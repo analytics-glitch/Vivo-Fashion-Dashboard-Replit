@@ -5,23 +5,27 @@ import psycopg2
 DATABASE_URL = os.environ['DATABASE_URL']
 
 def main():
-    # Get latest rates from Frankfurter
+    # Frankfurter doesn't support KES as base — use EUR as bridge
     resp = requests.get(
         'https://api.frankfurter.app/latest',
-        params={'from': 'KES', 'to': 'UGX,RWF'},
+        params={'from': 'EUR', 'to': 'KES,UGX,RWF'},
         timeout=10
     )
     resp.raise_for_status()
     data = resp.json()
-    ugx_per_kes = round(data['rates']['UGX'], 6)
-    rwf_per_kes = round(data['rates']['RWF'], 6)
+    kes = float(data['rates']['KES'])
+    ugx = float(data['rates']['UGX'])
+    rwf = float(data['rates']['RWF'])
+
+    # Rate = how many local currency per 1 KES
+    ugx_per_kes = round(ugx / kes, 6)
+    rwf_per_kes = round(rwf / kes, 6)
     print(f"1 KES = {ugx_per_kes} UGX")
     print(f"1 KES = {rwf_per_kes} RWF")
 
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
 
-    # Truncate and insert single rate per country
     cur.execute("TRUNCATE currency_rates")
     cur.execute("INSERT INTO currency_rates (country, month, rate) VALUES ('Kenya', 'latest', 1.0)")
     cur.execute("INSERT INTO currency_rates (country, month, rate) VALUES ('Uganda', 'latest', %s)", (ugx_per_kes,))
