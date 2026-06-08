@@ -1,0 +1,2 @@
+- [SQL sandbox bulk insert](sql-sandbox-bulk-insert.md) — executeSql spawns the query as a process arg; large multi-row INSERTs fail with E2BIG. Keep chunks ~200 rows.
+- [BI reporting period](bi-reporting-period.md) — derive current/prior year from data (MAX year), never hardcode, so YoY stays correct as data ages.

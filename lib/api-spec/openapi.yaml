@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: bi
+    description: Business intelligence dashboard data
 paths:
   /healthz:
     get:
@@ -24,6 +26,135 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /bi/summary:
+    get:
+      operationId: getKpiSummary
+      tags: [bi]
+      summary: Headline KPIs
+      description: Top-level KPIs for the group across the trailing period.
+      responses:
+        "200":
+          description: KPI summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KpiSummary"
+  /bi/revenue-trend:
+    get:
+      operationId: getRevenueTrend
+      tags: [bi]
+      summary: Monthly revenue trend
+      description: Monthly net revenue for the current and prior year.
+      responses:
+        "200":
+          description: Monthly revenue points
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RevenuePoint"
+  /bi/sales-by-brand:
+    get:
+      operationId: getSalesByBrand
+      tags: [bi]
+      summary: Revenue by brand
+      description: Net revenue and units grouped by brand in the group portfolio.
+      responses:
+        "200":
+          description: Brand performance rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BrandSales"
+  /bi/sales-by-category:
+    get:
+      operationId: getSalesByCategory
+      tags: [bi]
+      summary: Revenue by product category
+      responses:
+        "200":
+          description: Category performance rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CategorySales"
+  /bi/sales-by-region:
+    get:
+      operationId: getSalesByRegion
+      tags: [bi]
+      summary: Revenue by region
+      responses:
+        "200":
+          description: Region performance rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RegionSales"
+  /bi/sales-by-channel:
+    get:
+      operationId: getSalesByChannel
+      tags: [bi]
+      summary: Revenue by sales channel
+      description: Net revenue split across online, retail, and wholesale channels.
+      responses:
+        "200":
+          description: Channel performance rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ChannelSales"
+  /bi/top-products:
+    get:
+      operationId: getTopProducts
+      tags: [bi]
+      summary: Top selling products
+      responses:
+        "200":
+          description: Top product rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProductSales"
+  /bi/store-performance:
+    get:
+      operationId: getStorePerformance
+      tags: [bi]
+      summary: Store level performance
+      responses:
+        "200":
+          description: Store performance rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StorePerformance"
+  /bi/inventory-health:
+    get:
+      operationId: getInventoryHealth
+      tags: [bi]
+      summary: Inventory health by category
+      description: Stock value, units, and weeks of cover per category with sell-through.
+      responses:
+        "200":
+          description: Inventory rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/InventoryHealth"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +164,189 @@ components:
           type: string
       required:
         - status
-
+    KpiSummary:
+      type: object
+      required:
+        - totalRevenue
+        - revenueGrowthPct
+        - unitsSold
+        - unitsGrowthPct
+        - avgOrderValue
+        - aovGrowthPct
+        - grossMarginPct
+        - marginChangePct
+        - returnRatePct
+        - returnRateChangePct
+        - onlineSharePct
+        - activeStores
+      properties:
+        totalRevenue:
+          type: number
+        revenueGrowthPct:
+          type: number
+        unitsSold:
+          type: integer
+        unitsGrowthPct:
+          type: number
+        avgOrderValue:
+          type: number
+        aovGrowthPct:
+          type: number
+        grossMarginPct:
+          type: number
+        marginChangePct:
+          type: number
+        returnRatePct:
+          type: number
+        returnRateChangePct:
+          type: number
+        onlineSharePct:
+          type: number
+        activeStores:
+          type: integer
+    RevenuePoint:
+      type: object
+      required:
+        - month
+        - currentYear
+        - priorYear
+      properties:
+        month:
+          type: string
+        currentYear:
+          type: number
+        priorYear:
+          type: number
+    BrandSales:
+      type: object
+      required:
+        - brand
+        - revenue
+        - units
+        - marginPct
+        - growthPct
+      properties:
+        brand:
+          type: string
+        revenue:
+          type: number
+        units:
+          type: integer
+        marginPct:
+          type: number
+        growthPct:
+          type: number
+    CategorySales:
+      type: object
+      required:
+        - category
+        - revenue
+        - units
+        - marginPct
+      properties:
+        category:
+          type: string
+        revenue:
+          type: number
+        units:
+          type: integer
+        marginPct:
+          type: number
+    RegionSales:
+      type: object
+      required:
+        - region
+        - revenue
+        - units
+        - growthPct
+      properties:
+        region:
+          type: string
+        revenue:
+          type: number
+        units:
+          type: integer
+        growthPct:
+          type: number
+    ChannelSales:
+      type: object
+      required:
+        - channel
+        - revenue
+        - units
+        - orders
+      properties:
+        channel:
+          type: string
+        revenue:
+          type: number
+        units:
+          type: integer
+        orders:
+          type: integer
+    ProductSales:
+      type: object
+      required:
+        - sku
+        - name
+        - brand
+        - category
+        - revenue
+        - units
+        - marginPct
+      properties:
+        sku:
+          type: string
+        name:
+          type: string
+        brand:
+          type: string
+        category:
+          type: string
+        revenue:
+          type: number
+        units:
+          type: integer
+        marginPct:
+          type: number
+    StorePerformance:
+      type: object
+      required:
+        - store
+        - region
+        - revenue
+        - units
+        - targetPct
+        - growthPct
+      properties:
+        store:
+          type: string
+        region:
+          type: string
+        revenue:
+          type: number
+        units:
+          type: integer
+        targetPct:
+          type: number
+        growthPct:
+          type: number
+    InventoryHealth:
+      type: object
+      required:
+        - category
+        - stockUnits
+        - stockValue
+        - weeksOfCover
+        - sellThroughPct
+      properties:
+        category:
+          type: string
+        stockUnits:
+          type: integer
+        stockValue:
+          type: number
+        weeksOfCover:
+          type: number
+        sellThroughPct:
+          type: number
