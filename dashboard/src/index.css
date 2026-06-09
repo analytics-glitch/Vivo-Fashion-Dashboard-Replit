@@ -1,0 +1,336 @@
+@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+    margin: 0;
+    background: #fed7aa;
+    color: #1a1a1a;
+    font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "ss01";
+}
+
+@layer base {
+    :root {
+        --bg: #fed7aa;
+        --panel: #ffedd5;
+        --card: #ffffff;
+        --border: #fdba74;
+        --border-strong: #fb923c;
+        --text: #1a1a1a;
+        --text-sub: #4b5563;
+        --muted: #6b7280;
+        --accent: #1a5c38;
+        --accent-strong: #00c853;
+        --accent-deep: #0f3d24;
+        --danger: #dc2626;
+        --amber: #d97706;
+
+        --background: 33 100% 83%;
+        --foreground: 0 0% 10%;
+        --card-foreground: 0 0% 10%;
+        --primary: 146 54% 23%;
+        --primary-foreground: 0 0% 100%;
+        --border-hsl: 55 10% 87%;
+        --radius: 0.75rem;
+    }
+}
+
+@layer base {
+    body {
+        background: var(--bg);
+        color: var(--text);
+    }
+    ::selection {
+        background: var(--accent);
+        color: #fff;
+    }
+}
+
+@layer components {
+    .card {
+        background: #ffedd5;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        box-shadow: 0 1px 2px rgba(16, 40, 24, 0.04);
+    }
+    .card-white {
+        background: #ffedd5;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        box-shadow: 0 1px 2px rgba(16, 40, 24, 0.04);
+    }
+    .card-accent {
+        background: linear-gradient(135deg, #1a5c38 0%, #0f3d24 100%);
+        border: 1px solid #1a5c38;
+        border-radius: 12px;
+        color: #ffffff;
+        box-shadow: 0 4px 12px rgba(26, 92, 56, 0.2);
+    }
+    .card-accent .eyebrow {
+        color: rgba(255, 255, 255, 0.7) !important;
+    }
+    .card-accent .kpi-value {
+        color: #ffffff !important;
+    }
+    .kpi-value {
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        line-height: 1.05;
+        color: var(--text);
+    }
+    .num {
+        font-variant-numeric: tabular-nums;
+    }
+    .eyebrow {
+        text-transform: uppercase;
+        letter-spacing: 0.09em;
+        font-size: 0.65rem;
+        font-weight: 600;
+        color: var(--muted);
+    }
+    .hover-lift {
+        transition: transform 0.18s ease, box-shadow 0.18s ease,
+            border-color 0.18s ease;
+    }
+    .hover-lift:hover {
+        transform: translateY(-2px);
+        border-color: var(--accent);
+        box-shadow: 0 8px 24px rgba(26, 92, 56, 0.1);
+    }
+    .fade-in {
+        animation: fadeIn 0.35s ease both;
+    }
+    .pill-green {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.1rem 0.5rem;
+        background: #dcfce7;
+        color: #166534;
+        border-radius: 999px;
+        font-size: 0.7rem;
+        font-weight: 600;
+    }
+    .pill-red {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.1rem 0.5rem;
+        background: #fee2e2;
+        color: #991b1b;
+        border-radius: 999px;
+        font-size: 0.7rem;
+        font-weight: 600;
+    }
+    .pill-amber {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.1rem 0.5rem;
+        background: #fef3c7;
+        color: #92400e;
+        border-radius: 999px;
+        font-size: 0.7rem;
+        font-weight: 600;
+    }
+    .pill-neutral {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.1rem 0.5rem;
+        background: #f3f4f6;
+        color: #1f2937;
+        border-radius: 999px;
+        font-size: 0.7rem;
+        font-weight: 600;
+    }
+    .delta-up {
+        color: #047857;
+        font-weight: 700;
+    }
+    .delta-down {
+        color: #b91c1c;
+        font-weight: 700;
+    }
+    .delta-flat {
+        color: #6b7280;
+        font-weight: 600;
+    }
+    .input-pill {
+        background: #ffffff;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.5rem 0.75rem;
+        color: var(--text);
+        font-size: 0.85rem;
+        outline: none;
+        min-width: 0;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .input-pill:focus,
+    .input-pill:focus-within {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(26, 92, 56, 0.1);
+    }
+    .btn-primary {
+        background: var(--accent);
+        color: #ffffff;
+        border: 1px solid var(--accent);
+        border-radius: 10px;
+        padding: 0.55rem 1rem;
+        font-size: 0.85rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s ease;
+    }
+    .btn-primary:hover {
+        background: var(--accent-deep);
+    }
+    .btn-ghost {
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.55rem 1rem;
+        font-size: 0.85rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .btn-ghost:hover {
+        border-color: var(--accent);
+        background: #f9fafb;
+    }
+    table.data th {
+        font-weight: 600;
+        color: var(--muted);
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        padding: 0.75rem 0.75rem;
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+        background: #fed7aa;
+        white-space: nowrap;
+    }
+    table.data th.text-right,
+    table.data th[class*="text-right"] {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+    }
+    table.data td {
+        padding: 0.75rem 0.75rem;
+        border-bottom: 1px solid var(--border);
+        font-size: 0.85rem;
+        color: var(--text);
+        vertical-align: middle;
+    }
+    table.data td.num,
+    table.data td[class*="num"] {
+        font-variant-numeric: tabular-nums;
+    }
+    table.data tr:last-child td {
+        border-bottom: none;
+    }
+    table.data tr:hover td {
+        background: rgba(26, 92, 56, 0.03);
+    }
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Recharts polish */
+.recharts-cartesian-axis-tick text {
+    fill: #6b7280;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+.recharts-cartesian-grid line {
+    stroke: #f0f1f3;
+}
+.recharts-tooltip-wrapper {
+    outline: none !important;
+}
+.recharts-default-tooltip {
+    background: #ffffff !important;
+    border: 1px solid #e5e7eb !important;
+    border-radius: 10px !important;
+    padding: 10px 12px !important;
+    box-shadow: 0 10px 24px rgba(16, 40, 24, 0.12) !important;
+    color: #1a1a1a !important;
+}
+
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: #e5e7eb;
+    border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #1a5c38;
+}
+
+/* Print styles */
+@media print {
+    body {
+        background: #ffffff !important;
+    }
+    .no-print {
+        display: none !important;
+    }
+    .print-page {
+        background: #ffffff !important;
+        color: #000 !important;
+        padding: 0 !important;
+        border: none !important;
+        box-shadow: none !important;
+        max-width: none !important;
+    }
+    .print-page .accent-heading {
+        color: #1a5c38 !important;
+        border-bottom: 2px solid #1a5c38 !important;
+    }
+    .print-page .card,
+    .print-page .card-accent {
+        border: 1px solid #cccccc !important;
+        background: #ffffff !important;
+        color: #000 !important;
+        box-shadow: none !important;
+    }
+    .print-page .card-accent,
+    .print-page .card-accent * {
+        color: #000 !important;
+    }
+    @page {
+        margin: 12mm;
+    }
+}
+
+/* Hide the "Made with Emergent" preview badge */
+#emergent-badge,
+a[href*="emergent.sh"],
+a[aria-label*="Made with Emergent" i] {
+    display: none !important;
+}
+

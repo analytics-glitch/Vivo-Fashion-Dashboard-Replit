@@ -1,0 +1,300 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { api, fmtNum } from "@/lib/api";
+import { Loading, Empty, ErrorBox, SectionTitle } from "@/components/common";
+import SortableTable from "@/components/SortableTable";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
+import { ClockCounterClockwise, DownloadSimple, CaretDown, CaretRight } from "@phosphor-icons/react";
+
+/**
+ * Recent allocation runs — a per-row snapshot of every Save click.
+ * Click a row to expand and see the per-store suggested-vs-allocated
+ * detail. Each run also has a "Download CSV" button.
+ */
+const AllocationRunsHistory = ({ refreshKey, optimisticRun }) => {
+  const [runs, setRuns] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [expandedId, setExpandedId] = useState(null);
+
+  // Optimistic prepend: when a run is just saved, parent passes it in
+  // as `optimisticRun`. We surface it instantly while the GET round-
+  // trip catches up.
+  useEffect(() => {
+    if (!optimisticRun) return;
+    setRuns((prev) => {
+      if (prev.some((r) => r.id === optimisticRun.id)) return prev;
+      return [optimisticRun, ...prev];
+    });
+  }, [optimisticRun]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api.get("/allocations/runs", { timeout: 30000 })
+      .then((r) => {
+        if (cancelled) return;
+        const fetched = r.data || [];
+        // Merge — keep the optimistic run if the fetched list hasn't
+        // caught up yet so it doesn't briefly disappear.
+        if (optimisticRun && !fetched.some((x) => x.id === optimisticRun.id)) {
+          setRuns([optimisticRun, ...fetched]);
+        } else {
+          setRuns(fetched);
+        }
+      })
+      .catch((e) => { if (!cancelled) setError(e?.response?.data?.detail || e.message); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const downloadRun = (run) => {
+    const sizeKeys = Object.keys(run.pack_breakdown || {});
+    const header = [
+      "Store",
+      "Buying Packs", "Buying Units",
+      "Warehouse Packs", "Warehouse Units",
+      "Delta Units",
+      ...sizeKeys.flatMap((s) => [`${s} Buying`, `${s} Warehouse`]),
+    ];
+    const lines = [
+      `Style:,"${(run.style_name || "").replace(/"/g, '""')}"`,
+      `Color:,"${run.color || "all"}"`,
+      `Type:,${run.allocation_type}`,
+      `Subcategory:,"${run.subcategory || ""}"`,
+      `Status:,${run.status || "fulfilled"}`,
+      `Units total:,${run.units_total}`,
+      `Pack size:,${run.pack_unit_size}`,
+      `Saved:,${run.created_at}`,
+      `Saved by:,${run.created_by_email}`,
+      `Fulfilled by:,${run.fulfilled_by_email || "—"}`,
+      `Fulfilled at:,${run.fulfilled_at || "—"}`,
+      "",
+      header.join(","),
+    ];
+    (run.rows || []).forEach((r) => {
+      const buying_sizes = r.buying_sizes || r.sizes || {};
+      const wh_sizes = r.warehouse_sizes || r.sizes || {};
+      lines.push([
+        `"${(r.store || "").replace(/"/g, '""')}"`,
+        r.buying_packs ?? r.suggested_packs ?? 0,
+        r.buying_units ?? r.suggested_units ?? 0,
+        r.allocated_packs ?? 0,
+        r.warehouse_units ?? r.allocated_units ?? 0,
+        (r.warehouse_units ?? r.allocated_units ?? 0) - (r.buying_units ?? r.suggested_units ?? 0),
+        ...sizeKeys.flatMap((s) => [
+          buying_sizes[s] || 0,
+          wh_sizes[s] || 0,
+        ]),
+      ].join(","));
+    });
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    const fname = `allocation_${(run.style_name || "untitled").replace(/[^\w]+/g, "_")}_${(run.created_at || "").slice(0, 10)}.csv`;
+    link.download = fname;
+    document.body.appendChild(link); link.click(); link.remove();
+    URL.revokeObjectURL(link.href);
+  };
+
+  const sortedRuns = useMemo(
+    () => [...runs].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")),
+    [runs]
+  );
+
+  // Iter 89 — Sortable headers for every column. The default ordering
+  // remains "newest first" (the manual sort above); clicking a header
+  // applies a user-driven sort on top.
+  const { sort, toggleSort, sortRows } = useTableSort();
+  const accessors = useMemo(() => ({
+    style_name: (r) => r.style_name || "",
+    color: (r) => r.color || "",
+    allocation_type: (r) => r.allocation_type || "",
+    subcategory: (r) => r.subcategory || "",
+    suggested_total: (r) => Number(r.suggested_total ?? 0),
+    allocated_total: (r) => Number(r.allocated_total ?? 0),
+    delta_total: (r) => Number(r.delta_total ?? 0),
+    status: (r) => r.status || "",
+    created_at: (r) => r.created_at || "",
+    created_by: (r) => r.created_by_name || r.created_by_email || "",
+  }), []);
+  const displayedRuns = useMemo(
+    () => sortRows(sortedRuns, accessors),
+    [sortRows, sortedRuns, accessors],
+  );
+
+  return (
+    <div className="card-white p-5" data-testid="allocation-history">
+      <SectionTitle
+        title={
+          <span className="inline-flex items-center gap-2">
+            <ClockCounterClockwise size={16} weight="duotone" className="text-[#1a5c38]" />
+            Recent Allocations
+          </span>
+        }
+        subtitle="Every saved allocation run. Click a row to see per-store suggested vs allocated detail. Use Download to export the run as a CSV."
+      />
+      {loading && <Loading label="Loading history…" />}
+      {error && <ErrorBox message={error} />}
+      {!loading && !error && sortedRuns.length === 0 && (
+        <Empty label="No saved allocations yet — calculate then click Save allocation to create a record." />
+      )}
+      {!loading && !error && sortedRuns.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[12px]" data-testid="allocation-history-table">
+            <thead>
+              <tr className="bg-[#fde7c5] text-[#5b3a00]">
+                <th className="text-left px-3 py-2 w-6"></th>
+                <SortableTh sortKey="style_name" sort={sort} onSort={toggleSort} className="px-3 py-2">Style</SortableTh>
+                <SortableTh sortKey="color" sort={sort} onSort={toggleSort} className="px-3 py-2">Color</SortableTh>
+                <SortableTh sortKey="allocation_type" sort={sort} onSort={toggleSort} className="px-3 py-2">Type</SortableTh>
+                <SortableTh sortKey="subcategory" sort={sort} onSort={toggleSort} className="px-3 py-2">Subcat</SortableTh>
+                <SortableTh sortKey="suggested_total" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Buying</SortableTh>
+                <SortableTh sortKey="allocated_total" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Warehouse</SortableTh>
+                <SortableTh sortKey="delta_total" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Δ</SortableTh>
+                <SortableTh sortKey="status" sort={sort} onSort={toggleSort} className="px-3 py-2">Status</SortableTh>
+                <SortableTh sortKey="created_at" sort={sort} onSort={toggleSort} className="px-3 py-2">Saved</SortableTh>
+                <SortableTh sortKey="created_by" sort={sort} onSort={toggleSort} className="px-3 py-2">By</SortableTh>
+                <th className="text-right px-3 py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {displayedRuns.map((run) => {
+                const open = expandedId === run.id;
+                return (
+                  <React.Fragment key={run.id}>
+                    <tr
+                      className={`border-b border-border/40 hover:bg-amber-50/40 cursor-pointer ${open ? "bg-amber-50/40" : ""}`}
+                      onClick={() => setExpandedId(open ? null : run.id)}
+                      data-testid={`alloc-history-row-${run.id}`}
+                    >
+                      <td className="px-3 py-1.5">
+                        {open ? <CaretDown size={12} weight="bold" /> : <CaretRight size={12} weight="bold" />}
+                      </td>
+                      <td className="px-3 py-1.5 font-bold text-foreground" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>
+                        {run.style_name}
+                      </td>
+                      <td className="px-3 py-1.5">
+                        {run.color ? (
+                          <span className="text-[10.5px] font-bold uppercase tracking-wide bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded">
+                            {run.color}
+                          </span>
+                        ) : <span className="text-muted">—</span>}
+                      </td>
+                      <td className="px-3 py-1.5">
+                        <span className={`text-[10.5px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                          run.allocation_type === "replenishment"
+                            ? "bg-blue-100 text-blue-800"
+                            : "bg-emerald-100 text-emerald-800"
+                        }`}>
+                          {run.allocation_type}
+                        </span>
+                      </td>
+                      <td className="px-3 py-1.5 text-muted">{run.subcategory}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-muted">{fmtNum(run.suggested_total)}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums font-bold">{fmtNum(run.allocated_total)}</td>
+                      <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${
+                        run.delta_total > 0 ? "text-amber-700" : run.delta_total < 0 ? "text-rose-700" : "text-muted"
+                      }`}>
+                        {run.delta_total > 0 ? `+${run.delta_total}` : run.delta_total}
+                      </td>
+                      <td className="px-3 py-1.5">
+                        <span className={`text-[10.5px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                          run.status === "fulfilled"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "bg-amber-100 text-amber-900"
+                        }`}>
+                          {run.status === "fulfilled" ? "Fulfilled" : "Pending"}
+                        </span>
+                      </td>
+                      <td className="px-3 py-1.5 text-muted">
+                        {(run.created_at || "").slice(0, 16).replace("T", " ")}
+                      </td>
+                      <td className="px-3 py-1.5 text-muted">{run.created_by_name || run.created_by_email}</td>
+                      <td className="px-3 py-1.5 text-right">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); downloadRun(run); }}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-brand-deep border border-brand-deep/30 hover:bg-brand-deep/5 px-2 py-1 rounded-md"
+                          data-testid={`alloc-history-download-${run.id}`}
+                        >
+                          <DownloadSimple size={11} /> CSV
+                        </button>
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr className="bg-amber-50/30 border-b border-amber-200">
+                        <td colSpan={12} className="px-3 py-3">
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-[11.5px]">
+                              <thead>
+                                <tr className="text-muted">
+                                  <th className="text-left px-2 py-1">Store</th>
+                                  <th className="text-right px-2 py-1">Buying packs</th>
+                                  <th className="text-right px-2 py-1">Warehouse packs</th>
+                                  <th className="text-right px-2 py-1">Buying units</th>
+                                  <th className="text-right px-2 py-1">Warehouse units</th>
+                                  <th className="text-right px-2 py-1">Δ Units</th>
+                                  {Object.keys(run.pack_breakdown || {}).map((sz) => (
+                                    <th key={sz} className="text-right px-2 py-1" colSpan={2}>{sz}</th>
+                                  ))}
+                                </tr>
+                                <tr className="text-[10.5px] text-muted">
+                                  <th colSpan={6}></th>
+                                  {Object.keys(run.pack_breakdown || {}).map((sz) => (
+                                    <React.Fragment key={sz}>
+                                      <th className="text-right px-2 pb-1">Buying</th>
+                                      <th className="text-right px-2 pb-1 bg-emerald-50/50">Warehouse</th>
+                                    </React.Fragment>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(run.rows || []).map((r, i) => {
+                                  const buying_units = r.buying_units ?? r.suggested_units ?? 0;
+                                  const wh_units = r.warehouse_units ?? r.allocated_units ?? 0;
+                                  const buying_sizes = r.buying_sizes || r.sizes || {};
+                                  const wh_sizes = r.warehouse_sizes || r.sizes || {};
+                                  const delta = wh_units - buying_units;
+                                  return (
+                                    <tr key={i} className="border-b border-border/30">
+                                      <td className="px-2 py-1 font-medium">{r.store}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums text-muted">{r.buying_packs ?? r.suggested_packs}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums font-bold">{r.allocated_packs}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums text-muted">{fmtNum(buying_units)}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums font-bold">{fmtNum(wh_units)}</td>
+                                      <td className={`px-2 py-1 text-right tabular-nums ${
+                                        delta > 0 ? "text-amber-700" : delta < 0 ? "text-rose-700" : "text-muted"
+                                      }`}>
+                                        {delta > 0 ? `+${delta}` : delta}
+                                      </td>
+                                      {Object.keys(run.pack_breakdown || {}).map((sz) => (
+                                        <React.Fragment key={sz}>
+                                          <td className="px-2 py-1 text-right tabular-nums text-muted">
+                                            {fmtNum(buying_sizes[sz] || 0)}
+                                          </td>
+                                          <td className="px-2 py-1 text-right tabular-nums bg-emerald-50/40">
+                                            {fmtNum(wh_sizes[sz] || 0)}
+                                          </td>
+                                        </React.Fragment>
+                                      ))}
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default AllocationRunsHistory;

@@ -1,0 +1,135 @@
+import React, { Suspense, useEffect, useRef } from "react";
+import "@/App.css";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import TopNav from "@/components/Sidebar";
+import FilterBar from "@/components/FilterBar";
+import Login from "@/pages/Login";
+import AuthCallback from "@/pages/AuthCallback";
+import { Loading } from "@/components/common";
+
+// Code-split every authed page so the initial JS bundle is lean and
+// the first paint after login is fast — critical when the upstream BI
+// API is degraded and we're waiting on data anyway.
+const Overview = React.lazy(() => import("@/pages/Overview"));
+const Locations = React.lazy(() => import("@/pages/Locations"));
+const Products = React.lazy(() => import("@/pages/Products"));
+const Inventory = React.lazy(() => import("@/pages/Inventory"));
+const Exports = React.lazy(() => import("@/pages/Exports"));
+const Customers = React.lazy(() => import("@/pages/Customers"));
+const CustomerDetails = React.lazy(() => import("@/pages/CustomerDetails"));
+const Footfall = React.lazy(() => import("@/pages/Footfall"));
+const CEOReport = React.lazy(() => import("@/pages/CEOReport"));
+const TargetsTracker = React.lazy(() => import("@/pages/TargetsTracker"));
+const ReOrder = React.lazy(() => import("@/pages/ReOrder"));
+const IBT = React.lazy(() => import("@/pages/IBT"));
+const DataQuality = React.lazy(() => import("@/pages/DataQuality"));
+const Users = React.lazy(() => import("@/pages/Users"));
+const ActivityLogs = React.lazy(() => import("@/pages/ActivityLogs"));
+const Feedback = React.lazy(() => import("@/pages/Feedback"));
+const AdminFeedback = React.lazy(() => import("@/pages/AdminFeedback"));
+const Allocations = React.lazy(() => import("@/pages/Allocations"));
+const Replenishments = React.lazy(() => import("@/pages/Replenishments"));
+const StoreClusters = React.lazy(() => import("@/pages/StoreClusters"));
+const ExecutiveSummary = React.lazy(() => import("@/pages/ExecutiveSummary"));
+const Marketing = React.lazy(() => import("@/pages/Marketing"));
+const RangeManagement = React.lazy(() => import("@/pages/RangeManagement"));
+
+import { FiltersProvider } from "@/lib/filters";
+import { AuthProvider } from "@/lib/auth";
+import ProtectedRoute from "@/components/ProtectedRoute";
+import ChatWidget from "@/components/ChatWidget";
+import GlobalSearch from "@/components/GlobalSearch";
+import { Toaster } from "@/components/ui/sonner";
+import useHeartbeat from "@/lib/useHeartbeat";
+import { useAuth } from "@/lib/auth";
+
+const Shell = ({ children }) => {
+  const navRef = useRef(null);
+  const { user } = useAuth();
+  // Iter 89w-g — fire presence heartbeats while a tab is open so
+  // admins can see live "who's using the system" on Activity Logs.
+  useHeartbeat(Boolean(user));
+  // Expose the actual rendered navbar+filter-bar height as a CSS variable so
+  // sticky table headers across the app can `top: var(--app-navbar-h)`
+  // and never slide under the navbar. Recalculates on resize and on
+  // route-change-induced reflows.
+  useEffect(() => {
+    const el = navRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const apply = () => {
+      const h = el.getBoundingClientRect().height;
+      document.documentElement.style.setProperty("--app-navbar-h", `${Math.round(h)}px`);
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    window.addEventListener("resize", apply);
+    return () => { ro.disconnect(); window.removeEventListener("resize", apply); };
+  }, []);
+  return (
+    <div className="min-h-screen bg-background text-foreground" data-testid="app-shell">
+      <div ref={navRef} className="sticky top-0 z-40">
+        <TopNav />
+        <FilterBar />
+      </div>
+      <main className="px-3 sm:px-5 lg:px-10 pt-4 pb-6 max-w-[1600px] mx-auto w-full">
+        <Suspense fallback={<div className="py-10"><Loading label="Loading…" /></div>}>
+          {children}
+        </Suspense>
+      </main>
+      <ChatWidget />
+      <GlobalSearch />
+    </div>
+  );
+};
+
+const ProtectedShell = ({ children, adminOnly = false, pageId }) => (
+  <ProtectedRoute adminOnly={adminOnly} pageId={pageId}>
+    <Shell>{children}</Shell>
+  </ProtectedRoute>
+);
+
+function App() {
+  return (
+    <div className="App">
+      <BrowserRouter>
+        <AuthProvider>
+          <FiltersProvider>
+            <Routes>
+              <Route path="/login" element={<Login />} />
+              <Route path="/auth/callback" element={<AuthCallback />} />
+              <Route path="/" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
+              <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
+              <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
+              <Route path="/locations" element={<ProtectedShell pageId="locations"><Locations /></ProtectedShell>} />
+              <Route path="/products" element={<ProtectedShell pageId="products"><Products /></ProtectedShell>} />
+              <Route path="/inventory" element={<ProtectedShell pageId="inventory"><Inventory /></ProtectedShell>} />
+              <Route path="/exports" element={<ProtectedShell pageId="exports"><Exports /></ProtectedShell>} />
+              <Route path="/customers" element={<ProtectedShell pageId="customers"><Customers /></ProtectedShell>} />
+              <Route path="/customer-details" element={<ProtectedShell pageId="customer-details"><CustomerDetails /></ProtectedShell>} />
+              <Route path="/marketing" element={<ProtectedShell pageId="marketing"><Marketing /></ProtectedShell>} />
+              <Route path="/range-mgmt" element={<ProtectedShell pageId="range-mgmt"><RangeManagement /></ProtectedShell>} />
+              <Route path="/footfall" element={<ProtectedShell pageId="footfall"><Footfall /></ProtectedShell>} />
+              <Route path="/ceo-report" element={<ProtectedShell pageId="ceo-report"><CEOReport /></ProtectedShell>} />
+              <Route path="/targets" element={<ProtectedShell pageId="targets"><TargetsTracker /></ProtectedShell>} />
+              <Route path="/re-order" element={<ProtectedShell pageId="re-order"><ReOrder /></ProtectedShell>} />
+              <Route path="/ibt" element={<ProtectedShell pageId="ibt"><IBT /></ProtectedShell>} />
+              <Route path="/data-quality" element={<ProtectedShell pageId="data-quality"><DataQuality /></ProtectedShell>} />
+              <Route path="/feedback" element={<ProtectedShell pageId="feedback"><Feedback /></ProtectedShell>} />
+              <Route path="/allocations" element={<ProtectedShell pageId="allocations"><Allocations /></ProtectedShell>} />
+              <Route path="/replenishments" element={<ProtectedShell pageId="replenishments"><Replenishments /></ProtectedShell>} />
+              <Route path="/admin/users" element={<ProtectedShell adminOnly pageId="admin-users"><Users /></ProtectedShell>} />
+              <Route path="/admin/activity-logs" element={<ProtectedShell adminOnly pageId="admin-activity-logs"><ActivityLogs /></ProtectedShell>} />
+              <Route path="/admin/feedback" element={<ProtectedShell adminOnly pageId="admin-feedback"><AdminFeedback /></ProtectedShell>} />
+              <Route path="/admin/store-clusters" element={<ProtectedShell adminOnly pageId="admin-store-clusters"><StoreClusters /></ProtectedShell>} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </FiltersProvider>
+        </AuthProvider>
+      </BrowserRouter>
+      <Toaster position="top-right" richColors />
+    </div>
+  );
+}
+
+export default App;

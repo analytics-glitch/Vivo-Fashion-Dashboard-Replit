@@ -98,11 +98,11 @@ def build_filters(date_from, date_to, country=None, channel=None, extra=None):
         parts.append(extra)
     return " AND ".join(parts)
 
-@app.get("/")
+@app.get("/api/")
 def root():
     return {"status": "ok", "service": "Vivo BI API (PostgreSQL)"}
 
-@app.get("/locations")
+@app.get("/api/locations")
 def get_locations():
     return run_query("""
         SELECT location_name, country, city, store_type, brand
@@ -111,7 +111,7 @@ def get_locations():
         ORDER BY country, location_name
     """)
 
-@app.get("/kpis")
+@app.get("/api/kpis")
 def get_kpis(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -137,7 +137,7 @@ def get_kpis(
         WHERE """ + where, date_to=date_to)
     return rows[0] if rows else {}
 
-@app.get("/country-summary")
+@app.get("/api/country-summary")
 def get_country_summary(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -158,7 +158,7 @@ def get_country_summary(
         ORDER BY total_sales DESC
     """, date_to=date_to)
 
-@app.get("/sales-summary")
+@app.get("/api/sales-summary")
 def get_sales_summary(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -181,7 +181,7 @@ def get_sales_summary(
         ORDER BY total_sales DESC
     """, date_to=date_to)
 
-@app.get("/daily-trend")
+@app.get("/api/daily-trend")
 def get_daily_trend(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -200,7 +200,7 @@ def get_daily_trend(
         ORDER BY s.sale_date, s.country
     """, date_to=date_to)
 
-@app.get("/subcategory-sales")
+@app.get("/api/subcategory-sales")
 def get_subcategory_sales(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -223,7 +223,7 @@ def get_subcategory_sales(
         ORDER BY total_sales DESC
     """, date_to=date_to)
 
-@app.get("/top-skus")
+@app.get("/api/top-skus")
 def get_top_skus(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -246,7 +246,7 @@ def get_top_skus(
         ORDER BY units_sold DESC
         LIMIT """ + str(limit), date_to=date_to)
 
-@app.get("/inventory")
+@app.get("/api/inventory")
 def get_inventory(
     location: str = Query(default=None),
     country:  str = Query(default=None),
@@ -275,7 +275,7 @@ def get_inventory(
         LIMIT 2000
     """)
 
-@app.get("/inventory-summary")
+@app.get("/api/inventory-summary")
 def get_inventory_summary(country: str = Query(default=None)):
     filters = ["i.available > 0", "i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")"]
     if country:
@@ -292,7 +292,7 @@ def get_inventory_summary(country: str = Query(default=None)):
         ORDER BY available DESC
     """)
 
-@app.get("/footfall")
+@app.get("/api/footfall")
 def get_footfall(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -333,7 +333,7 @@ def get_footfall(
         ORDER BY total_footfall DESC
     """, date_to=date_to)
 
-@app.get("/footfall/weekday-pattern")
+@app.get("/api/footfall/weekday-pattern")
 def get_footfall_weekday(
     date_from: str = Query(default=str((date.today() - timedelta(days=30)).isoformat())),
     date_to:   str = Query(default=str(date.today())),
@@ -354,7 +354,7 @@ def get_footfall_weekday(
         ORDER BY dow
     """, date_to=date_to)
 
-@app.get("/customers")
+@app.get("/api/customers")
 def get_customers(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -413,7 +413,7 @@ def get_customers(
     """, date_to=date_to)
     return rows[0] if rows else {}
 
-@app.get("/top-customers")
+@app.get("/api/top-customers")
 def get_top_customers(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -443,7 +443,7 @@ def get_top_customers(
         ORDER BY total_sales DESC
         LIMIT """ + str(limit), date_to=date_to)
 
-@app.get("/customer-search")
+@app.get("/api/customer-search")
 def get_customer_search(
     q:         str = Query(default=""),
     date_from: str = Query(default="2020-01-01"),
@@ -481,7 +481,7 @@ def get_customer_search(
         LIMIT 10
     """, date_to=date_to)
 
-@app.get("/customer-products")
+@app.get("/api/customer-products")
 def get_customer_products(customer_id: str = Query(default="")):
     if not customer_id:
         return []
@@ -500,7 +500,7 @@ def get_customer_products(customer_id: str = Query(default="")):
         LIMIT 10
     """)
 
-@app.get("/customer-frequency")
+@app.get("/api/customer-frequency")
 def get_customer_frequency(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -527,7 +527,7 @@ def get_customer_frequency(
         ORDER BY MIN(order_count)
     """, date_to=date_to)
 
-@app.get("/customer-trend")
+@app.get("/api/customer-trend")
 def get_customer_trend(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -551,7 +551,7 @@ def get_customer_trend(
         GROUP BY s.sale_date ORDER BY s.sale_date
     """, date_to=date_to)
 
-@app.get("/customers-by-location")
+@app.get("/api/customers-by-location")
 def get_customers_by_location(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -577,7 +577,7 @@ def get_customers_by_location(
         ORDER BY total_customers DESC
     """, date_to=date_to)
 
-@app.get("/churned-customers")
+@app.get("/api/churned-customers")
 def get_churned_customers(
     days:  int = Query(default=90),
     limit: int = Query(default=20),
@@ -607,7 +607,7 @@ def get_churned_customers(
         ORDER BY lp.lifetime_spend DESC
         LIMIT """ + str(limit))
 
-@app.get("/new-customer-products")
+@app.get("/api/new-customer-products")
 def get_new_customer_products(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -636,7 +636,7 @@ def get_new_customer_products(
         ORDER BY units_sold DESC
         LIMIT """ + str(limit), date_to=date_to)
 
-@app.get("/sor")
+@app.get("/api/sor")
 def get_sor(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -667,7 +667,7 @@ def get_sor(
         LIMIT 200
     """, date_to=date_to)
 
-@app.get("/subcategory-stock-sales")
+@app.get("/api/subcategory-stock-sales")
 def get_subcategory_stock_sales(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -708,7 +708,7 @@ def get_subcategory_stock_sales(
         ORDER BY units_sold DESC
     """, date_to=date_to)
 
-@app.get("/orders")
+@app.get("/api/orders")
 def get_orders(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -737,7 +737,7 @@ def get_orders(
         ORDER BY s.sale_date DESC, s.order_id
         LIMIT """ + str(limit), date_to=date_to)
 
-@app.get("/stock-to-sales")
+@app.get("/api/stock-to-sales")
 def get_stock_to_sales(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
@@ -772,7 +772,7 @@ def get_stock_to_sales(
         ORDER BY stock_to_sales_ratio DESC
     """, date_to=date_to)
 
-@app.get("/customer-type-spend")
+@app.get("/api/customer-type-spend")
 def get_customer_type_spend(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
