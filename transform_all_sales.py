@@ -176,9 +176,9 @@ def transform_shopify(cur, conn, rates):
             now, now,
             str(line_item_id) if line_item_id else None,
             restock_type, country, rate,
-            round(price, 2),
-            round(total, 2), round(gross, 2), round(disc, 2),
-            round(ret, 2), round(net, 2),
+            round(price / rate, 2) if rate != 1 else price,
+            round(total / rate, 2), round(gross / rate, 2), round(disc / rate, 2),
+            round(ret / rate, 2), round(net / rate, 2),
             str(day),
         ))
 
@@ -367,10 +367,10 @@ def transform_odoo(cur, conn, rates):
             str(line_id),
             'return' if qty < 0 else None,
             country, rate,
-            round(price, 2),
-            round(total, 2), round(gross, 2), round(disc, 2),
-            round(ret, 2), round(net, 2),
-            day_str,
+            round(price / rate, 2) if rate != 1 else price,
+            round(total / rate, 2), round(gross / rate, 2), round(disc / rate, 2),
+            round(ret / rate, 2), round(net / rate, 2),
+            str(day),
         ))
 
     log.info("Odoo rows to insert: %d", len(insert_rows))

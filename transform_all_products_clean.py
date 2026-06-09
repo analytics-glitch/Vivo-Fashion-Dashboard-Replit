@@ -21,69 +21,37 @@ SIZE_NORM = {
     'XL/2X': '1X/2X', 'OS': 'F',
 }
 
-SUBCAT_RULES = [
-    (['fitness bra', 'sports bra'],                          'Fitted Tops'),
-    (['biker'],                                              'Leggings'),
-    (['catsuit', 'unitard', 'romper'],                       'Jumpsuits & Playsuits'),
-    (['shawl', 'scarf', 'sarong', 'yoga wrap'],              'Scarves'),
-    (['blazer', 'shacket', 'jacket', 'coat'],                'Jackets & Coats'),
-    (['poncho', 'sweater'],                                  'Sweaters & Ponchos'),
-    (['waterfall', 'kimono', 'cover up', 'cover-up'],        'Waterfalls & Kimonos'),
-    (['hoodie', 'sweatshirt'],                               'Hoodies & Sweatshirts'),
-    (['bodysuit', 'body suit'],                              'Bodysuits'),
-    (['jumpsuit', 'playsuit'],                               'Jumpsuits & Playsuits'),
-    (['legging'],                                            'Leggings'),
-    (['culotte', 'cullote'],                                 'Culottes & Capri Pants'),
-    (['palazzo', 'jogger', 'trouser'],                       'Full Length Pants'),
-    (['skort'],                                              'Shorts & Skorts'),
-    (['maxi', 'dress'],                                      'Maxi Dresses'),
-    (['midi', 'dress'],                                      'Midi & Capri Dresses'),
-    (['mini', 'dress'],                                      'Short & Mini Dresses'),
-    (['knee', 'dress'],                                      'Knee Length Dresses'),
-    (['bodycon'],                                            'Knee Length Dresses'),
-    (['kaftan'],                                             'Maxi Dresses'),
-    (['maxi', 'skirt'],                                      'Maxi Skirts'),
-    (['dress'],                                              'Knee Length Dresses'),
-    (['skirt'],                                              'Knee Length Skirts'),
-    (['tee', 't-shirt', 'tank'],                             'T-shirts & Tank Tops'),
-    (['tunic', 'blouse', 'camisole', 'cowl', 'vest', 'chiffon'], 'Loose Tops'),
-    (['shirt'],                                              'Loose Tops'),
-    (['top'],                                                'Loose Tops'),
-    (['short'],                                              'Shorts & Skorts'),
-    (['pant'],                                               'Full Length Pants'),
-    (['maxi'],                                               'Maxi Dresses'),
-]
-
 CATEGORY_MAP = {
-    'Skirts & Top Set': 'Two-Piece Sets',
-    'Pants & Top Set': 'Two-Piece Sets',
-    'Two-Piece Sets': 'Two-Piece Sets',
-    'Bangles & Bracelets': 'Accessories',
-    'Belts': 'Accessories',
-    'Scarves': 'Accessories',
-    'Accessories': 'Accessories',
-    'Bodysuits': 'Tops',
-    'Fitted Tops': 'Tops',
-    'Loose Tops': 'Tops',
-    'T-shirts & Tank Tops': 'Tops',
-    'Midriff & Crop Tops': 'Tops',
-    'Culottes & Capri Pants': 'Bottoms',
-    'Full Length Pants': 'Bottoms',
-    'Jumpsuits & Playsuits': 'Bottoms',
-    'Leggings': 'Bottoms',
-    'Shorts & Skorts': 'Bottoms',
-    'Knee Length Dresses': 'Dresses',
-    'Maxi Dresses': 'Dresses',
-    'Midi & Capri Dresses': 'Dresses',
-    'Short & Mini Dresses': 'Dresses',
-    'Knee Length Skirts': 'Skirts',
-    'Maxi Skirts': 'Skirts',
-    'Hoodies & Sweatshirts': 'Outerwear',
-    'Jackets & Coats': 'Outerwear',
-    'Sweaters & Ponchos': 'Outerwear',
-    'Waterfalls & Kimonos': 'Outerwear',
-    'Sample & Sale Items': 'Sale',
+    'Fitted Tops':              'Tops',
+    'Loose Tops':               'Tops',
+    'T-shirts & Tank Tops':     'Tops',
+    'Bodysuits':                'Tops',
+    'Midriff & Crop Tops':      'Tops',
+    'Knee Length Dresses':      'Dresses',
+    'Maxi Dresses':             'Dresses',
+    'Midi & Capri Dresses':     'Dresses',
+    'Short & Mini Dresses':     'Dresses',
+    'Knee Length Skirts':       'Skirts',
+    'Maxi Skirts':              'Skirts',
+    'Midi & Capri Skirts':      'Skirts',
+    'Full Length Pants':        'Bottoms',
+    'Leggings':                 'Bottoms',
+    'Shorts & Skorts':          'Bottoms',
+    'Culottes & Capri Pants':   'Bottoms',
+    'Jumpsuits & Playsuits':    'Bottoms',
+    'Jackets & Coats':          'Outerwear',
+    'Waterfalls & Kimonos':     'Outerwear',
+    'Hoodies & Sweatshirts':    'Outerwear',
+    'Sweaters & Ponchos':       'Outerwear',
+    'Two-Piece Sets':           'Two-Piece Sets',
+    'Scarves':                  'Accessories',
+    'Accessories':              'Accessories',
+    'Sample & Sale Items':      'Sale',
+    'Gift Vouchers':            'Gift Vouchers',
 }
+
+VALID_SUBCATS = set(CATEGORY_MAP.keys())
+
 
 def extract_size(sku):
     if not sku:
@@ -93,6 +61,7 @@ def extract_size(sku):
         raw = m.group(1)
         return SIZE_NORM.get(raw, raw)
     return None
+
 
 def extract_style_number(sku, name=''):
     if not sku:
@@ -108,23 +77,24 @@ def extract_style_number(sku, name=''):
         return 'V' + sku[:7]
     return sku[:7]
 
+
 def extract_style_name(name):
     if not name:
         return name
-    name = re.sub(r'- ', ' - ', name)
     name = re.sub(r' -([^ ])', r' - \1', name)
     if ' - ' in name:
         return name.split(' - ')[0].strip()
     return name.strip()
 
+
 def extract_color_from_name(name):
     if not name:
         return None
-    name = re.sub(r'- ', ' - ', name)
     name = re.sub(r' -([^ ])', r' - \1', name)
     if ' - ' in name:
         return name.split(' - ', 1)[1].strip()
     return None
+
 
 def guess_brand(name):
     n = (name or '').upper()
@@ -136,24 +106,22 @@ def guess_brand(name):
         return 'Vivo'
     return 'Third Party Brands'
 
-def guess_subcat(name):
-    n = (name or '').lower()
-    for keywords, subcat in SUBCAT_RULES:
-        if all(kw in n for kw in keywords):
-            return subcat
-        if any(kw in n for kw in keywords[:1]):
-            if len(keywords) == 1 or any(kw in n for kw in keywords[1:]):
-                return subcat
-    return None
 
 def is_sample(name, sku):
     n = (name or '').upper()
     s = (sku or '').upper()
     return (
-        'SAMPLE' in n or 'TEST' in n or 'GIFT VOUCHER' in n or
-        'FS' in s or 'SD' in s or s.startswith('CS') or
-        s.startswith('SALE') or s.startswith('TT') or 'SAL' in s
+        'SAMPLE' in n or 'TEST' in n or
+        s.startswith('FS') or s.startswith('SD') or
+        s.startswith('CS') or s.startswith('SALE') or
+        s.startswith('TT') or 'SAL' in s[:4]
     )
+
+
+def is_gift_voucher(name):
+    n = (name or '').lower()
+    return 'gift voucher' in n or 'gift card' in n
+
 
 def main():
     conn = psycopg2.connect(DATABASE_URL)
@@ -163,20 +131,20 @@ def main():
     log.info("Building all_products_clean...")
     cur.execute("TRUNCATE all_products_clean")
 
-    # Get all_sales product data for enrichment
+    # ── Sales enrichment data ────────────────────────────────────────────────
     cur.execute("""
         SELECT variant_sku,
             MAX(product_vendor) AS vendor,
-            MAX(product_type) AS sale_product_type,
-            MAX(product_title) AS sale_product_name
+            MAX(product_type)   AS sale_product_type,
+            MAX(product_title)  AS sale_product_name
         FROM all_sales
-        WHERE variant_sku IS NOT NULL
+        WHERE variant_sku IS NOT NULL AND variant_sku != ''
         GROUP BY variant_sku
     """)
     sales_data = {r[0]: r for r in cur.fetchall()}
     log.info("Sales enrichment data: %d SKUs", len(sales_data))
 
-    # Get Odoo products — deduplicated by SKU
+    # ── Odoo products ────────────────────────────────────────────────────────
     cur.execute("""
         SELECT DISTINCT ON (default_code)
             id, name, default_code, barcode,
@@ -195,8 +163,7 @@ def main():
     odoo_products = cur.fetchall()
     log.info("Odoo products: %d", len(odoo_products))
 
-    # Build style → dominant subcat map
-    style_subcat = {}
+    # ── Dominant subcat per style name from Odoo ─────────────────────────────
     cur.execute("""
         SELECT
             SPLIT_PART(name, ' - ', 1) AS style_nm,
@@ -211,6 +178,8 @@ def main():
     subcat_counts = {}
     for row in cur.fetchall():
         sn, sc, freq = row
+        if sc not in VALID_SUBCATS:
+            continue
         if sn not in subcat_counts or subcat_counts[sn][1] < freq:
             subcat_counts[sn] = (sc, freq)
     style_subcat = {k: v[0] for k, v in subcat_counts.items()}
@@ -229,51 +198,41 @@ def main():
         seen_skus.add(sku)
 
         s = sales_data.get(sku)
-        sale_name   = s[3] if s else None
-        sale_vendor = s[1] if s else None
-        sale_type   = s[2] if s else None
 
-        # Style name
+        # Style name and color
         sname = style_name or extract_style_name(name)
-
-        # Color
-        clr = color or extract_color_from_name(name)
+        clr   = color or extract_color_from_name(name)
         if clr:
             clr = clr.title()
 
         # Product name
-        if sname and clr:
-            product_name = f"{sname} - {clr}"
-        else:
-            product_name = sname or sale_name or name
+        product_name = f"{sname} - {clr}" if sname and clr else (sname or name)
 
         # Brand
-        br = brand or guess_brand(name)
-
-        # Style number
+        br   = brand or guess_brand(name)
         snum = style_number or extract_style_number(sku, name)
-
-        # Size
         size = extract_size(sku)
 
         # Subcategory
-        if is_sample(name, sku):
+        if is_gift_voucher(name):
+            subcat = 'Gift Vouchers'
+        elif is_sample(name, sku):
             subcat = 'Sample & Sale Items'
+        elif sub_category and sub_category in VALID_SUBCATS:
+            subcat = sub_category
         elif style_subcat.get(sname):
             subcat = style_subcat[sname]
-        elif sub_category and sub_category != 'Sample & Sale Items':
-            subcat = sub_category
-        elif sale_type and sale_type != 'Sample & Sale Items':
-            subcat = sale_type
         else:
-            subcat = guess_subcat(name or sale_name)
+            subcat = None
 
-        # Category rollup
-        cat = CATEGORY_MAP.get(subcat, category)
+        cat = CATEGORY_MAP.get(subcat)
 
         # Print/plain
-        clr_upper = (clr or '').upper()
-        if 'PRINT' in clr_upper or (clr and '/' in clr):
+        name_upper = (name or '').upper()
+        clr_upper  = (clr or '').upper()
+        if 'PRINT' in clr_upper or 'PRINT' in name_upper or \
+           'ANKARA' in name_upper or 'KITENGE' in name_upper or \
+           'TIE DYE' in name_upper:
             print_plain = 'Print'
         else:
             print_plain = 'Plain'
@@ -281,22 +240,21 @@ def main():
         rows.append((
             sku, product_name, str(barcode) if barcode else None,
             float(price or 0), float(cost or 0),
-            br, vendor or sale_vendor,
+            br, vendor,
             clr, snum, collection, sname,
             print_plain, subcat, cat,
             gender, season, size,
-            int(0), int(0),  # stock_on_hand, stock_available (joined later)
+            0, 0,
             bool(active), pid,
-            s is not None,  # ever_sold
+            s is not None,
         ))
 
-    # Also add SKUs from sales that have no Odoo product
+    # ── SKUs from sales not in Odoo ──────────────────────────────────────────
     for sku, s in sales_data.items():
         if sku in seen_skus:
             continue
         sale_name   = s[3]
         sale_vendor = s[1]
-        sale_type   = s[2]
 
         br    = guess_brand(sale_name)
         sname = extract_style_name(sale_name)
@@ -305,21 +263,27 @@ def main():
             clr = clr.title()
         snum  = extract_style_number(sku, sale_name)
         size  = extract_size(sku)
-        subcat = guess_subcat(sale_name)
-        cat    = CATEGORY_MAP.get(subcat)
+
+        if is_gift_voucher(sale_name or ''):
+            subcat = 'Gift Vouchers'
+        elif is_sample(sale_name or '', sku):
+            subcat = 'Sample & Sale Items'
+        else:
+            subcat = None
+
+        cat = CATEGORY_MAP.get(subcat)
+
+        name_upper = (sale_name or '').upper()
+        clr_upper  = (clr or '').upper()
+        print_plain = 'Print' if ('PRINT' in clr_upper or 'PRINT' in name_upper or
+                                   'ANKARA' in name_upper or 'KITENGE' in name_upper) else 'Plain'
 
         rows.append((
-            sku,
-            sale_name,
-            None, 0.0, 0.0,
-            br, sale_vendor,
-            clr, snum, None, sname,
-            'Print' if clr and ('/' in clr or 'PRINT' in (clr or '').upper()) else 'Plain',
-            subcat, cat,
-            None, None, size,
-            0, 0,
-            None, None,
-            True,
+            sku, sale_name, None, 0.0, 0.0,
+            br, sale_vendor, clr, snum, None, sname,
+            print_plain, subcat, cat,
+            None, None, size, 0, 0,
+            None, None, True,
         ))
         seen_skus.add(sku)
 
@@ -335,23 +299,154 @@ def main():
         ) VALUES %s
         ON CONFLICT (sku) DO UPDATE SET
             product_name = EXCLUDED.product_name,
-            price = EXCLUDED.price,
-            cost = EXCLUDED.cost,
-            active = EXCLUDED.active
+            price        = EXCLUDED.price,
+            cost         = EXCLUDED.cost,
+            active       = EXCLUDED.active
     """, rows, page_size=1000)
 
-    conn.commit()
     cur.execute("SELECT COUNT(*) FROM all_products_clean")
-    log.info("✅ all_products_clean: %d rows", cur.fetchone()[0])
+    log.info("✅ all_products_clean before inventory: %d rows", cur.fetchone()[0])
+
+    # ── Add inventory SKUs not in products ───────────────────────────────────
+    cur.execute("""
+        SELECT DISTINCT i.sku, i.style_name, i.product_name,
+               i.size, i.color_print, i.brand, i.sub_category
+        FROM all_inventory i
+        LEFT JOIN all_products_clean p ON i.sku = p.sku
+        WHERE p.sku IS NULL AND i.sku IS NOT NULL
+    """)
+    inv_rows = cur.fetchall()
+    log.info("Inventory SKUs to add: %d", len(inv_rows))
+
+    inv_insert = []
+    for r in inv_rows:
+        sku, style_name, product_name, size, color, brand, subcat = r
+        br    = brand or guess_brand(product_name or '')
+        snum  = extract_style_number(sku, product_name or '')
+        sname = style_name or extract_style_name(product_name or '')
+        if subcat not in VALID_SUBCATS:
+            subcat = None
+        cat   = CATEGORY_MAP.get(subcat)
+        s     = sales_data.get(sku)
+
+        name_upper = (product_name or '').upper()
+        clr_upper  = (color or '').upper()
+        print_plain = 'Print' if ('PRINT' in clr_upper or 'PRINT' in name_upper or
+                                   'ANKARA' in name_upper or 'KITENGE' in name_upper) else 'Plain'
+
+        inv_insert.append((
+            sku, product_name, None, 0.0, 0.0,
+            br, None, color, snum, None, sname,
+            print_plain, subcat, cat,
+            None, None, size, 0, 0,
+            None, None, s is not None,
+        ))
+
+    if inv_insert:
+        execute_values(cur, """
+            INSERT INTO all_products_clean (
+                sku, product_name, barcode, price, cost,
+                brand, vendor, color_print, style_number,
+                collection, style_name, print_plain,
+                product_type, category, gender, season, size,
+                stock_on_hand, stock_available, active, product_id, ever_sold
+            ) VALUES %s
+            ON CONFLICT (sku) DO NOTHING
+        """, inv_insert, page_size=500)
+        log.info("✅ Added %d inventory SKUs", len(inv_insert))
+
+    # ── Enforce dominant subcat per style number ─────────────────────────────
+    log.info("Enforcing dominant subcat per style number...")
+    cur.execute("""
+        WITH dominant AS (
+            SELECT style_number,
+                   product_type,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY style_number
+                       ORDER BY COUNT(*) DESC
+                   ) as rn
+            FROM all_products_clean
+            WHERE style_number IS NOT NULL
+            AND product_type IS NOT NULL
+            AND product_type != 'Sample & Sale Items'
+            AND product_type != 'Gift Vouchers'
+            GROUP BY style_number, product_type
+        )
+        UPDATE all_products_clean p
+        SET product_type = d.product_type
+        FROM dominant d
+        WHERE p.style_number = d.style_number
+        AND d.rn = 1
+        AND p.product_type NOT IN ('Sample & Sale Items', 'Gift Vouchers')
+    """)
+    log.info("Dominant subcat enforced: %d rows updated", cur.rowcount)
+
+    # ── Sync category to match subcat ────────────────────────────────────────
+    cur.execute("""
+        UPDATE all_products_clean
+        SET category = CASE product_type
+            WHEN 'Fitted Tops'           THEN 'Tops'
+            WHEN 'Loose Tops'            THEN 'Tops'
+            WHEN 'T-shirts & Tank Tops'  THEN 'Tops'
+            WHEN 'Bodysuits'             THEN 'Tops'
+            WHEN 'Midriff & Crop Tops'   THEN 'Tops'
+            WHEN 'Knee Length Dresses'   THEN 'Dresses'
+            WHEN 'Maxi Dresses'          THEN 'Dresses'
+            WHEN 'Midi & Capri Dresses'  THEN 'Dresses'
+            WHEN 'Short & Mini Dresses'  THEN 'Dresses'
+            WHEN 'Knee Length Skirts'    THEN 'Skirts'
+            WHEN 'Maxi Skirts'           THEN 'Skirts'
+            WHEN 'Midi & Capri Skirts'   THEN 'Skirts'
+            WHEN 'Full Length Pants'     THEN 'Bottoms'
+            WHEN 'Leggings'              THEN 'Bottoms'
+            WHEN 'Shorts & Skorts'       THEN 'Bottoms'
+            WHEN 'Culottes & Capri Pants' THEN 'Bottoms'
+            WHEN 'Jumpsuits & Playsuits' THEN 'Bottoms'
+            WHEN 'Jackets & Coats'       THEN 'Outerwear'
+            WHEN 'Waterfalls & Kimonos'  THEN 'Outerwear'
+            WHEN 'Hoodies & Sweatshirts' THEN 'Outerwear'
+            WHEN 'Sweaters & Ponchos'    THEN 'Outerwear'
+            WHEN 'Two-Piece Sets'        THEN 'Two-Piece Sets'
+            WHEN 'Scarves'               THEN 'Accessories'
+            WHEN 'Accessories'           THEN 'Accessories'
+            WHEN 'Sample & Sale Items'   THEN 'Sale'
+            WHEN 'Gift Vouchers'         THEN 'Gift Vouchers'
+            ELSE category
+        END
+        WHERE product_type IS NOT NULL
+    """)
+    log.info("Categories synced to subcats")
+
+    # ── Update barcodes from Shopify (already loaded) ────────────────────────
+    conn.commit()
+
+    cur.execute("SELECT COUNT(*) FROM all_products_clean")
+    log.info("✅ all_products_clean final: %d rows", cur.fetchone()[0])
 
     cur.execute("""
         SELECT brand, COUNT(*) FROM all_products_clean
-        GROUP BY brand ORDER BY COUNT(*) DESC LIMIT 10
+        GROUP BY brand ORDER BY COUNT(*) DESC
     """)
     for row in cur.fetchall():
         log.info("  %s: %d", row[0], row[1])
 
+    # ── Verify no style number has multiple subcats ──────────────────────────
+    cur.execute("""
+        SELECT COUNT(*) FROM (
+            SELECT style_number
+            FROM all_products_clean
+            WHERE style_number IS NOT NULL
+            AND product_type IS NOT NULL
+            AND product_type NOT IN ('Sample & Sale Items', 'Gift Vouchers')
+            GROUP BY style_number
+            HAVING COUNT(DISTINCT product_type) > 1
+        ) x
+    """)
+    conflicts = cur.fetchone()[0]
+    log.info("Style numbers with multiple subcats: %d", conflicts)
+
     conn.close()
+
 
 if __name__ == "__main__":
     main()

@@ -32,7 +32,12 @@ STORES = [
         "cutoff_date": None,
     },
 ]
-
+LOCATION_ID_MAP = {
+    59649392798:  'The Oasis Mall',
+    111194112366: 'Vivo Acacia',
+    65931444396:  'Vivo Kigali Heights',
+    69236097196:  'Vivo M-peace Plaza',
+}
 def get_last_sync(cur, store_id):
     """Use MAX(day) as cursor so we always resume from last saved date."""
     cur.execute("""
@@ -56,7 +61,7 @@ def fetch_and_save_batch(store, cur, conn, since, until=None):
         "status": "any",
         "created_at_min": since,
         "limit": BATCH_SIZE,
-        "fields": "id,name,created_at,updated_at,financial_status,line_items,customer,location_name",
+        "fields": "id,name,created_at,updated_at,financial_status,line_items,customer,location_id,location_name",
         "order": "created_at asc",
     }
     if until:
@@ -102,7 +107,8 @@ def fetch_and_save_batch(store, cur, conn, since, until=None):
             customer_id   = str(customer.get("id", "")) if customer.get("id") else None
             customer_type = "Returning" if customer.get("orders_count", 0) > 1 else "New"
             is_refunded   = fin_status in ("refunded", "partially_refunded")
-            location_name = order.get("location_name") or store_id
+            location_id = order.get("location_id")
+            location_name = LOCATION_ID_MAP.get(location_id) or order.get("location_name") or store_id
             order_ids.append(order_id)
 
             order_rows.append((
