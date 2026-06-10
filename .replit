@@ -48,8 +48,20 @@ localPort = 8081
 externalPort = 8081
 
 [[ports]]
+localPort = 8082
+externalPort = 5173
+
+[[ports]]
+localPort = 8099
+externalPort = 8099
+
+[[ports]]
 localPort = 18659
 externalPort = 3000
 
 [nix]
 channel = "stable-25_05"
+packages = ["cargo", "libiconv", "libxcrypt", "openssl", "pkg-config", "rustc"]
+
+[run]
+args = ["bash", "/home/runner/workspace/start_all.sh"]

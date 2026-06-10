@@ -1,6 +1,5 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
@@ -28,9 +27,28 @@ if (!basePath) {
 
 export default defineConfig({
   base: basePath,
+  // The ported CRA frontend reads its backend origin from
+  // process.env.REACT_APP_BACKEND_URL. We serve the FastAPI backend
+  // same-origin under /api, so resolve it to an empty string — api.js then
+  // derives API = "/api" (relative, proxied by the shared reverse proxy).
+  define: {
+    "process.env.REACT_APP_BACKEND_URL": JSON.stringify(""),
+  },
+  // The ported source is CRA-style: plain `.js` files that contain JSX.
+  // Tell esbuild (Vite's transform + the dep scanner/pre-bundler) to treat
+  // every `src/**/*.js` as JSX, otherwise import-analysis fails to parse it.
+  esbuild: {
+    loader: "jsx",
+    include: /src\/.*\.jsx?$/,
+    exclude: [],
+  },
+  optimizeDeps: {
+    esbuildOptions: {
+      loader: { ".js": "jsx" },
+    },
+  },
   plugins: [
     react(),
-    tailwindcss(),
     runtimeErrorOverlay(),
     ...(process.env.NODE_ENV !== "production" &&
     process.env.REPL_ID !== undefined

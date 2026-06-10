@@ -1,56 +1,69 @@
 # Vivo Fashion Group BI
 
-An executive Business Intelligence cockpit for a multi-brand fashion retail group. Surfaces revenue/sales trends, brand/category/region/channel breakdowns, top products, store performance, and inventory health from a seeded PostgreSQL dataset.
+An executive Business Intelligence cockpit for Vivo Fashion Group — a multi-brand fashion retailer operating across East Africa (Kenya, Uganda, Rwanda, and an Online channel). It surfaces sales/revenue, locations & channels, footfall & conversion, customers, products, and inventory health from a live PostgreSQL database. All money is in Kenyan Shillings (KES).
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
+- API server: runs `api_pg.py` (FastAPI) via the `artifacts/api-server` workflow — `uvicorn api_pg:app --host 0.0.0.0 --port 8080`, served under `/api`
+- Frontend: `pnpm --filter @workspace/vivo-bi run dev` (previewPath `/`)
+- `pnpm --filter @workspace/vivo-bi run typecheck` — typecheck the dashboard
 - Required env: `DATABASE_URL` — Postgres connection string
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Frontend: React + Vite, React Query, Recharts, @tanstack/react-table
-- Build: esbuild (CJS bundle)
+- Backend: Python FastAPI (`api_pg.py`) querying live Postgres directly, returning JSON (money in KES)
+- Frontend: React + Vite, wouter (routing), React Query, Recharts, shadcn/ui
+- Data fetching: a small custom `useApi` React Query hook → `GET /api/*` (no Orval/OpenAPI codegen in use)
 
 ## Where things live
 
-- Frontend dashboard: `artifacts/vivo-bi/src/App.tsx` (previewPath `/`); theme in `artifacts/vivo-bi/src/index.css`
-- API contract (source of truth): `lib/api-spec/openapi.yaml` — 9 read-only BI GET endpoints under `/api/bi/*`
-- Generated hooks/Zod schemas: `lib/api-hooks`, `lib/api-zod` (run codegen after spec edits)
-- BI route handlers: `artifacts/api-server/src/routes/bi.ts` (registered in `routes/index.ts`)
-- DB schema: `lib/db/src/schema/` — `salesLines` (fact), `stores` (dimension + targets), `inventory` (snapshot)
+- Backend: `api_pg.py` at the repo root — ~25 read-only BI GET endpoints under `/api/*`
+- Frontend app shell + routes: `artifacts/vivo-bi/src/App.tsx`
+- Pages (one per nav item): `artifacts/vivo-bi/src/pages/` — `overview`, `locations`, `footfall`, `customers`, `products`, `inventory`
+- Data layer + response types: `artifacts/vivo-bi/src/lib/api.ts` (`useApi`, `apiGet`, `API_BASE = "/api"`)
+- Global filters (date range / country / channel): `artifacts/vivo-bi/src/lib/filters.tsx`
+- Shared BI components: `artifacts/vivo-bi/src/components/bi/` (Panel, KpiCard, DataTable, QueryState, ExportButton, ChartTooltip)
+- Layout: `artifacts/vivo-bi/src/components/layout/` (app-shell with sidebar + PageHeader, filter-bar)
+- Theme: `artifacts/vivo-bi/src/index.css`
 
 ## Architecture decisions
 
-- Single `sales_lines` fact table (16k seeded rows, 2025–2026) aggregated on-the-fly in SQL so all cross-tabs (brand/category/region/channel/store) stay internally consistent. `stores` and `inventory` are small dimension/snapshot tables.
-- Reporting period is derived dynamically: `getReportingYears()` reads `MAX(year)` from the fact table (cached per process) as the current year, prior = current − 1. No hardcoded years, so comparisons stay correct as data ages.
-- Every endpoint validates its output with the generated Zod response schema before sending.
-- Data-viz cost discipline: React Query `staleTime` 5 min, `refetchOnWindowFocus` false.
+- The FastAPI backend aggregates on-the-fly in SQL against the live Postgres data, so cross-tabs (country/channel/product/store) stay internally consistent.
+- The frontend is multi-page (6 nav sections) rather than a single scrolling page, with a shared filter bar that drives every page via React Query keys `[path, params]`.
+- Endpoint filter contracts vary and the pages respect them: footfall & weekday-pattern take `date_from`/`date_to`/`channel` (no country); customer-trend / customers-by-location / stock-to-sales take `date_from`/`date_to`/`country`; churned-customers takes `days`/`limit` only.
+- Cost discipline: React Query `staleTime` 5 min, `refetchOnWindowFocus` false.
+- Filter date defaults/presets are formatted in local time (not UTC) to avoid an off-by-one around midnight in East Africa (UTC+3).
 
 ## Product
 
-Single-page executive dashboard: KPI row (revenue, units, margin, AOV with YoY deltas), YoY revenue trend line, channel donut, brand/category/region bar charts, inventory diagnostics (stock value vs weeks of cover), and sortable/paginated top-products & store-performance tables. Includes dark mode, print-to-PDF, per-chart CSV export, and manual/auto refresh.
+A multi-page executive cockpit with a persistent sidebar and a global filter bar (date presets 7D/30D/90D/1Y + custom range, country, channel):
+
+- Overview — KPI row, YoY/period sales trend, sales-by-country donut, channel/brand/category breakdowns
+- Locations — net sales & orders by country, top markets, active selling points
+- Footfall & Conversion — total footfall, outside traffic, turn-in, conversion, weekday pattern, top stores by conversion
+- Customers — total/new/repeat customers, avg spend, churned count, customer-trend (new vs returning), purchase frequency
+- Products — units sold, current stock, sell-through, top style, sales by subcategory, units-sold-vs-stock
+- Inventory — available vs on-hand units, SKUs, locations, available stock by location
+
+Per-chart CSV export is available throughout.
 
 ## User preferences
 
-- No emojis in the UI.
-- Premium, editorial, information-dense aesthetic (warm off-white/charcoal palette, deep accent).
+- No emojis in the UI. No flag glyphs — represent countries with colored dots + the country name.
+- Premium, editorial, information-dense aesthetic — warm peach background, white cards, safari-green primary (#1a5c38), dark-green sidebar. Light mode only.
+- Country accent colors: Kenya #1a5c38, Uganda #d97706, Rwanda #00c853, Online #4b7bec.
 
 ## Gotchas
 
-- After editing `lib/api-spec/openapi.yaml`, always run codegen before relying on hooks/schemas. Do not change the OpenAPI `info.title` — it controls generated filenames.
-- Seeding large batches via the SQL sandbox: keep multi-row INSERT chunks small (~200 rows). Large single statements fail with `E2BIG` (argument list too long).
-- Reporting-year cache (`getReportingYears`) is per-process; restart the api-server after reseeding if the year range changes.
+- ENVIRONMENT: if the `u-root-cmds` Nix package is present in `.replit` `[nix].packages`, it shadows GNU coreutils (`find`, `ls`, `sort`, `head`, `tail`, ...) with stripped-down versions. This breaks search/glob tooling AND the agent checkpoint/save step (fails with `UNKNOWN_NOT_GIT`). Remove it and fully restart the Repl. See `.agents/memory/uroot-find-breaks-checkpoint.md`.
+- DEV-ONLY HMR ghost: `src/lib/filters.jsx` exports both the `useFilters` hook and components, which breaks React Fast Refresh. Editing it (or co-editing) prints `Invalid hook call` / `useFilters must be used inside FiltersProvider` then forces a full page reload that recovers. These are NOT runtime bugs — production has no HMR. They masquerade as a "stuck on skeleton / Loading…" bug, especially since each screenshot is a fresh page load that captures the pre-data loading state. Trust the console `loading:false … hasKpis:true` line over a transient skeleton screenshot. See `.agents/memory/hmr-fast-refresh-ghost.md`.
+- `all_sales.sale_date` is a TEXT column. `BETWEEN '...' AND '...'` works, but date functions (`date_trunc`, `EXTRACT`) need an explicit `s.sale_date::date` cast or they error with `function date_trunc(unknown, text) does not exist`. See `.agents/memory/pg-text-date-columns.md`.
+- DATA: `pos_location_name = 'vivowoman'` is the PRIMARY Kenya POS (~84% of all sales, all pre-Feb-2022 data). It must NOT be excluded in `api_pg.py` `BASE_FILTERS` or history/Kenya sales go missing. Keep excluding only `Staff purchases`/`Manual Order`/`Online - vivo-uganda`. See `.agents/memory/vivowoman-base-filter.md`.
+- The `/api/customers` `churn_rate` is computed inconsistently (all-time churned vs period-scoped base) and returns an absurd value; the Customers page shows the churned COUNT instead of the rate.
+- Recharts: a Pie with a bottom Legend can collapse its radius to ~0; pin `cx`/`cy` + radii and constrain Legend height. See `.agents/memory/recharts-donut-collapse.md`.
+- The legacy Express api-server, `lib/api-spec/openapi.yaml`, and the Orval-generated `lib/api-hooks`/`lib/api-zod` are no longer wired into the running app (kept only as leftover scaffold).
 
 ## Pointers
 
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

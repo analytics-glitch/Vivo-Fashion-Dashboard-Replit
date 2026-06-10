@@ -1,0 +1,829 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { useFilters } from "@/lib/filters";
+import { api, fmtKES, fmtNum, fmtDate } from "@/lib/api";
+import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import SortableTable from "@/components/SortableTable";
+import MultiSelect from "@/components/MultiSelect";
+import LaunchMonthFilter, { filterByLaunchMonths } from "@/components/LaunchMonthFilter";
+import { DownloadSimple, MagnifyingGlass, X } from "@phosphor-icons/react";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
+
+/**
+ * SOR Report — catalog-wide style sell-through report.
+ *
+ * Master table: one row per style with the 19-column finance/buying-ops
+ * layout. Each row expands to a Color × Size SKU breakdown (matches the
+ * SOR L-10 drill-down pattern).
+ *
+ * Detail pane (right side): when a row is selected, shows a per-location
+ * table with units sold (6m), SOH, and per-location SOR — so the user
+ * can answer "where did this style sell, and where's it sitting now?"
+ * in one view.
+ */
+const SORReport = () => {
+  const { applied } = useFilters();
+  const { countries, channels } = applied;
+  const countryParam = countries?.length ? countries.map((c) => c.toLowerCase()).join(",") : undefined;
+  const channelParam = channels?.length ? channels.join(",") : undefined;
+
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [catSel, setCatSel] = useState([]);
+  const [subcatSel, setSubcatSel] = useState([]);
+  const [brandSel, setBrandSel] = useState([]);
+  const [launchMonthSel, setLaunchMonthSel] = useState([]);
+  const [selectedStyle, setSelectedStyle] = useState(null);
+  const [selectedColor, setSelectedColor] = useState(null);
+  const [selectedSize, setSelectedSize] = useState(null);
+
+  // Per-style SKU breakdown cache (for row expand). Keyed by style_name.
+  const [skuCache, setSkuCache] = useState({});
+  const [skuLoading, setSkuLoading] = useState({});
+
+  // Per-style location breakdown cache. Keyed by `style|color|size`
+  // (color/size = "" for the all-rollup view) so the same style can
+  // show all-colours, per-colour, AND per-(colour+size) drills without
+  // re-fetching when toggling between them.
+  const [locCache, setLocCache] = useState({});
+  const [locLoading, setLocLoading] = useState(false);
+  const [locError, setLocError] = useState(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput.trim().toLowerCase()), 150);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    const params = {};
+    if (countryParam) params.country = countryParam;
+    if (channelParam) params.channel = channelParam;
+    api.get("/analytics/sor-all-styles", { params })
+      .then((r) => { if (!cancelled) setRows(Array.isArray(r.data) ? r.data : []); })
+      .catch((e) => { if (!cancelled) setError(e?.response?.data?.detail || e.message); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [countryParam, channelParam]);
+
+  // Drop the per-style caches when the country/channel filters change so
+  // we don't show a Kenya-scoped breakdown for an Online-scoped table.
+  useEffect(() => {
+    setSkuCache({});
+    setLocCache({});
+    setSelectedStyle(null);
+  }, [countryParam, channelParam]);
+
+  const categories = useMemo(() => {
+    const s = new Set(rows.map((r) => r.category).filter(Boolean));
+    return Array.from(s).sort().map((v) => ({ value: v, label: v }));
+  }, [rows]);
+  const subcategories = useMemo(() => {
+    const s = new Set(rows.map((r) => r.subcategory).filter(Boolean));
+    return Array.from(s).sort().map((v) => ({ value: v, label: v }));
+  }, [rows]);
+  const brands = useMemo(() => {
+    const s = new Set(rows.map((r) => r.brand).filter(Boolean));
+    return Array.from(s).sort().map((v) => ({ value: v, label: v }));
+  }, [rows]);
+
+  const filtered = useMemo(() => {
+    const byLaunch = filterByLaunchMonths(rows, launchMonthSel);
+    return byLaunch.filter((r) => {
+      if (catSel.length && !catSel.includes(r.category)) return false;
+      if (subcatSel.length && !subcatSel.includes(r.subcategory)) return false;
+      if (brandSel.length && !brandSel.includes(r.brand)) return false;
+      if (search) {
+        const hay = (
+          (r.style_name || "") + " " + (r.style_number || "") + " " + (r.collection || "")
+        ).toLowerCase();
+        if (!hay.includes(search)) return false;
+      }
+      return true;
+    });
+  }, [rows, search, catSel, subcatSel, brandSel, launchMonthSel]);
+
+  const stats = useMemo(() => {
+    const totalSales = filtered.reduce((s, r) => s + (r.sales_6m || 0), 0);
+    const totalUnits = filtered.reduce((s, r) => s + (r.units_6m || 0), 0);
+    const totalSOH = filtered.reduce((s, r) => s + (r.soh_total || 0), 0);
+    const denom = filtered.reduce((s, r) => s + ((r.units_6m || 0) + (r.soh_total || 0)), 0);
+    const wSor = denom > 0 ? totalUnits / denom * 100 : 0;
+    // Iter 89d — Catalog-wide Weeks-of-Cover.
+    //   weekly_burn = Σ(weekly_avg) — already 3-month based (Iter 89c).
+    //   wOC = totalSOH ÷ weekly_burn. "—" when the filtered catalog
+    //   has 0 recent burn (would be ∞).
+    const totalWeeklyBurn = filtered.reduce((s, r) => s + (r.weekly_avg || 0), 0);
+    const aggregateWoc = totalWeeklyBurn > 0 ? totalSOH / totalWeeklyBurn : null;
+    const overstocked = filtered.filter((r) => r.woc != null && r.woc > 26).length;
+    return { totalSales, totalUnits, totalSOH, wSor, n: filtered.length, aggregateWoc, overstocked };
+  }, [filtered]);
+
+  // Lazy-load SKU breakdown when a row expands. The endpoint may
+  // return 202 `{computing: true}` for cold styles whose /orders scan
+  // exceeds the 60s ingress timeout; we poll every 15s in that case.
+  const loadSku = (style) => {
+    if (!style || skuCache[style] || skuLoading[style]) return;
+    setSkuLoading((s) => ({ ...s, [style]: true }));
+    const tick = (attempt = 0) => {
+      api.get("/analytics/style-sku-breakdown", {
+        params: { style_name: style, country: countryParam, channel: channelParam },
+      })
+        .then((r) => {
+          if (r.data?.computing && attempt < 8) {
+            setTimeout(() => tick(attempt + 1), (r.data.retry_after || 15) * 1000);
+          } else if (r.data?.computing) {
+            setSkuCache((c) => ({ ...c, [style]: [] }));
+            setSkuLoading((s) => ({ ...s, [style]: false }));
+          } else {
+            setSkuCache((c) => ({ ...c, [style]: r.data?.skus || [] }));
+            setSkuLoading((s) => ({ ...s, [style]: false }));
+          }
+        })
+        .catch(() => {
+          setSkuCache((c) => ({ ...c, [style]: [] }));
+          setSkuLoading((s) => ({ ...s, [style]: false }));
+        });
+    };
+    tick();
+  };
+
+  // Lazy-load location breakdown when a style (and optionally color +
+  // size) is selected. Same 202 poll pattern as SKU breakdown — both
+  // endpoints share the same /orders scan on the backend so once one
+  // finishes the other warms instantly. Cache key is `style|color|size`
+  // so toggling between any of the three drill levels doesn't refetch.
+  const loadLocations = (style, color, size) => {
+    if (!style) return;
+    const key = `${style}|${color || ""}|${size || ""}`;
+    if (locCache[key]) return;
+    setLocLoading(true);
+    setLocError(null);
+    const tick = (attempt = 0) => {
+      api.get("/analytics/style-location-breakdown", {
+        params: {
+          style_name: style,
+          country: countryParam,
+          channel: channelParam,
+          ...(color ? { color } : {}),
+          ...(size ? { size } : {}),
+        },
+      })
+        .then((r) => {
+          if (r.data?.computing && attempt < 8) {
+            setLocError(`Computing… (${attempt * 15}s elapsed; rare styles can take ~2 min)`);
+            setTimeout(() => tick(attempt + 1), (r.data.retry_after || 15) * 1000);
+          } else if (r.data?.computing) {
+            setLocError("Still computing — try again in a minute. The result will be cached and instant once ready.");
+            setLocLoading(false);
+          } else {
+            setLocCache((c) => ({ ...c, [key]: r.data?.locations || [] }));
+            setLocError(null);
+            setLocLoading(false);
+          }
+        })
+        .catch((e) => {
+          setLocError(e?.response?.data?.detail || e.message || "Could not load location breakdown");
+          setLocLoading(false);
+        });
+    };
+    tick();
+  };
+
+  // Note: auto-select on first render was removed — the cold /orders
+  // fan-out for a randomly-picked first-row style is too slow and made
+  // the SOR Report tab feel sluggish on open. Users now explicitly
+  // click a row to populate the side pane.
+
+  useEffect(() => {
+    if (selectedStyle) loadLocations(selectedStyle, selectedColor, selectedSize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStyle, selectedColor, selectedSize]);
+
+  const exportCsv = () => {
+    const header = [
+      "Style Name", "Category", "Sub Category", "Style Number",
+      "Sales Last 6 Months", "Units Sold", "Units Last 6 Months",
+      "Units Last 3 Weeks", "Units Since Launch", "SOH", "SOH Warehouse",
+      "% In WH", "ASP 6 Months", "Original Price", "Days Since Last Sale",
+      "6 Months SOR", "SOR Since Launch", "Style Launch Date",
+      "Weekly Average", "Weeks of Cover", "Style Age (Weeks)",
+    ];
+    const lines = [header];
+    for (const r of filtered) {
+      lines.push([
+        r.style_name || "", r.category || "", r.subcategory || "", r.style_number || "",
+        r.sales_6m ?? "", r.units_6m ?? "", r.units_6m ?? "", r.units_3w ?? "",
+        r.units_since_launch ?? "", r.soh_total ?? "", r.soh_wh ?? "", r.pct_in_wh ?? "",
+        r.asp_6m ?? "", r.original_price ?? "", r.days_since_last_sale ?? "",
+        r.sor_6m ?? "", r.sor_since_launch ?? "", r.launch_date || "", r.weekly_avg ?? "",
+        r.woc ?? "", r.style_age_weeks ?? "",
+      ]);
+    }
+    const csv = lines
+      .map((row) => row.map((v) => {
+        const s = v == null ? "" : String(v);
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      }).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `sor-report_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-4" data-testid="sor-report-tab">
+      <div className="card-white p-4 sm:p-5">
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+          <div>
+            <SectionTitle>SOR Report — Catalog-wide</SectionTitle>
+            <div className="text-[12px] text-muted mt-0.5">
+              Every style with sales in the last 6 months. {stats.n.toLocaleString()} of {rows.length.toLocaleString()} styles after filters.
+              Click any row to expand its Color × Size SKU breakdown, or select a style to see its per-location sales & stock on the right.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={exportCsv}
+            disabled={!filtered.length}
+            className="btn-primary inline-flex items-center gap-1.5 disabled:opacity-50"
+            data-testid="sor-report-export-btn"
+          >
+            <DownloadSimple size={14} weight="bold" /> Export CSV
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
+          <Tile label="Styles" value={fmtNum(stats.n)} />
+          <Tile label="Total Sales" value={fmtKES(stats.totalSales)} />
+          <Tile label="Units Sold" value={fmtNum(stats.totalUnits)} />
+          <Tile label="SOH" value={fmtNum(stats.totalSOH)} />
+          <Tile
+            label="Weeks of Cover"
+            value={stats.aggregateWoc == null ? "—" : `${stats.aggregateWoc.toFixed(1)}w`}
+            sub={stats.aggregateWoc == null ? "no recent burn" : `${fmtNum(stats.overstocked)} styles > 26w`}
+            tone={
+              stats.aggregateWoc == null
+                ? undefined
+                : stats.aggregateWoc < 12
+                ? "good"
+                : stats.aggregateWoc > 26
+                ? "warn"
+                : undefined
+            }
+          />
+          <Tile label="Weighted SOR" value={`${stats.wSor.toFixed(1)}%`} />
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-2 mb-3">
+          <div className="md:col-span-3 relative">
+            <MagnifyingGlass size={14} className="absolute left-2.5 top-2.5 text-muted" />
+            <input
+              type="text"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Search style name, style number, collection…"
+              className="w-full pl-8 pr-2 py-1.5 rounded-lg border border-border bg-white text-[13px]"
+              data-testid="sor-report-search"
+            />
+          </div>
+          <div className="md:col-span-2">
+            <MultiSelect options={categories} value={catSel} onChange={setCatSel} placeholder="All Categories" testId="sor-cat-filter" />
+          </div>
+          <div className="md:col-span-2">
+            <MultiSelect options={subcategories} value={subcatSel} onChange={setSubcatSel} placeholder="All Subcategories" testId="sor-subcat-filter" />
+          </div>
+          <div className="md:col-span-2">
+            <MultiSelect options={brands} value={brandSel} onChange={setBrandSel} placeholder="All Brands" testId="sor-brand-filter" />
+          </div>
+          <div className="md:col-span-3">
+            <LaunchMonthFilter
+              rows={rows}
+              value={launchMonthSel}
+              onChange={setLaunchMonthSel}
+              testId="sor-launch-month-filter"
+            />
+          </div>
+        </div>
+
+        {loading ? (
+          <Loading />
+        ) : error ? (
+          <ErrorBox message={error} />
+        ) : !filtered.length ? (
+          <Empty>No styles match the current filters.</Empty>
+        ) : (
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+            {/* Master table — 2 columns wide on xl */}
+            <div className="xl:col-span-2 min-w-0">
+              <SortableTable
+                testId="sor-report-table"
+                onRowClick={(row) => {
+                  // Fire SKU first — its server handler also warms the
+                  // location-breakdown cache from the same scan, so the
+                  // location pane fetch below hits a warm cache after
+                  // ~1ms instead of running a second cold scan.
+                  loadSku(row.style_name);
+                  // Reset the per-color and per-size drills whenever
+                  // the user picks a different style — colours/sizes
+                  // from the previous style would no longer match.
+                  if (row.style_name !== selectedStyle) {
+                    setSelectedColor(null);
+                    setSelectedSize(null);
+                  }
+                  setSelectedStyle(row.style_name);
+                }}
+                rowClassName={(row) => row.style_name === selectedStyle ? "bg-amber-50/60" : ""}
+                columns={[
+                  { key: "style_name", label: "Style Name", sortable: true,
+                    render: (r) => <span className="font-semibold block max-w-[280px]" style={{ whiteSpace: "normal", wordBreak: "break-word", overflowWrap: "anywhere" }} title={r.style_name}>{r.style_name}</span> },
+                  { key: "category", label: "Category", sortable: true,
+                    render: (r) => r.category || "—" },
+                  { key: "subcategory", label: "Sub Category", sortable: true,
+                    render: (r) => r.subcategory || "—" },
+                  { key: "style_number", label: "Style #", sortable: true,
+                    render: (r) => <span className="font-mono text-[11px]">{r.style_number || "—"}</span> },
+                  { key: "sales_6m", label: "Sales 6M", sortable: true, align: "right",
+                    render: (r) => fmtKES(r.sales_6m) },
+                  { key: "units_6m", label: "Units 6M", sortable: true, align: "right",
+                    render: (r) => fmtNum(r.units_6m) },
+                  { key: "units_3w", label: "Units 3W", sortable: true, align: "right",
+                    render: (r) => fmtNum(r.units_3w) },
+                  // Iter 89c — Weekly Avg + WoC promoted next to SOH
+                  // for visibility. WoC formula uses 3-month burn rate
+                  // and the launch-date / age are keyed on style_number
+                  // (see backend `sor-all-styles` for the math).
+                  { key: "weekly_avg", label: "Weekly Avg", sortable: true, align: "right",
+                    render: (r) => (r.weekly_avg ?? 0).toFixed(1) },
+                  { key: "units_since_launch", label: "Units Since Launch", sortable: true, align: "right",
+                    render: (r) => fmtNum(r.units_since_launch) },
+                  { key: "soh_total", label: "SOH", sortable: true, align: "right",
+                    render: (r) => fmtNum(r.soh_total) },
+                  { key: "soh_wh", label: "SOH WH", sortable: true, align: "right",
+                    render: (r) => fmtNum(r.soh_wh) },
+                  { key: "woc", label: "WoC", sortable: true, align: "right",
+                    sortValue: (r) => r.woc == null ? 9999 : r.woc,
+                    render: (r) => {
+                      if (r.woc == null) return <span className="text-muted">—</span>;
+                      const cls = r.woc < 4 ? "text-emerald-600 font-bold" : r.woc < 12 ? "text-emerald-500" : r.woc < 26 ? "text-amber-600" : "text-rose-600";
+                      return <span className={cls}>{r.woc.toFixed(1)}w</span>;
+                    } },
+                  { key: "pct_in_wh", label: "% In WH", sortable: true, align: "right",
+                    render: (r) => `${r.pct_in_wh.toFixed(1)}%` },
+                  { key: "asp_6m", label: "ASP 6M", sortable: true, align: "right",
+                    render: (r) => fmtKES(r.asp_6m) },
+                  { key: "original_price", label: "Orig Price", sortable: true, align: "right",
+                    render: (r) => fmtKES(r.original_price) },
+                  { key: "days_since_last_sale", label: "Days Since Sale", sortable: true, align: "right",
+                    render: (r) => {
+                      const d = r.days_since_last_sale;
+                      const cls = d > 60 ? "text-rose-600 font-bold" : d > 30 ? "text-amber-600" : "";
+                      return <span className={cls}>{d}d</span>;
+                    } },
+                  { key: "sor_6m", label: "6M SOR", sortable: true, align: "right",
+                    render: (r) => {
+                      const v = r.sor_6m || 0;
+                      const cls = v >= 70 ? "text-emerald-600 font-bold" : v >= 50 ? "text-emerald-500" : v < 25 ? "text-rose-600" : "";
+                      return <span className={cls}>{v.toFixed(1)}%</span>;
+                    } },
+                  { key: "sor_since_launch", label: "SOR Since Launch", sortable: true, align: "right",
+                    render: (r) => {
+                      const v = r.sor_since_launch || 0;
+                      const cls = v >= 70 ? "text-emerald-600 font-bold" : v >= 50 ? "text-emerald-500" : v < 25 ? "text-rose-600" : "";
+                      return <span className={cls}>{v.toFixed(1)}%</span>;
+                    } },
+                  { key: "launch_date", label: "Launch", sortable: true,
+                    render: (r) => r.launch_date ? fmtDate(r.launch_date) : "—" },
+                  { key: "style_age_weeks", label: "Age (W)", sortable: true, align: "right",
+                    render: (r) => `${r.style_age_weeks.toFixed(1)}w` },
+                ]}
+                rows={filtered}
+                defaultSort={{ key: "sales_6m", dir: "desc" }}
+                pageSize={50}
+                stickyFirstCol
+                renderExpanded={(row) => (
+                  <SkuBreakdown
+                    rows={skuCache[row.style_name]}
+                    loading={skuLoading[row.style_name]}
+                    selectedColor={row.style_name === selectedStyle ? selectedColor : null}
+                    selectedSize={row.style_name === selectedStyle ? selectedSize : null}
+                    onColorClick={(color) => {
+                      // Anchor the location pane to this style first so
+                      // useEffect re-fires the loader. Toggling: same
+                      // colour clicked again clears both filters.
+                      setSelectedStyle(row.style_name);
+                      setSelectedSize(null);  // changing color always resets size
+                      setSelectedColor((prev) => (prev === color ? null : color));
+                    }}
+                    onSizeClick={(color, size) => {
+                      // Drill to color+size for this style. Toggling:
+                      // same size clicked again clears just the size,
+                      // keeping the colour filter active.
+                      setSelectedStyle(row.style_name);
+                      setSelectedColor(color);
+                      setSelectedSize((prev) => (prev === size ? null : size));
+                    }}
+                  />
+                )}
+              />
+            </div>
+
+            {/* Location detail pane */}
+            <div className="xl:col-span-1 min-w-0">
+              <LocationPane
+                style={selectedStyle}
+                color={selectedColor}
+                size={selectedSize}
+                rows={locCache[`${selectedStyle}|${selectedColor || ""}|${selectedSize || ""}`]}
+                loading={locLoading}
+                error={locError}
+                onClear={() => { setSelectedStyle(null); setSelectedColor(null); setSelectedSize(null); }}
+                onClearColor={() => { setSelectedColor(null); setSelectedSize(null); }}
+                onClearSize={() => setSelectedSize(null)}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const Tile = ({ label, value, sub, tone }) => {
+  // Iter 89d — `tone` paints WoC tile in green when catalog is lean
+  // (< 12w) or amber when overstocked (> 26w). `sub` adds context line
+  // such as "X styles > 26w" so the tile reads at a glance.
+  const cls =
+    tone === "warn"
+      ? "border-amber-300 bg-amber-50 text-amber-900"
+      : tone === "good"
+      ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+      : "border-border";
+  return (
+    <div className={`rounded-xl border p-3 ${cls}`}>
+      <div className="eyebrow">{label}</div>
+      <div className="font-extrabold text-[16px] num mt-0.5">{value}</div>
+      {sub && <div className="text-[10.5px] opacity-80 mt-0.5">{sub}</div>}
+    </div>
+  );
+};
+
+const SizeBreakdownTable = ({ color, sizes, selectedColor, selectedSize, onSizeClick }) => {
+  const { sort, toggleSort, sortRows } = useTableSort();
+  const isLocFiltered = selectedColor === color.color;
+  // Default size ordering already applied upstream; only sort when user clicks.
+  const displayed = useMemo(
+    () => sort
+      ? sortRows(sizes, {
+          size: (r) => r.size || "",
+          sku: (r) => r.sku || "",
+          units_6m: (r) => Number(r.units_6m ?? 0),
+          pct_of_color: (r) => color.units_6m ? (r.units_6m / color.units_6m) * 100 : 0,
+          units_3w: (r) => Number(r.units_3w ?? 0),
+          soh_total: (r) => Number(r.soh_total ?? 0),
+          soh_wh: (r) => Number(r.soh_wh ?? 0),
+          pct_in_wh: (r) => Number(r.pct_in_wh ?? 0),
+        })
+      : sizes,
+    [sort, sortRows, sizes, color.units_6m],
+  );
+  return (
+    <table className="w-full text-[11.5px]" data-testid={`sor-size-table-${color.color}`}>
+      <thead>
+        <tr className="text-left text-muted border-b border-border/60">
+          <SortableTh sortKey="size" sort={sort} onSort={toggleSort} className="py-1 pr-3">Size</SortableTh>
+          <SortableTh sortKey="sku" sort={sort} onSort={toggleSort} className="py-1 pr-3 font-mono">SKU</SortableTh>
+          <SortableTh sortKey="units_6m" sort={sort} onSort={toggleSort} numeric className="py-1 pr-3">Units 6M</SortableTh>
+          <SortableTh sortKey="pct_of_color" sort={sort} onSort={toggleSort} numeric className="py-1 pr-3">% of Color</SortableTh>
+          <SortableTh sortKey="units_3w" sort={sort} onSort={toggleSort} numeric className="py-1 pr-3">Units 3W</SortableTh>
+          <SortableTh sortKey="soh_total" sort={sort} onSort={toggleSort} numeric className="py-1 pr-3">SOH</SortableTh>
+          <SortableTh sortKey="soh_wh" sort={sort} onSort={toggleSort} numeric className="py-1 pr-3">SOH WH</SortableTh>
+          <SortableTh sortKey="pct_in_wh" sort={sort} onSort={toggleSort} numeric className="py-1 pr-0">% In WH</SortableTh>
+        </tr>
+      </thead>
+      <tbody>
+        {displayed.map((r, i) => {
+          const isSizeSel = isLocFiltered && selectedSize === r.size;
+          return (
+          <tr
+            key={`${r.sku}-${i}`}
+            className={`border-b border-border/30 last:border-0 cursor-pointer hover:bg-amber-50/60 ${isSizeSel ? "bg-amber-200/50" : ""}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onSizeClick) onSizeClick(color.color, r.size);
+            }}
+            data-testid={`sor-size-row-${color.color}-${r.size}`}
+          >
+            <td className="py-1 pr-3">{r.size || "—"}</td>
+            <td className="py-1 pr-3 font-mono text-[10.5px]">{r.sku || "—"}</td>
+            <td className="py-1 pr-3 text-right num">{fmtNum(r.units_6m)}</td>
+            <td className="py-1 pr-3 text-right num text-muted">
+              {color.units_6m ? ((r.units_6m / color.units_6m) * 100).toFixed(1) : "0.0"}%
+            </td>
+            <td className="py-1 pr-3 text-right num">{fmtNum(r.units_3w)}</td>
+            <td className="py-1 pr-3 text-right num">{fmtNum(r.soh_total)}</td>
+            <td className="py-1 pr-3 text-right num">{fmtNum(r.soh_wh)}</td>
+            <td className="py-1 pr-0 text-right num">{(r.pct_in_wh || 0).toFixed(1)}%</td>
+          </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+};
+
+// ---- SKU breakdown (Color → Size, 2-level drill) ----
+//
+// Outer rows = each unique color with rolled-up totals across its sizes.
+// Click a color to expand the per-size SKU rows for that color.
+// Picks the heaviest row design constraint: a "Maxi Dress" with 8 colors ×
+// 5 sizes is 40 SKUs flat — too noisy. Grouping to color first lets the
+// merch team scan colour performance, then drill into the lagging size.
+const SkuBreakdown = ({ rows, loading, selectedColor, selectedSize, onColorClick, onSizeClick }) => {
+  const [openColor, setOpenColor] = useState(null);
+  const { sort: colorSort, toggleSort: toggleColorSort, sortRows: sortColorRows } = useTableSort();
+
+  if (loading && (!rows || rows.length === 0)) {
+    return <div className="text-[12px] text-muted py-2">Loading SKU breakdown… (~30s on cold cache)</div>;
+  }
+  if (!rows || !rows.length) {
+    return <div className="text-[12px] text-muted py-2">No SKU detail available for this style.</div>;
+  }
+  // Roll up by color
+  const totalUnits = rows.reduce((s, r) => s + (r.units_6m || 0), 0);
+  const colorMap = new Map();
+  for (const r of rows) {
+    const c = r.color || "—";
+    const bucket = colorMap.get(c) || {
+      color: c,
+      units_6m: 0,
+      units_3w: 0,
+      soh_total: 0,
+      soh_wh: 0,
+      sizes: [],
+    };
+    bucket.units_6m += r.units_6m || 0;
+    bucket.units_3w += r.units_3w || 0;
+    bucket.soh_total += r.soh_total || 0;
+    bucket.soh_wh += r.soh_wh || 0;
+    bucket.sizes.push(r);
+    colorMap.set(c, bucket);
+  }
+  const colors = Array.from(colorMap.values()).sort((a, b) => (b.units_6m || 0) - (a.units_6m || 0));
+  // Stable size sort within each color (XS→S→M→L→XL→XXL→F, else alpha).
+  const sizeOrder = { XS: 1, S: 2, M: 3, L: 4, XL: 5, XXL: 6, "3XL": 7, F: 99 };
+  for (const c of colors) {
+    c.sizes.sort((a, b) => {
+      const ax = sizeOrder[a.size] ?? 50;
+      const bx = sizeOrder[b.size] ?? 50;
+      if (ax !== bx) return ax - bx;
+      return (a.size || "").localeCompare(b.size || "");
+    });
+  }
+  // Iter 89 — apply user-driven sort if active; otherwise keep the
+  // "by Units 6M descending" default established above.
+  const displayColors = colorSort
+    ? sortColorRows(colors, {
+        color: (c) => c.color,
+        units_6m: (c) => Number(c.units_6m ?? 0),
+        pct_of_style: (c) => totalUnits ? (c.units_6m / totalUnits) * 100 : 0,
+        units_3w: (c) => Number(c.units_3w ?? 0),
+        soh_total: (c) => Number(c.soh_total ?? 0),
+        soh_wh: (c) => Number(c.soh_wh ?? 0),
+        pct_in_wh: (c) => c.soh_total > 0 ? (c.soh_wh / c.soh_total) * 100 : 0,
+      })
+    : colors;
+
+  return (
+    <div className="px-2 py-1" data-testid="sor-sku-breakdown">
+      <div className="text-[11px] font-bold uppercase text-muted mb-2">
+        Color × Size — {colors.length} color{colors.length === 1 ? "" : "s"} · {rows.length} variant{rows.length === 1 ? "" : "s"}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[12px]" data-testid="sor-color-table">
+          <thead>
+            <tr className="text-left text-muted border-b border-border">
+              <th className="py-1 pr-3 w-5"></th>
+              <SortableTh sortKey="color" sort={colorSort} onSort={toggleColorSort} className="py-1 pr-3">Color</SortableTh>
+              <SortableTh sortKey="units_6m" sort={colorSort} onSort={toggleColorSort} numeric className="py-1 pr-3">Units 6M</SortableTh>
+              <SortableTh sortKey="pct_of_style" sort={colorSort} onSort={toggleColorSort} numeric className="py-1 pr-3">% of Style</SortableTh>
+              <SortableTh sortKey="units_3w" sort={colorSort} onSort={toggleColorSort} numeric className="py-1 pr-3">Units 3W</SortableTh>
+              <SortableTh sortKey="soh_total" sort={colorSort} onSort={toggleColorSort} numeric className="py-1 pr-3">SOH</SortableTh>
+              <SortableTh sortKey="soh_wh" sort={colorSort} onSort={toggleColorSort} numeric className="py-1 pr-3">SOH WH</SortableTh>
+              <SortableTh sortKey="pct_in_wh" sort={colorSort} onSort={toggleColorSort} numeric className="py-1 pr-0">% In WH</SortableTh>
+            </tr>
+          </thead>
+          <tbody>
+            {displayColors.map((c) => {
+              const isOpen = openColor === c.color;
+              const isLocFiltered = selectedColor === c.color;
+              const pctInWh = c.soh_total > 0 ? (c.soh_wh / c.soh_total) * 100 : 0;
+              return (
+                <React.Fragment key={c.color}>
+                  <tr
+                    className={`border-b border-border/40 last:border-0 cursor-pointer hover:bg-panel/60 ${isLocFiltered ? "bg-amber-100/70" : ""}`}
+                    onClick={() => {
+                      setOpenColor(isOpen ? null : c.color);
+                      if (onColorClick) onColorClick(c.color);
+                    }}
+                    data-testid={`sor-color-row-${c.color}`}
+                  >
+                    <td className="py-1 pr-3 text-muted">
+                      <span className={`inline-block transition-transform ${isOpen ? "rotate-90" : ""}`}>▸</span>
+                    </td>
+                    <td className="py-1 pr-3 font-semibold">{c.color}</td>
+                    <td className="py-1 pr-3 text-right num font-semibold">{fmtNum(c.units_6m)}</td>
+                    <td className="py-1 pr-3 text-right num text-muted">
+                      {totalUnits ? ((c.units_6m / totalUnits) * 100).toFixed(1) : "0.0"}%
+                    </td>
+                    <td className="py-1 pr-3 text-right num">{fmtNum(c.units_3w)}</td>
+                    <td className="py-1 pr-3 text-right num">{fmtNum(c.soh_total)}</td>
+                    <td className="py-1 pr-3 text-right num">{fmtNum(c.soh_wh)}</td>
+                    <td className="py-1 pr-0 text-right num">{pctInWh.toFixed(1)}%</td>
+                  </tr>
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={8} className="bg-panel/30 px-3 py-2">
+                        <SizeBreakdownTable
+                          color={c}
+                          sizes={c.sizes}
+                          selectedColor={selectedColor}
+                          selectedSize={selectedSize}
+                          onSizeClick={onSizeClick}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// ---- Location pane (right side) — sortable by clicking headers ----
+const LocationPane = ({ style, color, size, rows, loading, error, onClear, onClearColor, onClearSize }) => {
+  const [sortKey, setSortKey] = useState("units_6m");
+  const [sortDir, setSortDir] = useState("desc");
+
+  const sorted = useMemo(() => {
+    if (!rows || !rows.length) return rows || [];
+    const copy = [...rows];
+    copy.sort((a, b) => {
+      const av = a[sortKey];
+      const bv = b[sortKey];
+      // String compare for `location`, numeric otherwise
+      if (sortKey === "location") {
+        const r = String(av || "").localeCompare(String(bv || ""));
+        return sortDir === "asc" ? r : -r;
+      }
+      const an = Number(av) || 0;
+      const bn = Number(bv) || 0;
+      return sortDir === "asc" ? an - bn : bn - an;
+    });
+    return copy;
+  }, [rows, sortKey, sortDir]);
+
+  const toggleSort = (key) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir(key === "location" ? "asc" : "desc");
+    }
+  };
+
+  const SortHeader = ({ keyName, label, align = "left" }) => {
+    const active = sortKey === keyName;
+    const arrow = active ? (sortDir === "asc" ? "▲" : "▼") : "";
+    return (
+      <th
+        onClick={() => toggleSort(keyName)}
+        className={`py-1 pr-2 cursor-pointer hover:text-foreground select-none ${align === "right" ? "text-right" : "text-left"}`}
+        data-testid={`sor-loc-th-${keyName}`}
+      >
+        {label} <span className="text-[9px]">{arrow}</span>
+      </th>
+    );
+  };
+
+  if (!style) {
+    return (
+      <div className="rounded-xl border border-border p-4 text-[12px] text-muted text-center" data-testid="sor-location-pane-empty">
+        Click any style on the left to see where it sold and where it's stocked.
+      </div>
+    );
+  }
+  const totals = (rows || []).reduce(
+    (a, r) => ({
+      units_6m: a.units_6m + (r.units_6m || 0),
+      sales_6m: a.sales_6m + (r.sales_6m || 0),
+      soh_total: a.soh_total + (r.soh_total || 0),
+    }),
+    { units_6m: 0, sales_6m: 0, soh_total: 0 },
+  );
+  return (
+    <div className="rounded-xl border border-border bg-white" data-testid="sor-location-pane">
+      <div className="flex items-start justify-between gap-2 px-4 py-3 border-b border-border">
+        <div className="min-w-0">
+          <div className="eyebrow">Where did it sell?</div>
+          <div className="font-bold text-[14px]" style={{ whiteSpace: "normal", wordBreak: "break-word", overflowWrap: "anywhere" }} title={style}>{style}</div>
+          {(color || size) && (
+            <div className="mt-1 flex flex-wrap gap-1.5" data-testid="sor-loc-filter-pills">
+              {color && (
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-300 text-amber-900 text-[10.5px] font-bold" data-testid="sor-loc-color-pill">
+                  <span>Color: {color}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); if (onClearColor) onClearColor(); }}
+                    className="hover:text-rose-700"
+                    aria-label="Clear color filter"
+                    data-testid="sor-loc-clear-color-btn"
+                  >×</button>
+                </span>
+              )}
+              {size && (
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-sky-50 border border-sky-300 text-sky-900 text-[10.5px] font-bold" data-testid="sor-loc-size-pill">
+                  <span>Size: {size}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); if (onClearSize) onClearSize(); }}
+                    className="hover:text-rose-700"
+                    aria-label="Clear size filter"
+                    data-testid="sor-loc-clear-size-btn"
+                  >×</button>
+                </span>
+              )}
+            </div>
+          )}
+          {(rows && rows.length > 0) && (
+            <div className="text-[11px] text-muted mt-1">
+              {rows.length} location{rows.length === 1 ? "" : "s"} ·{" "}
+              {fmtNum(totals.units_6m)} units · {fmtKES(totals.sales_6m)} · {fmtNum(totals.soh_total)} SOH
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onClear}
+          className="text-muted hover:text-foreground p-1"
+          aria-label="Clear selection"
+          data-testid="sor-location-pane-clear"
+        >
+          <X size={14} weight="bold" />
+        </button>
+      </div>
+      <div className="px-2 py-2 max-h-[640px] overflow-y-auto">
+        {loading ? (
+          <div className="text-[12px] text-muted px-2 py-3">Loading… (~30s on cold cache)</div>
+        ) : error ? (
+          <div className="text-[12px] text-rose-600 px-2 py-3">{error}</div>
+        ) : (!rows || rows.length === 0) ? (
+          <div className="text-[12px] text-muted px-2 py-3">No location data for this style.</div>
+        ) : (
+          <table className="w-full text-[12px]" data-testid="sor-location-table">
+            <thead>
+              <tr className="text-muted border-b border-border">
+                <SortHeader keyName="location" label="Location" />
+                <SortHeader keyName="units_6m" label="Units 6M" align="right" />
+                <SortHeader keyName="soh_total" label="SOH" align="right" />
+                <SortHeader keyName="sor_6m" label="SOR" align="right" />
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((r) => {
+                const sor = r.sor_6m || 0;
+                const sorCls = sor >= 70 ? "text-emerald-600 font-bold"
+                  : sor >= 50 ? "text-emerald-500"
+                  : sor < 25 ? "text-rose-600"
+                  : "";
+                return (
+                  <tr key={r.location} className="border-b border-border/40 last:border-0">
+                    <td className="py-1.5 pr-2 max-w-[180px]" style={{ whiteSpace: "normal", wordBreak: "break-word" }} title={r.location}>{r.location}</td>
+                    <td className="py-1.5 pr-2 text-right num">{fmtNum(r.units_6m)}</td>
+                    <td className="py-1.5 pr-2 text-right num">{fmtNum(r.soh_total)}</td>
+                    <td className={`py-1.5 pr-0 text-right num ${sorCls}`}>{sor.toFixed(1)}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default SORReport;

@@ -17,7 +17,7 @@ STORES = [
         "store_id":  "vivowoman",
         "store_url": os.environ["SHOPIFY_KENYA_STORE"],
         "token":     os.environ["SHOPIFY_KENYA_TOKEN"],
-        "cutoff":    "2026-03-19",
+        "cutoff":    None,
     },
     {
         "store_id":  "vivo-uganda",
