@@ -1,0 +1,71 @@
+VIVO BI DASHBOARD — PERMANENT FIXES ACROSS ALL PAGES
+You are fixing the Vivo Fashion Group BI dashboard backed by a FastAPI (api_pg.py) + PostgreSQL (heliumdb) stack. Three root causes have been identified that break multiple dashboard pages. Fix all of them permanently and audit every endpoint for similar patterns.
+
+ROOT CAUSE 1: SKU JOIN MISMATCH
+all_sales.variant_sku stores values like V0821064LGR2X while all_products_clean.sku stores 0819065BLA3X — different formats. Any endpoint that joins these two tables on sku will silently drop 80-90% of rows.
+Fix: wherever all_sales joins all_products_clean on SKU, use a fuzzy match or don't rely on this join for filtering. Specifically:
+
+The canonical-units-sold endpoint must NOT filter by product_type via this broken join — return SUM(ordered_item_quantity) directly from all_sales with BASE_FILTERS applied, no product join required
+Any other endpoint that joins all_sales to all_products_clean on SKU and uses the result as a filter must be audited and fixed the same way
+all_sales.product_type is NULL for all rows — never use it as a filter
+
+
+ROOT CAUSE 2: INVENTORY SUMMARY SHAPE MISMATCH
+/analytics/inventory-summary returns a list of per-location rows. The frontend Inventory.jsx expects a single object with fields: total_units, store_units, warehouse_units, by_product_type. This means all inventory KPI cards show 0.
+Fix: rewrite /analytics/inventory-summary to return a single JSON object with:
+json{
+  "total_units": <sum of on_hand across all merch locations>,
+  "store_units": <sum of on_hand for POS store locations only>,
+  "warehouse_units": <sum of on_hand for warehouse locations only>,
+  "by_product_type": [{"product_type": "...", "units": ...}],
+  "total_skus": <count of distinct SKUs>,
+  "low_stock_styles": <count of styles with on_hand <= 10>,
+  "weeks_of_cover": <overall WOC>
+}
+Store locations = any pos_location_name containing "Vivo", "Safari", "Zoya", "Online", "Oasis", "Kigali".
+Warehouse locations = "Warehouse Finished Goods", "Warehouse Receiving", "In Transit", "Holding Warehouse Finished Goods", "Finished Goods Production", "Production", "Raw Materials", "Fabric Trimming", "Dead Stock Fabric", "Buying & Merchandise".
+
+ROOT CAUSE 3: INVENTORY ENDPOINT TRUNCATION
+/api/inventory has LIMIT 2000 ORDER BY pos_location_name. Since warehouse names come before "Vivo..." alphabetically, all POS store locations are cut off.
+Fix:
+
+Remove the LIMIT 2000 or increase to 50000
+Add ORDER BY CASE WHEN pos_location_name LIKE 'Vivo%' THEN 0 WHEN pos_location_name LIKE 'Online%' THEN 1 ELSE 2 END, pos_location_name so store locations always come first
+Apply the same fix to any other inventory endpoint with arbitrary LIMITs that could truncate store data
+
+
+ROOT CAUSE 4: API STABILITY — CONNECTION POOL
+The API dies under load because run_query opens a new PostgreSQL connection per request. A connection pool was partially added — verify it is correctly implemented:
+
+Use psycopg2.pool.ThreadedConnectionPool with minconn=2, maxconn=10
+Every run_query call must use pool.getconn() / pool.putconn() with proper try/finally
+The pool must be initialized once at startup, not per request
+Add a /api/healthz endpoint that returns {"status": "ok"} without hitting the DB, for Replit's health probe
+
+
+ROOT CAUSE 5: STATIC FILE SERVING / CACHE
+The FastAPI serves the React build via a catch-all GET /{full_path:path} route. Ensure:
+
+index.html is served with headers: Cache-Control: no-cache, no-store, must-revalidate
+Static JS/CSS assets under /static/ are served with Cache-Control: public, max-age=31536000, immutable (they have hashed filenames so caching is safe)
+The /api/* routes must be defined BEFORE the catch-all static route, otherwise API calls get served index.html
+
+
+AUDIT INSTRUCTIONS
+After fixing the above, audit every @app.get and @app.post endpoint in api_pg.py for:
+
+Any JOIN all_products_clean on sku used as a WHERE filter — flag and fix
+Any LIMIT under 10000 on endpoints that return location/store-level data — remove or increase
+Any endpoint returning a list where the frontend expects a dict (check field names against what Inventory.jsx, Overview.jsx, useKpis.js consume)
+Any raw psycopg2.connect() call outside the connection pool — replace with pool
+Any endpoint with no error handling that would return a 500 and kill the worker
+
+
+AFTER FIXING
+
+Restart api_pg.py
+Stress test: fire 20 concurrent requests to /api/kpis, /api/inventory, /api/sales-summary simultaneously — all must return 200
+Verify /api/healthz returns {"status": "ok"}
+Rebuild the React dashboard: cd /home/runner/workspace/dashboard && npx craco build
+Confirm the build completes without errors
+Update start_all.sh to always start the API with the connection pool before the sync script

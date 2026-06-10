@@ -1,1 +1,3 @@
 - [API SQL-injection posture](sql-injection-audit.md) — edge date-validation + quote-doubling (not bound params); depends on pinned standard_conforming_strings=on. Lists params already safe.
+- [SKU join is sound](sku-join-not-broken.md) — all_sales.variant_sku=all_products_clean.sku matches ~98%; don't fuzzy/prefix-match. Low product metrics are the product_type filter, not the join.
+- [Live vs legacy frontend](two-frontend-architecture.md) — artifacts/vivo-bi (Vite) is live at /; dashboard/ (craco) + start_all.sh + FastAPI catch-all are dead. Don't edit the dead path.

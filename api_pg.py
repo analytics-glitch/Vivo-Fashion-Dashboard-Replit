@@ -245,6 +245,13 @@ def build_filters(date_from, date_to, country=None, channel=None, extra=None):
 def root():
     return {"status": "ok", "service": "Vivo BI API (PostgreSQL)"}
 
+@app.get("/api/healthz")
+def healthz():
+    # Lightweight liveness probe — deliberately does NOT touch the DB so it
+    # stays green even if Postgres is briefly saturated, and is whitelisted in
+    # _AUTH_PUBLIC_EXACT so the platform probe never gets a 401.
+    return {"status": "ok"}
+
 @app.get("/api/locations")
 def get_locations():
     return run_query("""
@@ -1055,10 +1062,11 @@ def analytics_canonical_units_sold(
 ):
     # Total units sold under BASE_FILTERS (which already excludes shopping bags,
     # staff purchases, manual orders and the Uganda online channel). We do NOT
-    # restrict by product_type here: all_sales.product_type is entirely NULL and
-    # the variant_sku -> all_products_clean.sku join misses ~84% of sale rows, so
-    # any product_type filter collapses the count to a fraction of reality and
-    # contradicts the ASP / transactions KPIs computed off the same base.
+    # restrict by product_type here. The variant_sku -> all_products_clean.sku
+    # join is actually sound (~98% of sale rows match), but all_sales.product_type
+    # is ~97% NULL and joined product_type only covers ~70% of sold units, so any
+    # product_type filter would drop ~30% of real units and contradict the ASP /
+    # transactions KPIs computed off the same base.
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0")
     rows = run_query("""
