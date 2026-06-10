@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { useFilters } from "@/lib/filters";
 import { api, storeToCountry } from "@/lib/api";
-import { CalendarBlank, Globe, Storefront } from "@phosphor-icons/react";
+import { CalendarBlank, Globe, Storefront, ArrowLeft } from "@phosphor-icons/react";
 
 const COUNTRIES = ["all", "Kenya", "Uganda", "Rwanda"];
 
@@ -24,6 +25,7 @@ const Topbar = ({
     setLocation,
   } = useFilters();
 
+  const navigate = useNavigate();
   const [locations, setLocations] = useState([]);
 
   useEffect(() => {
@@ -44,15 +46,20 @@ const Topbar = ({
       className="flex flex-col md:flex-row md:items-end md:justify-between gap-5 pb-6 border-b border-border"
       data-testid="topbar"
     >
-      <div>
-        <div className="eyebrow" data-testid="topbar-breadcrumb">
-          Dashboard · {title}
-        </div>
-        <h1 className="font-sans font-extrabold text-[30px] md:text-[36px] tracking-tight mt-1 leading-[1.05] text-foreground">
-          {title}
-        </h1>
+      <div className="flex flex-col gap-2 items-start">
+        <button
+          type="button"
+          onClick={() =>
+            window.history.length > 1 ? navigate(-1) : navigate("/")
+          }
+          data-testid="topbar-back"
+          className="inline-flex items-center gap-1.5 input-pill text-sm font-medium text-foreground hover:bg-accent transition-colors"
+        >
+          <ArrowLeft size={15} className="text-muted" />
+          Back
+        </button>
         {subtitle && (
-          <p className="text-muted mt-1.5 text-sm max-w-2xl">{subtitle}</p>
+          <p className="text-muted text-sm max-w-2xl">{subtitle}</p>
         )}
       </div>
 

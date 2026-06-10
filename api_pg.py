@@ -550,20 +550,30 @@ def _init_user_store():
 # below turns the first-purchase + per-customer aggregation into an index scan
 # (exec-summary cold load dropped ~25s -> ~10s). Created idempotently so the
 # optimisation also applies in production after a fresh DB sync.
+# CONCURRENTLY so the build never takes an exclusive lock on the 1.5M-row table
+# (a plain CREATE INDEX would block reads AND, critically, block the /api/
+# startup healthcheck while it runs — which on a freshly-synced production DB
+# made the deployment flap and hang on "Checking session…").
 _PERF_INDEXES = [
     ("idx_as_cust_firstpurch",
-     "CREATE INDEX IF NOT EXISTS idx_as_cust_firstpurch ON all_sales "
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_as_cust_firstpurch ON all_sales "
      "(customer_id, sale_date) "
      "WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL"),
     ("idx_as_kind_date",
-     "CREATE INDEX IF NOT EXISTS idx_as_kind_date ON all_sales (sale_kind, sale_date)"),
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_as_kind_date ON all_sales (sale_kind, sale_date)"),
 ]
 
 
-@app.on_event("startup")
-def _ensure_perf_indexes():
-    pool = _get_pool()
-    conn = pool.getconn()
+def _build_perf_indexes():
+    """Create the hot-path indexes. Runs in a background thread (see the startup
+    hook) so it NEVER delays uvicorn binding / the production startup healthcheck.
+    Each statement is autocommit + CONCURRENTLY, so a slow first build on a fresh
+    DB happens online without blocking queries or the health probe."""
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+    except Exception:
+        return
     try:
         conn.autocommit = True
         cur = conn.cursor()
@@ -577,6 +587,15 @@ def _ensure_perf_indexes():
         pool.putconn(conn, close=True)
         return
     pool.putconn(conn)
+
+
+@app.on_event("startup")
+def _ensure_perf_indexes():
+    # Fire-and-forget: index maintenance must not block the server from serving
+    # the startup healthcheck. A daemon thread dies with the process.
+    import threading
+    threading.Thread(target=_build_perf_indexes, name="perf-index-build",
+                     daemon=True).start()
 
 
 @app.on_event("startup")
@@ -751,21 +770,59 @@ def get_locations():
 # Any value outside the whitelist is rejected with 400, and the only free-text
 # inputs (date range, country/channel filters) flow through the same validated
 # build_filters/csv_to_sql escaping used by every other endpoint.
+# Each dimension carries: the expression to GROUP BY on the SALES side, the
+# matching expression on the INVENTORY side (None when inventory has no such
+# dimension), whether it needs the all_products_clean join, a human label, and a
+# group tag for the picker UI. Brand/category/subcategory are NOT columns on
+# all_sales — they come from all_products_clean joined on the SKU, exactly like
+# every other product breakdown in this file. "category"/"product_type" mirror
+# the Products page; "store" is the POS location name.
 _REPORT_DIMENSIONS = {
-    "country":     ("s.country",                              "Country"),
-    "channel":     ("s.channel",                              "Channel"),
-    "brand":       ("s.brand",                                "Brand"),
-    "category":    ("s.category",                             "Category"),
-    "subcategory": ("s.subcategory",                          "Subcategory"),
-    "store":       ("s.pos_location_name",                    "Store"),
-    "month":       ("to_char(s.sale_date::date, 'YYYY-MM')",  "Month"),
+    "country":     {"sales": "s.country",                          "inv": "i.country",            "pjoin": False, "label": "Country",     "group": "Geography"},
+    "channel":     {"sales": "s.channel",                          "inv": None,                   "pjoin": False, "label": "Channel",     "group": "Geography"},
+    "store":       {"sales": "s.pos_location_name",                "inv": "i.pos_location_name",  "pjoin": False, "label": "Store",       "group": "Geography"},
+    "brand":       {"sales": "p.brand",                            "inv": "p.brand",              "pjoin": True,  "label": "Brand",       "group": "Product"},
+    "category":    {"sales": "p.category",                         "inv": "p.category",           "pjoin": True,  "label": "Category",    "group": "Product"},
+    "subcategory": {"sales": "p.product_type",                     "inv": "p.product_type",       "pjoin": True,  "label": "Subcategory", "group": "Product"},
+    "month":       {"sales": "to_char(s.sale_date::date,'YYYY-MM')", "inv": None,                 "pjoin": False, "label": "Month",       "group": "Time"},
 }
+
+# Sales-grain measures aggregate directly over all_sales (returns netted exactly
+# like /api/kpis so the same metric name means the same thing everywhere). AOV
+# and ASP are ratios computed inline. Inventory-grain measures (soh, sor) need
+# the current stock snapshot and are only valid with inventory-compatible
+# dimensions (see _INVENTORY_MEASURES below).
+_UNITS = "SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END)"
+_ORDERS = "COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END)"
+_NET = ("SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric "
+        "WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END)")
 _REPORT_MEASURES = {
-    "revenue":   ("ROUND(SUM(s.total_sales_kes::numeric), 0)",                                                          "Revenue (KES)"),
-    "units":     ("COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END), 0)", "Units"),
-    "orders":    ("COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END)",                      "Orders"),
-    "customers": ("COUNT(DISTINCT s.customer_id)",                                                                      "Customers"),
+    "revenue":      {"sql": "ROUND(SUM(s.total_sales_kes::numeric), 0)",                                                       "label": "Revenue (KES)",        "group": "Sales"},
+    "net_revenue":  {"sql": f"ROUND({_NET}, 0)",                                                                               "label": "Net Revenue (KES)",    "group": "Sales"},
+    "gross_revenue":{"sql": "ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0)", "label": "Gross Revenue (KES)", "group": "Sales"},
+    "returns":      {"sql": "ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0)",          "label": "Returns (KES)",        "group": "Sales"},
+    "discounts":    {"sql": "ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END), 0)", "label": "Discounts (KES)",     "group": "Sales"},
+    "units":        {"sql": f"COALESCE({_UNITS}, 0)",                                                                          "label": "Units Sold",           "group": "Sales"},
+    "orders":       {"sql": _ORDERS,                                                                                           "label": "Orders",               "group": "Sales"},
+    "customers":    {"sql": "COUNT(DISTINCT s.customer_id)",                                                                   "label": "Customers",            "group": "Customers"},
+    "aov":          {"sql": f"ROUND(SUM(s.total_sales_kes::numeric) / NULLIF({_ORDERS}, 0), 0)",                              "label": "Avg Order Value (KES)","group": "Sales"},
+    "asp":          {"sql": f"ROUND(SUM(s.total_sales_kes::numeric) / NULLIF({_UNITS}, 0), 0)",                               "label": "Avg Selling Price (KES)","group": "Sales"},
 }
+# Inventory-grain measures. soh = current store stock on hand (SUM available,
+# warehouse excluded — matches the SOR convention used by /subcategory-stock-sales).
+# sor = sell-through % = units sold in period / (units sold + current stock).
+_INVENTORY_MEASURES = {
+    "soh": {"label": "Stock on Hand", "group": "Inventory"},
+    "sor": {"label": "Sell-Through %", "group": "Inventory"},
+}
+
+
+def _report_field_catalog():
+    dims = [{"id": k, "label": v["label"], "group": v["group"]} for k, v in _REPORT_DIMENSIONS.items()]
+    meas = [{"id": k, "label": v["label"], "group": v["group"]} for k, v in _REPORT_MEASURES.items()]
+    meas += [{"id": k, "label": v["label"], "group": v["group"]} for k, v in _INVENTORY_MEASURES.items()]
+    return dims, meas
+
 
 @app.get("/api/custom-report")
 def custom_report(
@@ -787,48 +844,110 @@ def custom_report(
         raise HTTPException(status_code=400, detail="Pick at least one dimension")
     if not meas:
         raise HTTPException(status_code=400, detail="Pick at least one measure")
-    bad = [d for d in dims if d not in _REPORT_DIMENSIONS] + [m for m in meas if m not in _REPORT_MEASURES]
+    all_measures = {**_REPORT_MEASURES, **_INVENTORY_MEASURES}
+    bad = [d for d in dims if d not in _REPORT_DIMENSIONS] + [m for m in meas if m not in all_measures]
     if bad:
         raise HTTPException(status_code=400, detail=f"Unknown field(s): {', '.join(bad)}")
 
-    select_parts, group_idx = [], []
-    for i, d in enumerate(dims, start=1):
-        expr, _label = _REPORT_DIMENSIONS[d]
-        select_parts.append(f"{expr} AS {d}")
-        group_idx.append(str(i))
-    for m in meas:
-        expr, _label = _REPORT_MEASURES[m]
-        select_parts.append(f"{expr} AS {m}")
-
-    # ORDER BY is whitelist-bound: only a chosen measure or dimension, with a
-    # fixed ASC/DESC token — never a raw user string.
-    order_col = sort if sort in (dims + meas) else (meas[0] if meas else dims[0])
-    order_token = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+    inv_meas = [m for m in meas if m in _INVENTORY_MEASURES]
+    sales_meas = [m for m in meas if m in _REPORT_MEASURES]
+    needs_pjoin = any(_REPORT_DIMENSIONS[d]["pjoin"] for d in dims)
     safe_limit = max(1, min(int(limit or 500), 5000))
+    order_token = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+    order_col = sort if sort in (dims + meas) else (meas[0] if meas else dims[0])
 
+    def labels():
+        return (
+            [{"id": d, "label": _REPORT_DIMENSIONS[d]["label"]} for d in dims],
+            [{"id": m, "label": all_measures[m]["label"]} for m in meas],
+        )
+
+    if not inv_meas:
+        # ---- Sales-only path: one grouped scan of all_sales (+product join). ----
+        select_parts, group_idx = [], []
+        for idx, d in enumerate(dims, start=1):
+            select_parts.append(f'{_REPORT_DIMENSIONS[d]["sales"]} AS "{d}"')
+            group_idx.append(str(idx))
+        for m in sales_meas:
+            select_parts.append(f'{_REPORT_MEASURES[m]["sql"]} AS "{m}"')
+        join_sql = " LEFT JOIN all_products_clean p ON s.variant_sku = p.sku" if needs_pjoin else ""
+        where = build_filters(date_from, date_to, country, channel)
+        rows = run_query(
+            "SELECT " + ", ".join(select_parts) +
+            " FROM all_sales s" + join_sql + " WHERE " + where +
+            " GROUP BY " + ", ".join(group_idx) +
+            f' ORDER BY "{order_col}" {order_token}' +
+            f" LIMIT {safe_limit}",
+            date_to=date_to,
+        )
+        dim_labels, meas_labels = labels()
+        return {"dimensions": dim_labels, "measures": meas_labels, "rows": rows,
+                "row_count": len(rows), "truncated": len(rows) >= safe_limit}
+
+    # ---- Inventory path: sales aggregate FULL OUTER JOIN current-stock aggregate. ----
+    # Inventory is a current snapshot with no channel / time dimension, so those
+    # dimensions can't be combined with stock measures.
+    incompatible = [d for d in dims if _REPORT_DIMENSIONS[d]["inv"] is None]
+    if incompatible:
+        names = ", ".join(_REPORT_DIMENSIONS[d]["label"] for d in incompatible)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Stock on Hand / Sell-Through can't be grouped by {names} "
+                   "(inventory is a current snapshot with no channel or time). "
+                   "Use Country, Store, Brand, Category, or Subcategory.",
+        )
+
+    keys = [f"k{i}" for i in range(1, len(dims) + 1)]
+    sales_sel = [f'{_REPORT_DIMENSIONS[d]["sales"]} AS {keys[i]}' for i, d in enumerate(dims)]
+    inv_sel   = [f'{_REPORT_DIMENSIONS[d]["inv"]} AS {keys[i]}'   for i, d in enumerate(dims)]
+    # Always carry units in the sales CTE so SOR is computable even if the user
+    # didn't explicitly pick Units.
+    sales_measure_sql = {m: _REPORT_MEASURES[m]["sql"] for m in sales_meas}
+    sales_measure_sql["__units"] = f"COALESCE({_UNITS}, 0)"
+    sales_cte_measures = [f'{sql} AS "{name}"' for name, sql in sales_measure_sql.items()]
+    sales_join = " LEFT JOIN all_products_clean p ON s.variant_sku = p.sku" if needs_pjoin else ""
+    inv_join   = " LEFT JOIN all_products_clean p ON i.sku = p.sku" if needs_pjoin else ""
     where = build_filters(date_from, date_to, country, channel)
-    rows = run_query(
-        "SELECT " + ", ".join(select_parts) +
-        " FROM all_sales s WHERE " + where +
-        " GROUP BY " + ", ".join(group_idx) +
-        f' ORDER BY "{order_col}" {order_token}' +
-        f" LIMIT {safe_limit}",
-        date_to=date_to,
-    )
-    return {
-        "dimensions": [{"id": d, "label": _REPORT_DIMENSIONS[d][1]} for d in dims],
-        "measures": [{"id": m, "label": _REPORT_MEASURES[m][1]} for m in meas],
-        "rows": rows,
-        "row_count": len(rows),
-        "truncated": len(rows) >= safe_limit,
-    }
+
+    grp = ", ".join(str(i + 1) for i in range(len(dims)))
+    sales_cte = ("SELECT " + ", ".join(sales_sel + sales_cte_measures) +
+                 " FROM all_sales s" + sales_join + " WHERE " + where +
+                 " GROUP BY " + grp)
+    inv_cte = ("SELECT " + ", ".join(inv_sel) + ", SUM(i.available) AS soh"
+               " FROM all_inventory i" + inv_join +
+               " WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")"
+               " AND i.available > 0 GROUP BY " + grp)
+
+    # Postgres can't FULL JOIN on IS NOT DISTINCT FROM (not hash/merge-joinable),
+    # so match on a NULL-safe COALESCE sentinel instead. All inventory-compatible
+    # dimensions are text, so '' is a safe sentinel (real values are NULL, not '').
+    on_clause = " AND ".join(f"COALESCE(s.{k}::text,'') = COALESCE(st.{k}::text,'')" for k in keys)
+    out_parts = []
+    for i, d in enumerate(dims):
+        out_parts.append(f'COALESCE(s.{keys[i]}, st.{keys[i]}) AS "{d}"')
+    for m in meas:
+        if m == "soh":
+            out_parts.append('COALESCE(st.soh, 0) AS "soh"')
+        elif m == "sor":
+            out_parts.append('ROUND(COALESCE(s."__units",0)*100.0 / '
+                             'NULLIF(COALESCE(s."__units",0)+COALESCE(st.soh,0),0), 1) AS "sor"')
+        else:
+            out_parts.append(f'COALESCE(s."{m}", 0) AS "{m}"')
+
+    sql = ("WITH sales AS (" + sales_cte + "), stock AS (" + inv_cte + ") "
+           "SELECT " + ", ".join(out_parts) +
+           " FROM sales s FULL OUTER JOIN stock st ON " + on_clause +
+           " WHERE COALESCE(s." + keys[0] + ", st." + keys[0] + ") IS NOT NULL" +
+           f' ORDER BY "{order_col}" {order_token} LIMIT {safe_limit}')
+    rows = run_query(sql, date_to=date_to)
+    dim_labels, meas_labels = labels()
+    return {"dimensions": dim_labels, "measures": meas_labels, "rows": rows,
+            "row_count": len(rows), "truncated": len(rows) >= safe_limit}
 
 @app.get("/api/custom-report/fields")
 def custom_report_fields():
-    return {
-        "dimensions": [{"id": k, "label": v[1]} for k, v in _REPORT_DIMENSIONS.items()],
-        "measures": [{"id": k, "label": v[1]} for k, v in _REPORT_MEASURES.items()],
-    }
+    dims, meas = _report_field_catalog()
+    return {"dimensions": dims, "measures": meas}
 
 @app.get("/api/kpis")
 def get_kpis(
