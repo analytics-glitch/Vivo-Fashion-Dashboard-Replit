@@ -1,0 +1,109 @@
+IMPLEMENT PHASE 1 — Foundation fixes based on the audit in /home/runner/workspace/replenishment_ibt_audit.md
+Read the audit document first, then implement Phase 1 exactly as specified:
+Step 1: Create the persistence schema (B0)
+Run this DDL against the database:
+sqlCREATE TABLE IF NOT EXISTS recommendation_actions (
+  id            BIGSERIAL PRIMARY KEY,
+  rec_type      TEXT NOT NULL,
+  rec_key       TEXT NOT NULL,
+  status        TEXT NOT NULL,
+  actual_units  INTEGER,
+  reason        TEXT,
+  acted_by      TEXT,
+  acted_at      TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (rec_type, rec_key)
+);
+
+CREATE TABLE IF NOT EXISTS ibt_completions (
+  id                  BIGSERIAL PRIMARY KEY,
+  style_name          TEXT,
+  brand               TEXT,
+  subcategory         TEXT,
+  from_store          TEXT,
+  to_store            TEXT,
+  flow                TEXT,
+  units_to_move       INTEGER,
+  actual_units_moved  INTEGER,
+  sku                 TEXT,
+  color               TEXT,
+  size                TEXT,
+  barcode             TEXT,
+  po_number           TEXT,
+  completed_by_name   TEXT,
+  suggested_at        DATE,
+  transfer_date       DATE,
+  completed_at        TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS allocation_runs (
+  id           TEXT PRIMARY KEY,
+  payload      JSONB NOT NULL,
+  status       TEXT NOT NULL,
+  created_at   TIMESTAMPTZ DEFAULT now(),
+  fulfilled_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS sync_health_log (
+  id           BIGSERIAL PRIMARY KEY,
+  checked_at   TIMESTAMPTZ DEFAULT now(),
+  api_healthy  BOOLEAN,
+  sync_healthy BOOLEAN,
+  last_sync_at TIMESTAMPTZ,
+  action_taken TEXT,
+  notes        TEXT
+);
+Step 2: Migrate all stubs and in-memory stores to the real tables
+In api_pg.py:
+
+Replace _REPLEN_MARKS (in-memory dict) with reads/writes to recommendation_actions where rec_type='replenish'
+Replace _ALLOC_RUNS (in-memory list) with reads/writes to allocation_runs
+Replace POST /api/ibt/complete no-op with real INSERT into ibt_completions
+Replace GET /api/ibt/completed stub with real SELECT from ibt_completions
+Replace GET /api/ibt/completed/keys stub with real SELECT DISTINCT from ibt_completions
+Replace GET /api/recommendations stub with real SELECT from recommendation_actions
+Replace POST /api/recommendations stub with real UPSERT into recommendation_actions
+Replace GET /api/analytics/replenishment-completed stub with real SELECT
+
+Step 3: Fix the IBT late count (B1)
+Replace the GET /api/ibt/late-count stub with a real count of IBT suggestions that have no matching completion in ibt_completions and are older than 7 days. Use suggested_at from recommendation_actions or fallback to now() - INTERVAL '7 days' as the SLA boundary.
+Step 4: Fix the Weeks of Cover formula (A1)
+In analytics_weeks_of_cover and analytics_replenish_by_color, replace the static units_28 / 4.0 with a recency-weighted velocity:
+python# weighted: recent 28 days × 2, prior 28 days × 1, over 12 effective weeks
+weekly_units = ((units_28 * 2) + max(units_56 - units_28, 0)) / 12.0
+Query both 56-day and 28-day windows.
+Step 5: Add lead-time reorder point (A2)
+Add constants at the top of api_pg.py:
+pythonLEAD_TIME_WEEKS = 4.0
+SAFETY_WEEKS    = 1.0
+In replenishment endpoints, add at_risk = (weeks_of_cover < LEAD_TIME_WEEKS + SAFETY_WEEKS) and reorder_point = weekly_units * (LEAD_TIME_WEEKS + SAFETY_WEEKS) to the output.
+Step 6: Exclude dead stock from IBT (A7)
+In ibt_suggestions, exclude any style from both donor and needer sets where the style has >16 weeks of cover AND <5% sell-through in the last 56 days.
+Step 7: Fix inventory freshness (C2)
+Add a new endpoint GET /api/inventory/freshness:
+sqlSELECT pos_location_name,
+  MAX(_loaded_at) AS last_updated,
+  EXTRACT(EPOCH FROM (now() - MAX(_loaded_at)))/3600 AS hours_since_update,
+  (now() - MAX(_loaded_at) > INTERVAL '24 hours') AS stale
+FROM all_inventory
+GROUP BY pos_location_name
+ORDER BY last_updated ASC
+Step 8: Fix the i.size bug (C3)
+In analytics_aged_stock and any other endpoint reading i.size, replace with p.size from the all_products_clean join. The all_inventory.size column is 100% NULL.
+Step 9: Remove _REPLEN_OWNERS hardcoding
+Replace the hardcoded ["Matthew","Teddy","Alvi","Emma"] default with a configurable list stored in a simple app_config table:
+sqlCREATE TABLE IF NOT EXISTS app_config (
+  key   TEXT PRIMARY KEY,
+  value JSONB NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+INSERT INTO app_config (key, value) VALUES ('replenishment_owners', '["Matthew","Teddy","Alvi","Emma"]') ON CONFLICT DO NOTHING;
+After implementing all steps:
+
+Restart api_pg.py
+Verify each formerly-stubbed endpoint now returns real data or accepts real writes
+Test: mark an IBT as done → verify it appears in /api/ibt/completed
+Test: approve a replenishment → verify it survives an API restart
+Test: check /api/ibt/late-count returns a real number > 0 if there are open suggestions older than 7 days
+Show before/after for the WoC formula on a specific style to confirm the new velocity calculation is working
+
+Do not move to Phase 2 until all Phase 1 items are verified working and surviving a server restart.

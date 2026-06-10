@@ -5,6 +5,7 @@ from datetime import date, timedelta
 import psycopg2
 import psycopg2.extras
 import os
+import json
 import time
 import hashlib
 import hmac
@@ -645,6 +646,13 @@ PRODUCT_SUBCATS = [
     "Hoodies & Sweatshirts","Two-Piece Sets","Scarves","Accessories",
 ]
 
+# Lead-time reorder policy (Phase 1 audit A2). A style is "at risk" when its
+# weeks-of-cover falls below lead time + safety stock; reorder_point is the
+# recency-weighted weekly velocity carried over that same horizon.
+LEAD_TIME_WEEKS = 4.0
+SAFETY_WEEKS    = 1.0
+REORDER_COVER_WEEKS = LEAD_TIME_WEEKS + SAFETY_WEEKS
+
 WAREHOUSE_LOCATIONS = (
     "'Warehouse Finished Goods','Warehouse Receiving','In Transit',"
     "'Holding Warehouse Finished Goods','Finished Goods Production','Production',"
@@ -712,15 +720,107 @@ def merch_types_for(category=None, subcategory=None):
         return [sub for sub, cat in SUBCATEGORY_TO_CATEGORY.items() if cat in cats]
     return None
 
-# In-memory operational state. The warehouse has no audit tables for these,
-# so allocation runs and the replenishment roster live for the server session.
-_ALLOC_RUNS = []
-_REPLEN_OWNERS = ["Matthew", "Teddy", "Alvi", "Emma"]
-# Replenishment marks overlay. The report is computed on the fly with no audit
-# table, so marks persist for the server session. Callers identify a row by
-# either sku or barcode, so keys are namespaced: (pos_location, "sku", sku) and
-# (pos_location, "barcode", barcode) -> {replenished, actual_units_replenished}.
-_REPLEN_MARKS = {}
+# Operational state persisted in Postgres (Phase 1 audit B0) so it survives a
+# server restart: allocation runs (allocation_runs), the replenishment roster
+# (app_config), replenishment marks + recommendation actions
+# (recommendation_actions), and completed IBT moves (ibt_completions).
+_DEFAULT_REPLEN_OWNERS = ["Matthew", "Teddy", "Alvi", "Emma"]
+
+
+def _replen_owners():
+    """Configurable replenishment roster from app_config (falls back to default)."""
+    try:
+        rows = _users_exec(
+            "SELECT value FROM app_config WHERE key='replenishment_owners'",
+            fetch=True)
+    except Exception:
+        rows = None
+    if rows:
+        val = rows[0].get("value")
+        if isinstance(val, str):
+            try:
+                val = json.loads(val)
+            except Exception:
+                val = None
+        if isinstance(val, list):
+            owners = [str(o).strip() for o in val if str(o).strip()]
+            if owners:
+                return owners
+    return list(_DEFAULT_REPLEN_OWNERS)
+
+
+def _set_replen_owners(owners):
+    _users_exec(
+        "INSERT INTO app_config (key, value, updated_at) "
+        "VALUES ('replenishment_owners', %s::jsonb, now()) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+        (json.dumps(owners),))
+
+
+def _replen_marks():
+    """All replenishment marks keyed by (pos_location, kind, value)."""
+    rows = _users_exec(
+        "SELECT rec_key, actual_units FROM recommendation_actions "
+        "WHERE rec_type='replenish' AND status='done'", fetch=True) or []
+    marks = {}
+    for r in rows:
+        parts = (r["rec_key"] or "").split("|", 2)
+        if len(parts) == 3:
+            marks[(parts[0], parts[1], parts[2])] = {
+                "replenished": True,
+                "actual_units_replenished": int(r["actual_units"] or 0),
+            }
+    return marks
+
+
+def _set_replen_mark(pos_location, kind, value, replenished, actual, acted_by=None):
+    rec_key = f"{pos_location}|{kind}|{value}"
+    if replenished:
+        _users_exec(
+            "INSERT INTO recommendation_actions "
+            "(rec_type, rec_key, status, actual_units, acted_by, acted_at) "
+            "VALUES ('replenish', %s, 'done', %s, %s, now()) "
+            "ON CONFLICT (rec_type, rec_key) DO UPDATE SET "
+            "status='done', actual_units=EXCLUDED.actual_units, "
+            "acted_by=EXCLUDED.acted_by, acted_at=now()",
+            (rec_key, actual, acted_by))
+    else:
+        _users_exec(
+            "DELETE FROM recommendation_actions "
+            "WHERE rec_type='replenish' AND rec_key=%s", (rec_key,))
+
+
+def _alloc_runs(status=None):
+    if status:
+        rows = _users_exec(
+            "SELECT payload FROM allocation_runs WHERE status=%s "
+            "ORDER BY created_at DESC", (status,), fetch=True)
+    else:
+        rows = _users_exec(
+            "SELECT payload FROM allocation_runs ORDER BY created_at DESC",
+            fetch=True)
+    return [r["payload"] for r in (rows or [])]
+
+
+def _alloc_insert(run):
+    _users_exec(
+        "INSERT INTO allocation_runs (id, payload, status, created_at) "
+        "VALUES (%s, %s::jsonb, %s, now())",
+        (run["id"], json.dumps(run), run["status"]))
+
+
+def _alloc_get(run_id):
+    rows = _users_exec(
+        "SELECT payload FROM allocation_runs WHERE id=%s", (run_id,), fetch=True)
+    return rows[0]["payload"] if rows else None
+
+
+def _alloc_update(run):
+    _users_exec(
+        "UPDATE allocation_runs SET payload=%s::jsonb, status=%s, "
+        "fulfilled_at = CASE WHEN %s='fulfilled' THEN now() ELSE fulfilled_at END "
+        "WHERE id=%s",
+        (json.dumps(run), run["status"], run["status"], run["id"]))
 # Range-management manual tier overrides, keyed by style_name -> {"tier", "reason"}.
 # Applied on top of the age-based auto-tier in /range-mgmt/classify.
 _RANGE_OVERRIDES = {}
@@ -2612,7 +2712,7 @@ def analytics_aged_stock(
         SELECT i.pos_location_name AS pos_location,
             i.sku,
             MAX(i.product_name) AS product_name,
-            MAX(i.size) AS size,
+            MAX(p.size) AS size,
             MAX(p.barcode) AS barcode,
             MAX(i.color_print) AS color,
             COALESCE(MAX(ls.units_180), 0) AS units_sold_180d,
@@ -2634,6 +2734,24 @@ def analytics_aged_stock(
         LIMIT 1000
     """)
 
+@app.get("/api/inventory/freshness")
+def inventory_freshness():
+    rows = _users_exec("""
+        SELECT pos_location_name,
+            MAX(_loaded_at) AS last_updated,
+            ROUND((EXTRACT(EPOCH FROM (now() - MAX(_loaded_at))) / 3600.0)::numeric, 1) AS hours_since_update,
+            (now() - MAX(_loaded_at) > INTERVAL '24 hours') AS stale
+        FROM all_inventory
+        GROUP BY pos_location_name
+        ORDER BY last_updated ASC NULLS FIRST
+    """, fetch=True) or []
+    for r in rows:
+        if r.get("last_updated") is not None:
+            r["last_updated"] = r["last_updated"].isoformat()
+        if r.get("hours_since_update") is not None:
+            r["hours_since_update"] = float(r["hours_since_update"])
+    return rows
+
 @app.get("/api/analytics/weeks-of-cover")
 def analytics_weeks_of_cover(
     date_from: str = Query(default=None),
@@ -2641,14 +2759,19 @@ def analytics_weeks_of_cover(
     country:   str = Query(default=None),
 ):
     subcat_list = "'" + "','".join(PRODUCT_SUBCATS) + "'"
+    reorder_weeks = str(REORDER_COVER_WEEKS)
+    # Recency-weighted weekly velocity (Phase 1 audit A1): the last 28 days count
+    # double, the prior 28 days single, over a 12-week-equivalent denominator.
     return run_query("""
         WITH sales AS (
             SELECT p.product_type AS subcategory, p.style_name,
-                SUM(s.ordered_item_quantity) AS units_28
+                SUM(s.ordered_item_quantity) FILTER (
+                    WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days') AS units_28,
+                SUM(s.ordered_item_quantity) AS units_56
             FROM all_sales s
             LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
             WHERE s.sale_kind IN ('sale','order')
-            AND s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days'
+            AND s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
             AND """ + BASE_FILTERS + """
             AND p.product_type IN (""" + subcat_list + """)
             GROUP BY p.product_type, p.style_name
@@ -2661,18 +2784,29 @@ def analytics_weeks_of_cover(
             WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
             AND p.product_type IN (""" + subcat_list + """)
             GROUP BY p.product_type, p.style_name
+        ),
+        base AS (
+            SELECT COALESCE(st.subcategory, sa.subcategory) AS subcategory,
+                COALESCE(st.style_name, sa.style_name) AS style_name,
+                COALESCE(st.available, 0) AS available,
+                COALESCE(sa.units_28, 0) AS units_28,
+                COALESCE(sa.units_56, 0) AS units_56,
+                ((COALESCE(sa.units_28, 0) * 2)
+                  + GREATEST(COALESCE(sa.units_56, 0) - COALESCE(sa.units_28, 0), 0)) / 12.0
+                  AS weekly_units
+            FROM stock st
+            FULL OUTER JOIN sales sa
+                ON st.subcategory = sa.subcategory AND st.style_name = sa.style_name
+            WHERE COALESCE(st.style_name, sa.style_name) IS NOT NULL
         )
-        SELECT COALESCE(st.subcategory, sa.subcategory) AS subcategory,
-            COALESCE(st.style_name, sa.style_name) AS style_name,
-            COALESCE(st.available, 0) AS available,
-            COALESCE(st.available, 0) AS current_stock,
-            ROUND(COALESCE(sa.units_28, 0) / 4.0, 2) AS weekly_units,
-            COALESCE(sa.units_28, 0) AS units_sold_28d,
-            ROUND(COALESCE(st.available, 0) / NULLIF(COALESCE(sa.units_28, 0) / 4.0, 0), 1) AS weeks_of_cover
-        FROM stock st
-        FULL OUTER JOIN sales sa
-            ON st.subcategory = sa.subcategory AND st.style_name = sa.style_name
-        WHERE COALESCE(st.style_name, sa.style_name) IS NOT NULL
+        SELECT subcategory, style_name, available,
+            available AS current_stock,
+            ROUND(weekly_units, 2) AS weekly_units,
+            units_28 AS units_sold_28d,
+            ROUND(available / NULLIF(weekly_units, 0), 1) AS weeks_of_cover,
+            ROUND(weekly_units * """ + reorder_weeks + """)::int AS reorder_point,
+            (available < weekly_units * """ + reorder_weeks + """) AS at_risk
+        FROM base
         ORDER BY available DESC
         LIMIT 2000
     """)
@@ -2837,24 +2971,14 @@ def customers_walk_ins(
 def _sql_str(s):
     return (s or "").replace("'", "''")
 
-@app.get("/api/analytics/ibt-suggestions")
-def ibt_suggestions(
-    date_from: str = Query(default=None),
-    date_to:   str = Query(default=None),
-    country:   str = Query(default=None),
-    limit:     int = Query(default=300),
-    low_pct:   float = Query(default=20),
-    high_pct:  float = Query(default=150),
-):
-    today = date.today()
-    date_to = date_to or today.isoformat()
-    date_from = date_from or (today - timedelta(days=30)).isoformat()
-    low = float(low_pct) / 100.0
-    high = float(high_pct) / 100.0
-    lim = max(1, min(int(limit), 1000))
+def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim):
+    """Shared IBT suggestions SQL builder (Phase 1 audit B6). Excludes
+    dead-stock styles (>16 weeks cover AND <5% sell-through over 56 days) from
+    both the donor and recipient sides so we never recommend moving dead stock.
+    Reused by both /analytics/ibt-suggestions and /ibt/late-count."""
     c_sales = ("AND s.country = '" + _sql_str(country) + "'") if country else ""
     c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
-    q = f"""
+    return f"""
     WITH sv AS (
       SELECT p.style_name AS style, s.pos_location_name AS store,
              SUM(s.net_quantity) AS units_sold,
@@ -2890,15 +3014,45 @@ def ibt_suggestions(
       SELECT style, AVG(units_sold) AS avg_u, MAX(asp) AS asp
       FROM combined GROUP BY style HAVING COUNT(*) >= 2 AND AVG(units_sold) > 0
     ),
+    style_inv AS (
+      SELECT p.style_name AS style, SUM(i.available) AS avail
+      FROM all_inventory i
+      JOIN all_products_clean p ON p.sku = i.sku
+      WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND COALESCE(p.style_name,'') <> ''
+      GROUP BY 1
+    ),
+    style_sales56 AS (
+      SELECT p.style_name AS style, SUM(s.net_quantity) AS u56
+      FROM all_sales s
+      JOIN all_products_clean p ON p.sku = s.variant_sku
+      WHERE s.sale_date >= (CURRENT_DATE - INTERVAL '56 days')::text
+        AND s.sale_kind IN ('sale','order')
+        AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND COALESCE(p.style_name,'') <> ''
+      GROUP BY 1
+    ),
+    dead AS (
+      SELECT iv.style
+      FROM style_inv iv
+      LEFT JOIN style_sales56 sa ON sa.style = iv.style
+      WHERE (COALESCE(sa.u56, 0) = 0
+             OR (iv.avail::numeric * 8.0 / NULLIF(sa.u56, 0)) > 16.0)
+        AND (COALESCE(sa.u56, 0)::numeric
+             / NULLIF(COALESCE(sa.u56, 0) + iv.avail, 0) < 0.05
+             OR (COALESCE(sa.u56, 0) + iv.avail) = 0)
+    ),
     froms AS (
       SELECT c.style, c.store, c.available
       FROM combined c JOIN stats st ON st.style = c.style
       WHERE c.available >= 3 AND c.units_sold <= {low} * st.avg_u
+        AND NOT EXISTS (SELECT 1 FROM dead d WHERE d.style = c.style)
     ),
     tos AS (
       SELECT c.style, c.store, c.available, c.units_sold
       FROM combined c JOIN stats st ON st.style = c.style
       WHERE c.units_sold >= {high} * st.avg_u AND c.available <= 2
+        AND NOT EXISTS (SELECT 1 FROM dead d WHERE d.style = c.style)
     ),
     pairs AS (
       SELECT DISTINCT ON (f.style)
@@ -2923,6 +3077,24 @@ def ibt_suggestions(
     ORDER BY estimated_uplift DESC NULLS LAST
     LIMIT {lim}
     """
+
+
+@app.get("/api/analytics/ibt-suggestions")
+def ibt_suggestions(
+    date_from: str = Query(default=None),
+    date_to:   str = Query(default=None),
+    country:   str = Query(default=None),
+    limit:     int = Query(default=300),
+    low_pct:   float = Query(default=20),
+    high_pct:  float = Query(default=150),
+):
+    today = date.today()
+    date_to = date_to or today.isoformat()
+    date_from = date_from or (today - timedelta(days=30)).isoformat()
+    low = float(low_pct) / 100.0
+    high = float(high_pct) / 100.0
+    lim = max(1, min(int(limit), 1000))
+    q = _ibt_suggestions_sql(date_from, date_to, country, low, high, lim)
     return run_query(q, date_to=date_to)
 
 
@@ -3122,7 +3294,7 @@ def admin_users_list():
     return rows
 @app.get("/api/admin/replenishment-config")
 def admin_replenishment_config():
-    return {"owners": list(_REPLEN_OWNERS)}
+    return {"owners": _replen_owners()}
 @app.get("/api/admin/snapshot-freshness")
 def admin_snapshot_freshness():
     # "Upstream" here is the Postgres data source the API reads from directly.
@@ -3145,10 +3317,7 @@ def admin_snapshot_freshness():
     }
 @app.get("/api/allocations/runs")
 def allocations_runs(status: str = Query(default=None)):
-    runs = _ALLOC_RUNS
-    if status:
-        runs = [r for r in runs if r.get("status") == status]
-    return runs
+    return _alloc_runs(status)
 @app.get("/api/allocations/sizes")
 def allocations_sizes():
     rows = run_query("""
@@ -3872,11 +4041,13 @@ def analytics_replenish_by_color(
         WITH sales30 AS (
             SELECT p.style_name, MAX(p.brand) AS brand, MAX(p.product_type) AS subcategory,
                 COALESCE(NULLIF(TRIM(p.color_print), ''), 'Unspecified') AS color,
-                SUM(s.net_quantity) AS units_30d
+                SUM(s.net_quantity) FILTER (
+                    WHERE s.sale_date >= (CURRENT_DATE - INTERVAL '28 days')::text) AS units_28,
+                SUM(s.net_quantity) AS units_56
             FROM all_sales s
             JOIN all_products_clean p ON p.sku = s.variant_sku
             WHERE s.sale_kind IN ('sale','order')
-              AND s.sale_date >= (CURRENT_DATE - INTERVAL '30 days')::text
+              AND s.sale_date >= (CURRENT_DATE - INTERVAL '56 days')::text
               AND """ + BASE_FILTERS + sales_extra + """
               AND p.style_name IS NOT NULL
             GROUP BY p.style_name, color
@@ -3894,7 +4065,8 @@ def analytics_replenish_by_color(
         SELECT COALESCE(s.style_name, h.style_name) AS style_name,
             COALESCE(s.color, h.color) AS color,
             MAX(s.brand) AS brand, MAX(s.subcategory) AS subcategory,
-            COALESCE(SUM(s.units_30d), 0) AS units_30d,
+            COALESCE(SUM(s.units_28), 0) AS units_28,
+            COALESCE(SUM(s.units_56), 0) AS units_56,
             COALESCE(SUM(h.soh_total), 0) AS soh_total
         FROM sales30 s
         FULL OUTER JOIN soh h ON h.style_name = s.style_name AND h.color = s.color
@@ -3912,23 +4084,38 @@ def analytics_replenish_by_color(
             st["subcategory"] = r["subcategory"]
         st["colors"].append({
             "color": r["color"],
-            "units_30d": int(float(r["units_30d"] or 0)),
+            "units_28": int(float(r["units_28"] or 0)),
+            "units_56": int(float(r["units_56"] or 0)),
             "soh_total": int(float(r["soh_total"] or 0)),
         })
     out = []
     weeks_target = 4.0
+
+    def _weekly(u28, u56):
+        # Recency-weighted weekly velocity (Phase 1 audit A1): the last 28 days
+        # are double-weighted over a 12-week-equivalent denominator. Identical to
+        # /analytics/weeks-of-cover so cover figures agree across the app.
+        return ((u28 * 2) + max(u56 - u28, 0)) / 12.0
+
     for sn, st in styles.items():
-        total_u = sum(c["units_30d"] for c in st["colors"])
+        total_u28 = sum(c["units_28"] for c in st["colors"])
+        total_u56 = sum(c["units_56"] for c in st["colors"])
         total_soh = sum(c["soh_total"] for c in st["colors"])
         for c in st["colors"]:
-            weekly = c["units_30d"] / 4.0
+            weekly = _weekly(c["units_28"], c["units_56"])
             target = int(round(weekly * weeks_target))
+            c["units_30d"] = c["units_28"]
+            c["weekly_units"] = round(weekly, 2)
+            c["weeks_of_cover"] = round(c["soh_total"] / weekly, 1) if weekly else 999.0
+            c["reorder_point"] = int(round(weekly * REORDER_COVER_WEEKS))
+            c["at_risk"] = c["soh_total"] < c["reorder_point"]
             c["target_qty"] = target
             c["recommended_qty"] = max(0, target - c["soh_total"])
-            c["pct_of_style_sales"] = round(100.0 * c["units_30d"] / total_u, 1) if total_u else 0.0
-        style_weekly = total_u / 4.0
+            c["pct_of_style_sales"] = round(100.0 * c["units_28"] / total_u28, 1) if total_u28 else 0.0
+        style_weekly = _weekly(total_u28, total_u56)
+        style_reorder = int(round(style_weekly * REORDER_COVER_WEEKS))
         woc = round(total_soh / style_weekly, 1) if style_weekly else 999.0
-        sor = round(100.0 * total_u / (total_u + total_soh), 1) if (total_u + total_soh) else 0.0
+        sor = round(100.0 * total_u28 / (total_u28 + total_soh), 1) if (total_u28 + total_soh) else 0.0
         total_rec = sum(c["recommended_qty"] for c in st["colors"])
         if sor < min_sor_percent or woc > max_weeks_of_cover or total_rec <= 0:
             continue
@@ -3936,13 +4123,38 @@ def analytics_replenish_by_color(
         out.append({
             "style_name": sn, "brand": st["brand"], "subcategory": st["subcategory"],
             "sor_percent": sor, "weeks_of_cover": woc,
-            "total_units_30d": total_u, "total_soh": total_soh,
+            "weekly_units": round(style_weekly, 2),
+            "reorder_point": style_reorder, "at_risk": total_soh < style_reorder,
+            "total_units_30d": total_u28, "total_soh": total_soh,
             "total_recommended_qty": total_rec, "colors": st["colors"],
         })
     out.sort(key=lambda x: x["total_recommended_qty"], reverse=True)
     return out
 @app.get("/api/analytics/replenishment-completed")
-def stub_analytics_replenishment_completed(): return []
+def analytics_replenishment_completed(days: int = Query(default=30)):
+    rows = _users_exec(
+        "SELECT rec_key, actual_units, acted_by, acted_at "
+        "FROM recommendation_actions "
+        "WHERE rec_type='replenish' AND status='done' "
+        "AND acted_at >= now() - (%s || ' days')::interval "
+        "ORDER BY acted_at DESC LIMIT 2000",
+        (str(int(days)),), fetch=True) or []
+    out = []
+    for r in rows:
+        parts = (r["rec_key"] or "").split("|", 2)
+        if len(parts) != 3:
+            continue
+        pos_location, kind, value = parts
+        out.append({
+            "pos_location": pos_location,
+            "barcode": value if kind == "barcode" else None,
+            "sku": value if kind == "sku" else None,
+            "replenished": True,
+            "actual_units_replenished": int(r["actual_units"] or 0),
+            "completed_by": r["acted_by"],
+            "completed_at": r["acted_at"].isoformat() if r.get("acted_at") else None,
+        })
+    return {"rows": out, "total": sum(x["actual_units_replenished"] for x in out)}
 @app.get("/api/analytics/replenishment-report")
 def analytics_replenishment_report(
     date_from: str = Query(default=None),
@@ -3972,7 +4184,7 @@ def analytics_replenishment_report(
         store_soh AS (
             SELECT i.pos_location_name, i.sku,
                 SUM(i.available) AS soh_store,
-                MAX(i.location_name) AS bin, MAX(i.size) AS size
+                MAX(i.location_name) AS bin
             FROM all_inventory i
             WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
             GROUP BY i.pos_location_name, i.sku
@@ -3985,7 +4197,7 @@ def analytics_replenishment_report(
         )
         SELECT sold.pos_location_name AS pos_location, sold.country,
             sold.product_name, sold.variant_sku AS sku, sold.units_sold, sold.last_sale,
-            COALESCE(p.size, ss.size) AS size, p.barcode,
+            p.size AS size, p.barcode,
             COALESCE(ss.soh_store, 0) AS soh_store, COALESCE(ss.bin, '') AS bin,
             COALESCE(w.soh_wh, 0) AS soh_wh
         FROM sold
@@ -3995,7 +4207,8 @@ def analytics_replenishment_report(
         WHERE COALESCE(ss.soh_store, 0) < sold.units_sold AND COALESCE(w.soh_wh, 0) > 0
         ORDER BY (sold.units_sold - COALESCE(ss.soh_store, 0)) DESC
         LIMIT """ + str(int(limit)))
-    owners = list(_REPLEN_OWNERS) or ["Matthew", "Teddy", "Alvi", "Emma"]
+    owners = _replen_owners()
+    marks_all = _replen_marks()
     today = date.today()
     out_rows = []
     for idx, r in enumerate(rows):
@@ -4009,8 +4222,8 @@ def analytics_replenishment_report(
                 days_lapsed = (today - date.fromisoformat(str(r["last_sale"])[:10])).days
             except ValueError:
                 days_lapsed = 0
-        mark = (_REPLEN_MARKS.get((r.get("pos_location"), "sku", r.get("sku")))
-                or _REPLEN_MARKS.get((r.get("pos_location"), "barcode", r.get("barcode")))
+        mark = (marks_all.get((r.get("pos_location"), "sku", r.get("sku")))
+                or marks_all.get((r.get("pos_location"), "barcode", r.get("barcode")))
                 or {})
         out_rows.append({
             "owner": owners[idx % len(owners)], "country": r.get("country"),
@@ -4214,15 +4427,52 @@ def analytics_style_location_breakdown(style_name: str = Query(...),
 @app.get("/api/analytics/ceo-report")
 def stub_analytics_ceo_report(): return []
 @app.get("/api/ibt/completed")
-def stub_ibt_completed(): return []
+def ibt_completed():
+    rows = _users_exec(
+        "SELECT style_name, brand, subcategory, from_store, to_store, flow, "
+        "units_to_move, actual_units_moved, sku, color, size, barcode, po_number, "
+        "completed_by_name, suggested_at, transfer_date, completed_at, "
+        "CASE WHEN suggested_at IS NOT NULL "
+        "THEN (completed_at::date - suggested_at) END AS days_lapsed "
+        "FROM ibt_completions ORDER BY completed_at DESC LIMIT 1000",
+        fetch=True) or []
+    for r in rows:
+        for k in ("suggested_at", "transfer_date", "completed_at"):
+            if r.get(k) is not None:
+                r[k] = r[k].isoformat()
+    return rows
 @app.get("/api/ibt/completed/keys")
-def stub_ibt_completed_keys(): return []
+def ibt_completed_keys():
+    sku_rows = _users_exec(
+        "SELECT DISTINCT style_name, to_store, sku FROM ibt_completions "
+        "WHERE sku IS NOT NULL AND sku <> ''", fetch=True) or []
+    all_rows = _users_exec(
+        "SELECT DISTINCT style_name, to_store FROM ibt_completions "
+        "WHERE sku IS NULL OR sku = ''", fetch=True) or []
+    sku_keys = [f"{r['style_name']}||{r['to_store']}||{r['sku']}" for r in sku_rows]
+    keys = [f"{r['style_name']}||{r['to_store']}||__all__" for r in all_rows]
+    return {"keys": keys, "sku_keys": sku_keys}
 @app.get("/api/leaderboard/streaks")
 def stub_leaderboard_streaks(): return []
 @app.get("/api/notifications")
 def stub_notifications(): return []
 @app.get("/api/recommendations")
-def stub_recommendations(): return []
+def get_recommendations(item_type: str = Query(default=None)):
+    if item_type:
+        rows = _users_exec(
+            "SELECT rec_type AS item_type, rec_key AS item_key, status, "
+            "reason AS note, actual_units, acted_by, acted_at "
+            "FROM recommendation_actions WHERE rec_type=%s "
+            "ORDER BY acted_at DESC", (item_type,), fetch=True) or []
+    else:
+        rows = _users_exec(
+            "SELECT rec_type AS item_type, rec_key AS item_key, status, "
+            "reason AS note, actual_units, acted_by, acted_at "
+            "FROM recommendation_actions ORDER BY acted_at DESC", fetch=True) or []
+    for r in rows:
+        if r.get("acted_at") is not None:
+            r["acted_at"] = r["acted_at"].isoformat()
+    return rows
 @app.get("/api/recommendations/wins")
 def stub_recommendations_wins(): return []
 # RAG target bands for the Range tier counts. Calibrated to the cumulative
@@ -4752,7 +5002,28 @@ def admin_reconciliation_check():
 @app.get("/api/data-freshness")
 def stub_data_freshness(): return {"fresh": True, "last_updated": None}
 @app.get("/api/ibt/late-count")
-def stub_ibt_late_count(): return {"count": 0}
+def ibt_late_count():
+    # Outstanding IBT suggestions (default 30-day window) that are neither
+    # completed nor recently acted on: treat anything not acknowledged within
+    # the last 7 days as late (Phase 1 audit B6).
+    today = date.today()
+    df = (today - timedelta(days=30)).isoformat()
+    dt = today.isoformat()
+    inner = _ibt_suggestions_sql(df, dt, None, 0.20, 1.50, 1000)
+    q = ("WITH suggestions AS (" + inner + ") "
+         "SELECT COUNT(*) AS count FROM suggestions sg "
+         "LEFT JOIN ibt_completions c "
+         "ON COALESCE(c.style_name,'') = COALESCE(sg.style_name,'') "
+         "AND COALESCE(c.from_store,'') = COALESCE(sg.from_store,'') "
+         "AND COALESCE(c.to_store,'') = COALESCE(sg.to_store,'') "
+         "LEFT JOIN recommendation_actions ra "
+         "ON ra.rec_type='ibt' "
+         "AND ra.rec_key = COALESCE(sg.style_name,'')||'||'||COALESCE(sg.from_store,'')"
+         "||'||'||COALESCE(sg.to_store,'') "
+         "WHERE c.id IS NULL "
+         "AND COALESCE(ra.acted_at, now() - INTERVAL '7 days') <= now() - INTERVAL '7 days'")
+    rows = _users_exec(q, fetch=True)
+    return {"count": int(rows[0]["count"]) if rows else 0}
 @app.get("/api/notifications/unread-count")
 def stub_notifications_unread_count(): return {"unread": 0}
 @app.get("/api/leaderboard/store-of-the-week")
@@ -4989,7 +5260,7 @@ async def allocations_save(request: Request):
             "buying_sizes": sizes, "warehouse_sizes": {}, "sizes": sizes,
         })
     run["delta_total"] = run["allocated_total"] - run["suggested_total"]
-    _ALLOC_RUNS.insert(0, run)
+    _alloc_insert(run)
     return run
 
 
@@ -4997,30 +5268,31 @@ async def allocations_save(request: Request):
 async def allocations_runs_fulfil(run_id: str, request: Request):
     body = await request.json()
     fulfil_rows = {r.get("store"): (r.get("sizes") or {}) for r in (body.get("rows") or [])}
-    for run in _ALLOC_RUNS:
-        if run.get("id") == run_id:
-            if run.get("status") == "fulfilled":
-                from fastapi import HTTPException
-                raise HTTPException(status_code=400, detail="Run already fulfilled")
-            total = 0
-            for r in run.get("rows", []):
-                szs = fulfil_rows.get(r["store"])
-                if szs is not None:
-                    szs = {k: int(v or 0) for k, v in szs.items()}
-                    r["warehouse_sizes"] = szs
-                    r["warehouse_units"] = sum(szs.values())
-                else:
-                    r["warehouse_sizes"] = r.get("buying_sizes") or {}
-                    r["warehouse_units"] = r.get("buying_units") or 0
-                total += r["warehouse_units"]
-            run["status"] = "fulfilled"
-            run["allocated_total"] = total
-            run["delta_total"] = total - (run.get("suggested_total") or 0)
-            run["fulfilled_by_email"] = "warehouse@vivo"
-            run["fulfilled_at"] = date.today().isoformat() + "T00:00"
-            return run
-    from fastapi import HTTPException
-    raise HTTPException(status_code=404, detail="Run not found")
+    run = _alloc_get(run_id)
+    if run is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.get("status") == "fulfilled":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Run already fulfilled")
+    total = 0
+    for r in run.get("rows", []):
+        szs = fulfil_rows.get(r["store"])
+        if szs is not None:
+            szs = {k: int(v or 0) for k, v in szs.items()}
+            r["warehouse_sizes"] = szs
+            r["warehouse_units"] = sum(szs.values())
+        else:
+            r["warehouse_sizes"] = r.get("buying_sizes") or {}
+            r["warehouse_units"] = r.get("buying_units") or 0
+        total += r["warehouse_units"]
+    run["status"] = "fulfilled"
+    run["allocated_total"] = total
+    run["delta_total"] = total - (run.get("suggested_total") or 0)
+    run["fulfilled_by_email"] = "warehouse@vivo"
+    run["fulfilled_at"] = date.today().isoformat() + "T00:00"
+    _alloc_update(run)
+    return run
 @app.post("/api/admin/cache-clear")
 async def admin_cache_clear(request: Request):
     n = len(_cache)
@@ -5203,24 +5475,50 @@ async def analytics_replenishment_report_mark(request: Request):
         raise HTTPException(status_code=400, detail="pos_location and one of sku/barcode are required")
     replenished = bool(body.get("replenished", True))
     actual = int(body.get("actual_units_replenished") or 0)
+    acting = getattr(request.state, "user", None) or {}
+    acted_by = acting.get("name") or acting.get("email")
     # Callers identify rows by either sku (Replenishments) or barcode
     # (ReplenishmentReport); store under both so either GET row matches.
-    keys = []
     if sku:
-        keys.append((pos_location, "sku", sku))
+        _set_replen_mark(pos_location, "sku", sku, replenished, actual, acted_by)
     if barcode:
-        keys.append((pos_location, "barcode", barcode))
-    for key in keys:
-        if replenished:
-            _REPLEN_MARKS[key] = {"replenished": True, "actual_units_replenished": actual}
-        else:
-            _REPLEN_MARKS.pop(key, None)
+        _set_replen_mark(pos_location, "barcode", barcode, replenished, actual, acted_by)
     return {
         "ok": True, "sku": sku, "barcode": barcode, "pos_location": pos_location,
         "replenished": replenished, "actual_units_replenished": actual,
     }
 @app.post("/api/ibt/complete")
-async def stub_ibt_complete(request: Request): return {"ok": True}
+async def ibt_complete(request: Request):
+    body = await request.json()
+    acting = getattr(request.state, "user", None) or {}
+
+    def _d(v):
+        try:
+            return date.fromisoformat(str(v)[:10]).isoformat()
+        except Exception:
+            return None
+
+    def _i(v):
+        try:
+            return int(v)
+        except Exception:
+            return None
+
+    _users_exec(
+        "INSERT INTO ibt_completions "
+        "(style_name, brand, subcategory, from_store, to_store, flow, "
+        "units_to_move, actual_units_moved, sku, color, size, barcode, "
+        "po_number, completed_by_name, suggested_at, transfer_date) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        (body.get("style_name"), body.get("brand"), body.get("subcategory"),
+         body.get("from_store"), body.get("to_store"),
+         body.get("flow") or "store_to_store",
+         _i(body.get("units_to_move")), _i(body.get("actual_units_moved")),
+         body.get("sku"), body.get("color"), body.get("size"), body.get("barcode"),
+         body.get("po_number"),
+         body.get("completed_by_name") or acting.get("name") or acting.get("email"),
+         _d(body.get("suggested_at")), _d(body.get("transfer_date"))))
+    return {"ok": True}
 @app.post("/api/notifications/read-all")
 async def stub_notifications_read_all(request: Request): return {"ok": True}
 @app.post("/api/notifications/refresh")
@@ -5267,14 +5565,38 @@ async def stub_thumbnails_post(style: str, request: Request): return {"ok": True
 @app.post("/api/auth/heartbeat")
 async def stub_auth_heartbeat_post(request: Request): return {"ok": True}
 @app.post("/api/recommendations")
-async def stub_recommendations_post(request: Request): return {"ok": True}
+async def post_recommendations(request: Request):
+    body = await request.json()
+    item_type = body.get("item_type") or body.get("rec_type")
+    item_key = body.get("item_key") or body.get("rec_key")
+    status = body.get("status")
+    if not item_type or not item_key or not status:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="item_type, item_key and status are required")
+    acting = getattr(request.state, "user", None) or {}
+    acted_by = acting.get("name") or acting.get("email")
+    note = body.get("note")
+    if status == "pending":
+        _users_exec(
+            "DELETE FROM recommendation_actions WHERE rec_type=%s AND rec_key=%s",
+            (item_type, item_key))
+        return {"ok": True, "item_type": item_type, "item_key": item_key, "status": "pending"}
+    _users_exec(
+        "INSERT INTO recommendation_actions "
+        "(rec_type, rec_key, status, reason, acted_by, acted_at) "
+        "VALUES (%s, %s, %s, %s, %s, now()) "
+        "ON CONFLICT (rec_type, rec_key) DO UPDATE SET "
+        "status=EXCLUDED.status, reason=EXCLUDED.reason, "
+        "acted_by=EXCLUDED.acted_by, acted_at=now()",
+        (item_type, item_key, status, note, acted_by))
+    return {"ok": True, "item_type": item_type, "item_key": item_key, "status": status}
 @app.post("/api/admin/replenishment-config")
 async def admin_replenishment_config_post(request: Request):
-    global _REPLEN_OWNERS
     body = await request.json()
     owners = [str(o).strip() for o in (body.get("owners") or []) if str(o).strip()]
-    _REPLEN_OWNERS = owners or ["Matthew", "Teddy", "Alvi", "Emma"]
-    return {"ok": True, "owners": list(_REPLEN_OWNERS)}
+    owners = owners or list(_DEFAULT_REPLEN_OWNERS)
+    _set_replen_owners(owners)
+    return {"ok": True, "owners": owners}
 # ── Conversational BI assistant (text-to-SQL over live Postgres) ──────────────
 # The widget (ChatWidget.jsx) POSTs {message, session_id, context} and renders
 # the {session_id, answer} reply as plain text. The assistant works in two LLM
