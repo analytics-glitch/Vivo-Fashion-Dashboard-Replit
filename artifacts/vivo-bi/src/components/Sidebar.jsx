@@ -338,55 +338,6 @@ const TopNav = () => {
       </div>
       </div>
 
-      {/* Row 2: page-name tabs (full viewport width, max 2 rows) */}
-      <div
-        className="hidden lg:flex items-center gap-x-1 gap-y-1 justify-start flex-wrap mt-2 -mx-1 px-1"
-        data-testid="top-nav-tabs"
-      >
-        {visibleTabs.map((t) => (
-          <NavLink
-            key={t.id}
-            to={t.to}
-            end={t.to === "/"}
-            data-testid={`nav-${t.id}`}
-            onMouseEnter={() => prefetchForRoute(t.id, prefetchFilters)}
-            onFocus={() => prefetchForRoute(t.id, prefetchFilters)}
-            className={({ isActive }) =>
-              `flex items-center gap-1 px-1.5 xl:px-2 py-1 rounded-md text-[11px] xl:text-[12px] font-medium transition-colors whitespace-nowrap ${
-                isActive
-                  ? "bg-brand text-white shadow-sm"
-                  : "text-foreground/70 hover:bg-panel hover:text-foreground"
-              }`
-            }
-          >
-            {({ isActive }) => (
-              <>
-                <t.icon size={13} weight={isActive ? "fill" : "regular"} />
-                <span>{t.label}</span>
-                {t.id === "ibt" && lateCount > 0 && (
-                  <span
-                    className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold leading-none animate-pulse"
-                    title={`${lateCount} transfer${lateCount === 1 ? "" : "s"} suggested >5 days ago and not yet marked done`}
-                    data-testid="ibt-late-badge"
-                  >
-                    {lateCount > 99 ? "99+" : lateCount}
-                  </span>
-                )}
-                {t.id === "replenishments" && replenPending > 0 && (
-                  <span
-                    className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-brand text-white text-[10px] font-bold leading-none"
-                    title={`${replenPending} replenishment recommendation${replenPending === 1 ? "" : "s"} pending review`}
-                    data-testid="replen-pending-badge"
-                  >
-                    {replenPending > 99 ? "99+" : replenPending}
-                  </span>
-                )}
-              </>
-            )}
-          </NavLink>
-        ))}
-      </div>
-
       {mobileOpen && (
         <div
           className="lg:hidden absolute left-0 right-0 top-full bg-white border-b border-border shadow-md z-40 px-3 py-2 flex flex-col gap-1"
