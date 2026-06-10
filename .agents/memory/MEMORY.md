@@ -1,1 +1,2 @@
 - [RBAC last-admin & bootstrap concurrency](rbac-last-admin-toctou.md) — admin role/status/delete + first-login bootstrap must run in one advisory-locked tx, or concurrent requests can leave zero admins.
+- [Clerk prod "Checking session…" blank](clerk-prod-blank-checking-session.md) — published app stuck on auth-loading while dev works = stale live-key build; fix is re-publish, not code.
