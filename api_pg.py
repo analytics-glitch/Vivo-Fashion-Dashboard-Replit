@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Query, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
+import calendar
 from datetime import date, timedelta
 import psycopg2
 import psycopg2.extras
@@ -2640,6 +2641,459 @@ def analytics_monthly_targets(month: str = Query(default=None)):
         })
     stores.sort(key=lambda x: x["sales_target"], reverse=True)
     return {"month": str(mstart), "stores": stores}
+
+# ── Executive Summary ─────────────────────────────────────────────────────────
+# One heavy composite endpoint that powers ExecutiveSummary.jsx. It assembles
+# YTD + MTD scorecards (each metric current vs same-period-last-year), a
+# per-country breakdown, store performance, category/subcategory deltas,
+# yearly-target pacing, and a stock-mix table — all internally consistent because
+# every block is aggregated off the same BASE_FILTERS sales base via the existing
+# helper functions (get_kpis / get_customers / _country_summary_q /
+# get_sales_summary / get_subcategory_sales). Targets reuse the prior-year-actual
+# + 15% stretch convention from /analytics/{annual,monthly}-targets.
+
+_ES_KPI_KEYS = ["revenue", "avg_sales_per_day", "units", "footfall",
+                "avg_basket", "asp", "total_customers", "new_customers",
+                "returning_customers"]
+
+def _es_pct(cur, ly):
+    # Percent delta cur-vs-ly. None when ly is missing/zero so the frontend
+    # DeltaPill renders an em-dash instead of a misleading 0 / infinity.
+    if cur is None or ly is None:
+        return None
+    cur = float(cur); ly = float(ly)
+    if ly == 0:
+        return None
+    return (cur - ly) / ly * 100.0
+
+def _es_cmp(cur, ly):
+    return {"cur": float(cur or 0), "ly": float(ly or 0), "delta_pct": _es_pct(cur, ly)}
+
+def _es_shift_year(d, years):
+    # d with year reduced by `years`, guarding the Feb-29 -> Feb-28 edge.
+    try:
+        return d.replace(year=d.year - years)
+    except ValueError:
+        return d.replace(year=d.year - years, day=28)
+
+def _es_footfall_by_country(date_from, date_to):
+    # {country: total_footfall_in} over [from,to]. footfall has no country
+    # column, so map pos_location_name -> pos_locations.country.
+    rows = run_query("""
+        SELECT COALESCE(pl.country, 'Other') AS country,
+            SUM(f.a01_footfall_in) AS footfall
+        FROM footfall f
+        LEFT JOIN pos_locations pl ON f.pos_location_name = pl.location_name
+        WHERE f.time BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+        GROUP BY COALESCE(pl.country, 'Other')
+    """, date_to=date_to)
+    return {r["country"]: float(r["footfall"] or 0) for r in rows}
+
+def _es_footfall_total(ff_map, country):
+    if country:
+        wanted = {c.strip().lower() for c in country.split(",")}
+        return sum(v for kc, v in ff_map.items() if kc.lower() in wanted)
+    return sum(ff_map.values())
+
+def _es_customer_windows(span_from, span_to, windows, country):
+    # total / new / returning customer counts for several windows in ONE pass.
+    # Mirrors get_customers exactly (validated): first_ever_purchase is GLOBAL
+    # (no base/country filter), period membership applies BASE_FILTERS + country.
+    # new = single-order-in-window customer whose first ever purchase is in the
+    # window; returning = single-order customer whose first purchase predates it.
+    country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    pc_cols, sel = [], []
+    for k, (a, b) in windows.items():
+        pc_cols.append("COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_date BETWEEN '"
+                       + a + "' AND '" + b + "') AS oc_" + k)
+        sel.append("COUNT(*) FILTER (WHERE oc_" + k + " > 0) AS total_" + k)
+        sel.append("COUNT(*) FILTER (WHERE oc_" + k + " = 1 AND a.first_ever BETWEEN '"
+                   + a + "' AND '" + b + "') AS new_" + k)
+        sel.append("COUNT(*) FILTER (WHERE oc_" + k + " = 1 AND a.first_ever < '"
+                   + a + "') AS ret_" + k)
+    rows = run_query("""
+        WITH at AS (
+            SELECT customer_id, MIN(sale_date) AS first_ever
+            FROM all_sales
+            WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
+            GROUP BY customer_id
+        ),
+        pc AS (
+            SELECT s.customer_id, """ + ",\n".join(pc_cols) + """
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL
+              AND s.customer_id NOT IN ('None','null','')
+              AND s.sale_date BETWEEN '""" + span_from + """' AND '""" + span_to + """'
+              AND """ + BASE_FILTERS + " " + country_filter + """
+            GROUP BY s.customer_id
+        )
+        SELECT """ + ",\n".join(sel) + """
+        FROM pc JOIN at a ON pc.customer_id = a.customer_id
+    """, date_to=span_to)
+    r = rows[0] if rows else {}
+    return {k: {"total": float(r.get("total_" + k) or 0),
+                "new": float(r.get("new_" + k) or 0),
+                "returning": float(r.get("ret_" + k) or 0)} for k in windows}
+
+def _es_kpi_block(frm, to, country, days, footfall, cust):
+    # Raw headline scalars for one window. revenue/units/basket/ASP come from
+    # get_kpis; footfall + customer counts are precomputed and passed in.
+    k = get_kpis(frm, to, country, None) or {}
+    revenue = float(k.get("total_sales") or 0)
+    return {
+        "revenue": revenue,
+        "avg_sales_per_day": revenue / days if days else 0.0,
+        "units": float(k.get("total_units") or 0),
+        "footfall": footfall,
+        "avg_basket": float(k.get("avg_basket_size") or 0),
+        "asp": float(k.get("avg_selling_price") or 0),
+        "total_customers": cust.get("total", 0.0),
+        "new_customers": cust.get("new", 0.0),
+        "returning_customers": cust.get("returning", 0.0),
+    }
+
+def _es_kpis(cur_blk, ly_blk):
+    return {key: _es_cmp(cur_blk[key], ly_blk[key]) for key in _ES_KPI_KEYS}
+
+def _es_countries(cur_from, cur_to, ly_from, ly_to, country, days_cur, days_ly, ff_cur, ff_ly):
+    cur = {r["country"]: r for r in _country_summary_q(cur_from, cur_to, country)}
+    ly = {r["country"]: r for r in _country_summary_q(ly_from, ly_to, country)}
+    names = [c for c in ["Kenya", "Uganda", "Rwanda", "Online"] if c in cur or c in ly]
+    for c in list(cur.keys()) + list(ly.keys()):
+        if c and c not in names:
+            names.append(c)
+    out = []
+    for c in names:
+        rc = cur.get(c, {}); rl = ly.get(c, {})
+        rev_c = float(rc.get("total_sales") or 0); rev_l = float(rl.get("total_sales") or 0)
+        u_c = float(rc.get("units_sold") or 0); u_l = float(rl.get("units_sold") or 0)
+        o_c = float(rc.get("orders") or 0); o_l = float(rl.get("orders") or 0)
+        ff_c = float(ff_cur.get(c, 0)); ff_l = float(ff_ly.get(c, 0))
+        apd = _es_cmp(rev_c / days_cur if days_cur else 0, rev_l / days_ly if days_ly else 0)
+        apd["days"] = days_cur
+        out.append({
+            "country": c,
+            "revenue": _es_cmp(rev_c, rev_l),
+            "avg_sales_per_day": apd,
+            "units": _es_cmp(u_c, u_l),
+            "orders": _es_cmp(o_c, o_l),
+            "footfall": _es_cmp(ff_c, ff_l),
+            "avg_basket": _es_cmp(rev_c / o_c if o_c else 0, rev_l / o_l if o_l else 0),
+            "asp": _es_cmp(rev_c / u_c if u_c else 0, rev_l / u_l if u_l else 0),
+        })
+    return out
+
+def _es_store_targets(ytd_ly_from, ytd_ly_to, year_ly):
+    # Per-channel targets via the prior-year-actual + 15% stretch convention:
+    # target_ytd = prior-year same YTD period; target_annual = prior full year.
+    growth = 1.15
+    ytd_rows = run_query("""
+        SELECT s.pos_location_name AS channel,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric ELSE 0 END)) AS net
+        FROM all_sales s
+        WHERE s.sale_date BETWEEN '""" + ytd_ly_from + """' AND '""" + ytd_ly_to + """'
+          AND s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + """
+        GROUP BY s.pos_location_name
+    """, date_to=ytd_ly_to)
+    ann_rows = run_query("""
+        SELECT s.pos_location_name AS channel,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric ELSE 0 END)) AS net
+        FROM all_sales s
+        WHERE s.sale_date BETWEEN '""" + str(year_ly) + """-01-01' AND '""" + str(year_ly) + """-12-31'
+          AND s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + """
+        GROUP BY s.pos_location_name
+    """)
+    out = {}
+    for r in ytd_rows:
+        out.setdefault(r["channel"], {})["ytd"] = round(float(r["net"] or 0) * growth)
+    for r in ann_rows:
+        out.setdefault(r["channel"], {})["annual"] = round(float(r["net"] or 0) * growth)
+    return out
+
+def _es_stores(cur_from, cur_to, ly_from, ly_to, country, store_targets):
+    # Physical stores only — drop Online / Staff channels (the StorePerformance
+    # table is store-level). cur/ly are window revenue; targets are fixed YTD.
+    cur = get_sales_summary(cur_from, cur_to, country, None)
+    ly = {r["channel"]: r for r in get_sales_summary(ly_from, ly_to, country, None)}
+    out = []
+    for r in cur:
+        ch = r.get("channel") or ""
+        co = r.get("country") or ""
+        low = ch.lower()
+        if "online" in low or "staff" in low or co == "Online":
+            continue
+        l = ly.get(ch, {})
+        cur_v = float(r.get("total_sales") or 0)
+        ly_v = float(l.get("total_sales") or 0)
+        tgt = store_targets.get(ch, {})
+        out.append({
+            "channel": ch, "country": co,
+            "cur": cur_v, "ly": ly_v, "delta_pct": _es_pct(cur_v, ly_v),
+            "target_annual": tgt.get("annual", 0), "target_ytd": tgt.get("ytd", 0),
+        })
+    out.sort(key=lambda x: x["cur"], reverse=True)
+    return out
+
+def _es_categories(cur_from, cur_to, ly_from, ly_to, country):
+    # Per-subcategory revenue + units, current vs LY. The frontend rolls these
+    # up to high-level categories via productCategory.js.
+    cur = {r["subcategory"]: r for r in get_subcategory_sales(cur_from, cur_to, country, None)}
+    ly = {r["subcategory"]: r for r in get_subcategory_sales(ly_from, ly_to, country, None)}
+    subs = []
+    for sc in set(list(cur.keys()) + list(ly.keys())):
+        if not sc:
+            continue
+        rc = cur.get(sc, {}); rl = ly.get(sc, {})
+        rev_c = float(rc.get("total_sales") or 0); rev_l = float(rl.get("total_sales") or 0)
+        subs.append({
+            "subcategory": sc,
+            "cur": rev_c, "ly": rev_l,
+            "cur_units": float(rc.get("units_sold") or 0),
+            "ly_units": float(rl.get("units_sold") or 0),
+            "delta_pct": _es_pct(rev_c, rev_l),
+        })
+    subs.sort(key=lambda x: x["cur"], reverse=True)
+    return {"subcategories": subs}
+
+def _es_targets(as_of, country):
+    # Yearly-target pacing per market. annual = prior full-year net * 1.15;
+    # ytd = full elapsed months * 1.15 + current month * 1.15 * day-fraction.
+    growth = 1.15
+    year_ly = as_of.year - 1
+    market = ("CASE WHEN s.country = 'Online' OR s.pos_location_name ILIKE '%online%' "
+              "THEN 'Online' ELSE COALESCE(NULLIF(s.country, ''), 'Other') END")
+    rows = run_query("""
+        SELECT """ + market + """ AS bucket,
+            EXTRACT(MONTH FROM s.sale_date::date)::int AS m,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric ELSE 0 END)) AS net
+        FROM all_sales s
+        WHERE s.sale_date BETWEEN '""" + str(year_ly) + """-01-01' AND '""" + str(year_ly) + """-12-31'
+          AND s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + """
+        GROUP BY 1, 2
+    """)
+    by_bucket = {}
+    for r in rows:
+        b = r["bucket"]; m = int(r["m"]) if r["m"] else 0
+        by_bucket.setdefault(b, {})[m] = float(r["net"] or 0)
+    dim = calendar.monthrange(as_of.year, as_of.month)[1]
+    month_frac = as_of.day / dim if dim else 1.0
+    cur_month = as_of.month
+
+    def country_target(b):
+        months = by_bucket.get(b, {})
+        annual = round(sum(months.values()) * growth)
+        ytd = 0.0
+        for m in range(1, cur_month):
+            ytd += months.get(m, 0) * growth
+        ytd += months.get(cur_month, 0) * growth * month_frac
+        return {"country": b, "ytd": round(ytd), "annual": annual}
+
+    names = [b for b in ["Kenya", "Uganda", "Rwanda", "Online"] if b in by_bucket]
+    for b in by_bucket:
+        if b not in names:
+            names.append(b)
+    if country:
+        cset = {c.strip() for c in country.split(",")}
+        names = [b for b in names if b in cset]
+    countries = [country_target(b) for b in names]
+    return {
+        "countries": countries,
+        "total": {"ytd": sum(c["ytd"] for c in countries),
+                  "annual": sum(c["annual"] for c in countries)},
+    }
+
+def _es_stock_mix(sold_from, sold_to, window_days, country):
+    # Stock-vs-sales mix: on-hand units (warehouse vs stores) against units sold
+    # over the window, rolled up to categories with weeks-of-cover and gap.
+    subcat_list = "'" + "','".join(PRODUCT_SUBCATS) + "'"
+    inv_country = ("AND LOWER(i.country) IN (" + csv_to_sql(country.lower()) + ")") if country else ""
+    sales_country = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    inv = run_query("""
+        SELECT p.product_type AS subcategory,
+            SUM(CASE WHEN i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """) THEN i.available ELSE 0 END) AS wh_units,
+            SUM(CASE WHEN i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """) THEN i.available ELSE 0 END) AS st_units
+        FROM all_inventory i
+        JOIN all_products_clean p ON i.sku = p.sku
+        WHERE i.available > 0 AND p.product_type IN (""" + subcat_list + """) """ + inv_country + """
+        GROUP BY p.product_type
+    """)
+    sales = run_query("""
+        SELECT p.product_type AS subcategory,
+            SUM(s.ordered_item_quantity) AS sold_units,
+            ROUND(SUM(s.total_sales_kes::numeric), 0) AS sold_rev
+        FROM all_sales s
+        LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
+        WHERE s.sale_date BETWEEN '""" + sold_from + """' AND '""" + sold_to + """'
+          AND s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0
+          AND """ + BASE_FILTERS + " " + sales_country + """
+          AND p.product_type IN (""" + subcat_list + """)
+        GROUP BY p.product_type
+    """, date_to=sold_to)
+    inv_map = {r["subcategory"]: r for r in inv}
+    sales_map = {r["subcategory"]: r for r in sales}
+    weeks = (window_days / 7.0) if window_days else 1.0
+
+    raw = []
+    for sc in set(list(inv_map.keys()) + list(sales_map.keys())):
+        if not sc:
+            continue
+        iv = inv_map.get(sc, {}); sv = sales_map.get(sc, {})
+        wh = float(iv.get("wh_units") or 0); st = float(iv.get("st_units") or 0)
+        raw.append({
+            "subcategory": sc, "category": SUBCATEGORY_TO_CATEGORY.get(sc, "Other"),
+            "wh": wh, "st": st, "stock": wh + st,
+            "sold": float(sv.get("sold_units") or 0), "rev": float(sv.get("sold_rev") or 0),
+        })
+    tot_stock = sum(r["stock"] for r in raw)
+    tot_wh = sum(r["wh"] for r in raw)
+    tot_st = sum(r["st"] for r in raw)
+    tot_sold = sum(r["sold"] for r in raw)
+
+    def cover(stock, sold):
+        if sold <= 0:
+            return None
+        weekly = sold / weeks if weeks else 0
+        return round(stock / weekly, 2) if weekly else None
+
+    def asp(rev, sold):
+        return round(rev / sold) if sold else None
+
+    def make_row(d):
+        stock = d["stock"]; sold = d["sold"]; rev = d["rev"]
+        stock_pct = stock / tot_stock * 100 if tot_stock else 0
+        sold_pct = sold / tot_sold * 100 if tot_sold else 0
+        a = asp(rev, sold)
+        return {
+            "stock_units": stock, "stock_pct": round(stock_pct, 2),
+            "stock_units_warehouse": d["wh"],
+            "stock_pct_warehouse": round(d["wh"] / tot_wh * 100, 2) if tot_wh else 0,
+            "stock_units_stores": d["st"],
+            "stock_pct_stores": round(d["st"] / tot_st * 100, 2) if tot_st else 0,
+            "sold_units": sold, "sold_pct": round(sold_pct, 2),
+            "gap_pct": round(stock_pct - sold_pct, 2),
+            "weeks_of_cover": cover(stock, sold),
+            "asp_mtd": a, "tied_up_kes": round(stock * a) if a else 0,
+        }
+
+    cats = {}
+    for d in raw:
+        c = cats.setdefault(d["category"], {"category": d["category"], "wh": 0.0,
+                                            "st": 0.0, "stock": 0.0, "sold": 0.0,
+                                            "rev": 0.0, "subs": []})
+        c["wh"] += d["wh"]; c["st"] += d["st"]; c["stock"] += d["stock"]
+        c["sold"] += d["sold"]; c["rev"] += d["rev"]; c["subs"].append(d)
+    categories = []
+    for c in cats.values():
+        row = make_row(c)
+        row["category"] = c["category"]
+        row["subcategories"] = sorted(
+            [dict(make_row(s), subcategory=s["subcategory"]) for s in c["subs"]],
+            key=lambda x: x["stock_units"], reverse=True)
+        categories.append(row)
+    categories.sort(key=lambda x: x["stock_units"], reverse=True)
+
+    return {
+        "window_days": window_days, "weeks_in_window": round(weeks, 2),
+        "sold_window": {"from": sold_from, "to": sold_to},
+        "total_stock_units": tot_stock,
+        "total_stock_units_warehouse": tot_wh,
+        "total_stock_units_stores": tot_st,
+        "total_stock_pct_warehouse": round(tot_wh / tot_stock * 100, 2) if tot_stock else 0,
+        "total_stock_pct_stores": round(tot_st / tot_stock * 100, 2) if tot_stock else 0,
+        "total_sold_units_mtd": tot_sold,
+        "total_weeks_of_cover": cover(tot_stock, tot_sold),
+        "categories": categories,
+    }
+
+@app.get("/api/exec-summary")
+def exec_summary(
+    country:     str = Query(default=None),
+    window_days: int = Query(default=30),
+    date_from:   str = Query(default=None),
+    date_to:     str = Query(default=None),
+    style_status: str = Query(default="all"),
+):
+    # Anchor "as of" to yesterday, but never past the latest sale in the data.
+    mx = run_query("SELECT MAX(s.sale_date) AS mx FROM all_sales s WHERE s.sale_kind IN ('sale','order')")
+    max_date = None
+    if mx and mx[0].get("mx"):
+        try:
+            max_date = date.fromisoformat(str(mx[0]["mx"])[:10])
+        except ValueError:
+            max_date = None
+    as_of = date.today() - timedelta(days=1)
+    if max_date and max_date < as_of:
+        as_of = max_date
+
+    ytd_cur = (date(as_of.year, 1, 1), as_of)
+    ytd_ly = (date(as_of.year - 1, 1, 1), _es_shift_year(as_of, 1))
+    mtd_cur = (as_of.replace(day=1), as_of)
+    mtd_ly = (_es_shift_year(as_of.replace(day=1), 1), _es_shift_year(as_of, 1))
+
+    def ds(t):
+        return (t[0].isoformat(), t[1].isoformat())
+    ytd_cur_s, ytd_ly_s = ds(ytd_cur), ds(ytd_ly)
+    mtd_cur_s, mtd_ly_s = ds(mtd_cur), ds(mtd_ly)
+
+    days_ytd = (ytd_cur[1] - ytd_cur[0]).days + 1
+    days_ytd_ly = (ytd_ly[1] - ytd_ly[0]).days + 1
+    days_mtd = (mtd_cur[1] - mtd_cur[0]).days + 1
+    days_mtd_ly = (mtd_ly[1] - mtd_ly[0]).days + 1
+
+    # Footfall-by-country for each window: computed once and reused by both the
+    # KPI blocks (totals) and the country breakdowns below.
+    ff = {
+        "yc": _es_footfall_by_country(ytd_cur_s[0], ytd_cur_s[1]),
+        "yl": _es_footfall_by_country(ytd_ly_s[0], ytd_ly_s[1]),
+        "mc": _es_footfall_by_country(mtd_cur_s[0], mtd_cur_s[1]),
+        "ml": _es_footfall_by_country(mtd_ly_s[0], mtd_ly_s[1]),
+    }
+    ff_total = {k: _es_footfall_total(v, country) for k, v in ff.items()}
+
+    # total/new/returning customers for all four windows in a single query span.
+    cust = _es_customer_windows(ytd_ly_s[0], ytd_cur_s[1], {
+        "yc": ytd_cur_s, "yl": ytd_ly_s, "mc": mtd_cur_s, "ml": mtd_ly_s,
+    }, country)
+
+    ytd_kpis = _es_kpis(
+        _es_kpi_block(ytd_cur_s[0], ytd_cur_s[1], country, days_ytd, ff_total["yc"], cust["yc"]),
+        _es_kpi_block(ytd_ly_s[0], ytd_ly_s[1], country, days_ytd_ly, ff_total["yl"], cust["yl"]))
+    mtd_kpis = _es_kpis(
+        _es_kpi_block(mtd_cur_s[0], mtd_cur_s[1], country, days_mtd, ff_total["mc"], cust["mc"]),
+        _es_kpi_block(mtd_ly_s[0], mtd_ly_s[1], country, days_mtd_ly, ff_total["ml"], cust["ml"]))
+
+    store_targets = _es_store_targets(ytd_ly_s[0], ytd_ly_s[1], as_of.year - 1)
+
+    if date_from and date_to:
+        sold_from, sold_to = date_from, date_to
+        wd = (date.fromisoformat(date_to[:10]) - date.fromisoformat(date_from[:10])).days + 1
+    else:
+        wd = window_days or 30
+        sold_from = (as_of - timedelta(days=wd - 1)).isoformat()
+        sold_to = as_of.isoformat()
+
+    return {
+        "as_of": as_of.isoformat(),
+        "windows": {
+            "ytd": {"current": list(ytd_cur_s), "ly": list(ytd_ly_s)},
+            "mtd": {"current": list(mtd_cur_s), "ly": list(mtd_ly_s)},
+        },
+        "ytd": {
+            "kpis": ytd_kpis,
+            "countries": _es_countries(ytd_cur_s[0], ytd_cur_s[1], ytd_ly_s[0], ytd_ly_s[1], country, days_ytd, days_ytd_ly, ff["yc"], ff["yl"]),
+            "stores": _es_stores(ytd_cur_s[0], ytd_cur_s[1], ytd_ly_s[0], ytd_ly_s[1], country, store_targets),
+            "categories": _es_categories(ytd_cur_s[0], ytd_cur_s[1], ytd_ly_s[0], ytd_ly_s[1], country),
+        },
+        "mtd": {
+            "kpis": mtd_kpis,
+            "countries": _es_countries(mtd_cur_s[0], mtd_cur_s[1], mtd_ly_s[0], mtd_ly_s[1], country, days_mtd, days_mtd_ly, ff["mc"], ff["ml"]),
+            "stores": _es_stores(mtd_cur_s[0], mtd_cur_s[1], mtd_ly_s[0], mtd_ly_s[1], country, store_targets),
+            "categories": _es_categories(mtd_cur_s[0], mtd_cur_s[1], mtd_ly_s[0], mtd_ly_s[1], country),
+        },
+        "targets": _es_targets(as_of, country),
+        "stock_mix": _es_stock_mix(sold_from, sold_to, wd, country),
+        "kpis": {"units": ytd_kpis["units"]},
+    }
 # IBT (Inter-Branch Transfer) endpoints — see PART A region below for the
 # real implementations (ibt_suggestions / ibt_sku_breakdown /
 # ibt_warehouse_to_store). Kept out of the stub block intentionally.
