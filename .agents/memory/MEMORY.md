@@ -1,1 +1,1 @@
-- [Clerk dev SignIn blank in screenshot](clerk-dev-signin-screenshot.md) — Clerk dev-instance SignIn renders blank in the screenshot tool though it works; trust DOM/console signals over the blank image.
+- [API SQL-injection posture](sql-injection-audit.md) — edge date-validation + quote-doubling (not bound params); depends on pinned standard_conforming_strings=on. Lists params already safe.

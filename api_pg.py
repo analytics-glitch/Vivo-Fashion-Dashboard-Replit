@@ -53,11 +53,20 @@ def _get_pool():
             if _POOL is None:
                 _POOL = _pg_pool.ThreadedConnectionPool(
                     minconn=2, maxconn=MAX_DB_CONNECTIONS,
-                    dsn=os.environ['DATABASE_URL'])
+                    dsn=os.environ['DATABASE_URL'],
+                    # SECURITY: pin standard_conforming_strings=on for every
+                    # pooled connection. SQL is built by concatenation and string
+                    # values are escaped by doubling single quotes; that escaping
+                    # is only sufficient when backslashes are literal (this
+                    # setting on). Enforcing it per-connection means the injection
+                    # defenses can't be weakened by a server/role default drift.
+                    options='-c standard_conforming_strings=on')
     return _POOL
 
 def get_conn():
-    return psycopg2.connect(os.environ['DATABASE_URL'])
+    return psycopg2.connect(
+        os.environ['DATABASE_URL'],
+        options='-c standard_conforming_strings=on')
 
 def run_query(query, date_to=None):
     key = hashlib.md5(query.encode()).hexdigest()
@@ -101,6 +110,21 @@ from fastapi.responses import JSONResponse
 # Exact /api paths reachable without a session (health probes + proxy prefix).
 _AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz"}
 
+# Query params that are concatenated into SQL as date literals. We validate them
+# to strict ISO dates at the edge so they can never carry SQL-injection payloads
+# (a value that parses as a date contains only digits/'-'/':'/'T' — none can
+# break out of a '...' string literal). This guards every date-filtered endpoint
+# in one place without touching the (heavily '%'-laden) query strings.
+_DATE_QUERY_PARAMS = ("date_from", "date_to", "compare_from", "compare_to")
+
+
+def _is_iso_date(v):
+    try:
+        date.fromisoformat(v)
+        return True
+    except (ValueError, TypeError):
+        return False
+
 
 @app.middleware("http")
 async def clerk_auth_gate(request: Request, call_next):
@@ -117,6 +141,14 @@ async def clerk_auth_gate(request: Request, call_next):
     if user is None:
         return JSONResponse({"detail": detail}, status_code=status)
     request.state.user = user
+    # Reject any non-ISO date filter before it reaches a query string literal.
+    for _k in _DATE_QUERY_PARAMS:
+        _v = request.query_params.get(_k)
+        if _v not in (None, "") and not _is_iso_date(_v):
+            return JSONResponse(
+                {"detail": f"Invalid {_k}: expected ISO date (YYYY-MM-DD)"},
+                status_code=400,
+            )
     return await call_next(request)
 
 @app.on_event("startup")
@@ -129,6 +161,26 @@ def _cap_threadpool():
         anyio.to_thread.current_default_thread_limiter().total_tokens = MAX_DB_CONNECTIONS - 2
     except Exception:
         pass
+
+
+@app.on_event("startup")
+def _assert_standard_conforming_strings():
+    # Fail fast if quote-doubling escaping (csv_to_sql et al.) is not backed by
+    # standard_conforming_strings=on. We pin it per-connection via libpq options;
+    # this asserts it actually took effect rather than trusting the default.
+    pool = _get_pool()
+    conn = pool.getconn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SHOW standard_conforming_strings")
+        setting = cur.fetchone()[0]
+        cur.close()
+    finally:
+        pool.putconn(conn)
+    if setting != "on":
+        raise RuntimeError(
+            "standard_conforming_strings must be 'on' for SQL-injection escaping "
+            f"to be sound, got {setting!r}")
 
 BASE_FILTERS = """
     s.pos_location_name NOT IN ('Staff purchases','Manual Order','Online - vivo-uganda')
@@ -170,7 +222,11 @@ _REPLEN_MARKS = {}
 _RANGE_OVERRIDES = {}
 
 def csv_to_sql(val):
-    return "'" + "','".join([v.strip() for v in val.split(",")]) + "'"
+    # Escape embedded single quotes (double them) so comma-separated filter
+    # values (country / channel / location) cannot break out of the SQL string
+    # literal. Safe because the server runs with standard_conforming_strings=on
+    # (backslashes are literal), so doubling quotes is sufficient.
+    return "'" + "','".join(v.strip().replace("'", "''") for v in val.split(",")) + "'"
 
 def build_filters(date_from, date_to, country=None, channel=None, extra=None):
     parts = [
