@@ -208,6 +208,26 @@ WAREHOUSE_LOCATIONS = (
     "'Staff purchases'"
 )
 
+# Merchandise subcategories — the set of all_products_clean.product_type values
+# that count as sellable apparel. MUST stay in lock-step with
+# SUBCATEGORY_TO_CATEGORY in artifacts/vivo-bi/src/lib/productCategory.js:
+# excludes Accessories and Sample & Sale, matching the BigQuery all_products_clean
+# rule (category NOT IN ('Accessories','Sale')). If merchandising adds a new
+# subcategory, update BOTH this tuple and productCategory.js.
+MERCH_SUBCATEGORIES = (
+    "Culottes & Capri Pants", "Full Length Pants", "Jumpsuits & Playsuits",
+    "Leggings", "Shorts & Skorts", "Knee Length Dresses", "Maxi Dresses",
+    "Midi & Capri Dresses", "Short & Mini Dresses", "Men's Bottoms", "Men's Tops",
+    "Hoodies & Sweatshirts", "Jackets & Coats", "Sweaters & Ponchos",
+    "Waterfalls & Kimonos", "Knee Length Skirts", "Maxi Skirts",
+    "Midi & Capri Skirts", "Short & Mini Skirts", "Bodysuits", "Fitted Tops",
+    "Loose Tops", "Midriff & Crop Tops", "T-shirts & Tank Tops", "Pants & Top Set",
+    "Pants & Waterfall Set", "Skirts & Top Set",
+)
+MERCH_SUBCATEGORIES_SQL = "'" + "','".join(
+    s.replace("'", "''") for s in MERCH_SUBCATEGORIES
+) + "'"
+
 # In-memory operational state. The warehouse has no audit tables for these,
 # so allocation runs and the replenishment roster live for the server session.
 _ALLOC_RUNS = []
@@ -426,21 +446,59 @@ def get_inventory(
     """)
 
 @app.get("/api/inventory-summary")
-def get_inventory_summary(country: str = Query(default=None)):
-    filters = ["i.available > 0", "i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")"]
+def get_inventory_summary(country: str = Query(default=None), locations: str = Query(default=None)):
+    # Compact merchandise inventory aggregate so the dashboard renders its KPIs
+    # and summary charts from a few dozen rows instead of pulling ~50K SKU rows
+    # client-side. by_location keeps ALL locations (warehouse included) so the
+    # frontend can split store vs warehouse with its own location regex — that
+    # classification stays single-sourced on the client and is not duplicated here.
+    # Merch filter mirrors productCategory.js (see MERCH_SUBCATEGORIES).
+    filters = ["i.available > 0", "p.product_type IN (" + MERCH_SUBCATEGORIES_SQL + ")"]
     if country:
-        filters.append("i.country IN (" + csv_to_sql(country) + ")")
+        # Frontend sends lowercased country names; DB stores them capitalised, so
+        # compare case-insensitively (csv_to_sql is case-sensitive).
+        filters.append("LOWER(i.country) IN (" + csv_to_sql(country.lower()) + ")")
+    if locations:
+        filters.append("i.pos_location_name IN (" + csv_to_sql(locations) + ")")
     where = " AND ".join(filters)
-    return run_query("""
+    by_location = run_query("""
         SELECT i.pos_location_name AS location, i.country,
-            COUNT(DISTINCT i.sku) AS skus,
-            SUM(i.available) AS available,
-            SUM(i.on_hand) AS on_hand
+            ROUND(SUM(i.available)::numeric, 2) AS units
         FROM all_inventory i
+        JOIN all_products_clean p ON i.sku = p.sku
         WHERE """ + where + """
         GROUP BY i.pos_location_name, i.country
-        ORDER BY available DESC
+        ORDER BY units DESC
     """)
+    by_subcat = run_query("""
+        SELECT p.product_type, ROUND(SUM(i.available)::numeric, 2) AS units
+        FROM all_inventory i
+        JOIN all_products_clean p ON i.sku = p.sku
+        WHERE """ + where + """
+        GROUP BY p.product_type
+        ORDER BY units DESC
+    """)
+    totals = run_query("""
+        SELECT ROUND(COALESCE(SUM(i.available), 0)::numeric, 2) AS total_units,
+            COUNT(DISTINCT i.sku) AS sku_count,
+            COUNT(DISTINCT i.pos_location_name) AS location_count
+        FROM all_inventory i
+        JOIN all_products_clean p ON i.sku = p.sku
+        WHERE """ + where)
+    t = totals[0] if totals else {}
+    return {
+        "total_units": float(t.get("total_units") or 0),
+        "sku_count": int(t.get("sku_count") or 0),
+        "location_count": int(t.get("location_count") or 0),
+        "by_location": [
+            {"location": r["location"], "country": r["country"], "units": float(r["units"] or 0)}
+            for r in by_location
+        ],
+        "by_subcat": [
+            {"product_type": r["product_type"], "units": float(r["units"] or 0)}
+            for r in by_subcat
+        ],
+    }
 
 @app.get("/api/footfall")
 def get_footfall(
@@ -1076,8 +1134,8 @@ def analytics_canonical_units_sold(
     return {"units_sold": int((rows[0].get("units_sold") if rows and rows[0].get("units_sold") is not None else 0))}
 
 @app.get("/api/analytics/inventory-summary")
-def analytics_inventory_summary(country: str = Query(default=None)):
-    return get_inventory_summary(country)
+def analytics_inventory_summary(country: str = Query(default=None), locations: str = Query(default=None)):
+    return get_inventory_summary(country, locations)
 
 @app.get("/api/analytics/total-sales-summary")
 def analytics_total_sales_summary(

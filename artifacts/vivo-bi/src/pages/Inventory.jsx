@@ -36,6 +36,16 @@ import {
   LabelList,
 } from "recharts";
 
+// Single source of truth for the store-vs-warehouse split. A location counts as
+// "warehouse" (i.e. non-store stock) when its name matches this pattern. Used
+// both for the client-side aggregate (filtered rows) and for splitting the
+// backend inventory-summary `by_location` list. "online - shop zetu" is
+// online-fulfilment holding stock, not a retail store, so it is warehouse here.
+const isWarehouseLocation = (loc) =>
+  /warehouse|wholesale|holding|staging|sale stock|online - shop zetu/.test(
+    (loc || "").toLowerCase()
+  );
+
 const Inventory = () => {
   const { applied, touchLastUpdated } = useFilters();
   const { dateFrom, dateTo, countries, channels, dataVersion } = applied;
@@ -60,6 +70,10 @@ const Inventory = () => {
   // subcategory-wide rollup.
   const [topSkus, setTopSkus] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Separate flag for the heavy row-level payloads (/inventory + /top-skus),
+  // which load in the background after the lightweight summary/aggregate
+  // endpoints so the page is interactive without waiting on ~50K rows.
+  const [rowsLoading, setRowsLoading] = useState(true);
   const [error, setError] = useState(null);
 
   // Live search — debounced via useEffect below to avoid re-render storms.
@@ -141,6 +155,7 @@ const Inventory = () => {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setRowsLoading(true);
     setError(null);
     const countryCsv = countries.length ? countries.map((c) => c.toLowerCase()).join(",") : undefined;
     const locationsCsv = channels.length ? channels.join(",") : undefined;
@@ -180,22 +195,24 @@ const Inventory = () => {
       include_warehouse: includeWarehouse ? 1 : undefined,
       stock_scope: stockScope,
     };
+    // Phase 1 — lightweight aggregate endpoints. The backend now rolls up the
+    // inventory headline (total/store/warehouse units, by-location, by-subcat)
+    // server-side, so these compact responses are all the page needs to render
+    // its KPIs, summary charts, and stock-to-sales / weeks-of-cover tables. The
+    // page becomes interactive as soon as these resolve — it no longer blocks
+    // on the ~50K-row /inventory payload.
     Promise.all([
       api.get("/analytics/inventory-summary", { params: refreshParams }),
-      api.get("/inventory", { params: refreshParams }),
       api.get("/stock-to-sales", { params: { date_from: stsDateFrom, date_to: stsDateTo, country: countryCsv, locations: locationsCsv } }),
       api.get("/analytics/stock-to-sales-by-subcat", { params: dateParams }),
       api.get("/analytics/stock-to-sales-by-category", { params: dateParams }),
       api.get("/analytics/weeks-of-cover", { params: { country: countryCsv, locations: locationsCsv, stock_scope: stockScope } }),
       api.get("/analytics/sell-through-by-location", { params: { date_from: dateFrom, date_to: dateTo, country: countryCsv } })
         .catch(() => ({ data: [] })),
-      api.get("/top-skus", { params: { date_from: dateFrom, date_to: dateTo, country: countryCsv, channel: locationsCsv, limit: 5000, style_status: styleStatus } })
-        .catch(() => ({ data: [] })),
     ])
-      .then(([s, i, st, sc, cat, woc, str, tsk]) => {
+      .then(([s, st, sc, cat, woc, str]) => {
         if (cancelled) return;
         setSummary(s.data);
-        setInv(i.data || []);
         setSts(st.data || []);
         setSubcatSS(sc.data || []);
         setStsByCat(cat.data || []);
@@ -211,11 +228,28 @@ const Inventory = () => {
           setWeeksOfCoverSummary(wocPayload?._summary || null);
         }
         setSellThrough(str.data || []);
-        setTopSkus(tsk.data || []);
         touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
+
+    // Phase 2 — heavy row-level payloads, loaded in the background. These power
+    // the row-derived features that still need per-SKU data: the low-stock-style
+    // KPI, brand filter pills, SKU search, and the filter-aware client-side
+    // aggregates. The page already renders from the Phase-1 summary while these
+    // stream in; row-dependent sections show a loading state until they arrive.
+    Promise.all([
+      api.get("/inventory", { params: refreshParams }),
+      api.get("/top-skus", { params: { date_from: dateFrom, date_to: dateTo, country: countryCsv, channel: locationsCsv, limit: 5000, style_status: styleStatus } })
+        .catch(() => ({ data: [] })),
+    ])
+      .then(([i, tsk]) => {
+        if (cancelled) return;
+        setInv(i.data || []);
+        setTopSkus(tsk.data || []);
+      })
+      .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
+      .finally(() => !cancelled && setRowsLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion, includeWarehouse, stockScope, styleStatus, stsWindowDays, stsCustomRange.from, stsCustomRange.to]);
@@ -331,8 +365,14 @@ const Inventory = () => {
         .map(([location, units]) => ({ location, units }))
         .sort((a, b) => b.units - a.units);
     }
-    // Filter summary.by_location to only include merchandise units — we don't
-    // have a per-subcat breakdown in by_location, so re-derive from merchInv.
+    // No local filters: use the backend merch-filtered by_location aggregate so
+    // we don't aggregate ~50K rows client-side. Fall back to merchInv until the
+    // summary arrives (or if it is missing).
+    if (summary && summary.by_location) {
+      return summary.by_location
+        .map((r) => ({ location: r.location || "—", units: r.units || 0 }))
+        .sort((a, b) => b.units - a.units);
+    }
     const m = new Map();
     for (const r of merchInv) {
       const loc = r.location_name || "—";
@@ -341,7 +381,7 @@ const Inventory = () => {
     return [...m.entries()]
       .map(([location, units]) => ({ location, units }))
       .sort((a, b) => b.units - a.units);
-  }, [filtersActive, filteredInv, merchInv]);
+  }, [filtersActive, filteredInv, merchInv, summary]);
 
   const totalFilteredUnits = useMemo(
     () => filteredInv.reduce((s, r) => s + (r.available || 0), 0),
@@ -350,21 +390,27 @@ const Inventory = () => {
 
   // Store vs Warehouse split derived from filtered rows.
   const storeVsWarehouse = useMemo(() => {
-    // Iter 91h — keep this regex in sync with backend WAREHOUSE_KEYS
-    // (server.py). "online - shop zetu" is online-fulfilment, not a
-    // store, so it must be classified as warehouse here too.
-    const isWarehouse = (loc) => {
-      const s = (loc || "").toLowerCase();
-      return /warehouse|wholesale|holding|staging|sale stock|online - shop zetu/.test(s);
-    };
     let store = 0;
     let warehouse = 0;
     for (const r of filteredInv) {
-      if (isWarehouse(r.location_name)) warehouse += r.available || 0;
+      if (isWarehouseLocation(r.location_name)) warehouse += r.available || 0;
       else store += r.available || 0;
     }
     return { store, warehouse };
   }, [filteredInv]);
+
+  // Store vs Warehouse split from the backend by_location aggregate, used for
+  // the headline KPIs when no local filters are active (avoids the 50K-row
+  // client-side path). Same location classifier as storeVsWarehouse.
+  const summaryStoreWarehouse = useMemo(() => {
+    let store = 0;
+    let warehouse = 0;
+    for (const r of summary?.by_location || []) {
+      if (isWarehouseLocation(r.location)) warehouse += r.units || 0;
+      else store += r.units || 0;
+    }
+    return { store, warehouse };
+  }, [summary]);
 
   const lowStockByStyle = useMemo(() => {
     const m = new Map();
@@ -420,24 +466,31 @@ const Inventory = () => {
   }, [stsByCat, visibleCategories]);
 
   const invBySubcat = useMemo(() => {
-    // Derive merch stock-on-hand per subcategory from the (merch-filtered,
-    // filter-aware) inventory rows. The backend inventory-summary endpoint does
-    // not return a by_product_type breakdown, so we aggregate client-side.
-    const m = new Map();
-    for (const r of filteredInv) {
-      const pt = r.product_type;
-      if (!pt) continue;
-      m.set(pt, (m.get(pt) || 0) + (r.available || 0));
+    // Merch stock-on-hand per subcategory. When no local filters are active the
+    // backend inventory-summary `by_subcat` aggregate is used so we don't roll up
+    // ~50K rows client-side; otherwise it is filter-aware off filteredInv.
+    let sorted;
+    if (!filtersActive && summary && summary.by_subcat) {
+      sorted = summary.by_subcat
+        .map((r) => ({ product_type: r.product_type, units: r.units || 0 }))
+        .sort((a, b) => (b.units || 0) - (a.units || 0));
+    } else {
+      const m = new Map();
+      for (const r of filteredInv) {
+        const pt = r.product_type;
+        if (!pt) continue;
+        m.set(pt, (m.get(pt) || 0) + (r.available || 0));
+      }
+      sorted = [...m.entries()]
+        .map(([product_type, units]) => ({ product_type, units }))
+        .sort((a, b) => (b.units || 0) - (a.units || 0));
     }
-    const sorted = [...m.entries()]
-      .map(([product_type, units]) => ({ product_type, units }))
-      .sort((a, b) => (b.units || 0) - (a.units || 0));
     const total = sorted.reduce((s, r) => s + (r.units || 0), 0) || 1;
     return sorted.slice(0, 15).map((r) => {
       const pct = ((r.units || 0) / total) * 100;
       return { ...r, pct, subcat_label: `${pct.toFixed(1)}%` };
     });
-  }, [filteredInv]);
+  }, [filteredInv, filtersActive, summary]);
 
   const filteredWeeksOfCover = useMemo(
     () => weeksOfCover
@@ -586,14 +639,18 @@ const Inventory = () => {
       .sort((a, b) => b.understock_pct - a.understock_pct);
   }, [filteredSubcatSS]);
 
-  // Always derive the headline KPIs from the client-side merch aggregates.
-  // When no local filters are active, filteredInv == all merchandise rows, so
-  // these equal the full totals; the backend inventory-summary endpoint returns
-  // a per-location list (no total_units/store_units/warehouse_units fields), so
-  // the old summary fallback evaluated to 0.
-  const kpiTotal = totalFilteredUnits;
-  const kpiStore = storeVsWarehouse.store;
-  const kpiWarehouse = storeVsWarehouse.warehouse;
+  // Headline KPIs. When no local filters are active, source them from the
+  // compact backend inventory-summary aggregate (total_units + by_location) so
+  // the page does not roll up ~50K rows client-side just to show three numbers.
+  // When a local filter is active, fall back to the filter-aware client-side
+  // aggregates over filteredInv. (Country/channel scoping is applied server-side
+  // on the summary, so it stays correct without local filters.)
+  const useSummaryKpis = Boolean(summary && summary.by_location && !filtersActive);
+  const kpiTotal = useSummaryKpis ? summary.total_units : totalFilteredUnits;
+  const kpiStore = useSummaryKpis ? summaryStoreWarehouse.store : storeVsWarehouse.store;
+  const kpiWarehouse = useSummaryKpis
+    ? summaryStoreWarehouse.warehouse
+    : storeVsWarehouse.warehouse;
 
   // Export filename slug reflecting the active filters — makes traceability
   // obvious when sharing CSVs via email/chat.
@@ -826,8 +883,8 @@ const Inventory = () => {
             <KPICard
               testId="inv-kpi-lowstock"
               label="Low-Stock Styles (≤10)"
-              sub="Risk of stockout — act fast"
-              value={fmtNum(lowStockByStyle.length)}
+              sub={rowsLoading ? "Loading SKU detail…" : "Risk of stockout — act fast"}
+              value={rowsLoading ? "…" : fmtNum(lowStockByStyle.length)}
               icon={Warning}
               showDelta={false}
               higherIsBetter={false}
