@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { api, fmtKES, fmtNum } from "@/lib/api";
+import { api, fmtKES, fmtNum, countryColor } from "@/lib/api";
+import CountryDot from "@/components/CountryDot";
 import ExecutiveSummarySnapshot from "@/components/ExecutiveSummarySnapshot";
 import DateWindowSelector from "@/components/DateWindowSelector";
 import StyleStatusToggle from "@/components/StyleStatusToggle";
@@ -112,7 +113,6 @@ const KpiCard = ({ icon: Icon, label, fmt, ytd, mtd, testId, tone }) => {
  * leadership spot a single country that's pulling the group up or
  * down without scrolling to the store table.
  */
-const COUNTRY_FLAGS = { Kenya: "🇰🇪", Uganda: "🇺🇬", Rwanda: "🇷🇼", Online: "🌐" };
 
 const CountryMetricRow = ({ label, cur, ly, fmt, delta }) => {
   // Iter 89h — show LY value inline so leadership can read "what
@@ -185,7 +185,7 @@ const CountryCard = ({ ytd, mtd, targets, selected, onClick }) => {
       title={selected ? `Click again to clear filter (${country})` : `Filter Store Performance + Categories to ${country}`}
     >
       <div className="text-[15px] font-extrabold mb-2 flex items-center gap-2">
-        <span className="text-[18px]">{COUNTRY_FLAGS[country] || "🌍"}</span>
+        <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: countryColor(country) }} aria-hidden />
         {country}
         {selected && <span className="ml-auto inline-flex items-center gap-1 text-[10px] uppercase font-bold text-brand bg-brand/10 px-1.5 py-0.5 rounded">Filter on</span>}
       </div>
@@ -1014,7 +1014,7 @@ const _fmtRange = (range) => {
  * pro-rata YTD target). The annual target is also surfaced so leadership
  * can see "we need X more to hit the full year".
  */
-const TargetRow = ({ label, ytdActual, ytdTarget, annualTarget, flag }) => {
+const TargetRow = ({ label, ytdActual, ytdTarget, annualTarget }) => {
   // Iter 89o — focus this row on YTD-actual-vs-YTD-pro-rata-target.
   // The annual figure is shown only for reference (no "% achieved"
   // against annual — that was misleading because Kenya at 89% of
@@ -1035,7 +1035,7 @@ const TargetRow = ({ label, ytdActual, ytdTarget, annualTarget, flag }) => {
       data-testid={`exec-target-row-${label}`}
     >
       <div className="flex items-center gap-2">
-        {flag && <span className="text-[16px]">{flag}</span>}
+        <CountryDot country={label} dotOnly />
         <span className="font-bold text-[13px]">{label}</span>
       </div>
       <div>
@@ -1094,7 +1094,6 @@ const YearlyTargets = ({ targets, ytdCountries, ytdKpis }) => {
             <TargetRow
               key={c.country}
               label={c.country}
-              flag={COUNTRY_FLAGS[c.country]}
               ytdActual={actualMap[c.country] || 0}
               ytdTarget={c.ytd}
               annualTarget={c.annual}
@@ -2006,7 +2005,7 @@ const ExecutiveSummary = () => {
                 Categories rolled up vs same period last year, with each subcategory listed underneath. Sorted worst-decline first so the bleeding buckets surface at the top. Color-coded Δ% cells make growth (green) and decline (red) instantly readable.
                 {selectedCountry && (
                   <span className="ml-1.5 text-[11px] font-bold text-brand">
-                    Filtered to {COUNTRY_FLAGS[selectedCountry]} {selectedCountry}{countryLoading ? " — loading…" : ""}
+                    Filtered to {selectedCountry}{countryLoading ? " — loading…" : ""}
                   </span>
                 )}
               </span>
@@ -2079,7 +2078,7 @@ const ExecutiveSummary = () => {
               onClick={() => setSelectedCountry(null)}
               data-testid="exec-store-clear-filter"
             >
-              <span>{COUNTRY_FLAGS[selectedCountry]} {selectedCountry}</span>
+              <CountryDot country={selectedCountry} />
               <span className="opacity-70">×</span>
             </button>
           )}

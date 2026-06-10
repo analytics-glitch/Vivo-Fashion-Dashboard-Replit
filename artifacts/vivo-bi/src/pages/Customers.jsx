@@ -7,6 +7,7 @@ import { api, fmtKES, fmtNum, fmtPct, fmtDate } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
+import CountryDot from "@/components/CountryDot";
 import {
   Users, UserPlus, ArrowsCounterClockwise, UserMinus, Coins,
   MagnifyingGlass, X, UserCircle, Phone, Eye, Trophy, ArrowRight, Warning,
@@ -2290,7 +2291,6 @@ const Customers = () => {
                 }${weakening > 0 ? ` ${weakening} location${weakening === 1 ? "" : "s"} flagged for retention risk.` : ""}`
               : null;
 
-            const COUNTRY_FLAG = { Kenya: "🇰🇪", Uganda: "🇺🇬", Rwanda: "🇷🇼", Online: "🌐" };
             const isOnline = (r) => (r.country === "Online") || String(r.pos_location || "").toLowerCase().startsWith("online");
 
             // CSV filename reflects filter state
@@ -2323,7 +2323,7 @@ const Customers = () => {
                         key: "pos_location", label: "POS Location", align: "left",
                         render: (r) => (
                           <div className="flex items-center gap-1.5">
-                            {isOnline(r) && <span title="Online channel" className="text-[11px]">🌐</span>}
+                            {isOnline(r) && <span title="Online channel" className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: "#4b7bec" }} aria-hidden />}
                             <span className="font-medium">{r.pos_location}</span>
                           </div>
                         ),
@@ -2336,7 +2336,7 @@ const Customers = () => {
                       },
                       {
                         key: "country", label: "Country", align: "left",
-                        render: (r) => <span title={r.country}>{COUNTRY_FLAG[r.country] || r.country}</span>,
+                        render: (r) => r.country ? <CountryDot country={r.country} /> : <span>—</span>,
                         csv: (r) => r.country,
                       },
                       {

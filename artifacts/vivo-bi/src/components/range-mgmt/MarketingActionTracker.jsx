@@ -64,7 +64,7 @@ export default function MarketingActionTracker({ countries = [], channels = [], 
       <div className="card-white p-5 border-l-4" style={{ borderLeftColor: "#f97316" }}>
         <h3 className="font-extrabold text-[15px]">Marketing Action Tracker</h3>
         <p className="text-[11.5px] text-muted mt-1">
-          Styles ≥ {age_min_weeks} weeks post-launch with lifetime SOR &lt; {threshold_pct}%. Log a marketing action to start tracking SOR progression.
+          Tier 3 / 4 styles that re-activated recently — sold in the last 14 days after 30+ days dormant. Log a marketing action to start tracking SOR progression.
         </p>
         <div className="mt-2 text-[11px] flex gap-4">
           <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 font-bold">{candidates.length} need action</span>

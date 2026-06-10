@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { api, fmtKES, COUNTRY_FLAGS } from "@/lib/api";
+import { api, fmtKES, countryColor } from "@/lib/api";
 import { Loading, ErrorBox } from "@/components/common";
 import { Target, TrendUp } from "@phosphor-icons/react";
 
@@ -64,7 +64,7 @@ function TargetTile({ label, achieved, target, projected, daysLeft, isOverall, t
   const onPace = projectedPct >= 100;
   // Ring color: green when on/above pace, amber when 70–99%, red when <70%.
   const ringColor = onPace ? "#00c853" : projectedPct >= 70 ? "#d97706" : "#dc2626";
-  const flag = !isOverall ? (COUNTRY_FLAGS?.[label] || "") : "";
+  const dotColor = !isOverall ? countryColor(label) : null;
   return (
     <div
       className={`relative overflow-hidden rounded-xl border p-4 transition-transform hover:-translate-y-0.5 ${
@@ -76,7 +76,7 @@ function TargetTile({ label, achieved, target, projected, daysLeft, isOverall, t
     >
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-1.5 min-w-0">
-          {!isOverall && flag && <span className="text-base leading-none" aria-hidden>{flag}</span>}
+          {!isOverall && <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: dotColor }} aria-hidden />}
           <span className={`text-[12px] font-bold uppercase tracking-wide truncate ${
             isOverall ? "text-white/90" : "text-[#1a5c38]"
           }`}>

@@ -512,13 +512,18 @@ export const comparePeriod = (from, to, mode, custom) => {
 };
 
 // --- misc ---
-export const COUNTRY_FLAGS = {
-  Kenya: "🇰🇪",
-  Uganda: "🇺🇬",
-  Rwanda: "🇷🇼",
-  Online: "🌐",
-  Other: "🌍",
+// Country accent colors. No flag glyphs (user preference): countries are shown
+// as a colored dot + the country name via <CountryDot/>.
+export const COUNTRY_COLORS = {
+  Kenya: "#1a5c38",
+  Uganda: "#d97706",
+  Rwanda: "#00c853",
+  Online: "#4b7bec",
+  Other: "#9ca3af",
 };
+
+export const countryColor = (country) =>
+  COUNTRY_COLORS[country] || COUNTRY_COLORS.Other;
 
 // Build query params; countries/channels are arrays → join w/ comma
 export const buildParams = (filters, extra = {}) => {

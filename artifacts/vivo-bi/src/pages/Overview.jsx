@@ -14,7 +14,6 @@ import {
   buildParams,
   pctDelta,
   comparePeriod,
-  COUNTRY_FLAGS,
 } from "@/lib/api";
 import { KPICard, HighlightCard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
@@ -386,7 +385,6 @@ const Overview = () => {
       const r = byCountry.get(c) || {};
       return {
         country: c,
-        flag: COUNTRY_FLAGS[c] || "🌍",
         total_sales: adj(r.total_sales || 0),
         orders: r.orders || r.total_orders || 0,
         units_sold: r.units_sold || r.total_units || 0,
@@ -398,7 +396,6 @@ const Overview = () => {
       if (!wanted.includes(r.country) && r.country) {
         rows.push({
           country: r.country,
-          flag: COUNTRY_FLAGS[r.country] || "🌍",
           total_sales: adj(r.total_sales || 0),
           orders: r.orders || r.total_orders || 0,
           units_sold: r.units_sold || r.total_units || 0,
@@ -1116,10 +1113,9 @@ const Overview = () => {
                       <XAxis type="number" tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: isMobile ? 9 : 10 }} />
                       <YAxis type="category" dataKey="country" width={isMobile ? 90 : 110}
                         tick={({ x, y, payload }) => {
-                          const row = countryBars.find((r) => r.country === payload.value);
                           return (
                             <text x={x - 6} y={y + 4} fontSize={isMobile ? 10 : 11} textAnchor="end">
-                              {row?.flag} {payload.value}
+                              {payload.value}
                             </text>
                           );
                         }} />

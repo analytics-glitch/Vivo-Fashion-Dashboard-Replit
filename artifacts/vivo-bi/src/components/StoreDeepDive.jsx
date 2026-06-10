@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { api, fmtKES, fmtNum, fmtPct, fmtDelta, buildParams } from "@/lib/api";
 import { useFilters } from "@/lib/filters";
 import { Loading, Empty } from "@/components/common";
+import CountryDot from "@/components/CountryDot";
 import { KPICard } from "@/components/KPICard";
 import { DataQualityPill } from "@/components/DataQualityPill";
 import {
@@ -30,9 +31,6 @@ import {
  *     filter, so the CTAs are free composition.
  */
 
-const COUNTRY_FLAGS = {
-  Kenya: "🇰🇪", Uganda: "🇺🇬", Rwanda: "🇷🇼", Online: "🌐",
-};
 const WEEKDAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 // Reusable tone helper for mini-stat pills
@@ -143,7 +141,7 @@ const StoreDeepDive = ({
           </div>
           <div className="min-w-0 flex-1">
             <div className="text-[10.5px] text-muted font-semibold uppercase tracking-[0.14em]">
-              {COUNTRY_FLAGS[country] || "🌍"} {country} · Store deep-dive
+              <CountryDot country={country} /> · Store deep-dive
             </div>
             <h2
               id="store-deepdive-title"

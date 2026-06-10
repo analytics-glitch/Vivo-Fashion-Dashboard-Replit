@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
-import { api, fmtKES, fmtNum, fmtDec, fmtPct, fmtAxisKES, COUNTRY_FLAGS } from "@/lib/api";
+import { api, fmtKES, fmtNum, fmtDec, fmtPct, fmtAxisKES } from "@/lib/api";
+import CountryDot from "@/components/CountryDot";
 import { varianceStyle, VarianceCell } from "@/lib/variance";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
@@ -850,17 +851,16 @@ const Inventory = () => {
               } else {
                 const totalStock = filteredWeeksOfCover.reduce((s, r) => s + (r.current_stock || 0), 0);
                 const totalWeekly = filteredWeeksOfCover.reduce(
-                  (s, r) => s + (r.units_sold_3m ?? r.units_sold_28d ?? 0),
+                  (s, r) => s + (r.units_sold_28d ?? r.units_sold_3m ?? 0),
                   0,
-                ) / 12;
+                ) / 4;
                 woc = totalWeekly > 0 ? totalStock / totalWeekly : null;
               }
               const sub = woc == null
-                ? "Not enough sales history"
-                : woc < 4 ? "Healthy — stock is moving"
-                : woc < 8 ? "Watch — slowing"
-                : woc < 16 ? "Heavy — markdown candidates"
-                : "Stale — clearance now";
+                ? "Not enough recent sales"
+                : woc < 2 ? "Undercover — stockout risk, restock"
+                : woc <= 4 ? "Low cover — monitor, plan re-order"
+                : "Healthy cover (ideal ~12 weeks)";
               return (
                 <KPICard
                   testId="inv-kpi-weeks-of-cover"
@@ -1320,7 +1320,7 @@ const Inventory = () => {
               initialSort={{ key: "stock_to_sales_ratio", dir: "desc" }}
               columns={[
                 { key: "location", label: "Location", align: "left", render: (r) => <span className="font-medium">{r.location}</span> },
-                { key: "country", label: "Country", align: "left", render: (r) => <span>{COUNTRY_FLAGS[r.country] || "🌍"} {r.country}</span>, csv: (r) => r.country },
+                { key: "country", label: "Country", align: "left", render: (r) => <CountryDot country={r.country} />, csv: (r) => r.country },
                 { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
                 { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
                 { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="font-semibold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
@@ -1343,7 +1343,7 @@ const Inventory = () => {
                 {
                   key: "weeks_of_cover",
                   label: (
-                    <span title="Weeks of Cover = current_stock ÷ (units sold in last 4 weeks ÷ 4). Ideal = 12 weeks. Red = undercover (< 12w → restock); Amber = healthy (12-26w); Green = excess cover (> 26w → watch for slow turn).">
+                    <span title="Weeks of Cover = current_stock ÷ (units sold in last 28 days ÷ 4). Ideal ≈ 12 weeks. Red = undercover (< 2w → stockout risk, restock); Amber = low cover (2-4w → monitor); Green = healthy cover (> 4w).">
                       Weeks of Cover ⓘ
                     </span>
                   ),
@@ -1355,9 +1355,9 @@ const Inventory = () => {
                   render: (r) => {
                     if (r.weeks_of_cover == null) return <span className="pill-neutral">—</span>;
                     const w = r.weeks_of_cover;
-                    // Ideal WOC = 12 weeks. Anything below = undercover → red.
-                    // 12-26w = healthy range → amber; >26w = excess → green-but-watch.
-                    const cls = w < 12 ? "pill-red" : w <= 26 ? "pill-amber" : "pill-green";
+                    // Spec bands: < 2w red (stockout risk), 2-4w amber (monitor),
+                    // > 4w green (healthy cover; ideal ~12 weeks).
+                    const cls = w < 2 ? "pill-red" : w <= 4 ? "pill-amber" : "pill-green";
                     return <span className={cls}>{w.toFixed(1)}w</span>;
                   },
                   csv: (r) => (r.weeks_of_cover == null ? "" : r.weeks_of_cover.toFixed(2)),
@@ -1383,7 +1383,7 @@ const Inventory = () => {
                 initialSort={{ key: "sell_through_pct", dir: "desc" }}
                 columns={[
                   { key: "location", label: "Location", align: "left", mobilePrimary: true, render: (r) => <span className="font-medium">{r.location}</span> },
-                  { key: "country", label: "Country", align: "left", render: (r) => <span>{COUNTRY_FLAGS[r.country] || "🌍"} {r.country || "—"}</span>, csv: (r) => r.country },
+                  { key: "country", label: "Country", align: "left", render: (r) => r.country ? <CountryDot country={r.country} /> : <span>—</span>, csv: (r) => r.country },
                   { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
                   { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(Math.round(r.current_stock || 0)) },
                   { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="font-semibold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },

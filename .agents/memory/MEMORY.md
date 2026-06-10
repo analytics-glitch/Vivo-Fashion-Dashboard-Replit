@@ -1,1 +1,1 @@
-- [Inventory summary aggregation + two-phase load](inventory-summary-aggregation.md) — headline KPIs from compact backend summary; ~50K rows load in background and still power low-stock/pills/search; aging comes from weeks-of-cover (light), merch taxonomy mirrored in Python, country filter case-insensitive in summary only.
+- [Range Mgmt tier model](range-mgmt-tiers.md) — classify carries TWO tiers: Pareto sales-share `tier` (doc-conformant) vs internal `age_tier` (lifecycle); never conflate.

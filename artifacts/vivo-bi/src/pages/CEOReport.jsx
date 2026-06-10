@@ -12,8 +12,8 @@ import {
   pctDelta,
   comparePeriod,
   shiftISO,
-  COUNTRY_FLAGS,
 } from "@/lib/api";
+import CountryDot from "@/components/CountryDot";
 import SORHeader from "@/components/SORHeader";
 import { useTableSort, SortableTh } from "@/lib/useTableSort";
 // AnnualTargetsCard moved to /targets (Targets Tracker page).
@@ -532,7 +532,7 @@ const CEOReport = () => {
                   return (
                     <tr key={cname}>
                       <td className="font-medium">
-                        {COUNTRY_FLAGS[cname] || "🌍"} {cname}
+                        <CountryDot country={cname} />
                       </td>
                       <td className="text-right num font-bold">{fmtKES(c?.total_sales)}</td>
                       <td className={`text-right num ${dLM > 0 ? "delta-up" : dLM < 0 ? "delta-down" : "delta-flat"}`}>
@@ -592,7 +592,7 @@ const CEOReport = () => {
                       <td className="text-muted num">{i + 1}</td>
                       <td className="font-medium">{l.channel}</td>
                       <td className="text-muted">
-                        {COUNTRY_FLAGS[l.country] || "🌍"} {l.country}
+                        <CountryDot country={l.country} />
                       </td>
                       <td className="text-right num font-bold">{fmtKES(l.total_sales)}</td>
                       <td className={`text-right num ${d > 0 ? "delta-up" : d < 0 ? "delta-down" : "delta-flat"}`}>
@@ -831,7 +831,7 @@ const CEOReport = () => {
                     <td className="text-muted num">{i + 1}</td>
                     <td className="font-medium">{l.channel}</td>
                     <td className="text-muted">
-                      {COUNTRY_FLAGS[l.country] || "🌍"} {l.country}
+                      <CountryDot country={l.country} />
                     </td>
                     <td className="text-right num font-bold text-danger">{fmtKES(l.returns)}</td>
                     <td className="text-right num">{fmtKES(l.total_sales)}</td>

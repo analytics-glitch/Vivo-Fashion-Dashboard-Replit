@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { api, fmtKES, COUNTRY_FLAGS } from "@/lib/api";
+import { api, fmtKES, countryColor } from "@/lib/api";
 import { Loading, ErrorBox } from "@/components/common";
 import AnnualTargetsCard from "@/components/AnnualTargetsCard";
 import MonthlyTargetsTracker from "@/components/MonthlyTargetsTracker";
@@ -112,7 +112,7 @@ function TargetTile({
   const projectedPct = target ? (projected / target) * 100 : 0;
   const onPace = projectedPct >= 100;
   const ringColor = onPace ? "#00c853" : projectedPct >= 70 ? "#d97706" : "#dc2626";
-  const flag = !isOverall ? (COUNTRY_FLAGS?.[label] || "") : "";
+  const dotColor = !isOverall ? countryColor(label) : null;
   // Delta vs target (percentage points). Positive = ahead of pace.
   const deltaPp = projectedPct - 100;
   // Delta vs prior period (% growth). Skip when prior is 0 or missing
@@ -132,7 +132,7 @@ function TargetTile({
     >
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-1.5 min-w-0">
-          {!isOverall && flag && <span className="text-base leading-none" aria-hidden>{flag}</span>}
+          {!isOverall && <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: dotColor }} aria-hidden />}
           <span className={`text-[12px] font-bold uppercase tracking-wide truncate ${
             isOverall ? "text-white/90" : "text-[#1a5c38]"
           }`}>

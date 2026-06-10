@@ -6,6 +6,92 @@ import psycopg2.extras
 import os
 import time
 import hashlib
+import hmac
+import base64
+
+# ── PII reveal (step-up) tokens ───────────────────────────────────────────────
+# Customer contact PII (phone/email) is masked in every response by default.
+# A short-lived, HMAC-signed reveal token — issued by POST /api/auth/verify-password
+# after the caller proves the shared ops password — unmasks it for ~10 minutes.
+# The token is bound to the caller's user id so it cannot be replayed by another
+# session. Signing key is SESSION_SECRET; the ops password is PII_REVEAL_PASSWORD.
+_PII_REVEAL_TTL = 10 * 60  # seconds
+
+
+def _pii_signing_key() -> bytes:
+    return (os.environ.get("SESSION_SECRET") or "").encode("utf-8")
+
+
+def _b64u(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).decode("ascii").rstrip("=")
+
+
+def _b64u_dec(s: str) -> bytes:
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def make_reveal_token(user_id: str) -> str:
+    payload = f"{user_id}:{int(time.time()) + _PII_REVEAL_TTL}"
+    sig = hmac.new(_pii_signing_key(), payload.encode("utf-8"), hashlib.sha256).digest()
+    return _b64u(payload.encode("utf-8")) + "." + _b64u(sig)
+
+
+def _reveal_token_valid(token: str, user_id: str) -> bool:
+    if not token or not user_id:
+        return False
+    try:
+        payload_b64, sig_b64 = token.split(".", 1)
+        payload = _b64u_dec(payload_b64)
+        expected = hmac.new(_pii_signing_key(), payload, hashlib.sha256).digest()
+        if not hmac.compare_digest(expected, _b64u_dec(sig_b64)):
+            return False
+        tok_user, tok_exp = payload.decode("utf-8").rsplit(":", 1)
+        if tok_user != user_id:
+            return False
+        return int(tok_exp) > int(time.time())
+    except (ValueError, TypeError):
+        return False
+
+
+def pii_revealed(request) -> bool:
+    """True when the request carries a valid reveal token for its own user."""
+    if request is None:
+        return False
+    token = request.headers.get("X-PII-Reveal-Token")
+    if not token:
+        return False
+    user = getattr(request.state, "user", None) or {}
+    return _reveal_token_valid(token, str(user.get("id") or ""))
+
+
+def mask_phone(p):
+    if not p:
+        return p
+    s = str(p)
+    return s if len(s) <= 7 else s[:4] + "***" + s[-3:]
+
+
+def mask_email(e):
+    if not e:
+        return e
+    s = str(e)
+    at = s.find("@")
+    return s if at < 1 else s[0] + "***" + s[at:]
+
+
+def mask_pii_rows(rows, request, phone_keys=("phone",), email_keys=("email",)):
+    """Mask phone/email columns in-place unless the request is reveal-authorized."""
+    if pii_revealed(request):
+        return rows
+    for r in rows or []:
+        for k in phone_keys:
+            if k in r and r[k]:
+                r[k] = mask_phone(r[k])
+        for k in email_keys:
+            if k in r and r[k]:
+                r[k] = mask_email(r[k])
+    return rows
+
 
 _cache = {}
 
@@ -228,6 +314,43 @@ MERCH_SUBCATEGORIES_SQL = "'" + "','".join(
     s.replace("'", "''") for s in MERCH_SUBCATEGORIES
 ) + "'"
 
+# Subcategory (product_type) -> high-level merch category. Mirrors
+# SUBCATEGORY_TO_CATEGORY in artifacts/vivo-bi/src/lib/productCategory.js and MUST
+# stay in lock-step with it (and with MERCH_SUBCATEGORIES above).
+SUBCATEGORY_TO_CATEGORY = {
+    "Accessories": "Accessories", "Bangles & Bracelets": "Accessories",
+    "Belts": "Accessories", "Body Mists & Fragrances": "Accessories",
+    "Earrings": "Accessories", "Necklaces": "Accessories", "Rings": "Accessories",
+    "Scarves": "Accessories",
+    "Culottes & Capri Pants": "Bottoms", "Full Length Pants": "Bottoms",
+    "Jumpsuits & Playsuits": "Bottoms", "Leggings": "Bottoms",
+    "Shorts & Skorts": "Bottoms",
+    "Knee Length Dresses": "Dresses", "Maxi Dresses": "Dresses",
+    "Midi & Capri Dresses": "Dresses", "Short & Mini Dresses": "Dresses",
+    "Men's Bottoms": "Mens", "Men's Tops": "Mens",
+    "Hoodies & Sweatshirts": "Outerwear", "Jackets & Coats": "Outerwear",
+    "Sweaters & Ponchos": "Outerwear", "Waterfalls & Kimonos": "Outerwear",
+    "Sample & Sale Items": "Sale",
+    "Knee Length Skirts": "Skirts", "Maxi Skirts": "Skirts",
+    "Midi & Capri Skirts": "Skirts", "Short & Mini Skirts": "Skirts",
+    "Bodysuits": "Tops", "Fitted Tops": "Tops", "Loose Tops": "Tops",
+    "Midriff & Crop Tops": "Tops", "T-shirts & Tank Tops": "Tops",
+    "Pants & Top Set": "Two-Piece Sets", "Pants & Waterfall Set": "Two-Piece Sets",
+    "Skirts & Top Set": "Two-Piece Sets",
+}
+
+
+def merch_types_for(category=None, subcategory=None):
+    """Resolve category/subcategory filter params to a list of product_type
+    values, or None when no merch filter applies. An explicit subcategory wins;
+    otherwise expand the category(ies) to their subcategories."""
+    if subcategory:
+        return [s.strip() for s in subcategory.split(",") if s.strip()]
+    if category:
+        cats = {c.strip() for c in category.split(",") if c.strip()}
+        return [sub for sub, cat in SUBCATEGORY_TO_CATEGORY.items() if cat in cats]
+    return None
+
 # In-memory operational state. The warehouse has no audit tables for these,
 # so allocation runs and the replenishment roster live for the server session.
 _ALLOC_RUNS = []
@@ -378,14 +501,18 @@ def get_subcategory_sales(
     channel:   str = Query(default=None),
 ):
     subcat_list = "'" + "','".join(PRODUCT_SUBCATS) + "'"
+    # total_sales is NET of returns (gross − returns) per the metrics spec: this
+    # endpoint, /top-skus and /sor report net sales. Return rows are included so
+    # returns_kes is subtracted; units/orders/gross stay sale+order only.
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.product_type IN (" + subcat_list + ")")
+        extra="s.sale_kind IN ('sale','order','return') AND p.product_type IN (" + subcat_list + ")")
     return run_query("""
         SELECT p.product_type AS subcategory,
-            SUM(s.ordered_item_quantity) AS units_sold,
-            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
-            ROUND(SUM(s.gross_sales_kes::numeric), 0) AS gross_sales,
-            COUNT(DISTINCT s.order_id) AS orders
+            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
+                           WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales,
+            COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_kind IN ('sale','order')) AS orders
         FROM all_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
         WHERE """ + where + """
@@ -401,14 +528,19 @@ def get_top_skus(
     channel:   str = Query(default=None),
     limit:     int = Query(default=20),
 ):
+    # total_sales is NET of returns (gross − returns) per the metrics spec.
+    # Return rows are included so returns_kes is subtracted; units / gross /
+    # avg_price stay sale+order only.
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.style_name IS NOT NULL")
+        extra="s.sale_kind IN ('sale','order','return') AND p.style_name IS NOT NULL")
     return run_query("""
         SELECT p.style_name, p.collection, p.brand, p.product_type,
-            SUM(s.ordered_item_quantity) AS units_sold,
-            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
-            ROUND(SUM(s.gross_sales_kes::numeric), 0) AS gross_sales,
-            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(SUM(s.ordered_item_quantity), 0), 0) AS avg_price
+            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
+                           WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END)
+                / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END), 0), 0) AS avg_price
         FROM all_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
         WHERE """ + where + """
@@ -547,20 +679,106 @@ def get_footfall_weekday(
     date_to:   str = Query(default=str(date.today())),
     channel:   str = Query(default=None),
 ):
-    filters = ["f.time BETWEEN '" + date_from + "' AND '" + date_to + "'"]
-    if channel:
-        filters.append("f.pos_location_name IN (" + csv_to_sql(channel) + ")")
-    where = " AND ".join(filters)
-    return run_query("""
-        SELECT TO_CHAR(f.time, 'Day') AS weekday,
-            EXTRACT(DOW FROM f.time) AS dow,
-            ROUND(AVG(f.a01_footfall_in), 0) AS avg_footfall,
-            ROUND(AVG(f.a05_outside_traffic), 0) AS avg_outside_traffic
-        FROM footfall f
-        WHERE """ + where + """
-        GROUP BY weekday, dow
-        ORDER BY dow
+    # LOCATION x WEEKDAY heatmap. Weekday index is 0=Mon..6=Sun (the frontend's
+    # WEEKDAY_SHORT convention), derived from Postgres DOW (0=Sun) via (dow+6)%7.
+    # Conversion per weekday follows doc 03.7.2: mean(daily_orders / daily_walk_ins),
+    # i.e. the average of per-day ratios — NOT pooled sum/sum. Turn-in is the same
+    # mean-of-daily-ratios shape (footfall_in / outside_traffic).
+    ff_extra = (" AND f.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    sa_extra = (" AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    raw = run_query("""
+        WITH ff AS (
+            SELECT f.pos_location_name AS location, f.time::date AS d,
+                ((EXTRACT(DOW FROM f.time)::int + 6) % 7) AS wd,
+                SUM(f.a01_footfall_in) AS footfall,
+                SUM(f.a05_outside_traffic) AS outside
+            FROM footfall f
+            WHERE f.time BETWEEN '""" + date_from + """' AND '""" + date_to + """'""" + ff_extra + """
+            GROUP BY f.pos_location_name, f.time::date
+        ),
+        sa AS (
+            SELECT s.pos_location_name AS location, s.sale_date::date AS d,
+                COUNT(DISTINCT s.order_id) AS orders
+            FROM all_sales s
+            WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+              AND s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + sa_extra + """
+            GROUP BY s.pos_location_name, s.sale_date::date
+        ),
+        joined AS (
+            SELECT ff.location, ff.wd, ff.footfall, ff.outside, COALESCE(sa.orders, 0) AS orders
+            FROM ff LEFT JOIN sa ON sa.location = ff.location AND sa.d = ff.d
+        )
+        SELECT location, wd AS weekday,
+            ROUND(AVG(footfall), 0) AS avg_footfall,
+            ROUND(AVG(outside), 0) AS avg_outside_traffic,
+            ROUND(AVG(CASE WHEN footfall > 0 THEN orders * 100.0 / footfall END)::numeric, 1) AS avg_conversion_rate,
+            ROUND(AVG(CASE WHEN outside > 0 THEN footfall * 100.0 / outside END)::numeric, 1) AS avg_turn_in_rate,
+            COUNT(*) AS days,
+            COALESCE(SUM(outside), 0) AS sum_outside
+        FROM joined
+        GROUP BY location, wd
+        ORDER BY location, wd
     """, date_to=date_to)
+
+    # Assemble into per-location rows, each with a dense 7-entry by_weekday list
+    # (missing weekdays filled with days=0 so the frontend renders a dashed cell).
+    by_loc = {}
+    for r in raw:
+        loc = r["location"]
+        slot = by_loc.setdefault(loc, {
+            "location": loc,
+            "total_outside_window": 0,
+            "_cells": {},
+        })
+        slot["total_outside_window"] += int(r["sum_outside"] or 0)
+        slot["_cells"][int(r["weekday"])] = {
+            "weekday": int(r["weekday"]),
+            "avg_footfall": int(r["avg_footfall"] or 0),
+            "avg_outside_traffic": int(r["avg_outside_traffic"] or 0),
+            "avg_conversion_rate": float(r["avg_conversion_rate"]) if r["avg_conversion_rate"] is not None else None,
+            "avg_turn_in_rate": float(r["avg_turn_in_rate"]) if r["avg_turn_in_rate"] is not None else None,
+            "days": int(r["days"] or 0),
+        }
+
+    rows = []
+    for loc, slot in by_loc.items():
+        by_weekday = []
+        for wd in range(7):
+            by_weekday.append(slot["_cells"].get(wd, {
+                "weekday": wd, "avg_footfall": 0, "avg_outside_traffic": 0,
+                "avg_conversion_rate": None, "avg_turn_in_rate": None, "days": 0,
+            }))
+        rows.append({
+            "location": loc,
+            "total_outside_window": slot["total_outside_window"],
+            "by_weekday": by_weekday,
+        })
+    rows.sort(key=lambda x: -sum(c["avg_footfall"] for c in x["by_weekday"]))
+
+    # Group average per weekday = mean across locations (only cells with data).
+    group = []
+    for wd in range(7):
+        ff_vals = [c["avg_footfall"] for r in rows for c in r["by_weekday"]
+                   if c["weekday"] == wd and c["days"] > 0]
+        ot_vals = [c["avg_outside_traffic"] for r in rows for c in r["by_weekday"]
+                   if c["weekday"] == wd and c["days"] > 0]
+        cr_vals = [c["avg_conversion_rate"] for r in rows for c in r["by_weekday"]
+                   if c["weekday"] == wd and c["avg_conversion_rate"] is not None]
+        ti_vals = [c["avg_turn_in_rate"] for r in rows for c in r["by_weekday"]
+                   if c["weekday"] == wd and c["avg_turn_in_rate"] is not None]
+        group.append({
+            "weekday": wd,
+            "avg_footfall": round(sum(ff_vals) / len(ff_vals)) if ff_vals else 0,
+            "avg_outside_traffic": round(sum(ot_vals) / len(ot_vals)) if ot_vals else 0,
+            "avg_conversion_rate": round(sum(cr_vals) / len(cr_vals), 1) if cr_vals else None,
+            "avg_turn_in_rate": round(sum(ti_vals) / len(ti_vals), 1) if ti_vals else None,
+        })
+
+    return {
+        "rows": rows,
+        "group_avg_by_weekday": group,
+        "window": {"start": date_from, "end": date_to},
+    }
 
 @app.get("/api/customers")
 def get_customers(
@@ -590,17 +808,23 @@ def get_customers(
             GROUP BY customer_id
         ),
         churned AS (
-            SELECT COUNT(DISTINCT s1.customer_id) AS churned_count
+            -- Churn (doc 03.6.2): a customer is churned if they have not
+            -- transacted in the last 90 days. The rate denominator is the
+            -- "eligible base" = customers old enough to churn (first purchase
+            -- before the 90-day cutoff), NOT the period customers — basing it
+            -- on period customers produced an absurd ratio.
+            SELECT
+                COUNT(*) FILTER (WHERE last_sale < CURRENT_DATE - INTERVAL '90 days') AS churned_count,
+                COUNT(*) AS eligible_base
             FROM (
-                SELECT DISTINCT customer_id FROM all_sales
+                SELECT customer_id,
+                    MAX(sale_date::date) AS last_sale
+                FROM all_sales
                 WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
-                AND sale_date::date < CURRENT_DATE - INTERVAL '3 months'
-            ) s1
-            WHERE s1.customer_id NOT IN (
-                SELECT DISTINCT customer_id FROM all_sales
-                WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
-                AND sale_date::date >= CURRENT_DATE - INTERVAL '3 months'
-            )
+                  AND customer_id NOT IN ('None','null','')
+                GROUP BY customer_id
+                HAVING MIN(sale_date::date) < CURRENT_DATE - INTERVAL '90 days'
+            ) t
         )
         SELECT
             COUNT(DISTINCT p.customer_id) AS total_customers,
@@ -614,7 +838,7 @@ def get_customers(
             MAX(c.churned_count) AS churned_customers,
             ROUND(AVG(p.total_spend), 0) AS avg_customer_spend,
             ROUND(AVG(p.order_count), 2) AS avg_orders_per_customer,
-            ROUND(MAX(c.churned_count) * 100.0 / NULLIF(COUNT(DISTINCT p.customer_id), 0), 2) AS churn_rate
+            ROUND(MAX(c.churned_count) * 100.0 / NULLIF(MAX(c.eligible_base), 0), 2) AS churn_rate
         FROM period_customers p
         LEFT JOIN all_time a ON p.customer_id = a.customer_id
         CROSS JOIN churned c
@@ -623,15 +847,17 @@ def get_customers(
 
 @app.get("/api/top-customers")
 def get_top_customers(
+    request:   Request,
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
     limit:     int = Query(default=20),
+    reveal:    bool = Query(default=False),
 ):
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')")
-    return run_query("""
+    rows = run_query("""
         SELECT
             ROW_NUMBER() OVER (ORDER BY SUM(s.total_sales_kes::numeric) DESC) AS rank,
             s.customer_id,
@@ -650,17 +876,20 @@ def get_top_customers(
         GROUP BY s.customer_id, c.first_name, c.last_name, c.phone, c.email, c.city, c.country
         ORDER BY total_sales DESC
         LIMIT """ + str(limit), date_to=date_to)
+    return mask_pii_rows(rows, request)
 
 @app.get("/api/customer-search")
 def get_customer_search(
+    request:   Request,
     q:         str = Query(default=""),
     date_from: str = Query(default="2020-01-01"),
     date_to:   str = Query(default=str(date.today())),
+    reveal:    bool = Query(default=False),
 ):
     if not q or len(q) < 2:
         return []
     search = q.lower().replace("'", "")
-    return run_query("""
+    rows = run_query("""
         WITH sales AS (
             SELECT s.customer_id,
                 COUNT(DISTINCT s.order_id) AS total_orders,
@@ -688,6 +917,7 @@ def get_customer_search(
         ORDER BY sa.total_sales DESC
         LIMIT 10
     """, date_to=date_to)
+    return mask_pii_rows(rows, request)
 
 @app.get("/api/customer-products")
 def get_customer_products(customer_id: str = Query(default="")):
@@ -787,10 +1017,12 @@ def get_customers_by_location(
 
 @app.get("/api/churned-customers")
 def get_churned_customers(
+    request: Request,
     days:  int = Query(default=90),
     limit: int = Query(default=20),
+    reveal: bool = Query(default=False),
 ):
-    return run_query("""
+    rows = run_query("""
         WITH last_purchase AS (
             SELECT s.customer_id,
                 MAX(s.sale_date::date) AS last_purchase_date,
@@ -814,6 +1046,52 @@ def get_churned_customers(
         WHERE CURRENT_DATE - lp.last_purchase_date > """ + str(days) + """
         ORDER BY lp.lifetime_spend DESC
         LIMIT """ + str(limit))
+    return mask_pii_rows(rows, request)
+
+@app.get("/api/analytics/customer-details")
+def analytics_customer_details(
+    request:     Request,
+    date_from:   str = Query(default="2020-01-01"),
+    date_to:     str = Query(default=str(date.today())),
+    country:     str = Query(default=None),
+    channel:     str = Query(default=None),
+    category:    str = Query(default=None),
+    subcategory: str = Query(default=None),
+    limit:       int = Query(default=2000),
+    reveal:      bool = Query(default=False),
+):
+    # One row per identified customer with name / contact / lifetime stats over
+    # the window. Phone & email are masked unless a valid PII reveal token is
+    # presented. Optional merch category / subcategory narrows to buyers of those
+    # product types (requires joining the product catalogue).
+    types = merch_types_for(category, subcategory)
+    type_join = ""
+    type_filter = ""
+    if types:
+        type_join = "LEFT JOIN all_products_clean p ON s.variant_sku = p.sku"
+        types_sql = "'" + "','".join(t.replace("'", "''") for t in types) + "'"
+        type_filter = "AND p.product_type IN (" + types_sql + ")"
+    where = build_filters(date_from, date_to, country, channel,
+        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL "
+              "AND s.customer_id NOT IN ('None','null','') " + type_filter)
+    rows = run_query("""
+        SELECT s.customer_id,
+            c.first_name, c.last_name, c.email,
+            COALESCE(c.phone,'') AS mobile,
+            c.city, c.country AS customer_country,
+            COUNT(DISTINCT s.order_id) AS total_orders,
+            SUM(s.ordered_item_quantity) AS total_units,
+            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
+            MIN(s.sale_date) AS first_order_date,
+            MAX(s.sale_date) AS last_order_date
+        FROM all_sales s
+        LEFT JOIN all_customers c ON s.customer_id = c.customer_id
+        """ + type_join + """
+        WHERE """ + where + """
+        GROUP BY s.customer_id, c.first_name, c.last_name, c.email, c.phone, c.city, c.country
+        ORDER BY total_sales DESC
+        LIMIT """ + str(limit), date_to=date_to)
+    return mask_pii_rows(rows, request, phone_keys=("mobile",), email_keys=("email",))
 
 @app.get("/api/new-customer-products")
 def get_new_customer_products(
@@ -851,15 +1129,19 @@ def get_sor(
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
 ):
+    # total_sales is NET of returns (gross − returns) per the metrics spec.
+    # Return rows are included so returns_kes is subtracted; units_sold (which
+    # drives sor_percent) stays sale+order only.
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.style_name IS NOT NULL")
+        extra="s.sale_kind IN ('sale','order','return') AND p.style_name IS NOT NULL")
     return run_query("""
         SELECT p.style_name, p.collection, p.brand, p.product_type,
-            SUM(s.ordered_item_quantity) AS units_sold,
-            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
+                           WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
             COALESCE(MAX(i.current_stock), 0) AS current_stock,
-            ROUND(SUM(s.ordered_item_quantity) * 100.0 /
-                NULLIF(SUM(s.ordered_item_quantity) + COALESCE(MAX(i.current_stock), 0), 0), 1) AS sor_percent
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) * 100.0 /
+                NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) + COALESCE(MAX(i.current_stock), 0), 0), 1) AS sor_percent
         FROM all_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
         LEFT JOIN (
@@ -1159,12 +1441,22 @@ def analytics_total_sales_summary(
 
 @app.get("/api/analytics/active-pos")
 def analytics_active_pos(
-    date_from: str = Query(default=str(date.today().replace(day=1))),
-    date_to:   str = Query(default=str(date.today())),
-    country:   str = Query(default=None),
+    n_days:  int = Query(default=30),
+    country: str = Query(default=None),
 ):
+    # Active POS detection (business rule 6.4): a physical store that (1) is not an
+    # excluded location, (2) whose channel name does NOT contain "online" or
+    # "third-party", and (3) sold >= 1 unit in the last N days (default 30). The
+    # window is rolling-N-days, NOT the global date filter — the FilterBar POS
+    # dropdown should list stores that *currently* trade, regardless of the view.
+    date_from = str(date.today() - timedelta(days=max(1, n_days)))
+    date_to   = str(date.today())
     where = build_filters(date_from, date_to, country,
-        extra="s.sale_kind IN ('sale','order') AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")")
+        extra="s.sale_kind IN ('sale','order') "
+              "AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ") "
+              "AND LOWER(s.pos_location_name) NOT LIKE '%online%' "
+              "AND LOWER(s.pos_location_name) NOT LIKE '%third-party%' "
+              "AND LOWER(s.pos_location_name) NOT LIKE '%third party%'")
     return run_query("""
         SELECT s.pos_location_name AS channel, s.country,
             COUNT(DISTINCT s.order_id) AS orders,
@@ -1173,7 +1465,7 @@ def analytics_active_pos(
         FROM all_sales s
         WHERE """ + where + """
         GROUP BY s.pos_location_name, s.country
-        HAVING SUM(s.total_sales_kes::numeric) > 0
+        HAVING SUM(s.ordered_item_quantity) >= 1
         ORDER BY total_sales DESC
     """, date_to=date_to)
 
@@ -1220,15 +1512,19 @@ def analytics_sor_all_styles(
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
 ):
+    # total_sales is NET of returns (gross − returns) per the metrics spec.
+    # Return rows are included so returns_kes is subtracted; units_sold (which
+    # drives sor_percent) stays sale+order only.
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.style_name IS NOT NULL")
+        extra="s.sale_kind IN ('sale','order','return') AND p.style_name IS NOT NULL")
     return run_query("""
         SELECT p.style_name, p.collection, p.brand, p.product_type,
-            SUM(s.ordered_item_quantity) AS units_sold,
-            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
+                           WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
             COALESCE(MAX(i.current_stock), 0) AS current_stock,
-            ROUND(SUM(s.ordered_item_quantity) * 100.0 /
-                NULLIF(SUM(s.ordered_item_quantity) + COALESCE(MAX(i.current_stock), 0), 0), 1) AS sor_percent
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) * 100.0 /
+                NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) + COALESCE(MAX(i.current_stock), 0), 0), 1) AS sor_percent
         FROM all_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
         LEFT JOIN (
@@ -1378,28 +1674,54 @@ def analytics_new_styles(
         LIMIT """ + str(int(limit)))
 
 @app.get("/api/analytics/aged-stock")
-def analytics_aged_stock(days: int = Query(default=90)):
+def analytics_aged_stock(
+    min_days_since_sale: int = Query(default=60),
+    days:                int = Query(default=None),
+):
+    # Per SKU-store row of store stock that hasn't sold in >= N days at that
+    # store. Shape matches AgedStockReport.jsx. `days` kept as a back-compat alias
+    # for the min-days threshold. Never-sold SKUs surface with the 999 sentinel so
+    # the frontend renders "Never". soh = store on-hand, soh_warehouse = WH on-hand
+    # for the same SKU so the merchandiser sees the full replenishable footprint.
+    n = int(days) if days is not None else int(min_days_since_sale)
     return run_query("""
         WITH last_sale AS (
-            SELECT variant_sku AS sku, MAX(sale_date) AS last_sold
+            SELECT variant_sku AS sku, MAX(sale_date) AS last_sold,
+                SUM(CASE WHEN sale_date::date >= CURRENT_DATE - INTERVAL '180 days'
+                         THEN ordered_item_quantity ELSE 0 END) AS units_180
             FROM all_sales
             WHERE sale_kind IN ('sale','order')
             GROUP BY variant_sku
+        ),
+        wh AS (
+            SELECT sku, SUM(available) AS soh_warehouse
+            FROM all_inventory
+            WHERE pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+            GROUP BY sku
         )
-        SELECT i.sku,
-            MAX(i.style_name) AS style_name,
-            i.location_name, i.country,
-            SUM(i.available) AS available,
-            MAX(ls.last_sold) AS last_sold
+        SELECT i.pos_location_name AS pos_location,
+            i.sku,
+            MAX(i.product_name) AS product_name,
+            MAX(i.size) AS size,
+            MAX(p.barcode) AS barcode,
+            MAX(i.color_print) AS color,
+            COALESCE(MAX(ls.units_180), 0) AS units_sold_180d,
+            SUM(i.available) AS soh,
+            COALESCE(MAX(wh.soh_warehouse), 0) AS soh_warehouse,
+            CASE WHEN MAX(ls.last_sold) IS NULL THEN 999
+                 ELSE (CURRENT_DATE - MAX(ls.last_sold)::date) END AS days_since_last_sale,
+            MAX(ls.last_sold) AS last_sale_date
         FROM all_inventory i
         LEFT JOIN last_sale ls ON i.sku = ls.sku
+        LEFT JOIN wh ON i.sku = wh.sku
+        LEFT JOIN all_products_clean p ON i.sku = p.sku
         WHERE i.available > 0
         AND i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
         AND (ls.last_sold IS NULL
-             OR ls.last_sold::date < CURRENT_DATE - (""" + str(int(days)) + """ || ' days')::interval)
-        GROUP BY i.sku, i.location_name, i.country
-        ORDER BY available DESC
-        LIMIT 200
+             OR ls.last_sold::date < CURRENT_DATE - (""" + str(n) + """ || ' days')::interval)
+        GROUP BY i.pos_location_name, i.sku
+        ORDER BY days_since_last_sale DESC, soh DESC
+        LIMIT 1000
     """)
 
 @app.get("/api/analytics/weeks-of-cover")
@@ -1412,11 +1734,11 @@ def analytics_weeks_of_cover(
     return run_query("""
         WITH sales AS (
             SELECT p.product_type AS subcategory, p.style_name,
-                SUM(s.ordered_item_quantity) AS units_90
+                SUM(s.ordered_item_quantity) AS units_28
             FROM all_sales s
             LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
             WHERE s.sale_kind IN ('sale','order')
-            AND s.sale_date::date >= CURRENT_DATE - INTERVAL '90 days'
+            AND s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days'
             AND """ + BASE_FILTERS + """
             AND p.product_type IN (""" + subcat_list + """)
             GROUP BY p.product_type, p.style_name
@@ -1434,9 +1756,9 @@ def analytics_weeks_of_cover(
             COALESCE(st.style_name, sa.style_name) AS style_name,
             COALESCE(st.available, 0) AS available,
             COALESCE(st.available, 0) AS current_stock,
-            ROUND(COALESCE(sa.units_90, 0) / 13.0, 2) AS weekly_units,
-            COALESCE(sa.units_90, 0) AS units_sold_3m,
-            ROUND(COALESCE(st.available, 0) / NULLIF(COALESCE(sa.units_90, 0) / 13.0, 0), 1) AS weeks_of_cover
+            ROUND(COALESCE(sa.units_28, 0) / 4.0, 2) AS weekly_units,
+            COALESCE(sa.units_28, 0) AS units_sold_28d,
+            ROUND(COALESCE(st.available, 0) / NULLIF(COALESCE(sa.units_28, 0) / 4.0, 0), 1) AS weeks_of_cover
         FROM stock st
         FULL OUTER JOIN sales sa
             ON st.subcategory = sa.subcategory AND st.style_name = sa.style_name
@@ -1548,28 +1870,28 @@ def analytics_customer_crosswalk(
 @app.get("/api/customers/churn-rate")
 def customers_churn_rate():
     rows = run_query("""
-        WITH churned AS (
-            SELECT COUNT(DISTINCT s1.customer_id) AS churned_count
-            FROM (
-                SELECT DISTINCT customer_id FROM all_sales
-                WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
-                AND customer_id NOT IN ('None','null','')
-                AND sale_date::date < CURRENT_DATE - INTERVAL '3 months'
-            ) s1
-            WHERE s1.customer_id NOT IN (
-                SELECT DISTINCT customer_id FROM all_sales
-                WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
-                AND sale_date::date >= CURRENT_DATE - INTERVAL '3 months'
-            )
-        ),
-        base AS (
-            SELECT COUNT(DISTINCT customer_id) AS n FROM all_sales
+        -- Churn (doc 03.6.2): churned = no transaction in the last 90 days.
+        -- Rate = churned / eligible base (customers whose first purchase was
+        -- before the 90-day cutoff, i.e. old enough to be assessed).
+        WITH per_customer AS (
+            SELECT customer_id,
+                MAX(sale_date::date) AS last_sale,
+                MIN(sale_date::date) AS first_sale
+            FROM all_sales
             WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
-            AND customer_id NOT IN ('None','null','')
+              AND customer_id NOT IN ('None','null','')
+            GROUP BY customer_id
+        ),
+        agg AS (
+            SELECT
+                COUNT(*) FILTER (WHERE last_sale < CURRENT_DATE - INTERVAL '90 days') AS churned_count,
+                COUNT(*) AS eligible_base
+            FROM per_customer
+            WHERE first_sale < CURRENT_DATE - INTERVAL '90 days'
         )
-        SELECT c.churned_count, b.n AS base,
-            ROUND(c.churned_count * 100.0 / NULLIF(b.n, 0), 2) AS churn_rate
-        FROM churned c CROSS JOIN base b
+        SELECT churned_count, eligible_base AS base,
+            ROUND(churned_count * 100.0 / NULLIF(eligible_base, 0), 2) AS churn_rate
+        FROM agg
     """)
     if not rows:
         return {"churn_rate": 0, "churned_count": 0, "churned_customers": 0, "base": 0}
@@ -2512,12 +2834,16 @@ def stub_notifications(): return []
 def stub_recommendations(): return []
 @app.get("/api/recommendations/wins")
 def stub_recommendations_wins(): return []
+# RAG target bands for the Range tier counts. Calibrated to the cumulative
+# sales-share Pareto distribution (doc 6.5): the active range is a steep long tail
+# (T1 tiny, T4 large), so these bracket the observed active-style counts. RAG is an
+# app-only health indicator — the docs specify the tier rule, not these target bands.
 _RANGE_TARGETS = {
-    "total": [500, 700],
-    "Tier 1": [80, 150],
-    "Tier 2": [150, 250],
-    "Tier 3": [120, 200],
-    "Tier 4": [80, 150],
+    "total": [1500, 2800],
+    "Tier 1": [15, 60],
+    "Tier 2": [120, 320],
+    "Tier 3": [400, 800],
+    "Tier 4": [900, 1800],
 }
 
 def _parse_iso_date(s):
@@ -2575,6 +2901,10 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                 SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days') AS units_6m,
                 ROUND(SUM(s.net_sales_kes::numeric) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days')) AS sales_6m,
                 SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '30 days') AS units_30d,
+                SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '14 days') AS units_14d,
+                SUM(s.net_quantity) FILTER (
+                    WHERE s.sale_date::date <  CURRENT_DATE - INTERVAL '14 days'
+                      AND s.sale_date::date >= CURRENT_DATE - INTERVAL '44 days') AS units_prior_30d,
                 SUM(s.net_quantity) FILTER (WHERE s.pos_location_name ILIKE '%online%') AS units_online,
                 SUM(s.net_quantity) FILTER (WHERE s.pos_location_name NOT ILIKE '%online%') AS units_stores,
                 MAX(s.sale_date::date) AS last_sale,
@@ -2597,6 +2927,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             COALESCE(sa.units_life, 0) AS units_life, COALESCE(sa.sales_life, 0) AS sales_life,
             COALESCE(sa.units_6m, 0) AS units_6m, COALESCE(sa.sales_6m, 0) AS sales_6m,
             COALESCE(sa.units_30d, 0) AS units_30d,
+            COALESCE(sa.units_14d, 0) AS units_14d, COALESCE(sa.units_prior_30d, 0) AS units_prior_30d,
             COALESCE(sa.units_online, 0) AS units_online, COALESCE(sa.units_stores, 0) AS units_stores,
             sa.last_sale, sa.first_sale,
             COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse
@@ -2607,17 +2938,21 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
     """)
     today = date.today()
     active, retired, pipeline, candidates = [], [], [], []
+    meta = []  # parallel to `active`: (row, age_tier, first_sale, sales_life, flagged)
     for r in raw:
         units_life = int(r["units_life"] or 0)
         sales_life = float(r["sales_life"] or 0)
         units_6m = int(r["units_6m"] or 0)
         sales_6m = float(r["sales_6m"] or 0)
         units_30d = int(r["units_30d"] or 0)
+        units_14d = int(r["units_14d"] or 0)
+        units_prior_30d = int(r["units_prior_30d"] or 0)
         soh_stores = int(r["soh_stores"] or 0)
         soh_warehouse = int(r["soh_warehouse"] or 0)
         current_stock = soh_stores + soh_warehouse
         last_sale = r["last_sale"]
-        launch = _parse_iso_date(r["launch_date"]) or r["first_sale"]
+        first_sale = r["first_sale"]
+        launch = _parse_iso_date(r["launch_date"]) or first_sale
         age_weeks = round((today - launch).days / 7.0) if launch else None
         last_sale_days = (today - last_sale).days if last_sale else None
         weekly_avg = round(units_30d / (30.0 / 7.0), 1)
@@ -2634,6 +2969,9 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         full_price_pct = round(min(100.0, avg_price * 100.0 / original_price), 1) \
             if (avg_price and original_price) else None
 
+        # Age-based lifecycle stage. NOTE: this is NOT the Range tier — doc 6.5 defines
+        # tiers by cumulative sales share (assigned in the Pareto pass below). age_tier
+        # only drives the age-gated lifecycle: status, graduation gates, action copy.
         if age_weeks is None:
             age_tier = "Tier 4"
         elif age_weeks >= 104:
@@ -2649,16 +2987,6 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                       and (last_sale_days is None or last_sale_days > 270))
         flagged = (not is_retired and age_weeks is not None and age_weeks >= 39
                    and sor_life is not None and sor_life < 40 and current_stock > 0)
-
-        ov = _RANGE_OVERRIDES.get(r["style_name"])
-        if ov:
-            tier, auto_tier, override_reason = ov["tier"], age_tier, ov.get("reason")
-        elif is_retired:
-            tier, auto_tier, override_reason = "Retire", "Retire", None
-        elif flagged:
-            tier, auto_tier, override_reason = "Retire", "Retire", None
-        else:
-            tier, auto_tier, override_reason = age_tier, age_tier, None
 
         if flagged or is_retired:
             status = "Retire"
@@ -2676,7 +3004,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             action = "Overdue Week-8 read — review sell-through now and decide reorder or exit."
         elif status == "At Risk":
             action = "Monitor weekly; consider a marketing push or price review to lift sell-through."
-        elif tier == "Tier 3":
+        elif age_tier == "Tier 3":
             action = "On review — track toward the 9-month gate for graduation to Tier 2."
         else:
             action = "Healthy — maintain replenishment to keep the core line in stock."
@@ -2686,12 +3014,13 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             "style_number": r["style_number"],
             "brand": r["brand"],
             "subcategory": r["subcategory"],
-            "tier": tier,
-            "auto_tier": auto_tier,
-            "override_reason": override_reason,
+            "tier": None,
+            "auto_tier": None,
+            "override_reason": None,
             "status": status,
             "recommended_action": action,
             "style_age_weeks": age_weeks,
+            "age_tier": age_tier,
             "launch_date": str(launch) if launch else None,
             "reorder_count": reorder_count,
             "current_stock": current_stock,
@@ -2701,6 +3030,8 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             "units_stores": int(r["units_stores"] or 0),
             "units_since_launch": units_life,
             "units_6m": units_6m,
+            "units_14d": units_14d,
+            "units_prior_30d": units_prior_30d,
             "sales_since_launch": sales_life,
             "sales_6m": sales_6m,
             "sor_since_launch": sor_life,
@@ -2715,18 +3046,11 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         }
 
         if is_retired:
+            row["tier"] = row["auto_tier"] = "Retire"
             retired.append(row)
             continue
         active.append(row)
-
-        if flagged:
-            rec = today + timedelta(days=14)
-            pipeline.append({**row,
-                "recommended_retirement_date": str(rec),
-                "outlet_discount_date": str(rec + timedelta(days=28)),
-                "reason": "Aged %sw at %s%% lifetime SOR with %s units remaining — below Tier-1 threshold." % (
-                    age_weeks, sor_life, current_stock),
-            })
+        meta.append((row, age_tier, first_sale, sales_life, flagged))
 
         if (age_tier == "Tier 3" and age_weeks is not None and 0 <= (39 - age_weeks) <= 6
                 and reorder_count >= 3 and sor_life is not None and sor_life > 60
@@ -2736,6 +3060,45 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                 "weeks_to_gate": 39 - age_weeks, "lifetime_sor_pct": sor_life,
                 "full_price_pct": full_price_pct, "reorder_count": reorder_count,
                 "current_stock": current_stock, "last_sale_days": last_sale_days,
+            })
+
+    # --- Range tier classification (doc 6.5): cumulative sales-share Pareto over the
+    # ACTIVE range. T1 <= 20% cum share, T2 <= 60%, T3 <= 90%, T4 the long tail.
+    # Styles never sold (no first_sale) or with zero lifetime sales fall to Tier 4.
+    ranked = sorted([m for m in meta if m[2] is not None and m[3] > 0],
+                    key=lambda m: m[3], reverse=True)
+    total_sales = sum(m[3] for m in ranked)
+    cum = 0.0
+    pareto = {}
+    for row, _at, _fs, sl, _fl in ranked:
+        cum += sl
+        share = cum / total_sales if total_sales > 0 else 1.0
+        if share <= 0.20:
+            pareto[id(row)] = "Tier 1"
+        elif share <= 0.60:
+            pareto[id(row)] = "Tier 2"
+        elif share <= 0.90:
+            pareto[id(row)] = "Tier 3"
+        else:
+            pareto[id(row)] = "Tier 4"
+
+    for row, _at, _fs, _sl, flagged in meta:
+        auto_tier = pareto.get(id(row), "Tier 4")
+        ov = _RANGE_OVERRIDES.get(row["style_name"])
+        if ov:
+            row["tier"], row["auto_tier"], row["override_reason"] = ov["tier"], auto_tier, ov.get("reason")
+        elif flagged:
+            row["tier"], row["auto_tier"], row["override_reason"] = "Retire", "Retire", None
+        else:
+            row["tier"], row["auto_tier"], row["override_reason"] = auto_tier, auto_tier, None
+
+        if flagged:
+            rec = today + timedelta(days=14)
+            pipeline.append({**row,
+                "recommended_retirement_date": str(rec),
+                "outlet_discount_date": str(rec + timedelta(days=28)),
+                "reason": "Aged %sw at %s%% lifetime SOR with %s units remaining — below retirement threshold." % (
+                    row["style_age_weeks"], row["sor_since_launch"], row["current_stock"]),
             })
 
     tier_counts = {t: 0 for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4", "Retire")}
@@ -2752,10 +3115,11 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         tier_summary[t] = _tier_summary_block(
             [row for row in active if row["tier"] == t], total_count)
 
+    # Approaching age-gates is an age-lifecycle metric, so it keys off age_tier.
     approaching = sum(1 for row in active
         if row["style_age_weeks"] is not None and (
-            (row["tier"] == "Tier 3" and 0 <= (39 - row["style_age_weeks"]) <= 6) or
-            (row["tier"] == "Tier 4" and 0 <= (13 - row["style_age_weeks"]) <= 6)))
+            (row["age_tier"] == "Tier 3" and 0 <= (39 - row["style_age_weeks"]) <= 6) or
+            (row["age_tier"] == "Tier 4" and 0 <= (13 - row["style_age_weeks"]) <= 6)))
 
     rag = {"total": _rag(len(active), *_RANGE_TARGETS["total"])}
     for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"):
@@ -2876,7 +3240,46 @@ def range_mgmt_weekly_sor(country: str = Query(default=None), channel: str = Que
     return {"weeks": list(range(1, 15)), "rows": rows, "min_combined": min_combined}
 
 @app.get("/api/range-mgmt/marketing-candidates")
-def stub_range_mgmt_marketing_candidates(): return []
+def range_mgmt_marketing_candidates(country: str = Query(default=None), channel: str = Query(default=None)):
+    # Doc 03.8.1: a style is a marketing-push candidate if it is Tier 3/4 in the
+    # current Range Mgmt classification AND it re-activated recently — sold >= 1 unit
+    # in the last 14 days but was dormant for the 30 days before that. Reuses the
+    # classify pass (which carries units_14d / units_prior_30d per style).
+    # NOTE: action persistence was Mongo-backed (infrastructure not replicated), so
+    # in_flight stays empty until an action store exists.
+    cls = range_mgmt_classify(country, channel)
+    cands = []
+    for row in cls["rows"]:
+        if row["tier"] in ("Tier 3", "Tier 4") \
+                and (row.get("units_14d") or 0) >= 1 \
+                and (row.get("units_prior_30d") or 0) == 0:
+            cands.append({
+                "style_name": row["style_name"],
+                "style_number": row["style_number"],
+                "brand": row["brand"],
+                "subcategory": row["subcategory"],
+                "tier": row["tier"],
+                "launch_date": row["launch_date"],
+                "age_weeks": row["style_age_weeks"],
+                "sor_lifetime": row["sor_since_launch"],
+                "units_online": row["units_online"],
+                "units_stores": row["units_stores"],
+                "soh_warehouse": row["soh_warehouse"],
+                "soh_stores": row["soh_stores"],
+                "current_stock": row["current_stock"],
+                "days_since_last_sale": row["last_sale_days"],
+                "units_14d": row.get("units_14d"),
+            })
+    # Sorted lowest lifetime SOR first (nulls last).
+    cands.sort(key=lambda c: (c["sor_lifetime"] is None, c["sor_lifetime"] or 0))
+    return {
+        "candidates": cands,
+        "in_flight": [],
+        "action_types": ["Discount", "Email Campaign", "Social Push",
+                         "Window Display", "Bundle", "Influencer", "Other"],
+        "threshold_pct": 90,
+        "age_min_weeks": 13,
+    }
 @app.get("/api/feedback")
 def stub_feedback_get(): return []
 @app.get("/api/feedback/mine")
@@ -2962,7 +3365,24 @@ def stub_range_mgmt_marketing_actions_get(): return []
 
 # --- POST stubs ---
 @app.post("/api/auth/verify-password")
-async def stub_auth_verify_password(request: Request): return {"ok": True, "valid": True}
+async def auth_verify_password(request: Request):
+    # Step-up: verify the shared ops password and issue a short-lived, user-bound
+    # reveal token that unmasks customer PII for ~10 minutes.
+    configured = os.environ.get("PII_REVEAL_PASSWORD")
+    if not configured:
+        return JSONResponse(
+            {"detail": "PII reveal is not configured. Set the PII_REVEAL_PASSWORD secret to enable it."},
+            status_code=503,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    supplied = (body or {}).get("password") or ""
+    if not hmac.compare_digest(str(supplied), str(configured)):
+        return JSONResponse({"detail": "Incorrect password"}, status_code=403)
+    user = getattr(request.state, "user", None) or {}
+    return {"ok": True, "valid": True, "reveal_token": make_reveal_token(str(user.get("id") or ""))}
 @app.post("/api/allocations/calculate")
 async def allocations_calculate(request: Request):
     body = await request.json()

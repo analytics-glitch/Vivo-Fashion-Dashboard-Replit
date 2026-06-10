@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useAuth } from "@/lib/auth";
-import { api, fmtNum, fmtKES, fmtDate, COUNTRY_FLAGS } from "@/lib/api";
+import { api, fmtNum, fmtKES, fmtDate } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
 import SortableTable from "@/components/SortableTable";
@@ -275,7 +275,7 @@ const InventoryExport = () => {
                 <div className="eyebrow mb-1">Country</div>
                 <MultiSelect
                   testId="exports-filter-country"
-                  options={countryList.map((c) => ({ value: c, label: `${COUNTRY_FLAGS[c.charAt(0).toUpperCase() + c.slice(1)] || "🌍"} ${c}` }))}
+                  options={countryList.map((c) => ({ value: c, label: c }))}
                   value={countrySel}
                   onChange={(v) => { setCountrySel(v); setPage(0); }}
                   placeholder="All countries"

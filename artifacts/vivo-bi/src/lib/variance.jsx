@@ -5,19 +5,20 @@ import React from "react";
  * comparisons. Invoked by Inventory, Products, Re-Order, IBT, CEO Report —
  * anywhere "sales share vs stock share" is shown.
  *
- * Mapping (inverted from raw math to call-to-action):
- *   |v| ≤ 2 pp                         → GREEN  (healthy balance)
- *   2 < |v| ≤ 5, v > 0                 → AMBER  (watch — stockout watch)
- *   2 < |v| ≤ 5, v < 0                 → AMBER  (watch — overstock watch)
- *   |v| > 5,     v > 0                 → RED    (stockout risk — re-order)
- *   |v| > 5,     v < 0                 → RED    (overstock risk — markdown / IBT)
+ * Mapping (inverted from raw math to call-to-action). Bands match the
+ * Stock-to-Sales variance spec in the BI docs (06/03):
+ *   |v| ≤ 1 pp                         → GREEN  (healthy balance)
+ *   1 < |v| ≤ 3, v > 0                 → AMBER  (watch — stockout watch)
+ *   1 < |v| ≤ 3, v < 0                 → AMBER  (watch — overstock watch)
+ *   |v| > 3,     v > 0                 → RED    (stockout risk — re-order)
+ *   |v| > 3,     v < 0                 → RED    (overstock risk — markdown / IBT)
  *
- * Thresholds are intentionally simple (pp, symmetric); tune VAR_GREEN /
- * VAR_AMBER if the merchandising team re-calibrates. Icons are rendered
- * alongside color so colorblind readers get the same signal.
+ * Thresholds are symmetric (pp); tune VAR_GREEN / VAR_AMBER if the
+ * merchandising team re-calibrates. Icons are rendered alongside color so
+ * colorblind readers get the same signal.
  */
-export const VAR_GREEN = 2;
-export const VAR_AMBER = 5;
+export const VAR_GREEN = 1;
+export const VAR_AMBER = 3;
 
 export const varianceStyle = (v) => {
   if (v == null || isNaN(v))

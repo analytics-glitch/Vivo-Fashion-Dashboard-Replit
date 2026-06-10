@@ -26,7 +26,7 @@ import {
 const sorPillClass = (p) => {
   if (p == null) return "pill-neutral";
   if (p < 30) return "pill-red";
-  if (p < 60) return "pill-amber";
+  if (p <= 60) return "pill-amber";
   return "pill-green";
 };
 

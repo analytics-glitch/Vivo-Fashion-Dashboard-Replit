@@ -1,6 +1,6 @@
 import React, { useRef, useState } from "react";
 import html2canvas from "html2canvas";
-import { fmtKESMobile, COUNTRY_FLAGS } from "@/lib/api";
+import { fmtKESMobile, countryColor } from "@/lib/api";
 import { X, DownloadSimple, CircleNotch, Clock } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -26,7 +26,7 @@ import { toast } from "sonner";
 
 // Tile colours per CEO mock: orange accent border for the top performer,
 // neutral border for the rest. Keep the green hero accent fixed.
-const Tile = ({ label, flag, pct, achieved, target, projected, isTop }) => (
+const Tile = ({ label, pct, achieved, target, projected, isTop }) => (
   <div
     className={`rounded-2xl p-3 border-2 ${
       isTop ? "border-brand bg-brand/5" : "border-border bg-white"
@@ -34,7 +34,7 @@ const Tile = ({ label, flag, pct, achieved, target, projected, isTop }) => (
     data-testid={`tgt-snap-tile-${label.toLowerCase()}`}
   >
     <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand-deep">
-      <span>{flag}</span>
+      <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: countryColor(label) }} aria-hidden />
       <span>{label}</span>
     </div>
     <div className="font-extrabold text-[28px] leading-tight mt-0.5 text-foreground tabular-nums">
@@ -223,7 +223,6 @@ const TargetsSnapshot = ({ quarterLabel, daysLeft, rows, overall, onClose }) => 
               <Tile
                 key={r.label}
                 label={r.label}
-                flag={COUNTRY_FLAGS?.[r.label] || (r.label === "Online" ? "🌐" : "")}
                 pct={r.target > 0 ? (r.projected / r.target) * 100 : 0}
                 achieved={r.achieved}
                 target={r.target}
