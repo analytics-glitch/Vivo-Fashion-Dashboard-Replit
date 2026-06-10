@@ -1,4 +1,3 @@
-cat > /home/runner/workspace/extract_shopzetu_shopifyql.py << 'ENDOFFILE'
 """
 extract_shopzetu_shopifyql.py
 ─────────────────────────────
@@ -328,4 +327,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-ENDOFFILE
