@@ -1,0 +1,179 @@
+Here's the Phase 3 prompt for the Replit agent:
+
+IMPLEMENT PHASE 3 — New features (based on /home/runner/workspace/replenishment_ibt_audit.md)
+Phases 1 and 2 are complete and merged. Now implement Phase 3. Read the audit document first, then implement each item in order.
+Step 1: IBT outcome tracking + ROI card (B2)
+Create the outcome tracking system:
+
+The ibt_completions table already exists from Phase 1. Add a new endpoint GET /api/ibt/outcomes:
+
+sqlSELECT c.style_name, c.brand, c.subcategory, c.to_store, c.from_store, c.flow,
+  c.actual_units_moved, c.transfer_date, c.completed_at,
+  COALESCE(SUM(s.net_quantity) FILTER (
+    WHERE s.sale_date::date BETWEEN c.transfer_date AND c.transfer_date + 30
+    AND s.pos_location_name = c.to_store
+  ), 0) AS sold_30d,
+  COALESCE(SUM(s.net_quantity) FILTER (
+    WHERE s.sale_date::date BETWEEN c.transfer_date AND c.transfer_date + 60
+    AND s.pos_location_name = c.to_store
+  ), 0) AS sold_60d,
+  ROUND(100.0 * COALESCE(SUM(s.net_quantity) FILTER (
+    WHERE s.sale_date::date BETWEEN c.transfer_date AND c.transfer_date + 30
+    AND s.pos_location_name = c.to_store
+  ), 0) / NULLIF(c.actual_units_moved, 0), 1) AS sell_through_30d,
+  ROUND(100.0 * COALESCE(SUM(s.net_quantity) FILTER (
+    WHERE s.sale_date::date BETWEEN c.transfer_date AND c.transfer_date + 60
+    AND s.pos_location_name = c.to_store
+  ), 0) / NULLIF(c.actual_units_moved, 0), 1) AS sell_through_60d
+FROM ibt_completions c
+LEFT JOIN all_products_clean p ON p.style_name = c.style_name
+LEFT JOIN all_sales s ON s.variant_sku = p.sku
+  AND s.sale_kind IN ('sale', 'order')
+WHERE c.transfer_date IS NOT NULL
+GROUP BY c.id, c.style_name, c.brand, c.subcategory, c.to_store, c.from_store,
+  c.flow, c.actual_units_moved, c.transfer_date, c.completed_at
+ORDER BY c.completed_at DESC
+
+Add a summary endpoint GET /api/ibt/outcomes/summary:
+
+json{
+  "total_transfers": 0,
+  "total_units_moved": 0,
+  "avg_sell_through_30d": 0,
+  "avg_sell_through_60d": 0,
+  "transfers_above_50pct_30d": 0,
+  "transfers_above_50pct_60d": 0,
+  "best_performing_store": null,
+  "worst_performing_store": null
+}
+
+Answers business questions Q4 (stores receiving IBTs but not selling) and Q5 (avg time from recommendation to completion)
+
+Step 2: Replenishment by size curve — frontend integration (A3 extension)
+The backend already has GET /api/replenishment/size-breakdown. Now add it to the replenishment report response:
+
+In analytics_replenishment_report, for each (store, style) row in the output, attach a size_breakdown array showing recommended qty per size
+Use the same size mix logic from _size_mix_rows already implemented in Phase 2
+Add a size_breakdown_available boolean field — true if size mix data exists, false if not enough sales history
+
+Step 3: Replenishment accuracy tracking
+Add a new endpoint GET /api/replenishment/accuracy:
+
+Compare replenishment recommendations against actual sales in the following period
+Logic: for each recommendation in recommendation_actions where rec_type='replenish' and status='done', check what actually sold at that store in the 28 days after the action
+Output:
+
+json{
+  "accuracy_score": 85.2,
+  "over_replenished": [...styles where recommended > sold by >20%],
+  "under_replenished": [...styles where recommended < sold by >20%],
+  "well_calibrated": [...styles within 20% accuracy],
+  "avg_days_to_stockout_after_replenish": 14.2
+}
+Step 4: Bulk approve/reject actions (D3)
+Add endpoints for bulk operations:
+
+POST /api/recommendations/bulk — accepts array of actions:
+
+json{
+  "actions": [
+    {"rec_type": "replenish", "rec_key": "store|sku", "status": "done", "acted_by": "William"},
+    {"rec_type": "ibt", "rec_key": "style|from|to", "status": "dismissed", "acted_by": "William"}
+  ]
+}
+Use a single transaction — all succeed or all fail. Return count of updated rows.
+
+DELETE /api/recommendations/bulk — accepts rec_type and optional status filter, deletes matching rows (for clearing resolved items)
+GET /api/recommendations/summary — returns count by rec_type and status:
+
+json{
+  "replenish": {"pending": 45, "done": 12, "dismissed": 3},
+  "reorder": {"pending": 23, "po_raised": 8, "done": 15},
+  "ibt": {"pending": 67, "done": 34}
+}
+Step 5: Export to operations — Excel grouped by source store (D4)
+Add endpoint GET /api/ibt/export/operations:
+
+Returns an Excel file (.xlsx) grouped by from_store (source store)
+Each sheet = one source store
+Columns per row: Style Name, Brand, Subcategory, From Store, To Store, SKUs, Sizes, Units to Move, Score, Estimated Uplift (KES), Suggested Date
+Header row with Vivo branding (orange #E85B1B)
+Parameters: date_from, date_to, country, use_clustering (passed through to ibt-suggestions)
+File download with Content-Disposition: attachment; filename="IBT_Operations_{date}.xlsx"
+
+Similarly add GET /api/replenishment/export/operations:
+
+Excel file grouped by store
+Columns: Store, Style, Brand, SKU, Current Stock, Units Sold (30d), Recommended Qty, Size Breakdown, Priority, Trigger Reason
+Parameters: country, channel
+
+Step 6: Chronic stockout detection (A8)
+Add a weekly snapshot mechanism and chronic stockout detection:
+
+Create a stockout_snapshots table:
+
+sqlCREATE TABLE IF NOT EXISTS stockout_snapshots (
+  id BIGSERIAL PRIMARY KEY,
+  snapshot_date DATE NOT NULL,
+  style_name TEXT NOT NULL,
+  brand TEXT,
+  subcategory TEXT,
+  country TEXT,
+  weeks_of_cover NUMERIC,
+  at_risk BOOLEAN,
+  weekly_units NUMERIC,
+  soh_total NUMERIC,
+  snapshot_taken_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(snapshot_date, style_name, country)
+);
+
+Add endpoint POST /api/replenishment/snapshot — takes a snapshot of current WoC for all styles (called weekly by the sync script)
+Add endpoint GET /api/replenishment/chronic-stockouts:
+
+
+Finds styles that have been at_risk=true for 3+ consecutive weekly snapshots
+Output: {style_name, brand, subcategory, country, consecutive_at_risk_weeks, avg_weekly_units, avg_woc, first_flagged_date}
+Answers business question Q6
+
+
+Update sync_incremental.py to call POST /api/replenishment/snapshot once per day (at midnight EAT, 21:00 UTC)
+
+Step 7: 7-day forward predictive stockout alerts (Phase 4 pulled forward)
+Add endpoint GET /api/replenishment/stockout-alerts:
+
+Find all styles where weeks_of_cover < 2 (will stock out within 2 weeks)
+Group by urgency: CRITICAL (<1 week), WARNING (1-2 weeks)
+For each alert include: style_name, brand, subcategory, affected_stores (comma-separated), total_soh, weekly_units, days_until_stockout, warehouse_stock_available (can WH cover it?), recommended_action ("IBT from warehouse" / "Replenish from production" / "No stock available")
+Parameters: country, channel
+This directly answers business question Q1
+
+Step 8: Store understocking analysis (Q9)
+Add endpoint GET /api/analytics/store-potential:
+
+Compare each store's actual sales vs its "potential" based on its cluster peers
+Logic: within each cluster, compute median revenue per store; flag stores selling <70% of cluster median as understocked
+Output per store: {store, cluster, actual_revenue_90d, cluster_median_revenue, pct_of_potential, gap_kes, likely_cause} where likely_cause is one of "low_stock", "low_footfall", "low_conversion", "new_store"
+Cross-reference with inventory (low stock → likely cause is low_stock) and footfall data
+
+After implementing all steps:
+
+Restart api_pg.py
+Validate each endpoint against live data:
+
+GET /api/ibt/outcomes → returns array (may be empty if no completions yet, but must not error)
+GET /api/ibt/outcomes/summary → returns summary object
+GET /api/replenishment/stockout-alerts → returns styles with weeks_of_cover < 2
+GET /api/replenishment/chronic-stockouts → returns array (may be empty initially)
+GET /api/recommendations/summary → returns counts by type and status
+POST /api/recommendations/bulk with test payload → returns updated count
+GET /api/replenishment/calendar → already working from Phase 2
+GET /api/ibt/export/operations → downloads an Excel file
+GET /api/analytics/store-potential → returns store vs cluster comparison
+
+
+For stockout alerts, show the top 10 most urgent styles and confirm they have weeks_of_cover < 2
+For store potential, show which stores are flagged as understocked and what the likely cause is
+Update sync_incremental.py to call the daily snapshot endpoint
+Run the architect review subagent on all changes
+Do not mark complete until all endpoints are validated against live data and the architect review passes
+

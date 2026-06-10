@@ -496,6 +496,20 @@ async def clerk_auth_gate(request: Request, call_next):
         return await call_next(request)
     if path in _AUTH_PUBLIC_EXACT or path.startswith("/api/__clerk"):
         return await call_next(request)
+    # Internal service call: the unauthenticated sync job (sync_incremental.py)
+    # POSTs the daily stockout snapshot. It proves itself with a constant-time
+    # match against SESSION_SECRET (shared env, never sent to browsers) instead
+    # of a Clerk session. Any other path/method falls through to the normal gate.
+    if path == "/api/replenishment/snapshot" and request.method == "POST":
+        _sek = os.environ.get("SESSION_SECRET") or ""
+        _tok = request.headers.get("X-Internal-Token") or ""
+        if _sek and hmac.compare_digest(_tok, _sek):
+            request.state.user = {
+                "id": "internal:sync", "user_id": "internal:sync",
+                "email": "sync@internal", "name": "Sync Job",
+                "role": "admin", "status": "active", "active": True,
+            }
+            return await call_next(request)
     user, status, detail = clerk_auth.authenticate(request)
     if user is None:
         return JSONResponse({"detail": detail}, status_code=status)
@@ -4701,6 +4715,39 @@ def analytics_replenishment_report(
     by_owner_list = sorted(
         [{"owner": o["owner"], "lines": o["lines"], "units": o["units"], "stores": len(o["stores"])} for o in by_owner.values()],
         key=lambda x: x["units"], reverse=True)
+    # Phase 3 A3-ext — attach a recommended-qty size curve per (store, style).
+    # Two batch queries total: sku->style map, then one size-mix pull for every
+    # style on the page (chain-wide curve), split per (store, style) group total.
+    _skus = sorted({r["sku"] for r in out_rows if r.get("sku")})
+    _sku_style = {}
+    if _skus:
+        _sku_in = ",".join("'" + _sql_str(x) + "'" for x in _skus)
+        for m in (run_query(
+                "SELECT sku, style_name FROM all_products_clean WHERE sku IN ("
+                + _sku_in + ") AND COALESCE(style_name,'') <> ''") or []):
+            _sku_style[m["sku"]] = m["style_name"]
+    _styles = sorted({v for v in _sku_style.values() if v})
+    _style_rows = {}
+    if _styles:
+        _style_in = " AND p.style_name IN (" + ",".join("'" + _sql_str(x) + "'" for x in _styles) + ")"
+        for sr in (_size_mix_rows(_style_in, "", "") or []):
+            _style_rows.setdefault(sr["style"], []).append(sr)
+    _grp_total = {}
+    for r in out_rows:
+        st = _sku_style.get(r.get("sku"))
+        if st:
+            _grp_total[(r["pos_location"], st)] = _grp_total.get((r["pos_location"], st), 0) + r["replenish"]
+    _grp_mix = {}
+    for (loc, st), tot in _grp_total.items():
+        srows = _style_rows.get(st)
+        if srows and tot > 0:
+            _grp_mix[(loc, st)] = _build_size_mix(srows, tot)
+    for r in out_rows:
+        st = _sku_style.get(r.get("sku"))
+        mix = _grp_mix.get((r["pos_location"], st)) if st else None
+        r["style_name"] = st
+        r["size_breakdown"] = mix or []
+        r["size_breakdown_available"] = bool(mix)
     return {
         "rows": out_rows,
         "summary": {
@@ -6440,6 +6487,802 @@ async def clerk_frontend_proxy(clerk_path: str, request: Request):
         status_code=upstream.status_code,
         headers=resp_headers,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 3 — IBT/replenishment outcome tracking, accuracy, bulk ops, Excel ops
+# exports, chronic-stockout snapshots, predictive alerts and store-potential.
+# All read-only BI aggregation against the live Postgres (sale_date is TEXT, so
+# every date function gets an explicit ::date cast). Velocity uses the same
+# recency-weighted 56-day EWMA proxy as the rest of the app: a style's weekly run
+# rate ≈ ((u28*2) + max(u56-u28, 0)) / 12, which double-weights the most recent
+# 28 days over the trailing 56-day window.
+# ══════════════════════════════════════════════════════════════════════════════
+VELOCITY_METHOD = "ewma_56d"
+
+
+def _ewma_weekly(u28, u56):
+    """Recency-weighted weekly run-rate (units/week) from 28d & 56d unit sums."""
+    u28 = float(u28 or 0)
+    u56 = float(u56 or 0)
+    return ((u28 * 2.0) + max(u56 - u28, 0.0)) / 12.0
+
+
+# ── Step 1 — IBT outcome tracking + ROI (audit B2) ────────────────────────────
+_IBT_OUTCOMES_SQL = """
+    SELECT c.style_name, c.brand, c.subcategory, c.to_store, c.from_store, c.flow,
+        c.actual_units_moved, c.transfer_date, c.completed_at,
+        COALESCE(SUM(s.net_quantity) FILTER (
+            WHERE s.sale_date::date BETWEEN c.transfer_date AND c.transfer_date + 30
+              AND s.pos_location_name = c.to_store), 0) AS sold_30d,
+        COALESCE(SUM(s.net_quantity) FILTER (
+            WHERE s.sale_date::date BETWEEN c.transfer_date AND c.transfer_date + 60
+              AND s.pos_location_name = c.to_store), 0) AS sold_60d,
+        ROUND(100.0 * COALESCE(SUM(s.net_quantity) FILTER (
+            WHERE s.sale_date::date BETWEEN c.transfer_date AND c.transfer_date + 30
+              AND s.pos_location_name = c.to_store), 0)
+            / NULLIF(c.actual_units_moved, 0), 1) AS sell_through_30d,
+        ROUND(100.0 * COALESCE(SUM(s.net_quantity) FILTER (
+            WHERE s.sale_date::date BETWEEN c.transfer_date AND c.transfer_date + 60
+              AND s.pos_location_name = c.to_store), 0)
+            / NULLIF(c.actual_units_moved, 0), 1) AS sell_through_60d
+    FROM ibt_completions c
+    LEFT JOIN all_products_clean p ON p.style_name = c.style_name
+    LEFT JOIN all_sales s ON s.variant_sku = p.sku
+        AND s.sale_kind IN ('sale','order')
+    WHERE c.transfer_date IS NOT NULL
+    GROUP BY c.id, c.style_name, c.brand, c.subcategory, c.to_store, c.from_store,
+        c.flow, c.actual_units_moved, c.transfer_date, c.completed_at
+    ORDER BY c.completed_at DESC
+"""
+
+
+def _ibt_outcome_rows():
+    rows = run_query(_IBT_OUTCOMES_SQL) or []
+    out = []
+    for r in rows:
+        out.append({
+            "style_name": r.get("style_name"), "brand": r.get("brand"),
+            "subcategory": r.get("subcategory"), "to_store": r.get("to_store"),
+            "from_store": r.get("from_store"), "flow": r.get("flow"),
+            "actual_units_moved": int(r.get("actual_units_moved") or 0),
+            "transfer_date": r["transfer_date"].isoformat() if r.get("transfer_date") else None,
+            "completed_at": r["completed_at"].isoformat() if r.get("completed_at") else None,
+            "sold_30d": int(r.get("sold_30d") or 0),
+            "sold_60d": int(r.get("sold_60d") or 0),
+            "sell_through_30d": float(r["sell_through_30d"]) if r.get("sell_through_30d") is not None else None,
+            "sell_through_60d": float(r["sell_through_60d"]) if r.get("sell_through_60d") is not None else None,
+        })
+    return out
+
+
+@app.get("/api/ibt/outcomes")
+def ibt_outcomes():
+    return _ibt_outcome_rows()
+
+
+@app.get("/api/ibt/outcomes/summary")
+def ibt_outcomes_summary():
+    rows = _ibt_outcome_rows()
+    total = len(rows)
+    units = sum(r["actual_units_moved"] for r in rows)
+    st30 = [r["sell_through_30d"] for r in rows if r["sell_through_30d"] is not None]
+    st60 = [r["sell_through_60d"] for r in rows if r["sell_through_60d"] is not None]
+    # Per-destination-store performance = avg 30d sell-through across its inbound
+    # transfers (answers Q4: stores that receive IBTs but do not sell them).
+    by_store = {}
+    for r in rows:
+        b = by_store.setdefault(r["to_store"], [])
+        if r["sell_through_30d"] is not None:
+            b.append(r["sell_through_30d"])
+    store_avg = {k: round(sum(v) / len(v), 1) for k, v in by_store.items() if v}
+    best = max(store_avg.items(), key=lambda kv: kv[1]) if store_avg else None
+    worst = min(store_avg.items(), key=lambda kv: kv[1]) if store_avg else None
+    return {
+        "total_transfers": total,
+        "total_units_moved": units,
+        "avg_sell_through_30d": round(sum(st30) / len(st30), 1) if st30 else 0,
+        "avg_sell_through_60d": round(sum(st60) / len(st60), 1) if st60 else 0,
+        "transfers_above_50pct_30d": sum(1 for x in st30 if x >= 50),
+        "transfers_above_50pct_60d": sum(1 for x in st60 if x >= 50),
+        "best_performing_store": ({"store": best[0], "avg_sell_through_30d": best[1]} if best else None),
+        "worst_performing_store": ({"store": worst[0], "avg_sell_through_30d": worst[1]} if worst else None),
+        "velocity_method": VELOCITY_METHOD,
+    }
+
+
+# ── Step 3 — replenishment recommendation accuracy ────────────────────────────
+@app.get("/api/replenishment/accuracy")
+def replenishment_accuracy():
+    # Compare each completed replenishment (recommendation_actions rec_type
+    # 'replenish', status 'done') against what actually sold at that store in the
+    # 28 days AFTER the action. rec_key is "<store>|<kind>|<value>" where kind is
+    # 'sku' or 'barcode'. actual_units holds the units that were replenished.
+    rows = _users_exec("""
+        WITH acts AS (
+            SELECT rec_key, actual_units, acted_at,
+                split_part(rec_key, '|', 1) AS store,
+                split_part(rec_key, '|', 2) AS kind,
+                split_part(rec_key, '|', 3) AS val
+            FROM recommendation_actions
+            WHERE rec_type = 'replenish' AND status = 'done'
+              AND actual_units > 0 AND acted_at IS NOT NULL
+        )
+        SELECT a.rec_key, a.store, a.actual_units, a.acted_at,
+            MAX(p.style_name) AS style_name, MAX(s.product_title) AS product_name,
+            COALESCE(SUM(s.net_quantity) FILTER (
+                WHERE s.sale_date::date BETWEEN a.acted_at::date
+                  AND a.acted_at::date + 28), 0) AS sold_28d
+        FROM acts a
+        LEFT JOIN all_products_clean p
+            ON (a.kind = 'sku' AND p.sku = a.val)
+            OR (a.kind = 'barcode' AND p.barcode = a.val)
+        LEFT JOIN all_sales s ON s.variant_sku = p.sku
+            AND s.pos_location_name = a.store
+            AND s.sale_kind IN ('sale','order')
+        GROUP BY a.rec_key, a.store, a.actual_units, a.acted_at
+    """, fetch=True) or []
+    over, under, well = [], [], []
+    stockout_days = []
+    for r in rows:
+        rec = int(r.get("actual_units") or 0)
+        sold = int(r.get("sold_28d") or 0)
+        item = {
+            "store": r.get("store"),
+            "style_name": r.get("style_name") or r.get("product_name"),
+            "recommended": rec, "sold_28d": sold,
+            "accuracy_pct": round(100.0 * min(rec, sold) / max(rec, sold, 1), 1) if (rec or sold) else 0.0,
+        }
+        if sold <= 0 or rec > sold * 1.2:
+            over.append(item)
+        elif rec < sold * 0.8:
+            under.append(item)
+        else:
+            well.append(item)
+        if sold > 0:
+            # Days the replenished units last at the observed post-replenish rate.
+            stockout_days.append(rec / (sold / 28.0))
+    total = len(rows)
+    over.sort(key=lambda x: x["recommended"] - x["sold_28d"], reverse=True)
+    under.sort(key=lambda x: x["sold_28d"] - x["recommended"], reverse=True)
+    return {
+        "accuracy_score": round(100.0 * len(well) / total, 1) if total else 0.0,
+        "evaluated": total,
+        "over_replenished": over,
+        "under_replenished": under,
+        "well_calibrated": well,
+        "avg_days_to_stockout_after_replenish": round(sum(stockout_days) / len(stockout_days), 1) if stockout_days else None,
+    }
+
+
+# ── Step 4 — bulk approve/reject + summary (audit D3) ─────────────────────────
+@app.post("/api/recommendations/bulk")
+async def post_recommendations_bulk(request: Request):
+    from fastapi import HTTPException
+    body = await request.json()
+    actions = body.get("actions") if isinstance(body, dict) else body
+    if not isinstance(actions, list) or not actions:
+        raise HTTPException(status_code=400, detail="actions must be a non-empty array")
+    acting = getattr(request.state, "user", None) or {}
+    default_by = acting.get("name") or acting.get("email")
+    updated = 0
+    with _users_tx() as cur:
+        for a in actions:
+            if not isinstance(a, dict):
+                continue
+            rt = a.get("rec_type") or a.get("item_type")
+            rk = a.get("rec_key") or a.get("item_key")
+            stt = a.get("status")
+            if not rt or not rk or not stt:
+                continue
+            by = a.get("acted_by") or default_by
+            note = a.get("reason") or a.get("note")
+            au = a.get("actual_units")
+            if stt == "pending":
+                cur.execute(
+                    "DELETE FROM recommendation_actions WHERE rec_type=%s AND rec_key=%s",
+                    (rt, rk))
+                updated += cur.rowcount
+                continue
+            cur.execute(
+                "INSERT INTO recommendation_actions "
+                "(rec_type, rec_key, status, reason, actual_units, acted_by, acted_at) "
+                "VALUES (%s,%s,%s,%s,%s,%s,now()) "
+                "ON CONFLICT (rec_type, rec_key) DO UPDATE SET "
+                "status=EXCLUDED.status, reason=EXCLUDED.reason, "
+                "actual_units=EXCLUDED.actual_units, acted_by=EXCLUDED.acted_by, acted_at=now()",
+                (rt, rk, stt, note, au, by))
+            updated += cur.rowcount
+    return {"ok": True, "updated": updated}
+
+
+@app.delete("/api/recommendations/bulk")
+async def delete_recommendations_bulk(request: Request):
+    from fastapi import HTTPException
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    rt = body.get("rec_type") if isinstance(body, dict) else None
+    stt = body.get("status") if isinstance(body, dict) else None
+    if not rt:
+        raise HTTPException(status_code=400, detail="rec_type is required")
+    with _users_tx() as cur:
+        if stt:
+            cur.execute(
+                "DELETE FROM recommendation_actions WHERE rec_type=%s AND status=%s",
+                (rt, stt))
+        else:
+            cur.execute("DELETE FROM recommendation_actions WHERE rec_type=%s", (rt,))
+        deleted = cur.rowcount
+    return {"ok": True, "deleted": deleted}
+
+
+@app.get("/api/recommendations/summary")
+def recommendations_summary():
+    rows = _users_exec(
+        "SELECT rec_type, status, COUNT(*) AS n FROM recommendation_actions "
+        "GROUP BY rec_type, status", fetch=True) or []
+    out = {}
+    for r in rows:
+        out.setdefault(r["rec_type"] or "unknown", {})[r["status"] or "unknown"] = int(r["n"])
+    return out
+
+
+# ── Step 5 — operations Excel exports (audit D4) ──────────────────────────────
+_XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_BRAND_ORANGE = "E85B1B"
+
+
+def _xlsx_response(wb, filename):
+    import io
+    from fastapi.responses import StreamingResponse
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf, media_type=_XLSX_MEDIA,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+def _xlsx_sheet_title(name, used):
+    import re
+    t = re.sub(r'[:\\/?*\[\]]', '-', str(name or "Sheet"))[:31] or "Sheet"
+    base = t
+    i = 2
+    while t.lower() in used:
+        suffix = f" ({i})"
+        t = (base[:31 - len(suffix)] + suffix)
+        i += 1
+    used.add(t.lower())
+    return t
+
+
+def _xlsx_header(ws, cols):
+    from openpyxl.styles import Font, PatternFill, Alignment
+    fill = PatternFill("solid", fgColor=_BRAND_ORANGE)
+    font = Font(bold=True, color="FFFFFF")
+    for ci, h in enumerate(cols, 1):
+        c = ws.cell(row=1, column=ci, value=h)
+        c.fill = fill
+        c.font = font
+        c.alignment = Alignment(horizontal="left", vertical="center")
+        ws.column_dimensions[c.column_letter].width = max(12, min(40, len(str(h)) + 6))
+    ws.freeze_panes = "A2"
+
+
+@app.get("/api/ibt/export/operations")
+def ibt_export_operations(
+    date_from: str = Query(default=None),
+    date_to:   str = Query(default=None),
+    country:   str = Query(default=None),
+    use_clustering: bool = Query(default=True),
+):
+    from openpyxl import Workbook
+    today = date.today()
+    date_to = date_to or today.isoformat()
+    date_from = date_from or (today - timedelta(days=30)).isoformat()
+    rows = run_query(
+        _ibt_suggestions_sql(date_from, date_to, country, 0.2, 1.5, 1000,
+                             use_clustering=use_clustering),
+        date_to=date_to) or []
+    # One batch lookup of the available size run + SKUs per (style, donor store).
+    sku_map = {}
+    styles = sorted({r.get("style_name") for r in rows if r.get("style_name")})
+    if styles:
+        style_in = ",".join("'" + _sql_str(x) + "'" for x in styles)
+        for m in (run_query(
+                "SELECT p.style_name AS style, i.pos_location_name AS store, "
+                "string_agg(DISTINCT p.sku, ', ' ORDER BY p.sku) AS skus, "
+                "string_agg(DISTINCT p.size, ', ' ORDER BY p.size) AS sizes "
+                "FROM all_inventory i JOIN all_products_clean p ON p.sku = i.sku "
+                "WHERE i.available > 0 AND p.style_name IN (" + style_in + ") "
+                "GROUP BY 1, 2") or []):
+            sku_map[(m["style"], m["store"])] = (m.get("skus") or "", m.get("sizes") or "")
+    cols = ["Style Name", "Brand", "Subcategory", "From Store", "To Store",
+            "SKUs", "Sizes", "Units to Move", "Score",
+            "Estimated Uplift (KES)", "Suggested Date"]
+    wb = Workbook()
+    wb.remove(wb.active)
+    groups = {}
+    for r in rows:
+        groups.setdefault(r.get("from_store") or "Unknown", []).append(r)
+    used = set()
+    suggested = today.isoformat()
+    if not groups:
+        ws = wb.create_sheet(_xlsx_sheet_title("No Suggestions", used))
+        _xlsx_header(ws, cols)
+    for store in sorted(groups):
+        ws = wb.create_sheet(_xlsx_sheet_title(store, used))
+        _xlsx_header(ws, cols)
+        for r in groups[store]:
+            skus, sizes = sku_map.get((r.get("style_name"), store), ("", ""))
+            ws.append([
+                r.get("style_name"), r.get("brand"), r.get("subcategory"),
+                store, r.get("to_store"), skus, sizes,
+                int(r.get("units_to_move") or 0), int(r.get("score") or 0),
+                float(r.get("estimated_uplift") or 0), suggested,
+            ])
+    return _xlsx_response(wb, f"IBT_Operations_{today.isoformat()}.xlsx")
+
+
+def _replen_export_rows(country, channel):
+    c_sales = (" AND s.country = '" + _sql_str(country) + "'") if country else ""
+    c_inv = (" AND i.country = '" + _sql_str(country) + "'") if country else ""
+    ch = (" AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    ch_inv = (" AND i.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    return run_query(f"""
+        WITH sold AS (
+            SELECT s.pos_location_name, s.variant_sku,
+                MAX(s.country) AS country, MAX(s.product_title) AS product_name,
+                SUM(s.net_quantity) AS units_sold
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date >= (CURRENT_DATE - INTERVAL '30 days')::text
+              AND {BASE_FILTERS}
+              AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+              AND s.pos_location_name NOT ILIKE '%online%'
+              AND s.variant_sku IS NOT NULL AND s.variant_sku <> '' {c_sales}{ch}
+            GROUP BY 1, 2 HAVING SUM(s.net_quantity) > 0
+        ),
+        store_soh AS (
+            SELECT i.pos_location_name, i.sku, SUM(i.available) AS soh_store
+            FROM all_inventory i
+            WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS}) {c_inv}{ch_inv}
+            GROUP BY 1, 2
+        ),
+        wh_soh AS (
+            SELECT i.sku, SUM(i.available) AS soh_wh
+            FROM all_inventory i
+            WHERE i.pos_location_name IN ({WAREHOUSE_LOCATIONS})
+            GROUP BY 1
+        )
+        SELECT sold.pos_location_name AS store, sold.country, sold.product_name,
+            sold.variant_sku AS sku, p.style_name, p.brand, p.size,
+            sold.units_sold,
+            COALESCE(ss.soh_store, 0) AS soh_store,
+            COALESCE(w.soh_wh, 0) AS soh_wh
+        FROM sold
+        LEFT JOIN store_soh ss ON ss.pos_location_name = sold.pos_location_name AND ss.sku = sold.variant_sku
+        LEFT JOIN wh_soh w ON w.sku = sold.variant_sku
+        LEFT JOIN all_products_clean p ON p.sku = sold.variant_sku
+        WHERE COALESCE(ss.soh_store, 0) < sold.units_sold AND COALESCE(w.soh_wh, 0) > 0
+        ORDER BY sold.pos_location_name, (sold.units_sold - COALESCE(ss.soh_store, 0)) DESC
+    """) or []
+
+
+@app.get("/api/replenishment/export/operations")
+def replenishment_export_operations(
+    country: str = Query(default=None),
+    channel: str = Query(default=None),
+):
+    from openpyxl import Workbook
+    rows = _replen_export_rows(country, channel)
+    # Per (store, style) size curve from each line's own size + recommended qty.
+    curve = {}
+    enriched = []
+    for r in rows:
+        units = int(r.get("units_sold") or 0)
+        soh = int(r.get("soh_store") or 0)
+        wh = int(r.get("soh_wh") or 0)
+        rec = max(0, min(units - soh, wh))
+        store = r.get("store")
+        style = r.get("style_name") or r.get("product_name")
+        size = (r.get("size") or "").strip()
+        if size and rec > 0:
+            curve.setdefault((store, style), {})
+            curve[(store, style)][size] = curve[(store, style)].get(size, 0) + rec
+        enriched.append((r, units, soh, wh, rec, store, style, size))
+    cols = ["Store", "Style", "Brand", "SKU", "Current Stock", "Units Sold (30d)",
+            "Recommended Qty", "Size Breakdown", "Priority", "Trigger Reason"]
+    wb = Workbook()
+    wb.remove(wb.active)
+    groups = {}
+    for tup in enriched:
+        groups.setdefault(tup[5] or "Unknown", []).append(tup)
+    used = set()
+    if not groups:
+        ws = wb.create_sheet(_xlsx_sheet_title("No Replenishments", used))
+        _xlsx_header(ws, cols)
+    for store in sorted(groups):
+        ws = wb.create_sheet(_xlsx_sheet_title(store, used))
+        _xlsx_header(ws, cols)
+        for (r, units, soh, wh, rec, st, style, size) in groups[store]:
+            if soh == 0:
+                priority = "CRITICAL"
+            elif soh < units * 0.5:
+                priority = "HIGH"
+            else:
+                priority = "MEDIUM"
+            cur_curve = curve.get((st, style), {})
+            curve_str = ", ".join(f"{k}:{v}" for k, v in
+                                  sorted(cur_curve.items(), key=lambda kv: _size_sort_key(kv[0])))
+            reason = f"Sold {units} in 30d, only {soh} on hand; warehouse has {wh}"
+            ws.append([st, style, r.get("brand"), r.get("sku"), soh, units,
+                       rec, curve_str, priority, reason])
+    return _xlsx_response(wb, f"Replenishment_Operations_{date.today().isoformat()}.xlsx")
+
+
+# ── Step 6 — chronic stockout snapshots (audit A8) ────────────────────────────
+def _ensure_stockout_table():
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS stockout_snapshots (
+            id BIGSERIAL PRIMARY KEY,
+            snapshot_date DATE NOT NULL,
+            style_name TEXT NOT NULL,
+            brand TEXT,
+            subcategory TEXT,
+            country TEXT,
+            weeks_of_cover NUMERIC,
+            at_risk BOOLEAN,
+            weekly_units NUMERIC,
+            soh_total NUMERIC,
+            snapshot_taken_at TIMESTAMPTZ DEFAULT now(),
+            UNIQUE(snapshot_date, style_name, country)
+        )""")
+    _users_exec(
+        "CREATE INDEX IF NOT EXISTS idx_stockout_style_country_date "
+        "ON stockout_snapshots (style_name, country, snapshot_date DESC)")
+
+
+@app.on_event("startup")
+def _init_stockout_table():
+    try:
+        _ensure_stockout_table()
+    except Exception:
+        pass
+
+
+_STOCKOUT_AT_RISK_WOC = 2.0  # weeks-of-cover threshold below which a style is at risk
+
+
+@app.post("/api/replenishment/snapshot")
+async def replenishment_snapshot(request: Request, force: bool = Query(default=False)):
+    # Persist current weeks-of-cover per (style, country). Called daily by the
+    # sync job but deduplicated to ~weekly cadence so "consecutive snapshots"
+    # ≈ "consecutive weeks" for chronic detection (override with ?force=1).
+    from datetime import datetime, timezone
+    _ensure_stockout_table()
+    eat_today = (datetime.now(timezone.utc) + timedelta(hours=3)).date()
+    if not force:
+        last = _users_exec(
+            "SELECT MAX(snapshot_date) AS d FROM stockout_snapshots", fetch=True) or []
+        last_d = last[0].get("d") if last else None
+        if last_d and (eat_today - last_d).days < 6:
+            return {"ok": True, "skipped": True, "reason": "within weekly window",
+                    "last_snapshot_date": last_d.isoformat(), "snapshot_date": eat_today.isoformat()}
+    rows = run_query(f"""
+        WITH sales AS (
+            SELECT p.style_name AS style, s.country AS country,
+                MAX(p.brand) AS brand, MAX(p.category) AS subcategory,
+                SUM(s.net_quantity) FILTER (
+                    WHERE s.sale_date >= (CURRENT_DATE - INTERVAL '28 days')::text) AS u28,
+                SUM(s.net_quantity) AS u56
+            FROM all_sales s
+            JOIN all_products_clean p ON p.sku = s.variant_sku
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date >= (CURRENT_DATE - INTERVAL '56 days')::text
+              AND {BASE_FILTERS}
+              AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+              AND COALESCE(p.style_name,'') <> ''
+            GROUP BY 1, 2
+        ),
+        soh AS (
+            SELECT p.style_name AS style, i.country AS country, SUM(i.available) AS soh
+            FROM all_inventory i
+            JOIN all_products_clean p ON p.sku = i.sku
+            WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+              AND COALESCE(p.style_name,'') <> ''
+            GROUP BY 1, 2
+        )
+        SELECT COALESCE(sa.style, so.style) AS style_name,
+            COALESCE(sa.country, so.country) AS country,
+            sa.brand, sa.subcategory,
+            COALESCE(sa.u28, 0) AS u28, COALESCE(sa.u56, 0) AS u56,
+            COALESCE(so.soh, 0) AS soh_total
+        FROM sales sa
+        FULL OUTER JOIN soh so
+            ON so.style = sa.style AND so.country IS NOT DISTINCT FROM sa.country
+        WHERE COALESCE(sa.style, so.style) IS NOT NULL
+    """) or []
+    written = 0
+    with _users_tx() as cur:
+        for r in rows:
+            weekly = _ewma_weekly(r.get("u28"), r.get("u56"))
+            if weekly <= 0:
+                continue  # only track actively-selling styles
+            soh_total = float(r.get("soh_total") or 0)
+            woc = round(soh_total / weekly, 2)
+            at_risk = woc < _STOCKOUT_AT_RISK_WOC
+            cur.execute(
+                "INSERT INTO stockout_snapshots "
+                "(snapshot_date, style_name, brand, subcategory, country, "
+                "weeks_of_cover, at_risk, weekly_units, soh_total) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (snapshot_date, style_name, country) DO UPDATE SET "
+                "brand=EXCLUDED.brand, subcategory=EXCLUDED.subcategory, "
+                "weeks_of_cover=EXCLUDED.weeks_of_cover, at_risk=EXCLUDED.at_risk, "
+                "weekly_units=EXCLUDED.weekly_units, soh_total=EXCLUDED.soh_total, "
+                "snapshot_taken_at=now()",
+                (eat_today, r.get("style_name"), r.get("brand"), r.get("subcategory"),
+                 r.get("country") or "", woc, at_risk, round(weekly, 3), soh_total))
+            written += 1
+    return {"ok": True, "skipped": False, "snapshot_date": eat_today.isoformat(),
+            "rows_written": written, "velocity_method": VELOCITY_METHOD}
+
+
+@app.get("/api/replenishment/chronic-stockouts")
+def replenishment_chronic_stockouts(min_weeks: int = Query(default=3)):
+    min_weeks = max(1, int(min_weeks))
+    rows = _users_exec(
+        "SELECT style_name, country, brand, subcategory, snapshot_date, at_risk, "
+        "weekly_units, weeks_of_cover FROM stockout_snapshots "
+        "ORDER BY style_name, country, snapshot_date DESC", fetch=True) or []
+    groups = {}
+    for r in rows:
+        groups.setdefault((r["style_name"], r.get("country")), []).append(r)
+    out = []
+    for (style, country), recs in groups.items():
+        run = []
+        for r in recs:  # already date-desc within group
+            if r.get("at_risk"):
+                run.append(r)
+            else:
+                break
+        if len(run) < int(min_weeks):
+            continue
+        wk = [float(r["weekly_units"]) for r in run if r.get("weekly_units") is not None]
+        wc = [float(r["weeks_of_cover"]) for r in run if r.get("weeks_of_cover") is not None]
+        out.append({
+            "style_name": style, "country": country,
+            "brand": run[0].get("brand"), "subcategory": run[0].get("subcategory"),
+            "consecutive_at_risk_weeks": len(run),
+            "avg_weekly_units": round(sum(wk) / len(wk), 2) if wk else 0,
+            "avg_woc": round(sum(wc) / len(wc), 2) if wc else 0,
+            "first_flagged_date": run[-1]["snapshot_date"].isoformat(),
+        })
+    out.sort(key=lambda x: (-x["consecutive_at_risk_weeks"], -x["avg_weekly_units"]))
+    return out
+
+
+# ── Step 7 — 7-day forward predictive stockout alerts (answers Q1) ────────────
+@app.get("/api/replenishment/stockout-alerts")
+def replenishment_stockout_alerts(
+    country: str = Query(default=None),
+    channel: str = Query(default=None),
+):
+    c_sales = (" AND s.country = '" + _sql_str(country) + "'") if country else ""
+    c_inv = (" AND i.country = '" + _sql_str(country) + "'") if country else ""
+    ch = (" AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    ch_inv = (" AND i.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    rows = run_query(f"""
+        WITH sales AS (
+            SELECT p.style_name AS style, MAX(p.brand) AS brand, MAX(p.category) AS subcategory,
+                SUM(s.net_quantity) FILTER (
+                    WHERE s.sale_date >= (CURRENT_DATE - INTERVAL '28 days')::text) AS u28,
+                SUM(s.net_quantity) AS u56
+            FROM all_sales s
+            JOIN all_products_clean p ON p.sku = s.variant_sku
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date >= (CURRENT_DATE - INTERVAL '56 days')::text
+              AND {BASE_FILTERS}
+              AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+              AND COALESCE(p.style_name,'') <> '' {c_sales}{ch}
+            GROUP BY 1
+        ),
+        store_soh AS (
+            SELECT p.style_name AS style,
+                string_agg(DISTINCT i.pos_location_name, ', ') AS stores,
+                SUM(i.available) AS soh
+            FROM all_inventory i
+            JOIN all_products_clean p ON p.sku = i.sku
+            WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+              AND i.available > 0 AND COALESCE(p.style_name,'') <> '' {c_inv}{ch_inv}
+            GROUP BY 1
+        ),
+        wh AS (
+            SELECT p.style_name AS style, SUM(i.available) AS wh_soh
+            FROM all_inventory i
+            JOIN all_products_clean p ON p.sku = i.sku
+            WHERE i.pos_location_name IN ({WAREHOUSE_LOCATIONS})
+              AND COALESCE(p.style_name,'') <> ''
+            GROUP BY 1
+        )
+        SELECT sa.style AS style_name, sa.brand, sa.subcategory,
+            COALESCE(sa.u28, 0) AS u28, COALESCE(sa.u56, 0) AS u56,
+            COALESCE(ss.soh, 0) AS total_soh,
+            COALESCE(ss.stores, '') AS affected_stores,
+            COALESCE(wh.wh_soh, 0) AS warehouse_stock
+        FROM sales sa
+        LEFT JOIN store_soh ss ON ss.style = sa.style
+        LEFT JOIN wh ON wh.style = sa.style
+    """) or []
+    alerts = []
+    for r in rows:
+        weekly = _ewma_weekly(r.get("u28"), r.get("u56"))
+        if weekly <= 0:
+            continue
+        total_soh = int(r.get("total_soh") or 0)
+        woc = total_soh / weekly
+        if woc >= 2.0:
+            continue
+        wh = int(r.get("warehouse_stock") or 0)
+        if wh > 0:
+            action = "IBT from warehouse"
+        elif total_soh <= 0:
+            action = "No stock available"
+        else:
+            action = "Replenish from production"
+        alerts.append({
+            "style_name": r.get("style_name"), "brand": r.get("brand"),
+            "subcategory": r.get("subcategory"),
+            "affected_stores": r.get("affected_stores") or "",
+            "total_soh": total_soh, "weekly_units": round(weekly, 2),
+            "weeks_of_cover": round(woc, 2),
+            "days_until_stockout": round(woc * 7.0, 1),
+            "warehouse_stock_available": wh > 0,
+            "warehouse_stock": wh,
+            "urgency": "CRITICAL" if woc < 1.0 else "WARNING",
+            "recommended_action": action,
+        })
+    alerts.sort(key=lambda x: x["days_until_stockout"])
+    return {
+        "alerts": alerts,
+        "critical_count": sum(1 for a in alerts if a["urgency"] == "CRITICAL"),
+        "warning_count": sum(1 for a in alerts if a["urgency"] == "WARNING"),
+        "total": len(alerts),
+        "velocity_method": VELOCITY_METHOD,
+    }
+
+
+# ── Step 8 — store understocking vs cluster peers (answers Q9) ─────────────────
+@app.get("/api/analytics/store-potential")
+def analytics_store_potential(country: str = Query(default=None)):
+    import statistics
+    c_sales = (" AND s.country = '" + _sql_str(country) + "'") if country else ""
+    c_inv = (" AND i.country = '" + _sql_str(country) + "'") if country else ""
+    rows = run_query(f"""
+        WITH rev AS (
+            SELECT s.pos_location_name AS store, MAX(s.country) AS country,
+                SUM(s.net_sales_kes::numeric) AS rev90,
+                SUM(s.net_quantity) AS units90
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date >= (CURRENT_DATE - INTERVAL '90 days')::text
+              AND {BASE_FILTERS}
+              AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+              AND s.pos_location_name NOT ILIKE '%online%' {c_sales}
+            GROUP BY 1
+        ),
+        firsts AS (
+            SELECT s.pos_location_name AS store, MIN(s.sale_date) AS first_sale
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+            GROUP BY 1
+        ),
+        inv AS (
+            SELECT i.pos_location_name AS store, SUM(i.available) AS soh
+            FROM all_inventory i
+            WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS}) {c_inv}
+            GROUP BY 1
+        ),
+        ff AS (
+            SELECT f.pos_location_name AS store,
+                SUM(f.a01_footfall_in) AS footfall,
+                AVG(NULLIF(f.b06_sales_conversion, 0)) AS conversion
+            FROM footfall f
+            WHERE f.time::date >= CURRENT_DATE - INTERVAL '90 days'
+            GROUP BY 1
+        )
+        SELECT rev.store, rev.country, rev.rev90, rev.units90,
+            firsts.first_sale,
+            COALESCE(inv.soh, 0) AS soh,
+            COALESCE(ff.footfall, 0) AS footfall, ff.conversion
+        FROM rev
+        LEFT JOIN firsts ON firsts.store = rev.store
+        LEFT JOIN inv ON inv.store = rev.store
+        LEFT JOIN ff ON ff.store = rev.store
+        WHERE rev.rev90 > 0
+        ORDER BY rev.rev90 DESC
+    """) or []
+    n = len(rows)
+    if n == 0:
+        return {"stores": [], "clusters": {}}
+    # NTILE(3) by revenue desc: top third = cluster A, middle = B, bottom = C.
+    for i, r in enumerate(rows):
+        third = i * 3 // n
+        r["_cluster"] = "A" if third == 0 else ("B" if third == 1 else "C")
+    by_cluster = {}
+    for r in rows:
+        by_cluster.setdefault(r["_cluster"], []).append(r)
+    cluster_meta = {}
+    for cl, members in by_cluster.items():
+        revs = [float(m["rev90"] or 0) for m in members]
+        sohs = [float(m["soh"] or 0) for m in members]
+        ffs = [float(m["footfall"] or 0) for m in members]
+        convs = [float(m["conversion"]) for m in members if m.get("conversion") is not None]
+        cluster_meta[cl] = {
+            "median_revenue": statistics.median(revs) if revs else 0,
+            "median_soh": statistics.median(sohs) if sohs else 0,
+            "median_footfall": statistics.median(ffs) if ffs else 0,
+            "median_conversion": statistics.median(convs) if convs else 0,
+            "stores": len(members),
+        }
+    today = date.today()
+    out = []
+    for r in rows:
+        cl = r["_cluster"]
+        meta = cluster_meta[cl]
+        rev90 = float(r["rev90"] or 0)
+        median = meta["median_revenue"] or 0
+        pct = round(100.0 * rev90 / median, 1) if median else 100.0
+        understocked = pct < 70.0
+        gap = round(max(0.0, median - rev90))
+        # Likely cause: a brand-new store first, else the metric most deficient
+        # vs its cluster peers (stock / footfall / conversion).
+        cause = None
+        if understocked:
+            new_store = False
+            fs = r.get("first_sale")
+            if fs:
+                try:
+                    new_store = (today - date.fromisoformat(str(fs)[:10])).days <= 120
+                except ValueError:
+                    new_store = False
+            if new_store:
+                cause = "new_store"
+            else:
+                ratios = {}
+                if meta["median_soh"]:
+                    ratios["low_stock"] = float(r["soh"] or 0) / meta["median_soh"]
+                if meta["median_footfall"]:
+                    ratios["low_footfall"] = float(r["footfall"] or 0) / meta["median_footfall"]
+                if meta["median_conversion"] and r.get("conversion") is not None:
+                    ratios["low_conversion"] = float(r["conversion"]) / meta["median_conversion"]
+                cause = min(ratios, key=ratios.get) if ratios else "low_stock"
+        out.append({
+            "store": r["store"], "country": r.get("country"), "cluster": cl,
+            "actual_revenue_90d": round(rev90),
+            "cluster_median_revenue": round(median),
+            "pct_of_potential": pct,
+            "gap_kes": gap,
+            "units_90d": int(r.get("units90") or 0),
+            "store_soh": int(r.get("soh") or 0),
+            "footfall_90d": int(r.get("footfall") or 0),
+            "conversion_rate": round(float(r["conversion"]), 1) if r.get("conversion") is not None else None,
+            "understocked": understocked,
+            "likely_cause": cause,
+        })
+    out.sort(key=lambda x: x["pct_of_potential"])
+    return {
+        "stores": out,
+        "clusters": {cl: {
+            "median_revenue": round(m["median_revenue"]),
+            "stores": m["stores"],
+        } for cl, m in cluster_meta.items()},
+        "understocked_count": sum(1 for s in out if s["understocked"]),
+    }
 
 
 from fastapi.staticfiles import StaticFiles

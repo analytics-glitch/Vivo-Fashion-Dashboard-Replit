@@ -563,6 +563,26 @@ def main():
         log.error("Footfall sync error: %s", e)
         conn.rollback()
 
+    # Chronic-stockout snapshot — once a day around midnight EAT (21:00 UTC).
+    # The API endpoint dedupes to a weekly cadence, so running it on every cycle
+    # in this window is harmless; we only narrow to the hour to avoid pointless
+    # calls the rest of the day. It authenticates with the shared SESSION_SECRET.
+    try:
+        if now.hour == 21:
+            _secret = os.environ.get("SESSION_SECRET")
+            if _secret:
+                resp = requests.post(
+                    "http://localhost:80/api/replenishment/snapshot",
+                    headers={"X-Internal-Token": _secret},
+                    timeout=120,
+                )
+                log.info("Stockout snapshot — HTTP %s %s",
+                         resp.status_code, resp.text[:200])
+            else:
+                log.warning("Stockout snapshot skipped — SESSION_SECRET unset")
+    except Exception as e:
+        log.error("Stockout snapshot error: %s", e)
+
     write_heartbeat(conn, "ok")
     conn.close()
     log.info("=== Sync complete ===")
