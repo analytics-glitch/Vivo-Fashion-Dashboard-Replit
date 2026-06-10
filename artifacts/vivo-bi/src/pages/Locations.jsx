@@ -265,13 +265,6 @@ const Locations = () => {
 
   return (
     <div className="space-y-6" data-testid="locations-page">
-      <div>
-        <div className="eyebrow">Dashboard · Locations</div>
-        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)]">
-          Locations
-        </h1>
-      </div>
-
       {(loading || kpisLoading) && <Loading />}
       {(error || kpisError) && <ErrorBox message={error || kpisError} />}
 

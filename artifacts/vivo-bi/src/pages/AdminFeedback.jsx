@@ -61,11 +61,6 @@ const AdminFeedback = () => {
   return (
     <div className="space-y-6" data-testid="admin-feedback-page">
       <div>
-        <div className="eyebrow">Admin · Feedback Inbox</div>
-        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)] inline-flex items-center gap-2">
-          <ChatCircleDots size={22} weight="duotone" className="text-[#1a5c38]" />
-          Feedback Inbox
-        </h1>
         <p className="text-muted text-[13px] mt-1 max-w-2xl">
           Every feedback submission lands here. Use the resolved toggle to
           close items as you action them.

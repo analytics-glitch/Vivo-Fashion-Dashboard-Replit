@@ -175,10 +175,6 @@ const IBT = () => {
   return (
     <div className="space-y-6" data-testid="ibt-page">
       <div>
-        <div className="eyebrow">Dashboard · Inter-Branch Transfer</div>
-        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)]">
-          Inter-Branch Transfer Recommendations
-        </h1>
         <p className="text-muted text-[13px] mt-1 max-w-3xl">
           Moves a SKU from a store where it isn't selling to one where it is.
           Rule: the <b>from</b>-store sells at ≤ 20% of the group average for

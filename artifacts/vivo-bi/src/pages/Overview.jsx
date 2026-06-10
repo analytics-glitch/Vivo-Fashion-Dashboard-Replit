@@ -862,8 +862,6 @@ const Overview = () => {
       {snapshot ? null : (<>
       <div className="flex flex-wrap items-baseline gap-3">
         <div>
-          <div className="eyebrow">Dashboard · Overview</div>
-          <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)]">Overview</h1>
           <p className="text-muted text-[13px] mt-0.5">
             {fmtDate(dateFrom)} → {fmtDate(dateTo)}
             {compareMode !== "none" && compareLbl && (

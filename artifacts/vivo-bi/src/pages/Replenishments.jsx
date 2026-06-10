@@ -368,10 +368,6 @@ const Replenishments = () => {
   return (
     <div className="space-y-5" data-testid="replenishments-page">
       <div>
-        <div className="text-[11px] uppercase tracking-wide text-muted">Dashboard · Replenishments</div>
-        <h1 className="font-extrabold text-foreground" style={{ fontSize: "clamp(20px, 3vw, 28px)" }}>
-          Daily Replenishment Workflow
-        </h1>
         <p className="text-[12.5px] text-muted mt-1 max-w-3xl">
           For each POS where shop-floor stock is below 2 units AND units sold &gt; 0 in
           the window we recommend a top-up to <b>2 units per SKU</b>, drawn from the

@@ -11,6 +11,7 @@ import { Loading } from "@/components/common";
 // Code-split every authed page so the initial JS bundle is lean and
 // the first paint after login is fast — critical when the upstream BI
 // API is degraded and we're waiting on data anyway.
+const Home = React.lazy(() => import("@/pages/Home"));
 const Overview = React.lazy(() => import("@/pages/Overview"));
 const Locations = React.lazy(() => import("@/pages/Locations"));
 const Products = React.lazy(() => import("@/pages/Products"));
@@ -237,7 +238,7 @@ function App() {
                 {/* Legacy auth routes now defer to the Clerk sign-in page. */}
                 <Route path="/login" element={<Navigate to="/sign-in" replace />} />
                 <Route path="/auth/callback" element={<Navigate to="/sign-in" replace />} />
-                <Route path="/" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
+                <Route path="/" element={<ProtectedShell><Home /></ProtectedShell>} />
                 <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
                 <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
                 <Route path="/locations" element={<ProtectedShell pageId="locations"><Locations /></ProtectedShell>} />

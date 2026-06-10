@@ -1908,10 +1908,6 @@ const ExecutiveSummary = () => {
       <div className="card-white p-4 sm:p-5">
         <div className="flex items-start gap-3 flex-wrap justify-between">
           <div>
-            <h1 className="text-[22px] sm:text-[26px] font-extrabold leading-tight flex items-center gap-2">
-              <Briefcase size={22} weight="duotone" className="text-brand" />
-              Executive Summary
-            </h1>
             <div className="text-[12px] text-muted mt-1 space-y-0.5">
               <div data-testid="exec-mtd-window">
                 <span className="font-bold text-foreground">MTD:</span> {_fmtRange(mtdRange?.current)} <span className="text-muted">vs</span> {_fmtRange(mtdRange?.ly)}

@@ -677,10 +677,6 @@ const Inventory = () => {
   return (
     <div className="space-y-6" data-testid="inventory-page">
       <div>
-        <div className="eyebrow">Dashboard · Inventory</div>
-        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)]">
-          Inventory
-        </h1>
         <p className="text-muted text-[13px] mt-0.5">
           Merchandise only — Accessories, Sample &amp; Sale Items and
           uncategorised products are excluded from every section below.

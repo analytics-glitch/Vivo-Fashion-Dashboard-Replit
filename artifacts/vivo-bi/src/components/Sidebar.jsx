@@ -1,5 +1,5 @@
 import React from "react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink, Link, useNavigate } from "react-router-dom";
 import {
   ChartPieSlice,
   MapPin,
@@ -35,27 +35,9 @@ import ReconciliationStatusPill from "@/components/ReconciliationStatusPill";
 import UpstreamHealthPill from "@/components/UpstreamHealthPill";
 import BackendUrlWarningPill from "@/components/BackendUrlWarningPill";
 import CacheStatsPill from "@/components/CacheStatsPill";
-
-const tabs = [
-  { to: "/", label: "Overview", icon: ChartPieSlice, id: "overview" },
-  { to: "/exec-summary", label: "Executive Summary", icon: Briefcase, id: "exec-summary" },
-  { to: "/locations", label: "Locations", icon: MapPin, id: "locations" },
-  { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall" },
-  { to: "/customers", label: "Customers", icon: Users, id: "customers" },
-  { to: "/customer-details", label: "Customer Details", icon: Users, id: "customer-details" },
-  { to: "/marketing", label: "Marketing", icon: Megaphone, id: "marketing" },
-  { to: "/products", label: "Products", icon: Tag, id: "products" },
-  { to: "/range-mgmt", label: "Range Mgmt", icon: Stack, id: "range-mgmt" },
-  { to: "/inventory", label: "Inventory", icon: Package, id: "inventory" },
-  { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order" },
-  { to: "/ibt", label: "IBT", icon: Truck, id: "ibt" },
-  { to: "/allocations", label: "Allocations", icon: Stack, id: "allocations" },
-  { to: "/replenishments", label: "Replenishments", icon: ArrowsClockwise, id: "replenishments" },
-  { to: "/targets", label: "Targets", icon: Target, id: "targets" },
-  { to: "/data-quality", label: "Data Quality", icon: Warning, id: "data-quality" },
-  { to: "/exports", label: "Exports (Sales, Inventory)", icon: DownloadSimple, id: "exports" },
-  { to: "/feedback", label: "Feedback", icon: ChatCircleDots, id: "feedback" },
-];
+// Top-nav tabs come from the shared nav definition (lib/navItems.jsx), the same
+// source the Home landing page uses, so the two never drift apart.
+import { PRIMARY_NAV as tabs } from "@/lib/navItems";
 
 const relativeTime = (d) => {
   if (!d) return "—";
@@ -266,25 +248,26 @@ const TopNav = () => {
         >
           {mobileOpen ? <CloseIcon size={20} /> : <MenuIcon size={20} />}
         </button>
-        <div
-          className="flex items-center shrink-0"
+        <Link
+          to="/"
+          className="flex items-center gap-2 sm:gap-3 min-w-0 hover:opacity-90 transition-opacity"
           data-testid="brand-logo"
-          aria-label="Vivo Fashion Group"
+          aria-label="Vivo Fashion Group — home"
         >
           <img
             src="/brand/vivo-logo.png"
             alt="Vivo"
-            className="h-8 sm:h-9 w-auto rounded-md"
+            className="h-8 sm:h-9 w-auto rounded-md shrink-0"
           />
-        </div>
-        <div className="leading-tight min-w-0">
-          <div className="text-[13px] sm:text-[14px] font-bold tracking-tight text-foreground truncate">
-            Vivo Fashion Group
-          </div>
-          <div className="hidden sm:block text-[10.5px] text-muted uppercase tracking-wider">
-            BI · East Africa
-          </div>
-        </div>
+          <span className="leading-tight min-w-0">
+            <span className="block text-[13px] sm:text-[14px] font-bold tracking-tight text-foreground truncate">
+              Vivo Fashion Group
+            </span>
+            <span className="hidden sm:block text-[10.5px] text-muted uppercase tracking-wider">
+              BI · East Africa
+            </span>
+          </span>
+        </Link>
       </div>
 
       <div className="flex items-center gap-1.5 sm:gap-2 text-[11.5px] text-muted">

@@ -174,12 +174,6 @@ const DataQuality = () => {
   return (
     <div className="space-y-4" data-testid="data-quality-page">
       <div>
-        <div className="flex items-center gap-2 text-[11px] text-muted font-semibold uppercase tracking-[0.14em]">
-          <ShieldCheck size={12} weight="fill" /> Dashboard · Data Quality
-        </div>
-        <h1 className="mt-0.5 text-[28px] sm:text-[32px] font-bold text-brand-deep tracking-tight leading-[1.15]" data-testid="dq-title">
-          Data Quality
-        </h1>
         <div className="mt-0.5 text-[13.5px] text-muted max-w-2xl">
           Every anomaly the platform detects, in one place. Flag a store for investigation,
           dismiss false positives, or mark resolved — decisions persist per user.

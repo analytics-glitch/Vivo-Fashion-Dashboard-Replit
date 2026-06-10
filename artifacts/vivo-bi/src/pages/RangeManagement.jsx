@@ -406,13 +406,6 @@ const RangeManagement = () => {
     <div className="space-y-5" data-testid="range-mgmt-page">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="eyebrow">Dashboard · Range Management</div>
-          <h1
-            className="font-extrabold tracking-tight mt-1 leading-[1.15]"
-            style={{ fontSize: "clamp(15px, 1.6vw, 22px)" }}
-          >
-            Range Management — Product Tiers
-          </h1>
           <p className="text-muted text-[13px] mt-0.5">
             Vivo 4-Tier Framework · Target: <span className="font-semibold text-foreground">{totalTarget[0]}–{totalTarget[1]} active styles</span>
             <> · updated <span className="font-semibold text-foreground">{new Date().toLocaleTimeString()}</span></>

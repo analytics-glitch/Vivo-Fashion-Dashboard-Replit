@@ -41,7 +41,6 @@ export default function Marketing() {
     <div className="space-y-6" data-testid="marketing-page">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <SectionTitle icon={Megaphone}>Marketing</SectionTitle>
           <p className="text-[12px] text-muted mt-1 max-w-[680px]">
             Action tracker for under-performing styles (≥ 4 weeks post-launch, lifetime SOR &lt; 40%). Log an action to start
             tracking SOR progression — every entry snapshots the SOR at start so we can measure which marketing levers actually

@@ -1,2 +1,3 @@
 - [RBAC last-admin & bootstrap concurrency](rbac-last-admin-toctou.md) — admin role/status/delete + first-login bootstrap must run in one advisory-locked tx, or concurrent requests can leave zero admins.
 - [Clerk prod "Checking session…" blank](clerk-prod-blank-checking-session.md) — published app stuck on auth-loading (dev fine) = Python Clerk proxy relays Brotli the browser can't decode; force Accept-Encoding gzip/deflate.
+- [BI chat text-to-SQL](bi-chat-text-to-sql.md) — /api/chat runs LLM-generated SQL on a forced read-only psycopg2 conn (never the shared pool); keep the read-only + PII guards.

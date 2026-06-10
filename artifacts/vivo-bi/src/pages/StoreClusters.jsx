@@ -61,10 +61,6 @@ const StoreClusters = () => {
   return (
     <div className="space-y-5" data-testid="store-clusters-page">
       <div>
-        <div className="text-[11px] uppercase tracking-wide text-muted">Admin · Store peer-clusters</div>
-        <h1 className="font-extrabold text-foreground" style={{ fontSize: "clamp(20px, 3vw, 28px)" }}>
-          Store Peer-Cluster Inspector
-        </h1>
         <p className="text-[12.5px] text-muted mt-1 max-w-3xl">
           Phase 1 surface — IBT recommendations now display each store's
           peer-cluster id (e.g. <b>A1</b>) but the math still uses the chain-wide

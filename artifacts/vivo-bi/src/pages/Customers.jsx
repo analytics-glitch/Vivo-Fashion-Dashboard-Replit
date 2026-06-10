@@ -458,10 +458,6 @@ const Customers = () => {
     <div className="space-y-6" data-testid="customers-page">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <div className="eyebrow">Dashboard · Customers</div>
-          <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)]">
-            Customers
-          </h1>
           <div
             className="mt-1 text-[11px] text-muted flex items-center gap-2"
             data-testid="customers-refresh-strip"

@@ -554,11 +554,6 @@ function Header() {
   return (
     <div className="flex items-start gap-3 flex-wrap">
       <div>
-        <div className="eyebrow">Dashboard · Targets</div>
-        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)] inline-flex items-center gap-2">
-          <CalendarBlank size={22} weight="duotone" className="text-[#1a5c38]" />
-          Targets Tracker
-        </h1>
         <p className="text-muted text-[13px] mt-1 max-w-2xl">
           Annual + per-quarter target progress for each country / channel.
           Pace-based projection scales current achievement across the

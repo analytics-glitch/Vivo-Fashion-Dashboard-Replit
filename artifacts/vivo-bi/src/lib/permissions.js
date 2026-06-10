@@ -48,34 +48,7 @@ export const canAccessPage = (user, pageId) => {
  */
 export const homePageFor = (user) => {
   if (!user) return "/login";
-  if (canAccessPage(user, "overview")) return "/";
-  const role = (user.role || "viewer").toLowerCase();
-  const pages = (Array.isArray(user.allowed_pages) ? user.allowed_pages : ROLE_PAGES[role]) || ["overview"];
-  const first = pages[0] || "overview";
-  // Map page id → route. Mirrors App.js routes.
-  const routeMap = {
-    "overview": "/",
-    "exec-summary": "/exec-summary",
-    "locations": "/locations",
-    "footfall": "/footfall",
-    "customers": "/customers",
-    "customer-details": "/customer-details",
-    "products": "/products",
-    "inventory": "/inventory",
-    "re-order": "/re-order",
-    "ibt": "/ibt",
-    "targets": "/targets",
-    "data-quality": "/data-quality",
-    "exports": "/exports",
-    "feedback": "/feedback",
-    "allocations": "/allocations",
-    "replenishments": "/replenishments",
-    "marketing": "/marketing",
-    "range-mgmt": "/range-mgmt",
-    "admin-store-clusters": "/admin/store-clusters",
-    "admin-users": "/admin/users",
-    "admin-activity-logs": "/admin/activity-logs",
-    "admin-feedback": "/admin/feedback",
-  };
-  return routeMap[first] || "/";
+  // Everyone lands on the Home landing page (route "/"), which renders only the
+  // tiles the user can actually access — so this is always a safe redirect target.
+  return "/";
 };

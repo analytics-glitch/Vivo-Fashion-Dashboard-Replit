@@ -4045,16 +4045,278 @@ async def admin_replenishment_config_post(request: Request):
     owners = [str(o).strip() for o in (body.get("owners") or []) if str(o).strip()]
     _REPLEN_OWNERS = owners or ["Matthew", "Teddy", "Alvi", "Emma"]
     return {"ok": True, "owners": list(_REPLEN_OWNERS)}
+# ── Conversational BI assistant (text-to-SQL over live Postgres) ──────────────
+# The widget (ChatWidget.jsx) POSTs {message, session_id, context} and renders
+# the {session_id, answer} reply as plain text. The assistant works in two LLM
+# passes: (1) plan — answer directly or emit ONE read-only SELECT; (2) summarize
+# the returned rows into executive prose. Generated SQL runs on a dedicated
+# connection forced read-only with a statement timeout and a hard row cap, so it
+# can never write or run away, and customer contact PII stays off-limits.
+import json as _chat_json
+import re as _chat_re
+import uuid as _chat_uuid
+import requests as _chat_requests
+from starlette.concurrency import run_in_threadpool as _chat_run_in_threadpool
+
+_CHAT_MODEL = "gpt-5.4"
+_CHAT_MAX_TOKENS = 8192
+_CHAT_ROW_LIMIT = 200            # hard cap on rows the generated SQL may return
+_CHAT_SUMMARY_ROWS = 60          # rows actually handed to the model to summarize
+_CHAT_MAX_TURNS = 10             # NL turns kept per session for follow-up context
+_CHAT_SESSIONS = {}              # session_id -> list[{"role","content"}]
+_CHAT_SESSIONS_LOCK = threading.Lock()
+
+_CHAT_SCHEMA_DOC = """
+You write PostgreSQL SELECT queries against a read-only retail BI database for
+Vivo Fashion Group (multi-brand fashion, East Africa). Money is Kenyan Shillings.
+
+MAIN FACT TABLE — all_sales s  (one row per sale/return line):
+  s.sale_date    TEXT  'YYYY-MM-DD'  -- cast s.sale_date::date for date_trunc/EXTRACT; plain BETWEEN on the text is fine
+  s.country      TEXT  -- 'Kenya','Uganda','Rwanda', and an Online channel
+  s.channel      TEXT
+  s.pos_location_name TEXT  -- store / point of sale
+  s.sale_kind    TEXT  -- 'sale','order','return'
+  s.customer_id  TEXT
+  s.customer_type TEXT
+  s.product_title TEXT
+  s.product_type  TEXT  -- subcategory, e.g. 'Maxi Dresses'
+  s.product_vendor TEXT -- brand
+  s.variant_sku   TEXT
+  s.ordered_item_quantity INTEGER   -- units sold (use with sale_kind in ('sale','order'))
+  s.returned_item_quantity INTEGER
+  -- MONEY: ALWAYS use the *_kes columns (KES). Ignore the non-kes money columns.
+  s.total_sales_kes NUMERIC
+  s.gross_sales_kes NUMERIC
+  s.discounts_kes   NUMERIC
+  s.returns_kes     NUMERIC
+  s.net_sales_kes   NUMERIC
+
+OTHER TABLES (query directly; inspect columns by selecting a few rows if unsure):
+  all_inventory      -- current stock on hand by location / sku
+  all_products_clean -- product master (style, category, product_type)
+  all_customers      -- customer master (NEVER select phone or email)
+  footfall           -- store footfall / traffic by date
+  pos_locations, stores -- store metadata
+
+MANDATORY RULES:
+- Read-only. Output exactly ONE statement: a SELECT (or WITH ... SELECT). Never write.
+- On all_sales ALWAYS add this noise filter to the WHERE clause:
+""" + "    " + BASE_FILTERS.strip() + """
+- Money is KES; round money to 0 decimals.
+- Net sales = SUM(net_sales_kes) for sale/order rows minus SUM(returns_kes) for returns.
+- Never select or expose customer phone or email.
+- Always add a LIMIT (<= 200).
+"""
+
+_CHAT_FORBIDDEN_SQL = _chat_re.compile(
+    r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|"
+    r"comment|copy|call|merge|vacuum|analyze|reindex|cluster|refresh|lock|"
+    r"listen|notify|into|begin|commit|rollback|savepoint|prepare|execute|"
+    r"deallocate)\b",
+    _chat_re.IGNORECASE,
+)
+_CHAT_PII_SQL = _chat_re.compile(r"\b(phone|email|mobile|msisdn|telephone)\b", _chat_re.IGNORECASE)
+
+
+def _chat_llm(messages, max_tokens=_CHAT_MAX_TOKENS):
+    base = os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
+    key = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")
+    if not base or not key:
+        raise RuntimeError("AI assistant not configured")
+    resp = _chat_requests.post(
+        base.rstrip("/") + "/chat/completions",
+        json={"model": _CHAT_MODEL, "messages": messages, "max_completion_tokens": max_tokens},
+        headers={"Authorization": "Bearer " + key},
+        timeout=90,
+    )
+    resp.raise_for_status()
+    return (resp.json()["choices"][0]["message"].get("content") or "").strip()
+
+
+def _chat_extract_json(text):
+    try:
+        return _chat_json.loads(text)
+    except Exception:
+        pass
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return _chat_json.loads(text[start:end + 1])
+        except Exception:
+            return None
+    return None
+
+
+def _chat_clean_sql(sql):
+    s = (sql or "").strip()
+    if s.startswith("```"):
+        s = _chat_re.sub(r"^```[a-zA-Z]*", "", s).strip()
+        if s.endswith("```"):
+            s = s[:-3].strip()
+    return s.rstrip().rstrip(";").strip()
+
+
+def _chat_is_safe_select(sql):
+    if not sql:
+        return False, "empty"
+    if ";" in sql:
+        return False, "multiple statements"
+    low = sql.lstrip().lower()
+    if not (low.startswith("select") or low.startswith("with")):
+        return False, "not a select"
+    if _CHAT_FORBIDDEN_SQL.search(sql):
+        return False, "disallowed keyword"
+    return True, None
+
+
+def _chat_run_readonly_sql(sql, limit=_CHAT_ROW_LIMIT):
+    conn = psycopg2.connect(
+        os.environ["DATABASE_URL"],
+        options=("-c standard_conforming_strings=on "
+                 "-c default_transaction_read_only=on "
+                 "-c statement_timeout=8000"),
+    )
+    try:
+        conn.set_session(readonly=True, autocommit=False)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql)
+        rows = [dict(r) for r in cur.fetchmany(limit)]
+        cur.close()
+        conn.rollback()
+        return rows
+    finally:
+        conn.close()
+
+
+def _chat_context_line(ctx):
+    parts = []
+    df, dt = ctx.get("date_from"), ctx.get("date_to")
+    if df or dt:
+        parts.append("date range %s to %s" % (df or "?", dt or "?"))
+    countries = ctx.get("countries")
+    if countries:
+        parts.append("countries: " + (", ".join(countries) if isinstance(countries, list) else str(countries)))
+    locs = ctx.get("pos_locations")
+    if locs:
+        parts.append("stores: " + (", ".join(locs) if isinstance(locs, list) else str(locs)))
+    if not parts:
+        return ""
+    return ("The user is viewing the dashboard with these filters applied: "
+            + "; ".join(parts) + ". Apply them unless the user clearly asks otherwise.")
+
+
+def _chat_core(message, session_id, ctx, revealed):
+    with _CHAT_SESSIONS_LOCK:
+        history = list(_CHAT_SESSIONS.get(session_id, []))
+
+    ctx_line = _chat_context_line(ctx)
+    plan_sys = (
+        "You are the Vivo Fashion Group BI assistant, embedded in an executive "
+        "retail analytics dashboard. Money is in Kenyan Shillings (KES). Decide "
+        "whether the question needs data from the database.\n"
+        + _CHAT_SCHEMA_DOC
+        + "\nReply with ONLY a JSON object, no prose. Either "
+        '{"action":"sql","sql":"<one SELECT statement>"} to fetch data, or '
+        '{"action":"answer","answer":"<text>"} for greetings, metric definitions '
+        "(e.g. what ABV means), or anything that needs no data."
+        + (("\n" + ctx_line) if ctx_line else "")
+    )
+    plan_msgs = [{"role": "system", "content": plan_sys}]
+    plan_msgs += history[-6:]
+    plan_msgs.append({"role": "user", "content": message})
+
+    try:
+        plan = _chat_extract_json(_chat_llm(plan_msgs))
+    except Exception:
+        return "Sorry, I couldn't reach the assistant just now. Please try again in a moment."
+    if not isinstance(plan, dict):
+        return "I'm not sure how to answer that. Try asking about sales, customers, products, footfall or inventory."
+
+    answer = None
+    if plan.get("action") == "answer" and plan.get("answer"):
+        answer = str(plan["answer"]).strip()
+    elif plan.get("action") == "sql" and plan.get("sql"):
+        sql = _chat_clean_sql(plan["sql"])
+        ok, _why = _chat_is_safe_select(sql)
+        if not ok:
+            answer = "I can only run read-only data lookups and couldn't form a safe query for that. Could you rephrase?"
+        elif _CHAT_PII_SQL.search(sql) and not revealed:
+            answer = ("I can't return customer contact details (phone or email) here. "
+                      "Use the Customers page, which has a secure reveal step.")
+        else:
+            rows = None
+            try:
+                rows = _chat_run_readonly_sql(sql)
+            except Exception as e:
+                # One self-correction attempt: hand the DB error back to the model.
+                try:
+                    fix_msgs = [
+                        {"role": "system", "content": plan_sys},
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": _chat_json.dumps({"action": "sql", "sql": sql})},
+                        {"role": "user", "content": "That query failed with: "
+                            + str(e)[:300] + ". Return corrected JSON with one fixed SELECT."},
+                    ]
+                    fixed = _chat_extract_json(_chat_llm(fix_msgs))
+                    sql2 = _chat_clean_sql((fixed or {}).get("sql", ""))
+                    ok2, _ = _chat_is_safe_select(sql2)
+                    if ok2 and not (_CHAT_PII_SQL.search(sql2) and not revealed):
+                        rows = _chat_run_readonly_sql(sql2)
+                except Exception:
+                    rows = None
+            if rows is None:
+                answer = "I tried to look that up but the query failed. Could you rephrase or be more specific?"
+            else:
+                sample = _chat_json.dumps(rows[:_CHAT_SUMMARY_ROWS], default=str)
+                sum_sys = (
+                    "You are the Vivo Fashion Group BI assistant. Summarize the query "
+                    "result for a retail executive in clear, concise PLAIN TEXT (no "
+                    "markdown, no tables, no code fences). Money is KES — format like "
+                    "'KES 1,234,567'. Lead with the direct answer, then up to three "
+                    "supporting points. If there are no rows, say no data matched the request."
+                )
+                try:
+                    answer = _chat_llm([
+                        {"role": "system", "content": sum_sys},
+                        {"role": "user", "content": "Question: " + message
+                            + "\n\nRows returned (" + str(len(rows)) + "): " + sample},
+                    ]).strip()
+                except Exception:
+                    answer = "I fetched the data but couldn't summarize it. Please try again."
+
+    if not answer:
+        answer = "I'm not sure how to answer that. Try asking about sales, customers, products, footfall or inventory."
+
+    with _CHAT_SESSIONS_LOCK:
+        h = _CHAT_SESSIONS.get(session_id, [])
+        h.append({"role": "user", "content": message})
+        h.append({"role": "assistant", "content": answer})
+        _CHAT_SESSIONS[session_id] = h[-_CHAT_MAX_TURNS * 2:]
+
+    return answer
+
+
 @app.post("/api/chat")
-async def stub_chat_post(request: Request):
+async def chat_post(request: Request):
     try:
         body = await request.json()
     except Exception:
         body = {}
-    return {
-        "session_id": body.get("session_id") or "local",
-        "answer": "The conversational assistant isn't available in this build.",
-    }
+    message = (body.get("message") or "").strip()
+    session_id = body.get("session_id") or _chat_uuid.uuid4().hex
+    ctx = body.get("context") or {}
+
+    if not message:
+        return {"session_id": session_id,
+                "answer": "Ask me about your sales, customers, products, footfall or inventory."}
+    if not (os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
+            and os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")):
+        return {"session_id": session_id,
+                "answer": "The assistant isn't configured yet. Please try again later."}
+
+    revealed = pii_revealed(request)
+    answer = await _chat_run_in_threadpool(_chat_core, message, session_id, ctx, revealed)
+    return {"session_id": session_id, "answer": answer}
 @app.post("/api/search/ask")
 async def stub_search_ask_post(request: Request):
     return {

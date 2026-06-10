@@ -695,12 +695,6 @@ const Exports = () => {
   const [tab, setTab] = useState(isInventoryOnly ? "inventory" : "sales");
   return (
     <div className="space-y-5" data-testid="exports-page">
-      <div>
-        <div className="eyebrow">Dashboard · Exports</div>
-        <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)]">
-          {isInventoryOnly ? "Exports (Inventory)" : "Exports (Sales, Inventory)"}
-        </h1>
-      </div>
       <div className="inline-flex flex-wrap rounded-xl bg-panel p-1 border border-border" data-testid="exports-tabs">
         {!isInventoryOnly && (
           <button
