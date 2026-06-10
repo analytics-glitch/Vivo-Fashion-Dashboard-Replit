@@ -76,12 +76,7 @@ const CustomerDetails = () => {
       {modal}
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <div className="eyebrow">Customers · Details</div>
-          <h1 className="font-extrabold tracking-tight mt-1 leading-[1.15] line-clamp-2 text-[clamp(15px,1.5vw,19px)] inline-flex items-center gap-2">
-            <Users size={22} weight="duotone" className="text-[#1a5c38]" />
-            Customer Details
-          </h1>
-          <p className="text-muted text-[13px] mt-1">
+          <p className="text-muted text-[13px]">
             One row per identified customer. Walk-ins (no customer_id) are
             excluded. Filter by category, subcategory, POS or date range
             using the global filter bar above.

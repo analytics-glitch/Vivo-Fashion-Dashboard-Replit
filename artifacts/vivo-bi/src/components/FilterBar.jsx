@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useFilters } from "@/lib/filters";
 import { api, datePresets, fmtDate } from "@/lib/api";
 import MultiSelect from "@/components/MultiSelect";
@@ -9,6 +10,7 @@ import {
   ShareNetwork,
   Check,
   CaretDown,
+  ArrowLeft,
   ArrowsLeftRight,
   ClockCounterClockwise,
 } from "@phosphor-icons/react";
@@ -524,6 +526,27 @@ const MobileFiltersSheet = ({ children }) => {
 };
 
 // ---------- Main FilterBar ----------
+const BackButton = ({ className = "" }) => {
+  const navigate = useNavigate();
+  const goBack = () => {
+    if (window.history.length > 1) navigate(-1);
+    else navigate("/");
+  };
+  return (
+    <button
+      type="button"
+      onClick={goBack}
+      data-testid="back-button"
+      title="Go back"
+      aria-label="Go back"
+      className={`shrink-0 inline-flex items-center gap-1.5 rounded-full border border-border bg-white px-3 py-1.5 text-[12px] font-semibold text-foreground/80 hover:border-brand/40 hover:bg-brand-soft/50 transition-colors shadow-sm ${className}`}
+    >
+      <ArrowLeft size={14} weight="bold" className="text-brand-deep" />
+      <span>Back</span>
+    </button>
+  );
+};
+
 const FilterBar = () => {
   const f = useFilters();
   const [locations, setLocations] = useState([]);
@@ -610,6 +633,7 @@ const FilterBar = () => {
     >
       {/* Desktop layout */}
       <div className="hidden md:flex md:flex-wrap md:items-center md:gap-2">
+        <BackButton />
         {ControlsInline}
         <button
           type="button"
@@ -640,6 +664,7 @@ const FilterBar = () => {
           entirely; users edit filters directly. */}
       <div className="flex md:hidden flex-col gap-2">
         <div className="flex items-center gap-2">
+          <BackButton />
           <div className="flex-1 min-w-0"><ChannelGroupToggle /></div>
           <button
             type="button"

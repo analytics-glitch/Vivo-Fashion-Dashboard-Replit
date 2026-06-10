@@ -5184,15 +5184,29 @@ async def chat_post(request: Request):
     answer = await _chat_run_in_threadpool(_chat_core, message, session_id, ctx, revealed)
     return {"session_id": session_id, "answer": answer}
 @app.post("/api/search/ask")
-async def stub_search_ask_post(request: Request):
-    return {
-        "answer": "Natural-language search isn't available in this build. Use the filters and pages to explore the data.",
-        "intent": "unknown",
-        "count": 0,
-        "link": None,
-        "rows": [],
-        "followups": [],
-    }
+async def search_ask_post(request: Request):
+    """Natural-language search — routes to the same LLM-backed assistant as
+    /api/chat so the global-search "Ask" mode answers any dashboard question."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    query = (body.get("q") or body.get("message") or "").strip()
+    base = {"intent": "assistant", "count": None, "link": None,
+            "rows": [], "followups": []}
+    if not query:
+        return {**base,
+                "answer": "Ask me anything about your sales, customers, products, footfall or inventory."}
+    if not (os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
+            and os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")):
+        return {**base,
+                "answer": "The assistant isn't configured yet. Please try again later."}
+
+    revealed = pii_revealed(request)
+    session_id = body.get("session_id") or _chat_uuid.uuid4().hex
+    answer = await _chat_run_in_threadpool(
+        _chat_core, query, session_id, body.get("context") or {}, revealed)
+    return {**base, "answer": answer}
 
 
 # ── Clerk Frontend-API reverse proxy (production only) ────────────────────────

@@ -15,21 +15,47 @@ import { DownloadSimple, Table } from "@phosphor-icons/react";
 // it ever fails). The server is the source of truth for the whitelist; we
 // hydrate from it on mount so this page can't drift from the backend.
 const DEFAULT_DIMENSIONS = [
-  { id: "country", label: "Country" },
-  { id: "channel", label: "Channel" },
-  { id: "brand", label: "Brand" },
-  { id: "category", label: "Category" },
-  { id: "subcategory", label: "Subcategory" },
-  { id: "store", label: "Store" },
-  { id: "month", label: "Month" },
+  { id: "country", label: "Country", group: "Geography" },
+  { id: "channel", label: "Channel", group: "Geography" },
+  { id: "store", label: "Store", group: "Geography" },
+  { id: "brand", label: "Brand", group: "Product" },
+  { id: "category", label: "Category", group: "Product" },
+  { id: "subcategory", label: "Subcategory", group: "Product" },
+  { id: "month", label: "Month", group: "Time" },
 ];
 
 const DEFAULT_MEASURES = [
-  { id: "revenue", label: "Revenue (KES)" },
-  { id: "units", label: "Units" },
-  { id: "orders", label: "Orders" },
-  { id: "customers", label: "Customers" },
+  { id: "revenue", label: "Revenue (KES)", group: "Sales" },
+  { id: "net_revenue", label: "Net Revenue (KES)", group: "Sales" },
+  { id: "gross_revenue", label: "Gross Revenue (KES)", group: "Sales" },
+  { id: "returns", label: "Returns (KES)", group: "Sales" },
+  { id: "discounts", label: "Discounts (KES)", group: "Sales" },
+  { id: "units", label: "Units Sold", group: "Sales" },
+  { id: "orders", label: "Orders", group: "Sales" },
+  { id: "aov", label: "Avg Order Value (KES)", group: "Sales" },
+  { id: "asp", label: "Avg Selling Price (KES)", group: "Sales" },
+  { id: "customers", label: "Customers", group: "Customers" },
+  { id: "soh", label: "Stock on Hand", group: "Inventory" },
+  { id: "sor", label: "Sell-Through %", group: "Inventory" },
 ];
+
+// Measures rendered as KES money vs plain counts vs a percentage. Kept in sync
+// with the server whitelist (_REPORT_MEASURES / _INVENTORY_MEASURES in api_pg.py).
+const MONEY_MEASURES = new Set([
+  "revenue", "net_revenue", "gross_revenue", "returns", "discounts", "aov", "asp",
+]);
+
+// Group chips under their `group` so the (now longer) field lists stay scannable.
+const groupBy = (items) => {
+  const out = [];
+  const idx = new Map();
+  for (const it of items) {
+    const g = it.group || "Other";
+    if (!idx.has(g)) { idx.set(g, out.length); out.push({ group: g, items: [] }); }
+    out[idx.get(g)].items.push(it);
+  }
+  return out;
+};
 
 const Chip = ({ active, onClick, children, testId }) => (
   <button
@@ -47,8 +73,12 @@ const Chip = ({ active, onClick, children, testId }) => (
   </button>
 );
 
-const fmtMeasure = (id, val) =>
-  id === "revenue" ? fmtKESLong(val) : fmtNum(val);
+const fmtMeasure = (id, val) => {
+  if (val === null || val === undefined) return "—";
+  if (MONEY_MEASURES.has(id)) return fmtKESLong(val);
+  if (id === "sor") return `${fmtNum(val)}%`;
+  return fmtNum(val);
+};
 
 const CustomReport = () => {
   const { applied, touchLastUpdated } = useFilters();
@@ -59,6 +89,13 @@ const CustomReport = () => {
 
   const [dims, setDims] = useState(["country"]);
   const [meas, setMeas] = useState(["revenue", "units", "orders"]);
+
+  // On-page date selector. Seeded from the global filter bar's applied range so
+  // it stays consistent, but can be overridden here without touching the global
+  // filters. Changing it re-runs the report (once the report has been run once).
+  const [localFrom, setLocalFrom] = useState(dateFrom);
+  const [localTo, setLocalTo] = useState(dateTo);
+  useEffect(() => { setLocalFrom(dateFrom); setLocalTo(dateTo); }, [dateFrom, dateTo]);
 
   // Hydrate the available fields from the server whitelist so the chips can
   // never drift from the backend. Falls back silently to the defaults.
@@ -91,7 +128,8 @@ const CustomReport = () => {
   const toggle = (list, setList, id) =>
     setList(list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
 
-  const canRun = dims.length > 0 && meas.length > 0;
+  const validDateRange = !!localFrom && !!localTo && localFrom <= localTo;
+  const canRun = dims.length > 0 && meas.length > 0 && validDateRange;
 
   useEffect(() => {
     if (runToken === 0) return; // don't auto-run on first mount
@@ -108,8 +146,8 @@ const CustomReport = () => {
         params: {
           dimensions: usedDims.join(","),
           measures: usedMeas.join(","),
-          date_from: dateFrom,
-          date_to: dateTo,
+          date_from: localFrom,
+          date_to: localTo,
           country,
           channel,
           limit: 2000,
@@ -130,7 +168,7 @@ const CustomReport = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [runToken, dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+  }, [runToken, localFrom, localTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
   const columns = useMemo(() => {
     if (!report || !ranWith) return [];
@@ -165,7 +203,7 @@ const CustomReport = () => {
       `# Vivo BI · Custom Report`,
       `# Dimensions: ${report.dimensions.map((d) => d.label).join("; ")}`,
       `# Measures: ${report.measures.map((m) => m.label).join("; ")}`,
-      `# Date range: ${fmtDate(dateFrom)} to ${fmtDate(dateTo)}`,
+      `# Date range: ${fmtDate(localFrom)} to ${fmtDate(localTo)}`,
       `# Country: ${countries.length ? countries.join("; ") : "All"}`,
       `# Channel: ${channels.length ? channels.join("; ") : "All"}`,
       `# Rows: ${report.row_count}`,
@@ -190,13 +228,10 @@ const CustomReport = () => {
     <div className="space-y-5" data-testid="custom-report-page">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h2 className="font-extrabold text-[18px] sm:text-[20px] tracking-tight">
-            Custom Report
-          </h2>
-          <p className="text-muted text-[13px] mt-0.5">
+          <p className="text-muted text-[13px]">
             Build your own breakdown: pick the dimensions to group by and the
-            measures to total, then run and export to CSV. Date range, country
-            and channel come from the filter bar above.
+            measures to total, choose a date range, then run and export to CSV.
+            Country and channel come from the filter bar above.
           </p>
         </div>
         <button
@@ -213,34 +248,77 @@ const CustomReport = () => {
 
       <div className="card-white p-4 space-y-4" data-testid="custom-report-builder">
         <div>
+          <div className="eyebrow mb-2">Date range</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="date"
+              value={localFrom || ""}
+              max={localTo || undefined}
+              onChange={(e) => setLocalFrom(e.target.value)}
+              data-testid="custom-report-date-from"
+              className="rounded-lg border border-border bg-white px-3 py-1.5 text-[12.5px] font-medium text-foreground focus:border-brand focus:outline-none"
+            />
+            <span className="text-[12px] text-muted">to</span>
+            <input
+              type="date"
+              value={localTo || ""}
+              min={localFrom || undefined}
+              onChange={(e) => setLocalTo(e.target.value)}
+              data-testid="custom-report-date-to"
+              className="rounded-lg border border-border bg-white px-3 py-1.5 text-[12.5px] font-medium text-foreground focus:border-brand focus:outline-none"
+            />
+            <span className="text-[11.5px] text-muted">
+              Seeded from the filter bar — change here to override for this report.
+            </span>
+          </div>
+        </div>
+        <div>
           <div className="eyebrow mb-2">Group by (dimensions)</div>
-          <div className="flex flex-wrap gap-2">
-            {dimOptions.map((d) => (
-              <Chip
-                key={d.id}
-                active={dims.includes(d.id)}
-                onClick={() => toggle(dims, setDims, d.id)}
-                testId={`custom-report-dim-${d.id}`}
-              >
-                {d.label}
-              </Chip>
+          <div className="space-y-2">
+            {groupBy(dimOptions).map((grp) => (
+              <div key={grp.group} className="flex flex-wrap items-center gap-2">
+                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-muted w-[68px] shrink-0">
+                  {grp.group}
+                </span>
+                {grp.items.map((d) => (
+                  <Chip
+                    key={d.id}
+                    active={dims.includes(d.id)}
+                    onClick={() => toggle(dims, setDims, d.id)}
+                    testId={`custom-report-dim-${d.id}`}
+                  >
+                    {d.label}
+                  </Chip>
+                ))}
+              </div>
             ))}
           </div>
         </div>
         <div>
           <div className="eyebrow mb-2">Measures</div>
-          <div className="flex flex-wrap gap-2">
-            {measOptions.map((m) => (
-              <Chip
-                key={m.id}
-                active={meas.includes(m.id)}
-                onClick={() => toggle(meas, setMeas, m.id)}
-                testId={`custom-report-measure-${m.id}`}
-              >
-                {m.label}
-              </Chip>
+          <div className="space-y-2">
+            {groupBy(measOptions).map((grp) => (
+              <div key={grp.group} className="flex flex-wrap items-center gap-2">
+                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-muted w-[68px] shrink-0">
+                  {grp.group}
+                </span>
+                {grp.items.map((m) => (
+                  <Chip
+                    key={m.id}
+                    active={meas.includes(m.id)}
+                    onClick={() => toggle(meas, setMeas, m.id)}
+                    testId={`custom-report-measure-${m.id}`}
+                  >
+                    {m.label}
+                  </Chip>
+                ))}
+              </div>
             ))}
           </div>
+          <p className="text-[11.5px] text-muted mt-2">
+            Stock on Hand and Sell-Through % are inventory measures — they can only
+            be grouped by Country, Store, Brand, Category or Subcategory (not Channel or Month).
+          </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           <button
@@ -255,7 +333,9 @@ const CustomReport = () => {
           </button>
           {!canRun && (
             <span className="text-[12px] text-muted">
-              Pick at least one dimension and one measure.
+              {dims.length === 0 || meas.length === 0
+                ? "Pick at least one dimension and one measure."
+                : "Choose a valid date range (start on or before end)."}
             </span>
           )}
         </div>
@@ -268,7 +348,7 @@ const CustomReport = () => {
         <div className="card-white p-5" data-testid="custom-report-results">
           <SectionTitle
             title={`${fmtNum(report.row_count)} rows`}
-            subtitle={`Grouped by ${report.dimensions.map((d) => d.label).join(" × ")} · ${fmtDate(dateFrom)} to ${fmtDate(dateTo)}${report.truncated ? " · truncated to first 2,000 rows" : ""}`}
+            subtitle={`Grouped by ${report.dimensions.map((d) => d.label).join(" × ")} · ${fmtDate(localFrom)} to ${fmtDate(localTo)}${report.truncated ? " · truncated to first 2,000 rows" : ""}`}
           />
           {report.rows.length === 0 ? (
             <Empty label="No data matches the current selection." />
