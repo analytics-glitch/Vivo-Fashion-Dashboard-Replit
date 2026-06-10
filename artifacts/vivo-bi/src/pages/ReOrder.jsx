@@ -13,7 +13,7 @@ import { useThumbnails } from "@/lib/useThumbnails";
 import AgedStockReport from "@/components/AgedStockReport";
 import ReplenishByColor from "@/components/ReplenishByColor";
 import { useRecommendationState } from "@/lib/useRecommendationState";
-import { Package, ArrowsClockwise, Fire, TrendUp } from "@phosphor-icons/react";
+import { Package, ArrowsClockwise, Fire, TrendUp, TrendDown, ArrowRight, Tag, Target } from "@phosphor-icons/react";
 
 const ReOrder = () => {
   const { applied, touchLastUpdated } = useFilters();
@@ -24,6 +24,8 @@ const ReOrder = () => {
   const [error, setError] = useState(null);
   const [drillStyle, setDrillStyle] = useState(null);
   const [showResolved, setShowResolved] = useState(false);
+  const [markdownSet, setMarkdownSet] = useState(() => new Set());
+  const [accuracy, setAccuracy] = useState(null);
   const { stateByKey, setState } = useRecommendationState("reorder");
 
   useEffect(() => {
@@ -46,6 +48,42 @@ const ReOrder = () => {
     return () => { cancelled = true; };
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+
+  // Markdown candidates (for the "Markdown?" flag) + replenishment forecast
+  // accuracy (summary KPI). Both are non-fatal — failures leave the page
+  // fully usable, just without the enrichment.
+  useEffect(() => {
+    let cancelled = false;
+    const country = countries.length === 1 ? countries[0] : undefined;
+    api
+      .get("/analytics/markdown-candidates", { params: { country } })
+      .then(({ data }) => {
+        if (cancelled) return;
+        const list = Array.isArray(data) ? data : (data?.candidates || []);
+        setMarkdownSet(new Set(list.map((c) => c.style_name).filter(Boolean)));
+      })
+      .catch(() => !cancelled && setMarkdownSet(new Set()));
+    return () => { cancelled = true; };
+    // eslint-disable-next-line
+  }, [JSON.stringify(countries), dataVersion]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get("/replenishment/forecast-accuracy")
+      .then(({ data }) => {
+        if (cancelled) return;
+        const mape = data?.mape;
+        if (mape === null || mape === undefined || isNaN(Number(mape))) {
+          setAccuracy(null);
+          return;
+        }
+        const acc = Math.max(0, Math.min(100, 100 - Number(mape)));
+        setAccuracy({ pct: acc, evaluated: Number(data?.evaluated || 0) });
+      })
+      .catch(() => !cancelled && setAccuracy(null));
+    return () => { cancelled = true; };
+  }, [dataVersion]);
 
   // Re-order rule: new style (already filtered by backend ≤90 days) with SOR ≥ 50% in first 6 weeks.
   // Frontend layer adds: SOR ≥ 50% AND merchandise-only AND ranked by sales velocity.
@@ -87,6 +125,56 @@ const ReOrder = () => {
 
   const pillFor = (u) => u === "CRITICAL" ? "pill-red" : u === "HIGH" ? "pill-amber" : "pill-neutral";
 
+  // Number of days in the selected reporting window — used to annualise the
+  // period sell-rate against the launch-to-date rate when inferring momentum.
+  const periodDays = useMemo(() => {
+    try {
+      const a = new Date(dateFrom);
+      const b = new Date(dateTo);
+      const d = Math.round((b - a) / 86_400_000) + 1;
+      return d > 0 ? d : 1;
+    } catch {
+      return 1;
+    }
+  }, [dateFrom, dateTo]);
+
+  // Infer momentum from the available velocity fields: compare the period
+  // sell-rate (sales in the selected window ÷ window length) against the
+  // launch-to-date sell-rate (lifetime sales ÷ days since launch). A period
+  // running materially faster than the lifetime average is accelerating;
+  // slower is decelerating; otherwise stable.
+  const trendFor = (r) => {
+    const periodSales = Number(r.total_sales_period || 0);
+    const launchSales = Number(r.total_sales_launch || 0);
+    let daysSinceLaunch = 0;
+    const lv = r.style_launch_date;
+    if (lv) {
+      try {
+        daysSinceLaunch = Math.round(
+          (Date.now() - new Date(String(lv).slice(0, 10)).getTime()) / 86_400_000
+        );
+      } catch {
+        daysSinceLaunch = 0;
+      }
+    }
+    if (!periodSales || launchSales <= 0 || daysSinceLaunch <= 0) {
+      return { dir: "stable", label: "Stable", Icon: ArrowRight, cls: "text-muted" };
+    }
+    const lifetimeRate = launchSales / daysSinceLaunch;
+    const periodRate = periodSales / periodDays;
+    if (lifetimeRate <= 0) {
+      return { dir: "stable", label: "Stable", Icon: ArrowRight, cls: "text-muted" };
+    }
+    const ratio = periodRate / lifetimeRate;
+    if (ratio >= 1.15) {
+      return { dir: "up", label: "Accelerating", Icon: TrendUp, cls: "text-emerald-600" };
+    }
+    if (ratio <= 0.85) {
+      return { dir: "down", label: "Decelerating", Icon: TrendDown, cls: "text-rose-600" };
+    }
+    return { dir: "stable", label: "Stable", Icon: ArrowRight, cls: "text-muted" };
+  };
+
   const { urlFor } = useThumbnails(useMemo(() => visibleList.map((r) => r.style_name), [visibleList]));
 
   return (
@@ -103,13 +191,23 @@ const ReOrder = () => {
 
       {!loading && !error && (
         <>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             <KPICard testId="ro-kpi-count" accent label="Open re-orders"
               sub={kpis.resolved > 0 ? `${kpis.resolved} already actioned` : "All pending review"}
               value={fmtNum(kpis.total - kpis.resolved)} icon={ArrowsClockwise} showDelta={false} />
             <KPICard testId="ro-kpi-critical" label="CRITICAL · SOR ≥80%" value={fmtNum(kpis.critical)} icon={Fire} showDelta={false} />
             <KPICard testId="ro-kpi-high" label="HIGH · SOR 65-80%" value={fmtNum(kpis.high)} icon={TrendUp} showDelta={false} />
             <KPICard testId="ro-kpi-units" label="Units Sold Since Launch" value={fmtNum(kpis.totalUnitsSold)} icon={Package} showDelta={false} />
+            <KPICard
+              testId="ro-kpi-accuracy"
+              label="Replenishment Accuracy"
+              value={accuracy ? fmtPct(accuracy.pct) : "—"}
+              sub={accuracy
+                ? (accuracy.evaluated > 0 ? `${fmtNum(accuracy.evaluated)} actions evaluated` : "No actions evaluated yet")
+                : "Data unavailable"}
+              icon={Target}
+              showDelta={false}
+            />
           </div>
 
           <div className="card-white p-5" data-testid="reorder-table-card">
@@ -166,7 +264,30 @@ const ReOrder = () => {
                   { key: "brand", label: "Brand", align: "left", render: (r) => <span className="pill-neutral">{r.brand || "—"}</span>, csv: (r) => r.brand },
                   { key: "category", label: "Category", align: "left", render: (r) => <span className="pill-neutral">{r.category || "—"}</span>, csv: (r) => r.category },
                   { key: "product_type", label: "Subcategory", align: "left", render: (r) => <span className="text-muted">{r.product_type || "—"}</span> },
-                  { key: "sor_percent", label: <SORHeader />, numeric: true, render: (r) => <span className={pillFor(r.urgency)}>{fmtPct(r.sor_percent)}</span>, csv: (r) => r.sor_percent?.toFixed(2) },
+                  { key: "sor_percent", label: <SORHeader />, numeric: true, render: (r) => {
+                    const t = trendFor(r);
+                    const T = t.Icon;
+                    return (
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className={pillFor(r.urgency)}>{fmtPct(r.sor_percent)}</span>
+                        <T size={14} weight="bold" className={t.cls} title={`Momentum: ${t.label}`} aria-label={t.label} />
+                      </span>
+                    );
+                  }, csv: (r) => r.sor_percent?.toFixed(2) },
+                  { key: "trend", label: "Trend", align: "left", sortable: false, mobileHidden: true, render: (r) => {
+                    const t = trendFor(r);
+                    const T = t.Icon;
+                    return (
+                      <span className={`inline-flex items-center gap-1 text-[11.5px] font-semibold ${t.cls}`}>
+                        <T size={13} weight="bold" /> {t.label}
+                      </span>
+                    );
+                  }, csv: (r) => trendFor(r).label },
+                  { key: "markdown", label: "Markdown?", align: "left", sortable: false, render: (r) => (
+                    markdownSet.has(r.style_name)
+                      ? <span className="pill-amber inline-flex items-center gap-1"><Tag size={12} weight="bold" /> Markdown?</span>
+                      : <span className="text-muted">—</span>
+                  ), csv: (r) => markdownSet.has(r.style_name) ? "Markdown candidate" : "" },
                   { key: "units_sold_launch", label: "Units Sold (Launch)", numeric: true, render: (r) => fmtNum(r.units_sold_launch) },
                   { key: "total_sales_launch", label: "Sales (Launch)", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales_launch)}</span>, csv: (r) => r.total_sales_launch },
                   { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => <span className={(r.current_stock || 0) < 10 ? "pill-red" : "pill-neutral"}>{fmtNum(r.current_stock)}</span>, csv: (r) => r.current_stock },

@@ -37,6 +37,7 @@ const CustomReport = React.lazy(() => import("@/pages/CustomReport"));
 const RangeManagement = React.lazy(() => import("@/pages/RangeManagement"));
 const Velocity = React.lazy(() => import("@/pages/Velocity"));
 const SizeHealth = React.lazy(() => import("@/pages/SizeHealth"));
+const MarkdownClearance = React.lazy(() => import("@/pages/MarkdownClearance"));
 const Margin = React.lazy(() => import("@/pages/Margin"));
 const RFM = React.lazy(() => import("@/pages/RFM"));
 
@@ -259,6 +260,7 @@ function App() {
                 <Route path="/marketing" element={<ProtectedShell pageId="marketing"><Marketing /></ProtectedShell>} />
                 <Route path="/custom-report" element={<ProtectedShell pageId="custom-report"><CustomReport /></ProtectedShell>} />
                 <Route path="/range-mgmt" element={<ProtectedShell pageId="range-mgmt"><RangeManagement /></ProtectedShell>} />
+                <Route path="/markdown-clearance" element={<ProtectedShell pageId="markdown-clearance"><MarkdownClearance /></ProtectedShell>} />
                 <Route path="/footfall" element={<ProtectedShell pageId="footfall"><Footfall /></ProtectedShell>} />
                 <Route path="/targets" element={<ProtectedShell pageId="targets"><TargetsTracker /></ProtectedShell>} />
                 <Route path="/re-order" element={<ProtectedShell pageId="re-order"><ReOrder /></ProtectedShell>} />

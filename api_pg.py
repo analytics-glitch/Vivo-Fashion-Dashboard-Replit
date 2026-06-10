@@ -1,6 +1,9 @@
-from fastapi import FastAPI, Query, Request, Body
+from fastapi import FastAPI, Query, Request, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 import calendar
+import logging
+from collections import deque
 from datetime import date, timedelta
 import psycopg2
 import psycopg2.extras
@@ -111,6 +114,15 @@ _BOOT_TS = time.time()
 # (here "upstream" is the Postgres data source the API reads from directly).
 _last_db_success_ts = None
 
+log = logging.getLogger("api_pg")
+
+# Slow-query telemetry: a ring buffer of the most recent slow queries (>2s),
+# surfaced by GET /api/diagnostics/slow-queries. Anything over 5s is also written
+# to sync_health_log with action_taken='slow_query' so it shows on the timeline.
+SLOW_QUERY_WARN_SEC = 2.0
+SLOW_QUERY_ERROR_SEC = 5.0
+_slow_queries = deque(maxlen=20)
+
 def smart_ttl(date_to=None):
     if not date_to:
         return 120
@@ -181,13 +193,51 @@ def get_conn():
         os.environ['DATABASE_URL'],
         options='-c standard_conforming_strings=on')
 
+def _acquire_conn(timeout=5.0):
+    """Get a pooled connection, waiting up to ``timeout`` seconds if the pool is
+    momentarily exhausted. ThreadedConnectionPool.getconn() raises immediately
+    when maxconn is reached, so we retry with a short backoff and surface a clean
+    503 (rather than a 500) if the pool stays saturated past the deadline."""
+    pool = _get_pool()
+    deadline = time.time() + timeout
+    while True:
+        try:
+            return pool, pool.getconn()
+        except _pg_pool.PoolError:
+            if time.time() >= deadline:
+                raise HTTPException(
+                    status_code=503,
+                    detail={"error": "Service temporarily busy, please retry"})
+            time.sleep(0.05)
+
+
+def _record_slow_query(query, elapsed):
+    preview = " ".join(query.split())[:200]
+    entry = {"sql": preview, "duration_ms": round(elapsed * 1000, 1),
+             "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    _slow_queries.appendleft(entry)
+    if elapsed >= SLOW_QUERY_ERROR_SEC:
+        log.error("SLOW QUERY %.1fs: %s", elapsed, preview)
+        try:
+            with _users_tx() as cur:
+                cur.execute(
+                    "INSERT INTO sync_health_log "
+                    "(checked_at, api_healthy, sync_healthy, action_taken, notes) "
+                    "VALUES (now(), true, true, %s, %s)",
+                    ("slow_query", f"{entry['duration_ms']}ms: {preview}"[:500]))
+        except Exception:
+            pass
+    else:
+        log.warning("SLOW QUERY %.1fs: %s", elapsed, preview)
+
+
 def run_query(query, date_to=None):
     key = hashlib.md5(query.encode()).hexdigest()
     cached = cache_get(key)
     if cached is not None:
         return cached
-    pool = _get_pool()
-    conn = pool.getconn()
+    pool, conn = _acquire_conn()
+    t0 = time.time()
     try:
         conn.autocommit = True  # read-only BI; never leave idle-in-transaction
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -200,6 +250,9 @@ def run_query(query, date_to=None):
         raise
     else:
         pool.putconn(conn)
+    elapsed = time.time() - t0
+    if elapsed >= SLOW_QUERY_WARN_SEC:
+        _record_slow_query(query, elapsed)
     global _last_db_success_ts
     _last_db_success_ts = time.time()
     cache_set(key, rows, ttl=smart_ttl(date_to))
@@ -280,6 +333,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Compress JSON responses larger than 1KB. The BI payloads (tables, multi-series
+# charts) are highly compressible text, so this cuts transfer size sharply over
+# slower links without measurable CPU cost on these read-only aggregates.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # ── Clerk auth gate ───────────────────────────────────────────────────────────
 # Every /api/* request must carry a valid Clerk session whose verified email is
@@ -559,6 +616,42 @@ def _init_user_store():
         pass
 
 
+@app.on_event("startup")
+def _startup_health_check():
+    # Verify DB connectivity + that every table the BI endpoints rely on exists.
+    # Never crash on a missing table (the API still serves what it can — degraded
+    # mode); just log a clear summary so deploys surface problems immediately.
+    required = ["all_sales", "all_inventory", "all_products_clean", "pos_locations",
+                "footfall", "currency_rates", "recommendation_actions",
+                "ibt_completions", "allocation_runs"]
+    db_ok = False
+    present = 0
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        try:
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            db_ok = (cur.fetchone()[0] == 1)
+            for t in required:
+                cur.execute("SELECT to_regclass(%s)", (f"public.{t}",))
+                if cur.fetchone()[0] is not None:
+                    present += 1
+                else:
+                    log.error("Startup: required table missing: %s", t)
+            cur.close()
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        log.error("Startup health check failed: %s", e)
+    healthy = db_ok and present == len(required)
+    summary = ("Startup [%s] | DB connected: %s | Tables: %d/%d | Pool: %d-%d | "
+               "Cache: ready") % ("OK" if healthy else "DEGRADED", db_ok, present,
+                                  len(required), 2, MAX_DB_CONNECTIONS)
+    (log.info if healthy else log.error)(summary)
+
+
 # Performance indexes for the hot all_sales scans. The base table ships with
 # indexes on sale_date / store_id / country, but the customer-analytics paths
 # GROUP BY customer_id over the whole table (e.g. global first-purchase in
@@ -577,6 +670,40 @@ _PERF_INDEXES = [
      "WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL"),
     ("idx_as_kind_date",
      "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_as_kind_date ON all_sales (sale_kind, sale_date)"),
+    # Phase 7 hot-path coverage. Duplicates of pre-existing indexes (sale_date,
+    # products.sku pkey, rec_actions (rec_type,rec_key) unique, sale_kind leading
+    # col of idx_as_kind_date) are intentionally omitted to avoid redundant write
+    # cost. CONCURRENTLY IF NOT EXISTS so production picks them up online.
+    ("idx_all_sales_store_date",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_all_sales_store_date ON all_sales (store_id, sale_date)"),
+    ("idx_all_sales_location_date",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_all_sales_location_date ON all_sales (pos_location_name, sale_date)"),
+    ("idx_all_sales_sku",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_all_sales_sku ON all_sales (variant_sku)"),
+    ("idx_all_sales_country_date",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_all_sales_country_date ON all_sales (country, sale_date)"),
+    ("idx_all_inventory_sku",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_all_inventory_sku ON all_inventory (sku)"),
+    ("idx_all_inventory_location",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_all_inventory_location ON all_inventory (pos_location_name)"),
+    ("idx_all_inventory_country",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_all_inventory_country ON all_inventory (country)"),
+    ("idx_all_products_style",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_all_products_style ON all_products_clean (style_name)"),
+    ("idx_all_products_type",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_all_products_type ON all_products_clean (product_type)"),
+    ("idx_rec_actions_status",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_rec_actions_status ON recommendation_actions (status)"),
+    ("idx_ibt_completions_style",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ibt_completions_style ON ibt_completions (style_name)"),
+    ("idx_ibt_completions_stores",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ibt_completions_stores ON ibt_completions (from_store, to_store)"),
+    ("idx_ibt_completions_date",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ibt_completions_date ON ibt_completions (transfer_date)"),
+    ("idx_footfall_location_time",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_footfall_location_time ON footfall (pos_location_name, \"time\")"),
+    ("idx_sync_health_checked",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sync_health_checked ON sync_health_log (checked_at DESC)"),
 ]
 
 
@@ -5470,6 +5597,76 @@ def stub_thumbnails(): return []
 def analytics_cache_stats(): return _cache_stats_payload()
 @app.get("/api/admin/cache-stats")
 def admin_cache_stats(): return _cache_stats_payload()
+
+
+# ── Ops / diagnostics endpoints (Phase 7) ─────────────────────────────────────
+def _require_admin(request: Request):
+    u = getattr(request.state, "user", None) or {}
+    if u.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Administrator access required.")
+
+
+@app.get("/api/pool-status")
+def pool_status(request: Request):
+    _require_admin(request)
+    pool = _get_pool()
+    used = len(getattr(pool, "_used", {}) or {})
+    idle = len(getattr(pool, "_pool", []) or [])
+    return {
+        "min_conn": pool.minconn,
+        "max_conn": pool.maxconn,
+        "used_conn": used,
+        "available_conn": pool.maxconn - used,
+        "idle_conn": idle,
+    }
+
+
+@app.get("/api/cache/status")
+def cache_status():
+    payload = _cache_stats_payload()
+    now = time.time()
+    total_bytes = 0
+    oldest = None
+    newest = None
+    for _val, ts, _ttl in list(_cache.values()):
+        oldest = ts if oldest is None or ts < oldest else oldest
+        newest = ts if newest is None or ts > newest else newest
+        try:
+            total_bytes += len(json.dumps(_val, default=str))
+        except Exception:
+            pass
+    return {
+        "total_entries": len(_cache),
+        "total_size_bytes": total_bytes,
+        "hit_rate": payload["counters_since_boot"]["hit_rate_pct"],
+        "ttl_buckets": payload["in_process_cache"]["ttl_buckets"],
+        "oldest_entry_age_sec": round(now - oldest) if oldest else 0,
+        "newest_entry_age_sec": round(now - newest) if newest else 0,
+        # The query cache is keyed by SQL hash, not request path, so a true
+        # per-endpoint breakdown is not available; ttl_buckets gives the live tier
+        # split (60s today / 600s yesterday / 3600s historical).
+        "endpoints": [],
+    }
+
+
+@app.post("/api/cache/clear")
+def cache_clear(request: Request):
+    _require_admin(request)
+    n = len(_cache)
+    _cache.clear()
+    _cache_stats["evictions"] += n
+    return {"ok": True, "cleared_entries": n}
+
+
+@app.get("/api/diagnostics/slow-queries")
+def diagnostics_slow_queries(request: Request):
+    _require_admin(request)
+    return {
+        "warn_threshold_sec": SLOW_QUERY_WARN_SEC,
+        "error_threshold_sec": SLOW_QUERY_ERROR_SEC,
+        "count": len(_slow_queries),
+        "slow_queries": list(_slow_queries),
+    }
 @app.get("/api/admin/reconciliation-check")
 def admin_reconciliation_check():
     # Cross-page consistency: the Σ of per-country aggregates must equal the

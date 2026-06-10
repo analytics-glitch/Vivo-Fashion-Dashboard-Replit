@@ -49,6 +49,7 @@ export const PRIMARY_NAV = [
   { to: "/products", label: "Products", icon: Tag, id: "products", group: "Products & Range", desc: "Style and subcategory performance" },
   { to: "/margin", label: "Margin & Markdown", icon: Percent, id: "margin", group: "Products & Range", desc: "Discount impact on gross margin, COGS and margin %" },
   { to: "/range-mgmt", label: "Range Mgmt", icon: Stack, id: "range-mgmt", group: "Products & Range", desc: "Range classification and assortment planning" },
+  { to: "/markdown-clearance", label: "Markdown & Clearance", icon: Percent, id: "markdown-clearance", group: "Products & Range", desc: "Markdown candidates and clearance plan" },
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory", group: "Inventory & Replenishment", desc: "Stock on hand, availability and cover by location" },
   { to: "/velocity", label: "Velocity", icon: Gauge, id: "velocity", group: "Inventory & Replenishment", desc: "Sell-through rate of sale and weeks of cover by style" },
   { to: "/size-health", label: "Size Health", icon: Ruler, id: "size-health", group: "Inventory & Replenishment", desc: "Broken size-curve detection by style" },

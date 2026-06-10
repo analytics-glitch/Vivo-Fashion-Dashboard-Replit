@@ -5,11 +5,17 @@ import { api, fmtKES, fmtNum } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import IBTFlatTable from "@/components/IBTFlatTable";
+import IBTSuggestionsTable from "@/components/IBTSuggestionsTable";
+import IBTOutcomes from "@/components/IBTOutcomes";
 import WarehouseToStoreIBT from "@/components/WarehouseToStoreIBT";
 import IBTCompletedMoves from "@/components/IBTCompletedMoves";
 import IBTMarkAsDoneModal from "@/components/IBTMarkAsDoneModal";
 import { useRecommendationState } from "@/lib/useRecommendationState";
-import { Truck, Coins, Package, MagnifyingGlass } from "@phosphor-icons/react";
+import { toast } from "sonner";
+import {
+  Truck, Coins, Package, MagnifyingGlass, DownloadSimple,
+  ListChecks, ChartLineUp, Stack,
+} from "@phosphor-icons/react";
 
 const ibtKey = (r) => `${r.style_name}||${r.from_store}||${r.to_store}`;
 
@@ -34,6 +40,19 @@ const IBT = () => {
   const [completedSkuKeys, setCompletedSkuKeys] = useState(new Set());
   const [completedRefresh, setCompletedRefresh] = useState(0);
   const [doneModalRow, setDoneModalRow] = useState(null);
+  // B1 — top-level view tabs: live suggestions vs. realised outcomes.
+  const [tab, setTab] = useState("suggestions");
+  // B1 — cluster-aware matching (A/B/C revenue tiers). Default ON per spec;
+  // persisted so a buyer's preference survives reloads.
+  const [useClustering, setUseClustering] = useState(() => {
+    try { return localStorage.getItem("vivo_ibt_clustering") !== "off"; }
+    catch { return true; }
+  });
+  const setClusteringPersist = (on) => {
+    setUseClustering(on);
+    try { localStorage.setItem("vivo_ibt_clustering", on ? "on" : "off"); } catch { /* private browsing */ }
+  };
+  const [exporting, setExporting] = useState(false);
   // Sensitivity preset for the FROM/TO velocity bands. Persists across
   // sessions so a buyer who likes the looser view doesn't have to
   // re-pick it every visit. Default = strict (matches pre-iter-64).
@@ -55,8 +74,9 @@ const IBT = () => {
   // useRecommendationState writes to MongoDB; we no longer surface the
   // pill UI per leadership request — Mark As Done is the single
   // workflow.
-  // eslint-disable-next-line no-unused-vars
-  const { stateByKey } = useRecommendationState("ibt");
+  // B1 — full hook: read state + refresh after bulk actions in the
+  // priority suggestions accordion.
+  const ibtRecState = useRecommendationState("ibt");
 
   // ALWAYS force "Last 30 days" on this page — leadership directive so
   // store managers don't see stale narrow date windows. Runs once on
@@ -104,6 +124,7 @@ const IBT = () => {
           date_from: dateFrom, date_to: dateTo, country,
           limit: 300,
           low_pct: low, high_pct: high,
+          use_clustering: useClustering,
         },
         timeout: 180000,
       })
@@ -116,7 +137,41 @@ const IBT = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), dataVersion, sensitivity]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), dataVersion, sensitivity, useClustering]);
+
+  // B1 — Export to Operations: server-built multi-sheet Excel (one tab per
+  // donor store) for the picking team. Streams a blob; bypasses the response
+  // cache so each click reflects the latest filters/clustering choice.
+  const handleExportOps = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const country = countries.length === 1 ? countries[0] : undefined;
+      const resp = await api.get("/ibt/export/operations", {
+        params: { date_from: dateFrom, date_to: dateTo, country, use_clustering: useClustering },
+        responseType: "blob",
+        forceFresh: true,
+        timeout: 180000,
+      });
+      const blob = new Blob([resp.data], {
+        type: resp.headers?.["content-type"] ||
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `ibt-operations-${dateTo}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Operations workbook downloaded");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Export failed — try again");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const brands = useMemo(
     () => Array.from(new Set(rows.map((r) => r.brand).filter(Boolean))).sort(),
@@ -184,10 +239,39 @@ const IBT = () => {
         </p>
       </div>
 
-      {loading && <Loading label="Analyzing sell-through across stores…" />}
-      {error && <ErrorBox message={error} />}
+      <div className="flex items-center gap-1 border-b border-border" role="tablist" data-testid="ibt-tabs">
+        {[
+          { id: "suggestions", label: "Suggestions", icon: ListChecks },
+          { id: "outcomes", label: "Outcomes", icon: ChartLineUp },
+        ].map((t) => {
+          const TabIcon = t.icon;
+          const active = tab === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setTab(t.id)}
+              data-testid={`ibt-tab-${t.id}`}
+              className={`inline-flex items-center gap-1.5 px-4 py-2 text-[13px] font-semibold border-b-2 -mb-px transition-colors ${
+                active
+                  ? "border-brand text-brand-deep"
+                  : "border-transparent text-muted hover:text-foreground"
+              }`}
+            >
+              <TabIcon size={15} weight={active ? "fill" : "regular"} /> {t.label}
+            </button>
+          );
+        })}
+      </div>
 
-      {!loading && !error && (
+      {tab === "outcomes" && <IBTOutcomes dataVersion={dataVersion} />}
+
+      {tab === "suggestions" && loading && <Loading label="Analyzing sell-through across stores…" />}
+      {tab === "suggestions" && error && <ErrorBox message={error} />}
+
+      {tab === "suggestions" && !loading && !error && (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <KPICard testId="ibt-kpi-moves" accent label="Open moves"
@@ -264,6 +348,51 @@ const IBT = () => {
                 clear
               </button>
             )}
+            <div className="flex-1" />
+            <button
+              type="button"
+              role="switch"
+              aria-checked={useClustering}
+              onClick={() => setClusteringPersist(!useClustering)}
+              data-testid="ibt-clustering-toggle"
+              title="Match stores within the same or adjacent revenue tier (A/B/C). Off = chain-wide matching."
+              className={`inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-2.5 py-1.5 rounded-lg border transition-colors ${
+                useClustering
+                  ? "bg-brand/10 text-brand-deep border-brand/40"
+                  : "bg-white text-muted border-border hover:border-brand/40"
+              }`}
+            >
+              <Stack size={13} weight="bold" />
+              Cluster-aware {useClustering ? "on" : "off"}
+            </button>
+            <button
+              type="button"
+              onClick={handleExportOps}
+              disabled={exporting}
+              data-testid="ibt-export-operations"
+              title="Download a multi-sheet Excel workbook (one tab per donor store) for the picking team"
+              className="inline-flex items-center gap-1.5 text-[11.5px] font-bold text-white bg-brand hover:bg-brand-deep disabled:opacity-50 px-3 py-1.5 rounded-lg"
+            >
+              <DownloadSimple size={13} weight="bold" />
+              {exporting ? "Exporting…" : "Export to Operations"}
+            </button>
+          </div>
+
+          <div className="card-white p-4 sm:p-5" data-testid="ibt-priority-card">
+            <SectionTitle
+              title="Priority transfers"
+              subtitle="Grouped by style and ranked by transfer score (donor surplus + destination demand). Expand a style to see every donor → needer pair, store revenue-cluster (A/B/C), the projected weeks-of-cover left at source, and the SKU-level size run. Select rows for bulk Mark Done / Dismiss / Export."
+            />
+            <IBTSuggestionsTable
+              suggestions={visible}
+              recState={ibtRecState}
+              onMarkDone={(payload) => setDoneModalRow(payload)}
+              emptyLabel={
+                filtered.length === 0
+                  ? "No transfer opportunities found for the current window. Try widening the date range or turning off cluster-aware matching."
+                  : "All transfer moves have been actioned."
+              }
+            />
           </div>
 
           <div className="card-white p-4 sm:p-5" data-testid="ibt-table-card">

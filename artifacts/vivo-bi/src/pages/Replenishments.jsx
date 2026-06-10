@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { api, fmtNum } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useFilters } from "@/lib/filters";
 import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
 import { useTableSort, SortableTh } from "@/lib/useTableSort";
 import {
   Calendar as CalendarIcon, CheckCircle, FilePdf,
   Package, ArrowCounterClockwise, MagnifyingGlass,
+  Warning, Info, CaretDown, CaretRight, ListBullets,
+  CalendarBlank, DownloadSimple, X as XIcon,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { jsPDF } from "jspdf";
@@ -45,9 +48,19 @@ const _isAdminOrOwner = (user) => {
   return r === "admin" || r === "owner";
 };
 
+const PRIO_RANK = { critical: 0, high: 1, medium: 2 };
+
 const Replenishments = () => {
   const { user } = useAuth();
   const isAdmin = _isAdminOrOwner(user);
+
+  // Global filters drive the country/channel-scoped panels (chronic
+  // stockouts, predictive alerts, the forward calendar and the Operations
+  // export). The pick-list itself keeps its own date pickers.
+  const { applied } = useFilters();
+  const filterCountry = applied.countries.length === 1 ? applied.countries[0] : undefined;
+  const filterChannel = applied.channels.length ? applied.channels.join(",") : undefined;
+  const filterKey = JSON.stringify([applied.countries, applied.channels, applied.dataVersion]);
 
   // ISS-002 — Pick list date defaults to TODAY in Africa/Nairobi (EAT),
   // not UTC's yesterday. The label reads "Today's pick list · <today>"
@@ -97,6 +110,26 @@ const Replenishments = () => {
   const liveSort = useTableSort();
   const fulfilmentSort = useTableSort();
   const completedSort = useTableSort();
+
+  // B2 — list vs forward calendar.
+  const [viewMode, setViewMode] = useState("list");
+  // B2 — per-row expand (size breakdown) + bulk selection sets.
+  const [expanded, setExpanded] = useState(() => new Set());
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkSaving, setBulkSaving] = useState(false);
+  // B2 — Operations export in-flight flag.
+  const [exporting, setExporting] = useState(false);
+
+  // B2 — predictive stockout banner (dismissible) + chronic-stockouts panel.
+  const [alerts, setAlerts] = useState(null);
+  const [alertDismissed, setAlertDismissed] = useState(false);
+  const [chronic, setChronic] = useState(null);
+  const [chronicOpen, setChronicOpen] = useState(false);
+
+  // B2 — forward replenishment calendar (only fetched in calendar view).
+  const [calendar, setCalendar] = useState(null);
+  const [calLoading, setCalLoading] = useState(false);
+  const [calError, setCalError] = useState(null);
 
   // Bootstrap is now handled inside <ReplenishmentRosterCard>; this
   // page just listens for the save signal via the onSaved callback.
@@ -160,6 +193,40 @@ const Replenishments = () => {
       .finally(() => { if (!cancel) setCompletedLoading(false); });
     return () => { cancel = true; };
   }, [isAdmin, completedRefresh]);
+
+  // B2 — predictive stockout alerts (styles dropping below 2 weeks of cover).
+  useEffect(() => {
+    let cancel = false;
+    api.get("/replenishment/stockout-alerts", { params: { country: filterCountry, channel: filterChannel } })
+      .then(({ data }) => { if (!cancel) { setAlerts(data || null); setAlertDismissed(false); } })
+      .catch(() => { if (!cancel) setAlerts(null); });
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterKey]);
+
+  // B2 — chronic stockouts (at risk 3+ consecutive snapshot weeks).
+  useEffect(() => {
+    let cancel = false;
+    api.get("/replenishment/chronic-stockouts", { params: { min_weeks: 3 } })
+      .then(({ data }) => { if (!cancel) setChronic(Array.isArray(data) ? data : []); })
+      .catch(() => { if (!cancel) setChronic([]); });
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applied.dataVersion]);
+
+  // B2 — forward replenishment calendar (only when the calendar view is on).
+  useEffect(() => {
+    if (viewMode !== "calendar") return;
+    let cancel = false;
+    setCalLoading(true);
+    setCalError(null);
+    api.get("/replenishment/calendar", { params: { country: filterCountry, weeks_ahead: 8 } })
+      .then(({ data }) => { if (!cancel) setCalendar(data || null); })
+      .catch((e) => { if (!cancel) setCalError(e?.response?.data?.detail || e.message); })
+      .finally(() => { if (!cancel) setCalLoading(false); });
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, filterKey]);
 
   // Visible rows = filter out already-completed rows AND apply free-text search.
   const visibleRows = useMemo(() => {
@@ -245,6 +312,159 @@ const Replenishments = () => {
       setSavingKey(null);
     }
   };
+
+  // B2 — sales velocity → weeks-of-cover, computed from the pick-list window.
+  // The report only ships raw units sold + store SOH, so we normalise the
+  // window to a weekly run-rate to expose "weeks of cover" (WoC). A 4-week
+  // supplier lead time is the line in the sand: under it = AT RISK.
+  const windowDays = useMemo(() => {
+    try {
+      const a = new Date(dateFrom);
+      const b = new Date(dateTo);
+      const d = Math.round((b - a) / 86400000) + 1;
+      return d > 0 ? d : 1;
+    } catch { return 1; }
+  }, [dateFrom, dateTo]);
+
+  const rowVelocity = useCallback((r) => {
+    const sold = Number(r.units_sold || 0);
+    const soh = Number(r.soh_store || 0);
+    const weekly = windowDays > 0 ? (sold / windowDays) * 7 : sold * 7;
+    const woc = weekly > 0 ? soh / weekly : (soh > 0 ? Infinity : 0);
+    let status = null; // "risk" | "watch"
+    if (weekly > 0) {
+      if (woc < 4) status = "risk";
+      else if (woc >= 5 && woc <= 7) status = "watch";
+    }
+    return { weekly, woc, status };
+  }, [windowDays]);
+
+  // B2 — expand / collapse the size-breakdown sub-row for a SKU.
+  const toggleExpand = useCallback((k) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k); else next.add(k);
+      return next;
+    });
+  }, []);
+
+  // B2 — bulk selection helpers (keyed identically to markAsDone).
+  const toggleSelect = useCallback((k) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k); else next.add(k);
+      return next;
+    });
+  }, []);
+
+  const allVisibleSelected = sortedVisibleRows.length > 0
+    && sortedVisibleRows.every((r) => selected.has(`${r.pos_location}|${r.barcode}`));
+
+  const toggleSelectAll = useCallback(() => {
+    setSelected((prev) => {
+      const keys = sortedVisibleRows.map((r) => `${r.pos_location}|${r.barcode}`);
+      const everySelected = keys.length > 0 && keys.every((k) => prev.has(k));
+      if (everySelected) {
+        const next = new Set(prev);
+        keys.forEach((k) => next.delete(k));
+        return next;
+      }
+      return new Set([...prev, ...keys]);
+    });
+  }, [sortedVisibleRows]);
+
+  // B2 — bulk approve via the recommendations engine. Each line is stamped
+  // done under both its SKU and barcode keys so the audit ledger matches the
+  // single-row mark path exactly.
+  const bulkApprove = useCallback(async () => {
+    const rows = sortedVisibleRows.filter((r) => selected.has(`${r.pos_location}|${r.barcode}`));
+    if (!rows.length) return;
+    const actions = [];
+    for (const r of rows) {
+      const k = `${r.pos_location}|${r.barcode}`;
+      const raw = actuals[k];
+      const actual = raw === "" || raw == null ? Number(r.replenish || 0) : Number(raw);
+      const au = Number.isNaN(actual) || actual < 0 ? Number(r.replenish || 0) : actual;
+      if (r.sku) {
+        actions.push({ rec_type: "replenish", rec_key: `${r.pos_location}|sku|${r.sku}`, status: "done", actual_units: au });
+      }
+      if (r.barcode) {
+        actions.push({ rec_type: "replenish", rec_key: `${r.pos_location}|barcode|${r.barcode}`, status: "done", actual_units: au });
+      }
+    }
+    if (!actions.length) {
+      toast.error("Selected lines have no SKU or barcode to approve.");
+      return;
+    }
+    setBulkSaving(true);
+    try {
+      await api.post("/recommendations/bulk", { actions });
+      const keys = new Set(rows.map((r) => `${r.pos_location}|${r.barcode}`));
+      setData((prev) => ({
+        ...prev,
+        rows: (prev.rows || []).map((r) =>
+          keys.has(`${r.pos_location}|${r.barcode}`) ? { ...r, replenished: true } : r
+        ),
+      }));
+      setSelected(new Set());
+      setCompletedRefresh((t) => t + 1);
+      toast.success(`Approved ${rows.length} line${rows.length === 1 ? "" : "s"}.`);
+    } catch (e) {
+      toast.error("Bulk approve failed — " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setBulkSaving(false);
+    }
+  }, [sortedVisibleRows, selected, actuals]);
+
+  // B2 — Export to Operations (server-built XLSX). Cookie auth rides along
+  // on the same axios client; forceFresh skips the response cache.
+  const exportOperations = useCallback(async () => {
+    setExporting(true);
+    try {
+      const resp = await api.get("/replenishment/export/operations", {
+        params: { country: filterCountry, channel: filterChannel },
+        responseType: "blob",
+        forceFresh: true,
+        timeout: 240000,
+      });
+      const blob = resp?.data instanceof Blob ? resp.data : new Blob([resp.data]);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `Replenishment_Operations_${todayEat}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Operations export downloaded.");
+    } catch (e) {
+      toast.error("Export failed — " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setExporting(false);
+    }
+  }, [filterCountry, filterChannel]);
+
+  // B2 — pivot the forward calendar into a subcategory × week matrix.
+  const calMatrix = useMemo(() => {
+    const buckets = calendar?.buckets || [];
+    if (!buckets.length) return null;
+    const map = {}; // subcat → weekStart → {count, critical, high, medium}
+    const subcats = new Set();
+    for (const b of buckets) {
+      for (const s of (b.styles || [])) {
+        const sc = s.subcategory || "Other";
+        subcats.add(sc);
+        map[sc] = map[sc] || {};
+        const cell = (map[sc][b.week_start] = map[sc][b.week_start] || { count: 0, critical: 0, high: 0, medium: 0 });
+        cell.count += 1;
+        const p = (s.priority || "").toLowerCase();
+        if (p === "critical") cell.critical += 1;
+        else if (p === "high") cell.high += 1;
+        else cell.medium += 1;
+      }
+    }
+    return { buckets, subcats: [...subcats].sort(), map };
+  }, [calendar]);
 
   // Per-user fulfilment summary — small focused widget. Aggregates
   // completed rows by owner/picker and computes their overall
@@ -367,6 +587,90 @@ const Replenishments = () => {
 
   return (
     <div className="space-y-5" data-testid="replenishments-page">
+      {/* B2 — predictive stockout banner. `total` is already pre-filtered to
+          styles dropping under 2 weeks of cover on the server. */}
+      {alerts && !alertDismissed && (alerts.total ?? 0) > 0 && (
+        <div
+          className="flex items-start gap-3 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3"
+          role="alert"
+          data-testid="replen-stockout-banner"
+        >
+          <Warning size={18} weight="fill" className="text-rose-600 mt-0.5 shrink-0" />
+          <div className="flex-1 min-w-0 text-[12.5px] text-rose-900">
+            <b>{fmtNum(alerts.total)}</b> style{alerts.total === 1 ? "" : "s"} will stock out within 2 weeks.
+            {(alerts.critical_count ?? 0) > 0 && (
+              <> <span className="font-semibold">{fmtNum(alerts.critical_count)} critical</span>.</>
+            )}
+            {(alerts.warning_count ?? 0) > 0 && (
+              <> {fmtNum(alerts.warning_count)} on watch.</>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setAlertDismissed(true)}
+            className="text-rose-500 hover:text-rose-700 shrink-0"
+            aria-label="Dismiss stockout alert"
+            data-testid="replen-banner-dismiss"
+          >
+            <XIcon size={15} weight="bold" />
+          </button>
+        </div>
+      )}
+
+      {/* B2 — chronic stockouts (at risk 3+ consecutive snapshot weeks). */}
+      {chronic && chronic.length > 0 && (
+        <div className="card-white p-0 overflow-hidden" data-testid="replen-chronic-panel">
+          <button
+            type="button"
+            onClick={() => setChronicOpen((o) => !o)}
+            className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-panel/40"
+            data-testid="replen-chronic-toggle"
+          >
+            <span className="inline-flex items-center gap-2 font-extrabold text-[13.5px] text-[#0f3d24]">
+              <Warning size={15} weight="duotone" className="text-amber-600" />
+              Chronic stockouts · {fmtNum(chronic.length)} style{chronic.length === 1 ? "" : "s"} at risk 3+ weeks
+            </span>
+            {chronicOpen ? <CaretDown size={15} weight="bold" /> : <CaretRight size={15} weight="bold" />}
+          </button>
+          {chronicOpen && (
+            <div className="overflow-x-auto border-t border-border">
+              <table className="w-full min-w-max text-[12px]">
+                <thead className="bg-panel">
+                  <tr className="text-left">
+                    <th className="px-3 py-2 font-semibold whitespace-nowrap">Style</th>
+                    <th className="px-3 py-2 font-semibold whitespace-nowrap">Country</th>
+                    <th className="px-3 py-2 font-semibold whitespace-nowrap">Brand</th>
+                    <th className="px-3 py-2 font-semibold whitespace-nowrap">Subcategory</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Weeks at risk</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Avg units/wk</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Avg WoC</th>
+                    <th className="px-3 py-2 font-semibold whitespace-nowrap">First flagged</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {chronic.map((c, i) => (
+                    <tr key={`${c.style_name}-${c.country}-${i}`} className={`border-t border-border/50 ${i % 2 === 0 ? "bg-white" : "bg-panel/30"}`} data-testid={`replen-chronic-row-${i}`}>
+                      <td className="px-3 py-2 whitespace-nowrap font-semibold">{c.style_name || "—"}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">{c.country || "—"}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">{c.brand || "—"}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">{c.subcategory || "—"}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        <span className="inline-flex items-center bg-rose-100 text-rose-800 border border-rose-300 font-bold px-2 py-0.5 rounded-full">
+                          {fmtNum(c.consecutive_at_risk_weeks)}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtNum(c.avg_weekly_units)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{c.avg_woc == null ? "—" : Number(c.avg_woc).toFixed(1)}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-muted">{c.first_flagged_date || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
       <div>
         <p className="text-[12.5px] text-muted mt-1 max-w-3xl">
           For each POS where shop-floor stock is below 2 units AND units sold &gt; 0 in
@@ -405,6 +709,38 @@ const Replenishments = () => {
               data-testid="replen-date-to"
               className="input-pill text-[12px] py-1.5 px-3" />
           </label>
+
+          {/* B2 — list vs forward calendar + Operations export. */}
+          <div className="ml-auto flex items-center gap-2">
+            <div className="inline-flex rounded-full border border-border overflow-hidden" role="group" data-testid="replen-view-toggle">
+              <button
+                type="button"
+                onClick={() => setViewMode("list")}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-semibold ${viewMode === "list" ? "bg-emerald-700 text-white" : "bg-white text-foreground hover:bg-panel"}`}
+                data-testid="replen-view-list"
+              >
+                <ListBullets size={13} weight="bold" /> List
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("calendar")}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-semibold ${viewMode === "calendar" ? "bg-emerald-700 text-white" : "bg-white text-foreground hover:bg-panel"}`}
+                data-testid="replen-view-calendar"
+              >
+                <CalendarBlank size={13} weight="bold" /> Calendar
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={exportOperations}
+              disabled={exporting}
+              className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-white bg-[#0f3d24] hover:bg-[#0c3019] disabled:opacity-50 px-3 py-1.5 rounded-full"
+              data-testid="replen-export-ops"
+              title="Download the full replenishment plan as an Operations workbook"
+            >
+              <DownloadSimple size={13} weight="bold" /> {exporting ? "Exporting…" : "Export to Operations"}
+            </button>
+          </div>
         </div>
 
         {/* Summary pills with per-person PDF export. */}
@@ -439,6 +775,8 @@ const Replenishments = () => {
           </div>
         )}
 
+        {/* B2 — list view: search, bulk bar, and the SKU pick-list table. */}
+        {viewMode === "list" && (<>
         {/* Search */}
         <div className="flex items-center gap-2 input-pill mb-3" style={{ maxWidth: 360 }}>
           <MagnifyingGlass size={14} className="text-muted" />
@@ -451,6 +789,30 @@ const Replenishments = () => {
           />
         </div>
 
+        {/* B2 — bulk action bar (appears once lines are selected). */}
+        {selected.size > 0 && (
+          <div className="flex flex-wrap items-center gap-3 mb-3 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2" data-testid="replen-bulk-bar">
+            <span className="text-[12px] font-semibold text-emerald-900">{selected.size} selected</span>
+            <button
+              type="button"
+              onClick={bulkApprove}
+              disabled={bulkSaving}
+              className="inline-flex items-center gap-1.5 text-[11.5px] font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 px-3 py-1.5 rounded-md"
+              data-testid="replen-bulk-approve"
+            >
+              <CheckCircle size={13} weight="fill" /> {bulkSaving ? "Approving…" : "Approve selected"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelected(new Set())}
+              className="text-[11.5px] font-semibold text-muted hover:text-foreground"
+              data-testid="replen-bulk-clear"
+            >
+              Clear
+            </button>
+          </div>
+        )}
+
         {loading && <Loading label="Computing replenishment list…" />}
         {error && <ErrorBox message={error} />}
 
@@ -459,13 +821,23 @@ const Replenishments = () => {
             <Empty label={
               (data.rows || []).length === 0
                 ? "Nothing to replenish — no in-store SKU sold > 0 with stock < 2 in this window."
-                : "All open lines have been actioned. 🎉"
+                : "All open lines have been actioned."
             } />
           ) : (
             <div className="overflow-x-auto rounded-lg border border-border bg-white">
               <table className="w-full min-w-max text-[12.5px]" data-testid="replen-table">
                 <thead className="bg-panel sticky top-0 z-10">
                   <tr className="text-left">
+                    <th className="px-3 py-2.5 w-9">
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        onChange={toggleSelectAll}
+                        aria-label="Select all lines"
+                        data-testid="replen-select-all"
+                        className="accent-emerald-700"
+                      />
+                    </th>
                     <SortableTh sortKey="owner" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Owner</SortableTh>
                     <SortableTh sortKey="pos_location" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">POS Location</SortableTh>
                     <SortableTh sortKey="days_lapsed" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Days since this SKU first appeared on the replenishment list. RED when > 2.">Days lapsed</SortableTh>
@@ -485,8 +857,28 @@ const Replenishments = () => {
                   {sortedVisibleRows.map((r, idx) => {
                     const k = `${r.pos_location}|${r.barcode}`;
                     const dl = r.days_lapsed;
+                    const isSelected = selected.has(k);
+                    const isOpen = expanded.has(k);
+                    const hasBreakdown = r.size_breakdown_available
+                      && Array.isArray(r.size_breakdown) && r.size_breakdown.length > 0;
+                    const vel = rowVelocity(r);
+                    const wocLabel = !isFinite(vel.woc)
+                      ? "ample"
+                      : `${vel.woc.toFixed(1)} wks`;
+                    const whyText = `${r.pos_location}: ~${vel.weekly.toFixed(1)} units/wk sell-through, ${wocLabel} of store cover. Suggested top-up keeps this SKU ahead of the 4-week supplier lead time.`;
                     return (
-                      <tr key={k} className={`border-t border-border/50 ${idx % 2 === 0 ? "bg-white" : "bg-panel/30"} hover:bg-amber-50/40`}>
+                      <React.Fragment key={k}>
+                      <tr className={`border-t border-border/50 ${idx % 2 === 0 ? "bg-white" : "bg-panel/30"} hover:bg-amber-50/40`}>
+                        <td className="px-3 py-3 align-top">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleSelect(k)}
+                            aria-label={`Select ${r.product_name || "line"}`}
+                            data-testid={`replen-select-${idx}`}
+                            className="accent-emerald-700"
+                          />
+                        </td>
                         <td className="px-3 py-3 whitespace-nowrap">
                           <span className="inline-flex items-center bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">
                             {r.owner || "—"}
@@ -499,7 +891,31 @@ const Replenishments = () => {
                             : <span className="text-muted">{dl}d</span>}
                         </td>
                         <td className="px-3 py-3 sticky left-0 bg-inherit z-[5] min-w-[200px] max-w-[280px]">
-                          <span className="break-words" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>{r.product_name}</span>
+                          <div className="flex items-start gap-1.5">
+                            {hasBreakdown ? (
+                              <button
+                                type="button"
+                                onClick={() => toggleExpand(k)}
+                                className="mt-0.5 text-muted hover:text-foreground shrink-0"
+                                aria-label="Toggle size breakdown"
+                                aria-expanded={isOpen}
+                                data-testid={`replen-expand-${idx}`}
+                              >
+                                {isOpen ? <CaretDown size={13} weight="bold" /> : <CaretRight size={13} weight="bold" />}
+                              </button>
+                            ) : (
+                              <span className="w-[13px] shrink-0" aria-hidden="true" />
+                            )}
+                            <span className="break-words" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>{r.product_name}</span>
+                            <span
+                              title={whyText}
+                              className="text-muted hover:text-brand cursor-help shrink-0 mt-0.5"
+                              data-testid={`replen-why-${idx}`}
+                              aria-label="Why recommended?"
+                            >
+                              <Info size={13} weight="bold" />
+                            </span>
+                          </div>
                         </td>
                         <td className="px-3 py-3 whitespace-nowrap">{r.size || "—"}</td>
                         <td className="px-3 py-3 whitespace-nowrap font-mono text-[11px]">{r.barcode}</td>
@@ -514,7 +930,19 @@ const Replenishments = () => {
                         </td>
                         <td className="px-3 py-3 text-right tabular-nums">{fmtNum(r.soh_wh)}</td>
                         <td className="px-3 py-3 text-right tabular-nums">
-                          <span className="inline-flex items-center bg-emerald-100 text-emerald-900 font-bold px-2 py-0.5 rounded-full">{fmtNum(r.replenish)}</span>
+                          <div className="inline-flex flex-col items-end gap-1">
+                            <span className="inline-flex items-center bg-emerald-100 text-emerald-900 font-bold px-2 py-0.5 rounded-full">{fmtNum(r.replenish)}</span>
+                            {vel.status === "risk" && (
+                              <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-800 border border-rose-300 text-[9.5px] font-bold px-1.5 py-0.5 rounded-full" data-testid={`replen-risk-${idx}`} title={whyText}>
+                                <Warning size={9} weight="fill" /> AT RISK
+                              </span>
+                            )}
+                            {vel.status === "watch" && (
+                              <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-900 border border-amber-300 text-[9.5px] font-bold px-1.5 py-0.5 rounded-full" data-testid={`replen-watch-${idx}`} title={whyText}>
+                                WATCH
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-3 py-2 text-right">
                           <input
@@ -542,12 +970,91 @@ const Replenishments = () => {
                           </button>
                         </td>
                       </tr>
+                      {isOpen && hasBreakdown && (
+                        <tr className="bg-emerald-50/40 border-t border-border/40" data-testid={`replen-size-row-${idx}`}>
+                          <td colSpan={14} className="px-4 py-2.5">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-[11px] font-semibold text-muted mr-1">Size mix:</span>
+                              {r.size_breakdown.map((s, si) => (
+                                <span key={si} className="inline-flex items-center gap-1 bg-white border border-emerald-200 text-emerald-900 text-[10.5px] font-semibold px-2 py-0.5 rounded-full">
+                                  {s.size}: <b>{fmtNum(s.recommended_qty)}</b>
+                                  <span className="text-muted font-normal">
+                                    ({fmtNum(s.soh)} soh{s.size_share_pct != null ? ` · ${Number(s.size_share_pct).toFixed(0)}%` : ""})
+                                  </span>
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
               </table>
             </div>
           )
+        )}
+        </>)}
+
+        {/* B2 — forward replenishment calendar: subcategory × week matrix. */}
+        {viewMode === "calendar" && (
+          <div data-testid="replen-calendar">
+            {calLoading && <Loading label="Building the forward calendar…" />}
+            {calError && <ErrorBox message={calError} />}
+            {!calLoading && !calError && (
+              !calMatrix ? (
+                <Empty label="No upcoming replenishment needs in the next 8 weeks." />
+              ) : (
+                <>
+                  <div className="flex flex-wrap items-center gap-3 mb-3 text-[11px] text-muted">
+                    <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-rose-500 inline-block" /> Critical</span>
+                    <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-amber-500 inline-block" /> High</span>
+                    <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-yellow-300 inline-block" /> Medium</span>
+                    <span className="ml-1">Cell shows the number of styles needing action that week.</span>
+                  </div>
+                  <div className="overflow-x-auto rounded-lg border border-border bg-white">
+                    <table className="w-full min-w-max text-[12px]" data-testid="replen-calendar-table">
+                      <thead className="bg-panel sticky top-0 z-10">
+                        <tr className="text-left">
+                          <th className="px-3 py-2.5 font-semibold sticky left-0 bg-panel z-20 whitespace-nowrap">Subcategory</th>
+                          {calMatrix.buckets.map((b) => (
+                            <th key={b.week_start} className="px-3 py-2.5 font-semibold text-center whitespace-nowrap">{b.week_label}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {calMatrix.subcats.map((sc, ri) => (
+                          <tr key={sc} className={`border-t border-border/50 ${ri % 2 === 0 ? "bg-white" : "bg-panel/30"}`}>
+                            <td className="px-3 py-2.5 font-semibold sticky left-0 bg-inherit z-[5] whitespace-nowrap">{sc}</td>
+                            {calMatrix.buckets.map((b) => {
+                              const cell = calMatrix.map[sc]?.[b.week_start];
+                              if (!cell || !cell.count) {
+                                return <td key={b.week_start} className="px-3 py-2.5 text-center text-muted">·</td>;
+                              }
+                              const cls = cell.critical > 0
+                                ? "bg-rose-500 text-white"
+                                : cell.high > 0
+                                  ? "bg-amber-500 text-white"
+                                  : "bg-yellow-300 text-yellow-950";
+                              const title = `${cell.count} style(s) · ${cell.critical} critical · ${cell.high} high · ${cell.medium} medium`;
+                              return (
+                                <td key={b.week_start} className="px-2 py-2 text-center">
+                                  <span title={title} className={`inline-flex items-center justify-center min-w-[26px] font-bold px-2 py-0.5 rounded ${cls}`}>
+                                    {cell.count}
+                                  </span>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )
+            )}
+          </div>
         )}
       </div>
 

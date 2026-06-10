@@ -44,6 +44,9 @@ import {
   TrendUp,
   Footprints,
   Target,
+  Warning,
+  X,
+  ArrowsLeftRight,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -188,6 +191,7 @@ const ProjectionBanner = ({ p }) => {
 
 const Overview = () => {
   const { applied, touchLastUpdated, lastUpdated } = useFilters();
+  const navigate = useNavigate();
   const { dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, channelGroup, dataVersion } = applied;
   const isOnlineOnly = channelGroup === "online";
   const filters = { dateFrom, dateTo, countries, channels };
@@ -227,6 +231,11 @@ const Overview = () => {
   // raw kpi.total_units while loading or on error.
   const [canonicalUnits, setCanonicalUnits] = useState(null);
   const [canonicalUnitsPrev, setCanonicalUnitsPrev] = useState(null);
+
+  // B8 — page-level additions: stockout alert banner + IBT ROI card.
+  const [stockoutAlerts, setStockoutAlerts] = useState(null);
+  const [stockoutDismissed, setStockoutDismissed] = useState(false);
+  const [ibtRoi, setIbtRoi] = useState(null);
 
   // VAT logic has been removed per product decision — all monetary values
   // rendered as-is from upstream (excl. VAT). `adj` is a no-op identity to
@@ -340,6 +349,25 @@ const Overview = () => {
     return () => { cancelled = true; };
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, compareDateFrom, compareDateTo, dataVersion]);
+
+  // B8 — Stockout alerts (banner) + IBT ROI dashboard (card). Both are
+  // best-effort: failures never crash the page, they simply hide the
+  // section. Stockout-alerts accepts a single country + comma channels;
+  // roi-dashboard takes only date_from/date_to.
+  useEffect(() => {
+    let cancelled = false;
+    const country = countries.length === 1 ? countries[0] : undefined;
+    const channel = channels.length ? channels.join(",") : undefined;
+    setStockoutDismissed(false);
+    api.get("/replenishment/stockout-alerts", { params: { country, channel } })
+      .then((r) => { if (!cancelled) setStockoutAlerts(r.data || null); })
+      .catch(() => { if (!cancelled) setStockoutAlerts(null); });
+    api.get("/ibt/roi-dashboard", { params: { date_from: dateFrom, date_to: dateTo } })
+      .then((r) => { if (!cancelled) setIbtRoi(r.data || null); })
+      .catch(() => { if (!cancelled) setIbtRoi(null); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
 
   const pairedBars = useMemo(() => {
@@ -889,6 +917,35 @@ const Overview = () => {
         )}
       </div>
 
+      {!stockoutDismissed && stockoutAlerts && (stockoutAlerts.total || 0) > 0 && (
+        <div
+          className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex flex-wrap items-center gap-3"
+          data-testid="overview-stockout-banner"
+        >
+          <Warning size={20} weight="fill" className="text-amber-600 shrink-0" />
+          <span className="text-[13px] text-amber-900 font-semibold">
+            {fmtNum(stockoutAlerts.total)} {stockoutAlerts.total === 1 ? "style" : "styles"} stocking out within 2 weeks
+          </span>
+          <button
+            type="button"
+            onClick={() => navigate("/replenishments")}
+            data-testid="overview-stockout-review"
+            className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11.5px] font-semibold border border-amber-400 bg-white text-amber-800 hover:bg-amber-100 transition-colors"
+          >
+            Review replenishments
+          </button>
+          <button
+            type="button"
+            onClick={() => setStockoutDismissed(true)}
+            aria-label="Dismiss stockout alert"
+            data-testid="overview-stockout-dismiss"
+            className="ml-auto p-1 rounded-md text-amber-700 hover:bg-amber-100 transition-colors"
+          >
+            <X size={16} weight="bold" />
+          </button>
+        </div>
+      )}
+
       {(loading || kpisLoading) && !kpis && <OverviewSkeleton />}
       {error && <ErrorBox message={error} />}
       {degradedMessage && (
@@ -1052,6 +1109,31 @@ const Overview = () => {
                 amount={bestConversionStore ? fmtPct(bestConversionStore.conversion_rate) : "—"} icon={TrendUp} />
             )}
           </div>
+
+          {ibtRoi && (ibtRoi.total_transfers_completed || 0) > 0 && (
+            <div className="space-y-3" data-testid="overview-ibt-roi">
+              <SectionTitle
+                title="IBT ROI"
+                subtitle={`Outcomes of completed inter-branch transfers${ibtRoi.period?.from ? ` · ${fmtDate(ibtRoi.period.from)} → ${fmtDate(ibtRoi.period.to)}` : ""}`}
+              />
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <KPICard small testId="ibt-roi-sellthrough" label="Avg 30-Day Sell-Through"
+                  sub="Units sold within 30 days of transfer"
+                  value={fmtPct(ibtRoi.avg_sell_through_30d)} icon={TrendUp} showDelta={false} />
+                <KPICard small testId="ibt-roi-uplift" label="Incremental Revenue"
+                  sub="Estimated uplift from transfers"
+                  value={fmtKES(ibtRoi.total_estimated_uplift_kes)} valueFull={fmtKESLong(ibtRoi.total_estimated_uplift_kes)}
+                  icon={CurrencyCircleDollar} showDelta={false} />
+                <KPICard small testId="ibt-roi-revenue" label="Revenue Generated"
+                  sub="Actual sales from moved units"
+                  value={fmtKES(ibtRoi.total_actual_revenue_kes)} valueFull={fmtKESLong(ibtRoi.total_actual_revenue_kes)}
+                  icon={Coins} showDelta={false} />
+                <KPICard small testId="ibt-roi-transfers" label="Transfers Completed"
+                  sub={`${fmtNum(ibtRoi.total_units_moved)} units moved`}
+                  value={fmtNum(ibtRoi.total_transfers_completed)} icon={ArrowsLeftRight} showDelta={false} />
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="card-white p-5 lg:col-span-2" data-testid="chart-top-channels">

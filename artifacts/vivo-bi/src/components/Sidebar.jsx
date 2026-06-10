@@ -36,6 +36,7 @@ import SyncStatusPill from "@/components/SyncStatusPill";
 import UpstreamHealthPill from "@/components/UpstreamHealthPill";
 import BackendUrlWarningPill from "@/components/BackendUrlWarningPill";
 import CacheStatsPill from "@/components/CacheStatsPill";
+import DataQualityStatusPill from "@/components/DataQualityStatusPill";
 // Top-nav tabs come from the shared nav definition (lib/navItems.jsx), the same
 // source the Home landing page uses, so the two never drift apart.
 import { PRIMARY_NAV as tabs } from "@/lib/navItems";
@@ -232,6 +233,33 @@ const TopNav = () => {
     const id = setInterval(fetch, 5 * 60 * 1000);
     return () => { cancelled = true; clearInterval(id); };
   }, [user]);
+
+  // "Pending replenishment recommendations" badge — count of replenishment
+  // recommendation actions still awaiting a decision. Polled every 5 min.
+  const [replenPending, setReplenPending] = React.useState(0);
+  React.useEffect(() => {
+    if (!user || !canAccessPage(user, "replenishments")) return;
+    let cancelled = false;
+    const fetch = () => {
+      api.get("/recommendations/summary")
+        .then((r) => {
+          if (cancelled) return;
+          const d = r.data || {};
+          let n = 0;
+          for (const [recType, byStatus] of Object.entries(d)) {
+            // Backend tags replenishment recommendation actions rec_type="replenish".
+            if (String(recType).toLowerCase() === "replenish") {
+              n += Number(byStatus?.pending || 0);
+            }
+          }
+          setReplenPending(n);
+        })
+        .catch(() => { /* non-critical */ });
+    };
+    fetch();
+    const id = setInterval(fetch, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [user]);
   return (
     <nav
       className="relative px-3 sm:px-5 lg:px-10 pt-2.5 pb-1.5 no-print bg-[#fed7aa] border-b border-border"
@@ -303,6 +331,7 @@ const TopNav = () => {
         <UpstreamHealthPill />
         <SyncStatusPill />
         <ReconciliationStatusPill />
+        <DataQualityStatusPill />
         <CacheStatsPill />
         <RedisStatusPill />
         <UserMenu />
@@ -343,6 +372,15 @@ const TopNav = () => {
                     {lateCount > 99 ? "99+" : lateCount}
                   </span>
                 )}
+                {t.id === "replenishments" && replenPending > 0 && (
+                  <span
+                    className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-brand text-white text-[10px] font-bold leading-none"
+                    title={`${replenPending} replenishment recommendation${replenPending === 1 ? "" : "s"} pending review`}
+                    data-testid="replen-pending-badge"
+                  >
+                    {replenPending > 99 ? "99+" : replenPending}
+                  </span>
+                )}
               </>
             )}
           </NavLink>
@@ -379,6 +417,14 @@ const TopNav = () => {
                       data-testid="ibt-late-badge-mobile"
                     >
                       {lateCount > 99 ? "99+" : lateCount}
+                    </span>
+                  )}
+                  {t.id === "replenishments" && replenPending > 0 && (
+                    <span
+                      className="ml-auto inline-flex items-center justify-center min-w-[20px] h-[20px] px-1.5 rounded-full bg-brand text-white text-[11px] font-bold leading-none"
+                      data-testid="replen-pending-badge-mobile"
+                    >
+                      {replenPending > 99 ? "99+" : replenPending}
                     </span>
                   )}
                 </>

@@ -53,6 +53,9 @@ A multi-page executive cockpit with a persistent sidebar and a global filter bar
 - Customers — total/new/repeat customers, avg spend, churned count, customer-trend (new vs returning), purchase frequency
 - Products — units sold, current stock, sell-through, top style, sales by subcategory, units-sold-vs-stock
 - Inventory — available vs on-hand units, SKUs, locations, available stock by location
+- Markdown & Clearance — markdown candidates (WoC, sell-through, recommended markdown %, est. revenue) and a clearance plan grouped by IMMEDIATE vs PLANNED urgency
+
+Operational close-the-loop pages also exist (IBT transfer suggestions, Replenishments, Re-Order, Size Health, Store Clusters, Data Quality) with recommendation actions, bulk operations, and "Export to Operations" file downloads. The topbar carries a Data Quality status pill and a Replenishments pending-count badge.
 
 Per-chart CSV export is available throughout.
 
