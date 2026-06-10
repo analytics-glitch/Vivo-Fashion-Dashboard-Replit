@@ -1,20 +1,6 @@
 #!/bin/bash
-echo "Starting Vivo Dashboard..."
-
-pkill -f api_pg.py 2>/dev/null
-pkill -f sync_incremental.py 2>/dev/null
-sleep 2
-
+# Local prod-parity entrypoint. In the pnpm-workspace deployment, production is
+# actually driven by each artifact's artifact.toml (the api-server service runs
+# watchdog.py). This script lets you run the same supervised stack locally.
 cd /home/runner/workspace
-
-# Start API (serves both /api/* and React frontend)
-python api_pg.py &
-echo "API + Frontend started on port ${PORT:-8000}"
-sleep 3
-
-# Start sync
-python sync_incremental.py &
-echo "Sync started"
-
-echo "All services running"
-wait
+exec python3 watchdog.py

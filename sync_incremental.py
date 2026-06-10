@@ -12,6 +12,45 @@ log = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ['DATABASE_URL']
 
+
+def ensure_heartbeat_table(conn):
+    with conn.cursor() as c:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sync_heartbeat (
+                id            INT PRIMARY KEY DEFAULT 1,
+                last_cycle_at TIMESTAMPTZ,
+                last_status   TEXT,
+                CONSTRAINT sync_heartbeat_single CHECK (id = 1)
+            )
+        """)
+    conn.commit()
+
+
+def write_heartbeat(conn, status):
+    """Record that the sync loop is alive and making progress.
+
+    Deliberately decoupled from data freshness (all_sales.loaded_at): during
+    quiet periods with no new sales, loaded_at stops advancing even though the
+    loop is perfectly healthy. The watchdog keys off this heartbeat so it never
+    restarts a working sync just because business was slow.
+    """
+    try:
+        with conn.cursor() as c:
+            c.execute("""
+                INSERT INTO sync_heartbeat (id, last_cycle_at, last_status)
+                VALUES (1, now(), %s)
+                ON CONFLICT (id) DO UPDATE
+                    SET last_cycle_at = now(), last_status = EXCLUDED.last_status
+            """, (status,))
+        conn.commit()
+    except Exception as e:
+        log.warning("heartbeat write failed: %s", e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 STORES = [
     {
         "store_id":  "vivowoman",
@@ -126,11 +165,16 @@ def get_vat(pos_location, store_vat=1.16):
         return 1.18
     return store_vat
 
+# How many days before the last known sale to re-pull each run. Defaults to 2
+# (incremental overlap); the watchdog widens this for recovery backfills via the
+# --days flag / SYNC_LOOKBACK_DAYS env var.
+LOOKBACK_DAYS = int(os.environ.get("SYNC_LOOKBACK_DAYS", "2"))
+
 def get_last_sync(cur, store_id):
     cur.execute("SELECT MAX(sale_date::date) FROM all_sales WHERE store_id = %s", (store_id,))
     result = cur.fetchone()[0]
     if result:
-        since = result - timedelta(days=2)
+        since = result - timedelta(days=LOOKBACK_DAYS)
         return since.strftime("%Y-%m-%dT%H:%M:%SZ")
     return "2019-01-01T00:00:00Z"
 
@@ -477,6 +521,9 @@ def main():
     cur  = conn.cursor()
     now  = datetime.now(timezone.utc)
 
+    ensure_heartbeat_table(conn)
+    write_heartbeat(conn, "cycle_start")
+
     # Load exchange rates once per sync cycle
     rates = get_exchange_rates(cur)
     log.info("Exchange rates: %s", rates)
@@ -487,6 +534,7 @@ def main():
         try:
             process_shopify_store(store, cur, now, rates)
             conn.commit()
+            write_heartbeat(conn, f"store:{store['store_id']}")
         except Exception as e:
             log.error("Error syncing %s: %s", store["store_id"], e)
             conn.rollback()
@@ -502,6 +550,7 @@ def main():
     try:
         sync_odoo(cur, now, rates)
         conn.commit()
+        write_heartbeat(conn, "odoo")
     except Exception as e:
         log.error("Odoo sync error: %s", e)
         conn.rollback()
@@ -509,18 +558,34 @@ def main():
     try:
         sync_footfall(cur, now)
         conn.commit()
+        write_heartbeat(conn, "footfall")
     except Exception as e:
         log.error("Footfall sync error: %s", e)
         conn.rollback()
 
+    write_heartbeat(conn, "ok")
     conn.close()
     log.info("=== Sync complete ===")
 
 if __name__ == "__main__":
-    while True:
-        try:
-            main()
-        except Exception as e:
-            log.error("Fatal sync error: %s", e)
-        log.info("Sleeping 1 minute...")
-        time.sleep(60)
+    import argparse
+    ap = argparse.ArgumentParser(description="Vivo incremental sync")
+    ap.add_argument("--once", action="store_true",
+                    help="run a single sync cycle and exit (used for recovery)")
+    ap.add_argument("--days", type=int, default=None,
+                    help="re-pull this many days before the last known sale")
+    cli = ap.parse_args()
+    if cli.days is not None:
+        LOOKBACK_DAYS = cli.days
+        log.info("Lookback window overridden to %d days", LOOKBACK_DAYS)
+
+    if cli.once:
+        main()
+    else:
+        while True:
+            try:
+                main()
+            except Exception as e:
+                log.error("Fatal sync error: %s", e)
+            log.info("Sleeping 1 minute...")
+            time.sleep(60)

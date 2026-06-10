@@ -290,7 +290,7 @@ import clerk_auth
 from fastapi.responses import JSONResponse
 
 # Exact /api paths reachable without a session (health probes + proxy prefix).
-_AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz"}
+_AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/sync-status"}
 
 # Query params that are concatenated into SQL as date literals. We validate them
 # to strict ISO dates at the edge so they can never carry SQL-injection payloads
@@ -755,6 +755,109 @@ def healthz():
     # stays green even if Postgres is briefly saturated, and is whitelisted in
     # _AUTH_PUBLIC_EXACT so the platform probe never gets a 401.
     return {"status": "ok"}
+
+
+@app.get("/api/sync-status")
+def sync_status():
+    """Sync-pipeline health for the dashboard status pill and external monitors.
+
+    Public (whitelisted in _AUTH_PUBLIC_EXACT): it exposes only timestamps and
+    health flags — no business data.
+
+    Health is keyed off the sync-loop HEARTBEAT (sync_heartbeat.last_cycle_at),
+    NOT data freshness: during a quiet sales period all_sales.loaded_at
+    legitimately stops advancing, so reporting that as CRITICAL would be a false
+    alarm. Data freshness (last load) is still reported separately, for info.
+    WARNING after 10 min without a heartbeat, CRITICAL after 30 min.
+    """
+    from datetime import datetime, timezone
+    WARN_MIN, CRIT_MIN = 10, 30
+    pool = _get_pool()
+    conn = pool.getconn()
+    try:
+        conn.autocommit = True
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Sync-loop heartbeat (liveness) — drives health.
+        heartbeat = None
+        cur.execute("SELECT to_regclass('public.sync_heartbeat') AS t")
+        if cur.fetchone()["t"]:
+            cur.execute("SELECT last_cycle_at, last_status FROM sync_heartbeat WHERE id = 1")
+            heartbeat = cur.fetchone()
+
+        # Data freshness (informational) — latest load overall + per store.
+        cur.execute("SELECT MAX(loaded_at) AS last FROM all_sales")
+        data_last = cur.fetchone()["last"]
+        cur.execute(
+            "SELECT store_id, MAX(loaded_at) AS last FROM all_sales "
+            "GROUP BY store_id ORDER BY 2 DESC NULLS LAST"
+        )
+        store_rows = cur.fetchall()
+
+        last_check = None
+        cur.execute("SELECT to_regclass('public.sync_health_log') AS t")
+        if cur.fetchone()["t"]:
+            cur.execute(
+                "SELECT checked_at, api_healthy, sync_healthy, action_taken, notes "
+                "FROM sync_health_log ORDER BY checked_at DESC LIMIT 1"
+            )
+            h = cur.fetchone()
+            if h:
+                last_check = {
+                    "checked_at": h["checked_at"].isoformat() if h["checked_at"] else None,
+                    "api_healthy": h["api_healthy"],
+                    "sync_healthy": h["sync_healthy"],
+                    "action_taken": h["action_taken"],
+                    "notes": h["notes"],
+                }
+        cur.close()
+    except Exception:
+        pool.putconn(conn, close=True)
+        raise
+    else:
+        pool.putconn(conn)
+
+    now = datetime.now(timezone.utc)
+
+    def _mins(ts):
+        if ts is None:
+            return None
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return round((now - ts).total_seconds() / 60.0, 1)
+
+    last_cycle = heartbeat["last_cycle_at"] if heartbeat else None
+    minutes = _mins(last_cycle)
+    if minutes is None or minutes > CRIT_MIN:
+        health = "CRITICAL"
+    elif minutes > WARN_MIN:
+        health = "WARNING"
+    else:
+        health = "OK"
+
+    stores = [
+        {
+            "store_id": r["store_id"],
+            "last_sync_at": r["last"].isoformat() if r["last"] else None,
+            "minutes_since": _mins(r["last"]),
+        }
+        for r in store_rows
+    ]
+
+    return {
+        "health": health,
+        "last_sync_at": last_cycle.isoformat() if last_cycle else None,
+        "minutes_since": minutes,
+        "last_status": heartbeat["last_status"] if heartbeat else None,
+        "warning_after_min": WARN_MIN,
+        "critical_after_min": CRIT_MIN,
+        "data_freshness": {
+            "last_loaded_at": data_last.isoformat() if data_last else None,
+            "minutes_since": _mins(data_last),
+        },
+        "stores": stores,
+        "last_check": last_check,
+    }
 
 @app.get("/api/locations")
 def get_locations():

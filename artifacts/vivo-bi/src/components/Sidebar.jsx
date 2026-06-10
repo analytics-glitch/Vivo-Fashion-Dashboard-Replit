@@ -32,6 +32,7 @@ import { canAccessPage } from "@/lib/permissions";
 import NotificationBell from "@/components/NotificationBell";
 import RedisStatusPill from "@/components/RedisStatusPill";
 import ReconciliationStatusPill from "@/components/ReconciliationStatusPill";
+import SyncStatusPill from "@/components/SyncStatusPill";
 import UpstreamHealthPill from "@/components/UpstreamHealthPill";
 import BackendUrlWarningPill from "@/components/BackendUrlWarningPill";
 import CacheStatsPill from "@/components/CacheStatsPill";
@@ -300,6 +301,7 @@ const TopNav = () => {
         <NotificationBell />
         <BackendUrlWarningPill />
         <UpstreamHealthPill />
+        <SyncStatusPill />
         <ReconciliationStatusPill />
         <CacheStatsPill />
         <RedisStatusPill />

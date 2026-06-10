@@ -20,11 +20,15 @@ run = "python3 -m uvicorn api_pg:app --app-dir /home/runner/workspace --host 0.0
 [services.production.build]
 args = ["python3", "--version"]
 
+# Production runs the self-healing supervisor (watchdog), which spawns and keeps
+# alive both uvicorn (the API on PORT) and the incremental sync loop. Requires a
+# Reserved VM deployment target so the background loop is never scaled to zero.
 [services.production.run]
-args = ["python3", "-m", "uvicorn", "api_pg:app", "--app-dir", "/home/runner/workspace", "--host", "0.0.0.0", "--port", "8080"]
+args = ["python3", "/home/runner/workspace/watchdog.py"]
 
 [services.production.run.env]
 PORT = "8080"
+WATCHDOG_MANAGE_API = "1"
 
 [services.production.health.startup]
 path = "/api/"
