@@ -1,0 +1,191 @@
+IMPLEMENT PHASE 5 + 7 — Frontend integration + Performance & Stability
+Phases 1-4 are complete and merged. Now implement Phase 5 (frontend) and Phase 7 (performance) together since many optimisations apply directly to the frontend data fetching layer.
+
+PART A — PERFORMANCE & STABILITY (do this first, it unblocks frontend work)
+A1: Query optimisation — add database indexes
+Run these indexes against the database (check if they exist first before creating):
+sql-- Sales queries (most frequent)
+CREATE INDEX IF NOT EXISTS idx_all_sales_sale_date ON all_sales (sale_date);
+CREATE INDEX IF NOT EXISTS idx_all_sales_store_date ON all_sales (store_id, sale_date);
+CREATE INDEX IF NOT EXISTS idx_all_sales_location_date ON all_sales (pos_location_name, sale_date);
+CREATE INDEX IF NOT EXISTS idx_all_sales_sku ON all_sales (variant_sku);
+CREATE INDEX IF NOT EXISTS idx_all_sales_sale_kind ON all_sales (sale_kind);
+CREATE INDEX IF NOT EXISTS idx_all_sales_country_date ON all_sales (country, sale_date);
+
+-- Inventory queries
+CREATE INDEX IF NOT EXISTS idx_all_inventory_sku ON all_inventory (sku);
+CREATE INDEX IF NOT EXISTS idx_all_inventory_location ON all_inventory (pos_location_name);
+CREATE INDEX IF NOT EXISTS idx_all_inventory_country ON all_inventory (country);
+
+-- Product master
+CREATE INDEX IF NOT EXISTS idx_all_products_sku ON all_products_clean (sku);
+CREATE INDEX IF NOT EXISTS idx_all_products_style ON all_products_clean (style_name);
+CREATE INDEX IF NOT EXISTS idx_all_products_type ON all_products_clean (product_type);
+
+-- Recommendation actions
+CREATE INDEX IF NOT EXISTS idx_rec_actions_type_key ON recommendation_actions (rec_type, rec_key);
+CREATE INDEX IF NOT EXISTS idx_rec_actions_status ON recommendation_actions (status);
+
+-- IBT completions
+CREATE INDEX IF NOT EXISTS idx_ibt_completions_style ON ibt_completions (style_name);
+CREATE INDEX IF NOT EXISTS idx_ibt_completions_stores ON ibt_completions (from_store, to_store);
+CREATE INDEX IF NOT EXISTS idx_ibt_completions_date ON ibt_completions (transfer_date);
+
+-- Footfall
+CREATE INDEX IF NOT EXISTS idx_footfall_location_time ON footfall (pos_location_name, time);
+
+-- Sync health
+CREATE INDEX IF NOT EXISTS idx_sync_health_checked ON sync_health_log (checked_at DESC);
+After creating indexes, run ANALYZE on each table to update query planner statistics.
+A2: Connection pool audit and fix
+In api_pg.py:
+
+Verify ThreadedConnectionPool is correctly configured with minconn=2, maxconn=10
+Ensure every run_query call uses pool.getconn() / pool.putconn() in a proper try/finally block — no connection leaks
+Add a GET /api/pool-status endpoint (admin only) returning: {min_conn, max_conn, used_conn, available_conn}
+Add connection timeout: if a connection can't be acquired within 5 seconds, return a 503 with {"error": "Service temporarily busy, please retry"}
+Verify the pool is initialised once at startup, not per request
+
+A3: Tiered caching strategy
+Review and enforce the existing smart_ttl cache across all endpoints:
+
+today's data → 60 second TTL (live sales update every minute)
+yesterday's data → 300 second TTL
+historical data (>2 days ago) → 3600 second TTL
+inventory data → 300 second TTL (updates less frequently than sales)
+product master → 3600 second TTL (rarely changes)
+IBT suggestions → 120 second TTL (computed from live inventory + sales)
+replenishment calendar → 300 second TTL
+data quality report → 300 second TTL
+
+Add a GET /api/cache/status endpoint returning: {total_entries, total_size_bytes, hit_rate, endpoints: [{path, entries, oldest_entry, newest_entry}]}
+Add a POST /api/cache/clear endpoint (admin only) to manually flush the cache when needed.
+A4: Slow query detection
+Add query timing to run_query:
+
+If any query takes >2 seconds, log a WARNING with the first 200 chars of the SQL
+If any query takes >5 seconds, log an ERROR and also write to sync_health_log with action_taken='slow_query'
+Add a GET /api/diagnostics/slow-queries endpoint returning the last 20 slow query logs
+
+A5: API response compression
+Add GZip compression to the FastAPI app for responses >1KB:
+pythonfrom fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+A6: Startup health check
+On API startup, verify:
+
+Database connection works (run SELECT 1)
+All required tables exist (all_sales, all_inventory, all_products_clean, pos_locations, footfall, currency_rates, recommendation_actions, ibt_completions, allocation_runs)
+Log a clear startup summary: "✅ DB connected | Tables: 9/9 | Pool: 2-10 | Cache: ready"
+If any table is missing, log a clear ERROR but don't crash — return degraded mode
+
+
+PART B — FRONTEND INTEGRATION
+B1: IBT page upgrades
+File: src/pages/IBT.jsx and related components
+
+Score column — Add a Score column to the IBT suggestions table. Color code: ≥80 = red, 60-79 = orange, 40-59 = yellow, <40 = grey. Sort by score descending by default
+Cluster badges — Add from_cluster and to_cluster badges (A/B/C) next to store names. A = dark green, B = amber, C = grey
+Multi-pair accordion — Group rows by style_name with expandable accordion. Show pair_count badge. Expand to show all donor→needer pairs
+Size-run protection — In SKU breakdown, show 🔒 icon where size_run_protected: true with tooltip "Size run protected"
+Transfer impact column — Show projected WoC at source after transfer: (from_avail - units_to_move) / weekly_units
+IBT outcomes tab — New "Outcomes" tab showing completed transfers with sold_30d, sold_60d, sell_through_30d. Highlight rows where sell_through_30d < 30% in red. Data from GET /api/ibt/outcomes
+Export button — "Export to Operations" Excel download from GET /api/ibt/export/operations
+Bulk actions — Checkbox column + bulk action bar: "Mark Done", "Dismiss", "Export Selected". Wire to POST /api/recommendations/bulk
+Clustering toggle — Add a toggle switch "Cluster-aware matching" (default on) that passes use_clustering=true/false to the API
+
+B2: Replenishments page upgrades
+File: src/pages/Replenishments.jsx
+
+Size breakdown — Expandable size pills under each SKU row: S: 2 | M: 3 | L: 2 | XL: 1
+"Why recommended?" tooltip — Info icon showing: "<store> has <woc> wks cover at <weekly_units> units/wk — reorder now to cover 4-week lead time"
+At-risk badges — Red AT RISK badge where at_risk: true, yellow WATCH where WoC 5-7 weeks
+Calendar view toggle — Toggle between List and Calendar view. Calendar shows ISO weeks as columns, subcategories as rows, cell = count of styles needing action, color-coded by priority
+Chronic stockouts panel — Collapsible panel at top: "Chronic Stockouts — X styles at risk for 3+ consecutive weeks". Data from GET /api/replenishment/chronic-stockouts
+Stockout alert banner — Dismissible banner: "⚠️ X styles will stock out within 2 weeks". Data from GET /api/replenishment/stockout-alerts
+Export button — "Export to Operations" Excel download
+Bulk approve — Checkbox + bulk action bar matching IBT pattern
+
+B3: Re-Order page upgrades
+File: src/pages/ReOrder.jsx
+
+Trend indicators — Trend arrows next to sell-through: ↑ accelerating, → stable, ↓ decelerating
+Markdown flag — Badge "Markdown?" for styles in GET /api/analytics/markdown-candidates
+Forecast accuracy card — Summary card: "Replenishment Accuracy: XX%" from GET /api/replenishment/forecast-accuracy
+
+B4: New Markdown & Clearance page
+Create src/pages/MarkdownClearance.jsx
+
+Two tabs: "Markdown Candidates" and "Clearance Plan"
+Markdown tab: summary cards + table with Style, Brand, WoC, Sell-Through, Recommended Markdown %, Estimated Revenue
+Clearance tab: grouped by IMMEDIATE vs PLANNED urgency
+Add to sidebar between "Range Mgmt" and "Inventory"
+
+B5: Size Health page upgrades
+File: src/pages/SizeHealth.jsx
+
+Size gaps panel — "Missing Sizes" section from GET /api/analytics/size-gaps: Store, Style, Missing Sizes, Chain Demand, Est. Lost Sales, Source Stores Available. "Create IBT" button per row
+Store size health scores — Table from GET /api/analytics/size-run-health with progress bars
+IBT opportunity flag — Green "IBT Available" badge where ibt_opportunity: true
+
+B6: Data Quality page
+Create src/pages/DataQuality.jsx
+
+Overall score card (color coded >90=green, 75-90=yellow, <75=red)
+Check cards from GET /api/data-quality/report — one per quality check with score, details, failing items
+SKU coverage table from GET /api/data-quality/sku-coverage — one row per data source
+Sync health timeline — last 24 hours from sync_health_log
+Add to sidebar navigation
+
+B7: Store Clusters page upgrade
+File: src/pages/StoreClusters.jsx
+
+Store potential table — From GET /api/analytics/store-potential: Store, Cluster, Revenue, Cluster Median, % of Potential, Gap KES, Likely Cause badges
+Cluster IBT rules — Visual diagram: A↔B ✅, B↔C ✅, A↔C ❌
+Callout — "Cluster assignments now used in IBT recommendations"
+
+B8: Overview page upgrades
+File: src/pages/Overview.jsx
+
+Stockout alert banner — Dismissible: "⚠️ X styles stocking out within 2 weeks" linking to Replenishments
+IBT ROI card — New card: avg 30-day sell-through + total incremental revenue from GET /api/ibt/roi-dashboard
+Data quality badge — Small score badge in header bar next to "Recon" and "Cache" indicators
+
+B9: Global improvements
+
+Recommendations badge — Badge count on Replenishments nav item showing pending count from GET /api/recommendations/summary
+Sync status pill — Per-store freshness on hover from GET /api/sync-status
+Loading skeletons — All new data fetches show loading skeletons matching existing KPICard pattern
+Error states — All new sections show muted "Data unavailable" state on API errors — never crash
+Mobile responsive — All new pages usable at 375px width using existing Tailwind patterns
+Empty states — Helpful messages when data is sparse or missing
+
+
+IMPLEMENTATION REQUIREMENTS:
+
+Use api.get() from src/lib/api.js for all data fetching — respect existing cache layer
+Use existing formatters: fmtKES, fmtNum, fmtPct, fmtDate
+All new pages added to router in App.jsx and sidebar in Sidebar.jsx
+New pages must respect global filter context (date range, country, channel)
+No new npm dependencies unless absolutely necessary
+Follow existing component patterns (KPICard, SortableTable, FilterBar)
+
+PERFORMANCE TARGETS:
+
+Overview page initial load: <3 seconds
+IBT suggestions: <2 seconds
+Inventory page: <3 seconds
+All other pages: <5 seconds
+
+Measure actual load times before and after indexes are added and report the improvement.
+AFTER IMPLEMENTING ALL STEPS:
+
+Run indexes + ANALYZE — report query time improvement on /api/kpis and /api/analytics/ibt-suggestions before vs after
+Run cd /home/runner/workspace/dashboard && npx craco build — must compile with zero errors
+Restart API and dashboard
+Open each new page — verify loads without console errors
+Test mobile viewport (375px) — all pages usable
+Verify existing pages have no regressions (Overview, Locations, Inventory, Customers)
+Run architect review subagent
+Report final performance metrics: load times for key pages, cache hit rate, pool utilisation
+Do not mark complete until build passes, architect approves, and performance targets are met

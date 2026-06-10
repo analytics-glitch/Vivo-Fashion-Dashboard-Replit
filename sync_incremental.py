@@ -583,6 +583,25 @@ def main():
     except Exception as e:
         log.error("Stockout snapshot error: %s", e)
 
+    # Data-quality log — once a day in the same 21:00 UTC window. Records the
+    # current overall data-quality score onto a sync_health_log row so quality
+    # is tracked alongside sync health. Authenticates with the shared secret.
+    try:
+        if now.hour == 21:
+            _secret = os.environ.get("SESSION_SECRET")
+            if _secret:
+                resp = requests.post(
+                    "http://localhost:80/api/data-quality/log",
+                    headers={"X-Internal-Token": _secret},
+                    timeout=120,
+                )
+                log.info("Data-quality log — HTTP %s %s",
+                         resp.status_code, resp.text[:200])
+            else:
+                log.warning("Data-quality log skipped — SESSION_SECRET unset")
+    except Exception as e:
+        log.error("Data-quality log error: %s", e)
+
     write_heartbeat(conn, "ok")
     conn.close()
     log.info("=== Sync complete ===")

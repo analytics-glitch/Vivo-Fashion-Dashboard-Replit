@@ -2,6 +2,7 @@
 - [Clerk prod "Checking session…" blank](clerk-prod-blank-checking-session.md) — published app stuck on auth-loading (dev fine) = Python Clerk proxy relays Brotli the browser can't decode; force Accept-Encoding gzip/deflate.
 - [Sync watchdog heartbeat](sync-watchdog-heartbeat.md) — sync health must key off a loop heartbeat, NOT all_sales.loaded_at (quiet periods = false failures); recovery backfill must suspend the supervised sync to avoid overlap.
 - [BI chat text-to-SQL](bi-chat-text-to-sql.md) — /api/chat runs LLM-generated SQL on a forced read-only psycopg2 conn (never the shared pool); keep the read-only + PII guards.
+- [Sync-loop idempotent endpoints](sync-loop-idempotent-endpoints.md) — sync_incremental's hour-gated "daily" POSTs actually fire ~60×/day; internal endpoints it calls must dedupe their own writes.
 - [Python deps in .pythonlibs](python-deps-pythonlibs.md) — pip & installLanguagePackages fail here; add backend pkgs via `uv pip install --target .pythonlibs/lib/python3.11/site-packages`.
 - [Channel param = pos_location_name](channel-param-pos-location.md) — the filter-bar "channel" param carries pos_location_name values; filter with s.pos_location_name, NOT the separate s.channel column.
 - [Inventory velocity formula](inventory-velocity-formula.md) — one recency-weighted weekly-velocity + dead-stock rule shared by weeks-of-cover, replenish-by-color, and IBT; country-scope the dead-stock CTEs.
