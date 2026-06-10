@@ -1,0 +1,1057 @@
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+from google.cloud import bigquery
+from datetime import date, timedelta
+import os
+import time
+import hashlib
+
+# ── Smart cache — TTL based on how recent the data is ────────────────────────
+# Today (live):    120s  — data refreshes every 5 min
+# Yesterday:       600s  — mostly stable
+# Historical:     3600s  — never changes
+_cache = {}
+
+def smart_ttl(date_to=None):
+    if not date_to:
+        return 120
+    try:
+        today = date.today().isoformat()
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        if date_to >= today:      return 120    # 2 min — live
+        elif date_to >= yesterday: return 600   # 10 min — yesterday
+        else:                      return 3600  # 1 hour — historical
+    except Exception:
+        return 120
+
+def cache_get(key):
+    if key in _cache:
+        val, ts, ttl = _cache[key]
+        if time.time() - ts < ttl:
+            return val
+        del _cache[key]
+    return None
+
+def cache_set(key, val, ttl=120):
+    _cache[key] = (val, time.time(), ttl)
+
+def run_query(bq, query, date_to=None):
+    key = hashlib.md5(query.encode()).hexdigest()
+    cached = cache_get(key)
+    if cached is not None:
+        return cached
+    rows = [dict(r) for r in bq.query(query).result()]
+    cache_set(key, rows, ttl=smart_ttl(date_to))
+    return rows
+
+app = FastAPI(title="Vivo Fashion Group BI API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+GCP_PROJECT = "vivo-project-478307"
+BQ_LOCATION = "EU"
+SALES_TABLE = "vivo-project-478307.powerbi_automation.all_sales_mat"
+INVENTORY_TABLE = "vivo-project-478307.powerbi_automation.all_inventory_mat"
+PRODUCTS_TABLE = "vivo-project-478307.powerbi_automation.all_products_clean_mat"
+CUSTOMERS_TABLE = "vivo-project-478307.powerbi_automation.all_customers_mat"
+
+CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+if not CREDENTIALS:
+    local_cred = r"C:\odoo-sync\vivo-project-478307-97bb89510d42.json"
+    if os.path.exists(local_cred):
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = local_cred
+
+BASE_FILTERS = [
+    "pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda')",
+    "LOWER(COALESCE(s.product_title, '')) NOT LIKE '%shopping bag%'",
+    "LOWER(COALESCE(s.product_title, '')) NOT LIKE '%gift card%'",
+    "LOWER(COALESCE(s.variant_sku, '')) NOT LIKE '%vb00%'",
+]
+
+# total_sales_kes expression — use directly (already nets discounts for Shop Zetu via ShopifyQL)
+TOTAL_SALES_EXPR = "CAST(s.total_sales_kes AS FLOAT64)"
+
+PRODUCT_SUBCATS = [
+    "Knee Length Dresses", "Full Length Pants", "Fitted Tops", "Loose Tops",
+    "Maxi Dresses", "Waterfalls & Kimonos", "Sweaters & Ponchos", "Midi & Capri Dresses",
+    "T-shirts & Tank Tops", "Bodysuits", "Jackets & Coats", "Leggings",
+    "Shorts & Skorts", "Knee Length Skirts", "Jumpsuits & Playsuits", "Midriff & Crop Tops",
+    "Maxi Skirts", "Men's Tops", "Short & Mini Skirts", "Midi & Capri Skirts",
+    "Short & Mini Dresses", "Men's Bottoms", "Skirts & Top Set", "Culottes & Capri Pants",
+    "Hoodies & Sweatshirts", "Pants & Waterfall Set", "Pants & Top Set"
+]
+SUBCAT_LIST = "'" + "','".join([s.replace("'", "\\'") for s in PRODUCT_SUBCATS]) + "'"
+
+CUSTOMERS_DEDUP = (
+    "WITH customers_dedup AS ("
+    "SELECT *, ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY updated_at DESC) AS rn "
+    "FROM `vivo-project-478307.powerbi_automation.all_customers_mat` "
+    "WHERE customer_id IS NOT NULL"
+    "), "
+    "excluded AS ("
+    "SELECT customer_id FROM customers_dedup WHERE rn = 1 AND ("
+    "LOWER(COALESCE(email, '')) LIKE '%vivofashiongroup.com%' "
+    "OR LOWER(COALESCE(email, '')) LIKE '%shopzetu.com%' "
+    "OR LOWER(COALESCE(email, '')) LIKE '%vivoactivewear.com%' "
+    "OR LOWER(COALESCE(CONCAT(first_name, ' ', last_name), '')) LIKE '%walk%in%' "
+    "OR LOWER(COALESCE(CONCAT(first_name, ' ', last_name), '')) LIKE '%walkin%'"
+    ")"
+    ") "
+)
+
+
+# ── Reuse BigQuery client at module level ─────────────────────────────────────
+_bq_client = None
+
+def get_bq():
+    global _bq_client
+    if _bq_client is None:
+        _bq_client = bigquery.Client(project=GCP_PROJECT, location=BQ_LOCATION)
+    return _bq_client
+
+
+def join_list(items):
+    return "','".join([i.strip() for i in items])
+
+
+def build_filters(date_from, date_to, country=None, channel=None, extra=[]):
+    filters = [
+        "s.sale_date BETWEEN DATE('{}') AND DATE('{}')".format(date_from, date_to),
+        "s.sale_date BETWEEN DATE('{}') AND DATE('{}')".format(date_from, date_to),
+        "s.day BETWEEN '{}' AND '{}'".format(date_from, date_to),
+    ] + BASE_FILTERS + extra
+    if country:
+        filters.append("s.country IN ('{}')".format(join_list(country.split(","))))
+    if channel:
+        filters.append("s.channel IN ('{}')".format(join_list(channel.split(","))))
+    return " AND ".join(filters)
+
+
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "Vivo BI API"}
+
+
+@app.get("/locations")
+def get_locations():
+    bq = get_bq()
+    query = (
+        "SELECT DISTINCT channel, pos_location_name, country "
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "WHERE pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda') "
+        "ORDER BY country, channel"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/kpis")
+def get_kpis(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    bq = get_bq()
+    where = build_filters(date_from, date_to, country, channel)
+    query = (
+        "SELECT "
+        "ROUND(SUM({ts}), 0) AS total_sales, ".format(ts=TOTAL_SALES_EXPR) +
+        "ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN CAST(s.gross_sales_kes AS FLOAT64) ELSE 0 END), 0) AS gross_sales, "
+        "ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN CAST(s.discounts_kes AS FLOAT64) ELSE 0 END), 0) AS total_discounts, "
+        "ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN CAST(s.returns_kes AS FLOAT64) ELSE 0 END), 0) AS total_returns, "
+        "ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN CAST(s.net_sales_kes AS FLOAT64) "
+        "WHEN s.sale_kind = 'return' THEN -CAST(s.returns_kes AS FLOAT64) ELSE 0 END), 0) AS net_sales, "
+        "COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS total_orders, "
+        "SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN CAST(s.ordered_item_quantity AS INT64) ELSE 0 END) AS total_units, "
+        "ROUND(SUM({ts}) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size, ".format(ts=TOTAL_SALES_EXPR) +
+        "ROUND(SUM({ts}) / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN CAST(s.ordered_item_quantity AS INT64) ELSE 0 END), 0), 0) AS avg_selling_price, ".format(ts=TOTAL_SALES_EXPR) +
+        "ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN CAST(s.returns_kes AS FLOAT64) ELSE 0 END) "
+        "/ NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN CAST(s.gross_sales_kes AS FLOAT64) ELSE 0 END), 0) * 100, 2) AS return_rate "
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "WHERE " + where
+    )
+    rows = run_query(bq, query, date_to=date_to if "date_to" in dir() else None)
+    return dict(rows[0]) if rows else {}
+
+
+@app.get("/sales-summary")
+def get_sales_summary(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    bq = get_bq()
+    where = build_filters(date_from, date_to, country, channel)
+    query = (
+        "SELECT s.channel, s.country, "
+        "COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders, "
+        "SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN CAST(s.ordered_item_quantity AS INT64) ELSE 0 END) AS units_sold, "
+        "ROUND(SUM({ts}), 0) AS total_sales, ".format(ts=TOTAL_SALES_EXPR) +
+        "ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN CAST(s.gross_sales_kes AS FLOAT64) ELSE 0 END), 0) AS gross_sales, "
+        "ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN CAST(s.discounts_kes AS FLOAT64) ELSE 0 END), 0) AS discounts, "
+        "ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN CAST(s.returns_kes AS FLOAT64) ELSE 0 END), 0) AS returns, "
+        "ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN CAST(s.net_sales_kes AS FLOAT64) "
+        "WHEN s.sale_kind = 'return' THEN -CAST(s.returns_kes AS FLOAT64) ELSE 0 END), 0) AS net_sales, "
+        "ROUND(SUM({ts}) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size ".format(ts=TOTAL_SALES_EXPR) +
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "WHERE " + where +
+        " GROUP BY s.channel, s.country "
+        "ORDER BY total_sales DESC"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/subcategory-sales")
+def get_subcategory_sales(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    bq = get_bq()
+    where = build_filters(date_from, date_to, country, channel, [
+        "s.sale_kind IN ('sale','order')",
+        "CAST(s.ordered_item_quantity AS INT64) > 0",
+        "p.product_type IN (" + SUBCAT_LIST + ")",
+    ])
+    query = (
+        "SELECT p.product_type AS subcategory, "
+        "SUM(CAST(s.ordered_item_quantity AS INT64)) AS units_sold, "
+        "ROUND(SUM({ts}), 0) AS total_sales, ".format(ts=TOTAL_SALES_EXPR) +
+        "ROUND(SUM(CAST(s.gross_sales_kes AS FLOAT64)), 0) AS gross_sales, "
+        "COUNT(DISTINCT s.order_id) AS orders "
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "LEFT JOIN `{}` p ON s.variant_sku = p.sku ".format(PRODUCTS_TABLE) +
+        "WHERE " + where +
+        " GROUP BY p.product_type "
+        "ORDER BY total_sales DESC"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/subcategory-stock-sales")
+def get_subcategory_stock_sales(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    bq = get_bq()
+    filters = [
+        "s.sale_date BETWEEN DATE('{}') AND DATE('{}')".format(date_from, date_to),
+        "s.day BETWEEN '{}' AND '{}'".format(date_from, date_to),
+        "s.sale_kind IN ('sale','order')",
+        "s.pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda')",
+        "LOWER(COALESCE(s.product_title, '')) NOT LIKE '%shopping bag%'",
+        "LOWER(COALESCE(s.product_title, '')) NOT LIKE '%gift card%'",
+        "LOWER(COALESCE(s.variant_sku, '')) NOT LIKE '%vb00%'",
+        "CAST(s.ordered_item_quantity AS INT64) > 0",
+        "p.product_type IN (" + SUBCAT_LIST + ")",
+    ]
+    if country:
+        filters.append("s.country IN ('{}')".format(join_list(country.split(","))))
+    if channel:
+        filters.append("s.channel IN ('{}')".format(join_list(channel.split(","))))
+    where = " AND ".join(filters)
+    query = (
+        "WITH sales AS ("
+        "SELECT p.product_type AS subcategory, "
+        "SUM(CAST(s.ordered_item_quantity AS INT64)) AS units_sold, "
+        "ROUND(SUM({ts}), 0) AS total_sales ".format(ts=TOTAL_SALES_EXPR) +
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "LEFT JOIN `{}` p ON s.variant_sku = p.sku ".format(PRODUCTS_TABLE) +
+        "WHERE " + where +
+        " GROUP BY p.product_type"
+        "), "
+        "stock AS ("
+        "SELECT p.product_type AS subcategory, SUM(i.available) AS current_stock "
+        "FROM `{}` i ".format(INVENTORY_TABLE) +
+        "LEFT JOIN `{}` p ON i.sku = p.sku ".format(PRODUCTS_TABLE) +
+        "WHERE i.location_name NOT IN ('Warehouse Finished Goods') "
+        "AND p.product_type IN (" + SUBCAT_LIST + ") "
+        "GROUP BY p.product_type"
+        "), "
+        "combined AS ("
+        "SELECT COALESCE(s.subcategory, st.subcategory) AS subcategory, "
+        "COALESCE(s.units_sold, 0) AS units_sold, "
+        "COALESCE(s.total_sales, 0) AS total_sales, "
+        "COALESCE(st.current_stock, 0) AS current_stock "
+        "FROM sales s "
+        "FULL OUTER JOIN stock st ON s.subcategory = st.subcategory"
+        ") "
+        "SELECT subcategory, units_sold, total_sales, current_stock, "
+        "ROUND(units_sold * 100.0 / NULLIF(SUM(units_sold) OVER(), 0), 2) AS pct_of_total_sold, "
+        "ROUND(current_stock * 100.0 / NULLIF(SUM(current_stock) OVER(), 0), 2) AS pct_of_total_stock, "
+        "ROUND(SAFE_DIVIDE(units_sold, units_sold + current_stock) * 100, 1) AS sor_percent "
+        "FROM combined "
+        "WHERE subcategory IS NOT NULL "
+        "ORDER BY units_sold DESC"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/top-skus")
+def get_top_skus(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+    limit:     int = Query(default=20),
+):
+    bq = get_bq()
+    where = build_filters(date_from, date_to, country, channel, [
+        "s.sale_kind IN ('sale','order')",
+        "CAST(s.ordered_item_quantity AS INT64) > 0",
+        "p.style_name IS NOT NULL",
+    ])
+    query = (
+        "SELECT p.style_name, p.collection, p.brand, p.product_type, "
+        "SUM(CAST(s.ordered_item_quantity AS INT64)) AS units_sold, "
+        "ROUND(SUM({ts}), 0) AS total_sales, ".format(ts=TOTAL_SALES_EXPR) +
+        "ROUND(SUM(CAST(s.gross_sales_kes AS FLOAT64)), 0) AS gross_sales, "
+        "ROUND(SUM({ts}) / NULLIF(SUM(CAST(s.ordered_item_quantity AS INT64)), 0), 0) AS avg_price ".format(ts=TOTAL_SALES_EXPR) +
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "LEFT JOIN `{}` p ON s.variant_sku = p.sku ".format(PRODUCTS_TABLE) +
+        "WHERE " + where +
+        " GROUP BY p.style_name, p.collection, p.brand, p.product_type "
+        "ORDER BY units_sold DESC "
+        "LIMIT " + str(limit)
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/sor")
+def get_sor(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    bq = get_bq()
+    where = build_filters(date_from, date_to, country, channel, [
+        "s.sale_kind IN ('sale','order')",
+        "CAST(s.ordered_item_quantity AS INT64) > 0",
+        "p.style_name IS NOT NULL",
+    ])
+    query = (
+        "SELECT p.style_name, p.collection, p.brand, p.product_type, "
+        "SUM(CAST(s.ordered_item_quantity AS INT64)) AS units_sold, "
+        "ROUND(SUM({ts}), 0) AS total_sales, ".format(ts=TOTAL_SALES_EXPR) +
+        "COALESCE(MAX(i.current_stock), 0) AS current_stock, "
+        "ROUND(SAFE_DIVIDE(SUM(CAST(s.ordered_item_quantity AS INT64)), "
+        "SUM(CAST(s.ordered_item_quantity AS INT64)) + COALESCE(MAX(i.current_stock), 0)) * 100, 1) AS sor_percent "
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "LEFT JOIN `{}` p ON s.variant_sku = p.sku ".format(PRODUCTS_TABLE) +
+        "LEFT JOIN ("
+        "SELECT p2.style_name, SUM(i2.available) AS current_stock "
+        "FROM `{}` i2 ".format(INVENTORY_TABLE) +
+        "LEFT JOIN `{}` p2 ON i2.sku = p2.sku ".format(PRODUCTS_TABLE) +
+        "WHERE i2.location_name NOT IN ('Warehouse Finished Goods') "
+        "GROUP BY p2.style_name"
+        ") i ON p.style_name = i.style_name "
+        "WHERE " + where +
+        " GROUP BY p.style_name, p.collection, p.brand, p.product_type "
+        "ORDER BY units_sold DESC "
+        "LIMIT 200"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/daily-trend")
+def get_daily_trend(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+):
+    bq = get_bq()
+    filters = [
+        "s.sale_date BETWEEN DATE('{}') AND DATE('{}')".format(date_from, date_to),
+        "s.day BETWEEN '{}' AND '{}'".format(date_from, date_to),
+        "s.sale_kind IN ('sale','order')",
+        "s.pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda')",
+        "LOWER(COALESCE(s.product_title, '')) NOT LIKE '%shopping bag%'",
+        "LOWER(COALESCE(s.product_title, '')) NOT LIKE '%gift card%'",
+        "LOWER(COALESCE(s.variant_sku, '')) NOT LIKE '%vb00%'",
+    ]
+    if country:
+        filters.append("s.country IN ('{}')".format(join_list(country.split(","))))
+    where = " AND ".join(filters)
+    query = (
+        "SELECT s.day, s.country, "
+        "COUNT(DISTINCT s.order_id) AS orders, "
+        "SUM(CAST(s.ordered_item_quantity AS INT64)) AS units, "
+        "ROUND(SUM({ts}), 0) AS total_sales, ".format(ts=TOTAL_SALES_EXPR) +
+        "ROUND(SUM(CAST(s.gross_sales_kes AS FLOAT64)), 0) AS gross_sales "
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "WHERE " + where +
+        " GROUP BY s.day, s.country "
+        "ORDER BY s.day, s.country"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/inventory")
+def get_inventory(
+    location: str = Query(default=None),
+    product:  str = Query(default=None),
+    country:  str = Query(default=None),
+):
+    bq = get_bq()
+    filters = ["i.available > 0"]
+    if location:
+        filters.append("i.location_name IN ('{}')".format(join_list(location.split(","))))
+    if product:
+        filters.append("LOWER(i.product_name) LIKE '%{}%'".format(product.lower()))
+    if country:
+        filters.append("i.country IN ('{}')".format(join_list(country.split(","))))
+    where = " AND ".join(filters)
+    query = (
+        "SELECT i.country, i.location_name, i.product_name, i.size, "
+        "i.barcode, i.sku, i.brand, i.product_type, "
+        "i.collection, i.style_name, i.color_print, "
+        "SUM(i.available) AS available "
+        "FROM `{}` i ".format(INVENTORY_TABLE) +
+        "WHERE " + where +
+        " GROUP BY i.country, i.location_name, i.product_name, i.size, "
+        "i.barcode, i.sku, i.brand, i.product_type, i.collection, i.style_name, i.color_print "
+        "ORDER BY i.location_name, i.product_name, i.size "
+        "LIMIT 2000"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/stock-to-sales")
+def get_stock_to_sales(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+):
+    bq = get_bq()
+    inv_filters = ["i.location_name NOT IN ('Warehouse Finished Goods')"]
+    if country:
+        inv_filters.append("i.country IN ('{}')".format(join_list(country.split(","))))
+    inv_where = " AND ".join(inv_filters)
+    query = (
+        "WITH sales AS ("
+        "SELECT s.channel, s.country, "
+        "SUM(CAST(s.ordered_item_quantity AS INT64)) AS units_sold, "
+        "ROUND(SUM({ts}), 0) AS total_sales ".format(ts=TOTAL_SALES_EXPR) +
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "WHERE s.sale_date BETWEEN DATE('{}') AND DATE('{}') AND s.day BETWEEN '{}' AND '{}' ".format(date_from, date_to, date_from, date_to) +
+        "AND s.sale_kind IN ('sale','order') "
+        "AND s.pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda') "
+        "AND LOWER(COALESCE(s.product_title, '')) NOT LIKE '%shopping bag%' "
+        "AND LOWER(COALESCE(s.variant_sku, '')) NOT LIKE '%vb00%' "
+        "GROUP BY s.channel, s.country"
+        "), "
+        "inventory AS ("
+        "SELECT i.location_name, i.country, SUM(i.available) AS total_stock "
+        "FROM `{}` i ".format(INVENTORY_TABLE) +
+        "WHERE " + inv_where +
+        " GROUP BY i.location_name, i.country"
+        ") "
+        "SELECT s.channel AS location, s.country, s.units_sold, s.total_sales, "
+        "COALESCE(i.total_stock, 0) AS current_stock, "
+        "ROUND(SAFE_DIVIDE(COALESCE(i.total_stock, 0), NULLIF(s.units_sold, 0)), 2) AS stock_to_sales_ratio "
+        "FROM sales s "
+        "LEFT JOIN inventory i ON s.channel = i.location_name "
+        "ORDER BY stock_to_sales_ratio DESC"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/customers")
+def get_customers(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    bq = get_bq()
+    filters = [
+        "s.sale_date BETWEEN DATE('{}') AND DATE('{}')".format(date_from, date_to),
+        "s.day BETWEEN '{}' AND '{}'".format(date_from, date_to),
+        "s.sale_kind IN ('sale','order')",
+        "s.customer_id IS NOT NULL",
+        "s.customer_id NOT IN ('None','null','')",
+        "s.pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda')",
+    ]
+    if country:
+        filters.append("s.country IN ('{}')".format(join_list(country.split(","))))
+    if channel:
+        filters.append("s.channel IN ('{}')".format(join_list(channel.split(","))))
+    where = " AND ".join(filters)
+    query = (
+        "WITH period_customers AS ("
+        "SELECT s.customer_id, "
+        "COUNT(DISTINCT s.order_id) AS order_count, "
+        "ROUND(SUM({ts}), 0) AS total_spend ".format(ts=TOTAL_SALES_EXPR) +
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "WHERE " + where +
+        " GROUP BY s.customer_id"
+        "), "
+        "all_time_customers AS ("
+        "SELECT customer_id, MIN(day) AS first_ever_purchase "
+        "FROM `{}` ".format(SALES_TABLE) +
+        "WHERE sale_kind IN ('sale','order') "
+        "AND customer_id IS NOT NULL "
+        "AND customer_id NOT IN ('None','null','') "
+        "GROUP BY customer_id"
+        "), "
+        "churned AS ("
+        "SELECT COUNT(DISTINCT s1.customer_id) AS churned_count "
+        "FROM ("
+        "SELECT DISTINCT customer_id "
+        "FROM `{}` ".format(SALES_TABLE) +
+        "WHERE sale_kind IN ('sale','order') "
+        "AND customer_id IS NOT NULL "
+        "AND customer_id NOT IN ('None','null','') "
+        "AND CAST(day AS DATE) < DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)"
+        ") s1 "
+        "WHERE s1.customer_id NOT IN ("
+        "SELECT DISTINCT customer_id "
+        "FROM `{}` ".format(SALES_TABLE) +
+        "WHERE sale_kind IN ('sale','order') "
+        "AND customer_id IS NOT NULL "
+        "AND customer_id NOT IN ('None','null','') "
+        "AND CAST(day AS DATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)"
+        ")"
+        ") "
+        "SELECT "
+        "COUNT(DISTINCT p.customer_id) AS total_customers, "
+        "COUNT(DISTINCT CASE WHEN p.order_count = 1 "
+        "AND a.first_ever_purchase BETWEEN '{}' AND '{}' ".format(date_from, date_to) +
+        "THEN p.customer_id END) AS new_customers, "
+        "COUNT(DISTINCT CASE WHEN p.order_count > 1 THEN p.customer_id END) AS repeat_customers, "
+        "COUNT(DISTINCT CASE WHEN p.order_count = 1 "
+        "AND a.first_ever_purchase < '{}' ".format(date_from) +
+        "THEN p.customer_id END) AS returning_customers, "
+        "MAX(c.churned_count) AS churned_customers, "
+        "ROUND(AVG(p.total_spend), 0) AS avg_customer_spend, "
+        "ROUND(AVG(p.order_count), 2) AS avg_orders_per_customer, "
+        "ROUND(MAX(c.churned_count) * 100.0 / NULLIF(COUNT(DISTINCT p.customer_id), 0), 2) AS churn_rate "
+        "FROM period_customers p "
+        "LEFT JOIN all_time_customers a ON p.customer_id = a.customer_id "
+        "CROSS JOIN churned c"
+    )
+    rows = run_query(bq, query, date_to=date_to if "date_to" in dir() else None)
+    return dict(rows[0]) if rows else {}
+
+
+
+@app.get("/customer-type-spend")
+def get_customer_type_spend(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+):
+    bq = get_bq()
+    country_filter = ""
+    if country:
+        country_filter = "AND s.country IN ('{}') ".format(join_list(country.split(",")))
+    query = (
+        "WITH customer_first_purchase AS ( "
+        "SELECT customer_id, MIN(CAST(day AS DATE)) AS first_purchase_date "
+        "FROM `{}` ".format(SALES_TABLE) +
+        "WHERE sale_kind = 'order' "
+        "AND customer_id IS NOT NULL AND customer_id != '' "
+        "GROUP BY customer_id "
+        "), "
+        "window_sales AS ( "
+        "SELECT s.customer_id, "
+        "COUNT(DISTINCT s.order_id) AS orders, "
+        "SUM(s.total_sales_kes) AS total_sales "
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "WHERE s.sale_date BETWEEN DATE('{}') AND DATE('{}') ".format("%(date_from)s", "%(date_to)s") +
+        "AND s.sale_kind = 'order' "
+        "AND COALESCE(s.sale_line_type, 'product') != 'discount' "
+        "AND s.customer_id IS NOT NULL AND s.customer_id != '' "
+        + country_filter +
+        "GROUP BY s.customer_id "
+        ") "
+        "SELECT "
+        "CASE WHEN f.first_purchase_date BETWEEN DATE('{}') AND DATE('{}') ".format("%(date_from)s", "%(date_to)s") +
+        "THEN 'New' ELSE 'Returning' END AS customer_segment, "
+        "COUNT(DISTINCT w.customer_id) AS customers, "
+        "SUM(w.orders) AS orders, "
+        "ROUND(SUM(w.total_sales), 0) AS total_sales, "
+        "ROUND(SUM(w.total_sales) / COUNT(DISTINCT w.customer_id), 0) AS spend_per_customer, "
+        "ROUND(SUM(w.total_sales) / SUM(w.orders), 0) AS avg_basket_value "
+        "FROM window_sales w "
+        "JOIN customer_first_purchase f ON w.customer_id = f.customer_id "
+        "GROUP BY customer_segment "
+        "ORDER BY customer_segment"
+    ) % {"date_from": date_from, "date_to": date_to}
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/customer-trend")
+def get_customer_trend(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+):
+    bq = get_bq()
+    filters = [
+        "s.sale_date BETWEEN DATE('{}') AND DATE('{}')".format(date_from, date_to),
+        "s.day BETWEEN '{}' AND '{}'".format(date_from, date_to),
+        "s.sale_kind IN ('sale','order')",
+        "s.customer_id IS NOT NULL",
+        "s.customer_id NOT IN ('None','null','')",
+        "s.pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda')",
+    ]
+    if country:
+        filters.append("s.country IN ('{}')".format(join_list(country.split(","))))
+    where = " AND ".join(filters)
+    query = (
+        "WITH all_time AS ("
+        "SELECT customer_id, MIN(day) AS first_purchase "
+        "FROM `{}` ".format(SALES_TABLE) +
+        "WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL "
+        "GROUP BY customer_id"
+        ") "
+        "SELECT s.day, "
+        "COUNT(DISTINCT s.customer_id) AS total_customers, "
+        "COUNT(DISTINCT CASE WHEN a.first_purchase = s.day THEN s.customer_id END) AS new_customers, "
+        "COUNT(DISTINCT CASE WHEN a.first_purchase < s.day THEN s.customer_id END) AS returning_customers "
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "LEFT JOIN all_time a ON s.customer_id = a.customer_id "
+        "WHERE " + where +
+        " GROUP BY s.day ORDER BY s.day"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/footfall")
+def get_footfall(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    channel:   str = Query(default=None),
+):
+    bq = get_bq()
+    footfall_filters = ["f.day BETWEEN '{}' AND '{}'".format(date_from, date_to)]
+    if channel:
+        footfall_filters.append("f.pos_location_name IN ('{}')".format(join_list(channel.split(","))))
+    footfall_where = " AND ".join(footfall_filters)
+    query = (
+        "WITH footfall AS ("
+        "SELECT pos_location_name, "
+        "SUM(footfall_in) AS total_footfall, "
+        "SUM(outside_traffic) AS total_outside_traffic "
+        "FROM `vivo-project-478307.powerbi_automation.footfall_mapped` f "
+        "WHERE " + footfall_where +
+        " GROUP BY pos_location_name"
+        "), "
+        "sales AS ("
+        "SELECT s.channel, "
+        "COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders, "
+        "ROUND(SUM({ts}), 0) AS total_sales, ".format(ts=TOTAL_SALES_EXPR) +
+        "ROUND(SUM({ts}) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket ".format(ts=TOTAL_SALES_EXPR) +
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "WHERE s.sale_date BETWEEN DATE('{}') AND DATE('{}') AND s.day BETWEEN '{}' AND '{}' ".format(date_from, date_to, date_from, date_to) +
+        "AND s.pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda') "
+        "AND LOWER(COALESCE(s.product_title, '')) NOT LIKE '%shopping bag%' "
+        "AND LOWER(COALESCE(s.variant_sku, '')) NOT LIKE '%vb00%' "
+        "GROUP BY s.channel"
+        ") "
+        "SELECT f.pos_location_name AS location, f.total_footfall, "
+        "f.total_outside_traffic AS outside_traffic, "
+        "ROUND(SAFE_DIVIDE(f.total_footfall * 100.0, NULLIF(f.total_outside_traffic, 0)), 1) AS turn_in_rate, "
+        "COALESCE(s.orders, 0) AS orders, "
+        "COALESCE(s.total_sales, 0) AS total_sales, "
+        "COALESCE(s.avg_basket, 0) AS avg_basket, "
+        "ROUND(SAFE_DIVIDE(COALESCE(s.orders, 0) * 100.0, NULLIF(f.total_footfall, 0)), 1) AS conversion_rate "
+        "FROM footfall f "
+        "LEFT JOIN sales s ON f.pos_location_name = s.channel "
+        "ORDER BY total_footfall DESC"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/country-summary")
+def get_country_summary(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+):
+    bq = get_bq()
+    query = (
+        "SELECT s.country, "
+        "COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders, "
+        "SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN CAST(s.ordered_item_quantity AS INT64) ELSE 0 END) AS units_sold, "
+        "ROUND(SUM({ts}), 0) AS total_sales, ".format(ts=TOTAL_SALES_EXPR) +
+        "ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN CAST(s.gross_sales_kes AS FLOAT64) ELSE 0 END), 0) AS gross_sales, "
+        "ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN CAST(s.discounts_kes AS FLOAT64) ELSE 0 END), 0) AS discounts, "
+        "ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN CAST(s.returns_kes AS FLOAT64) ELSE 0 END), 0) AS returns, "
+        "ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN CAST(s.net_sales_kes AS FLOAT64) "
+        "WHEN s.sale_kind = 'return' THEN -CAST(s.returns_kes AS FLOAT64) ELSE 0 END), 0) AS net_sales, "
+        "ROUND(SUM({ts}) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size ".format(ts=TOTAL_SALES_EXPR) +
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "WHERE s.sale_date BETWEEN DATE('{}') AND DATE('{}') AND s.day BETWEEN '{}' AND '{}' ".format(date_from, date_to, date_from, date_to) +
+        "AND s.pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda') "
+        "AND LOWER(COALESCE(s.product_title, '')) NOT LIKE '%shopping bag%' "
+        "AND LOWER(COALESCE(s.variant_sku, '')) NOT LIKE '%vb00%' "
+        "GROUP BY s.country "
+        "ORDER BY total_sales DESC"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/top-customers")
+def get_top_customers(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+    limit:     int = Query(default=20),
+):
+    bq = get_bq()
+    filters = [
+        "s.sale_date BETWEEN DATE('{}') AND DATE('{}')".format(date_from, date_to),
+        "s.day BETWEEN '{}' AND '{}'".format(date_from, date_to),
+        "s.sale_kind IN ('sale','order')",
+        "s.customer_id IS NOT NULL",
+        "s.customer_id NOT IN ('None','null','')",
+        "s.pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda')",
+        "LOWER(COALESCE(s.product_title, '')) NOT LIKE '%shopping bag%'",
+        "LOWER(COALESCE(s.variant_sku, '')) NOT LIKE '%vb00%'",
+    ]
+    if country:
+        filters.append("s.country IN ('{}')".format(join_list(country.split(","))))
+    if channel:
+        filters.append("s.channel IN ('{}')".format(join_list(channel.split(","))))
+    where = " AND ".join(filters)
+    query = (
+        CUSTOMERS_DEDUP +
+        "SELECT "
+        "ROW_NUMBER() OVER (ORDER BY SUM({ts}) DESC) AS rank, ".format(ts=TOTAL_SALES_EXPR) +
+        "s.customer_id, "
+        "CONCAT(c.first_name, ' ', c.last_name) AS customer_name, "
+        "REPLACE(COALESCE(c.phone, c.mobile), \"'\", '') AS phone, "
+        "c.email, c.city, c.country AS customer_country, "
+        "COUNT(DISTINCT s.order_id) AS total_orders, "
+        "SUM(CAST(s.ordered_item_quantity AS INT64)) AS total_units, "
+        "ROUND(SUM({ts}), 0) AS total_sales, ".format(ts=TOTAL_SALES_EXPR) +
+        "ROUND(SUM({ts}) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_basket, ".format(ts=TOTAL_SALES_EXPR) +
+        "MAX(s.day) AS last_purchase_date, "
+        "MIN(s.day) AS first_purchase_date "
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "LEFT JOIN customers_dedup c ON s.customer_id = c.customer_id AND c.rn = 1 "
+        "WHERE " + where +
+        " AND s.customer_id NOT IN (SELECT customer_id FROM excluded) "
+        "GROUP BY s.customer_id, c.first_name, c.last_name, c.phone, c.mobile, c.email, c.city, c.country "
+        "ORDER BY total_sales DESC "
+        "LIMIT " + str(limit)
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/customer-search")
+def get_customer_search(
+    q:         str = Query(default=""),
+    date_from: str = Query(default="2020-01-01"),
+    date_to:   str = Query(default=str(date.today())),
+):
+    bq = get_bq()
+    if not q or len(q) < 2:
+        return []
+    search = q.lower().replace("'", "")
+    query = (
+        CUSTOMERS_DEDUP +
+        ", sales AS ("
+        "SELECT s.customer_id, "
+        "COUNT(DISTINCT s.order_id) AS total_orders, "
+        "SUM(CAST(s.ordered_item_quantity AS INT64)) AS total_units, "
+        "ROUND(SUM({ts}), 0) AS total_sales, ".format(ts=TOTAL_SALES_EXPR) +
+        "ROUND(SUM({ts}) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_basket, ".format(ts=TOTAL_SALES_EXPR) +
+        "MAX(s.day) AS last_purchase_date, "
+        "MIN(s.day) AS first_purchase_date "
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "WHERE s.sale_kind IN ('sale','order') "
+        "AND s.customer_id IS NOT NULL "
+        "AND s.customer_id NOT IN ('None','null','') "
+        "AND s.sale_date BETWEEN DATE('{}') AND DATE('{}') AND s.day BETWEEN '{}' AND '{}' ".format(date_from, date_to, date_from, date_to) +
+        "GROUP BY s.customer_id"
+        ") "
+        "SELECT sa.customer_id, "
+        "CONCAT(c.first_name, ' ', c.last_name) AS customer_name, "
+        "REPLACE(COALESCE(c.phone, c.mobile), \"'\", '') AS phone, "
+        "c.email, c.city, c.country AS customer_country, "
+        "sa.total_orders, sa.total_units, sa.total_sales, sa.avg_basket, "
+        "sa.last_purchase_date, sa.first_purchase_date "
+        "FROM sales sa "
+        "LEFT JOIN customers_dedup c ON sa.customer_id = c.customer_id AND c.rn = 1 "
+        "WHERE sa.customer_id NOT IN (SELECT customer_id FROM excluded) "
+        "AND (LOWER(COALESCE(CONCAT(c.first_name, ' ', c.last_name), '')) LIKE '%{}%' ".format(search) +
+        "OR LOWER(REPLACE(COALESCE(c.phone, c.mobile, ''), \"'\", '')) LIKE '%{}%') ".format(search) +
+        "ORDER BY sa.total_sales DESC "
+        "LIMIT 10"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/customer-products")
+def get_customer_products(
+    customer_id: str = Query(default=""),
+):
+    bq = get_bq()
+    if not customer_id:
+        return []
+    query = (
+        "SELECT p.style_name, p.product_type AS subcategory, p.brand, "
+        "SUM(CAST(s.ordered_item_quantity AS INT64)) AS units_bought, "
+        "ROUND(SUM({ts}), 0) AS total_spend, ".format(ts=TOTAL_SALES_EXPR) +
+        "MAX(s.day) AS last_bought "
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "LEFT JOIN `{}` p ON s.variant_sku = p.sku ".format(PRODUCTS_TABLE) +
+        "WHERE s.customer_id = '{}' ".format(customer_id.replace("'", "")) +
+        "AND s.sale_kind IN ('sale','order') "
+        "AND p.style_name IS NOT NULL "
+        "GROUP BY p.style_name, p.product_type, p.brand "
+        "ORDER BY units_bought DESC "
+        "LIMIT 10"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/churned-customers")
+def get_churned_customers(
+    days:  int = Query(default=90),
+    limit: int = Query(default=20),
+):
+    bq = get_bq()
+    query = (
+        CUSTOMERS_DEDUP +
+        ", last_purchase AS ("
+        "SELECT s.customer_id, "
+        "MAX(s.day) AS last_purchase_date, "
+        "MIN(s.day) AS first_purchase_date, "
+        "COUNT(DISTINCT s.order_id) AS total_orders, "
+        "ROUND(SUM({ts}), 0) AS lifetime_spend ".format(ts=TOTAL_SALES_EXPR) +
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "WHERE s.sale_kind IN ('sale','order') "
+        "AND s.customer_id IS NOT NULL "
+        "AND s.customer_id NOT IN ('None','null','') "
+        "AND s.pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda') "
+        "GROUP BY s.customer_id"
+        ") "
+        "SELECT lp.customer_id, "
+        "CONCAT(c.first_name, ' ', c.last_name) AS customer_name, "
+        "REPLACE(COALESCE(c.phone, c.mobile), \"'\", '') AS phone, "
+        "c.email, lp.last_purchase_date, lp.first_purchase_date, "
+        "lp.total_orders, lp.lifetime_spend, "
+        "DATE_DIFF(CURRENT_DATE(), CAST(lp.last_purchase_date AS DATE), DAY) AS days_since_last_purchase "
+        "FROM last_purchase lp "
+        "LEFT JOIN customers_dedup c ON lp.customer_id = c.customer_id AND c.rn = 1 "
+        "WHERE lp.customer_id NOT IN (SELECT customer_id FROM excluded) "
+        "AND DATE_DIFF(CURRENT_DATE(), CAST(lp.last_purchase_date AS DATE), DAY) > {} ".format(days) +
+        "ORDER BY lp.lifetime_spend DESC "
+        "LIMIT " + str(limit)
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/customer-frequency")
+def get_customer_frequency(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    bq = get_bq()
+    filters = [
+        "s.sale_date BETWEEN DATE('{}') AND DATE('{}')".format(date_from, date_to),
+        "s.day BETWEEN '{}' AND '{}'".format(date_from, date_to),
+        "s.sale_kind IN ('sale','order')",
+        "s.customer_id IS NOT NULL",
+        "s.customer_id NOT IN ('None','null','')",
+        "s.pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda')",
+    ]
+    if country:
+        filters.append("s.country IN ('{}')".format(join_list(country.split(","))))
+    if channel:
+        filters.append("s.channel IN ('{}')".format(join_list(channel.split(","))))
+    where = " AND ".join(filters)
+    query = (
+        "WITH order_counts AS ("
+        "SELECT customer_id, COUNT(DISTINCT order_id) AS order_count "
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "WHERE " + where +
+        " GROUP BY customer_id"
+        ") "
+        "SELECT "
+        "CASE "
+        "WHEN order_count = 1 THEN '1 order' "
+        "WHEN order_count = 2 THEN '2 orders' "
+        "WHEN order_count = 3 THEN '3 orders' "
+        "WHEN order_count = 4 THEN '4 orders' "
+        "ELSE '5+ orders' END AS frequency_bucket, "
+        "COUNT(*) AS customer_count "
+        "FROM order_counts "
+        "GROUP BY frequency_bucket "
+        "ORDER BY MIN(order_count)"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/customers-by-location")
+def get_customers_by_location(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+):
+    bq = get_bq()
+    filters = [
+        "s.sale_date BETWEEN DATE('{}') AND DATE('{}')".format(date_from, date_to),
+        "s.day BETWEEN '{}' AND '{}'".format(date_from, date_to),
+        "s.sale_kind IN ('sale','order')",
+        "s.customer_id IS NOT NULL",
+        "s.customer_id NOT IN ('None','null','')",
+        "s.pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda')",
+    ]
+    if country:
+        filters.append("s.country IN ('{}')".format(join_list(country.split(","))))
+    where = " AND ".join(filters)
+    query = (
+        "WITH all_time AS ("
+        "SELECT customer_id, MIN(day) AS first_purchase "
+        "FROM `{}` ".format(SALES_TABLE) +
+        "WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL "
+        "GROUP BY customer_id"
+        ") "
+        "SELECT s.channel AS pos_location, s.country, "
+        "COUNT(DISTINCT s.customer_id) AS total_customers, "
+        "COUNT(DISTINCT CASE WHEN a.first_purchase BETWEEN '{}' AND '{}' ".format(date_from, date_to) +
+        "THEN s.customer_id END) AS new_customers, "
+        "COUNT(DISTINCT CASE WHEN a.first_purchase < '{}' ".format(date_from) +
+        "THEN s.customer_id END) AS returning_customers, "
+        "ROUND(COUNT(DISTINCT s.customer_id) * 100.0 / "
+        "NULLIF(SUM(COUNT(DISTINCT s.customer_id)) OVER(), 0), 1) AS pct_of_total "
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "LEFT JOIN all_time a ON s.customer_id = a.customer_id "
+        "WHERE " + where +
+        " GROUP BY s.channel, s.country "
+        "ORDER BY total_customers DESC"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/new-customer-products")
+def get_new_customer_products(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+    limit:     int = Query(default=20),
+):
+    bq = get_bq()
+    filters = [
+        "s.sale_date BETWEEN DATE('{}') AND DATE('{}')".format(date_from, date_to),
+        "s.day BETWEEN '{}' AND '{}'".format(date_from, date_to),
+        "s.sale_kind IN ('sale','order')",
+        "s.customer_id IS NOT NULL",
+        "s.customer_id NOT IN ('None','null','')",
+        "s.pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda')",
+        "LOWER(COALESCE(s.product_title, '')) NOT LIKE '%shopping bag%'",
+        "LOWER(COALESCE(s.variant_sku, '')) NOT LIKE '%vb00%'",
+        "CAST(s.ordered_item_quantity AS INT64) > 0",
+        "p.style_name IS NOT NULL",
+    ]
+    if country:
+        filters.append("s.country IN ('{}')".format(join_list(country.split(","))))
+    if channel:
+        filters.append("s.channel IN ('{}')".format(join_list(channel.split(","))))
+    where = " AND ".join(filters)
+    query = (
+        "WITH new_customers AS ("
+        "SELECT customer_id "
+        "FROM `{}` ".format(SALES_TABLE) +
+        "WHERE sale_kind IN ('sale','order') "
+        "AND customer_id IS NOT NULL "
+        "GROUP BY customer_id "
+        "HAVING MIN(day) BETWEEN '{}' AND '{}'".format(date_from, date_to) +
+        ") "
+        "SELECT p.style_name, p.product_type AS subcategory, p.brand, "
+        "SUM(CAST(s.ordered_item_quantity AS INT64)) AS units_sold, "
+        "ROUND(SUM({ts}), 0) AS total_sales, ".format(ts=TOTAL_SALES_EXPR) +
+        "ROUND(SUM({ts}) * 100.0 / ".format(ts=TOTAL_SALES_EXPR) +
+        "NULLIF(SUM(SUM({ts})) OVER(), 0), 1) AS pct_of_new_customer_sales ".format(ts=TOTAL_SALES_EXPR) +
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "LEFT JOIN `{}` p ON s.variant_sku = p.sku ".format(PRODUCTS_TABLE) +
+        "WHERE " + where +
+        " AND s.customer_id IN (SELECT customer_id FROM new_customers) "
+        "GROUP BY p.style_name, p.product_type, p.brand "
+        "ORDER BY units_sold DESC "
+        "LIMIT " + str(limit)
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/orders")
+def get_orders(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+    limit:     int = Query(default=1000),
+):
+    bq = get_bq()
+    filters = [
+        "s.sale_date BETWEEN DATE('{}') AND DATE('{}')".format(date_from, date_to),
+        "s.day BETWEEN '{}' AND '{}'".format(date_from, date_to),
+        "s.pos_location_name NOT IN ('Staff purchases', 'Manual Order', 'Online - vivo-uganda')",
+        "LOWER(COALESCE(s.product_title, '')) NOT LIKE '%shopping bag%'",
+        "LOWER(COALESCE(s.product_title, '')) NOT LIKE '%gift card%'",
+        "LOWER(COALESCE(s.variant_sku, '')) NOT LIKE '%vb00%'",
+    ]
+    if country:
+        filters.append("s.country IN ('{}')".format(join_list(country.split(","))))
+    if channel:
+        filters.append("s.channel IN ('{}')".format(join_list(channel.split(","))))
+    where = " AND ".join(filters)
+    query = (
+        "SELECT "
+        "s.order_id, s.order_name, s.day AS order_date, "
+        "s.pos_location_name, s.channel, s.country, "
+        "s.customer_id, s.customer_type, s.sale_kind, "
+        "s.product_title, s.variant_sku AS sku, "
+        "p.style_name, p.brand, p.collection, "
+        "p.product_type AS subcategory, p.color_print AS color, p.size, "
+        "CAST(s.ordered_item_quantity AS INT64) AS quantity, "
+        "ROUND(CAST(s.product_price_kes AS FLOAT64), 0) AS unit_price_kes, "
+        "ROUND(CAST(s.total_sales_kes AS FLOAT64), 0) AS total_sales_kes, "
+        "ROUND(CAST(s.gross_sales_kes AS FLOAT64), 0) AS gross_sales_kes, "
+        "ROUND(CAST(s.discounts_kes AS FLOAT64), 0) AS discount_kes, "
+        "ROUND(CAST(s.returns_kes AS FLOAT64), 0) AS returns_kes, "
+        "ROUND(CAST(s.net_sales_kes AS FLOAT64), 0) AS net_sales_kes "
+        "FROM `{}` s ".format(SALES_TABLE) +
+        "LEFT JOIN `{}` p ON s.variant_sku = p.sku ".format(PRODUCTS_TABLE) +
+        "WHERE " + where +
+        " ORDER BY s.day DESC, s.order_id, s.product_title "
+        "LIMIT " + str(limit)
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
+
+
+@app.get("/targets")
+def get_targets(
+    month:   str = Query(default=str(date.today().replace(day=1))),
+    channel: str = Query(default=None),
+):
+    bq = get_bq()
+    filters = ["DATE_TRUNC(t.month, MONTH) = DATE_TRUNC(DATE('{}'), MONTH)".format(month)]
+    if channel:
+        filters.append("t.channel IN ('{}')".format(join_list(channel.split(","))))
+    where = " AND ".join(filters)
+    query = (
+        "SELECT t.channel, t.sales_target "
+        "FROM `vivo-project-478307.powerbi_automation.store_targets` t "
+        "WHERE " + where +
+        " ORDER BY t.channel"
+    )
+    return run_query(bq, query, date_to=locals().get("date_to"))
