@@ -1,1 +1,1 @@
-- [Range Mgmt tier model](range-mgmt-tiers.md) — classify carries TWO tiers: Pareto sales-share `tier` (doc-conformant) vs internal `age_tier` (lifecycle); never conflate.
+- [RBAC last-admin & bootstrap concurrency](rbac-last-admin-toctou.md) — admin role/status/delete + first-login bootstrap must run in one advisory-locked tx, or concurrent requests can leave zero admins.

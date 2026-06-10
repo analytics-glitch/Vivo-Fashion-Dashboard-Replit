@@ -3,6 +3,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import { canAccessPage, homePageFor } from "@/lib/permissions";
 import AccessRestricted from "@/pages/AccessRestricted";
+import AwaitingApproval from "@/pages/AwaitingApproval";
 
 /**
  * Gate that wraps every authenticated route:
@@ -39,6 +40,12 @@ export const ProtectedRoute = ({ children, adminOnly = false, pageId }) => {
         </div>
       </div>
     );
+  }
+  // Signed in + on an allowed domain, but the account isn't approved yet
+  // (pending / rejected / disabled). Hold them on the awaiting-approval screen
+  // regardless of which route they hit until an admin activates them.
+  if (user.status && user.status !== "active") {
+    return <AwaitingApproval />;
   }
   if (adminOnly && user.role !== "admin") {
     return <Navigate to={homePageFor(user)} replace />;

@@ -37,7 +37,7 @@ def build_shopifyql(since, until, limit=5000, offset=0):
 def run_shopifyql(shopifyql):
     url = f"https://{SHOP}/admin/api/{API_VERSION}/graphql.json"
     headers = {"Content-Type": "application/json", "X-Shopify-Access-Token": ACCESS_TOKEN}
-    escaped = shopifyql.replace("\", "\\").replace('"', '\"')
+    escaped = shopifyql.replace(chr(92), chr(92)+chr(92)).replace(chr(34), chr(92)+chr(34))
     gql = 'query { shopifyqlQuery(query: "' + escaped + '") { tableData { columns { name displayName dataType } rows } parseErrors } }'
     for attempt in range(5):
         resp = requests.post(url, headers=headers, json={"query": gql}, timeout=90)

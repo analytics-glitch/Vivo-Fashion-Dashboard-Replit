@@ -124,6 +124,7 @@ def cache_set(key, val, ttl=120):
     _cache[key] = (val, time.time(), ttl)
 
 import threading
+import contextlib
 from psycopg2 import pool as _pg_pool
 
 # Cap concurrent DB connections. The dashboard fires bursts of ~20+ parallel
@@ -208,6 +209,182 @@ _AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz"}
 # in one place without touching the (heavily '%'-laden) query strings.
 _DATE_QUERY_PARAMS = ("date_from", "date_to", "compare_from", "compare_to")
 
+# ── App user store: roles + admin approval ────────────────────────────────────
+# Every Clerk-verified, domain-allowed identity gets a row in `app_users` the
+# first time we see it. New sign-ups land as `pending` with a default role and
+# can only reach their own auth/identity endpoints until an admin approves them.
+# Roles persist here (NOT in Clerk) so an admin can grant least-privilege access.
+VALID_ROLES = ("viewer", "store_manager", "warehouse", "analyst", "exec", "admin")
+VALID_STATUSES = ("pending", "active", "rejected", "disabled")
+DEFAULT_NEW_ROLE = "store_manager"
+# Paths a signed-in but not-yet-active user may still reach (so the frontend can
+# read its own status and poll for approval / sign out).
+_AUTH_SELF_PATHS = {
+    "/api/auth/me", "/api/auth/me/status",
+    "/api/auth/login", "/api/auth/logout", "/api/auth/heartbeat",
+}
+
+_USER_CACHE_TTL = 30  # seconds — bounds how long a role/status change lags
+_user_cache = {}      # sub -> (record, ts)
+_user_cache_lock = threading.Lock()
+
+
+def _admin_bootstrap_emails():
+    raw = os.environ.get("ADMIN_BOOTSTRAP_EMAILS") or ""
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+def _users_exec(query, params=None, fetch=False):
+    """Run a parameterised write/read against the user store (never cached)."""
+    pool = _get_pool()
+    conn = pool.getconn()
+    try:
+        conn.autocommit = True
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(query, params or ())
+        rows = [dict(r) for r in cur.fetchall()] if fetch else None
+        cur.close()
+    except Exception:
+        pool.putconn(conn, close=True)
+        raise
+    else:
+        pool.putconn(conn)
+    return rows
+
+
+# Single fixed key for a Postgres transaction-level advisory lock that serializes
+# every admin-membership critical section (bootstrap + role/status/delete). This
+# turns check-then-write sequences into atomic operations so concurrent requests
+# can never both pass a last-admin guard (or both bootstrap a first admin).
+_ADMIN_LOCK_KEY = 0x5669766F  # "Vivo"
+
+
+@contextlib.contextmanager
+def _users_tx(lock=False):
+    """Run statements atomically against the user store in one transaction.
+
+    When ``lock`` is true, acquire the shared admin advisory lock first so the
+    whole critical section is mutually exclusive across requests/threads. The
+    advisory lock is transaction-scoped and released automatically on
+    commit/rollback. Yields a RealDict cursor; commits on success, rolls back on
+    error."""
+    pool = _get_pool()
+    conn = pool.getconn()
+    try:
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        if lock:
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADMIN_LOCK_KEY,))
+        yield cur
+        conn.commit()
+        cur.close()
+    except Exception:
+        try:
+            conn.rollback()
+            conn.autocommit = True
+        except Exception:
+            pool.putconn(conn, close=True)
+            raise
+        pool.putconn(conn)
+        raise
+    else:
+        conn.autocommit = True
+        pool.putconn(conn)
+
+
+def _active_admins_excluding(cur, exclude_user_id=None):
+    """Count active admins using an existing transaction cursor (for atomic guards)."""
+    if exclude_user_id:
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM app_users WHERE role='admin' AND status='active' AND user_id <> %s",
+            (exclude_user_id,))
+    else:
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM app_users WHERE role='admin' AND status='active'")
+    row = cur.fetchone()
+    return int(row["n"]) if row else 0
+
+
+def _ensure_users_table():
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS app_users (
+            user_id       TEXT PRIMARY KEY,
+            email         TEXT UNIQUE NOT NULL,
+            name          TEXT,
+            role          TEXT NOT NULL DEFAULT 'store_manager',
+            status        TEXT NOT NULL DEFAULT 'pending',
+            auth_method   TEXT DEFAULT 'google',
+            created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+            approved_at   TIMESTAMPTZ,
+            approved_by   TEXT,
+            last_login_at TIMESTAMPTZ
+        )
+    """)
+
+
+def _resolve_app_user_db(sub, email, name):
+    rows = _users_exec(
+        "SELECT user_id, email, name, role, status FROM app_users WHERE user_id=%s",
+        (sub,), fetch=True)
+    if rows:
+        rec = rows[0]
+        # Refresh last-login + keep email/name in sync with the IdP, throttled by
+        # the cache TTL (this only runs on a cache miss, ~once per 30s per user).
+        try:
+            _users_exec(
+                "UPDATE app_users SET last_login_at=now(), email=%s, "
+                "name=COALESCE(NULLIF(%s,''), name) WHERE user_id=%s",
+                (email, name or "", sub))
+        except Exception:
+            pass
+        return rec
+    # First time we've seen this identity — decide whether to bootstrap an admin.
+    # The very first user (or anyone in ADMIN_BOOTSTRAP_EMAILS) becomes an active
+    # admin so the system is never left with nobody able to approve others. The
+    # "is there an admin yet?" check and the insert run inside one advisory-locked
+    # transaction so concurrent first logins cannot each elect themselves admin.
+    forced_admin = email.lower() in _admin_bootstrap_emails()
+    with _users_tx(lock=True) as cur:
+        bootstrap = forced_admin or (_active_admins_excluding(cur) == 0)
+        role = "admin" if bootstrap else DEFAULT_NEW_ROLE
+        status = "active" if bootstrap else "pending"
+        cur.execute("""
+            INSERT INTO app_users (user_id, email, name, role, status, auth_method,
+                                   last_login_at, approved_at, approved_by)
+            VALUES (%s, %s, %s, %s, %s, 'google', now(),
+                    CASE WHEN %s='active' THEN now() ELSE NULL END,
+                    CASE WHEN %s='active' THEN 'system:bootstrap' ELSE NULL END)
+            ON CONFLICT (user_id) DO UPDATE SET last_login_at=now()
+            RETURNING user_id, email, name, role, status
+        """, (sub, email, name or "", role, status, status, status))
+        row = cur.fetchone()
+    return dict(row) if row else {
+        "user_id": sub, "email": email, "name": name, "role": role, "status": status,
+    }
+
+
+def resolve_app_user(sub, email, name):
+    """Return the persisted {user_id,email,name,role,status} for a Clerk identity,
+    creating the row on first sight. Cached briefly to spare the DB on request
+    bursts; admin mutations invalidate the cache for instant effect."""
+    now = time.time()
+    with _user_cache_lock:
+        cached = _user_cache.get(sub)
+        if cached and (now - cached[1]) < _USER_CACHE_TTL:
+            return cached[0]
+    rec = _resolve_app_user_db(sub, email, name)
+    with _user_cache_lock:
+        _user_cache[sub] = (rec, now)
+    return rec
+
+
+def _invalidate_user_cache(sub=None):
+    with _user_cache_lock:
+        if sub:
+            _user_cache.pop(sub, None)
+        else:
+            _user_cache.clear()
+
 
 def _is_iso_date(v):
     try:
@@ -231,7 +408,32 @@ async def clerk_auth_gate(request: Request, call_next):
     user, status, detail = clerk_auth.authenticate(request)
     if user is None:
         return JSONResponse({"detail": detail}, status_code=status)
+    # Enrich the verified identity with its PERSISTED role + approval status.
+    # Fail closed: if the user store is unreachable, deny rather than fall back
+    # to the previous "everyone is admin" behaviour.
+    try:
+        app_user = resolve_app_user(user["id"], user["email"], user.get("name"))
+    except Exception:
+        return JSONResponse({"detail": "Account store temporarily unavailable"}, status_code=503)
+    role = app_user.get("role") or DEFAULT_NEW_ROLE
+    ustatus = app_user.get("status") or "pending"
+    user["role"] = role
+    user["status"] = ustatus
+    user["active"] = (ustatus == "active")
+    user["user_id"] = user["id"]
+    if ustatus != "active":
+        user["_restrictionReason"] = ustatus
     request.state.user = user
+    # Approval gate: a signed-in but not-active user may only read its own
+    # identity / sign out. Everything else (all data + admin) is blocked.
+    if ustatus != "active" and path not in _AUTH_SELF_PATHS:
+        return JSONResponse(
+            {"detail": "Your account is awaiting administrator approval.", "status": ustatus},
+            status_code=403,
+        )
+    # Admin-area gate: only admins may touch /api/admin/*.
+    if path.startswith("/api/admin/") and role != "admin":
+        return JSONResponse({"detail": "Administrator access required."}, status_code=403)
     # Reject any non-ISO date filter before it reaches a query string literal.
     for _k in _DATE_QUERY_PARAMS:
         _v = request.query_params.get(_k)
@@ -241,6 +443,15 @@ async def clerk_auth_gate(request: Request, call_next):
                 status_code=400,
             )
     return await call_next(request)
+
+@app.on_event("startup")
+def _init_user_store():
+    # Idempotently create the app_users table so role/approval state has a home.
+    try:
+        _ensure_users_table()
+    except Exception:
+        pass
+
 
 @app.on_event("startup")
 def _cap_threadpool():
@@ -1313,8 +1524,9 @@ def auth_me(request: Request):
     return getattr(request.state, "user", None) or {}
 
 @app.get("/api/auth/me/status")
-def auth_me_status():
-    return {"status":"active"}
+def auth_me_status(request: Request):
+    u = getattr(request.state, "user", None) or {}
+    return {"status": u.get("status", "active")}
 
 @app.post("/api/auth/login")
 def auth_login(request: Request):
@@ -2204,7 +2416,17 @@ def admin_store_clusters(forceFresh: bool = Query(default=False)):
         "by_store": by_store,
     }
 @app.get("/api/admin/users")
-def stub_admin_users(): return []
+def admin_users_list():
+    rows = _users_exec(
+        "SELECT user_id, email, name, role, status, auth_method, "
+        "created_at, approved_at, approved_by, last_login_at, "
+        "(status='active') AS active "
+        "FROM app_users ORDER BY created_at DESC", fetch=True) or []
+    for r in rows:
+        for k in ("created_at", "approved_at", "last_login_at"):
+            if r.get(k) is not None:
+                r[k] = r[k].isoformat()
+    return rows
 @app.get("/api/admin/replenishment-config")
 def admin_replenishment_config():
     return {"owners": list(_REPLEN_OWNERS)}
@@ -3585,7 +3807,161 @@ async def stub_admin_full_snapshot_rebuild(request: Request): return {"ok": True
 async def stub_admin_run_audit_now(request: Request): return {"ok": True}
 @app.patch("/api/admin/users/{user_id}")
 @app.post("/api/admin/users/{user_id}")
-async def stub_admin_users_update(user_id: str, request: Request): return {"ok": True}
+async def admin_users_update(user_id: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    acting = getattr(request.state, "user", None) or {}
+
+    new_role = None
+    if body.get("role"):
+        if body["role"] not in VALID_ROLES:
+            return JSONResponse({"detail": "Invalid role"}, status_code=400)
+        new_role = body["role"]
+
+    new_status = None
+    if body.get("status"):
+        if body["status"] not in VALID_STATUSES:
+            return JSONResponse({"detail": "Invalid status"}, status_code=400)
+        new_status = body["status"]
+    elif "active" in body:
+        new_status = "active" if body["active"] else "disabled"
+
+    # Guard + write run in one advisory-locked transaction so two concurrent
+    # demotions/deletions cannot both pass the last-admin check and leave zero
+    # active admins (TOCTOU).
+    try:
+        with _users_tx(lock=True) as cur:
+            cur.execute(
+                "SELECT user_id, role, status FROM app_users WHERE user_id=%s FOR UPDATE",
+                (user_id,))
+            target = cur.fetchone()
+            if not target:
+                return JSONResponse({"detail": "User not found"}, status_code=404)
+
+            # Lockout guard: never let the change remove the last active admin.
+            would_role = new_role or target["role"]
+            would_status = new_status or target["status"]
+            loses_admin = (target["role"] == "admin" and target["status"] == "active"
+                           and not (would_role == "admin" and would_status == "active"))
+            if loses_admin and _active_admins_excluding(cur, exclude_user_id=user_id) == 0:
+                return JSONResponse(
+                    {"detail": "Cannot remove the last active administrator."},
+                    status_code=400)
+
+            sets, params = [], []
+            if new_role is not None:
+                sets.append("role=%s"); params.append(new_role)
+            if new_status is not None:
+                sets.append("status=%s"); params.append(new_status)
+                if new_status == "active":
+                    sets.append("approved_at=now()")
+                    sets.append("approved_by=%s")
+                    params.append(acting.get("email") or acting.get("id"))
+            if not sets:
+                return {"ok": True}
+            params.append(user_id)
+            cur.execute(
+                f"UPDATE app_users SET {', '.join(sets)} WHERE user_id=%s", tuple(params))
+    finally:
+        _invalidate_user_cache(user_id)
+    return {"ok": True}
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def admin_users_delete(user_id: str, request: Request):
+    # Guard + delete run in one advisory-locked transaction so concurrent deletes
+    # cannot both pass the last-admin check (TOCTOU).
+    try:
+        with _users_tx(lock=True) as cur:
+            cur.execute(
+                "SELECT role, status FROM app_users WHERE user_id=%s FOR UPDATE",
+                (user_id,))
+            t = cur.fetchone()
+            if not t:
+                return {"ok": True}
+            if (t["role"] == "admin" and t["status"] == "active"
+                    and _active_admins_excluding(cur, exclude_user_id=user_id) == 0):
+                return JSONResponse(
+                    {"detail": "Cannot delete the last active administrator."},
+                    status_code=400)
+            cur.execute("DELETE FROM app_users WHERE user_id=%s", (user_id,))
+    finally:
+        _invalidate_user_cache(user_id)
+    return {"ok": True}
+
+
+@app.post("/api/admin/users")
+async def admin_users_create(request: Request):
+    # Admin-provisioned email/password account. Clerk owns credentials, so we
+    # create the identity via the Clerk Backend API, then mark it active locally.
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    email = (body.get("email") or "").strip().lower()
+    name = (body.get("name") or "").strip()
+    password = body.get("password") or ""
+    role = body.get("role") or "viewer"
+    if role not in VALID_ROLES:
+        return JSONResponse({"detail": "Invalid role"}, status_code=400)
+    if not email or "@" not in email:
+        return JSONResponse({"detail": "A valid email is required"}, status_code=400)
+    if not clerk_auth.email_allowed(email):
+        return JSONResponse(
+            {"detail": "Email must be on an allowed company domain"}, status_code=400)
+    if len(password) < 8:
+        return JSONResponse(
+            {"detail": "Password must be at least 8 characters"}, status_code=400)
+
+    secret = os.environ.get("CLERK_SECRET_KEY")
+    if not secret:
+        return JSONResponse(
+            {"detail": "User creation is not configured (missing Clerk secret)."},
+            status_code=503)
+
+    import requests
+    parts = name.split() if name else [email.split("@")[0]]
+    first = parts[0]
+    last = " ".join(parts[1:]) or None
+    payload = {"email_address": [email], "password": password, "first_name": first}
+    if last:
+        payload["last_name"] = last
+    try:
+        resp = requests.post(
+            "https://api.clerk.com/v1/users",
+            headers={"Authorization": f"Bearer {secret}",
+                     "Content-Type": "application/json"},
+            json=payload, timeout=15)
+    except Exception:
+        return JSONResponse(
+            {"detail": "Could not reach the identity provider."}, status_code=502)
+    if resp.status_code >= 400:
+        detail = "Identity provider rejected the request."
+        try:
+            errs = resp.json().get("errors") or []
+            if errs:
+                detail = errs[0].get("long_message") or errs[0].get("message") or detail
+        except Exception:
+            pass
+        return JSONResponse({"detail": detail}, status_code=400)
+
+    sub = (resp.json() or {}).get("id")
+    acting = getattr(request.state, "user", None) or {}
+    approver = acting.get("email") or acting.get("id")
+    _users_exec("""
+        INSERT INTO app_users (user_id, email, name, role, status, auth_method,
+                               approved_at, approved_by)
+        VALUES (%s, %s, %s, %s, 'active', 'password', now(), %s)
+        ON CONFLICT (user_id) DO UPDATE
+            SET role=EXCLUDED.role, status='active',
+                approved_at=now(), approved_by=EXCLUDED.approved_by
+    """, (sub, email, name or first, role, approver))
+    _invalidate_user_cache(sub)
+    return {"ok": True, "user_id": sub}
 @app.post("/api/analytics/replenishment-report/mark")
 async def analytics_replenishment_report_mark(request: Request):
     body = await request.json()

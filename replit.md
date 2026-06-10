@@ -27,6 +27,14 @@ An executive Business Intelligence cockpit for Vivo Fashion Group — a multi-br
 - Layout: `artifacts/vivo-bi/src/components/layout/` (app-shell with sidebar + PageHeader, filter-bar)
 - Theme: `artifacts/vivo-bi/src/index.css`
 
+## Access & roles
+
+- Identity is via Replit-managed Clerk (company domains only). Roles + approval status persist in the Postgres `app_users` table (`user_id` = Clerk sub, `email`, `name`, `role`, `status` [pending|active|disabled|rejected], `auth_method`, timestamps). Clerk proves *who you are*; `app_users` decides *what you can do*.
+- First login bootstraps an admin: the very first user — or anyone whose email is in `ADMIN_BOOTSTRAP_EMAILS` (comma-separated env) — becomes `admin`/`active`. Everyone else lands `store_manager`/`pending` and sees the AwaitingApproval screen until an admin approves them.
+- `api_pg.py` middleware enriches `request.state.user` with the persisted role/status, **fails closed (503)** if the user store is unreachable, blocks non-`active` users from all data (except the auth self-paths: `/api/auth/me`, `/me/status`, `/login`, `/logout`, `/heartbeat`), and gates `/api/admin/*` to admins only.
+- Admin user management lives under `/api/admin/users` (list / approve / reject / role / enable-disable / delete, plus create via the Clerk Backend API). Frontend admin page: `artifacts/vivo-bi/src/pages/Users.jsx`.
+- Last-admin lockout guard + first-login bootstrap run inside one advisory-locked transaction (`_users_tx(lock=True)` + `SELECT … FOR UPDATE`) so concurrent requests can never leave zero active admins. See `.agents/memory/rbac-last-admin-toctou.md`.
+
 ## Architecture decisions
 
 - The FastAPI backend aggregates on-the-fly in SQL against the live Postgres data, so cross-tabs (country/channel/product/store) stay internally consistent.
