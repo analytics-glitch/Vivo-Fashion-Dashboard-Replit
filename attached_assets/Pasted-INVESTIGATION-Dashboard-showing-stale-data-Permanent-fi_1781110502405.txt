@@ -1,0 +1,60 @@
+INVESTIGATION: Dashboard showing stale data + Permanent fix + Self-healing sync
+Context:
+This is a Vivo Fashion Group BI dashboard running on Replit. The stack is:
+
+api_pg.py — FastAPI backend serving the dashboard
+sync_incremental.py — incremental sync pulling from Odoo POS, Shopify (Kenya/Uganda/Rwanda), Shop Zetu (ShopifyQL), and FootfallCam into PostgreSQL every 1 minute
+extract_shopzetu_shopifyql.py — ShopifyQL sync for Shop Zetu called by sync_incremental.py
+start_all.sh — startup script that launches the API and sync
+PostgreSQL at $DATABASE_URL (internal helium host)
+React frontend built in /home/runner/workspace/dashboard/build/
+
+Problem 1: Dashboard is showing stale/outdated data
+Investigate why today's sales data is not current. Specifically:
+
+Check if sync_incremental.py is running (ps aux)
+Check when the last sync ran (SELECT MAX(loaded_at) FROM all_sales)
+Check if api_pg.py is running and responding (curl http://localhost:8000/api/healthz)
+Check logs for any errors
+Identify the root cause and fix it immediately
+
+Problem 2: Permanent fix — sync must never stop
+The sync currently dies whenever the Replit workspace goes idle. Fix this permanently:
+
+Configure the deployment's start_all.sh to run both api_pg.py and sync_incremental.py as supervised processes that auto-restart if they crash
+Use a proper process supervisor — implement a Python-based watchdog that monitors both processes and restarts them within 10 seconds of failure
+The watchdog itself should be the main process in start_all.sh so Replit's deployment keeps it alive 24/7
+Test by killing api_pg.py and sync_incremental.py manually and confirming they restart automatically within 10 seconds
+
+Problem 3: Self-healing sync with notifications
+Build a self-healing monitoring system:
+Health checks:
+
+Every 5 minutes, check that sync_incremental.py ran successfully in the last 10 minutes by querying SELECT MAX(loaded_at) FROM all_sales WHERE loaded_at > NOW() - INTERVAL '10 minutes'
+Every 5 minutes, check that api_pg.py is responding to GET /api/healthz
+If either check fails, automatically restart the failed process
+
+Escalation notifications:
+
+If the sync hasn't run in 15 minutes, send an email alert to william@vivofashiongroup.com using SMTP or a simple HTTP webhook
+If the sync hasn't run in 30 minutes despite auto-restart attempts, send a second escalation alert
+Include in the alert: what failed, when it failed, last successful sync time, and what action was taken
+
+Dashboard status indicator:
+
+Add a /api/sync-status endpoint to api_pg.py that returns: last sync time, minutes since last sync, sync health (OK/WARNING/CRITICAL), and which stores were last synced
+The dashboard already has a "Recon" status indicator in the top bar — connect it to this endpoint so users can see sync health at a glance
+Show WARNING (yellow) if last sync > 10 minutes ago, CRITICAL (red) if > 30 minutes ago
+
+Auto-recovery logic:
+
+If sync fails 3 times in a row, automatically run a fresh full sync for the last 4 days to recover any missed data
+Log all health check results and restarts to a sync_health_log table in PostgreSQL with columns: checked_at, api_healthy, sync_healthy, last_sync_at, action_taken, notes
+
+Implementation requirements:
+
+All monitoring and watchdog logic must be in a single watchdog.py file in /home/runner/workspace/
+start_all.sh should only launch watchdog.py — the watchdog manages everything else
+No external dependencies beyond what's already installed (psycopg2, requests)
+Must work both in the workspace (dev) and in the Replit deployment (prod)
+After implementing, show proof that killing sync_incremental.py triggers an automatic restart and notification
