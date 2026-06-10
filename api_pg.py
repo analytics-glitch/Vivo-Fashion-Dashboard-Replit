@@ -414,8 +414,8 @@ def get_inventory(
         WHERE """ + where + """
         GROUP BY i.country, i.pos_location_name, i.product_name, i.sku,
                  p.brand, p.product_type, p.style_name, p.color_print, p.size, p.barcode
-        ORDER BY i.pos_location_name, i.product_name
-        LIMIT 2000
+        ORDER BY available DESC
+        LIMIT 100000
     """)
 
 @app.get("/api/inventory-summary")
@@ -1053,13 +1053,17 @@ def analytics_canonical_units_sold(
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
 ):
-    subcat_list = "'" + "','".join(PRODUCT_SUBCATS) + "'"
+    # Total units sold under BASE_FILTERS (which already excludes shopping bags,
+    # staff purchases, manual orders and the Uganda online channel). We do NOT
+    # restrict by product_type here: all_sales.product_type is entirely NULL and
+    # the variant_sku -> all_products_clean.sku join misses ~84% of sale rows, so
+    # any product_type filter collapses the count to a fraction of reality and
+    # contradicts the ASP / transactions KPIs computed off the same base.
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.product_type IN (" + subcat_list + ")")
+        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0")
     rows = run_query("""
         SELECT COALESCE(SUM(s.ordered_item_quantity), 0) AS units_sold
         FROM all_sales s
-        LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
         WHERE """ + where, date_to=date_to)
     return {"units_sold": int((rows[0].get("units_sold") if rows and rows[0].get("units_sold") is not None else 0))}
 

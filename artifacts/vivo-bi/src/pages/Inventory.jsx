@@ -420,17 +420,24 @@ const Inventory = () => {
   }, [stsByCat, visibleCategories]);
 
   const invBySubcat = useMemo(() => {
-    const raw = summary?.by_product_type || [];
-    const merch = raw
-      .filter((r) => isMerchandise(r.product_type))
-      .filter((r) => !filtersActive || visibleSubcats.has(r.product_type));
-    const sorted = [...merch].sort((a, b) => (b.units || 0) - (a.units || 0));
+    // Derive merch stock-on-hand per subcategory from the (merch-filtered,
+    // filter-aware) inventory rows. The backend inventory-summary endpoint does
+    // not return a by_product_type breakdown, so we aggregate client-side.
+    const m = new Map();
+    for (const r of filteredInv) {
+      const pt = r.product_type;
+      if (!pt) continue;
+      m.set(pt, (m.get(pt) || 0) + (r.available || 0));
+    }
+    const sorted = [...m.entries()]
+      .map(([product_type, units]) => ({ product_type, units }))
+      .sort((a, b) => (b.units || 0) - (a.units || 0));
     const total = sorted.reduce((s, r) => s + (r.units || 0), 0) || 1;
     return sorted.slice(0, 15).map((r) => {
       const pct = ((r.units || 0) / total) * 100;
       return { ...r, pct, subcat_label: `${pct.toFixed(1)}%` };
     });
-  }, [summary, filtersActive, visibleSubcats]);
+  }, [filteredInv]);
 
   const filteredWeeksOfCover = useMemo(
     () => weeksOfCover
@@ -579,9 +586,14 @@ const Inventory = () => {
       .sort((a, b) => b.understock_pct - a.understock_pct);
   }, [filteredSubcatSS]);
 
-  const kpiTotal = filtersActive ? totalFilteredUnits : (summary?.total_units || 0);
-  const kpiStore = filtersActive ? storeVsWarehouse.store : (summary?.store_units || 0);
-  const kpiWarehouse = filtersActive ? storeVsWarehouse.warehouse : (summary?.warehouse_units || 0);
+  // Always derive the headline KPIs from the client-side merch aggregates.
+  // When no local filters are active, filteredInv == all merchandise rows, so
+  // these equal the full totals; the backend inventory-summary endpoint returns
+  // a per-location list (no total_units/store_units/warehouse_units fields), so
+  // the old summary fallback evaluated to 0.
+  const kpiTotal = totalFilteredUnits;
+  const kpiStore = storeVsWarehouse.store;
+  const kpiWarehouse = storeVsWarehouse.warehouse;
 
   // Export filename slug reflecting the active filters — makes traceability
   // obvious when sharing CSVs via email/chat.
