@@ -19,7 +19,6 @@ const Exports = React.lazy(() => import("@/pages/Exports"));
 const Customers = React.lazy(() => import("@/pages/Customers"));
 const CustomerDetails = React.lazy(() => import("@/pages/CustomerDetails"));
 const Footfall = React.lazy(() => import("@/pages/Footfall"));
-const CEOReport = React.lazy(() => import("@/pages/CEOReport"));
 const TargetsTracker = React.lazy(() => import("@/pages/TargetsTracker"));
 const ReOrder = React.lazy(() => import("@/pages/ReOrder"));
 const IBT = React.lazy(() => import("@/pages/IBT"));
@@ -250,7 +249,6 @@ function App() {
                 <Route path="/marketing" element={<ProtectedShell pageId="marketing"><Marketing /></ProtectedShell>} />
                 <Route path="/range-mgmt" element={<ProtectedShell pageId="range-mgmt"><RangeManagement /></ProtectedShell>} />
                 <Route path="/footfall" element={<ProtectedShell pageId="footfall"><Footfall /></ProtectedShell>} />
-                <Route path="/ceo-report" element={<ProtectedShell pageId="ceo-report"><CEOReport /></ProtectedShell>} />
                 <Route path="/targets" element={<ProtectedShell pageId="targets"><TargetsTracker /></ProtectedShell>} />
                 <Route path="/re-order" element={<ProtectedShell pageId="re-order"><ReOrder /></ProtectedShell>} />
                 <Route path="/ibt" element={<ProtectedShell pageId="ibt"><IBT /></ProtectedShell>} />

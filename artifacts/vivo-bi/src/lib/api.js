@@ -354,12 +354,21 @@ export const fmtDate = (d) => {
   // device timezone. Without this a US-based viewer would see dates shifted
   // back by up to 10 hours, which silently mis-aligns daily KPIs against
   // the EOD cut-off used by the data pipeline.
-  return new Date(d).toLocaleDateString("en-GB", {
-    day: "numeric",
+  // Uniform display format across the whole dashboard and every CSV export:
+  // dd-mmm-yyyy (e.g. "05-Jun-2026"). Built from parts so we control the
+  // hyphen separators (toLocaleDateString would give spaces).
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
     month: "short",
     year: "numeric",
     timeZone: "Africa/Nairobi",
-  });
+  }).formatToParts(new Date(d));
+  const get = (t) => parts.find((p) => p.type === t)?.value || "";
+  const day = get("day");
+  const month = get("month");
+  const year = get("year");
+  if (!day || !month || !year) return "";
+  return `${day}-${month}-${year}`;
 };
 
 export const fmtDelta = (n) => {

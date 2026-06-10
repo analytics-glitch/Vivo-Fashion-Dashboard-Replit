@@ -87,7 +87,7 @@ const buildBullets = ({ kpis, kpisSince, gapLabel }) => {
         emoji: up ? "⚠️" : "✅",
         text: `Return rate ${up ? "rose" : "improved"} ${Math.abs(diff).toFixed(2)}pp — now ${rNow.toFixed(2)}%.`,
         tone: up ? "bad" : "good",
-        to: "/ceo-report",
+        to: "/exec-summary",
         cta: "Investigate",
       });
     }

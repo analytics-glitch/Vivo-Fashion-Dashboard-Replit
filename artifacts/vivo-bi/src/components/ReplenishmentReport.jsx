@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { api, fmtNum } from "@/lib/api";
+import { api, fmtNum, fmtDate } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import { Calendar as CalendarIcon, CheckSquare, Square } from "@phosphor-icons/react";
@@ -110,6 +110,19 @@ const ReplenishmentReport = () => {
       render: (r) => r.bin ? <span className="pill-amber">{r.bin}</span> : <span className="text-muted text-[11px]">—</span>,
       csv: (r) => r.bin || "" },
     { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
+    { key: "last_sale", label: "Last Sold", align: "left",
+      sortValue: (r) => (r.last_sale ? new Date(r.last_sale).getTime() : 0),
+      render: (r) => r.last_sale
+        ? (
+          <span>
+            {fmtDate(r.last_sale)}
+            {typeof r.days_lapsed === "number" && r.days_lapsed > 0
+              ? <span className="text-muted text-[11px]"> · {r.days_lapsed}d ago</span>
+              : null}
+          </span>
+        )
+        : <span className="text-muted text-[11px]">—</span>,
+      csv: (r) => (r.last_sale ? fmtDate(r.last_sale) : "") },
     { key: "soh_store", label: "SOH Store", numeric: true,
       render: (r) => (
         <span className={r.soh_store === 0 ? "text-red-700 font-bold" : ""}>

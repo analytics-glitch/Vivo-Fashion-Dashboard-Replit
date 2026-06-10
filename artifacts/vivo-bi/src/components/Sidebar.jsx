@@ -51,7 +51,6 @@ const tabs = [
   { to: "/ibt", label: "IBT", icon: Truck, id: "ibt" },
   { to: "/allocations", label: "Allocations", icon: Stack, id: "allocations" },
   { to: "/replenishments", label: "Replenishments", icon: ArrowsClockwise, id: "replenishments" },
-  { to: "/ceo-report", label: "CEO Report", icon: FileText, id: "ceo-report" },
   { to: "/targets", label: "Targets", icon: Target, id: "targets" },
   { to: "/data-quality", label: "Data Quality", icon: Warning, id: "data-quality" },
   { to: "/exports", label: "Exports (Sales, Inventory)", icon: DownloadSimple, id: "exports" },
@@ -113,8 +112,6 @@ const prefetchForRoute = (routeId, filters) => {
       api.get("/analytics/allocations", { params: { country: ctry || undefined } }).catch(() => {});
     } else if (routeId === "targets") {
       api.get("/analytics/annual-targets").catch(() => {});
-    } else if (routeId === "ceo-report") {
-      api.get("/analytics/ceo-report", { params: p }).catch(() => {});
     }
   } catch { /* prefetch is best-effort */ }
 };
