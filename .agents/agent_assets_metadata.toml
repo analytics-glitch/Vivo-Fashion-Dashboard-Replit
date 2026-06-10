@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "lmwd83kHaYOQbQgx6LHd2"
+uri = "file://replenishment_ibt_audit.md"
+type = "text"
+title = "Replenishment & IBT — Audit, Gap Analysis & Improvement Plan"
