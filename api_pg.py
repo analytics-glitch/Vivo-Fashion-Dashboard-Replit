@@ -4114,6 +4114,18 @@ async def clerk_frontend_proxy(clerk_path: str, request: Request):
     }
     fwd_headers["Clerk-Proxy-Url"] = proxy_url
     fwd_headers["Clerk-Secret-Key"] = os.environ["CLERK_SECRET_KEY"]
+    # Restrict the upstream response to encodings the Python `requests`/urllib3
+    # stack transparently decodes. Browsers advertise `br`/`zstd`, which
+    # `requests` does NOT decompress — it would then hand us the raw compressed
+    # bytes, and since we strip the `Content-Encoding` response header below
+    # (it's hop-by-hop), the browser would receive compressed binary with no way
+    # to decode it and try to parse it as JS. That manifests as
+    # `Uncaught SyntaxError: Unexpected token '%' (at clerk.browser.js:1:2)` and
+    # `Clerk: Failed to load Clerk JS`, leaving the app stuck on the auth-loading
+    # screen in production (the proxy is dev-disabled, so dev never hits this).
+    # gzip/deflate/identity are all decoded by `requests` into the plain bytes we
+    # relay, so the browser always receives valid, uncompressed content.
+    fwd_headers["Accept-Encoding"] = "gzip, deflate"
     xff = request.headers.get("x-forwarded-for")
     client_ip = (xff.split(",")[0].strip() if xff else None) or (
         request.client.host if request.client else None

@@ -37,14 +37,7 @@ STORES = [
         "currency":  "RWF",
         "vat":       1.18,
     },
-    {
-        "store_id":  "shop-zetu",
-        "store_url": os.environ["SHOPZETU_STORE"],
-        "token":     os.environ["SHOPZETU_TOKEN"],
-        "country":   "Online",
-        "currency":  "KES",
-        "vat":       1.0,
-    },
+    # shop-zetu handled separately via ShopifyQL
 ]
 
 UGANDA_LOCATIONS = {
@@ -497,6 +490,14 @@ def main():
         except Exception as e:
             log.error("Error syncing %s: %s", store["store_id"], e)
             conn.rollback()
+
+    # Shop Zetu via ShopifyQL
+    try:
+        import subprocess, sys
+        subprocess.run([sys.executable, '/home/runner/workspace/extract_shopzetu_shopifyql.py'], check=True)
+        log.info('Shop Zetu ShopifyQL sync done')
+    except Exception as e:
+        log.error('Shop Zetu ShopifyQL sync error: %s', e)
 
     try:
         sync_odoo(cur, now, rates)
