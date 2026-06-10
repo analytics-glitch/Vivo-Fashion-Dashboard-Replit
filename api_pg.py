@@ -39,10 +39,15 @@ def make_reveal_token(user_id: str) -> str:
 def _reveal_token_valid(token: str, user_id: str) -> bool:
     if not token or not user_id:
         return False
+    key = _pii_signing_key()
+    if not key:
+        # Fail closed: with no signing secret configured, an attacker could forge a
+        # token signed with the empty key. Reject all reveal tokens so PII stays masked.
+        return False
     try:
         payload_b64, sig_b64 = token.split(".", 1)
         payload = _b64u_dec(payload_b64)
-        expected = hmac.new(_pii_signing_key(), payload, hashlib.sha256).digest()
+        expected = hmac.new(key, payload, hashlib.sha256).digest()
         if not hmac.compare_digest(expected, _b64u_dec(sig_b64)):
             return False
         tok_user, tok_exp = payload.decode("utf-8").rsplit(":", 1)
@@ -3372,6 +3377,13 @@ async def auth_verify_password(request: Request):
     if not configured:
         return JSONResponse(
             {"detail": "PII reveal is not configured. Set the PII_REVEAL_PASSWORD secret to enable it."},
+            status_code=503,
+        )
+    if not _pii_signing_key():
+        # Without a signing secret, issued tokens would be forgeable — refuse to enable
+        # the reveal flow at all (defense in depth alongside _reveal_token_valid).
+        return JSONResponse(
+            {"detail": "PII reveal is not configured. Set the SESSION_SECRET secret to enable it."},
             status_code=503,
         )
     try:
