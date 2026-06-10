@@ -16,6 +16,7 @@ import {
   ChatCircleDots,
   ShieldCheck,
   ClockClockwise,
+  Table,
 } from "@phosphor-icons/react";
 
 /**
@@ -49,6 +50,7 @@ export const PRIMARY_NAV = [
   { to: "/replenishments", label: "Replenishments", icon: ArrowsClockwise, id: "replenishments", group: "Inventory & Replenishment", desc: "Replenishment suggestions with last-sold dates" },
   { to: "/targets", label: "Targets", icon: Target, id: "targets", group: "Planning & Quality", desc: "Track sales against targets" },
   { to: "/data-quality", label: "Data Quality", icon: Warning, id: "data-quality", group: "Planning & Quality", desc: "Data completeness and quality checks" },
+  { to: "/custom-report", label: "Custom Report", icon: Table, id: "custom-report", group: "Tools", desc: "Build your own breakdown by dimensions & measures, export CSV" },
   { to: "/exports", label: "Exports (Sales, Inventory)", icon: DownloadSimple, id: "exports", group: "Tools", desc: "Download sales and inventory data as CSV" },
   { to: "/feedback", label: "Feedback", icon: ChatCircleDots, id: "feedback", group: "Tools", desc: "Send feedback to the BI team" },
 ];

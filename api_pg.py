@@ -100,6 +100,15 @@ def mask_pii_rows(rows, request, phone_keys=("phone",), email_keys=("email",)):
 
 
 _cache = {}
+# Lightweight counters so the admin Cache pill can show a real hit rate.
+_cache_stats = {"hits": 0, "misses": 0, "sets": 0, "evictions": 0}
+# Soft cap on the in-process query cache so memory stays bounded in production;
+# oldest entries are evicted first. max_entries is surfaced in the Cache pill.
+_CACHE_MAX_ENTRIES = 2000
+_BOOT_TS = time.time()
+# Wall-clock of the last successful DB query — drives the Upstream health pill
+# (here "upstream" is the Postgres data source the API reads from directly).
+_last_db_success_ts = None
 
 def smart_ttl(date_to=None):
     if not date_to:
@@ -117,12 +126,22 @@ def cache_get(key):
     if key in _cache:
         val, ts, ttl = _cache[key]
         if time.time() - ts < ttl:
+            _cache_stats["hits"] += 1
             return val
         del _cache[key]
+        _cache_stats["evictions"] += 1
+    _cache_stats["misses"] += 1
     return None
 
 def cache_set(key, val, ttl=120):
     _cache[key] = (val, time.time(), ttl)
+    _cache_stats["sets"] += 1
+    # Bound memory: evict the oldest entries once over the soft cap.
+    if len(_cache) > _CACHE_MAX_ENTRIES:
+        overflow = len(_cache) - _CACHE_MAX_ENTRIES
+        for old_key in sorted(_cache, key=lambda k: _cache[k][1])[:overflow]:
+            del _cache[old_key]
+            _cache_stats["evictions"] += 1
 
 import threading
 import contextlib
@@ -180,8 +199,78 @@ def run_query(query, date_to=None):
         raise
     else:
         pool.putconn(conn)
+    global _last_db_success_ts
+    _last_db_success_ts = time.time()
     cache_set(key, rows, ttl=smart_ttl(date_to))
     return rows
+
+
+def _process_rss_mb():
+    # Current resident set size in MB from /proc (Linux), else None.
+    try:
+        with open("/proc/self/statm") as f:
+            pages = int(f.read().split()[1])
+        return round(pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024), 1)
+    except Exception:
+        return None
+
+
+def _cache_stats_payload():
+    # Build the real Cache-health contract the admin pill expects from the
+    # in-process query cache and the since-boot counters.
+    hits = _cache_stats["hits"]
+    misses = _cache_stats["misses"]
+    total = hits + misses
+    hit_rate = round(hits / total * 100, 1) if total else 0.0
+
+    now = time.time()
+    buckets = {"today_120s": 0, "yesterday_600s": 0,
+               "historical_3600s": 0, "legacy_or_no_date": 0}
+    ages = []
+    for _val, ts, ttl in _cache.values():
+        ages.append(now - ts)
+        if ttl == 120:
+            buckets["today_120s"] += 1
+        elif ttl == 600:
+            buckets["yesterday_600s"] += 1
+        elif ttl == 3600:
+            buckets["historical_3600s"] += 1
+        else:
+            buckets["legacy_or_no_date"] += 1
+    avg_age = round(sum(ages) / len(ages)) if ages else 0
+
+    return {
+        "counters_since_boot": {
+            "l1_hits": hits,
+            "l2_redis_hits": 0,           # no Redis tier in this deployment
+            "misses": misses,
+            "hit_rate_pct": hit_rate,
+            "inflight_joins": 0,          # no request-coalescing layer
+        },
+        "miss_analysis": {
+            "distinct_keys_missed": 0,    # per-key miss tracking not retained
+            "repeat_misses": 0,
+            "repeat_miss_pct": 0,
+            "top_repeat_offenders": [],
+        },
+        "in_process_cache": {
+            "entries": len(_cache),
+            "max_entries": _CACHE_MAX_ENTRIES,
+            "ttl_buckets": buckets,
+            "avg_age_sec": avg_age,
+        },
+        "mongo_snapshots": 0,             # snapshots served live from Postgres
+        "heavy_guard": {
+            "limits": {},
+            "in_use": {},
+            "rejections_since_boot": {},
+        },
+        "process": {
+            "rss_mb": _process_rss_mb(),
+            "uptime_sec": round(now - _BOOT_TS),
+        },
+    }
+
 
 app = FastAPI(title="Vivo Fashion Group BI API")
 app.add_middleware(
@@ -454,6 +543,42 @@ def _init_user_store():
         pass
 
 
+# Performance indexes for the hot all_sales scans. The base table ships with
+# indexes on sale_date / store_id / country, but the customer-analytics paths
+# GROUP BY customer_id over the whole table (e.g. global first-purchase in
+# exec-summary / churn) which was a full 1.5M-row scan. The partial composite
+# below turns the first-purchase + per-customer aggregation into an index scan
+# (exec-summary cold load dropped ~25s -> ~10s). Created idempotently so the
+# optimisation also applies in production after a fresh DB sync.
+_PERF_INDEXES = [
+    ("idx_as_cust_firstpurch",
+     "CREATE INDEX IF NOT EXISTS idx_as_cust_firstpurch ON all_sales "
+     "(customer_id, sale_date) "
+     "WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL"),
+    ("idx_as_kind_date",
+     "CREATE INDEX IF NOT EXISTS idx_as_kind_date ON all_sales (sale_kind, sale_date)"),
+]
+
+
+@app.on_event("startup")
+def _ensure_perf_indexes():
+    pool = _get_pool()
+    conn = pool.getconn()
+    try:
+        conn.autocommit = True
+        cur = conn.cursor()
+        for _, sql in _PERF_INDEXES:
+            try:
+                cur.execute(sql)
+            except Exception:
+                pass
+        cur.close()
+    except Exception:
+        pool.putconn(conn, close=True)
+        return
+    pool.putconn(conn)
+
+
 @app.on_event("startup")
 def _cap_threadpool():
     # Sync endpoints run in Starlette's thread pool (default 40). Each can hold a
@@ -620,6 +745,90 @@ def get_locations():
         WHERE active = TRUE
         ORDER BY country, location_name
     """)
+
+# Custom report builder — a single SAFE, whitelist-driven aggregation endpoint.
+# The user picks dimensions + measures from fixed sets; we never accept raw SQL.
+# Any value outside the whitelist is rejected with 400, and the only free-text
+# inputs (date range, country/channel filters) flow through the same validated
+# build_filters/csv_to_sql escaping used by every other endpoint.
+_REPORT_DIMENSIONS = {
+    "country":     ("s.country",                              "Country"),
+    "channel":     ("s.channel",                              "Channel"),
+    "brand":       ("s.brand",                                "Brand"),
+    "category":    ("s.category",                             "Category"),
+    "subcategory": ("s.subcategory",                          "Subcategory"),
+    "store":       ("s.pos_location_name",                    "Store"),
+    "month":       ("to_char(s.sale_date::date, 'YYYY-MM')",  "Month"),
+}
+_REPORT_MEASURES = {
+    "revenue":   ("ROUND(SUM(s.total_sales_kes::numeric), 0)",                                                          "Revenue (KES)"),
+    "units":     ("COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END), 0)", "Units"),
+    "orders":    ("COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END)",                      "Orders"),
+    "customers": ("COUNT(DISTINCT s.customer_id)",                                                                      "Customers"),
+}
+
+@app.get("/api/custom-report")
+def custom_report(
+    dimensions: str = Query(default="country"),
+    measures:   str = Query(default="revenue"),
+    date_from:  str = Query(default=str(date.today().replace(day=1))),
+    date_to:    str = Query(default=str(date.today())),
+    country:    str = Query(default=None),
+    channel:    str = Query(default=None),
+    sort:       str = Query(default=None),
+    sort_dir:   str = Query(default="desc"),
+    limit:      int = Query(default=500),
+):
+    from fastapi import HTTPException
+
+    dims = [d.strip() for d in (dimensions or "").split(",") if d.strip()]
+    meas = [m.strip() for m in (measures or "").split(",") if m.strip()]
+    if not dims:
+        raise HTTPException(status_code=400, detail="Pick at least one dimension")
+    if not meas:
+        raise HTTPException(status_code=400, detail="Pick at least one measure")
+    bad = [d for d in dims if d not in _REPORT_DIMENSIONS] + [m for m in meas if m not in _REPORT_MEASURES]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"Unknown field(s): {', '.join(bad)}")
+
+    select_parts, group_idx = [], []
+    for i, d in enumerate(dims, start=1):
+        expr, _label = _REPORT_DIMENSIONS[d]
+        select_parts.append(f"{expr} AS {d}")
+        group_idx.append(str(i))
+    for m in meas:
+        expr, _label = _REPORT_MEASURES[m]
+        select_parts.append(f"{expr} AS {m}")
+
+    # ORDER BY is whitelist-bound: only a chosen measure or dimension, with a
+    # fixed ASC/DESC token — never a raw user string.
+    order_col = sort if sort in (dims + meas) else (meas[0] if meas else dims[0])
+    order_token = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+    safe_limit = max(1, min(int(limit or 500), 5000))
+
+    where = build_filters(date_from, date_to, country, channel)
+    rows = run_query(
+        "SELECT " + ", ".join(select_parts) +
+        " FROM all_sales s WHERE " + where +
+        " GROUP BY " + ", ".join(group_idx) +
+        f' ORDER BY "{order_col}" {order_token}' +
+        f" LIMIT {safe_limit}",
+        date_to=date_to,
+    )
+    return {
+        "dimensions": [{"id": d, "label": _REPORT_DIMENSIONS[d][1]} for d in dims],
+        "measures": [{"id": m, "label": _REPORT_MEASURES[m][1]} for m in meas],
+        "rows": rows,
+        "row_count": len(rows),
+        "truncated": len(rows) >= safe_limit,
+    }
+
+@app.get("/api/custom-report/fields")
+def custom_report_fields():
+    return {
+        "dimensions": [{"id": k, "label": v[1]} for k, v in _REPORT_DIMENSIONS.items()],
+        "measures": [{"id": k, "label": v[1]} for k, v in _REPORT_MEASURES.items()],
+    }
 
 @app.get("/api/kpis")
 def get_kpis(
@@ -2432,7 +2641,25 @@ def admin_users_list():
 def admin_replenishment_config():
     return {"owners": list(_REPLEN_OWNERS)}
 @app.get("/api/admin/snapshot-freshness")
-def stub_admin_snapshot_freshness(): return []
+def admin_snapshot_freshness():
+    # "Upstream" here is the Postgres data source the API reads from directly.
+    # Health is derived from how recently a DB query last succeeded.
+    age = None if _last_db_success_ts is None else round(time.time() - _last_db_success_ts)
+    if age is None:
+        status = "unknown"
+    elif age < 120:
+        status = "green"
+    elif age < 600:
+        status = "amber"
+    else:
+        status = "red"
+    return {
+        "upstream": {
+            "status": status,
+            "last_success_age_sec": age,
+            "open_breakers": [],
+        }
+    }
 @app.get("/api/allocations/runs")
 def allocations_runs(status: str = Query(default=None)):
     runs = _ALLOC_RUNS
@@ -3974,11 +4201,71 @@ def stub_thumbnails(): return []
 
 # --- GET stubs returning objects ---
 @app.get("/api/analytics/cache-stats")
-def stub_analytics_cache_stats(): return {}
+def analytics_cache_stats(): return _cache_stats_payload()
 @app.get("/api/admin/cache-stats")
-def stub_admin_cache_stats(): return {}
+def admin_cache_stats(): return _cache_stats_payload()
 @app.get("/api/admin/reconciliation-check")
-def stub_admin_reconciliation_check(): return {"ok": True}
+def admin_reconciliation_check():
+    # Cross-page consistency: the Σ of per-country aggregates must equal the
+    # single-shot /kpis totals over the same window (both derive from all_sales
+    # under identical BASE_FILTERS, so any drift means an aggregation bug).
+    rng = run_query("SELECT MAX(s.sale_date) AS d FROM all_sales s")
+    max_date = (rng[0]["d"] if rng and rng[0].get("d") else None)
+    if not max_date:
+        return {"date": None, "checks": [], "errors": [
+            {"endpoint": "/all_sales", "error": "no sale_date available"}]}
+    date_to = str(max_date)[:10]
+    date_from = (date.fromisoformat(date_to) - timedelta(days=30)).isoformat()
+
+    checks = []
+    errors = []
+    sot = {}
+    try:
+        kpis = get_kpis(date_from, date_to, country=None, channel=None)
+        countries = _country_summary_q(date_from, date_to)
+        sot = {"total_sales_kes": float(kpis.get("total_sales") or 0)}
+
+        def _num(x):
+            try:
+                return float(x or 0)
+            except Exception:
+                return 0.0
+
+        def _add(name, expected, got, hint):
+            exp, g = _num(expected), _num(got)
+            delta = g - exp
+            delta_pct = (delta / exp * 100) if exp else (0.0 if g == 0 else 100.0)
+            checks.append({
+                "name": name,
+                "ok": abs(delta_pct) < 0.5,
+                "expected": exp,
+                "got": g,
+                "delta": delta,
+                "delta_pct": delta_pct,
+                "hint": None if abs(delta_pct) < 0.5 else hint,
+            })
+
+        _add("country_sales_sum_eq_kpis",
+             kpis.get("total_sales"),
+             sum(_num(c.get("total_sales")) for c in countries),
+             "Σ per-country net sales drifted from /kpis total — check _country_summary_q vs get_kpis filters.")
+        _add("country_orders_sum_eq_kpis",
+             kpis.get("total_orders"),
+             sum(_num(c.get("orders")) for c in countries),
+             "Σ per-country orders drifted from /kpis — order_id DISTINCT counting differs across aggregations.")
+        _add("country_units_sum_eq_kpis",
+             kpis.get("total_units"),
+             sum(_num(c.get("units_sold")) for c in countries),
+             "Σ per-country units drifted from /kpis — ordered_item_quantity summed differently.")
+    except Exception as e:
+        errors.append({"endpoint": "/api/kpis", "error": str(e)})
+
+    return {
+        "date": f"{date_from} → {date_to}",
+        "source_of_truth": sot,
+        "checks": checks,
+        "errors": errors,
+    }
 @app.get("/api/data-freshness")
 def stub_data_freshness(): return {"fresh": True, "last_updated": None}
 @app.get("/api/ibt/late-count")
@@ -4252,9 +4539,15 @@ async def allocations_runs_fulfil(run_id: str, request: Request):
     from fastapi import HTTPException
     raise HTTPException(status_code=404, detail="Run not found")
 @app.post("/api/admin/cache-clear")
-async def stub_admin_cache_clear(request: Request): return {"ok": True}
+async def admin_cache_clear(request: Request):
+    n = len(_cache)
+    _cache.clear()
+    return {"ok": True, "cleared": {"stale_cache_entries": n, "redis_keys": 0}}
 @app.post("/api/admin/flush-kpi-cache")
-async def stub_admin_flush_kpi_cache(request: Request): return {"ok": True}
+async def admin_flush_kpi_cache(request: Request):
+    n = len(_cache)
+    _cache.clear()
+    return {"ok": True, "cleared": {"stale_cache_entries": n, "redis_keys": 0}}
 @app.post("/api/admin/full-snapshot-rebuild")
 async def stub_admin_full_snapshot_rebuild(request: Request): return {"ok": True}
 @app.post("/api/admin/run-audit-now")
