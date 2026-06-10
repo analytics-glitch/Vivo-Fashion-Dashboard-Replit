@@ -1,0 +1,214 @@
+INVESTIGATION: Document, Audit and Improve the Replenishment & IBT (Inter-Branch Transfer) processes
+Context:
+This is the Vivo Fashion Group BI dashboard. Two key operational modules exist:
+
+Replenishments — recommending stock to order/produce based on demand and current inventory
+IBT (Inter-Branch Transfer) — recommending stock movement between stores to balance inventory
+
+Both modules have dedicated pages in the dashboard and corresponding API endpoints in api_pg.py. The underlying data comes from all_sales (sales history), all_inventory (current stock), and all_products_clean (product master).
+Task:
+Read every piece of code related to Replenishments and IBT across the entire codebase — API endpoints, frontend pages, hooks, components, utility functions — and produce a comprehensive document covering all sections below.
+
+SECTION 1: HOW THE SYSTEM CURRENTLY WORKS
+For both Replenishment and IBT, document:
+
+Data sources used
+
+Which tables/views are queried
+What date ranges are used
+What filters are applied (location, category, brand, etc.)
+
+
+Calculation methodology
+
+Exact formulas used (e.g. Weeks of Cover, Average Weekly Sales, Reorder Point)
+How each metric is computed step by step
+Any thresholds, parameters, or constants hardcoded in the system
+
+
+Decision logic
+
+What criteria trigger a replenishment recommendation
+What criteria trigger an IBT recommendation
+How quantities are calculated
+How priority/urgency is determined
+Any ranking or scoring logic
+
+
+Output format
+
+What the API endpoints return
+How the frontend displays recommendations
+What actions a user can take (approve, reject, mark done, export)
+What happens after a user takes action
+
+
+Current limitations visible in the code
+
+Hardcoded assumptions
+Missing data dependencies
+Endpoints that return empty/stub data
+Frontend components that are placeholder or incomplete
+
+
+
+
+SECTION 2: WHAT THE PROCESS SHOULD IDEALLY DO
+Based on retail fashion best practices and the data available, document what a complete replenishment and IBT system should do:
+Replenishment should:
+
+Identify styles/SKUs that are running low across all stores
+Calculate demand-based reorder quantities using actual sales velocity
+Account for lead times, minimum order quantities, and supplier constraints
+Prioritise by sales contribution, weeks of cover, and season timing
+Distinguish between warehouse replenishment (produce/order more) and store replenishment (move from warehouse to store)
+Flag dead stock and overstocked styles separately
+Output a purchase order / production request format
+Account for size curve — replenish in the right size ratio based on historical sales mix
+
+IBT should:
+
+Identify imbalances where Store A has excess stock of a style and Store B has a stockout or near-stockout of the same style
+Account for store tier, demographics, and sales velocity per location
+Avoid moving slow-moving stock from one store to another slow store
+Calculate the optimal transfer quantity (not just binary yes/no)
+Consider size run integrity — avoid breaking a complete size run at the source store
+Flag "late IBT" where a recommended transfer hasn't been actioned within X days
+Track transfer history and measure outcomes (did the receiving store sell the transferred units?)
+Group transfers by source store to minimise logistics trips
+
+
+SECTION 3: GAP ANALYSIS
+Compare Section 1 (current state) vs Section 2 (ideal state) and produce a gap analysis table:
+FeatureCurrent StateIdeal StateGapPriorityWeeks of Cover calculation.........High/Med/LowSize run integrity check............Lead time consideration............Size curve replenishment............Transfer grouping by source............(continue for all features)
+For each gap, specify:
+
+What data is available to close it (already in all_sales, all_inventory, etc.)
+What data is missing and would need to be added
+Estimated implementation complexity (Simple/Medium/Complex)
+
+
+SECTION 4: SPECIFIC QUESTIONS TO ANSWER
+The business wants answers to these specific questions — check if the current system answers them and if not, flag as a gap:
+
+Which styles are at risk of stocking out in the next 2 weeks across all stores?
+Which stores have excess stock of styles that are selling well in other stores?
+What is the minimum transfer quantity that makes an IBT worthwhile (ROI threshold)?
+Are there stores that consistently receive IBTs but still don't sell the stock?
+What is the average time from IBT recommendation to IBT completion?
+Which styles have been recommended for replenishment more than 3 times in 90 days (chronic stockout styles)?
+Is the current replenishment quantity formula accounting for seasonal demand uplift?
+Are size runs being broken by IBTs (e.g. only XS/S moved, leaving broken size run at source)?
+Which stores are consistently understocked vs their sales potential?
+What percentage of IBT recommendations are actually actioned within 7 days?
+
+
+SECTION 5: RECOMMENDED IMPROVEMENTS
+Based on the gap analysis and business questions, produce a detailed improvement plan covering both quick wins and strategic upgrades.
+5a. Algorithm improvements
+For each improvement, provide:
+
+The specific change to make
+The exact SQL or Python code to implement it
+Which file to change (api_pg.py, which endpoint, which frontend component)
+Before/after example showing the difference in output
+How to verify it worked
+
+Improvements to cover:
+
+Weeks of Cover formula — current formula vs recommended formula using rolling 8-week average sales velocity instead of static period
+Dynamic reorder point — incorporate lead time (default 4 weeks for Vivo production) into reorder trigger
+Size curve logic — when recommending replenishment quantity, split by size using historical sales mix (e.g. if S=30%, M=40%, L=20%, XL=10% of sales, recommend quantities in that ratio)
+IBT scoring model — replace binary yes/no with a score (0-100) based on: source store excess weeks of cover, destination store stockout risk, style sell-through rate, store sales velocity match
+Size run integrity — add a check: if transferring units would leave source store with a broken size run (missing a core size), reduce transfer quantity or skip
+Seasonal adjustment — weight recent 4-week sales higher than older weeks when calculating velocity (exponential weighted average)
+Dead stock flag — flag any SKU with >16 weeks of cover and <5% sell-through in last 8 weeks as dead stock, exclude from IBT recommendations
+Chronic stockout detection — flag styles that have been at <2 weeks of cover for 3+ consecutive weeks as chronic, escalate priority
+
+5b. New features to add
+For each feature, provide the full implementation:
+
+IBT outcome tracking
+
+Add a ibt_outcomes table: transfer_id, style, sku, source_store, dest_store, units_transferred, transfer_date, units_sold_30d, units_sold_60d, sell_through_rate
+Add an API endpoint /api/ibt/outcomes that shows ROI of completed transfers
+Add a frontend summary card showing "% of IBT stock sold within 30 days"
+
+
+Replenishment by size curve
+
+Add a /api/replenishment/size-breakdown endpoint that for each recommended style shows the recommended quantity split by size
+Use last 90 days of sales to derive the size ratio per store cluster
+
+
+Late IBT escalation
+
+Add a ibt_sla column to the IBT recommendations table: recommended date + 5 business days
+Add a /api/ibt/late-count endpoint returning count of IBTs past SLA
+The dashboard already has a late-count indicator — connect it to real data
+
+
+Replenishment calendar
+
+Add a /api/replenishment/calendar endpoint that schedules replenishment actions by week based on current WOC and lead time
+Output: {week: "2026-W25", actions: [{style, qty, priority, trigger_reason}]}
+
+
+Store clustering for IBT
+
+Group stores by sales profile (ASP, basket size, category mix, size curve) using the data already in all_sales
+Only recommend IBTs between stores in the same cluster or adjacent clusters
+Add a /api/store-clusters endpoint returning cluster assignments
+
+
+
+5c. Data quality improvements
+
+SKU matching fix — all_sales.variant_sku and all_products_clean.sku have different formats. Implement a normalisation function that strips leading zeros, converts to uppercase, and strips special characters before joining. Apply this to all endpoints that join these two tables.
+Inventory freshness — Add a last_updated timestamp to all_inventory and surface it in the dashboard. Flag any location whose inventory hasn't been updated in >24 hours as stale.
+Missing size data — Identify SKUs in all_inventory with null size and estimate size from the SKU string pattern (e.g. V0821064LGR2X → size = 2X). Add a derived size_derived column.
+
+5d. UI/UX improvements
+
+Replenishment page — Add a "Why is this recommended?" tooltip on each row explaining the trigger (e.g. "Vivo Junction has 1.2 weeks of cover based on 8-week average of 23 units/week")
+IBT page — Add a "Transfer impact" column showing projected weeks of cover at source and destination stores after the transfer
+Bulk actions — Add ability to approve/reject all recommendations in a category or store in one click
+Export to operations — Add an export button that generates a formatted Excel file grouped by source store, ready to hand to the operations team for physical transfer execution
+
+
+SECTION 6: IMPLEMENTATION ROADMAP
+Produce a phased roadmap:
+Phase 1 — Foundation fixes (Week 1-2, implement now)
+
+SKU matching normalisation
+Weeks of Cover formula correction
+Dead stock exclusion from IBT
+Late IBT count connected to real data
+Inventory freshness indicator
+
+Phase 2 — Algorithm upgrades (Week 3-4)
+
+Size curve replenishment quantities
+IBT scoring model replacing binary logic
+Size run integrity check
+Seasonal velocity weighting
+
+Phase 3 — New features (Week 5-8)
+
+IBT outcome tracking table and dashboard card
+Store clustering for smarter IBT matching
+Replenishment calendar view
+Bulk approve/reject actions
+
+Phase 4 — Advanced analytics (Week 9-12)
+
+Chronic stockout detection and escalation
+IBT ROI dashboard
+Replenishment accuracy tracking (did we order the right quantities?)
+Predictive stockout alerts (7-day forward-looking)
+
+For each phase, specify which files change and in what order.
+
+Deliverable:
+Produce a single comprehensive markdown document covering all 6 sections. Be specific — quote actual SQL queries, actual field names, actual thresholds found in the code. Do not summarise vaguely. If something is a stub or returns hardcoded data, say so explicitly. Where you recommend new code, write the actual implementation, not pseudocode.
+After producing the document, save it to /home/runner/workspace/replenishment_ibt_audit.md and present it for download.
