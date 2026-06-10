@@ -845,6 +845,16 @@ def build_filters(date_from, date_to, country=None, channel=None, extra=None):
         parts.append(extra)
     return " AND ".join(parts)
 
+def _country_channel_filter(country=None, channel=None):
+    # BASE_FILTERS + optional country/channel, but NO date range — used for the
+    # fixed trailing-window (28d/56d) recency-weighted velocity (Phase 2 A6).
+    parts = [BASE_FILTERS]
+    if country:
+        parts.append("s.country IN (" + csv_to_sql(country) + ")")
+    if channel:
+        parts.append("s.pos_location_name IN (" + csv_to_sql(channel) + ")")
+    return " AND ".join(parts)
+
 @app.get("/api/")
 def root():
     return {"status": "ok", "service": "Vivo BI API (PostgreSQL)"}
@@ -2266,12 +2276,17 @@ def analytics_sor_all_styles(
     # drives sor_percent) stays sale+order only.
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order','return') AND p.style_name IS NOT NULL")
-    return run_query("""
+    # Phase 2 A6 — weekly_units uses the standardized recency-weighted velocity
+    # (28d ×2 over a 12-week-equivalent denominator on a trailing 56d window).
+    vel_cc = _country_channel_filter(country, channel)
+    rows = run_query("""
         SELECT p.style_name, p.collection, p.brand, p.product_type,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
                            WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
             COALESCE(MAX(i.current_stock), 0) AS current_stock,
+            ROUND(((COALESCE(MAX(v.u28), 0) * 2)
+                   + GREATEST(COALESCE(MAX(v.u56), 0) - COALESCE(MAX(v.u28), 0), 0)) / 12.0, 2) AS weekly_units,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) * 100.0 /
                 NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) + COALESCE(MAX(i.current_stock), 0), 0), 1) AS sor_percent
         FROM all_sales s
@@ -2283,11 +2298,26 @@ def analytics_sor_all_styles(
             WHERE i2.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
             GROUP BY p2.style_name
         ) i ON p.style_name = i.style_name
+        LEFT JOIN (
+            SELECT p.style_name,
+                SUM(s.ordered_item_quantity) FILTER (
+                    WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days') AS u28,
+                SUM(s.ordered_item_quantity) AS u56
+            FROM all_sales s
+            JOIN all_products_clean p ON s.variant_sku = p.sku
+            WHERE s.sale_kind IN ('sale','order') AND p.style_name IS NOT NULL
+              AND s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
+              AND """ + vel_cc + """
+            GROUP BY p.style_name
+        ) v ON p.style_name = v.style_name
         WHERE """ + where + """
         GROUP BY p.style_name, p.collection, p.brand, p.product_type
         ORDER BY units_sold DESC
         LIMIT 5000
     """, date_to=date_to)
+    for r in rows:
+        r["velocity_method"] = "ewma_56d"
+    return rows
 
 @app.get("/api/analytics/stock-to-sales-by-category")
 def analytics_sts_by_category(
@@ -2373,10 +2403,15 @@ def analytics_velocity(
     # selected period; weeks_of_cover = current store stock / rate_of_sale.
     # sell_through follows the SOR convention (sold / (sold + current stock)).
     # Current stock excludes warehouses, matching every other stock breakdown.
-    weeks = _period_weeks(date_from, date_to)
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.style_name IS NOT NULL")
-    return run_query("""
+    # Phase 2 A6/A1 — rate_of_sale & weeks_of_cover use the standardized
+    # recency-weighted weekly velocity (last 28 days double-weighted over a
+    # 12-week-equivalent denominator, computed on a trailing 56-day window) so
+    # cover figures agree with /weeks-of-cover and /replenish-by-color. The
+    # selected-period units_sold / total_sales remain for the displayed totals.
+    vel_cc = _country_channel_filter(country, channel)
+    rows = run_query("""
         WITH sales AS (
             SELECT p.style_name, p.brand, p.product_type,
                 SUM(s.ordered_item_quantity) AS units_sold,
@@ -2386,27 +2421,47 @@ def analytics_velocity(
             WHERE """ + where + """
             GROUP BY p.style_name, p.brand, p.product_type
         ),
+        vel AS (
+            SELECT p.style_name,
+                SUM(s.ordered_item_quantity) FILTER (
+                    WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days') AS u28,
+                SUM(s.ordered_item_quantity) AS u56
+            FROM all_sales s
+            JOIN all_products_clean p ON s.variant_sku = p.sku
+            WHERE s.sale_kind IN ('sale','order') AND p.style_name IS NOT NULL
+              AND s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
+              AND """ + vel_cc + """
+            GROUP BY p.style_name
+        ),
         stock AS (
             SELECT p.style_name, SUM(i.available) AS current_stock
             FROM all_inventory i
             JOIN all_products_clean p ON i.sku = p.sku
             WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
             GROUP BY p.style_name
+        ),
+        base AS (
+            SELECT sa.style_name, sa.brand, sa.product_type,
+                sa.units_sold, sa.total_sales,
+                COALESCE(st.current_stock, 0) AS current_stock,
+                ((COALESCE(v.u28, 0) * 2)
+                  + GREATEST(COALESCE(v.u56, 0) - COALESCE(v.u28, 0), 0)) / 12.0 AS weekly_units
+            FROM sales sa
+            LEFT JOIN vel v ON v.style_name = sa.style_name
+            LEFT JOIN stock st ON sa.style_name = st.style_name
         )
-        SELECT sa.style_name, sa.brand, sa.product_type,
-            sa.units_sold, sa.total_sales,
-            COALESCE(st.current_stock, 0) AS current_stock,
-            ROUND(sa.units_sold / """ + weeks + """, 1) AS rate_of_sale,
-            CASE WHEN sa.units_sold > 0
-                 THEN ROUND(COALESCE(st.current_stock, 0) / (sa.units_sold / """ + weeks + """), 1)
-                 ELSE NULL END AS weeks_of_cover,
-            ROUND(sa.units_sold * 100.0 /
-                NULLIF(sa.units_sold + COALESCE(st.current_stock, 0), 0), 1) AS sell_through
-        FROM sales sa
-        LEFT JOIN stock st ON sa.style_name = st.style_name
-        ORDER BY rate_of_sale DESC
+        SELECT style_name, brand, product_type, units_sold, total_sales, current_stock,
+            ROUND(weekly_units, 1) AS rate_of_sale,
+            ROUND(current_stock / NULLIF(weekly_units, 0), 1) AS weeks_of_cover,
+            ROUND(units_sold * 100.0 /
+                NULLIF(units_sold + current_stock, 0), 1) AS sell_through
+        FROM base
+        ORDER BY rate_of_sale DESC NULLS LAST
         LIMIT 5000
     """, date_to=date_to)
+    for r in rows:
+        r["velocity_method"] = "ewma_56d"
+    return rows
 
 @app.get("/api/analytics/size-curve")
 def analytics_size_curve(
@@ -2694,11 +2749,19 @@ def analytics_aged_stock(
     # the frontend renders "Never". soh = store on-hand, soh_warehouse = WH on-hand
     # for the same SKU so the merchandiser sees the full replenishable footprint.
     n = int(days) if days is not None else int(min_days_since_sale)
-    return run_query("""
+    # Phase 2 A6 — weekly_units per SKU uses the standardized recency-weighted
+    # velocity (28d ×2 over a 12-week-equivalent denominator on a trailing 56d
+    # window). For aged stock it is near-zero by definition, which is the point:
+    # it quantifies how slowly each SKU is actually moving.
+    rows = run_query("""
         WITH last_sale AS (
             SELECT variant_sku AS sku, MAX(sale_date) AS last_sold,
                 SUM(CASE WHEN sale_date::date >= CURRENT_DATE - INTERVAL '180 days'
-                         THEN ordered_item_quantity ELSE 0 END) AS units_180
+                         THEN ordered_item_quantity ELSE 0 END) AS units_180,
+                SUM(CASE WHEN sale_date::date >= CURRENT_DATE - INTERVAL '28 days'
+                         THEN ordered_item_quantity ELSE 0 END) AS u28,
+                SUM(CASE WHEN sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
+                         THEN ordered_item_quantity ELSE 0 END) AS u56
             FROM all_sales
             WHERE sale_kind IN ('sale','order')
             GROUP BY variant_sku
@@ -2718,6 +2781,8 @@ def analytics_aged_stock(
             COALESCE(MAX(ls.units_180), 0) AS units_sold_180d,
             SUM(i.available) AS soh,
             COALESCE(MAX(wh.soh_warehouse), 0) AS soh_warehouse,
+            ROUND(((COALESCE(MAX(ls.u28), 0) * 2)
+                   + GREATEST(COALESCE(MAX(ls.u56), 0) - COALESCE(MAX(ls.u28), 0), 0)) / 12.0, 2) AS weekly_units,
             CASE WHEN MAX(ls.last_sold) IS NULL THEN 999
                  ELSE (CURRENT_DATE - MAX(ls.last_sold)::date) END AS days_since_last_sale,
             MAX(ls.last_sold) AS last_sale_date
@@ -2733,6 +2798,9 @@ def analytics_aged_stock(
         ORDER BY days_since_last_sale DESC, soh DESC
         LIMIT 1000
     """)
+    for r in rows:
+        r["velocity_method"] = "ewma_56d"
+    return rows
 
 @app.get("/api/inventory/freshness")
 def inventory_freshness():
@@ -2971,13 +3039,35 @@ def customers_walk_ins(
 def _sql_str(s):
     return (s or "").replace("'", "''")
 
-def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim):
-    """Shared IBT suggestions SQL builder (Phase 1 audit B6). Excludes
-    dead-stock styles (>16 weeks cover AND <5% sell-through over 56 days) from
-    both the donor and recipient sides so we never recommend moving dead stock.
+def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim, use_clustering=True):
+    """Shared IBT suggestions SQL builder (Phase 1 audit B6 + Phase 2 A4/B4).
+
+    Phase 1: excludes dead-stock styles (>16 weeks cover AND <5% sell-through
+    over 56 days) from both donor and recipient sides.
+
+    Phase 2:
+      - A4 0-100 composite score (donor excess 40%, need urgency 40%,
+        sell-through 20%); rows ORDER BY score DESC.
+      - Removes the DISTINCT ON (style) one-pair-per-style cap so every valid
+        donor->needer pair is returned (capped only by `lim`). `pair_count` is a
+        per-style window count of all pairs for that style.
+      - B4 store clustering: stores are tiered A/B/C by 90-day revenue
+        (NTILE(3)); when use_clustering=True only pairs in the same or an
+        adjacent tier are emitted (A<->B, B<->C; A<->C blocked) and the demand
+        baseline avg_u is computed within the *destination* store's cluster
+        (falling back to the chain-wide average when the cluster has no signal).
+
     Reused by both /analytics/ibt-suggestions and /ibt/late-count."""
     c_sales = ("AND s.country = '" + _sql_str(country) + "'") if country else ""
     c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
+    if use_clustering:
+        avg_expr = "COALESCE(NULLIF(cs.avg_u, 0), st.avg_u)"
+        cs_join = "LEFT JOIN cluster_stats cs ON cs.style = f.style AND cs.tier_n = t.tier_n"
+        adj_filter = "AND ABS(f.tier_n - t.tier_n) <= 1"
+    else:
+        avg_expr = "st.avg_u"
+        cs_join = ""
+        adj_filter = ""
     return f"""
     WITH sv AS (
       SELECT p.style_name AS style, s.pos_location_name AS store,
@@ -3014,6 +3104,26 @@ def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim):
       SELECT style, AVG(units_sold) AS avg_u, MAX(asp) AS asp
       FROM combined GROUP BY style HAVING COUNT(*) >= 2 AND AVG(units_sold) > 0
     ),
+    store_rev AS (
+      SELECT s.pos_location_name AS store, SUM(s.net_sales_kes::numeric) AS rev90
+      FROM all_sales s
+      WHERE s.sale_kind IN ('sale','order')
+        AND s.sale_date >= (CURRENT_DATE - INTERVAL '90 days')::text
+        AND {BASE_FILTERS}
+        AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND s.pos_location_name NOT ILIKE '%online%' {c_sales}
+      GROUP BY 1
+    ),
+    store_tier AS (
+      SELECT store, NTILE(3) OVER (ORDER BY rev90 DESC) AS tier_n
+      FROM store_rev
+    ),
+    cluster_stats AS (
+      SELECT c.style, COALESCE(t.tier_n, 3) AS tier_n, AVG(c.units_sold) AS avg_u
+      FROM combined c
+      LEFT JOIN store_tier t ON t.store = c.store
+      GROUP BY c.style, COALESCE(t.tier_n, 3)
+    ),
     style_inv AS (
       SELECT p.style_name AS style, SUM(i.available) AS avail
       FROM all_inventory i
@@ -3043,38 +3153,63 @@ def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim):
              OR (COALESCE(sa.u56, 0) + iv.avail) = 0)
     ),
     froms AS (
-      SELECT c.style, c.store, c.available
-      FROM combined c JOIN stats st ON st.style = c.style
-      WHERE c.available >= 3 AND c.units_sold <= {low} * st.avg_u
+      SELECT c.style, c.store, c.available, c.units_sold,
+             COALESCE(stt.tier_n, 3) AS tier_n
+      FROM combined c
+      JOIN stats st ON st.style = c.style
+      LEFT JOIN store_tier stt ON stt.store = c.store
+      WHERE c.available >= 3
         AND NOT EXISTS (SELECT 1 FROM dead d WHERE d.style = c.style)
     ),
     tos AS (
-      SELECT c.style, c.store, c.available, c.units_sold
-      FROM combined c JOIN stats st ON st.style = c.style
-      WHERE c.units_sold >= {high} * st.avg_u AND c.available <= 2
+      SELECT c.style, c.store, c.available, c.units_sold,
+             COALESCE(stt.tier_n, 3) AS tier_n
+      FROM combined c
+      JOIN stats st ON st.style = c.style
+      LEFT JOIN store_tier stt ON stt.store = c.store
+      WHERE c.available <= 2
         AND NOT EXISTS (SELECT 1 FROM dead d WHERE d.style = c.style)
     ),
     pairs AS (
-      SELECT DISTINCT ON (f.style)
-             f.style, f.store AS from_store, f.available AS from_avail,
-             t.store AS to_store, t.available AS to_avail, t.units_sold AS to_sold
-      FROM froms f JOIN tos t ON t.style = f.style AND t.store <> f.store
-      ORDER BY f.style, f.available DESC, t.units_sold DESC
+      SELECT f.style,
+             f.store AS from_store, f.available AS from_avail,
+             f.units_sold AS from_sold, f.tier_n AS from_tier,
+             t.store AS to_store, t.available AS to_avail,
+             t.units_sold AS to_sold, t.tier_n AS to_tier,
+             {avg_expr} AS avg_u, st.asp AS asp
+      FROM froms f
+      JOIN tos t ON t.style = f.style AND t.store <> f.store
+      JOIN stats st ON st.style = f.style
+      {cs_join}
+      WHERE f.units_sold <= {low} * {avg_expr}
+        AND t.units_sold >= {high} * {avg_expr}
+        {adj_filter}
+    ),
+    scored AS (
+      SELECT pr.*,
+        ROUND(100 * (
+          0.4 * (LEAST(pr.from_avail::numeric / NULLIF(pr.avg_u, 0), 3.0) / 3.0)
+        + 0.4 * (LEAST(pr.to_sold::numeric / NULLIF(GREATEST(pr.to_avail, 0) + 1, 0), 5.0) / 5.0)
+        + 0.2 * COALESCE(pr.to_sold::numeric / NULLIF(pr.to_sold + pr.to_avail, 0), 0)
+        ))::int AS score
+      FROM pairs pr
     )
-    SELECT pr.style AS style_name, pp.brand, pp.category AS subcategory,
-           pr.from_store, pr.to_store,
-           GREATEST(LEAST(pr.from_avail - 2, GREATEST(pr.to_sold - pr.to_avail, 1)), 1)::int AS units_to_move,
-           ROUND(GREATEST(LEAST(pr.from_avail - 2, GREATEST(pr.to_sold - pr.to_avail, 1)), 1)
-                 * COALESCE(st.asp, 0))::numeric AS estimated_uplift,
-           COALESCE(fsv.units_sold, 0)::int AS from_qty_sold_28d,
-           pr.to_sold::int AS to_qty_sold_28d
-    FROM pairs pr
-    JOIN stats st ON st.style = pr.style
+    SELECT sc.style AS style_name, pp.brand, pp.category AS subcategory,
+           sc.from_store, sc.to_store,
+           CASE sc.from_tier WHEN 1 THEN 'A' WHEN 2 THEN 'B' ELSE 'C' END AS from_cluster,
+           CASE sc.to_tier   WHEN 1 THEN 'A' WHEN 2 THEN 'B' ELSE 'C' END AS to_cluster,
+           sc.score,
+           COUNT(*) OVER (PARTITION BY sc.style)::int AS pair_count,
+           GREATEST(LEAST(sc.from_avail - 2, GREATEST(sc.to_sold - sc.to_avail, 1)), 1)::int AS units_to_move,
+           ROUND(GREATEST(LEAST(sc.from_avail - 2, GREATEST(sc.to_sold - sc.to_avail, 1)), 1)
+                 * COALESCE(sc.asp, 0))::numeric AS estimated_uplift,
+           sc.from_sold::int AS from_qty_sold_28d,
+           sc.to_sold::int AS to_qty_sold_28d
+    FROM scored sc
     LEFT JOIN LATERAL (
-      SELECT brand, category FROM all_products_clean WHERE style_name = pr.style LIMIT 1
+      SELECT brand, category FROM all_products_clean WHERE style_name = sc.style LIMIT 1
     ) pp ON TRUE
-    LEFT JOIN combined fsv ON fsv.style = pr.style AND fsv.store = pr.from_store
-    ORDER BY estimated_uplift DESC NULLS LAST
+    ORDER BY sc.score DESC, sc.style, estimated_uplift DESC NULLS LAST
     LIMIT {lim}
     """
 
@@ -3087,6 +3222,7 @@ def ibt_suggestions(
     limit:     int = Query(default=300),
     low_pct:   float = Query(default=20),
     high_pct:  float = Query(default=150),
+    use_clustering: bool = Query(default=True),
 ):
     today = date.today()
     date_to = date_to or today.isoformat()
@@ -3094,7 +3230,8 @@ def ibt_suggestions(
     low = float(low_pct) / 100.0
     high = float(high_pct) / 100.0
     lim = max(1, min(int(limit), 1000))
-    q = _ibt_suggestions_sql(date_from, date_to, country, low, high, lim)
+    q = _ibt_suggestions_sql(date_from, date_to, country, low, high, lim,
+                             use_clustering=use_clustering)
     return run_query(q, date_to=date_to)
 
 
@@ -3108,6 +3245,11 @@ def ibt_sku_breakdown(
     st = _sql_str(style_name)
     fs = _sql_str(from_store)
     ts = _sql_str(to_store)
+    # Phase 2 A5 — size-run integrity guard. Every size the donor still stocks
+    # keeps at least 1 unit on the shelf, so a transfer can never zero out a size
+    # and break the donor's size run (qty is capped at from_available - 1). A SKU
+    # whose only available unit would otherwise move (and the destination is not
+    # already covered) is held back and flagged size_run_protected = true.
     q = f"""
     WITH skus AS (
       SELECT DISTINCT p.sku, p.color_print AS color, p.size, p.barcode
@@ -3119,9 +3261,15 @@ def ibt_sku_breakdown(
            COALESCE(fi.av, 0)::int AS from_available,
            COALESCE(ti.av, 0)::int AS to_available,
            LEAST(
-             CASE WHEN COALESCE(fi.av,0) > 2 THEN COALESCE(fi.av,0) - 1 ELSE 0 END,
+             GREATEST(COALESCE(fi.av,0) - 1, 0),
              GREATEST(2 - COALESCE(ti.av,0), 0)
-           )::int AS suggested_qty
+           )::int AS suggested_qty,
+           (COALESCE(fi.av,0) >= 1
+            AND COALESCE(ti.av,0) < 2
+            AND LEAST(
+                  GREATEST(COALESCE(fi.av,0) - 1, 0),
+                  GREATEST(2 - COALESCE(ti.av,0), 0)
+                ) = 0) AS size_run_protected
     FROM skus s
     LEFT JOIN fi ON fi.sku = s.sku
     LEFT JOIN ti ON ti.sku = s.sku
@@ -4022,6 +4170,301 @@ def analytics_recently_unchurned(
         GROUP BY w.customer_id, c.first_name, c.last_name, c.phone, c.email
         ORDER BY last_order_date DESC, gap_days DESC
         LIMIT """ + str(int(limit)))
+# ── Phase 2 A3 — size-curve replenishment helpers ─────────────────────────────
+_SIZE_ORDER = {s: i for i, s in enumerate(
+    ["XXXS", "XXS", "XS", "S", "S/M", "M", "M/L", "L", "L/XL",
+     "XL", "XXL", "XXXL", "2XL", "3XL", "4XL", "5XL"])}
+
+
+def _size_sort_key(sz):
+    u = (sz or "").strip().upper()
+    if u in _SIZE_ORDER:
+        return (0, _SIZE_ORDER[u], "")
+    try:
+        return (1, float(u), "")
+    except (TypeError, ValueError):
+        return (2, 0.0, u)
+
+
+def _split_recommended(weights, total):
+    # Split `total` across buckets proportionally to `weights` using the
+    # largest-remainder method so the per-size parts always sum to exactly
+    # `total` (no rounding drift).
+    n = len(weights)
+    if n == 0 or total <= 0:
+        return [0] * n
+    tot_w = sum(weights)
+    if tot_w <= 0:
+        weights = [1] * n
+        tot_w = n
+    raw = [total * w / tot_w for w in weights]
+    floors = [int(x) for x in raw]
+    remainder = int(total - sum(floors))
+    order = sorted(range(n), key=lambda i: raw[i] - floors[i], reverse=True)
+    for k in range(max(0, remainder)):
+        floors[order[k % n]] += 1
+    return floors
+
+
+def _size_mix_rows(style_filter_sql, sales_extra, inv_country):
+    """Per (style, size) 28d/56d units sold + current store SOH, used by both
+    the size-breakdown endpoint and the replenish-by-color size_mix block.
+    `style_filter_sql` is an already-escaped `AND p.style_name ...` predicate."""
+    return run_query("""
+        WITH sized_sales AS (
+            SELECT p.style_name AS style, NULLIF(TRIM(p.size), '') AS size,
+                SUM(s.net_quantity) FILTER (
+                    WHERE s.sale_date >= (CURRENT_DATE - INTERVAL '28 days')::text) AS units_28,
+                SUM(s.net_quantity) AS units_56
+            FROM all_sales s
+            JOIN all_products_clean p ON p.sku = s.variant_sku
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date >= (CURRENT_DATE - INTERVAL '56 days')::text
+              AND """ + BASE_FILTERS + sales_extra + """
+              AND p.style_name IS NOT NULL """ + style_filter_sql + """
+              AND NULLIF(TRIM(p.size), '') IS NOT NULL
+            GROUP BY 1, 2
+        ),
+        sized_soh AS (
+            SELECT p.style_name AS style, NULLIF(TRIM(p.size), '') AS size,
+                SUM(i.available) AS soh
+            FROM all_inventory i
+            JOIN all_products_clean p ON p.sku = i.sku
+            WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+              AND p.style_name IS NOT NULL """ + style_filter_sql + """
+              AND NULLIF(TRIM(p.size), '') IS NOT NULL""" + inv_country + """
+            GROUP BY 1, 2
+        )
+        SELECT COALESCE(ss.style, sh.style) AS style,
+            COALESCE(ss.size, sh.size) AS size,
+            COALESCE(ss.units_28, 0)::int AS units_28,
+            COALESCE(ss.units_56, 0)::int AS units_56,
+            COALESCE(sh.soh, 0)::int AS soh
+        FROM sized_sales ss
+        FULL OUTER JOIN sized_soh sh ON sh.style = ss.style AND sh.size = ss.size
+        WHERE COALESCE(ss.style, sh.style) IS NOT NULL
+    """)
+
+
+def _build_size_mix(rows, total_recommended):
+    """Turn raw (size, units_28, units_56, soh) rows for ONE style into an
+    ordered size_mix list, splitting `total_recommended` proportionally to 28d
+    sales (falling back to 56d, then even) so the parts sum to the style total."""
+    rows = sorted(rows, key=lambda r: _size_sort_key(r.get("size")))
+    weights = [int(r.get("units_28") or 0) for r in rows]
+    if sum(weights) == 0:
+        weights = [int(r.get("units_56") or 0) for r in rows]
+    tot_w = sum(weights) or len(rows) or 1
+    qtys = _split_recommended(weights, total_recommended)
+    out = []
+    for r, w, q in zip(rows, weights, qtys):
+        out.append({
+            "size": r.get("size"),
+            "units_28": int(r.get("units_28") or 0),
+            "units_56": int(r.get("units_56") or 0),
+            "soh": int(r.get("soh") or 0),
+            "size_share_pct": round(100.0 * w / tot_w, 1) if tot_w else 0.0,
+            "recommended_qty": q,
+        })
+    return out
+
+
+@app.get("/api/replenishment/size-breakdown")
+def replenishment_size_breakdown(
+    style_name: str = Query(...),
+    country:    str = Query(default=None),
+    channel:    str = Query(default=None),
+):
+    # Phase 2 A3 — split a single style's recommended replenishment across its
+    # size run, proportional to the last-28-day size mix (recency-weighted
+    # velocity over the 56d window, identical to replenish-by-color).
+    sales_extra = ""
+    if country:
+        sales_extra += " AND s.country = '" + _sql_str(country) + "'"
+    if channel:
+        sales_extra += " AND s.pos_location_name IN (" + csv_to_sql(channel) + ")"
+    inv_country = (" AND i.country = '" + _sql_str(country) + "'") if country else ""
+    style_filter = " AND p.style_name = '" + _sql_str(style_name) + "'"
+    rows = _size_mix_rows(style_filter, sales_extra, inv_country)
+    total_28 = sum(int(r.get("units_28") or 0) for r in rows)
+    total_56 = sum(int(r.get("units_56") or 0) for r in rows)
+    total_soh = sum(int(r.get("soh") or 0) for r in rows)
+    weekly = ((total_28 * 2) + max(total_56 - total_28, 0)) / 12.0
+    target = int(round(weekly * 4.0))
+    total_recommended = max(0, target - total_soh)
+    sizes = _build_size_mix(rows, total_recommended)
+    return {
+        "style_name": style_name,
+        "weekly_units": round(weekly, 2),
+        "weeks_target": 4.0,
+        "total_units_28d": total_28,
+        "total_units_56d": total_56,
+        "total_soh": total_soh,
+        "total_recommended_qty": total_recommended,
+        "velocity_method": "ewma_56d",
+        "sizes": sizes,
+    }
+
+
+@app.get("/api/replenishment/calendar")
+def replenishment_calendar(
+    country:      str = Query(default=None),
+    weeks_ahead:  int = Query(default=8),
+):
+    # Phase 2 B3 — forward-looking replenishment calendar. For every style we
+    # project when its weeks-of-cover will fall to the lead-time + safety-stock
+    # reorder threshold, then bucket the styles by the ISO week in which an order
+    # must be placed so it arrives before stockout. Velocity is the standardized
+    # recency-weighted weekly run-rate (28d ×2 over a 12-week denominator on the
+    # trailing 56d window), identical to /weeks-of-cover and /replenish-by-color.
+    from datetime import datetime, timedelta
+    weeks_ahead = max(1, min(int(weeks_ahead), 52))
+    subcat_list = "'" + "','".join(PRODUCT_SUBCATS) + "'"
+    sales_extra = ""
+    inv_extra = ""
+    if country:
+        sales_extra = " AND s.country IN (" + csv_to_sql(country) + ")"
+        # Scope stock to the same country so weeks_of_cover / reorder_point /
+        # priority compare local demand against local stock (architect review).
+        inv_extra = " AND i.country IN (" + csv_to_sql(country) + ")"
+    rows = run_query("""
+        WITH sales AS (
+            SELECT p.product_type AS subcategory, p.style_name, p.brand,
+                SUM(s.ordered_item_quantity) FILTER (
+                    WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days') AS units_28,
+                SUM(s.ordered_item_quantity) AS units_56
+            FROM all_sales s
+            LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
+            WHERE s.sale_kind IN ('sale','order')
+            AND s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
+            AND """ + BASE_FILTERS + sales_extra + """
+            AND p.product_type IN (""" + subcat_list + """)
+            GROUP BY p.product_type, p.style_name, p.brand
+        ),
+        stock AS (
+            SELECT p.product_type AS subcategory, p.style_name,
+                SUM(i.available) AS available
+            FROM all_inventory i
+            LEFT JOIN all_products_clean p ON i.sku = p.sku
+            WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)""" + inv_extra + """
+            AND p.product_type IN (""" + subcat_list + """)
+            GROUP BY p.product_type, p.style_name
+        ),
+        base AS (
+            SELECT COALESCE(st.subcategory, sa.subcategory) AS subcategory,
+                COALESCE(st.style_name, sa.style_name) AS style_name,
+                MAX(sa.brand) AS brand,
+                COALESCE(st.available, 0) AS available,
+                ((COALESCE(sa.units_28, 0) * 2)
+                  + GREATEST(COALESCE(sa.units_56, 0) - COALESCE(sa.units_28, 0), 0)) / 12.0
+                  AS weekly_units
+            FROM stock st
+            FULL OUTER JOIN sales sa
+                ON st.subcategory = sa.subcategory AND st.style_name = sa.style_name
+            WHERE COALESCE(st.style_name, sa.style_name) IS NOT NULL
+            GROUP BY st.subcategory, sa.subcategory, st.style_name, sa.style_name,
+                st.available, sa.units_28, sa.units_56
+        )
+        SELECT subcategory, style_name, brand, available,
+            ROUND(weekly_units, 2) AS weekly_units,
+            ROUND(available / NULLIF(weekly_units, 0), 1) AS weeks_of_cover,
+            ROUND(weekly_units * """ + str(REORDER_COVER_WEEKS) + """)::int AS reorder_point
+        FROM base
+        WHERE weekly_units > 0
+        ORDER BY weeks_of_cover ASC NULLS LAST
+        LIMIT 5000
+    """)
+
+    today = date.today()
+    # Monday of the current ISO week — every bucket is anchored on a Monday.
+    current_monday = today - timedelta(days=today.weekday())
+    horizon_end = current_monday + timedelta(weeks=weeks_ahead)
+
+    buckets = {}  # week_start ISO date -> bucket dict
+
+    def _bucket(week_start):
+        key = week_start.isoformat()
+        if key not in buckets:
+            iso_year, iso_week, _ = week_start.isocalendar()
+            buckets[key] = {
+                "week_start": key,
+                "iso_year": iso_year,
+                "iso_week": iso_week,
+                "week_label": "%d-W%02d" % (iso_year, iso_week),
+                "critical": 0, "high": 0, "medium": 0,
+                "styles": [],
+            }
+        return buckets[key]
+
+    for r in rows:
+        weekly = float(r.get("weekly_units") or 0)
+        if weekly <= 0:
+            continue
+        available = float(r.get("available") or 0)
+        woc = available / weekly  # raw weeks of cover
+        # Weeks from now until cover decays to the reorder threshold.
+        weeks_until = woc - REORDER_COVER_WEEKS
+
+        if woc < LEAD_TIME_WEEKS:
+            priority = "CRITICAL"
+            action_monday = current_monday
+            trigger_reason = (
+                "Only %.1f weeks of cover — below the %.0f-week production lead "
+                "time. Stockout imminent; expedite now." % (woc, LEAD_TIME_WEEKS)
+            )
+        elif weeks_until <= 0:
+            priority = "HIGH"
+            action_monday = current_monday
+            trigger_reason = (
+                "Below reorder point (%.1f wks cover < %.0f-wk threshold). "
+                "Place the reorder this week." % (woc, REORDER_COVER_WEEKS)
+            )
+        else:
+            # Will cross the reorder threshold in `weeks_until` weeks.
+            action_monday = current_monday + timedelta(weeks=int(weeks_until // 1))
+            if action_monday >= horizon_end:
+                continue  # beyond the requested horizon — not actionable yet
+            priority = "MEDIUM"
+            trigger_reason = (
+                "Projected to hit the reorder point in ~%d week(s) "
+                "(%.1f wks cover now)." % (int(weeks_until // 1), woc)
+            )
+
+        b = _bucket(action_monday)
+        b[priority.lower()] += 1
+        b["styles"].append({
+            "style_name": r.get("style_name"),
+            "subcategory": r.get("subcategory"),
+            "brand": r.get("brand"),
+            "available": int(available),
+            "weekly_units": round(weekly, 2),
+            "weeks_of_cover": round(woc, 1),
+            "reorder_point": int(r.get("reorder_point") or 0),
+            "priority": priority,
+            "trigger_reason": trigger_reason,
+            "velocity_method": "ewma_56d",
+        })
+
+    _prio_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2}
+    for b in buckets.values():
+        b["styles"].sort(key=lambda s: (_prio_rank.get(s["priority"], 9),
+                                        s["weeks_of_cover"]))
+        b["count"] = len(b["styles"])
+
+    ordered = [buckets[k] for k in sorted(buckets.keys())]
+    return {
+        "country": country,
+        "weeks_ahead": weeks_ahead,
+        "lead_time_weeks": LEAD_TIME_WEEKS,
+        "safety_weeks": SAFETY_WEEKS,
+        "reorder_cover_weeks": REORDER_COVER_WEEKS,
+        "generated_at": today.isoformat(),
+        "total_styles": sum(b["count"] for b in ordered),
+        "velocity_method": "ewma_56d",
+        "buckets": ordered,
+    }
+
+
 @app.get("/api/analytics/replenish-by-color")
 def analytics_replenish_by_color(
     country: str = Query(default=None),
@@ -4033,7 +4476,7 @@ def analytics_replenish_by_color(
     if country:
         sales_extra += " AND s.country = '" + country.replace("'", "''") + "'"
     if channel:
-        sales_extra += " AND s.channel IN (" + csv_to_sql(channel) + ")"
+        sales_extra += " AND s.pos_location_name IN (" + csv_to_sql(channel) + ")"
     inv_country = ""
     if country:
         inv_country = " AND i.country = '" + country.replace("'", "''") + "'"
@@ -4127,8 +4570,22 @@ def analytics_replenish_by_color(
             "reorder_point": style_reorder, "at_risk": total_soh < style_reorder,
             "total_units_30d": total_u28, "total_soh": total_soh,
             "total_recommended_qty": total_rec, "colors": st["colors"],
+            "size_mix": [],
         })
     out.sort(key=lambda x: x["total_recommended_qty"], reverse=True)
+    # Phase 2 A3 — attach a per-style size_mix (recommended qty split across the
+    # size run by 28d sales mix). One query for every style that made the cut.
+    if out:
+        names = [o["style_name"] for o in out]
+        style_filter = (" AND p.style_name IN ("
+                        + ",".join("'" + _sql_str(n) + "'" for n in names) + ")")
+        size_rows = _size_mix_rows(style_filter, sales_extra, inv_country)
+        by_style = {}
+        for r in size_rows:
+            by_style.setdefault(r["style"], []).append(r)
+        for o in out:
+            o["size_mix"] = _build_size_mix(
+                by_style.get(o["style_name"], []), o["total_recommended_qty"])
     return out
 @app.get("/api/analytics/replenishment-completed")
 def analytics_replenishment_completed(days: int = Query(default=30)):

@@ -1,0 +1,92 @@
+IMPLEMENT PHASE 2 — Algorithm upgrades (based on /home/runner/workspace/replenishment_ibt_audit.md)
+Phase 1 is complete and merged. Now implement Phase 2 exactly as specified in the audit. Read the audit document first, then implement each item in order.
+Step 1: Size-curve replenishment quantities (A3)
+Add a new endpoint GET /api/replenishment/size-breakdown:
+
+Parameters: style_name, country (optional), channel (optional)
+Query: 90-day sales mix per size for the style from all_sales joined to all_products_clean
+Output per size: size, units_sold, pct_of_sales, recommended_qty (split from total recommended qty proportionally)
+Also add size_mix array to the existing analytics_replenish_by_color response so the frontend can show per-size breakdown without a second API call
+Verify: per-size quantities sum (±1 rounding) to the style total and follow historical S/M/L/XL ratio
+
+Step 2: IBT 0–100 scoring model (A4)
+In ibt_suggestions (the shared _ibt_suggestions_sql builder from Phase 1):
+
+Replace binary threshold filtering with a composite score:
+
+sql  donor_excess  = LEAST(from_avail / NULLIF(avg_u, 0), 3.0) / 3.0
+  need_urgency  = LEAST(to_sold / NULLIF(GREATEST(to_avail, 0) + 1, 0), 5.0) / 5.0
+  sell_through  = to_sold / NULLIF(to_sold + to_avail, 0)
+  score = ROUND(100 * (0.4*donor_excess + 0.4*need_urgency + 0.2*sell_through))
+
+Return score field on every IBT suggestion row
+Order by score DESC instead of arbitrary order
+Remove the DISTINCT ON (style) one-pair-per-style cap — return ALL valid donor→needer pairs per style, up to the limit parameter
+Verify: A→B pairs where B is selling fast and nearly empty while A is heavily overstocked rank at top (score 80–100); verify multiple pairs per style now appear where applicable
+
+Step 3: Size-run integrity guard (A5)
+In ibt-sku-breakdown endpoint:
+
+For each SKU being considered for transfer, check how many distinct sizes the source store currently stocks for that style
+If transferring the suggested quantity would leave the source store with zero units of that size (breaking the size run), reduce suggested_qty to from_av - 1 (keep at least 1)
+If the source store has only 1 unit of a size and it's the only size remaining, skip that SKU transfer entirely (flag size_run_protected: true)
+Add size_run_protected boolean field to each SKU row in the response
+Verify: a donor with sizes {S:1, M:1, L:4} only releases L units; S and M are protected
+
+Step 4: Multi-pair IBT (remove DISTINCT ON cap)
+Already partially covered in Step 2. Additionally:
+
+Update GET /api/analytics/ibt-suggestions to group results by style_name in the response, showing all donor→needer pairs per style
+Add a pair_count field per style showing how many transfer pairs exist
+Cap total results at the limit parameter (default 300) across all pairs, not per style
+Verify: a style with 3 overstocked stores and 2 understocked stores generates up to 6 pairs (3×2), all scored and ranked
+
+Step 5: Seasonal/recency velocity weighting (A6)
+This was partially implemented in Phase 1 with the ((u28*2) + max(u56-u28, 0)) / 12 formula. Extend it:
+
+Apply the same recency-weighted velocity consistently to analytics_velocity, analytics_sor_all_styles, and analytics_aged_stock
+Currently these endpoints use different window sizes and formulas — standardise them all to use the same 56-day window with recency weighting
+Add a velocity_method: "ewma_56d" field to responses so the frontend can display the methodology
+Verify: a style with 50 units sold in the last 28 days and 10 in the prior 28 days shows weekly velocity of (50*2 + 10) / 12 = 9.2 units/week, not 50/4 = 12.5 (which overstates by ignoring trend)
+
+Step 6: Store clustering used in IBT matching (B4 from Phase 3, pulled forward)
+The store clustering data already exists in GET /api/admin/store-clusters. Now use it in IBT matching:
+
+Compute cluster tiers (A/B/C based on revenue_90d ranking) at query time within _ibt_suggestions_sql
+Add a cluster-match filter: only emit IBT pairs where cluster(from_store) == cluster(to_store) OR adjacent tiers (A↔B or B↔C allowed, A↔C not allowed)
+Add from_cluster and to_cluster fields to each IBT suggestion row
+Make cluster filtering optional via a use_clustering=true/false query parameter (default true)
+Compute avg_u (average units sold) within the destination store's cluster rather than chain-wide
+Verify: a flagship store (tier A) no longer gets IBT recommendations from a developing store (tier C)
+
+Step 7: New endpoint — Replenishment calendar (B3)
+Add GET /api/replenishment/calendar:
+
+Parameters: country (optional), weeks_ahead (default 8)
+Logic: for each at_risk style (from replenish-by-color with at_risk=true), calculate which ISO week action is needed by:
+
+weeks_until_stockout = weeks_of_cover
+action_week = current_week + max(0, floor(weeks_until_stockout - LEAD_TIME_WEEKS))
+
+
+Output grouped by ISO week: {week: "2026-W25", styles: [{style_name, brand, subcategory, recommended_qty, weekly_units, weeks_of_cover, priority, trigger_reason}]}
+Priority: CRITICAL if action needed this week or next, HIGH if 2–3 weeks, MEDIUM if 4+ weeks
+trigger_reason: human-readable string e.g. "Vivo Ankara has 1.8 wks cover at 12 units/wk — reorder now to cover 4-week lead time"
+Verify: styles with weeks_of_cover < 5 appear in the next 1–2 weeks in the calendar
+
+After implementing all steps:
+
+Restart api_pg.py
+Validate each new endpoint against live data:
+
+GET /api/replenishment/size-breakdown?style_name=<any active style> → returns size mix
+GET /api/analytics/ibt-suggestions → returns score field, multiple pairs per style, from_cluster/to_cluster
+GET /api/analytics/ibt-sku-breakdown → returns size_run_protected field
+GET /api/replenishment/calendar → returns ISO week buckets with styles
+
+
+For IBT scoring, show the top 5 suggestions with their scores and confirm the ranking makes intuitive sense (highest-scoring = most urgent transfer)
+For size-run integrity, show a specific example of a protected SKU
+Run the architect review subagent on the changes before marking complete
+
+Do not mark complete until all 7 steps are validated against live data.
