@@ -2147,6 +2147,267 @@ def analytics_sts_by_subcat(
             r["variance"] = 0
     return rows
 
+def _period_weeks(date_from, date_to):
+    # Number of whole-ish weeks covered by the selected range (inclusive),
+    # floored at 1 so rate-of-sale never divides by zero. Computed in Python
+    # and injected as a literal — sale_date is TEXT so SQL date math on it is
+    # avoided here.
+    try:
+        d0 = date.fromisoformat(str(date_from)[:10])
+        d1 = date.fromisoformat(str(date_to)[:10])
+        return f"{max(1.0, ((d1 - d0).days + 1) / 7.0):.4f}"
+    except Exception:
+        return "1.0"
+
+@app.get("/api/analytics/velocity")
+def analytics_velocity(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    # Sell-through velocity by style. rate_of_sale = units sold / weeks in the
+    # selected period; weeks_of_cover = current store stock / rate_of_sale.
+    # sell_through follows the SOR convention (sold / (sold + current stock)).
+    # Current stock excludes warehouses, matching every other stock breakdown.
+    weeks = _period_weeks(date_from, date_to)
+    where = build_filters(date_from, date_to, country, channel,
+        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.style_name IS NOT NULL")
+    return run_query("""
+        WITH sales AS (
+            SELECT p.style_name, p.brand, p.product_type,
+                SUM(s.ordered_item_quantity) AS units_sold,
+                ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales
+            FROM all_sales s
+            JOIN all_products_clean p ON s.variant_sku = p.sku
+            WHERE """ + where + """
+            GROUP BY p.style_name, p.brand, p.product_type
+        ),
+        stock AS (
+            SELECT p.style_name, SUM(i.available) AS current_stock
+            FROM all_inventory i
+            JOIN all_products_clean p ON i.sku = p.sku
+            WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+            GROUP BY p.style_name
+        )
+        SELECT sa.style_name, sa.brand, sa.product_type,
+            sa.units_sold, sa.total_sales,
+            COALESCE(st.current_stock, 0) AS current_stock,
+            ROUND(sa.units_sold / """ + weeks + """, 1) AS rate_of_sale,
+            CASE WHEN sa.units_sold > 0
+                 THEN ROUND(COALESCE(st.current_stock, 0) / (sa.units_sold / """ + weeks + """), 1)
+                 ELSE NULL END AS weeks_of_cover,
+            ROUND(sa.units_sold * 100.0 /
+                NULLIF(sa.units_sold + COALESCE(st.current_stock, 0), 0), 1) AS sell_through
+        FROM sales sa
+        LEFT JOIN stock st ON sa.style_name = st.style_name
+        ORDER BY rate_of_sale DESC
+        LIMIT 5000
+    """, date_to=date_to)
+
+@app.get("/api/analytics/size-curve")
+def analytics_size_curve(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    # Size-curve health by style: how many of a style's catalogued sizes are
+    # currently in stock across selling locations (warehouses excluded). A
+    # "broken" curve = catalogued sizes that are out of stock. units_sold over
+    # the selected period is attached so best-sellers with broken curves surface
+    # first. Only styles with a real size run (>= 2 sizes) are returned.
+    where = build_filters(date_from, date_to, country, channel,
+        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.style_name IS NOT NULL")
+    return run_query("""
+        WITH sales AS (
+            SELECT p.style_name, SUM(s.ordered_item_quantity) AS units_sold
+            FROM all_sales s
+            JOIN all_products_clean p ON s.variant_sku = p.sku
+            WHERE """ + where + """
+            GROUP BY p.style_name
+        ),
+        catalog AS (
+            SELECT style_name, NULLIF(TRIM(size), '') AS size
+            FROM all_products_clean
+            WHERE style_name IS NOT NULL AND NULLIF(TRIM(size), '') IS NOT NULL
+            GROUP BY style_name, NULLIF(TRIM(size), '')
+        ),
+        stock AS (
+            SELECT p.style_name, NULLIF(TRIM(p.size), '') AS size, SUM(i.available) AS avail
+            FROM all_inventory i
+            JOIN all_products_clean p ON i.sku = p.sku
+            WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+              AND p.style_name IS NOT NULL AND NULLIF(TRIM(p.size), '') IS NOT NULL
+            GROUP BY p.style_name, NULLIF(TRIM(p.size), '')
+        ),
+        curve AS (
+            SELECT c.style_name,
+                COUNT(*) AS total_sizes,
+                COUNT(*) FILTER (WHERE COALESCE(st.avail, 0) > 0) AS sizes_in_stock,
+                string_agg(CASE WHEN COALESCE(st.avail, 0) <= 0 THEN c.size END, ', ' ORDER BY c.size) AS missing_sizes
+            FROM catalog c
+            LEFT JOIN stock st ON c.style_name = st.style_name AND c.size = st.size
+            GROUP BY c.style_name
+        ),
+        meta AS (
+            SELECT style_name, MAX(brand) AS brand, MAX(category) AS category,
+                MAX(product_type) AS product_type
+            FROM all_products_clean WHERE style_name IS NOT NULL GROUP BY style_name
+        )
+        SELECT cu.style_name, m.brand, m.category, m.product_type,
+            COALESCE(sa.units_sold, 0) AS units_sold,
+            cu.total_sizes,
+            cu.sizes_in_stock,
+            cu.total_sizes - cu.sizes_in_stock AS broken_sizes,
+            ROUND(cu.sizes_in_stock * 100.0 / NULLIF(cu.total_sizes, 0), 0) AS health_pct,
+            cu.missing_sizes
+        FROM curve cu
+        LEFT JOIN sales sa ON cu.style_name = sa.style_name
+        LEFT JOIN meta m ON cu.style_name = m.style_name
+        WHERE cu.total_sizes >= 2
+        ORDER BY units_sold DESC, broken_sizes DESC
+        LIMIT 3000
+    """, date_to=date_to)
+
+_MARGIN_DIMS = {
+    "category":    "p.category",
+    "subcategory": "p.product_type",
+    "brand":       "p.brand",
+    "store":       "s.pos_location_name",
+    "month":       "to_char(s.sale_date::date,'YYYY-MM')",
+}
+
+@app.get("/api/analytics/margin")
+def analytics_margin(
+    dim:       str = Query(default="category"),
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    # Markdown / discount impact on gross margin. COGS uses
+    # all_products_clean.cost (per-unit landed cost). cost is not known for every
+    # SKU, so gross_margin / margin_pct are computed over the COSTED subset only
+    # (lines with cost > 0) and cost_coverage (% of units with a known cost) is
+    # returned so the margin figure is read honestly. discount_rate =
+    # discounts / gross (pre-discount). net_revenue nets returns like /api/kpis.
+    col = _MARGIN_DIMS.get(dim, _MARGIN_DIMS["category"])
+    where = build_filters(date_from, date_to, country, channel,
+        extra="s.sale_kind IN ('sale','order','return') AND COALESCE(" + col + ", '') <> ''")
+    return run_query("""
+        WITH base AS (
+            SELECT """ + col + """ AS dim,
+                SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
+                SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END) AS gross,
+                SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END) AS discounts,
+                SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
+                         WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END) AS net_revenue,
+                SUM(CASE WHEN s.sale_kind IN ('sale','order') AND p.cost IS NOT NULL AND p.cost > 0
+                         THEN s.ordered_item_quantity ELSE 0 END) AS costed_units,
+                SUM(CASE WHEN s.sale_kind IN ('sale','order') AND p.cost IS NOT NULL AND p.cost > 0
+                         THEN s.net_sales_kes::numeric ELSE 0 END) AS costed_net,
+                SUM(CASE WHEN s.sale_kind IN ('sale','order') AND p.cost IS NOT NULL AND p.cost > 0
+                         THEN s.ordered_item_quantity * p.cost ELSE 0 END) AS cogs
+            FROM all_sales s
+            JOIN all_products_clean p ON s.variant_sku = p.sku
+            WHERE """ + where + """
+            GROUP BY """ + col + """
+        )
+        SELECT dim,
+            units,
+            ROUND(gross, 0) AS gross,
+            ROUND(discounts, 0) AS discounts,
+            ROUND(discounts * 100.0 / NULLIF(gross, 0), 1) AS discount_rate,
+            ROUND(net_revenue, 0) AS net_revenue,
+            ROUND(cogs, 0) AS cogs,
+            ROUND(costed_net - cogs, 0) AS gross_margin,
+            ROUND((costed_net - cogs) * 100.0 / NULLIF(costed_net, 0), 1) AS margin_pct,
+            ROUND(costed_units * 100.0 / NULLIF(units, 0), 0) AS cost_coverage
+        FROM base
+        WHERE units > 0
+        ORDER BY net_revenue DESC
+        LIMIT 2000
+    """, date_to=date_to)
+
+@app.get("/api/analytics/rfm")
+def analytics_rfm(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+    limit:     int = Query(default=2000),
+):
+    # RFM segmentation over customers active in the selected period. Recency is
+    # measured against date_to; R/F/M each scored 1-5 via quintiles (NTILE) and
+    # combined into the canonical RFM segment grid (FM = avg of F and M). Returns
+    # a per-segment summary over the FULL base plus the top customers by monetary
+    # value (capped). monetary nets returns like /api/kpis.
+    lim = max(1, min(int(limit or 2000), 5000))
+    ref = str(date_to)[:10]
+    where = build_filters(date_from, date_to, country, channel,
+        extra="s.sale_kind IN ('sale','order','return') AND s.customer_id IS NOT NULL AND s.customer_id <> ''")
+    monetary_expr = ("SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric "
+                     "WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END)")
+    freq_expr = "COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END)"
+    base_cte = """
+        WITH cust AS (
+            SELECT s.customer_id,
+                MAX(s.sale_date::date) AS last_purchase,
+                """ + freq_expr + """ AS frequency,
+                """ + monetary_expr + """ AS monetary
+            FROM all_sales s
+            WHERE """ + where + """
+            GROUP BY s.customer_id
+            HAVING """ + monetary_expr + """ > 0 AND """ + freq_expr + """ > 0
+        ),
+        scored AS (
+            SELECT customer_id, last_purchase, frequency, monetary,
+                ('""" + ref + """'::date - last_purchase) AS recency_days,
+                NTILE(5) OVER (ORDER BY ('""" + ref + """'::date - last_purchase) DESC) AS r_score,
+                NTILE(5) OVER (ORDER BY frequency ASC) AS f_score,
+                NTILE(5) OVER (ORDER BY monetary ASC) AS m_score
+            FROM cust
+        ),
+        seg AS (
+            SELECT customer_id, last_purchase, frequency, monetary, recency_days,
+                r_score, f_score, m_score,
+                ROUND((f_score + m_score) / 2.0) AS fm,
+                CASE
+                    WHEN r_score >= 4 AND ROUND((f_score + m_score) / 2.0) >= 4 THEN 'Champions'
+                    WHEN r_score >= 3 AND ROUND((f_score + m_score) / 2.0) >= 3 THEN 'Loyal'
+                    WHEN r_score >= 4 AND ROUND((f_score + m_score) / 2.0) BETWEEN 2 AND 3 THEN 'Potential Loyalist'
+                    WHEN r_score >= 4 AND ROUND((f_score + m_score) / 2.0) <= 1 THEN 'New'
+                    WHEN r_score = 3 AND ROUND((f_score + m_score) / 2.0) <= 2 THEN 'Promising'
+                    WHEN r_score <= 2 AND ROUND((f_score + m_score) / 2.0) >= 4 THEN 'Cant Lose Them'
+                    WHEN r_score = 2 AND ROUND((f_score + m_score) / 2.0) >= 3 THEN 'At Risk'
+                    WHEN r_score <= 2 AND ROUND((f_score + m_score) / 2.0) = 2 THEN 'Hibernating'
+                    ELSE 'Lost'
+                END AS segment
+            FROM scored
+        )
+    """
+    summary = run_query(base_cte + """
+        SELECT segment,
+            COUNT(*) AS customers,
+            ROUND(SUM(monetary), 0) AS monetary,
+            ROUND(AVG(recency_days), 0) AS avg_recency_days,
+            ROUND(AVG(frequency), 1) AS avg_frequency,
+            ROUND(AVG(monetary), 0) AS avg_monetary
+        FROM seg
+        GROUP BY segment
+        ORDER BY monetary DESC
+    """, date_to=date_to)
+    customers = run_query(base_cte + """
+        SELECT customer_id, segment, recency_days, frequency,
+            ROUND(monetary, 0) AS monetary,
+            r_score, f_score, m_score
+        FROM seg
+        ORDER BY monetary DESC
+        LIMIT """ + str(lim) + """
+    """, date_to=date_to)
+    return {"summary": summary, "customers": customers}
+
 @app.get("/api/analytics/new-styles")
 def analytics_new_styles(
     days:  int = Query(default=90),

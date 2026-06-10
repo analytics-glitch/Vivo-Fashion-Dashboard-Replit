@@ -35,6 +35,10 @@ const ExecutiveSummary = React.lazy(() => import("@/pages/ExecutiveSummary"));
 const Marketing = React.lazy(() => import("@/pages/Marketing"));
 const CustomReport = React.lazy(() => import("@/pages/CustomReport"));
 const RangeManagement = React.lazy(() => import("@/pages/RangeManagement"));
+const Velocity = React.lazy(() => import("@/pages/Velocity"));
+const SizeHealth = React.lazy(() => import("@/pages/SizeHealth"));
+const Margin = React.lazy(() => import("@/pages/Margin"));
+const RFM = React.lazy(() => import("@/pages/RFM"));
 
 import { FiltersProvider } from "@/lib/filters";
 import { AuthProvider } from "@/lib/auth";
@@ -245,6 +249,10 @@ function App() {
                 <Route path="/locations" element={<ProtectedShell pageId="locations"><Locations /></ProtectedShell>} />
                 <Route path="/products" element={<ProtectedShell pageId="products"><Products /></ProtectedShell>} />
                 <Route path="/inventory" element={<ProtectedShell pageId="inventory"><Inventory /></ProtectedShell>} />
+                <Route path="/velocity" element={<ProtectedShell pageId="velocity"><Velocity /></ProtectedShell>} />
+                <Route path="/size-health" element={<ProtectedShell pageId="size-health"><SizeHealth /></ProtectedShell>} />
+                <Route path="/margin" element={<ProtectedShell pageId="margin"><Margin /></ProtectedShell>} />
+                <Route path="/rfm" element={<ProtectedShell pageId="rfm"><RFM /></ProtectedShell>} />
                 <Route path="/exports" element={<ProtectedShell pageId="exports"><Exports /></ProtectedShell>} />
                 <Route path="/customers" element={<ProtectedShell pageId="customers"><Customers /></ProtectedShell>} />
                 <Route path="/customer-details" element={<ProtectedShell pageId="customer-details"><CustomerDetails /></ProtectedShell>} />
