@@ -13,15 +13,9 @@ gate to fire once.
 
 **Why:** The hour gate fires every minute for the whole hour. Without endpoint-side
 dedupe you get ~60 duplicate rows/day and inflated monitoring noise. A code review
-caught this for `/api/data-quality/log`.
+caught this for the data-quality logging endpoint.
 
-**How to apply:**
-- `/api/replenishment/snapshot` dedupes to a weekly cadence inside the endpoint.
-- `/api/data-quality/log` dedupes per UTC day: inside one `_users_tx(lock=True)`
-  it `SELECT 1 ... WHERE action_taken='data_quality' AND checked_at::date =
-  (now() AT TIME ZONE 'UTC')::date` and returns `skipped:true` if a row exists,
-  else inserts. The advisory lock makes the check-then-insert atomic across the
-  concurrent per-minute calls.
-- Same store-by-`action_taken` row shape is reused on `sync_health_log` (one extra
-  nullable `data_quality_score numeric` column, added via `ADD COLUMN IF NOT EXISTS`
-  at startup + before each write).
+**How to apply:** Dedupe inside the endpoint, under the shared advisory lock so the
+check-then-insert is atomic across the concurrent per-minute calls. Existing
+precedent: the replenishment snapshot endpoint dedupes to a weekly cadence; the
+data-quality log endpoint dedupes per UTC day.
