@@ -3019,7 +3019,7 @@ def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim):
       FROM all_inventory i
       JOIN all_products_clean p ON p.sku = i.sku
       WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
-        AND COALESCE(p.style_name,'') <> ''
+        AND COALESCE(p.style_name,'') <> '' {c_inv}
       GROUP BY 1
     ),
     style_sales56 AS (
@@ -3029,7 +3029,7 @@ def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim):
       WHERE s.sale_date >= (CURRENT_DATE - INTERVAL '56 days')::text
         AND s.sale_kind IN ('sale','order')
         AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
-        AND COALESCE(p.style_name,'') <> ''
+        AND COALESCE(p.style_name,'') <> '' {c_sales}
       GROUP BY 1
     ),
     dead AS (
