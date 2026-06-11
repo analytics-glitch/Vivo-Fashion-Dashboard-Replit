@@ -23,5 +23,6 @@
 - [Mobile shares the API auth gate](mobile-shares-api-auth-gate.md) — Expo app hits the same gated /api as web; backend auth changes break mobile too. It sends a Bearer token from AsyncStorage (`vivo_token`).
 - [Footfall sensor-gap derived metrics](footfall-sensor-gap-derived-metrics.md) — sensor-down stores get absurd conversion/sales-per-visitor; gate them out of store-comparison visuals (basket stays fine).
 - [Loyalty member card](loyalty-member-card.md) — customer-facing loyalty (enrol/redeem with no staff login, barcode POS earn); earn idempotency = DB partial-unique index + ON CONFLICT, PIN login throttled, member token sha256 at rest.
+- [Loyalty tier rules & expiry](loyalty-tier-rules.md) — 3 tiers (Bronze/Silver/Gold, no VIP) by spend; tiered earn multipliers x1/x2/x3; lazy points expiry on 12mo inactivity (no cron); config lives in crm_config DB, not just defaults.
 - [CRM authz server-side gate](crm-authz-server-gate.md) — /api/crm/* role gate (analyst+) lives in clerk_auth_gate middleware, not just web/mobile nav; client hiding is bypassable.
 - [Facebook Page integration](facebook-page-integration.md) — /api/social/* (analyst+, same gate as CRM) posts offers + reads/replies to comments; insights derived from page node + posts (not the fragile /insights metric API); sentiment via shared LLM, never raises.

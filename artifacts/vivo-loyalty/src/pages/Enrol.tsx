@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import vivoLogo from "@assets/Vivo_Logo_Picture_1781198869845.png";
 
 const formSchema = z.object({
   name: z.string().min(2, "Name is required"),
@@ -62,7 +63,8 @@ export default function Enrol() {
   return (
     <MobileLayout>
       <div className="flex-1 flex flex-col justify-center px-6 py-10">
-        <div className="mb-8 text-center">
+        <div className="mb-8 text-center flex flex-col items-center">
+          <img src={vivoLogo} alt="Vivo" className="h-12 w-auto mb-4" />
           <h1 className="text-3xl font-bold tracking-tight text-primary">Join Rewards</h1>
           <p className="text-muted-foreground mt-2">Earn points on every purchase</p>
         </div>

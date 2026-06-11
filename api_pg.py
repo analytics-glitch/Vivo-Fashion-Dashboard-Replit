@@ -9238,13 +9238,21 @@ def data_quality_log(request: Request):
 CRM_BRANDS = ("vivo", "sz")
 
 CRM_CONFIG_DEFAULTS = {
-    "loyalty.earn_rate_kes": "100",        # 1 point per KES 100 spent (floor)
+    "loyalty.earn_rate_kes": "100",        # base: 1 point per KES 100 spent (floor)
     "loyalty.points_per_kes_redeem": "100",  # 100 points = KES 1
     "loyalty.redemption_floor": "200",     # minimum points to redeem
-    "loyalty.points_expiry_months": "12",
+    "loyalty.points_expiry_months": "12",  # points expire after this many months of no purchase
+    # Tier qualification by trailing-12-month spend (KES). Three tiers:
+    #   Bronze   KES 1 – 49,999
+    #   Silver   KES 50,000 – 99,999
+    #   Gold     KES 100,000+
     "loyalty.tier_silver_kes": "50000",
-    "loyalty.tier_gold_kes": "150000",
-    "loyalty.tier_vip_kes": "300000",
+    "loyalty.tier_gold_kes": "100000",
+    "loyalty.tier_vip_kes": "300000",      # NOT a loyalty tier; only the CRM "vip" high-spender segment
+    # Points earned per KES 100 by tier (tiered earn-rate multipliers).
+    "loyalty.earn_multiplier_bronze": "1",
+    "loyalty.earn_multiplier_silver": "2",
+    "loyalty.earn_multiplier_gold": "3",
     "sla.meta_high_minutes": "120",
     "sla.tiktok_high_minutes": "240",
     "sla.whatsapp_high_minutes": "120",
@@ -9580,14 +9588,67 @@ def _crm_cfg_num(cfg, key, default=0.0):
 
 
 def _crm_tier_for_spend(spend, cfg):
+    # Loyalty membership has three tiers, qualified by trailing-12-month spend.
     s = float(spend or 0)
-    if s >= _crm_cfg_num(cfg, "loyalty.tier_vip_kes", 300000):
-        return "VIP"
-    if s >= _crm_cfg_num(cfg, "loyalty.tier_gold_kes", 150000):
+    if s >= _crm_cfg_num(cfg, "loyalty.tier_gold_kes", 100000):
         return "Gold"
     if s >= _crm_cfg_num(cfg, "loyalty.tier_silver_kes", 50000):
         return "Silver"
     return "Bronze"
+
+
+def _crm_earn_multiplier(tier, cfg):
+    """Points earned per KES 100 depends on the member's tier:
+    Bronze x1, Silver x2, Gold x3 (configurable). Always >= 1."""
+    key = {
+        "Gold": "loyalty.earn_multiplier_gold",
+        "Silver": "loyalty.earn_multiplier_silver",
+    }.get(tier, "loyalty.earn_multiplier_bronze")
+    m = int(_crm_cfg_num(cfg, key, 1) or 1)
+    return m if m >= 1 else 1
+
+
+def _member_expire_inactive_points(customer_id, cfg=None):
+    """Lazily expire a member's whole points balance after N months with no
+    'earn' activity ("points expire within 12 months if the customer does not
+    come back"). There is no cron — this is evaluated on member reads + earns,
+    the same lazy pattern used for scheduled member messages. Coming back (an
+    earn) resets the clock. Returns True if points were expired this call."""
+    cfg = cfg or _crm_config_dict()
+    months = int(_crm_cfg_num(cfg, "loyalty.points_expiry_months", 12) or 12)
+    if months <= 0:
+        return False
+    with _users_tx() as cur:
+        cur.execute(
+            "SELECT points_balance FROM crm_loyalty_enrolment WHERE customer_id=%s FOR UPDATE",
+            (customer_id,))
+        row = cur.fetchone()
+        if not row or int(row["points_balance"] or 0) <= 0:
+            cur.connection.rollback()
+            return False
+        bal = int(row["points_balance"])
+        cur.execute(
+            "SELECT MAX(created_at) AS last_earn FROM crm_loyalty_ledger "
+            "WHERE customer_id=%s AND reason='earn'", (customer_id,))
+        lr = cur.fetchone()
+        last_earn = lr["last_earn"] if lr else None
+        if last_earn is None:
+            cur.connection.rollback()
+            return False
+        cur.execute(
+            "SELECT (%s < now() - make_interval(months => %s)) AS expired",
+            (last_earn, months))
+        if not cur.fetchone()["expired"]:
+            cur.connection.rollback()
+            return False
+        cur.execute(
+            "INSERT INTO crm_loyalty_ledger (customer_id, points_change, reason, balance_after, created_by) "
+            "VALUES (%s,%s,'expire',0,%s)",
+            (customer_id, -bal, "system:expiry"))
+        cur.execute(
+            "UPDATE crm_loyalty_enrolment SET points_balance=0 WHERE customer_id=%s",
+            (customer_id,))
+    return True
 
 
 def _crm_rolling_spend(customer_id):
@@ -10912,8 +10973,11 @@ async def crm_loyalty_earn(request: Request):
     cid = m["customer_id"]
     txn = (body.get("transaction_id") or "").strip() or None
     cfg = _crm_config_dict()
+    # Expire stale points before crediting: a member who was away past the
+    # expiry window loses their old balance; this purchase ("coming back")
+    # starts a fresh balance + resets the clock.
+    _member_expire_inactive_points(cid, cfg)
     earn_rate = _crm_cfg_num(cfg, "loyalty.earn_rate_kes", 100) or 100
-    points = int(amount // earn_rate)
     uid, uname, _ = _crm_actor(request)
     store_id = (body.get("store_id") or "").strip() or None
     with _users_tx() as cur:
@@ -10929,6 +10993,18 @@ async def crm_loyalty_earn(request: Request):
                 return {"ok": True, "duplicate": True, "points_awarded": 0,
                         "points_balance": int(dup["balance_after"] or 0),
                         "member_name": m.get("name"), "membership_code": code}
+        # Lock the member row and read the authoritative spend INSIDE the tx so
+        # concurrent earns (different transaction_ids) can't lose a spend/tier
+        # update. The tier going into this purchase drives the earn multiplier
+        # (Bronze x1, Silver x2, Gold x3).
+        cur.execute(
+            "SELECT spend_kes FROM crm_loyalty_member WHERE member_id=%s FOR UPDATE",
+            (m["member_id"],))
+        mrow = cur.fetchone()
+        prior_spend = float((mrow["spend_kes"] if mrow else m.get("spend_kes")) or 0)
+        current_tier = _crm_tier_for_spend(prior_spend, cfg)
+        multiplier = _crm_earn_multiplier(current_tier, cfg)
+        points = int(amount // earn_rate) * multiplier
         cur.execute(
             "SELECT points_balance, points_lifetime FROM crm_loyalty_enrolment "
             "WHERE customer_id=%s FOR UPDATE", (cid,))
@@ -10942,7 +11018,7 @@ async def crm_loyalty_earn(request: Request):
             bal, life = int(row["points_balance"]), int(row["points_lifetime"])
         new_bal = bal + points
         new_life = life + points
-        new_spend = float(m.get("spend_kes") or 0) + amount
+        new_spend = prior_spend + amount
         tier = _crm_tier_for_spend(new_spend, cfg)
         # Insert the ledger row FIRST under the partial-unique idempotency
         # index. If a concurrent request with the same transaction_id already
@@ -10981,9 +11057,11 @@ async def crm_loyalty_earn(request: Request):
             "UPDATE crm_loyalty_member SET spend_kes=%s WHERE member_id=%s",
             (new_spend, m["member_id"]))
     _crm_audit("loyalty", cid, "earn",
-               f"code={code} amount_kes={amount:.0f} points=+{points} store={store_id or '-'}", request)
+               f"code={code} amount_kes={amount:.0f} points=+{points} "
+               f"(x{multiplier} {current_tier}) store={store_id or '-'}", request)
     return {"ok": True, "points_awarded": points, "points_balance": new_bal,
-            "tier": tier, "member_name": m.get("name"), "membership_code": code}
+            "tier": tier, "points_multiplier": multiplier,
+            "member_name": m.get("name"), "membership_code": code}
 
 
 # --- Facebook Page integration (staff-gated, analyst+) --------------------
@@ -11381,6 +11459,8 @@ def loyalty_me(request: Request):
     if not m:
         return JSONResponse({"detail": "Not authenticated"}, status_code=401)
     cid = m["customer_id"]
+    # Lazily expire points if the member has been away past the expiry window.
+    _member_expire_inactive_points(cid)
     enrol = _member_enrolment(cid)
     ledger = _users_exec(
         "SELECT points_change, reason, balance_after, transaction_id, created_at "
@@ -11400,10 +11480,15 @@ def loyalty_me(request: Request):
             "earn_rate_kes": _crm_cfg_num(cfg, "loyalty.earn_rate_kes", 100),
             "points_per_kes_redeem": _crm_cfg_num(cfg, "loyalty.points_per_kes_redeem", 100),
             "redemption_floor": int(_crm_cfg_num(cfg, "loyalty.redemption_floor", 200)),
+            "points_expiry_months": int(_crm_cfg_num(cfg, "loyalty.points_expiry_months", 12)),
             "tiers": {
                 "Silver": _crm_cfg_num(cfg, "loyalty.tier_silver_kes", 50000),
-                "Gold": _crm_cfg_num(cfg, "loyalty.tier_gold_kes", 150000),
-                "VIP": _crm_cfg_num(cfg, "loyalty.tier_vip_kes", 300000),
+                "Gold": _crm_cfg_num(cfg, "loyalty.tier_gold_kes", 100000),
+            },
+            "earn_multipliers": {
+                "Bronze": _crm_earn_multiplier("Bronze", cfg),
+                "Silver": _crm_earn_multiplier("Silver", cfg),
+                "Gold": _crm_earn_multiplier("Gold", cfg),
             },
         },
     }

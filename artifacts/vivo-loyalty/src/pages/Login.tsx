@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import vivoLogo from "@assets/Vivo_Logo_Picture_1781198869845.png";
 
 const formSchema = z.object({
   phone: z.string().min(9, "Phone number is too short"),
@@ -54,8 +55,9 @@ export default function Login() {
   return (
     <MobileLayout>
       <div className="flex-1 flex flex-col justify-center px-6 py-12">
-        <div className="mb-10 text-center">
-          <h1 className="text-3xl font-bold tracking-tight text-primary">Vivo Rewards</h1>
+        <div className="mb-10 text-center flex flex-col items-center">
+          <img src={vivoLogo} alt="Vivo" className="h-12 w-auto mb-4" />
+          <h1 className="text-3xl font-bold tracking-tight text-primary">Rewards</h1>
           <p className="text-muted-foreground mt-2">Sign in to your membership</p>
         </div>
 

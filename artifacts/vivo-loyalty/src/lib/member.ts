@@ -144,7 +144,11 @@ export interface LoyaltyConfig {
   earn_rate_kes: number;
   points_per_kes_redeem: number;
   redemption_floor: number;
+  points_expiry_months: number;
+  /** Tier qualification thresholds in KES (Silver, Gold). Bronze is the base. */
   tiers: Record<string, number>;
+  /** Points earned per `earn_rate_kes` spent, by tier (Bronze/Silver/Gold). */
+  earn_multipliers: Record<string, number>;
 }
 
 export interface MemberMe {

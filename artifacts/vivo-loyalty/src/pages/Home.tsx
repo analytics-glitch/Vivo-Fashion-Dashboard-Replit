@@ -17,6 +17,13 @@ import {
 } from "@/components/ui/dialog";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import vivoLogo from "@assets/Vivo_Logo_Picture_1781198869845.png";
+
+const TIER_COLORS: Record<string, string> = {
+  Bronze: "#b08d57",
+  Silver: "#8c93a1",
+  Gold: "#c9a227",
+};
 
 export default function Home() {
   const { token, logout } = useAuth();
@@ -56,6 +63,17 @@ export default function Home() {
   const { member, ledger, unread_messages, config } = data;
   const kesValue = Math.floor(member.points_balance / config.points_per_kes_redeem);
   const canRedeem = member.points_balance >= config.redemption_floor;
+  const memberMultiplier = config.earn_multipliers?.[member.tier] ?? 1;
+
+  const silverMin = config.tiers?.Silver ?? 50000;
+  const goldMin = config.tiers?.Gold ?? 100000;
+  const tierRows: { name: string; min: number; max: number | null }[] = [
+    { name: "Bronze", min: 1, max: silverMin - 1 },
+    { name: "Silver", min: silverMin, max: goldMin - 1 },
+    { name: "Gold", min: goldMin, max: null },
+  ];
+  const tierRange = (min: number, max: number | null) =>
+    max === null ? `${fmtKES(min)}+` : `${fmtKES(min)} – ${fmtKES(max)}`;
 
   const handleRedeem = async () => {
     try {
@@ -81,7 +99,10 @@ export default function Home() {
     <MobileLayout>
       {/* Header */}
       <header className="px-6 py-4 flex items-center justify-between sticky top-0 bg-background/80 backdrop-blur-md z-10">
-        <h1 className="text-xl font-bold text-primary">Vivo Rewards</h1>
+        <div className="flex items-center gap-2">
+          <img src={vivoLogo} alt="Vivo" className="h-7 w-auto" />
+          <span className="text-base font-semibold text-primary tracking-tight">Rewards</span>
+        </div>
         <div className="flex items-center gap-3">
           <button 
             onClick={() => setLocation("/messages")}
@@ -135,6 +156,9 @@ export default function Home() {
                 <p className="text-white/60 text-sm mt-1">
                   Worth approx. <span className="text-white font-medium">{fmtKES(kesValue)}</span>
                 </p>
+                <p className="text-white/60 text-xs mt-2">
+                  Earning <span className="text-white font-medium">{fmtNum(memberMultiplier)} pts</span> per {fmtKES(config.earn_rate_kes)} spent
+                </p>
               </div>
 
               <div className="bg-white rounded-xl p-4 flex flex-col items-center justify-center">
@@ -165,6 +189,58 @@ export default function Home() {
           <div className="bg-card border border-border rounded-xl p-4 shadow-sm">
             <p className="text-muted-foreground text-xs uppercase font-bold tracking-wider mb-1">Lifetime Pts</p>
             <p className="text-lg font-bold text-primary">{fmtNum(member.points_lifetime)}</p>
+          </div>
+        </div>
+
+        {/* Tiers & Rewards */}
+        <div className="px-6 mb-8">
+          <div className="flex items-center gap-2 mb-4">
+            <h3 className="font-semibold text-primary">Tiers &amp; Rewards</h3>
+          </div>
+          <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm divide-y divide-border">
+            {tierRows.map((t) => {
+              const isCurrent = t.name === member.tier;
+              const rate = config.earn_multipliers?.[t.name] ?? 1;
+              return (
+                <div
+                  key={t.name}
+                  className={`p-4 flex items-center justify-between ${isCurrent ? "bg-accent/40" : ""}`}
+                >
+                  <div className="flex items-center gap-3">
+                    <span
+                      className="w-3 h-3 rounded-full shrink-0"
+                      style={{ backgroundColor: TIER_COLORS[t.name] }}
+                    />
+                    <div>
+                      <p className="font-semibold text-sm text-foreground flex items-center gap-2">
+                        {t.name}
+                        {isCurrent && (
+                          <span className="text-[10px] uppercase tracking-wider font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded">
+                            You
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {tierRange(t.min, t.max)} a year
+                      </p>
+                    </div>
+                  </div>
+                  <p className="text-sm font-bold text-primary whitespace-nowrap">
+                    {fmtNum(rate)} pts
+                    <span className="text-xs font-normal text-muted-foreground">
+                      {" "}/ {fmtKES(config.earn_rate_kes)}
+                    </span>
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+          <div className="text-xs text-muted-foreground mt-3 bg-muted/50 p-3 rounded-lg flex items-start gap-2">
+            <Info size={14} className="mt-0.5 shrink-0" />
+            <span>
+              Your tier is based on your spend over the last 12 months. Points expire after{" "}
+              {config.points_expiry_months} months without a purchase, so keep shopping to keep them.
+            </span>
           </div>
         </div>
 
