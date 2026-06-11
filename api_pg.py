@@ -705,8 +705,14 @@ async def clerk_auth_gate(request: Request, call_next):
         return await call_next(request)
 
     # Resolve the session token (Bearer header or httpOnly cookie) to a user.
+    # Fail closed: if the user store is unreachable we cannot prove identity, so
+    # refuse with a deterministic 503 rather than leaking a generic 500.
     token = _extract_session_token(request)
-    user = _user_for_session(token) if token else None
+    try:
+        user = _user_for_session(token) if token else None
+    except Exception:
+        return JSONResponse(
+            {"detail": "auth_store_unavailable"}, status_code=503)
     if not user:
         return JSONResponse({"detail": "Not authenticated"}, status_code=401)
     request.state.user = user
@@ -2497,7 +2503,9 @@ def auth_google_callback(request: Request):
         return RedirectResponse("/auth/callback#error=profile")
     info = prof.json() or {}
     email = (info.get("email") or "").strip().lower()
-    if info.get("email_verified") is False or not clerk_auth.email_allowed(email):
+    # Require an explicitly verified email AND an allowed company domain. Treat a
+    # missing/false email_verified as untrusted rather than letting it through.
+    if info.get("email_verified") is not True or not clerk_auth.email_allowed(email):
         return RedirectResponse("/auth/callback#error=domain_not_allowed")
     sub = "google:" + str(info.get("sub") or email)
     name = info.get("name") or ""
