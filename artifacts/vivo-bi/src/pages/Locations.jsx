@@ -356,6 +356,18 @@ const Locations = () => {
     return Math.max(1, d);
   }, [dateFrom, dateTo]);
 
+  const groupTotals = useMemo(() => {
+    // Use authoritative API KPIs — never sum per-location rows locally.
+    const sales = kpis?.total_sales || 0;
+    const orders = kpis?.total_orders || 0;
+    const units = kpis?.total_units || 0;
+    return {
+      abv: orders ? sales / orders : (kpis?.avg_basket_size || 0),
+      asp: units ? sales / units : (kpis?.avg_selling_price || 0),
+      msi: orders ? units / orders : 0,
+    };
+  }, [kpis]);
+
   // Network reference line for the visuals — sourced from the same blended
   // ffNetwork / groupTotals the tables use so everything stays consistent.
   const vizNetwork = useMemo(() => {
@@ -385,6 +397,71 @@ const Locations = () => {
   }, [ffRows]);
 
   const SENSOR_GAP_FRAC = 0.25;
+
+  // Best/worst conversion callout — excludes low-traffic stores (noise).
+  const ffCallouts = useMemo(() => {
+    const eligible = ffRows.filter((r) => !r.lowTraffic && r.conv != null && r.footfallCount > 0);
+    if (eligible.length < 2) return null;
+    const best = eligible.reduce((a, b) => (b.conv > a.conv ? b : a));
+    const worst = eligible.reduce((a, b) => (b.conv < a.conv ? b : a));
+    return { best, worst };
+  }, [ffRows]);
+
+  // "1–10 Jun vs 1–10 May 2026"-style period label for the subtitle.
+  const ffPeriodLabel = useMemo(() => {
+    const cur = fmtRange(dateFrom, dateTo);
+    if (compareMode === "none") return cur;
+    const p = comparePeriod(dateFrom, dateTo, compareMode, { date_from: compareDateFrom, date_to: compareDateTo });
+    return p ? `${cur} vs ${fmtRange(p.date_from, p.date_to)}` : cur;
+  }, [dateFrom, dateTo, compareMode, compareDateFrom, compareDateTo]);
+
+  const avg = useMemo(() => {
+    if (!enriched.length) return 0;
+    return (
+      enriched.reduce((s, r) => s + (r.total_sales || 0), 0) / enriched.length
+    );
+  }, [enriched]);
+
+  // Group-level previous-period totals (for KPI delta + prevValue).
+  const prevGroupTotals = useMemo(() => {
+    if (!rawKpisPrev) return null;
+    const sales = rawKpisPrev.total_sales || 0;
+    const orders = rawKpisPrev.total_orders || 0;
+    const units = rawKpisPrev.total_units || 0;
+    return {
+      total_sales: sales,
+      total_orders: orders,
+      total_units: units,
+      abv: orders ? sales / orders : (rawKpisPrev.avg_basket_size || 0),
+      asp: units ? sales / units : (rawKpisPrev.avg_selling_price || 0),
+      msi: orders ? units / orders : 0,
+    };
+  }, [rawKpisPrev]);
+
+  const compareLbl = compareMode === "yesterday" ? "vs Yesterday" : compareMode === "last_month" ? "vs Last Month" : compareMode === "last_year" ? "vs Last Year" : null;
+  const d = (cur, prev) => (cur != null && prev != null) ? pctDelta(cur, prev) : null;
+
+  // Data-quality outlier flagging on return-rate. Physical + online stores
+  // whose return rate falls ≥ 2σ above the group mean OR ≥ 30% (structural
+  // cap) get a "⚠ verify" chip on their card. Catches the
+  // "Vivo Sarit RETURNS ▲ +135.6%" class of anomaly the audit flagged.
+  const { enriched: enrichedWithDq, stats: returnStats, count: returnOutlierCount } = useOutliers(
+    enriched,
+    {
+      valueKey: "return_rate",
+      filter: (r) => (r.total_sales || 0) >= 100000,  // min 100k KES sample
+      hardHi: { at: 30, reason: "Return rate ≥ 30% — suspicious, investigate before using." },
+      label: "return rate",
+      valueFmt: (v) => `${v.toFixed(1)}%`,
+      sigmas: 2,
+      outputKey: "return_outlier",
+    }
+  );
+
+  // Per-store rows for the quadrant + heatmap. Joins the authoritative store
+  // grid (enrichedWithDq, carries country/abv) with the clean footfall model
+  // (ffByLoc, carries conversion/spv/sensor-gap). `prev` is only populated when
+  // a compare period is active and both prior conversion AND prior ABV exist.
   const storeViz = useMemo(() => {
     const net = vizNetwork;
     return enrichedWithDq.map((r) => {
@@ -434,78 +511,6 @@ const Locations = () => {
       };
     }).sort((a, b) => (b.sales || 0) - (a.sales || 0));
   }, [enrichedWithDq, ffByLoc, vizNetwork, windowDays, compareMode]);
-
-  // Best/worst conversion callout — excludes low-traffic stores (noise).
-  const ffCallouts = useMemo(() => {
-    const eligible = ffRows.filter((r) => !r.lowTraffic && r.conv != null && r.footfallCount > 0);
-    if (eligible.length < 2) return null;
-    const best = eligible.reduce((a, b) => (b.conv > a.conv ? b : a));
-    const worst = eligible.reduce((a, b) => (b.conv < a.conv ? b : a));
-    return { best, worst };
-  }, [ffRows]);
-
-  // "1–10 Jun vs 1–10 May 2026"-style period label for the subtitle.
-  const ffPeriodLabel = useMemo(() => {
-    const cur = fmtRange(dateFrom, dateTo);
-    if (compareMode === "none") return cur;
-    const p = comparePeriod(dateFrom, dateTo, compareMode, { date_from: compareDateFrom, date_to: compareDateTo });
-    return p ? `${cur} vs ${fmtRange(p.date_from, p.date_to)}` : cur;
-  }, [dateFrom, dateTo, compareMode, compareDateFrom, compareDateTo]);
-
-  const avg = useMemo(() => {
-    if (!enriched.length) return 0;
-    return (
-      enriched.reduce((s, r) => s + (r.total_sales || 0), 0) / enriched.length
-    );
-  }, [enriched]);
-
-  const groupTotals = useMemo(() => {
-    // Use authoritative API KPIs — never sum per-location rows locally.
-    const sales = kpis?.total_sales || 0;
-    const orders = kpis?.total_orders || 0;
-    const units = kpis?.total_units || 0;
-    return {
-      abv: orders ? sales / orders : (kpis?.avg_basket_size || 0),
-      asp: units ? sales / units : (kpis?.avg_selling_price || 0),
-      msi: orders ? units / orders : 0,
-    };
-  }, [kpis]);
-
-  // Group-level previous-period totals (for KPI delta + prevValue).
-  const prevGroupTotals = useMemo(() => {
-    if (!rawKpisPrev) return null;
-    const sales = rawKpisPrev.total_sales || 0;
-    const orders = rawKpisPrev.total_orders || 0;
-    const units = rawKpisPrev.total_units || 0;
-    return {
-      total_sales: sales,
-      total_orders: orders,
-      total_units: units,
-      abv: orders ? sales / orders : (rawKpisPrev.avg_basket_size || 0),
-      asp: units ? sales / units : (rawKpisPrev.avg_selling_price || 0),
-      msi: orders ? units / orders : 0,
-    };
-  }, [rawKpisPrev]);
-
-  const compareLbl = compareMode === "yesterday" ? "vs Yesterday" : compareMode === "last_month" ? "vs Last Month" : compareMode === "last_year" ? "vs Last Year" : null;
-  const d = (cur, prev) => (cur != null && prev != null) ? pctDelta(cur, prev) : null;
-
-  // Data-quality outlier flagging on return-rate. Physical + online stores
-  // whose return rate falls ≥ 2σ above the group mean OR ≥ 30% (structural
-  // cap) get a "⚠ verify" chip on their card. Catches the
-  // "Vivo Sarit RETURNS ▲ +135.6%" class of anomaly the audit flagged.
-  const { enriched: enrichedWithDq, stats: returnStats, count: returnOutlierCount } = useOutliers(
-    enriched,
-    {
-      valueKey: "return_rate",
-      filter: (r) => (r.total_sales || 0) >= 100000,  // min 100k KES sample
-      hardHi: { at: 30, reason: "Return rate ≥ 30% — suspicious, investigate before using." },
-      label: "return rate",
-      valueFmt: (v) => `${v.toFixed(1)}%`,
-      sigmas: 2,
-      outputKey: "return_outlier",
-    }
-  );
 
   const sorted = useMemo(() => {
     return [...enrichedWithDq].sort((a, b) => {
