@@ -10631,9 +10631,15 @@ async def crm_member_messages_create(request: Request):
         if val is None or str(val).strip() == "":
             return None
         try:
-            return datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
         except Exception:
             return "ERR"
+        # Require a timezone-aware value, then normalize to UTC so all
+        # comparisons below (against an aware now) stay valid. A naive
+        # datetime would raise TypeError on comparison -> 500, so reject it.
+        if dt.tzinfo is None:
+            return "ERR"
+        return dt.astimezone(timezone.utc)
     publish_at = _parse_dt(body.get("publish_at"))
     expires_at = _parse_dt(body.get("expires_at"))
     if publish_at == "ERR" or expires_at == "ERR":
