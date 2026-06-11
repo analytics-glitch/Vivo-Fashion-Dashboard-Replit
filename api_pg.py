@@ -525,6 +525,25 @@ def _resolve_app_user_db(sub, email, name):
         except Exception:
             pass
         return rec
+    # No row keyed by this exact identity. An account may already exist for this
+    # email under a different identity key — e.g. an admin-created email/password
+    # user (user_id "local:…") who now signs in with Google (sub "google:…"), or a
+    # returning Google user. Match on the unique email so we recognize the existing
+    # account instead of creating a duplicate. (A blind insert would also violate
+    # the email UNIQUE constraint and error, since ON CONFLICT only covers user_id.)
+    erows = _users_exec(
+        "SELECT user_id, email, name, role, status FROM app_users WHERE email=%s",
+        (email,), fetch=True) if email else None
+    if erows:
+        rec = erows[0]
+        try:
+            _users_exec(
+                "UPDATE app_users SET last_login_at=now(), "
+                "name=COALESCE(NULLIF(%s,''), name) WHERE user_id=%s",
+                (name or "", rec["user_id"]))
+        except Exception:
+            pass
+        return rec
     # First time we've seen this identity — decide whether to bootstrap an admin.
     # The very first user (or anyone in ADMIN_BOOTSTRAP_EMAILS) becomes an active
     # admin so the system is never left with nobody able to approve others. The

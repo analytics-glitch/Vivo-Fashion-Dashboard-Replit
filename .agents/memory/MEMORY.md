@@ -2,6 +2,7 @@
 - [Clerk prod "Checking session…" blank](clerk-prod-blank-checking-session.md) — published app stuck on auth-loading (dev fine) = Python Clerk proxy relays Brotli the browser can't decode; force Accept-Encoding gzip/deflate.
 - [Sync watchdog heartbeat](sync-watchdog-heartbeat.md) — sync health must key off a loop heartbeat, NOT all_sales.loaded_at (quiet periods = false failures); recovery backfill must suspend the supervised sync to avoid overlap.
 - [BI chat text-to-SQL](bi-chat-text-to-sql.md) — /api/chat runs LLM-generated SQL on a forced read-only psycopg2 conn (never the shared pool); keep the read-only + PII guards.
+- [Auth identity email fallback](auth-identity-email-fallback.md) — resolve identity by user_id/sub, then fall back to UNIQUE email, or admin-created (local:) users collide with Google (google:) sign-in; redirect_uri_mismatch = Google Console config, not code.
 - [psycopg2 literal %](psycopg2-literal-percent.md) — a literal `%` in SQL run with no params raises "IndexError: tuple index out of range"; escape as `%%` (bit /api/ibt/late-count).
 - [Sync-loop idempotent endpoints](sync-loop-idempotent-endpoints.md) — sync_incremental's hour-gated "daily" POSTs actually fire ~60×/day; internal endpoints it calls must dedupe their own writes.
 - [Python deps in .pythonlibs](python-deps-pythonlibs.md) — pip & installLanguagePackages fail here; add backend pkgs via `uv pip install --target .pythonlibs/lib/python3.11/site-packages`.
