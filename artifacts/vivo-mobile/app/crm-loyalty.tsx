@@ -53,6 +53,19 @@ interface RedeemLookup {
   redeemable: boolean;
 }
 
+interface RedemptionsReport {
+  summary: {
+    total_codes: number;
+    open_codes: number;
+    used_codes: number;
+    kes_issued: number;
+    kes_used: number;
+    kes_open: number;
+    points_redeemed: number;
+  };
+  by_store: { store: string; used_codes: number; kes_used: number }[];
+}
+
 export default function CrmLoyaltyScreen() {
   const c = useColors();
   const router = useRouter();
@@ -174,6 +187,13 @@ export default function CrmLoyaltyScreen() {
     enabled,
   });
 
+  const reportQ = useQuery({
+    queryKey: ["crm-loyalty-redemptions-report"],
+    queryFn: () => apiGet<RedemptionsReport>("/crm/loyalty/redemptions/report"),
+    staleTime: 60_000,
+    enabled,
+  });
+
   // Loyalty lookup reuses the customers search and shows enrolled members.
   const lookupQ = useQuery({
     queryKey: ["crm-loyalty-lookup", q],
@@ -190,8 +210,11 @@ export default function CrmLoyaltyScreen() {
   const tiers = s ? Object.entries(s.by_tier) : [];
   const members = (lookupQ.data?.customers ?? []).filter((m) => m.tier);
 
+  const report = reportQ.data;
+
   const refetchAll = () => {
     summaryQ.refetch();
+    reportQ.refetch();
     if (q) lookupQ.refetch();
   };
 
@@ -388,6 +411,58 @@ export default function CrmLoyaltyScreen() {
         </Card>
       </View>
 
+      {report ? (
+        <View>
+          <SectionHeader
+            title="Redemptions Report"
+            caption="Issued by issue date; used/spend by redemption date (all time)"
+          />
+          <KpiGrid>
+            <KpiCard
+              label="Codes Issued"
+              value={fmtNum(report.summary.total_codes)}
+              sub={`${fmtKES(report.summary.kes_issued)} value`}
+            />
+            <KpiCard
+              label="Codes Used"
+              value={fmtNum(report.summary.used_codes)}
+              sub={`${fmtKES(report.summary.kes_used)} spent`}
+            />
+            <KpiCard
+              label="Open Codes"
+              value={fmtNum(report.summary.open_codes)}
+              sub={`${fmtKES(report.summary.kes_open)} liability`}
+            />
+            <KpiCard
+              label="Points Redeemed"
+              value={fmtNum(report.summary.points_redeemed)}
+            />
+          </KpiGrid>
+          <SectionHeader title="Discount Spend by Store" />
+          {report.by_store.length === 0 ? (
+            <EmptyState text="No codes redeemed at a till yet" />
+          ) : (
+            <View style={styles.list}>
+              {report.by_store.map((st) => (
+                <Card key={st.store} style={styles.storeRow}>
+                  <Text style={[styles.storeName, { color: c.foreground }]} numberOfLines={1}>
+                    {st.store}
+                  </Text>
+                  <View style={styles.storeMeta}>
+                    <Text style={[styles.storeKes, { color: c.foreground }]}>
+                      {fmtKES(st.kes_used)}
+                    </Text>
+                    <Text style={[styles.storeCodes, { color: c.mutedForeground }]}>
+                      {fmtNum(st.used_codes)} codes
+                    </Text>
+                  </View>
+                </Card>
+              ))}
+            </View>
+          )}
+        </View>
+      ) : null}
+
       <View>
         <SectionHeader
           title="Member Lookup"
@@ -484,6 +559,15 @@ const styles = StyleSheet.create({
   tierMeta: { alignItems: "flex-end" },
   tierVal: { fontFamily: "Jakarta_700Bold", fontSize: 15 },
   tierSub: { fontFamily: "Jakarta_500Medium", fontSize: 12 },
+  storeRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  storeName: { fontFamily: "Jakarta_700Bold", fontSize: 14, flex: 1, marginRight: 12 },
+  storeMeta: { alignItems: "flex-end" },
+  storeKes: { fontFamily: "Jakarta_700Bold", fontSize: 15 },
+  storeCodes: { fontFamily: "Jakarta_500Medium", fontSize: 12 },
   searchWrap: {
     flexDirection: "row",
     alignItems: "center",

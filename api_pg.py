@@ -10439,6 +10439,95 @@ def crm_loyalty_summary(request: Request):
     }
 
 
+@app.get("/api/crm/loyalty/redemptions/report")
+def crm_loyalty_redemptions_report(
+    request: Request,
+    date_from: str = Query(default=None),
+    date_to:   str = Query(default=None),
+):
+    # Manager view of loyalty discount-code spend. Two date dimensions are used
+    # so the numbers mean what managers expect:
+    #   - ISSUED metrics (codes issued, open/outstanding liability, points
+    #     redeemed) are scoped by issue date.
+    #   - REALIZED spend (codes used, KES discount spent, per-store breakdown)
+    #     is scoped by redemption (used_at) date — so a code issued before the
+    #     window but redeemed inside it counts as spend in the window.
+    # With no range, everything is all-time.
+    if bool(date_from) != bool(date_to):
+        return JSONResponse(
+            {"detail": "Provide both date_from and date_to, or neither"}, status_code=400)
+
+    issued_where = "1=1"
+    used_where = "r.code_status='used'"
+    iss_params: tuple = ()
+    used_params: tuple = ()
+    if date_from and date_to:
+        issued_where = "r.issued_at::date BETWEEN %s AND %s"
+        iss_params = (date_from, date_to)
+        used_where = "r.code_status='used' AND r.used_at::date BETWEEN %s AND %s"
+        used_params = (date_from, date_to)
+
+    issued = _users_exec(
+        "SELECT "
+        "COUNT(*) AS total_codes, "
+        "COUNT(*) FILTER (WHERE r.code_status='issued') AS open_codes, "
+        "COALESCE(SUM(r.kes_value),0) AS kes_issued, "
+        "COALESCE(SUM(r.kes_value) FILTER (WHERE r.code_status='issued'),0) AS kes_open, "
+        "COALESCE(SUM(r.points_redeemed),0) AS points_redeemed "
+        "FROM crm_redemptions r WHERE " + issued_where, iss_params, fetch=True) or [{}]
+    iss = issued[0]
+
+    used = _users_exec(
+        "SELECT COUNT(*) AS used_codes, COALESCE(SUM(r.kes_value),0) AS kes_used "
+        "FROM crm_redemptions r WHERE " + used_where, used_params, fetch=True) or [{}]
+    us = used[0]
+
+    by_store = _users_exec(
+        "SELECT COALESCE(NULLIF(TRIM(r.used_store_id),''), 'Unattributed') AS store, "
+        "COUNT(*) AS used_codes, COALESCE(SUM(r.kes_value),0) AS kes_used "
+        "FROM crm_redemptions r WHERE " + used_where + " "
+        "GROUP BY 1 ORDER BY kes_used DESC", used_params, fetch=True) or []
+
+    recent = _users_exec(
+        "SELECT r.discount_code, r.code_status, r.kes_value, r.points_redeemed, "
+        "r.issued_at, r.used_at, r.used_store_id, "
+        "COALESCE(m.name, NULLIF(TRIM(COALESCE(c.first_name,'')||' '||COALESCE(c.last_name,'')), '')) AS member_name "
+        "FROM crm_redemptions r "
+        "LEFT JOIN crm_loyalty_member m ON m.customer_id = r.customer_id "
+        "LEFT JOIN crm_customer c ON c.customer_id = r.customer_id "
+        "WHERE " + issued_where + " ORDER BY r.issued_at DESC LIMIT 100", iss_params, fetch=True) or []
+
+    def _f(v): return float(v) if v is not None else 0.0
+    return {
+        "summary": {
+            "total_codes": int(iss.get("total_codes") or 0),
+            "open_codes": int(iss.get("open_codes") or 0),
+            "used_codes": int(us.get("used_codes") or 0),
+            "kes_issued": _f(iss.get("kes_issued")),
+            "kes_used": _f(us.get("kes_used")),
+            "kes_open": _f(iss.get("kes_open")),
+            "points_redeemed": int(iss.get("points_redeemed") or 0),
+        },
+        "by_store": [
+            {"store": r["store"], "used_codes": int(r["used_codes"]), "kes_used": _f(r["kes_used"])}
+            for r in by_store
+        ],
+        "recent": [
+            {
+                "discount_code": r["discount_code"],
+                "code_status": r["code_status"],
+                "kes_value": _f(r["kes_value"]),
+                "points_redeemed": int(r["points_redeemed"] or 0),
+                "issued_at": r["issued_at"],
+                "used_at": r["used_at"],
+                "used_store_id": r["used_store_id"],
+                "member_name": r.get("member_name"),
+            }
+            for r in recent
+        ],
+    }
+
+
 @app.post("/api/crm/loyalty/{customer_id}/enrol")
 def crm_loyalty_enrol(customer_id: str, request: Request):
     cfg = _crm_config_dict()

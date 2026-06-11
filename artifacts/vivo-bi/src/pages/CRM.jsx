@@ -1233,6 +1233,16 @@ const LoyaltyTab = ({ isAdmin, onOpen360 }) => {
   const [redeemInfo, setRedeemInfo] = useState(null);
   const [redeemBusy, setRedeemBusy] = useState(false);
   const [redeemStore, setRedeemStore] = useState("");
+  const [report, setReport] = useState(null);
+  const [reportFrom, setReportFrom] = useState("");
+  const [reportTo, setReportTo] = useState("");
+
+  const loadReport = useCallback(() => {
+    const params = reportFrom && reportTo ? { date_from: reportFrom, date_to: reportTo } : {};
+    crmGet("/crm/loyalty/redemptions/report", params)
+      .then((r) => setReport(r.data))
+      .catch((e) => toast.error(errOf(e)));
+  }, [reportFrom, reportTo]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -1240,7 +1250,8 @@ const LoyaltyTab = ({ isAdmin, onOpen360 }) => {
       .then((r) => setSummary(r.data))
       .catch((e) => setError(errOf(e)))
       .finally(() => setLoading(false));
-  }, []);
+    loadReport();
+  }, [loadReport]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1419,6 +1430,115 @@ const LoyaltyTab = ({ isAdmin, onOpen360 }) => {
             </div>
           </div>
         </>
+      )}
+
+      {report && (
+        <div className="card-white p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[12px] font-semibold uppercase text-muted">Redemptions report</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <input className={inputCls} type="date" value={reportFrom} onChange={(e) => setReportFrom(e.target.value)} />
+              <span className="text-[12px] text-muted">to</span>
+              <input className={inputCls} type="date" value={reportTo} onChange={(e) => setReportTo(e.target.value)} />
+              <button className={btnGhost} onClick={loadReport}>Apply</button>
+              {(reportFrom || reportTo) && (
+                <button className={btnGhost} onClick={() => { setReportFrom(""); setReportTo(""); }}>Clear</button>
+              )}
+            </div>
+          </div>
+          <div className="mb-3 text-[11.5px] text-muted">
+            Issued &amp; outstanding figures are scoped by issue date; codes used and discount spent are scoped by redemption date.
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-md border border-border/60 p-3">
+              <div className="text-[11px] uppercase text-muted">Codes issued</div>
+              <div className="text-[20px] font-bold">{fmtNum(report.summary.total_codes)}</div>
+              <div className="text-[11.5px] text-muted">{fmtKES(report.summary.kes_issued)} value</div>
+            </div>
+            <div className="rounded-md border border-border/60 p-3">
+              <div className="text-[11px] uppercase text-muted">Codes used</div>
+              <div className="text-[20px] font-bold">{fmtNum(report.summary.used_codes)}</div>
+              <div className="text-[11.5px] text-muted">{fmtKES(report.summary.kes_used)} discount spent</div>
+            </div>
+            <div className="rounded-md border border-border/60 p-3">
+              <div className="text-[11px] uppercase text-muted">Open (outstanding)</div>
+              <div className="text-[20px] font-bold">{fmtNum(report.summary.open_codes)}</div>
+              <div className="text-[11.5px] text-muted">{fmtKES(report.summary.kes_open)} liability</div>
+            </div>
+            <div className="rounded-md border border-border/60 p-3">
+              <div className="text-[11px] uppercase text-muted">Points redeemed</div>
+              <div className="text-[20px] font-bold">{fmtNum(report.summary.points_redeemed)}</div>
+              <div className="text-[11.5px] text-muted">across issued codes</div>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <div className="mb-1 text-[12px] font-semibold uppercase text-muted">Discount spend by store</div>
+            {report.by_store.length === 0 ? (
+              <div className="py-3 text-[12.5px] text-muted">No codes have been redeemed at a till yet.</div>
+            ) : (
+              <table className="w-full text-[13px]">
+                <thead>
+                  <tr className="border-b border-border/60 text-left text-[11px] uppercase text-muted">
+                    <th className="px-2 py-1">Store</th>
+                    <th className="px-2 py-1 text-right">Codes used</th>
+                    <th className="px-2 py-1 text-right">Discount spent</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.by_store.map((s) => (
+                    <tr key={s.store} className="border-b border-border/40">
+                      <td className="px-2 py-1.5">{s.store}</td>
+                      <td className="px-2 py-1.5 text-right tabular-nums">{fmtNum(s.used_codes)}</td>
+                      <td className="px-2 py-1.5 text-right tabular-nums">{fmtKES(s.kes_used)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="mt-4">
+            <div className="mb-1 text-[12px] font-semibold uppercase text-muted">Recent codes</div>
+            {report.recent.length === 0 ? (
+              <div className="py-3 text-[12.5px] text-muted">No redemption codes issued in this range.</div>
+            ) : (
+              <div className="max-h-80 overflow-auto">
+                <table className="w-full text-[13px]">
+                  <thead className="sticky top-0 bg-white">
+                    <tr className="border-b border-border/60 text-left text-[11px] uppercase text-muted">
+                      <th className="px-2 py-1">Code</th>
+                      <th className="px-2 py-1">Member</th>
+                      <th className="px-2 py-1 text-right">Discount</th>
+                      <th className="px-2 py-1">Status</th>
+                      <th className="px-2 py-1">Issued</th>
+                      <th className="px-2 py-1">Used</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.recent.map((r) => (
+                      <tr key={r.discount_code} className="border-b border-border/40">
+                        <td className="px-2 py-1.5 font-mono text-[12px] whitespace-nowrap">{r.discount_code}</td>
+                        <td className="px-2 py-1.5">{r.member_name || "—"}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">{fmtKES(r.kes_value)}</td>
+                        <td className="px-2 py-1.5">
+                          <span className={r.code_status === "used"
+                            ? "rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-700"
+                            : "rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700"}>
+                            {r.code_status}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5 whitespace-nowrap text-muted">{r.issued_at ? fmtDate(r.issued_at) : "—"}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap text-muted">{r.used_at ? fmtDate(r.used_at) : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       <div className="card-white p-4">

@@ -62,6 +62,18 @@ NOT re-deduct points.
 **How to apply:** any "consume a single-use code/voucher" path must FOR-UPDATE-lock the
 row and re-assert its unused status in the same tx, not rely on a prior read.
 
+### 4. Redemptions report uses two date dimensions
+`GET /api/crm/loyalty/redemptions/report` tracks discount-code spend. Issued /
+outstanding metrics (codes issued, open liability, points redeemed) scope by
+`issued_at`; realized spend (codes used, KES spent, per-store breakdown) scopes by
+`used_at`. A single date range therefore filters different rows for different metrics.
+`date_from`/`date_to` must come as a pair (400 otherwise); omit both = all-time.
+**Why:** managers asked to "track discount spend over time" = realized spend. A code
+issued before the window but redeemed inside it IS in-window spend — scoping the whole
+report by `issued_at` would silently drop it and understate per-store spend.
+**How to apply:** any "issued vs consumed over time" report needs separate scope
+columns per metric; never reuse one timestamp filter for both creation and consumption.
+
 ## Clients
 - Mobile (`artifacts/vivo-mobile`): `lib/member.ts` keeps the token in AsyncStorage key
   `vivo_member_token`. The `app/member/` group (index card with CODE128 barcode via
