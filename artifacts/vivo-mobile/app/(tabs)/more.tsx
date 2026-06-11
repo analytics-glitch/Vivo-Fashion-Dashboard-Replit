@@ -9,7 +9,7 @@ import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/lib/auth";
 
 type Item = { label: string; caption: string; icon: keyof typeof Feather.glyphMap; route: string };
-type Group = { title: string; items: Item[] };
+type Group = { title: string; items: Item[]; roles?: string[] };
 
 const GROUPS: Group[] = [
   {
@@ -30,6 +30,9 @@ const GROUPS: Group[] = [
   },
   {
     title: "CRM",
+    // CRM is an analyst+ surface (matches the web nav + backend role gate);
+    // hidden for viewer / store_manager / warehouse roles.
+    roles: ["analyst", "exec", "admin"],
     items: [
       { label: "Contacts", caption: "Search profiles & 360 view", icon: "user", route: "/crm-contacts" },
       { label: "Tasks", caption: "Follow-up queue", icon: "check-square", route: "/crm-tasks" },
@@ -81,7 +84,9 @@ export default function MoreScreen() {
         <Text style={[styles.title, { color: c.foreground }]}>All Reports</Text>
       </View>
 
-      {GROUPS.map((g) => (
+      {GROUPS.filter(
+        (g) => !g.roles || g.roles.includes(user?.role ?? ""),
+      ).map((g) => (
         <View key={g.title} style={styles.group}>
           <Text style={[styles.groupTitle, { color: c.mutedForeground }]}>{g.title}</Text>
           <Card style={styles.groupCard}>

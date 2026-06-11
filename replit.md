@@ -77,6 +77,15 @@ Operational close-the-loop pages also exist (IBT transfer suggestions, Replenish
 
 Per-chart CSV export is available throughout.
 
+### CRM, Service & Loyalty
+
+A CRM/CEM/loyalty surface sits on top of the same backend + auth. It is brand-aware via a `brand_code` split (`vivo` = Vivo #1a5c38, `sz` = Shop Zetu #7c3aed — shown as colored dots, no logos).
+
+- Backend: ~30 endpoints under `/api/crm/*` in `api_pg.py` (inserted before the `StaticFiles` SPA catch-all). Schema is idempotent DDL (`_ensure_crm_tables()` on startup) — 14 `crm_*` tables (config, customer overrides + manual contacts, tags + members, tasks, interactions, campaigns + members, tickets + messages, loyalty enrolment, append-only ledger, redemptions, audit). Customers blend the read-only `all_customers`/`all_sales` data with the `crm_customer` override row (FULL OUTER JOIN) so manual contacts and CRM edits coexist with transactional history. Loyalty config defaults (earn rate, point value, tiers, channel/priority SLAs) seed from config. **External features deferred**: social webhooks, POS/Shopify auto-sync, customer-facing loyalty app, OTP, email engine, ML churn.
+- Web: single `src/pages/CRM.jsx` with tabbed sub-views (Contacts/360, Tasks, Tickets, Campaigns, Loyalty, Config[admin]). Route `/crm` in `App.js`, nav under a "Customers & Marketing" group in `navItems.jsx`, page id `crm` in `permissions.js`.
+- Mobile (`artifacts/vivo-mobile`): a "CRM" group in `app/(tabs)/more.tsx` (gated to analyst+ roles) linking 4 lighter stack screens — `app/crm-contacts.tsx` (search + segment filter), `crm-customer.tsx` (360 view), `crm-tasks.tsx` (queue + mark-done), `crm-tickets.tsx` + `crm-ticket.tsx` (list/detail, status change, reply), `crm-loyalty.tsx` (summary + member lookup). `lib/api.ts` gained `apiPatch` (shared `apiWrite` helper with `apiPost`); brand dot/label helpers live in `constants/colors.ts`.
+- **Authorization**: CRM is an analyst+ surface. The `clerk_auth_gate` middleware enforces `role ∈ {analyst, exec, admin}` for any `/api/crm/*` request server-side (so hidden web nav / mobile routes can't be bypassed); finer-grained mutations (loyalty adjust, config PUT) still require admin via `_crm_is_admin`.
+
 ## User preferences
 
 - No emojis in the UI. No flag glyphs — represent countries with colored dots + the country name.
