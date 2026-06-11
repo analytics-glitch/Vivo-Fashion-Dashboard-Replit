@@ -3,6 +3,7 @@ import { api, fmtKES, fmtNum, fmtPct, fmtDate } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { useAuth } from "@/lib/auth";
 import CountryDot from "@/components/CountryDot";
+import Social from "@/pages/Social";
 import { toast } from "sonner";
 import {
   MagnifyingGlass,
@@ -22,6 +23,7 @@ import {
   Trash,
   DeviceMobile,
   ArrowSquareOut,
+  FacebookLogo,
 } from "@phosphor-icons/react";
 
 // ---------------------------------------------------------------------------
@@ -1920,13 +1922,20 @@ const TABS = [
   { key: "campaigns", label: "Campaigns", icon: Megaphone },
   { key: "messages", label: "Messages", icon: ChatText },
   { key: "loyalty", label: "Loyalty", icon: Crown },
+  { key: "social", label: "Social", icon: FacebookLogo },
   { key: "mobile", label: "Mobile app", icon: DeviceMobile },
 ];
 
 const CRM = () => {
   const { user } = useAuth();
   const isAdmin = (user?.role || "").toLowerCase() === "admin";
-  const [tab, setTab] = useState("contacts");
+  const initialTab = (() => {
+    if (typeof window === "undefined") return "contacts";
+    const requested = new URLSearchParams(window.location.search).get("tab");
+    const allowed = ["contacts", "tasks", "tickets", "campaigns", "messages", "loyalty", "social", "mobile"];
+    return allowed.includes(requested) ? requested : "contacts";
+  })();
+  const [tab, setTab] = useState(initialTab);
   const [brand, setBrand] = useState("");
   const [team, setTeam] = useState([]);
   const [open360, setOpen360] = useState(null);
@@ -1975,6 +1984,7 @@ const CRM = () => {
       {tab === "campaigns" && <CampaignsTab brand={brand} />}
       {tab === "messages" && <MessagesTab />}
       {tab === "loyalty" && <LoyaltyTab isAdmin={isAdmin} onOpen360={setOpen360} />}
+      {tab === "social" && <Social embedded />}
       {tab === "mobile" && <MobilePreviewTab />}
       {tab === "config" && isAdmin && <ConfigTab />}
 

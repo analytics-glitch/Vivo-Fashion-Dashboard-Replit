@@ -60,6 +60,7 @@ LOCATION_ID_MAP = {
     71464648859:  'Safari Sarit',
     66820767899:  'Staff purchases',
     66799599771:  'vivowoman',
+    49363320987:  'Vivo Village Market',  # fulfillment location
     # Additional Kenya stores
     36478582880:  'Vivo Yaya',
     49383833755:  'Vivo Two Rivers',

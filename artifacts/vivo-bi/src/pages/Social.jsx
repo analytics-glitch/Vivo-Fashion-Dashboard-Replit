@@ -239,7 +239,7 @@ const PostCard = ({ post }) => {
 // Page
 // =====================================================================
 
-const Social = () => {
+const Social = ({ embedded = false }) => {
   const [status, setStatus] = useState(null);
   const [statusErr, setStatusErr] = useState("");
   const [insights, setInsights] = useState(null);
@@ -310,17 +310,19 @@ const Social = () => {
     <div className="space-y-5">
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-brand/10 text-brand grid place-items-center">
-            <FacebookLogo size={22} weight="fill" />
+        {!embedded && (
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-brand/10 text-brand grid place-items-center">
+              <FacebookLogo size={22} weight="fill" />
+            </div>
+            <div>
+              <h1 className="font-sans text-[20px] font-bold tracking-tight text-foreground">Social</h1>
+              <p className="text-[12.5px] text-muted">
+                Publish offers, track engagement and reply to comments on your Facebook Page
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="font-sans text-[20px] font-bold tracking-tight text-foreground">Social</h1>
-            <p className="text-[12.5px] text-muted">
-              Publish offers, track engagement and reply to comments on your Facebook Page
-            </p>
-          </div>
-        </div>
+        )}
         <div className="flex items-center gap-3">
           {status && (
             <div className="flex items-center gap-2 text-[12.5px]">
