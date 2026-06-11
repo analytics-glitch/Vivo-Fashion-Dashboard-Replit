@@ -74,6 +74,21 @@ report by `issued_at` would silently drop it and understate per-store spend.
 **How to apply:** any "issued vs consumed over time" report needs separate scope
 columns per metric; never reuse one timestamp filter for both creation and consumption.
 
+### 5. Member message inbox audience is matched server-side
+Staff broadcast in-app messages to loyalty members from the CRM; members read them in
+the mobile card. Tables `crm_member_message` (audience `all|brand|member`, optional
+`brand_code`/`customer_id`, `active`) + `crm_member_message_read` (PK message_id+customer_id).
+A message reaches a member when audience=`all`, OR audience=`brand` and brand matches, OR
+audience=`member` and `customer_id` matches — encoded once in `_member_message_match_sql()`
+(columns qualified with the `msg.` alias). Member list/unread + `unread_messages` on
+`/api/loyalty/me` reuse that one helper; mark-read is idempotent (`ON CONFLICT DO NOTHING`).
+**Why:** the member list query JOINs the read table (which ALSO has a `customer_id`), so an
+unqualified `customer_id` in the match clause is ambiguous and the query errors — always
+qualify with `msg.`. Centralizing the match in one helper keeps member-list, unread-count,
+and `/me` from drifting (e.g. one counting retracted messages the others hide).
+**How to apply:** member-facing reads must filter `active=TRUE`; staff list shows retracted
+rows too. Delete is a soft delete (`active=FALSE`), so reach/read stats survive retraction.
+
 ## Clients
 - Mobile (`artifacts/vivo-mobile`): `lib/member.ts` keeps the token in AsyncStorage key
   `vivo_member_token`. The `app/member/` group (index card with CODE128 barcode via

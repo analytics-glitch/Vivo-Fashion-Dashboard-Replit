@@ -168,6 +168,7 @@ export default function MemberCardScreen() {
   }
 
   const { member, ledger, config } = data;
+  const unread = data.unread_messages || 0;
   const accent = brandColor(member.brand_code);
   const value = member.points_balance / (config.points_per_kes_redeem || 100);
 
@@ -286,6 +287,31 @@ export default function MemberCardScreen() {
         Minimum {fmtNum(config.redemption_floor)} points ·{" "}
         {fmtNum(config.points_per_kes_redeem)} points = KES 1
       </Text>
+
+      {/* Messages inbox */}
+      <Pressable
+        onPress={() => router.push("/member/messages")}
+        style={({ pressed }) => [
+          styles.inboxRow,
+          { backgroundColor: c.card, borderColor: c.border, opacity: pressed ? 0.85 : 1 },
+        ]}
+      >
+        <Ionicons name="mail-outline" size={20} color={c.primary} />
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.inboxTitle, { color: c.foreground }]}>Messages</Text>
+          <Text style={[styles.inboxSub, { color: c.mutedForeground }]}>
+            Offers and updates from Vivo Rewards
+          </Text>
+        </View>
+        {unread > 0 && (
+          <View style={[styles.badge, { backgroundColor: c.primary }]}>
+            <Text style={[styles.badgeText, { color: c.primaryForeground }]}>
+              {unread > 99 ? "99+" : unread}
+            </Text>
+          </View>
+        )}
+        <Ionicons name="chevron-forward" size={18} color={c.mutedForeground} />
+      </Pressable>
 
       {/* Activity (points audit) */}
       <View>
@@ -487,6 +513,26 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: -6,
   },
+  inboxRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  inboxTitle: { fontFamily: "Jakarta_700Bold", fontSize: 15, letterSpacing: -0.2 },
+  inboxSub: { fontFamily: "Jakarta_500Medium", fontSize: 12, marginTop: 2 },
+  badge: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  badgeText: { fontFamily: "Jakarta_800ExtraBold", fontSize: 12 },
   sectionTitle: {
     fontFamily: "Jakarta_700Bold",
     fontSize: 18,

@@ -143,7 +143,17 @@ export interface MemberMe {
   member: LoyaltyMember;
   ledger: LedgerEntry[];
   redemptions: RedemptionEntry[];
+  unread_messages: number;
   config: LoyaltyConfig;
+}
+
+export interface MemberMessage {
+  id: number;
+  title: string;
+  body: string;
+  created_at: string;
+  created_by_name: string | null;
+  read: boolean;
 }
 
 // --- API calls -------------------------------------------------------------
@@ -182,6 +192,19 @@ export async function redeemPoints(
   points: number,
 ): Promise<{ discount_code: string; kes_value: number; points_balance: number }> {
   return memberPost("/loyalty/redeem", { points });
+}
+
+export async function fetchMemberMessages(): Promise<{
+  messages: MemberMessage[];
+  unread: number;
+}> {
+  return memberGet("/loyalty/messages");
+}
+
+export async function markMessageRead(
+  id: number,
+): Promise<{ ok: boolean; unread: number }> {
+  return memberPost(`/loyalty/messages/${id}/read`);
 }
 
 export async function logoutMember(): Promise<void> {

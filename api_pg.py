@@ -9483,6 +9483,28 @@ def _ensure_crm_tables():
     # the member row so it survives restarts and is per-account, not in-memory.
     _users_exec("ALTER TABLE crm_loyalty_member ADD COLUMN IF NOT EXISTS failed_logins INTEGER NOT NULL DEFAULT 0")
     _users_exec("ALTER TABLE crm_loyalty_member ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ")
+    # In-app messages staff broadcast to loyalty members (read in the mobile card).
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_member_message (
+            id              SERIAL PRIMARY KEY,
+            audience        TEXT NOT NULL DEFAULT 'all',
+            brand_code      TEXT,
+            customer_id     TEXT,
+            title           TEXT NOT NULL,
+            body            TEXT NOT NULL,
+            created_by      TEXT,
+            created_by_name TEXT,
+            active          BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_msg_active ON crm_member_message(active, created_at DESC)")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_member_message_read (
+            message_id  INTEGER NOT NULL,
+            customer_id TEXT NOT NULL,
+            read_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (message_id, customer_id)
+        )""")
     # Seed config defaults (idempotent — never clobbers an admin-edited value).
     for k, v in CRM_CONFIG_DEFAULTS.items():
         _users_exec(
@@ -10528,6 +10550,89 @@ def crm_loyalty_redemptions_report(
     }
 
 
+@app.get("/api/crm/member-messages")
+def crm_member_messages_list(request: Request):
+    """Staff view of the in-app messages sent to loyalty members, newest first,
+    each with audience reach + how many members have read it."""
+    rows = _users_exec(
+        "SELECT msg.id, msg.audience, msg.brand_code, msg.customer_id, msg.title, "
+        "msg.body, msg.created_by_name, msg.active, msg.created_at, "
+        "(SELECT COUNT(*) FROM crm_member_message_read r WHERE r.message_id = msg.id) AS read_count "
+        "FROM crm_member_message msg ORDER BY msg.created_at DESC LIMIT 200",
+        fetch=True) or []
+    # Reach: how many members each broadcast can land on (computed once for 'all').
+    total = _users_exec("SELECT COUNT(*) AS n FROM crm_loyalty_member", fetch=True)
+    total_members = int(total[0]["n"]) if total else 0
+    by_brand_rows = _users_exec(
+        "SELECT brand_code, COUNT(*) AS n FROM crm_loyalty_member GROUP BY brand_code",
+        fetch=True) or []
+    by_brand = {r["brand_code"]: int(r["n"]) for r in by_brand_rows}
+    out = []
+    for r in rows:
+        if r["audience"] == "all":
+            reach = total_members
+        elif r["audience"] == "brand":
+            reach = by_brand.get(r["brand_code"], 0)
+        else:
+            reach = 1
+        out.append({
+            "id": r["id"], "audience": r["audience"], "brand_code": r["brand_code"],
+            "customer_id": r["customer_id"], "title": r["title"], "body": r["body"],
+            "created_by_name": r["created_by_name"], "active": r["active"],
+            "created_at": r["created_at"], "read_count": int(r["read_count"] or 0),
+            "reach": reach,
+        })
+    return {"messages": out}
+
+
+@app.post("/api/crm/member-messages")
+async def crm_member_messages_create(request: Request):
+    """Staff compose an in-app message/announcement for loyalty members."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    title = (body.get("title") or "").strip()
+    text = (body.get("body") or "").strip()
+    audience = (body.get("audience") or "all").strip().lower()
+    if not title or not text:
+        return JSONResponse({"detail": "Title and message are required"}, status_code=400)
+    if audience not in ("all", "brand", "member"):
+        return JSONResponse({"detail": "Invalid audience"}, status_code=400)
+    brand_code = None
+    customer_id = None
+    if audience == "brand":
+        brand_code = _crm_brand(body.get("brand_code"))
+    elif audience == "member":
+        customer_id = (body.get("customer_id") or "").strip()
+        if not customer_id:
+            return JSONResponse({"detail": "customer_id is required for a member message"}, status_code=400)
+        exists = _users_exec(
+            "SELECT 1 FROM crm_loyalty_member WHERE customer_id=%s", (customer_id,), fetch=True)
+        if not exists:
+            return JSONResponse({"detail": "Loyalty member not found"}, status_code=404)
+    uid, uname, _ = _crm_actor(request)
+    rows = _users_exec(
+        "INSERT INTO crm_member_message (audience, brand_code, customer_id, title, body, created_by, created_by_name) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+        (audience, brand_code, customer_id, title, text, uid, uname), fetch=True)
+    mid = rows[0]["id"] if rows else None
+    _crm_audit("member_message", str(mid), "create", f"{audience}: {title}", request)
+    return {"ok": True, "id": mid}
+
+
+@app.delete("/api/crm/member-messages/{message_id}")
+def crm_member_messages_delete(message_id: int, request: Request):
+    """Retract a message (soft delete) so members stop seeing it."""
+    found = _users_exec(
+        "SELECT 1 FROM crm_member_message WHERE id=%s", (message_id,), fetch=True)
+    if not found:
+        return JSONResponse({"detail": "Message not found"}, status_code=404)
+    _users_exec("UPDATE crm_member_message SET active=FALSE WHERE id=%s", (message_id,))
+    _crm_audit("member_message", str(message_id), "retract", "", request)
+    return {"ok": True}
+
+
 @app.post("/api/crm/loyalty/{customer_id}/enrol")
 def crm_loyalty_enrol(customer_id: str, request: Request):
     cfg = _crm_config_dict()
@@ -10989,6 +11094,7 @@ def loyalty_me(request: Request):
         "member": _member_public(m, enrol),
         "ledger": ledger,
         "redemptions": redemptions,
+        "unread_messages": _member_unread_message_count(cid, m.get("brand_code")),
         "config": {
             "earn_rate_kes": _crm_cfg_num(cfg, "loyalty.earn_rate_kes", 100),
             "points_per_kes_redeem": _crm_cfg_num(cfg, "loyalty.points_per_kes_redeem", 100),
@@ -11000,6 +11106,71 @@ def loyalty_me(request: Request):
             },
         },
     }
+
+
+def _member_message_match_sql():
+    """Shared WHERE for messages visible to a member: broadcast, their brand, or
+    addressed to them personally. Columns are qualified with the `msg` alias
+    (every call site aliases crm_member_message AS msg) because the read table
+    also has a customer_id. Params order: (brand_code, customer_id)."""
+    return (
+        "msg.active = TRUE AND ("
+        "msg.audience = 'all' "
+        "OR (msg.audience = 'brand' AND msg.brand_code = %s) "
+        "OR (msg.audience = 'member' AND msg.customer_id = %s))"
+    )
+
+
+def _member_unread_message_count(customer_id, brand_code):
+    rows = _users_exec(
+        "SELECT COUNT(*) AS n FROM crm_member_message msg "
+        "WHERE " + _member_message_match_sql() + " "
+        "AND NOT EXISTS (SELECT 1 FROM crm_member_message_read r "
+        "  WHERE r.message_id = msg.id AND r.customer_id = %s)",
+        (brand_code or "vivo", customer_id, customer_id), fetch=True)
+    return int(rows[0]["n"]) if rows else 0
+
+
+@app.get("/api/loyalty/messages")
+def loyalty_messages(request: Request):
+    """List the in-app messages a loyalty member can see, newest first, each
+    flagged read/unread for this member."""
+    m = _member_for_request(request)
+    if not m:
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+    cid = m["customer_id"]
+    brand = m.get("brand_code") or "vivo"
+    rows = _users_exec(
+        "SELECT msg.id, msg.title, msg.body, msg.created_at, msg.created_by_name, "
+        "(r.message_id IS NOT NULL) AS read "
+        "FROM crm_member_message msg "
+        "LEFT JOIN crm_member_message_read r "
+        "  ON r.message_id = msg.id AND r.customer_id = %s "
+        "WHERE " + _member_message_match_sql() + " "
+        "ORDER BY msg.created_at DESC LIMIT 100",
+        (cid, brand, cid), fetch=True) or []
+    unread = sum(1 for x in rows if not x["read"])
+    return {"messages": rows, "unread": unread}
+
+
+@app.post("/api/loyalty/messages/{message_id}/read")
+def loyalty_message_read(message_id: int, request: Request):
+    """Mark a message read for the calling member (idempotent)."""
+    m = _member_for_request(request)
+    if not m:
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+    cid = m["customer_id"]
+    brand = m.get("brand_code") or "vivo"
+    visible = _users_exec(
+        "SELECT 1 FROM crm_member_message msg "
+        "WHERE msg.id = %s AND " + _member_message_match_sql(),
+        (message_id, brand, cid), fetch=True)
+    if not visible:
+        return JSONResponse({"detail": "Message not found"}, status_code=404)
+    _users_exec(
+        "INSERT INTO crm_member_message_read (message_id, customer_id) "
+        "VALUES (%s, %s) ON CONFLICT DO NOTHING", (message_id, cid))
+    return {"ok": True, "unread": _member_unread_message_count(cid, brand)}
 
 
 @app.post("/api/loyalty/redeem")

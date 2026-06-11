@@ -17,6 +17,9 @@ import {
   X,
   Tag as TagIcon,
   Coins,
+  ChatText,
+  PaperPlaneTilt,
+  Trash,
 } from "@phosphor-icons/react";
 
 // ---------------------------------------------------------------------------
@@ -1647,11 +1650,171 @@ const ConfigTab = () => {
 // Root page
 // =====================================================================
 
+// =====================================================================
+// Messages tab — staff broadcast in-app messages to loyalty members
+// (read in the mobile membership card). Audience: all members, one brand,
+// or a single member by customer id.
+// =====================================================================
+
+const MSG_AUDIENCE_LABEL = { all: "All members", brand: "By brand", member: "One member" };
+
+const MessagesTab = () => {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [showCreate, setShowCreate] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    crmGet("/crm/member-messages")
+      .then((r) => setRows(r.data?.messages || []))
+      .catch((e) => setError(errOf(e)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const retract = (id) => {
+    if (!window.confirm("Retract this message? Members will stop seeing it.")) return;
+    api.delete(`/crm/member-messages/${id}`)
+      .then(() => { toast.success("Message retracted"); load(); })
+      .catch((e) => toast.error(errOf(e)));
+  };
+
+  return (
+    <div className="space-y-4">
+      <SectionTitle
+        title="Member messages"
+        subtitle="Send announcements and offers that loyalty members read inside the mobile membership card."
+        action={<button className={btnPrimary} onClick={() => setShowCreate(true)}><Plus size={15} /> New message</button>}
+      />
+      {loading ? (
+        <Loading label="Loading messages…" />
+      ) : error ? (
+        <ErrorBox message={error} />
+      ) : rows.length === 0 ? (
+        <Empty label="No messages sent yet." />
+      ) : (
+        <div className="card-white overflow-x-auto">
+          <table className="min-w-full text-[13px]">
+            <thead>
+              <tr className="border-b border-border text-left text-[11.5px] uppercase tracking-wide text-muted">
+                <th className="px-3 py-2 font-semibold">Message</th>
+                <th className="px-3 py-2 font-semibold">Audience</th>
+                <th className="px-3 py-2 font-semibold text-right">Reach</th>
+                <th className="px-3 py-2 font-semibold text-right">Read</th>
+                <th className="px-3 py-2 font-semibold">Sent by</th>
+                <th className="px-3 py-2 font-semibold">When</th>
+                <th className="px-3 py-2 font-semibold">Status</th>
+                <th className="px-3 py-2 font-semibold" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((m) => (
+                <tr key={m.id} className="border-b border-border/60 align-top">
+                  <td className="px-3 py-2">
+                    <div className="font-semibold text-foreground">{m.title}</div>
+                    <div className="max-w-md text-[12px] text-muted">{m.body}</div>
+                  </td>
+                  <td className="px-3 py-2">
+                    {MSG_AUDIENCE_LABEL[m.audience] || m.audience}
+                    {m.audience === "brand" && m.brand_code && <div className="mt-1"><BrandDot brand={m.brand_code} /></div>}
+                  </td>
+                  <td className="px-3 py-2 text-right">{fmtNum(m.reach)}</td>
+                  <td className="px-3 py-2 text-right">
+                    {fmtNum(m.read_count)}
+                    {m.reach > 0 && <span className="ml-1 text-[11px] text-muted">({fmtPct((m.read_count / m.reach) * 100)})</span>}
+                  </td>
+                  <td className="px-3 py-2">{m.created_by_name || "—"}</td>
+                  <td className="px-3 py-2 whitespace-nowrap text-muted">{fmtDate(m.created_at)}</td>
+                  <td className="px-3 py-2">
+                    <Pill color={m.active ? "#1a5c38" : "#6b7280"} subtle>{m.active ? "Active" : "Retracted"}</Pill>
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    {m.active && (
+                      <button className="text-muted hover:text-red-600" title="Retract" onClick={() => retract(m.id)}>
+                        <Trash size={16} />
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <CreateMessageModal open={showCreate} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); load(); }} />
+    </div>
+  );
+};
+
+const CreateMessageModal = ({ open, onClose, onCreated }) => {
+  const [form, setForm] = useState({});
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { if (open) setForm({ audience: "all", brand_code: "vivo" }); }, [open]);
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const submit = () => {
+    if (!form.title?.trim() || !form.body?.trim()) { toast.error("Title and message are required"); return; }
+    if (form.audience === "member" && !form.customer_id?.trim()) { toast.error("A customer id is required for a single-member message"); return; }
+    const payload = {
+      audience: form.audience,
+      title: form.title.trim(),
+      body: form.body.trim(),
+      ...(form.audience === "brand" ? { brand_code: form.brand_code } : {}),
+      ...(form.audience === "member" ? { customer_id: form.customer_id.trim() } : {}),
+    };
+    setSaving(true);
+    api.post("/crm/member-messages", payload)
+      .then(() => { toast.success("Message sent"); onCreated(); })
+      .catch((e) => toast.error(errOf(e)))
+      .finally(() => setSaving(false));
+  };
+  return (
+    <Modal open={open} onClose={onClose} title="New member message">
+      <div className="space-y-3">
+        <Field label="Send to">
+          <select className={inputCls} value={form.audience} onChange={(e) => set("audience", e.target.value)}>
+            <option value="all">All loyalty members</option>
+            <option value="brand">Members of one brand</option>
+            <option value="member">A single member (by customer id)</option>
+          </select>
+        </Field>
+        {form.audience === "brand" && (
+          <Field label="Brand">
+            <select className={inputCls} value={form.brand_code || "vivo"} onChange={(e) => set("brand_code", e.target.value)}>
+              <option value="vivo">Vivo</option>
+              <option value="sz">Shop Zetu</option>
+            </select>
+          </Field>
+        )}
+        {form.audience === "member" && (
+          <Field label="Customer id">
+            <input className={inputCls} placeholder="e.g. mbr:… or a customer id" value={form.customer_id || ""} onChange={(e) => set("customer_id", e.target.value)} />
+          </Field>
+        )}
+        <Field label="Title">
+          <input className={inputCls} value={form.title || ""} onChange={(e) => set("title", e.target.value)} />
+        </Field>
+        <Field label="Message">
+          <textarea className={inputCls} rows={4} value={form.body || ""} onChange={(e) => set("body", e.target.value)} />
+        </Field>
+        <p className="text-[12px] text-muted">Members see this in the mobile membership card. No emojis.</p>
+      </div>
+      <div className="mt-4 flex justify-end gap-2">
+        <button className={btnGhost} onClick={onClose}>Cancel</button>
+        <button className={btnPrimary} onClick={submit} disabled={saving}><PaperPlaneTilt size={15} /> {saving ? "Sending…" : "Send message"}</button>
+      </div>
+    </Modal>
+  );
+};
+
 const TABS = [
   { key: "contacts", label: "Contacts", icon: MagnifyingGlass },
   { key: "tasks", label: "Tasks", icon: CheckCircle },
   { key: "tickets", label: "Tickets", icon: TicketIcon },
   { key: "campaigns", label: "Campaigns", icon: Megaphone },
+  { key: "messages", label: "Messages", icon: ChatText },
   { key: "loyalty", label: "Loyalty", icon: Crown },
 ];
 
@@ -1705,6 +1868,7 @@ const CRM = () => {
       {tab === "tasks" && <TasksTab brand={brand} team={team} />}
       {tab === "tickets" && <TicketsTab brand={brand} team={team} />}
       {tab === "campaigns" && <CampaignsTab brand={brand} />}
+      {tab === "messages" && <MessagesTab />}
       {tab === "loyalty" && <LoyaltyTab isAdmin={isAdmin} onOpen360={setOpen360} />}
       {tab === "config" && isAdmin && <ConfigTab />}
 

@@ -26,6 +26,7 @@ export default function MemberLayout() {
       <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="enrol" options={{ title: "Join Vivo Rewards" }} />
       <Stack.Screen name="login" options={{ title: "Member sign in" }} />
+      <Stack.Screen name="messages" options={{ title: "Messages" }} />
     </Stack>
   );
 }
