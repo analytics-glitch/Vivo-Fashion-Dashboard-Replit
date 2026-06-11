@@ -9,17 +9,26 @@ const AuthCallback = () => {
 
   useEffect(() => {
     const run = async () => {
-      const hash = window.location.hash || "";
-      const m = hash.match(/session_id=([^&]+)/);
-      if (!m) {
-        setError("Missing session_id from redirect");
+      const hash = (window.location.hash || "").replace(/^#/, "");
+      const params = new URLSearchParams(hash);
+      const errParam = params.get("error");
+      if (errParam) {
+        setError(decodeURIComponent(errParam));
+        return;
+      }
+      const token = params.get("token");
+      if (!token) {
+        setError("Missing token from redirect");
         return;
       }
       try {
-        await completeGoogleLogin(m[1]);
-        // Clear the hash so a reload doesn't re-exchange.
+        const u = await completeGoogleLogin(token);
+        // Clear the hash so a reload doesn't re-process the token.
         window.history.replaceState(null, "", "/");
+        // Pending/rejected users still land in the app — ProtectedRoute
+        // routes them to the awaiting-approval screen.
         navigate("/", { replace: true });
+        if (!u) setError("Could not verify your account. Please try again.");
       } catch (err) {
         setError(err?.response?.data?.detail || "Google sign-in failed");
       }

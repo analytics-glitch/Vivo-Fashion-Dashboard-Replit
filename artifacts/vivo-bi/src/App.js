@@ -37,6 +37,8 @@ const SizeHealth = React.lazy(() => import("@/pages/SizeHealth"));
 const MarkdownClearance = React.lazy(() => import("@/pages/MarkdownClearance"));
 const Margin = React.lazy(() => import("@/pages/Margin"));
 const RFM = React.lazy(() => import("@/pages/RFM"));
+const Login = React.lazy(() => import("@/pages/Login"));
+const AuthCallback = React.lazy(() => import("@/pages/AuthCallback"));
 
 import { FiltersProvider } from "@/lib/filters";
 import { AuthProvider } from "@/lib/auth";
@@ -100,11 +102,11 @@ function App() {
           <AuthProvider>
             <FiltersProvider>
               <Routes>
-                {/* Login removed for now — every auth route redirects into the app. */}
-                <Route path="/sign-in/*" element={<Navigate to="/" replace />} />
-                <Route path="/sign-up/*" element={<Navigate to="/" replace />} />
-                <Route path="/login" element={<Navigate to="/" replace />} />
-                <Route path="/auth/callback" element={<Navigate to="/" replace />} />
+                {/* Public auth routes — rendered without the app Shell. */}
+                <Route path="/login" element={<Suspense fallback={<div className="min-h-screen grid place-items-center"><Loading label="Loading…" /></div>}><Login /></Suspense>} />
+                <Route path="/auth/callback" element={<Suspense fallback={<div className="min-h-screen grid place-items-center"><Loading label="Loading…" /></div>}><AuthCallback /></Suspense>} />
+                <Route path="/sign-in/*" element={<Navigate to="/login" replace />} />
+                <Route path="/sign-up/*" element={<Navigate to="/login" replace />} />
                 <Route path="/" element={<ProtectedShell><Home /></ProtectedShell>} />
                 <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
                 <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />

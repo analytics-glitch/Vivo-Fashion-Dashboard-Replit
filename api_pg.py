@@ -13,6 +13,9 @@ import time
 import hashlib
 import hmac
 import base64
+import secrets
+import requests
+from urllib.parse import urlencode, quote
 
 # ── PII reveal (step-up) tokens ───────────────────────────────────────────────
 # Customer contact PII (phone/email) is masked in every response by default.
@@ -345,7 +348,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # stdlib (see clerk_auth.py) — no SDK, because this env's u-root-cmds shadows
 # coreutils and breaks the wheels' builds.
 import clerk_auth
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 # Exact /api paths reachable without a session (health probes + proxy prefix).
 _AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/sync-status"}
@@ -369,12 +372,28 @@ DEFAULT_NEW_ROLE = "store_manager"
 # read its own status and poll for approval / sign out).
 _AUTH_SELF_PATHS = {
     "/api/auth/me", "/api/auth/me/status",
-    "/api/auth/login", "/api/auth/logout", "/api/auth/heartbeat",
+    "/api/auth/logout", "/api/auth/heartbeat",
+}
+# Paths reachable with no session at all: the login form, the Google OAuth
+# initiator + callback, and the allowed-domains hint shown on the sign-in page.
+_AUTH_PUBLIC_AUTH_PATHS = {
+    "/api/auth/login",
+    "/api/auth/google/login",
+    "/api/auth/google/callback",
+    "/api/auth/allowed-domains",
 }
 
 _USER_CACHE_TTL = 30  # seconds — bounds how long a role/status change lags
 _user_cache = {}      # sub -> (record, ts)
 _user_cache_lock = threading.Lock()
+
+# Opaque session lifetime + a tiny lookup cache so a burst of requests on one
+# token doesn't hammer the DB. Admin role/status mutations clear this cache so
+# changes take effect immediately rather than lagging the TTL.
+_SESSION_TTL = 7 * 24 * 3600   # 7 days
+_SESSION_CACHE_TTL = 30        # seconds
+_session_cache = {}            # token -> (user, ts)
+_session_cache_lock = threading.Lock()
 
 
 def _admin_bootstrap_emails():
@@ -468,6 +487,26 @@ def _ensure_users_table():
             last_login_at TIMESTAMPTZ
         )
     """)
+    # Local email/password accounts store a PBKDF2 hash here; Google-only
+    # identities leave it NULL (they authenticate via OAuth, never a password).
+    _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS password_hash TEXT")
+    # Opaque server-side sessions. The token is the bearer/cookie value; we never
+    # store anything derivable back to a password here.
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            session_token TEXT PRIMARY KEY,
+            user_id       TEXT NOT NULL REFERENCES app_users(user_id) ON DELETE CASCADE,
+            created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+            expires_at    TIMESTAMPTZ NOT NULL
+        )
+    """)
+    _users_exec(
+        "CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id)")
+    # Reap expired sessions on boot so the table cannot grow unbounded.
+    try:
+        _users_exec("DELETE FROM user_sessions WHERE expires_at <= now()")
+    except Exception:
+        pass
 
 
 def _resolve_app_user_db(sub, email, name):
@@ -532,6 +571,102 @@ def _invalidate_user_cache(sub=None):
             _user_cache.pop(sub, None)
         else:
             _user_cache.clear()
+    # Sessions are keyed by token (not user_id), so a targeted purge isn't cheap;
+    # role/status changes are rare, so clear the whole session cache to guarantee
+    # the change is reflected on the next request rather than lagging the TTL.
+    with _session_cache_lock:
+        _session_cache.clear()
+
+
+# ── Password hashing (PBKDF2-SHA256, stdlib) ──────────────────────────────────
+# We deliberately avoid passlib/bcrypt: their wheels fail to build in this env
+# (u-root-cmds shadows coreutils). PBKDF2-SHA256 from hashlib is constant-time
+# verified via hmac.compare_digest and is a sound password KDF at high iteration.
+_PBKDF2_ITERS = 200_000
+
+
+def _hash_password(password):
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITERS)
+    return "pbkdf2_sha256$%d$%s$%s" % (
+        _PBKDF2_ITERS,
+        base64.b64encode(salt).decode("ascii"),
+        base64.b64encode(dk).decode("ascii"),
+    )
+
+
+def _verify_password(password, stored):
+    if not stored:
+        return False
+    try:
+        algo, iters, salt_b64, hash_b64 = stored.split("$")
+        if algo != "pbkdf2_sha256":
+            return False
+        salt = base64.b64decode(salt_b64)
+        expected = base64.b64decode(hash_b64)
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(iters))
+        return hmac.compare_digest(dk, expected)
+    except Exception:
+        return False
+
+
+# ── Opaque server-side sessions ───────────────────────────────────────────────
+def _create_session(user_id):
+    token = secrets.token_urlsafe(32)
+    _users_exec(
+        "INSERT INTO user_sessions (session_token, user_id, expires_at) "
+        "VALUES (%s, %s, now() + make_interval(secs => %s))",
+        (token, user_id, _SESSION_TTL))
+    return token
+
+
+def _destroy_session(token):
+    if not token:
+        return
+    try:
+        _users_exec("DELETE FROM user_sessions WHERE session_token=%s", (token,))
+    except Exception:
+        pass
+    with _session_cache_lock:
+        _session_cache.pop(token, None)
+
+
+def _user_dict(row):
+    return {
+        "id": row["user_id"], "user_id": row["user_id"],
+        "email": row["email"], "name": row["name"],
+        "role": row["role"], "status": row["status"],
+        "active": row["status"] == "active", "picture": None,
+    }
+
+
+def _user_for_session(token):
+    """Resolve an active session token to a user dict (or None). Briefly cached."""
+    if not token:
+        return None
+    now = time.time()
+    with _session_cache_lock:
+        cached = _session_cache.get(token)
+        if cached and (now - cached[1]) < _SESSION_CACHE_TTL:
+            return cached[0]
+    rows = _users_exec(
+        "SELECT u.user_id, u.email, u.name, u.role, u.status "
+        "FROM user_sessions s JOIN app_users u ON u.user_id = s.user_id "
+        "WHERE s.session_token=%s AND s.expires_at > now()",
+        (token,), fetch=True)
+    if not rows:
+        return None
+    user = _user_dict(rows[0])
+    with _session_cache_lock:
+        _session_cache[token] = (user, now)
+    return user
+
+
+def _extract_session_token(request):
+    auth = request.headers.get("authorization") or ""
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip() or None
+    return request.cookies.get("session_token")
 
 
 def _is_iso_date(v):
@@ -548,21 +683,12 @@ async def clerk_auth_gate(request: Request, call_next):
     # Non-API routes (static assets, SPA fallback) are not gated here.
     if not path.startswith("/api"):
         return await call_next(request)
-    # CORS preflight and the Clerk proxy / health endpoints bypass the gate.
+    # CORS preflight bypasses the gate.
     if request.method == "OPTIONS":
         return await call_next(request)
-    if path in _AUTH_PUBLIC_EXACT or path.startswith("/api/__clerk"):
-        return await call_next(request)
-    # Login + access control removed for now: every request runs as a built-in
-    # admin, so no Clerk session or app_users approval is required. The
-    # SQL-injection guard on date filters below is intentionally kept (it is a
-    # safety guard, not a login feature).
-    request.state.user = {
-        "id": "anon", "user_id": "anon",
-        "email": "anon@local", "name": "User",
-        "role": "admin", "status": "active", "active": True,
-    }
+
     # Reject any non-ISO date filter before it reaches a query string literal.
+    # This SQL-injection guard runs for every /api request regardless of auth.
     for _k in _DATE_QUERY_PARAMS:
         _v = request.query_params.get(_k)
         if _v not in (None, "") and not _is_iso_date(_v):
@@ -570,6 +696,41 @@ async def clerk_auth_gate(request: Request, call_next):
                 {"detail": f"Invalid {_k}: expected ISO date (YYYY-MM-DD)"},
                 status_code=400,
             )
+
+    # Health/proxy probes and the public auth paths (login + Google OAuth flow)
+    # are reachable without a session.
+    if path in _AUTH_PUBLIC_EXACT or path.startswith("/api/__clerk"):
+        return await call_next(request)
+    if path in _AUTH_PUBLIC_AUTH_PATHS:
+        return await call_next(request)
+
+    # Resolve the session token (Bearer header or httpOnly cookie) to a user.
+    token = _extract_session_token(request)
+    user = _user_for_session(token) if token else None
+    if not user:
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+    request.state.user = user
+
+    status = user.get("status")
+    # Self-service auth paths are reachable by any signed-in user regardless of
+    # approval status (so the frontend can read its own status / sign out).
+    if path in _AUTH_SELF_PATHS:
+        return await call_next(request)
+
+    # Approval gating: distinct refusals so the frontend can route correctly.
+    if status == "pending":
+        return JSONResponse({"detail": "account_pending_approval"}, status_code=403)
+    if status == "rejected":
+        return JSONResponse({"detail": "account_rejected"}, status_code=403)
+    if status == "disabled":
+        return JSONResponse({"detail": "account_disabled"}, status_code=403)
+    if status != "active":
+        return JSONResponse({"detail": "account_inactive"}, status_code=403)
+
+    # Admin-only endpoints require the admin role.
+    if path.startswith("/api/admin") and user.get("role") != "admin":
+        return JSONResponse({"detail": "Admin access required"}, status_code=403)
+
     return await call_next(request)
 
 @app.on_event("startup")
@@ -579,6 +740,41 @@ def _init_user_store():
         _ensure_users_table()
     except Exception:
         pass
+
+
+@app.on_event("startup")
+def _seed_admin():
+    # Ensure there is always at least one admin who can sign in and approve
+    # others. The seed credentials come from env; the email defaults to the
+    # company admin address. Idempotent — re-running keeps the account in sync
+    # with the env password so a known-good login always exists.
+    email = (os.environ.get("SEED_ADMIN_EMAIL")
+             or "admin@vivofashiongroup.com").strip().lower()
+    password = os.environ.get("SEED_ADMIN_PASSWORD")
+    try:
+        # Defensive migration: any legacy row with a NULL status becomes active
+        # so it isn't accidentally locked out by the new approval gate.
+        _users_exec("UPDATE app_users SET status='active' WHERE status IS NULL")
+    except Exception as e:
+        log.error("Seed admin: status backfill failed: %s", e)
+    if not password:
+        log.info("Seed admin: SEED_ADMIN_PASSWORD not set; skipping admin seed "
+                 "(set SEED_ADMIN_EMAIL/SEED_ADMIN_PASSWORD to enable).")
+        return
+    try:
+        ph = _hash_password(password)
+        _users_exec("""
+            INSERT INTO app_users (user_id, email, name, role, status,
+                                   auth_method, password_hash, approved_at, approved_by)
+            VALUES (%s, %s, %s, 'admin', 'active', 'password', %s, now(), 'system:seed')
+            ON CONFLICT (email) DO UPDATE SET
+                role='admin', status='active', auth_method='password',
+                password_hash=EXCLUDED.password_hash
+        """, ("seed:" + email, email, "Administrator", ph))
+        _invalidate_user_cache()
+        log.info("Seed admin ensured for %s", email)
+    except Exception as e:
+        log.error("Seed admin failed: %s", e)
 
 
 @app.on_event("startup")
@@ -2165,26 +2361,152 @@ def get_customer_type_spend(
     """, date_to=date_to)
 
 
-# ── Auth endpoints (Clerk-verified) ───────────────────────────────────────────
-# The auth gate has already verified the Clerk session + domain allowlist by the
-# time these run, so `request.state.user` is the authenticated company account.
+# ── Auth endpoints (self-hosted Postgres sessions) ────────────────────────────
+# Login verifies a PBKDF2 password hash and issues an opaque session (returned as
+# a bearer token AND set as an httpOnly cookie). The gate resolves that session
+# back to `request.state.user` on every subsequent request.
+def _login_cookie_kwargs():
+    # httpOnly so JS can't read it; SameSite=Lax so the Google redirect carries
+    # it; Secure because the Replit proxy always serves the app over HTTPS.
+    return dict(httponly=True, samesite="lax", secure=True, path="/",
+                max_age=_SESSION_TTL)
+
+
 @app.get("/api/auth/me")
 def auth_me(request: Request):
     return getattr(request.state, "user", None) or {}
 
+
 @app.get("/api/auth/me/status")
 def auth_me_status(request: Request):
     u = getattr(request.state, "user", None) or {}
-    return {"status": u.get("status", "active")}
+    return {"status": u.get("status", "active"), "role": u.get("role"), "user": u}
+
 
 @app.post("/api/auth/login")
-def auth_login(request: Request):
-    user = getattr(request.state, "user", None) or {}
-    return {"token": "clerk-session", "user": user}
+async def auth_login(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    email = (body.get("email") or "").strip().lower()
+    password = body.get("password") or ""
+    if not email or not password:
+        return JSONResponse({"detail": "Email and password are required"}, status_code=400)
+    rows = _users_exec(
+        "SELECT user_id, email, name, role, status, password_hash "
+        "FROM app_users WHERE email=%s", (email,), fetch=True)
+    rec = rows[0] if rows else None
+    if not rec or not _verify_password(password, rec.get("password_hash")):
+        return JSONResponse({"detail": "Invalid email or password"}, status_code=401)
+    if rec["status"] == "rejected":
+        return JSONResponse({"detail": "account_rejected"}, status_code=403)
+    if rec["status"] == "disabled":
+        return JSONResponse({"detail": "account_disabled"}, status_code=403)
+    token = _create_session(rec["user_id"])
+    try:
+        _users_exec("UPDATE app_users SET last_login_at=now() WHERE user_id=%s",
+                    (rec["user_id"],))
+    except Exception:
+        pass
+    user = _user_dict(rec)
+    resp = JSONResponse({"token": token, "user": user})
+    resp.set_cookie("session_token", token, **_login_cookie_kwargs())
+    return resp
+
 
 @app.post("/api/auth/logout")
-def auth_logout():
-    return {"ok":True}
+async def auth_logout(request: Request):
+    _destroy_session(_extract_session_token(request))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie("session_token", path="/")
+    return resp
+
+
+# ── Google OAuth (Authorization Code flow, stdlib + requests) ─────────────────
+def _google_redirect_uri(request: Request):
+    # An explicit override wins (useful if the registered URI differs from the
+    # request host). Otherwise derive it from the forwarded host so the same code
+    # works in dev and production behind the Replit proxy.
+    override = os.environ.get("GOOGLE_REDIRECT_URI")
+    if override:
+        return override
+    proto = request.headers.get("x-forwarded-proto", "https")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    return f"{proto}://{host}/api/auth/google/callback"
+
+
+@app.get("/api/auth/google/login")
+def auth_google_login(request: Request):
+    client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    if not client_id:
+        return JSONResponse(
+            {"detail": "Google sign-in is not configured."}, status_code=503)
+    state = secrets.token_urlsafe(24)
+    params = urlencode({
+        "client_id": client_id,
+        "redirect_uri": _google_redirect_uri(request),
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "online",
+        "prompt": "select_account",
+    })
+    resp = RedirectResponse(
+        f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
+    # Short-lived state cookie for CSRF protection on the callback.
+    resp.set_cookie("g_oauth_state", state, httponly=True, samesite="lax",
+                    secure=True, max_age=600, path="/")
+    return resp
+
+
+@app.get("/api/auth/google/callback")
+def auth_google_callback(request: Request):
+    client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return RedirectResponse("/auth/callback#error=not_configured")
+    if request.query_params.get("error"):
+        return RedirectResponse(
+            "/auth/callback#error=" + quote(request.query_params.get("error")))
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    cookie_state = request.cookies.get("g_oauth_state")
+    if not code or not state or not cookie_state or not hmac.compare_digest(state, cookie_state):
+        return RedirectResponse("/auth/callback#error=invalid_state")
+    redirect_uri = _google_redirect_uri(request)
+    try:
+        tok = requests.post("https://oauth2.googleapis.com/token", data={
+            "code": code, "client_id": client_id, "client_secret": client_secret,
+            "redirect_uri": redirect_uri, "grant_type": "authorization_code",
+        }, timeout=15)
+    except Exception:
+        return RedirectResponse("/auth/callback#error=token_exchange")
+    if tok.status_code >= 400:
+        return RedirectResponse("/auth/callback#error=token_exchange")
+    access_token = (tok.json() or {}).get("access_token")
+    if not access_token:
+        return RedirectResponse("/auth/callback#error=token_exchange")
+    try:
+        prof = requests.get(
+            "https://openidconnect.googleapis.com/v1/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"}, timeout=15)
+    except Exception:
+        return RedirectResponse("/auth/callback#error=profile")
+    if prof.status_code >= 400:
+        return RedirectResponse("/auth/callback#error=profile")
+    info = prof.json() or {}
+    email = (info.get("email") or "").strip().lower()
+    if info.get("email_verified") is False or not clerk_auth.email_allowed(email):
+        return RedirectResponse("/auth/callback#error=domain_not_allowed")
+    sub = "google:" + str(info.get("sub") or email)
+    name = info.get("name") or ""
+    rec = resolve_app_user(sub, email, name)
+    token = _create_session(rec["user_id"])
+    resp = RedirectResponse("/auth/callback#token=" + quote(token))
+    resp.set_cookie("session_token", token, **_login_cookie_kwargs())
+    resp.delete_cookie("g_oauth_state", path="/")
+    return resp
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PART A — REAL DATA endpoints (appended)
@@ -5728,7 +6050,7 @@ def stub_thumbnails_lookup(): return {}
 @app.get("/api/auth/activity-streak")
 def stub_auth_activity_streak(): return {"streak": 0}
 @app.get("/api/auth/allowed-domains")
-def stub_auth_allowed_domains(): return {"domains": []}
+def stub_auth_allowed_domains(): return {"domains": list(clerk_auth.ALLOWED_DOMAINS)}
 @app.get("/api/auth/heartbeat")
 def stub_auth_heartbeat(): return {"ok": True}
 @app.get("/api/user/last-visit")
@@ -6093,8 +6415,8 @@ async def admin_users_delete(user_id: str, request: Request):
 
 @app.post("/api/admin/users")
 async def admin_users_create(request: Request):
-    # Admin-provisioned email/password account. Clerk owns credentials, so we
-    # create the identity via the Clerk Backend API, then mark it active locally.
+    # Admin-provisioned email/password account. Credentials are owned locally:
+    # we store a PBKDF2 hash and mark the account active so it can sign in at once.
     try:
         body = await request.json()
     except Exception:
@@ -6114,51 +6436,26 @@ async def admin_users_create(request: Request):
         return JSONResponse(
             {"detail": "Password must be at least 8 characters"}, status_code=400)
 
-    secret = os.environ.get("CLERK_SECRET_KEY")
-    if not secret:
-        return JSONResponse(
-            {"detail": "User creation is not configured (missing Clerk secret)."},
-            status_code=503)
-
-    import requests
-    parts = name.split() if name else [email.split("@")[0]]
-    first = parts[0]
-    last = " ".join(parts[1:]) or None
-    payload = {"email_address": [email], "password": password, "first_name": first}
-    if last:
-        payload["last_name"] = last
-    try:
-        resp = requests.post(
-            "https://api.clerk.com/v1/users",
-            headers={"Authorization": f"Bearer {secret}",
-                     "Content-Type": "application/json"},
-            json=payload, timeout=15)
-    except Exception:
-        return JSONResponse(
-            {"detail": "Could not reach the identity provider."}, status_code=502)
-    if resp.status_code >= 400:
-        detail = "Identity provider rejected the request."
-        try:
-            errs = resp.json().get("errors") or []
-            if errs:
-                detail = errs[0].get("long_message") or errs[0].get("message") or detail
-        except Exception:
-            pass
-        return JSONResponse({"detail": detail}, status_code=400)
-
-    sub = (resp.json() or {}).get("id")
+    first = (name.split()[0] if name else email.split("@")[0])
+    ph = _hash_password(password)
     acting = getattr(request.state, "user", None) or {}
     approver = acting.get("email") or acting.get("id")
-    _users_exec("""
+    user_id = "local:" + secrets.token_hex(8)
+    rows = _users_exec("""
         INSERT INTO app_users (user_id, email, name, role, status, auth_method,
-                               approved_at, approved_by)
-        VALUES (%s, %s, %s, %s, 'active', 'password', now(), %s)
-        ON CONFLICT (user_id) DO UPDATE
-            SET role=EXCLUDED.role, status='active',
+                               password_hash, approved_at, approved_by)
+        VALUES (%s, %s, %s, %s, 'active', 'password', %s, now(), %s)
+        ON CONFLICT (email) DO UPDATE
+            SET name=EXCLUDED.name, role=EXCLUDED.role, status='active',
+                auth_method='password', password_hash=EXCLUDED.password_hash,
                 approved_at=now(), approved_by=EXCLUDED.approved_by
-    """, (sub, email, name or first, role, approver))
+        RETURNING user_id
+    """, (user_id, email, name or first, role, ph, approver), fetch=True)
+    sub = rows[0]["user_id"] if rows else user_id
     _invalidate_user_cache(sub)
     return {"ok": True, "user_id": sub}
+
+
 @app.post("/api/analytics/replenishment-report/mark")
 async def analytics_replenishment_report_mark(request: Request):
     body = await request.json()

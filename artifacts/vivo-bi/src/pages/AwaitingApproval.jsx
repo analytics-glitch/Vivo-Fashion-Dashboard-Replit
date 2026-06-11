@@ -10,7 +10,8 @@ import { Hourglass, SignOut, X } from "@phosphor-icons/react";
  */
 export default function AwaitingApproval() {
   const { user, logout, checkAuth } = useAuth();
-  const isRejected = (user?._restrictionReason || "").includes("rejected");
+  const status = (user?.status || "").toLowerCase();
+  const isRejected = status === "rejected" || status === "disabled";
 
   useEffect(() => {
     if (isRejected) return;

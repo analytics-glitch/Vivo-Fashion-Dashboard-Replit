@@ -150,6 +150,21 @@ api.interceptors.request.use((cfg) => {
   if ((cfg.method || "get").toLowerCase() === "get") {
     cfg.params = { ...(cfg.params || {}), _t: Date.now() };
   }
+  // Attach the session token (set on login / Google callback) as a Bearer
+  // header. The backend also accepts the httpOnly session cookie, but the
+  // Bearer header is the primary path and survives cookie-blocking browsers.
+  try {
+    const t =
+      typeof window !== "undefined"
+        ? window.localStorage.getItem("vivo_token")
+        : null;
+    if (t) {
+      cfg.headers = cfg.headers || {};
+      cfg.headers.Authorization = `Bearer ${t}`;
+    }
+  } catch {
+    /* storage blocked — fall back to the cookie */
+  }
   return cfg;
 });
 
@@ -187,8 +202,8 @@ api.interceptors.response.use(undefined, async (error) => {
       _inflight.clear();
       // Hard redirect — React Router would keep the in-memory user
       // state and we want a clean slate.
-      if (typeof window !== "undefined" && !window.location.pathname.startsWith("/sign-in")) {
-        window.location.assign("/sign-in?session_expired=1");
+      if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+        window.location.assign("/login?session_expired=1");
       }
     } catch { /* defensive — never break the rejection path */ }
     return Promise.reject(error);

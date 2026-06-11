@@ -2,9 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import { GoogleLogo, Envelope, Lock, SignIn, Warning } from "@phosphor-icons/react";
-import { api } from "@/lib/api";
-
-const GOOGLE_AUTH_URL = "https://auth.emergentagent.com/";
+import { api, API } from "@/lib/api";
 
 const Login = () => {
   const { user, loginWithPassword } = useAuth();
@@ -77,9 +75,10 @@ const Login = () => {
   };
 
   const googleSignIn = () => {
-    // Emergent redirect flow — returns to /auth/callback with #session_id=…
-    const redirect = `${window.location.origin}/auth/callback`;
-    window.location.href = `${GOOGLE_AUTH_URL}?redirect=${encodeURIComponent(redirect)}`;
+    // Our backend starts the Google OAuth flow, then redirects back to
+    // /auth/callback#token=<session> (or #error=…). API is "/api" (same
+    // origin) in production, or the full backend URL in the preview env.
+    window.location.href = `${API}/auth/google/login`;
   };
 
   return (
