@@ -420,13 +420,14 @@ def sync_odoo(cur, now, rates):
             net_sales_kes     = round(total_out / vat / rate, 2)
             product_price_kes = round(price_unit / rate, 2)
 
+            sku = sku_map.get(product[0], "") if product else ""
             rows.append((
                 str(uuid.uuid4()),
                 "vivofashiongroup", order_id, order_name,
                 date_order, date_order,
                 pos_location, "Kenya", "POS",
                 customer_id, customer_type, sale_kind,
-                title, "",
+                title, sku,
                 int(abs(qty)), product_price_kes, price_unit,
                 gross_sales_kes, discounts_kes, net_sales_kes,
                 total_sales_kes,
