@@ -211,16 +211,52 @@ def fetch_orders(store_url, token, since, limit=250):
         params = {}
     return all_orders
 
+KENYA_LOCATION_ID_MAP = {
+    36310057056:  'Vivo Sarit',
+    36309925984:  'Vivo Junction',
+    36309958752:  'Vivo Mama Ngina St',
+    49383899291:  'Vivo Moi Avenue',
+    36309893216:  'Vivo Garden City',
+    36309991520:  'Vivo Capital Centre',
+    62460067995:  'Vivo Imaara',
+    50320343195:  'Vivo Eldoret',
+    61614751899:  'Vivo Kisumu',
+    36478648416:  'Vivo Galleria',
+    49363222683:  'Vivo Hub',
+    50320408731:  'Vivo City Mall',
+    50320277659:  'Vivo Nakuru',
+    73530376347:  'Vivo Runda',
+    66861301915:  'Vivo Greenspan',
+    66839806107:  'Vivo Kileleshwa',
+    66799567003:  'Vivo Meru',
+    69343084699:  'Vivo MSA Digo Road',
+    71464648859:  'Safari Sarit',
+    66820767899:  'Staff purchases',
+    66799599771:  'vivowoman',
+    49363320987:  'Vivo Village Market',
+    36478582880:  'Vivo Yaya',
+    49383833755:  'Vivo Two Rivers',
+    71464747163:  'Vivo Village Market',
+    63040127131:  'Vivo TRM',
+    61123592347:  'Vivo Signature Mall',
+    49363550363:  'Vivo T- Mall',
+    71464485019:  'Zoya Sarit',
+}
+
 def get_pos_location(store, order):
     store_id = store["store_id"]
+    location_id = order.get("location_id")
     fulfillments = order.get("fulfillments", [])
-    location_id = fulfillments[0].get("location_id") if fulfillments else None
+    if not location_id and fulfillments:
+        location_id = fulfillments[0].get("location_id")
     if store_id == "vivo-uganda":
         return UGANDA_LOCATIONS.get(location_id, "Uganda")
     if store_id == "vivo-rwanda":
         return RWANDA_LOCATIONS.get(location_id, "Rwanda")
     if store_id == "shop-zetu":
         return "Online - Shop Zetu"
+    if store_id == "vivowoman":
+        return KENYA_LOCATION_ID_MAP.get(location_id, "vivowoman")
     return "vivowoman"
 
 def process_shopify_store(store, cur, now, rates):

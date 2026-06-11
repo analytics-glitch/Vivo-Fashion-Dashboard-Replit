@@ -14,6 +14,10 @@ import {
   CaretDown,
   CaretRight,
   Megaphone,
+  PlugsConnected,
+  CheckCircle,
+  XCircle,
+  Warning,
 } from "@phosphor-icons/react";
 
 // ---------------------------------------------------------------------------
@@ -56,6 +60,108 @@ const SentimentBadge = ({ sentiment }) => {
   const m = SENTIMENT_META[sentiment];
   if (!m) return <Pill color="#9ca3af" subtle>Unscored</Pill>;
   return <Pill color={m.color} subtle>{m.label}</Pill>;
+};
+
+const PERM_STATUS_META = {
+  granted: { label: "Granted", color: "#1a5c38", Icon: CheckCircle },
+  missing: { label: "Missing", color: "#dc2626", Icon: XCircle },
+  declined: { label: "Declined", color: "#dc2626", Icon: XCircle },
+  unknown: { label: "Not verified", color: "#b45309", Icon: Warning },
+};
+
+const DiagnosticsPanel = ({ diag, onClose }) => {
+  const ok = !!diag.ok;
+  const tone = ok ? "#1a5c38" : "#dc2626";
+  return (
+    <div className="card-white p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span
+            className="inline-block w-2.5 h-2.5 rounded-full"
+            style={{ backgroundColor: tone }}
+            aria-hidden="true"
+          />
+          <SectionTitle title="Facebook connection test" />
+        </div>
+        <button
+          type="button"
+          className="text-[12px] font-semibold text-muted hover:text-foreground"
+          onClick={onClose}
+        >
+          Dismiss
+        </button>
+      </div>
+
+      {diag.summary && (
+        <p className="mt-2 text-[13px]" style={{ color: tone }}>
+          {diag.summary}
+        </p>
+      )}
+
+      {/* Required permissions */}
+      {!!(diag.permissions || []).length && (
+        <div className="mt-4">
+          <div className="text-[11.5px] font-semibold uppercase tracking-wide text-muted mb-2">
+            Required permissions
+          </div>
+          <div className="space-y-1.5">
+            {diag.permissions.map((p) => {
+              const meta = PERM_STATUS_META[p.status] || PERM_STATUS_META.unknown;
+              const Icon = meta.Icon;
+              return (
+                <div
+                  key={p.permission}
+                  className="flex items-start justify-between gap-3 rounded-md border border-border px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <div className="font-mono text-[12.5px] text-foreground">{p.permission}</div>
+                    <div className="text-[11.5px] text-muted">{p.purpose}</div>
+                  </div>
+                  <span
+                    className="inline-flex items-center gap-1 shrink-0 text-[11.5px] font-semibold"
+                    style={{ color: meta.color }}
+                  >
+                    <Icon size={14} weight="fill" /> {meta.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          {diag.permissions_source === "probe" && (
+            <p className="mt-2 text-[11.5px] text-muted">
+              This token does not expose its full permission list, so posting and reply
+              permissions were not directly verified. They are required to publish offers
+              and reply to comments.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Checks */}
+      {!!(diag.checks || []).length && (
+        <div className="mt-4">
+          <div className="text-[11.5px] font-semibold uppercase tracking-wide text-muted mb-2">
+            Checks
+          </div>
+          <div className="space-y-1.5">
+            {diag.checks.map((c, i) => {
+              const meta = c.ok ? PERM_STATUS_META.granted : PERM_STATUS_META.missing;
+              const Icon = meta.Icon;
+              return (
+                <div key={i} className="flex items-start gap-2 text-[12.5px]">
+                  <Icon size={15} weight="fill" style={{ color: meta.color }} className="mt-0.5 shrink-0" />
+                  <div className="min-w-0">
+                    <span className="font-semibold text-foreground">{c.name}</span>
+                    {c.detail && <span className="text-muted"> — {c.detail}</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 };
 
 const KpiTile = ({ label, value, icon: Icon }) => (
@@ -252,6 +358,10 @@ const Social = ({ embedded = false }) => {
   const [link, setLink] = useState("");
   const [posting, setPosting] = useState(false);
 
+  const [diag, setDiag] = useState(null);
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [diagErr, setDiagErr] = useState("");
+
   const loadStatus = useCallback(() => {
     setStatusErr("");
     api
@@ -306,6 +416,19 @@ const Social = ({ embedded = false }) => {
       .finally(() => setPosting(false));
   };
 
+  const runDiagnostics = () => {
+    setDiagLoading(true);
+    setDiagErr("");
+    api
+      .get("/social/diagnostics")
+      .then((r) => {
+        setDiag(r.data);
+        loadStatus();
+      })
+      .catch((e) => setDiagErr(errOf(e)))
+      .finally(() => setDiagLoading(false));
+  };
+
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -339,11 +462,23 @@ const Social = ({ embedded = false }) => {
               )}
             </div>
           )}
+          <button
+            type="button"
+            className={btnGhost}
+            onClick={runDiagnostics}
+            disabled={diagLoading}
+          >
+            <PlugsConnected size={14} /> {diagLoading ? "Testing…" : "Test connection"}
+          </button>
           <button type="button" className={btnGhost} onClick={refreshAll}>
             <ArrowClockwise size={14} /> Refresh
           </button>
         </div>
       </div>
+
+      {/* Connection diagnostics */}
+      {diagErr && <ErrorBox message={diagErr} onRetry={runDiagnostics} />}
+      {diag && <DiagnosticsPanel diag={diag} onClose={() => setDiag(null)} />}
 
       {/* Connection problem states */}
       {statusErr && <ErrorBox message={statusErr} />}

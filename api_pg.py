@@ -11196,6 +11196,160 @@ async def social_status(request: Request):
     }
 
 
+# Permissions the Social cockpit relies on, in the order shown in the UI.
+_FB_REQUIRED_PERMISSIONS = [
+    ("pages_show_list", "Identify and list the Page"),
+    ("pages_read_engagement", "Read Page info, posts, insights and comments"),
+    ("pages_manage_posts", "Publish offers and posts from the cockpit"),
+    ("pages_manage_engagement", "Reply to comments on Page posts"),
+]
+
+
+@app.get("/api/social/diagnostics")
+async def social_diagnostics(request: Request):
+    """One-click connection test for the Facebook Page token. Reports which
+    required permissions are granted vs missing so a token can be validated from
+    the UI without reading server logs. Strictly read-only: it never posts."""
+    token = _fb_token()
+    page_id = _fb_page_id()
+    out = {
+        "configured": bool(token and page_id),
+        "token_present": bool(token),
+        "page_id_present": bool(page_id),
+        "page_id": page_id or None,
+        "checks": [],
+        "permissions": [],
+        "missing": [],
+        "ok": False,
+    }
+    if not token or not page_id:
+        miss = []
+        if not token:
+            miss.append("FACEBOOK_PAGE_ACCESS_TOKEN")
+        if not page_id:
+            miss.append("FACEBOOK_PAGE_ID")
+        out["summary"] = "Not configured. Missing secret(s): " + ", ".join(miss)
+        return out
+
+    # 1) Identity probe — confirms the token is a usable Page token and that it
+    #    points at the configured Page id.
+    identity = {"name": "Token identity (/me)", "ok": False, "detail": ""}
+    me = None
+    try:
+        me = _fb_get("me", {"fields": "id,name"})
+        identity["ok"] = True
+        identity["detail"] = f"{me.get('name') or 'Unknown'} (id {me.get('id')})"
+        out["identity_name"] = me.get("name")
+        out["matches_page_id"] = (str(me.get("id")) == str(page_id))
+    except Exception as e:
+        identity["detail"] = str(e)
+    out["checks"].append(identity)
+
+    if me is not None and not out.get("matches_page_id", True):
+        out["checks"].append({
+            "name": "Token matches FACEBOOK_PAGE_ID",
+            "ok": False,
+            "detail": (f"Token is for id {me.get('id')} but FACEBOOK_PAGE_ID is "
+                       f"{page_id}. This looks like a user token, not the Page "
+                       "token. Get the Page token from /me/accounts for this Page."),
+        })
+
+    # 2) Read-engagement probe — reading the Page node + a recent post requires
+    #    pages_read_engagement (Graph error #10 names it when missing).
+    read_ok = False
+    read_detail = ""
+    try:
+        _fb_get(page_id, {"fields": "name,fan_count,followers_count"})
+        _fb_get(f"{page_id}/posts", {"limit": 1, "fields": "id"})
+        read_ok = True
+        read_detail = "Read Page profile and recent posts."
+    except Exception as e:
+        read_detail = str(e)
+    out["checks"].append({"name": "Read Page profile & posts", "ok": read_ok,
+                          "detail": read_detail})
+
+    # 3) Resolve granted permissions. The definitive source is /me/permissions;
+    #    some Page tokens cannot read it, in which case we infer from the probes.
+    granted = None
+    declined = set()
+    try:
+        perms = _fb_get("me/permissions")
+        rows = perms.get("data") or []
+        if not rows:
+            # Empty list is inconclusive (some tokens hide their scopes) — infer.
+            raise RuntimeError("no permission rows")
+        granted = set()
+        for row in rows:
+            name = row.get("permission")
+            st = (row.get("status") or "").lower()
+            if not name:
+                continue
+            if st == "granted":
+                granted.add(name)
+            elif st == "declined":
+                declined.add(name)
+        out["permissions_source"] = "granted_list"
+    except Exception:
+        granted = None
+        out["permissions_source"] = "probe"
+
+    for name, purpose in _FB_REQUIRED_PERMISSIONS:
+        if granted is not None:
+            if name in granted:
+                status = "granted"
+            elif name in declined:
+                status = "declined"
+            else:
+                status = "missing"
+        else:
+            # Probe-based inference (no granted list available for this token).
+            if name == "pages_read_engagement":
+                status = "granted" if read_ok else "missing"
+            elif name == "pages_show_list":
+                status = "granted" if identity["ok"] else "unknown"
+            else:
+                status = "unknown"
+        if status in ("missing", "declined"):
+            out["missing"].append(name)
+        out["permissions"].append({"permission": name, "purpose": purpose,
+                                   "status": status})
+
+    reads_ok = read_ok and identity["ok"] and out.get("matches_page_id", True)
+    if out["permissions_source"] == "granted_list":
+        out["ok"] = bool(reads_ok and not out["missing"])
+        if out["ok"]:
+            out["summary"] = (f"Connected to {out.get('identity_name') or 'the Page'}. "
+                              "All required permissions are granted.")
+        elif out["missing"]:
+            out["summary"] = ("Missing permission(s): " + ", ".join(out["missing"]) +
+                              ". Regenerate a Page token with these scopes.")
+        elif not identity["ok"]:
+            out["summary"] = "Token is not a valid Page token: " + (identity["detail"] or "identity check failed")
+        elif not out.get("matches_page_id", True):
+            out["summary"] = ("Scopes are granted but the token is not the Page "
+                              "token (its id does not match FACEBOOK_PAGE_ID). "
+                              "Use the Page token from /me/accounts.")
+        else:
+            out["summary"] = "Connection test failed. See checks for details."
+    else:
+        out["ok"] = bool(reads_ok)
+        if out["ok"]:
+            out["summary"] = (f"Connected to {out.get('identity_name') or 'the Page'}. "
+                              "Page reads work. Posting and reply permissions could not be "
+                              "auto-verified from this token; if publishing fails, ensure "
+                              "pages_manage_posts and pages_manage_engagement are granted.")
+        elif not identity["ok"]:
+            out["summary"] = "Token is not a valid Page token: " + (identity["detail"] or "identity check failed")
+        elif not out.get("matches_page_id", True):
+            out["summary"] = "Token does not match the configured Page id."
+        elif not read_ok:
+            out["summary"] = ("Cannot read the Page (missing pages_read_engagement): " +
+                              (read_detail or "read failed"))
+        else:
+            out["summary"] = "Connection test failed. See checks for details."
+    return out
+
+
 @app.get("/api/social/insights")
 async def social_insights(request: Request):
     if not _fb_configured():
