@@ -1,0 +1,290 @@
+I have enough — here's the full end-to-end documentation.
+
+---
+
+# Login & user-approval flow — end to end
+
+## 1. Tech stack (auth-specific)
+
+| Layer | Tool / file |
+|---|---|
+| Backend | `backend/auth.py` (808 lines) — FastAPI router, all auth endpoints |
+| Password hashing | `passlib` w/ **bcrypt** |
+| Session store | MongoDB collection `user_sessions` |
+| User store | MongoDB collection `users` (unique index on `email` + `user_id`) |
+| Session token | 64-char hex string (two concatenated `uuid4().hex` — 128 bits effective) |
+| Session delivery | **Two parallel mechanisms** for max compatibility: (1) `Authorization: Bearer <token>` header (mobile, SPAs), (2) `httpOnly` cookie `session_token` (cross-site browser fallback) |
+| Google OAuth proxy | Emergent's hosted endpoint `https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data` (provides the OAuth dance — we never touch Google directly) |
+| Frontend | `src/auth.jsx` (context + AuthProvider), `src/pages/Login.jsx`, `src/pages/AuthCallback.jsx`, `src/pages/AwaitingApproval.jsx`, `src/pages/Users.jsx` |
+
+## 2. There are **two login paths**
+
+### Path A — Email + password (admins, ops users)
+For accounts created **explicitly by an admin** via the Users page. Always start as `status="active"`.
+
+### Path B — Google OAuth (everyone else)
+For staff signing in with their `@vivofashiongroup.com` or `@shopzetu.com` Google account. **First-time logins land in `status="pending"` and require admin approval before they can use the dashboard.**
+
+Both paths land at the same destination after success: a row in `user_sessions` keyed by `session_token`, with a 7-day expiry.
+
+---
+
+## 3. Path A — Email + password (full flow)
+
+### Step 1 — Admin seeds the initial admin account at server boot
+`seed_admin()` runs on every startup. It's idempotent:
+- Creates `users.email` and `users.user_id` unique indexes (Mongo dedup).
+- Reads `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` env vars (default `admin@vivofashiongroup.com` / `VivoAdmin!2026`).
+- Migrates old users without `status` field → `status="active"` (so existing accounts aren't locked out by the new approval gate).
+- Inserts the seed admin **only if it doesn't already exist**.
+
+```python
+await db.users.insert_one({
+    "user_id": f"user_{uuid.uuid4().hex[:12]}",
+    "email": "admin@vivofashiongroup.com",
+    "role": "admin",
+    "active": True,
+    "auth_method": "password",
+    "password_hash": pwd.hash(seed_pwd),    # bcrypt hash
+    "created_at": utcnow(),
+})
+```
+
+### Step 2 — Admin creates additional users via `POST /api/admin/users`
+Body: `{ email, name, password (≥ 8 chars), role }`. Role must be one of `admin | exec | analyst | store_manager | warehouse | viewer` (validated against `PII_VALID_ROLES`). Password is bcrypt-hashed before persisting.
+
+### Step 3 — User logs in via `POST /api/auth/login`
+```http
+POST /api/auth/login
+{ "email": "...", "password": "..." }
+```
+The endpoint (with iter 91w timeout hardening):
+1. **Mongo lookup** for the email (`asyncio.wait_for(..., timeout=5s)` — bounded so a slow Mongo can't pin the worker for 30 s and trigger Cloudflare 520).
+2. If no user OR `active=false` → **401 Invalid credentials** (uniform error to avoid email-enumeration leakage).
+3. `pwd.verify(password, hash)` — bcrypt compare with constant-time check.
+4. If verify fails → **401 Invalid credentials**.
+5. Create a new session row (`_create_session`):
+   ```python
+   {
+     "user_id": "...",
+     "session_token": "<128-bit hex>",
+     "expires_at": now + 7 days,
+     "created_at": now,
+   }
+   ```
+6. Best-effort update `last_login_at` (3 s timeout, swallowed if fails — login still succeeds).
+7. Set `session_token` cookie (`httpOnly`, `secure`, `SameSite=None`).
+8. Return JSON: `{ token, user: { user_id, email, name, role, status, allowed_pages: [...] } }`.
+
+### Step 4 — Frontend stores token in `localStorage`
+`src/auth.jsx` writes the token to `localStorage.token`. All subsequent API calls auto-attach it as `Authorization: Bearer <token>` via the `api.js` axios interceptor.
+
+---
+
+## 4. Path B — Google OAuth (full flow)
+
+### Step 1 — User clicks "Sign in with Google" on `/login`
+Browser redirects to Emergent's hosted OAuth proxy:
+```
+https://emergent.sh/login?app=<our_app_id>&redirect_uri=<our_callback>
+```
+Emergent handles the actual Google OAuth dance (client secrets, consent screen, token exchange). We never see Google API keys — that's why this is documented as an *Emergent-managed* integration.
+
+### Step 2 — Emergent redirects back to `/auth/callback?session_id=<emergent_id>`
+React route is `pages/AuthCallback.jsx`. Its job is to swap the `session_id` for our own session by calling:
+```http
+POST /api/auth/google/callback
+{ "session_id": "<emergent_session_id>" }
+```
+
+### Step 3 — Backend resolves session_id → user details
+`google_callback()` in `auth.py`:
+```python
+GET https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data
+Headers: X-Session-ID: <session_id>
+```
+Returns `{ email, name, picture, session_token }` (the session_token is Emergent's own, which we reuse to avoid double-tokens).
+
+### Step 4 — Domain whitelist enforcement
+```python
+ALLOWED_DOMAINS = {"vivofashiongroup.com", "shopzetu.com"}  # from env var ALLOWED_EMAIL_DOMAINS
+```
+If `email.split("@")[1]` is not in the set → **403** with explanatory message ("please sign in with vivofashiongroup.com or shopzetu.com").
+
+### Step 5 — Provision or update
+- **First-time user** → insert with `status="pending"`, `role="store_manager"`, `active=true`, `auth_method="google"`.
+- **Returning user** — only update `name`, `picture`, `last_login_at`. If `active=false` → **403 Account disabled**.
+
+### Step 6 — Session persistence
+Reuse Emergent's `session_token` if present (saves a re-issue); otherwise call `_create_session()`. Either way, **upsert** a row in `user_sessions` with `expires_at = now + 7 days`. Set the `session_token` cookie. Return user payload to the frontend.
+
+### Step 7 — Frontend: handle pending vs active
+`AuthCallback.jsx` saves the token to localStorage, then calls `GET /api/auth/me/status`. Three outcomes:
+- `status="pending"` → redirect to `/awaiting-approval`. The page polls `/api/auth/me/status` every 10 s so users see the dashboard automatically the moment an admin approves them — no re-login needed.
+- `status="rejected"` → show a "Access denied" page.
+- `status="active"` → redirect to `/` (Overview).
+
+---
+
+## 5. The approval gate — `get_current_user()`
+
+Every protected endpoint (anything not in `PUBLIC_API_PATHS`) calls `Depends(get_current_user)`:
+```python
+async def get_current_user(request: Request) -> User:
+    token = request.cookies.get("session_token") or
+            request.headers.get("authorization")[7:]   # strip "Bearer "
+    if not token: raise 401("Not authenticated")
+
+    sess = await db.user_sessions.find_one({"session_token": token})
+    if not sess or sess.expires_at < now(): raise 401("Session expired")
+
+    user = await db.users.find_one({"user_id": sess.user_id})
+    if not user or not user.active: raise 401("Session expired")
+
+    # THE KEY GATE:
+    if user.status == "pending":  raise 403("account_pending_approval")
+    if user.status == "rejected": raise 403("account_rejected")
+
+    return user
+```
+
+A pending user **has a valid session** but every protected call returns **403 with detail `"account_pending_approval"`**. The frontend recognises this exact string and redirects to `/awaiting-approval` instead of `/login`. That way users don't have to re-log-in when an admin approves them — they just see the dashboard appear.
+
+---
+
+## 6. Admin approves / rejects users — `/api/admin/users` endpoints
+
+### List pending users
+```http
+GET /api/admin/users
+```
+Returns the full users collection (admin-only via `Depends(require_admin)`). Frontend `Users.jsx` filters for `status == "pending"` and shows them in a top-row "Awaiting approval" section.
+
+### Approve
+```http
+PATCH /api/admin/users/{user_id}
+{ "status": "active", "role": "viewer" }   # role is optional but commonly set during approval
+```
+- Validates `status ∈ {active, pending, rejected}`.
+- Validates `role ∈ PII_VALID_ROLES` if provided.
+- Prevents self-demotion (`if user_id == actor.user_id and role != "admin": 400`).
+- Prevents self-disable.
+- Single Mongo `$set` update.
+
+### Reject
+Same endpoint, body `{ "status": "rejected" }`. Their session stays alive but every protected call now returns `403 account_rejected`; the frontend lands them on the rejection page.
+
+### Delete (hard-delete)
+```http
+DELETE /api/admin/users/{user_id}
+```
+Deletes the user row AND all their sessions in one atomic flow.
+
+### Change role / disable
+Same PATCH endpoint, `{ "role": "analyst" }` or `{ "active": false }`.
+
+---
+
+## 7. Role-based page access (RBAC)
+
+`ROLE_PAGES` map in `auth.py`:
+| Role | Pages |
+|---|---|
+| `viewer` | Overview, Locations, Footfall, Customers, Customer Details, Feedback, Morning Brief |
+| `store_manager` | Locations, IBT, Exports (inventory only), Feedback, Replenishments |
+| `warehouse` | Inventory, Replenishments, IBT, Re-Order, Allocations, Exports, Feedback |
+| `analyst` | All viewer pages + Inventory, Re-Order, IBT, Products, Data Quality, Allocations, Replenishments, Marketing, Range Mgmt |
+| `exec` | All analyst pages + CEO Report, Targets, Exports, Exec Summary |
+| `admin` | All exec pages + Admin Users, Activity Logs, Admin Feedback, Store Clusters |
+
+Two layers of enforcement:
+- **Frontend** — `pages_for(user)` is echoed by `/api/auth/me` as `allowed_pages: [...]`. `ProtectedRoute` in React redirects on direct URL hits; Sidebar hides un-permitted nav items.
+- **Backend** — every page-scoped endpoint uses `Depends(require_page("page-id"))` so an analyst can't curl `/api/users` even though they could spoof their JWT.
+
+`require_admin()` is the strictest gate, used on the entire `/api/admin/*` namespace.
+
+---
+
+## 8. Session lifecycle
+
+| Event | What happens to `user_sessions` |
+|---|---|
+| Login (either path) | Insert new row with `expires_at = now + 7 days` |
+| Each request | Lookup token, validate expiry (no rolling refresh — once issued, the 7-day clock starts and runs) |
+| Logout (`POST /api/auth/logout`) | Delete the row + clear the cookie |
+| User deleted | All their sessions deleted |
+| Mongo TTL index on `expires_at` | Mongo auto-reaps expired rows |
+
+---
+
+## 9. Activity logging & streak
+
+`ActivityLogMiddleware` (also in `auth.py`) logs every authenticated `/api/*` request to `activity_logs`:
+```python
+{ user_id, email, path, method, status_code, duration_ms, ts }
+```
+The Activity Logs admin page reads this. `GET /api/auth/activity-streak` derives a consecutive-day login streak from these rows (used by the Overview page's streak badge).
+
+---
+
+## 10. PII protection layer
+
+Admins can view customer PII (phone / email / full name). Non-admin roles see masked values. This is enforced in a separate `pii.py` module that's imported by every endpoint returning customer data. The role check uses the same `user.role` we just discussed — so the auth layer is the single source of truth for what each user can see.
+
+A separate **step-up auth** endpoint `POST /api/auth/verify-password` lets admins re-confirm with their password before doing an especially sensitive action (e.g., before viewing a customer's phone in a PII reveal). Uses `PasswordOnlyBody` model (no email — uses the current session's user_id).
+
+---
+
+## 11. End-to-end happy path summary
+
+```
+            ┌─────────────────┐
+1. New user │ Visits /login   │
+            └────────┬────────┘
+                     │ clicks "Sign in with Google"
+                     ▼
+            ┌─────────────────────────────────┐
+2. Emergent │ OAuth via Emergent → callback   │
+            │ with ?session_id=xyz             │
+            └────────┬─────────────────────────┘
+                     │
+                     ▼
+3. Backend  POST /api/auth/google/callback
+            ├─ Resolve session_id → email
+            ├─ Reject if domain not whitelisted
+            ├─ Insert user with status=PENDING
+            └─ Return token, user
+                     │
+                     ▼
+4. Frontend Save token to localStorage
+            GET /api/auth/me/status → status="pending"
+            Redirect → /awaiting-approval
+            (Poll every 10s)
+                     │
+                     ▼
+5. Admin    Goes to /admin-users
+            Sees the new user in "Awaiting approval"
+            PATCH /api/admin/users/{id} { status: "active", role: "viewer" }
+                     │
+                     ▼
+6. User     Next /me/status poll returns "active"
+            Frontend auto-redirects to /
+            Dashboard loads, allowed_pages drives the nav
+```
+
+---
+
+## 12. The handful of "footguns" we've already protected against
+
+- **Bcrypt $-character env-var bug** — `SEED_ADMIN_PASSWORD` is plain (not bcrypt-prehashed) so the `$2b$` chars in a bcrypt string can't be misinterpreted by the env-loader.
+- **Idempotent seed** — running `seed_admin()` 100 times only inserts once.
+- **Self-demote / self-disable / self-delete blocked** — preventing an admin locking themselves out.
+- **Uniform 401s on bad creds** — no enumeration leak.
+- **Login Mongo timeout (iter 91w)** — 5 s + 3 s caps so a slow Mongo returns a clean 503 instead of a Cloudflare 520.
+- **Non-blocking startup (iter 91w)** — `seed_admin()` is background-tasked so the pod is responsive within ms of boot.
+- **Domain whitelist** — only `vivofashiongroup.com` / `shopzetu.com` Google accounts can even reach the pending state.
+- **`SameSite=None; secure; httpOnly` cookie** — works across the bi.vivofashionbrands.com ↔ emergent.sh boundary, immune to script-side theft.
+
+---
+
+If you want this in the docs repo, say the word and I'll drop it as `/app/docs/09_authentication.md` so it lives next to the others.
