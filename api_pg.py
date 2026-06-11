@@ -7025,6 +7025,104 @@ async def search_ask_post(request: Request):
     return {**base, "answer": answer}
 
 
+def _num(v, default=0.0):
+    try:
+        if v is None:
+            return default
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _projection_ai_core(feat):
+    """Ask the LLM to act as a retail intraday forecaster. It receives the
+    deterministic features (so-far revenue/orders, elapsed shape fraction, the
+    last few same-DOW closing totals, SDLM/SDLY) and returns a calibrated
+    end-of-day estimate with a range, confidence and one-line rationale. The
+    output is validated + clamped so a bad/hallucinated number can never make
+    the projection nonsensical (must be >= so-far revenue)."""
+    so_far = _num(feat.get("so_far"))
+    orders = int(_num(feat.get("orders")))
+    elapsed_pct = round(_num(feat.get("elapsed")) * 100, 1)
+    shape_pct = round(_num(feat.get("shape_fraction")) * 100, 1)
+    dow_name = str(feat.get("dow_name") or "")
+    now_local = str(feat.get("now_local") or "")
+    dow_totals = [round(_num(x)) for x in (feat.get("dow_totals") or []) if _num(x) > 0]
+    dow_avg = round(sum(dow_totals) / len(dow_totals)) if dow_totals else 0
+    sdlm = round(_num(feat.get("sdlm")))
+    sdly = round(_num(feat.get("sdly")))
+    curve_proj = round(_num(feat.get("curve_projected")))
+    linear_proj = round(_num(feat.get("linear_projected")))
+
+    sys = (
+        "You are a precise retail intraday sales forecaster for a fashion "
+        "retailer in East Africa (Kenya/Uganda/Rwanda), trading 9:00 AM to "
+        "8:30 PM (Africa/Nairobi). Sales are NOT linear across the day: "
+        "mornings are slow, there is a midday bump, and the afternoon/early "
+        "evening is the strongest. Estimate today's end-of-day total revenue "
+        "in KES given how the day is tracking so far versus the same weekday "
+        "in prior weeks. Be realistic and avoid over-reacting to a small "
+        "morning sample. Respond with STRICT JSON only, no prose:\n"
+        '{"projected": <number>, "low": <number>, "high": <number>, '
+        '"confidence": "low|medium|high", "rationale": "<=140 chars"}'
+    )
+    user = (
+        f"Now: {now_local} ({dow_name}). Clock-elapsed of trading window: "
+        f"{elapsed_pct}%. Typical revenue completed by now (intraday shape "
+        f"curve): {shape_pct}%.\n"
+        f"So far today: KES {round(so_far):,} across {orders} orders.\n"
+        f"Last same-weekday closing totals: {dow_totals} (avg KES {dow_avg:,}).\n"
+        f"Same day last month: KES {sdlm:,}. Same day last year: KES {sdly:,}.\n"
+        f"Reference projections — shape-curve: KES {curve_proj:,}, "
+        f"linear-pace: KES {linear_proj:,}.\n"
+        "Return the JSON forecast now."
+    )
+    raw = _chat_llm([{"role": "system", "content": sys},
+                     {"role": "user", "content": user}])
+    parsed = _chat_extract_json(raw) or {}
+    proj = _num(parsed.get("projected"))
+    if proj <= 0:
+        return {"available": False}
+    # Clamp: never below what is already booked; cap runaway estimates at a
+    # sane multiple of the same-DOW average / so-far figure.
+    ceiling = max(dow_avg, curve_proj, linear_proj, so_far) * 3 + 1
+    proj = max(so_far, min(proj, ceiling))
+    low = _num(parsed.get("low"))
+    high = _num(parsed.get("high"))
+    low = max(so_far, min(low, proj)) if low > 0 else proj * 0.9
+    high = max(proj, min(high, ceiling)) if high > 0 else proj * 1.1
+    conf = str(parsed.get("confidence") or "medium").lower()
+    if conf not in ("low", "medium", "high"):
+        conf = "medium"
+    rationale = str(parsed.get("rationale") or "").strip()[:160]
+    return {
+        "available": True,
+        "projected": round(proj),
+        "low": round(low),
+        "high": round(high),
+        "confidence": conf,
+        "rationale": rationale,
+    }
+
+
+@app.post("/api/analytics/projection-ai")
+async def projection_ai_post(request: Request):
+    """AI-assisted end-of-day projection. The client sends the deterministic
+    intraday features it already computed; we run an LLM forecast server-side
+    (the AI key is server-only) and return a calibrated estimate + rationale."""
+    try:
+        feat = await request.json()
+    except Exception:
+        feat = {}
+    if not (os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
+            and os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")):
+        return {"available": False, "reason": "ai_not_configured"}
+    try:
+        return await _chat_run_in_threadpool(_projection_ai_core, feat or {})
+    except Exception:
+        return {"available": False, "reason": "ai_error"}
+
+
 # ── Clerk Frontend-API reverse proxy (production only) ────────────────────────
 # Mirrors the Node `clerkProxyMiddleware`: proxies the browser's Clerk
 # Frontend-API calls through our own domain so Clerk works on .replit.app /

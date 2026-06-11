@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
 import { isMerchandise, categoryFor as sharedCategoryFor } from "@/lib/productCategory";
@@ -68,6 +68,31 @@ const COUNTRY_LINE_COLORS = {
 const ALL_COUNTRIES = ["Kenya", "Uganda", "Rwanda", "Online"];
 
 /**
+ * Intraday cumulative-revenue shape for East African fashion retail
+ * (trading window 9:00 AM–8:30 PM Africa/Nairobi). Maps a clock hour to the
+ * fraction of the full day's revenue typically completed by that time. Sales
+ * are NOT linear across the day: slow mornings, a midday bump, then a strong
+ * afternoon/early-evening peak that tapers near close. Dividing "revenue so
+ * far" by this fraction yields an end-of-day projection that stays accurate at
+ * any point of the day, unlike dividing by raw clock-elapsed.
+ */
+const INTRADAY_CURVE = [
+  [9.0, 0.0], [10, 0.035], [11, 0.09], [12, 0.17], [13, 0.27],
+  [14, 0.37], [15, 0.47], [16, 0.585], [17, 0.70], [18, 0.81],
+  [19, 0.91], [20, 0.975], [20.5, 1.0],
+];
+const curveFraction = (h) => {
+  if (h <= 9.0) return 0;
+  if (h >= 20.5) return 1;
+  for (let i = 1; i < INTRADAY_CURVE.length; i++) {
+    const [h0, f0] = INTRADAY_CURVE[i - 1];
+    const [h1, f1] = INTRADAY_CURVE[i];
+    if (h <= h1) return f0 + (f1 - f0) * ((h - h0) / (h1 - h0));
+  }
+  return 1;
+};
+
+/**
  * ProjectionBanner — live "Projected Today" callout shown on the
  * Overview Daily-Sales-Trend chart whenever the date filter is set to
  * today (Africa/Nairobi).  Reads from the `todayProjection` memo
@@ -91,10 +116,11 @@ const ProjectionBanner = ({ p }) => {
     : p.phase === "after-close" ? "border-border bg-gradient-to-br from-panel/40 to-white"
     : "border-amber-300 bg-gradient-to-br from-amber-50/40 to-white";
   const methodTag =
-    p.method === "shape-blend" ? `Shape-aware blend · ${p.dowSamples}-week same-DOW avg`
+    p.method === "ai-blend" ? "AI + shape-aware forecast"
+    : p.method === "shape-blend" ? `Shape-aware curve · ${p.dowSamples}-week same-DOW`
     : p.method === "dow-avg" ? `${p.dowSamples}-week same-DOW average`
     : p.method === "actual" ? "Actual closing total"
-    : "Linear pace projection";
+    : "Shape-aware projection";
   const Pill = ({ value, label }) => {
     if (value == null || !isFinite(value)) {
       return <span className="text-[10.5px] text-muted">{label}: —</span>;
@@ -141,7 +167,13 @@ const ProjectionBanner = ({ p }) => {
               <div className="text-[12.5px] font-semibold tabular-nums text-muted">{fmtNum(p.todayOrders || 0)}</div>
               <div className="text-[10.5px] text-muted">Orders so far</div>
             </div>
-            {p.method === "shape-blend" && p.linear != null && (
+            {p.phase === "live" && p.curveProjected != null && (
+              <div>
+                <div className="text-[11.5px] font-semibold tabular-nums text-muted">{fmtKES(p.curveProjected)}</div>
+                <div className="text-[10px] text-muted">Shape-curve pace</div>
+              </div>
+            )}
+            {p.phase === "live" && p.linear != null && (
               <div>
                 <div className="text-[11.5px] font-semibold tabular-nums text-muted">{fmtKES(p.linear)}</div>
                 <div className="text-[10px] text-muted">Linear-only pace</div>
@@ -163,6 +195,18 @@ const ProjectionBanner = ({ p }) => {
           </div>
         </div>
       </div>
+      {/* AI forecast rationale — only when the LLM forecast is blended in. */}
+      {p.ai?.available && (
+        <div className="mt-2.5 flex items-start gap-2 rounded-lg bg-brand/5 border border-brand/15 px-2.5 py-1.5">
+          <span className="inline-flex items-center text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-brand text-white shrink-0 mt-px">AI</span>
+          <div className="text-[10.5px] text-foreground/80 leading-snug">
+            {p.ai.rationale && <span className="font-medium">{p.ai.rationale} </span>}
+            <span className="text-muted">
+              Range {fmtKES(p.ai.low)}–{fmtKES(p.ai.high)} · {p.ai.confidence} confidence
+            </span>
+          </div>
+        </div>
+      )}
       {/* Trading-day progress bar — visualises elapsed window. */}
       {p.phase !== "before-open" && (
         <div className="mt-3">
@@ -603,19 +647,75 @@ const Overview = () => {
     }
     const elapsed = (nowH - start) / totalH;
     const linear = elapsed > 0.05 ? todayRev / elapsed : todayRev * 4;
-    // Shape-aware blend: weight linear by elapsed (more trustworthy
-    // late in the day), and DOW reference by remaining (more
-    // trustworthy early in the day). When no DOW history is available
-    // we fall back to pure linear.
+    // Non-linear, shape-aware projection: divide today's actual revenue by the
+    // fraction of the day's revenue *typically* completed by now (intraday
+    // curve), rather than the raw clock-elapsed fraction. This corrects for
+    // the slow morning / strong evening shape that a linear pace gets wrong.
+    const shapeFraction = curveFraction(nowH);
+    const curveProjected = shapeFraction > 0.02 ? todayRev / shapeFraction : todayRev * 8;
+    // Early in the day today's sample is tiny, so regularise toward the
+    // same-DOW average; lean increasingly on today's actual as the day fills
+    // (weight = fraction of the day's revenue already booked).
+    const w = Math.min(Math.max(shapeFraction, 0), 1);
     const projected = dowRef > 0
-      ? elapsed * linear + (1 - elapsed) * dowRef
-      : linear;
+      ? w * curveProjected + (1 - w) * dowRef
+      : curveProjected;
     return {
-      phase: "live", elapsed, projected, todayRev, sdlw, sdlm, todayOrders,
-      dowRef, dowSamples: dowSamples.length, linear, nowH,
+      phase: "live", elapsed, shapeFraction, projected, deterministic: projected,
+      curveProjected, todayRev, sdlw, sdlm, todayOrders,
+      dowRef, dowSamples: dowSamples.length, dowTotals: dowSamples,
+      sdly: pairedDays.sdly?.total_sales || 0, linear, nowH,
       method: dowRef > 0 ? "shape-blend" : "linear",
     };
   }, [pairedDays, rangeDays, dateFrom, nowTick]);
+
+  // AI-assisted forecast — the deterministic shape projection is sent to a
+  // server-side LLM that weighs how today is tracking vs the same weekday in
+  // prior weeks and returns a calibrated estimate + range + rationale. Calls
+  // are throttled to ~5-minute buckets so the minute tick doesn't spam the LLM.
+  const [aiProjection, setAiProjection] = useState(null);
+  const aiBucketRef = useRef(null);
+  useEffect(() => {
+    const p = todayProjection;
+    if (!p || p.phase !== "live") { setAiProjection(null); aiBucketRef.current = null; return; }
+    const bucket = Math.floor(p.nowH * 12); // 5-minute buckets
+    if (aiBucketRef.current === bucket) return;
+    aiBucketRef.current = bucket;
+    let alive = true;
+    const d = new Date(nowTick);
+    const nowLocal = d.toLocaleString("en-GB", { timeZone: "Africa/Nairobi", hour: "2-digit", minute: "2-digit", hour12: true });
+    const dowName = d.toLocaleString("en-US", { timeZone: "Africa/Nairobi", weekday: "long" });
+    api.post("/analytics/projection-ai", {
+      so_far: p.todayRev, orders: p.todayOrders, elapsed: p.elapsed,
+      shape_fraction: p.shapeFraction, now_local: nowLocal, dow_name: dowName,
+      dow_totals: p.dowTotals || [], sdlm: p.sdlm, sdly: p.sdly,
+      curve_projected: p.curveProjected, linear_projected: p.linear,
+    })
+      .then((r) => {
+        if (!alive) return;
+        // Tag the result with its bucket so the blend only applies to the
+        // current 5-min window; clear stale AI state on unavailable so the UI
+        // falls back to the deterministic shape projection (no stale blend).
+        setAiProjection(r.data?.available ? { ...r.data, bucket } : null);
+      })
+      .catch(() => { if (alive) setAiProjection(null); });
+    return () => { alive = false; };
+  }, [todayProjection, nowTick]);
+
+  // Final projection shown in the banner: blend the deterministic shape
+  // projection with the AI forecast, weighting the AI by its stated confidence.
+  // Only blend when the AI result is for the current time bucket, so a stale
+  // estimate is never mixed into a later window's projection.
+  const projectionView = useMemo(() => {
+    const p = todayProjection;
+    if (!p || p.phase !== "live" || !aiProjection?.available) return p;
+    const curBucket = Math.floor(p.nowH * 12);
+    if (aiProjection.bucket !== curBucket) return p;
+    const wAi = aiProjection.confidence === "high" ? 0.6
+      : aiProjection.confidence === "low" ? 0.3 : 0.45;
+    const projected = wAi * aiProjection.projected + (1 - wAi) * p.deterministic;
+    return { ...p, projected, ai: aiProjection, method: "ai-blend" };
+  }, [todayProjection, aiProjection]);
 
   const top15 = useMemo(() => {
     const sorted = [...sales].sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0));
@@ -1259,7 +1359,7 @@ const Overview = () => {
                 Africa/Nairobi trading window, with SDLW/SDLM pace anchors
                 so leadership can see if today is tracking ahead/behind. */}
             {todayProjection && (
-              <ProjectionBanner p={todayProjection} />
+              <ProjectionBanner p={projectionView} />
             )}
 
             {rangeDays === 1 ? (

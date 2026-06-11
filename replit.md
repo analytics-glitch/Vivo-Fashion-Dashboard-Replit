@@ -65,7 +65,7 @@ Build: `eas build --platform android --profile production`. Internal team distri
 
 A multi-page executive cockpit with a persistent sidebar and a global filter bar (date presets 7D/30D/90D/1Y + custom range, country, channel):
 
-- Overview — KPI row, YoY/period sales trend, sales-by-country donut, channel/brand/category breakdowns
+- Overview — KPI row, YoY/period sales trend, sales-by-country donut, channel/brand/category breakdowns. When the date filter is "today" it shows a live **"Projected Today"** end-of-day forecast that is non-linear (an intraday revenue shape curve, not clock-linear pace) and AI-assisted (blends a server-side LLM estimate from `POST /api/analytics/projection-ai` with the deterministic shape projection). See `.agents/memory/intraday-projection.md`.
 - Locations — net sales & orders by country, top markets, active selling points
 - Footfall & Conversion — total footfall, outside traffic, turn-in, conversion, weekday pattern, top stores by conversion
 - Customers — total/new/repeat customers, avg spend, churned count, customer-trend (new vs returning), purchase frequency
