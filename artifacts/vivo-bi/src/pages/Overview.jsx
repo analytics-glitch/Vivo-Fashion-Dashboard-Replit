@@ -19,14 +19,11 @@ import { KPICard, HighlightCard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import OverviewSkeleton from "@/components/OverviewSkeleton";
 import SortableTable from "@/components/SortableTable";
-import DataFreshness from "@/components/DataFreshness";
 // SalesProjection moved to /targets (Targets Tracker page).
-import DailyBriefing from "@/components/DailyBriefing";
 import StoreOfTheWeek from "@/components/StoreOfTheWeek";
 import WinsThisWeekCard from "@/components/WinsThisWeekCard";
 import OverviewSnapshot from "@/components/OverviewSnapshot";
 // Q2TargetsCard + AnnualTargetsCard moved to /targets (Targets Tracker page).
-import KpiTrendChart from "@/components/KpiTrendChart";
 import { useLocationBadges, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
 import { ChartTooltip, useIsMobile, makePctDeltaLabel } from "@/components/ChartHelpers";
 import {
@@ -1533,22 +1530,8 @@ const Overview = () => {
           <div className="pt-2 border-t border-border/60" data-testid="insights-section">
             <div className="eyebrow mb-3 text-muted">Insights & Projections</div>
             <div className="space-y-6">
-              <DailyBriefing
-                kpis={kpis}
-                prevKpis={kpisPrev}
-                sales={sales}
-                inventory={kpis}
-                compareLbl={compareLbl}
-              />
               <WinsThisWeekCard />
               {!isOnlineOnly && <StoreOfTheWeek />}
-              <KpiTrendChart
-                dateFrom={dateFrom}
-                dateTo={dateTo}
-                countries={countries}
-                dataVersion={dataVersion}
-              />
-              <DataFreshness />
             </div>
           </div>
         </>
