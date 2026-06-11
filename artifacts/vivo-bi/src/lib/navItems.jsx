@@ -22,6 +22,7 @@ import {
   Percent,
   UsersThree,
   AddressBook,
+  FacebookLogo,
 } from "@phosphor-icons/react";
 
 /**
@@ -48,6 +49,7 @@ export const PRIMARY_NAV = [
   { to: "/marketing", label: "Marketing", icon: Megaphone, id: "marketing", group: "Customers & Marketing", desc: "Campaign and channel marketing performance" },
   { to: "/rfm", label: "RFM Segments", icon: UsersThree, id: "rfm", group: "Customers & Marketing", desc: "Recency / frequency / monetary customer segments" },
   { to: "/crm", label: "CRM", icon: AddressBook, id: "crm", group: "Customers & Marketing", desc: "Contacts, tasks, service tickets, campaigns and loyalty" },
+  { to: "/social", label: "Social", icon: FacebookLogo, id: "social", group: "Customers & Marketing", desc: "Facebook Page offers, insights and comment replies with sentiment" },
   { to: "/products", label: "Products", icon: Tag, id: "products", group: "Products & Range", desc: "Style and subcategory performance" },
   { to: "/margin", label: "Margin & Markdown", icon: Percent, id: "margin", group: "Products & Range", desc: "Discount impact on gross margin, COGS and margin %" },
   { to: "/range-mgmt", label: "Range Mgmt", icon: Stack, id: "range-mgmt", group: "Products & Range", desc: "Range classification and assortment planning" },

@@ -775,6 +775,11 @@ async def clerk_auth_gate(request: Request, call_next):
     if path.startswith("/api/crm") and user.get("role") not in ("analyst", "exec", "admin"):
         return JSONResponse({"detail": "CRM access requires an analyst, exec or admin role"}, status_code=403)
 
+    # Social (Facebook Page) management is the same analyst+ surface as CRM:
+    # publishing offers and replying to customers is a marketing action.
+    if path.startswith("/api/social") and user.get("role") not in ("analyst", "exec", "admin"):
+        return JSONResponse({"detail": "Social access requires an analyst, exec or admin role"}, status_code=403)
+
     return await call_next(request)
 
 @app.on_event("startup")
@@ -10979,6 +10984,264 @@ async def crm_loyalty_earn(request: Request):
                f"code={code} amount_kes={amount:.0f} points=+{points} store={store_id or '-'}", request)
     return {"ok": True, "points_awarded": points, "points_balance": new_bal,
             "tier": tier, "member_name": m.get("name"), "membership_code": code}
+
+
+# --- Facebook Page integration (staff-gated, analyst+) --------------------
+# Manage the brand's Facebook Page from the cockpit: publish offers, pull Page
+# audience + engagement, and read/reply to comments with AI sentiment. Uses the
+# Page access token + Page id from secrets (FACEBOOK_PAGE_ACCESS_TOKEN /
+# FACEBOOK_PAGE_ID). All calls go through the Graph API and surface the Graph
+# error message on failure rather than a generic 500.
+
+_FB_GRAPH = "https://graph.facebook.com/v21.0"
+
+
+def _fb_token():
+    return (os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN") or "").strip()
+
+
+def _fb_page_id():
+    return (os.environ.get("FACEBOOK_PAGE_ID") or "").strip()
+
+
+def _fb_configured():
+    return bool(_fb_token() and _fb_page_id())
+
+
+def _fb_error_detail(resp):
+    try:
+        err = (resp.json() or {}).get("error") or {}
+        msg = err.get("message")
+        if msg:
+            return msg
+    except Exception:
+        pass
+    return f"Facebook request failed ({resp.status_code})"
+
+
+def _fb_get(path, params=None):
+    p = dict(params or {})
+    p["access_token"] = _fb_token()
+    resp = requests.get(_FB_GRAPH.rstrip("/") + "/" + str(path).lstrip("/"),
+                        params=p, timeout=30)
+    if not resp.ok:
+        raise RuntimeError(_fb_error_detail(resp))
+    return resp.json()
+
+
+def _fb_post(path, data=None):
+    d = dict(data or {})
+    d["access_token"] = _fb_token()
+    resp = requests.post(_FB_GRAPH.rstrip("/") + "/" + str(path).lstrip("/"),
+                         data=d, timeout=30)
+    if not resp.ok:
+        raise RuntimeError(_fb_error_detail(resp))
+    return resp.json()
+
+
+def _fb_normalize_post(p):
+    """Flatten a Graph post node into the shape the UI consumes."""
+    reactions = ((p.get("reactions") or {}).get("summary") or {})
+    comments = ((p.get("comments") or {}).get("summary") or {})
+    shares = (p.get("shares") or {})
+    return {
+        "id": p.get("id"),
+        "message": p.get("message") or "",
+        "created_time": p.get("created_time"),
+        "permalink_url": p.get("permalink_url"),
+        "picture": p.get("full_picture"),
+        "like_count": int(reactions.get("total_count") or 0),
+        "comment_count": int(comments.get("total_count") or 0),
+        "share_count": int(shares.get("count") or 0),
+    }
+
+
+_FB_POST_FIELDS = (
+    "message,created_time,permalink_url,full_picture,shares,"
+    "comments.summary(true),reactions.summary(true)"
+)
+
+
+def _fb_sentiment(messages):
+    """Classify a list of comment strings as positive/negative/neutral via the
+    shared LLM. Returns a dict {index: label|None}; never raises."""
+    result = {i: None for i in range(len(messages))}
+    idxs = [i for i, t in enumerate(messages) if (t or "").strip()]
+    if not idxs:
+        return result
+    try:
+        numbered = "\n".join(f"{i}: {messages[i].strip()}" for i in idxs)
+        prompt = [
+            {"role": "system", "content":
+             "You classify the sentiment of customer comments on a fashion "
+             "retailer's social posts. Reply ONLY with compact JSON mapping each "
+             "id (as a string) to one of \"positive\", \"negative\", or "
+             "\"neutral\". No prose."},
+            {"role": "user", "content":
+             "Classify these comments. Example output: {\"0\":\"positive\","
+             "\"1\":\"neutral\"}.\n" + numbered},
+        ]
+        raw = _chat_llm(prompt, max_tokens=600)
+        data = _chat_extract_json(raw) or {}
+        for k, v in data.items():
+            try:
+                ki = int(k)
+            except Exception:
+                continue
+            label = (v or "").lower().strip()
+            if ki in result and label in ("positive", "negative", "neutral"):
+                result[ki] = label
+    except Exception:
+        pass
+    return result
+
+
+@app.get("/api/social/status")
+async def social_status(request: Request):
+    if not _fb_configured():
+        return {"configured": False}
+    try:
+        page = _fb_get(_fb_page_id(),
+                       {"fields": "name,fan_count,followers_count,link"})
+    except Exception as e:
+        return JSONResponse(
+            {"configured": True, "ok": False, "detail": str(e)},
+            status_code=502)
+    return {
+        "configured": True,
+        "ok": True,
+        "page_id": _fb_page_id(),
+        "name": page.get("name"),
+        "fan_count": page.get("fan_count"),
+        "followers_count": page.get("followers_count"),
+        "link": page.get("link"),
+    }
+
+
+@app.get("/api/social/insights")
+async def social_insights(request: Request):
+    if not _fb_configured():
+        return JSONResponse({"detail": "Facebook is not configured"}, status_code=400)
+    try:
+        page = _fb_get(_fb_page_id(),
+                       {"fields": "name,fan_count,followers_count"})
+        feed = _fb_get(f"{_fb_page_id()}/posts",
+                       {"fields": _FB_POST_FIELDS, "limit": 25})
+    except Exception as e:
+        return JSONResponse({"detail": str(e)}, status_code=502)
+    posts = [_fb_normalize_post(p) for p in (feed.get("data") or [])]
+    reactions = sum(p["like_count"] for p in posts)
+    comments = sum(p["comment_count"] for p in posts)
+    shares = sum(p["share_count"] for p in posts)
+    return {
+        "name": page.get("name"),
+        "fan_count": page.get("fan_count"),
+        "followers_count": page.get("followers_count"),
+        "posts_analyzed": len(posts),
+        "total_reactions": reactions,
+        "total_comments": comments,
+        "total_shares": shares,
+        "total_engagement": reactions + comments + shares,
+    }
+
+
+@app.get("/api/social/posts")
+async def social_posts(request: Request):
+    if not _fb_configured():
+        return JSONResponse({"detail": "Facebook is not configured"}, status_code=400)
+    try:
+        limit = int(request.query_params.get("limit") or 12)
+    except Exception:
+        limit = 12
+    limit = max(1, min(limit, 50))
+    try:
+        feed = _fb_get(f"{_fb_page_id()}/posts",
+                       {"fields": _FB_POST_FIELDS, "limit": limit})
+    except Exception as e:
+        return JSONResponse({"detail": str(e)}, status_code=502)
+    return {"posts": [_fb_normalize_post(p) for p in (feed.get("data") or [])]}
+
+
+@app.post("/api/social/post")
+async def social_create_post(request: Request):
+    if not _fb_configured():
+        return JSONResponse({"detail": "Facebook is not configured"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    message = (body.get("message") or "").strip()
+    link = (body.get("link") or "").strip()
+    if not message:
+        return JSONResponse({"detail": "message is required"}, status_code=400)
+    data = {"message": message}
+    if link:
+        data["link"] = link
+    try:
+        res = _fb_post(f"{_fb_page_id()}/feed", data)
+    except Exception as e:
+        return JSONResponse({"detail": str(e)}, status_code=502)
+    pid = res.get("id")
+    _crm_audit("social", pid or "-", "post",
+               f"published offer ({len(message)} chars)" + (f" link={link}" if link else ""),
+               request)
+    return {"ok": True, "id": pid}
+
+
+@app.get("/api/social/comments")
+async def social_comments(request: Request):
+    if not _fb_configured():
+        return JSONResponse({"detail": "Facebook is not configured"}, status_code=400)
+    post_id = (request.query_params.get("post_id") or "").strip()
+    if not post_id:
+        return JSONResponse({"detail": "post_id is required"}, status_code=400)
+    try:
+        limit = int(request.query_params.get("limit") or 30)
+    except Exception:
+        limit = 30
+    limit = max(1, min(limit, 100))
+    try:
+        res = _fb_get(f"{post_id}/comments", {
+            "fields": "message,from,created_time,like_count",
+            "order": "reverse_chronological",
+            "limit": limit,
+        })
+    except Exception as e:
+        return JSONResponse({"detail": str(e)}, status_code=502)
+    raw = res.get("data") or []
+    sentiments = _fb_sentiment([(c.get("message") or "") for c in raw])
+    out = []
+    for i, c in enumerate(raw):
+        frm = c.get("from") or {}
+        out.append({
+            "id": c.get("id"),
+            "message": c.get("message") or "",
+            "created_time": c.get("created_time"),
+            "like_count": int(c.get("like_count") or 0),
+            "from_name": frm.get("name"),
+            "sentiment": sentiments.get(i),
+        })
+    return {"comments": out}
+
+
+@app.post("/api/social/comments/{comment_id}/reply")
+async def social_reply_comment(comment_id: str, request: Request):
+    if not _fb_configured():
+        return JSONResponse({"detail": "Facebook is not configured"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    message = (body.get("message") or "").strip()
+    if not message:
+        return JSONResponse({"detail": "message is required"}, status_code=400)
+    try:
+        res = _fb_post(f"{comment_id}/comments", {"message": message})
+    except Exception as e:
+        return JSONResponse({"detail": str(e)}, status_code=502)
+    _crm_audit("social", comment_id, "reply",
+               f"replied to comment ({len(message)} chars)", request)
+    return {"ok": True, "id": res.get("id")}
 
 
 # --- Customer-facing loyalty (public, member-token auth) -------------------

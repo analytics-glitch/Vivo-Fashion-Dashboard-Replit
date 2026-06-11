@@ -24,3 +24,4 @@
 - [Footfall sensor-gap derived metrics](footfall-sensor-gap-derived-metrics.md) — sensor-down stores get absurd conversion/sales-per-visitor; gate them out of store-comparison visuals (basket stays fine).
 - [Loyalty member card](loyalty-member-card.md) — customer-facing loyalty (enrol/redeem with no staff login, barcode POS earn); earn idempotency = DB partial-unique index + ON CONFLICT, PIN login throttled, member token sha256 at rest.
 - [CRM authz server-side gate](crm-authz-server-gate.md) — /api/crm/* role gate (analyst+) lives in clerk_auth_gate middleware, not just web/mobile nav; client hiding is bypassable.
+- [Facebook Page integration](facebook-page-integration.md) — /api/social/* (analyst+, same gate as CRM) posts offers + reads/replies to comments; insights derived from page node + posts (not the fragile /insights metric API); sentiment via shared LLM, never raises.
