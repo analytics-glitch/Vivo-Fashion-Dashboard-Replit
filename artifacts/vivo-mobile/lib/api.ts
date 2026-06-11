@@ -10,6 +10,14 @@
 const DOMAIN = process.env.EXPO_PUBLIC_DOMAIN;
 export const API_BASE = DOMAIN ? `https://${DOMAIN}/api` : "/api";
 
+/** Map a transport failure / gateway status to a user-friendly message. */
+function friendlyHttpError(status: number): string {
+  if (status === 502 || status === 503 || status === 504)
+    return "The server is temporarily unavailable. Please try again in a moment.";
+  if (status >= 500) return "Something went wrong on the server. Please try again.";
+  return `Request failed (${status})`;
+}
+
 // --- Auth token: set by AuthProvider, attached to every request ---
 // Every /api endpoint is gated by the backend session middleware, so requests
 // without a valid Bearer token return 401. The AuthProvider keeps this in sync
@@ -47,33 +55,47 @@ const qs = (params?: Params): string => {
 };
 
 export async function apiGet<T>(path: string, params?: Params): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}${qs(params)}`, {
-    headers: { ...authHeaders() },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}${qs(params)}`, {
+      headers: { ...authHeaders() },
+    });
+  } catch {
+    throw new Error("Cannot reach the server. Check your connection and try again.");
+  }
   if (res.status === 401) {
     onUnauthorized?.();
     throw new Error("Unauthorized (401)");
   }
   if (!res.ok) {
-    throw new Error(`Request failed (${res.status})`);
+    throw new Error(friendlyHttpError(res.status));
   }
   return (await res.json()) as T;
 }
 
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    const err = new Error(
+      "Cannot reach the server. Check your connection and try again.",
+    ) as Error & { status?: number };
+    err.status = 0;
+    throw err;
+  }
   if (res.status === 401) onUnauthorized?.();
   if (!res.ok) {
-    let detail = `Request failed (${res.status})`;
+    let detail = friendlyHttpError(res.status);
     try {
       const j = (await res.json()) as { detail?: unknown };
       if (j && typeof j.detail === "string") detail = j.detail;
     } catch {
-      // non-JSON error body; keep the generic message
+      // non-JSON error body (e.g. a proxy 502 page); keep the friendly message
     }
     const err = new Error(detail) as Error & { status?: number };
     err.status = res.status;
@@ -106,6 +128,26 @@ export async function loginRequest(
 export async function fetchMe(): Promise<AuthUser> {
   return apiGet<AuthUser>("/auth/me");
 }
+
+/** Company email domains that may sign in (shown on the login screen). */
+export async function fetchAllowedDomains(): Promise<string[]> {
+  try {
+    const r = await apiGet<{ domains?: string[] }>("/auth/allowed-domains");
+    return r.domains ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * OAuth start URL (backend kicks off the Google authorization-code flow).
+ * Pass the native deep link the backend should hand the session back to; the
+ * backend validates it (app schemes only) and redirects there once done.
+ */
+export const googleLoginUrl = (returnUrl?: string): string =>
+  returnUrl
+    ? `${API_BASE}/auth/google/login?return=${encodeURIComponent(returnUrl)}`
+    : `${API_BASE}/auth/google/login`;
 
 export async function logoutRequest(): Promise<void> {
   try {

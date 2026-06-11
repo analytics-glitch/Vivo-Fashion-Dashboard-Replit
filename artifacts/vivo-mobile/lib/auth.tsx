@@ -26,6 +26,7 @@ interface AuthValue {
   status: Status;
   user: AuthUser | null;
   login: (email: string, password: string) => Promise<void>;
+  completeGoogleLogin: (token: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -147,14 +148,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [clear, queryClient],
   );
 
+  const completeGoogleLogin = useCallback(
+    async (token: string) => {
+      if (!token) throw new Error("Sign in failed. Please try again.");
+      setAuthToken(token);
+      let me: AuthUser;
+      try {
+        me = await fetchMe();
+      } catch {
+        await clear();
+        throw new Error("Sign in failed. Please try again.");
+      }
+      if (!me || !me.user_id) {
+        await clear();
+        throw new Error("Sign in failed. Please try again.");
+      }
+      if (me.status && me.status !== "active") {
+        await clear();
+        throw new Error(statusMessage(me.status));
+      }
+      queryClient.clear();
+      setAuthToken(token);
+      try {
+        await AsyncStorage.setItem(TOKEN_KEY, token);
+      } catch {
+        // ignore storage errors; session still works for this launch
+      }
+      setUser(me);
+      setStatus("authenticated");
+    },
+    [clear, queryClient],
+  );
+
   const logout = useCallback(async () => {
     await logoutRequest();
     await clear();
   }, [clear]);
 
   const value = useMemo<AuthValue>(
-    () => ({ status, user, login, logout }),
-    [status, user, login, logout],
+    () => ({ status, user, login, completeGoogleLogin, logout }),
+    [status, user, login, completeGoogleLogin, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

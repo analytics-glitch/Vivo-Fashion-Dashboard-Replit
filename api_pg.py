@@ -13,6 +13,7 @@ import time
 import hashlib
 import hmac
 import base64
+import re
 import secrets
 import requests
 from urllib.parse import urlencode, quote
@@ -2461,6 +2462,30 @@ def _google_redirect_uri(request: Request):
     return f"{proto}://{host}/api/auth/google/callback"
 
 
+def _safe_oauth_return(val):
+    """Validate the optional ``return`` target for the OAuth callback.
+
+    Only native-app deep links pointing at our own callback path are allowed
+    (the mobile app passes its runtime redirect URL here so the session can be
+    handed back). This is deliberately NOT a general web redirect — only the
+    Expo/standalone app schemes are accepted, so it cannot be abused as an open
+    redirect to an arbitrary website. Web clients omit the param and keep the
+    default relative ``/auth/callback`` behavior.
+    """
+    if not val:
+        return None
+    val = val.strip()
+    if len(val) > 512:
+        return None
+    if "auth/callback" not in val:
+        return None
+    # Expo Go uses exp:// (optionally exp+<slug>://), standalone builds use the
+    # app's own scheme. Both only open this app, never a website.
+    if re.match(r"^(vivo-mobile|exp|exp\+[a-z0-9._-]+)://", val):
+        return val
+    return None
+
+
 @app.get("/api/auth/google/login")
 def auth_google_login(request: Request):
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
@@ -2468,6 +2493,7 @@ def auth_google_login(request: Request):
         return JSONResponse(
             {"detail": "Google sign-in is not configured."}, status_code=503)
     state = secrets.token_urlsafe(24)
+    return_to = _safe_oauth_return(request.query_params.get("return"))
     params = urlencode({
         "client_id": client_id,
         "redirect_uri": _google_redirect_uri(request),
@@ -2482,6 +2508,10 @@ def auth_google_login(request: Request):
     # Short-lived state cookie for CSRF protection on the callback.
     resp.set_cookie("g_oauth_state", state, httponly=True, samesite="lax",
                     secure=True, max_age=600, path="/")
+    # Remember where to hand the session back (mobile deep link). Absent for web.
+    if return_to:
+        resp.set_cookie("g_oauth_return", return_to, httponly=True,
+                        samesite="lax", secure=True, max_age=600, path="/")
     return resp
 
 
@@ -2489,16 +2519,27 @@ def auth_google_login(request: Request):
 def auth_google_callback(request: Request):
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
     client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
+    # Where to hand the result back. Web uses the default relative path with a
+    # URL fragment; the mobile app passes a native deep link (stored at login),
+    # for which query params survive the OS hand-off more reliably than a #frag.
+    return_to = _safe_oauth_return(request.cookies.get("g_oauth_return"))
+    base = return_to or "/auth/callback"
+    sep = "?" if return_to else "#"
+
+    def _back(suffix):
+        r = RedirectResponse(f"{base}{sep}{suffix}")
+        r.delete_cookie("g_oauth_return", path="/")
+        return r
+
     if not client_id or not client_secret:
-        return RedirectResponse("/auth/callback#error=not_configured")
+        return _back("error=not_configured")
     if request.query_params.get("error"):
-        return RedirectResponse(
-            "/auth/callback#error=" + quote(request.query_params.get("error")))
+        return _back("error=" + quote(request.query_params.get("error")))
     code = request.query_params.get("code")
     state = request.query_params.get("state")
     cookie_state = request.cookies.get("g_oauth_state")
     if not code or not state or not cookie_state or not hmac.compare_digest(state, cookie_state):
-        return RedirectResponse("/auth/callback#error=invalid_state")
+        return _back("error=invalid_state")
     redirect_uri = _google_redirect_uri(request)
     try:
         tok = requests.post("https://oauth2.googleapis.com/token", data={
@@ -2506,31 +2547,31 @@ def auth_google_callback(request: Request):
             "redirect_uri": redirect_uri, "grant_type": "authorization_code",
         }, timeout=15)
     except Exception:
-        return RedirectResponse("/auth/callback#error=token_exchange")
+        return _back("error=token_exchange")
     if tok.status_code >= 400:
-        return RedirectResponse("/auth/callback#error=token_exchange")
+        return _back("error=token_exchange")
     access_token = (tok.json() or {}).get("access_token")
     if not access_token:
-        return RedirectResponse("/auth/callback#error=token_exchange")
+        return _back("error=token_exchange")
     try:
         prof = requests.get(
             "https://openidconnect.googleapis.com/v1/userinfo",
             headers={"Authorization": f"Bearer {access_token}"}, timeout=15)
     except Exception:
-        return RedirectResponse("/auth/callback#error=profile")
+        return _back("error=profile")
     if prof.status_code >= 400:
-        return RedirectResponse("/auth/callback#error=profile")
+        return _back("error=profile")
     info = prof.json() or {}
     email = (info.get("email") or "").strip().lower()
     # Require an explicitly verified email AND an allowed company domain. Treat a
     # missing/false email_verified as untrusted rather than letting it through.
     if info.get("email_verified") is not True or not clerk_auth.email_allowed(email):
-        return RedirectResponse("/auth/callback#error=domain_not_allowed")
+        return _back("error=domain_not_allowed")
     sub = "google:" + str(info.get("sub") or email)
     name = info.get("name") or ""
     rec = resolve_app_user(sub, email, name)
     token = _create_session(rec["user_id"])
-    resp = RedirectResponse("/auth/callback#token=" + quote(token))
+    resp = _back("token=" + quote(token))
     resp.set_cookie("session_token", token, **_login_cookie_kwargs())
     resp.delete_cookie("g_oauth_state", path="/")
     return resp

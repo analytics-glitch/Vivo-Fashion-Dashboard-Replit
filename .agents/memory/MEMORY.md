@@ -2,6 +2,7 @@
 - [Clerk prod "Checking session…" blank](clerk-prod-blank-checking-session.md) — published app stuck on auth-loading (dev fine) = Python Clerk proxy relays Brotli the browser can't decode; force Accept-Encoding gzip/deflate.
 - [Sync watchdog heartbeat](sync-watchdog-heartbeat.md) — sync health must key off a loop heartbeat, NOT all_sales.loaded_at (quiet periods = false failures); recovery backfill must suspend the supervised sync to avoid overlap.
 - [BI chat text-to-SQL](bi-chat-text-to-sql.md) — /api/chat runs LLM-generated SQL on a forced read-only psycopg2 conn (never the shared pool); keep the read-only + PII guards.
+- [Mobile Google OAuth deep-link](mobile-google-oauth-deeplink.md) — Expo completes Google sign-in via a scheme-locked `return` deep link to the shared /api callback; native gets ?query, web keeps #fragment, web unchanged.
 - [Multi-query partial-failure state](multi-query-partial-failure.md) — screens with several parallel queries must OR-compose error/loading (or per-section states); AND-composing hides partial API failures as fake-healthy zeroes.
 - [Mobile Overview filter mapping](mobile-overview-filter-mapping.md) — Expo All/Retail/Online segment maps to `country` (channel param=pos_location_name can't); period deltas = two /api/kpis calls.
 - [Auth identity email fallback](auth-identity-email-fallback.md) — resolve identity by user_id/sub, then fall back to UNIQUE email, or admin-created (local:) users collide with Google (google:) sign-in; redirect_uri_mismatch = Google Console config, not code.
