@@ -18,6 +18,10 @@ const rScale = (o: number) => {
 const netX = xScale(NETWORK.netConv);
 const netY = yScale(NETWORK.netAbv);
 
+const MOVE_COLOR = { up: "#1a5c38", down: "#b91c1c", flat: "#9ca3af" } as const;
+const clampX = (v: number) => Math.max(M.l, Math.min(M.l + IW, v));
+const clampY = (v: number) => Math.max(M.t, Math.min(M.t + IH, v));
+
 const plotted = STORES.filter((s) => s.convReliable && s.conversion != null);
 const notPlotted = STORES.filter((s) => !s.convReliable);
 
@@ -37,7 +41,8 @@ export function Quadrant() {
             </h2>
             <p className="mt-1 text-[13px] text-neutral-500 leading-relaxed max-w-[640px]">
               Each store positioned against the network average. Where a store sits tells you the <em>kind</em> of
-              problem it has — not just whether it is good or bad. Bubble size = orders. {NETWORK.window}.
+              problem it has — not just whether it is good or bad. Bubble size = orders. Trails show movement
+              vs the prior period ({NETWORK.prevWindow}). {NETWORK.window}.
             </p>
           </div>
 
@@ -80,6 +85,37 @@ export function Quadrant() {
               <text transform={`rotate(-90 18 ${M.t + IH / 2})`} x={18} y={M.t + IH / 2} textAnchor="middle" className="fill-neutral-600" style={{ fontSize: 12, fontWeight: 600 }}>Average basket (KES)</text>
               <text x={netX} y={M.t - 6} textAnchor="middle" style={{ fontSize: 10.5, fontWeight: 700, fill: "#1a5c38" }}>avg {NETWORK.netConv}%</text>
 
+              {/* movement trails (since last month) */}
+              <defs>
+                {(["up", "down", "flat"] as const).map((d) => (
+                  <marker key={d} id={`arrow-${d}`} markerWidth={6} markerHeight={6} refX={4.6} refY={2.4} orient="auto">
+                    <path d="M0,0 L5,2.4 L0,4.8 Z" fill={MOVE_COLOR[d]} fillOpacity={0.6} />
+                  </marker>
+                ))}
+              </defs>
+              {plotted.filter((s) => s.prev).map((s) => {
+                const p = s.prev!;
+                const x1 = clampX(xScale(p.prevConv));
+                const y1 = clampY(yScale(p.prevAbv));
+                const cx = clampX(xScale(s.conversion as number));
+                const cy = clampY(yScale(s.abv));
+                const col = MOVE_COLOR[p.dir];
+                const r = rScale(s.orders);
+                const dx = cx - x1, dy = cy - y1;
+                const len = Math.hypot(dx, dy) || 1;
+                // stop the trail short of the bubble edge so the arrowhead reads cleanly
+                const ex = cx - (dx / len) * (r + 3);
+                const ey = cy - (dy / len) * (r + 3);
+                const active = hover?.store === s.store;
+                if (len < r + 6) return null; // negligible movement: skip to avoid clutter
+                return (
+                  <g key={`tr-${s.store}`} opacity={active ? 0.95 : 0.5}>
+                    <line x1={x1} y1={y1} x2={ex} y2={ey} stroke={col} strokeWidth={active ? 2 : 1.4} markerEnd={`url(#arrow-${p.dir})`} />
+                    <circle cx={x1} cy={y1} r={2.6} fill="#fff" stroke={col} strokeWidth={1.3} />
+                  </g>
+                );
+              })}
+
               {/* bubbles */}
               {plotted.map((s) => {
                 const cx = xScale(s.conversion as number);
@@ -113,6 +149,25 @@ export function Quadrant() {
                     <Row k="Net sales" v={fmtKES(hover.sales)} />
                     <Row k="Footfall" v={hover.footfall.toLocaleString()} />
                   </div>
+                  {hover.prev && (
+                    <div className="mt-2.5 pt-2.5 border-t border-black/5 text-[11px]">
+                      <div className="font-semibold mb-1" style={{ color: MOVE_COLOR[hover.prev.dir] }}>
+                        {hover.prev.dir === "up" ? "Improving" : hover.prev.dir === "down" ? "Sliding" : "Roughly flat"} vs last month
+                      </div>
+                      <div className="flex items-center justify-between text-neutral-500">
+                        <span>Conversion</span>
+                        <span className="tabular-nums font-medium" style={{ color: hover.prev.dConv >= 0 ? "#1a5c38" : "#b91c1c" }}>
+                          {hover.prev.dConv >= 0 ? "+" : ""}{hover.prev.dConv.toFixed(1)} pts
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-neutral-500">
+                        <span>Avg basket</span>
+                        <span className="tabular-nums font-medium" style={{ color: hover.prev.dAbv >= 0 ? "#1a5c38" : "#b91c1c" }}>
+                          {hover.prev.dAbv >= 0 ? "+" : "−"}{fmtKES(Math.abs(hover.prev.dAbv)).replace("KES ", "")}
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="text-[12px] text-neutral-400 leading-relaxed">Hover any bubble for the full numbers.</div>
@@ -131,6 +186,21 @@ export function Quadrant() {
               <span className="inline-block w-4 h-4 rounded-full border" style={{ borderColor: "#1a5c38" }} />
               <span className="inline-block w-2.5 h-2.5 rounded-full border" style={{ borderColor: "#1a5c38" }} />
               bubble = orders
+            </div>
+            <div className="flex items-center gap-3 text-[12px] text-neutral-500">
+              <span className="flex items-center gap-1.5">
+                <svg width="22" height="8"><line x1="1" y1="4" x2="17" y2="4" stroke="#1a5c38" strokeWidth="1.6" /><path d="M16,1.6 L21,4 L16,6.4 Z" fill="#1a5c38" /></svg>
+                improving
+              </span>
+              <span className="flex items-center gap-1.5">
+                <svg width="22" height="8"><line x1="1" y1="4" x2="17" y2="4" stroke="#b91c1c" strokeWidth="1.6" /><path d="M16,1.6 L21,4 L16,6.4 Z" fill="#b91c1c" /></svg>
+                sliding
+              </span>
+              <span className="flex items-center gap-1.5">
+                <svg width="22" height="8"><line x1="1" y1="4" x2="17" y2="4" stroke="#9ca3af" strokeWidth="1.6" /><path d="M16,1.6 L21,4 L16,6.4 Z" fill="#9ca3af" /></svg>
+                flat
+              </span>
+              <span className="text-neutral-400">since last month</span>
             </div>
           </div>
           {notPlotted.length > 0 && (

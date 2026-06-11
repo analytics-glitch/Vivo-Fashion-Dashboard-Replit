@@ -1,6 +1,7 @@
-// AUTO-GENERATED from live API (13 May - 11 Jun 2026). Real Vivo data snapshot for canvas prototype.
-export interface StoreRow { store:string; country:string; orders:number; units:number; sales:number; abv:number; footfall:number; conversion:number|null; salesPerVisitor:number|null; sensorGap:number; lowVolume:boolean; noFootfall:boolean; convReliable:boolean; }
-export const NETWORK = {"netConv": 13.2, "netAbv": 8851, "netSpv": 1200, "window": "13 May - 11 Jun 2026", "relCount": 28, "total": 30};
+// AUTO-GENERATED from live API. Current + previous period snapshot for canvas prototype.
+export interface Move { prevConv:number; prevAbv:number; dConv:number; dAbv:number; dir:'up'|'down'|'flat'; }
+export interface StoreRow { store:string; country:string; orders:number; units:number; sales:number; abv:number; footfall:number; conversion:number|null; salesPerVisitor:number|null; sensorGap:number; lowVolume:boolean; noFootfall:boolean; convReliable:boolean; prev:Move|null; }
+export const NETWORK = {"netConv": 13.2, "netAbv": 8851, "netSpv": 1200, "window": "13 May - 11 Jun 2026", "prevWindow": "13 Apr - 12 May 2026", "relCount": 28, "total": 30};
 export const STORES: StoreRow[] = [
   {
     "store": "Shop Zetu",
@@ -15,7 +16,8 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": true,
-    "convReliable": false
+    "convReliable": false,
+    "prev": null
   },
   {
     "store": "Junction",
@@ -30,7 +32,8 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": null
   },
   {
     "store": "Sarit",
@@ -45,7 +48,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 14.7,
+      "prevAbv": 8734,
+      "dConv": 3.2,
+      "dAbv": -596,
+      "dir": "up"
+    }
   },
   {
     "store": "Mama Ngina St",
@@ -60,7 +70,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 17.0,
+      "prevAbv": 8834,
+      "dConv": -0.4,
+      "dAbv": 138,
+      "dir": "flat"
+    }
   },
   {
     "store": "Yaya",
@@ -75,7 +92,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 14.0,
+      "prevAbv": 10282,
+      "dConv": 0.9,
+      "dAbv": 415,
+      "dir": "up"
+    }
   },
   {
     "store": "Moi Avenue",
@@ -90,7 +114,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 11.3,
+      "prevAbv": 7114,
+      "dConv": -0.7,
+      "dAbv": 392,
+      "dir": "flat"
+    }
   },
   {
     "store": "Village Market",
@@ -105,7 +136,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 1,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 12.0,
+      "prevAbv": 9408,
+      "dConv": 1.5,
+      "dAbv": -5,
+      "dir": "up"
+    }
   },
   {
     "store": "Kigali Heights",
@@ -120,7 +158,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 17.0,
+      "prevAbv": 11353,
+      "dConv": 1.2,
+      "dAbv": 1026,
+      "dir": "up"
+    }
   },
   {
     "store": "Acacia",
@@ -135,7 +180,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 14.2,
+      "prevAbv": 11616,
+      "dConv": -1.7,
+      "dAbv": 2004,
+      "dir": "up"
+    }
   },
   {
     "store": "Garden City",
@@ -150,7 +202,8 @@ export const STORES: StoreRow[] = [
     "sensorGap": 5,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": null
   },
   {
     "store": "Galleria",
@@ -165,7 +218,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 13.4,
+      "prevAbv": 9536,
+      "dConv": 0.5,
+      "dAbv": -335,
+      "dir": "flat"
+    }
   },
   {
     "store": "City Mall",
@@ -180,7 +240,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 5,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 11.7,
+      "prevAbv": 8552,
+      "dConv": 2.7,
+      "dAbv": 471,
+      "dir": "up"
+    }
   },
   {
     "store": "TRM",
@@ -195,7 +262,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 13.3,
+      "prevAbv": 8914,
+      "dConv": 2.5,
+      "dAbv": -537,
+      "dir": "up"
+    }
   },
   {
     "store": "Nakuru",
@@ -210,7 +284,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 5,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 16.0,
+      "prevAbv": 8073,
+      "dConv": 0.9,
+      "dAbv": 742,
+      "dir": "up"
+    }
   },
   {
     "store": "Two Rivers",
@@ -225,7 +306,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 11.3,
+      "prevAbv": 9297,
+      "dConv": 1.6,
+      "dAbv": -1092,
+      "dir": "flat"
+    }
   },
   {
     "store": "Imaara",
@@ -240,7 +328,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 15.8,
+      "prevAbv": 9234,
+      "dConv": 0.4,
+      "dAbv": -2,
+      "dir": "up"
+    }
   },
   {
     "store": "Capital Centre",
@@ -255,7 +350,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 10.4,
+      "prevAbv": 8969,
+      "dConv": 1.2,
+      "dAbv": -412,
+      "dir": "up"
+    }
   },
   {
     "store": "Kisumu",
@@ -270,7 +372,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 11.4,
+      "prevAbv": 8170,
+      "dConv": -0.6,
+      "dAbv": 335,
+      "dir": "flat"
+    }
   },
   {
     "store": "Runda",
@@ -285,7 +394,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 3,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 14.3,
+      "prevAbv": 9367,
+      "dConv": 6.0,
+      "dAbv": 477,
+      "dir": "up"
+    }
   },
   {
     "store": "Hub",
@@ -300,7 +416,8 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": null
   },
   {
     "store": "The Oasis Mall",
@@ -315,7 +432,8 @@ export const STORES: StoreRow[] = [
     "sensorGap": 26,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": false
+    "convReliable": false,
+    "prev": null
   },
   {
     "store": "Eldoret",
@@ -330,7 +448,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 12.1,
+      "prevAbv": 7491,
+      "dConv": 0.4,
+      "dAbv": 202,
+      "dir": "up"
+    }
   },
   {
     "store": "T- Mall",
@@ -345,7 +470,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 7,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 14.7,
+      "prevAbv": 8896,
+      "dConv": 1.0,
+      "dAbv": 636,
+      "dir": "up"
+    }
   },
   {
     "store": "MSA Digo Road",
@@ -360,7 +492,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 11.7,
+      "prevAbv": 7975,
+      "dConv": 0.6,
+      "dAbv": -23,
+      "dir": "up"
+    }
   },
   {
     "store": "Signature Mall",
@@ -375,7 +514,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 11.7,
+      "prevAbv": 8300,
+      "dConv": 0.3,
+      "dAbv": 361,
+      "dir": "up"
+    }
   },
   {
     "store": "Kileleshwa",
@@ -390,7 +536,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 15.0,
+      "prevAbv": 8160,
+      "dConv": 1.0,
+      "dAbv": 1469,
+      "dir": "up"
+    }
   },
   {
     "store": "Greenspan",
@@ -405,7 +558,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 10.6,
+      "prevAbv": 7891,
+      "dConv": -1.2,
+      "dAbv": -694,
+      "dir": "down"
+    }
   },
   {
     "store": "Safari Sarit",
@@ -420,7 +580,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 5.3,
+      "prevAbv": 8517,
+      "dConv": 0.1,
+      "dAbv": 605,
+      "dir": "up"
+    }
   },
   {
     "store": "Meru",
@@ -435,7 +602,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 8.0,
+      "prevAbv": 8425,
+      "dConv": -0.7,
+      "dAbv": -587,
+      "dir": "down"
+    }
   },
   {
     "store": "Zoya Sarit",
@@ -450,7 +624,14 @@ export const STORES: StoreRow[] = [
     "sensorGap": 0,
     "lowVolume": false,
     "noFootfall": false,
-    "convReliable": true
+    "convReliable": true,
+    "prev": {
+      "prevConv": 5.7,
+      "prevAbv": 3585,
+      "dConv": -1.8,
+      "dAbv": 405,
+      "dir": "down"
+    }
   }
 ];
 
