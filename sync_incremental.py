@@ -349,6 +349,14 @@ def sync_odoo(cur, now, rates):
         for l in lines:
             oid = str(l["order_id"][0])
             lines_data.setdefault(oid, []).append(l)
+        # Fetch product SKUs (default_code) for all products in these lines
+        prod_ids = list({l["product_id"][0] for l in lines if l.get("product_id")})
+        sku_map = {}
+        if prod_ids:
+            prods = models.execute_kw(ODOO_DB, uid, ODOO_PASS, "product.product", "search_read",
+                [[["id", "in", prod_ids]]],
+                {"fields": ["id", "default_code"]})
+            sku_map = {p["id"]: (p.get("default_code") or "") for p in prods}
 
     config_ids = list(set(o["config_id"][0] for o in orders if o.get("config_id")))
     configs = {}
