@@ -20,6 +20,8 @@ import {
   ChatText,
   PaperPlaneTilt,
   Trash,
+  DeviceMobile,
+  ArrowSquareOut,
 } from "@phosphor-icons/react";
 
 // ---------------------------------------------------------------------------
@@ -1844,6 +1846,73 @@ const CreateMessageModal = ({ open, onClose, onCreated }) => {
   );
 };
 
+// Mobile app preview — a live, phone-framed view of the staff Expo app served
+// at /mobile/ (same origin via the shared proxy, so it works in dev and prod).
+// Lets staff see the mobile look & feel without a device. The embedded app has
+// its own login (it shares the gated /api with its own token store).
+const MobilePreviewTab = () => {
+  const [reloadKey, setReloadKey] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+  const src = "/mobile/";
+  useEffect(() => {
+    setLoaded(false);
+  }, [reloadKey]);
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <SectionTitle>Mobile app preview</SectionTitle>
+          <p className="text-[12.5px] text-muted">
+            A live preview of the Vivo BI mobile app. It signs in separately —
+            use your same staff credentials inside the phone to explore it.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button className={btnGhost} onClick={() => setReloadKey((k) => k + 1)}>
+            <ArrowClockwise size={15} /> Reload
+          </button>
+          <a className={btnGhost} href={src} target="_blank" rel="noreferrer">
+            <ArrowSquareOut size={15} /> Open in new tab
+          </a>
+        </div>
+      </div>
+
+      <div className="flex justify-center py-4">
+        <div
+          className="relative rounded-[44px] bg-[#0c1f17] p-3 shadow-2xl"
+          style={{ width: 392, boxShadow: "0 30px 60px -20px rgba(12,31,23,.55)" }}
+        >
+          <div className="absolute left-1/2 top-3 z-10 h-6 w-32 -translate-x-1/2 rounded-b-2xl bg-[#0c1f17]" />
+          <div className="relative overflow-hidden rounded-[32px] bg-white" style={{ height: 812 }}>
+            {!loaded && (
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-white text-center">
+                <ArrowClockwise size={22} className="animate-spin text-brand" />
+                <div className="text-[12.5px] text-muted">Starting the mobile preview…</div>
+                <a className="text-[12px] font-semibold text-brand underline" href={src} target="_blank" rel="noreferrer">
+                  Taking a while? Open in a new tab
+                </a>
+              </div>
+            )}
+            <iframe
+              key={reloadKey}
+              title="Vivo BI mobile app preview"
+              src={src}
+              className="h-full w-full border-0"
+              style={{ width: 366, height: 812 }}
+              onLoad={() => setLoaded(true)}
+            />
+          </div>
+        </div>
+      </div>
+
+      <p className="text-center text-[11.5px] text-muted">
+        Shown at phone size (approximately 366 × 812). The preview runs the same
+        app your team installs on Android.
+      </p>
+    </div>
+  );
+};
+
 const TABS = [
   { key: "contacts", label: "Contacts", icon: MagnifyingGlass },
   { key: "tasks", label: "Tasks", icon: CheckCircle },
@@ -1851,6 +1920,7 @@ const TABS = [
   { key: "campaigns", label: "Campaigns", icon: Megaphone },
   { key: "messages", label: "Messages", icon: ChatText },
   { key: "loyalty", label: "Loyalty", icon: Crown },
+  { key: "mobile", label: "Mobile app", icon: DeviceMobile },
 ];
 
 const CRM = () => {
@@ -1905,6 +1975,7 @@ const CRM = () => {
       {tab === "campaigns" && <CampaignsTab brand={brand} />}
       {tab === "messages" && <MessagesTab />}
       {tab === "loyalty" && <LoyaltyTab isAdmin={isAdmin} onOpen360={setOpen360} />}
+      {tab === "mobile" && <MobilePreviewTab />}
       {tab === "config" && isAdmin && <ConfigTab />}
 
       {open360 && (
