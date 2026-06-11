@@ -1,9 +1,6 @@
 import React, { Suspense, useEffect, useRef } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
-import { ClerkProvider, SignIn, SignUp } from "@clerk/react";
-import { publishableKeyFromHost } from "@clerk/react/internal";
-import { shadcn } from "@clerk/themes";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import TopNav from "@/components/Sidebar";
 import FilterBar from "@/components/FilterBar";
 import { Loading } from "@/components/common";
@@ -49,94 +46,6 @@ import GlobalSearch from "@/components/GlobalSearch";
 import { Toaster } from "@/components/ui/sonner";
 import useHeartbeat from "@/lib/useHeartbeat";
 import { useAuth } from "@/lib/auth";
-
-// Resolve the publishable key from the current host so the SAME build works
-// across the dev preview and any production / custom domain (falls back to the
-// VITE_CLERK_PUBLISHABLE_KEY env var). The proxy URL is wired unconditionally:
-// it is undefined in development (no proxy) and auto-set in production.
-const PUBLISHABLE_KEY = publishableKeyFromHost(
-  typeof window !== "undefined" ? window.location.hostname : "",
-  import.meta.env.VITE_CLERK_PUBLISHABLE_KEY,
-);
-const CLERK_PROXY_URL = import.meta.env.VITE_CLERK_PROXY_URL;
-
-// The app is mounted at Vite's base path. Clerk's router callbacks hand us
-// full (base-prefixed) paths; strip the base so react-router navigates
-// correctly. `path`/url props passed to <SignIn>/<SignUp> keep the base.
-const BASE = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
-const withBase = (p) => `${BASE}${p}`;
-const stripBase = (to) => {
-  if (typeof to !== "string") return to;
-  if (BASE && to.startsWith(BASE)) return to.slice(BASE.length) || "/";
-  return to;
-};
-
-const clerkAppearance = {
-  theme: shadcn,
-  variables: {
-    colorPrimary: "#1a5c38",
-    colorBackground: "#ffffff",
-    colorForeground: "#1a1a1a",
-    colorMutedForeground: "#6b7280",
-    colorInput: "#ffffff",
-    colorInputForeground: "#1a1a1a",
-    colorDanger: "#dc2626",
-    fontFamily:
-      "'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, sans-serif",
-    borderRadius: "0.75rem",
-  },
-  elements: {
-    rootBox: "w-full flex justify-center",
-    cardBox:
-      "bg-white border border-[#fdba74] rounded-2xl shadow-xl w-[400px] max-w-full overflow-hidden",
-    card: "!bg-transparent !shadow-none !border-0",
-    headerTitle: "text-[#1a1a1a]",
-    headerSubtitle: "text-[#6b7280]",
-    socialButtonsBlockButton: "border-[#e5e7eb] hover:bg-[#f9fafb]",
-    socialButtonsBlockButtonText: "text-[#1a1a1a] font-medium",
-    dividerLine: "bg-[#e5e7eb]",
-    dividerText: "text-[#6b7280]",
-    formFieldLabel: "text-[#1a1a1a]",
-    formFieldInput: "bg-white border-[#e5e7eb] text-[#1a1a1a]",
-    formButtonPrimary: "bg-[#1a5c38] hover:bg-[#14492c] text-white",
-    identityPreviewText: "text-[#1a1a1a]",
-    formResendCodeLink: "text-[#1a5c38]",
-    footer: "!bg-transparent",
-    footerActionText: "text-[#6b7280]",
-    footerActionLink: "text-[#1a5c38] hover:text-[#14492c] font-semibold",
-    logoImage: "h-10 w-auto",
-  },
-  options: {
-    logoPlacement: "inside",
-    logoLinkUrl: BASE || "/",
-    logoImageUrl: `${typeof window !== "undefined" ? window.location.origin : ""}${withBase("/logo.svg")}`,
-    socialButtonsVariant: "blockButton",
-  },
-};
-
-const clerkLocalization = {
-  signIn: {
-    start: {
-      title: "Sign in to Vivo BI",
-      subtitle: "Use your Vivo Fashion Group or Shop Zetu account",
-    },
-  },
-  signUp: {
-    start: {
-      title: "Request access",
-      subtitle: "Only @vivofashiongroup.com and @shopzetu.com accounts are permitted",
-    },
-  },
-};
-
-const AuthScreen = ({ children }) => (
-  <div
-    className="min-h-screen w-full grid place-items-center bg-[#fed7aa] px-4 py-10"
-    data-testid="auth-screen"
-  >
-    {children}
-  </div>
-);
 
 const Shell = ({ children }) => {
   const navRef = useRef(null);
@@ -184,66 +93,18 @@ const ProtectedShell = ({ children, adminOnly = false, pageId }) => (
   </ProtectedRoute>
 );
 
-// ClerkProvider must live inside the Router so its routerPush/Replace can use
-// react-router's navigate (keeps Clerk's hosted flows as SPA navigations).
-const ClerkProviderWithRoutes = ({ children }) => {
-  const navigate = useNavigate();
-  return (
-    <ClerkProvider
-      publishableKey={PUBLISHABLE_KEY}
-      proxyUrl={CLERK_PROXY_URL}
-      appearance={clerkAppearance}
-      localization={clerkLocalization}
-      signInUrl={withBase("/sign-in")}
-      signUpUrl={withBase("/sign-up")}
-      afterSignOutUrl={withBase("/sign-in")}
-      routerPush={(to) => navigate(stripBase(to))}
-      routerReplace={(to) => navigate(stripBase(to), { replace: true })}
-    >
-      {children}
-    </ClerkProvider>
-  );
-};
-
 function App() {
   return (
     <div className="App">
       <BrowserRouter>
-        <ClerkProviderWithRoutes>
           <AuthProvider>
             <FiltersProvider>
               <Routes>
-                <Route
-                  path="/sign-in/*"
-                  element={
-                    <AuthScreen>
-                      <SignIn
-                        routing="path"
-                        path={withBase("/sign-in")}
-                        signUpUrl={withBase("/sign-up")}
-                        forceRedirectUrl={withBase("/")}
-                        appearance={clerkAppearance}
-                      />
-                    </AuthScreen>
-                  }
-                />
-                <Route
-                  path="/sign-up/*"
-                  element={
-                    <AuthScreen>
-                      <SignUp
-                        routing="path"
-                        path={withBase("/sign-up")}
-                        signInUrl={withBase("/sign-in")}
-                        forceRedirectUrl={withBase("/")}
-                        appearance={clerkAppearance}
-                      />
-                    </AuthScreen>
-                  }
-                />
-                {/* Legacy auth routes now defer to the Clerk sign-in page. */}
-                <Route path="/login" element={<Navigate to="/sign-in" replace />} />
-                <Route path="/auth/callback" element={<Navigate to="/sign-in" replace />} />
+                {/* Login removed for now — every auth route redirects into the app. */}
+                <Route path="/sign-in/*" element={<Navigate to="/" replace />} />
+                <Route path="/sign-up/*" element={<Navigate to="/" replace />} />
+                <Route path="/login" element={<Navigate to="/" replace />} />
+                <Route path="/auth/callback" element={<Navigate to="/" replace />} />
                 <Route path="/" element={<ProtectedShell><Home /></ProtectedShell>} />
                 <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
                 <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
@@ -277,7 +138,6 @@ function App() {
               </Routes>
             </FiltersProvider>
           </AuthProvider>
-        </ClerkProviderWithRoutes>
       </BrowserRouter>
       <Toaster position="top-right" richColors />
     </div>

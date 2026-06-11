@@ -553,50 +553,15 @@ async def clerk_auth_gate(request: Request, call_next):
         return await call_next(request)
     if path in _AUTH_PUBLIC_EXACT or path.startswith("/api/__clerk"):
         return await call_next(request)
-    # Internal service call: the unauthenticated sync job (sync_incremental.py)
-    # POSTs the daily stockout snapshot. It proves itself with a constant-time
-    # match against SESSION_SECRET (shared env, never sent to browsers) instead
-    # of a Clerk session. Any other path/method falls through to the normal gate.
-    if request.method == "POST" and path in (
-        "/api/replenishment/snapshot", "/api/data-quality/log"):
-        _sek = os.environ.get("SESSION_SECRET") or ""
-        _tok = request.headers.get("X-Internal-Token") or ""
-        if _sek and hmac.compare_digest(_tok, _sek):
-            request.state.user = {
-                "id": "internal:sync", "user_id": "internal:sync",
-                "email": "sync@internal", "name": "Sync Job",
-                "role": "admin", "status": "active", "active": True,
-            }
-            return await call_next(request)
-    user, status, detail = clerk_auth.authenticate(request)
-    if user is None:
-        return JSONResponse({"detail": detail}, status_code=status)
-    # Enrich the verified identity with its PERSISTED role + approval status.
-    # Fail closed: if the user store is unreachable, deny rather than fall back
-    # to the previous "everyone is admin" behaviour.
-    try:
-        app_user = resolve_app_user(user["id"], user["email"], user.get("name"))
-    except Exception:
-        return JSONResponse({"detail": "Account store temporarily unavailable"}, status_code=503)
-    role = app_user.get("role") or DEFAULT_NEW_ROLE
-    ustatus = app_user.get("status") or "pending"
-    user["role"] = role
-    user["status"] = ustatus
-    user["active"] = (ustatus == "active")
-    user["user_id"] = user["id"]
-    if ustatus != "active":
-        user["_restrictionReason"] = ustatus
-    request.state.user = user
-    # Approval gate: a signed-in but not-active user may only read its own
-    # identity / sign out. Everything else (all data + admin) is blocked.
-    if ustatus != "active" and path not in _AUTH_SELF_PATHS:
-        return JSONResponse(
-            {"detail": "Your account is awaiting administrator approval.", "status": ustatus},
-            status_code=403,
-        )
-    # Admin-area gate: only admins may touch /api/admin/*.
-    if path.startswith("/api/admin/") and role != "admin":
-        return JSONResponse({"detail": "Administrator access required."}, status_code=403)
+    # Login + access control removed for now: every request runs as a built-in
+    # admin, so no Clerk session or app_users approval is required. The
+    # SQL-injection guard on date filters below is intentionally kept (it is a
+    # safety guard, not a login feature).
+    request.state.user = {
+        "id": "anon", "user_id": "anon",
+        "email": "anon@local", "name": "User",
+        "role": "admin", "status": "active", "active": True,
+    }
     # Reject any non-ISO date filter before it reaches a query string literal.
     for _k in _DATE_QUERY_PARAMS:
         _v = request.query_params.get(_k)
