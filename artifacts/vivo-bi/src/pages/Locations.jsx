@@ -662,14 +662,9 @@ const Locations = () => {
             />
           </div>
 
-          {/* At-a-glance visuals (graduated from the canvas): a plain-English
-              quadrant (who buys / how much they spend) and a per-store
-              heatmap. These sit ABOVE the detailed tables, which are demoted
-              into a collapsible drill-down below. */}
-          <StoreQuadrant stores={storeViz} network={vizNetwork} />
-          <StoreHeatmap stores={storeViz} network={vizNetwork} />
-
-          {/* Sort + leaderboard + grid — kept visible behind the deep-dive
+          {/* Sort + leaderboard + grid — store cards sit DIRECTLY below the
+              main KPI cards (per request). The at-a-glance quadrant + heatmap
+              visuals now follow the grid. Kept visible behind the deep-dive
               slide-over so users can jump between stores without losing
               context (the drill pattern the audit asked for). */}
           <>
@@ -893,6 +888,13 @@ const Locations = () => {
                   );
                 })}
               </div>
+
+              {/* At-a-glance visuals (graduated from the canvas): a plain-English
+                  quadrant (who buys / how much they spend) and a per-store
+                  heatmap. Placed below the store cards so the cards sit directly
+                  under the main KPI cards. */}
+              <StoreQuadrant stores={storeViz} network={vizNetwork} />
+              <StoreHeatmap stores={storeViz} network={vizNetwork} />
 
               {/* Stock-to-Sales · by Subcategory — moved from the bottom
                   of the page (iter 88b) so location-focused users see the
