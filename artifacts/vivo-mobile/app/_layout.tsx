@@ -8,14 +8,17 @@ import {
 } from "@expo-google-fonts/plus-jakarta-sans";
 import { Feather } from "@expo/vector-icons";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Stack } from "expo-router";
+import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect } from "react";
+import { ActivityIndicator, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import colors from "@/constants/colors";
+import { AuthProvider, useAuth } from "@/lib/auth";
 import { FiltersProvider } from "@/lib/filters";
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
@@ -24,9 +27,39 @@ SplashScreen.preventAutoHideAsync();
 const queryClient = new QueryClient();
 
 function RootLayoutNav() {
+  const { status } = useAuth();
+  const segments = useSegments();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (status === "loading") return;
+    const onLogin = segments[0] === "login";
+    if (status === "unauthenticated" && !onLogin) {
+      router.replace("/login");
+    } else if (status === "authenticated" && onLogin) {
+      router.replace("/(tabs)");
+    }
+  }, [status, segments, router]);
+
+  if (status === "loading") {
+    return (
+      <View
+        style={{
+          flex: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: colors.light.background,
+        }}
+      >
+        <ActivityIndicator color={colors.light.primary} />
+      </View>
+    );
+  }
+
   return (
     <Stack screenOptions={{ headerBackTitle: "Back" }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen name="login" options={{ headerShown: false }} />
     </Stack>
   );
 }
@@ -55,9 +88,11 @@ export default function RootLayout() {
         <QueryClientProvider client={queryClient}>
           <GestureHandlerRootView>
             <KeyboardProvider>
-              <FiltersProvider>
-                <RootLayoutNav />
-              </FiltersProvider>
+              <AuthProvider>
+                <FiltersProvider>
+                  <RootLayoutNav />
+                </FiltersProvider>
+              </AuthProvider>
             </KeyboardProvider>
           </GestureHandlerRootView>
         </QueryClientProvider>

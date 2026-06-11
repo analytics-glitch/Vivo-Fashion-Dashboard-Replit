@@ -1,6 +1,7 @@
+import { Feather } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import React from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
@@ -13,6 +14,7 @@ import {
 } from "@/components/ui";
 import { useColors } from "@/hooks/useColors";
 import { Kpis, apiGet } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { fmtCompact, fmtKES, fmtNum, fmtPct } from "@/lib/format";
 import { useFilters } from "@/lib/filters";
 
@@ -20,11 +22,13 @@ export default function OverviewScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
   const { range } = useFilters();
+  const { status, logout } = useAuth();
 
   const q = useQuery({
     queryKey: ["kpis", range.date_from, range.date_to],
     queryFn: () => apiGet<Kpis>("/kpis", range),
     staleTime: 5 * 60_000,
+    enabled: status === "authenticated",
   });
 
   const k = q.data;
@@ -37,9 +41,18 @@ export default function OverviewScreen() {
         { paddingTop: insets.top + WEB_TOP_INSET + 8, paddingBottom: 120 },
       ]}
     >
-      <View style={styles.header}>
-        <Text style={[styles.brand, { color: c.primaryDeep }]}>Vivo Fashion Group</Text>
-        <Text style={[styles.title, { color: c.foreground }]}>Executive Overview</Text>
+      <View style={styles.headerRow}>
+        <View style={styles.header}>
+          <Text style={[styles.brand, { color: c.primaryDeep }]}>Vivo Fashion Group</Text>
+          <Text style={[styles.title, { color: c.foreground }]}>Executive Overview</Text>
+        </View>
+        <Pressable
+          onPress={() => logout()}
+          hitSlop={10}
+          style={[styles.signOut, { borderColor: c.border, backgroundColor: c.card }]}
+        >
+          <Feather name="log-out" size={16} color={c.textSub} />
+        </Pressable>
       </View>
       <PresetPills />
 
@@ -109,7 +122,21 @@ function MovementRow({ label, value }: { label: string; value: string }) {
 
 const styles = StyleSheet.create({
   content: { paddingHorizontal: 16, gap: 16 },
-  header: { gap: 2 },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  header: { gap: 2, flexShrink: 1 },
+  signOut: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   brand: {
     fontFamily: "Jakarta_700Bold",
     fontSize: 12,

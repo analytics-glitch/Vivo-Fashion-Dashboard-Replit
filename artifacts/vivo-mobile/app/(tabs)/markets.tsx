@@ -17,6 +17,7 @@ import {
 import { countryColor } from "@/constants/colors";
 import { useColors } from "@/hooks/useColors";
 import { CountryRow, apiGet } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { fmtKES, fmtNum } from "@/lib/format";
 import { useFilters } from "@/lib/filters";
 
@@ -24,11 +25,13 @@ export default function MarketsScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
   const { range } = useFilters();
+  const { status } = useAuth();
 
   const q = useQuery({
     queryKey: ["country-summary", range.date_from, range.date_to],
     queryFn: () => apiGet<CountryRow[]>("/country-summary", range),
     staleTime: 5 * 60_000,
+    enabled: status === "authenticated",
   });
 
   const rows = q.data ?? [];

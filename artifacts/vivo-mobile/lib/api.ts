@@ -10,6 +10,26 @@
 const DOMAIN = process.env.EXPO_PUBLIC_DOMAIN;
 export const API_BASE = DOMAIN ? `https://${DOMAIN}/api` : "/api";
 
+// --- Auth token: set by AuthProvider, attached to every request ---
+// Every /api endpoint is gated by the backend session middleware, so requests
+// without a valid Bearer token return 401. The AuthProvider keeps this in sync
+// with the persisted token and registers an unauthorized handler so an expired
+// session bounces the user back to the login screen.
+let authToken: string | null = null;
+let onUnauthorized: (() => void) | null = null;
+
+export function setAuthToken(token: string | null): void {
+  authToken = token;
+}
+
+export function setUnauthorizedHandler(fn: (() => void) | null): void {
+  onUnauthorized = fn;
+}
+
+function authHeaders(): Record<string, string> {
+  return authToken ? { Authorization: `Bearer ${authToken}` } : {};
+}
+
 type Params = Record<string, string | number | undefined | null>;
 
 const qs = (params?: Params): string => {
@@ -27,11 +47,72 @@ const qs = (params?: Params): string => {
 };
 
 export async function apiGet<T>(path: string, params?: Params): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}${qs(params)}`);
+  const res = await fetch(`${API_BASE}${path}${qs(params)}`, {
+    headers: { ...authHeaders() },
+  });
+  if (res.status === 401) {
+    onUnauthorized?.();
+    throw new Error("Unauthorized (401)");
+  }
   if (!res.ok) {
     throw new Error(`Request failed (${res.status})`);
   }
   return (await res.json()) as T;
+}
+
+export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (res.status === 401) onUnauthorized?.();
+  if (!res.ok) {
+    let detail = `Request failed (${res.status})`;
+    try {
+      const j = (await res.json()) as { detail?: unknown };
+      if (j && typeof j.detail === "string") detail = j.detail;
+    } catch {
+      // non-JSON error body; keep the generic message
+    }
+    const err = new Error(detail) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
+  return (await res.json()) as T;
+}
+
+// --- Auth ---
+
+export interface AuthUser {
+  user_id: string;
+  email: string;
+  name?: string | null;
+  role?: string | null;
+  status?: string | null;
+  picture?: string | null;
+}
+
+export async function loginRequest(
+  email: string,
+  password: string,
+): Promise<{ token: string; user: AuthUser }> {
+  return apiPost<{ token: string; user: AuthUser }>("/auth/login", {
+    email,
+    password,
+  });
+}
+
+export async function fetchMe(): Promise<AuthUser> {
+  return apiGet<AuthUser>("/auth/me");
+}
+
+export async function logoutRequest(): Promise<void> {
+  try {
+    await apiPost("/auth/logout");
+  } catch {
+    // best-effort; local token is cleared regardless
+  }
 }
 
 // --- Response types (subset of fields the mobile app uses) ---

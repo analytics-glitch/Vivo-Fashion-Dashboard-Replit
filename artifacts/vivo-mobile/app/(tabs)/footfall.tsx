@@ -16,6 +16,7 @@ import {
 } from "@/components/ui";
 import { useColors } from "@/hooks/useColors";
 import { FootfallRow, apiGet } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { fmtCompact, fmtNum, fmtPct } from "@/lib/format";
 import { useFilters } from "@/lib/filters";
 
@@ -23,12 +24,14 @@ export default function FootfallScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
   const { range } = useFilters();
+  const { status } = useAuth();
 
   // Footfall endpoint takes date range only (no country filter, per backend contract).
   const q = useQuery({
     queryKey: ["footfall", range.date_from, range.date_to],
     queryFn: () => apiGet<FootfallRow[]>("/footfall", range),
     staleTime: 5 * 60_000,
+    enabled: status === "authenticated",
   });
 
   const rows = q.data ?? [];
