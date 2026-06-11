@@ -69,4 +69,23 @@ export const COUNTRY_COLORS: Record<string, string> = {
 export const countryColor = (name?: string | null): string =>
   (name && COUNTRY_COLORS[name]) || COUNTRY_COLORS.Other;
 
+// Brand accent colors + labels for the CRM brand split (Vivo vs Shop Zetu).
+// Represent brands with a colored dot + the name (no logos/glyphs), mirroring
+// the country-dot convention.
+export const BRAND_COLORS: Record<string, string> = {
+  vivo: "#1a5c38",
+  sz: "#7c3aed",
+};
+
+export const BRAND_LABELS: Record<string, string> = {
+  vivo: "Vivo",
+  sz: "Shop Zetu",
+};
+
+export const brandColor = (code?: string | null): string =>
+  (code && BRAND_COLORS[code]) || "#6b7280";
+
+export const brandLabel = (code?: string | null): string =>
+  (code && BRAND_LABELS[code]) || (code || "—");
+
 export default colors;

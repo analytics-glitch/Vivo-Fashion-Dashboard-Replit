@@ -37,6 +37,7 @@ const SizeHealth = React.lazy(() => import("@/pages/SizeHealth"));
 const MarkdownClearance = React.lazy(() => import("@/pages/MarkdownClearance"));
 const Margin = React.lazy(() => import("@/pages/Margin"));
 const RFM = React.lazy(() => import("@/pages/RFM"));
+const CRM = React.lazy(() => import("@/pages/CRM"));
 const Login = React.lazy(() => import("@/pages/Login"));
 const AuthCallback = React.lazy(() => import("@/pages/AuthCallback"));
 
@@ -117,6 +118,7 @@ function App() {
                 <Route path="/size-health" element={<ProtectedShell pageId="size-health"><SizeHealth /></ProtectedShell>} />
                 <Route path="/margin" element={<ProtectedShell pageId="margin"><Margin /></ProtectedShell>} />
                 <Route path="/rfm" element={<ProtectedShell pageId="rfm"><RFM /></ProtectedShell>} />
+                <Route path="/crm" element={<ProtectedShell pageId="crm"><CRM /></ProtectedShell>} />
                 <Route path="/exports" element={<ProtectedShell pageId="exports"><Exports /></ProtectedShell>} />
                 <Route path="/customers" element={<ProtectedShell pageId="customers"><Customers /></ProtectedShell>} />
                 <Route path="/customer-details" element={<ProtectedShell pageId="customer-details"><CustomerDetails /></ProtectedShell>} />

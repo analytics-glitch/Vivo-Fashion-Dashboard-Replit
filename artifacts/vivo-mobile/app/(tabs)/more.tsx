@@ -29,6 +29,15 @@ const GROUPS: Group[] = [
     ],
   },
   {
+    title: "CRM",
+    items: [
+      { label: "Contacts", caption: "Search profiles & 360 view", icon: "user", route: "/crm-contacts" },
+      { label: "Tasks", caption: "Follow-up queue", icon: "check-square", route: "/crm-tasks" },
+      { label: "Service Tickets", caption: "Cases, SLA & replies", icon: "life-buoy", route: "/crm-tickets" },
+      { label: "Loyalty", caption: "Members, tiers & lookup", icon: "gift", route: "/crm-loyalty" },
+    ],
+  },
+  {
     title: "Products & Range",
     items: [
       { label: "Products", caption: "Style & subcategory performance", icon: "shopping-bag", route: "/products" },

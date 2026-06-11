@@ -761,6 +761,13 @@ async def clerk_auth_gate(request: Request, call_next):
     if path.startswith("/api/admin") and user.get("role") != "admin":
         return JSONResponse({"detail": "Admin access required"}, status_code=403)
 
+    # CRM is an analyst+ surface (analyst / exec / admin). Enforce server-side so
+    # client-side nav/route hiding can never be bypassed (e.g. direct API or
+    # mobile). Specific CRM mutations still apply their own finer-grained checks
+    # (e.g. loyalty adjust / config require admin via _crm_is_admin).
+    if path.startswith("/api/crm") and user.get("role") not in ("analyst", "exec", "admin"):
+        return JSONResponse({"detail": "CRM access requires an analyst, exec or admin role"}, status_code=403)
+
     return await call_next(request)
 
 @app.on_event("startup")
@@ -967,6 +974,7 @@ BASE_FILTERS = """
     s.pos_location_name NOT IN ('Staff purchases','Manual Order','Online - vivo-uganda')
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%shopping bag%'
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%gift card%'
+    AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%on specific products%'
     AND LOWER(COALESCE(s.variant_sku,'')) NOT LIKE '%vb00%'
 """
 
@@ -9202,6 +9210,1242 @@ def data_quality_log(request: Request):
             ("data_quality", note[:500], score))
     return {"ok": True, "data_quality_score": score, "skipped": False,
             "checks": rep["checks"]}
+
+
+# =====================================================================
+# CRM / CEM / Loyalty platform (in-app, no external integrations)
+# ---------------------------------------------------------------------
+# A write-capable CRM layered on the live BI data. Customer 360 merges
+# all_customers + all_sales with a CRM override/extension table; brand
+# split (vivo | sz) lives on every CRM record. Append-only ledgers for
+# loyalty points and ticket messages. All money in KES. Social-channel
+# webhooks, the customer loyalty app, OTP, email engine and ML churn are
+# intentionally NOT built here (they need external accounts/approvals).
+# =====================================================================
+
+CRM_BRANDS = ("vivo", "sz")
+
+CRM_CONFIG_DEFAULTS = {
+    "loyalty.earn_rate_kes": "100",        # 1 point per KES 100 spent (floor)
+    "loyalty.points_per_kes_redeem": "100",  # 100 points = KES 1
+    "loyalty.redemption_floor": "200",     # minimum points to redeem
+    "loyalty.points_expiry_months": "12",
+    "loyalty.tier_silver_kes": "50000",
+    "loyalty.tier_gold_kes": "150000",
+    "loyalty.tier_vip_kes": "300000",
+    "sla.meta_high_minutes": "120",
+    "sla.tiktok_high_minutes": "240",
+    "sla.whatsapp_high_minutes": "120",
+    "sla.email_minutes": "1440",
+    "sla.in_store_critical_minutes": "60",
+    "sla.default_minutes": "480",
+}
+
+
+def _ensure_crm_tables():
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_config (
+            key        TEXT PRIMARY KEY,
+            value      TEXT,
+            updated_by TEXT,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    # Customer extension / override layer. Rows may key an existing
+    # all_customers.customer_id (overrides + CRM-only fields) OR be a
+    # staff-added contact (is_manual=true, generated 'crm:' customer_id).
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_customer (
+            customer_id            TEXT PRIMARY KEY,
+            brand_code             TEXT NOT NULL DEFAULT 'vivo',
+            first_name             TEXT,
+            last_name              TEXT,
+            phone                  TEXT,
+            email                  TEXT,
+            dob                    TEXT,
+            preferred_size         TEXT,
+            preferred_style        TEXT,
+            preferred_channel      TEXT,
+            store_affinity         TEXT,
+            consent_marketing      BOOLEAN NOT NULL DEFAULT FALSE,
+            consent_data_processing BOOLEAN NOT NULL DEFAULT FALSE,
+            notes                  TEXT,
+            is_manual              BOOLEAN NOT NULL DEFAULT FALSE,
+            created_by             TEXT,
+            created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_by             TEXT,
+            updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_customer_phone ON crm_customer(phone)")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_customer_email ON crm_customer(email)")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_customer_brand ON crm_customer(brand_code)")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_tags (
+            id         SERIAL PRIMARY KEY,
+            name       TEXT NOT NULL,
+            color      TEXT DEFAULT '#1a5c38',
+            brand_code TEXT NOT NULL DEFAULT 'vivo',
+            created_by TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (name, brand_code)
+        )""")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_customer_tags (
+            customer_id TEXT NOT NULL,
+            tag_id      INTEGER NOT NULL REFERENCES crm_tags(id) ON DELETE CASCADE,
+            added_by    TEXT,
+            added_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (customer_id, tag_id)
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_customer_tags_tag ON crm_customer_tags(tag_id)")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_tasks (
+            id               SERIAL PRIMARY KEY,
+            customer_id      TEXT,
+            title            TEXT NOT NULL,
+            description      TEXT,
+            due_date         DATE,
+            status           TEXT NOT NULL DEFAULT 'open',
+            priority         TEXT NOT NULL DEFAULT 'normal',
+            assignee_user_id TEXT,
+            assignee_name    TEXT,
+            brand_code       TEXT NOT NULL DEFAULT 'vivo',
+            created_by       TEXT,
+            created_by_name  TEXT,
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_tasks_status ON crm_tasks(status)")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_tasks_assignee ON crm_tasks(assignee_user_id)")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_tasks_customer ON crm_tasks(customer_id)")
+    # Append-only interaction / outcome log.
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_interactions (
+            id          SERIAL PRIMARY KEY,
+            customer_id TEXT NOT NULL,
+            type        TEXT NOT NULL DEFAULT 'note',
+            outcome     TEXT,
+            channel     TEXT,
+            notes       TEXT,
+            user_id     TEXT,
+            user_name   TEXT,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_interactions_customer ON crm_interactions(customer_id)")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_campaigns (
+            id              SERIAL PRIMARY KEY,
+            name            TEXT NOT NULL,
+            brand_code      TEXT NOT NULL DEFAULT 'vivo',
+            channel         TEXT,
+            description     TEXT,
+            status          TEXT NOT NULL DEFAULT 'draft',
+            created_by      TEXT,
+            created_by_name TEXT,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_campaign_members (
+            id            SERIAL PRIMARY KEY,
+            campaign_id   INTEGER NOT NULL REFERENCES crm_campaigns(id) ON DELETE CASCADE,
+            customer_id   TEXT NOT NULL,
+            send_status   TEXT NOT NULL DEFAULT 'pending',
+            responded     BOOLEAN NOT NULL DEFAULT FALSE,
+            response_note TEXT,
+            sent_at       TIMESTAMPTZ,
+            responded_at  TIMESTAMPTZ,
+            added_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (campaign_id, customer_id)
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_campaign_members_campaign ON crm_campaign_members(campaign_id)")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_tickets (
+            id                SERIAL PRIMARY KEY,
+            ticket_number     TEXT UNIQUE,
+            customer_id       TEXT,
+            brand_code        TEXT NOT NULL DEFAULT 'vivo',
+            inbound_channel   TEXT,
+            issue_category    TEXT,
+            subject           TEXT,
+            priority          TEXT NOT NULL DEFAULT 'normal',
+            assigned_to       TEXT,
+            assigned_to_name  TEXT,
+            status            TEXT NOT NULL DEFAULT 'open',
+            sla_target_minutes INTEGER,
+            sla_due_at        TIMESTAMPTZ,
+            sla_breached      BOOLEAN NOT NULL DEFAULT FALSE,
+            csat_score        INTEGER,
+            created_by        TEXT,
+            created_by_name   TEXT,
+            created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+            resolved_at       TIMESTAMPTZ
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_tickets_status ON crm_tickets(status)")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_tickets_assigned ON crm_tickets(assigned_to)")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_tickets_customer ON crm_tickets(customer_id)")
+    # Append-only ticket conversation.
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_ticket_messages (
+            id             SERIAL PRIMARY KEY,
+            ticket_id      INTEGER NOT NULL REFERENCES crm_tickets(id) ON DELETE CASCADE,
+            direction      TEXT NOT NULL DEFAULT 'outbound',
+            sender_user_id TEXT,
+            sender_name    TEXT,
+            body           TEXT,
+            created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_ticket_messages_ticket ON crm_ticket_messages(ticket_id)")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_loyalty_enrolment (
+            customer_id     TEXT PRIMARY KEY,
+            brand_code      TEXT NOT NULL DEFAULT 'vivo',
+            tier            TEXT NOT NULL DEFAULT 'Bronze',
+            points_balance  INTEGER NOT NULL DEFAULT 0,
+            points_lifetime INTEGER NOT NULL DEFAULT 0,
+            enrolment_date  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            tier_updated_at TIMESTAMPTZ
+        )""")
+    # Append-only points ledger — single source of truth, never updated/deleted.
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_loyalty_ledger (
+            id             SERIAL PRIMARY KEY,
+            customer_id    TEXT NOT NULL,
+            transaction_id TEXT,
+            points_change  INTEGER NOT NULL,
+            reason         TEXT NOT NULL DEFAULT 'admin',
+            balance_after  INTEGER,
+            valid_until    TIMESTAMPTZ,
+            created_by     TEXT,
+            created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_ledger_customer ON crm_loyalty_ledger(customer_id)")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_redemptions (
+            id             SERIAL PRIMARY KEY,
+            customer_id    TEXT NOT NULL,
+            points_redeemed INTEGER NOT NULL,
+            kes_value      NUMERIC,
+            discount_code  TEXT UNIQUE,
+            code_status    TEXT NOT NULL DEFAULT 'issued',
+            issued_by      TEXT,
+            issued_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            used_at        TIMESTAMPTZ,
+            used_store_id  TEXT
+        )""")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_audit (
+            id         SERIAL PRIMARY KEY,
+            entity     TEXT,
+            entity_id  TEXT,
+            action     TEXT,
+            detail     TEXT,
+            user_id    TEXT,
+            user_name  TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    # Seed config defaults (idempotent — never clobbers an admin-edited value).
+    for k, v in CRM_CONFIG_DEFAULTS.items():
+        _users_exec(
+            "INSERT INTO crm_config (key, value, updated_by) VALUES (%s, %s, 'system:seed') "
+            "ON CONFLICT (key) DO NOTHING", (k, v))
+
+
+@app.on_event("startup")
+def _init_crm_store():
+    try:
+        _ensure_crm_tables()
+    except Exception as e:
+        log.error("CRM table init failed: %s", e)
+
+
+# --- CRM helpers ----------------------------------------------------------
+
+def _crm_actor(request):
+    u = getattr(request.state, "user", None) or {}
+    uid = u.get("user_id") or u.get("id") or "system"
+    name = u.get("name") or u.get("email") or "system"
+    role = (u.get("role") or "viewer").lower()
+    return uid, name, role
+
+
+def _crm_is_admin(request):
+    _, _, role = _crm_actor(request)
+    return role == "admin"
+
+
+def _crm_norm_phone(p):
+    """Normalise a Kenyan phone toward E.164 (+254...). Best-effort."""
+    if not p:
+        return None
+    d = re.sub(r"[^0-9]", "", str(p))
+    if not d:
+        return None
+    if d.startswith("254"):
+        pass
+    elif d.startswith("0"):
+        d = "254" + d[1:]
+    elif len(d) == 9 and d[0] in ("7", "1"):
+        d = "254" + d
+    return "+" + d
+
+
+def _crm_brand(v, default="vivo"):
+    v = (v or "").strip().lower()
+    return v if v in CRM_BRANDS else default
+
+
+def _crm_config_dict():
+    rows = _users_exec("SELECT key, value FROM crm_config", fetch=True) or []
+    cfg = dict(CRM_CONFIG_DEFAULTS)
+    for r in rows:
+        cfg[r["key"]] = r["value"]
+    return cfg
+
+
+def _crm_cfg_num(cfg, key, default=0.0):
+    try:
+        return float(cfg.get(key, CRM_CONFIG_DEFAULTS.get(key, default)))
+    except Exception:
+        return float(default)
+
+
+def _crm_tier_for_spend(spend, cfg):
+    s = float(spend or 0)
+    if s >= _crm_cfg_num(cfg, "loyalty.tier_vip_kes", 300000):
+        return "VIP"
+    if s >= _crm_cfg_num(cfg, "loyalty.tier_gold_kes", 150000):
+        return "Gold"
+    if s >= _crm_cfg_num(cfg, "loyalty.tier_silver_kes", 50000):
+        return "Silver"
+    return "Bronze"
+
+
+def _crm_rolling_spend(customer_id):
+    rows = _users_exec(
+        "SELECT COALESCE(SUM(s.total_sales_kes::numeric),0) AS spend "
+        "FROM all_sales s WHERE s.customer_id = %s "
+        "AND s.sale_kind IN ('sale','order') "
+        "AND s.sale_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' "
+        "AND s.sale_date::date >= (CURRENT_DATE - INTERVAL '12 months') "
+        "AND s.pos_location_name NOT IN ('Staff purchases','Manual Order','Online - vivo-uganda')",
+        (customer_id,), fetch=True)
+    return float(rows[0]["spend"]) if rows else 0.0
+
+
+def _crm_audit(entity, entity_id, action, detail, request):
+    uid, name, _ = _crm_actor(request)
+    try:
+        _users_exec(
+            "INSERT INTO crm_audit (entity, entity_id, action, detail, user_id, user_name) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (entity, str(entity_id), action, (detail or "")[:1000], uid, name))
+    except Exception:
+        pass
+
+
+def _crm_sla_minutes(cfg, channel, priority):
+    ch = (channel or "").lower()
+    pr = (priority or "normal").lower()
+    if ch == "in_store" and pr in ("critical", "urgent", "high"):
+        return int(_crm_cfg_num(cfg, "sla.in_store_critical_minutes", 60))
+    if ch in ("facebook", "instagram", "meta"):
+        return int(_crm_cfg_num(cfg, "sla.meta_high_minutes", 120))
+    if ch == "tiktok":
+        return int(_crm_cfg_num(cfg, "sla.tiktok_high_minutes", 240))
+    if ch == "whatsapp":
+        return int(_crm_cfg_num(cfg, "sla.whatsapp_high_minutes", 120))
+    if ch == "email":
+        return int(_crm_cfg_num(cfg, "sla.email_minutes", 1440))
+    return int(_crm_cfg_num(cfg, "sla.default_minutes", 480))
+
+
+# --- CRM: config + team ---------------------------------------------------
+
+@app.get("/api/crm/config")
+def crm_config_get(request: Request):
+    return {"config": _crm_config_dict()}
+
+
+@app.put("/api/crm/config")
+async def crm_config_put(request: Request):
+    if not _crm_is_admin(request):
+        return JSONResponse({"detail": "Admin access required"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    items = body.get("config") if isinstance(body, dict) and "config" in body else body
+    if not isinstance(items, dict):
+        return JSONResponse({"detail": "Expected an object of key/value pairs"}, status_code=400)
+    uid, name, _ = _crm_actor(request)
+    for k, v in items.items():
+        _users_exec(
+            "INSERT INTO crm_config (key, value, updated_by, updated_at) VALUES (%s,%s,%s,now()) "
+            "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=now()",
+            (str(k), str(v), name))
+    _crm_audit("config", "*", "update", ", ".join(items.keys()), request)
+    return {"ok": True, "config": _crm_config_dict()}
+
+
+@app.get("/api/crm/team")
+def crm_team(request: Request):
+    rows = _users_exec(
+        "SELECT user_id, name, email, role FROM app_users WHERE status='active' ORDER BY name NULLS LAST, email",
+        fetch=True) or []
+    return {"team": rows}
+
+
+# --- CRM: customers (search / 360 / create / patch) -----------------------
+
+@app.get("/api/crm/customers")
+def crm_customers(request: Request):
+    qp = request.query_params
+    q = (qp.get("q") or "").strip()
+    brand = _crm_brand(qp.get("brand"), default="")
+    segment = (qp.get("segment") or "").strip().lower()
+    tag_id = qp.get("tag_id")
+    try:
+        limit = max(1, min(int(qp.get("limit") or 50), 200))
+    except Exception:
+        limit = 50
+    try:
+        offset = max(0, int(qp.get("offset") or 0))
+    except Exception:
+        offset = 0
+
+    like = f"%{q.lower()}%"
+    phone_digits = re.sub(r"[^0-9]", "", q)
+    phone_like = f"%{phone_digits}%" if phone_digits else None
+
+    where = ["1=1"]
+    params = {}
+    if q:
+        cond = "(lower(m.name) LIKE %(like)s OR lower(m.email) LIKE %(like)s"
+        params["like"] = like
+        if phone_like:
+            cond += " OR regexp_replace(COALESCE(m.phone,''),'[^0-9]','','g') LIKE %(phone_like)s"
+            params["phone_like"] = phone_like
+        cond += ")"
+        where.append(cond)
+    if brand:
+        where.append("m.brand_code = %(brand)s")
+        params["brand"] = brand
+    if tag_id:
+        where.append("EXISTS (SELECT 1 FROM crm_customer_tags ct WHERE ct.customer_id = m.customer_id AND ct.tag_id = %(tag_id)s)")
+        try:
+            params["tag_id"] = int(tag_id)
+        except Exception:
+            params["tag_id"] = -1
+    if segment == "new":
+        where.append("COALESCE(m.total_orders,0) <= 1")
+    elif segment == "loyal":
+        where.append("COALESCE(m.total_orders,0) >= 5")
+    elif segment == "vip":
+        where.append("COALESCE(m.total_spend_kes,0) >= %(vip)s")
+        params["vip"] = _crm_cfg_num(_crm_config_dict(), "loyalty.tier_vip_kes", 300000)
+    elif segment == "at_risk":
+        where.append("m.days_since BETWEEN 90 AND 180")
+    elif segment == "churned":
+        where.append("m.days_since > 180")
+
+    sql = f"""
+    WITH base AS (
+        SELECT customer_id,
+               MAX(NULLIF(TRIM(CONCAT_WS(' ', first_name, last_name)),'')) AS b_name,
+               MAX(NULLIF(phone,''))   AS b_phone,
+               MAX(NULLIF(email,''))   AS b_email,
+               MAX(NULLIF(country,'')) AS b_country,
+               SUM(COALESCE(total_orders,0))    AS b_orders,
+               SUM(COALESCE(total_spend_kes,0)) AS b_spend,
+               MAX(last_order_date)    AS b_last
+        FROM all_customers GROUP BY customer_id
+    ),
+    merged AS (
+        SELECT COALESCE(cc.customer_id, b.customer_id) AS customer_id,
+               COALESCE(NULLIF(TRIM(CONCAT_WS(' ', cc.first_name, cc.last_name)),''), b.b_name) AS name,
+               COALESCE(NULLIF(cc.phone,''), b.b_phone) AS phone,
+               COALESCE(NULLIF(cc.email,''), b.b_email) AS email,
+               b.b_country AS country,
+               COALESCE(cc.brand_code,'vivo') AS brand_code,
+               COALESCE(b.b_orders,0)  AS total_orders,
+               COALESCE(b.b_spend,0)   AS total_spend_kes,
+               b.b_last AS last_order_date,
+               COALESCE(cc.is_manual,false) AS is_manual,
+               CASE WHEN b.b_last ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
+                    THEN (CURRENT_DATE - b.b_last::date) END AS days_since
+        FROM base b FULL OUTER JOIN crm_customer cc ON cc.customer_id = b.customer_id
+    )
+    SELECT m.customer_id, m.name, m.phone, m.email, m.country, m.brand_code,
+           m.total_orders, m.total_spend_kes, m.last_order_date, m.is_manual, m.days_since,
+           le.tier, le.points_balance
+    FROM merged m
+    LEFT JOIN crm_loyalty_enrolment le ON le.customer_id = m.customer_id
+    WHERE {" AND ".join(where)}
+    ORDER BY m.total_spend_kes DESC NULLS LAST, m.name NULLS LAST
+    LIMIT %(limit)s OFFSET %(offset)s
+    """
+    params["limit"] = limit
+    params["offset"] = offset
+    rows = _users_exec(sql, params, fetch=True) or []
+    # Attach tags for this page of customers.
+    ids = [r["customer_id"] for r in rows]
+    tags_by_cust = {}
+    if ids:
+        trows = _users_exec(
+            "SELECT ct.customer_id, t.id, t.name, t.color FROM crm_customer_tags ct "
+            "JOIN crm_tags t ON t.id = ct.tag_id WHERE ct.customer_id = ANY(%s)",
+            (ids,), fetch=True) or []
+        for tr in trows:
+            tags_by_cust.setdefault(tr["customer_id"], []).append(
+                {"id": tr["id"], "name": tr["name"], "color": tr["color"]})
+    for r in rows:
+        r["tags"] = tags_by_cust.get(r["customer_id"], [])
+        if r.get("total_spend_kes") is not None:
+            r["total_spend_kes"] = float(r["total_spend_kes"])
+    return {"customers": rows, "count": len(rows), "limit": limit, "offset": offset}
+
+
+@app.get("/api/crm/customers/{customer_id}")
+def crm_customer_detail(customer_id: str, request: Request):
+    base = _users_exec(
+        "SELECT customer_id, "
+        "MAX(NULLIF(TRIM(CONCAT_WS(' ', first_name, last_name)),'')) AS name, "
+        "MAX(NULLIF(phone,'')) AS phone, MAX(NULLIF(email,'')) AS email, "
+        "MAX(NULLIF(country,'')) AS country, MAX(NULLIF(city,'')) AS city, "
+        "MAX(NULLIF(preferred_size,'')) AS preferred_size, "
+        "SUM(COALESCE(total_orders,0)) AS total_orders, "
+        "SUM(COALESCE(total_spend_kes,0)) AS total_spend_kes, "
+        "MAX(last_order_date) AS last_order_date, MIN(first_order_date) AS first_order_date "
+        "FROM all_customers WHERE customer_id=%s GROUP BY customer_id",
+        (customer_id,), fetch=True)
+    ext = _users_exec("SELECT * FROM crm_customer WHERE customer_id=%s", (customer_id,), fetch=True)
+    if not base and not ext:
+        return JSONResponse({"detail": "Customer not found"}, status_code=404)
+    b = base[0] if base else {}
+    e = ext[0] if ext else {}
+    profile = {
+        "customer_id": customer_id,
+        "name": (((e.get("first_name") or "") + " " + (e.get("last_name") or "")).strip()
+                 or b.get("name") or ""),
+        "first_name": e.get("first_name"),
+        "last_name": e.get("last_name"),
+        "phone": e.get("phone") or b.get("phone"),
+        "email": e.get("email") or b.get("email"),
+        "country": b.get("country"),
+        "city": b.get("city"),
+        "brand_code": e.get("brand_code") or "vivo",
+        "dob": e.get("dob"),
+        "preferred_size": e.get("preferred_size") or b.get("preferred_size"),
+        "preferred_style": e.get("preferred_style"),
+        "preferred_channel": e.get("preferred_channel"),
+        "store_affinity": e.get("store_affinity"),
+        "consent_marketing": bool(e.get("consent_marketing")),
+        "consent_data_processing": bool(e.get("consent_data_processing")),
+        "notes": e.get("notes"),
+        "is_manual": bool(e.get("is_manual")),
+        "total_orders": int(b.get("total_orders") or 0),
+        "total_spend_kes": float(b.get("total_spend_kes") or 0),
+        "first_order_date": b.get("first_order_date"),
+        "last_order_date": b.get("last_order_date"),
+    }
+    # Recent transactions (aggregate per order, most recent 20).
+    txns = _users_exec(
+        "SELECT s.order_id, MAX(s.sale_date) AS sale_date, MAX(s.pos_location_name) AS pos_location, "
+        "MAX(s.channel) AS channel, MAX(s.country) AS country, "
+        "ROUND(SUM(s.total_sales_kes::numeric),0) AS amount_kes, "
+        "SUM(COALESCE(s.ordered_item_quantity,0)) AS units "
+        "FROM all_sales s WHERE s.customer_id=%s "
+        "AND s.pos_location_name NOT IN ('Staff purchases','Manual Order','Online - vivo-uganda') "
+        "GROUP BY s.order_id ORDER BY MAX(s.sale_date) DESC NULLS LAST LIMIT 20",
+        (customer_id,), fetch=True) or []
+    for t in txns:
+        t["amount_kes"] = float(t["amount_kes"]) if t.get("amount_kes") is not None else 0.0
+    tags = _users_exec(
+        "SELECT t.id, t.name, t.color FROM crm_customer_tags ct JOIN crm_tags t ON t.id=ct.tag_id "
+        "WHERE ct.customer_id=%s ORDER BY t.name", (customer_id,), fetch=True) or []
+    tasks = _users_exec(
+        "SELECT * FROM crm_tasks WHERE customer_id=%s ORDER BY (status='done'), due_date NULLS LAST, created_at DESC LIMIT 50",
+        (customer_id,), fetch=True) or []
+    interactions = _users_exec(
+        "SELECT * FROM crm_interactions WHERE customer_id=%s ORDER BY created_at DESC LIMIT 50",
+        (customer_id,), fetch=True) or []
+    tickets = _users_exec(
+        "SELECT id, ticket_number, subject, status, priority, inbound_channel, sla_breached, created_at "
+        "FROM crm_tickets WHERE customer_id=%s ORDER BY created_at DESC LIMIT 50",
+        (customer_id,), fetch=True) or []
+    enrol = _users_exec("SELECT * FROM crm_loyalty_enrolment WHERE customer_id=%s", (customer_id,), fetch=True)
+    ledger = _users_exec(
+        "SELECT * FROM crm_loyalty_ledger WHERE customer_id=%s ORDER BY created_at DESC LIMIT 25",
+        (customer_id,), fetch=True) or []
+    redemptions = _users_exec(
+        "SELECT * FROM crm_redemptions WHERE customer_id=%s ORDER BY issued_at DESC LIMIT 25",
+        (customer_id,), fetch=True) or []
+    for rd in redemptions:
+        if rd.get("kes_value") is not None:
+            rd["kes_value"] = float(rd["kes_value"])
+    return {
+        "profile": profile,
+        "transactions": txns,
+        "tags": tags,
+        "tasks": tasks,
+        "interactions": interactions,
+        "tickets": tickets,
+        "loyalty": {
+            "enrolment": enrol[0] if enrol else None,
+            "ledger": ledger,
+            "redemptions": redemptions,
+        },
+    }
+
+
+@app.post("/api/crm/customers")
+async def crm_customer_create(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    first = (body.get("first_name") or "").strip()
+    last = (body.get("last_name") or "").strip()
+    if not first and not last:
+        return JSONResponse({"detail": "A first or last name is required"}, status_code=400)
+    uid, name, _ = _crm_actor(request)
+    cid = "crm:" + secrets.token_hex(8)
+    phone = _crm_norm_phone(body.get("phone"))
+    _users_exec(
+        "INSERT INTO crm_customer (customer_id, brand_code, first_name, last_name, phone, email, "
+        "dob, preferred_size, preferred_style, preferred_channel, store_affinity, "
+        "consent_marketing, consent_data_processing, notes, is_manual, created_by, updated_by) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,true,%s,%s)",
+        (cid, _crm_brand(body.get("brand_code")), first, last, phone,
+         (body.get("email") or "").strip() or None, body.get("dob"),
+         body.get("preferred_size"), body.get("preferred_style"), body.get("preferred_channel"),
+         body.get("store_affinity"), bool(body.get("consent_marketing")),
+         bool(body.get("consent_data_processing")), body.get("notes"), uid, name))
+    _crm_audit("customer", cid, "create", f"manual contact {first} {last}", request)
+    return {"ok": True, "customer_id": cid}
+
+
+@app.patch("/api/crm/customers/{customer_id}")
+async def crm_customer_patch(customer_id: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    uid, name, _ = _crm_actor(request)
+    allowed = ["first_name", "last_name", "phone", "email", "dob", "preferred_size",
+               "preferred_style", "preferred_channel", "store_affinity", "notes",
+               "consent_marketing", "consent_data_processing", "brand_code"]
+    fields = {}
+    for k in allowed:
+        if k in body:
+            if k == "phone":
+                fields[k] = _crm_norm_phone(body.get(k))
+            elif k == "brand_code":
+                fields[k] = _crm_brand(body.get(k))
+            elif k in ("consent_marketing", "consent_data_processing"):
+                fields[k] = bool(body.get(k))
+            else:
+                fields[k] = body.get(k)
+    # Upsert: ensure a row exists then update the touched fields.
+    _users_exec(
+        "INSERT INTO crm_customer (customer_id, created_by, updated_by) VALUES (%s,%s,%s) "
+        "ON CONFLICT (customer_id) DO NOTHING", (customer_id, uid, name))
+    if fields:
+        sets = ", ".join(f"{k}=%s" for k in fields) + ", updated_by=%s, updated_at=now()"
+        vals = list(fields.values()) + [name, customer_id]
+        _users_exec(f"UPDATE crm_customer SET {sets} WHERE customer_id=%s", vals)
+    _crm_audit("customer", customer_id, "update", ", ".join(fields.keys()), request)
+    return {"ok": True, "customer_id": customer_id}
+
+
+# --- CRM: tags / segments -------------------------------------------------
+
+@app.get("/api/crm/tags")
+def crm_tags_list(request: Request):
+    brand = _crm_brand(request.query_params.get("brand"), default="")
+    if brand:
+        rows = _users_exec(
+            "SELECT t.*, (SELECT COUNT(*) FROM crm_customer_tags ct WHERE ct.tag_id=t.id) AS member_count "
+            "FROM crm_tags t WHERE t.brand_code=%s ORDER BY t.name", (brand,), fetch=True) or []
+    else:
+        rows = _users_exec(
+            "SELECT t.*, (SELECT COUNT(*) FROM crm_customer_tags ct WHERE ct.tag_id=t.id) AS member_count "
+            "FROM crm_tags t ORDER BY t.name", fetch=True) or []
+    return {"tags": rows}
+
+
+@app.post("/api/crm/tags")
+async def crm_tags_create(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"detail": "Tag name is required"}, status_code=400)
+    uid, uname, _ = _crm_actor(request)
+    rows = _users_exec(
+        "INSERT INTO crm_tags (name, color, brand_code, created_by) VALUES (%s,%s,%s,%s) "
+        "ON CONFLICT (name, brand_code) DO UPDATE SET color=EXCLUDED.color RETURNING *",
+        (name, body.get("color") or "#1a5c38", _crm_brand(body.get("brand_code")), uname), fetch=True)
+    return {"ok": True, "tag": rows[0] if rows else None}
+
+
+@app.delete("/api/crm/tags/{tag_id}")
+def crm_tags_delete(tag_id: int, request: Request):
+    _users_exec("DELETE FROM crm_tags WHERE id=%s", (tag_id,))
+    return {"ok": True}
+
+
+@app.post("/api/crm/tags/{tag_id}/members")
+async def crm_tag_add_members(tag_id: int, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    ids = body.get("customer_ids") or []
+    if not isinstance(ids, list) or not ids:
+        return JSONResponse({"detail": "customer_ids[] is required"}, status_code=400)
+    uid, uname, _ = _crm_actor(request)
+    added = 0
+    for cid in ids:
+        try:
+            _users_exec(
+                "INSERT INTO crm_customer_tags (customer_id, tag_id, added_by) VALUES (%s,%s,%s) "
+                "ON CONFLICT (customer_id, tag_id) DO NOTHING", (str(cid), tag_id, uname))
+            added += 1
+        except Exception:
+            pass
+    return {"ok": True, "added": added}
+
+
+@app.delete("/api/crm/customers/{customer_id}/tags/{tag_id}")
+def crm_tag_remove(customer_id: str, tag_id: int, request: Request):
+    _users_exec("DELETE FROM crm_customer_tags WHERE customer_id=%s AND tag_id=%s", (customer_id, tag_id))
+    return {"ok": True}
+
+
+@app.get("/api/crm/segments")
+def crm_segments(request: Request):
+    """Lightweight, derived target segments (counts) for building lists."""
+    cfg = _crm_config_dict()
+    vip = _crm_cfg_num(cfg, "loyalty.tier_vip_kes", 300000)
+    rows = _users_exec(
+        "WITH c AS (SELECT customer_id, SUM(COALESCE(total_orders,0)) AS orders, "
+        "SUM(COALESCE(total_spend_kes,0)) AS spend, MAX(last_order_date) AS last "
+        "FROM all_customers GROUP BY customer_id), "
+        "d AS (SELECT *, CASE WHEN last ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN (CURRENT_DATE - last::date) END AS days "
+        "FROM c) "
+        "SELECT "
+        "COUNT(*) FILTER (WHERE orders <= 1) AS new_count, "
+        "COUNT(*) FILTER (WHERE orders >= 5) AS loyal_count, "
+        "COUNT(*) FILTER (WHERE spend >= %s) AS vip_count, "
+        "COUNT(*) FILTER (WHERE days BETWEEN 90 AND 180) AS at_risk_count, "
+        "COUNT(*) FILTER (WHERE days > 180) AS churned_count "
+        "FROM d", (vip,), fetch=True)
+    r = rows[0] if rows else {}
+    segs = [
+        {"key": "new", "label": "New (≤1 order)", "count": int(r.get("new_count") or 0)},
+        {"key": "loyal", "label": "Loyal (5+ orders)", "count": int(r.get("loyal_count") or 0)},
+        {"key": "vip", "label": "VIP spend", "count": int(r.get("vip_count") or 0)},
+        {"key": "at_risk", "label": "At risk (90–180d)", "count": int(r.get("at_risk_count") or 0)},
+        {"key": "churned", "label": "Churned (>180d)", "count": int(r.get("churned_count") or 0)},
+    ]
+    return {"segments": segs}
+
+
+# --- CRM: tasks (shared follow-up queue) ----------------------------------
+
+@app.get("/api/crm/tasks")
+def crm_tasks_list(request: Request):
+    qp = request.query_params
+    where, params = ["1=1"], []
+    st = (qp.get("status") or "").strip().lower()
+    if st == "open":
+        where.append("status <> 'done' AND status <> 'cancelled'")
+    elif st:
+        where.append("status=%s")
+        params.append(st)
+    if qp.get("assignee"):
+        where.append("assignee_user_id=%s")
+        params.append(qp.get("assignee"))
+    if qp.get("customer_id"):
+        where.append("customer_id=%s")
+        params.append(qp.get("customer_id"))
+    brand = _crm_brand(qp.get("brand"), default="")
+    if brand:
+        where.append("brand_code=%s")
+        params.append(brand)
+    rows = _users_exec(
+        f"SELECT * FROM crm_tasks WHERE {' AND '.join(where)} "
+        "ORDER BY (status='done' OR status='cancelled'), due_date NULLS LAST, created_at DESC LIMIT 500",
+        tuple(params) if params else None, fetch=True) or []
+    return {"tasks": rows}
+
+
+@app.post("/api/crm/tasks")
+async def crm_tasks_create(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    title = (body.get("title") or "").strip()
+    if not title:
+        return JSONResponse({"detail": "Task title is required"}, status_code=400)
+    uid, uname, _ = _crm_actor(request)
+    assignee = body.get("assignee_user_id")
+    assignee_name = body.get("assignee_name")
+    if assignee and not assignee_name:
+        ar = _users_exec("SELECT name, email FROM app_users WHERE user_id=%s", (assignee,), fetch=True)
+        if ar:
+            assignee_name = ar[0].get("name") or ar[0].get("email")
+    rows = _users_exec(
+        "INSERT INTO crm_tasks (customer_id, title, description, due_date, priority, "
+        "assignee_user_id, assignee_name, brand_code, created_by, created_by_name) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+        (body.get("customer_id"), title, body.get("description"), body.get("due_date") or None,
+         body.get("priority") or "normal", assignee, assignee_name,
+         _crm_brand(body.get("brand_code")), uid, uname), fetch=True)
+    return {"ok": True, "id": rows[0]["id"] if rows else None}
+
+
+@app.patch("/api/crm/tasks/{task_id}")
+async def crm_tasks_patch(task_id: int, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    fields = {}
+    for k in ("title", "description", "due_date", "status", "priority", "assignee_user_id"):
+        if k in body:
+            fields[k] = body.get(k) or None
+    if "assignee_user_id" in fields:
+        ar = _users_exec("SELECT name, email FROM app_users WHERE user_id=%s", (fields["assignee_user_id"],), fetch=True)
+        fields["assignee_name"] = (ar[0].get("name") or ar[0].get("email")) if ar else None
+    if not fields:
+        return {"ok": True}
+    sets = ", ".join(f"{k}=%s" for k in fields) + ", updated_at=now()"
+    vals = list(fields.values()) + [task_id]
+    _users_exec(f"UPDATE crm_tasks SET {sets} WHERE id=%s", vals)
+    return {"ok": True}
+
+
+@app.delete("/api/crm/tasks/{task_id}")
+def crm_tasks_delete(task_id: int, request: Request):
+    _users_exec("DELETE FROM crm_tasks WHERE id=%s", (task_id,))
+    return {"ok": True}
+
+
+# --- CRM: interactions (logged outcomes) ----------------------------------
+
+@app.post("/api/crm/customers/{customer_id}/interactions")
+async def crm_interaction_create(customer_id: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    uid, uname, _ = _crm_actor(request)
+    rows = _users_exec(
+        "INSERT INTO crm_interactions (customer_id, type, outcome, channel, notes, user_id, user_name) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+        (customer_id, (body.get("type") or "note"), body.get("outcome"), body.get("channel"),
+         body.get("notes"), uid, uname), fetch=True)
+    return {"ok": True, "id": rows[0]["id"] if rows else None}
+
+
+# --- CRM: campaigns -------------------------------------------------------
+
+@app.get("/api/crm/campaigns")
+def crm_campaigns_list(request: Request):
+    brand = _crm_brand(request.query_params.get("brand"), default="")
+    where = "WHERE c.brand_code=%s" if brand else ""
+    params = (brand,) if brand else None
+    rows = _users_exec(
+        "SELECT c.*, "
+        "(SELECT COUNT(*) FROM crm_campaign_members m WHERE m.campaign_id=c.id) AS members, "
+        "(SELECT COUNT(*) FROM crm_campaign_members m WHERE m.campaign_id=c.id AND m.send_status='sent') AS sent, "
+        "(SELECT COUNT(*) FROM crm_campaign_members m WHERE m.campaign_id=c.id AND m.responded) AS responses "
+        f"FROM crm_campaigns c {where} ORDER BY c.created_at DESC",
+        params, fetch=True) or []
+    return {"campaigns": rows}
+
+
+@app.post("/api/crm/campaigns")
+async def crm_campaigns_create(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"detail": "Campaign name is required"}, status_code=400)
+    uid, uname, _ = _crm_actor(request)
+    rows = _users_exec(
+        "INSERT INTO crm_campaigns (name, brand_code, channel, description, status, created_by, created_by_name) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+        (name, _crm_brand(body.get("brand_code")), body.get("channel"), body.get("description"),
+         body.get("status") or "draft", uid, uname), fetch=True)
+    return {"ok": True, "id": rows[0]["id"] if rows else None}
+
+
+@app.get("/api/crm/campaigns/{campaign_id}")
+def crm_campaign_detail(campaign_id: int, request: Request):
+    c = _users_exec("SELECT * FROM crm_campaigns WHERE id=%s", (campaign_id,), fetch=True)
+    if not c:
+        return JSONResponse({"detail": "Campaign not found"}, status_code=404)
+    members = _users_exec(
+        "SELECT m.*, "
+        "COALESCE(NULLIF(TRIM(CONCAT_WS(' ', cc.first_name, cc.last_name)),''), "
+        "  (SELECT MAX(NULLIF(TRIM(CONCAT_WS(' ', ac.first_name, ac.last_name)),'')) FROM all_customers ac WHERE ac.customer_id=m.customer_id)) AS name, "
+        "COALESCE(cc.phone, (SELECT MAX(NULLIF(ac.phone,'')) FROM all_customers ac WHERE ac.customer_id=m.customer_id)) AS phone, "
+        "COALESCE(cc.email, (SELECT MAX(NULLIF(ac.email,'')) FROM all_customers ac WHERE ac.customer_id=m.customer_id)) AS email "
+        "FROM crm_campaign_members m LEFT JOIN crm_customer cc ON cc.customer_id=m.customer_id "
+        "WHERE m.campaign_id=%s ORDER BY m.added_at DESC LIMIT 1000",
+        (campaign_id,), fetch=True) or []
+    return {"campaign": c[0], "members": members}
+
+
+@app.post("/api/crm/campaigns/{campaign_id}/members")
+async def crm_campaign_add_members(campaign_id: int, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    ids = body.get("customer_ids") or []
+    if not isinstance(ids, list) or not ids:
+        return JSONResponse({"detail": "customer_ids[] is required"}, status_code=400)
+    added = 0
+    for cid in ids:
+        try:
+            _users_exec(
+                "INSERT INTO crm_campaign_members (campaign_id, customer_id) VALUES (%s,%s) "
+                "ON CONFLICT (campaign_id, customer_id) DO NOTHING", (campaign_id, str(cid)))
+            added += 1
+        except Exception:
+            pass
+    return {"ok": True, "added": added}
+
+
+@app.patch("/api/crm/campaigns/{campaign_id}")
+async def crm_campaign_patch(campaign_id: int, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    fields = {}
+    for k in ("name", "channel", "description", "status", "brand_code"):
+        if k in body:
+            fields[k] = _crm_brand(body.get(k)) if k == "brand_code" else body.get(k)
+    if not fields:
+        return {"ok": True}
+    sets = ", ".join(f"{k}=%s" for k in fields)
+    _users_exec(f"UPDATE crm_campaigns SET {sets} WHERE id=%s", list(fields.values()) + [campaign_id])
+    return {"ok": True}
+
+
+@app.patch("/api/crm/campaigns/{campaign_id}/members/{member_id}")
+async def crm_campaign_member_patch(campaign_id: int, member_id: int, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    sets, vals = [], []
+    if "send_status" in body:
+        sets.append("send_status=%s")
+        vals.append(body.get("send_status"))
+        if body.get("send_status") == "sent":
+            sets.append("sent_at=now()")
+    if "responded" in body:
+        sets.append("responded=%s")
+        vals.append(bool(body.get("responded")))
+        if body.get("responded"):
+            sets.append("responded_at=now()")
+    if "response_note" in body:
+        sets.append("response_note=%s")
+        vals.append(body.get("response_note"))
+    if not sets:
+        return {"ok": True}
+    vals += [member_id, campaign_id]
+    _users_exec(f"UPDATE crm_campaign_members SET {', '.join(sets)} WHERE id=%s AND campaign_id=%s", vals)
+    return {"ok": True}
+
+
+@app.post("/api/crm/campaigns/{campaign_id}/mark-sent")
+async def crm_campaign_mark_sent(campaign_id: int, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    member_ids = body.get("member_ids")
+    if isinstance(member_ids, list) and member_ids:
+        _users_exec(
+            "UPDATE crm_campaign_members SET send_status='sent', sent_at=now() "
+            "WHERE campaign_id=%s AND id = ANY(%s) AND send_status<>'sent'",
+            (campaign_id, member_ids))
+    else:
+        _users_exec(
+            "UPDATE crm_campaign_members SET send_status='sent', sent_at=now() "
+            "WHERE campaign_id=%s AND send_status<>'sent'", (campaign_id,))
+    return {"ok": True}
+
+
+# --- CRM: service tickets -------------------------------------------------
+
+@app.get("/api/crm/tickets")
+def crm_tickets_list(request: Request):
+    qp = request.query_params
+    where, params = ["1=1"], []
+    st = (qp.get("status") or "").strip().lower()
+    if st == "open":
+        where.append("status <> 'resolved' AND status <> 'closed'")
+    elif st:
+        where.append("status=%s")
+        params.append(st)
+    if qp.get("assigned_to"):
+        where.append("assigned_to=%s")
+        params.append(qp.get("assigned_to"))
+    if qp.get("customer_id"):
+        where.append("customer_id=%s")
+        params.append(qp.get("customer_id"))
+    brand = _crm_brand(qp.get("brand"), default="")
+    if brand:
+        where.append("brand_code=%s")
+        params.append(brand)
+    rows = _users_exec(
+        f"SELECT t.*, (now() > t.sla_due_at AND t.status NOT IN ('resolved','closed')) AS sla_overdue, "
+        "(SELECT COALESCE(MAX(NULLIF(TRIM(CONCAT_WS(' ', ac.first_name, ac.last_name)),'')),'') "
+        " FROM all_customers ac WHERE ac.customer_id=t.customer_id) AS customer_name "
+        f"FROM crm_tickets t WHERE {' AND '.join(where)} "
+        "ORDER BY (status IN ('resolved','closed')), sla_due_at NULLS LAST, created_at DESC LIMIT 500",
+        tuple(params) if params else None, fetch=True) or []
+    return {"tickets": rows}
+
+
+@app.post("/api/crm/tickets")
+async def crm_tickets_create(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    subject = (body.get("subject") or "").strip()
+    if not subject:
+        return JSONResponse({"detail": "Subject is required"}, status_code=400)
+    uid, uname, _ = _crm_actor(request)
+    cfg = _crm_config_dict()
+    channel = body.get("inbound_channel") or "in_store"
+    priority = body.get("priority") or "normal"
+    minutes = _crm_sla_minutes(cfg, channel, priority)
+    assigned = body.get("assigned_to")
+    assigned_name = None
+    if assigned:
+        ar = _users_exec("SELECT name, email FROM app_users WHERE user_id=%s", (assigned,), fetch=True)
+        if ar:
+            assigned_name = ar[0].get("name") or ar[0].get("email")
+    tnum = "TKT-" + secrets.token_hex(3).upper()
+    rows = _users_exec(
+        "INSERT INTO crm_tickets (ticket_number, customer_id, brand_code, inbound_channel, "
+        "issue_category, subject, priority, assigned_to, assigned_to_name, status, "
+        "sla_target_minutes, sla_due_at, created_by, created_by_name) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'open',%s, now() + (%s || ' minutes')::interval, %s,%s) RETURNING id, ticket_number",
+        (tnum, body.get("customer_id"), _crm_brand(body.get("brand_code")), channel,
+         body.get("issue_category"), subject, priority, assigned, assigned_name,
+         minutes, str(minutes), uid, uname), fetch=True)
+    tid = rows[0]["id"] if rows else None
+    if body.get("description"):
+        _users_exec(
+            "INSERT INTO crm_ticket_messages (ticket_id, direction, sender_user_id, sender_name, body) "
+            "VALUES (%s,'internal',%s,%s,%s)", (tid, uid, uname, body.get("description")))
+    return {"ok": True, "id": tid, "ticket_number": rows[0]["ticket_number"] if rows else None}
+
+
+@app.get("/api/crm/tickets/{ticket_id}")
+def crm_ticket_detail(ticket_id: int, request: Request):
+    t = _users_exec("SELECT * FROM crm_tickets WHERE id=%s", (ticket_id,), fetch=True)
+    if not t:
+        return JSONResponse({"detail": "Ticket not found"}, status_code=404)
+    msgs = _users_exec(
+        "SELECT * FROM crm_ticket_messages WHERE ticket_id=%s ORDER BY created_at ASC", (ticket_id,), fetch=True) or []
+    return {"ticket": t[0], "messages": msgs}
+
+
+@app.patch("/api/crm/tickets/{ticket_id}")
+async def crm_ticket_patch(ticket_id: int, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    sets, vals = [], []
+    for k in ("status", "priority", "issue_category", "assigned_to", "csat_score"):
+        if k in body:
+            sets.append(f"{k}=%s")
+            vals.append(body.get(k) or None)
+    if "assigned_to" in body:
+        ar = _users_exec("SELECT name, email FROM app_users WHERE user_id=%s", (body.get("assigned_to"),), fetch=True)
+        sets.append("assigned_to_name=%s")
+        vals.append((ar[0].get("name") or ar[0].get("email")) if ar else None)
+    if body.get("status") in ("resolved", "closed"):
+        sets.append("resolved_at=COALESCE(resolved_at, now())")
+        sets.append("sla_breached=(now() > sla_due_at)")
+    if not sets:
+        return {"ok": True}
+    vals.append(ticket_id)
+    _users_exec(f"UPDATE crm_tickets SET {', '.join(sets)} WHERE id=%s", vals)
+    return {"ok": True}
+
+
+@app.post("/api/crm/tickets/{ticket_id}/messages")
+async def crm_ticket_message(ticket_id: int, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    txt = (body.get("body") or "").strip()
+    if not txt:
+        return JSONResponse({"detail": "Message body is required"}, status_code=400)
+    uid, uname, _ = _crm_actor(request)
+    _users_exec(
+        "INSERT INTO crm_ticket_messages (ticket_id, direction, sender_user_id, sender_name, body) "
+        "VALUES (%s,%s,%s,%s,%s)",
+        (ticket_id, body.get("direction") or "outbound", uid, uname, txt))
+    return {"ok": True}
+
+
+# --- CRM: loyalty ---------------------------------------------------------
+
+@app.get("/api/crm/loyalty/summary")
+def crm_loyalty_summary(request: Request):
+    rows = _users_exec(
+        "SELECT tier, COUNT(*) AS members, COALESCE(SUM(points_balance),0) AS points "
+        "FROM crm_loyalty_enrolment GROUP BY tier", fetch=True) or []
+    by_tier = {r["tier"]: {"members": int(r["members"]), "points": int(r["points"])} for r in rows}
+    total_members = sum(v["members"] for v in by_tier.values())
+    total_points = sum(v["points"] for v in by_tier.values())
+    red = _users_exec(
+        "SELECT COUNT(*) FILTER (WHERE code_status='issued') AS open_codes, "
+        "COUNT(*) FILTER (WHERE code_status='used') AS used_codes FROM crm_redemptions", fetch=True)
+    return {
+        "by_tier": by_tier,
+        "total_members": total_members,
+        "total_points_outstanding": total_points,
+        "redemptions": red[0] if red else {},
+    }
+
+
+@app.post("/api/crm/loyalty/{customer_id}/enrol")
+def crm_loyalty_enrol(customer_id: str, request: Request):
+    cfg = _crm_config_dict()
+    spend = _crm_rolling_spend(customer_id)
+    tier = _crm_tier_for_spend(spend, cfg)
+    brand_rows = _users_exec("SELECT brand_code FROM crm_customer WHERE customer_id=%s", (customer_id,), fetch=True)
+    brand = (brand_rows[0]["brand_code"] if brand_rows else "vivo")
+    _users_exec(
+        "INSERT INTO crm_loyalty_enrolment (customer_id, brand_code, tier, tier_updated_at) "
+        "VALUES (%s,%s,%s,now()) ON CONFLICT (customer_id) DO UPDATE SET tier=EXCLUDED.tier, tier_updated_at=now()",
+        (customer_id, brand, tier))
+    _crm_audit("loyalty", customer_id, "enrol", f"tier={tier}", request)
+    return {"ok": True, "tier": tier, "rolling_12m_spend_kes": spend}
+
+
+@app.post("/api/crm/loyalty/{customer_id}/adjust")
+async def crm_loyalty_adjust(customer_id: str, request: Request):
+    if not _crm_is_admin(request):
+        return JSONResponse({"detail": "Admin access required"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        change = int(body.get("points_change"))
+    except Exception:
+        return JSONResponse({"detail": "points_change (integer) is required"}, status_code=400)
+    uid, uname, _ = _crm_actor(request)
+    reason = body.get("reason") or "admin"
+    with _users_tx() as cur:
+        cur.execute("SELECT points_balance, points_lifetime FROM crm_loyalty_enrolment WHERE customer_id=%s FOR UPDATE",
+                    (customer_id,))
+        row = cur.fetchone()
+        if not row:
+            cur.execute(
+                "INSERT INTO crm_loyalty_enrolment (customer_id, points_balance, points_lifetime, tier_updated_at) "
+                "VALUES (%s,0,0,now())", (customer_id,))
+            bal, life = 0, 0
+        else:
+            bal, life = int(row["points_balance"]), int(row["points_lifetime"])
+        new_bal = bal + change
+        if new_bal < 0:
+            new_bal = 0
+        new_life = life + (change if change > 0 else 0)
+        cur.execute("UPDATE crm_loyalty_enrolment SET points_balance=%s, points_lifetime=%s WHERE customer_id=%s",
+                    (new_bal, new_life, customer_id))
+        cur.execute(
+            "INSERT INTO crm_loyalty_ledger (customer_id, points_change, reason, balance_after, created_by) "
+            "VALUES (%s,%s,%s,%s,%s)", (customer_id, change, reason, new_bal, uname))
+    return {"ok": True, "points_balance": new_bal}
+
+
+@app.post("/api/crm/loyalty/{customer_id}/redeem")
+async def crm_loyalty_redeem(customer_id: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        points = int(body.get("points"))
+    except Exception:
+        return JSONResponse({"detail": "points (integer) is required"}, status_code=400)
+    cfg = _crm_config_dict()
+    floor = int(_crm_cfg_num(cfg, "loyalty.redemption_floor", 200))
+    per_kes = _crm_cfg_num(cfg, "loyalty.points_per_kes_redeem", 100) or 100
+    if points < floor:
+        return JSONResponse({"detail": f"Minimum redemption is {floor} points"}, status_code=400)
+    uid, uname, _ = _crm_actor(request)
+    code = "VFG-" + secrets.token_hex(4).upper()
+    kes_value = round(points / per_kes, 2)
+    with _users_tx() as cur:
+        cur.execute("SELECT points_balance FROM crm_loyalty_enrolment WHERE customer_id=%s FOR UPDATE", (customer_id,))
+        row = cur.fetchone()
+        bal = int(row["points_balance"]) if row else 0
+        if not row or bal < points:
+            cur.connection.rollback()
+            return JSONResponse({"detail": f"Insufficient points (balance {bal})"}, status_code=400)
+        new_bal = bal - points
+        cur.execute("UPDATE crm_loyalty_enrolment SET points_balance=%s WHERE customer_id=%s", (new_bal, customer_id))
+        cur.execute(
+            "INSERT INTO crm_loyalty_ledger (customer_id, points_change, reason, balance_after, created_by) "
+            "VALUES (%s,%s,'redemption',%s,%s)", (customer_id, -points, new_bal, uname))
+        cur.execute(
+            "INSERT INTO crm_redemptions (customer_id, points_redeemed, kes_value, discount_code, issued_by) "
+            "VALUES (%s,%s,%s,%s,%s)", (customer_id, points, kes_value, code, uname))
+    return {"ok": True, "discount_code": code, "kes_value": kes_value, "points_balance": new_bal}
+
+
+@app.post("/api/crm/redemptions/{redemption_id}/mark-used")
+async def crm_redemption_mark_used(redemption_id: int, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    _users_exec(
+        "UPDATE crm_redemptions SET code_status='used', used_at=now(), used_store_id=%s "
+        "WHERE id=%s AND code_status='issued'", (body.get("used_store_id"), redemption_id))
+    return {"ok": True}
+
+
+@app.post("/api/crm/loyalty/recalc-tiers")
+def crm_loyalty_recalc(request: Request):
+    if not _crm_is_admin(request):
+        return JSONResponse({"detail": "Admin access required"}, status_code=403)
+    cfg = _crm_config_dict()
+    enrolled = _users_exec("SELECT customer_id FROM crm_loyalty_enrolment", fetch=True) or []
+    updated = 0
+    for e in enrolled:
+        cid = e["customer_id"]
+        spend = _crm_rolling_spend(cid)
+        tier = _crm_tier_for_spend(spend, cfg)
+        _users_exec(
+            "UPDATE crm_loyalty_enrolment SET tier=%s, tier_updated_at=now() WHERE customer_id=%s AND tier<>%s",
+            (tier, cid, tier))
+        updated += 1
+    return {"ok": True, "evaluated": updated}
 
 
 from fastapi.staticfiles import StaticFiles

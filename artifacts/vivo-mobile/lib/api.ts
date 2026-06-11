@@ -74,10 +74,22 @@ export async function apiGet<T>(path: string, params?: Params): Promise<T> {
 }
 
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
+  return apiWrite<T>("POST", path, body);
+}
+
+export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
+  return apiWrite<T>("PATCH", path, body);
+}
+
+async function apiWrite<T>(
+  method: "POST" | "PATCH",
+  path: string,
+  body?: unknown,
+): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, {
-      method: "POST",
+      method,
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
