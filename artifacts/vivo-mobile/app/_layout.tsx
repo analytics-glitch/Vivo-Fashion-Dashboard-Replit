@@ -57,7 +57,19 @@ function RootLayoutNav() {
   }
 
   return (
-    <Stack screenOptions={{ headerBackTitle: "Back" }}>
+    <Stack
+      screenOptions={{
+        headerBackTitle: "Back",
+        headerStyle: { backgroundColor: colors.light.card },
+        headerTintColor: colors.light.primaryDeep,
+        headerTitleStyle: {
+          fontFamily: "Jakarta_700Bold",
+          color: colors.light.foreground,
+        },
+        headerShadowVisible: false,
+        contentStyle: { backgroundColor: colors.light.background },
+      }}
+    >
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="login" options={{ headerShown: false }} />
     </Stack>

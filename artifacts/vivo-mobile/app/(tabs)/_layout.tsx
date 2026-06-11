@@ -14,6 +14,7 @@ const TABS = [
   { name: "markets", title: "Markets", sf: "globe.europe.africa.fill", sfBase: "globe", feather: "globe" as const },
   { name: "products", title: "Products", sf: "bag.fill", sfBase: "bag", feather: "shopping-bag" as const },
   { name: "footfall", title: "Footfall", sf: "figure.walk", sfBase: "figure.walk", feather: "trending-up" as const },
+  { name: "more", title: "More", sf: "square.grid.2x2.fill", sfBase: "square.grid.2x2", feather: "grid" as const },
 ];
 
 function NativeTabLayout() {
