@@ -135,7 +135,7 @@ const ProjectionBanner = ({ p }) => {
   };
   return (
     <div
-      className={`rounded-xl border-2 ${phaseTone} p-3 sm:p-3.5 mt-3 mb-1`}
+      className={`rounded-xl border-2 ${phaseTone} p-3.5 sm:p-4`}
       data-testid="overview-projected-today-banner"
     >
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -1062,6 +1062,13 @@ const Overview = () => {
         );
       })()}
 
+      {/* Live "Projected Today" hero — only when viewing today. Pinned to
+          the top of the Overview so leadership sees the end-of-day forecast
+          first. Non-linear shape curve + AI blend; SDLW/SDLM pace anchors. */}
+      {todayProjection && (
+        <ProjectionBanner p={projectionView} />
+      )}
+
       {!kpisLoading && !error && kpis && (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
@@ -1353,14 +1360,6 @@ const Overview = () => {
                   : `Solid = current · Dotted = ${compareMode === "last_month" ? "last month" : compareMode === "last_year" ? "last year" : "prior period"}`
               }
             />
-
-            {/* Live "Projected Today" banner — only when viewing today.
-                Linear projection of today_so_far against the 9 AM – 8:30 PM
-                Africa/Nairobi trading window, with SDLW/SDLM pace anchors
-                so leadership can see if today is tracking ahead/behind. */}
-            {todayProjection && (
-              <ProjectionBanner p={projectionView} />
-            )}
 
             {rangeDays === 1 ? (
               // --- Single-day paired bars ---
