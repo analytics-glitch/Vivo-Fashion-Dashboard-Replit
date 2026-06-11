@@ -516,6 +516,81 @@ def sync_footfall(cur, now):
 
     return len(rows)
 
+
+def categorise_products(cur):
+    """Fill missing product_type and category based on product name keywords."""
+    cur.execute("""
+        UPDATE all_products_clean
+        SET product_type = CASE
+            WHEN UPPER(product_name) LIKE '%SAMPLE%' OR UPPER(product_name) LIKE '%GIFT VOUCHER%'
+                OR UPPER(product_name) LIKE '%GIFT CARD%' OR UPPER(sku) LIKE '%FS%'
+                OR UPPER(sku) LIKE 'CS%' OR UPPER(sku) LIKE 'SALE%' THEN 'Sample & Sale Items'
+            WHEN LOWER(product_name) LIKE '%fitness bra%' OR LOWER(product_name) LIKE '%sports bra%'
+                OR LOWER(product_name) LIKE '%bralette%' THEN 'Bodysuits'
+            WHEN LOWER(product_name) LIKE '%fitness tights%' OR LOWER(product_name) LIKE '%legging%'
+                OR LOWER(product_name) LIKE '%biker%' THEN 'Leggings'
+            WHEN LOWER(product_name) LIKE '%catsuit%' OR LOWER(product_name) LIKE '%jumpsuit%'
+                OR LOWER(product_name) LIKE '%playsuit%' OR LOWER(product_name) LIKE '%romper%' THEN 'Jumpsuits & Playsuits'
+            WHEN LOWER(product_name) LIKE '%scarf%' OR LOWER(product_name) LIKE '%hijab%'
+                OR LOWER(product_name) LIKE '%shawl%' OR LOWER(product_name) LIKE '%sarong%'
+                OR LOWER(product_name) LIKE '%wrap%' OR LOWER(product_name) LIKE '%scarve%' THEN 'Scarves'
+            WHEN LOWER(product_name) LIKE '%blazer%' OR LOWER(product_name) LIKE '%jacket%'
+                OR LOWER(product_name) LIKE '%cardigan%' OR LOWER(product_name) LIKE '%coat%' THEN 'Jackets & Coats'
+            WHEN LOWER(product_name) LIKE '%poncho%' OR LOWER(product_name) LIKE '%sweater%' THEN 'Sweaters & Ponchos'
+            WHEN LOWER(product_name) LIKE '%waterfall%' OR LOWER(product_name) LIKE '%kimono%'
+                OR LOWER(product_name) LIKE '%shrug%' OR LOWER(product_name) LIKE '%cover%' THEN 'Waterfalls & Kimonos'
+            WHEN LOWER(product_name) LIKE '%hoodie%' OR LOWER(product_name) LIKE '%sweatshirt%' THEN 'Hoodies & Sweatshirts'
+            WHEN LOWER(product_name) LIKE '%bodysuit%' OR LOWER(product_name) LIKE '%bdodysuit%' THEN 'Bodysuits'
+            WHEN LOWER(product_name) LIKE '%culotte%' THEN 'Culottes & Capri Pants'
+            WHEN LOWER(product_name) LIKE '%palazzo%' OR LOWER(product_name) LIKE '%jogger%'
+                OR LOWER(product_name) LIKE '%trouser%' OR LOWER(product_name) LIKE '%jeans%' THEN 'Full Length Pants'
+            WHEN LOWER(product_name) LIKE '%full%' AND LOWER(product_name) LIKE '%pant%' THEN 'Full Length Pants'
+            WHEN LOWER(product_name) LIKE '%skort%' OR (LOWER(product_name) LIKE '%short%'
+                AND LOWER(product_name) NOT LIKE '%top%' AND LOWER(product_name) NOT LIKE '%sleeve%') THEN 'Shorts & Skorts'
+            WHEN LOWER(product_name) LIKE '%pant%' THEN 'Full Length Pants'
+            WHEN LOWER(product_name) LIKE '%maxi%' AND LOWER(product_name) LIKE '%dress%' THEN 'Maxi Dresses'
+            WHEN LOWER(product_name) LIKE '%knee%' AND LOWER(product_name) LIKE '%dress%' THEN 'Knee Length Dresses'
+            WHEN LOWER(product_name) LIKE '%midi%' AND LOWER(product_name) LIKE '%dress%' THEN 'Midi & Capri Dresses'
+            WHEN LOWER(product_name) LIKE '%mini%' AND LOWER(product_name) LIKE '%dress%' THEN 'Short & Mini Dresses'
+            WHEN LOWER(product_name) LIKE '%bodycon%' THEN 'Knee Length Dresses'
+            WHEN LOWER(product_name) LIKE '%kaftan%' OR LOWER(product_name) LIKE '%maxi%' THEN 'Maxi Dresses'
+            WHEN LOWER(product_name) LIKE '%dress%' THEN 'Knee Length Dresses'
+            WHEN LOWER(product_name) LIKE '%maxi%' AND LOWER(product_name) LIKE '%skirt%' THEN 'Maxi Skirts'
+            WHEN LOWER(product_name) LIKE '%skirt%' THEN 'Knee Length Skirts'
+            WHEN LOWER(product_name) LIKE '%tee%' OR LOWER(product_name) LIKE '%t-shirt%'
+                OR LOWER(product_name) LIKE '%tank%' THEN 'T-shirts & Tank Tops'
+            WHEN LOWER(product_name) LIKE '%fitted%' AND LOWER(product_name) LIKE '%top%' THEN 'Fitted Tops'
+            WHEN LOWER(product_name) LIKE '%loose%' AND LOWER(product_name) LIKE '%top%' THEN 'Loose Tops'
+            WHEN LOWER(product_name) LIKE '%tunic%' OR LOWER(product_name) LIKE '%blouse%'
+                OR LOWER(product_name) LIKE '%vest%' OR LOWER(product_name) LIKE '%chiffon%' THEN 'Loose Tops'
+            WHEN LOWER(product_name) LIKE '%earring%' OR LOWER(product_name) LIKE '%bracelet%'
+                OR LOWER(product_name) LIKE '%necklace%' OR LOWER(product_name) LIKE '%ring%'
+                OR LOWER(product_name) LIKE '%belt%' OR LOWER(product_name) LIKE '%hat%'
+                OR LOWER(product_name) LIKE '%cap%' OR LOWER(product_name) LIKE '%bag%'
+                OR LOWER(product_name) LIKE '%sock%' OR LOWER(product_name) LIKE '%accessori%' THEN 'Accessories'
+            WHEN LOWER(product_name) LIKE '%shirt%' OR LOWER(product_name) LIKE '%top%' THEN 'Loose Tops'
+            ELSE 'Accessories'
+        END
+        WHERE product_type IS NULL OR TRIM(product_type) = ''
+    """)
+
+    cur.execute("""
+        UPDATE all_products_clean
+        SET category = CASE
+            WHEN product_type IN ('Bodysuits','Fitted Tops','Loose Tops','Midriff & Crop Tops','T-shirts & Tank Tops') THEN 'Tops'
+            WHEN product_type IN ('Culottes & Capri Pants','Full Length Pants','Jumpsuits & Playsuits','Leggings','Shorts & Skorts') THEN 'Bottoms'
+            WHEN product_type IN ('Knee Length Dresses','Maxi Dresses','Midi & Capri Dresses','Short & Mini Dresses') THEN 'Dresses'
+            WHEN product_type IN ('Knee Length Skirts','Maxi Skirts','Midi & Capri Skirts','Short & Mini Skirts') THEN 'Skirts'
+            WHEN product_type IN ('Hoodies & Sweatshirts','Jackets & Coats','Sweaters & Ponchos','Waterfalls & Kimonos') THEN 'Outerwear'
+            WHEN product_type IN ('Skirts & Top Set','Pants & Top Set','Two-Piece Sets') THEN 'Two-Piece Sets'
+            WHEN product_type IN ('Accessories','Scarves','Belts','Earrings','Necklaces') THEN 'Accessories'
+            WHEN product_type = 'Sample & Sale Items' THEN 'Sale'
+            ELSE 'Accessories'
+        END
+        WHERE category IS NULL OR TRIM(category) = ''
+    """)
+    log.info("✅ Product categorisation done")
+
 def main():
     conn = psycopg2.connect(DATABASE_URL)
     cur  = conn.cursor()
@@ -553,6 +628,14 @@ def main():
         write_heartbeat(conn, "odoo")
     except Exception as e:
         log.error("Odoo sync error: %s", e)
+        conn.rollback()
+
+    # Categorise any new products
+    try:
+        categorise_products(cur)
+        conn.commit()
+    except Exception as e:
+        log.error("Categorisation error: %s", e)
         conn.rollback()
 
     try:

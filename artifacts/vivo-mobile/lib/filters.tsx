@@ -12,7 +12,9 @@ const FiltersContext = createContext<FiltersValue | null>(null);
 
 export function FiltersProvider({ children }: { children: React.ReactNode }) {
   const [preset, setPreset] = useState<PresetKey>("90d");
+
   const range = useMemo(() => presetRange(preset), [preset]);
+
   const value = useMemo<FiltersValue>(
     () => ({ preset, setPreset, range }),
     [preset, range],

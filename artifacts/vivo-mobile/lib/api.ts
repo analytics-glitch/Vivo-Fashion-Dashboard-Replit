@@ -174,13 +174,24 @@ export type DateRange = {
   date_to: string;
 };
 
-export type PresetKey = "30d" | "90d" | "1y";
+export type PresetKey = "today" | "7d" | "30d" | "90d" | "1y";
 
 export const PRESETS: { key: PresetKey; label: string }[] = [
+  { key: "today", label: "Today" },
+  { key: "7d", label: "7D" },
   { key: "30d", label: "30D" },
   { key: "90d", label: "90D" },
   { key: "1y", label: "1Y" },
 ];
+
+/** Longer, human labels for the Overview date-range chip menu. */
+export const PRESET_MENU_LABEL: Record<PresetKey, string> = {
+  today: "Today",
+  "7d": "Last 7 days",
+  "30d": "Last 30 days",
+  "90d": "Last 90 days",
+  "1y": "Last 12 months",
+};
 
 export const presetRange = (key: PresetKey): DateRange => {
   const now = new Date();
@@ -190,7 +201,40 @@ export const presetRange = (key: PresetKey): DateRange => {
   const today = new Date(y, m, d);
   const minus = (days: number) => new Date(y, m, d - days);
   const to = toISO(today);
+  if (key === "today") return { date_from: to, date_to: to };
+  if (key === "7d") return { date_from: toISO(minus(6)), date_to: to };
   if (key === "30d") return { date_from: toISO(minus(29)), date_to: to };
   if (key === "90d") return { date_from: toISO(minus(89)), date_to: to };
   return { date_from: toISO(minus(364)), date_to: to };
 };
+
+// --- Comparison period (period-over-period deltas, like the web cockpit) ---
+
+export type CompareKey = "yesterday" | "last_month" | "last_year";
+
+export const COMPARES: { key: CompareKey; chip: string; vs: string }[] = [
+  { key: "yesterday", chip: "Previous day", vs: "vs Yesterday" },
+  { key: "last_month", chip: "Previous month", vs: "vs Last Month" },
+  { key: "last_year", chip: "Previous year", vs: "vs Last Year" },
+];
+
+const shiftISO = (iso: string, key: CompareKey): string => {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  if (key === "yesterday") dt.setDate(dt.getDate() - 1);
+  else if (key === "last_month") dt.setMonth(dt.getMonth() - 1);
+  else dt.setFullYear(dt.getFullYear() - 1);
+  return toISO(dt);
+};
+
+/** Shift a range back by one day / month / year for the "vs" comparison. */
+export const compareRange = (r: DateRange, key: CompareKey): DateRange => ({
+  date_from: shiftISO(r.date_from, key),
+  date_to: shiftISO(r.date_to, key),
+});
+
+/** A stockout alert row — the Overview only needs the array length. */
+export interface StockoutAlert {
+  style: string | null;
+  weeks_of_cover: number | null;
+}

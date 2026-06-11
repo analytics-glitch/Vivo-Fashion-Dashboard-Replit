@@ -41,3 +41,23 @@ export const fmtPct = (n: number | null | undefined, d = 1): string => {
   if (n === null || n === undefined || isNaN(Number(n))) return "0%";
   return `${Number(n).toFixed(d)}%`;
 };
+
+const MONTHS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/** "2026-06-11" -> "11-Jun-2026" for the date-range display line. */
+export const fmtDateLabel = (iso: string | null | undefined): string => {
+  if (!iso) return "—";
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  return `${String(d).padStart(2, "0")}-${MONTHS[m - 1]}-${y}`;
+};
+
+/** Signed percentage delta for "vs ..." lines, e.g. -79.1 -> "-79.1%". */
+export const fmtDelta = (n: number | null | undefined): string => {
+  if (n === null || n === undefined || isNaN(Number(n))) return "—";
+  const v = Number(n);
+  return `${v > 0 ? "+" : ""}${v.toFixed(1)}%`;
+};
