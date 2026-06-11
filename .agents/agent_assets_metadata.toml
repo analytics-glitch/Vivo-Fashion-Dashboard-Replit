@@ -6,3 +6,9 @@ id = "lmwd83kHaYOQbQgx6LHd2"
 uri = "file://replenishment_ibt_audit.md"
 type = "text"
 title = "Replenishment & IBT — Audit, Gap Analysis & Improvement Plan"
+
+[[outputs]]
+id = "MUDBi4GmHfIGFQG-RDTsf"
+uri = "file://.local/qr/expo-qr.png"
+type = "image"
+title = "Expo QR — Vivo BI Mobile"
