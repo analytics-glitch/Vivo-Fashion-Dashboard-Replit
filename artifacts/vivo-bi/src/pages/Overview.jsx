@@ -989,6 +989,7 @@ const Overview = () => {
               prefetch={pf("/products")} />
             {!isOnlineOnly && (
               <KPICard testId="kpi-footfall" label="Total Footfall" sub="Walk-ins counted at our store sensors" value={fmtNum(footfallAgg.total_footfall)} valueFull={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
+                formula={"Formula: sum of door-sensor walk-ins (a01_footfall_in) across stores for the selected period.\n\nRenamed sensor feeds are mapped back to their store before totalling. Stores flagged for sensor data-quality issues (conversion over 50%) are excluded."}
                 delta={compareMode !== "none" && footfallAggPrev.total_footfall ? pctDelta(footfallAgg.total_footfall, footfallAggPrev.total_footfall) : null}
                 deltaLabel={compareLbl} showDelta={compareMode !== "none"}
                 action={{ label: "Footfall by store", to: "/footfall" }}
@@ -996,6 +997,7 @@ const Overview = () => {
             )}
             {!isOnlineOnly && (
               <KPICard testId="kpi-conversion" label="Conversion Rate" sub="Out of every 100 walk-ins, how many bought" value={fmtPct(footfallAgg.conversion_rate, 2)} valueFull={`${Number(footfallAgg.conversion_rate || 0).toFixed(4)}%`} icon={Target}
+                formula={"Formula: (total transactions ÷ total walk-ins) × 100, pooled across stores.\n\nTransactions and footfall are matched per store, so the renamed sensor feeds (from 2026-06-07) are mapped back to their sales name before dividing. Stores with sensor data-quality issues (conversion over 50%) are excluded."}
                 delta={compareMode !== "none" && footfallAggPrev.conversion_rate ? pctDelta(footfallAgg.conversion_rate, footfallAggPrev.conversion_rate) : null}
                 deltaLabel={compareLbl} showDelta={compareMode !== "none"}
                 action={{ label: "Which stores dropped?", to: "/footfall" }}

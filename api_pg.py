@@ -966,6 +966,53 @@ BASE_FILTERS = """
     AND LOWER(COALESCE(s.variant_sku,'')) NOT LIKE '%vb00%'
 """
 
+# --- Footfall location-name canonicalisation -------------------------------
+# The footfall sensor feed renamed every store on 2026-06-07 (e.g.
+# "Vivo Junction" -> "VFGJUNCTION", "Vivo Sarit" -> "Sarit Centre"). The new
+# spellings do NOT match all_sales.pos_location_name, so footfall->sales joins
+# silently fail: orders fall to 0 for the renamed stores and conversion rate
+# collapses (~1% instead of ~12%). The old names stop 2026-06-06 and the new
+# names start 2026-06-07 with NO overlap, so folding the new spellings back to
+# the canonical sales name is safe (it can never double-count a day). Keys are
+# the footfall sensor spellings; values are the canonical all_sales name.
+FOOTFALL_LOCATION_ALIASES = {
+    "Vivo MoiAV": "Vivo Moi Avenue",
+    "Sarit Centre": "Vivo Sarit",
+    "VFGJUNCTION": "Vivo Junction",
+    "Yaya Centre": "Vivo Yaya",
+    "VIVO Mama Ngina": "Vivo Mama Ngina St",
+    "VivoKisumu": "Vivo Kisumu",
+    "VIVO Gardencity": "Vivo Garden City",
+    "Two Rivers": "Vivo Two Rivers",
+    "VIVO Capital": "Vivo Capital Centre",
+    "VFGGALLERIAMALL": "Vivo Galleria",
+    "VFGELDORET": "Vivo Eldoret",
+    "VFGTHEHUB": "Vivo Hub",
+    "VIVO Mombasa": "Vivo MSA Digo Road",
+    "Vivo_MSA_DigoRD": "Vivo MSA Digo Road",
+    "Acacia Mall": "Vivo Acacia",
+    "VivoVillageMKT": "Vivo Village Market",
+    "Vivo Runda Mall": "Vivo Runda",
+    "Vivo Kigali ": "Vivo Kigali Heights",
+    "VIVO MERU": "Vivo Meru",
+    "VFGSIGNATURE": "Vivo Signature Mall",
+    "KILELESHWA": "Vivo Kileleshwa",
+    "VFG T-MALL": "Vivo T- Mall",
+    " Oasis mall": "The Oasis Mall",
+}
+
+def ff_canon_sql(col="f.pos_location_name"):
+    """Return a SQL expression that maps a footfall location column to its
+    canonical all_sales name via FOOTFALL_LOCATION_ALIASES. Alias keys/values
+    contain no single quotes, so static interpolation is injection-safe."""
+    if not FOOTFALL_LOCATION_ALIASES:
+        return col
+    whens = " ".join(
+        "WHEN '" + a.replace("'", "''") + "' THEN '" + c.replace("'", "''") + "'"
+        for a, c in FOOTFALL_LOCATION_ALIASES.items()
+    )
+    return "CASE " + col + " " + whens + " ELSE " + col + " END"
+
 PRODUCT_SUBCATS = [
     "Knee Length Dresses","Full Length Pants","Fitted Tops","Loose Tops",
     "Maxi Dresses","Waterfalls & Kimonos","Sweaters & Ponchos","Midi & Capri Dresses",
@@ -1725,19 +1772,19 @@ def get_footfall(
     date_to:   str = Query(default=str(date.today())),
     channel:   str = Query(default=None),
 ):
-    ff_filters = ["f.time BETWEEN '" + date_from + "' AND '" + date_to + "'"]
-    if channel:
-        ff_filters.append("f.pos_location_name IN (" + csv_to_sql(channel) + ")")
-    ff_where = " AND ".join(ff_filters)
+    ff_where = "f.time BETWEEN '" + date_from + "' AND '" + date_to + "'"
+    # Channel filter is applied on the CANONICAL name (post-alias) so it also
+    # matches the renamed sensor spellings introduced 2026-06-07.
+    ff_having = (" HAVING " + ff_canon_sql() + " IN (" + csv_to_sql(channel) + ")") if channel else ""
     sales_where = "s.sale_date BETWEEN '" + date_from + "' AND '" + date_to + "' AND " + BASE_FILTERS
     return run_query("""
         WITH footfall AS (
-            SELECT f.pos_location_name,
+            SELECT """ + ff_canon_sql() + """ AS pos_location_name,
                 SUM(f.a01_footfall_in) AS total_footfall,
                 SUM(f.a05_outside_traffic) AS outside_traffic
             FROM footfall f
             WHERE """ + ff_where + """
-            GROUP BY f.pos_location_name
+            GROUP BY 1""" + ff_having + """
         ),
         sales AS (
             SELECT s.pos_location_name,
@@ -1771,17 +1818,17 @@ def get_footfall_weekday(
     # Conversion per weekday follows doc 03.7.2: mean(daily_orders / daily_walk_ins),
     # i.e. the average of per-day ratios — NOT pooled sum/sum. Turn-in is the same
     # mean-of-daily-ratios shape (footfall_in / outside_traffic).
-    ff_extra = (" AND f.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    ff_extra = (" AND " + ff_canon_sql() + " IN (" + csv_to_sql(channel) + ")") if channel else ""
     sa_extra = (" AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
     raw = run_query("""
         WITH ff AS (
-            SELECT f.pos_location_name AS location, f.time::date AS d,
+            SELECT """ + ff_canon_sql() + """ AS location, f.time::date AS d,
                 ((EXTRACT(DOW FROM f.time)::int + 6) % 7) AS wd,
                 SUM(f.a01_footfall_in) AS footfall,
                 SUM(f.a05_outside_traffic) AS outside
             FROM footfall f
             WHERE f.time BETWEEN '""" + date_from + """' AND '""" + date_to + """'""" + ff_extra + """
-            GROUP BY f.pos_location_name, f.time::date
+            GROUP BY """ + ff_canon_sql() + """, f.time::date
         ),
         sa AS (
             SELECT s.pos_location_name AS location, s.sale_date::date AS d,
@@ -4235,7 +4282,7 @@ def _es_footfall_by_country(date_from, date_to):
         SELECT COALESCE(pl.country, 'Other') AS country,
             SUM(f.a01_footfall_in) AS footfall
         FROM footfall f
-        LEFT JOIN pos_locations pl ON f.pos_location_name = pl.location_name
+        LEFT JOIN pos_locations pl ON """ + ff_canon_sql() + """ = pl.location_name
         WHERE f.time BETWEEN '""" + date_from + """' AND '""" + date_to + """'
         GROUP BY COALESCE(pl.country, 'Other')
     """, date_to=date_to)
@@ -7769,7 +7816,7 @@ def analytics_store_potential(country: str = Query(default=None)):
             GROUP BY 1
         ),
         ff AS (
-            SELECT f.pos_location_name AS store,
+            SELECT """ + ff_canon_sql() + """ AS store,
                 SUM(f.a01_footfall_in) AS footfall,
                 AVG(NULLIF(f.b06_sales_conversion, 0)) AS conversion
             FROM footfall f

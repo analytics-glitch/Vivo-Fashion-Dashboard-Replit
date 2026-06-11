@@ -496,6 +496,7 @@ const Footfall = () => {
               testId="ff-kpi-outside"
               label="Outside Traffic"
               sub="people who passed the store"
+              formula="Formula: sum of door-sensor outside-traffic (a05_outside_traffic) across stores for the selected period — everyone who walked past the storefront."
               value={fmtNum(totals.outsideTraffic)}
               icon={UsersThree}
               delta={delta(totals.outsideTraffic, prevTotals.outsideTraffic)}
@@ -507,6 +508,7 @@ const Footfall = () => {
               testId="ff-kpi-total"
               accent
               label="Footfall In"
+              formula="Formula: sum of door-sensor walk-ins (a01_footfall_in) across stores. Renamed sensor feeds (from 2026-06-07) are mapped back to their store before totalling."
               value={fmtNum(totals.footfall)}
               icon={Footprints}
               delta={delta(totals.footfall, prevTotals.footfall)}
@@ -545,6 +547,7 @@ const Footfall = () => {
               testId="ff-kpi-orders"
               label="Orders"
               sub="all channels"
+              formula="Formula: count of distinct transactions (order IDs) across all channels for the selected period."
               value={fmtNum(authoritativeKpis?.total_orders ?? totals.scopedOrders)}
               icon={ShoppingCart}
               delta={delta(
@@ -559,6 +562,7 @@ const Footfall = () => {
               testId="ff-kpi-conv"
               label="Stores Conversion Rate"
               sub={`${fmtNum(totals.scopedOrders)} orders ÷ ${fmtNum(totals.footfall)} footfall`}
+              formula="Formula: (orders ÷ footfall in) × 100, summed across the stores in scope. Per-store orders (from sales) and footfall are matched on store name — renamed sensor feeds (from 2026-06-07) are mapped back to their sales name before dividing. Only stores that have a footfall counter contribute; no conversion-rate outliers are excluded."
               value={fmtPct(totals.conv, 2)}
               icon={Target}
               delta={delta(totals.conv, prevTotals.conv)}
@@ -570,6 +574,7 @@ const Footfall = () => {
               testId="ff-kpi-abv"
               label="Avg Basket Value"
               sub="Total Sales ÷ Orders"
+              formula="Formula: total sales ÷ number of orders — the average amount spent per transaction."
               value={fmtKES(totals.abv)}
               icon={Coins}
               delta={delta(totals.abv, prevTotals.abv)}
