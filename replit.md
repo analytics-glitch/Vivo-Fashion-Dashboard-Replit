@@ -9,6 +9,17 @@ An executive Business Intelligence cockpit for Vivo Fashion Group — a multi-br
 - `pnpm --filter @workspace/vivo-bi run typecheck` — typecheck the dashboard
 - Required env: `DATABASE_URL` — Postgres connection string
 
+### Mobile (Android / Google Play) build via EAS
+
+The Expo app (`artifacts/vivo-mobile`) is configured for EAS Build. App identifier: `com.vivofashiongroup.bi` (both `android.package` and iOS `bundleIdentifier`). `eas.json` defines `development`/`preview` (APK, internal distribution) and `production` (`app-bundle` `.aab` for the Play Store, `autoIncrement` versionCode, `appVersionSource: remote`). `metro.config.js` is monorepo-aware (watches the workspace root) so EAS resolves `@workspace/*` deps. Unused native permissions (location, camera, media) are blocked in `app.json` so the Play listing stays lean for an internal tool.
+
+**Before a production build, three things still require manual action (cannot be done from the agent):**
+1. **Link an Expo account:** run `npx eas init` inside `artifacts/vivo-mobile` (or use Replit's Expo "Launch" panel) to create the EAS project and inject `extra.eas.projectId` + `owner` into `app.json`.
+2. **Set the backend domain:** the native build bundles `EXPO_PUBLIC_DOMAIN` at build time (the app talks to `https://<domain>/api`). Deploy the project first to get a stable production domain, then replace `"set-me-to-your-published-domain"` in each `eas.json` profile's `env` with that domain. A wrong/placeholder value ships an app that cannot reach the API.
+3. **pnpm monorepo autolinking:** if an EAS build fails to find native modules, add `node-linker=hoisted` to the repo-root `.npmrc` (changes the install layout, so re-test the dev workflow after).
+
+Build: `eas build --platform android --profile production`. Internal team distribution (recommended for this gated BI app) → use the `preview` APK profile or Google Play's internal testing track rather than a full public listing.
+
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
