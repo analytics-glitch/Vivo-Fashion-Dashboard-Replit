@@ -25,6 +25,13 @@ const clampY = (v: number) => Math.max(M.t, Math.min(M.t + IH, v));
 const plotted = STORES.filter((s) => s.convReliable && s.conversion != null);
 const notPlotted = STORES.filter((s) => !s.convReliable);
 
+const composite = (s: StoreRow) =>
+  (s.prev!.dConv / (NETWORK.netConv || 1)) + (s.prev!.dAbv / (NETWORK.netAbv || 1));
+
+const movers = plotted.filter((s) => s.prev).map((s) => ({ s, score: composite(s) }));
+const improving = movers.filter((m) => m.score > 0).sort((a, b) => b.score - a.score).slice(0, 3);
+const sliding = movers.filter((m) => m.score < 0).sort((a, b) => a.score - b.score).slice(0, 3);
+
 export function Quadrant() {
   const [hover, setHover] = useState<StoreRow | null>(null);
 
@@ -44,6 +51,13 @@ export function Quadrant() {
               problem it has — not just whether it is good or bad. Bubble size = orders. Trails show movement
               vs the prior period ({NETWORK.prevWindow}). {NETWORK.window}.
             </p>
+          </div>
+
+          {/* biggest movers strip */}
+          <div className="px-7 py-3.5 border-b border-black/5 flex flex-wrap items-start gap-x-8 gap-y-3" style={{ background: "#fcf9f4" }}>
+            <MoverGroup label="Biggest gains" dir="up" movers={improving} />
+            <div className="w-px self-stretch bg-black/5 hidden md:block" />
+            <MoverGroup label="Biggest declines" dir="down" movers={sliding} />
           </div>
 
           <div className="relative">
@@ -219,6 +233,44 @@ export function Quadrant() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function MoverGroup({ label, dir, movers }: { label: string; dir: "up" | "down"; movers: { s: StoreRow; score: number }[] }) {
+  const col = dir === "up" ? "#1a5c38" : "#b91c1c";
+  return (
+    <div className="flex-1 min-w-[300px]">
+      <div className="flex items-center gap-1.5 mb-2">
+        <svg width="20" height="8">
+          <line x1="1" y1="4" x2="15" y2="4" stroke={col} strokeWidth="1.6" />
+          <path d="M14,1.6 L19,4 L14,6.4 Z" fill={col} />
+        </svg>
+        <span className="text-[11px] font-semibold tracking-[0.1em] uppercase" style={{ color: col }}>{label}</span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {movers.length === 0 ? (
+          <span className="text-[12px] text-neutral-400">No qualifying stores</span>
+        ) : (
+          movers.map((m) => <MoverChip key={m.s.store} s={m.s} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MoverChip({ s }: { s: StoreRow }) {
+  const p = s.prev!;
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-black/5 bg-white px-2.5 py-1.5 shadow-sm">
+      <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ background: ACCENT[s.country] }} />
+      <span className="text-[12.5px] font-semibold text-neutral-800 whitespace-nowrap">{s.store}</span>
+      <span className="text-[11px] tabular-nums whitespace-nowrap" style={{ color: p.dConv >= 0 ? "#1a5c38" : "#b91c1c" }}>
+        {p.dConv >= 0 ? "+" : ""}{p.dConv.toFixed(1)}pt
+      </span>
+      <span className="text-[11px] tabular-nums whitespace-nowrap" style={{ color: p.dAbv >= 0 ? "#1a5c38" : "#b91c1c" }}>
+        {p.dAbv >= 0 ? "+" : "−"}{fmtKES(Math.abs(p.dAbv)).replace("KES ", "")}
+      </span>
     </div>
   );
 }
