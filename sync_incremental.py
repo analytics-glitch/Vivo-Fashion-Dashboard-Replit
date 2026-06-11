@@ -646,6 +646,19 @@ def main():
         log.error("Footfall sync error: %s", e)
         conn.rollback()
 
+    # Inventory sync — once a day at midnight EAT (21:00 UTC)
+    now_utc = datetime.now(timezone.utc)
+    if 21 <= now_utc.hour < 22:
+        try:
+            import subprocess, sys
+            log.info("Running nightly inventory sync...")
+            subprocess.run([sys.executable, '/home/runner/workspace/extract_odoo_inventory.py'], check=True)
+            subprocess.run([sys.executable, '/home/runner/workspace/extract_shopify_inventory.py'], check=True)
+            subprocess.run([sys.executable, '/home/runner/workspace/extract_shopzetu_inventory.py'], check=True)
+            log.info("✅ Nightly inventory sync complete")
+        except Exception as e:
+            log.error("Inventory sync error: %s", e)
+
     # Chronic-stockout snapshot — once a day around midnight EAT (21:00 UTC).
     # The API endpoint dedupes to a weekly cadence, so running it on every cycle
     # in this window is harmless; we only narrow to the hour to avoid pointless

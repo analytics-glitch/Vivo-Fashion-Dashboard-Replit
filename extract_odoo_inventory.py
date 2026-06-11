@@ -49,6 +49,17 @@ LOCATION_COUNTRY_MAP = {
     "Vivo M-peace Plaza":     ("Vivo M-peace Plaza",    "Rwanda"),
 }
 
+EXCLUDED_LOCATIONS = {
+    'Production Accessories', 'Raw Materials', 'Production',
+    'Fabric Trimming', 'Shopping Bags', 'Dead Stock Fabric',
+    'Finished Goods Production', 'Defects Location',
+    'Buying & Merchandise', 'Fabric Production', 'Wandia',
+    'Galleria Holding', 'Washing', 'Cutting - Spreading',
+    'Recall Location', 'Holding Warehouse Finished Goods',
+    'Studio Location', 'Product Development', 'Sampling Fabric',
+    'Repairs', 'Sampling', 'Sale Stock',
+}
+
 def get_m2o_name(v):
     if isinstance(v, list) and len(v) > 1:
         return str(v[1])
@@ -152,6 +163,9 @@ def main():
             color      = get_m2o_name(p.get("x_vivo_color"))
 
             if not sku:
+                continue
+            # Skip excluded internal locations
+            if any(exc.lower() in location.lower() for exc in EXCLUDED_LOCATIONS):
                 continue
 
             rows.append((

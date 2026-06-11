@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
-import { api, fmtKES, fmtNum, fmtDelta, fmtPct, buildParams, pctDelta, comparePeriod } from "@/lib/api";
+import { api, fmtKES, fmtKESLong, fmtNum, fmtDelta, fmtPct, buildParams, pctDelta, comparePeriod } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { InlineDelta } from "@/components/ChartHelpers";
 import SortableTable from "@/components/SortableTable";
@@ -14,7 +14,72 @@ import StoreDeepDive from "@/components/StoreDeepDive";
 import LocationsAttentionPanel from "@/components/LocationsAttentionPanel";
 import MonthlyTargetsTracker from "@/components/MonthlyTargetsTracker";
 import StockToSalesBySubcategory from "@/components/StockToSalesBySubcategory";
-import { Storefront, ArrowsDownUp, ArrowUpRight } from "@phosphor-icons/react";
+import { Storefront, ArrowsDownUp, ArrowUpRight, Warning, CaretDown, CaretRight, Footprints, Target, Coins } from "@phosphor-icons/react";
+
+// --- Footfall & Conversion table tuning ---------------------------------
+// Conversion bands (configurable). A store converting >= GREEN% is strong,
+// AMBER..GREEN is a watch, below AMBER is weak. FF_LOW is the footfall floor
+// below which conversion is statistical noise (deltas muted, store excluded
+// from best/worst callouts).
+const CONV_GREEN = 13;
+const CONV_AMBER = 8;
+const FF_LOW = 100;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Compact date-range label, e.g. "1–10 Jun 2026" or "1 Jun – 3 Jul 2026".
+const fmtRange = (from, to) => {
+  if (!from || !to) return "";
+  const [y1, m1, d1] = from.split("-").map(Number);
+  const [y2, m2, d2] = to.split("-").map(Number);
+  if (from === to) return `${d1} ${MONTHS[m1 - 1]} ${y1}`;
+  if (y1 === y2 && m1 === m2) return `${d1}–${d2} ${MONTHS[m1 - 1]} ${y1}`;
+  if (y1 === y2) return `${d1} ${MONTHS[m1 - 1]} – ${d2} ${MONTHS[m2 - 1]} ${y1}`;
+  return `${d1} ${MONTHS[m1 - 1]} ${y1} – ${d2} ${MONTHS[m2 - 1]} ${y2}`;
+};
+
+const convBand = (c, low) => {
+  if (low || c == null) return "pill-neutral";
+  if (c >= CONV_GREEN) return "pill-green";
+  if (c >= CONV_AMBER) return "pill-amber";
+  return "pill-red";
+};
+
+// One "lever" of the diagnose-the-gap mini panel: current vs last-month,
+// rendered as two proportional bars plus the delta. Higher-is-better drives
+// the delta colour.
+const LeverTile = ({ icon: Icon, label, cur, prev, fmt, delta, deltaSuffix = "%", higherBetter = true, note }) => {
+  const max = Math.max(cur || 0, prev || 0) || 1;
+  const good = delta == null ? null : (higherBetter ? delta >= 0 : delta <= 0);
+  const deltaCls = good == null ? "text-muted" : good ? "text-emerald-700" : "text-red-600";
+  const Bar = ({ v, tone }) => (
+    <div className="h-1.5 rounded-full bg-stone-200/70 overflow-hidden">
+      <div className={`h-full rounded-full ${tone}`} style={{ width: `${Math.max(2, ((v || 0) / max) * 100)}%` }} />
+    </div>
+  );
+  return (
+    <div className="flex-1 min-w-[150px] rounded-lg border border-stone-200 bg-white p-3">
+      <div className="flex items-center gap-1.5 text-[11px] font-semibold text-muted uppercase tracking-wide">
+        {Icon && <Icon size={13} weight="bold" />}{label}
+      </div>
+      <div className="mt-2 flex items-baseline justify-between gap-2">
+        <span className="text-base font-bold text-[#1a1a1a]">{fmt(cur)}</span>
+        {delta != null && (
+          <span className={`text-[11px] font-semibold ${deltaCls}`}>
+            {delta >= 0 ? "▲" : "▼"} {Math.abs(delta).toFixed(1)}{deltaSuffix}
+          </span>
+        )}
+      </div>
+      <div className="mt-1.5 space-y-1">
+        <Bar v={cur} tone="bg-brand" />
+        <Bar v={prev} tone="bg-stone-300" />
+      </div>
+      <div className="mt-1 flex justify-between text-[10px] text-muted">
+        <span>Now</span><span>LM {prev == null ? "n/a" : fmt(prev)}</span>
+      </div>
+      {note && <div className="mt-1.5 text-[10px] text-muted leading-snug">{note}</div>}
+    </div>
+  );
+};
 
 const Locations = () => {
   const { applied, touchLastUpdated } = useFilters();
@@ -33,8 +98,10 @@ const Locations = () => {
   const [sortKey, setSortKey] = useState("total_sales");
   const [selected, setSelected] = useState(null);
   const [weekdayData, setWeekdayData] = useState(null);
-  // Iter 89 — Sort state for the plain "Footfall & Conversion" table.
-  const ffSort = useTableSort();
+  // Footfall & Conversion table — default sort by Sales/Visitor desc (the
+  // primary efficiency metric). Row click expands a diagnose-the-gap panel.
+  const ffSort = useTableSort({ key: "spv", dir: "desc" });
+  const [expandedFf, setExpandedFf] = useState(null);
 
   // Weekday pattern feeds the store deep-dive's mini-heatmap.
   // Safe to share across all store drills since the endpoint is 1h-cached.
@@ -176,6 +243,99 @@ const Locations = () => {
       };
     });
   }, [rows, prevMap, footfallMap, prevFootfallMap]);
+
+  // --- Footfall & Conversion table model ---------------------------------
+  // One decorated row per footfall location. Sales/Orders come from the
+  // authoritative store grid (sales-summary); conversion is recomputed from
+  // CLEAN orders (sensor-gap days excluded server-side). prev-period values
+  // come from the second /footfall + /sales-summary fan-out.
+  const ffRows = useMemo(() => {
+    return footfall.map((r) => {
+      const loc = r.location;
+      const store = enriched.find((l) => l.channel === loc);
+      const sales = store ? (store.total_sales || 0) : (r.total_sales || 0);
+      const orders = store ? (store.orders || store.total_orders || 0) : (r.orders || 0);
+      const footfallCount = r.total_footfall || 0;
+      const sensorGapDays = r.sensor_gap_days || 0;
+      // clean_orders excludes orders booked on days the sensor reported 0.
+      const cleanOrders = r.clean_orders != null ? r.clean_orders : orders;
+      const conv = footfallCount ? (cleanOrders / footfallCount) * 100 : null;
+
+      const pFf = prevFootfallMap.get(loc);
+      const prevFootfallCount = pFf ? (pFf.total_footfall || 0) : 0;
+      const prevStore = prevMap.get(loc);
+      const prevOrders = prevStore ? (prevStore.orders || prevStore.total_orders || 0) : 0;
+      const prevSales = prevStore ? (prevStore.total_sales || 0) : 0;
+      // Previous conversion must use the SAME sensor-clean methodology as the
+      // current period — prior clean orders over prior footfall, not raw
+      // sales-summary orders — or Δpp is comparing two different bases.
+      const prevCleanOrders = pFf ? (pFf.clean_orders != null ? pFf.clean_orders : (pFf.orders || 0)) : 0;
+      const prevConv = prevFootfallCount ? (prevCleanOrders / prevFootfallCount) * 100 : null;
+      const convDeltaPp = (conv != null && prevConv != null) ? +(conv - prevConv).toFixed(2) : null;
+
+      const footfallDeltaPct = prevFootfallCount > 0 ? pctDelta(footfallCount, prevFootfallCount) : null;
+      const spv = footfallCount ? sales / footfallCount : null;
+      const prevSpv = prevFootfallCount ? prevSales / prevFootfallCount : null;
+      const spvDeltaPct = (spv != null && prevSpv != null && prevSpv > 0) ? pctDelta(spv, prevSpv) : null;
+
+      // Low-traffic when either period is below the noise floor.
+      const lowTraffic = footfallCount < FF_LOW || (prevFootfallCount > 0 && prevFootfallCount < FF_LOW);
+      // Estimated orders gained/lost from the conversion move: Δpp × footfall.
+      const estOrdersDelta = convDeltaPp != null ? Math.round((convDeltaPp / 100) * footfallCount) : null;
+
+      const abv = store ? (store.abv || 0) : 0;
+      const prevAbv = store ? store.prev_abv : null;
+      const abvDeltaPct = store ? store.d_abv : null;
+
+      return {
+        loc, sales, orders, cleanOrders, footfallCount, prevFootfallCount,
+        conv, prevConv, convDeltaPp, footfallDeltaPct, spv, prevSpv, spvDeltaPct,
+        lowTraffic, estOrdersDelta, sensorGapDays, abv, prevAbv, abvDeltaPct,
+        prevOrders, prevSales, prevCleanOrders,
+      };
+    });
+  }, [footfall, enriched, prevFootfallMap, prevMap]);
+
+  // Pinned network total (blended, not averaged). Conversion blends CLEAN
+  // orders over total footfall; sales/visitor blends total sales over footfall.
+  const ffNetwork = useMemo(() => {
+    if (!ffRows.length) return null;
+    const sum = (k) => ffRows.reduce((a, r) => a + (r[k] || 0), 0);
+    const footfall = sum("footfallCount");
+    const prevFootfall = sum("prevFootfallCount");
+    const cleanOrders = sum("cleanOrders");
+    const orders = sum("orders");
+    const sales = sum("sales");
+    const prevCleanOrders = sum("prevCleanOrders");
+    const prevSales = sum("prevSales");
+    const conv = footfall ? (cleanOrders / footfall) * 100 : null;
+    const prevConv = prevFootfall ? (prevCleanOrders / prevFootfall) * 100 : null;
+    const convDeltaPp = (conv != null && prevConv != null) ? +(conv - prevConv).toFixed(2) : null;
+    const spv = footfall ? sales / footfall : null;
+    const prevSpv = prevFootfall ? prevSales / prevFootfall : null;
+    return {
+      footfall, orders, sales, conv, prevConv, convDeltaPp, spv,
+      footfallDeltaPct: prevFootfall > 0 ? pctDelta(footfall, prevFootfall) : null,
+      spvDeltaPct: (spv != null && prevSpv != null && prevSpv > 0) ? pctDelta(spv, prevSpv) : null,
+    };
+  }, [ffRows]);
+
+  // Best/worst conversion callout — excludes low-traffic stores (noise).
+  const ffCallouts = useMemo(() => {
+    const eligible = ffRows.filter((r) => !r.lowTraffic && r.conv != null && r.footfallCount > 0);
+    if (eligible.length < 2) return null;
+    const best = eligible.reduce((a, b) => (b.conv > a.conv ? b : a));
+    const worst = eligible.reduce((a, b) => (b.conv < a.conv ? b : a));
+    return { best, worst };
+  }, [ffRows]);
+
+  // "1–10 Jun vs 1–10 May 2026"-style period label for the subtitle.
+  const ffPeriodLabel = useMemo(() => {
+    const cur = fmtRange(dateFrom, dateTo);
+    if (compareMode === "none") return cur;
+    const p = comparePeriod(dateFrom, dateTo, compareMode, { date_from: compareDateFrom, date_to: compareDateTo });
+    return p ? `${cur} vs ${fmtRange(p.date_from, p.date_to)}` : cur;
+  }, [dateFrom, dateTo, compareMode, compareDateFrom, compareDateTo]);
 
   const avg = useMemo(() => {
     if (!enriched.length) return 0;
@@ -639,74 +799,216 @@ const Locations = () => {
                 />
               </div>
 
-              <div className="card-white p-5" data-testid="footfall-section">
-                <SectionTitle
-                  title="Footfall & Conversion"
-                  subtitle="Total Sales match the store grid above (sales-summary). Orders & sales/visitor recomputed from the authoritative totals."
-                />
-                <div className="overflow-x-auto">
-                  <table className="w-full data" data-testid="footfall-table">
-                    <thead>
-                      <tr>
-                        <SortableTh sortKey="location" sort={ffSort.sort} onSort={ffSort.toggleSort}>Location</SortableTh>
-                        <SortableTh sortKey="total_sales" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Total Sales</SortableTh>
-                        <SortableTh sortKey="orders" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Orders</SortableTh>
-                        <SortableTh sortKey="footfall" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Footfall</SortableTh>
-                        <SortableTh sortKey="conversion" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Conversion</SortableTh>
-                        <SortableTh sortKey="conv_delta" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Δ Conversion</SortableTh>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {footfall.length === 0 && (
-                        <tr><td colSpan={6}><Empty label="No footfall data in this period." /></td></tr>
+              {(() => {
+                const compare = compareMode !== "none";
+                const activeSort = ffSort.sort || { key: "spv", dir: "desc" };
+                const sortLabels = {
+                  location: "Location", footfall: "Footfall", ff_delta: "Δ Footfall",
+                  orders: "Orders", conversion: "Conversion", prev_conv: "Conversion (LM)",
+                  spv: "Sales/Visitor", total_sales: "Total Sales",
+                };
+                const accessors = {
+                  location: (r) => r.loc,
+                  footfall: (r) => r.footfallCount,
+                  ff_delta: (r) => r.footfallDeltaPct,
+                  orders: (r) => r.orders,
+                  conversion: (r) => r.conv,
+                  prev_conv: (r) => r.prevConv,
+                  spv: (r) => r.spv,
+                  total_sales: (r) => r.sales,
+                };
+                const sortedFf = ffSort.sort
+                  ? ffSort.sortRows(ffRows, accessors)
+                  : [...ffRows].sort((a, b) => (b.spv || 0) - (a.spv || 0));
+                const nColumns = compare ? 8 : 6;
+                const lmTag = compareMode === "yesterday" ? "Yd" : compareMode === "last_month" ? "LM" : "LY";
+
+                return (
+                  <div className="card-white p-5" data-testid="footfall-section">
+                    <SectionTitle
+                      title="Footfall & Conversion"
+                      subtitle={`Sales/Visitor (Total Sales ÷ Footfall) is the headline efficiency metric. Sorted by ${sortLabels[activeSort.key] || "Sales/Visitor"} ${activeSort.dir === "asc" ? "↑" : "↓"} · ${ffPeriodLabel} · KES. Conversion uses sensor-clean days; click a store to diagnose the gap.`}
+                    />
+
+                    {/* Conversion legend + best/worst callout */}
+                    <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 mb-3 text-[11px]">
+                      <div className="flex items-center gap-3 text-muted">
+                        <span className="font-semibold uppercase tracking-wide">Conversion</span>
+                        <span className="inline-flex items-center gap-1"><i className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500" />≥{CONV_GREEN}% strong</span>
+                        <span className="inline-flex items-center gap-1"><i className="inline-block w-2.5 h-2.5 rounded-full bg-amber-500" />{CONV_AMBER}–{CONV_GREEN}% watch</span>
+                        <span className="inline-flex items-center gap-1"><i className="inline-block w-2.5 h-2.5 rounded-full bg-red-500" />&lt;{CONV_AMBER}% weak</span>
+                        <span className="inline-flex items-center gap-1"><Warning size={12} weight="bold" className="text-amber-600" />sensor gap</span>
+                        <span className="opacity-70">Low traffic (&lt;{FF_LOW}) muted</span>
+                      </div>
+                      {ffCallouts && (
+                        <div className="flex items-center gap-4">
+                          <span className="text-muted">Best <span className="font-semibold text-emerald-700">{ffCallouts.best.loc} {fmtPct(ffCallouts.best.conv)}</span></span>
+                          <span className="text-muted">Watch <span className="font-semibold text-red-700">{ffCallouts.worst.loc} {fmtPct(ffCallouts.worst.conv)}</span></span>
+                        </div>
                       )}
-                      {(() => {
-                        const decorated = footfall.map((r) => {
-                          const store = enriched.find((l) => l.channel === r.location);
-                          const authoritativeSales = store ? (store.total_sales || 0) : (r.total_sales || 0);
-                          const authoritativeOrders = store ? (store.orders || store.total_orders || 0) : (r.orders || 0);
-                          const footfallCount = r.total_footfall || 0;
-                          const cr = footfallCount ? (authoritativeOrders / footfallCount) * 100 : 0;
-                          const convPp = store ? store.conv_delta_pp : null;
-                          return { r, authoritativeSales, authoritativeOrders, footfallCount, cr, convPp };
-                        });
-                        const sortedFf = ffSort.sort
-                          ? ffSort.sortRows(decorated, {
-                              location: (d) => d.r.location,
-                              total_sales: (d) => d.authoritativeSales,
-                              orders: (d) => d.authoritativeOrders,
-                              footfall: (d) => d.footfallCount,
-                              conversion: (d) => d.cr,
-                              conv_delta: (d) => d.convPp == null ? null : Number(d.convPp),
-                            })
-                          : decorated.sort((a, b) => (b.footfallCount || 0) - (a.footfallCount || 0));
-                        return sortedFf.map((d, i) => {
-                          const { r, authoritativeSales, authoritativeOrders, footfallCount, cr, convPp } = d;
-                          const pill = cr > 15 ? "pill-green" : cr >= 10 ? "pill-amber" : "pill-red";
-                          return (
-                            <tr key={r.location + i}>
-                              <td className="font-medium">{r.location}</td>
-                              <td className="text-right num font-semibold">{fmtKES(authoritativeSales)}</td>
-                              <td className="text-right num">{fmtNum(authoritativeOrders)}</td>
-                              <td className="text-right num">{fmtNum(footfallCount)}</td>
-                              <td className="text-right"><span className={pill}>{fmtPct(cr)}</span></td>
-                              <td className="text-right num">
-                                {compareMode === "none" || convPp == null ? (
-                                  <span className="text-muted text-[11px]">—</span>
-                                ) : (
-                                  <span className={`font-semibold ${convPp > 0.05 ? "text-emerald-700" : convPp < -0.05 ? "text-red-700" : "text-muted"}`}>
-                                    {convPp > 0.05 ? "▲" : convPp < -0.05 ? "▼" : "—"} {Math.abs(convPp).toFixed(2)}pp
-                                  </span>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full data" data-testid="footfall-table">
+                        <thead>
+                          <tr>
+                            <th className="w-5" />
+                            <SortableTh sortKey="location" sort={ffSort.sort} onSort={ffSort.toggleSort}>Location</SortableTh>
+                            <SortableTh sortKey="footfall" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Footfall</SortableTh>
+                            {compare && <SortableTh sortKey="ff_delta" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Δ Footfall</SortableTh>}
+                            <SortableTh sortKey="orders" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Orders</SortableTh>
+                            <SortableTh sortKey="conversion" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Conversion</SortableTh>
+                            {compare && <SortableTh sortKey="prev_conv" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric title={`Conversion last ${lmTag === "Yd" ? "day" : lmTag === "LM" ? "month" : "year"}`}>Conv ({lmTag})</SortableTh>}
+                            <SortableTh sortKey="spv" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric title="Total Sales ÷ Footfall">Sales/Visitor</SortableTh>
+                            <SortableTh sortKey="total_sales" sort={ffSort.sort} onSort={ffSort.toggleSort} numeric>Total Sales</SortableTh>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ffRows.length === 0 && (
+                            <tr><td colSpan={nColumns + 1}><Empty label="No footfall data in this period." /></td></tr>
+                          )}
+
+                          {/* Pinned network total */}
+                          {ffNetwork && ffRows.length > 0 && (
+                            <tr className="bg-[#f6efe6] font-semibold border-b-2 border-stone-300" data-testid="ff-network-row">
+                              <td />
+                              <td className="text-[#0f3d24]">Network total</td>
+                              <td className="text-right num">{fmtNum(ffNetwork.footfall)}</td>
+                              {compare && (
+                                <td className="text-right num">{ffNetwork.footfallDeltaPct == null ? "—" : <InlineDelta delta={ffNetwork.footfallDeltaPct} compact />}</td>
+                              )}
+                              <td className="text-right num">{fmtNum(ffNetwork.orders)}</td>
+                              <td className="text-right">
+                                <span className={convBand(ffNetwork.conv, false)}>{fmtPct(ffNetwork.conv)}</span>
+                                {compare && ffNetwork.convDeltaPp != null && (
+                                  <div className={`text-[10px] mt-0.5 font-semibold ${ffNetwork.convDeltaPp > 0 ? "text-emerald-700" : ffNetwork.convDeltaPp < 0 ? "text-red-700" : "text-muted"}`}>
+                                    {ffNetwork.convDeltaPp > 0 ? "▲" : ffNetwork.convDeltaPp < 0 ? "▼" : ""} {Math.abs(ffNetwork.convDeltaPp).toFixed(1)}pp
+                                  </div>
                                 )}
                               </td>
+                              {compare && <td className="text-right num text-muted">{ffNetwork.prevConv == null ? "—" : fmtPct(ffNetwork.prevConv)}</td>}
+                              <td className="text-right num text-[#0f3d24] font-bold">
+                                {ffNetwork.spv == null ? "—" : fmtKESLong(ffNetwork.spv)}
+                                {compare && ffNetwork.spvDeltaPct != null && (
+                                  <div className="text-[10px] font-normal"><InlineDelta delta={ffNetwork.spvDeltaPct} compact /></div>
+                                )}
+                              </td>
+                              <td className="text-right num">{fmtKES(ffNetwork.sales)}</td>
                             </tr>
-                          );
-                        });
-                      })()}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+                          )}
+
+                          {sortedFf.map((r, i) => {
+                            const open = expandedFf === r.loc;
+                            return (
+                              <React.Fragment key={r.loc + i}>
+                                <tr
+                                  className="cursor-pointer hover:bg-stone-50/70"
+                                  onClick={() => setExpandedFf(open ? null : r.loc)}
+                                  data-testid={`ff-row-${r.loc}`}
+                                >
+                                  <td className="text-muted pl-1">
+                                    {open ? <CaretDown size={12} weight="bold" /> : <CaretRight size={12} weight="bold" />}
+                                  </td>
+                                  <td className="font-medium">
+                                    <span className="inline-flex items-center gap-1.5">
+                                      {r.loc}
+                                      {r.sensorGapDays > 0 && (
+                                        <Warning
+                                          size={13}
+                                          weight="fill"
+                                          className="text-amber-600"
+                                          title={`Sensor gap: ${r.sensorGapDays} day(s) had sales but zero footfall — excluded from the conversion calc.`}
+                                        />
+                                      )}
+                                      {r.lowTraffic && (
+                                        <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide bg-stone-100 text-muted border border-stone-200">Low traffic</span>
+                                      )}
+                                    </span>
+                                  </td>
+                                  <td className="text-right num">{fmtNum(r.footfallCount)}</td>
+                                  {compare && (
+                                    <td className="text-right num">
+                                      {r.footfallDeltaPct == null ? <span className="text-muted text-[11px]">—</span> : <InlineDelta delta={r.footfallDeltaPct} compact />}
+                                    </td>
+                                  )}
+                                  <td className="text-right num">{fmtNum(r.orders)}</td>
+                                  <td className="text-right">
+                                    <span className={convBand(r.conv, r.lowTraffic)}>{r.conv == null ? "—" : fmtPct(r.conv)}</span>
+                                    {compare && (
+                                      r.lowTraffic ? (
+                                        <div className="text-[10px] mt-0.5 text-muted">Δ muted</div>
+                                      ) : r.convDeltaPp != null ? (
+                                        <div
+                                          className={`text-[10px] mt-0.5 font-semibold ${r.convDeltaPp > 0 ? "text-emerald-700" : r.convDeltaPp < 0 ? "text-red-700" : "text-muted"}`}
+                                          title={`${r.estOrdersDelta >= 0 ? "≈ +" : "≈ "}${r.estOrdersDelta} orders vs ${lmTag} (Δpp × footfall)`}
+                                        >
+                                          {r.convDeltaPp > 0 ? "▲" : r.convDeltaPp < 0 ? "▼" : ""} {Math.abs(r.convDeltaPp).toFixed(1)}pp
+                                        </div>
+                                      ) : null
+                                    )}
+                                  </td>
+                                  {compare && (
+                                    <td className="text-right num text-muted">{r.prevConv == null ? "—" : fmtPct(r.prevConv)}</td>
+                                  )}
+                                  <td className="text-right num text-[#0f3d24] font-bold">
+                                    {r.spv == null ? "—" : fmtKESLong(r.spv)}
+                                    {compare && r.spvDeltaPct != null && (
+                                      <div className="text-[10px] font-normal"><InlineDelta delta={r.spvDeltaPct} compact /></div>
+                                    )}
+                                  </td>
+                                  <td className="text-right num font-semibold">{fmtKES(r.sales)}</td>
+                                </tr>
+                                {open && (
+                                  <tr className="bg-[#faf6ef]" data-testid={`ff-expand-${r.loc}`}>
+                                    <td colSpan={nColumns + 1} className="p-3">
+                                      <div className="text-[11px] text-muted mb-2">
+                                        Diagnose the gap for <span className="font-semibold text-[#0f3d24]">{r.loc}</span> — is the move traffic, conversion, or basket?
+                                        {r.sensorGapDays > 0 && (
+                                          <span className="ml-2 inline-flex items-center gap-1 text-amber-700"><Warning size={12} weight="fill" />{r.sensorGapDays} sensor-gap day(s) excluded from conversion</span>
+                                        )}
+                                      </div>
+                                      <div className="flex flex-wrap gap-3">
+                                        <LeverTile
+                                          icon={Footprints}
+                                          label="Footfall"
+                                          cur={r.footfallCount}
+                                          prev={r.prevFootfallCount || null}
+                                          fmt={(v) => fmtNum(v)}
+                                          delta={r.footfallDeltaPct}
+                                          note="Visitors through the door."
+                                        />
+                                        <LeverTile
+                                          icon={Target}
+                                          label="Conversion"
+                                          cur={r.conv}
+                                          prev={r.prevConv}
+                                          fmt={(v) => (v == null ? "n/a" : fmtPct(v))}
+                                          delta={r.convDeltaPp}
+                                          deltaSuffix="pp"
+                                          note={r.estOrdersDelta != null ? `${r.estOrdersDelta >= 0 ? "≈ +" : "≈ "}${r.estOrdersDelta} orders from the conversion move.` : "Orders ÷ footfall (clean days)."}
+                                        />
+                                        <LeverTile
+                                          icon={Coins}
+                                          label="Avg basket (ABV)"
+                                          cur={r.abv}
+                                          prev={r.prevAbv}
+                                          fmt={(v) => (v == null ? "n/a" : fmtKESLong(v))}
+                                          delta={r.abvDeltaPct}
+                                          note="Spend per order."
+                                        />
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                              </React.Fragment>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* "Locations needing attention" — surfaces stores that look
                   off on at least one of: sales drop, conversion drop,

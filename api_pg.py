@@ -1775,35 +1775,58 @@ def get_footfall(
     ff_where = "f.time BETWEEN '" + date_from + "' AND '" + date_to + "'"
     # Channel filter is applied on the CANONICAL name (post-alias) so it also
     # matches the renamed sensor spellings introduced 2026-06-07.
-    ff_having = (" HAVING " + ff_canon_sql() + " IN (" + csv_to_sql(channel) + ")") if channel else ""
     sales_where = "s.sale_date BETWEEN '" + date_from + "' AND '" + date_to + "' AND " + BASE_FILTERS
+    # Applied after the day-level FULL OUTER JOIN, on the canonical location.
+    loc_filter = (" WHERE loc IN (" + csv_to_sql(channel) + ")") if channel else ""
+    # Day-level join (footfall vs sales) so we can detect "sensor-gap" days —
+    # days where a store made sales but the footfall counter reported zero —
+    # and recompute a clean conversion that excludes those days. Top-level
+    # fields stay byte-for-byte compatible with the prior store-level query;
+    # `sensor_gap_days` / `clean_orders` / `clean_conversion_rate` are additive.
     return run_query("""
-        WITH footfall AS (
-            SELECT """ + ff_canon_sql() + """ AS pos_location_name,
-                SUM(f.a01_footfall_in) AS total_footfall,
-                SUM(f.a05_outside_traffic) AS outside_traffic
+        WITH ff_daily AS (
+            SELECT """ + ff_canon_sql() + """ AS loc,
+                f.time::date AS d,
+                SUM(f.a01_footfall_in) AS ff,
+                SUM(f.a05_outside_traffic) AS outside
             FROM footfall f
             WHERE """ + ff_where + """
-            GROUP BY 1""" + ff_having + """
+            GROUP BY 1, 2
         ),
-        sales AS (
-            SELECT s.pos_location_name,
+        sales_daily AS (
+            SELECT s.pos_location_name AS loc,
+                s.sale_date::date AS d,
                 COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
-                ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
-                ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket
+                ROUND(SUM(s.total_sales_kes::numeric), 0) AS sales
             FROM all_sales s
             WHERE """ + sales_where + """
-            GROUP BY s.pos_location_name
+            GROUP BY 1, 2
+        ),
+        ff_locs AS (SELECT DISTINCT loc FROM ff_daily),
+        joined AS (
+            SELECT COALESCE(ff.loc, sd.loc) AS loc,
+                COALESCE(ff.ff, 0) AS ff,
+                COALESCE(ff.outside, 0) AS outside,
+                COALESCE(sd.orders, 0) AS orders,
+                COALESCE(sd.sales, 0) AS sales
+            FROM ff_daily ff
+            FULL OUTER JOIN sales_daily sd
+                ON sd.loc = ff.loc AND sd.d = ff.d
+            WHERE COALESCE(ff.loc, sd.loc) IN (SELECT loc FROM ff_locs)
         )
-        SELECT f.pos_location_name AS location,
-            f.total_footfall, f.outside_traffic,
-            ROUND(f.total_footfall * 100.0 / NULLIF(f.outside_traffic, 0), 1) AS turn_in_rate,
-            COALESCE(s.orders, 0) AS orders,
-            COALESCE(s.total_sales, 0) AS total_sales,
-            COALESCE(s.avg_basket, 0) AS avg_basket,
-            ROUND(COALESCE(s.orders, 0) * 100.0 / NULLIF(f.total_footfall, 0), 1) AS conversion_rate
-        FROM footfall f
-        LEFT JOIN sales s ON f.pos_location_name = s.pos_location_name
+        SELECT loc AS location,
+            SUM(ff) AS total_footfall,
+            SUM(outside) AS outside_traffic,
+            ROUND(SUM(ff) * 100.0 / NULLIF(SUM(outside), 0), 1) AS turn_in_rate,
+            SUM(orders) AS orders,
+            SUM(sales) AS total_sales,
+            ROUND(SUM(sales) / NULLIF(SUM(orders), 0), 0) AS avg_basket,
+            ROUND(SUM(orders) * 100.0 / NULLIF(SUM(ff), 0), 1) AS conversion_rate,
+            COUNT(*) FILTER (WHERE ff = 0 AND orders > 0) AS sensor_gap_days,
+            COALESCE(SUM(orders) FILTER (WHERE ff > 0), 0) AS clean_orders,
+            ROUND(SUM(orders) FILTER (WHERE ff > 0) * 100.0 / NULLIF(SUM(ff), 0), 1) AS clean_conversion_rate
+        FROM joined""" + loc_filter + """
+        GROUP BY loc
         ORDER BY total_footfall DESC
     """, date_to=date_to)
 
