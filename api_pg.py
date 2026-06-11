@@ -9498,6 +9498,9 @@ def _ensure_crm_tables():
             created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
         )""")
     _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_msg_active ON crm_member_message(active, created_at DESC)")
+    # Scheduling: optional auto-publish (hidden until publish_at) + auto-expire (hidden after expires_at).
+    _users_exec("ALTER TABLE crm_member_message ADD COLUMN IF NOT EXISTS publish_at TIMESTAMPTZ")
+    _users_exec("ALTER TABLE crm_member_message ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ")
     _users_exec("""
         CREATE TABLE IF NOT EXISTS crm_member_message_read (
             message_id  INTEGER NOT NULL,
@@ -10556,7 +10559,7 @@ def crm_member_messages_list(request: Request):
     each with audience reach + how many members have read it."""
     rows = _users_exec(
         "SELECT msg.id, msg.audience, msg.brand_code, msg.customer_id, msg.title, "
-        "msg.body, msg.created_by_name, msg.active, msg.created_at, "
+        "msg.body, msg.created_by_name, msg.active, msg.created_at, msg.publish_at, msg.expires_at, "
         "(SELECT COUNT(*) FROM crm_member_message_read r WHERE r.message_id = msg.id) AS read_count "
         "FROM crm_member_message msg ORDER BY msg.created_at DESC LIMIT 200",
         fetch=True) or []
@@ -10567,6 +10570,8 @@ def crm_member_messages_list(request: Request):
         "SELECT brand_code, COUNT(*) AS n FROM crm_loyalty_member GROUP BY brand_code",
         fetch=True) or []
     by_brand = {r["brand_code"]: int(r["n"]) for r in by_brand_rows}
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
     out = []
     for r in rows:
         if r["audience"] == "all":
@@ -10575,12 +10580,21 @@ def crm_member_messages_list(request: Request):
             reach = by_brand.get(r["brand_code"], 0)
         else:
             reach = 1
+        pub, exp = r["publish_at"], r["expires_at"]
+        if not r["active"]:
+            status = "retracted"
+        elif pub is not None and pub > now:
+            status = "scheduled"
+        elif exp is not None and exp <= now:
+            status = "expired"
+        else:
+            status = "active"
         out.append({
             "id": r["id"], "audience": r["audience"], "brand_code": r["brand_code"],
             "customer_id": r["customer_id"], "title": r["title"], "body": r["body"],
             "created_by_name": r["created_by_name"], "active": r["active"],
             "created_at": r["created_at"], "read_count": int(r["read_count"] or 0),
-            "reach": reach,
+            "reach": reach, "publish_at": pub, "expires_at": exp, "status": status,
         })
     return {"messages": out}
 
@@ -10611,11 +10625,29 @@ async def crm_member_messages_create(request: Request):
             "SELECT 1 FROM crm_loyalty_member WHERE customer_id=%s", (customer_id,), fetch=True)
         if not exists:
             return JSONResponse({"detail": "Loyalty member not found"}, status_code=404)
+    # Optional scheduling: publish_at (auto-publish) + expires_at (auto-hide). ISO 8601 UTC.
+    from datetime import datetime, timezone
+    def _parse_dt(val):
+        if val is None or str(val).strip() == "":
+            return None
+        try:
+            return datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+        except Exception:
+            return "ERR"
+    publish_at = _parse_dt(body.get("publish_at"))
+    expires_at = _parse_dt(body.get("expires_at"))
+    if publish_at == "ERR" or expires_at == "ERR":
+        return JSONResponse({"detail": "Invalid publish/expiry date"}, status_code=400)
+    now = datetime.now(timezone.utc)
+    if expires_at is not None and expires_at <= now:
+        return JSONResponse({"detail": "Expiry must be in the future"}, status_code=400)
+    if publish_at is not None and expires_at is not None and expires_at <= publish_at:
+        return JSONResponse({"detail": "Expiry must be after the publish date"}, status_code=400)
     uid, uname, _ = _crm_actor(request)
     rows = _users_exec(
-        "INSERT INTO crm_member_message (audience, brand_code, customer_id, title, body, created_by, created_by_name) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-        (audience, brand_code, customer_id, title, text, uid, uname), fetch=True)
+        "INSERT INTO crm_member_message (audience, brand_code, customer_id, title, body, created_by, created_by_name, publish_at, expires_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+        (audience, brand_code, customer_id, title, text, uid, uname, publish_at, expires_at), fetch=True)
     mid = rows[0]["id"] if rows else None
     _crm_audit("member_message", str(mid), "create", f"{audience}: {title}", request)
     return {"ok": True, "id": mid}
@@ -11114,7 +11146,10 @@ def _member_message_match_sql():
     (every call site aliases crm_member_message AS msg) because the read table
     also has a customer_id. Params order: (brand_code, customer_id)."""
     return (
-        "msg.active = TRUE AND ("
+        "msg.active = TRUE "
+        "AND (msg.publish_at IS NULL OR msg.publish_at <= now()) "
+        "AND (msg.expires_at IS NULL OR msg.expires_at > now()) "
+        "AND ("
         "msg.audience = 'all' "
         "OR (msg.audience = 'brand' AND msg.brand_code = %s) "
         "OR (msg.audience = 'member' AND msg.customer_id = %s))"

@@ -1657,6 +1657,17 @@ const ConfigTab = () => {
 // =====================================================================
 
 const MSG_AUDIENCE_LABEL = { all: "All members", brand: "By brand", member: "One member" };
+const MSG_STATUS_LABEL = { active: "Active", scheduled: "Scheduled", expired: "Expired", retracted: "Retracted" };
+const MSG_STATUS_COLOR = { active: "#1a5c38", scheduled: "#d97706", expired: "#6b7280", retracted: "#6b7280" };
+
+const fmtDateTime = (iso) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleString("en-GB", {
+    day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
+  });
+};
 
 const MessagesTab = () => {
   const [rows, setRows] = useState([]);
@@ -1726,9 +1737,13 @@ const MessagesTab = () => {
                     {m.reach > 0 && <span className="ml-1 text-[11px] text-muted">({fmtPct((m.read_count / m.reach) * 100)})</span>}
                   </td>
                   <td className="px-3 py-2">{m.created_by_name || "—"}</td>
-                  <td className="px-3 py-2 whitespace-nowrap text-muted">{fmtDate(m.created_at)}</td>
+                  <td className="px-3 py-2 whitespace-nowrap text-muted">
+                    {fmtDate(m.created_at)}
+                    {m.publish_at && <div className="text-[11px]">Publishes {fmtDateTime(m.publish_at)}</div>}
+                    {m.expires_at && <div className="text-[11px]">Hides {fmtDateTime(m.expires_at)}</div>}
+                  </td>
                   <td className="px-3 py-2">
-                    <Pill color={m.active ? "#1a5c38" : "#6b7280"} subtle>{m.active ? "Active" : "Retracted"}</Pill>
+                    <Pill color={MSG_STATUS_COLOR[m.status] || "#6b7280"} subtle>{MSG_STATUS_LABEL[m.status] || m.status}</Pill>
                   </td>
                   <td className="px-3 py-2 text-right">
                     {m.active && (
@@ -1757,12 +1772,24 @@ const CreateMessageModal = ({ open, onClose, onCreated }) => {
   const submit = () => {
     if (!form.title?.trim() || !form.body?.trim()) { toast.error("Title and message are required"); return; }
     if (form.audience === "member" && !form.customer_id?.trim()) { toast.error("A customer id is required for a single-member message"); return; }
+    const toIso = (v) => {
+      if (!v) return undefined;
+      const d = new Date(v);
+      return isNaN(d.getTime()) ? undefined : d.toISOString();
+    };
+    const pub = toIso(form.publish_at);
+    const exp = toIso(form.expires_at);
+    if (form.expires_at && !exp) { toast.error("Invalid expiry date"); return; }
+    if (pub && exp && new Date(exp) <= new Date(pub)) { toast.error("Expiry must be after the publish date"); return; }
+    if (exp && new Date(exp) <= new Date()) { toast.error("Expiry must be in the future"); return; }
     const payload = {
       audience: form.audience,
       title: form.title.trim(),
       body: form.body.trim(),
       ...(form.audience === "brand" ? { brand_code: form.brand_code } : {}),
       ...(form.audience === "member" ? { customer_id: form.customer_id.trim() } : {}),
+      ...(pub ? { publish_at: pub } : {}),
+      ...(exp ? { expires_at: exp } : {}),
     };
     setSaving(true);
     api.post("/crm/member-messages", payload)
@@ -1799,7 +1826,15 @@ const CreateMessageModal = ({ open, onClose, onCreated }) => {
         <Field label="Message">
           <textarea className={inputCls} rows={4} value={form.body || ""} onChange={(e) => set("body", e.target.value)} />
         </Field>
-        <p className="text-[12px] text-muted">Members see this in the mobile membership card. No emojis.</p>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Publish at (optional)">
+            <input type="datetime-local" className={inputCls} value={form.publish_at || ""} onChange={(e) => set("publish_at", e.target.value)} />
+          </Field>
+          <Field label="Auto-hide at (optional)">
+            <input type="datetime-local" className={inputCls} value={form.expires_at || ""} onChange={(e) => set("expires_at", e.target.value)} />
+          </Field>
+        </div>
+        <p className="text-[12px] text-muted">Leave the publish date blank to send now. Set an auto-hide date to expire an offer automatically. Members see this in the mobile membership card. No emojis.</p>
       </div>
       <div className="mt-4 flex justify-end gap-2">
         <button className={btnGhost} onClick={onClose}>Cancel</button>

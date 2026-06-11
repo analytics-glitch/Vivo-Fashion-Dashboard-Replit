@@ -89,6 +89,15 @@ and `/me` from drifting (e.g. one counting retracted messages the others hide).
 **How to apply:** member-facing reads must filter `active=TRUE`; staff list shows retracted
 rows too. Delete is a soft delete (`active=FALSE`), so reach/read stats survive retraction.
 
+Scheduling: `crm_member_message` also has optional `publish_at` / `expires_at` (TIMESTAMPTZ).
+Visibility is purely time-gated in SQL via `now()` inside `_member_message_match_sql()`
+(`publish_at IS NULL OR publish_at<=now()` AND `expires_at IS NULL OR expires_at>now()`) —
+there is NO background job/cron; a scheduled message simply starts/stops matching. The web
+sends `datetime-local` values converted to UTC ISO (`new Date(v).toISOString()`); backend
+parses with `datetime.fromisoformat` (handles trailing `Z`). Staff list derives a `status`
+(`retracted`/`scheduled`/`expired`/`active`) in Python. **Why:** auto-publish/expire for
+time-boxed offers without a scheduler; the gate is evaluated per-query so it's always current.
+
 ## Clients
 - Mobile (`artifacts/vivo-mobile`): `lib/member.ts` keeps the token in AsyncStorage key
   `vivo_member_token`. The `app/member/` group (index card with CODE128 barcode via
