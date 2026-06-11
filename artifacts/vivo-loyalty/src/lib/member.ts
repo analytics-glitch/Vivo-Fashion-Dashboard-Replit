@@ -1,39 +1,38 @@
 /**
- * Customer-facing loyalty membership layer for the Vivo BI mobile app.
+ * Customer-facing loyalty membership client for the Vivo Loyalty web app.
  *
- * This is a SEPARATE identity from the staff BI login (lib/auth.tsx). A loyalty
- * member enrols with their phone + a short PIN — no staff account, no approval —
- * and receives a scannable membership barcode plus a points/tier card. The
- * backend gates these `/api/loyalty/*` endpoints with a member card token sent
- * as `X-Member-Token` (NOT the staff Bearer token), so the two sessions never
- * collide on the same device.
+ * This is the standalone shopper experience (separate from the staff BI cockpit
+ * and the staff Expo app). A loyalty member enrols with their phone + a short
+ * PIN — no staff account, no approval — and receives a scannable membership
+ * barcode plus a points/tier card. The backend gates these `/api/loyalty/*`
+ * endpoints with a member card token sent as `X-Member-Token` (NOT a staff
+ * Bearer token), so the two session types never collide.
  */
-import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import { API_BASE } from "@/lib/api";
+export const API_BASE = "/api";
 
 const MEMBER_TOKEN_KEY = "vivo_member_token";
 
-// Module-level card token, mirrored to AsyncStorage. Attached to every member
+// Module-level card token, mirrored to localStorage. Attached to every member
 // request as X-Member-Token.
 let memberToken: string | null = null;
 
-export async function loadMemberToken(): Promise<string | null> {
+export function loadMemberToken(): string | null {
   try {
-    memberToken = await AsyncStorage.getItem(MEMBER_TOKEN_KEY);
+    memberToken = localStorage.getItem(MEMBER_TOKEN_KEY);
   } catch {
     memberToken = null;
   }
   return memberToken;
 }
 
-export async function setMemberToken(token: string | null): Promise<void> {
+export function setMemberToken(token: string | null): void {
   memberToken = token;
   try {
-    if (token) await AsyncStorage.setItem(MEMBER_TOKEN_KEY, token);
-    else await AsyncStorage.removeItem(MEMBER_TOKEN_KEY);
+    if (token) localStorage.setItem(MEMBER_TOKEN_KEY, token);
+    else localStorage.removeItem(MEMBER_TOKEN_KEY);
   } catch {
-    // ignore storage errors; in-memory token still works for this launch
+    // ignore storage errors; in-memory token still works for this session
   }
 }
 
@@ -48,8 +47,23 @@ function memberHeaders(): Record<string, string> {
 function friendly(status: number): string {
   if (status === 502 || status === 503 || status === 504)
     return "The server is temporarily unavailable. Please try again in a moment.";
-  if (status >= 500) return "Something went wrong on the server. Please try again.";
+  if (status >= 500)
+    return "Something went wrong on the server. Please try again.";
   return `Request failed (${status})`;
+}
+
+async function detailOf(res: Response): Promise<string> {
+  try {
+    const j = (await res.json()) as { detail?: unknown };
+    if (j && typeof j.detail === "string") return j.detail;
+  } catch {
+    // non-JSON error body; fall through to the friendly status message
+  }
+  return friendly(res.status);
+}
+
+export interface ApiError extends Error {
+  status?: number;
 }
 
 export async function memberGet<T>(path: string): Promise<T> {
@@ -57,10 +71,14 @@ export async function memberGet<T>(path: string): Promise<T> {
   try {
     res = await fetch(`${API_BASE}${path}`, { headers: { ...memberHeaders() } });
   } catch {
-    throw new Error("Cannot reach the server. Check your connection and try again.");
+    const err = new Error(
+      "Cannot reach the server. Check your connection and try again.",
+    ) as ApiError;
+    err.status = 0;
+    throw err;
   }
   if (!res.ok) {
-    const err = new Error(await detailOf(res)) as Error & { status?: number };
+    const err = new Error(await detailOf(res)) as ApiError;
     err.status = res.status;
     throw err;
   }
@@ -78,26 +96,16 @@ export async function memberPost<T>(path: string, body?: unknown): Promise<T> {
   } catch {
     const err = new Error(
       "Cannot reach the server. Check your connection and try again.",
-    ) as Error & { status?: number };
+    ) as ApiError;
     err.status = 0;
     throw err;
   }
   if (!res.ok) {
-    const err = new Error(await detailOf(res)) as Error & { status?: number };
+    const err = new Error(await detailOf(res)) as ApiError;
     err.status = res.status;
     throw err;
   }
   return (await res.json()) as T;
-}
-
-async function detailOf(res: Response): Promise<string> {
-  try {
-    const j = (await res.json()) as { detail?: unknown };
-    if (j && typeof j.detail === "string") return j.detail;
-  } catch {
-    // non-JSON error body; fall through to the friendly status message
-  }
-  return friendly(res.status);
 }
 
 // --- Response shapes -------------------------------------------------------
@@ -168,7 +176,7 @@ export async function enrolMember(input: {
     "/loyalty/enrol",
     input,
   );
-  await setMemberToken(res.token);
+  setMemberToken(res.token);
   return res;
 }
 
@@ -180,7 +188,7 @@ export async function loginMember(input: {
     "/loyalty/login",
     input,
   );
-  await setMemberToken(res.token);
+  setMemberToken(res.token);
   return res;
 }
 
@@ -188,9 +196,11 @@ export async function fetchMemberMe(): Promise<MemberMe> {
   return memberGet<MemberMe>("/loyalty/me");
 }
 
-export async function redeemPoints(
-  points: number,
-): Promise<{ discount_code: string; kes_value: number; points_balance: number }> {
+export async function redeemPoints(points: number): Promise<{
+  discount_code: string;
+  kes_value: number;
+  points_balance: number;
+}> {
   return memberPost("/loyalty/redeem", { points });
 }
 
@@ -213,5 +223,5 @@ export async function logoutMember(): Promise<void> {
   } catch {
     // best-effort; local token is cleared regardless
   }
-  await setMemberToken(null);
+  setMemberToken(null);
 }

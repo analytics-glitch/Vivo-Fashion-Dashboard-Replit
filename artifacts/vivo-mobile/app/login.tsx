@@ -282,20 +282,6 @@ export default function LoginScreen() {
           if you need access.
         </Text>
 
-        {/* Customer loyalty entry — no staff account needed. */}
-        <Pressable
-          onPress={() => router.push("/member")}
-          style={({ pressed }) => [
-            styles.memberLink,
-            { borderColor: c.border, borderRadius: c.radius, opacity: pressed ? 0.6 : 1 },
-          ]}
-        >
-          <Ionicons name="card-outline" size={16} color={c.primary} />
-          <Text style={[styles.memberLinkText, { color: c.primary }]}>
-            Loyalty member? View your card
-          </Text>
-        </Pressable>
-
         <View style={[styles.poweredBy, { borderTopColor: c.border }]}>
           <Text style={[styles.poweredText, { color: c.mutedForeground }]}>
             Powered by
@@ -404,16 +390,6 @@ const styles = StyleSheet.create({
   },
   buttonText: { fontFamily: "Jakarta_700Bold", fontSize: 15 },
   note: { fontFamily: "Jakarta_500Medium", fontSize: 11.5, lineHeight: 17, marginTop: 2 },
-  memberLink: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    borderWidth: 1,
-    paddingVertical: 12,
-    marginTop: 2,
-  },
-  memberLinkText: { fontFamily: "Jakarta_600SemiBold", fontSize: 13.5 },
   poweredBy: {
     flexDirection: "row",
     alignItems: "center",

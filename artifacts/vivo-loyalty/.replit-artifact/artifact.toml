@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/loyalty/"
+title = "Vivo Loyalty"
+version = "1.0.0"
+id = "artifacts/vivo-loyalty"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/loyalty/" ]
+localPort = 21438
+
+[services.development]
+run = "pnpm --filter @workspace/vivo-loyalty run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/vivo-loyalty", "run", "build" ]
+publicDir = "artifacts/vivo-loyalty/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21438"
+BASE_PATH = "/loyalty/"
