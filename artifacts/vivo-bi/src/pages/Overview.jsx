@@ -28,7 +28,6 @@ import OverviewSnapshot from "@/components/OverviewSnapshot";
 // Q2TargetsCard + AnnualTargetsCard moved to /targets (Targets Tracker page).
 import KpiTrendChart from "@/components/KpiTrendChart";
 import { useLocationBadges, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
-import { useNavigate } from "react-router-dom";
 import { ChartTooltip, useIsMobile, makePctDeltaLabel } from "@/components/ChartHelpers";
 import {
   CurrencyCircleDollar,
@@ -44,8 +43,6 @@ import {
   TrendUp,
   Footprints,
   Target,
-  Warning,
-  X,
   ArrowsLeftRight,
 } from "@phosphor-icons/react";
 import {
@@ -191,7 +188,6 @@ const ProjectionBanner = ({ p }) => {
 
 const Overview = () => {
   const { applied, touchLastUpdated, lastUpdated } = useFilters();
-  const navigate = useNavigate();
   const { dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, channelGroup, dataVersion } = applied;
   const isOnlineOnly = channelGroup === "online";
   const filters = { dateFrom, dateTo, countries, channels };
@@ -232,9 +228,7 @@ const Overview = () => {
   const [canonicalUnits, setCanonicalUnits] = useState(null);
   const [canonicalUnitsPrev, setCanonicalUnitsPrev] = useState(null);
 
-  // B8 — page-level additions: stockout alert banner + IBT ROI card.
-  const [stockoutAlerts, setStockoutAlerts] = useState(null);
-  const [stockoutDismissed, setStockoutDismissed] = useState(false);
+  // B8 — page-level addition: IBT ROI card.
   const [ibtRoi, setIbtRoi] = useState(null);
 
   // VAT logic has been removed per product decision — all monetary values
@@ -350,18 +344,11 @@ const Overview = () => {
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, compareDateFrom, compareDateTo, dataVersion]);
 
-  // B8 — Stockout alerts (banner) + IBT ROI dashboard (card). Both are
-  // best-effort: failures never crash the page, they simply hide the
-  // section. Stockout-alerts accepts a single country + comma channels;
-  // roi-dashboard takes only date_from/date_to.
+  // B8 — IBT ROI dashboard (card). Best-effort: failures never crash the
+  // page, they simply hide the section. roi-dashboard takes only
+  // date_from/date_to.
   useEffect(() => {
     let cancelled = false;
-    const country = countries.length === 1 ? countries[0] : undefined;
-    const channel = channels.length ? channels.join(",") : undefined;
-    setStockoutDismissed(false);
-    api.get("/replenishment/stockout-alerts", { params: { country, channel } })
-      .then((r) => { if (!cancelled) setStockoutAlerts(r.data || null); })
-      .catch(() => { if (!cancelled) setStockoutAlerts(null); });
     api.get("/ibt/roi-dashboard", { params: { date_from: dateFrom, date_to: dateTo } })
       .then((r) => { if (!cancelled) setIbtRoi(r.data || null); })
       .catch(() => { if (!cancelled) setIbtRoi(null); });
@@ -916,35 +903,6 @@ const Overview = () => {
           </div>
         )}
       </div>
-
-      {!stockoutDismissed && stockoutAlerts && (stockoutAlerts.total || 0) > 0 && (
-        <div
-          className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex flex-wrap items-center gap-3"
-          data-testid="overview-stockout-banner"
-        >
-          <Warning size={20} weight="fill" className="text-amber-600 shrink-0" />
-          <span className="text-[13px] text-amber-900 font-semibold">
-            {fmtNum(stockoutAlerts.total)} {stockoutAlerts.total === 1 ? "style" : "styles"} stocking out within 2 weeks
-          </span>
-          <button
-            type="button"
-            onClick={() => navigate("/replenishments")}
-            data-testid="overview-stockout-review"
-            className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11.5px] font-semibold border border-amber-400 bg-white text-amber-800 hover:bg-amber-100 transition-colors"
-          >
-            Review replenishments
-          </button>
-          <button
-            type="button"
-            onClick={() => setStockoutDismissed(true)}
-            aria-label="Dismiss stockout alert"
-            data-testid="overview-stockout-dismiss"
-            className="ml-auto p-1 rounded-md text-amber-700 hover:bg-amber-100 transition-colors"
-          >
-            <X size={16} weight="bold" />
-          </button>
-        </div>
-      )}
 
       {(loading || kpisLoading) && !kpis && <OverviewSkeleton />}
       {error && <ErrorBox message={error} />}
