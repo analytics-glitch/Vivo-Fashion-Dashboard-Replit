@@ -14,7 +14,8 @@ import StoreDeepDive from "@/components/StoreDeepDive";
 import LocationsAttentionPanel from "@/components/LocationsAttentionPanel";
 import MonthlyTargetsTracker from "@/components/MonthlyTargetsTracker";
 import StockToSalesBySubcategory from "@/components/StockToSalesBySubcategory";
-import { Storefront, ArrowsDownUp, ArrowUpRight, Warning, CaretDown, CaretRight, Footprints, Target, Coins } from "@phosphor-icons/react";
+import { Storefront, ArrowsDownUp, ArrowUpRight, Warning, CaretDown, CaretRight, Footprints, Target, Coins, Stack, Tag } from "@phosphor-icons/react";
+import { useAuth } from "@/lib/auth";
 
 // --- Footfall & Conversion table tuning ---------------------------------
 // Conversion bands (configurable). A store converting >= GREEN% is strong,
@@ -24,7 +25,19 @@ import { Storefront, ArrowsDownUp, ArrowUpRight, Warning, CaretDown, CaretRight,
 const CONV_GREEN = 13;
 const CONV_AMBER = 8;
 const FF_LOW = 100;
+// ABV table: a store with fewer than this many orders in EITHER the current
+// or comparison period is statistically too thin to trust — its ABV/deltas
+// are greyed out, badged "Low volume", and excluded from the default sort.
+const ABV_LOW_ORDERS = 10;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Signed full-precision KES delta, e.g. "+KES 6,810" / "−KES 1,240".
+const fmtKESDelta = (n) => {
+  if (n === null || n === undefined || isNaN(Number(n))) return "—";
+  const v = Math.round(Number(n));
+  const sign = v > 0 ? "+" : v < 0 ? "−" : "";
+  return `${sign}KES ${Math.abs(v).toLocaleString("en-US")}`;
+};
 
 // Compact date-range label, e.g. "1–10 Jun 2026" or "1 Jun – 3 Jul 2026".
 const fmtRange = (from, to) => {
@@ -102,6 +115,13 @@ const Locations = () => {
   // primary efficiency metric). Row click expands a diagnose-the-gap panel.
   const ffSort = useTableSort({ key: "spv", dir: "desc" });
   const [expandedFf, setExpandedFf] = useState(null);
+
+  // ABV-by-location table — manual sort (null until the user clicks a header,
+  // so the default low-volume-aware ordering applies), plus row expansion for
+  // the basket-decomposition drill-down.
+  const abvSort = useTableSort();
+  const [expandedAbv, setExpandedAbv] = useState(null);
+  const { user } = useAuth();
 
   // Weekday pattern feeds the store deep-dive's mini-heatmap.
   // Safe to share across all store drills since the endpoint is 1h-cached.
@@ -236,6 +256,8 @@ const Locations = () => {
         prev_abv: pAbv,
         prev_orders: pOrders,
         prev_sales: pSales,
+        prev_msi: pMsi,
+        prev_asp: pAsp,
         // Footfall + conversion (joined from /footfall response)
         total_footfall: ffCount,
         conversion_rate: conv,
@@ -400,6 +422,63 @@ const Locations = () => {
       return (b[sortKey] || 0) - (a[sortKey] || 0);
     });
   }, [enrichedWithDq, sortKey]);
+
+  // --- Average Basket Value table model ----------------------------------
+  // One decorated row per location. ABV = Total Sales ÷ Orders, decomposed
+  // into Items/Order (msi) × Avg Item Price (asp). A store too thin to trust
+  // in EITHER period is flagged low-volume (deltas suppressed, sorted last by
+  // default, badged). prev_* come from the sales-summary compare fan-out.
+  const abvRows = useMemo(() => {
+    return enrichedWithDq.map((r) => {
+      const orders = r.orders || 0;
+      const prevOrders = r.prev_orders;
+      const lowVolume =
+        orders < ABV_LOW_ORDERS ||
+        (prevOrders != null && prevOrders < ABV_LOW_ORDERS);
+      const abvDeltaKes =
+        r.abv != null && r.prev_abv != null ? r.abv - r.prev_abv : null;
+      return {
+        loc: r.channel,
+        orders,
+        prevOrders,
+        sales: r.total_sales || 0,
+        abv: r.abv,
+        prevAbv: r.prev_abv,
+        abvDeltaKes,
+        abvDeltaPct: r.d_abv,
+        msi: r.msi,
+        prevMsi: r.prev_msi,
+        asp: r.asp,
+        prevAsp: r.prev_asp,
+        lowVolume,
+      };
+    });
+  }, [enrichedWithDq]);
+
+  // Pinned "Network Average" benchmark — Total Sales ÷ Total Orders across all
+  // locations (sourced from authoritative KPIs so it matches Overview/CEO).
+  const abvNetwork = useMemo(() => {
+    if (!abvRows.length) return null;
+    const orders = kpis?.total_orders || 0;
+    const sales = kpis?.total_sales || 0;
+    const abv = groupTotals.abv;
+    const prevAbv = prevGroupTotals?.abv ?? null;
+    const abvDeltaKes = abv != null && prevAbv != null ? abv - prevAbv : null;
+    const abvDeltaPct = prevAbv != null ? pctDelta(abv, prevAbv) : null;
+    return { orders, sales, abv, prevAbv, abvDeltaKes, abvDeltaPct };
+  }, [abvRows, kpis, groupTotals, prevGroupTotals]);
+
+  // Personalisation: store staff (role store_manager) get their own store row
+  // auto-highlighted + a one-line summary. There is NO store↔user mapping in
+  // app_users, so we match the user's display name to a location name (exact,
+  // case-insensitive). Fails safe: no match → no highlight, no false claim.
+  const myStoreLoc = useMemo(() => {
+    if (!user || (user.role || "").toLowerCase() !== "store_manager") return null;
+    const name = (user.name || "").trim().toLowerCase();
+    if (!name) return null;
+    const hit = abvRows.find((r) => (r.loc || "").trim().toLowerCase() === name);
+    return hit ? hit.loc : null;
+  }, [user, abvRows]);
 
   // Sum of sales across all in-scope locations — used to surface a "% of
   // total" chip on each location card AND to power the bottom-of-page
@@ -726,78 +805,218 @@ const Locations = () => {
                 defaultLookbackDays={30}
               />
 
-              <div className="card-white p-5" data-testid="abv-by-location">
-                <SectionTitle
-                  title="Average Basket Value by Location"
-                  subtitle={
-                    compareMode !== "none"
-                      ? `Total Sales ÷ Orders — how valuable each customer transaction is. Sorted by ABV descending. Change vs ${compareMode === "yesterday" ? "yesterday" : compareMode === "last_month" ? "last month" : "last year"}.`
-                      : "Total Sales ÷ Orders — how valuable each customer transaction is. Sorted by ABV descending."
-                  }
-                />
-                <SortableTable
-                  testId="abv-table"
-                  exportName="abv-by-location.csv"
-                  initialSort={{ key: "abv", dir: "desc" }}
-                  columns={[
-                    { key: "rank", label: "#", align: "left", sortable: false, render: (_r, i) => <span className="num text-muted">{i + 1}</span> },
-                    {
-                      key: "channel",
-                      label: "Location",
-                      align: "left",
-                      render: (r) => (
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); setSelected(r.channel); }}
-                          className="font-medium text-left hover:text-brand hover:underline decoration-dotted underline-offset-[3px]"
-                          data-testid={`abv-row-link-${r.channel}`}
-                        >
-                          {r.channel}
-                        </button>
-                      ),
-                    },
-                    {
-                      key: "abv",
-                      label: "ABV",
-                      numeric: true,
-                      render: (r) => <span className="font-semibold">{fmtKES(r.abv)}</span>,
-                      csv: (r) => Math.round(r.abv || 0),
-                    },
-                    ...(compareMode !== "none" ? [{
-                      key: "prev_abv",
-                      label: `ABV ${compareMode === "yesterday" ? "(Yd)" : compareMode === "last_month" ? "(LM)" : "(LY)"}`,
-                      numeric: true,
-                      render: (r) => (
-                        r.prev_abv == null
-                          ? <span className="text-muted text-[11px]">n/a</span>
-                          : <span className="text-muted">{fmtKES(r.prev_abv)}</span>
-                      ),
-                      csv: (r) => r.prev_abv == null ? "" : Math.round(r.prev_abv),
-                    }] : []),
-                    { key: "orders", label: "Orders", numeric: true, render: (r) => fmtNum(r.orders) },
-                    {
-                      key: "total_sales",
-                      label: "Total Sales",
-                      numeric: true,
-                      render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>,
-                      csv: (r) => Math.round(r.total_sales || 0),
-                    },
-                    ...(compareMode !== "none" ? [{
-                      key: "d_abv",
-                      label: `Δ ABV ${compareMode === "yesterday" ? "(vs Yd)" : compareMode === "last_month" ? "(vs LM)" : "(vs LY)"}`,
-                      numeric: true,
-                      sortValue: (r) => r.d_abv == null ? -9999 : r.d_abv,
-                      render: (r) => (
-                        r.d_abv == null
-                          ? <span className="text-muted text-[11px]">n/a</span>
-                          : <InlineDelta delta={r.d_abv} compact />
-                      ),
-                      csv: (r) => r.d_abv == null ? "" : r.d_abv.toFixed(2),
-                    }] : []),
-                  ]}
-                  rows={sorted}
-                />
-              </div>
+              {(() => {
+                const compare = compareMode !== "none";
+                const lmTag = compareMode === "yesterday" ? "Yd" : compareMode === "last_month" ? "LM" : "LY";
+                // Explicit comparison periods for the subtitle, e.g.
+                // "1–10 Jun 2026 vs 1–10 May 2026 (MTD comparison)".
+                const curRange = fmtRange(dateFrom, dateTo);
+                const prevP = compare
+                  ? comparePeriod(dateFrom, dateTo, compareMode, { date_from: compareDateFrom, date_to: compareDateTo })
+                  : null;
+                const cmpNote = compareMode === "yesterday" ? "prior-day comparison" : compareMode === "last_month" ? "MTD comparison" : "YoY comparison";
+                const subtitle = compare && prevP
+                  ? `Total Sales ÷ Orders — the value of each customer transaction. ${curRange} vs ${fmtRange(prevP.date_from, prevP.date_to)} (${cmpNote}) · KES. Click a row to decompose the basket.`
+                  : `Total Sales ÷ Orders — the value of each customer transaction. ${curRange} · KES. Click a row to decompose the basket.`;
+
+                const accessors = {
+                  location: (r) => r.loc,
+                  orders: (r) => r.orders,
+                  total_sales: (r) => r.sales,
+                  abv: (r) => r.abv,
+                  prev_abv: (r) => r.prevAbv,
+                  d_abv_kes: (r) => r.abvDeltaKes,
+                  d_abv_pct: (r) => r.abvDeltaPct,
+                };
+                const sortLabels = {
+                  location: "Location", orders: "Orders", total_sales: "Total Sales",
+                  abv: "ABV", prev_abv: `ABV (${lmTag})`, d_abv_kes: "Δ ABV (KES)", d_abv_pct: "Δ ABV (%)",
+                };
+                // Default (no manual sort): trustworthy rows by ABV desc, then
+                // low-volume rows pushed to the bottom. Manual sort applies to
+                // every row uniformly.
+                const sortedAbv = abvSort.sort
+                  ? abvSort.sortRows(abvRows, accessors)
+                  : [...abvRows].sort((a, b) => {
+                      if (a.lowVolume !== b.lowVolume) return a.lowVolume ? 1 : -1;
+                      return (b.abv || 0) - (a.abv || 0);
+                    });
+                const activeSort = abvSort.sort;
+                const nCols = compare ? 8 : 5;
+
+                const myRow = myStoreLoc ? abvRows.find((r) => r.loc === myStoreLoc) : null;
+
+                return (
+                  <div className="card-white p-5" data-testid="abv-by-location">
+                    <SectionTitle
+                      title="Average Basket Value by Location"
+                      subtitle={
+                        activeSort
+                          ? `${subtitle.replace(/Click a row.*$/, "")}Sorted by ${sortLabels[activeSort.key] || "ABV"} ${activeSort.dir === "asc" ? "↑" : "↓"}. Click a row to decompose the basket.`
+                          : subtitle
+                      }
+                    />
+
+                    {/* Store-staff personalisation: one-line summary above the
+                        table when the signed-in manager's store is in scope. */}
+                    {myRow && (
+                      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-[#1a5c38]/25 bg-[#1a5c38]/[0.06] px-3 py-2 text-[12px]" data-testid="abv-mystore-summary">
+                        <Storefront size={14} weight="bold" className="text-[#1a5c38]" />
+                        <span className="text-[#1a1a1a]">
+                          Your store <span className="font-semibold text-[#0f3d24]">{myRow.loc}</span>{" "}
+                          {myRow.lowVolume
+                            ? "has too few orders this period to read a reliable basket value."
+                            : <>has an average basket of <span className="font-semibold">{fmtKESLong(myRow.abv)}</span>{abvNetwork && abvNetwork.abv != null && (
+                                <> — {myRow.abv >= abvNetwork.abv ? "above" : "below"} the network average of <span className="font-semibold">{fmtKESLong(abvNetwork.abv)}</span></>
+                              )}{compare && myRow.abvDeltaKes != null && (
+                                <> ({fmtKESDelta(myRow.abvDeltaKes)} vs {lmTag})</>
+                              )}.</>}
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="overflow-x-auto max-h-[640px] overflow-y-auto">
+                      <table className="w-full data abv-compact" data-testid="abv-table">
+                        <thead className="sticky top-0 z-10 bg-white">
+                          <tr>
+                            <th className="w-10">#</th>
+                            <SortableTh sortKey="location" sort={abvSort.sort} onSort={abvSort.toggleSort}>Location</SortableTh>
+                            <SortableTh sortKey="orders" sort={abvSort.sort} onSort={abvSort.toggleSort} numeric>Orders</SortableTh>
+                            <SortableTh sortKey="total_sales" sort={abvSort.sort} onSort={abvSort.toggleSort} numeric>Total Sales</SortableTh>
+                            <SortableTh sortKey="abv" sort={abvSort.sort} onSort={abvSort.toggleSort} numeric title="Total Sales ÷ Orders">ABV</SortableTh>
+                            {compare && <SortableTh sortKey="prev_abv" sort={abvSort.sort} onSort={abvSort.toggleSort} numeric title={`ABV last ${lmTag === "Yd" ? "day" : lmTag === "LM" ? "month" : "year"}`}>ABV ({lmTag})</SortableTh>}
+                            {compare && <SortableTh sortKey="d_abv_kes" sort={abvSort.sort} onSort={abvSort.toggleSort} numeric>Δ ABV (KES)</SortableTh>}
+                            {compare && <SortableTh sortKey="d_abv_pct" sort={abvSort.sort} onSort={abvSort.toggleSort} numeric>Δ ABV (%)</SortableTh>}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {abvRows.length === 0 && (
+                            <tr><td colSpan={nCols + 1}><Empty label="No sales data in this period." /></td></tr>
+                          )}
+
+                          {/* Pinned network-average benchmark */}
+                          {abvNetwork && abvRows.length > 0 && (
+                            <tr className="bg-[#f6efe6] font-semibold border-b-2 border-stone-300" data-testid="abv-network-row">
+                              <td className="text-muted text-center">—</td>
+                              <td className="text-[#0f3d24]">Network Average</td>
+                              <td className="text-right num">{fmtNum(abvNetwork.orders)}</td>
+                              <td className="text-right num font-normal">{fmtKESLong(abvNetwork.sales)}</td>
+                              <td className="text-right num text-[#0f3d24] font-bold">{abvNetwork.abv == null ? "—" : fmtKESLong(abvNetwork.abv)}</td>
+                              {compare && <td className="text-right num text-muted">{abvNetwork.prevAbv == null ? "—" : fmtKESLong(abvNetwork.prevAbv)}</td>}
+                              {compare && (
+                                <td className={`text-right num ${abvNetwork.abvDeltaKes == null ? "text-muted" : abvNetwork.abvDeltaKes > 0 ? "text-emerald-700" : abvNetwork.abvDeltaKes < 0 ? "text-red-700" : "text-muted"}`}>
+                                  {abvNetwork.abvDeltaKes == null ? "—" : fmtKESDelta(abvNetwork.abvDeltaKes)}
+                                </td>
+                              )}
+                              {compare && (
+                                <td className="text-right num">{abvNetwork.abvDeltaPct == null ? <span className="text-muted">—</span> : <InlineDelta delta={abvNetwork.abvDeltaPct} compact />}</td>
+                              )}
+                            </tr>
+                          )}
+
+                          {sortedAbv.map((r, i) => {
+                            const open = expandedAbv === r.loc;
+                            const mine = myStoreLoc && r.loc === myStoreLoc;
+                            const muted = r.lowVolume ? "text-muted" : "";
+                            return (
+                              <React.Fragment key={r.loc + i}>
+                                <tr
+                                  className={`cursor-pointer hover:bg-stone-50/70 ${mine ? "bg-[#1a5c38]/[0.06]" : ""}`}
+                                  onClick={() => setExpandedAbv(open ? null : r.loc)}
+                                  data-testid={`abv-row-${r.loc}`}
+                                >
+                                  <td className="text-muted">
+                                    <span className="inline-flex items-center gap-1 num">
+                                      {open ? <CaretDown size={11} weight="bold" /> : <CaretRight size={11} weight="bold" />}
+                                      {i + 1}
+                                    </span>
+                                  </td>
+                                  <td className="font-medium">
+                                    <span className="inline-flex items-center gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={(e) => { e.stopPropagation(); setSelected(r.loc); }}
+                                        className="text-left hover:text-brand hover:underline decoration-dotted underline-offset-[3px]"
+                                        data-testid={`abv-row-link-${r.loc}`}
+                                      >
+                                        {r.loc}
+                                      </button>
+                                      {mine && (
+                                        <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide bg-[#1a5c38] text-white">Your store</span>
+                                      )}
+                                      {r.lowVolume && (
+                                        <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide bg-stone-100 text-muted border border-stone-200" title={`Fewer than ${ABV_LOW_ORDERS} orders in this period or the comparison period — basket value is statistically unreliable.`}>Low volume</span>
+                                      )}
+                                    </span>
+                                  </td>
+                                  <td className="text-right num">{fmtNum(r.orders)}</td>
+                                  <td className="text-right num font-normal">{fmtKESLong(r.sales)}</td>
+                                  <td className={`text-right num font-bold ${r.lowVolume ? "text-muted" : "text-[#0f3d24]"}`}>
+                                    {r.abv == null ? "—" : fmtKESLong(r.abv)}
+                                  </td>
+                                  {compare && (
+                                    <td className={`text-right num ${r.lowVolume ? "text-muted/70" : "text-muted"}`}>
+                                      {r.lowVolume || r.prevAbv == null ? "—" : fmtKESLong(r.prevAbv)}
+                                    </td>
+                                  )}
+                                  {compare && (
+                                    <td className={`text-right num ${r.lowVolume ? "text-muted" : r.abvDeltaKes == null ? "text-muted" : r.abvDeltaKes > 0 ? "text-emerald-700 font-semibold" : r.abvDeltaKes < 0 ? "text-red-700 font-semibold" : "text-muted"}`}>
+                                      {r.lowVolume || r.abvDeltaKes == null ? "—" : fmtKESDelta(r.abvDeltaKes)}
+                                    </td>
+                                  )}
+                                  {compare && (
+                                    <td className="text-right num">
+                                      {r.lowVolume || r.abvDeltaPct == null ? <span className="text-muted">—</span> : <span className="text-[11px]"><InlineDelta delta={r.abvDeltaPct} compact /></span>}
+                                    </td>
+                                  )}
+                                </tr>
+                                {open && (
+                                  <tr className="bg-[#faf6ef]" data-testid={`abv-expand-${r.loc}`}>
+                                    <td colSpan={nCols + 1} className="p-3">
+                                      <div className="text-[11px] text-muted mb-2">
+                                        Basket decomposition for <span className="font-semibold text-[#0f3d24]">{r.loc}</span> — ABV = Items per Order × Average Item Price.
+                                      </div>
+                                      <div className="flex flex-wrap gap-3">
+                                        <LeverTile
+                                          icon={Coins}
+                                          label="Avg basket (ABV)"
+                                          cur={r.abv}
+                                          prev={r.prevAbv}
+                                          fmt={(v) => (v == null ? "n/a" : fmtKESLong(v))}
+                                          delta={r.abvDeltaPct}
+                                          note="Total Sales ÷ Orders."
+                                        />
+                                        <LeverTile
+                                          icon={Stack}
+                                          label="Items per order"
+                                          cur={r.msi}
+                                          prev={r.prevMsi}
+                                          fmt={(v) => (v == null ? "n/a" : v.toFixed(2))}
+                                          delta={r.prevMsi ? pctDelta(r.msi, r.prevMsi) : null}
+                                          note="Units ÷ Orders (basket size)."
+                                        />
+                                        <LeverTile
+                                          icon={Tag}
+                                          label="Avg item price"
+                                          cur={r.asp}
+                                          prev={r.prevAsp}
+                                          fmt={(v) => (v == null ? "n/a" : fmtKESLong(v))}
+                                          delta={r.prevAsp ? pctDelta(r.asp, r.prevAsp) : null}
+                                          note="Sales ÷ Units (price point)."
+                                        />
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                              </React.Fragment>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {(() => {
                 const compare = compareMode !== "none";

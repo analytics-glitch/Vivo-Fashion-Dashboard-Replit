@@ -242,6 +242,14 @@ body {
     table.data tr:hover td {
         background: rgba(26, 92, 56, 0.03);
     }
+    /* Compact density (~30% shorter rows) for high-row-count tables that use a
+       sticky header + scroll body instead of pagination. */
+    table.data.abv-compact th {
+        padding: 0.5rem 0.625rem;
+    }
+    table.data.abv-compact td {
+        padding: 0.5rem 0.625rem;
+    }
 }
 
 @keyframes fadeIn {
