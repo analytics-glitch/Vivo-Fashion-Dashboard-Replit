@@ -43,6 +43,16 @@ interface Member {
   total_spend_kes: number;
 }
 
+interface RedeemLookup {
+  discount_code: string;
+  member_name: string | null;
+  kes_value: number | null;
+  points_redeemed: number | null;
+  code_status: string;
+  used_at: string | null;
+  redeemable: boolean;
+}
+
 export default function CrmLoyaltyScreen() {
   const c = useColors();
   const router = useRouter();
@@ -55,6 +65,11 @@ export default function CrmLoyaltyScreen() {
   const [earnCode, setEarnCode] = React.useState("");
   const [earnAmount, setEarnAmount] = React.useState("");
   const [earning, setEarning] = React.useState(false);
+
+  const [redeemCode, setRedeemCode] = React.useState("");
+  const [redeemStore, setRedeemStore] = React.useState("");
+  const [redeemInfo, setRedeemInfo] = React.useState<RedeemLookup | null>(null);
+  const [redeemBusy, setRedeemBusy] = React.useState(false);
 
   React.useEffect(() => {
     const t = setTimeout(() => setQ(text.trim()), 350);
@@ -94,6 +109,61 @@ export default function CrmLoyaltyScreen() {
       );
     } finally {
       setEarning(false);
+    }
+  };
+
+  const redeemLookup = async () => {
+    if (redeemBusy) return;
+    const code = redeemCode.trim();
+    if (!code) {
+      Alert.alert("Code required", "Scan or enter a redemption code.");
+      return;
+    }
+    setRedeemBusy(true);
+    setRedeemInfo(null);
+    try {
+      const r = await apiPost<RedeemLookup>("/crm/loyalty/redeem-code/lookup", {
+        code,
+      });
+      setRedeemInfo(r);
+    } catch (e) {
+      Alert.alert(
+        "Could not find code",
+        e instanceof Error ? e.message : "Please try again.",
+      );
+    } finally {
+      setRedeemBusy(false);
+    }
+  };
+
+  const redeemApply = async () => {
+    if (redeemBusy) return;
+    const code = (redeemInfo?.discount_code || redeemCode).trim();
+    if (!code) return;
+    setRedeemBusy(true);
+    try {
+      const r = await apiPost<{
+        kes_value?: number | null;
+        member_name?: string | null;
+      }>("/crm/loyalty/redeem-code/apply", {
+        code,
+        used_store_id: redeemStore.trim() || undefined,
+      });
+      Alert.alert(
+        "Discount applied",
+        `${fmtKES(r.kes_value ?? 0)} off for ${r.member_name || "member"}.`,
+      );
+      setRedeemCode("");
+      setRedeemStore("");
+      setRedeemInfo(null);
+      summaryQ.refetch();
+    } catch (e) {
+      Alert.alert(
+        "Could not apply code",
+        e instanceof Error ? e.message : "Please try again.",
+      );
+    } finally {
+      setRedeemBusy(false);
     }
   };
 
@@ -227,6 +297,99 @@ export default function CrmLoyaltyScreen() {
 
       <View>
         <SectionHeader
+          title="Redeem Code"
+          caption="Validate a member's redemption code at the till"
+        />
+        <Card style={styles.earnCard}>
+          <TextInput
+            value={redeemCode}
+            onChangeText={(t) => {
+              setRedeemCode(t);
+              setRedeemInfo(null);
+            }}
+            placeholder="Redemption code (e.g. VFG-XXXXXXXX)"
+            placeholderTextColor={c.mutedForeground}
+            style={[styles.earnInput, { color: c.foreground, borderColor: c.border }]}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            editable={!redeemBusy}
+          />
+          <TextInput
+            value={redeemStore}
+            onChangeText={setRedeemStore}
+            placeholder="Store ID (optional)"
+            placeholderTextColor={c.mutedForeground}
+            style={[styles.earnInput, { color: c.foreground, borderColor: c.border }]}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            editable={!redeemBusy}
+          />
+          {redeemInfo ? (
+            <View
+              style={[
+                styles.redeemPreview,
+                { backgroundColor: c.muted, borderColor: c.border },
+              ]}
+            >
+              <Text style={[styles.redeemName, { color: c.foreground }]}>
+                {redeemInfo.member_name || "Member"}
+              </Text>
+              <Text style={[styles.redeemMeta, { color: c.mutedForeground }]}>
+                {redeemInfo.discount_code} · {fmtNum(redeemInfo.points_redeemed ?? 0)} pts ·{" "}
+                {fmtKES(redeemInfo.kes_value ?? 0)} discount
+              </Text>
+              {!redeemInfo.redeemable ? (
+                <Text style={[styles.redeemUsed, { color: c.destructive }]}>
+                  Code already {redeemInfo.code_status}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+          {redeemInfo?.redeemable ? (
+            <Pressable
+              onPress={redeemApply}
+              disabled={redeemBusy}
+              style={({ pressed }) => [
+                styles.earnButton,
+                { backgroundColor: c.primary, opacity: redeemBusy || pressed ? 0.7 : 1 },
+              ]}
+            >
+              {redeemBusy ? (
+                <ActivityIndicator size="small" color={c.primaryForeground} />
+              ) : (
+                <Text style={[styles.earnButtonText, { color: c.primaryForeground }]}>
+                  Apply discount
+                </Text>
+              )}
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={redeemLookup}
+              disabled={redeemBusy}
+              style={({ pressed }) => [
+                styles.earnButton,
+                {
+                  backgroundColor: c.card,
+                  borderWidth: 1,
+                  borderColor: c.border,
+                  opacity: redeemBusy || pressed ? 0.7 : 1,
+                },
+              ]}
+            >
+              {redeemBusy ? (
+                <ActivityIndicator size="small" color={c.primary} />
+              ) : (
+                <Text style={[styles.earnButtonText, { color: c.foreground }]}>
+                  Validate code
+                </Text>
+              )}
+            </Pressable>
+          )}
+        </Card>
+      </View>
+
+      <View>
+        <SectionHeader
           title="Member Lookup"
           caption="Search a contact to view their loyalty status"
         />
@@ -347,6 +510,15 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   earnButtonText: { fontFamily: "Jakarta_700Bold", fontSize: 15 },
+  redeemPreview: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    gap: 4,
+  },
+  redeemName: { fontFamily: "Jakarta_700Bold", fontSize: 15 },
+  redeemMeta: { fontFamily: "Jakarta_500Medium", fontSize: 12.5 },
+  redeemUsed: { fontFamily: "Jakarta_700Bold", fontSize: 12.5, marginTop: 2 },
   memberRow: { gap: 6 },
   memberTop: {
     flexDirection: "row",

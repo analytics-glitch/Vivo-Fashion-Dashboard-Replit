@@ -10539,6 +10539,95 @@ async def crm_redemption_mark_used(redemption_id: int, request: Request):
     return {"ok": True}
 
 
+# --- CRM: till "scan to redeem" (staff-gated, analyst+) -------------------
+# Members redeem points online/in-app and receive a discount_code (VFG-XXXXXXXX).
+# At the till, staff enter that code to (1) preview its KES value + member, then
+# (2) apply it — which marks the code 'used' atomically so it can only be spent
+# once. The points were already deducted at issue time; redeeming the code only
+# applies the discount and burns the code.
+
+def _redemption_by_code_sql():
+    return (
+        "SELECT r.id, r.customer_id, r.points_redeemed, r.kes_value, r.discount_code, "
+        "r.code_status, r.issued_at, r.used_at, r.used_store_id, "
+        "COALESCE(m.name, NULLIF(TRIM(COALESCE(c.first_name,'')||' '||COALESCE(c.last_name,'')), '')) AS member_name "
+        "FROM crm_redemptions r "
+        "LEFT JOIN crm_loyalty_member m ON m.customer_id = r.customer_id "
+        "LEFT JOIN crm_customer c ON c.customer_id = r.customer_id "
+        "WHERE r.discount_code=%s")
+
+
+@app.post("/api/crm/loyalty/redeem-code/lookup")
+async def crm_redeem_code_lookup(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    code = (body.get("code") or "").strip().upper()
+    if not code:
+        return JSONResponse({"detail": "code is required"}, status_code=400)
+    rows = _users_exec(_redemption_by_code_sql(), (code,), fetch=True)
+    if not rows:
+        return JSONResponse({"detail": "No redemption matches that code"}, status_code=404)
+    r = rows[0]
+    return {
+        "ok": True,
+        "redemption_id": r["id"],
+        "discount_code": r["discount_code"],
+        "customer_id": r["customer_id"],
+        "member_name": r.get("member_name"),
+        "kes_value": float(r["kes_value"]) if r.get("kes_value") is not None else None,
+        "points_redeemed": r.get("points_redeemed"),
+        "code_status": r["code_status"],
+        "issued_at": r.get("issued_at"),
+        "used_at": r.get("used_at"),
+        "used_store_id": r.get("used_store_id"),
+        "redeemable": r["code_status"] == "issued",
+    }
+
+
+@app.post("/api/crm/loyalty/redeem-code/apply")
+async def crm_redeem_code_apply(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    code = (body.get("code") or "").strip().upper()
+    if not code:
+        return JSONResponse({"detail": "code is required"}, status_code=400)
+    store_id = (body.get("used_store_id") or "").strip() or None
+    with _users_tx() as cur:
+        # Lock the redemption row so two tills can't both burn the same code.
+        cur.execute(
+            "SELECT id, customer_id, points_redeemed, kes_value, code_status, used_at, used_store_id "
+            "FROM crm_redemptions WHERE discount_code=%s FOR UPDATE", (code,))
+        row = cur.fetchone()
+        if not row:
+            cur.connection.rollback()
+            return JSONResponse({"detail": "No redemption matches that code"}, status_code=404)
+        if row["code_status"] != "issued":
+            cur.connection.rollback()
+            used_at = row["used_at"]
+            return JSONResponse(
+                {"detail": f"Code already {row['code_status']}",
+                 "code_status": row["code_status"],
+                 "used_at": used_at.isoformat() if used_at is not None else None,
+                 "used_store_id": row["used_store_id"]},
+                status_code=409)
+        cur.execute(
+            "UPDATE crm_redemptions SET code_status='used', used_at=now(), used_store_id=%s WHERE id=%s",
+            (store_id, row["id"]))
+    cid = row["customer_id"]
+    kes_value = float(row["kes_value"]) if row["kes_value"] is not None else None
+    _crm_audit("loyalty", cid, "redeem-code",
+               f"code={code} kes_value={kes_value if kes_value is not None else '-'} store={store_id or '-'}", request)
+    nm = _users_exec(_redemption_by_code_sql(), (code,), fetch=True)
+    member_name = nm[0].get("member_name") if nm else None
+    return {"ok": True, "redemption_id": row["id"], "discount_code": code,
+            "customer_id": cid, "member_name": member_name,
+            "kes_value": kes_value, "points_redeemed": row["points_redeemed"]}
+
+
 @app.post("/api/crm/loyalty/recalc-tiers")
 def crm_loyalty_recalc(request: Request):
     if not _crm_is_admin(request):

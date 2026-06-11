@@ -1229,6 +1229,10 @@ const LoyaltyTab = ({ isAdmin, onOpen360 }) => {
   const [earnCode, setEarnCode] = useState("");
   const [earnAmount, setEarnAmount] = useState("");
   const [earning, setEarning] = useState(false);
+  const [redeemCode, setRedeemCode] = useState("");
+  const [redeemInfo, setRedeemInfo] = useState(null);
+  const [redeemBusy, setRedeemBusy] = useState(false);
+  const [redeemStore, setRedeemStore] = useState("");
 
   const load = useCallback(() => {
     setLoading(true);
@@ -1261,6 +1265,34 @@ const LoyaltyTab = ({ isAdmin, onOpen360 }) => {
       })
       .catch((e) => toast.error(errOf(e)))
       .finally(() => setEarning(false));
+  };
+
+  const redeemLookup = () => {
+    const code = redeemCode.trim();
+    if (!code) { toast.error("Scan or enter a redemption code"); return; }
+    setRedeemBusy(true);
+    setRedeemInfo(null);
+    api.post("/crm/loyalty/redeem-code/lookup", { code })
+      .then((r) => setRedeemInfo(r.data || null))
+      .catch((e) => toast.error(errOf(e)))
+      .finally(() => setRedeemBusy(false));
+  };
+
+  const redeemApply = () => {
+    const code = (redeemInfo?.discount_code || redeemCode).trim();
+    if (!code) return;
+    setRedeemBusy(true);
+    api.post("/crm/loyalty/redeem-code/apply", { code, used_store_id: redeemStore.trim() || undefined })
+      .then((r) => {
+        const d = r.data || {};
+        toast.success(`Applied ${fmtKES(d.kes_value || 0)} discount for ${d.member_name || "member"}`);
+        setRedeemCode("");
+        setRedeemInfo(null);
+        setRedeemStore("");
+        load();
+      })
+      .catch((e) => toast.error(errOf(e)))
+      .finally(() => setRedeemBusy(false));
   };
 
   const recalc = () =>
@@ -1300,6 +1332,53 @@ const LoyaltyTab = ({ isAdmin, onOpen360 }) => {
           </button>
         </div>
         <div className="mt-2 text-[11.5px] text-muted">Earns points from the purchase amount at the configured earn rate. Updates the member's balance and tier.</div>
+      </div>
+
+      <div className="card-white p-4">
+        <div className="mb-2 text-[12px] font-semibold uppercase text-muted">Redeem code (at till)</div>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input
+            className={inputCls}
+            placeholder="Scan or enter redemption code (e.g. VFG-XXXXXXXX)…"
+            value={redeemCode}
+            onChange={(e) => { setRedeemCode(e.target.value); setRedeemInfo(null); }}
+            onKeyDown={(e) => e.key === "Enter" && redeemLookup()}
+          />
+          <input
+            className={inputCls}
+            placeholder="Store ID (optional)"
+            value={redeemStore}
+            onChange={(e) => setRedeemStore(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && redeemLookup()}
+          />
+          <button className={btnGhost} onClick={redeemLookup} disabled={redeemBusy}>
+            <MagnifyingGlass size={14} /> {redeemBusy && !redeemInfo ? "Checking…" : "Validate"}
+          </button>
+        </div>
+        {redeemInfo && (
+          <div className="mt-3 rounded-md border border-border/60 bg-panel/40 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-[14px] font-semibold">{redeemInfo.member_name || "Member"}</div>
+                <div className="text-[12px] text-muted">
+                  {redeemInfo.discount_code} · {fmtNum(redeemInfo.points_redeemed || 0)} pts ·{" "}
+                  <span className="font-semibold text-ink">{fmtKES(redeemInfo.kes_value || 0)} discount</span>
+                </div>
+              </div>
+              {redeemInfo.redeemable ? (
+                <button className={btnPrimary} onClick={redeemApply} disabled={redeemBusy}>
+                  <TicketIcon size={14} /> {redeemBusy ? "Applying…" : "Apply discount"}
+                </button>
+              ) : (
+                <span className="rounded-full bg-rose-100 px-3 py-1 text-[12px] font-semibold text-rose-700">
+                  Code already {redeemInfo.code_status}
+                  {redeemInfo.used_at ? ` · ${fmtDate(redeemInfo.used_at)}` : ""}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+        <div className="mt-2 text-[11.5px] text-muted">Validate the member's redemption code, then apply it at checkout. Each code can only be used once.</div>
       </div>
 
       {loading ? (

@@ -48,6 +48,20 @@ account takeover + redemption fraud.
 - Enrol mirrors the member into `crm_customer` (`is_manual`, `created_by='loyalty:self'`) +
   `crm_loyalty_enrolment` so staff 360 / loyalty admin see self-enrolled members.
 
+### 3. Redeem-code apply must re-check status under a row lock (no double spend)
+Members redeem points online/in-app → get a `discount_code` (`VFG-…`) stored
+`code_status='issued'` in `crm_redemptions` (points already deducted at issue time).
+Staff burn it at the till via `POST /api/crm/loyalty/redeem-code/apply`: it does
+`SELECT … FOR UPDATE` on the row by `discount_code`, RE-checks `code_status='issued'`
+inside the tx (returns 409 if already used, 404 if unknown), then sets `used`. The
+separate `…/redeem-code/lookup` preview is read-only and can go stale — never trust it
+for the final burn.
+**Why:** a code = KES discount; a stale lookup + two concurrent tills must not let the
+same code be spent twice. Applying only burns the code + surfaces the KES value; it does
+NOT re-deduct points.
+**How to apply:** any "consume a single-use code/voucher" path must FOR-UPDATE-lock the
+row and re-assert its unused status in the same tx, not rely on a prior read.
+
 ## Clients
 - Mobile (`artifacts/vivo-mobile`): `lib/member.ts` keeps the token in AsyncStorage key
   `vivo_member_token`. The `app/member/` group (index card with CODE128 barcode via
