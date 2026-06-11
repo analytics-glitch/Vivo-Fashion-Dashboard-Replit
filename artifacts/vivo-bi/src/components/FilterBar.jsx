@@ -547,6 +547,66 @@ const BackButton = ({ className = "" }) => {
   );
 };
 
+// ---------- Compact "data last updated" pill ----------
+const fmtRelFresh = (secs) => {
+  if (secs == null || isNaN(secs)) return null;
+  const s = Math.max(0, Math.round(secs));
+  if (s < 60) return "just now";
+  const mins = Math.round(s / 60);
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+};
+
+const fmtAbsFresh = (iso) => {
+  if (!iso) return "—";
+  // `last_updated` is a naive server-time timestamp; show its calendar parts
+  // verbatim (no browser-timezone reinterpretation).
+  const m = String(iso).match(/(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (!m) return String(iso);
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return `${m[3]} ${months[Number(m[2]) - 1]}, ${m[4]}:${m[5]}`;
+};
+
+const DataUpdatedPill = ({ className = "" }) => {
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .get("/data-freshness")
+      .then((r) => { if (alive) setData(r.data); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  const rel = fmtRelFresh(data?.seconds_since_update);
+  if (!rel) return null;
+
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            data-testid="data-updated-pill"
+            className={`inline-flex items-center gap-1.5 rounded-full border border-border bg-white/70 px-2.5 py-1 text-[11.5px] font-medium text-foreground/70 shadow-sm cursor-default ${className}`}
+          >
+            <ClockCounterClockwise size={13} weight="bold" className="text-brand-deep" />
+            <span className="whitespace-nowrap">Updated {rel}</span>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>
+          <div className="text-[11px] leading-relaxed">
+            <div>Last data load: {fmtAbsFresh(data?.last_updated)}</div>
+            {data?.last_sale_date && <div>Last sale date: {data.last_sale_date}</div>}
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+};
+
 const FilterBar = () => {
   const f = useFilters();
   const [locations, setLocations] = useState([]);
@@ -635,27 +695,30 @@ const FilterBar = () => {
       <div className="hidden md:flex md:flex-wrap md:items-center md:gap-2">
         <BackButton />
         {ControlsInline}
-        <button
-          type="button"
-          onClick={handleShare}
-          data-testid="share-filter-link"
-          title="Copy a shareable link to this filtered view."
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-semibold transition-all ml-auto ${
-            shareCopied
-              ? "bg-[#059669] text-white border border-[#059669]"
-              : "bg-white text-foreground/80 border border-border hover:border-brand/40 hover:bg-brand-soft/50"
-          }`}
-        >
-          {shareCopied ? (
-            <>
-              <Check size={13} weight="bold" /> Copied
-            </>
-          ) : (
-            <>
-              <ShareNetwork size={13} weight="bold" /> Share view
-            </>
-          )}
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <DataUpdatedPill />
+          <button
+            type="button"
+            onClick={handleShare}
+            data-testid="share-filter-link"
+            title="Copy a shareable link to this filtered view."
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-semibold transition-all ${
+              shareCopied
+                ? "bg-[#059669] text-white border border-[#059669]"
+                : "bg-white text-foreground/80 border border-border hover:border-brand/40 hover:bg-brand-soft/50"
+            }`}
+          >
+            {shareCopied ? (
+              <>
+                <Check size={13} weight="bold" /> Copied
+              </>
+            ) : (
+              <>
+                <ShareNetwork size={13} weight="bold" /> Share view
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Mobile layout — compact 4-row stack, always visible (no sheet
@@ -717,6 +780,9 @@ const FilterBar = () => {
           placeholder="All POS"
           width={220}
         />
+        <div className="flex justify-center pt-0.5">
+          <DataUpdatedPill />
+        </div>
       </div>
     </div>
   );

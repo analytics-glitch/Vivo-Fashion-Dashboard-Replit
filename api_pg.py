@@ -6132,7 +6132,30 @@ def admin_reconciliation_check():
         "errors": errors,
     }
 @app.get("/api/data-freshness")
-def stub_data_freshness(): return {"fresh": True, "last_updated": None}
+def get_data_freshness():
+    # Real freshness from the analytics table load timestamp. `loaded_at` is a
+    # naive server-time timestamp written by the sync; `now()::timestamp` is the
+    # current server time, so their difference is a correct elapsed interval
+    # regardless of session timezone. `secs` drives the relative "Updated X ago"
+    # label so the client never has to reinterpret a naive timestamp.
+    try:
+        rows = run_query(
+            "SELECT MAX(loaded_at) AS last_updated, "
+            "MAX(sale_date) AS last_sale_date, "
+            "EXTRACT(EPOCH FROM (now()::timestamp - MAX(loaded_at))) AS secs "
+            "FROM all_sales"
+        )
+        r = rows[0] if rows else {}
+        lu = r.get("last_updated")
+        secs = r.get("secs")
+        return {
+            "fresh": True,
+            "last_updated": lu.isoformat() if hasattr(lu, "isoformat") else lu,
+            "seconds_since_update": int(secs) if secs is not None else None,
+            "last_sale_date": r.get("last_sale_date"),
+        }
+    except Exception:
+        return {"fresh": False, "last_updated": None, "seconds_since_update": None, "last_sale_date": None}
 @app.get("/api/ibt/late-count")
 def ibt_late_count():
     # Outstanding IBT suggestions (default 30-day window) that are neither
