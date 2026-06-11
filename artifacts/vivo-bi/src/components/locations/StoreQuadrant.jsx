@@ -76,7 +76,7 @@ export default function StoreQuadrant({ stores = [], network }) {
   const yScale = (a) => M.t + (1 - (a - yMin) / ((yMax - yMin) || 1)) * IH;
   const rScale = (o) => {
     const t = Math.sqrt(Math.min(o || 0, maxOrders) / maxOrders);
-    return Math.max(7, Math.min(26, 7 + t * 19));
+    return Math.max(6, Math.min(22, 6 + t * 16));
   };
   const clampX = (v) => Math.max(M.l, Math.min(M.l + IW, v));
   const clampY = (v) => Math.max(M.t, Math.min(M.t + IH, v));
@@ -136,7 +136,7 @@ export default function StoreQuadrant({ stores = [], network }) {
           Across the bottom: how many visitors buy something. Up the side: how much each customer spends.
           The dotted lines are the company average — top-right is the best place to be. Bigger circle = more
           sales made (number of sales).
-          {network.prevWindow ? ` The arrows show how each store moved since the comparison period (${network.prevWindow}).` : ""}
+          {network.prevWindow ? ` Hover a circle to see how that store moved since the comparison period (${network.prevWindow}).` : ""}
           {network.window ? ` ${network.window}.` : ""}
         </p>
       </div>
@@ -188,39 +188,20 @@ export default function StoreQuadrant({ stores = [], network }) {
           <text transform={`rotate(-90 18 ${M.t + IH / 2})`} x={18} y={M.t + IH / 2} textAnchor="middle" className="fill-neutral-600" style={{ fontSize: 12, fontWeight: 600 }}>Average spend per sale (KES)</text>
           <text x={netX} y={M.t - 6} textAnchor="middle" style={{ fontSize: 10.5, fontWeight: 700, fill: "#1a5c38" }}>company avg {netConv.toFixed(1)}%</text>
 
-          {/* movement trails (since the compare period) */}
+          {/* arrow markers for the hovered store's movement trail */}
           <defs>
             {["up", "down", "flat"].map((dd) => (
               <marker key={dd} id={`loc-arrow-${dd}`} markerWidth={6} markerHeight={6} refX={4.6} refY={2.4} orient="auto">
-                <path d="M0,0 L5,2.4 L0,4.8 Z" fill={MOVE_COLOR[dd]} fillOpacity={0.6} />
+                <path d="M0,0 L5,2.4 L0,4.8 Z" fill={MOVE_COLOR[dd]} />
               </marker>
             ))}
           </defs>
-          {plotted.filter((s) => s.prev).map((s) => {
-            const p = s.prev;
-            if (p.prevConv == null || p.prevAbv == null) return null;
-            const x1 = clampX(xScale(p.prevConv));
-            const y1 = clampY(yScale(p.prevAbv));
-            const cx = clampX(xScale(s.conversion));
-            const cy = clampY(yScale(s.abv));
-            const col = MOVE_COLOR[p.dir] || MOVE_COLOR.flat;
-            const r = rScale(s.orders);
-            const dx = cx - x1;
-            const dy = cy - y1;
-            const len = Math.hypot(dx, dy) || 1;
-            const ex = cx - (dx / len) * (r + 3);
-            const ey = cy - (dy / len) * (r + 3);
-            const active = hover?.store === s.store;
-            if (len < r + 6) return null;
-            return (
-              <g key={`tr-${s.store}`} opacity={active ? 0.95 : 0.5}>
-                <line x1={x1} y1={y1} x2={ex} y2={ey} stroke={col} strokeWidth={active ? 2 : 1.4} markerEnd={`url(#loc-arrow-${p.dir})`} />
-                <circle cx={x1} cy={y1} r={2.6} fill="#fff" stroke={col} strokeWidth={1.3} />
-              </g>
-            );
-          })}
 
-          {/* bubbles */}
+          {/* bubbles — store names and movement arrows are revealed only for
+              the hovered store. Drawing every store's name inside the bubble
+              and every movement arrow at once produced an unreadable tangle;
+              the "Most improved / Slipping" panel above already summarises
+              movement, so the default plot is kept clean. */}
           {plotted.map((s) => {
             const cx = xScale(s.conversion);
             const cy = yScale(s.abv);
@@ -228,14 +209,65 @@ export default function StoreQuadrant({ stores = [], network }) {
             const c = countryColor(s.country);
             const active = hover?.store === s.store;
             return (
-              <g key={s.store} onMouseEnter={() => setHover(s)} onMouseLeave={() => setHover(null)} style={{ cursor: "pointer" }}>
-                <circle cx={cx} cy={cy} r={r} fill={c} fillOpacity={active ? 0.42 : 0.24} stroke={c} strokeWidth={active ? 2.4 : 1.5} />
-                {(r >= 14 || active) && (
-                  <text x={cx} y={cy + 3.5} textAnchor="middle" style={{ fontSize: 10, fontWeight: 600, fill: "#1f2937" }}>{s.store}</text>
-                )}
-              </g>
+              <circle
+                key={s.store}
+                cx={cx}
+                cy={cy}
+                r={r}
+                fill={c}
+                fillOpacity={active ? 0.5 : 0.22}
+                stroke={c}
+                strokeWidth={active ? 2.4 : 1.4}
+                onMouseEnter={() => setHover(s)}
+                onMouseLeave={() => setHover(null)}
+                style={{ cursor: "pointer" }}
+              />
             );
           })}
+
+          {/* hover overlay — drawn last so the active store, its movement
+              arrow and its name sit cleanly on top of every other bubble. */}
+          {hover && (() => {
+            const s = hover;
+            const cx = xScale(s.conversion);
+            const cy = yScale(s.abv);
+            const r = rScale(s.orders);
+            const c = countryColor(s.country);
+            const p = s.prev;
+            let trail = null;
+            if (p && p.prevConv != null && p.prevAbv != null) {
+              const x1 = clampX(xScale(p.prevConv));
+              const y1 = clampY(yScale(p.prevAbv));
+              const col = MOVE_COLOR[p.dir] || MOVE_COLOR.flat;
+              const dx = cx - x1;
+              const dy = cy - y1;
+              const len = Math.hypot(dx, dy) || 1;
+              if (len >= r + 6) {
+                const ex = cx - (dx / len) * (r + 3);
+                const ey = cy - (dy / len) * (r + 3);
+                trail = (
+                  <g>
+                    <line x1={x1} y1={y1} x2={ex} y2={ey} stroke={col} strokeWidth={2} markerEnd={`url(#loc-arrow-${p.dir})`} />
+                    <circle cx={x1} cy={y1} r={3} fill="#fff" stroke={col} strokeWidth={1.4} />
+                  </g>
+                );
+              }
+            }
+            return (
+              <g pointerEvents="none">
+                {trail}
+                <circle cx={cx} cy={cy} r={r} fill={c} fillOpacity={0.5} stroke={c} strokeWidth={2.6} />
+                <text
+                  x={cx}
+                  y={cy - r - 7}
+                  textAnchor="middle"
+                  style={{ fontSize: 12.5, fontWeight: 700, fill: "#111827", paintOrder: "stroke", stroke: "#fff", strokeWidth: 4, strokeLinejoin: "round" }}
+                >
+                  {s.store}
+                </text>
+              </g>
+            );
+          })()}
         </svg>
 
         {/* hover detail card */}
@@ -301,7 +333,7 @@ export default function StoreQuadrant({ stores = [], network }) {
               <svg width="22" height="8"><line x1="1" y1="4" x2="17" y2="4" stroke="#b91c1c" strokeWidth="1.6" /><path d="M16,1.6 L21,4 L16,6.4 Z" fill="#b91c1c" /></svg>
               getting worse
             </span>
-            <span className="text-neutral-400">vs comparison period</span>
+            <span className="text-neutral-400">hover a store to see its move</span>
           </div>
         )}
       </div>
