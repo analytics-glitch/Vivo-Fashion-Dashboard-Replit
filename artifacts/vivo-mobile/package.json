@@ -56,6 +56,7 @@
     "zod-validation-error": "^3.4.0"
   },
   "dependencies": {
-    "@expo-google-fonts/plus-jakarta-sans": "^0.4.2"
+    "@expo-google-fonts/plus-jakarta-sans": "^0.4.2",
+    "react-native-barcode-svg": "^0.0.15"
   }
 }

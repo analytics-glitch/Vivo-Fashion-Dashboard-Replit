@@ -3,6 +3,7 @@ import { Stack, useRouter } from "expo-router";
 import React from "react";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   StyleSheet,
   Text,
@@ -21,7 +22,7 @@ import {
 } from "@/components/ui";
 import { brandColor, brandLabel } from "@/constants/colors";
 import { useColors } from "@/hooks/useColors";
-import { apiGet } from "@/lib/api";
+import { apiGet, apiPost } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { fmtKES, fmtNum } from "@/lib/format";
 
@@ -51,10 +52,50 @@ export default function CrmLoyaltyScreen() {
   const [text, setText] = React.useState("");
   const [q, setQ] = React.useState("");
 
+  const [earnCode, setEarnCode] = React.useState("");
+  const [earnAmount, setEarnAmount] = React.useState("");
+  const [earning, setEarning] = React.useState(false);
+
   React.useEffect(() => {
     const t = setTimeout(() => setQ(text.trim()), 350);
     return () => clearTimeout(t);
   }, [text]);
+
+  const awardPoints = async () => {
+    if (earning) return;
+    const code = earnCode.trim();
+    const amount = Number(earnAmount);
+    if (!code) {
+      Alert.alert("Membership code required", "Scan or enter a membership code.");
+      return;
+    }
+    if (!amount || amount <= 0) {
+      Alert.alert("Amount required", "Enter a valid purchase amount in KES.");
+      return;
+    }
+    setEarning(true);
+    try {
+      const r = await apiPost<{
+        points_awarded?: number;
+        points_balance?: number;
+        member_name?: string | null;
+      }>("/crm/loyalty/earn", { membership_code: code, amount_kes: amount });
+      Alert.alert(
+        "Points awarded",
+        `${r.member_name || "Member"}: +${fmtNum(r.points_awarded ?? 0)} pts (balance ${fmtNum(r.points_balance ?? 0)})`,
+      );
+      setEarnCode("");
+      setEarnAmount("");
+      summaryQ.refetch();
+    } catch (e) {
+      Alert.alert(
+        "Could not award points",
+        e instanceof Error ? e.message : "Please try again.",
+      );
+    } finally {
+      setEarning(false);
+    }
+  };
 
   const summaryQ = useQuery({
     queryKey: ["crm-loyalty-summary"],
@@ -138,6 +179,51 @@ export default function CrmLoyaltyScreen() {
           </View>
         </>
       ) : null}
+
+      <View>
+        <SectionHeader
+          title="Award Points"
+          caption="Scan or enter a membership code at point of sale"
+        />
+        <Card style={styles.earnCard}>
+          <TextInput
+            value={earnCode}
+            onChangeText={setEarnCode}
+            placeholder="Membership code"
+            placeholderTextColor={c.mutedForeground}
+            style={[styles.earnInput, { color: c.foreground, borderColor: c.border }]}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="number-pad"
+            editable={!earning}
+          />
+          <TextInput
+            value={earnAmount}
+            onChangeText={(t) => setEarnAmount(t.replace(/[^0-9.]/g, ""))}
+            placeholder="Purchase amount (KES)"
+            placeholderTextColor={c.mutedForeground}
+            style={[styles.earnInput, { color: c.foreground, borderColor: c.border }]}
+            keyboardType="decimal-pad"
+            editable={!earning}
+          />
+          <Pressable
+            onPress={awardPoints}
+            disabled={earning}
+            style={({ pressed }) => [
+              styles.earnButton,
+              { backgroundColor: c.primary, opacity: earning || pressed ? 0.7 : 1 },
+            ]}
+          >
+            {earning ? (
+              <ActivityIndicator size="small" color={c.primaryForeground} />
+            ) : (
+              <Text style={[styles.earnButtonText, { color: c.primaryForeground }]}>
+                Award points
+              </Text>
+            )}
+          </Pressable>
+        </Card>
+      </View>
 
       <View>
         <SectionHeader
@@ -245,6 +331,22 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   search: { flex: 1, paddingVertical: 12, fontFamily: "Jakarta_500Medium", fontSize: 15 },
+  earnCard: { gap: 10 },
+  earnInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontFamily: "Jakarta_500Medium",
+    fontSize: 15,
+  },
+  earnButton: {
+    borderRadius: 10,
+    paddingVertical: 13,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  earnButtonText: { fontFamily: "Jakarta_700Bold", fontSize: 15 },
   memberRow: { gap: 6 },
   memberTop: {
     flexDirection: "row",

@@ -34,7 +34,11 @@ function RootLayoutNav() {
   useEffect(() => {
     if (status === "loading") return;
     const onLogin = segments[0] === "login";
-    if (status === "unauthenticated" && !onLogin) {
+    // The customer loyalty card flow (app/member/*) has its OWN member-token
+    // session and is intentionally reachable WITHOUT a staff BI login, so the
+    // staff auth gate must not bounce it back to /login.
+    const onMember = segments[0] === "member";
+    if (status === "unauthenticated" && !onLogin && !onMember) {
       router.replace("/login");
     } else if (status === "authenticated" && onLogin) {
       router.replace("/(tabs)");
@@ -72,6 +76,7 @@ function RootLayoutNav() {
     >
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="login" options={{ headerShown: false }} />
+      <Stack.Screen name="member" options={{ headerShown: false }} />
     </Stack>
   );
 }

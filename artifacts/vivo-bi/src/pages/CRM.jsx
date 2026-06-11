@@ -16,6 +16,7 @@ import {
   ArrowClockwise,
   X,
   Tag as TagIcon,
+  Coins,
 } from "@phosphor-icons/react";
 
 // ---------------------------------------------------------------------------
@@ -1225,6 +1226,9 @@ const LoyaltyTab = ({ isAdmin, onOpen360 }) => {
   const [error, setError] = useState(null);
   const [lookup, setLookup] = useState("");
   const [results, setResults] = useState([]);
+  const [earnCode, setEarnCode] = useState("");
+  const [earnAmount, setEarnAmount] = useState("");
+  const [earning, setEarning] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -1241,6 +1245,24 @@ const LoyaltyTab = ({ isAdmin, onOpen360 }) => {
     crmGet("/crm/customers", { q: lookup, limit: 20 }).then((r) => setResults(r.data?.customers || [])).catch((e) => toast.error(errOf(e)));
   };
 
+  const awardPoints = () => {
+    const code = earnCode.trim();
+    const amount = Number(earnAmount);
+    if (!code) { toast.error("Scan or enter a membership code"); return; }
+    if (!amount || amount <= 0) { toast.error("Enter a valid purchase amount"); return; }
+    setEarning(true);
+    api.post("/crm/loyalty/earn", { membership_code: code, amount_kes: amount })
+      .then((r) => {
+        const d = r.data || {};
+        toast.success(`${d.member_name || "Member"}: +${fmtNum(d.points_awarded || 0)} pts (balance ${fmtNum(d.points_balance || 0)})`);
+        setEarnCode("");
+        setEarnAmount("");
+        load();
+      })
+      .catch((e) => toast.error(errOf(e)))
+      .finally(() => setEarning(false));
+  };
+
   const recalc = () =>
     api.post("/crm/loyalty/recalc-tiers", {}).then((r) => { toast.success(`Re-evaluated ${r.data?.evaluated} members`); load(); }).catch((e) => toast.error(errOf(e)));
 
@@ -1253,6 +1275,32 @@ const LoyaltyTab = ({ isAdmin, onOpen360 }) => {
         subtitle="Append-only points ledger, rolling-12-month spend tiers and redemption codes."
         action={isAdmin && <button className={btnGhost} onClick={recalc}><ArrowClockwise size={14} /> Re-evaluate tiers</button>}
       />
+
+      <div className="card-white p-4">
+        <div className="mb-2 text-[12px] font-semibold uppercase text-muted">Award points (scan code)</div>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input
+            className={inputCls}
+            placeholder="Scan or enter membership code…"
+            value={earnCode}
+            onChange={(e) => setEarnCode(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && awardPoints()}
+          />
+          <input
+            className={inputCls}
+            type="number"
+            min="0"
+            placeholder="Purchase amount (KES)"
+            value={earnAmount}
+            onChange={(e) => setEarnAmount(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && awardPoints()}
+          />
+          <button className={btnPrimary} onClick={awardPoints} disabled={earning}>
+            <Coins size={14} /> {earning ? "Awarding…" : "Award points"}
+          </button>
+        </div>
+        <div className="mt-2 text-[11.5px] text-muted">Earns points from the purchase amount at the configured earn rate. Updates the member's balance and tier.</div>
+      </div>
 
       {loading ? (
         <Loading label="Loading loyalty summary…" />

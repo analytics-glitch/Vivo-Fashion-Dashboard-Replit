@@ -728,6 +728,13 @@ async def clerk_auth_gate(request: Request, call_next):
     if path in _AUTH_PUBLIC_AUTH_PATHS:
         return await call_next(request)
 
+    # Customer-facing loyalty endpoints carry their OWN member-token auth (a
+    # loyalty card session, not a staff session) so members can enrol, check
+    # their tier/points and redeem WITHOUT a staff login. They validate the
+    # X-Member-Token header internally and fail closed with 401 when missing.
+    if path.startswith("/api/loyalty"):
+        return await call_next(request)
+
     # Resolve the session token (Bearer header or httpOnly cookie) to a user.
     # Fail closed: if the user store is unreachable we cannot prove identity, so
     # refuse with a deterministic 503 rather than leaking a generic 500.
@@ -9418,6 +9425,14 @@ def _ensure_crm_tables():
             created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
         )""")
     _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_ledger_customer ON crm_loyalty_ledger(customer_id)")
+    # Make POS earn idempotency a hard DB invariant: at most one 'earn' ledger
+    # row per (customer, transaction_id). Concurrent same-txn requests can no
+    # longer both pass the pre-check and double-credit — the loser hits this
+    # constraint and is collapsed via ON CONFLICT DO NOTHING.
+    _users_exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_crm_ledger_earn_txn "
+        "ON crm_loyalty_ledger(customer_id, transaction_id) "
+        "WHERE reason='earn' AND transaction_id IS NOT NULL")
     _users_exec("""
         CREATE TABLE IF NOT EXISTS crm_redemptions (
             id             SERIAL PRIMARY KEY,
@@ -9442,6 +9457,32 @@ def _ensure_crm_tables():
             user_name  TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )""")
+    # Customer-facing loyalty membership (the "loyalty card"). A self-service
+    # identity distinct from staff app_users: members enrol with phone + PIN and
+    # carry a scannable membership_code (Carrefour-style barcode). Points/tiers
+    # live in the existing crm_loyalty_enrolment/ledger keyed by customer_id; this
+    # row links a member to that customer_id ('mbr:' generated id).
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_loyalty_member (
+            member_id       TEXT PRIMARY KEY,
+            customer_id     TEXT UNIQUE NOT NULL,
+            brand_code      TEXT NOT NULL DEFAULT 'vivo',
+            name            TEXT,
+            phone           TEXT UNIQUE NOT NULL,
+            email           TEXT,
+            membership_code TEXT UNIQUE NOT NULL,
+            pin_hash        TEXT NOT NULL,
+            card_token_hash TEXT,
+            spend_kes       NUMERIC NOT NULL DEFAULT 0,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            last_login_at   TIMESTAMPTZ
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_member_code ON crm_loyalty_member(membership_code)")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_member_token ON crm_loyalty_member(card_token_hash)")
+    # Brute-force throttle for the low-entropy (4–6 digit) PIN login. Tracked on
+    # the member row so it survives restarts and is per-account, not in-memory.
+    _users_exec("ALTER TABLE crm_loyalty_member ADD COLUMN IF NOT EXISTS failed_logins INTEGER NOT NULL DEFAULT 0")
+    _users_exec("ALTER TABLE crm_loyalty_member ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ")
     # Seed config defaults (idempotent — never clobbers an admin-edited value).
     for k, v in CRM_CONFIG_DEFAULTS.items():
         _users_exec(
@@ -9540,6 +9581,74 @@ def _crm_audit(entity, entity_id, action, detail, request):
             (entity, str(entity_id), action, (detail or "")[:1000], uid, name))
     except Exception:
         pass
+
+
+# --- Loyalty membership (customer-facing card) helpers --------------------
+
+def _member_hash_token(token):
+    """Hash a member card token for at-rest storage (never store the raw token)."""
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+def _member_token_from_request(request):
+    """Read the member card token from the X-Member-Token header (or Bearer)."""
+    tok = request.headers.get("x-member-token")
+    if tok:
+        return tok.strip()
+    auth = request.headers.get("authorization") or ""
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return None
+
+
+def _member_for_request(request):
+    """Resolve the calling loyalty member from their card token, or None."""
+    tok = _member_token_from_request(request)
+    if not tok:
+        return None
+    rows = _users_exec(
+        "SELECT * FROM crm_loyalty_member WHERE card_token_hash=%s",
+        (_member_hash_token(tok),), fetch=True)
+    return rows[0] if rows else None
+
+
+def _gen_membership_code():
+    """Generate a unique 13-digit numeric membership code (scans as Code128)."""
+    for _ in range(10):
+        code = "20" + "".join(secrets.choice("0123456789") for _ in range(11))
+        if not _users_exec(
+                "SELECT 1 FROM crm_loyalty_member WHERE membership_code=%s",
+                (code,), fetch=True):
+            return code
+    return "20" + "".join(secrets.choice("0123456789") for _ in range(11))
+
+
+def _member_public(m, enrol=None):
+    """The safe member view returned to the loyalty app (no PIN / token hash)."""
+    out = {
+        "member_id": m.get("member_id"),
+        "customer_id": m.get("customer_id"),
+        "brand_code": m.get("brand_code") or "vivo",
+        "name": m.get("name"),
+        "phone": m.get("phone"),
+        "email": m.get("email"),
+        "membership_code": m.get("membership_code"),
+        "tier": "Bronze",
+        "points_balance": 0,
+        "points_lifetime": 0,
+    }
+    if enrol:
+        out["tier"] = enrol.get("tier") or "Bronze"
+        out["points_balance"] = int(enrol.get("points_balance") or 0)
+        out["points_lifetime"] = int(enrol.get("points_lifetime") or 0)
+    return out
+
+
+def _member_enrolment(customer_id):
+    rows = _users_exec(
+        "SELECT * FROM crm_loyalty_enrolment WHERE customer_id=%s",
+        (customer_id,), fetch=True)
+    return rows[0] if rows else None
 
 
 def _crm_sla_minutes(cfg, channel, priority):
@@ -10446,6 +10555,312 @@ def crm_loyalty_recalc(request: Request):
             (tier, cid, tier))
         updated += 1
     return {"ok": True, "evaluated": updated}
+
+
+# --- CRM: POS "scan to earn" (staff-gated, analyst+) ----------------------
+# A POS operator scans the member's barcode (membership_code) and posts the
+# purchase amount; we award points = floor(amount / earn_rate). Idempotent on
+# transaction_id so a double-submit (or the sync loop's retries) can't
+# double-credit. Writes the append-only ledger + audit trail.
+
+@app.post("/api/crm/loyalty/earn")
+async def crm_loyalty_earn(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    code = (body.get("membership_code") or "").strip()
+    if not code:
+        return JSONResponse({"detail": "membership_code is required"}, status_code=400)
+    try:
+        amount = float(body.get("amount_kes"))
+    except Exception:
+        return JSONResponse({"detail": "amount_kes (number) is required"}, status_code=400)
+    if amount <= 0:
+        return JSONResponse({"detail": "amount_kes must be positive"}, status_code=400)
+    rows = _users_exec(
+        "SELECT * FROM crm_loyalty_member WHERE membership_code=%s", (code,), fetch=True)
+    if not rows:
+        return JSONResponse({"detail": "No loyalty member matches that code"}, status_code=404)
+    m = rows[0]
+    cid = m["customer_id"]
+    txn = (body.get("transaction_id") or "").strip() or None
+    cfg = _crm_config_dict()
+    earn_rate = _crm_cfg_num(cfg, "loyalty.earn_rate_kes", 100) or 100
+    points = int(amount // earn_rate)
+    uid, uname, _ = _crm_actor(request)
+    store_id = (body.get("store_id") or "").strip() or None
+    with _users_tx() as cur:
+        # Idempotency: a ledger row already exists for this transaction_id.
+        if txn:
+            cur.execute(
+                "SELECT balance_after FROM crm_loyalty_ledger "
+                "WHERE customer_id=%s AND transaction_id=%s AND reason='earn' LIMIT 1",
+                (cid, txn))
+            dup = cur.fetchone()
+            if dup:
+                cur.connection.rollback()
+                return {"ok": True, "duplicate": True, "points_awarded": 0,
+                        "points_balance": int(dup["balance_after"] or 0),
+                        "member_name": m.get("name"), "membership_code": code}
+        cur.execute(
+            "SELECT points_balance, points_lifetime FROM crm_loyalty_enrolment "
+            "WHERE customer_id=%s FOR UPDATE", (cid,))
+        row = cur.fetchone()
+        if not row:
+            cur.execute(
+                "INSERT INTO crm_loyalty_enrolment (customer_id, brand_code, points_balance, points_lifetime, tier_updated_at) "
+                "VALUES (%s,%s,0,0,now())", (cid, m.get("brand_code") or "vivo"))
+            bal, life = 0, 0
+        else:
+            bal, life = int(row["points_balance"]), int(row["points_lifetime"])
+        new_bal = bal + points
+        new_life = life + points
+        new_spend = float(m.get("spend_kes") or 0) + amount
+        tier = _crm_tier_for_spend(new_spend, cfg)
+        # Insert the ledger row FIRST under the partial-unique idempotency
+        # index. If a concurrent request with the same transaction_id already
+        # won the race, ON CONFLICT collapses this one to zero rows and we abort
+        # the credit entirely (return the existing balance) — so the spend +
+        # balance updates below never double-apply.
+        if txn:
+            cur.execute(
+                "INSERT INTO crm_loyalty_ledger (customer_id, transaction_id, points_change, reason, balance_after, created_by) "
+                "VALUES (%s,%s,%s,'earn',%s,%s) "
+                "ON CONFLICT (customer_id, transaction_id) WHERE reason='earn' AND transaction_id IS NOT NULL "
+                "DO NOTHING RETURNING id",
+                (cid, txn, points, new_bal, uname))
+            if cur.fetchone() is None:
+                # Lost the race: another request already credited this txn.
+                cur.connection.rollback()
+                dup_bal = _users_exec(
+                    "SELECT balance_after FROM crm_loyalty_ledger "
+                    "WHERE customer_id=%s AND transaction_id=%s AND reason='earn' "
+                    "ORDER BY id LIMIT 1",
+                    (cid, txn), fetch=True)
+                bal_after = int((dup_bal[0]["balance_after"] if dup_bal else bal) or 0)
+                return {"ok": True, "duplicate": True, "points_awarded": 0,
+                        "points_balance": bal_after,
+                        "member_name": m.get("name"), "membership_code": code}
+        else:
+            cur.execute(
+                "INSERT INTO crm_loyalty_ledger (customer_id, transaction_id, points_change, reason, balance_after, created_by) "
+                "VALUES (%s,%s,%s,'earn',%s,%s)",
+                (cid, txn, points, new_bal, uname))
+        cur.execute(
+            "UPDATE crm_loyalty_enrolment SET points_balance=%s, points_lifetime=%s, "
+            "tier=%s, tier_updated_at=now() WHERE customer_id=%s",
+            (new_bal, new_life, tier, cid))
+        cur.execute(
+            "UPDATE crm_loyalty_member SET spend_kes=%s WHERE member_id=%s",
+            (new_spend, m["member_id"]))
+    _crm_audit("loyalty", cid, "earn",
+               f"code={code} amount_kes={amount:.0f} points=+{points} store={store_id or '-'}", request)
+    return {"ok": True, "points_awarded": points, "points_balance": new_bal,
+            "tier": tier, "member_name": m.get("name"), "membership_code": code}
+
+
+# --- Customer-facing loyalty (public, member-token auth) -------------------
+# These endpoints are NOT behind the staff session gate (see clerk_auth_gate).
+# A member enrols with phone + PIN, receives a card token (device session) +
+# a scannable membership_code, and can read their tier/points/ledger + redeem
+# without any staff login. The ledger is the customer-visible points audit.
+
+def _member_issue_token(member_id):
+    """Mint + persist a fresh card token for a member; return the raw token."""
+    token = secrets.token_urlsafe(32)
+    _users_exec(
+        "UPDATE crm_loyalty_member SET card_token_hash=%s, last_login_at=now() WHERE member_id=%s",
+        (_member_hash_token(token), member_id))
+    return token
+
+
+def _valid_pin(pin):
+    return bool(pin) and pin.isdigit() and 4 <= len(pin) <= 6
+
+
+@app.post("/api/loyalty/enrol")
+async def loyalty_enrol(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = (body.get("name") or "").strip()
+    phone = _crm_norm_phone(body.get("phone"))
+    pin = (body.get("pin") or "").strip()
+    email = (body.get("email") or "").strip() or None
+    brand = _crm_brand(body.get("brand_code"))
+    if not name:
+        return JSONResponse({"detail": "Your name is required"}, status_code=400)
+    if not phone:
+        return JSONResponse({"detail": "A valid phone number is required"}, status_code=400)
+    if not _valid_pin(pin):
+        return JSONResponse({"detail": "Choose a 4–6 digit PIN"}, status_code=400)
+    if _users_exec("SELECT 1 FROM crm_loyalty_member WHERE phone=%s", (phone,), fetch=True):
+        return JSONResponse(
+            {"detail": "This phone is already enrolled. Please sign in instead."},
+            status_code=409)
+    member_id = "mbr:" + secrets.token_hex(8)
+    customer_id = member_id  # loyalty card customer key
+    code = _gen_membership_code()
+    pin_hash = _hash_password(pin)
+    _users_exec(
+        "INSERT INTO crm_loyalty_member (member_id, customer_id, brand_code, name, phone, email, membership_code, pin_hash) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+        (member_id, customer_id, brand, name, phone, email, code, pin_hash))
+    # Mirror into the staff CRM as a manual contact so the 360 view + loyalty
+    # admin can see self-enrolled members alongside transactional customers.
+    parts = name.split(" ", 1)
+    first, last = parts[0], (parts[1] if len(parts) > 1 else None)
+    _users_exec(
+        "INSERT INTO crm_customer (customer_id, brand_code, first_name, last_name, phone, email, is_manual, created_by, consent_marketing) "
+        "VALUES (%s,%s,%s,%s,%s,%s,TRUE,'loyalty:self',TRUE) ON CONFLICT (customer_id) DO NOTHING",
+        (customer_id, brand, first, last, phone, email))
+    _users_exec(
+        "INSERT INTO crm_loyalty_enrolment (customer_id, brand_code, tier, tier_updated_at) "
+        "VALUES (%s,%s,'Bronze',now()) ON CONFLICT (customer_id) DO NOTHING",
+        (customer_id, brand))
+    _users_exec(
+        "INSERT INTO crm_audit (entity, entity_id, action, detail, user_id, user_name) "
+        "VALUES ('loyalty',%s,'self_enrol',%s,%s,%s)",
+        (customer_id, f"code={code}", member_id, name))
+    token = _member_issue_token(member_id)
+    m = _users_exec("SELECT * FROM crm_loyalty_member WHERE member_id=%s", (member_id,), fetch=True)[0]
+    enrol = _member_enrolment(customer_id)
+    return {"ok": True, "token": token, "member": _member_public(m, enrol)}
+
+
+@app.post("/api/loyalty/login")
+async def loyalty_login(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    phone = _crm_norm_phone(body.get("phone"))
+    pin = (body.get("pin") or "").strip()
+    if not phone or not pin:
+        return JSONResponse({"detail": "Phone and PIN are required"}, status_code=400)
+    # Brute-force throttle: a 4–6 digit PIN is low-entropy, so cap failures per
+    # account. After LOGIN_MAX_FAILS consecutive misses the account is locked for
+    # LOGIN_LOCK_MINUTES; a correct PIN resets the counter. Lock + counter live on
+    # the member row (survives restarts, per-account). The whole check-and-bump
+    # runs inside one advisory-locked tx so concurrent guesses can't race past it.
+    LOGIN_MAX_FAILS = 5
+    LOGIN_LOCK_MINUTES = 15
+    with _users_tx(lock=True) as cur:
+        cur.execute(
+            "SELECT *, (locked_until IS NOT NULL AND locked_until > now()) AS is_locked "
+            "FROM crm_loyalty_member WHERE phone=%s FOR UPDATE", (phone,))
+        m = cur.fetchone()
+        # Uniform 401 whether or not the phone exists (no account enumeration).
+        if not m:
+            return JSONResponse({"detail": "Invalid phone or PIN"}, status_code=401)
+        if m.get("is_locked"):
+            return JSONResponse(
+                {"detail": "Too many attempts. Try again later."}, status_code=429)
+        if not _verify_password(pin, m["pin_hash"]):
+            fails = int(m.get("failed_logins") or 0) + 1
+            if fails >= LOGIN_MAX_FAILS:
+                cur.execute(
+                    "UPDATE crm_loyalty_member SET failed_logins=0, "
+                    "locked_until=now() + (%s || ' minutes')::interval WHERE member_id=%s",
+                    (LOGIN_LOCK_MINUTES, m["member_id"]))
+                return JSONResponse(
+                    {"detail": "Too many attempts. Try again later."}, status_code=429)
+            cur.execute(
+                "UPDATE crm_loyalty_member SET failed_logins=%s WHERE member_id=%s",
+                (fails, m["member_id"]))
+            return JSONResponse({"detail": "Invalid phone or PIN"}, status_code=401)
+        # Success: clear throttle state.
+        cur.execute(
+            "UPDATE crm_loyalty_member SET failed_logins=0, locked_until=NULL WHERE member_id=%s",
+            (m["member_id"],))
+    token = _member_issue_token(m["member_id"])
+    enrol = _member_enrolment(m["customer_id"])
+    m = _users_exec("SELECT * FROM crm_loyalty_member WHERE member_id=%s", (m["member_id"],), fetch=True)[0]
+    return {"ok": True, "token": token, "member": _member_public(m, enrol)}
+
+
+@app.post("/api/loyalty/logout")
+async def loyalty_logout(request: Request):
+    m = _member_for_request(request)
+    if m:
+        _users_exec(
+            "UPDATE crm_loyalty_member SET card_token_hash=NULL WHERE member_id=%s",
+            (m["member_id"],))
+    return {"ok": True}
+
+
+@app.get("/api/loyalty/me")
+def loyalty_me(request: Request):
+    m = _member_for_request(request)
+    if not m:
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+    cid = m["customer_id"]
+    enrol = _member_enrolment(cid)
+    ledger = _users_exec(
+        "SELECT points_change, reason, balance_after, transaction_id, created_at "
+        "FROM crm_loyalty_ledger WHERE customer_id=%s ORDER BY created_at DESC LIMIT 50",
+        (cid,), fetch=True) or []
+    redemptions = _users_exec(
+        "SELECT points_redeemed, kes_value, discount_code, code_status, issued_at, used_at "
+        "FROM crm_redemptions WHERE customer_id=%s ORDER BY issued_at DESC LIMIT 25",
+        (cid,), fetch=True) or []
+    cfg = _crm_config_dict()
+    return {
+        "member": _member_public(m, enrol),
+        "ledger": ledger,
+        "redemptions": redemptions,
+        "config": {
+            "earn_rate_kes": _crm_cfg_num(cfg, "loyalty.earn_rate_kes", 100),
+            "points_per_kes_redeem": _crm_cfg_num(cfg, "loyalty.points_per_kes_redeem", 100),
+            "redemption_floor": int(_crm_cfg_num(cfg, "loyalty.redemption_floor", 200)),
+            "tiers": {
+                "Silver": _crm_cfg_num(cfg, "loyalty.tier_silver_kes", 50000),
+                "Gold": _crm_cfg_num(cfg, "loyalty.tier_gold_kes", 150000),
+                "VIP": _crm_cfg_num(cfg, "loyalty.tier_vip_kes", 300000),
+            },
+        },
+    }
+
+
+@app.post("/api/loyalty/redeem")
+async def loyalty_redeem(request: Request):
+    m = _member_for_request(request)
+    if not m:
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        points = int(body.get("points"))
+    except Exception:
+        return JSONResponse({"detail": "points (integer) is required"}, status_code=400)
+    cfg = _crm_config_dict()
+    floor = int(_crm_cfg_num(cfg, "loyalty.redemption_floor", 200))
+    per_kes = _crm_cfg_num(cfg, "loyalty.points_per_kes_redeem", 100) or 100
+    if points < floor:
+        return JSONResponse({"detail": f"Minimum redemption is {floor} points"}, status_code=400)
+    cid = m["customer_id"]
+    code = "VFG-" + secrets.token_hex(4).upper()
+    kes_value = round(points / per_kes, 2)
+    with _users_tx() as cur:
+        cur.execute("SELECT points_balance FROM crm_loyalty_enrolment WHERE customer_id=%s FOR UPDATE", (cid,))
+        row = cur.fetchone()
+        bal = int(row["points_balance"]) if row else 0
+        if not row or bal < points:
+            cur.connection.rollback()
+            return JSONResponse({"detail": f"Insufficient points (balance {bal})"}, status_code=400)
+        new_bal = bal - points
+        cur.execute("UPDATE crm_loyalty_enrolment SET points_balance=%s WHERE customer_id=%s", (new_bal, cid))
+        cur.execute(
+            "INSERT INTO crm_loyalty_ledger (customer_id, points_change, reason, balance_after, created_by) "
+            "VALUES (%s,%s,'redemption',%s,'member:self')", (cid, -points, new_bal))
+        cur.execute(
+            "INSERT INTO crm_redemptions (customer_id, points_redeemed, kes_value, discount_code, issued_by) "
+            "VALUES (%s,%s,%s,%s,'member:self')", (cid, points, kes_value, code))
+    return {"ok": True, "discount_code": code, "kes_value": kes_value, "points_balance": new_bal}
 
 
 from fastapi.staticfiles import StaticFiles

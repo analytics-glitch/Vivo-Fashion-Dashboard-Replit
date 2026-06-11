@@ -280,7 +280,7 @@ def process_shopify_store(store, cur, now, rates):
                 store_id, order_id, order_name,
                 created_at, created_at,
                 pos_location, store["country"],
-                "POS" if store_id == "vivowoman" else "Online",
+                "POS" if (store_id == "vivowoman" and pos_location != "vivowoman") else "Online",
                 customer_id, customer_type, sale_kind,
                 title, sku, qty,
                 product_price_kes, price,
