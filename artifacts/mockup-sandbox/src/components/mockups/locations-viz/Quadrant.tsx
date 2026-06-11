@@ -41,23 +41,23 @@ export function Quadrant() {
         <div className="rounded-2xl bg-white shadow-sm border border-black/5 overflow-hidden">
           <div className="px-7 pt-6 pb-4 border-b border-black/5">
             <div className="text-[11px] font-semibold tracking-[0.14em] uppercase" style={{ color: "#1a5c38" }}>
-              Diagnosis
+              Store check-up
             </div>
             <h2 className="mt-1 text-[22px] font-semibold tracking-tight text-neutral-900">
-              Conversion vs. Average Basket
+              Are people buying, and how much do they spend?
             </h2>
-            <p className="mt-1 text-[13px] text-neutral-500 leading-relaxed max-w-[640px]">
-              Each store positioned against the network average. Where a store sits tells you the <em>kind</em> of
-              problem it has — not just whether it is good or bad. Bubble size = orders. Trails show movement
-              vs the prior period ({NETWORK.prevWindow}). {NETWORK.window}.
+            <p className="mt-1 text-[13px] text-neutral-500 leading-relaxed max-w-[660px]">
+              Across the bottom: how many visitors buy something. Up the side: how much each customer spends.
+              The dotted lines are the company average — top-right is the best place to be. Bigger circle = more
+              sales made (number of sales). The arrows show how each store moved since last month ({NETWORK.prevWindow}). {NETWORK.window}.
             </p>
           </div>
 
           {/* biggest movers strip */}
           <div className="px-7 py-3.5 border-b border-black/5 flex flex-wrap items-start gap-x-8 gap-y-3" style={{ background: "#fcf9f4" }}>
-            <MoverGroup label="Biggest gains" dir="up" movers={improving} />
+            <MoverGroup label="Most improved" dir="up" movers={improving} />
             <div className="w-px self-stretch bg-black/5 hidden md:block" />
-            <MoverGroup label="Biggest declines" dir="down" movers={sliding} />
+            <MoverGroup label="Slipping the most" dir="down" movers={sliding} />
           </div>
 
           <div className="relative">
@@ -81,10 +81,10 @@ export function Quadrant() {
               <line x1={M.l} y1={netY} x2={M.l + IW} y2={netY} stroke="#1a5c38" strokeDasharray="5 4" strokeWidth={1.4} opacity={0.55} />
 
               {/* quadrant labels */}
-              <text x={M.l + IW - 8} y={M.t + 18} textAnchor="end" className="fill-neutral-400" style={{ fontSize: 11, fontWeight: 600 }}>WIN ZONE — both levers healthy</text>
-              <text x={M.l + 8} y={M.t + 18} textAnchor="start" className="fill-neutral-400" style={{ fontSize: 11, fontWeight: 600 }}>Premium basket, low conversion</text>
-              <text x={M.l + IW - 8} y={M.t + IH - 10} textAnchor="end" className="fill-neutral-400" style={{ fontSize: 11, fontWeight: 600 }}>High conversion, small basket</text>
-              <text x={M.l + 8} y={M.t + IH - 10} textAnchor="start" className="fill-neutral-400" style={{ fontSize: 11, fontWeight: 600 }}>Underperforming</text>
+              <text x={M.l + IW - 8} y={M.t + 18} textAnchor="end" className="fill-neutral-400" style={{ fontSize: 11, fontWeight: 600 }}>Doing well — many buy and spend a lot</text>
+              <text x={M.l + 8} y={M.t + 18} textAnchor="start" className="fill-neutral-400" style={{ fontSize: 11, fontWeight: 600 }}>Big spenders, but few buy</text>
+              <text x={M.l + IW - 8} y={M.t + IH - 10} textAnchor="end" className="fill-neutral-400" style={{ fontSize: 11, fontWeight: 600 }}>Many buy, but spend little</text>
+              <text x={M.l + 8} y={M.t + IH - 10} textAnchor="start" className="fill-neutral-400" style={{ fontSize: 11, fontWeight: 600 }}>Needs help — few buy, low spend</text>
 
               {/* axes */}
               <line x1={M.l} y1={M.t + IH} x2={M.l + IW} y2={M.t + IH} stroke="#000" opacity={0.18} />
@@ -95,9 +95,9 @@ export function Quadrant() {
               {[5000, 7500, 10000, 12500].map((a) => (
                 <text key={a} x={M.l - 10} y={yScale(a) + 4} textAnchor="end" className="fill-neutral-500" style={{ fontSize: 11 }}>{(a / 1000).toFixed(0)}k</text>
               ))}
-              <text x={M.l + IW / 2} y={H - 14} textAnchor="middle" className="fill-neutral-600" style={{ fontSize: 12, fontWeight: 600 }}>Conversion rate</text>
-              <text transform={`rotate(-90 18 ${M.t + IH / 2})`} x={18} y={M.t + IH / 2} textAnchor="middle" className="fill-neutral-600" style={{ fontSize: 12, fontWeight: 600 }}>Average basket (KES)</text>
-              <text x={netX} y={M.t - 6} textAnchor="middle" style={{ fontSize: 10.5, fontWeight: 700, fill: "#1a5c38" }}>avg {NETWORK.netConv}%</text>
+              <text x={M.l + IW / 2} y={H - 14} textAnchor="middle" className="fill-neutral-600" style={{ fontSize: 12, fontWeight: 600 }}>How many visitors buy</text>
+              <text transform={`rotate(-90 18 ${M.t + IH / 2})`} x={18} y={M.t + IH / 2} textAnchor="middle" className="fill-neutral-600" style={{ fontSize: 12, fontWeight: 600 }}>Average spend per sale (KES)</text>
+              <text x={netX} y={M.t - 6} textAnchor="middle" style={{ fontSize: 10.5, fontWeight: 700, fill: "#1a5c38" }}>company avg {NETWORK.netConv}%</text>
 
               {/* movement trails (since last month) */}
               <defs>
@@ -157,25 +157,25 @@ export function Quadrant() {
                     <span className="text-[13px] font-semibold text-neutral-900">{hover.store}</span>
                   </div>
                   <div className="mt-2.5 space-y-1.5 text-[12px]">
-                    <Row k="Conversion" v={fmtPct(hover.conversion)} />
-                    <Row k="Avg basket" v={fmtKES(hover.abv)} />
-                    <Row k="Orders" v={hover.orders.toLocaleString()} />
-                    <Row k="Net sales" v={fmtKES(hover.sales)} />
-                    <Row k="Footfall" v={hover.footfall.toLocaleString()} />
+                    <Row k="Visitors who buy" v={fmtPct(hover.conversion)} />
+                    <Row k="Average spend" v={fmtKES(hover.abv)} />
+                    <Row k="Sales (count)" v={hover.orders.toLocaleString()} />
+                    <Row k="Total sales" v={fmtKES(hover.sales)} />
+                    <Row k="Visitors" v={hover.footfall.toLocaleString()} />
                   </div>
                   {hover.prev && (
                     <div className="mt-2.5 pt-2.5 border-t border-black/5 text-[11px]">
                       <div className="font-semibold mb-1" style={{ color: MOVE_COLOR[hover.prev.dir] }}>
-                        {hover.prev.dir === "up" ? "Improving" : hover.prev.dir === "down" ? "Sliding" : "Roughly flat"} vs last month
+                        {hover.prev.dir === "up" ? "Better" : hover.prev.dir === "down" ? "Worse" : "About the same"} than last month
                       </div>
                       <div className="flex items-center justify-between text-neutral-500">
-                        <span>Conversion</span>
+                        <span>Visitors who buy</span>
                         <span className="tabular-nums font-medium" style={{ color: hover.prev.dConv >= 0 ? "#1a5c38" : "#b91c1c" }}>
                           {hover.prev.dConv >= 0 ? "+" : ""}{hover.prev.dConv.toFixed(1)} pts
                         </span>
                       </div>
                       <div className="flex items-center justify-between text-neutral-500">
-                        <span>Avg basket</span>
+                        <span>Average spend</span>
                         <span className="tabular-nums font-medium" style={{ color: hover.prev.dAbv >= 0 ? "#1a5c38" : "#b91c1c" }}>
                           {hover.prev.dAbv >= 0 ? "+" : "−"}{fmtKES(Math.abs(hover.prev.dAbv)).replace("KES ", "")}
                         </span>
@@ -184,7 +184,7 @@ export function Quadrant() {
                   )}
                 </>
               ) : (
-                <div className="text-[12px] text-neutral-400 leading-relaxed">Hover any bubble for the full numbers.</div>
+                <div className="text-[12px] text-neutral-400 leading-relaxed">Point at any circle to see its numbers.</div>
               )}
             </div>
           </div>
@@ -199,20 +199,20 @@ export function Quadrant() {
             <div className="flex items-center gap-1.5 text-[12px] text-neutral-500">
               <span className="inline-block w-4 h-4 rounded-full border" style={{ borderColor: "#1a5c38" }} />
               <span className="inline-block w-2.5 h-2.5 rounded-full border" style={{ borderColor: "#1a5c38" }} />
-              bubble = orders
+              bigger circle = more sales made
             </div>
             <div className="flex items-center gap-3 text-[12px] text-neutral-500">
               <span className="flex items-center gap-1.5">
                 <svg width="22" height="8"><line x1="1" y1="4" x2="17" y2="4" stroke="#1a5c38" strokeWidth="1.6" /><path d="M16,1.6 L21,4 L16,6.4 Z" fill="#1a5c38" /></svg>
-                improving
+                getting better
               </span>
               <span className="flex items-center gap-1.5">
                 <svg width="22" height="8"><line x1="1" y1="4" x2="17" y2="4" stroke="#b91c1c" strokeWidth="1.6" /><path d="M16,1.6 L21,4 L16,6.4 Z" fill="#b91c1c" /></svg>
-                sliding
+                getting worse
               </span>
               <span className="flex items-center gap-1.5">
                 <svg width="22" height="8"><line x1="1" y1="4" x2="17" y2="4" stroke="#9ca3af" strokeWidth="1.6" /><path d="M16,1.6 L21,4 L16,6.4 Z" fill="#9ca3af" /></svg>
-                flat
+                no change
               </span>
               <span className="text-neutral-400">since last month</span>
             </div>
@@ -220,11 +220,11 @@ export function Quadrant() {
           {notPlotted.length > 0 && (
             <div className="px-7 pb-5 -mt-1">
               <div className="rounded-lg bg-neutral-50 border border-black/5 px-4 py-2.5 text-[12px] text-neutral-500">
-                <span className="font-semibold text-neutral-600">Not plotted (no reliable footfall):</span>{" "}
+                <span className="font-semibold text-neutral-600">Not shown (no reliable visitor count):</span>{" "}
                 {notPlotted.map((s, i) => (
                   <span key={s.store}>
                     {s.store}
-                    {s.noFootfall ? " (online channel)" : ` (sensor down ${s.sensorGap}/30 days)`}
+                    {s.noFootfall ? " (online — no shop visitors)" : ` (counter down ${s.sensorGap}/30 days)`}
                     {i < notPlotted.length - 1 ? " · " : ""}
                   </span>
                 ))}

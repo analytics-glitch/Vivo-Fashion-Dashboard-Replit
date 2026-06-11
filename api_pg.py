@@ -1548,7 +1548,7 @@ def get_kpis(
     where = build_filters(date_from, date_to, country, channel)
     rows = run_query("""
         SELECT
-            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END), 0) AS total_discounts,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_returns,
@@ -1556,8 +1556,8 @@ def get_kpis(
                           WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS net_sales,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS total_orders,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS total_units,
-            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size,
-            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END), 0), 0) AS avg_selling_price,
+            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size,
+            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END), 0), 0) AS avg_selling_price,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)
                 / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) * 100, 2) AS return_rate
         FROM all_sales s

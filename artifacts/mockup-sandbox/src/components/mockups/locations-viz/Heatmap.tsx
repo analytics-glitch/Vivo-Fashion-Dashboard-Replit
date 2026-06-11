@@ -34,16 +34,16 @@ export function Heatmap() {
         <div className="rounded-2xl bg-white shadow-sm border border-black/5 overflow-hidden">
           <div className="px-7 pt-6 pb-4 border-b border-black/5">
             <div className="text-[11px] font-semibold tracking-[0.14em] uppercase" style={{ color: "#1a5c38" }}>
-              Triage
+              Where to focus
             </div>
             <h2 className="mt-1 text-[22px] font-semibold tracking-tight text-neutral-900">
-              Store Performance Heatmap
+              How each store is doing
             </h2>
             <p className="mt-1 text-[13px] text-neutral-500 leading-relaxed max-w-[640px]">
-              Read colour clusters, not numbers. Conversion, sales/visitor and basket are shaded{" "}
-              <span style={{ color: "#1a5c38", fontWeight: 600 }}>green above</span> /{" "}
-              <span style={{ color: "#b91c1c", fontWeight: 600 }}>red below</span> the network average. Total sales stays
-              neutral grey — it is context (a big store always sells more), not a verdict. {NETWORK.window}.
+              Look at the colours, not the numbers.{" "}
+              <span style={{ color: "#1a5c38", fontWeight: 600 }}>Green is better</span> than the company average,{" "}
+              <span style={{ color: "#b91c1c", fontWeight: 600 }}>red is worse</span>. Total sales is grey because it only
+              shows how big a store is, not how well it is doing. {NETWORK.window}.
             </p>
           </div>
 
@@ -52,7 +52,7 @@ export function Heatmap() {
               <thead>
                 <tr>
                   <th className="text-left text-[11px] font-semibold uppercase tracking-wide text-neutral-400 px-3 py-2">Store</th>
-                  {["Conversion", "Sales / visitor", "Basket (ABV)", "Total sales"].map((h) => (
+                  {["Visitors who buy", "Sales per visitor", "Average spend", "Total sales"].map((h) => (
                     <th key={h} className="text-center text-[11px] font-semibold uppercase tracking-wide text-neutral-400 px-2 py-2">{h}</th>
                   ))}
                 </tr>
@@ -60,7 +60,7 @@ export function Heatmap() {
               <tbody>
                 {/* pinned network average */}
                 <tr>
-                  <td className="px-3 py-2 text-[12.5px] font-semibold text-neutral-700 whitespace-nowrap">Network average</td>
+                  <td className="px-3 py-2 text-[12.5px] font-semibold text-neutral-700 whitespace-nowrap">Company average</td>
                   <Cell text={fmtPct(NETWORK.netConv)} bg="rgba(26,92,56,0.10)" color="#1a5c38" bold />
                   <Cell text={fmtKES(NETWORK.netSpv)} bg="rgba(26,92,56,0.10)" color="#1a5c38" bold />
                   <Cell text={fmtKES(NETWORK.netAbv)} bg="rgba(26,92,56,0.10)" color="#1a5c38" bold />
@@ -74,9 +74,10 @@ export function Heatmap() {
           </div>
 
           <div className="px-7 py-4 border-t border-black/5 text-[12px] text-neutral-500 leading-relaxed">
-            <span className="font-semibold text-neutral-600">How to read it:</span> a row red across conversion + sales/visitor
-            is a traffic-or-closing problem; a row red only on basket is an attach-selling / premium-mix problem. Hatched cells
-            mark stores where the footfall sensor was down too long to trust conversion.
+            <span className="font-semibold text-neutral-600">How to read it:</span> if a store is red on both
+            "visitors who buy" and "sales per visitor", not enough people are buying — work on welcoming and closing
+            the sale. If it is red only on "average spend", customers buy but spend little — suggest add-ons and
+            higher-value items. Striped boxes mean the visitor counter was down too long to trust those numbers.
           </div>
         </div>
       </div>
@@ -92,13 +93,13 @@ function Row({ s }: { s: StoreRow }) {
         <span className="inline-flex items-center gap-2">
           <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ background: ACCENT[s.country] }} />
           {s.store}
-          {s.lowVolume && <span className="text-[10px] text-neutral-400">(low vol)</span>}
+          {s.lowVolume && <span className="text-[10px] text-neutral-400">(few sales)</span>}
         </span>
       </td>
       {unreliable && s.noFootfall ? (
         <HatchCell label="online" />
       ) : unreliable ? (
-        <HatchCell label={`sensor ${s.sensorGap}/30d`} />
+        <HatchCell label="no counter" />
       ) : (
         <Cell text={fmtPct(s.conversion)} bg={divergingBg(s.conversion, NETWORK.netConv)} color={textColor(s.conversion, NETWORK.netConv)} />
       )}
