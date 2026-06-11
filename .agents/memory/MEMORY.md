@@ -21,3 +21,4 @@
 - [Expo vector-icon font preload](expo-vector-icon-font-preload.md) — tab icons tofu on Android/Expo Go but fine on web → spread `Feather.font` into the gating `useFonts`.
 - [Expo first-build cold-cache port timeout](expo-cold-cache-port.md) — first Expo workflow start can fail DIDNT_OPEN_A_PORT on cold Metro cache; warm via background dev + /status poll, then restart.
 - [Mobile shares the API auth gate](mobile-shares-api-auth-gate.md) — Expo app hits the same gated /api as web; backend auth changes break mobile too. It sends a Bearer token from AsyncStorage (`vivo_token`).
+- [Footfall sensor-gap derived metrics](footfall-sensor-gap-derived-metrics.md) — sensor-down stores get absurd conversion/sales-per-visitor; gate them out of store-comparison visuals (basket stays fine).
