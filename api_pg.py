@@ -409,7 +409,11 @@ def _users_exec(query, params=None, fetch=False):
     try:
         conn.autocommit = True
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(query, params or ())
+        # Pass params through as-is (None when absent). Passing an empty tuple
+        # instead of None makes psycopg2 attempt %-interpolation, which raises
+        # "IndexError: tuple index out of range" on any query containing a
+        # literal % (e.g. the IBT late-count SQL) and no bind params.
+        cur.execute(query, params)
         rows = [dict(r) for r in cur.fetchall()] if fetch else None
         cur.close()
     except Exception:

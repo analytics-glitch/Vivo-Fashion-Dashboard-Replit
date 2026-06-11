@@ -14,6 +14,8 @@ import StoreDeepDive from "@/components/StoreDeepDive";
 import LocationsAttentionPanel from "@/components/LocationsAttentionPanel";
 import MonthlyTargetsTracker from "@/components/MonthlyTargetsTracker";
 import StockToSalesBySubcategory from "@/components/StockToSalesBySubcategory";
+import StoreQuadrant from "@/components/locations/StoreQuadrant";
+import StoreHeatmap from "@/components/locations/StoreHeatmap";
 import { Storefront, ArrowsDownUp, ArrowUpRight, Warning, CaretDown, CaretRight, Footprints, Target, Coins, Stack, Tag } from "@phosphor-icons/react";
 import { useAuth } from "@/lib/auth";
 
@@ -342,6 +344,97 @@ const Locations = () => {
     };
   }, [ffRows]);
 
+  // --- Locations visuals model (quadrant + heatmap) ----------------------
+  // Number of calendar days in the active window (inclusive). Used to gate
+  // conversion reliability: a store whose visitor counter was dark for >25%
+  // of the window can't have a trustworthy conversion / sales-per-visitor.
+  const windowDays = useMemo(() => {
+    if (!dateFrom || !dateTo) return 1;
+    const a = new Date(dateFrom + "T00:00:00");
+    const b = new Date(dateTo + "T00:00:00");
+    const d = Math.round((b - a) / 86400000) + 1;
+    return Math.max(1, d);
+  }, [dateFrom, dateTo]);
+
+  // Network reference line for the visuals — sourced from the same blended
+  // ffNetwork / groupTotals the tables use so everything stays consistent.
+  const vizNetwork = useMemo(() => {
+    if (!ffNetwork) return null;
+    let prevWindow = null;
+    if (compareMode !== "none") {
+      const p = comparePeriod(dateFrom, dateTo, compareMode, { date_from: compareDateFrom, date_to: compareDateTo });
+      prevWindow = p ? fmtRange(p.date_from, p.date_to) : null;
+    }
+    return {
+      netConv: ffNetwork.conv ?? 0,
+      netAbv: groupTotals.abv ?? 0,
+      netSpv: ffNetwork.spv ?? 0,
+      window: fmtRange(dateFrom, dateTo),
+      prevWindow,
+    };
+  }, [ffNetwork, groupTotals, dateFrom, dateTo, compareMode, compareDateFrom, compareDateTo]);
+
+  // Per-store rows for the quadrant + heatmap. Joins the authoritative store
+  // grid (enriched, carries country/abv) with the clean footfall model
+  // (ffRows, carries conversion/spv/sensor-gap). `prev` is only populated when
+  // a compare period is active and both prior conversion AND prior ABV exist.
+  const ffByLoc = useMemo(() => {
+    const m = new Map();
+    for (const r of ffRows) m.set(r.loc, r);
+    return m;
+  }, [ffRows]);
+
+  const SENSOR_GAP_FRAC = 0.25;
+  const storeViz = useMemo(() => {
+    const net = vizNetwork;
+    return enrichedWithDq.map((r) => {
+      const loc = r.channel;
+      const ff = ffByLoc.get(loc);
+      const footfall = ff ? ff.footfallCount : (r.total_footfall || 0);
+      const noFootfall = !footfall;
+      const sensorGap = ff ? (ff.sensorGapDays || 0) : 0;
+      const conversion = ff ? ff.conv : null;
+      const salesPerVisitor = ff ? ff.spv : null;
+      const orders = r.orders || 0;
+      const lowVolume = orders < ABV_LOW_ORDERS;
+      const convReliable =
+        !noFootfall && conversion != null && sensorGap < SENSOR_GAP_FRAC * windowDays;
+
+      let prev = null;
+      if (
+        compareMode !== "none" && ff &&
+        ff.prevConv != null && ff.prevAbv != null && ff.convDeltaPp != null
+      ) {
+        const dConv = ff.convDeltaPp;
+        const dAbv = (r.abv != null && r.prev_abv != null) ? r.abv - r.prev_abv : null;
+        if (dAbv != null) {
+          const nc = (net && net.netConv) || 1;
+          const na = (net && net.netAbv) || 1;
+          const composite = dConv / nc + dAbv / na;
+          const dir = composite > 0.02 ? "up" : composite < -0.02 ? "down" : "flat";
+          prev = { prevConv: ff.prevConv, prevAbv: ff.prevAbv, dConv, dAbv, dir };
+        }
+      }
+
+      return {
+        store: loc,
+        country: r.country || "Other",
+        orders,
+        units: r.units_sold || 0,
+        sales: r.total_sales || 0,
+        abv: r.abv || 0,
+        footfall,
+        conversion,
+        salesPerVisitor,
+        sensorGap,
+        lowVolume,
+        noFootfall,
+        convReliable,
+        prev,
+      };
+    }).sort((a, b) => (b.sales || 0) - (a.sales || 0));
+  }, [enrichedWithDq, ffByLoc, vizNetwork, windowDays, compareMode]);
+
   // Best/worst conversion callout — excludes low-traffic stores (noise).
   const ffCallouts = useMemo(() => {
     const eligible = ffRows.filter((r) => !r.lowTraffic && r.conv != null && r.footfallCount > 0);
@@ -564,6 +657,13 @@ const Locations = () => {
             />
           </div>
 
+          {/* At-a-glance visuals (graduated from the canvas): a plain-English
+              quadrant (who buys / how much they spend) and a per-store
+              heatmap. These sit ABOVE the detailed tables, which are demoted
+              into a collapsible drill-down below. */}
+          <StoreQuadrant stores={storeViz} network={vizNetwork} />
+          <StoreHeatmap stores={storeViz} network={vizNetwork} />
+
           {/* Sort + leaderboard + grid — kept visible behind the deep-dive
               slide-over so users can jump between stores without losing
               context (the drill pattern the audit asked for). */}
@@ -603,7 +703,6 @@ const Locations = () => {
                 data-testid="locations-deep-dive-hint"
               >
                 <span className="inline-flex items-center gap-2">
-                  <span aria-hidden="true">👆</span>
                   <span>
                     <b className="text-brand-deep">Click any card</b> to open the
                     store deep-dive — full KPI history, daily trend, top SKUs and
@@ -778,7 +877,6 @@ const Locations = () => {
                           card's hover via the parent .hover-lift. */}
                       <div className="mt-4 pt-3 border-t border-border/60 flex items-center justify-between text-[11.5px]">
                         <span className="text-muted inline-flex items-center gap-1">
-                          <span aria-hidden="true">👆</span>
                           <span>Click for deep dive</span>
                         </span>
                         <span className="font-semibold text-brand-deep inline-flex items-center gap-0.5">
@@ -804,6 +902,21 @@ const Locations = () => {
                 useOwnDates
                 defaultLookbackDays={30}
               />
+
+              {/* Detailed per-store tables — demoted into a collapsible
+                  drill-down now that the quadrant + heatmap above give the
+                  at-a-glance read. Open it for exact figures, sorting, deltas
+                  and the basket / conversion decomposition drawers. */}
+              <details className="card-white group" data-testid="locations-tables-details">
+                <summary className="flex items-center justify-between gap-3 cursor-pointer select-none px-5 py-4 list-none">
+                  <span className="flex items-center gap-2.5">
+                    <CaretRight size={14} weight="bold" className="text-muted transition-transform group-open:rotate-90" />
+                    <span className="font-semibold text-[14px] text-[#0f3d24]">Full store breakdown (tables)</span>
+                    <span className="text-[12px] text-muted hidden sm:inline">Average basket value &amp; Footfall / conversion — exact figures and drill-downs</span>
+                  </span>
+                  <span className="text-[11px] font-medium text-muted shrink-0">Click to expand</span>
+                </summary>
+                <div className="px-5 pb-5 space-y-6">
 
               {(() => {
                 const compare = compareMode !== "none";
@@ -1228,6 +1341,9 @@ const Locations = () => {
                   </div>
                 );
               })()}
+
+                </div>
+              </details>
 
               {/* "Locations needing attention" — surfaces stores that look
                   off on at least one of: sales drop, conversion drop,

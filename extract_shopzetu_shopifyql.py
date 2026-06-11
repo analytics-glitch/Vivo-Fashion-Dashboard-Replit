@@ -130,7 +130,7 @@ def transform_rows(rows):
             round(net_sales, 2),
             round(total_sales if not is_reversal else 0, 2),
             net_qty,
-            round(abs(returns_val) if is_reversal else 0, 2),
+            round(abs(returns_val) * 1.16 if is_reversal else 0, 2),  # ShopifyQL returns are ex-VAT; gross up to match total_sales basis
             now,
         ))
     return result
