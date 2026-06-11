@@ -6,3 +6,9 @@
 - [Python deps in .pythonlibs](python-deps-pythonlibs.md) — pip & installLanguagePackages fail here; add backend pkgs via `uv pip install --target .pythonlibs/lib/python3.11/site-packages`.
 - [Channel param = pos_location_name](channel-param-pos-location.md) — the filter-bar "channel" param carries pos_location_name values; filter with s.pos_location_name, NOT the separate s.channel column.
 - [Inventory velocity formula](inventory-velocity-formula.md) — one recency-weighted weekly-velocity + dead-stock rule shared by weeks-of-cover, replenish-by-color, and IBT; country-scope the dead-stock CTEs.
+- [filters.jsx HMR Fast-Refresh ghost](hmr-fast-refresh-ghost.md) — "stuck on skeleton" + "useFilters must be used inside FiltersProvider" are DEV-ONLY HMR artifacts, not real bugs; screenshots catch fresh-load loading state.
+- [Postgres text date columns](pg-text-date-columns.md) — `all_sales.sale_date` is TEXT; cast `::date` before `date_trunc`/date funcs or you get "function date_trunc(unknown, text) does not exist".
+- [vivowoman is primary Kenya POS](vivowoman-base-filter.md) — never exclude `vivowoman` in BASE_FILTERS; it's 84% of sales and all pre-2022 data, not a rollup.
+- [Range Management endpoints](range-mgmt-endpoints.md) — /api/range-mgmt/* shape & filter contract: tier_summary keys need spaces, apply channel to inventory + BASE_FILTERS to sales.
+- [Expo vector-icon font preload](expo-vector-icon-font-preload.md) — tab icons tofu on Android/Expo Go but fine on web → spread `Feather.font` into the gating `useFonts`.
+- [Expo first-build cold-cache port timeout](expo-cold-cache-port.md) — first Expo workflow start can fail DIDNT_OPEN_A_PORT on cold Metro cache; warm via background dev + /status poll, then restart.
