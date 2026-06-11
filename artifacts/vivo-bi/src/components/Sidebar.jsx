@@ -22,9 +22,11 @@ import {
   ChatCircleDots,
   Briefcase,
   Megaphone,
+  Star,
   List as MenuIcon,
   X as CloseIcon,
 } from "@phosphor-icons/react";
+import { usePinnedPages } from "@/lib/pinnedPages";
 import { useFilters } from "@/lib/filters";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
@@ -209,6 +211,15 @@ const TopNav = () => {
           : t,
       );
   }, [user]);
+  // Per-user pinned pages ("Favorites") — quick one-click access to the handful
+  // of pages a user uses most. Order follows the order they were pinned.
+  const { pinned, toggle: togglePin, isPinned } = usePinnedPages(user?.user_id);
+  const pinnedTabs = React.useMemo(() => {
+    const byId = new Map(visibleTabs.map((t) => [t.id, t]));
+    // Map pinned ids → currently-visible tabs (drops pages the user can no
+    // longer access without mutating their saved pins).
+    return pinned.map((id) => byId.get(id)).filter(Boolean);
+  }, [pinned, visibleTabs]);
   const [mobileOpen, setMobileOpen] = React.useState(false);
   // Force the relative-time label to re-render every 30s.
   const [, setTick] = React.useState(0);
@@ -338,6 +349,56 @@ const TopNav = () => {
       </div>
       </div>
 
+      {/* Favorites — per-user pinned pages for one-click access. Desktop only;
+          shown when the user has pinned at least one page. */}
+      {pinnedTabs.length > 0 && (
+        <div
+          className="hidden lg:flex items-center gap-x-1 gap-y-1 justify-start flex-wrap mt-2 -mx-1 px-1"
+          data-testid="top-nav-favorites"
+        >
+          <span className="inline-flex items-center gap-1 pl-1 pr-1 text-[10.5px] font-semibold uppercase tracking-wider text-foreground/55 select-none">
+            <Star size={12} weight="fill" className="text-amber-500" />
+            Favorites
+          </span>
+          {pinnedTabs.map((t) => (
+            <NavLink
+              key={`fav-${t.id}`}
+              to={t.to}
+              end={t.to === "/"}
+              data-testid={`fav-${t.id}`}
+              onMouseEnter={() => prefetchForRoute(t.id, prefetchFilters)}
+              onFocus={() => prefetchForRoute(t.id, prefetchFilters)}
+              className={({ isActive }) =>
+                `flex items-center gap-1 px-1.5 xl:px-2 py-1 rounded-md text-[11px] xl:text-[12px] font-medium transition-colors whitespace-nowrap border ${
+                  isActive
+                    ? "bg-brand text-white border-brand shadow-sm"
+                    : "bg-white/60 text-foreground/75 border-border hover:bg-panel hover:text-foreground"
+                }`
+              }
+            >
+              {({ isActive }) => (
+                <>
+                  <t.icon size={13} weight={isActive ? "fill" : "regular"} />
+                  <span>{t.label}</span>
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Unpin ${t.label} from Favorites`}
+                    title="Unpin from Favorites"
+                    data-testid={`unpin-${t.id}`}
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); togglePin(t.id); }}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); togglePin(t.id); } }}
+                    className={`ml-0.5 -mr-0.5 p-0.5 rounded ${isActive ? "text-amber-200 hover:text-white" : "text-amber-500 hover:text-amber-600"}`}
+                  >
+                    <Star size={12} weight="fill" />
+                  </span>
+                </>
+              )}
+            </NavLink>
+          ))}
+        </div>
+      )}
+
       {/* Row 2: page-name tabs (full viewport width, max 2 rows) */}
       <div
         className="hidden lg:flex items-center gap-x-1 gap-y-1 justify-start flex-wrap mt-2 -mx-1 px-1"
@@ -352,7 +413,7 @@ const TopNav = () => {
             onMouseEnter={() => prefetchForRoute(t.id, prefetchFilters)}
             onFocus={() => prefetchForRoute(t.id, prefetchFilters)}
             className={({ isActive }) =>
-              `flex items-center gap-1 px-1.5 xl:px-2 py-1 rounded-md text-[11px] xl:text-[12px] font-medium transition-colors whitespace-nowrap ${
+              `group flex items-center gap-1 px-1.5 xl:px-2 py-1 rounded-md text-[11px] xl:text-[12px] font-medium transition-colors whitespace-nowrap ${
                 isActive
                   ? "bg-brand text-white shadow-sm"
                   : "text-foreground/70 hover:bg-panel hover:text-foreground"
@@ -381,6 +442,20 @@ const TopNav = () => {
                     {replenPending > 99 ? "99+" : replenPending}
                   </span>
                 )}
+                <span
+                  role="button"
+                  tabIndex={0}
+                  aria-label={isPinned(t.id) ? `Unpin ${t.label} from Favorites` : `Pin ${t.label} to Favorites`}
+                  title={isPinned(t.id) ? "Unpin from Favorites" : "Pin to Favorites"}
+                  data-testid={`pin-${t.id}`}
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); togglePin(t.id); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); togglePin(t.id); } }}
+                  className={`ml-0.5 -mr-0.5 p-0.5 rounded transition-opacity ${
+                    isPinned(t.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus:opacity-100"
+                  } ${isActive ? "text-amber-200 hover:text-white" : "text-amber-500 hover:text-amber-600"}`}
+                >
+                  <Star size={12} weight={isPinned(t.id) ? "fill" : "regular"} />
+                </span>
               </>
             )}
           </NavLink>
@@ -392,6 +467,45 @@ const TopNav = () => {
           className="lg:hidden absolute left-0 right-0 top-full bg-white border-b border-border shadow-md z-40 px-3 py-2 flex flex-col gap-1"
           data-testid="mobile-menu"
         >
+          {pinnedTabs.length > 0 && (
+            <>
+              <div className="px-3 pt-1 pb-0.5 text-[11px] font-semibold uppercase tracking-wider text-foreground/55 flex items-center gap-1 select-none">
+                <Star size={12} weight="fill" className="text-amber-500" /> Favorites
+              </div>
+              {pinnedTabs.map((t) => (
+                <NavLink
+                  key={`fav-m-${t.id}`}
+                  to={t.to}
+                  end={t.to === "/"}
+                  onClick={() => setMobileOpen(false)}
+                  data-testid={`nav-mobile-fav-${t.id}`}
+                  className={({ isActive }) =>
+                    `flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[14px] font-medium ${
+                      isActive ? "bg-brand text-white" : "text-foreground/80 hover:bg-panel"
+                    }`
+                  }
+                >
+                  {({ isActive }) => (
+                    <>
+                      <t.icon size={17} weight={isActive ? "fill" : "regular"} />
+                      <span>{t.label}</span>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Unpin ${t.label} from Favorites`}
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); togglePin(t.id); }}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); togglePin(t.id); } }}
+                        className={`ml-auto p-1 ${isActive ? "text-amber-200" : "text-amber-500"}`}
+                      >
+                        <Star size={16} weight="fill" />
+                      </span>
+                    </>
+                  )}
+                </NavLink>
+              ))}
+              <div className="h-px bg-border my-1 mx-3" />
+            </>
+          )}
           {visibleTabs.map((t) => (
             <NavLink
               key={t.id}
@@ -427,6 +541,16 @@ const TopNav = () => {
                       {replenPending > 99 ? "99+" : replenPending}
                     </span>
                   )}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={isPinned(t.id) ? `Unpin ${t.label} from Favorites` : `Pin ${t.label} to Favorites`}
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); togglePin(t.id); }}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); togglePin(t.id); } }}
+                    className={`${t.id === "ibt" || t.id === "replenishments" ? "ml-1" : "ml-auto"} p-1 ${isPinned(t.id) ? "text-amber-500" : "text-foreground/30"}`}
+                  >
+                    <Star size={16} weight={isPinned(t.id) ? "fill" : "regular"} />
+                  </span>
                 </>
               )}
             </NavLink>
