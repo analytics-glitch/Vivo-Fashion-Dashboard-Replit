@@ -424,8 +424,11 @@ def _utc_day_year(dt):
     return utc.strftime("%Y-%m-%d"), utc.year
 
 
-def fetch_sales(store_config, days_per_batch=90, limit=None, start_from=None):
-    """Fetch sales (order line items) for one store and save to the mirror table."""
+def fetch_sales(store_config, days_per_batch=90, limit=None, start_from=None, end_at=None):
+    """Fetch sales (order line items) for one store and save to the mirror table.
+
+    Optional `end_at` (YYYY-MM-DD, inclusive) caps the window for a bounded historical
+    extract; default is "now"."""
     client = ShopifyClient(store_config=store_config)
     store_id = client.store_id
 
@@ -441,6 +444,8 @@ def fetch_sales(store_config, days_per_batch=90, limit=None, start_from=None):
     logger.info("[%s] Starting sales from %s", store_id, start_date.date())
 
     end_date = datetime.utcnow()
+    if end_at:
+        end_date = min(end_date, datetime.strptime(end_at, "%Y-%m-%d") + timedelta(days=1))
     total_sales = 0
     orders_processed = 0
     customer_cache = {}
