@@ -1,34 +1,43 @@
 """
 Shopify Sales Extractor (self-contained, saves to our Postgres database)
 
-A faithful port of the reference Shopify Sales Extractor, adapted to run in this
-repo with NO `src/` framework. The four framework dependencies of the original
-(`src.adapters`, `src.clients.shopify_client`, `src.extractors.utils.vendor_filter`,
-`src.utils`) are implemented inline below against:
+A faithful 1:1 port of the reference Shopify Sales Extractor that runs against
+BigQuery. The four framework dependencies of the original (`src.adapters`,
+`src.clients.shopify_client`, `src.extractors.utils.vendor_filter`, `src.utils`)
+are implemented inline below against:
 
   - Shopify Admin REST API (via `requests`)
-  - our PostgreSQL database (via `psycopg2`, table `raw_shopify_sales`)
+  - our PostgreSQL database (via `psycopg2`)
 
-Reference logic preserved 1:1:
+GOAL: produce data identical to what the BigQuery extractor writes. To make that
+possible the output goes to a DEDICATED table `shopify_sales` that mirrors the
+BigQuery `shopify_sales` schema -- it deliberately does NOT reuse `raw_shopify_sales`
+(whose PRIMARY KEY (line_item_id, store_id) forbids the duplicate line_item_ids that
+BigQuery emits for order+return rows). The existing `raw_shopify_sales` table and the
+live BI app are left untouched.
+
+Reference logic preserved 1:1 (values identical to BigQuery):
   - fetch_location_map: /locations.json -> {location_id: name}
   - get_pos_location_name: location_id -> name, else source_name fallback
   - prefetch_customer_orders_count: DB first (raw_shopify_orders), then API for the rest
   - get_customer_type: Returning / New / Guest from orders_count
   - vendor filtering via should_include_vendor
-  - one "order" row per line item + one separate "return" row per refund line item,
-    returns dated by the refund date and attributed to the ORIGINAL order location,
-    restock_type == "cancel" excluded
-  - 90-day forward batches, status=any, created_at_min/max, idempotent delete+insert
+  - one "order" row per line item + one separate "return" row PER refund line item
+    (returns keep the ORIGINAL line_item_id, are dated by the refund date in UTC, and
+    are attributed to the ORIGINAL order location; restock_type == "cancel" excluded)
+  - `day`/`year` are in UTC (straight from the order/refund instant), exactly like the
+    reference -- NOT converted to local time
+  - 90-day forward batches, status=any, created_at_min/max
+  - idempotent re-runs: delete this batch's orders by (store_id, order_id), then insert
 
-Adaptations required to save into our DB (documented intentionally):
-  - target table is `raw_shopify_sales` (schema in create_raw_tables.py)
-  - `day`/`year` use Africa/Nairobi (UTC+3, "EAT") so rows line up with the 1.4M
-    rows already loaded and the all_sales transform (East Africa local dates)
-  - return rows get a "<line_item_id>_ret" id so they don't collide with the order
-    row under the table primary key (line_item_id, store_id) -- a plain match would
-    drop returns via ON CONFLICT DO NOTHING
-  - checkpoint is derived from MAX(day) in the table (minus 2 days of overlap), so
-    re-runs resume forward without a separate checkpoint store
+Schema parity notes (vs our `raw_*` tables):
+  - the mirror table has NO `id`, NO `customer_id`, NO `_loaded_at` columns and NO
+    blocking primary key -- it carries exactly the columns the reference row dict emits
+  - BigQuery names the year column `Year`; Postgres folds unquoted identifiers to
+    lower case, so it is stored as `year` (same value)
+  - customer order counts are read from our `raw_shopify_orders` (the reference reads
+    its own `shopify_orders`); customer_type values match when the order data matches,
+    otherwise the API fallback fills the gap
 
 Run:  python3 shopify_sales_extractor.py
 Env:  DATABASE_URL, SHOPIFY_{KENYA,UGANDA,RWANDA}_STORE, SHOPIFY_{KENYA,UGANDA,RWANDA}_TOKEN
@@ -46,7 +55,8 @@ import requests
 from psycopg2.extras import execute_values, RealDictCursor
 
 API_VERSION = "2025-10"
-EAT = timezone(timedelta(hours=3))  # Africa/Nairobi (UTC+3)
+TABLE = "shopify_sales"  # dedicated BigQuery-mirror table (NOT raw_shopify_sales)
+HISTORICAL_START = "2019-01-01"  # backfill start for an empty table (reference parity)
 DATABASE_URL = os.environ["DATABASE_URL"]
 
 
@@ -73,13 +83,13 @@ def _vendor_filter(env_key):
 
 def build_stores():
     candidates = [
-        # id            store_env                token_env                vendors_env                cutoff_date
-        ("vivowoman",   "SHOPIFY_KENYA_STORE",   "SHOPIFY_KENYA_TOKEN",   "SHOPIFY_KENYA_VENDORS",   "2026-03-19"),
-        ("vivo-uganda", "SHOPIFY_UGANDA_STORE",  "SHOPIFY_UGANDA_TOKEN",  "SHOPIFY_UGANDA_VENDORS",  None),
-        ("vivo-rwanda", "SHOPIFY_RWANDA_STORE",  "SHOPIFY_RWANDA_TOKEN",  "SHOPIFY_RWANDA_VENDORS",  None),
+        # id            store_env                token_env                vendors_env
+        ("vivowoman",   "SHOPIFY_KENYA_STORE",   "SHOPIFY_KENYA_TOKEN",   "SHOPIFY_KENYA_VENDORS"),
+        ("vivo-uganda", "SHOPIFY_UGANDA_STORE",  "SHOPIFY_UGANDA_TOKEN",  "SHOPIFY_UGANDA_VENDORS"),
+        ("vivo-rwanda", "SHOPIFY_RWANDA_STORE",  "SHOPIFY_RWANDA_TOKEN",  "SHOPIFY_RWANDA_VENDORS"),
     ]
     stores = []
-    for store_id, store_env, token_env, vendors_env, cutoff in candidates:
+    for store_id, store_env, token_env, vendors_env in candidates:
         store_url = os.environ.get(store_env)
         access_token = os.environ.get(token_env)
         if not store_url or not access_token:
@@ -90,7 +100,6 @@ def build_stores():
             "store_url": store_url,
             "access_token": access_token,
             "vendor_filter": _vendor_filter(vendors_env),
-            "cutoff_date": cutoff,
         })
     return stores
 
@@ -159,14 +168,60 @@ def execute_query(query, params=None):
         return [dict(r) for r in cur.fetchall()]
 
 
+def ensure_table():
+    """Create the BigQuery-mirror table if it does not exist.
+
+    Columns mirror the reference row dict exactly: NO surrogate id, NO customer_id,
+    NO _loaded_at, and NO blocking primary key (so an order row and its return rows
+    can legitimately share a line_item_id, just like BigQuery)."""
+    conn = _conn()
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS {TABLE} (
+                store_id                TEXT,
+                day                     TEXT,
+                order_id                BIGINT,
+                order_name              TEXT,
+                line_item_id            BIGINT,
+                purchase_option         TEXT,
+                sale_kind               TEXT,
+                sale_line_type          TEXT,
+                pos_location_name       TEXT,
+                product_price           NUMERIC,
+                product_title           TEXT,
+                product_type            TEXT,
+                product_vendor          TEXT,
+                variant_id              BIGINT,
+                variant_sku             TEXT,
+                variant_title           TEXT,
+                customer_type           TEXT,
+                total_sales             NUMERIC,
+                orders                  INTEGER,
+                gross_sales             NUMERIC,
+                discounts               NUMERIC,
+                returns                 NUMERIC,
+                net_sales               NUMERIC,
+                net_quantity            INTEGER,
+                ordered_item_quantity   INTEGER,
+                returned_item_quantity  INTEGER,
+                restock_type            TEXT,
+                year                    INTEGER
+            )
+        """)
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_store_order ON {TABLE} (store_id, order_id)"
+        )
+    conn.commit()
+
+
 def get_checkpoint(store_id):
     """Resume point = last loaded day minus 2 days of overlap (idempotent re-insert
-    handles the overlap). Empty table -> historical start."""
-    rows = execute_query("SELECT MAX(day) AS m FROM raw_shopify_sales WHERE store_id = %s", (store_id,))
+    handles the overlap). Empty table -> historical start (reference parity)."""
+    rows = execute_query(f"SELECT MAX(day) AS m FROM {TABLE} WHERE store_id = %s", (store_id,))
     last = rows[0]["m"] if rows else None
     if last:
-        return (last - timedelta(days=2)).strftime("%Y-%m-%d")
-    return "2019-01-01"
+        return (datetime.strptime(last, "%Y-%m-%d") - timedelta(days=2)).strftime("%Y-%m-%d")
+    return HISTORICAL_START
 
 
 def save_checkpoint(store_id, date_str):
@@ -175,20 +230,21 @@ def save_checkpoint(store_id, date_str):
 
 
 def save_rows(store_id, sales_rows):
-    """Atomically replace this batch's orders: delete + insert in ONE transaction
-    with a single commit, so a crash can never leave orders deleted-but-not-reinserted."""
+    """Idempotent re-runs (reference parity): delete this batch's orders by
+    (store_id, order_id), then plain INSERT -- all in ONE transaction with a single
+    commit so a crash can never leave orders deleted-but-not-reinserted. No
+    ON CONFLICT: duplicate line_item_ids (order + its returns) are intended."""
     if not sales_rows:
         return
-    order_ids = list({str(r["order_id"]) for r in sales_rows if r.get("order_id") is not None})
-    now = datetime.utcnow()
+    order_ids = list({r["order_id"] for r in sales_rows if r.get("order_id") is not None})
     rows = []
     for r in sales_rows:
         rows.append((
-            str(r["line_item_id"]) if r.get("line_item_id") else None,  # id
             r["store_id"],
             r["day"],
-            str(r["order_id"]) if r.get("order_id") is not None else None,
+            r.get("order_id"),
             r.get("order_name"),
+            r.get("line_item_id"),
             r.get("purchase_option"),
             r.get("sale_kind"),
             r.get("sale_line_type"),
@@ -197,13 +253,12 @@ def save_rows(store_id, sales_rows):
             r.get("product_title"),
             r.get("product_type"),
             r.get("product_vendor"),
-            str(r["variant_id"]) if r.get("variant_id") else None,
+            r.get("variant_id"),
             r.get("variant_sku"),
             r.get("variant_title"),
             r.get("customer_type"),
-            str(r["customer_id"]) if r.get("customer_id") else None,
             r.get("total_sales"),
-            r.get("orders", 1),
+            r.get("orders"),
             r.get("gross_sales"),
             r.get("discounts"),
             r.get("returns"),
@@ -211,32 +266,29 @@ def save_rows(store_id, sales_rows):
             r.get("net_quantity"),
             r.get("ordered_item_quantity"),
             r.get("returned_item_quantity"),
-            r.get("year"),
-            str(r["line_item_id"]) if r.get("line_item_id") else None,  # line_item_id
             r.get("restock_type"),
-            now,
+            r.get("year"),
         ))
     conn = _conn()
     try:
         with conn.cursor() as cur:
             if order_ids:
                 cur.execute(
-                    "DELETE FROM raw_shopify_sales WHERE store_id = %s AND order_id = ANY(%s)",
+                    f"DELETE FROM {TABLE} WHERE store_id = %s AND order_id = ANY(%s)",
                     (store_id, order_ids),
                 )
-            execute_values(cur, """
-                INSERT INTO raw_shopify_sales (
-                    id, store_id, day, order_id, order_name,
+            execute_values(cur, f"""
+                INSERT INTO {TABLE} (
+                    store_id, day, order_id, order_name, line_item_id,
                     purchase_option, sale_kind, sale_line_type, pos_location_name,
                     product_price, product_title, product_type, product_vendor,
                     variant_id, variant_sku, variant_title,
-                    customer_type, customer_id,
+                    customer_type,
                     total_sales, orders,
                     gross_sales, discounts, returns, net_sales,
                     net_quantity, ordered_item_quantity, returned_item_quantity,
-                    year, line_item_id, restock_type, _loaded_at
+                    restock_type, year
                 ) VALUES %s
-                ON CONFLICT (line_item_id, store_id) DO NOTHING
             """, rows, page_size=500)
         conn.commit()
     except Exception:
@@ -363,16 +415,17 @@ def get_customer_type(customer, customer_cache):
     return "Returning" if orders_count > 1 else "New"
 
 
-def _eat_day_year(dt):
-    """Return (YYYY-MM-DD in EAT, calendar year of the source instant)."""
+def _utc_day_year(dt):
+    """Return (YYYY-MM-DD, calendar year) in UTC -- straight from the source instant,
+    exactly like the reference (no local-time conversion)."""
     if not dt:
         return None, None
-    eat = dt.astimezone(EAT)
-    return eat.strftime("%Y-%m-%d"), eat.year
+    utc = dt.astimezone(timezone.utc)
+    return utc.strftime("%Y-%m-%d"), utc.year
 
 
 def fetch_sales(store_config, days_per_batch=90, limit=None, start_from=None):
-    """Fetch sales (order line items) for one store and save to raw_shopify_sales."""
+    """Fetch sales (order line items) for one store and save to the mirror table."""
     client = ShopifyClient(store_config=store_config)
     store_id = client.store_id
 
@@ -388,10 +441,6 @@ def fetch_sales(store_config, days_per_batch=90, limit=None, start_from=None):
     logger.info("[%s] Starting sales from %s", store_id, start_date.date())
 
     end_date = datetime.utcnow()
-    cutoff_date = store_config.get("cutoff_date")
-    if cutoff_date:
-        end_date = min(end_date, datetime.strptime(cutoff_date, "%Y-%m-%d") + timedelta(days=1))
-
     total_sales = 0
     orders_processed = 0
     customer_cache = {}
@@ -404,7 +453,7 @@ def fetch_sales(store_config, days_per_batch=90, limit=None, start_from=None):
             "status": "any",
             "limit": 250,
             "created_at_min": start_date.isoformat() + "Z",
-            "created_at_max": batch_end.strftime("%Y-%m-%dT23:59:59Z"),
+            "created_at_max": batch_end.isoformat() + "Z",
             "fields": "id,name,created_at,customer,source_name,location_id,line_items,refunds",
         }
         orders = client.get_paginated("/orders.json", params)
@@ -427,10 +476,9 @@ def fetch_sales(store_config, days_per_batch=90, limit=None, start_from=None):
                 order_id = order.get("id")
                 order_name = order.get("name")
                 customer = order.get("customer")
-                customer_id = customer.get("id") if customer else None
                 customer_type = get_customer_type(customer, customer_cache)
 
-                day, year = _eat_day_year(created_dt)
+                day, year = _utc_day_year(created_dt)
                 source_name = order.get("source_name")
                 purchase_option = source_name or "one_time"
                 location_id = order.get("location_id")
@@ -487,7 +535,7 @@ def fetch_sales(store_config, days_per_batch=90, limit=None, start_from=None):
                         "day": day,
                         "order_id": order_id,
                         "order_name": order_name,
-                        "line_item_id": str(line_item_id) if line_item_id else None,
+                        "line_item_id": line_item_id,
                         "purchase_option": purchase_option,
                         "sale_kind": "order",
                         "sale_line_type": "product",
@@ -500,7 +548,6 @@ def fetch_sales(store_config, days_per_batch=90, limit=None, start_from=None):
                         "variant_sku": variant_sku,
                         "variant_title": variant_title,
                         "customer_type": customer_type,
-                        "customer_id": customer_id,
                         "total_sales": round(gross_sales - discounts, 2),
                         "orders": 1,
                         "gross_sales": round(gross_sales, 2),
@@ -514,21 +561,21 @@ def fetch_sales(store_config, days_per_batch=90, limit=None, start_from=None):
                         "year": year,
                     })
 
-                    # RETURN rows (dated by refund date, attributed to original location)
+                    # RETURN rows: one per refund event, dated by the refund date (UTC),
+                    # attributed to the ORIGINAL order location, keeping the original
+                    # line_item_id (no suffix -- matches BigQuery).
                     for refund_info in refund_details_per_line.get(line_item_id, []):
                         if refund_info.get("restock_type") == "cancel":
                             continue  # removed before fulfillment -- exclude from sales
                         returned_qty = refund_info["quantity"]
-                        refund_day, refund_year = _eat_day_year(refund_info["refund_date"])
+                        refund_day, refund_year = _utc_day_year(refund_info["refund_date"])
                         return_amount = product_price * returned_qty
                         sales_rows.append({
                             "store_id": store_id,
                             "day": refund_day or day,
                             "order_id": order_id,
                             "order_name": order_name,
-                            # distinct id so the return row does not collide with the
-                            # order row under PK (line_item_id, store_id)
-                            "line_item_id": f"{line_item_id}_ret" if line_item_id else None,
+                            "line_item_id": line_item_id,
                             "purchase_option": purchase_option,
                             "sale_kind": "return",
                             "sale_line_type": "product",
@@ -541,7 +588,6 @@ def fetch_sales(store_config, days_per_batch=90, limit=None, start_from=None):
                             "variant_sku": variant_sku,
                             "variant_title": variant_title,
                             "customer_type": customer_type,
-                            "customer_id": customer_id,
                             "total_sales": round(-return_amount, 2),
                             "orders": 0,
                             "gross_sales": 0,
@@ -578,20 +624,16 @@ def fetch_sales(store_config, days_per_batch=90, limit=None, start_from=None):
 
 
 def main():
+    ensure_table()
     stores = build_stores()
     if not stores:
-        raise SystemExit("No Shopify stores configured (set SHOPIFY_*_STORE / SHOPIFY_*_TOKEN).")
-
-    for store in stores:
-        fetch_sales(store)
-
-    print("\n=== raw_shopify_sales summary ===")
-    for row in execute_query("""
-        SELECT store_id, COUNT(*) AS rows, MIN(day) AS first, MAX(day) AS last
-        FROM raw_shopify_sales
-        GROUP BY store_id ORDER BY store_id
-    """):
-        print(f"  {row['store_id']}: {row['rows']} rows ({row['first']} to {row['last']})")
+        logger.error("No stores configured (set SHOPIFY_<COUNTRY>_STORE / _TOKEN). Nothing to do.")
+        return
+    grand_total = 0
+    for store_config in stores:
+        logger.info("=== Extracting store: %s ===", store_config["id"])
+        grand_total += fetch_sales(store_config)
+    logger.info("All stores complete. Grand total rows written: %d", grand_total)
 
 
 if __name__ == "__main__":
