@@ -384,7 +384,7 @@ def transform_odoo(cur, conn, rates):
             o.partner_name,
             o._synced_at,
             ROW_NUMBER() OVER (
-                PARTITION BY o.id::text, DATE(o.date_order)::text, p.default_code
+                PARTITION BY l.id
                 ORDER BY o._synced_at DESC
             ) AS rn
         FROM raw_odoo_pos_order_lines l
