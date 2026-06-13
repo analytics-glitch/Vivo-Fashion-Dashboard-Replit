@@ -1,7 +1,7 @@
 """
 transform_all_sales.py
 Mirrors BigQuery all_sales view exactly:
-  1. shopify_deduped  → raw_shopify_sales (dedup by line_item_id, order_id, day, store_id, product_title)
+  1. shopify_deduped  → shopify_sales (dedup by line_item_id, order_id, day, store_id, product_title)
   2. shopzetu_clean   → raw_shopify_vendor_sales (no dedup)
   3. odoo_mapped      → raw_odoo_pos_order_lines + raw_odoo_pos_orders (dedup by order_id, day, variant_sku)
 UNION ALL → all_sales physical table
@@ -114,7 +114,7 @@ def transform_shopify(cur, conn, rates):
     log.info("Transforming Shopify sales...")
     cur.execute("""
         SELECT
-            s.id, s.store_id, s.day, s.order_id, s.order_name,
+            s.line_item_id AS id, s.store_id, s.day, s.order_id, s.order_name,
             s.purchase_option, s.sale_kind, s.sale_line_type,
             s.pos_location_name,
             s.product_price, s.product_title, s.product_type, s.product_vendor,
@@ -123,19 +123,19 @@ def transform_shopify(cur, conn, rates):
             s.total_sales, s.orders,
             s.gross_sales, s.discounts, s.returns, s.net_sales,
             s.net_quantity, s.ordered_item_quantity, s.returned_item_quantity,
-            s.year, s.line_item_id, s.restock_type, s._loaded_at
+            s.year, s.line_item_id, s.restock_type
         FROM (
             SELECT *, ROW_NUMBER() OVER (
-                PARTITION BY s2.line_item_id, s2.order_id, s2.day::text, s2.store_id, s2.product_title
-                ORDER BY s2._loaded_at DESC
+                PARTITION BY s2.line_item_id, s2.order_id, s2.day, s2.store_id, s2.product_title
+                ORDER BY s2.ctid
             ) AS rn
-            FROM raw_shopify_sales s2
+            FROM shopify_sales s2
             WHERE s2.store_id != 'shop-zetu'
             AND (s2.store_id != 'vivowoman' OR s2.day <= '2026-03-19')
             AND LOWER(COALESCE(s2.product_title, '')) NOT LIKE '%%shopping bag%%'
         ) s
         LEFT JOIN raw_shopify_orders o
-            ON s.order_id = o.id AND s.store_id = o.store_id
+            ON s.order_id::text = o.id::text AND s.store_id = o.store_id
         WHERE s.rn = 1
     """)
     rows = cur.fetchall()
@@ -175,7 +175,6 @@ def transform_shopify(cur, conn, rates):
             year,
             line_item_id,
             restock_type,
-            loaded_at,
         ) = r
 
         channel = get_channel(pos_location_name)

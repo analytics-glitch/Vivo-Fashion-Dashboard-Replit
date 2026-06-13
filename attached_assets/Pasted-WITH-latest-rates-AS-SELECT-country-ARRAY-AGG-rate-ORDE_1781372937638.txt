@@ -1,0 +1,285 @@
+WITH
+latest_rates AS (
+    SELECT
+        country,
+        ARRAY_AGG(rate ORDER BY month DESC LIMIT 1)[OFFSET(0)] AS rate
+    FROM `vivo-project-478307.powerbi_automation.currency_rates`
+    GROUP BY country
+),
+shopify_deduped AS (
+    SELECT *
+    FROM (
+        SELECT *,
+            ROW_NUMBER() OVER (
+                PARTITION BY
+                    CAST(line_item_id AS STRING),
+                    CAST(order_id AS STRING),
+                    CAST(day AS STRING),
+                    store_id,
+                    product_title
+                ORDER BY CAST(_loaded_at AS STRING) DESC
+            ) AS rn
+        FROM `vivo-project-478307.powerbi_automation.shopify_sales`
+        WHERE store_id != 'shop-zetu'
+    )
+    WHERE rn = 1
+),
+-- Shop Zetu: NO dedup — raw table is kept clean via delete-before-insert
+shopzetu_clean AS (
+    SELECT *
+    FROM `vivo-project-478307.powerbi_automation.shopify_vendor_sales`
+    WHERE NOT is_totals_row
+    AND LOWER(COALESCE(product_title_at_time_of_sale, '')) NOT LIKE '%shopping bag%'
+),
+odoo_mapped AS (
+    SELECT *
+    FROM (
+        SELECT
+            o.*,
+            COALESCE(
+                CAST(c.shopify_user_id AS STRING),
+                CAST(o.customer_id AS STRING)
+            )                                   AS universal_customer_id,
+            CASE pos_location_name
+                WHEN 'Sarit'                  THEN 'Vivo Sarit'
+                WHEN 'Moi Avenue'             THEN 'Vivo Moi Avenue'
+                WHEN 'Mama Ngina'             THEN 'Vivo Mama Ngina St'
+                WHEN 'Yaya'                   THEN 'Vivo Yaya'
+                WHEN 'Village Market'         THEN 'Vivo Village Market'
+                WHEN 'Junction'               THEN 'Vivo Junction'
+                WHEN 'Capital Centre'         THEN 'Vivo Capital Centre'
+                WHEN 'Imaara'                 THEN 'Vivo Imaara'
+                WHEN 'Nakuru (Westside Mall)' THEN 'Vivo Nakuru'
+                WHEN 'Garden City'            THEN 'Vivo Garden City'
+                WHEN 'Eldoret (Rupa)'         THEN 'Vivo Eldoret'
+                WHEN 'Kisumu (United Mall)'   THEN 'Vivo Kisumu'
+                WHEN 'Two Rivers'             THEN 'Vivo Two Rivers'
+                WHEN 'Thika Road Mall'        THEN 'Vivo TRM'
+                WHEN 'Hub'                    THEN 'Vivo Hub'
+                WHEN 'Galleria'               THEN 'Vivo Galleria'
+                WHEN 'Runda Mall'             THEN 'Vivo Runda'
+                WHEN 'Signature Mall'         THEN 'Vivo Signature Mall'
+                WHEN 'Greenspan'              THEN 'Vivo Greenspan'
+                WHEN 'Mombasa (City Mall)'    THEN 'Vivo City Mall'
+                WHEN 'Tmall'                  THEN 'Vivo T- Mall'
+                WHEN 'Zoya Sarit'             THEN 'Zoya Sarit'
+                WHEN 'Mombasa CBD'            THEN 'Vivo MSA Digo Road'
+                WHEN 'Kileleshwa'             THEN 'Vivo Kileleshwa'
+                WHEN 'Meru (Green Wood)'      THEN 'Vivo Meru'
+                WHEN 'Sarit Safari'           THEN 'Safari Sarit'
+                WHEN 'HQ Outlet'              THEN 'Staff purchases'
+                ELSE pos_location_name
+            END AS mapped_location,
+            -- Updated dedup: partition by order_id + variant_sku + day
+            -- to catch cases where Odoo assigns different line_item_ids
+            -- to the same line item across multiple syncs
+            ROW_NUMBER() OVER (
+                PARTITION BY
+                    CAST(o.order_id AS STRING),
+                    CAST(o.day AS STRING),
+                    o.variant_sku
+                ORDER BY o._loaded_at DESC
+            ) AS rn
+        FROM `vivo-project-478307.powerbi_automation.odoo_pos_orders_shopify_format` o
+        LEFT JOIN `vivo-project-478307.powerbi_automation.odoo_customers_shopify_format` c
+            ON CAST(o.customer_id AS STRING) = CAST(c.odoo_customer_id AS STRING)
+        INNER JOIN (
+            SELECT id, state
+            FROM `vivo-project-478307.powerbi_automation.odoo_pos_orders`
+        ) pos ON CAST(o.order_id AS STRING) = CAST(pos.id AS STRING)
+        WHERE CAST(o.day AS DATE) >= '2026-03-20'
+        AND LOWER(o.product_title) NOT LIKE '%shopping bag%'
+        AND CAST(o.order_id AS STRING) != '16547'
+        AND pos.state IN ('done', 'paid', 'invoiced')
+    )
+    WHERE rn = 1
+)
+
+-- Shopify (excluding shop-zetu and vivowoman after cutover)
+SELECT
+    CAST(s.id AS STRING)                     AS id,
+    s.store_id,
+    CAST(s.day AS STRING)                    AS day,
+    CAST(s.order_id AS STRING)               AS order_id,
+    s.order_name,
+    s.purchase_option,
+    s.sale_kind,
+    s.sale_line_type,
+    s.pos_location_name,
+    CASE
+        WHEN s.pos_location_name IN ('Online - shop-zetu', 'POS - 67096608987') THEN 'Online - Shop Zetu'
+        WHEN s.pos_location_name = 'Online - safari-by-vivo' THEN 'Online - Safari'
+        ELSE s.pos_location_name
+    END                                                                             AS channel,
+    CAST(s.product_price AS STRING)          AS product_price,
+    s.product_title,
+    s.product_type,
+    s.product_vendor,
+    CAST(s.variant_id AS STRING)             AS variant_id,
+    s.variant_sku,
+    s.variant_title,
+    s.customer_type,
+    CAST(o.customer_id AS STRING)            AS customer_id,
+    CAST(s.total_sales AS STRING)            AS total_sales,
+    CAST(s.orders AS STRING)                 AS orders,
+    CAST(s.gross_sales AS STRING)            AS gross_sales,
+    CAST(s.discounts AS STRING)              AS discounts,
+    CAST(s.returns AS STRING)                AS returns,
+    CAST(
+        ROUND(
+            CASE
+                WHEN s.pos_location_name IN ('The Oasis Mall', 'Vivo Acacia', 'Vivo Kigali Heights', 'Vivo M-peace Plaza')
+                THEN CAST(s.total_sales AS FLOAT64) / 1.18
+                ELSE CAST(s.total_sales AS FLOAT64) / 1.16
+            END, 2
+        ) AS STRING
+    )                                                                               AS net_sales,
+    CAST(s.net_quantity AS STRING)           AS net_quantity,
+    CAST(s.ordered_item_quantity AS STRING)  AS ordered_item_quantity,
+    CAST(s.returned_item_quantity AS STRING) AS returned_item_quantity,
+    CAST(s.Year AS STRING)                   AS Year,
+    CAST(s.last_synced AS STRING)            AS last_synced,
+    CAST(s._loaded_at AS STRING)             AS _loaded_at,
+    CAST(s.line_item_id AS STRING)           AS line_item_id,
+    s.restock_type,
+    CASE
+        WHEN s.pos_location_name IN ('Vivo Kigali Heights', 'Vivo M-peace Plaza') THEN 'Rwanda'
+        WHEN s.pos_location_name IN ('The Oasis Mall', 'Vivo Acacia')             THEN 'Uganda'
+        WHEN s.pos_location_name IN ('Online - shop-zetu', 'POS - 67096608987', 'Online - safari-by-vivo') THEN 'Online'
+        ELSE 'Kenya'
+    END                                                                             AS country,
+    COALESCE(lr.rate, 1)                                                            AS exchange_rate,
+    ROUND(CAST(s.product_price AS FLOAT64) / COALESCE(lr.rate, 1), 2)              AS product_price_kes,
+    ROUND(CAST(s.total_sales AS FLOAT64)   / COALESCE(lr.rate, 1), 2)              AS total_sales_kes,
+    ROUND(CAST(s.gross_sales AS FLOAT64)   / COALESCE(lr.rate, 1), 2)              AS gross_sales_kes,
+    ROUND(CAST(s.discounts AS FLOAT64)     / COALESCE(lr.rate, 1), 2)              AS discounts_kes,
+    ROUND(CAST(s.returns AS FLOAT64)       / COALESCE(lr.rate, 1), 2)              AS returns_kes,
+    ROUND(
+        CASE
+            WHEN s.pos_location_name IN ('The Oasis Mall', 'Vivo Acacia', 'Vivo Kigali Heights', 'Vivo M-peace Plaza')
+            THEN CAST(s.total_sales AS FLOAT64) / 1.18 / COALESCE(lr.rate, 1)
+            ELSE CAST(s.total_sales AS FLOAT64) / 1.16 / COALESCE(lr.rate, 1)
+        END, 2
+    )                                                                               AS net_sales_kes
+FROM shopify_deduped s
+LEFT JOIN `vivo-project-478307.powerbi_automation.shopify_orders` o
+    ON CAST(s.order_id AS STRING) = CAST(o.id AS STRING)
+    AND s.store_id = o.store_id
+LEFT JOIN latest_rates lr
+    ON lr.country = CASE
+        WHEN s.pos_location_name IN ('Vivo Kigali Heights', 'Vivo M-peace Plaza') THEN 'Rwanda'
+        WHEN s.pos_location_name IN ('The Oasis Mall', 'Vivo Acacia')             THEN 'Uganda'
+        ELSE 'Kenya'
+    END
+WHERE (
+    s.store_id != 'vivowoman'
+    OR (s.store_id = 'vivowoman' AND CAST(s.day AS DATE) <= '2026-03-19')
+)
+AND LOWER(s.product_title) NOT LIKE '%shopping bag%'
+
+UNION ALL
+
+-- Shop Zetu (ShopifyQL) — no dedup needed, raw table is clean
+SELECT
+    NULL                                                AS id,
+    'shop-zetu'                                         AS store_id,
+    CAST(sv.day AS STRING)                              AS day,
+    sv.order_id                                         AS order_id,
+    sv.order_name                                       AS order_name,
+    'web'                                               AS purchase_option,
+    CASE WHEN sv.is_reversal_row THEN 'return' ELSE 'order' END AS sale_kind,
+    'product'                                           AS sale_line_type,
+    'Online - Shop Zetu'                                AS pos_location_name,
+    'Online - Shop Zetu'                                AS channel,
+    CAST(sv.product_variant_price AS STRING)            AS product_price,
+    sv.product_title_at_time_of_sale                    AS product_title,
+    sv.product_type                                     AS product_type,
+    sv.product_vendor                                   AS product_vendor,
+    sv.product_variant_id                               AS variant_id,
+    sv.product_variant_sku                              AS variant_sku,
+    sv.product_variant_title_at_time_of_sale            AS variant_title,
+    sv.new_or_returning_customer                        AS customer_type,
+    CAST(so.customer_id AS STRING)                      AS customer_id,
+    CAST(ROUND(sv.total_sales, 2) AS STRING)            AS total_sales,
+    CAST(CASE WHEN sv.is_reversal_row THEN 0 ELSE COALESCE(sv.orders, 1) END AS STRING) AS orders,
+    CAST(ROUND(CASE WHEN sv.is_reversal_row THEN 0 ELSE sv.gross_sales END, 2) AS STRING) AS gross_sales,
+    CAST(ROUND(CASE WHEN sv.is_reversal_row THEN 0 ELSE ABS(COALESCE(sv.discounts, 0)) END, 2) AS STRING) AS discounts,
+    CAST(ROUND(CASE WHEN sv.is_reversal_row THEN ABS(sv.total_sales) ELSE 0 END, 2) AS STRING) AS returns,
+    CAST(ROUND(sv.net_sales, 2) AS STRING)              AS net_sales,
+    CAST(COALESCE(sv.net_items_sold, 0) AS STRING)      AS net_quantity,
+    CAST(COALESCE(sv.quantity_ordered, 0) AS STRING)    AS ordered_item_quantity,
+    CAST(ABS(COALESCE(sv.reversed_quantity, 0)) AS STRING) AS returned_item_quantity,
+    CAST(EXTRACT(YEAR FROM sv.day) AS STRING)           AS Year,
+    CAST(sv._loaded_at AS STRING)                       AS last_synced,
+    CAST(sv._loaded_at AS STRING)                       AS _loaded_at,
+    sv.order_id                                         AS line_item_id,
+    NULL                                                AS restock_type,
+    'Online'                                            AS country,
+    1                                                   AS exchange_rate,
+    ROUND(sv.product_variant_price, 2)                  AS product_price_kes,
+    ROUND(sv.total_sales, 2)                            AS total_sales_kes,
+    ROUND(CASE WHEN sv.is_reversal_row THEN 0 ELSE sv.gross_sales END, 2)                  AS gross_sales_kes,
+    ROUND(CASE WHEN sv.is_reversal_row THEN 0 ELSE ABS(COALESCE(sv.discounts, 0)) END, 2)  AS discounts_kes,
+    ROUND(CASE WHEN sv.is_reversal_row THEN ABS(sv.total_sales) ELSE 0 END, 2)             AS returns_kes,
+    ROUND(sv.net_sales, 2)                              AS net_sales_kes
+FROM shopzetu_clean sv
+LEFT JOIN `vivo-project-478307.powerbi_automation.shopify_orders` so
+    ON sv.order_id = CAST(so.id AS STRING)
+    AND so.store_id = 'shop-zetu'
+
+UNION ALL
+
+-- Odoo POS (from March 20 2026)
+SELECT
+    CAST(id AS STRING)                       AS id,
+    store_id,
+    CAST(day AS STRING)                      AS day,
+    CAST(order_id AS STRING)                 AS order_id,
+    order_name,
+    purchase_option,
+    sale_kind,
+    sale_line_type,
+    mapped_location                          AS pos_location_name,
+    mapped_location                          AS channel,
+    CAST(product_price AS STRING)            AS product_price,
+    product_title,
+    product_type,
+    product_vendor,
+    CAST(variant_id AS STRING)               AS variant_id,
+    variant_sku,
+    variant_title,
+    customer_type,
+    universal_customer_id                    AS customer_id,
+    CAST(total_sales AS STRING)              AS total_sales,
+    CAST(orders AS STRING)                   AS orders,
+    CAST(gross_sales AS STRING)              AS gross_sales,
+    CAST(discounts AS STRING)                AS discounts,
+    CAST(returns AS STRING)                  AS returns,
+    CAST(net_sales AS STRING)                AS net_sales,
+    CAST(net_quantity AS STRING)             AS net_quantity,
+    CAST(ordered_item_quantity AS STRING)    AS ordered_item_quantity,
+    CAST(returned_item_quantity AS STRING)   AS returned_item_quantity,
+    CAST(Year AS STRING)                     AS Year,
+    CAST(last_synced AS STRING)              AS last_synced,
+    CAST(_loaded_at AS STRING)               AS _loaded_at,
+    CAST(line_item_id AS STRING)             AS line_item_id,
+    restock_type,
+    CASE
+        WHEN mapped_location IN ('Vivo Kigali Heights', 'Vivo M-peace Plaza') THEN 'Rwanda'
+        WHEN mapped_location IN ('The Oasis Mall', 'Vivo Acacia')             THEN 'Uganda'
+        ELSE 'Kenya'
+    END                                                                             AS country,
+    COALESCE(lr.rate, 1)                                                            AS exchange_rate,
+    ROUND(CAST(product_price AS FLOAT64) / COALESCE(lr.rate, 1), 2)                AS product_price_kes,
+    ROUND(CAST(total_sales AS FLOAT64)   / COALESCE(lr.rate, 1), 2)                AS total_sales_kes,
+    ROUND(CAST(gross_sales AS FLOAT64)   / COALESCE(lr.rate, 1), 2)                AS gross_sales_kes,
+    ROUND(CAST(discounts AS FLOAT64)     / COALESCE(lr.rate, 1), 2)                AS discounts_kes,
+    ROUND(CAST(returns AS FLOAT64)       / COALESCE(lr.rate, 1), 2)                AS returns_kes,
+    ROUND(CAST(total_sales AS FLOAT64)   / 1.16 / COALESCE(lr.rate, 1), 2)         AS net_sales_kes
+FROM odoo_mapped
+LEFT JOIN latest_rates lr
+    ON lr.country = CASE
+        WHEN mapped_location IN ('Vivo Kigali Heights', 'Vivo M-peace Plaza') THEN 'Rwanda'
+        WHEN mapped_location IN ('The Oasis Mall', 'Vivo Acacia')             THEN 'Uganda'
+        ELSE 'Kenya'
+    END
