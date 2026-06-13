@@ -43,10 +43,7 @@ LOCATION_COUNTRY_MAP = {
     "Sarit Safari":           ("Safari Sarit",          "Kenya"),
     "HQ Outlet":              ("Staff purchases",       "Kenya"),
     "Warehouse":              ("Warehouse",             "Kenya"),
-    "The Oasis Mall":         ("The Oasis Mall",        "Uganda"),
-    "Vivo Acacia":            ("Vivo Acacia",           "Uganda"),
-    "Vivo Kigali Heights":    ("Vivo Kigali Heights",   "Rwanda"),
-    "Vivo M-peace Plaza":     ("Vivo M-peace Plaza",    "Rwanda"),
+
 }
 
 EXCLUDED_LOCATIONS = {
