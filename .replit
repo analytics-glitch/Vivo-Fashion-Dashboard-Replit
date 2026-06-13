@@ -20,6 +20,10 @@ author = "agent"
 task = "workflow.run"
 args = "Sync Watchdog"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Shopify Full Extract"
+
 [[workflows.workflow]]
 name = "Sync Watchdog"
 author = "agent"
@@ -27,6 +31,17 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "WATCHDOG_MANAGE_API=0 python3 /home/runner/workspace/watchdog.py"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow]]
+name = "Shopify Full Extract"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python3 shopify_full_extract.py"
 
 [workflows.workflow.metadata]
 outputType = "console"
