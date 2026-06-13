@@ -152,11 +152,15 @@ def main():
 
             for level in levels:
                 item_id   = level.get("inventory_item_id")
-                sku       = item_to_sku.get(item_id)
+                item_data = item_to_sku.get(item_id)
+                if not item_data: continue
+                sku, product_title = item_data
                 available = int(level.get("available") or 0)
                 on_hand   = available  # Shopify only gives available
 
                 if not sku or available <= 0:
+                    continue
+                if store_id == "shop-zetu" and not any(k.lower() in product_title.lower() for k in store.get("vendor_filter", [])):
                     continue
 
                 rows.append((
