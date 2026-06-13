@@ -1,0 +1,465 @@
+"""
+Shopify Sales Extractor
+
+Extracts order line items (sales) from Shopify.
+Supports multi-store extraction with store_id tracking.
+Supports vendor filtering for specific stores.
+"""
+
+from collections import defaultdict
+from datetime import datetime, timedelta
+
+from src.adapters import get_checkpoint, save_checkpoint
+from src.clients.shopify_client import ShopifyClient
+from src.adapters import execute_query, insert_batch, delete_rows
+from src.extractors.utils.vendor_filter import should_include_vendor
+from src.utils import setup_logger
+
+logger = setup_logger()
+
+
+def fetch_location_map(client):
+    """Build a mapping of location_id -> location_name."""
+    location_map = {}
+    try:
+        locations = client.get_paginated("/locations.json", {})
+        for loc in locations:
+            loc_id = loc.get("id")
+            loc_name = loc.get("name")
+            if loc_id and loc_name:
+                location_map[loc_id] = loc_name
+    except Exception as e:
+        logger.warning(f"Failed to fetch locations: {e}")
+    return location_map
+
+
+def get_pos_location_name(location_id, source_name, location_map, store_id):
+    """Determine the POS location name based on order source.
+
+    Args:
+        location_id: The location_id from the order (None for online orders)
+        source_name: The source_name from the order (e.g., 'web', 'shopify_draft_order')
+        location_map: Dict mapping location_id -> location_name
+        store_id: The store identifier for online order labeling
+
+    Returns:
+        A descriptive location name:
+        - POS location name if location_id exists in location_map
+        - "Manual Order" for shopify_draft_order
+        - "Third-party App" for numeric IDs or known third-party apps
+        - "Online - {store_id}" for regular online orders
+    """
+    # If we have a valid POS location, use it
+    if location_id and location_id in location_map:
+        return location_map[location_id]
+
+    # Normalize source_name for comparison
+    source = (source_name or "").lower().strip()
+
+    # Manual/Draft orders
+    if source == "shopify_draft_order":
+        return "Manual Order"
+
+    # Third-party apps: numeric IDs (app IDs) or known third-party app names
+    # Shopify assigns numeric app IDs to third-party apps
+    if source and source.isdigit():
+        return "Third-party App"
+
+    # Known third-party app identifiers
+    third_party_apps = {"multivendor", "marketplace", "oberlo", "dsers", "spocket", "printful"}
+    if source in third_party_apps:
+        return "Third-party App"
+
+    # Default: Online order (web, iphone, android, or any other source without POS location)
+    return f"Online - {store_id}"
+
+
+def load_customer_orders_count_from_db(store_id, customer_ids):
+    """Load orders_count for customers from the database.
+
+    This is much faster than making individual API calls for each customer.
+
+    Args:
+        store_id: Store identifier
+        customer_ids: Set of customer IDs to look up
+
+    Returns:
+        Dict mapping customer_id -> orders_count
+    """
+    if not customer_ids:
+        return {}
+
+    try:
+        # Query customers table for order counts
+        # Note: total_spent is in the DB, but we need to count orders
+        # We'll use the shopify_orders table to count orders per customer
+        placeholders = ",".join(["%s"] * len(customer_ids))
+        query = f"""
+            SELECT customer_id, COUNT(*) as orders_count
+            FROM shopify_orders
+            WHERE store_id = %s AND customer_id IN ({placeholders})
+            GROUP BY customer_id
+        """
+        params = (store_id, *customer_ids)
+        results = execute_query(query, params)
+        return {row["customer_id"]: row["orders_count"] for row in results}
+    except Exception as e:
+        logger.warning(f"[{store_id}] Failed to load customer order counts from DB: {e}")
+        return {}
+
+
+def prefetch_customer_orders_count(client, store_id, orders, customer_cache):
+    """Pre-fetch orders_count for all customers in a batch of orders.
+
+    This eliminates the N+1 API call pattern by:
+    1. First checking the database for existing customers
+    2. Only making API calls for customers not found in DB
+
+    Args:
+        client: ShopifyClient instance
+        store_id: Store identifier
+        orders: List of orders to process
+        customer_cache: Dict to populate with customer_id -> orders_count
+    """
+    # Collect unique customer IDs from orders
+    customer_ids = set()
+    for order in orders:
+        customer = order.get("customer")
+        if customer and customer.get("id"):
+            customer_ids.add(customer["id"])
+
+    if not customer_ids:
+        return
+
+    # First, try to get orders_count from database (fast!)
+    db_counts = load_customer_orders_count_from_db(store_id, customer_ids)
+    customer_cache.update(db_counts)
+
+    # Find customers not in database
+    missing_ids = customer_ids - set(db_counts.keys())
+
+    if missing_ids:
+        logger.info(f"[{store_id}] Fetching {len(missing_ids)} customers from API (not in DB)")
+
+        # Batch fetch customers from API using ids parameter
+        # Shopify allows up to 250 IDs per request
+        missing_list = list(missing_ids)
+        batch_size = 250
+
+        for i in range(0, len(missing_list), batch_size):
+            batch = missing_list[i : i + batch_size]
+            ids_param = ",".join(str(cid) for cid in batch)
+
+            try:
+                customers = client.get_paginated("/customers.json", {"ids": ids_param, "fields": "id,orders_count"})
+                for cust in customers:
+                    customer_cache[cust["id"]] = cust.get("orders_count", 0)
+            except Exception as e:
+                logger.warning(f"[{store_id}] Failed to batch fetch customers: {e}")
+                # Fallback: mark these as unknown (will default to 'New')
+                for cid in batch:
+                    if cid not in customer_cache:
+                        customer_cache[cid] = 0
+
+
+def get_customer_type(customer, customer_cache):
+    """Determine customer type from pre-fetched cache.
+
+    Args:
+        customer: Customer object from order
+        customer_cache: Pre-populated dict of customer_id -> orders_count
+
+    Returns:
+        "Returning", "New", or "Guest"
+    """
+    if not customer:
+        return "Guest"
+
+    customer_id = customer.get("id")
+    if not customer_id:
+        return "Guest"
+
+    orders_count = customer_cache.get(customer_id, 0)
+    return "Returning" if orders_count > 1 else "New"
+
+
+def fetch_sales(days_per_batch=90, limit=None, store_config=None, start_from=None):
+    """Fetch sales (order line items) from Shopify.
+
+    Fetches historical data in date batches going forwards from oldest to newest.
+    Uses checkpoint to track progress and resume if interrupted.
+
+    Args:
+        days_per_batch: Number of days per batch
+        limit: Optional max orders to process
+        store_config: Optional store config dict with 'id', 'shop_url', 'access_token'
+        start_from: Optional start date string (YYYY-MM-DD) to override checkpoint
+    """
+    client = ShopifyClient(store_config=store_config)
+    store_id = client.store_id
+
+    # Get vendor filter from store config
+    vendor_filter = store_config.get("vendor_filter") if store_config else None
+    if vendor_filter:
+        logger.info(f"[{store_id}] Vendor filter active: {len(vendor_filter)} allowed vendors")
+
+    # Build location ID -> name mapping
+    location_map = fetch_location_map(client)
+    logger.info(f"[{store_id}] Loaded {len(location_map)} location mappings")
+
+    # Get checkpoint - stores the last successfully fetched end date
+    checkpoint_key = f"shopify_sales_{store_id}"
+    checkpoint_date = get_checkpoint(checkpoint_key)
+
+    # Handle "0" checkpoint (new table) - set to historical start date
+    if checkpoint_date == "0":
+        checkpoint_date = "2019-01-01"
+
+    if start_from:
+        start_date = datetime.strptime(start_from, "%Y-%m-%d")
+        logger.info(f"[{store_id}] Starting sales from specified date: {start_date.date()}")
+    elif checkpoint_date:
+        # Resume from checkpoint - continue forward from last processed date
+        start_date = datetime.strptime(checkpoint_date, "%Y-%m-%d")
+        logger.info(f"[{store_id}] Resuming sales from checkpoint: {start_date.date()}")
+    else:
+        # Start from 6 years ago to get all historical data
+        start_date = datetime.utcnow() - timedelta(days=365 * 6)
+        logger.info(f"[{store_id}] Starting initial sales extraction from {start_date.date()}")
+
+    end_date = datetime.utcnow()
+    total_sales = 0
+    orders_processed = 0
+
+    # Cache customer orders_count to avoid redundant API calls within batches
+    customer_cache = {}
+
+    # Fetch data in batches going forwards in time
+    while start_date < end_date:
+        batch_end = min(start_date + timedelta(days=days_per_batch), end_date)
+
+        logger.info(f"[{store_id}] Fetching sales from {start_date.date()} to {batch_end.date()}")
+
+        params = {
+            "status": "any",
+            "limit": 250,
+            "created_at_min": start_date.isoformat() + "Z",
+            "created_at_max": batch_end.isoformat() + "Z",
+            "fields": "id,name,created_at,customer,source_name,location_id,line_items,refunds",
+        }
+
+        orders = client.get_paginated("/orders.json", params)
+
+        if not orders:
+            logger.info(f"[{store_id}] No orders for {start_date.date()} to {batch_end.date()}")
+        else:
+            # Pre-fetch all customer order counts for this batch (eliminates N+1 API calls)
+            prefetch_customer_orders_count(client, store_id, orders, customer_cache)
+
+            sales_rows = []
+
+            for order in orders:
+                orders_processed += 1
+
+                # Parse dates
+                created_at = order.get("created_at")
+                try:
+                    created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00")) if created_at else None
+                except Exception:
+                    created_dt = datetime.utcnow()
+
+                order_id = order.get("id")
+                order_name = order.get("name")
+
+                # Customer info - uses pre-fetched cache (no API calls here)
+                customer = order.get("customer")
+                customer_type = get_customer_type(customer, customer_cache)
+
+                # Sales-specific fields
+                day = created_dt.strftime("%Y-%m-%d") if created_dt else None
+                year = created_dt.year if created_dt else None
+                source_name = order.get("source_name")
+                purchase_option = source_name or "one_time"
+                location_id = order.get("location_id")
+                pos_location_name = get_pos_location_name(location_id, source_name, location_map, store_id)
+
+                # Build detailed refund info per line_item id
+                # Tracks: quantity, refund date, and refund location for each line item
+                refund_details_per_line = defaultdict(list)
+                for refund in order.get("refunds", []) or []:
+                    refund_created_at = refund.get("created_at")
+                    try:
+                        refund_dt = (
+                            datetime.fromisoformat(refund_created_at.replace("Z", "+00:00"))
+                            if refund_created_at
+                            else created_dt
+                        )
+                    except Exception:
+                        refund_dt = created_dt
+
+                    for rli in refund.get("refund_line_items", []) or []:
+                        li = rli.get("line_item") or {}
+                        line_item_id = li.get("id")
+                        qty = rli.get("quantity", 0)
+                        restock_type = rli.get("restock_type")
+                        # Get the return location - may be different from order location
+                        refund_location_id = rli.get("location_id")
+                        if line_item_id and qty > 0:
+                            refund_details_per_line[line_item_id].append(
+                                {
+                                    "quantity": int(qty),
+                                    "refund_date": refund_dt,
+                                    "location_id": refund_location_id,
+                                    "restock_type": restock_type,
+                                }
+                            )
+
+                for li in order.get("line_items", []) or []:
+                    variant_id = li.get("variant_id") or None
+                    variant_sku = li.get("sku") or None
+                    variant_title = li.get("variant_title") or li.get("title") or None
+                    product_title = li.get("name") or li.get("title") or None
+                    product_price = float(li.get("price") or 0)
+                    product_type = li.get("product_type") or None
+                    product_vendor = li.get("vendor") or None
+                    quantity = int(li.get("quantity", 0))
+
+                    # Apply vendor filter if configured
+                    if not should_include_vendor(product_vendor, vendor_filter):
+                        continue
+
+                    # Discounts on the line item
+                    discounts = 0.0
+                    for alloc in li.get("discount_allocations", []) or []:
+                        try:
+                            discounts += float(alloc.get("amount", 0))
+                        except Exception:
+                            pass
+
+                    # Get refund details for this line item
+                    line_refunds = refund_details_per_line.get(li.get("id"), [])
+                    total_returned_qty = sum(r["quantity"] for r in line_refunds)
+
+                    gross_sales = product_price * quantity
+
+                    # Create ORDER record for the original sale
+                    sales_rows.append(
+                        {
+                            "store_id": store_id,
+                            "day": day,
+                            "order_id": order_id,
+                            "order_name": order_name,
+                            "line_item_id": li.get("id"),
+                            "purchase_option": purchase_option,
+                            "sale_kind": "order",
+                            "sale_line_type": "product",
+                            "pos_location_name": pos_location_name,
+                            "product_price": round(product_price, 2),
+                            "product_title": product_title,
+                            "product_type": product_type,
+                            "product_vendor": product_vendor,
+                            "variant_id": variant_id,
+                            "variant_sku": variant_sku,
+                            "variant_title": variant_title,
+                            "customer_type": customer_type,
+                            "total_sales": round(gross_sales - discounts, 2),
+                            "orders": 1,
+                            "gross_sales": round(gross_sales, 2),
+                            "discounts": round(discounts, 2),
+                            "returns": 0,
+                            "net_sales": round(gross_sales - discounts, 2),
+                            "net_quantity": quantity,
+                            "ordered_item_quantity": quantity,
+                            "returned_item_quantity": 0,
+                            "restock_type": None,
+                            "Year": year,
+                        }
+                    )
+
+                    # Create separate RETURN records for each refund (with actual refund date)
+                    # NOTE: Returns are attributed to the ORIGINAL sale location (not where returned)
+                    # This ensures the return "undoes" the sale at the same location it was made
+                    for refund_info in line_refunds:
+                        if refund_info.get("restock_type") == "cancel":
+                            continue  # Removed before fulfillment — exclude from sales
+
+                        returned_qty = refund_info["quantity"]
+                        refund_dt = refund_info["refund_date"]
+
+                        # Use refund date instead of order date
+                        refund_day = refund_dt.strftime("%Y-%m-%d") if refund_dt else day
+                        refund_year = refund_dt.year if refund_dt else year
+
+                        # Use ORIGINAL order location for returns (not refund location)
+                        # This attributes the return to where the item was originally sold
+                        return_location_name = pos_location_name
+
+                        return_amount = product_price * returned_qty
+                        sales_rows.append(
+                            {
+                                "store_id": store_id,
+                                "day": refund_day,
+                                "order_id": order_id,
+                                "order_name": order_name,
+                                "line_item_id": li.get("id"),
+                                "purchase_option": purchase_option,
+                                "sale_kind": "return",
+                                "sale_line_type": "product",
+                                "pos_location_name": return_location_name,
+                                "product_price": round(product_price, 2),
+                                "product_title": product_title,
+                                "product_type": product_type,
+                                "product_vendor": product_vendor,
+                                "variant_id": variant_id,
+                                "variant_sku": variant_sku,
+                                "variant_title": variant_title,
+                                "customer_type": customer_type,
+                                "total_sales": round(-return_amount, 2),
+                                "orders": 0,
+                                "gross_sales": 0,
+                                "discounts": 0,
+                                "returns": round(return_amount, 2),
+                                "net_sales": round(-return_amount, 2),
+                                "net_quantity": -returned_qty,
+                                "ordered_item_quantity": 0,
+                                "returned_item_quantity": returned_qty,
+                                "restock_type": refund_info.get("restock_type"),
+                                "Year": refund_year,
+                            }
+                        )
+
+            # Delete existing rows for these orders, then insert (idempotent re-runs)
+            if sales_rows:
+                order_ids = list(set(row["order_id"] for row in sales_rows))
+                delete_rows(
+                    "shopify_sales",
+                    "store_id = @store_id AND order_id IN UNNEST(@order_ids)",
+                    {"store_id": store_id, "order_ids": order_ids},
+                )
+                insert_batch("shopify_sales", sales_rows)
+                total_sales += len(sales_rows)
+                logger.info(f"[{store_id}] Inserted {len(sales_rows)} sales records")
+
+            logger.info(
+                f"[{store_id}] Sales batch complete: {start_date.date()} to {batch_end.date()} (Total: {total_sales})"
+            )
+
+        # Save checkpoint - store the batch_end so we can continue forward from there
+        save_checkpoint(checkpoint_key, batch_end.strftime("%Y-%m-%d"))
+
+        # Move the window forward in time
+        start_date = batch_end
+
+        if limit and orders_processed >= limit:
+            logger.info(f"[{store_id}] Reached limit of {limit} orders processed")
+            break
+
+    logger.info(f"[{store_id}] Sales extraction complete. Total sales: {total_sales}")
+    return total_sales
+
+
+if __name__ == "__main__":
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    fetch_sales()

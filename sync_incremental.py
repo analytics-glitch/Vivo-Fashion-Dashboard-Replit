@@ -53,14 +53,6 @@ def write_heartbeat(conn, status):
 
 STORES = [
     {
-        "store_id":  "vivowoman",
-        "store_url": os.environ["SHOPIFY_KENYA_STORE"],
-        "token":     os.environ["SHOPIFY_KENYA_TOKEN"],
-        "country":   "Kenya",
-        "currency":  "KES",
-        "vat":       1.16,
-    },
-    {
         "store_id":  "vivo-uganda",
         "store_url": os.environ["SHOPIFY_UGANDA_STORE"],
         "token":     os.environ["SHOPIFY_UGANDA_TOKEN"],

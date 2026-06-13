@@ -1,84 +1,89 @@
-import os
+"""
+transform_all_sales.py
+Mirrors BigQuery all_sales view exactly:
+  1. shopify_deduped  → raw_shopify_sales (dedup by line_item_id, order_id, day, store_id, product_title)
+  2. shopzetu_clean   → raw_shopify_vendor_sales (no dedup)
+  3. odoo_mapped      → raw_odoo_pos_order_lines + raw_odoo_pos_orders (dedup by order_id, day, variant_sku)
+UNION ALL → all_sales physical table
+"""
+
+import os, logging
 import psycopg2
 from psycopg2.extras import execute_values
 from datetime import datetime, timezone
-import logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-DATABASE_URL = os.environ['DATABASE_URL']
+DATABASE_URL = os.environ["DATABASE_URL"]
 
-LOCATION_MAP = {
-    'Sarit':                  'Vivo Sarit',
-    'Moi Avenue':             'Vivo Moi Avenue',
-    'Mama Ngina':             'Vivo Mama Ngina St',
-    'Yaya':                   'Vivo Yaya',
-    'Village Market':         'Vivo Village Market',
-    'Junction':               'Vivo Junction',
-    'Capital Centre':         'Vivo Capital Centre',
-    'Imaara':                 'Vivo Imaara',
-    'Nakuru (Westside Mall)': 'Vivo Nakuru',
-    'Garden City':            'Vivo Garden City',
-    'Eldoret (Rupa)':         'Vivo Eldoret',
-    'Kisumu (United Mall)':   'Vivo Kisumu',
-    'Two Rivers':             'Vivo Two Rivers',
-    'Thika Road Mall':        'Vivo TRM',
-    'Hub':                    'Vivo Hub',
-    'Galleria':               'Vivo Galleria',
-    'Runda Mall':             'Vivo Runda',
-    'Signature Mall':         'Vivo Signature Mall',
-    'Greenspan':              'Vivo Greenspan',
-    'Mombasa (City Mall)':    'Vivo City Mall',
-    'Tmall':                  'Vivo T- Mall',
-    'Zoya Sarit':             'Zoya Sarit',
-    'Mombasa CBD':            'Vivo MSA Digo Road',
-    'Kileleshwa':             'Vivo Kileleshwa',
-    'Meru (Green Wood)':      'Vivo Meru',
-    'Sarit Safari':           'Safari Sarit',
-    'HQ Outlet':              'Staff purchases',
+UGANDA_LOCATIONS = {"The Oasis Mall", "Vivo Acacia"}
+RWANDA_LOCATIONS = {"Vivo Kigali Heights", "Vivo M-peace Plaza"}
+
+ODOO_LOCATION_MAP = {
+    "Sarit": "Vivo Sarit",
+    "Moi Avenue": "Vivo Moi Avenue",
+    "Mama Ngina": "Vivo Mama Ngina St",
+    "Yaya": "Vivo Yaya",
+    "Village Market": "Vivo Village Market",
+    "Junction": "Vivo Junction",
+    "Capital Centre": "Vivo Capital Centre",
+    "Imaara": "Vivo Imaara",
+    "Nakuru (Westside Mall)": "Vivo Nakuru",
+    "Garden City": "Vivo Garden City",
+    "Eldoret (Rupa)": "Vivo Eldoret",
+    "Kisumu (United Mall)": "Vivo Kisumu",
+    "Two Rivers": "Vivo Two Rivers",
+    "Thika Road Mall": "Vivo TRM",
+    "Hub": "Vivo Hub",
+    "Galleria": "Vivo Galleria",
+    "Runda Mall": "Vivo Runda",
+    "Signature Mall": "Vivo Signature Mall",
+    "Greenspan": "Vivo Greenspan",
+    "Mombasa (City Mall)": "Vivo City Mall",
+    "Tmall": "Vivo T- Mall",
+    "Zoya Sarit": "Zoya Sarit",
+    "Mombasa CBD": "Vivo MSA Digo Road",
+    "Kileleshwa": "Vivo Kileleshwa",
+    "Meru (Green Wood)": "Vivo Meru",
+    "Sarit Safari": "Safari Sarit",
+    "HQ Outlet": "Staff purchases",
 }
 
-CHANNEL_MAP = {
-    'Online - shop-zetu':      'Online - Shop Zetu',
-    'POS - 67096608987':       'Online - Shop Zetu',
-    'Online - safari-by-vivo': 'Online - Safari',
-}
 
-UGANDA_LOCATIONS = {'The Oasis Mall', 'Vivo Acacia'}
-RWANDA_LOCATIONS = {'Vivo Kigali Heights', 'Vivo M-peace Plaza'}
-ONLINE_LOCATIONS = {
-    'Online - Shop Zetu', 'Online - Safari',
-    'Online - shop-zetu', 'POS - 67096608987',
-    'Online - safari-by-vivo'
-}
-
-VAT_UGANDA_RWANDA = 1.18
-VAT_KENYA         = 1.16
+def get_country(loc):
+    if loc in RWANDA_LOCATIONS:
+        return "Rwanda"
+    if loc in UGANDA_LOCATIONS:
+        return "Uganda"
+    if "online" in loc.lower() or "shop zetu" in loc.lower():
+        return "Online"
+    return "Kenya"
 
 
-def get_country(location):
-    if location in RWANDA_LOCATIONS:
-        return 'Rwanda'
-    if location in UGANDA_LOCATIONS:
-        return 'Uganda'
-    if location in ONLINE_LOCATIONS:
-        return 'Online'
-    return 'Kenya'
+def get_vat(loc):
+    if loc in UGANDA_LOCATIONS or loc in RWANDA_LOCATIONS:
+        return 1.18
+    return 1.16
 
 
-def get_vat(location):
-    if location in UGANDA_LOCATIONS or location in RWANDA_LOCATIONS:
-        return VAT_UGANDA_RWANDA
-    return VAT_KENYA
+def get_channel(loc):
+    if loc in ("Online - shop-zetu", "POS - 67096608987"):
+        return "Online - Shop Zetu"
+    if loc == "Online - safari-by-vivo":
+        return "Online - Safari"
+    return loc
 
 
-def _bulk_insert(cur, rows):
+def bulk_insert(cur, conn, rows, label):
     if not rows:
+        log.info("%s: no rows to insert", label)
         return
-    execute_values(cur, """
+    execute_values(
+        cur,
+        """
         INSERT INTO all_sales (
-            id, store_id, day, order_id, order_name,
+            id, store_id, sale_date, order_id, order_name,
             purchase_option, sale_kind, sale_line_type,
             pos_location_name, channel,
             product_price, product_title, product_type, product_vendor,
@@ -90,108 +95,153 @@ def _bulk_insert(cur, rows):
             year, last_synced, loaded_at, line_item_id, restock_type,
             country, exchange_rate,
             product_price_kes, total_sales_kes, gross_sales_kes,
-            discounts_kes, returns_kes, net_sales_kes, sale_date
+            discounts_kes, returns_kes, net_sales_kes
         ) VALUES %s
         ON CONFLICT (id, store_id) DO UPDATE SET
-            last_synced = EXCLUDED.last_synced,
-            total_sales_kes = EXCLUDED.total_sales_kes
-    """, rows, page_size=1000)
+            last_synced       = EXCLUDED.last_synced,
+            total_sales_kes   = EXCLUDED.total_sales_kes,
+            pos_location_name = EXCLUDED.pos_location_name
+    """,
+        rows,
+        page_size=1000,
+    )
+    conn.commit()
+    log.info("✅ %s: inserted %d rows", label, len(rows))
 
 
 def transform_shopify(cur, conn, rates):
-    """Transform raw_shopify_sales → all_sales (Kenya/Uganda/Rwanda)."""
+    """Mirror BigQuery shopify_deduped exactly."""
     log.info("Transforming Shopify sales...")
-
     cur.execute("""
         SELECT
             s.id, s.store_id, s.day, s.order_id, s.order_name,
             s.purchase_option, s.sale_kind, s.sale_line_type,
-            s.pos_location_name, s.product_price, s.product_title,
-            s.product_type, s.product_vendor, s.variant_id,
-            s.variant_sku, s.variant_title, s.customer_type,
-            o.customer_id,
-            s.total_sales, s.orders, s.gross_sales, s.discounts,
-            s.returns, s.net_sales, s.net_quantity,
-            s.ordered_item_quantity, s.returned_item_quantity,
-            s.year, s.line_item_id, s.restock_type, s._loaded_at,
-            ROW_NUMBER() OVER (
-                PARTITION BY s.order_id::text, s.day::text, s.variant_sku
-                ORDER BY s._loaded_at DESC
+            s.pos_location_name,
+            s.product_price, s.product_title, s.product_type, s.product_vendor,
+            s.variant_id, s.variant_sku, s.variant_title,
+            s.customer_type, o.customer_id,
+            s.total_sales, s.orders,
+            s.gross_sales, s.discounts, s.returns, s.net_sales,
+            s.net_quantity, s.ordered_item_quantity, s.returned_item_quantity,
+            s.year, s.line_item_id, s.restock_type, s._loaded_at
+        FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY s2.line_item_id, s2.order_id, s2.day::text, s2.store_id, s2.product_title
+                ORDER BY s2._loaded_at DESC
             ) AS rn
-        FROM raw_shopify_sales s
+            FROM raw_shopify_sales s2
+            WHERE s2.store_id != 'shop-zetu'
+            AND (s2.store_id != 'vivowoman' OR s2.day <= '2026-03-19')
+            AND LOWER(COALESCE(s2.product_title, '')) NOT LIKE '%%shopping bag%%'
+        ) s
         LEFT JOIN raw_shopify_orders o
             ON s.order_id = o.id AND s.store_id = o.store_id
-        WHERE s.store_id != 'shop-zetu'
-        AND (
-            s.store_id != 'vivowoman'
-            OR s.day <= '2026-03-19'
-        )
-        AND LOWER(COALESCE(s.product_title, '')) NOT LIKE '%shopping bag%'
+        WHERE s.rn = 1
     """)
-
     rows = cur.fetchall()
-    log.info("Shopify raw rows: %d", len(rows))
+    log.info("Shopify deduped rows: %d", len(rows))
 
     now = datetime.now(timezone.utc)
     insert_rows = []
-
     for r in rows:
-        (id_, store_id, day, order_id, order_name, purchase_option,
-         sale_kind, sale_line_type, pos_location_name, product_price,
-         product_title, product_type, product_vendor, variant_id,
-         variant_sku, variant_title, customer_type, customer_id,
-         total_sales, orders, gross_sales, discounts, returns_,
-         net_sales, net_quantity, ordered_qty, returned_qty,
-         year, line_item_id, restock_type, loaded_at, rn) = r
+        (
+            id_,
+            store_id,
+            day,
+            order_id,
+            order_name,
+            purchase_option,
+            sale_kind,
+            sale_line_type,
+            pos_location_name,
+            product_price,
+            product_title,
+            product_type,
+            product_vendor,
+            variant_id,
+            variant_sku,
+            variant_title,
+            customer_type,
+            customer_id,
+            total_sales,
+            orders,
+            gross_sales,
+            discounts,
+            returns_,
+            net_sales,
+            net_quantity,
+            ordered_qty,
+            returned_qty,
+            year,
+            line_item_id,
+            restock_type,
+            loaded_at,
+        ) = r
 
-        if rn != 1:
-            continue
-
-        channel = CHANNEL_MAP.get(pos_location_name, pos_location_name)
+        channel = get_channel(pos_location_name)
         country = get_country(channel)
-        rate    = rates.get(country, 1.0)
-        vat     = get_vat(channel)
+        rate = rates.get(country, 1.0)
+        vat = get_vat(channel)
 
         price = float(product_price or 0)
         total = float(total_sales or 0)
         gross = float(gross_sales or 0)
-        disc  = float(discounts or 0)
-        ret   = float(returns_ or 0)
-        net   = round(total / vat, 2)
+        disc = float(discounts or 0)
+        ret = float(returns_ or 0)
+        net = round(total / vat, 2)
 
-        insert_rows.append((
-            str(id_), store_id, str(day), str(order_id), order_name,
-            purchase_option or 'web', sale_kind, sale_line_type or 'product',
-            pos_location_name, channel,
-            round(price / rate, 2) if rate != 1 else price,
-            product_title, product_type, product_vendor,
-            str(variant_id) if variant_id else None,
-            variant_sku, variant_title, customer_type,
-            str(customer_id) if customer_id else None,
-            round(total / rate, 2), int(orders or 1),
-            round(gross / rate, 2), round(disc / rate, 2),
-            round(ret / rate, 2), round(net / rate, 2),
-            int(net_quantity or 0), int(ordered_qty or 0), int(returned_qty or 0),
-            int(year) if year else None,
-            now, now,
-            str(line_item_id) if line_item_id else None,
-            restock_type, country, rate,
-            round(price / rate, 2) if rate != 1 else price,
-            round(total / rate, 2), round(gross / rate, 2), round(disc / rate, 2),
-            round(ret / rate, 2), round(net / rate, 2),
-            str(day),
-        ))
+        insert_rows.append(
+            (
+                str(id_),
+                store_id,
+                str(day),
+                str(order_id),
+                order_name,
+                purchase_option or "web",
+                sale_kind,
+                sale_line_type or "product",
+                pos_location_name,
+                channel,
+                round(price / rate, 2),
+                product_title,
+                product_type,
+                product_vendor,
+                str(variant_id) if variant_id else None,
+                variant_sku,
+                variant_title,
+                customer_type,
+                str(customer_id) if customer_id else None,
+                round(total / rate, 2),
+                int(orders or 1),
+                round(gross / rate, 2),
+                round(disc / rate, 2),
+                round(ret / rate, 2),
+                round(net / rate, 2),
+                int(net_quantity or 0),
+                int(ordered_qty or 0),
+                int(returned_qty or 0),
+                int(year) if year else None,
+                now,
+                now,
+                str(line_item_id) if line_item_id else None,
+                restock_type,
+                country,
+                rate,
+                round(price / rate, 2),
+                round(total / rate, 2),
+                round(gross / rate, 2),
+                round(disc / rate, 2),
+                round(ret / rate, 2),
+                round(net / rate, 2),
+            )
+        )
 
-    log.info("Shopify rows to insert: %d", len(insert_rows))
-    _bulk_insert(cur, insert_rows)
-    conn.commit()
-    log.info("✅ Shopify transform done")
+    bulk_insert(cur, conn, insert_rows, "Shopify")
 
 
 def transform_shopzetu(cur, conn, rates):
-    """Transform raw_shopify_vendor_sales → all_sales (Shop Zetu)."""
+    """Mirror BigQuery shopzetu_clean — no dedup, raw table is clean."""
     log.info("Transforming Shop Zetu sales...")
-
     cur.execute("""
         SELECT
             sv.order_id, sv.order_name, sv.day,
@@ -207,89 +257,123 @@ def transform_shopzetu(cur, conn, rates):
         LEFT JOIN raw_shopify_orders o
             ON sv.order_id = o.id AND o.store_id = 'shop-zetu'
         WHERE sv.is_totals_row = FALSE
-        AND LOWER(COALESCE(sv.product_title_at_time_of_sale, '')) NOT LIKE '%shopping bag%'
+        AND LOWER(COALESCE(sv.product_title_at_time_of_sale, '')) NOT LIKE '%%shopping bag%%'
     """)
-
     rows = cur.fetchall()
-    log.info("Shop Zetu raw rows: %d", len(rows))
+    log.info("Shop Zetu rows: %d", len(rows))
 
     now = datetime.now(timezone.utc)
     insert_rows = []
-
     for r in rows:
-        (order_id, order_name, day, product_title, product_type, product_vendor,
-         variant_id, variant_sku, variant_title, product_price,
-         gross_sales, discounts, returns_, net_sales, total_sales,
-         orders, net_items_sold, qty_ordered, qty_returned,
-         customer_type, is_reversal, customer_id) = r
+        (
+            order_id,
+            order_name,
+            day,
+            product_title,
+            product_type,
+            product_vendor,
+            variant_id,
+            variant_sku,
+            variant_title,
+            product_price,
+            gross_sales,
+            discounts,
+            returns_,
+            net_sales,
+            total_sales,
+            orders,
+            net_items_sold,
+            qty_ordered,
+            qty_returned,
+            customer_type,
+            is_reversal,
+            customer_id,
+        ) = r
 
-        sale_kind       = 'return' if is_reversal else 'order'
-        price           = float(product_price or 0)
-        total           = float(total_sales or 0)
-        gross           = float(gross_sales or 0)
-        disc            = float(abs(discounts or 0))
-        ret             = float(abs(returns_ or 0))
-        net             = float(net_sales or 0)
-        sku             = variant_sku or ''
-        day_str         = str(day)
-        reversal_flag   = '1' if is_reversal else '0'
-        row_id          = f"{order_id}_{sku}_{day_str}_{reversal_flag}"
+        sale_kind = "return" if is_reversal else "order"
+        price = float(product_price or 0)
+        total = float(total_sales or 0)
+        gross = float(gross_sales or 0) if not is_reversal else 0.0
+        disc = float(abs(discounts or 0)) if not is_reversal else 0.0
+        ret = float(abs(returns_ or 0)) if is_reversal else 0.0
+        net = float(net_sales or 0)
+        sku = variant_sku or ""
+        day_str = str(day)
+        row_id = f"{order_id}_{sku}_{day_str}_{'1' if is_reversal else '0'}"
 
-        insert_rows.append((
-            row_id,
-            'shop-zetu', day_str, str(order_id), order_name,
-            'web', sale_kind, 'product',
-            'Online - Shop Zetu', 'Online - Shop Zetu',
-            price, product_title, product_type, product_vendor,
-            str(variant_id) if variant_id else None,
-            sku, variant_title, customer_type,
-            str(customer_id) if customer_id else None,
-            total, int(orders or 0),
-            gross if not is_reversal else 0,
-            disc,
-            ret if is_reversal else 0,
-            net,
-            int(net_items_sold or 0),
-            int(qty_ordered or 0),
-            int(qty_returned or 0),
-            int(day_str[:4]) if day_str else None,
-            now, now,
-            str(order_id),
-            None, 'Online', 1.0,
-            price, total,
-            gross if not is_reversal else 0,
-            disc,
-            ret if is_reversal else 0,
-            net,
-            day_str,
-        ))
+        insert_rows.append(
+            (
+                row_id,
+                "shop-zetu",
+                day_str,
+                str(order_id),
+                order_name,
+                "web",
+                sale_kind,
+                "product",
+                "Online - Shop Zetu",
+                "Online - Shop Zetu",
+                price,
+                product_title,
+                product_type,
+                product_vendor,
+                str(variant_id) if variant_id else None,
+                sku,
+                variant_title,
+                customer_type,
+                str(customer_id) if customer_id else None,
+                total,
+                int(orders or 0),
+                gross,
+                disc,
+                ret,
+                net,
+                int(net_items_sold or 0),
+                int(qty_ordered or 0),
+                int(qty_returned or 0),
+                int(day_str[:4]) if day_str else None,
+                now,
+                now,
+                str(order_id),
+                None,
+                "Online",
+                1.0,
+                price,
+                total,
+                gross,
+                disc,
+                ret,
+                net,
+            )
+        )
 
-    log.info("Shop Zetu rows to insert: %d", len(insert_rows))
-    _bulk_insert(cur, insert_rows)
-    conn.commit()
-    log.info("✅ Shop Zetu transform done")
+    bulk_insert(cur, conn, insert_rows, "Shop Zetu")
 
 
 def transform_odoo(cur, conn, rates):
-    """Transform raw_odoo_pos_orders + lines → all_sales (Odoo POS from Mar 20 2026)."""
+    """Mirror BigQuery odoo_mapped exactly."""
     log.info("Transforming Odoo POS sales...")
-
     cur.execute("""
         SELECT
             l.id, o.id AS order_id, o.name AS order_name,
             DATE(o.date_order) AS day,
-            o.state, o.config_name AS pos_location_name,
+            o.config_name AS pos_location_name,
             l.full_product_name, l.qty, l.price_unit,
             l.price_subtotal, l.price_subtotal_incl,
-            l.is_reward_line, l.discount,
+            l.discount,
             p.default_code AS variant_sku,
             p.name AS variant_title,
             p.sub_category AS product_type,
             p.vendor AS product_vendor,
             l.product_id AS variant_id,
             o.partner_id AS customer_id,
+            COALESCE(c.shopify_user_id::text, o.partner_id::text) AS universal_customer_id,
             o.partner_name,
-            o._synced_at
+            o._synced_at,
+            ROW_NUMBER() OVER (
+                PARTITION BY o.id::text, DATE(o.date_order)::text, p.default_code
+                ORDER BY o._synced_at DESC
+            ) AS rn
         FROM raw_odoo_pos_order_lines l
         JOIN raw_odoo_pos_orders o ON l.order_id = o.id
         LEFT JOIN (
@@ -298,99 +382,126 @@ def transform_odoo(cur, conn, rates):
             FROM raw_odoo_products
             ORDER BY id, write_date DESC
         ) p ON l.product_id = p.id
+        LEFT JOIN raw_odoo_customers c ON o.partner_id = c.id
         WHERE DATE(o.date_order) >= '2026-03-20'
         AND o.state IN ('done', 'paid', 'invoiced')
-        AND LOWER(COALESCE(l.full_product_name, '')) NOT LIKE '%shopping bag%'
+        AND LOWER(COALESCE(l.full_product_name, '')) NOT LIKE '%%shopping bag%%'
         AND o.id::text != '16547'
         AND l.is_reward_line = FALSE
     """)
-
     rows = cur.fetchall()
     log.info("Odoo raw rows: %d", len(rows))
 
     now = datetime.now(timezone.utc)
-
-    # Dedup by order_id + day + variant_sku
-    seen = {}
-    deduped = []
-    for r in rows:
-        key = (str(r[1]), str(r[3]), r[13] or '')
-        if key not in seen or (r[20] and (not seen[key] or r[20] > seen[key])):
-            seen[key] = r[20]
-            deduped.append(r)
-    rows = deduped
-    log.info("After dedup: %d rows", len(rows))
-
     insert_rows = []
-
     for r in rows:
-        (line_id, order_id, order_name, day, state, pos_location_name,
-         product_title, qty, price_unit, price_subtotal, price_subtotal_incl,
-         is_reward, discount, variant_sku, variant_title, product_type,
-         product_vendor, variant_id, customer_id, partner_name,
-         synced_at) = r
+        (
+            line_id,
+            order_id,
+            order_name,
+            day,
+            pos_location_name,
+            product_title,
+            qty,
+            price_unit,
+            price_subtotal,
+            price_subtotal_incl,
+            discount,
+            variant_sku,
+            variant_title,
+            product_type,
+            product_vendor,
+            variant_id,
+            customer_id,
+            universal_customer_id,
+            partner_name,
+            synced_at,
+            rn,
+        ) = r
 
-        qty        = float(qty or 0)
-        price      = float(price_unit or 0)
-        subtotal   = float(price_subtotal or 0)
+        if rn != 1:
+            continue
+
+        qty = float(qty or 0)
+        price = float(price_unit or 0)
+        subtotal = float(price_subtotal or 0)
         subtotal_i = float(price_subtotal_incl or 0)
 
-        sale_kind = 'return' if qty < 0 else 'order'
-        total     = round(price * qty, 2)
-        gross     = subtotal if qty >= 0 else 0
-        disc      = round((price * qty - subtotal_i) / VAT_KENYA, 2) if qty >= 0 else 0
-        ret       = abs(subtotal) if qty < 0 else 0
-        net       = -abs(subtotal) if qty < 0 else subtotal
+        sale_kind = "return" if qty < 0 else "order"
+        gross = subtotal_i if qty >= 0 else 0.0
+        disc = round(subtotal_i - subtotal, 2) if qty >= 0 else 0.0
+        ret = abs(subtotal_i) if qty < 0 else 0.0
+        total = subtotal_i if qty >= 0 else -abs(subtotal_i)
+        net = subtotal if qty >= 0 else -abs(subtotal)
 
-        mapped  = LOCATION_MAP.get(pos_location_name, pos_location_name)
+        mapped = ODOO_LOCATION_MAP.get(pos_location_name, pos_location_name)
         country = get_country(mapped)
-        rate    = rates.get(country, 1.0)
+        rate = rates.get(country, 1.0)
         day_str = str(day)
 
-        insert_rows.append((
-            str(line_id), 'vivofashiongroup', day_str,
-            str(order_id), order_name,
-            'pos', sale_kind, 'product',
-            mapped, mapped,
-            round(price / rate, 2) if rate != 1 else price,
-            product_title, product_type, product_vendor,
-            str(variant_id) if variant_id else None,
-            variant_sku, variant_title,
-            'Returning' if partner_name else 'New',
-            str(customer_id) if customer_id else None,
-            round(total / rate, 2), 1,
-            round(gross / rate, 2), round(disc / rate, 2),
-            round(ret / rate, 2), round(net / rate, 2),
-            int(qty), int(qty) if qty > 0 else 0, int(abs(qty)) if qty < 0 else 0,
-            int(day_str[:4]) if day_str else None,
-            now, now,
-            str(line_id),
-            'return' if qty < 0 else None,
-            country, rate,
-            round(price / rate, 2) if rate != 1 else price,
-            round(total / rate, 2), round(gross / rate, 2), round(disc / rate, 2),
-            round(ret / rate, 2), round(net / rate, 2),
-            str(day),
-        ))
+        insert_rows.append(
+            (
+                str(line_id),
+                "vivofashiongroup",
+                day_str,
+                str(order_id),
+                order_name,
+                "pos",
+                sale_kind,
+                "product",
+                mapped,
+                mapped,
+                round(price / rate, 2),
+                product_title,
+                product_type,
+                product_vendor,
+                str(variant_id) if variant_id else None,
+                variant_sku,
+                variant_title,
+                "Returning" if partner_name else "New",
+                universal_customer_id,
+                round(total / rate, 2),
+                1,
+                round(gross / rate, 2),
+                round(disc / rate, 2),
+                round(ret / rate, 2),
+                round(net / rate, 2),
+                int(qty),
+                int(qty) if qty > 0 else 0,
+                int(abs(qty)) if qty < 0 else 0,
+                int(day_str[:4]) if day_str else None,
+                now,
+                now,
+                str(line_id),
+                "return" if qty < 0 else None,
+                country,
+                rate,
+                round(price / rate, 2),
+                round(total / rate, 2),
+                round(gross / rate, 2),
+                round(disc / rate, 2),
+                round(ret / rate, 2),
+                round(net / rate, 2),
+            )
+        )
 
-    log.info("Odoo rows to insert: %d", len(insert_rows))
-    _bulk_insert(cur, insert_rows)
-    conn.commit()
-    log.info("✅ Odoo transform done")
+    bulk_insert(cur, conn, insert_rows, "Odoo")
 
 
 def main():
     conn = psycopg2.connect(DATABASE_URL)
-    cur  = conn.cursor()
+    cur = conn.cursor()
 
-    # Get rates
-    rates = {'Kenya': 1.0, 'Online': 1.0}
-    cur.execute("SELECT country, rate FROM currency_rates")
+    # Load latest exchange rates (one per country)
+    rates = {"Kenya": 1.0, "Online": 1.0}
+    cur.execute("SELECT country, rate FROM currency_rates ORDER BY month DESC")
+    seen = set()
     for row in cur.fetchall():
-        rates[row[0]] = float(row[1])
-    log.info("Rates loaded: %s", rates)
+        if row[0] not in seen:
+            rates[row[0]] = float(row[1])
+            seen.add(row[0])
+    log.info("Rates: %s", rates)
 
-    # Truncate and rebuild all_sales
     cur.execute("TRUNCATE all_sales")
     conn.commit()
     log.info("all_sales truncated")
@@ -401,11 +512,10 @@ def main():
 
     cur.execute("""
         SELECT store_id, COUNT(*) as rows,
-               MIN(sale_date) as earliest, MAX(sale_date) as latest,
+               MIN(sale_date) as first, MAX(sale_date) as last,
                ROUND(SUM(total_sales_kes::numeric)/1000000, 2) AS total_m
         FROM all_sales
-        GROUP BY store_id
-        ORDER BY store_id
+        GROUP BY store_id ORDER BY store_id
     """)
     print("\n=== all_sales summary ===")
     for row in cur.fetchall():
