@@ -34,7 +34,10 @@ STORES = [
         "store_id":  "shop-zetu",
         "store_url": os.environ["SHOPZETU_STORE"],
         "token":     os.environ["SHOPZETU_TOKEN"],
-        "locations": {}  # will fetch all locations
+        "locations": {
+            67096608987: "Online - Shop Zetu",
+        },
+        "vendor_filter": ["vivo", "zoya", "safari"],
     },
 ]
 
@@ -83,15 +86,16 @@ def fetch_variants_map(store_url, token):
     """Build inventory_item_id → sku mapping."""
     headers = {"X-Shopify-Access-Token": token}
     url = f"https://{store_url}/admin/api/2025-10/products.json"
-    params = {"limit": 250, "fields": "id,variants"}
+    params = {"limit": 250, "fields": "id,title,variants"}
     item_to_sku = {}
     while url:
         resp = requests.get(url, headers=headers, params=params, timeout=60)
         resp.raise_for_status()
         for p in resp.json().get("products", []):
+            title = p.get("title", "")
             for v in p.get("variants", []):
                 if v.get("sku") and v.get("inventory_item_id"):
-                    item_to_sku[v["inventory_item_id"]] = v["sku"]
+                    item_to_sku[v["inventory_item_id"]] = (v["sku"], title)
         link = resp.headers.get("Link", "")
         next_url = None
         for part in link.split(","):
