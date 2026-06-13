@@ -345,7 +345,15 @@ def sync_odoo(cur, now, rates):
     ODOO_USER = os.environ["ODOO_USER"]
     ODOO_PASS = os.environ["ODOO_PASSWORD"]
 
-    cur.execute("SELECT MAX(loaded_at::date) FROM all_sales WHERE store_id = 'vivofashiongroup'")
+    # Anchor `since` to the actual data coverage, NOT loaded_at alone: a full
+    # rebuild (transform_all_sales) resets every row's loaded_at to "today", which
+    # would push `since` ahead of the data we actually have (the raw Odoo source
+    # can lag a few days), permanently skipping orders in the gap. LEAST(loaded_at,
+    # sale_date) never runs ahead of real coverage, so the next sync self-heals.
+    cur.execute("""
+        SELECT LEAST(MAX(loaded_at::date), MAX(sale_date::date))
+        FROM all_sales WHERE store_id = 'vivofashiongroup'
+    """)
     result = cur.fetchone()[0]
     since  = (result - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S") if result else "2026-03-19 00:00:00"
 

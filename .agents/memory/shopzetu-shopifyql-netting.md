@@ -54,3 +54,16 @@ that was later returned.
 an idle command), run one rebuild to completion, verify per-store counts against
 known-good targets, then restore the watchdog command
 (`WATCHDOG_MANAGE_API=0 python3 .../watchdog.py`).
+
+## A rebuild resets loaded_at — never anchor an incremental "since" to it
+`transform_all_sales.py` stamps every reloaded row with `loaded_at = now()`. Any
+incremental sync that computes its `since` watermark from `MAX(loaded_at)` will,
+right after a rebuild, jump `since` forward to ~today even though the rebuild's
+raw source may only cover up to a few days ago — permanently **skipping the gap
+days**. This bit the Odoo/Kenya (`store_id='vivofashiongroup'`) sync: the raw
+Odoo table lagged to 06-08, the rebuild reset loaded_at to today, so the next
+sync's `since` became 06-12 and it never pulled the 06-09..06-11 orders (the
+dashboard showed no recent Kenya). **Anchor `since` to actual data coverage:**
+`LEAST(MAX(loaded_at::date), MAX(sale_date::date)) - 1 day` never runs ahead of
+the data we hold, so the sync self-heals after any rebuild. (Online/Uganda/Rwanda
+were fine because their Shopify syncs were already current.)
