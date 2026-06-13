@@ -986,6 +986,7 @@ BASE_FILTERS = """
     s.pos_location_name NOT IN ('Staff purchases','Manual Order','Online - vivo-uganda')
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%shopping bag%'
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%gift card%'
+    AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%gift voucher%'
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%on specific products%'
     AND LOWER(COALESCE(s.variant_sku,'')) NOT LIKE '%vb00%'
 """

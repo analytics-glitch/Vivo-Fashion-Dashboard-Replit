@@ -87,6 +87,11 @@ EXCLUDED_LOCATIONS = {
     'Recall Location', 'Holding Warehouse Finished Goods',
     'Studio Location', 'Product Development', 'Sampling Fabric',
     'Repairs', 'Sampling', 'Sale Stock',
+    'PDACC', 'RMAT', 'FTRIM', 'PROD', 'SZONL', 'Dead/Stock Fabric',
+    'FGPRD', 'INTRA', 'HWHFN', 'WHREC', 'KIHOL', 'OAHOL', 'GALHO',
+    'OASIS', 'KIGAL', 'Buyin', 'Retir', 'WND', 'Wash', 'CUTT',
+    'RCALL', 'Studi', 'PDDEV', 'Repai', 'Samp', 'SALE', 'FABPR',
+    'Archv', 'Wholesale', 'Defects', 'HQ/Stock', 'ACCHO',
 }
 
 def get_m2o_name(v):
@@ -199,7 +204,7 @@ def main():
 
             rows.append((
                 sku, style_name, name, None, color,
-                brand, sub_cat, mapped_location, country,
+                brand, sub_cat, location, mapped_location, country,
                 available, qty, now
             ))
 
@@ -207,7 +212,7 @@ def main():
             execute_values(cur, """
                 INSERT INTO all_inventory (
                     sku, style_name, product_name, size, color_print,
-                    brand, sub_category, location_name, country,
+                    brand, sub_category, location_name, pos_location_name, country,
                     available, on_hand, _loaded_at
                 ) VALUES %s
             """, rows, page_size=500)
