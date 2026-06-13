@@ -17,6 +17,7 @@
 - [filters.jsx HMR Fast-Refresh ghost](hmr-fast-refresh-ghost.md) — "stuck on skeleton" + "useFilters must be used inside FiltersProvider" are DEV-ONLY HMR artifacts, not real bugs; screenshots catch fresh-load loading state.
 - [Postgres text date columns](pg-text-date-columns.md) — `all_sales.sale_date` is TEXT; cast `::date` before `date_trunc`/date funcs or you get "function date_trunc(unknown, text) does not exist".
 - [vivowoman is primary Kenya POS](vivowoman-base-filter.md) — never exclude `vivowoman` in BASE_FILTERS; it's 84% of sales and all pre-2022 data, not a rollup.
+- [all_sales id is a per-row surrogate](all-sales-id-surrogate.md) — rebuild transform must give each row a unique id (md5 of grain), NOT line_item_id; reusing it collides sale+return under PK (id,store_id) and drops ~27k rows BQ keeps.
 - [Range Management endpoints](range-mgmt-endpoints.md) — /api/range-mgmt/* shape & filter contract: tier_summary keys need spaces, apply channel to inventory + BASE_FILTERS to sales.
 - [Expo vector-icon font preload](expo-vector-icon-font-preload.md) — tab icons tofu on Android/Expo Go but fine on web → spread `Feather.font` into the gating `useFonts`.
 - [Expo first-build cold-cache port timeout](expo-cold-cache-port.md) — first Expo workflow start can fail DIDNT_OPEN_A_PORT on cold Metro cache; warm via background dev + /status poll, then restart.

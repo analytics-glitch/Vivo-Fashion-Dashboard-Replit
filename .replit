@@ -24,16 +24,20 @@ args = "Sync Watchdog"
 task = "workflow.run"
 args = "Shopify Full Extract"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Rebuild all_sales"
+
 [[workflows.workflow]]
 name = "Sync Watchdog"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "WATCHDOG_MANAGE_API=0 python3 /home/runner/workspace/watchdog.py"
-
-[workflows.workflow.metadata]
-outputType = "console"
 
 [[workflows.workflow]]
 name = "Shopify Full Extract"
@@ -42,6 +46,17 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python3 shopify_full_extract.py"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow]]
+name = "Rebuild all_sales"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python3 transform_all_sales.py"
 
 [workflows.workflow.metadata]
 outputType = "console"

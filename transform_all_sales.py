@@ -7,7 +7,7 @@ Mirrors BigQuery all_sales view exactly:
 UNION ALL → all_sales physical table
 """
 
-import os, logging
+import os, logging, hashlib
 import psycopg2
 from psycopg2.extras import execute_values
 from datetime import datetime, timezone
@@ -134,8 +134,11 @@ def transform_shopify(cur, conn, rates):
             AND (s2.store_id != 'vivowoman' OR s2.day <= '2026-03-19')
             AND LOWER(COALESCE(s2.product_title, '')) NOT LIKE '%%shopping bag%%'
         ) s
-        LEFT JOIN raw_shopify_orders o
-            ON s.order_id::text = o.id::text AND s.store_id = o.store_id
+        LEFT JOIN (
+            SELECT DISTINCT ON (id::text, store_id) id, store_id, customer_id
+            FROM raw_shopify_orders
+            ORDER BY id::text, store_id, _loaded_at DESC
+        ) o ON s.order_id::text = o.id::text AND s.store_id = o.store_id
         WHERE s.rn = 1
     """)
     rows = cur.fetchall()
@@ -189,9 +192,20 @@ def transform_shopify(cur, conn, rates):
         ret = float(returns_ or 0)
         net = round(total / vat, 2)
 
+        # BigQuery keeps a line item's sale and its later return as separate
+        # rows (its dedup grain is line_item_id+order_id+day+store_id+
+        # product_title). The all_sales PK is (id, store_id), so reusing
+        # line_item_id as id would collide those pairs and drop one. Mirror BQ's
+        # row set with a unique surrogate id derived from that same grain
+        # (store_id is the other PK column), consistent with the live sync's
+        # per-row unique id.
+        row_id = hashlib.md5(
+            f"{line_item_id}|{order_id}|{day}|{product_title}".encode("utf-8")
+        ).hexdigest()
+
         insert_rows.append(
             (
-                str(id_),
+                row_id,
                 store_id,
                 str(day),
                 str(order_id),
