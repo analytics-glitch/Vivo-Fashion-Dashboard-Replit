@@ -1,0 +1,159 @@
+import requests
+import pandas as pd
+import io
+import os
+
+# ── CONFIG ────────────────────────────────────────────────────────────────────
+SHOP_DOMAIN = "pay.shopzetu.com"          # your myshopify or primary domain
+ACCESS_TOKEN = os.environ["SHOPIFY_ADMIN_TOKEN"]  # set as env var
+API_VERSION  = "2025-01"
+
+GRAPHQL_URL = f"https://{SHOP_DOMAIN}/admin/api/{API_VERSION}/graphql.json"
+HEADERS = {
+    "Content-Type": "application/json",
+    "X-Shopify-Access-Token": ACCESS_TOKEN,
+}
+
+# ── SHOPIFYQL QUERY (corrected) ───────────────────────────────────────────────
+QUERY = """
+{
+  shopifyqlQuery(query: \"\"\"
+    FROM sales
+      SHOW total_sales, orders, gross_sales, discounts, total_returns, net_sales,
+        net_items_sold, quantity_ordered, quantity_returned
+      WHERE product_vendor IN (
+        'Safari', 'Vivo', 'Zoya', 'SOWAIRINA BY VIVO', 'VIVO',
+        'VIVO WOMAN', 'vivo', 'SAFARI', 'ZOYA', 'Zoya Essentials',
+        'Safari By Vivo', 'Safari by Vivo'
+      )
+      GROUP BY month, order_id, order_name, subscription_or_one_time,
+        order_or_return, line_type, pos_location_name, product_variant_price,
+        product_title_at_time_of_sale, product_type, product_vendor,
+        product_variant_sku, product_variant_title_at_time_of_sale,
+        new_or_returning_customer WITH TOTALS
+      SINCE 2026-01-01 UNTIL 2026-06-10
+      ORDER BY gross_sales ASC
+      LIMIT 1000
+  \"\"\") {
+    tableData {
+      unformattedData {
+        cols { name }
+        rows { cells { value } }
+      }
+    }
+    parseErrors { code message }
+  }
+}
+"""
+
+# ── FETCH DATA ────────────────────────────────────────────────────────────────
+def fetch_shopifyql(query: str) -> pd.DataFrame:
+    resp = requests.post(GRAPHQL_URL, json={"query": query}, headers=HEADERS)
+    resp.raise_for_status()
+    body = resp.json()
+
+    ql = body["data"]["shopifyqlQuery"]
+
+    # Surface any parse errors
+    if ql.get("parseErrors"):
+        for err in ql["parseErrors"]:
+            print(f"[ShopifyQL Error] {err['code']}: {err['message']}")
+        return pd.DataFrame()
+
+    table = ql["tableData"]["unformattedData"]
+    cols  = [c["name"] for c in table["cols"]]
+    rows  = [[cell["value"] for cell in row["cells"]] for row in table["rows"]]
+    return pd.DataFrame(rows, columns=cols)
+
+
+df = fetch_shopifyql(QUERY)
+print(f"Rows fetched: {len(df)}")
+
+# ── TYPE COERCION ─────────────────────────────────────────────────────────────
+NUMERIC_COLS = [
+    "total_sales", "orders", "gross_sales", "discounts",
+    "total_returns", "net_sales", "net_items_sold",
+    "quantity_ordered", "quantity_returned",
+]
+for col in NUMERIC_COLS:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+# Parse month as period
+if "month" in df.columns:
+    df["month"] = pd.to_datetime(df["month"], errors="coerce").dt.to_period("M")
+
+# ── DERIVED / VALIDATION COLUMNS ─────────────────────────────────────────────
+# Verify Shopify's own calculations match the formulas
+df["calc_net_sales"]      = df["gross_sales"] + df["discounts"] + df["total_returns"]
+df["calc_net_items_sold"] = df["quantity_ordered"] + df["quantity_returned"]
+
+# Tolerance check (floating point)
+df["net_sales_match"]      = (df["net_sales"] - df["calc_net_sales"]).abs() < 0.01
+df["net_items_match"]      = (df["net_items_sold"] - df["calc_net_items_sold"]).abs() < 0.5
+
+# Flag fully-returned orders: net_items_sold == 0 and quantity_ordered > 0
+df["fully_returned"] = (df["net_items_sold"] == 0) & (df["quantity_ordered"] > 0)
+
+# Return rate per row
+df["return_rate_qty"] = df.apply(
+    lambda r: abs(r["quantity_returned"]) / r["quantity_ordered"]
+    if r["quantity_ordered"] > 0 else 0,
+    axis=1,
+)
+
+# ── SUMMARY BY VENDOR ─────────────────────────────────────────────────────────
+vendor_summary = (
+    df.groupby("product_vendor", as_index=False)
+    .agg(
+        gross_sales      = ("gross_sales",       "sum"),
+        discounts        = ("discounts",         "sum"),
+        total_returns    = ("total_returns",     "sum"),
+        net_sales        = ("net_sales",         "sum"),
+        total_sales      = ("total_sales",       "sum"),
+        orders           = ("orders",            "sum"),
+        quantity_ordered = ("quantity_ordered",  "sum"),
+        quantity_returned= ("quantity_returned", "sum"),
+        net_items_sold   = ("net_items_sold",    "sum"),
+    )
+)
+vendor_summary["return_rate_value"] = (
+    vendor_summary["total_returns"].abs() / vendor_summary["gross_sales"]
+).round(4)
+vendor_summary["return_rate_qty"] = (
+    vendor_summary["quantity_returned"].abs() / vendor_summary["quantity_ordered"]
+).round(4)
+
+print("\n── Vendor Summary ──")
+print(vendor_summary.to_string(index=False))
+
+# ── SUMMARY BY MONTH ──────────────────────────────────────────────────────────
+monthly_summary = (
+    df.groupby("month", as_index=False)
+    .agg(
+        gross_sales      = ("gross_sales",       "sum"),
+        net_sales        = ("net_sales",         "sum"),
+        total_returns    = ("total_returns",     "sum"),
+        quantity_ordered = ("quantity_ordered",  "sum"),
+        quantity_returned= ("quantity_returned", "sum"),
+        net_items_sold   = ("net_items_sold",    "sum"),
+    )
+)
+print("\n── Monthly Summary ──")
+print(monthly_summary.to_string(index=False))
+
+# ── FULLY RETURNED ORDERS ─────────────────────────────────────────────────────
+fully_returned_orders = df[df["fully_returned"]][
+    ["order_id", "order_name", "month", "product_vendor",
+     "quantity_ordered", "quantity_returned", "net_items_sold", "gross_sales"]
+]
+print(f"\n── Fully Returned Orders: {len(fully_returned_orders)} rows ──")
+print(fully_returned_orders.head(20).to_string(index=False))
+
+# ── EXPORT ────────────────────────────────────────────────────────────────────
+df.to_csv("vendor_sales_raw.csv", index=False)
+vendor_summary.to_csv("vendor_summary.csv", index=False)
+monthly_summary.to_csv("monthly_summary.csv", index=False)
+fully_returned_orders.to_csv("fully_returned_orders.csv", index=False)
+
+print("\n✅ Exports complete: vendor_sales_raw.csv, vendor_summary.csv, monthly_summary.csv, fully_returned_orders.csv")

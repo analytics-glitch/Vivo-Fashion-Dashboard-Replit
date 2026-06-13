@@ -61,7 +61,7 @@ tables = [
         quantity_ordered INTEGER, reversed_quantity INTEGER,
         new_or_returning_customer TEXT, is_reversal_row BOOLEAN,
         is_totals_row BOOLEAN, _loaded_at TIMESTAMP,
-        PRIMARY KEY (order_id, day, product_variant_sku)
+        PRIMARY KEY (order_id, day, product_variant_sku, is_reversal_row)
     )""",
     """CREATE TABLE IF NOT EXISTS raw_shopify_orders (
         id TEXT, store_id TEXT, name TEXT, created_at TEXT,

@@ -28,6 +28,10 @@ args = "Shopify Full Extract"
 task = "workflow.run"
 args = "Rebuild all_sales"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "ShopZetu QL Backfill"
+
 [[workflows.workflow]]
 name = "Sync Watchdog"
 author = "agent"
@@ -54,12 +58,20 @@ outputType = "console"
 name = "Rebuild all_sales"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python3 transform_all_sales.py"
 
-[workflows.workflow.metadata]
-outputType = "console"
+[[workflows.workflow]]
+name = "ShopZetu QL Backfill"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python3 extract_shopzetu_sales.py --since=2022-01-01 --until=2026-06-13"
 
 [agent]
 stack = "PNPM_WORKSPACE"
