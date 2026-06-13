@@ -1,0 +1,109 @@
+[{
+  "pos_location_name": "Vivo Sarit",
+  "gross": "16514438",
+  "orders": "1701"
+}, {
+  "pos_location_name": "Vivo Mama Ngina St",
+  "gross": "13377247",
+  "orders": "1425"
+}, {
+  "pos_location_name": "Vivo Junction",
+  "gross": "12966555",
+  "orders": "1271"
+}, {
+  "pos_location_name": "Vivo Moi Avenue",
+  "gross": "12112176",
+  "orders": "1541"
+}, {
+  "pos_location_name": "Vivo Yaya",
+  "gross": "10459758",
+  "orders": "1064"
+}, {
+  "pos_location_name": "Vivo Village Market",
+  "gross": "10409225",
+  "orders": "1004"
+}, {
+  "pos_location_name": "Vivo Garden City",
+  "gross": "9829943",
+  "orders": "1010"
+}, {
+  "pos_location_name": "Vivo TRM",
+  "gross": "8324825",
+  "orders": "886"
+}, {
+  "pos_location_name": "Vivo Galleria",
+  "gross": "7656889",
+  "orders": "829"
+}, {
+  "pos_location_name": "Vivo Capital Centre",
+  "gross": "7610698",
+  "orders": "872"
+}, {
+  "pos_location_name": "Vivo Imaara",
+  "gross": "7329809",
+  "orders": "833"
+}, {
+  "pos_location_name": "Vivo Two Rivers",
+  "gross": "7228438",
+  "orders": "753"
+}, {
+  "pos_location_name": "Vivo Nakuru",
+  "gross": "6636449",
+  "orders": "809"
+}, {
+  "pos_location_name": "Vivo Runda",
+  "gross": "6399016",
+  "orders": "683"
+}, {
+  "pos_location_name": "Vivo City Mall",
+  "gross": "6330516",
+  "orders": "706"
+}, {
+  "pos_location_name": "Vivo Hub",
+  "gross": "6318008",
+  "orders": "691"
+}, {
+  "pos_location_name": "Vivo Kisumu",
+  "gross": "5838167",
+  "orders": "674"
+}, {
+  "pos_location_name": "Vivo Eldoret",
+  "gross": "5825397",
+  "orders": "712"
+}, {
+  "pos_location_name": "Vivo Signature Mall",
+  "gross": "4500519",
+  "orders": "561"
+}, {
+  "pos_location_name": "Vivo T- Mall",
+  "gross": "4478224",
+  "orders": "535"
+}, {
+  "pos_location_name": "Vivo MSA Digo Road",
+  "gross": "4290680",
+  "orders": "530"
+}, {
+  "pos_location_name": "Vivo Greenspan",
+  "gross": "3813938",
+  "orders": "475"
+}, {
+  "pos_location_name": "Safari Sarit",
+  "gross": "3070217",
+  "orders": "292"
+}, {
+  "pos_location_name": "Vivo Kileleshwa",
+  "gross": "3045497",
+  "orders": "357"
+}, {
+  "pos_location_name": "Vivo Meru",
+  "gross": "2508751",
+  "orders": "275"
+}, {
+  "pos_location_name": "Zoya Sarit",
+  "gross": "1327350",
+  "orders": "435"
+}, {
+  "pos_location_name": "Staff purchases",
+  "gross": "757922",
+  "orders": "119"
+}]

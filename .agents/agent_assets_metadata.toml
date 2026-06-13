@@ -12,3 +12,9 @@ id = "MUDBi4GmHfIGFQG-RDTsf"
 uri = "file://.local/qr/expo-qr.png"
 type = "image"
 title = "Expo QR — Vivo BI Mobile"
+
+[[outputs]]
+id = "wdCNsuTnVRzPrAH1_4Vyz"
+uri = "file://attached_assets/returns_in_ours_not_bq.csv"
+type = "table"
+title = "222 return orders in our table not in BigQuery"
