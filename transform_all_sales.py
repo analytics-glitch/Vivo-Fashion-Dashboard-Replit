@@ -3,7 +3,7 @@ transform_all_sales.py
 Mirrors BigQuery all_sales view exactly:
   1. shopify_deduped  → shopify_sales (dedup by line_item_id, order_id, day, store_id, product_title)
   2. shopzetu_clean   → raw_shopify_vendor_sales (no dedup)
-  3. odoo_mapped      → raw_odoo_pos_order_lines + raw_odoo_pos_orders (dedup by order_id, day, variant_sku)
+  3. odoo_mapped      → raw_odoo_pos_order_lines + raw_odoo_pos_orders (dedup by unique line id l.id; latest _synced_at wins)
 UNION ALL → all_sales physical table
 """
 
