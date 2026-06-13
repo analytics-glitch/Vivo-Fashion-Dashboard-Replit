@@ -5685,7 +5685,8 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         FROM prod p
         LEFT JOIN sales sa USING (style_name)
         LEFT JOIN stock st USING (style_name)
-        WHERE COALESCE(sa.units_life, 0) > 0 OR COALESCE(st.soh_stores, 0) > 0 OR COALESCE(st.soh_warehouse, 0) > 0
+        WHERE (COALESCE(sa.units_life, 0) > 0 OR COALESCE(st.soh_stores, 0) > 0 OR COALESCE(st.soh_warehouse, 0) > 0)
+          AND COALESCE(p.brand, '') NOT ILIKE '%third party%'
     """)
     today = date.today()
     active, retired, pipeline, candidates = [], [], [], []
@@ -5736,6 +5737,9 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
 
         is_retired = (age_weeks is not None and age_weeks >= 39 and units_6m == 0
                       and (last_sale_days is None or last_sale_days > 270))
+        # Brand rule: every Zoya style is treated as a retired style.
+        if (r["brand"] or "").strip().lower() == "zoya":
+            is_retired = True
         flagged = (not is_retired and age_weeks is not None and age_weeks >= 39
                    and sor_life is not None and sor_life < 40 and current_stock > 0)
 
@@ -5918,6 +5922,8 @@ def range_mgmt_weekly_sor(country: str = Query(default=None), channel: str = Que
         new_styles AS (
             SELECT * FROM prod
             WHERE launch_date IS NOT NULL AND launch_date::date >= CURRENT_DATE - INTERVAL '98 days'
+              AND COALESCE(brand, '') NOT ILIKE '%third party%'
+              AND LOWER(COALESCE(brand, '')) <> 'zoya'
         ),
         sales AS (
             SELECT p.style_name, s.sale_date::date AS sd, SUM(s.net_quantity) AS units

@@ -19,6 +19,19 @@ description: Shape/filter rules the /api/range-mgmt/* endpoints must satisfy so 
 - `recent_movements` is intentionally `[]` — no tier-history snapshots exist in the DB.
 - Manual tier promotions persist in module-level `_RANGE_OVERRIDES` (session-scoped, lost on restart) and classify applies them as `tier` vs `auto_tier`.
 
+## Brand scope rule
+
+- Range Management covers **only Vivo, Safari, Zoya** brands. `'Third Party Brands'`
+  is excluded from `classify` (final WHERE: `COALESCE(p.brand,'') NOT ILIKE '%third party%'`)
+  and from `weekly-sor` (`new_styles` CTE). Brand values in `all_products_clean.brand`
+  are exactly: `Vivo`, `Third Party Brands`, `Safari`, `Zoya`.
+- **Every Zoya style is always Retired** — in the classify loop, `brand == 'zoya'`
+  forces `is_retired=True` (so Zoya never enters active tiers, Pareto, pipeline, or
+  candidates, and `_RANGE_OVERRIDES` can't promote it back because overrides apply
+  only after the retired-row `continue`). Zoya is also excluded from `weekly-sor`
+  (a retired brand has no "new style" to track).
+- **Why:** business directive — third-party is not the house range; Zoya is being wound down.
+
 ## Filter rules
 
 - Use `_style_filters(country, channel, alias)` for BOTH sales (alias `s`) and inventory (alias `i`).
