@@ -25,6 +25,17 @@ Env:
   PORT                  API port (default 8080)
   WATCHDOG_MANAGE_API   "0" => supervise the sync only (dev: the API already
                         runs as its own workflow). Default "1" => manage both.
+  REBUILD_ON_BOOT       "1"/"true" => run ONE full all_sales rebuild at startup
+                        (after the API is up, before the sync loop) to correct
+                        this environment's data, then continue normally. Default
+                        "0" (off). Set it for a single publish to fix production
+                        historical data, then unset and republish so it does not
+                        rebuild on every VM restart. See replit.md.
+  REBUILD_REFRESH_RAW   "0" => skip the Odoo raw refresh before the rebuild.
+                        Default "1" => refresh raw_odoo_products + orders first
+                        so SKUs are complete and recent days don't regress.
+  REBUILD_TIMEOUT_SEC   per-step subprocess timeout for the rebuild (default
+                        5400 = 90 min; the Shopify transform is the long phase).
 """
 import os
 import sys
@@ -60,6 +71,15 @@ ESCALATE_2_MIN = 30
 RECOVERY_THRESHOLD = 3      # consecutive failed sync checks before backfill
 RECOVERY_DAYS = 4
 
+# One-time full rebuild (correct this environment's historical all_sales).
+REBUILD_ON_BOOT = os.environ.get("REBUILD_ON_BOOT", "0").lower() not in ("0", "", "false")
+REBUILD_REFRESH_RAW = os.environ.get("REBUILD_REFRESH_RAW", "1").lower() not in ("0", "", "false")
+try:
+    REBUILD_TIMEOUT = int(os.environ.get("REBUILD_TIMEOUT_SEC", "5400"))  # 90 min / step
+except ValueError:
+    log.warning("Invalid REBUILD_TIMEOUT_SEC — falling back to 5400")
+    REBUILD_TIMEOUT = 5400
+
 API_CMD = [
     sys.executable, "-m", "uvicorn", "api_pg:app",
     "--app-dir", ROOT, "--host", "0.0.0.0", "--port", str(API_PORT),
@@ -71,6 +91,7 @@ _suspended = set()           # names the supervisor must NOT auto-respawn
                              # (e.g. sync is intentionally stopped for recovery)
 _proc_lock = threading.Lock()
 _stop = threading.Event()
+_rebuild_proc = None         # in-flight one-time rebuild step (for SIGTERM)
 _sync_fail_streak = 0
 _stale_since = None           # when the sync first went stale (for escalation)
 _escalation_level = 0         # 0 none, 1 sent 15m, 2 sent 30m
@@ -235,6 +256,70 @@ def run_recovery():
     return result
 
 
+def run_full_rebuild():
+    """One-time full rebuild of all_sales for THIS environment's database.
+
+    Gated behind REBUILD_ON_BOOT. Called from main() AFTER the API is spawned
+    (so the deployment's startup health check on /api/ can pass) but BEFORE the
+    supervised sync loop and the supervise/health threads start — so nothing
+    ever overlaps the rebuild. An overlapping sync would double history (row
+    ids don't collide and all_sales has no PK guard against re-insert).
+
+    Steps (each validated by return code; any failure aborts the remainder and
+    returns False):
+      1. optional (REBUILD_REFRESH_RAW): refresh the Odoo raw tables so the
+         rebuild reads complete product SKUs and up-to-date recent orders —
+         extract_odoo_products.py (full reload) then extract_odoo_orders.py.
+      2. transform_all_sales.py — TRUNCATE + repopulate all_sales from the raw
+         tables using the current (fixed) transform logic.
+
+    NOTE: transform_all_sales TRUNCATEs then repopulates in a single run, so for
+    the rebuild's duration the live dashboard reads a partially populated table
+    — publish this off-peak. On failure all_sales may be left partial; the
+    supervised sync that follows only refreshes recent days, so re-run the
+    rebuild (republish with REBUILD_ON_BOOT still set) to finish it.
+    """
+    log.warning("REBUILD_ON_BOOT set — running one-time full all_sales rebuild "
+                "(refresh_raw=%s, timeout=%ss/step)",
+                REBUILD_REFRESH_RAW, REBUILD_TIMEOUT)
+    steps = []
+    if REBUILD_REFRESH_RAW:
+        steps.append(("extract_odoo_products",
+                      [sys.executable, os.path.join(ROOT, "extract_odoo_products.py")]))
+        steps.append(("extract_odoo_orders",
+                      [sys.executable, os.path.join(ROOT, "extract_odoo_orders.py")]))
+    steps.append(("transform_all_sales",
+                  [sys.executable, os.path.join(ROOT, "transform_all_sales.py")]))
+
+    global _rebuild_proc
+    for name, cmd in steps:
+        log.warning("Rebuild step starting: %s", name)
+        try:
+            _rebuild_proc = subprocess.Popen(cmd, cwd=ROOT)
+            rc = _rebuild_proc.wait(timeout=REBUILD_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            log.error("Rebuild step %s timed out after %ss — killing & ABORTING",
+                      name, REBUILD_TIMEOUT)
+            try:
+                _rebuild_proc.kill()
+            except Exception:
+                pass
+            _rebuild_proc = None
+            return False
+        except Exception as e:
+            log.error("Rebuild step %s errored (%s) — ABORTING rebuild", name, e)
+            _rebuild_proc = None
+            return False
+        if rc != 0:
+            _rebuild_proc = None
+            log.error("Rebuild step %s FAILED (rc=%s) — ABORTING rebuild", name, rc)
+            return False
+        _rebuild_proc = None
+        log.warning("Rebuild step done: %s", name)
+    log.warning("One-time full all_sales rebuild COMPLETED successfully")
+    return True
+
+
 def notify(level, last_sync, stale_min, action):
     # Email/webhook delivery is intentionally disabled — no channel is
     # configured (the operator opted to log only). Escalations are persisted to
@@ -302,6 +387,13 @@ def health_loop():
 def shutdown(*_):
     log.info("Shutting down watchdog…")
     _stop.set()
+    rp = _rebuild_proc
+    if rp is not None and rp.poll() is None:
+        log.info("Terminating in-flight rebuild step")
+        try:
+            rp.terminate()
+        except Exception:
+            pass
     with _proc_lock:
         for name, p in _procs.items():
             if p.poll() is None:
@@ -319,6 +411,30 @@ def main():
     if MANAGE_API:
         spawn("api")
         time.sleep(3)  # let uvicorn bind before the sync hammers the DB
+
+    if REBUILD_ON_BOOT:
+        # The API is up (so the deployment startup health check can pass); run
+        # the one-time full rebuild synchronously now — BEFORE the supervised
+        # sync loop and the supervise/health threads start — so nothing ever
+        # overlaps it (an overlapping sync would double history).
+        if not run_full_rebuild():
+            # Fail closed: the rebuild may have left all_sales partially
+            # populated. Do NOT resume the incremental sync (it heals only
+            # recent days and would mask a broken history) and do NOT start the
+            # health loop (which would auto-recover sync). Keep the API
+            # supervised so the failure stays observable, log a CRITICAL
+            # escalation, and idle until an operator intervenes (fix the cause
+            # and republish, or unset REBUILD_ON_BOOT and republish to resume).
+            notify("CRITICAL", None, 0.0, "rebuild_on_boot_failed")
+            log.error("One-time rebuild FAILED — NOT starting sync; watchdog "
+                      "idling in degraded mode, operator action required "
+                      "(see replit.md).")
+            threading.Thread(target=supervise_loop, daemon=True).start()
+            while not _stop.is_set():
+                time.sleep(1)
+            return
+        log.warning("Rebuild-on-boot result: ok")
+
     spawn("sync")
 
     threading.Thread(target=supervise_loop, daemon=True).start()

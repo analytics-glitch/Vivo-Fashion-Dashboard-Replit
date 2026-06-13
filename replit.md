@@ -9,6 +9,18 @@ An executive Business Intelligence cockpit for Vivo Fashion Group — a multi-br
 - `pnpm --filter @workspace/vivo-bi run typecheck` — typecheck the dashboard
 - Required env: `DATABASE_URL` — Postgres connection string
 
+### Production data is a SEPARATE database (dev rebuilds do NOT reach prod)
+
+Development and the published deployment use **different** Postgres databases. The deployed api-server runs `watchdog.py` (Reserved VM, `WATCHDOG_MANAGE_API=1`), which supervises uvicorn **plus the incremental sync loop** against production's own DB. Production **never runs the full `transform_all_sales.py` rebuild** — only `sync_incremental.py` (recent days + a 4-day recovery backfill). So a full rebuild done in dev (e.g. to correct historical data) corrects the **dev** DB only; production's historical rows stay frozen at whatever logic last wrote them and never self-heal. Publishing ships code + migrates schema, but **does not copy data rows**.
+
+To correct production's historical `all_sales` (prod has all the `raw_*` source tables), use the **one-time rebuild gate** built into `watchdog.py`:
+
+1. Set deployment secret `REBUILD_ON_BOOT=1` (Publishing → secrets). Optional: `REBUILD_REFRESH_RAW=0` to skip the Odoo raw refresh, `REBUILD_TIMEOUT_SEC` to change the per-step timeout (default 5400).
+2. Publish (preferably off-peak — during the rebuild the live dashboard reads a partially populated table for ~tens of minutes). On boot the watchdog brings up the API (startup health passes), then runs the rebuild **synchronously before** the sync loop/health threads start so nothing overlaps it (an overlap would double history), then resumes normal supervision. Watch deployment logs for `One-time full all_sales rebuild COMPLETED successfully`.
+3. **Unset `REBUILD_ON_BOOT` (or set to 0) and republish** so it does not rebuild on every VM restart.
+
+Then verify prod via a read-only production query (e.g. Kenya net should match dev/BigQuery).
+
 ### Mobile (Android / Google Play) build via EAS
 
 The Expo app (`artifacts/vivo-mobile`) is configured for EAS Build. App identifier: `com.vivofashiongroup.bi` (both `android.package` and iOS `bundleIdentifier`). `eas.json` defines `development`/`preview` (APK, internal distribution) and `production` (`app-bundle` `.aab` for the Play Store, `autoIncrement` versionCode, `appVersionSource: remote`). `metro.config.js` is monorepo-aware (watches the workspace root) so EAS resolves `@workspace/*` deps. Unused native permissions (location, camera, media) are blocked in `app.json` so the Play listing stays lean for an internal tool.
