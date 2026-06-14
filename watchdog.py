@@ -31,11 +31,18 @@ Env:
                         "0" (off). Set it for a single publish to fix production
                         historical data, then unset and republish so it does not
                         rebuild on every VM restart. See replit.md.
-  REBUILD_REFRESH_RAW   "0" => skip the Odoo raw refresh before the rebuild.
-                        Default "1" => refresh raw_odoo_products + orders first
-                        so SKUs are complete and recent days don't regress.
+  REBUILD_REFRESH_RAW   "0" => skip the source refresh and transform the raw
+                        tables as-is (only safe if every source — shopify_sales,
+                        raw_shopify_vendor_sales, raw_odoo_* — is already
+                        complete & clean). Default "1" => re-extract ALL sources
+                        first (Shopify full history -> shopify_sales, ShopZetu
+                        full window -> raw_shopify_vendor_sales, Odoo products +
+                        orders), so a fresh/incomplete environment (e.g. prod)
+                        is corrected wholesale. Keep "1" for the prod fix.
   REBUILD_TIMEOUT_SEC   per-step subprocess timeout for the rebuild (default
-                        5400 = 90 min; the Shopify transform is the long phase).
+                        5400 = 90 min). With REBUILD_REFRESH_RAW=1 the Shopify
+                        full extract is the long pole; raise this (e.g. 7200) if
+                        a fresh prod extract risks exceeding 90 min.
 """
 import os
 import sys
@@ -267,11 +274,22 @@ def run_full_rebuild():
 
     Steps (each validated by return code; any failure aborts the remainder and
     returns False):
-      1. optional (REBUILD_REFRESH_RAW): refresh the Odoo raw tables so the
-         rebuild reads complete product SKUs and up-to-date recent orders —
-         extract_odoo_products.py (full reload) then extract_odoo_orders.py.
-      2. transform_all_sales.py — TRUNCATE + repopulate all_sales from the raw
-         tables using the current (fixed) transform logic.
+      1. optional (REBUILD_REFRESH_RAW): refresh EVERY source table the
+         transform reads, so a fresh/incomplete environment (e.g. production,
+         whose shopify_sales is empty and whose raw_shopify_vendor_sales may be
+         doubled/un-netted) is corrected wholesale before the transform runs:
+           a. shopify_full_extract.py  -> shopify_sales (Shopify retail history;
+              populated ONLY here, never by the incremental sync)
+           b. extract_shopzetu_sales.py --since=2022-01-01 --until=today
+              -> raw_shopify_vendor_sales (Online; full re-extract un-doubles +
+              re-nets via delete-by-window + insert)
+           c. extract_odoo_products.py then extract_odoo_orders.py -> raw_odoo_*
+      2. transform_all_sales.py — TRUNCATE + repopulate all_sales from those
+         source tables using the current (fixed) transform logic.
+
+    Because transform_all_sales (the only TRUNCATEing step) runs LAST, an
+    aborted source refresh leaves all_sales untouched (no truncate), so the
+    dashboard keeps its current rows rather than going empty.
 
     NOTE: transform_all_sales TRUNCATEs then repopulates in a single run, so for
     the rebuild's duration the live dashboard reads a partially populated table
@@ -284,6 +302,24 @@ def run_full_rebuild():
                 REBUILD_REFRESH_RAW, REBUILD_TIMEOUT)
     steps = []
     if REBUILD_REFRESH_RAW:
+        # Shopify retail history (vivowoman / vivo-uganda / vivo-rwanda) lives in
+        # the `shopify_sales` table, which is populated ONLY by this full extract
+        # — the incremental sync never writes it. A fresh environment (e.g. the
+        # production DB) has an EMPTY shopify_sales, so transform_all_sales would
+        # silently drop every Shopify retail row (Kenya pre-2026-03-20, Uganda,
+        # Rwanda). The extract is resumable + idempotent (delete-by-key+insert),
+        # so retrying after a timeout is safe.
+        steps.append(("shopify_full_extract",
+                      [sys.executable, os.path.join(ROOT, "shopify_full_extract.py")]))
+        # Online (Shop Zetu) source = raw_shopify_vendor_sales. Re-extract the
+        # FULL window from ShopifyQL (delete-by-window + insert) so a doubled /
+        # un-netted legacy table is corrected wholesale, not just the recent
+        # incremental tail. Pass an explicit window or the script would default
+        # to incremental (max(day)-4 -> today) and leave bad history in place.
+        _sz_until = datetime.now(timezone.utc).date().isoformat()
+        steps.append(("extract_shopzetu_sales",
+                      [sys.executable, os.path.join(ROOT, "extract_shopzetu_sales.py"),
+                       "--since=2022-01-01", f"--until={_sz_until}"]))
         steps.append(("extract_odoo_products",
                       [sys.executable, os.path.join(ROOT, "extract_odoo_products.py")]))
         steps.append(("extract_odoo_orders",

@@ -20,15 +20,44 @@ incremental sync (recent days + a 4-day recovery backfill). So:
 deployment watchdog → prod DB) that drift apart over time. Observed: prod Kenya
 Jan–Jun 2026 = 438M/31,350 vs corrected dev 398.8M/45,105 (matches BigQuery).
 
-## How to correct production data
-`watchdog.py` has a one-time gate `REBUILD_ON_BOOT` (+ `REBUILD_REFRESH_RAW`,
-`REBUILD_TIMEOUT_SEC`). It runs **after** the API is up (startup health passes)
-but **before** the sync loop/health threads start, so the rebuild can't overlap
-the sync (overlap doubles history — no PK guard on all_sales). Procedure:
-set `REBUILD_ON_BOOT=1` as a deployment secret → publish off-peak (live
-dashboard reads a partial table during the rebuild) → confirm the success log →
-**unset and republish** so it doesn't rebuild on every VM restart.
+## The trap: prod's SOURCE tables are incomplete, so a transform-only rebuild corrupts
+`transform_all_sales.py` reads three sources: `shopify_sales` (Shopify retail
+history), `raw_shopify_vendor_sales` (Online/Shop Zetu), `raw_odoo_*`. The
+killer: **`shopify_sales` is populated ONLY by `shopify_full_extract.py`** — the
+incremental sync never writes it. On a fresh prod DB `shopify_sales` is **empty**
+(prod maintains `raw_shopify_sales` + `all_sales` directly, NOT `shopify_sales`),
+so a transform-only rebuild logs `Shopify deduped rows: 0` and the TRUNCATE wipes
+every Shopify retail row (Kenya pre-2026-03-20, Uganda, Rwanda) — only Odoo +
+Shop Zetu survive. Separately prod's `raw_shopify_vendor_sales` was doubled +
+un-netted (net==gross, ~2.6× dev all-time) = legacy rows from before the dedup
+key/DELETE existed → Online over-reads (e.g. 39.98M vs correct 26.40M).
 
-**How to apply:** any time someone fixes the transform/ETL or rebuilds data in
-dev and asks why the published app still shows old numbers — the fix is in the
-rebuild path prod doesn't run; use REBUILD_ON_BOOT, don't just re-publish.
+**Don't trust "rebuild COMPLETED successfully"** — it only means rc==0. Verify
+the per-source insert lines (`Shopify deduped rows`, `Shop Zetu rows`, `Odoo raw
+rows`) are all non-zero and the summary lists `vivowoman`/`vivo-uganda`/
+`vivo-rwanda`, not just `vivofashiongroup` + `shop-zetu`.
+
+## How to correct production data
+`watchdog.py` one-time gate: `REBUILD_ON_BOOT` (+ `REBUILD_REFRESH_RAW` default
+`1`, `REBUILD_TIMEOUT_SEC`). Runs **after** the API is up (startup health passes)
+but **before** the sync loop/health threads start, so it can't overlap the sync
+(overlap doubles history — no PK guard on all_sales). When `REBUILD_REFRESH_RAW=1`
+it re-extracts ALL sources first: `shopify_full_extract.py` → `shopify_sales`,
+`extract_shopzetu_sales.py --since=2022-01-01 --until=today` → vendor_sales
+(delete-by-window+insert un-doubles + re-nets), Odoo products+orders, THEN
+`transform_all_sales.py` last (only TRUNCATEs when about to repopulate, so an
+aborted source refresh leaves all_sales untouched, not empty).
+
+Procedure: set `REBUILD_ON_BOOT=1`, **leave `REBUILD_REFRESH_RAW=1` (do NOT set
+0)**, raise `REBUILD_TIMEOUT_SEC` (~7200; first Shopify full extract is the long
+pole) → publish off-peak → verify the non-zero per-source logs above →
+**unset `REBUILD_ON_BOOT` and republish**.
+
+**Why REBUILD_REFRESH_RAW=0 is a trap:** it transforms prod's sources as-is, but
+prod's `shopify_sales` is empty → drops all Shopify retail. Only set 0 if every
+source is already known complete & clean (basically never true on prod).
+
+**How to apply:** any time someone fixes the transform/ETL or rebuilds in dev and
+the published app still shows wrong numbers — prod doesn't run the rebuild AND
+its source tables may be empty/dirty; use REBUILD_ON_BOOT with the source refresh
+ON, don't just re-publish or skip the refresh.
