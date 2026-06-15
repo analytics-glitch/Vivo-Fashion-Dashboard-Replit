@@ -31,3 +31,4 @@
 - [Gift voucher reporting filter](gift-voucher-reporting-filter.md) — raw Shopify extract keeps gift vouchers (faithful to BQ extractor); reporting excludes them in api_pg BASE_FILTERS, which must match BOTH '%gift card%' AND '%gift voucher%'.
 - [Odoo rebuild dedup dropped NULL-SKU lines](odoo-rebuild-dedup-null-sku.md) — transform_odoo must PARTITION BY l.id, not (order,day,sku): NULL default_code + window NULL-equality silently collapsed distinct lines (value loss); incl. safe rebuild procedure.
 - [Prod is a separate DB](prod-separate-db-rebuild.md) — dev rebuilds don't reach prod (publish ships code+schema, not rows); fix prod history via the REBUILD_ON_BOOT watchdog gate.
+- [Manual style retirement](manual-style-retirement.md) — durable code-level list force-retires styles (not DB/overrides/Odoo active flag); ALL active/retired endpoints must honor _is_manually_retired or screens disagree.

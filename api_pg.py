@@ -11,6 +11,7 @@ import os
 import json
 import time
 import hashlib
+import unicodedata
 import hmac
 import base64
 import re
@@ -1225,6 +1226,301 @@ def _alloc_update(run):
 # Range-management manual tier overrides, keyed by style_name -> {"tier", "reason"}.
 # Applied on top of the age-based auto-tier in /range-mgmt/classify.
 _RANGE_OVERRIDES = {}
+
+# Manually-retired styles. This is a DURABLE, code-level list (not the in-memory
+# _RANGE_OVERRIDES, and not the Odoo-sourced all_products_clean.active flag which
+# is overwritten on every product sync) so it survives API restarts + data syncs
+# and ships to the production deployment. A style on this list is force-treated as
+# retired everywhere retirement is determined (range-mgmt classify + the product
+# analysis active/retired toggle), overriding the automatic age/sales/SOR rules.
+# Matching is whitespace-insensitive via _norm_style (handles stray/double spaces,
+# NBSP, the "\u00ac\u2020" mojibake of NBSP, and CRLF) so source name variants
+# still resolve to the catalog style_name.
+def _norm_style(s):
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKC", str(s)).replace("\u00a0", " ").replace("\u00ac\u2020", " ")
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+_MANUAL_RETIRED_STYLES = [
+    "Safari 3/4 Sleeve Maxi Kimono With Headwrap",
+    "Safari Basic Ribbed Tank Top",
+    "Safari Bush Drop Shoulder Long Sleeve Top",
+    "Safari Bush Sweatshirt",
+    "Safari By Vivo Mens Cotton Long Sleeve Shirt",
+    "Safari By Vivo Mens Cotton Pants",
+    "Safari By Vivo Mens Cotton Short Sleeve Shirt",
+    "Safari By Vivo Mens Cotton Shorts",
+    "Safari Haya 0ne Shoulder Asymmetrical Side Tie Top",
+    "Safari Haya High Low Dress",
+    "Safari Kaya Long Sleeve Dolman Flounce Shirt Dress",
+    "Safari Kikoy Long Sleeve Shacket",
+    "Safari Kikoy Long Sleeved Shirt Dress",
+    "Safari Kikoy Tunic High Low Top With Side Slits",
+    "Safari Kikoy Wide Leg Pants",
+    "Safari Kikoy Wrap Dress",
+    "Safari Kitenge 3/4 sleeve Maxi Dress",
+    "Safari Kitenge Men's Sweat Pants",
+    "Safari Kitenge Men's Sweatshirt",
+    "Safari Kitenge Side Frill Kaftan",
+    "Safari Kitenge T-Shirt",
+    "Safari Lira Criss",
+    "Safari Lira Drawstring Jacket",
+    "Safari Lira Drop Shoulder Dress",
+    "Safari Mali 3/4 Sleeve Tie Shirt",
+    "Safari Mali Bishop Sleeve Tent Dress",
+    "Safari Mali Gathered Flounce Sleeve Tent Dress",
+    "Safari Mali Wrap Lapel Top",
+    "Safari Mansi Bishop Sleeve Shacket",
+    "Safari Mansi Mens Summer Shirt",
+    "Safari Mara 3/4 Sleeve Flounce Tunic Top",
+    "Safari Mara Cape Top",
+    "Safari Mara Shirred Bishop Sleeve Dress",
+    "Safari Mara Wide Bishop Sleeve Top",
+    "Safari Men's Bomber Jacket",
+    "Safari Men's Cargo Pants",
+    "Safari Men's Kitenge Drawstring Shorts",
+    "Safari Men's Long Sleeve Shirt",
+    "Safari Men's Long Sleeve T-shirt",
+    "Safari Men's Shacket",
+    "Safari Men's Short Sleeve Shirt",
+    "Safari Naledi Gathered Panel Maxi Skirt",
+    "Safari Nazari Coat Dress",
+    "Safari Nazari Maxi Shirt Dress",
+    "Safari Nazari Off Shoulder Top",
+    "Safari Njano Front Tie Dress",
+    "Safari Njano Joggers",
+    "Safari Njano Men's Easy Fit Kitenge Pants",
+    "Safari Njano Men's Easy Fit Pants",
+    "Safari Njano Men's Knee Length Shorts",
+    "Safari Njano Men's Short Sleeve Shirt",
+    "Safari Njano Men's Straight Leg Pants",
+    "Safari Njano Mens Bound Neck Shirt",
+    "Safari Reversible Shirt Jacket",
+    "Safari Savannah Front Slit Midi Skirt",
+    "Safari Savannah Kitenge Midi Wrap Dress",
+    "Safari Savannah Men's Drawstring Shorts (Tall)",
+    "Safari Savannah Men's Half Placket Shirt",
+    "Safari Savannah Men's Short Sleeve Shirt",
+    "Safari Savannah Midi Wrap Dress",
+    "Safari Savannah Wrap Top",
+    "Safari Sizani Strappy Tent Top",
+    "Safari Solana Sleeveless Tiered Maxi Dress",
+    "Safari Tafari Shorts",
+    "Safari Tafari Wrap Top",
+    "Safari Tara Bishop Sleeve Dress",
+    "Safari Tawi A-Line Long Sleeve Shirt Dress",
+    "Safari Tawi Shirt Collar Bishop Sleeve Tiered Dress",
+    "Safari Tie Back Maxi Dress",
+    "Safari Zene Dolman Top",
+    "Safari Zene Drop Shoulder Above Knee Dress",
+    "Safari Zene Tiered Above Knee Dress",
+    "Safari by Vivo Kamari Maxi Dress",
+    "Safari by Vivo Lira Sleeveless Coat",
+    "Safari by Vivo Naledi Bubble Midi Dress",
+    "Safari by Vivo Savannah Drawstring Shacket in Linen",
+    "Shiv & Shikie X Safari Cargo Pants",
+    "Shiv & Shikie X Safari Printed Short Sleeve Shirt",
+    "Shiv & Shikie X Safari Short Sleeve Shirt",
+    "Vivo  X This Is Essential Short Unitard",
+    "Vivo 3/4 Sleeve J.O Jersey A-line Knee Length Dress",
+    "Vivo Adisa Cold Shoulder Kaftan",
+    "Vivo Alek Halter Neck Maxi Dress",
+    "Vivo Aleri Trench Coat Dress",
+    "Vivo Alika Layered Dress",
+    "Vivo Alma Short Sleeve Mini Bodycon",
+    "Vivo Amai Cape Top",
+    "Vivo Amara Asymmetric Top",
+    "Vivo Analo Wide Hem Tent Dress",
+    "Vivo Arusha Wide Drop Shoulder Tunic Top",
+    "Vivo Basic 3/4 Sleeve Sheath Dress",
+    "Vivo Basic 3/4 Sleeve Top",
+    "Vivo Basic 3/4 Sleeved Bodysuit",
+    "Vivo Basic Abby Loose Top",
+    "Vivo Basic Angela Cowl Loose Top",
+    "Vivo Basic Button Down Shirt",
+    "Vivo Basic Dolman Maxi Dress",
+    "Vivo Basic EW Loose Top",
+    "Vivo Basic Faux Pocket Leisure Pants",
+    "Vivo Basic Knee Length Shirt Dress",
+    "Vivo Basic May Jersey Waterfall",
+    "Vivo Basic Mini Butterfly Waterfall",
+    "Vivo Basic Nalia High Low Jersey Top",
+    "Vivo Basic Neo Extra Long Lily Waterfall",
+    "Vivo Basic Neo Sienna Waterfall",
+    "Vivo Basic Puff Sleeved Bodycon",
+    "Vivo Basic Side Twist Knee Length Dress",
+    "Vivo Basic Sleeveless Overcoat",
+    "Vivo Beali Blazer",
+    "Vivo Binti High Low Poncho",
+    "Vivo Bodysuit",
+    "Vivo Cargo Pants",
+    "Vivo Chela Scalloped Sleeveless Top",
+    "Vivo Culottes",
+    "Vivo Dali Drawstring Shoulder Jumpsuit",
+    "Vivo Dali Tie Kimono",
+    "Vivo Essentials Bodycon",
+    "Vivo Essentials Dolman Maxi Dress",
+    "Vivo Essentials Drop Shoulder Tunic Top",
+    "Vivo Essentials Jersey Top",
+    "Vivo Essentials Sleeveless Tent Maxi Waterfall",
+    "Vivo Essentials Strappy Cold Shoulder Top",
+    "Vivo Essentials Tank Top",
+    "Vivo Fahari Cowl Drape Bodycon",
+    "Vivo Fara Off Shoulder Flounce Sleeve Jumpsuit",
+    "Vivo Fitness Bikers",
+    "Vivo Fitness Leggings",
+    "Vivo Fitness Shorts",
+    "Vivo Fitness Spaghetti Strap Tank Top",
+    "Vivo Hisi Dolman Knee Length Dress",
+    "Vivo Jamila  Side Drape Top",
+    "Vivo Jamila Halter Neck Maxi Dress",
+    "Vivo Jasiri Bishop Sleeve Layered Top",
+    "Vivo Jema Off Shoulder Tent Knee Length Dress",
+    "Vivo Jersey Drop Shoulder Top",
+    "Vivo Jira Hooded Poncho",
+    "Vivo Kala Hooded Poncho",
+    "Vivo Kelemi A-Line Knee Length Dress",
+    "Vivo Kelemi Halter Maxi Dress",
+    "Vivo Kelemi Wide Leg Pants",
+    "Vivo Kitenge Strappy Jumpsuit",
+    "Vivo Kitenge Strappy Tie Back Top",
+    "Vivo Kitenge Wide Leg Pants",
+    "Vivo Lamu 3/4 Sleeve Double Layered Bodycon",
+    "Vivo Leggings",
+    "Vivo Lena Slim Fit Pants",
+    "Vivo Liora Shorts",
+    "Vivo Lulu Cotton Barrel Pants",
+    "Vivo Luna Single Tiered Strappy Maxi Dress",
+    "Vivo Maisha Kimono & Pant Set",
+    "Vivo Maisha Strappy Maxi Dress",
+    "Vivo Malindi Loose Top",
+    "Vivo Malindi Tunic Dress With Frills",
+    "Vivo Maua Sleeveless Tent Knee Length Dress",
+    "Vivo Mira Joggers",
+    "Vivo Must Have Shorts in Zena Print",
+    "Vivo Nalia Long Sleeve High Low Top",
+    "Vivo Naya Strappy Midi Body-Con Dress",
+    "Vivo Niari Sleeveless Pleated Dress",
+    "Vivo Nimali Satin Flounce Kimono - Black",
+    "Vivo Nimali Side Flounce Top",
+    "Vivo Nkasi Bubble Sleeve Maxi Dress",
+    "Vivo Nkasi Maxi Kimono",
+    "Vivo Nuru Maxi Kimono",
+    "Vivo Pashmina Shawl",
+    "Vivo Pendo Puff Sleeve Shift Dress",
+    "Vivo Raha Satin Joggers",
+    "Vivo Raha Waist Tie Top",
+    "Vivo Rayon Jersey Slip Dress",
+    "Vivo Rema Drawstring Turtleneck",
+    "Vivo Rema Palazzo Pants",
+    "Vivo Ria A-Line Dress",
+    "Vivo Ruwa Flounce Sleeve Knee Length Tent Dress",
+    "Vivo Saida Ruffle Neck Sheath Dress",
+    "Vivo Saida Sheath Dress",
+    "Vivo Sakari Cap Sleeve Drape Top",
+    "Vivo Samira Maxi Kimono",
+    "Vivo Sana Cape Top",
+    "Vivo Sanali Off-Shoulder Knee Length Dress",
+    "Vivo Sani Long Sleeve Ruffle Placket Shirt",
+    "Vivo Sanyu Overlap Maxi Cover Up Top",
+    "Vivo Sanyu Shift Dress",
+    "Vivo Sia 3/4 Bishop Sleeve Shift Dress (Petite)",
+    "Vivo Sierra Bodycon",
+    "Vivo Situ Off Shoulder Top",
+    "Vivo Situ Ruffle Neck Top",
+    "Vivo Soleil Sleeveless Layered Top",
+    "Vivo Studio 2-piece in Mixed Media",
+    "Vivo Studio Mini Pencil Skirt in Ponte",
+    "Vivo Tana 3/4 Tulip Sleeve Overlap Maxi Top",
+    "Vivo Tana Jersey Tulip Back Waterfall",
+    "Vivo Tana Puff Sleeve Bodysuit",
+    "Vivo Tana Scalloped V-Neck Top",
+    "Vivo Tanda Handkerchief Drape Top",
+    "Vivo Tande Front Drape Skirt",
+    "Vivo Tiered Shirt Dress",
+    "Vivo Waridi Sleeveless Overcoat",
+    "Vivo Wendy Top",
+    "Vivo Wide Leg Pants With Short Lining",
+    "Vivo Wila Cowl Poncho",
+    "Vivo Wila Cowl Tunic",
+    "Vivo Wingu Long Sleeve Side Drape Tunic Top",
+    "Vivo Wingu Puff Sleeve Maxi Dress",
+    "Vivo X Essence Asha Wide Leg Pants With Short Lining",
+    "Vivo X Pinky Full Length Fitness Leggings",
+    "Vivo X Pinky Long Sleeve Cross Back Fitness Playsuit",
+    "Vivo X Pinky Long Sleeve Fitness Top",
+    "Vivo X Pinky Sleeveless Cross Back Fitness Bra",
+    "Vivo X Pinky Sleeveless Cross Back Fitness Tank Top",
+    "Vivo X This Is Essential Long Sleeve Bodysuit",
+    "Vivo X This Is Essential One Shoulder Bodysuit",
+    "Vivo X This Is Essential Scooped Neck Bralette",
+    "Vivo Zanzi Wrap Circular Dress",
+    "Vivo Zuri Long Sleeved Blouse",
+    "Zoya Aridi Leggings",
+    "Zoya Aridi Mens Straight Leg Pants",
+    "Zoya Aridi Unisex Shacket (Flannel)",
+    "Zoya Banda Crop Hoodie",
+    "Zoya Banda Men's Wide Pants",
+    "Zoya Basic Bodycon",
+    "Zoya Basic Full Length Leggings",
+    "Zoya Basic Jersey Bandeau",
+    "Zoya Basic Spaghetti Tank Top",
+    "Zoya Basic Val Tank Top",
+    "Zoya Brave Corduroy Booty Shorts",
+    "Zoya Brave Satin Joggers(Regular)",
+    "Zoya Capri Leggings",
+    "Zoya Chill Spaghetti Strap Tank Top",
+    "Zoya Essentials Basic Mini Bodycon",
+    "Zoya Fitness Shorts",
+    "Zoya Halter Neck Fitness Top",
+    "Zoya Kyro Cropped Shirt",
+    "Zoya Kyro Women's Oversized Blazer",
+    "Zoya Long Sleeved Fitness Crop Top",
+    "Zoya Men's Cargo Pants",
+    "Zoya Men's Round Neck T-shirt",
+    "Zoya Nia Crop Bomber Jacket",
+    "Zoya Nia Crop Oversized Jacket",
+    "Zoya Party Drawstring Hoodie",
+    "Zoya Party One Sleeved Side Cut Dress",
+    "Zoya Party Strappy One Shoulder Midi Dress",
+    "Zoya Party Tie Back Bodycon",
+    "Zoya Party Turtle Neck Maxi Top",
+    "Zoya Sadira Halter Neck Vest",
+    "Zoya Sadira Men's Long Sleeve  T Shirt",
+    "Zoya Sadira Men's Polo T-Shirt",
+    "Zoya Sadira Mens' Chino Pants",
+    "Zoya Sadira Mens' Chino Shorts",
+    "Zoya Shani Kimono",
+    "Zoya Shani Men's Drawstring Shorts",
+    "Zoya Shani Men's Summer Shirt",
+    "Zoya Shani Pleated Shorts",
+    "Zoya Sitawi Round Neck Midriff Top",
+    "Zoya Temo Crop T- Shirt",
+    "Zoya Temo Cropped Jacket",
+    "Zoya Temo Men's Knee Length Shorts",
+    "Zoya Temo Men's Patched Straight Leg Pants",
+    "Zoya Temo Mens Camo Shirt",
+    "Zoya Temo Mens Zipped  Overshirt",
+    "Zoya Temo Pleated Skirt",
+    "Zoya Vasha Midriff Jacket",
+    "Zoya Vasha Track Pants",
+    "Zoya Vasha Track Pants With Pockets",
+    "Zoya X Metamorphisized 143 Detachable Pants",
+    "Zoya X Metamorphisized 143 Pleated Mini Skirt",
+    "Zoya X Metamorphisized 143 Workman's Jacket",
+    "Zoya Yuni  Men's Fleece Sweat Pants",
+    "Zoya Yuni Cargo Pants",
+    "Zoya Yuni Contrast Stitch Cargo Pants",
+    "Zoya Yuni Halter Tank Top",
+    "Zoya Yuni Men's Long Sleeve T-shirt",
+    "Zoya Yuni Men's Sweatshirt",
+    "Zoya Yuni One",
+]
+_RETIRED_STYLE_NORM = frozenset(_norm_style(s) for s in _MANUAL_RETIRED_STYLES)
+
+def _is_manually_retired(style_name):
+    return _norm_style(style_name) in _RETIRED_STYLE_NORM
 
 def csv_to_sql(val):
     # Escape embedded single quotes (double them) so comma-separated filter
@@ -2990,12 +3286,15 @@ def analytics_sor_all_styles(
         soh_warehouse = int(r["soh_warehouse"] or 0)
         soh_total = soh_stores + soh_warehouse
         # Style status semantics: active = sold in window; retired = has
-        # stock but no sales in window; all = either.
+        # stock but no sales in window; all = either. A manually-retired
+        # style is force-treated as retired (never active, always satisfies
+        # the retired filter regardless of stock) for cross-screen consistency.
+        manual_retired = _is_manually_retired(r["style_name"])
         if status == "active":
-            if units_6m <= 0:
+            if units_6m <= 0 or manual_retired:
                 continue
         elif status == "retired":
-            if units_6m > 0 or soh_total <= 0:
+            if not manual_retired and (units_6m > 0 or soh_total <= 0):
                 continue
         else:  # all
             if units_6m <= 0 and soh_total <= 0:
@@ -3275,10 +3574,13 @@ def analytics_product_analysis(
 
     keep = set()
     for k, g in styles.items():
-        active = _is_active(g)
+        manual_retired = _is_manually_retired(k)
+        # A manually-retired style is force-treated as retired: never "active",
+        # and it always satisfies the "retired" filter regardless of stock.
+        active = _is_active(g) and not manual_retired
         if style_status == "active" and not active:
             continue
-        if style_status == "retired" and (active or g["stock"] <= 0):
+        if style_status == "retired" and not manual_retired and (active or g["stock"] <= 0):
             continue
         keep.add(k)
 
@@ -6394,6 +6696,9 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         # Brand rule: every Zoya style is treated as a retired style.
         if (r["brand"] or "").strip().lower() == "zoya":
             is_retired = True
+        # Durable manual-retirement list (overrides the auto age/sales/SOR rules).
+        if _is_manually_retired(r["style_name"]):
+            is_retired = True
         flagged = (not is_retired and age_weeks is not None and age_weeks >= 39
                    and sor_life is not None and sor_life < 40 and current_stock > 0)
 
@@ -7386,17 +7691,26 @@ def inventory_style_counts(
             JOIN all_products_clean p ON i.sku = p.sku
             WHERE i.available > 0 AND p.style_name IS NOT NULL AND p.style_name <> ''""" + cf_i + loc_i + """
         )
-        SELECT
-            (SELECT COUNT(*) FROM (SELECT style_name FROM sold UNION SELECT style_name FROM instock) u) AS total_styles,
-            (SELECT COUNT(*) FROM sold) AS active_styles,
-            (SELECT COUNT(*) FROM (SELECT style_name FROM instock EXCEPT SELECT style_name FROM sold) r) AS retired_styles
+        SELECT 'sold' AS src, style_name FROM sold
+        UNION ALL
+        SELECT 'instock' AS src, style_name FROM instock
         """
-    ) or [{}]
-    r = rows[0]
+    ) or []
+    # Compute counts in Python so the durable manual-retirement list is honored
+    # consistently (the normalized match can't be expressed in raw SQL equality):
+    # active = sold styles MINUS manual-retired; retired = everything in the
+    # universe that is not active (in-stock-no-sale PLUS manual-retired); the two
+    # buckets stay disjoint so active + retired == total.
+    sold, instock = set(), set()
+    for r in rows:
+        (sold if r["src"] == "sold" else instock).add(r["style_name"])
+    universe = sold | instock
+    active = {s for s in sold if not _is_manually_retired(s)}
+    retired = universe - active
     return {
-        "active_styles": int(r.get("active_styles") or 0),
-        "retired_styles": int(r.get("retired_styles") or 0),
-        "total_styles": int(r.get("total_styles") or 0),
+        "active_styles": len(active),
+        "retired_styles": len(retired),
+        "total_styles": len(universe),
     }
 
 
