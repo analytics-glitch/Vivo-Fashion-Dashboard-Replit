@@ -158,6 +158,7 @@ const ProductAnalysis = () => {
   const [subcats, setSubcats] = useState([]);       // [] = all
   const [velDays, setVelDays] = useState(30);       // velocity window (days)
   const [search, setSearch] = useState("");
+  const [hiddenCols, setHiddenCols] = useState(() => new Set()); // master col show/hide
 
   const [stores, setStores] = useState([]);
   const [data, setData] = useState(null);
@@ -214,7 +215,7 @@ const ProductAnalysis = () => {
         params: {
           date_from: dateFrom,
           date_to: dateTo,
-          country: store ? undefined : countryParam,
+          country: countryParam,
           store: store || undefined,
           style_status: status,
           grain,
@@ -262,7 +263,7 @@ const ProductAnalysis = () => {
     () => ({
       date_from: dateFrom,
       date_to: dateTo,
-      country: store ? undefined : countryParam,
+      country: countryParam,
       store: store || undefined,
     }),
     [dateFrom, dateTo, countryParam, store]
@@ -333,6 +334,24 @@ const ProductAnalysis = () => {
     );
     return cols;
   }, [showDim, grain]);
+
+  // Column show/hide for the master table. The first two identity columns
+  // (Style, and the colour/size dim when not at style grain) are always shown.
+  const lockedCols = useMemo(
+    () => new Set(["style_name", ...(showDim ? ["dim"] : [])]),
+    [showDim]
+  );
+  const visibleColumns = useMemo(
+    () => columns.filter((c) => lockedCols.has(c.key) || !hiddenCols.has(c.key)),
+    [columns, hiddenCols, lockedCols]
+  );
+  const toggleCol = useCallback((key) => {
+    setHiddenCols((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
 
   // Master CSV export — uses the full filtered set + the full-precision KES.
   const exportMaster = useCallback(() => {
@@ -632,10 +651,13 @@ const ProductAnalysis = () => {
                   columns={[
                     { key: "subcategory", label: "Sub-category", render: (r) => r.subcategory, csvLabel: "Sub-category" },
                     { key: "styles", label: "Styles", numeric: true, render: (r) => fmtNum(r.styles) },
+                    { key: "pct_range", label: "% Range", numeric: true, render: (r) => fmtPct(r.pct_range), pct: true },
+                    { key: "stock", label: "Stock", numeric: true, render: (r) => fmtNum(r.stock) },
+                    { key: "pct_stock", label: "% Stock", numeric: true, render: (r) => fmtPct(r.pct_stock), pct: true },
                     { key: "units", label: "Units", numeric: true, render: (r) => fmtNum(r.units) },
+                    { key: "pct_units", label: "% Units", numeric: true, render: (r) => fmtPct(r.pct_units), pct: true },
                     { key: "revenue", label: "Revenue", numeric: true, render: (r) => fmtKES(r.revenue) },
                     { key: "pct_revenue", label: "% Rev", numeric: true, render: (r) => fmtPct(r.pct_revenue), pct: true },
-                    { key: "stock", label: "Stock", numeric: true, render: (r) => fmtNum(r.stock) },
                     { key: "woc", label: "WOC", numeric: true, render: (r) => <span className={wocCls(r.woc)}>{fmtWoc(r.woc)}</span>, sortValue: (r) => (r.woc ?? -1) },
                   ]}
                 />
@@ -692,21 +714,50 @@ const ProductAnalysis = () => {
                 Styles ({fmtNum(filteredRows.length)}{filteredRows.length !== rows.length ? ` of ${fmtNum(rows.length)}` : ""})
                 {showDim ? ` · by ${grain === "color" ? "colour" : "size"}` : ""}
               </div>
-              <button
-                type="button"
-                onClick={exportMaster}
-                disabled={!filteredRows.length}
-                className="inline-flex items-center gap-1.5 text-[11.5px] text-muted hover:text-brand px-2 py-1 rounded border border-border hover:border-brand disabled:opacity-40"
-                data-testid="pa-master-export"
-              >
-                Export CSV
-              </button>
+              <div className="flex items-center gap-2">
+                <details className="relative" data-testid="pa-columns">
+                  <summary className="list-none cursor-pointer inline-flex items-center gap-1.5 text-[11.5px] text-muted hover:text-brand px-2 py-1 rounded border border-border hover:border-brand select-none">
+                    Columns{hiddenCols.size ? ` (${columns.length - hiddenCols.size}/${columns.length})` : ""}
+                  </summary>
+                  <div className="absolute right-0 z-20 mt-1 w-56 max-h-72 overflow-auto rounded-md border border-border bg-white shadow-lg p-1.5">
+                    {columns.map((c) => {
+                      const locked = lockedCols.has(c.key);
+                      const shown = locked || !hiddenCols.has(c.key);
+                      const label = typeof c.label === "string" ? c.label : c.key;
+                      return (
+                        <label
+                          key={c.key}
+                          className={`flex items-center gap-2 px-2 py-1 text-[12px] rounded ${locked ? "opacity-50" : "hover:bg-muted/10 cursor-pointer"}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={shown}
+                            disabled={locked}
+                            onChange={() => toggleCol(c.key)}
+                            data-testid={`pa-col-${c.key}`}
+                          />
+                          {label}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </details>
+                <button
+                  type="button"
+                  onClick={exportMaster}
+                  disabled={!filteredRows.length}
+                  className="inline-flex items-center gap-1.5 text-[11.5px] text-muted hover:text-brand px-2 py-1 rounded border border-border hover:border-brand disabled:opacity-40"
+                  data-testid="pa-master-export"
+                >
+                  Export CSV
+                </button>
+              </div>
             </div>
             {filteredRows.length ? (
               <SortableTable
                 testId="pa-master"
                 rows={filteredRows}
-                columns={columns}
+                columns={visibleColumns}
                 initialSort={{ key: "revenue", dir: "desc" }}
                 pageSize={100}
                 mobileCards
