@@ -2970,6 +2970,503 @@ def analytics_sor_all_styles(
     out.sort(key=lambda x: -(x["sales_6m"] or 0))
     return out
 
+# ---------------------------------------------------------------------------
+# Product Analysis cockpit — one canonical style-level dataset
+# ---------------------------------------------------------------------------
+# A single read-only endpoint that returns the CEO-grade style master for the
+# selected period + scope, with sales AND current stock BOTH scoped by the
+# store/country filter (store-scoped current stock, warehouse-excluded when
+# "Overall", is the key fix that makes every figure tie out). Metric defs
+# mirror /api/kpis: units = SUM(net_quantity); revenue = SUM(total_sales_kes
+# for sale/order) - SUM(returns_kes for return); net revenue likewise on
+# net_sales_kes; ASP = revenue / SUM(ordered_item_quantity for sale/order).
+# WOC + SOR reuse the shared velocity/sell-out shapes used elsewhere. The
+# summary band + by-brand + by-sub-category rollups are derived in Python from
+# the SAME canonical rows (rolled up to style grain) so they reconcile with
+# the table exactly at any grain.
+
+def _pa_safe_date(s, fallback):
+    """Validate a YYYY-MM-DD date param before it is interpolated into SQL.
+    The /api date-injection middleware already screens these, but we re-parse
+    here as defense in depth (and to apply a sane fallback)."""
+    try:
+        return str(date.fromisoformat((s or "").strip()))
+    except (ValueError, TypeError):
+        return fallback
+
+
+def _pa_in_filter(col, val, lower=False):
+    """Build an ` AND col IN (...)` clause from a comma-separated filter value.
+    Quotes are doubled so values can't break out of the SQL literal."""
+    if not val:
+        return ""
+    vals = [v.strip() for v in str(val).split(",") if v.strip()]
+    if not vals:
+        return ""
+    if lower:
+        joined = ",".join("'" + v.lower().replace("'", "''") + "'" for v in vals)
+        return " AND LOWER(" + col + ") IN (" + joined + ")"
+    joined = ",".join("'" + v.replace("'", "''") + "'" for v in vals)
+    return " AND " + col + " IN (" + joined + ")"
+
+
+@app.get("/api/analytics/product-analysis")
+def analytics_product_analysis(
+    date_from: str = Query(default=None),
+    date_to: str = Query(default=None),
+    country: str = Query(default=None),
+    store: str = Query(default=None),
+    brand: str = Query(default=None),
+    category: str = Query(default=None),
+    subcategory: str = Query(default=None),
+    style_status: str = Query(default="all"),
+    grain: str = Query(default="style"),
+    velocity_days: int = Query(default=30),
+):
+    df = _pa_safe_date(date_from, str(date.today() - timedelta(days=89)))
+    dt = _pa_safe_date(date_to, str(date.today()))
+    vel = velocity_days if isinstance(velocity_days, int) and velocity_days > 0 else 30
+    vel = min(vel, 3650)
+    grain = (grain or "style").strip().lower()
+    if grain not in ("style", "color", "size"):
+        grain = "style"
+    dim_col = {"color": "color_print", "size": "size", "style": None}[grain]
+    style_status = (style_status or "all").strip().lower()
+    if style_status not in ("active", "retired", "all"):
+        style_status = "all"
+
+    cf, chf = _style_filters(country, store, "s")   # sales scope (store -> pos_location_name)
+    icf, _ = _style_filters(country, None, "i")      # inventory country scope
+    if store:
+        current_loc_clause = "i.pos_location_name IN (" + csv_to_sql(store) + ")"
+    else:
+        current_loc_clause = "i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")"
+
+    brand_pf = _pa_in_filter("brand", brand, lower=True)
+    cat_pf = _pa_in_filter("category", category)
+    subcat_pf = _pa_in_filter("product_type", subcategory)
+
+    if dim_col:
+        prod_dim_sel = ", COALESCE(NULLIF(TRIM(" + dim_col + "),''),'(none)') AS dim"
+        prod_dim_grp = ", COALESCE(NULLIF(TRIM(" + dim_col + "),''),'(none)')"
+        sales_dim_sel = ", COALESCE(NULLIF(TRIM(p." + dim_col + "),''),'(none)') AS dim"
+        sales_dim_grp = ", COALESCE(NULLIF(TRIM(p." + dim_col + "),''),'(none)')"
+        inv_dim_sel = ", COALESCE(NULLIF(TRIM(i." + dim_col + "),''),'(none)') AS dim"
+        inv_dim_grp = ", COALESCE(NULLIF(TRIM(i." + dim_col + "),''),'(none)')"
+        join_keys = " USING (style_name, dim)"
+        sel_dim = " p.dim,"
+    else:
+        prod_dim_sel = prod_dim_grp = sales_dim_sel = sales_dim_grp = ""
+        inv_dim_sel = inv_dim_grp = ""
+        join_keys = " USING (style_name)"
+        sel_dim = ""
+
+    sql = (
+        "WITH prod AS ("
+        " SELECT style_name" + prod_dim_sel + ","
+        " MAX(brand) AS brand, MAX(category) AS category, MAX(product_type) AS subcategory,"
+        " MAX(collection) AS collection, MAX(season) AS season, MAX(style_number) AS style_number,"
+        " MAX(price) AS full_price,"
+        " MIN(substring(style_launch_date,1,10)) FILTER ("
+        " WHERE substring(style_launch_date,1,10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') AS launch_date,"
+        " COUNT(DISTINCT NULLIF(TRIM(size),'')) AS sizes_count,"
+        " COUNT(DISTINCT NULLIF(TRIM(color_print),'')) AS colors_count"
+        " FROM all_products_clean"
+        " WHERE style_name IS NOT NULL AND style_name <> ''" + brand_pf + cat_pf + subcat_pf +
+        " GROUP BY style_name" + prod_dim_grp +
+        "),"
+        "sales AS ("
+        " SELECT p.style_name" + sales_dim_sel + ","
+        " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "'),0) AS units_period,"
+        " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes"
+        " WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)"
+        " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "')),0) AS revenue_period,"
+        " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes"
+        " WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)"
+        " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "')),0) AS net_revenue_period,"
+        " COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END)"
+        " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "'),0) AS gross_units_period,"
+        " COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_kind IN ('sale','order')"
+        " AND s.sale_date BETWEEN '" + df + "' AND '" + dt + "') AS orders_period,"
+        " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '" + str(vel) + " days'),0) AS units_vel,"
+        " SUM(s.net_quantity) AS units_life,"
+        " MAX(s.sale_date::date) AS last_sale,"
+        " MIN(s.sale_date::date) FILTER (WHERE s.sale_kind IN ('sale','order')) AS first_sale"
+        " FROM all_products_clean p JOIN all_sales s ON s.variant_sku = p.sku"
+        " WHERE p.style_name IS NOT NULL AND p.style_name <> '' AND " + BASE_FILTERS + cf + chf +
+        " GROUP BY p.style_name" + sales_dim_grp +
+        "),"
+        "stock AS ("
+        " SELECT i.style_name" + inv_dim_sel + ","
+        " COALESCE(SUM(i.available) FILTER (WHERE " + current_loc_clause + "),0) AS soh_current,"
+        " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_warehouse,"
+        " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_stores"
+        " FROM all_inventory i WHERE i.style_name IS NOT NULL AND i.style_name <> ''" + icf +
+        " GROUP BY i.style_name" + inv_dim_grp +
+        "),"
+        "latest_price AS ("
+        " SELECT DISTINCT ON (p.style_name) p.style_name, s.product_price_kes AS current_price"
+        " FROM all_products_clean p JOIN all_sales s ON s.variant_sku = p.sku"
+        " WHERE p.style_name IS NOT NULL AND p.style_name <> '' AND s.sale_kind IN ('sale','order')"
+        " AND s.product_price_kes IS NOT NULL AND s.product_price_kes > 0 AND " + BASE_FILTERS + cf + chf +
+        " ORDER BY p.style_name, s.sale_date DESC"
+        ")"
+        " SELECT p.style_name," + sel_dim +
+        " p.brand, p.category, p.subcategory, p.collection, p.season, p.style_number,"
+        " p.full_price, p.launch_date, p.sizes_count, p.colors_count,"
+        " COALESCE(sa.units_period,0) AS units_period, COALESCE(sa.revenue_period,0) AS revenue_period,"
+        " COALESCE(sa.net_revenue_period,0) AS net_revenue_period, COALESCE(sa.gross_units_period,0) AS gross_units_period,"
+        " COALESCE(sa.orders_period,0) AS orders_period, COALESCE(sa.units_vel,0) AS units_vel,"
+        " COALESCE(sa.units_life,0) AS units_life, sa.last_sale, sa.first_sale,"
+        " COALESCE(st.soh_current,0) AS soh_current, COALESCE(st.soh_warehouse,0) AS soh_warehouse,"
+        " COALESCE(st.soh_stores,0) AS soh_stores, lp.current_price"
+        " FROM prod p"
+        " LEFT JOIN sales sa" + join_keys +
+        " LEFT JOIN stock st" + join_keys +
+        " LEFT JOIN latest_price lp USING (style_name)"
+        " WHERE (COALESCE(sa.units_life,0) <> 0 OR COALESCE(st.soh_current,0) > 0"
+        " OR COALESCE(st.soh_warehouse,0) > 0 OR COALESCE(st.soh_stores,0) > 0)"
+    )
+
+    raw = run_query(sql)
+    today = date.today()
+    wk = vel / 7.0
+
+    def _woc(stock, uvel):
+        wa = (uvel / wk) if wk > 0 else 0
+        return round(stock / wa, 1) if wa > 0 else None
+
+    def _sor(units, stock):
+        denom = units + stock
+        return round(units * 100.0 / denom, 1) if denom > 0 else None
+
+    rows = []
+    for r in raw:
+        units = int(r["units_period"] or 0)
+        revenue = float(r["revenue_period"] or 0)
+        net_rev = float(r["net_revenue_period"] or 0)
+        gross_units = int(r["gross_units_period"] or 0)
+        units_vel = int(r["units_vel"] or 0)
+        units_life = int(r["units_life"] or 0)
+        stock = int(r["soh_current"] or 0)
+        first_sale = r["first_sale"]
+        launch = _parse_iso_date(r["launch_date"]) or first_sale
+        age_weeks = round((today - launch).days / 7.0) if launch else None
+        full_price = round(float(r["full_price"])) if r["full_price"] is not None else None
+        current_price = round(float(r["current_price"])) if r["current_price"] is not None else None
+        asp = round(revenue / gross_units) if gross_units > 0 else None
+        rows.append({
+            "style_name": r["style_name"],
+            "dim": (r["dim"] if dim_col else None),
+            "style_number": r["style_number"],
+            "brand": r["brand"],
+            "category": r["category"],
+            "subcategory": r["subcategory"],
+            "collection": r["collection"],
+            "season": r["season"],
+            "units_sold": units,
+            "revenue": round(revenue),
+            "net_revenue": round(net_rev),
+            "orders": int(r["orders_period"] or 0),
+            "current_stock": stock,
+            "warehouse_stock": int(r["soh_warehouse"] or 0),
+            "store_stock": int(r["soh_stores"] or 0),
+            "units_vel": units_vel,
+            "units_life": units_life,
+            "woc": _woc(stock, units_vel),
+            "sor": _sor(units, stock),
+            "asp": asp,
+            "full_price": full_price,
+            "current_price": current_price,
+            "launch_date": str(launch) if launch else None,
+            "age_weeks": age_weeks,
+            "last_sale": str(r["last_sale"]) if r["last_sale"] else None,
+            "sizes_count": int(r["sizes_count"] or 0),
+            "colors_count": int(r["colors_count"] or 0),
+        })
+
+    # Roll the (possibly dim-grain) rows up to STYLE grain so the status filter
+    # and the summary/by-brand/by-subcategory rollups are computed consistently
+    # and reconcile with the table at any grain.
+    styles = {}
+    for row in rows:
+        k = row["style_name"]
+        g = styles.get(k)
+        if not g:
+            g = {"units": 0, "revenue": 0, "net_revenue": 0, "stock": 0, "units_vel": 0,
+                 "brand": row["brand"], "category": row["category"], "subcategory": row["subcategory"]}
+            styles[k] = g
+        g["units"] += row["units_sold"]
+        g["revenue"] += row["revenue"]
+        g["net_revenue"] += row["net_revenue"]
+        g["stock"] += row["current_stock"]
+        g["units_vel"] += row["units_vel"]
+
+    def _is_active(g):
+        return g["units_vel"] > 0
+
+    keep = set()
+    for k, g in styles.items():
+        active = _is_active(g)
+        if style_status == "active" and not active:
+            continue
+        if style_status == "retired" and (active or g["stock"] <= 0):
+            continue
+        keep.add(k)
+
+    rows = [r for r in rows if r["style_name"] in keep]
+    kept = {k: g for k, g in styles.items() if k in keep}
+
+    tot_units = sum(g["units"] for g in kept.values())
+    tot_rev = sum(g["revenue"] for g in kept.values())
+    tot_net = sum(g["net_revenue"] for g in kept.values())
+    tot_stock = sum(g["stock"] for g in kept.values())
+    tot_vel = sum(g["units_vel"] for g in kept.values())
+    summary = {
+        "styles": len(kept),
+        "active_styles": sum(1 for g in kept.values() if _is_active(g)),
+        "units": tot_units,
+        "revenue": tot_rev,
+        "net_revenue": tot_net,
+        "stock_units": tot_stock,
+        "avg_sor": _sor(tot_units, tot_stock),
+        "avg_woc": _woc(tot_stock, tot_vel),
+    }
+
+    brands_map = {}
+    for g in kept.values():
+        b = g["brand"] or "Unknown"
+        bb = brands_map.setdefault(b, {"brand": b, "styles": 0, "units": 0, "revenue": 0, "stock": 0, "units_vel": 0})
+        bb["styles"] += 1
+        bb["units"] += g["units"]
+        bb["revenue"] += g["revenue"]
+        bb["stock"] += g["stock"]
+        bb["units_vel"] += g["units_vel"]
+    by_brand = []
+    for bb in brands_map.values():
+        bb["sor"] = _sor(bb["units"], bb["stock"])
+        bb["woc"] = _woc(bb["stock"], bb["units_vel"])
+        by_brand.append(bb)
+    by_brand.sort(key=lambda x: -x["revenue"])
+
+    total_styles = len(kept) or 1
+    sub_map = {}
+    for g in kept.values():
+        sc = g["subcategory"] or "Unknown"
+        ss = sub_map.setdefault(sc, {"subcategory": sc, "category": g["category"], "styles": 0,
+                                     "units": 0, "revenue": 0, "stock": 0, "units_vel": 0})
+        ss["styles"] += 1
+        ss["units"] += g["units"]
+        ss["revenue"] += g["revenue"]
+        ss["stock"] += g["stock"]
+        ss["units_vel"] += g["units_vel"]
+    by_subcategory = []
+    for ss in sub_map.values():
+        ss["pct_range"] = round(ss["styles"] * 100.0 / total_styles, 1)
+        ss["pct_stock"] = round(ss["stock"] * 100.0 / tot_stock, 1) if tot_stock else 0.0
+        ss["pct_units"] = round(ss["units"] * 100.0 / tot_units, 1) if tot_units else 0.0
+        ss["pct_revenue"] = round(ss["revenue"] * 100.0 / tot_rev, 1) if tot_rev else 0.0
+        ss["woc"] = _woc(ss["stock"], ss["units_vel"])
+        by_subcategory.append(ss)
+    by_subcategory.sort(key=lambda x: -x["revenue"])
+
+    return {
+        "rows": rows,
+        "summary": summary,
+        "by_brand": by_brand,
+        "by_subcategory": by_subcategory,
+        "scope": {
+            "store": store or None, "country": country or None,
+            "date_from": df, "date_to": dt, "velocity_days": vel,
+            "grain": grain, "style_status": style_status,
+        },
+    }
+
+
+@app.get("/api/analytics/product-analysis/style")
+def analytics_product_analysis_style(
+    style: str = Query(...),
+    date_from: str = Query(default=None),
+    date_to: str = Query(default=None),
+    country: str = Query(default=None),
+    store: str = Query(default=None),
+):
+    """Per-style drill-down: size breakdown, colour breakdown, and current stock
+    by store location ("what's sitting where"). Sales are period/scope-scoped;
+    the location view shows ALL locations (country-scoped) so transfers can be
+    reasoned about, with the warehouse flagged."""
+    df = _pa_safe_date(date_from, str(date.today() - timedelta(days=89)))
+    dt = _pa_safe_date(date_to, str(date.today()))
+    st_lit = "'" + (style or "").replace("'", "''") + "'"
+    cf, chf = _style_filters(country, store, "s")
+    icf, _ = _style_filters(country, None, "i")
+    if store:
+        current_loc_clause = "i.pos_location_name IN (" + csv_to_sql(store) + ")"
+    else:
+        current_loc_clause = "i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")"
+
+    def _dim_break(dim_col):
+        return run_query(
+            "WITH sales AS ("
+            " SELECT COALESCE(NULLIF(TRIM(p." + dim_col + "),''),'(none)') AS k,"
+            " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "'),0) AS units,"
+            " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes"
+            " WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)"
+            " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "')),0) AS revenue"
+            " FROM all_products_clean p JOIN all_sales s ON s.variant_sku = p.sku"
+            " WHERE p.style_name = " + st_lit + " AND " + BASE_FILTERS + cf + chf +
+            " GROUP BY 1"
+            "), stock AS ("
+            " SELECT COALESCE(NULLIF(TRIM(i." + dim_col + "),''),'(none)') AS k,"
+            " COALESCE(SUM(i.available) FILTER (WHERE " + current_loc_clause + "),0) AS stock"
+            " FROM all_inventory i WHERE i.style_name = " + st_lit + icf +
+            " GROUP BY 1"
+            ") SELECT COALESCE(sa.k, st.k) AS k, COALESCE(sa.units,0) AS units,"
+            " COALESCE(sa.revenue,0) AS revenue, COALESCE(st.stock,0) AS stock"
+            " FROM sales sa FULL OUTER JOIN stock st USING (k)"
+            " ORDER BY units DESC, stock DESC"
+        )
+
+    by_size = [{"size": x["k"], "units": int(x["units"] or 0),
+                "revenue": int(float(x["revenue"] or 0)), "stock": int(x["stock"] or 0)}
+               for x in _dim_break("size")]
+    by_color = [{"color": x["k"], "units": int(x["units"] or 0),
+                 "revenue": int(float(x["revenue"] or 0)), "stock": int(x["stock"] or 0)}
+                for x in _dim_break("color_print")]
+
+    loc = run_query(
+        "SELECT i.pos_location_name AS location, MAX(i.country) AS country,"
+        " COALESCE(SUM(i.available),0) AS stock,"
+        " (i.pos_location_name IN (" + WAREHOUSE_LOCATIONS + ")) AS is_warehouse"
+        " FROM all_inventory i WHERE i.style_name = " + st_lit + icf +
+        " GROUP BY i.pos_location_name HAVING COALESCE(SUM(i.available),0) <> 0"
+        " ORDER BY stock DESC"
+    )
+    by_location = [{"location": x["location"], "country": x["country"],
+                    "stock": int(x["stock"] or 0), "is_warehouse": bool(x["is_warehouse"])}
+                   for x in loc]
+
+    return {
+        "style": style,
+        "by_size": by_size,
+        "by_color": by_color,
+        "by_location": by_location,
+        "scope": {"store": store or None, "country": country or None, "date_from": df, "date_to": dt},
+    }
+
+
+def _product_ai_core(body):
+    """Grounded "what to act on" narrative for the Product Analysis range. The
+    client posts the canonical summary + a few short lists (overstock / top
+    sellers / slow movers) computed from the same rows; we format the facts and
+    ask the LLM for a concise executive read. Plain text, never JSON."""
+    scope = str(body.get("scope_label") or "the range").strip()[:120]
+    date_label = str(body.get("date_label") or "").strip()[:80]
+    s = body.get("summary") or {}
+
+    def _g(k):
+        try:
+            v = s.get(k)
+            return None if v is None else float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _money(v):
+        return "KES %s" % format(round(v), ",") if v is not None else "n/a"
+
+    def _num(v):
+        return format(round(v), ",") if v is not None else "n/a"
+
+    def _lst(items, fmt):
+        out = []
+        for it in (items or [])[:8]:
+            try:
+                out.append(fmt(it))
+            except (TypeError, ValueError, KeyError, AttributeError):
+                continue
+        return "; ".join(out) if out else "none"
+
+    overstock = _lst(
+        body.get("overstock"),
+        lambda it: "%s (WOC %s, %s units stock)" % (
+            str(it.get("style_name") or it.get("style") or "")[:48],
+            ("%.0f" % float(it.get("woc"))) if it.get("woc") is not None else "n/a",
+            _num(float(it.get("current_stock") or it.get("stock") or 0)),
+        ),
+    )
+    top_sellers = _lst(
+        body.get("top_sellers"),
+        lambda it: "%s (%s units, %s)" % (
+            str(it.get("style_name") or it.get("style") or "")[:48],
+            _num(float(it.get("units_sold") or it.get("units") or 0)),
+            _money(float(it.get("revenue") or 0)),
+        ),
+    )
+    slow = _lst(
+        body.get("slow_movers"),
+        lambda it: "%s (SOR %s%%, %s units stock)" % (
+            str(it.get("style_name") or it.get("style") or "")[:48],
+            ("%.0f" % float(it.get("sor"))) if it.get("sor") is not None else "n/a",
+            _num(float(it.get("current_stock") or it.get("stock") or 0)),
+        ),
+    )
+
+    facts = (
+        "Scope: %s. Period: %s.\n"
+        "Range summary: %s active styles, %s units sold, %s revenue, %s units of current stock, "
+        "average sell-out rate %s%%, average weeks-of-cover %s.\n"
+        "Overstocked (high weeks-of-cover): %s.\n"
+        "Top sellers: %s.\n"
+        "Slow movers (low sell-out, stock on hand): %s."
+    ) % (
+        scope, date_label or "selected period",
+        _num(_g("active_styles") if _g("active_styles") is not None else _g("styles")),
+        _num(_g("units")), _money(_g("revenue")), _num(_g("stock_units")),
+        ("%.0f" % _g("avg_sor")) if _g("avg_sor") is not None else "n/a",
+        ("%.1f" % _g("avg_woc")) if _g("avg_woc") is not None else "n/a",
+        overstock, top_sellers, slow,
+    )
+    sys = (
+        "You are a retail merchandising analyst for Vivo Fashion Group, a "
+        "multi-brand fashion retailer in East Africa (Kenya/Uganda/Rwanda + "
+        "Online). All money is in Kenyan Shillings (KES). You are given a "
+        "snapshot of a product range: a summary plus lists of overstocked, "
+        "best-selling, and slow-moving styles. Write a concise, decision-useful "
+        "'what to act on' narrative (4-6 sentences, <=140 words): what to "
+        "reorder or chase, what to mark down or clear, and where stock is "
+        "imbalanced. Use the exact figures and style names provided; do not "
+        "invent numbers. Plain prose, no markdown headers, no bullet lists, no "
+        "emojis."
+    )
+    narrative = (_chat_llm(
+        [{"role": "system", "content": sys},
+         {"role": "user", "content": facts}],
+        max_tokens=380,
+    ) or "").strip()
+    if not narrative:
+        return {"available": False, "reason": "empty"}
+    return {"available": True, "narrative": narrative}
+
+
+@app.post("/api/analytics/product-analysis/ai")
+async def product_analysis_ai_post(request: Request):
+    """AI range narrative for the Product Analysis page. Mirrors the trend/
+    projection AI pattern: the AI key is server-only, so the client posts the
+    grounded summary and we run the LLM here. Always returns gracefully — the
+    narrative is an enhancement, never a blocker."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not (os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
+            and os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")):
+        return {"available": False, "reason": "ai_not_configured"}
+    try:
+        return await _chat_run_in_threadpool(_product_ai_core, body or {})
+    except Exception:
+        return {"available": False, "reason": "ai_error"}
+
+
 @app.get("/api/analytics/stock-to-sales-by-category")
 def analytics_sts_by_category(
     date_from: str = Query(default=str(date.today().replace(day=1))),
