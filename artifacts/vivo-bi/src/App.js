@@ -13,6 +13,7 @@ const Overview = React.lazy(() => import("@/pages/Overview"));
 const TrendAnalysis = React.lazy(() => import("@/pages/TrendAnalysis"));
 const Locations = React.lazy(() => import("@/pages/Locations"));
 const Products = React.lazy(() => import("@/pages/Products"));
+const ProductAnalysis = React.lazy(() => import("@/pages/ProductAnalysis"));
 const Inventory = React.lazy(() => import("@/pages/Inventory"));
 const Exports = React.lazy(() => import("@/pages/Exports"));
 const Customers = React.lazy(() => import("@/pages/Customers"));
@@ -130,6 +131,7 @@ function App() {
                 <Route path="/markdown-clearance" element={<ProtectedShell pageId="markdown-clearance"><MarkdownClearance /></ProtectedShell>} />
                 <Route path="/footfall" element={<ProtectedShell pageId="footfall"><Footfall /></ProtectedShell>} />
                 <Route path="/trend-analysis" element={<ProtectedShell pageId="trend-analysis"><TrendAnalysis /></ProtectedShell>} />
+                <Route path="/product-analysis" element={<ProtectedShell pageId="product-analysis"><ProductAnalysis /></ProtectedShell>} />
                 <Route path="/targets" element={<ProtectedShell pageId="targets"><TargetsTracker /></ProtectedShell>} />
                 <Route path="/re-order" element={<ProtectedShell pageId="re-order"><ReOrder /></ProtectedShell>} />
                 <Route path="/ibt" element={<ProtectedShell pageId="ibt"><IBT /></ProtectedShell>} />
