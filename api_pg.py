@@ -2858,58 +2858,117 @@ def analytics_sell_through_by_location(
 
 @app.get("/api/analytics/sor-all-styles")
 def analytics_sor_all_styles(
-    date_from: str = Query(default=str(date.today().replace(day=1))),
-    date_to:   str = Query(default=str(date.today())),
-    country:   str = Query(default=None),
-    channel:   str = Query(default=None),
+    brand: str = Query(default=None),
+    style_status: str = Query(default="all"),
+    window_days: int = Query(default=180),
+    country: str = Query(default=None),
+    channel: str = Query(default=None),
 ):
-    # total_sales is NET of returns (gross − returns) per the metrics spec.
-    # Return rows are included so returns_kes is subtracted; units_sold (which
-    # drives sor_percent) stays sale+order only.
-    where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order','return') AND p.style_name IS NOT NULL")
-    # Phase 2 A6 — weekly_units uses the standardized recency-weighted velocity
-    # (28d ×2 over a 12-week-equivalent denominator on a trailing 56d window).
-    vel_cc = _country_channel_filter(country, channel)
-    rows = run_query("""
-        SELECT p.style_name, p.collection, p.brand, p.product_type,
-            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
-                           WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
-            COALESCE(MAX(i.current_stock), 0) AS current_stock,
-            ROUND(((COALESCE(MAX(v.u28), 0) * 2)
-                   + GREATEST(COALESCE(MAX(v.u56), 0) - COALESCE(MAX(v.u28), 0), 0)) / 12.0, 2) AS weekly_units,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) * 100.0 /
-                NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) + COALESCE(MAX(i.current_stock), 0), 0), 1) AS sor_percent
-        FROM all_sales s
-        LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
-        LEFT JOIN (
-            SELECT p2.style_name, SUM(i2.available) AS current_stock
-            FROM all_inventory i2
-            LEFT JOIN all_products_clean p2 ON i2.sku = p2.sku
-            WHERE i2.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
-            GROUP BY p2.style_name
-        ) i ON p.style_name = i.style_name
-        LEFT JOIN (
+    # Catalog-wide SOR audit — same row shape as the L-10 report
+    # (SorStylesTable contract) but covering every style in the catalog
+    # rather than just the 90-122 day new-style band. "Active" rows are
+    # styles that sold a unit in the trailing `window_days`; "retired" are
+    # styles with stock but no sales in the window; "all" is the union.
+    win = int(window_days) if window_days and int(window_days) > 0 else 180
+    brand_pf = ""
+    if brand:
+        brand_pf = " AND LOWER(brand) = '" + brand.strip().lower().replace("'", "''") + "'"
+    cf, chf = _style_filters(country, channel, "s")
+    raw = run_query(
+        """
+        WITH prod AS (
+            SELECT style_name,
+                MAX(brand) AS brand,
+                MAX(collection) AS collection,
+                MAX(product_type) AS subcategory,
+                MAX(style_number) AS style_number
+            FROM all_products_clean
+            WHERE style_name IS NOT NULL AND style_name <> ''""" + brand_pf + """
+            GROUP BY style_name
+        ),
+        sales AS (
             SELECT p.style_name,
-                SUM(s.ordered_item_quantity) FILTER (
-                    WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days') AS u28,
-                SUM(s.ordered_item_quantity) AS u56
-            FROM all_sales s
-            JOIN all_products_clean p ON s.variant_sku = p.sku
-            WHERE s.sale_kind IN ('sale','order') AND p.style_name IS NOT NULL
-              AND s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
-              AND """ + vel_cc + """
+                SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '""" + str(win) + """ days') AS units_6m,
+                ROUND(SUM(s.net_sales_kes::numeric) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '""" + str(win) + """ days')) AS sales_6m,
+                SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '21 days') AS units_3w,
+                SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '30 days') AS units_30d,
+                MAX(s.sale_date::date) AS last_sale,
+                MIN(s.sale_date::date) AS first_sale
+            FROM all_products_clean p
+            JOIN all_sales s ON s.variant_sku = p.sku
+            WHERE p.style_name IS NOT NULL AND s.sale_kind IN ('sale','order')
+              AND """ + BASE_FILTERS + cf + chf + """
             GROUP BY p.style_name
-        ) v ON p.style_name = v.style_name
-        WHERE """ + where + """
-        GROUP BY p.style_name, p.collection, p.brand, p.product_type
-        ORDER BY units_sold DESC
-        LIMIT 5000
-    """, date_to=date_to)
-    for r in rows:
-        r["velocity_method"] = "ewma_56d"
-    return rows
+        ),
+        stock AS (
+            SELECT style_name,
+                COALESCE(SUM(available) FILTER (WHERE pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
+                COALESCE(SUM(available) FILTER (WHERE pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_warehouse
+            FROM all_inventory i
+            WHERE style_name IS NOT NULL
+            GROUP BY style_name
+        )
+        SELECT p.style_name, p.brand, p.collection, p.subcategory, p.style_number,
+            COALESCE(sa.units_6m, 0) AS units_6m, COALESCE(sa.sales_6m, 0) AS sales_6m,
+            COALESCE(sa.units_3w, 0) AS units_3w, COALESCE(sa.units_30d, 0) AS units_30d,
+            sa.last_sale, sa.first_sale,
+            COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse
+        FROM prod p
+        LEFT JOIN sales sa USING (style_name)
+        LEFT JOIN stock st USING (style_name)
+        WHERE COALESCE(p.brand, '') NOT ILIKE '%third party%'
+          AND (sa.units_6m IS NOT NULL OR st.soh_stores > 0 OR st.soh_warehouse > 0)
+        """
+    ) or []
+    status = (style_status or "all").strip().lower()
+    today = date.today()
+    out = []
+    for r in raw:
+        units_6m = int(r["units_6m"] or 0)
+        soh_stores = int(r["soh_stores"] or 0)
+        soh_warehouse = int(r["soh_warehouse"] or 0)
+        soh_total = soh_stores + soh_warehouse
+        # Style status semantics: active = sold in window; retired = has
+        # stock but no sales in window; all = either.
+        if status == "active":
+            if units_6m <= 0:
+                continue
+        elif status == "retired":
+            if units_6m > 0 or soh_total <= 0:
+                continue
+        else:  # all
+            if units_6m <= 0 and soh_total <= 0:
+                continue
+        sales_6m = float(r["sales_6m"] or 0)
+        units_30d = int(r["units_30d"] or 0)
+        last_sale = r["last_sale"]
+        first_sale = r["first_sale"]
+        weekly_avg = round(units_30d / (30.0 / 7.0), 1)
+        woc = round(soh_total / weekly_avg, 1) if weekly_avg > 0 else None
+        denom = units_6m + soh_total
+        age_days = (today - first_sale).days if first_sale else None
+        out.append({
+            "style_name": r["style_name"],
+            "brand": r["brand"],
+            "collection": r["collection"],
+            "subcategory": r["subcategory"],
+            "style_number": r["style_number"],
+            "sales_6m": round(sales_6m),
+            "units_6m": units_6m,
+            "units_3w": int(r["units_3w"] or 0),
+            "weekly_avg": weekly_avg,
+            "soh_total": soh_total,
+            "soh_wh": soh_warehouse,
+            "woc": woc,
+            "pct_in_wh": round(100.0 * soh_warehouse / soh_total, 1) if soh_total else 0.0,
+            "asp_6m": round(sales_6m / units_6m) if units_6m > 0 else None,
+            "days_since_last_sale": (today - last_sale).days if last_sale else None,
+            "sor_6m": round(100.0 * units_6m / denom, 1) if denom > 0 else None,
+            "launch_date": str(first_sale) if first_sale else None,
+            "style_age_weeks": round(age_days / 7.0) if age_days is not None else 0,
+        })
+    out.sort(key=lambda x: -(x["sales_6m"] or 0))
+    return out
 
 @app.get("/api/analytics/stock-to-sales-by-category")
 def analytics_sts_by_category(
