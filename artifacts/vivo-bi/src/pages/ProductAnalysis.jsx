@@ -111,6 +111,11 @@ const StyleDrill = ({ styleName, params }) => {
       </div>
       <div>
         <div className="eyebrow mb-1.5 flex items-center gap-1"><Warehouse size={12} /> Stock by location</div>
+        <div className="text-[10px] text-muted mb-1.5">
+          {params.store
+            ? "All locations (network-wide) — for transfer planning, not limited to the selected store"
+            : "All locations in the selected market(s)"}
+        </div>
         {data.by_location && data.by_location.length ? (
           <SortableTable
             testId="drill-location"
@@ -149,7 +154,9 @@ const ProductAnalysis = () => {
   const [status, setStatus] = useState("active");   // active | retired | all
   const [grain, setGrain] = useState("style");      // style | color | size
   const [brands, setBrands] = useState([]);         // [] = all
+  const [cats, setCats] = useState([]);             // [] = all (category)
   const [subcats, setSubcats] = useState([]);       // [] = all
+  const [velDays, setVelDays] = useState(30);       // velocity window (days)
   const [search, setSearch] = useState("");
 
   const [stores, setStores] = useState([]);
@@ -160,8 +167,10 @@ const ProductAnalysis = () => {
   // Accumulate brand / subcategory options across loads so narrowing the
   // filter never hides an option that exists in the catalog.
   const brandOptsRef = useRef(new Set());
+  const catOptsRef = useRef(new Set());
   const subcatOptsRef = useRef(new Set());
   const [brandOpts, setBrandOpts] = useState([]);
+  const [catOpts, setCatOpts] = useState([]);
   const [subcatOpts, setSubcatOpts] = useState([]);
 
   const [ai, setAi] = useState(null);
@@ -192,8 +201,8 @@ const ProductAnalysis = () => {
   // Reset the AI narrative whenever the scope changes — it described the
   // previous range.
   useEffect(() => { setAi(null); setAiError(null); }, [
-    dateFrom, dateTo, countryParam, store, status, grain,
-    brands.join(","), subcats.join(","),
+    dateFrom, dateTo, countryParam, store, status, grain, velDays,
+    brands.join(","), cats.join(","), subcats.join(","),
   ]);
 
   useEffect(() => {
@@ -209,7 +218,9 @@ const ProductAnalysis = () => {
           store: store || undefined,
           style_status: status,
           grain,
+          velocity_days: velDays,
           brand: brands.length ? brands.join(",") : undefined,
+          category: cats.length ? cats.join(",") : undefined,
           subcategory: subcats.length ? subcats.join(",") : undefined,
         },
       })
@@ -228,13 +239,18 @@ const ProductAnalysis = () => {
           if (s.subcategory && !subcatOptsRef.current.has(s.subcategory)) { subcatOptsRef.current.add(s.subcategory); sChanged = true; }
         }
         if (sChanged) setSubcatOpts(Array.from(subcatOptsRef.current).sort((a, b) => a.localeCompare(b)));
+        let cChanged = false;
+        for (const row of (d.rows || [])) {
+          if (row.category && !catOptsRef.current.has(row.category)) { catOptsRef.current.add(row.category); cChanged = true; }
+        }
+        if (cChanged) setCatOpts(Array.from(catOptsRef.current).sort((a, b) => a.localeCompare(b)));
       })
       .catch((e) => {
         if (!cancelled) setError(e?.response?.data?.detail || e?.message || "Failed to load product analysis");
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [dateFrom, dateTo, countryParam, store, status, grain, brands, subcats, dataVersion]);
+  }, [dateFrom, dateTo, countryParam, store, status, grain, velDays, brands, cats, subcats, dataVersion]);
 
   const rows = data?.rows || [];
   const summary = data?.summary || null;
@@ -365,13 +381,20 @@ const ProductAnalysis = () => {
         g.units_vel += r.units_vel || 0;
         return acc;
       }, {});
-      styleRows = Object.values(agg).map((g) => ({
-        ...g,
-        woc: g.units_vel > 0 ? g.current_stock / g.units_vel : null,
-        sor: (g.units_sold + g.current_stock) > 0
-          ? (g.units_sold * 100.0) / (g.units_sold + g.current_stock)
-          : null,
-      }));
+      // WOC mirrors the server: weekly velocity = units_vel / (velDays/7),
+      // then WOC = current_stock / weekly_velocity. Using raw units_vel here
+      // would distort the overstock ranking fed to the AI.
+      const wk = velDays / 7;
+      styleRows = Object.values(agg).map((g) => {
+        const weekly = wk > 0 ? g.units_vel / wk : 0;
+        return {
+          ...g,
+          woc: weekly > 0 ? g.current_stock / weekly : null,
+          sor: (g.units_sold + g.current_stock) > 0
+            ? (g.units_sold * 100.0) / (g.units_sold + g.current_stock)
+            : null,
+        };
+      });
     }
     const overstock = [...styleRows]
       .filter((r) => r.woc != null && r.current_stock > 0)
@@ -479,6 +502,17 @@ const ProductAnalysis = () => {
         />
 
         <MultiSelect
+          label="Category"
+          icon={Package}
+          options={catOpts.map((c) => ({ value: c, label: c }))}
+          value={cats}
+          onChange={setCats}
+          placeholder="All categories"
+          width={190}
+          testId="pa-category"
+        />
+
+        <MultiSelect
           label="Sub-cat"
           icon={Package}
           options={subcatOpts.map((s) => ({ value: s, label: s }))}
@@ -488,6 +522,22 @@ const ProductAnalysis = () => {
           width={210}
           testId="pa-subcat"
         />
+
+        <label className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[12px] text-muted">
+          Velocity
+          <select
+            value={velDays}
+            onChange={(e) => setVelDays(Number(e.target.value))}
+            className="bg-transparent text-[12px] text-foreground outline-none"
+            data-testid="pa-velocity"
+            title="Velocity window used for weeks-of-cover"
+          >
+            <option value={30}>30 days</option>
+            <option value={60}>60 days</option>
+            <option value={90}>90 days</option>
+            <option value={180}>180 days</option>
+          </select>
+        </label>
 
         <div className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 ml-auto">
           <MagnifyingGlass size={13} className="text-muted shrink-0" />
