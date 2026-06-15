@@ -39,8 +39,19 @@ const GRAINS = [
 
 const fmtWoc = (v) => (v === null || v === undefined ? "—" : `${fmtDec(v, 1)} wk`);
 const fmtSor = (v) => (v === null || v === undefined ? "—" : `${fmtDec(v, 1)}%`);
-const fmtAsp = (v) => (v === null || v === undefined || v === 0 ? "—" : fmtKES(v));
-const fmtPrice = (v) => (v === null || v === undefined || v === 0 ? "—" : fmtKES(v));
+// ASP / price columns show the full grouped shilling figure ("3,500") — no KES
+// prefix and no K/M abbreviation — per the user's request.
+const fmtAsp = (v) => (v === null || v === undefined || v === 0 ? "—" : fmtNum(v));
+const fmtPrice = (v) => (v === null || v === undefined || v === 0 ? "—" : fmtNum(v));
+
+// Local-time ISO date (YYYY-MM-DD) — avoids the UTC off-by-one around midnight
+// in East Africa (UTC+3) when computing date presets.
+const isoLocal = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
 
 // Colour the weeks-of-cover so overstock jumps out.
 const wocCls = (v) => {
@@ -150,7 +161,8 @@ const ProductAnalysis = () => {
   const { dateFrom, dateTo, countries, dataVersion } = applied;
 
   // Layered scope (on top of the global date + country filter bar).
-  const [store, setStore] = useState("");           // "" = Overall
+  const [stores, setStores] = useState([]);         // [] = all stores (multi)
+  const [tiers, setTiers] = useState([]);           // [] = all range tiers
   const [status, setStatus] = useState("active");   // active | retired | all
   const [grain, setGrain] = useState("style");      // style | color | size
   const [brands, setBrands] = useState([]);         // [] = all
@@ -158,9 +170,19 @@ const ProductAnalysis = () => {
   const [subcats, setSubcats] = useState([]);       // [] = all
   const [velDays, setVelDays] = useState(30);       // velocity window (days)
   const [search, setSearch] = useState("");
-  const [hiddenCols, setHiddenCols] = useState(() => new Set()); // master col show/hide
+  // Master column show/hide. The newly-added analytical columns start hidden so
+  // the default table stays readable; the picker (above the table) reveals them.
+  const [hiddenCols, setHiddenCols] = useState(
+    () => new Set(["style_number", "color", "print", "tier", "units_life", "sor_since_launch", "launch_date"])
+  );
 
-  const [stores, setStores] = useState([]);
+  // Local date scope — seeded from the global filter bar, with quick presets
+  // (30/90/120 days) + a custom range that re-scope ONLY this page.
+  const [localFrom, setLocalFrom] = useState(dateFrom);
+  const [localTo, setLocalTo] = useState(dateTo);
+  const [datePreset, setDatePreset] = useState(null); // 30 | 90 | 120 | "custom" | null
+
+  const [posOptions, setPosOptions] = useState([]);  // [{value,label,group:country}]
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -178,19 +200,23 @@ const ProductAnalysis = () => {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState(null);
 
-  // Master store list (active POS) for the scope select.
+  // Master store list (active POS) for the scope select — grouped by country.
   useEffect(() => {
     let cancelled = false;
     api
       .get("/analytics/active-pos", { params: { n_days: 365 } })
       .then((r) => {
         if (cancelled) return;
-        const names = Array.from(
-          new Set((r.data || []).map((s) => s.channel).filter(Boolean))
-        ).sort((a, b) => a.localeCompare(b));
-        setStores(names);
+        const seen = new Map(); // channel -> country
+        for (const s of (r.data || [])) {
+          if (s.channel && !seen.has(s.channel)) seen.set(s.channel, s.country || "Other");
+        }
+        const opts = Array.from(seen.entries())
+          .map(([channel, country]) => ({ value: channel, label: channel, group: country }))
+          .sort((a, b) => a.group.localeCompare(b.group) || a.value.localeCompare(b.value));
+        setPosOptions(opts);
       })
-      .catch(() => { if (!cancelled) setStores([]); });
+      .catch(() => { if (!cancelled) setPosOptions([]); });
     return () => { cancelled = true; };
   }, []);
 
@@ -198,12 +224,36 @@ const ProductAnalysis = () => {
     () => (countries && countries.length ? countries.join(",") : undefined),
     [countries]
   );
+  const storeParam = useMemo(
+    () => (stores.length ? stores.join(",") : undefined),
+    [stores]
+  );
+  const tierParam = useMemo(
+    () => (tiers.length ? tiers.join(",") : undefined),
+    [tiers]
+  );
+
+  // Re-seed the local date scope whenever the global filter bar date changes.
+  useEffect(() => {
+    setLocalFrom(dateFrom);
+    setLocalTo(dateTo);
+    setDatePreset(null);
+  }, [dateFrom, dateTo]);
+
+  const applyPreset = useCallback((days) => {
+    const today = new Date();
+    const from = new Date();
+    from.setDate(today.getDate() - (days - 1));
+    setLocalFrom(isoLocal(from));
+    setLocalTo(isoLocal(today));
+    setDatePreset(days);
+  }, []);
 
   // Reset the AI narrative whenever the scope changes — it described the
   // previous range.
   useEffect(() => { setAi(null); setAiError(null); }, [
-    dateFrom, dateTo, countryParam, store, status, grain, velDays,
-    brands.join(","), cats.join(","), subcats.join(","),
+    localFrom, localTo, countryParam, storeParam, status, grain, velDays,
+    brands.join(","), cats.join(","), subcats.join(","), tierParam,
   ]);
 
   useEffect(() => {
@@ -213,16 +263,17 @@ const ProductAnalysis = () => {
     api
       .get("/analytics/product-analysis", {
         params: {
-          date_from: dateFrom,
-          date_to: dateTo,
+          date_from: localFrom,
+          date_to: localTo,
           country: countryParam,
-          store: store || undefined,
+          store: storeParam,
           style_status: status,
           grain,
           velocity_days: velDays,
           brand: brands.length ? brands.join(",") : undefined,
           category: cats.length ? cats.join(",") : undefined,
           subcategory: subcats.length ? subcats.join(",") : undefined,
+          tier: tierParam,
         },
       })
       .then((r) => {
@@ -251,7 +302,7 @@ const ProductAnalysis = () => {
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [dateFrom, dateTo, countryParam, store, status, grain, velDays, brands, cats, subcats, dataVersion]);
+  }, [localFrom, localTo, countryParam, storeParam, status, grain, velDays, brands, cats, subcats, tierParam, dataVersion]);
 
   const rows = data?.rows || [];
   const summary = data?.summary || null;
@@ -261,12 +312,12 @@ const ProductAnalysis = () => {
   const showDim = grain !== "style";
   const drillParams = useMemo(
     () => ({
-      date_from: dateFrom,
-      date_to: dateTo,
+      date_from: localFrom,
+      date_to: localTo,
       country: countryParam,
-      store: store || undefined,
+      store: storeParam,
     }),
-    [dateFrom, dateTo, countryParam, store]
+    [localFrom, localTo, countryParam, storeParam]
   );
 
   // Client-side search filter over the master rows.
@@ -279,9 +330,9 @@ const ProductAnalysis = () => {
     );
   }, [rows, search]);
 
-  const rangeLabel = dateFrom && dateTo ? `${fmtDate(dateFrom)} – ${fmtDate(dateTo)}` : "";
-  const scopeLabel = store
-    ? store
+  const rangeLabel = localFrom && localTo ? `${fmtDate(localFrom)} – ${fmtDate(localTo)}` : "";
+  const scopeLabel = stores.length
+    ? (stores.length === 1 ? stores[0] : `${stores.length} stores`)
     : (countries && countries.length ? countries.join(", ") : "All markets");
 
   // Master table columns. The leading dimension column only appears when the
@@ -309,9 +360,17 @@ const ProductAnalysis = () => {
       });
     }
     cols.push(
+      { key: "style_number", label: "Style #", render: (r) => r.style_number || "—", csv: (r) => r.style_number || "" },
       { key: "brand", label: "Brand", render: (r) => r.brand || "—" },
       { key: "category", label: "Category", render: (r) => r.category || "—" },
       { key: "subcategory", label: "Sub-category", render: (r) => r.subcategory || "—", csvLabel: "Sub-category" },
+      { key: "color", label: "Colour", render: (r) => r.color || "—", csv: (r) => r.color || "" },
+      { key: "print", label: "Print", render: (r) => r.print || "—", csv: (r) => r.print || "" },
+      {
+        key: "tier", label: "Tier",
+        headerTitle: "Range tier by cumulative revenue — T1 top 20%, T2 next, T3, T4 tail",
+        render: (r) => r.tier || "—",
+      },
       { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
       { key: "revenue", label: "Revenue", numeric: true, render: (r) => fmtKES(r.revenue), csv: (r) => r.revenue },
       { key: "current_stock", label: "Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
@@ -328,9 +387,21 @@ const ProductAnalysis = () => {
         render: (r) => fmtSor(r.sor), pct: true,
         sortValue: (r) => (r.sor === null || r.sor === undefined ? -1 : r.sor),
       },
+      {
+        key: "units_life", label: "Units Sold Since Launch", numeric: true,
+        headerTitle: "Net units sold over the style's entire life (ignores the date range)",
+        render: (r) => fmtNum(r.units_life), csv: (r) => r.units_life ?? "",
+      },
+      {
+        key: "sor_since_launch", label: "SOR Since Launch", numeric: true,
+        headerTitle: "Lifetime sell-out = lifetime units ÷ (lifetime units + current stock)",
+        render: (r) => fmtSor(r.sor_since_launch), pct: true,
+        sortValue: (r) => (r.sor_since_launch === null || r.sor_since_launch === undefined ? -1 : r.sor_since_launch),
+      },
       { key: "asp", label: "ASP", numeric: true, headerTitle: "Average selling price", render: (r) => fmtAsp(r.asp), csv: (r) => r.asp ?? "" },
       { key: "full_price", label: "Full Price", numeric: true, render: (r) => fmtPrice(r.full_price), csv: (r) => r.full_price ?? "" },
       { key: "current_price", label: "Current Price", numeric: true, render: (r) => fmtPrice(r.current_price), csv: (r) => r.current_price ?? "" },
+      { key: "launch_date", label: "Launch Date", render: (r) => (r.launch_date ? fmtDate(r.launch_date) : "—"), csv: (r) => r.launch_date || "" },
     );
     return cols;
   }, [showDim, grain]);
@@ -362,19 +433,27 @@ const ProductAnalysis = () => {
       { key: "brand", label: "Brand", csv: (r) => r.brand || "" },
       { key: "category", label: "Category", csv: (r) => r.category || "" },
       { key: "subcategory", label: "Sub-category", csv: (r) => r.subcategory || "" },
+      { key: "color", label: "Colour", csv: (r) => r.color || "" },
+      { key: "print", label: "Print", csv: (r) => r.print || "" },
+      { key: "tier", label: "Tier", csv: (r) => r.tier || "" },
       { key: "units_sold", label: "Units Sold", csv: (r) => r.units_sold },
       { key: "revenue", label: "Revenue (KES)", csv: (r) => r.revenue },
       { key: "net_revenue", label: "Net Revenue (KES)", csv: (r) => r.net_revenue },
       { key: "current_stock", label: "Current Stock", csv: (r) => r.current_stock },
       { key: "woc", label: "Weeks of Cover", csv: (r) => (r.woc == null ? "" : r.woc) },
       { key: "sor", label: "Sell-Out Rate %", csv: (r) => (r.sor == null ? "" : r.sor), pct: true },
+      { key: "units_life", label: "Units Sold Since Launch", csv: (r) => r.units_life ?? "" },
+      { key: "sor_since_launch", label: "SOR Since Launch %", csv: (r) => (r.sor_since_launch == null ? "" : r.sor_since_launch), pct: true },
       { key: "asp", label: "ASP (KES)", csv: (r) => r.asp ?? "" },
       { key: "full_price", label: "Full Price (KES)", csv: (r) => r.full_price ?? "" },
       { key: "current_price", label: "Current Price (KES)", csv: (r) => r.current_price ?? "" },
       { key: "launch_date", label: "Launch Date", csv: (r) => r.launch_date || "" },
     ];
-    exportCSV(filteredRows, exportCols, `product_analysis_${grain}_${(store || "overall").replace(/\s+/g, "-")}.csv`);
-  }, [filteredRows, showDim, grain, store]);
+    const scopeSlug = stores.length
+      ? (stores.length === 1 ? stores[0] : `${stores.length}-stores`)
+      : "overall";
+    exportCSV(filteredRows, exportCols, `product_analysis_${grain}_${scopeSlug.replace(/\s+/g, "-")}.csv`);
+  }, [filteredRows, showDim, grain, stores]);
 
   const generateAi = useCallback(() => {
     if (!summary) return;
@@ -446,7 +525,7 @@ const ProductAnalysis = () => {
       })
       .catch((e) => setAiError(e?.response?.data?.detail || e?.message || "AI request failed"))
       .finally(() => setAiLoading(false));
-  }, [summary, rows, grain, scopeLabel, rangeLabel]);
+  }, [summary, rows, grain, velDays, scopeLabel, rangeLabel]);
 
   return (
     <div className="space-y-5" data-testid="product-analysis-page">
@@ -460,8 +539,9 @@ const ProductAnalysis = () => {
           One canonical style-level view of sales and stock that reconciles end to end.
           Scope it to all markets or a single store (sales and stock move together),
           switch the grain between style, colour and size, and drill any style into its
-          size / colour split and where its stock is sitting. Date range and market come
-          from the filter bar above.
+          size / colour split and where its stock is sitting. Narrow the date range with
+          the presets (or a custom range), scope to one or more stores, and filter by
+          range tier — all independent of the global filter bar.
         </p>
         <div className="text-[11.5px] text-muted mt-1">
           {rangeLabel ? <span className="num">{rangeLabel}</span> : null}
@@ -472,19 +552,52 @@ const ProductAnalysis = () => {
 
       {/* Scope controls */}
       <div className="card-white p-3.5 flex flex-wrap items-center gap-2.5">
-        <div className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5">
-          <Storefront size={13} className="text-muted shrink-0" />
-          <select
-            className="bg-transparent text-[12px] font-medium outline-none max-w-[180px]"
-            value={store}
-            onChange={(e) => setStore(e.target.value)}
-            data-testid="pa-store-select"
-            aria-label="Store scope"
-          >
-            <option value="">Overall (all stores)</option>
-            {stores.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
+        <div className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5" data-testid="pa-date">
+          {[30, 90, 120].map((d) => (
+            <button
+              key={d}
+              type="button"
+              onClick={() => applyPreset(d)}
+              data-testid={`pa-date-${d}`}
+              className={`px-2 py-0.5 text-[11.5px] font-semibold rounded-full transition-colors ${
+                datePreset === d ? "bg-[#1a5c38] text-white" : "text-[#374151] hover:bg-[#f3f4f6]"
+              }`}
+              title={`Last ${d} days`}
+            >
+              {d}D
+            </button>
+          ))}
+          <input
+            type="date"
+            value={localFrom || ""}
+            max={localTo || undefined}
+            onChange={(e) => { setLocalFrom(e.target.value); setDatePreset("custom"); }}
+            className="bg-transparent text-[11.5px] text-foreground outline-none"
+            data-testid="pa-date-from"
+            aria-label="From date"
+          />
+          <span className="text-muted text-[11px]">–</span>
+          <input
+            type="date"
+            value={localTo || ""}
+            min={localFrom || undefined}
+            onChange={(e) => { setLocalTo(e.target.value); setDatePreset("custom"); }}
+            className="bg-transparent text-[11.5px] text-foreground outline-none"
+            data-testid="pa-date-to"
+            aria-label="To date"
+          />
         </div>
+
+        <MultiSelect
+          label="Store"
+          icon={Storefront}
+          options={posOptions}
+          value={stores}
+          onChange={setStores}
+          placeholder="All stores"
+          width={210}
+          testId="pa-store"
+        />
 
         <div className="inline-flex rounded-full border border-border overflow-hidden" data-testid="pa-grain">
           {GRAINS.map((g) => {
@@ -540,6 +653,22 @@ const ProductAnalysis = () => {
           placeholder="All sub-categories"
           width={210}
           testId="pa-subcat"
+        />
+
+        <MultiSelect
+          label="Tier"
+          icon={ChartBar}
+          options={[
+            { value: "T1", label: "T1 · top 20% revenue" },
+            { value: "T2", label: "T2 · next 40%" },
+            { value: "T3", label: "T3 · next 30%" },
+            { value: "T4", label: "T4 · tail 10%" },
+          ]}
+          value={tiers}
+          onChange={setTiers}
+          placeholder="All tiers"
+          width={180}
+          testId="pa-tier"
         />
 
         <label className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[12px] text-muted">

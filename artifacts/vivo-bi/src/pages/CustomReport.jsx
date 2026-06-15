@@ -76,7 +76,7 @@ const Chip = ({ active, onClick, children, testId }) => (
 const fmtMeasure = (id, val) => {
   if (val === null || val === undefined) return "—";
   if (MONEY_MEASURES.has(id)) return fmtKESLong(val);
-  if (id === "sor") return `${fmtNum(val)}%`;
+  if (id === "sor" || id === "sor_since_launch") return `${fmtNum(val)}%`;
   return fmtNum(val);
 };
 

@@ -1392,13 +1392,18 @@ def get_locations():
 # every other product breakdown in this file. "category"/"product_type" mirror
 # the Products page; "store" is the POS location name.
 _REPORT_DIMENSIONS = {
-    "country":     {"sales": "s.country",                          "inv": "i.country",            "pjoin": False, "label": "Country",     "group": "Geography"},
-    "channel":     {"sales": "s.channel",                          "inv": None,                   "pjoin": False, "label": "Channel",     "group": "Geography"},
-    "store":       {"sales": "s.pos_location_name",                "inv": "i.pos_location_name",  "pjoin": False, "label": "Store",       "group": "Geography"},
-    "brand":       {"sales": "p.brand",                            "inv": "p.brand",              "pjoin": True,  "label": "Brand",       "group": "Product"},
-    "category":    {"sales": "p.category",                         "inv": "p.category",           "pjoin": True,  "label": "Category",    "group": "Product"},
-    "subcategory": {"sales": "p.product_type",                     "inv": "p.product_type",       "pjoin": True,  "label": "Subcategory", "group": "Product"},
-    "month":       {"sales": "to_char(s.sale_date::date,'YYYY-MM')", "inv": None,                 "pjoin": False, "label": "Month",       "group": "Time"},
+    "country":      {"sales": "s.country",                          "inv": "i.country",            "pjoin": False, "label": "Country",       "group": "Geography"},
+    "channel":      {"sales": "s.channel",                          "inv": None,                   "pjoin": False, "label": "Channel",       "group": "Geography"},
+    "store":        {"sales": "s.pos_location_name",                "inv": "i.pos_location_name",  "pjoin": False, "label": "POS Location",  "group": "Geography"},
+    "brand":        {"sales": "p.brand",                            "inv": "p.brand",              "pjoin": True,  "label": "Brand",         "group": "Product"},
+    "category":     {"sales": "p.category",                         "inv": "p.category",           "pjoin": True,  "label": "Category",      "group": "Product"},
+    "subcategory":  {"sales": "p.product_type",                     "inv": "p.product_type",       "pjoin": True,  "label": "Subcategory",   "group": "Product"},
+    "style":        {"sales": "p.style_name",                       "inv": "p.style_name",         "pjoin": True,  "label": "Style",         "group": "Product"},
+    "style_number": {"sales": "p.style_number",                     "inv": "p.style_number",       "pjoin": True,  "label": "Style Number",  "group": "Product"},
+    "color":        {"sales": "p.color_print",                      "inv": "p.color_print",        "pjoin": True,  "label": "Colour",        "group": "Product"},
+    "print":        {"sales": "p.print_plain",                      "inv": "p.print_plain",        "pjoin": True,  "label": "Print",         "group": "Product"},
+    "launch":       {"sales": "substring(p.style_launch_date,1,10)", "inv": "substring(p.style_launch_date,1,10)", "pjoin": True, "label": "Launch Date", "group": "Product"},
+    "month":        {"sales": "to_char(s.sale_date::date,'YYYY-MM')", "inv": None,                 "pjoin": False, "label": "Month",         "group": "Time"},
 }
 
 # Sales-grain measures aggregate directly over all_sales (returns netted exactly
@@ -1429,12 +1434,23 @@ _INVENTORY_MEASURES = {
     "soh": {"label": "Stock on Hand", "group": "Inventory"},
     "sor": {"label": "Sell-Through %", "group": "Inventory"},
 }
+# Lifetime ("since launch") measures ignore the report's date range — they total
+# over ALL of a style's history (matching the Product Analysis page columns).
+# units_since_launch = net units ever sold; sor_since_launch = lifetime
+# sell-through (lifetime units / (lifetime units + current stock)). They are
+# best paired with a product dimension (Style / Style Number); sor_since_launch
+# needs the stock snapshot so it inherits the inventory dimension restriction.
+_LIFETIME_MEASURES = {
+    "units_since_launch": {"label": "Units Sold (Since Launch)", "group": "Lifetime"},
+    "sor_since_launch":   {"label": "Sell-Through % (Since Launch)", "group": "Lifetime"},
+}
 
 
 def _report_field_catalog():
     dims = [{"id": k, "label": v["label"], "group": v["group"]} for k, v in _REPORT_DIMENSIONS.items()]
     meas = [{"id": k, "label": v["label"], "group": v["group"]} for k, v in _REPORT_MEASURES.items()]
     meas += [{"id": k, "label": v["label"], "group": v["group"]} for k, v in _INVENTORY_MEASURES.items()]
+    meas += [{"id": k, "label": v["label"], "group": v["group"]} for k, v in _LIFETIME_MEASURES.items()]
     return dims, meas
 
 
@@ -1458,12 +1474,13 @@ def custom_report(
         raise HTTPException(status_code=400, detail="Pick at least one dimension")
     if not meas:
         raise HTTPException(status_code=400, detail="Pick at least one measure")
-    all_measures = {**_REPORT_MEASURES, **_INVENTORY_MEASURES}
+    all_measures = {**_REPORT_MEASURES, **_INVENTORY_MEASURES, **_LIFETIME_MEASURES}
     bad = [d for d in dims if d not in _REPORT_DIMENSIONS] + [m for m in meas if m not in all_measures]
     if bad:
         raise HTTPException(status_code=400, detail=f"Unknown field(s): {', '.join(bad)}")
 
     inv_meas = [m for m in meas if m in _INVENTORY_MEASURES]
+    life_meas = [m for m in meas if m in _LIFETIME_MEASURES]
     sales_meas = [m for m in meas if m in _REPORT_MEASURES]
     needs_pjoin = any(_REPORT_DIMENSIONS[d]["pjoin"] for d in dims)
     safe_limit = max(1, min(int(limit or 500), 5000))
@@ -1476,7 +1493,7 @@ def custom_report(
             [{"id": m, "label": all_measures[m]["label"]} for m in meas],
         )
 
-    if not inv_meas:
+    if not inv_meas and not life_meas:
         # ---- Sales-only path: one grouped scan of all_sales (+product join). ----
         select_parts, group_idx = [], []
         for idx, d in enumerate(dims, start=1):
@@ -1498,60 +1515,104 @@ def custom_report(
         return {"dimensions": dim_labels, "measures": meas_labels, "rows": rows,
                 "row_count": len(rows), "truncated": len(rows) >= safe_limit}
 
-    # ---- Inventory path: sales aggregate FULL OUTER JOIN current-stock aggregate. ----
-    # Inventory is a current snapshot with no channel / time dimension, so those
-    # dimensions can't be combined with stock measures.
-    incompatible = [d for d in dims if _REPORT_DIMENSIONS[d]["inv"] is None]
-    if incompatible:
-        names = ", ".join(_REPORT_DIMENSIONS[d]["label"] for d in incompatible)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Stock on Hand / Sell-Through can't be grouped by {names} "
-                   "(inventory is a current snapshot with no channel or time). "
-                   "Use Country, Store, Brand, Category, or Subcategory.",
-        )
+    # ---- Multi-CTE path: a UNION "spine" of the distinct dimension-key combos,
+    # with each measure source (period sales / lifetime sales / current stock)
+    # LEFT JOINed back onto it. This generalises the old sales+stock FULL OUTER
+    # JOIN so it can also carry the lifetime ("since launch") measures. ----
+    needs_stock = bool(inv_meas) or ("sor_since_launch" in life_meas)
+    needs_life = bool(life_meas)
+
+    # Stock is a current snapshot with no channel / time dimension, so any
+    # stock-dependent measure can't be grouped by those.
+    if needs_stock:
+        incompatible = [d for d in dims if _REPORT_DIMENSIONS[d]["inv"] is None]
+        if incompatible:
+            names = ", ".join(_REPORT_DIMENSIONS[d]["label"] for d in incompatible)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Stock on Hand / Sell-Through can't be grouped by {names} "
+                       "(inventory is a current snapshot with no channel or time). "
+                       "Use Country, POS Location, Brand, Category, Subcategory, "
+                       "Style, Style Number, Colour, Print or Launch Date.",
+            )
 
     keys = [f"k{i}" for i in range(1, len(dims) + 1)]
-    sales_sel = [f'{_REPORT_DIMENSIONS[d]["sales"]} AS {keys[i]}' for i, d in enumerate(dims)]
-    inv_sel   = [f'{_REPORT_DIMENSIONS[d]["inv"]} AS {keys[i]}'   for i, d in enumerate(dims)]
-    # Always carry units in the sales CTE so SOR is computable even if the user
-    # didn't explicitly pick Units.
-    sales_measure_sql = {m: _REPORT_MEASURES[m]["sql"] for m in sales_meas}
-    sales_measure_sql["__units"] = f"COALESCE({_UNITS}, 0)"
-    sales_cte_measures = [f'{sql} AS "{name}"' for name, sql in sales_measure_sql.items()]
+    grp = ", ".join(str(i + 1) for i in range(len(dims)))
     sales_join = " LEFT JOIN all_products_clean p ON s.variant_sku = p.sku" if needs_pjoin else ""
     inv_join   = " LEFT JOIN all_products_clean p ON i.sku = p.sku" if needs_pjoin else ""
     where = build_filters(date_from, date_to, country, channel)
+    sales_sel = [f'{_REPORT_DIMENSIONS[d]["sales"]} AS {keys[i]}' for i, d in enumerate(dims)]
 
-    grp = ", ".join(str(i + 1) for i in range(len(dims)))
+    # Period sales CTE (alias `s`) — always present. Carries any period sales
+    # measures plus __units so SOR stays computable even if Units wasn't picked.
+    sales_measure_sql = {m: _REPORT_MEASURES[m]["sql"] for m in sales_meas}
+    sales_measure_sql["__units"] = f"COALESCE({_UNITS}, 0)"
+    sales_cte_measures = [f'{sql} AS "{name}"' for name, sql in sales_measure_sql.items()]
     sales_cte = ("SELECT " + ", ".join(sales_sel + sales_cte_measures) +
                  " FROM all_sales s" + sales_join + " WHERE " + where +
                  " GROUP BY " + grp)
-    inv_cte = ("SELECT " + ", ".join(inv_sel) + ", SUM(i.available) AS soh"
-               " FROM all_inventory i" + inv_join +
-               " WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")"
-               " AND i.available > 0 GROUP BY " + grp)
 
-    # Postgres can't FULL JOIN on IS NOT DISTINCT FROM (not hash/merge-joinable),
-    # so match on a NULL-safe COALESCE sentinel instead. All inventory-compatible
-    # dimensions are text, so '' is a safe sentinel (real values are NULL, not '').
-    on_clause = " AND ".join(f"COALESCE(s.{k}::text,'') = COALESCE(st.{k}::text,'')" for k in keys)
-    out_parts = []
-    for i, d in enumerate(dims):
-        out_parts.append(f'COALESCE(s.{keys[i]}, st.{keys[i]}) AS "{d}"')
+    cte_defs = ["s AS (" + sales_cte + ")"]
+    spine_sources = ["SELECT " + ", ".join(keys) + " FROM s"]
+
+    if needs_life:
+        # Lifetime sales — same grouping but NO date filter (i.e. since launch).
+        life_parts = [BASE_FILTERS]
+        if country:
+            life_parts.append("s.country IN (" + csv_to_sql(country) + ")")
+        if channel:
+            life_parts.append("s.pos_location_name IN (" + csv_to_sql(channel) + ")")
+        life_where = " AND ".join(life_parts)
+        life_cte = ("SELECT " + ", ".join(sales_sel) +
+                    ", COALESCE(SUM(s.net_quantity), 0) AS units_since_launch"
+                    " FROM all_sales s" + sales_join + " WHERE " + life_where +
+                    " GROUP BY " + grp)
+        cte_defs.append("life AS (" + life_cte + ")")
+        spine_sources.append("SELECT " + ", ".join(keys) + " FROM life")
+
+    if needs_stock:
+        inv_sel = [f'{_REPORT_DIMENSIONS[d]["inv"]} AS {keys[i]}' for i, d in enumerate(dims)]
+        inv_cte = ("SELECT " + ", ".join(inv_sel) + ", SUM(i.available) AS soh"
+                   " FROM all_inventory i" + inv_join +
+                   " WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")"
+                   " AND i.available > 0 GROUP BY " + grp)
+        cte_defs.append("stock AS (" + inv_cte + ")")
+        spine_sources.append("SELECT " + ", ".join(keys) + " FROM stock")
+
+    # Dimension spine: every distinct key combination across the sources, so a
+    # style that only has stock (no period sales) or only lifetime sales still
+    # appears. Postgres can't hash/merge-join on IS NOT DISTINCT FROM, so match
+    # on a NULL-safe COALESCE sentinel ('' — real values are NULL, not '').
+    cte_defs.append("spine AS (SELECT DISTINCT * FROM (" + " UNION ".join(spine_sources) + ") _u)")
+
+    def _on(alias):
+        return " AND ".join(
+            f"COALESCE(sp.{k}::text,'') = COALESCE({alias}.{k}::text,'')" for k in keys)
+
+    join_sql_parts = [" LEFT JOIN s ON " + _on("s")]
+    if needs_life:
+        join_sql_parts.append(" LEFT JOIN life ON " + _on("life"))
+    if needs_stock:
+        join_sql_parts.append(" LEFT JOIN stock ON " + _on("stock"))
+
+    out_parts = [f'sp.{keys[i]} AS "{d}"' for i, d in enumerate(dims)]
     for m in meas:
         if m == "soh":
-            out_parts.append('COALESCE(st.soh, 0) AS "soh"')
+            out_parts.append('COALESCE(stock.soh, 0) AS "soh"')
         elif m == "sor":
             out_parts.append('ROUND(COALESCE(s."__units",0)*100.0 / '
-                             'NULLIF(COALESCE(s."__units",0)+COALESCE(st.soh,0),0), 1) AS "sor"')
+                             'NULLIF(COALESCE(s."__units",0)+COALESCE(stock.soh,0),0), 1) AS "sor"')
+        elif m == "units_since_launch":
+            out_parts.append('COALESCE(life.units_since_launch, 0) AS "units_since_launch"')
+        elif m == "sor_since_launch":
+            out_parts.append('ROUND(COALESCE(life.units_since_launch,0)*100.0 / '
+                             'NULLIF(COALESCE(life.units_since_launch,0)+COALESCE(stock.soh,0),0), 1) '
+                             'AS "sor_since_launch"')
         else:
             out_parts.append(f'COALESCE(s."{m}", 0) AS "{m}"')
 
-    sql = ("WITH sales AS (" + sales_cte + "), stock AS (" + inv_cte + ") "
-           "SELECT " + ", ".join(out_parts) +
-           " FROM sales s FULL OUTER JOIN stock st ON " + on_clause +
-           " WHERE COALESCE(s." + keys[0] + ", st." + keys[0] + ") IS NOT NULL" +
+    sql = ("WITH " + ", ".join(cte_defs) + " SELECT " + ", ".join(out_parts) +
+           " FROM spine sp" + "".join(join_sql_parts) +
            f' ORDER BY "{order_col}" {order_token} LIMIT {safe_limit}')
     rows = run_query(sql, date_to=date_to)
     dim_labels, meas_labels = labels()
@@ -3019,6 +3080,7 @@ def analytics_product_analysis(
     brand: str = Query(default=None),
     category: str = Query(default=None),
     subcategory: str = Query(default=None),
+    tier: str = Query(default=None),
     style_status: str = Query(default="all"),
     grain: str = Query(default="style"),
     velocity_days: int = Query(default=30),
@@ -3070,7 +3132,9 @@ def analytics_product_analysis(
         " MIN(substring(style_launch_date,1,10)) FILTER ("
         " WHERE substring(style_launch_date,1,10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') AS launch_date,"
         " COUNT(DISTINCT NULLIF(TRIM(size),'')) AS sizes_count,"
-        " COUNT(DISTINCT NULLIF(TRIM(color_print),'')) AS colors_count"
+        " COUNT(DISTINCT NULLIF(TRIM(color_print),'')) AS colors_count,"
+        " string_agg(DISTINCT NULLIF(TRIM(color_print),''), ', ') AS color,"
+        " string_agg(DISTINCT NULLIF(TRIM(print_plain),''), ', ') AS print_plain"
         " FROM all_products_clean"
         " WHERE style_name IS NOT NULL AND style_name <> ''" + brand_pf + cat_pf + subcat_pf +
         " GROUP BY style_name" + prod_dim_grp +
@@ -3113,6 +3177,7 @@ def analytics_product_analysis(
         ")"
         " SELECT p.style_name," + sel_dim +
         " p.brand, p.category, p.subcategory, p.collection, p.season, p.style_number,"
+        " p.color, p.print_plain,"
         " p.full_price, p.launch_date, p.sizes_count, p.colors_count,"
         " COALESCE(sa.units_period,0) AS units_period, COALESCE(sa.revenue_period,0) AS revenue_period,"
         " COALESCE(sa.net_revenue_period,0) AS net_revenue_period, COALESCE(sa.gross_units_period,0) AS gross_units_period,"
@@ -3162,6 +3227,8 @@ def analytics_product_analysis(
             "brand": r["brand"],
             "category": r["category"],
             "subcategory": r["subcategory"],
+            "color": r["color"],
+            "print": r["print_plain"],
             "collection": r["collection"],
             "season": r["season"],
             "units_sold": units,
@@ -3175,6 +3242,7 @@ def analytics_product_analysis(
             "units_life": units_life,
             "woc": _woc(stock, units_vel),
             "sor": _sor(units, stock),
+            "sor_since_launch": _sor(units_life, stock),
             "asp": asp,
             "full_price": full_price,
             "current_price": current_price,
@@ -3216,6 +3284,36 @@ def analytics_product_analysis(
 
     rows = [r for r in rows if r["style_name"] in keep]
     kept = {k: g for k, g in styles.items() if k in keep}
+
+    # Range tier — Pareto on cumulative revenue share over the kept styles
+    # (T1 <= 20%, T2 <= 60%, T3 <= 90%, T4 the rest). Computed over the FULL
+    # kept population so the ranking is stable, THEN the optional tier filter
+    # narrows the table + the summary/by-brand/by-subcategory rollups (exactly
+    # like the brand/category filters do).
+    ranked = sorted(kept.items(), key=lambda kv: -(kv[1]["revenue"] or 0))
+    tot_rev_all = sum((g["revenue"] or 0) for _, g in ranked)
+    tier_by_style = {}
+    cum = 0.0
+    for k, g in ranked:
+        cum += (g["revenue"] or 0)
+        share = (cum / tot_rev_all) if tot_rev_all > 0 else 1.0
+        if share <= 0.20:
+            t = "T1"
+        elif share <= 0.60:
+            t = "T2"
+        elif share <= 0.90:
+            t = "T3"
+        else:
+            t = "T4"
+        tier_by_style[k] = t
+        g["tier"] = t
+    for r in rows:
+        r["tier"] = tier_by_style.get(r["style_name"])
+
+    tier_sel = {x.strip().upper() for x in str(tier).split(",")} - {""} if tier else set()
+    if tier_sel:
+        rows = [r for r in rows if (r.get("tier") in tier_sel)]
+        kept = {k: g for k, g in kept.items() if tier_by_style.get(k) in tier_sel}
 
     tot_units = sum(g["units"] for g in kept.values())
     tot_rev = sum(g["revenue"] for g in kept.values())
