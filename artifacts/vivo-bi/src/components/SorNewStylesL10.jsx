@@ -41,7 +41,7 @@ const SorNewStylesL10 = ({ brand, styleStatus = "all", windowDays = 180 }) => {
   const enriched = useMemo(
     () => (rows || [])
       // Backend `/api/analytics/sor-new-styles-l10` already filters
-      // out rows where `(units_6m + soh_total) < 20` — keep the map
+      // out rows where `(units_6m + soh_total) < 50` — keep the map
       // here just to enrich with category.
       .map((r) => ({ ...r, category: categoryFor(r.subcategory) || "—" })),
     [rows]

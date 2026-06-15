@@ -5902,6 +5902,850 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         "tier3_graduation_candidates": candidates,
     }
 
+
+# ───────────────────────────────────────────────────────────────────────────
+# Reports/exports endpoints called by the dashboard's analytics & exports pages.
+# All reuse the shared helpers (BASE_FILTERS, build_filters, _style_filters,
+# WAREHOUSE_LOCATIONS, ff_canon_sql, run_query) so figures stay internally
+# consistent with the rest of the cockpit. sale_date is TEXT → cast ::date.
+# ───────────────────────────────────────────────────────────────────────────
+
+def _x_pct(cur, prev):
+    """YoY/MoM percentage change, None when the base period is zero/empty."""
+    cur = float(cur or 0)
+    prev = float(prev or 0)
+    return round((cur - prev) / prev * 100, 2) if prev else None
+
+
+def _x_shift_years(d, n):
+    """Shift a date back n years, falling back to a 365-day step for Feb 29."""
+    try:
+        return d.replace(year=d.year - n)
+    except ValueError:
+        return d - timedelta(days=365 * n)
+
+
+def _x_store_sales(df, dt):
+    """{loc: {sales, units, tx}} for non-warehouse POS locations in [df,dt]."""
+    rows = run_query(
+        """
+        SELECT s.pos_location_name AS loc,
+            ROUND(SUM(s.total_sales_kes::numeric)) AS sales,
+            COALESCE(SUM(s.net_quantity), 0) AS units,
+            COUNT(DISTINCT s.order_id) AS tx
+        FROM all_sales s
+        WHERE s.sale_date BETWEEN '""" + df + """' AND '""" + dt + """'
+          AND s.sale_kind IN ('sale','order')
+          AND """ + BASE_FILTERS + """
+          AND s.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+        GROUP BY s.pos_location_name
+        """,
+        date_to=dt,
+    ) or []
+    return {r["loc"]: r for r in rows}
+
+
+def _x_store_footfall(df, dt):
+    """{canonical_location: footfall_in} in [df,dt]."""
+    rows = run_query(
+        "SELECT " + ff_canon_sql() + """ AS loc, SUM(f.a01_footfall_in) AS footfall
+        FROM footfall f
+        WHERE f.time BETWEEN '""" + df + """' AND '""" + dt + """'
+        GROUP BY 1
+        """,
+        date_to=dt,
+    ) or []
+    return {r["loc"]: float(r["footfall"] or 0) for r in rows}
+
+
+@app.get("/api/analytics/sor-new-styles-l10")
+def analytics_sor_new_styles_l10(
+    brand: str = Query(default=None),
+    style_status: str = Query(default="all"),
+    window_days: int = Query(default=180),
+):
+    # Styles whose FIRST-EVER sale was 90-122 days ago (≥3 and ≤4 months) AND
+    # whose combined demand+stock (units_6m + soh_total) is >= 50. Returns the
+    # SorStylesTable row shape so the L-10 tab can render + drill into SKUs.
+    brand_pf = ""
+    if brand:
+        brand_pf = " AND LOWER(brand) = '" + brand.strip().lower().replace("'", "''") + "'"
+    raw = run_query(
+        """
+        WITH prod AS (
+            SELECT style_name,
+                MAX(brand) AS brand,
+                MAX(collection) AS collection,
+                MAX(product_type) AS subcategory,
+                MAX(style_number) AS style_number
+            FROM all_products_clean
+            WHERE style_name IS NOT NULL AND style_name <> ''""" + brand_pf + """
+            GROUP BY style_name
+        ),
+        sales AS (
+            SELECT p.style_name,
+                SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '182 days') AS units_6m,
+                ROUND(SUM(s.net_sales_kes::numeric) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '182 days')) AS sales_6m,
+                SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '21 days') AS units_3w,
+                SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '30 days') AS units_30d,
+                MAX(s.sale_date::date) AS last_sale,
+                MIN(s.sale_date::date) AS first_sale
+            FROM all_products_clean p
+            JOIN all_sales s ON s.variant_sku = p.sku
+            WHERE p.style_name IS NOT NULL AND s.sale_kind IN ('sale','order')
+              AND """ + BASE_FILTERS + """
+            GROUP BY p.style_name
+        ),
+        stock AS (
+            SELECT style_name,
+                COALESCE(SUM(available) FILTER (WHERE pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
+                COALESCE(SUM(available) FILTER (WHERE pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_warehouse
+            FROM all_inventory i
+            WHERE style_name IS NOT NULL
+            GROUP BY style_name
+        )
+        SELECT p.style_name, p.brand, p.collection, p.subcategory, p.style_number,
+            COALESCE(sa.units_6m, 0) AS units_6m, COALESCE(sa.sales_6m, 0) AS sales_6m,
+            COALESCE(sa.units_3w, 0) AS units_3w, COALESCE(sa.units_30d, 0) AS units_30d,
+            sa.last_sale, sa.first_sale,
+            COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse
+        FROM prod p
+        JOIN sales sa USING (style_name)
+        LEFT JOIN stock st USING (style_name)
+        WHERE sa.first_sale IS NOT NULL
+          AND COALESCE(p.brand, '') NOT ILIKE '%third party%'
+        """
+    ) or []
+    today = date.today()
+    out = []
+    for r in raw:
+        first_sale = r["first_sale"]
+        if not first_sale:
+            continue
+        age_days = (today - first_sale).days
+        if age_days < 90 or age_days > 122:
+            continue
+        units_6m = int(r["units_6m"] or 0)
+        soh_stores = int(r["soh_stores"] or 0)
+        soh_warehouse = int(r["soh_warehouse"] or 0)
+        soh_total = soh_stores + soh_warehouse
+        if (units_6m + soh_total) < 50:
+            continue
+        sales_6m = float(r["sales_6m"] or 0)
+        units_30d = int(r["units_30d"] or 0)
+        last_sale = r["last_sale"]
+        weekly_avg = round(units_30d / (30.0 / 7.0), 1)
+        woc = round(soh_total / weekly_avg, 1) if weekly_avg > 0 else None
+        denom = units_6m + soh_total
+        out.append({
+            "style_name": r["style_name"],
+            "brand": r["brand"],
+            "collection": r["collection"],
+            "subcategory": r["subcategory"],
+            "style_number": r["style_number"],
+            "sales_6m": round(sales_6m),
+            "units_6m": units_6m,
+            "units_3w": int(r["units_3w"] or 0),
+            "weekly_avg": weekly_avg,
+            "soh_total": soh_total,
+            "soh_wh": soh_warehouse,
+            "woc": woc,
+            "pct_in_wh": round(100.0 * soh_warehouse / soh_total, 1) if soh_total else 0.0,
+            "asp_6m": round(sales_6m / units_6m) if units_6m > 0 else None,
+            "days_since_last_sale": (today - last_sale).days if last_sale else None,
+            "sor_6m": round(100.0 * units_6m / denom, 1) if denom > 0 else None,
+            "launch_date": str(first_sale),
+            "style_age_weeks": round(age_days / 7.0),
+        })
+    out.sort(key=lambda x: -(x["sales_6m"] or 0))
+    return out
+
+
+@app.get("/api/analytics/new-styles-curve")
+def analytics_new_styles_curve(
+    days: int = Query(default=122),
+    country: str = Query(default=None),
+    channel: str = Query(default=None),
+):
+    # Every style whose first-ever sale was in the last `days`, with its
+    # weekly units-since-launch curve + a climbing/plateau/declining trend.
+    cf, chf = _style_filters(country, channel, "s")
+    raw = run_query(
+        """
+        WITH firsts AS (
+            SELECT p.style_name,
+                MIN(s.sale_date::date) AS first_sale,
+                MAX(p.brand) AS brand,
+                MAX(p.product_type) AS subcategory
+            FROM all_products_clean p
+            JOIN all_sales s ON s.variant_sku = p.sku
+            WHERE p.style_name IS NOT NULL AND s.sale_kind IN ('sale','order')
+              AND """ + BASE_FILTERS + cf + chf + """
+            GROUP BY p.style_name
+            HAVING MIN(s.sale_date::date) >= CURRENT_DATE - INTERVAL '""" + str(days) + """ days'
+        )
+        SELECT f.style_name, f.brand, f.subcategory, f.first_sale,
+            ((s.sale_date::date - f.first_sale) / 7) AS week_index,
+            f.first_sale + ((s.sale_date::date - f.first_sale) / 7) * 7 AS week_start,
+            SUM(s.net_quantity) AS units,
+            ROUND(SUM(s.net_sales_kes::numeric)) AS sales
+        FROM firsts f
+        JOIN all_products_clean p ON p.style_name = f.style_name
+        JOIN all_sales s ON s.variant_sku = p.sku
+        WHERE s.sale_kind IN ('sale','order') AND s.sale_date::date >= f.first_sale
+          AND """ + BASE_FILTERS + cf + chf + """
+        GROUP BY f.style_name, f.brand, f.subcategory, f.first_sale,
+            ((s.sale_date::date - f.first_sale) / 7)
+        ORDER BY f.style_name, week_index
+        """
+    ) or []
+    today = date.today()
+    by_style = {}
+    for r in raw:
+        st = by_style.setdefault(r["style_name"], {
+            "style_name": r["style_name"], "brand": r["brand"],
+            "subcategory": r["subcategory"], "first_sale": r["first_sale"],
+            "weekly": [],
+        })
+        wi = int(r["week_index"] or 0)
+        if wi < 0:
+            continue
+        st["weekly"].append({
+            "week_index": wi,
+            "week_start": str(r["week_start"]) if r["week_start"] else None,
+            "units": int(r["units"] or 0),
+            "sales": round(float(r["sales"] or 0)),
+        })
+
+    def _trend(units_by_week):
+        if sum(units_by_week) == 0:
+            return "no-sales"
+        n = len(units_by_week)
+        tail = units_by_week[-3:] if n >= 3 else units_by_week[:]
+        recent = sum(tail) / len(tail)
+        prior_src = units_by_week[-6:-3] if n >= 6 else units_by_week[:max(0, n - len(tail))]
+        prior = (sum(prior_src) / len(prior_src)) if prior_src else None
+        if recent == 0:
+            return "declining"
+        if prior is None or prior == 0:
+            return "climbing"
+        ratio = recent / prior
+        if ratio >= 1.15:
+            return "climbing"
+        if ratio <= 0.7:
+            return "declining"
+        return "plateau"
+
+    rows = []
+    for st in by_style.values():
+        first_sale = st["first_sale"]
+        weeks_since_launch = max(0, (today - first_sale).days // 7) if first_sale else 0
+        weekly = sorted(st["weekly"], key=lambda w: w["week_index"])
+        wk_map = {w["week_index"]: w["units"] for w in weekly}
+        padded = [wk_map.get(i, 0) for i in range(0, max(weeks_since_launch, (weekly[-1]["week_index"] if weekly else 0)) + 1)]
+        total_units = sum(w["units"] for w in weekly)
+        total_sales = sum(w["sales"] for w in weekly)
+        peak = max((w["units"] for w in weekly), default=0)
+        rows.append({
+            "style_name": st["style_name"],
+            "brand": st["brand"],
+            "subcategory": st["subcategory"],
+            "first_sale": str(first_sale) if first_sale else None,
+            "weeks_since_launch": weeks_since_launch,
+            "weekly": weekly,
+            "peak_weekly_units": peak,
+            "total_units": total_units,
+            "total_sales": total_sales,
+            "trend": _trend(padded),
+        })
+    rows.sort(key=lambda x: -(x["total_units"] or 0))
+    return {"rows": rows}
+
+
+@app.get("/api/analytics/products-plan")
+def analytics_products_plan(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    # Sub-category composition: sales, SOR, qty + SOH split (stores vs W/H),
+    # each alongside its share of the corresponding group total.
+    where = build_filters(date_from, date_to, country, channel,
+        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 "
+              "AND p.product_type IN (" + MERCH_SUBCATEGORIES_SQL + ")")
+    inv_country = (" AND i.country IN (" + csv_to_sql(country) + ")") if country else ""
+    rows = run_query(
+        """
+        WITH sales AS (
+            SELECT p.category, p.product_type AS subcategory,
+                SUM(s.ordered_item_quantity) AS qty_sold,
+                ROUND(SUM(s.total_sales_kes::numeric)) AS total_sales
+            FROM all_sales s
+            JOIN all_products_clean p ON s.variant_sku = p.sku
+            WHERE """ + where + """
+            GROUP BY p.category, p.product_type
+        ),
+        stock AS (
+            SELECT p.category, p.product_type AS subcategory,
+                SUM(i.available) AS total_soh,
+                SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)) AS stores_soh,
+                SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)) AS wh_soh
+            FROM all_inventory i
+            JOIN all_products_clean p ON i.sku = p.sku
+            WHERE p.product_type IN (""" + MERCH_SUBCATEGORIES_SQL + """)""" + inv_country + """
+            GROUP BY p.category, p.product_type
+        )
+        SELECT COALESCE(s.category, st.category) AS category,
+            COALESCE(s.subcategory, st.subcategory) AS subcategory,
+            COALESCE(s.total_sales, 0) AS total_sales,
+            COALESCE(s.qty_sold, 0) AS qty_sold,
+            COALESCE(st.total_soh, 0) AS total_soh,
+            COALESCE(st.stores_soh, 0) AS stores_soh,
+            COALESCE(st.wh_soh, 0) AS wh_soh
+        FROM sales s
+        FULL OUTER JOIN stock st ON s.category = st.category AND s.subcategory = st.subcategory
+        WHERE COALESCE(s.subcategory, st.subcategory) IS NOT NULL
+        """,
+        date_to=date_to,
+    ) or []
+    tot_sales = sum(float(r["total_sales"] or 0) for r in rows)
+    tot_qty = sum(float(r["qty_sold"] or 0) for r in rows)
+    tot_soh = sum(float(r["total_soh"] or 0) for r in rows)
+    tot_stores = sum(float(r["stores_soh"] or 0) for r in rows)
+    tot_wh = sum(float(r["wh_soh"] or 0) for r in rows)
+    out = []
+    for r in rows:
+        qty = float(r["qty_sold"] or 0)
+        soh = float(r["total_soh"] or 0)
+        stores = float(r["stores_soh"] or 0)
+        wh = float(r["wh_soh"] or 0)
+        out.append({
+            "category": r["category"] or "—",
+            "subcategory": r["subcategory"] or "—",
+            "total_sales": round(float(r["total_sales"] or 0)),
+            "sor": round(qty / (qty + soh) * 100, 1) if (qty + soh) > 0 else 0.0,
+            "qty_sold": int(qty),
+            "pct_qty": round(qty / tot_qty * 100, 1) if tot_qty else 0.0,
+            "total_soh": int(soh),
+            "pct_total_soh": round(soh / tot_soh * 100, 1) if tot_soh else 0.0,
+            "stores_soh": int(stores),
+            "pct_stores_soh": round(stores / tot_stores * 100, 1) if tot_stores else 0.0,
+            "wh_soh": int(wh),
+            "pct_wh_soh": round(wh / tot_wh * 100, 1) if tot_wh else 0.0,
+        })
+    out.sort(key=lambda x: -x["qty_sold"])
+    return out
+
+
+@app.get("/api/analytics/category-country-matrix")
+def analytics_category_country_matrix(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    channel:   str = Query(default=None),
+):
+    # Subcategory × Country (Kenya/Uganda/Rwanda/Online) sales matrix. Each
+    # cell carries the KES + that subcategory's share of THAT country's total.
+    countries = ["Kenya", "Uganda", "Rwanda", "Online"]
+    chf = (" AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    rows = run_query(
+        """
+        SELECT p.product_type AS subcategory, s.country,
+            ROUND(SUM(s.total_sales_kes::numeric)) AS sales_kes
+        FROM all_sales s
+        JOIN all_products_clean p ON s.variant_sku = p.sku
+        WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+          AND s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0
+          AND """ + BASE_FILTERS + """
+          AND s.country IN ('Kenya','Uganda','Rwanda','Online')
+          AND p.product_type IN (""" + MERCH_SUBCATEGORIES_SQL + """)""" + chf + """
+        GROUP BY p.product_type, s.country
+        """,
+        date_to=date_to,
+    ) or []
+    country_totals = {c: 0.0 for c in countries}
+    by_sub = {}
+    for r in rows:
+        sub = r["subcategory"]
+        c = r["country"]
+        if c not in country_totals:
+            continue
+        v = float(r["sales_kes"] or 0)
+        country_totals[c] += v
+        by_sub.setdefault(sub, {})[c] = v
+    grand_total = sum(country_totals.values())
+    out_rows = []
+    for sub, cmap in by_sub.items():
+        cells = {}
+        row_total = 0.0
+        for c in countries:
+            v = cmap.get(c, 0.0)
+            row_total += v
+            if v:
+                cells[c] = {
+                    "sales_kes": round(v),
+                    "share_of_country_pct": round(v / country_totals[c] * 100, 1) if country_totals[c] else 0.0,
+                }
+        out_rows.append({
+            "subcategory": sub,
+            "row_total_kes": round(row_total),
+            "cells": cells,
+        })
+    out_rows.sort(key=lambda x: -x["row_total_kes"])
+    return {
+        "rows": out_rows,
+        "countries": countries,
+        "country_totals": {c: round(v) for c, v in country_totals.items()},
+        "grand_total_kes": round(grand_total),
+    }
+
+
+def _x_attr_variance(attr_col, key_name, date_from, date_to, cf, chf, inv_cf):
+    rows = run_query(
+        """
+        WITH sales AS (
+            SELECT p.""" + attr_col + """ AS k, SUM(s.ordered_item_quantity) AS units_sold
+            FROM all_sales s
+            JOIN all_products_clean p ON s.variant_sku = p.sku
+            WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+              AND s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0
+              AND """ + BASE_FILTERS + cf + chf + """
+            GROUP BY p.""" + attr_col + """
+        ),
+        stock AS (
+            SELECT p.""" + attr_col + """ AS k, SUM(i.available) AS current_stock
+            FROM all_inventory i
+            JOIN all_products_clean p ON i.sku = p.sku
+            WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)""" + inv_cf + """
+            GROUP BY p.""" + attr_col + """
+        )
+        SELECT COALESCE(s.k, st.k) AS k,
+            COALESCE(s.units_sold, 0) AS units_sold,
+            COALESCE(st.current_stock, 0) AS current_stock
+        FROM sales s FULL OUTER JOIN stock st ON s.k = st.k
+        WHERE COALESCE(s.k, st.k) IS NOT NULL AND COALESCE(s.k, st.k) <> ''
+        """,
+        date_to=date_to,
+    ) or []
+    tot_sold = sum(float(r["units_sold"] or 0) for r in rows)
+    tot_stock = sum(float(r["current_stock"] or 0) for r in rows)
+    out = []
+    for r in rows:
+        sold = float(r["units_sold"] or 0)
+        stock = float(r["current_stock"] or 0)
+        if sold == 0 and stock == 0:
+            continue
+        pct_sold = sold / tot_sold * 100 if tot_sold else 0.0
+        pct_stock = stock / tot_stock * 100 if tot_stock else 0.0
+        out.append({
+            key_name: r["k"],
+            "units_sold": int(sold),
+            "current_stock": int(stock),
+            "pct_of_total_sold": round(pct_sold, 2),
+            "pct_of_total_stock": round(pct_stock, 2),
+            "variance": round(pct_sold - pct_stock, 2),
+        })
+    out.sort(key=lambda x: -abs(x["variance"]))
+    return out
+
+
+@app.get("/api/analytics/stock-to-sales-by-attribute")
+def analytics_stock_to_sales_by_attribute(
+    date_from: str = Query(default=str((date.today() - timedelta(days=29)).isoformat())),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    locations: str = Query(default=None),
+):
+    # Stock-to-sales variance by color/print and by size. country is a
+    # lowercased CSV (matched case-insensitively); locations is a CSV of
+    # pos_location_name values applied to the sales side.
+    cf, chf = _style_filters(country, locations, "s")
+    inv_cf, _ = _style_filters(country, None, "i")
+    return {
+        "by_color": _x_attr_variance("color_print", "color", date_from, date_to, cf, chf, inv_cf),
+        "by_size": _x_attr_variance("size", "size", date_from, date_to, cf, chf, inv_cf),
+    }
+
+
+@app.get("/api/footfall/daily-calendar")
+def footfall_daily_calendar(
+    date_from: str = Query(default=str((date.today() - timedelta(days=89)).isoformat())),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+):
+    # Daily footfall + orders + sales for a calendar heatmap. footfall has no
+    # country column → mapped via pos_locations. weekday: 0=Mon..6=Sun.
+    ff_country = (" AND pl.country = '" + _sql_str(country) + "'") if country else ""
+    sa_country = (" AND s.country = '" + _sql_str(country) + "'") if country else ""
+    rows = run_query(
+        """
+        WITH ff AS (
+            SELECT f.time::date AS d, SUM(f.a01_footfall_in) AS footfall
+            FROM footfall f
+            LEFT JOIN pos_locations pl ON """ + ff_canon_sql() + """ = pl.location_name
+            WHERE f.time BETWEEN '""" + date_from + """' AND '""" + date_to + """'""" + ff_country + """
+            GROUP BY f.time::date
+        ),
+        sa AS (
+            SELECT s.sale_date::date AS d,
+                COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
+                ROUND(SUM(s.total_sales_kes::numeric)) AS total_sales
+            FROM all_sales s
+            WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+              AND """ + BASE_FILTERS + sa_country + """
+            GROUP BY s.sale_date::date
+        )
+        SELECT COALESCE(ff.d, sa.d) AS d,
+            ((EXTRACT(DOW FROM COALESCE(ff.d, sa.d))::int + 6) % 7) AS weekday,
+            COALESCE(ff.footfall, 0) AS footfall,
+            COALESCE(sa.orders, 0) AS orders,
+            COALESCE(sa.total_sales, 0) AS total_sales
+        FROM ff FULL OUTER JOIN sa ON ff.d = sa.d
+        WHERE COALESCE(ff.d, sa.d) IS NOT NULL
+        ORDER BY d
+        """,
+        date_to=date_to,
+    ) or []
+    days = []
+    max_ff = 0
+    for r in rows:
+        ff = int(r["footfall"] or 0)
+        orders = int(r["orders"] or 0)
+        max_ff = max(max_ff, ff)
+        days.append({
+            "date": str(r["d"]),
+            "weekday": int(r["weekday"]),
+            "footfall": ff,
+            "orders": orders,
+            "total_sales": round(float(r["total_sales"] or 0)),
+            "conversion_rate": round(orders / ff * 100, 1) if ff > 0 else None,
+        })
+    try:
+        ndays = (date.fromisoformat(date_to[:10]) - date.fromisoformat(date_from[:10])).days + 1
+    except ValueError:
+        ndays = len(days)
+    return {
+        "days": days,
+        "max_footfall": max_ff,
+        "window": {"start": date_from, "end": date_to, "days": ndays},
+    }
+
+
+@app.get("/api/exports/store-kpis")
+def exports_store_kpis(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+):
+    # One row per POS location with current vs LY (same window last year) and
+    # LM (previous equal-length window) for revenue/units/footfall/tx/basket/
+    # ASP/MSI plus conversion.
+    d0 = date.fromisoformat(date_from[:10])
+    d1 = date.fromisoformat(date_to[:10])
+    length = (d1 - d0).days + 1
+    ly0, ly1 = _x_shift_years(d0, 1), _x_shift_years(d1, 1)
+    lm1 = d0 - timedelta(days=1)
+    lm0 = lm1 - timedelta(days=length - 1)
+    cur = _x_store_sales(str(d0), str(d1))
+    ly = _x_store_sales(str(ly0), str(ly1))
+    lm = _x_store_sales(str(lm0), str(lm1))
+    ff_cur = _x_store_footfall(str(d0), str(d1))
+    ff_ly = _x_store_footfall(str(ly0), str(ly1))
+    locs = set(cur) | set(ly) | set(lm) | set(ff_cur) | set(ff_ly)
+
+    def _m(d, loc):
+        r = d.get(loc) or {}
+        return float(r.get("sales") or 0), float(r.get("units") or 0), float(r.get("tx") or 0)
+
+    rows = []
+    for loc in locs:
+        s_c, u_c, t_c = _m(cur, loc)
+        s_l, u_l, t_l = _m(ly, loc)
+        s_m, u_m, t_m = _m(lm, loc)
+        f_c = ff_cur.get(loc, 0.0)
+        f_l = ff_ly.get(loc, 0.0)
+        if s_c == 0 and u_c == 0 and t_c == 0 and f_c == 0:
+            continue
+        bv_c = s_c / t_c if t_c else 0
+        bv_l = s_l / t_l if t_l else 0
+        asp_c = s_c / u_c if u_c else 0
+        asp_l = s_l / u_l if u_l else 0
+        msi_c = u_c / t_c if t_c else 0
+        msi_l = u_l / t_l if t_l else 0
+        conv_c = t_c / f_c * 100 if f_c else None
+        conv_l = t_l / f_l * 100 if f_l else None
+        rows.append({
+            "pos_location": loc,
+            "total_sales": round(s_c), "total_sales_ly": round(s_l),
+            "yoy_revenue_pct": _x_pct(s_c, s_l),
+            "total_sales_lm": round(s_m), "mom_revenue_pct": _x_pct(s_c, s_m),
+            "units_sold": int(u_c), "units_sold_ly": int(u_l),
+            "yoy_units_pct": _x_pct(u_c, u_l),
+            "footfall": int(f_c), "footfall_ly": int(f_l),
+            "yoy_footfall_pct": _x_pct(f_c, f_l),
+            "transactions": int(t_c), "transactions_ly": int(t_l),
+            "yoy_transactions_pct": _x_pct(t_c, t_l),
+            "basket_value": round(bv_c), "basket_value_ly": round(bv_l),
+            "yoy_basket_value_pct": _x_pct(bv_c, bv_l),
+            "asp": round(asp_c), "asp_ly": round(asp_l),
+            "yoy_asp_pct": _x_pct(asp_c, asp_l),
+            "msi": round(msi_c, 2), "msi_ly": round(msi_l, 2),
+            "yoy_msi_pct": _x_pct(msi_c, msi_l),
+            "conv_rate": round(conv_c, 2) if conv_c is not None else None,
+            "yoy_conv_pp": round(conv_c - conv_l, 2) if (conv_c is not None and conv_l is not None) else None,
+        })
+    rows.sort(key=lambda x: -(x["total_sales"] or 0))
+    return {
+        "rows": rows,
+        "period_ly": {"date_from": str(ly0), "date_to": str(ly1)},
+        "period_lm": {"date_from": str(lm0), "date_to": str(lm1)},
+    }
+
+
+@app.get("/api/exports/period-performance")
+def exports_period_performance(
+    mode:   str = Query(default="wtd"),
+    anchor: str = Query(default=str(date.today())),
+):
+    # 3-year per-store comparison (Last-Last-Year / Last-Year / Current-Year)
+    # for WTD / MTD / YTD windows ending at `anchor`.
+    a = date.fromisoformat(anchor[:10])
+    if mode == "ytd":
+        frm = date(a.year, 1, 1)
+    elif mode == "mtd":
+        frm = a.replace(day=1)
+    else:
+        frm = a - timedelta(days=a.weekday())
+    to = a
+    ly0, ly1 = _x_shift_years(frm, 1), _x_shift_years(to, 1)
+    lly0, lly1 = _x_shift_years(frm, 2), _x_shift_years(to, 2)
+    cy = _x_store_sales(str(frm), str(to))
+    ly = _x_store_sales(str(ly0), str(ly1))
+    lly = _x_store_sales(str(lly0), str(lly1))
+    locs = set(cy) | set(ly) | set(lly)
+    total_rev_cy = sum(float((cy.get(l) or {}).get("sales") or 0) for l in cy)
+
+    def _ru(d, loc):
+        r = d.get(loc) or {}
+        return float(r.get("sales") or 0), float(r.get("units") or 0)
+
+    rows = []
+    for loc in locs:
+        r_cy, u_cy = _ru(cy, loc)
+        r_ly, u_ly = _ru(ly, loc)
+        r_lly, u_lly = _ru(lly, loc)
+        if r_cy == 0 and r_ly == 0 and r_lly == 0:
+            continue
+        asp_cy = r_cy / u_cy if u_cy else 0
+        asp_ly = r_ly / u_ly if u_ly else 0
+        asp_lly = r_lly / u_lly if u_lly else 0
+        rows.append({
+            "store_name": loc,
+            "units_lly": int(u_lly), "units_ly": int(u_ly), "units_cy": int(u_cy),
+            "units_yoy_pct": _x_pct(u_cy, u_ly), "units_lly_pct": _x_pct(u_cy, u_lly),
+            "revenue_lly": round(r_lly), "revenue_ly": round(r_ly), "revenue_cy": round(r_cy),
+            "revenue_yoy_pct": _x_pct(r_cy, r_ly), "revenue_lly_pct": _x_pct(r_cy, r_lly),
+            "asp_lly": round(asp_lly), "asp_ly": round(asp_ly), "asp_cy": round(asp_cy),
+            "asp_yoy_pct": _x_pct(asp_cy, asp_ly), "asp_lly_pct": _x_pct(asp_cy, asp_lly),
+            "contrib_revenue_pct": round(r_cy / total_rev_cy * 100, 2) if total_rev_cy else 0.0,
+        })
+    rows.sort(key=lambda x: -(x["revenue_cy"] or 0))
+    return {
+        "rows": rows,
+        "period_current": {"date_from": str(frm), "date_to": str(to)},
+    }
+
+
+@app.get("/api/exports/stock-rebalancing")
+def exports_stock_rebalancing(
+    categories: str = Query(default=None),
+    channel:    str = Query(default=None),
+    country:    str = Query(default=None),
+):
+    # Per category × subcategory: full-year units sold for the last 3 years and
+    # units in the same calendar quarter each year, alongside live store SOH.
+    today = date.today()
+    years = [today.year - 2, today.year - 1, today.year]
+    cq = (today.month - 1) // 3 + 1
+    q_start_m = (cq - 1) * 3 + 1
+
+    def _q_window(y):
+        start = date(y, q_start_m, 1)
+        end_m = q_start_m + 2
+        if end_m == 12:
+            end = date(y, 12, 31)
+        else:
+            end = date(y, end_m + 1, 1) - timedelta(days=1)
+        if end > today:
+            end = today
+        return start, end
+
+    cat_pf = ""
+    if categories:
+        cats = [c.strip() for c in categories.split(",") if c.strip()]
+        if cats:
+            cat_pf = " AND p.category IN (" + ",".join(
+                "'" + c.replace("'", "''") + "'" for c in cats) + ")"
+    chf = (" AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    sa_country = (" AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    inv_country = (" AND i.country IN (" + csv_to_sql(country) + ")") if country else ""
+
+    year_cols = []
+    for y in years:
+        qs, qe = _q_window(y)
+        year_cols.append(
+            "SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_date::date BETWEEN '"
+            + str(date(y, 1, 1)) + "' AND '" + str(date(y, 12, 31)) + "') AS y" + str(y) + "_units")
+        year_cols.append(
+            "SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_date::date BETWEEN '"
+            + str(qs) + "' AND '" + str(qe) + "') AS y" + str(y) + "_units_q")
+    sales = run_query(
+        """
+        SELECT p.category, p.product_type AS subcategory,
+            """ + ",\n            ".join(year_cols) + """
+        FROM all_sales s
+        JOIN all_products_clean p ON s.variant_sku = p.sku
+        WHERE s.sale_date BETWEEN '""" + str(date(years[0], 1, 1)) + """' AND '""" + str(today) + """'
+          AND s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0
+          AND p.product_type IN (""" + MERCH_SUBCATEGORIES_SQL + """)""" + cat_pf + chf + sa_country + """
+        GROUP BY p.category, p.product_type
+        """,
+        date_to=str(today),
+    ) or []
+    stock = run_query(
+        """
+        SELECT p.category, p.product_type AS subcategory, SUM(i.available) AS soh
+        FROM all_inventory i
+        JOIN all_products_clean p ON i.sku = p.sku
+        WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+          AND p.product_type IN (""" + MERCH_SUBCATEGORIES_SQL + """)""" + cat_pf + inv_country + """
+        GROUP BY p.category, p.product_type
+        """
+    ) or []
+    soh_map = {(r["category"], r["subcategory"]): float(r["soh"] or 0) for r in stock}
+
+    # Merge sales + stock keyed by (category, subcategory).
+    merged = {}
+    for r in sales:
+        key = (r["category"], r["subcategory"])
+        m = merged.setdefault(key, {})
+        for y in years:
+            m["y%d_units" % y] = float(r["y%d_units" % y] or 0)
+            m["y%d_units_q" % y] = float(r["y%d_units_q" % y] or 0)
+        m["soh"] = soh_map.get(key, 0.0)
+    for key, soh in soh_map.items():
+        if key not in merged:
+            m = merged.setdefault(key, {})
+            for y in years:
+                m["y%d_units" % y] = 0.0
+                m["y%d_units_q" % y] = 0.0
+            m["soh"] = soh
+
+    # Grand totals across everything (denominators for the % columns).
+    totals = {}
+    for y in years:
+        totals["y%d_units_sold" % y] = sum(m["y%d_units" % y] for m in merged.values())
+        totals["y%d_units_q" % y] = sum(m["y%d_units_q" % y] for m in merged.values())
+    totals["soh"] = sum(m["soh"] for m in merged.values())
+
+    def _pctof(val, key):
+        t = totals.get(key, 0)
+        return round(val / t * 100, 2) if t else 0.0
+
+    # Group by category → subcategory rows + a per-category total row.
+    by_cat = {}
+    for (cat, sub), m in merged.items():
+        by_cat.setdefault(cat or "—", []).append((sub, m))
+    out_rows = []
+    for cat in sorted(by_cat):
+        subs = sorted(by_cat[cat], key=lambda x: -(x[1].get("y%d_units" % years[-1]) or 0))
+        cat_tot = {}
+        for sub, m in subs:
+            row = {"category": cat, "subcategory": sub, "is_total": False}
+            for y in years:
+                u = m["y%d_units" % y]
+                uq = m["y%d_units_q" % y]
+                row["y%d_units_sold" % y] = int(u)
+                row["y%d_units_sold_pct" % y] = _pctof(u, "y%d_units_sold" % y)
+                row["y%d_units_q" % y] = int(uq)
+                row["y%d_units_q_pct" % y] = _pctof(uq, "y%d_units_q" % y)
+                cat_tot["y%d_units" % y] = cat_tot.get("y%d_units" % y, 0) + u
+                cat_tot["y%d_units_q" % y] = cat_tot.get("y%d_units_q" % y, 0) + uq
+            row["soh"] = int(m["soh"])
+            row["soh_pct"] = _pctof(m["soh"], "soh")
+            cat_tot["soh"] = cat_tot.get("soh", 0) + m["soh"]
+            out_rows.append(row)
+        trow = {"category": cat, "subcategory": "", "is_total": True}
+        for y in years:
+            trow["y%d_units_sold" % y] = int(cat_tot.get("y%d_units" % y, 0))
+            trow["y%d_units_sold_pct" % y] = _pctof(cat_tot.get("y%d_units" % y, 0), "y%d_units_sold" % y)
+            trow["y%d_units_q" % y] = int(cat_tot.get("y%d_units_q" % y, 0))
+            trow["y%d_units_q_pct" % y] = _pctof(cat_tot.get("y%d_units_q" % y, 0), "y%d_units_q" % y)
+        trow["soh"] = int(cat_tot.get("soh", 0))
+        trow["soh_pct"] = _pctof(cat_tot.get("soh", 0), "soh")
+        out_rows.append(trow)
+
+    available_categories = sorted(
+        {v for v in SUBCATEGORY_TO_CATEGORY.values() if v not in ("Accessories", "Sale")})
+    totals_out = {}
+    for y in years:
+        totals_out["y%d_units_sold" % y] = int(totals["y%d_units_sold" % y])
+        totals_out["y%d_units_q" % y] = int(totals["y%d_units_q" % y])
+    totals_out["soh"] = int(totals["soh"])
+    return {
+        "years": years,
+        "current_quarter": cq,
+        "rows": out_rows,
+        "totals": totals_out,
+        "available_categories": available_categories,
+    }
+
+
+@app.get("/api/inventory-style-counts")
+def inventory_style_counts(
+    country:   str = Query(default=None),
+    locations: str = Query(default=None),
+):
+    # Active = styles sold in the last 182 days; retired = styles with stock
+    # but no sale in that window; total = the union.
+    cf_s, chf_s = _style_filters(country, locations, "s")
+    cf_i, _ = _style_filters(country, None, "i")
+    loc_i = ""
+    if locations:
+        locs = [l.strip() for l in locations.split(",") if l.strip()]
+        if locs:
+            loc_i = " AND i.pos_location_name IN (" + ",".join(
+                "'" + l.replace("'", "''") + "'" for l in locs) + ")"
+    rows = run_query(
+        """
+        WITH sold AS (
+            SELECT DISTINCT p.style_name
+            FROM all_sales s
+            JOIN all_products_clean p ON s.variant_sku = p.sku
+            WHERE s.sale_kind IN ('sale','order') AND s.net_quantity > 0
+              AND s.sale_date::date >= CURRENT_DATE - INTERVAL '182 days'
+              AND p.style_name IS NOT NULL AND p.style_name <> ''
+              AND """ + BASE_FILTERS + cf_s + chf_s + """
+        ),
+        instock AS (
+            SELECT DISTINCT p.style_name
+            FROM all_inventory i
+            JOIN all_products_clean p ON i.sku = p.sku
+            WHERE i.available > 0 AND p.style_name IS NOT NULL AND p.style_name <> ''""" + cf_i + loc_i + """
+        )
+        SELECT
+            (SELECT COUNT(*) FROM (SELECT style_name FROM sold UNION SELECT style_name FROM instock) u) AS total_styles,
+            (SELECT COUNT(*) FROM sold) AS active_styles,
+            (SELECT COUNT(*) FROM (SELECT style_name FROM instock EXCEPT SELECT style_name FROM sold) r) AS retired_styles
+        """
+    ) or [{}]
+    r = rows[0]
+    return {
+        "active_styles": int(r.get("active_styles") or 0),
+        "retired_styles": int(r.get("retired_styles") or 0),
+        "total_styles": int(r.get("total_styles") or 0),
+    }
+
+
 @app.get("/api/range-mgmt/weekly-sor")
 def range_mgmt_weekly_sor(country: str = Query(default=None), channel: str = Query(default=None)):
     cf, chf = _style_filters(country, channel, "s")
