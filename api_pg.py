@@ -7160,6 +7160,8 @@ def _fmt_bucket_label(d, bucket):
         return d.strftime("%b %Y")
     if bucket == "quarter":
         return "Q%d %d" % ((d.month - 1) // 3 + 1, d.year)
+    if bucket == "year":
+        return d.strftime("%Y")
     return d.strftime("%b %d")
 
 @app.get("/api/analytics/kpi-trend")
@@ -7192,6 +7194,190 @@ def get_kpi_trend(
         r["date"] = str(d)
         r["label"] = _fmt_bucket_label(d, bucket)
     return rows
+
+# ── Trend Analysis ────────────────────────────────────────────────────────────
+# A dedicated, richer time-series used by the Trend Analysis page. Unlike
+# /api/analytics/kpi-trend it (a) supports a "year" bucket, (b) can scope to a
+# single store (pos_location_name), and (c) folds in FOOTFALL and CONVERSION by
+# joining the footfall sensor table per bucket. Metric definitions deliberately
+# MIRROR /api/kpis so a trend ties out to the Overview KPI cards:
+#   total_sales = net of returns; net_sales = net incl. returns; units = net_quantity;
+#   ABV = total_sales / orders; ASP = total_sales / ordered_item_quantity.
+@app.get("/api/analytics/trend-series")
+def get_trend_series(
+    date_from: str = Query(default=str(date.today().replace(month=1, day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    store:     str = Query(default=None),
+    bucket:    str = Query(default="month"),
+):
+    bucket = bucket if bucket in ("day", "week", "month", "quarter", "year") else "month"
+    # `store` is a pos_location_name; reuse build_filters' channel arg which
+    # filters s.pos_location_name. Absent => overall (all stores).
+    where = build_filters(date_from, date_to, country, store)
+    sales_rows = run_query("""
+        SELECT
+            date_trunc('""" + bucket + """', s.sale_date::date)::date AS bucket_date,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
+                - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
+                          WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS net_sales,
+            SUM(s.net_quantity) AS units_sold,
+            COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
+            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
+                - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END))
+                / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size,
+            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
+                - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END))
+                / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END), 0), 0) AS avg_selling_price
+        FROM all_sales s
+        WHERE """ + where + """
+        GROUP BY 1
+        ORDER BY 1
+    """, date_to=date_to)
+
+    # Footfall per bucket from the sensor table. Footfall has no country column,
+    # so a country filter cannot be applied here; when a single store is chosen
+    # we scope footfall to that store via the canonical name (post-rename safe).
+    ff_where = "f.time BETWEEN '" + date_from + "' AND '" + date_to + "'"
+    if store:
+        ff_where += " AND " + ff_canon_sql() + " IN (" + csv_to_sql(store) + ")"
+    ff_rows = run_query("""
+        SELECT date_trunc('""" + bucket + """', f.time::date)::date AS bucket_date,
+            SUM(f.a01_footfall_in) AS footfall
+        FROM footfall f
+        WHERE """ + ff_where + """
+        GROUP BY 1
+    """, date_to=date_to)
+    ff_by_bucket = {str(r["bucket_date"]): (r["footfall"] or 0) for r in ff_rows}
+
+    out = []
+    for r in sales_rows:
+        d = r.pop("bucket_date")
+        key = str(d)
+        ff = ff_by_bucket.pop(key, 0) or 0
+        orders = r.get("orders") or 0
+        r["date"] = key
+        r["label"] = _fmt_bucket_label(d, bucket)
+        r["footfall"] = int(ff)
+        r["conversion_rate"] = (round(orders * 100.0 / ff, 2) if ff else None)
+        out.append(r)
+    # Buckets that have footfall but no sales rows (rare — e.g. a store with a
+    # sensor but no qualifying sales in the window). Surface them so the
+    # footfall/conversion trend isn't silently truncated.
+    for key, ff in ff_by_bucket.items():
+        if not ff:
+            continue
+        d = date.fromisoformat(key)
+        out.append({
+            "date": key, "label": _fmt_bucket_label(d, bucket),
+            "total_sales": 0, "net_sales": 0, "units_sold": 0, "orders": 0,
+            "avg_basket_size": 0, "avg_selling_price": 0,
+            "footfall": int(ff), "conversion_rate": 0.0,
+        })
+    out.sort(key=lambda x: x["date"])
+    return out
+
+
+def _trend_ai_core(body):
+    """Generate a short, grounded narrative for a single KPI trend. The client
+    sends the metric, its unit, the granularity, the scope label, and the
+    plotted points; we compute deterministic summary stats and ask the LLM to
+    describe what the trend says (direction, momentum, peaks/troughs, a
+    pointer) in plain business English. Output is plain text, never JSON."""
+    metric_label = str(body.get("metric_label") or "the metric").strip()[:80]
+    unit = str(body.get("unit") or "").strip().lower()  # "kes" | "count" | "pct"
+    bucket = str(body.get("bucket") or "period").strip()[:16]
+    scope_label = str(body.get("scope_label") or "overall").strip()[:80]
+    points = body.get("points") or []
+    series = []
+    for p in points:
+        try:
+            v = p.get("value")
+            if v is None:
+                continue
+            series.append((str(p.get("label") or "")[:24], float(v)))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    if len(series) < 2:
+        return {"available": False, "reason": "not_enough_points"}
+
+    vals = [v for _, v in series]
+    first_lbl, first_v = series[0]
+    last_lbl, last_v = series[-1]
+    max_lbl, max_v = max(series, key=lambda s: s[1])
+    min_lbl, min_v = min(series, key=lambda s: s[1])
+    avg_v = sum(vals) / len(vals)
+    pct_change = ((last_v - first_v) / abs(first_v) * 100) if first_v else None
+
+    def _fmt(v):
+        if unit == "kes":
+            return "KES %s" % format(round(v), ",")
+        if unit == "pct":
+            return "%.1f%%" % v
+        return format(round(v), ",")
+
+    direction = "flat"
+    if pct_change is not None:
+        if pct_change > 3:
+            direction = "rising"
+        elif pct_change < -3:
+            direction = "declining"
+    facts = (
+        "Metric: %s. Granularity: per %s. Scope: %s.\n"
+        "Points (%d): %s.\n"
+        "First (%s): %s. Last (%s): %s. Overall change: %s.\n"
+        "Peak (%s): %s. Trough (%s): %s. Average: %s. Direction: %s."
+    ) % (
+        metric_label, bucket, scope_label, len(series),
+        ", ".join("%s=%s" % (lbl, _fmt(v)) for lbl, v in series[:40]),
+        first_lbl, _fmt(first_v), last_lbl, _fmt(last_v),
+        ("%+.1f%%" % pct_change if pct_change is not None else "n/a"),
+        max_lbl, _fmt(max_v), min_lbl, _fmt(min_v), _fmt(avg_v), direction,
+    )
+    sys = (
+        "You are a retail BI analyst for Vivo Fashion Group, a multi-brand "
+        "fashion retailer in East Africa (Kenya/Uganda/Rwanda + Online). All "
+        "money is in Kenyan Shillings (KES). You are given a single KPI's trend "
+        "over time with summary statistics. Write a concise, decision-useful "
+        "narrative (3-5 sentences, <=120 words) describing what the trend "
+        "shows: overall direction and momentum, notable peaks/troughs or "
+        "turning points, and one practical implication or thing to watch. Use "
+        "the exact figures provided; do not invent numbers. Plain prose, no "
+        "markdown headers, no bullet lists, no emojis."
+    )
+    narrative = _chat_llm(
+        [{"role": "system", "content": sys},
+         {"role": "user", "content": facts}],
+        max_tokens=320,
+    )
+    narrative = (narrative or "").strip()
+    if not narrative:
+        return {"available": False, "reason": "empty"}
+    return {
+        "available": True,
+        "narrative": narrative,
+        "direction": direction,
+        "pct_change": (round(pct_change, 1) if pct_change is not None else None),
+    }
+
+
+@app.post("/api/analytics/trend-ai")
+async def trend_ai_post(request: Request):
+    """AI narrative for a Trend Analysis chart. The AI key is server-only, so
+    the client posts the plotted series + metadata and we run the LLM here.
+    Always returns gracefully — a narrative is an enhancement, never a blocker."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not (os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
+            and os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")):
+        return {"available": False, "reason": "ai_not_configured"}
+    try:
+        return await _chat_run_in_threadpool(_trend_ai_core, body or {})
+    except Exception:
+        return {"available": False, "reason": "ai_error"}
 
 # --- GET stub used also as POST below (marketing-actions) ---
 @app.get("/api/range-mgmt/marketing-actions")
