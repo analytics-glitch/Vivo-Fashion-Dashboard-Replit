@@ -40,6 +40,7 @@ const MarkdownClearance = React.lazy(() => import("@/pages/MarkdownClearance"));
 const Margin = React.lazy(() => import("@/pages/Margin"));
 const RFM = React.lazy(() => import("@/pages/RFM"));
 const CRM = React.lazy(() => import("@/pages/CRM"));
+const Catalogue = React.lazy(() => import("@/pages/Catalogue"));
 const Login = React.lazy(() => import("@/pages/Login"));
 const AuthCallback = React.lazy(() => import("@/pages/AuthCallback"));
 
@@ -51,6 +52,16 @@ import GlobalSearch from "@/components/GlobalSearch";
 import { Toaster } from "@/components/ui/sonner";
 import useHeartbeat from "@/lib/useHeartbeat";
 import { useAuth } from "@/lib/auth";
+import { canAccessPage } from "@/lib/permissions";
+
+// Landing for "/". Renders the Overview cockpit for users who can access it
+// (exec / analyst / viewer), and falls back to the Home tile launcher for
+// roles without overview access (store_manager / warehouse) so they never hit
+// a redirect dead-end (ProtectedRoute bounces forbidden pages to "/").
+const RootLanding = () => {
+  const { user } = useAuth();
+  return canAccessPage(user, "overview") ? <Overview /> : <Home />;
+};
 
 const Shell = ({ children }) => {
   const navRef = useRef(null);
@@ -110,7 +121,9 @@ function App() {
                 <Route path="/auth/callback" element={<Suspense fallback={<div className="min-h-screen grid place-items-center"><Loading label="Loading…" /></div>}><AuthCallback /></Suspense>} />
                 <Route path="/sign-in/*" element={<Navigate to="/login" replace />} />
                 <Route path="/sign-up/*" element={<Navigate to="/login" replace />} />
-                <Route path="/" element={<ProtectedShell><Home /></ProtectedShell>} />
+                <Route path="/" element={<ProtectedShell><RootLanding /></ProtectedShell>} />
+                <Route path="/home" element={<ProtectedShell><Home /></ProtectedShell>} />
+                <Route path="/catalogue" element={<ProtectedShell pageId="catalogue"><Catalogue /></ProtectedShell>} />
                 <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
                 <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
                 <Route path="/locations" element={<ProtectedShell pageId="locations"><Locations /></ProtectedShell>} />

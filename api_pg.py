@@ -3883,6 +3883,90 @@ async def product_analysis_ai_post(request: Request):
         return {"available": False, "reason": "ai_error"}
 
 
+def _catalogue_ask_core(body):
+    """Map a natural-language question to the best dashboard page using the
+    catalogue index the client posts (frontend is the single source of truth)."""
+    question = (body.get("question") or "").strip()
+    pages = body.get("pages") or []
+    if not question:
+        return {"available": False, "reason": "empty_question"}
+    if not isinstance(pages, list) or not pages:
+        return {"available": False, "reason": "no_catalogue"}
+    lines = []
+    for p in pages[:120]:
+        if not isinstance(p, dict):
+            continue
+        route = str(p.get("route") or "").strip()
+        label = str(p.get("label") or "").strip()
+        purpose = str(p.get("purpose") or "").strip()
+        reports = p.get("reports") or []
+        if isinstance(reports, list):
+            rep = "; ".join(str(r)[:90] for r in reports[:14])
+        else:
+            rep = str(reports)[:280]
+        lines.append("- route=%s | page=%s | purpose=%s | reports: %s"
+                     % (route, label, purpose, rep))
+    catalog_txt = "\n".join(lines)
+    sys = (
+        "You are the report finder for the Vivo Fashion Group BI dashboard, a "
+        "multi-brand fashion retailer in East Africa (money in KES). You are given "
+        "a CATALOGUE of dashboard pages — each with its route, name, purpose and the "
+        "reports/metrics it contains. Given the user's question, pick the SINGLE best "
+        "page that answers it, plus up to 2 genuinely related pages. Only choose "
+        "routes that appear in the catalogue. Reply with STRICT JSON only (no markdown, "
+        "no prose around it), shaped exactly: "
+        '{"route": "/x", "label": "Page Name", '
+        '"answer": "one or two sentences telling the user exactly where to look and which report to open", '
+        '"related": [{"route": "/y", "label": "Other Page"}]}. '
+        "If nothing in the catalogue fits, set route to null and say so briefly in answer."
+    )
+    usr = "CATALOGUE:\n%s\n\nQUESTION: %s" % (catalog_txt, question)
+    raw = _chat_llm(
+        [{"role": "system", "content": sys},
+         {"role": "user", "content": usr}],
+        max_tokens=320,
+    )
+    data = _chat_extract_json(raw or "")
+    if not isinstance(data, dict):
+        return {"available": False, "reason": "parse_error"}
+    valid_routes = {str(p.get("route") or "") for p in pages if isinstance(p, dict)}
+    route = data.get("route")
+    if route and route not in valid_routes:
+        route = None
+    related = []
+    for r in (data.get("related") or []):
+        if isinstance(r, dict) and str(r.get("route") or "") in valid_routes:
+            related.append({"route": r.get("route"), "label": r.get("label")})
+        if len(related) >= 2:
+            break
+    return {
+        "available": True,
+        "route": route,
+        "label": data.get("label"),
+        "answer": (data.get("answer") or "").strip(),
+        "related": related,
+    }
+
+
+@app.post("/api/catalogue/ask")
+async def catalogue_ask_post(request: Request):
+    """AI report-finder for the Catalogue page. The client posts its question plus
+    the catalogue index; we run the LLM server-side (the AI key is server-only) and
+    return the best-matching page + route. Always returns gracefully — the AI hint
+    is an enhancement on top of the client-side keyword search, never a blocker."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not (os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
+            and os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")):
+        return {"available": False, "reason": "ai_not_configured"}
+    try:
+        return await _chat_run_in_threadpool(_catalogue_ask_core, body or {})
+    except Exception:
+        return {"available": False, "reason": "ai_error"}
+
+
 @app.get("/api/analytics/stock-to-sales-by-category")
 def analytics_sts_by_category(
     date_from: str = Query(default=str(date.today().replace(day=1))),

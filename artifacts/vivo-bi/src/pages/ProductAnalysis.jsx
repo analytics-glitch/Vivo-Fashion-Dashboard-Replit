@@ -90,35 +90,8 @@ const StyleDrill = ({ styleName, params }) => {
   if (error) return <ErrorBox message={error} />;
   if (!data) return <Empty label="No detail for this style." />;
 
-  const SizeColTable = ({ rows, dimKey, dimLabel }) => {
-    if (!rows || !rows.length) return <Empty label={`No ${dimLabel.toLowerCase()} data.`} />;
-    return (
-      <SortableTable
-        testId={`drill-${dimKey}`}
-        rows={rows}
-        initialSort={{ key: "units", dir: "desc" }}
-        exportName={`${styleName}_by_${dimKey}.csv`.replace(/\s+/g, "-")}
-        maxHeight={260}
-        columns={[
-          { key: dimKey, label: dimLabel, render: (r) => r[dimKey] || "(none)" },
-          { key: "units", label: "Units", numeric: true, render: (r) => fmtNum(r.units) },
-          { key: "revenue", label: "Revenue", numeric: true, render: (r) => fmtKES(r.revenue) },
-          { key: "stock", label: "Stock", numeric: true, render: (r) => fmtNum(r.stock) },
-        ]}
-      />
-    );
-  };
-
   return (
     <div className="grid grid-cols-1 gap-4" data-testid="style-drill">
-      <div>
-        <div className="eyebrow mb-1.5 flex items-center gap-1"><Stack size={12} /> By size</div>
-        <SizeColTable rows={data.by_size} dimKey="size" dimLabel="Size" />
-      </div>
-      <div>
-        <div className="eyebrow mb-1.5 flex items-center gap-1"><Cube size={12} /> By colour</div>
-        <SizeColTable rows={data.by_color} dimKey="color" dimLabel="Colour" />
-      </div>
       <div>
         <div className="eyebrow mb-1.5 flex items-center gap-1"><Warehouse size={12} /> Stock and Sales by location</div>
         <div className="text-[10px] text-muted mb-1.5">
