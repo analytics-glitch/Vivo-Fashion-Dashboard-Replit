@@ -3735,15 +3735,31 @@ def analytics_product_analysis_style(
                 for x in _dim_break("color_print")]
 
     loc = run_query(
-        "SELECT i.pos_location_name AS location, MAX(i.country) AS country,"
-        " COALESCE(SUM(i.available),0) AS stock,"
-        " (i.pos_location_name IN (" + WAREHOUSE_LOCATIONS + ")) AS is_warehouse"
+        "WITH stock AS ("
+        " SELECT i.pos_location_name AS location, MAX(i.country) AS country,"
+        " COALESCE(SUM(i.available),0) AS stock"
         " FROM all_inventory i WHERE i.style_name = " + st_lit + icf +
-        " GROUP BY i.pos_location_name HAVING COALESCE(SUM(i.available),0) <> 0"
-        " ORDER BY stock DESC"
+        " GROUP BY i.pos_location_name"
+        "), sales AS ("
+        " SELECT s.pos_location_name AS location,"
+        " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes"
+        " WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)"
+        " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "')),0) AS revenue"
+        " FROM all_products_clean p JOIN all_sales s ON s.variant_sku = p.sku"
+        " WHERE p.style_name = " + st_lit + " AND " + BASE_FILTERS + cf +
+        " GROUP BY s.pos_location_name"
+        ") SELECT COALESCE(st.location, sa.location) AS location,"
+        " st.country AS country,"
+        " COALESCE(st.stock,0) AS stock,"
+        " COALESCE(sa.revenue,0) AS revenue,"
+        " (COALESCE(st.location, sa.location) IN (" + WAREHOUSE_LOCATIONS + ")) AS is_warehouse"
+        " FROM stock st FULL OUTER JOIN sales sa ON st.location = sa.location"
+        " WHERE COALESCE(st.stock,0) <> 0 OR COALESCE(sa.revenue,0) <> 0"
+        " ORDER BY stock DESC, revenue DESC"
     )
     by_location = [{"location": x["location"], "country": x["country"],
-                    "stock": int(x["stock"] or 0), "is_warehouse": bool(x["is_warehouse"])}
+                    "stock": int(x["stock"] or 0), "revenue": int(float(x["revenue"] or 0)),
+                    "is_warehouse": bool(x["is_warehouse"])}
                    for x in loc]
 
     return {

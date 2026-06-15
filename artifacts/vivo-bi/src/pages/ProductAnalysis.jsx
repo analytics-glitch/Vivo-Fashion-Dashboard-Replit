@@ -7,7 +7,6 @@ import { KPICard } from "@/components/KPICard";
 import SortableTable, { exportCSV } from "@/components/SortableTable";
 import StyleStatusToggle from "@/components/StyleStatusToggle";
 import MultiSelect from "@/components/MultiSelect";
-import CountryDot from "@/components/CountryDot";
 import { Loading, ErrorBox, Empty } from "@/components/common";
 import {
   Tag, Storefront, MagnifyingGlass, Sparkle, X as XIcon,
@@ -111,7 +110,7 @@ const StyleDrill = ({ styleName, params }) => {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4" data-testid="style-drill">
+    <div className="grid grid-cols-1 gap-4" data-testid="style-drill">
       <div>
         <div className="eyebrow mb-1.5 flex items-center gap-1"><Stack size={12} /> By size</div>
         <SizeColTable rows={data.by_size} dimKey="size" dimLabel="Size" />
@@ -121,7 +120,7 @@ const StyleDrill = ({ styleName, params }) => {
         <SizeColTable rows={data.by_color} dimKey="color" dimLabel="Colour" />
       </div>
       <div>
-        <div className="eyebrow mb-1.5 flex items-center gap-1"><Warehouse size={12} /> Stock by location</div>
+        <div className="eyebrow mb-1.5 flex items-center gap-1"><Warehouse size={12} /> Stock and Sales by location</div>
         <div className="text-[10px] text-muted mb-1.5">
           {params.store
             ? "All locations (network-wide) — for transfer planning, not limited to the selected store"
@@ -146,11 +145,11 @@ const StyleDrill = ({ styleName, params }) => {
                   </span>
                 ),
               },
-              { key: "country", label: "Market", render: (r) => (r.country ? <CountryDot country={r.country} /> : "—") },
               { key: "stock", label: "Stock", numeric: true, render: (r) => fmtNum(r.stock) },
+              { key: "revenue", label: "Sales", numeric: true, render: (r) => fmtKES(r.revenue) },
             ]}
           />
-        ) : <Empty label="No stock on hand anywhere." />}
+        ) : <Empty label="No stock or sales anywhere." />}
       </div>
     </div>
   );
@@ -848,7 +847,7 @@ const ProductAnalysis = () => {
                   <summary className="list-none cursor-pointer inline-flex items-center gap-1.5 text-[11.5px] text-muted hover:text-brand px-2 py-1 rounded border border-border hover:border-brand select-none">
                     Columns{hiddenCols.size ? ` (${columns.length - hiddenCols.size}/${columns.length})` : ""}
                   </summary>
-                  <div className="absolute right-0 z-20 mt-1 w-56 max-h-72 overflow-auto rounded-md border border-border bg-white shadow-lg p-1.5">
+                  <div className="absolute right-0 z-50 mt-1 w-56 max-h-72 overflow-auto rounded-md border border-border bg-white shadow-lg p-1.5">
                     {columns.map((c) => {
                       const locked = lockedCols.has(c.key);
                       const shown = locked || !hiddenCols.has(c.key);
