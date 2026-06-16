@@ -304,11 +304,135 @@ def attribute_split(location: str = Query(default="RMAT/Stock")):
                 GROUP BY 1
                 ORDER BY value_kes DESC NULLS LAST
             """, (location,))
+        # Fiber content: many rows blank — keep only fabrics that declare a fiber,
+        # rolled up to the top values by stock value.
+        fiber = q(conn, """
+            SELECT p.fiber_content as value,
+              COUNT(DISTINCT i.product_id) as fabrics,
+              ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,0) as qty_metres,
+              ROUND(SUM(i.total_value)::numeric,0) as value_kes
+            FROM raw_fabric_inventory i
+            JOIN raw_fabric_products p ON p.id = i.product_id
+            WHERE i.quantity > 0 AND i.location_name = %s
+              AND p.fiber_content IS NOT NULL AND p.fiber_content <> ''
+            GROUP BY 1
+            ORDER BY value_kes DESC NULLS LAST
+            LIMIT 8
+        """, (location,))
         return {
             "plain_print": split("plain_print"),
             "weight_range": split("weight_range"),
             "structure": split("fabric_structure"),
+            "fiber": fiber,
         }
+
+# ── Top consumed fabrics (what's actually moving out) ───────
+@fabric_router.get("/api/fabric/top-consumed")
+def top_consumed(days: int = Query(default=90), limit: int = Query(default=20)):
+    with _get_conn() as conn:
+        return q(conn, """
+            WITH out_moves AS (
+              SELECT product_id, product_name,
+                SUM(CASE WHEN uom='g' THEN qty/1000 ELSE qty END) as consumed_kg,
+                COUNT(*) as moves, MAX(date)::date as last_out
+              FROM raw_fabric_moves
+              WHERE move_type='OUT' AND uom IN ('g','kg')
+                AND date >= NOW() - (%s || ' days')::interval
+              GROUP BY 1,2
+            ), stock AS (
+              SELECT product_id, SUM(quantity) as qty_kg
+              FROM raw_fabric_inventory WHERE quantity>0 GROUP BY 1
+            )
+            SELECT o.product_name,
+              ROUND(o.consumed_kg::numeric,1) as consumed_kg,
+              o.moves, o.last_out,
+              ROUND(COALESCE(s.qty_kg,0)::numeric,1) as stock_kg,
+              ROUND((COALESCE(s.qty_kg,0) / NULLIF(o.consumed_kg/(%s/7.0),0))::numeric,1) as weeks_cover
+            FROM out_moves o
+            LEFT JOIN stock s ON s.product_id = o.product_id
+            ORDER BY o.consumed_kg DESC
+            LIMIT %s
+        """, (days, days, limit))
+
+# ── Movement flow (IN / OUT / INTERNAL by month) ────────────
+@fabric_router.get("/api/fabric/movement-flow")
+def movement_flow(months: int = Query(default=6)):
+    with _get_conn() as conn:
+        return q(conn, """
+            SELECT DATE_TRUNC('month', date)::date as period,
+              ROUND(SUM(CASE WHEN move_type='IN'       THEN (CASE WHEN uom='g' THEN qty/1000 ELSE qty END) ELSE 0 END)::numeric,1) as in_kg,
+              ROUND(SUM(CASE WHEN move_type='OUT'      THEN (CASE WHEN uom='g' THEN qty/1000 ELSE qty END) ELSE 0 END)::numeric,1) as out_kg,
+              ROUND(SUM(CASE WHEN move_type='INTERNAL' THEN (CASE WHEN uom='g' THEN qty/1000 ELSE qty END) ELSE 0 END)::numeric,1) as internal_kg
+            FROM raw_fabric_moves
+            WHERE uom IN ('g','kg')
+              AND date >= DATE_TRUNC('month', NOW() - (%s || ' months')::interval)
+            GROUP BY 1 ORDER BY 1
+        """, (months,))
+
+# ── BOM styles (default explorer view) ──────────────────────
+@fabric_router.get("/api/fabric/bom-styles")
+def bom_styles(search: str = Query(default=None), limit: int = Query(default=300)):
+    with _get_conn() as conn:
+        where = "b.finished_product_name IS NOT NULL AND b.finished_product_name <> ''"
+        params = []
+        if search:
+            where += " AND (b.finished_product_name ILIKE %s OR b.finished_product_sku ILIKE %s)"
+            params = [f"%{search}%", f"%{search}%"]
+        rows = q(conn, f"""
+            SELECT b.finished_product_name as style, b.finished_product_sku as sku,
+              COUNT(*) as components,
+              COUNT(*) FILTER (WHERE b.component_uom IN ('kg','g')) as fabric_components,
+              ROUND(SUM(CASE WHEN b.component_uom='g' THEN b.component_qty/1000
+                             WHEN b.component_uom='kg' THEN b.component_qty ELSE 0 END)::numeric,3) as fabric_kg,
+              COUNT(*) FILTER (WHERE b.component_uom='Pcs') as trim_pieces
+            FROM raw_fabric_boms b
+            WHERE {where}
+            GROUP BY 1,2
+            ORDER BY fabric_kg DESC NULLS LAST
+            LIMIT %s
+        """, params + [limit])
+        total = q(conn, "SELECT COUNT(DISTINCT finished_product_name) as n FROM raw_fabric_boms")[0]['n']
+        return {"total_styles": total, "items": rows}
+
+# ── Where-used (reverse BOM: styles using a fabric) ─────────
+@fabric_router.get("/api/fabric/where-used")
+def where_used(component: str = Query(...)):
+    with _get_conn() as conn:
+        return q(conn, """
+            SELECT b.finished_product_name as style, b.finished_product_sku as sku,
+              b.component_name, ROUND(b.component_qty::numeric,3) as component_qty, b.component_uom
+            FROM raw_fabric_boms b
+            WHERE b.component_name ILIKE %s
+            ORDER BY b.finished_product_name
+            LIMIT 300
+        """, (f"%{component}%",))
+
+# ── Purchase-order delivery performance ─────────────────────
+@fabric_router.get("/api/fabric/po-performance")
+def po_performance():
+    with _get_conn() as conn:
+        kpis = q(conn, """
+            SELECT
+              COUNT(DISTINCT po_name) as pos,
+              COUNT(*) as lines,
+              COUNT(DISTINCT po_name) FILTER (WHERE state='done') as done_pos,
+              ROUND(SUM(total_value)::numeric,0) as ordered_value,
+              ROUND(SUM(qty_received*price_unit)::numeric,0) as received_value,
+              ROUND((SUM(qty_received)/NULLIF(SUM(qty_ordered),0)*100)::numeric,1) as fill_rate,
+              ROUND(AVG(date_planned - order_date)::numeric,0) as avg_lead_days,
+              COUNT(DISTINCT po_name) FILTER (WHERE date_planned < CURRENT_DATE AND qty_ordered>qty_received) as overdue_open
+            FROM raw_fabric_purchase_orders
+            WHERE state != 'cancel'
+        """)[0]
+        by_month = q(conn, """
+            SELECT DATE_TRUNC('month', order_date)::date as period,
+              COUNT(DISTINCT po_name) as pos,
+              ROUND(SUM(total_value)::numeric,0) as value_kes
+            FROM raw_fabric_purchase_orders
+            WHERE state != 'cancel' AND order_date IS NOT NULL
+            GROUP BY 1 ORDER BY 1
+        """)
+        return {"kpis": kpis, "by_month": by_month}
 
 # ── Supplier rollup (outstanding exposure) ──────────────────
 @fabric_router.get("/api/fabric/suppliers")
