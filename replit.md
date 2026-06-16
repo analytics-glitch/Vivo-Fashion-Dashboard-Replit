@@ -95,6 +95,10 @@ Operational close-the-loop pages also exist (IBT transfer suggestions, Replenish
 
 Per-chart CSV export is available throughout.
 
+### Standalone Clienteling CRM artifact (`artifacts/vivo-crm`, `/crm/`)
+
+Separate from the in-app CRM below (the `CRM.jsx` page on the BI app), `artifacts/vivo-crm` is a faithful port of the external reference app `github.com/analytics-glitch/CRM` (24-page React app + its own FastAPI). The frontend source was copied verbatim; only **auth** was rewired to this project's Postgres email/password + Google backend (Bearer `vivo_token`, axios baseURL `/api`, `AuthContext` maps roles {admin,exec,manager}→"manager" else "associate", active-only). It uses Tailwind v3 (not catalog v4) with `.cjs` postcss/tailwind configs, and `<BrowserRouter basename="/crm">`. The login renders faithfully and auth works end-to-end. **Backend gap (staged, next):** the ported pages call ~120 endpoints under names that don't yet exist on `api_pg.py` (`/api/dashboard/*`, `/api/my-customers`, `/api/customers/grid|{id}/*`, `/api/insights/*`, `/api/bi/*`, `/api/loyalty/*`, `/api/social/*`, `/api/training/*`, `/api/tasks`, `/api/templates`, `/api/segments/*`), so data pages 404 until built — source of truth is the cloned reference backend `/tmp/crm-ref/backend`. See `.agents/memory/vivo-crm-ported-frontend.md`.
+
 ### CRM, Service & Loyalty
 
 A CRM/CEM/loyalty surface sits on top of the same backend + auth. It is brand-aware via a `brand_code` split (`vivo` = Vivo #1a5c38, `sz` = Shop Zetu #7c3aed — shown as colored dots, no logos).

@@ -1,0 +1,5 @@
+/* App-level minimal styles. Most styling lives in index.css + Tailwind utilities. */
+.App {
+    min-height: 100vh;
+    background: var(--vivo-bg);
+}

@@ -2972,6 +2972,13 @@ def _safe_oauth_return(val):
     # app's own scheme. Both only open this app, never a website.
     if re.match(r"^(vivo-mobile|exp|exp\+[a-z0-9._-]+)://", val):
         return val
+    # Same-origin web path (e.g. "/crm/auth/callback"). Must be server-relative:
+    # exactly one leading slash, no scheme/host, not protocol-relative ("//host").
+    # This lets path-routed web apps (served under their own base path) get the
+    # OAuth result back at their own callback instead of the root SPA's.
+    if (val.startswith("/") and not val.startswith("//")
+            and re.match(r"^/[A-Za-z0-9._/-]*auth/callback$", val)):
+        return val
     return None
 
 
@@ -3013,7 +3020,12 @@ def auth_google_callback(request: Request):
     # for which query params survive the OS hand-off more reliably than a #frag.
     return_to = _safe_oauth_return(request.cookies.get("g_oauth_return"))
     base = return_to or "/auth/callback"
-    sep = "?" if return_to else "#"
+    # Native deep links carry the token as a query param (survives the OS
+    # hand-off more reliably); web targets (default root path or a relative
+    # same-origin path like /crm/auth/callback) use a URL fragment, which the
+    # SPA reads from window.location.hash.
+    is_native = bool(return_to) and "://" in return_to
+    sep = "?" if is_native else "#"
 
     def _back(suffix):
         r = RedirectResponse(f"{base}{sep}{suffix}")

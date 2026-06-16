@@ -1,0 +1,434 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
+import { useDateRange } from "@/contexts/DateRangeContext";
+import { api } from "@/lib/api";
+import { DateRangePicker } from "@/components/DateRangePicker";
+import {
+  LayoutDashboard,
+  Users,
+  BookImage,
+  MessageSquare,
+  ShieldCheck,
+  BarChart3,
+  LogOut,
+  Inbox,
+  Layers,
+  ClipboardList,
+  Compass,
+  GraduationCap,
+  Award,
+  Menu,
+  X,
+  Database,
+  Search,
+  Bell,
+  ArrowRight,
+  AlertOctagon,
+  Settings,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { PoweredFooter, ChangelogButton } from "@/components/Polish";
+
+const NAV = [
+  // Act 1 — The floor: every associate's daily flow
+  { to: "/dashboard", label: "Today", icon: LayoutDashboard, testid: "nav-today", group: "floor" },
+  { to: "/customers", label: "Customers", icon: Users, testid: "nav-customers", group: "floor" },
+  { to: "/customers/database", label: "Database", icon: BarChart3, testid: "nav-database", manager: true, group: "floor" },
+  { to: "/inbox", label: "Inbox", icon: Inbox, testid: "nav-inbox", group: "floor" },
+  { to: "/lookbooks", label: "Lookbooks", icon: BookImage, testid: "nav-lookbooks", group: "floor" },
+  // Act 2 — The relationship
+  { to: "/loyalty", label: "Loyalty", icon: Award, testid: "nav-loyalty", manager: true, group: "relationship" },
+  // Act 3 — Strategic lens (manager analytics)
+  { to: "/overview", label: "Overview", icon: Compass, testid: "nav-overview", manager: true, group: "analytics" },
+  { to: "/manager", label: "Insights", icon: BarChart3, testid: "nav-manager", manager: true, group: "analytics" },
+  { to: "/cohorts", label: "Cohorts", icon: Layers, testid: "nav-cohorts", manager: true, group: "analytics" },
+  { to: "/operations", label: "Operations", icon: ClipboardList, testid: "nav-operations", manager: true, group: "analytics" },
+  // Act 4 — Team & admin
+  { to: "/training", label: "Training", icon: GraduationCap, testid: "nav-training", manager: true, group: "admin" },
+  { to: "/templates", label: "Templates", icon: MessageSquare, testid: "nav-templates", manager: true, group: "admin" },
+  { to: "/audit", label: "Audit", icon: ShieldCheck, testid: "nav-audit", manager: true, group: "admin" },
+  { to: "/data-requests", label: "Requests", icon: AlertOctagon, testid: "nav-data-requests", manager: true, group: "admin" },
+  { to: "/data-quality", label: "Quality", icon: Database, testid: "nav-data-quality", manager: true, group: "admin" },
+  { to: "/settings", label: "Settings", icon: Settings, testid: "nav-settings", manager: true, group: "admin" },
+];
+
+export default function AppShell() {
+  const { user, logout, loading } = useAuth();
+  const navigate = useNavigate();
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [searchQ, setSearchQ] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [notifs, setNotifs] = useState([]);
+  const [notifsOpen, setNotifsOpen] = useState(false);
+  const searchTimer = useRef(null);
+  const searchBoxRef = useRef(null);
+  const notifsRef = useRef(null);
+  const { range, setRange, compare, setCompare, compareOn, setCompareOn } = useDateRange();
+
+  // Load open follow-ups for the bell (best-effort, refresh every 2 min)
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const loadNotifs = async () => {
+      try {
+        const r = await api.get("/tasks", { params: { mine: true } });
+        const open = (r.data || []).filter((t) => !t.completed);
+        if (!cancelled) setNotifs(open);
+      } catch { /* ignore */ }
+    };
+    loadNotifs();
+    const id = setInterval(loadNotifs, 120000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [user]);
+
+  // Debounced customer search
+  useEffect(() => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    const q = searchQ.trim();
+    if (q.length < 2) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return;
+    }
+    setSearchLoading(true);
+    searchTimer.current = setTimeout(async () => {
+      try {
+        const r = await api.get("/bi/customer-search", { params: { q } });
+        setSearchResults((r.data || []).slice(0, 8));
+      } catch { setSearchResults([]); }
+      finally { setSearchLoading(false); }
+    }, 250);
+    return () => searchTimer.current && clearTimeout(searchTimer.current);
+  }, [searchQ]);
+
+  // Close dropdowns when clicking outside
+  useEffect(() => {
+    const onClick = (e) => {
+      if (searchBoxRef.current && !searchBoxRef.current.contains(e.target)) setSearchOpen(false);
+      if (notifsRef.current && !notifsRef.current.contains(e.target)) setNotifsOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-[var(--vivo-muted)]">Loading…</div>
+    );
+  }
+  if (!user) {
+    if (typeof window !== "undefined") window.location.href = import.meta.env.BASE_URL + "login";
+    return null;
+  }
+
+  const isManager = user.role === "manager";
+  const items = NAV.filter((n) => !n.manager || isManager);
+
+  const overdueCount = notifs.filter((n) => {
+    if (!n.due_date) return false;
+    return new Date(n.due_date) < new Date();
+  }).length;
+
+  const openCustomer = (id) => {
+    setSearchOpen(false);
+    setSearchQ("");
+    navigate(`/customers/${id}`);
+  };
+
+  return (
+    <div className="min-h-screen bg-[var(--vivo-bg)]" data-testid="app-shell">
+      {/* Top bar */}
+      <header className="sticky top-0 z-40 bg-white border-b border-[var(--vivo-border)]" data-testid="top-nav">
+        <div className="mx-auto max-w-[1600px] flex items-center h-16 px-3 md:px-4 gap-1.5">
+          {/* Brand */}
+          <Link to="/dashboard" className="flex items-center gap-2 pr-2.5 mr-0.5 border-r border-[var(--vivo-border)] shrink-0" data-testid="brand-link">
+            <div className="vivo-logo-tile h-9 w-9 text-sm">Vivo</div>
+            <div className="hidden 2xl:block leading-tight">
+              <div className="font-display text-sm text-[var(--vivo-navy)] tracking-tight">Vivo CRM</div>
+              <div className="text-[9px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">Clienteling</div>
+            </div>
+          </Link>
+
+          {/* Desktop nav */}
+          <nav className="hidden md:flex items-center gap-0 flex-1 min-w-0 overflow-x-auto no-scrollbar" data-testid="top-nav-items">
+            {items.map((item, idx) => {
+              const prev = items[idx - 1];
+              const needsDivider = prev && prev.group && item.group && prev.group !== item.group;
+              return (
+                <React.Fragment key={item.to}>
+                  {needsDivider && (
+                    <span aria-hidden="true" className="mx-1.5 h-4 w-px bg-[var(--vivo-border)]" data-testid={`nav-divider-${item.group}`} />
+                  )}
+                  <NavLink
+                    to={item.to}
+                    data-testid={item.testid}
+                    className={({ isActive }) =>
+                      `inline-flex items-center gap-1.5 px-2 h-16 -mb-px text-[12px] whitespace-nowrap border-b-2 transition ${
+                        isActive
+                          ? "border-[var(--vivo-gold)] text-[var(--vivo-navy)] font-semibold"
+                          : "border-transparent text-[var(--vivo-muted)] hover:text-[var(--vivo-navy)]"
+                      }`
+                    }
+                  >
+                    <item.icon className="h-3.5 w-3.5 hidden 2xl:inline" />
+                    {item.label}
+                  </NavLink>
+                </React.Fragment>
+              );
+            })}
+          </nav>
+
+          {/* Search */}
+          <div ref={searchBoxRef} className="hidden 2xl:block relative shrink-0" data-testid="global-search">
+            <div className={`flex items-center gap-2 h-9 rounded-sm border transition ${searchOpen ? "border-[var(--vivo-navy)] bg-white w-64" : "border-[var(--vivo-border)] bg-[var(--vivo-bg)] w-40"}`}>
+              <Search className="h-3.5 w-3.5 text-[var(--vivo-muted)] ml-2.5 shrink-0" />
+              <input
+                type="text"
+                value={searchQ}
+                onChange={(e) => { setSearchQ(e.target.value); setSearchOpen(true); }}
+                onFocus={() => setSearchOpen(true)}
+                placeholder="Search customers…"
+                className="bg-transparent outline-none text-sm flex-1 min-w-0 placeholder:text-[var(--vivo-muted)] pr-2"
+                data-testid="global-search-input"
+              />
+            </div>
+            {searchOpen && searchQ.trim().length >= 2 && (
+              <div className="absolute top-11 right-0 w-80 max-h-[420px] overflow-y-auto bg-white border border-[var(--vivo-border)] rounded-sm shadow-lg z-50" data-testid="global-search-results">
+                {searchLoading && <div className="p-3 text-xs text-[var(--vivo-muted)]">Searching…</div>}
+                {!searchLoading && searchResults.length === 0 && (
+                  <div className="p-3 text-xs text-[var(--vivo-muted)]">No customers found.</div>
+                )}
+                {searchResults.map((c) => (
+                  <button
+                    key={c.customer_id}
+                    onClick={() => openCustomer(c.customer_id)}
+                    className="w-full text-left px-3 py-2 hover:bg-[var(--vivo-bg)] border-b border-[var(--vivo-border)] last:border-0"
+                    data-testid={`search-result-${c.customer_id}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-sm font-medium truncate">{c.customer_name || c.full_name || c.first_name || "Unknown"}</div>
+                      {c.rfm_tier && (
+                        <span className="text-[9px] uppercase tracking-wider text-[var(--vivo-navy)] bg-[var(--vivo-bg)] px-1.5 py-0.5 rounded-sm shrink-0">{c.rfm_tier}</span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-[var(--vivo-muted)] truncate">
+                      {c.phone || c.email || c.customer_id}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Notifications bell */}
+          <ChangelogButton />
+          <div ref={notifsRef} className="hidden md:block relative shrink-0" data-testid="notifications">
+            <button
+              type="button"
+              onClick={() => setNotifsOpen((v) => !v)}
+              className="relative inline-flex items-center justify-center h-9 w-9 rounded-sm border border-[var(--vivo-border)] bg-[var(--vivo-bg)] text-[var(--vivo-muted)] hover:text-[var(--vivo-navy)]"
+              data-testid="notifications-button"
+              aria-label="Notifications"
+            >
+              <Bell className="h-4 w-4" />
+              {notifs.length > 0 && (
+                <span
+                  className={`absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 rounded-full text-[10px] font-bold text-white flex items-center justify-center ${overdueCount > 0 ? "bg-red-600" : "bg-[var(--vivo-gold)]"}`}
+                  data-testid="notifications-badge"
+                >
+                  {notifs.length > 99 ? "99+" : notifs.length}
+                </span>
+              )}
+            </button>
+            {notifsOpen && (
+              <div className="absolute top-11 right-0 w-80 max-h-[420px] overflow-y-auto bg-white border border-[var(--vivo-border)] rounded-sm shadow-lg z-50" data-testid="notifications-panel">
+                <div className="px-3 py-3 border-b border-[var(--vivo-border)] flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold">Open follow-ups</div>
+                    <div className="text-[11px] text-[var(--vivo-muted)]">
+                      {notifs.length} total {overdueCount > 0 && <span className="text-red-600 font-medium">· {overdueCount} overdue</span>}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => { setNotifsOpen(false); navigate("/follow-ups"); }}
+                    className="text-xs text-[var(--vivo-navy)] hover:underline inline-flex items-center gap-1"
+                    data-testid="notifications-view-all"
+                  >
+                    View all <ArrowRight className="h-3 w-3" />
+                  </button>
+                </div>
+                {notifs.length === 0 && (
+                  <div className="p-6 text-center text-xs text-[var(--vivo-muted)]">
+                    🎉 You're all caught up.
+                  </div>
+                )}
+                {notifs.slice(0, 8).map((t) => {
+                  const overdue = t.due_date && new Date(t.due_date) < new Date();
+                  return (
+                    <button
+                      key={t.task_id}
+                      onClick={() => { setNotifsOpen(false); navigate(`/customers/${t.customer_id}`); }}
+                      className="w-full text-left px-3 py-2 hover:bg-[var(--vivo-bg)] border-b border-[var(--vivo-border)] last:border-0"
+                      data-testid={`notif-${t.task_id}`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="text-sm font-medium truncate flex-1">{t.title || t.name || "Follow-up"}</div>
+                        {overdue && (
+                          <span className="text-[10px] uppercase tracking-wider text-red-600 font-semibold shrink-0">Overdue</span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-[var(--vivo-muted)] truncate mt-0.5">
+                        {t.customer_name || "—"} · due {(t.due_date || "").slice(0, 10)}
+                      </div>
+                    </button>
+                  );
+                })}
+                {notifs.length > 8 && (
+                  <button
+                    onClick={() => { setNotifsOpen(false); navigate("/follow-ups"); }}
+                    className="w-full text-center text-xs text-[var(--vivo-navy)] py-2 hover:bg-[var(--vivo-bg)]"
+                  >
+                    + {notifs.length - 8} more
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Mobile menu toggle */}
+          <button
+            type="button"
+            className="md:hidden ml-auto inline-flex items-center justify-center h-10 w-10 rounded-sm border border-[var(--vivo-border)] text-[var(--vivo-muted)]"
+            onClick={() => setMobileOpen((v) => !v)}
+            data-testid="mobile-menu-toggle"
+            aria-label="Menu"
+          >
+            {mobileOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+          </button>
+
+          {/* User pill */}
+          <div className="hidden md:flex items-center gap-2 pl-3 ml-2 border-l border-[var(--vivo-border)] shrink-0">
+            <div className="h-8 w-8 rounded-full bg-[var(--vivo-navy)] text-white flex items-center justify-center font-semibold text-xs">
+              {(user.name || user.email)[0]?.toUpperCase()}
+            </div>
+            <div className="hidden xl:block leading-tight">
+              <div className="text-xs font-medium truncate max-w-[140px]" data-testid="user-name">{user.name}</div>
+              <div className="text-[10px] text-[var(--vivo-muted)] uppercase tracking-wider" data-testid="user-role">
+                {user.role}
+              </div>
+            </div>
+            <Button
+              onClick={logout}
+              data-testid="logout-button"
+              variant="ghost"
+              size="icon"
+              className="text-[var(--vivo-muted)] hover:text-[var(--vivo-navy)] h-9 w-9"
+              aria-label="Sign out"
+            >
+              <LogOut className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        {/* Date-range sub-toolbar — visible on all analytics pages */}
+        <div className="hidden md:flex items-center gap-2 px-4 md:px-6 h-12 border-t border-[var(--vivo-border)] bg-[var(--vivo-bg)]" data-testid="global-date-range">
+          <span className="text-[10px] uppercase tracking-[0.2em] text-[var(--vivo-muted)] mr-1">Period</span>
+          <DateRangePicker
+            testid="global-date-picker"
+            value={{ from: range.from, to: range.to }}
+            onChange={(v) => setRange(v)}
+            defaultPreset="last_90"
+            align="start"
+            buttonClassName="h-8 px-2.5 text-xs"
+          />
+          <button
+            type="button"
+            onClick={() => setCompareOn(!compareOn)}
+            title={compareOn ? "Hide comparison" : "Compare to another period"}
+            className={`h-8 px-2.5 text-[10px] uppercase tracking-[0.15em] rounded-sm border transition ${
+              compareOn
+                ? "bg-[var(--vivo-navy)] text-white border-[var(--vivo-navy)]"
+                : "bg-white text-[var(--vivo-muted)] border-[var(--vivo-border)] hover:text-[var(--vivo-navy)]"
+            }`}
+            data-testid="compare-toggle"
+          >
+            vs
+          </button>
+          {compareOn && (
+            <DateRangePicker
+              testid="global-compare-picker"
+              value={{ from: compare.from, to: compare.to }}
+              onChange={(v) => setCompare(v)}
+              defaultPreset="custom"
+              align="start"
+              buttonClassName="h-8 px-2.5 text-xs"
+            />
+          )}
+          {compareOn && (
+            <span className="text-[10px] text-[var(--vivo-muted)] ml-1">
+              Auto-shifts when you change the main period
+            </span>
+          )}
+        </div>
+
+        {/* Mobile dropdown */}
+        {mobileOpen && (
+          <div className="md:hidden border-t border-[var(--vivo-border)] bg-white" data-testid="mobile-menu">
+            <nav className="px-3 py-2">
+              {items.map((item, idx) => {
+                const prev = items[idx - 1];
+                const needsHeader = !prev || prev.group !== item.group;
+                const groupLabels = { floor: "The floor", relationship: "Relationship", analytics: "Strategic lens", admin: "Team & admin" };
+                return (
+                  <React.Fragment key={item.to}>
+                    {needsHeader && (
+                      <div className="px-3 pt-3 pb-1 text-[10px] uppercase tracking-[0.18em] text-[var(--vivo-muted)] font-semibold">
+                        {groupLabels[item.group] || ""}
+                      </div>
+                    )}
+                    <NavLink
+                      to={item.to}
+                      data-testid={`${item.testid}-mobile`}
+                      onClick={() => setMobileOpen(false)}
+                      className={({ isActive }) =>
+                        `flex items-center gap-3 px-3 py-2.5 text-sm rounded-sm ${
+                          isActive
+                            ? "bg-[var(--vivo-bg)] text-[var(--vivo-navy)] font-semibold"
+                            : "text-[var(--vivo-muted)] hover:text-[var(--vivo-navy)]"
+                        }`
+                      }
+                    >
+                      <item.icon className="h-4 w-4" />
+                      {item.label}
+                    </NavLink>
+                  </React.Fragment>
+                );
+              })}
+            </nav>
+            <div className="border-t border-[var(--vivo-border)] px-4 py-3 flex items-center gap-3">
+              <div className="h-9 w-9 rounded-full bg-[var(--vivo-navy)] text-white flex items-center justify-center font-semibold text-xs">
+                {(user.name || user.email)[0]?.toUpperCase()}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium truncate">{user.name}</div>
+                <div className="text-[10px] text-[var(--vivo-muted)] uppercase tracking-wider">{user.role}</div>
+              </div>
+              <Button onClick={logout} variant="ghost" size="icon" data-testid="logout-button-mobile">
+                <LogOut className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        )}
+      </header>
+
+      {/* Main */}
+      <main className="min-w-0">
+        <Outlet />
+      </main>
+      <PoweredFooter />
+    </div>
+  );
+}

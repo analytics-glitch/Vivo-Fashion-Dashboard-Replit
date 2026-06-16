@@ -36,4 +36,5 @@
 - [Notifications surface access requests](notifications-access-requests.md) — the notification bell is the discoverability path for pending app_users (status='pending'); endpoints derive live for admins, not stored.
 - [Manual style retirement](manual-style-retirement.md) — durable code-level list force-retires styles (not DB/overrides/Odoo active flag); ALL active/retired endpoints must honor _is_manually_retired or screens disagree.
 - [Fabric BI full-page routing](fabric-page-routing.md) — /fabric is a static page served by api_pg's catch-all; it must be in api-server artifact.toml paths or the proxy routes it to the vivo-bi SPA (dead handler).
+- [vivo-crm ported reference frontend](vivo-crm-ported-frontend.md) — standalone Clienteling CRM artifact (/crm/) faithfully ports an external React app; auth rewired to this project's Postgres login; ~120 backend endpoints still missing (source: /tmp/crm-ref/backend).
 - [Walk-in / anonymous definition](walk-in-anonymous-definition.md) — walk-in count = anonymous orders (null id OR customer_type='walk-in' OR pseudo-account name); null-only undercounts; walk-ins + identified = total; dedup pseudo set before join.
