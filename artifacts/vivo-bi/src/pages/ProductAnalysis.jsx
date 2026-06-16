@@ -51,6 +51,24 @@ const isoLocal = (d) => {
   return `${y}-${m}-${day}`;
 };
 
+// Inclusive day window ending today (matches applyPreset's 30/90/120 logic).
+const presetRange = (days) => {
+  const today = new Date();
+  const from = new Date();
+  from.setDate(today.getDate() - (days - 1));
+  return { from: isoLocal(from), to: isoLocal(today) };
+};
+
+// Whole days between a YYYY-MM-DD sale date and today (local time).
+const daysSinceSale = (d) => {
+  if (!d) return null;
+  const dt = new Date(`${d}T00:00:00`);
+  if (Number.isNaN(dt.getTime())) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.round((today.getTime() - dt.getTime()) / 86400000));
+};
+
 // Colour the weeks-of-cover so overstock jumps out.
 const wocCls = (v) => {
   if (v === null || v === undefined) return "text-muted";
@@ -143,7 +161,10 @@ const ProductAnalysis = () => {
   // Master column show/hide. The newly-added analytical columns start hidden so
   // the default table stays readable; the picker (above the table) reveals them.
   const [hiddenCols, setHiddenCols] = useState(
-    () => new Set(["color", "print", "size", "tier", "units_life", "sor_since_launch", "launch_date"])
+    () => new Set([
+      "color", "print", "size", "tier", "units_life", "sor_since_launch", "launch_date",
+      "days_since_last_sale", "soh_stores", "soh_warehouse",
+    ])
   );
 
   // Explosion dimensions = the colour / print / size columns currently shown.
@@ -152,11 +173,12 @@ const ProductAnalysis = () => {
   const dims = useMemo(() => DIM_KEYS.filter((k) => !hiddenCols.has(k)), [hiddenCols]);
   const dimsParam = useMemo(() => dims.join(","), [dims]);
 
-  // Local date scope — seeded from the global filter bar, with quick presets
-  // (30/90/120 days) + a custom range that re-scope ONLY this page.
-  const [localFrom, setLocalFrom] = useState(dateFrom);
-  const [localTo, setLocalTo] = useState(dateTo);
-  const [datePreset, setDatePreset] = useState(null); // 30 | 90 | 120 | "custom" | null
+  // Local date scope — defaults to the last 30 days for this page, with quick
+  // presets (30/90/120 days) + a custom range that re-scope ONLY this page.
+  // A later change to the global filter bar still re-seeds it (see effect below).
+  const [localFrom, setLocalFrom] = useState(() => presetRange(30).from);
+  const [localTo, setLocalTo] = useState(() => presetRange(30).to);
+  const [datePreset, setDatePreset] = useState(30); // 30 | 90 | 120 | "custom" | null
 
   const [posOptions, setPosOptions] = useState([]);  // [{value,label,group:country}]
   const [data, setData] = useState(null);
@@ -209,8 +231,11 @@ const ProductAnalysis = () => {
     [tiers]
   );
 
-  // Re-seed the local date scope whenever the global filter bar date changes.
+  // Re-seed the local date scope whenever the global filter bar date changes —
+  // but NOT on first mount, so the page opens on its 30-day default.
+  const didMountDateRef = useRef(false);
   useEffect(() => {
+    if (!didMountDateRef.current) { didMountDateRef.current = true; return; }
     setLocalFrom(dateFrom);
     setLocalTo(dateTo);
     setDatePreset(null);
@@ -345,6 +370,23 @@ const ProductAnalysis = () => {
       { key: "revenue", label: "Revenue", numeric: true, render: (r) => fmtKES(r.revenue), csv: (r) => r.revenue },
       { key: "current_stock", label: "Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
       {
+        key: "soh_stores", label: "SOH in Stores", numeric: true,
+        headerTitle: "Stock on hand held across retail stores",
+        render: (r) => fmtNum(r.store_stock), csv: (r) => r.store_stock ?? "",
+      },
+      {
+        key: "soh_warehouse", label: "SOH in Warehouse", numeric: true,
+        headerTitle: "Stock on hand held in the warehouse",
+        render: (r) => fmtNum(r.warehouse_stock), csv: (r) => r.warehouse_stock ?? "",
+      },
+      {
+        key: "days_since_last_sale", label: "Days Since Last Sale", numeric: true,
+        headerTitle: "Whole days since this style last sold a unit",
+        render: (r) => { const d = daysSinceSale(r.last_sale); return d == null ? "—" : fmtNum(d); },
+        sortValue: (r) => { const d = daysSinceSale(r.last_sale); return d == null ? -1 : d; },
+        csv: (r) => { const d = daysSinceSale(r.last_sale); return d == null ? "" : d; },
+      },
+      {
         key: "woc", label: "WOC", numeric: true,
         headerTitle: "Weeks of cover = current stock ÷ weekly velocity",
         render: (r) => <span className={wocCls(r.woc)}>{fmtWoc(r.woc)}</span>,
@@ -404,6 +446,9 @@ const ProductAnalysis = () => {
       { key: "size", label: "Size", csv: (r) => r.size || "" },
       { key: "tier", label: "Tier", csv: (r) => r.tier || "" },
       { key: "units_sold", label: "Units Sold", csv: (r) => r.units_sold },
+      { key: "soh_stores", label: "SOH in Stores", csv: (r) => r.store_stock ?? "" },
+      { key: "soh_warehouse", label: "SOH in Warehouse", csv: (r) => r.warehouse_stock ?? "" },
+      { key: "days_since_last_sale", label: "Days Since Last Sale", csv: (r) => { const d = daysSinceSale(r.last_sale); return d == null ? "" : d; } },
       { key: "revenue", label: "Revenue (KES)", csv: (r) => r.revenue },
       { key: "net_revenue", label: "Net Revenue (KES)", csv: (r) => r.net_revenue },
       { key: "current_stock", label: "Current Stock", csv: (r) => r.current_stock },
