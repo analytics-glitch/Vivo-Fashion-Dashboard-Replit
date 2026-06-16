@@ -288,6 +288,45 @@ def bom_lookup(sku: str = Query(default=None), style: str = Query(default=None))
             ORDER BY b.finished_product_name, b.component_name
         """, params)
 
+# ── Attribute split (plain/print, weight, structure) ────────
+@fabric_router.get("/api/fabric/attribute-split")
+def attribute_split(location: str = Query(default="RMAT/Stock")):
+    with _get_conn() as conn:
+        def split(col):
+            return q(conn, f"""
+                SELECT COALESCE(NULLIF(p.{col},''),'Unknown') as value,
+                  COUNT(DISTINCT i.product_id) as fabrics,
+                  ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,0) as qty_metres,
+                  ROUND(SUM(i.total_value)::numeric,0) as value_kes
+                FROM raw_fabric_inventory i
+                JOIN raw_fabric_products p ON p.id = i.product_id
+                WHERE i.quantity > 0 AND i.location_name = %s
+                GROUP BY 1
+                ORDER BY value_kes DESC NULLS LAST
+            """, (location,))
+        return {
+            "plain_print": split("plain_print"),
+            "weight_range": split("weight_range"),
+            "structure": split("fabric_structure"),
+        }
+
+# ── Supplier rollup (outstanding exposure) ──────────────────
+@fabric_router.get("/api/fabric/suppliers")
+def suppliers():
+    with _get_conn() as conn:
+        return q(conn, """
+            SELECT
+              COALESCE(NULLIF(supplier,''),'Unknown') as supplier,
+              COUNT(DISTINCT po_name) as pos,
+              ROUND(SUM(total_value)::numeric,0) as po_value,
+              ROUND(SUM((qty_ordered-qty_received)*price_unit)::numeric,0) as outstanding_value,
+              ROUND(SUM(qty_ordered-qty_received)::numeric,1) as outstanding_qty
+            FROM raw_fabric_purchase_orders
+            WHERE state != 'cancel'
+            GROUP BY 1
+            ORDER BY outstanding_value DESC NULLS LAST
+        """)
+
 # ── Filter options ──────────────────────────────────────────
 @fabric_router.get("/api/fabric/filters")
 def filters():
