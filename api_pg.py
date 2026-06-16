@@ -3451,6 +3451,17 @@ def analytics_product_analysis(
     if style_status not in ("active", "retired", "all"):
         style_status = "all"
 
+    # Response cache: this endpoint runs a heavy lifetime full-scan of all_sales
+    # (~1.6M rows). The result is identical for every user and changes slowly, so
+    # cache the fully-computed response for 10 min keyed on all filter params.
+    # (run_query also caches the SQL, but only ~120s; this keeps the page warm.)
+    _pa_ck = "pa:" + "|".join(str(x) for x in (
+        df, dt, country, store, brand, category, subcategory, tier,
+        style_status, grain, ",".join(sel_dims), vel))
+    _pa_cached = cache_get(_pa_ck)
+    if _pa_cached is not None:
+        return _pa_cached
+
     cf, chf = _style_filters(country, store, "s")   # sales scope (store -> pos_location_name)
     icf, _ = _style_filters(country, None, "i")      # inventory country scope
     if store:
@@ -3536,7 +3547,12 @@ def analytics_product_analysis(
         " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '" + str(vel) + " days'),0) AS units_vel,"
         " SUM(s.net_quantity) AS units_life,"
         " MAX(s.sale_date::date) AS last_sale,"
-        " MIN(s.sale_date::date) FILTER (WHERE s.sale_kind IN ('sale','order')) AS first_sale"
+        " MIN(s.sale_date::date) FILTER (WHERE s.sale_kind IN ('sale','order')) AS first_sale,"
+        # current_price = price of the most recent qualifying sale, computed in
+        # this same scan (argmax) so we avoid a second full scan of all_sales.
+        " (array_agg(s.product_price_kes ORDER BY s.sale_date DESC) FILTER ("
+        " WHERE s.sale_kind IN ('sale','order') AND s.product_price_kes IS NOT NULL"
+        " AND s.product_price_kes > 0))[1] AS current_price"
         " FROM all_products_clean p JOIN all_sales s ON s.variant_sku = p.sku"
         " WHERE p.style_name IS NOT NULL AND p.style_name <> '' AND " + BASE_FILTERS + cf + chf +
         " GROUP BY p.style_name" + sales_dim_grp +
@@ -3548,13 +3564,6 @@ def analytics_product_analysis(
         " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_stores"
         + stock_from + " WHERE i.style_name IS NOT NULL AND i.style_name <> ''" + icf +
         " GROUP BY i.style_name" + stock_dim_grp +
-        "),"
-        "latest_price AS ("
-        " SELECT DISTINCT ON (p.style_name) p.style_name, s.product_price_kes AS current_price"
-        " FROM all_products_clean p JOIN all_sales s ON s.variant_sku = p.sku"
-        " WHERE p.style_name IS NOT NULL AND p.style_name <> '' AND s.sale_kind IN ('sale','order')"
-        " AND s.product_price_kes IS NOT NULL AND s.product_price_kes > 0 AND " + BASE_FILTERS + cf + chf +
-        " ORDER BY p.style_name, s.sale_date DESC"
         ")"
         " SELECT p.style_name,"
         " p.brand, p.category, p.subcategory, p.collection, p.season, p.style_number,"
@@ -3565,11 +3574,10 @@ def analytics_product_analysis(
         " COALESCE(sa.orders_period,0) AS orders_period, COALESCE(sa.units_vel,0) AS units_vel,"
         " COALESCE(sa.units_life,0) AS units_life, sa.last_sale, sa.first_sale,"
         " COALESCE(st.soh_current,0) AS soh_current, COALESCE(st.soh_warehouse,0) AS soh_warehouse,"
-        " COALESCE(st.soh_stores,0) AS soh_stores, lp.current_price"
+        " COALESCE(st.soh_stores,0) AS soh_stores, sa.current_price"
         " FROM prod p"
         " LEFT JOIN sales sa" + join_keys +
         " LEFT JOIN stock st" + join_keys +
-        " LEFT JOIN latest_price lp USING (style_name)"
         " WHERE (COALESCE(sa.units_life,0) <> 0 OR COALESCE(st.soh_current,0) > 0"
         " OR COALESCE(st.soh_warehouse,0) > 0 OR COALESCE(st.soh_stores,0) > 0)"
     )
@@ -3752,7 +3760,7 @@ def analytics_product_analysis(
         by_subcategory.append(ss)
     by_subcategory.sort(key=lambda x: -x["revenue"])
 
-    return {
+    resp = {
         "rows": rows,
         "summary": summary,
         "by_brand": by_brand,
@@ -3763,6 +3771,8 @@ def analytics_product_analysis(
             "grain": grain, "dims": ",".join(sel_dims), "style_status": style_status,
         },
     }
+    cache_set(_pa_ck, resp, ttl=600)
+    return resp
 
 
 @app.get("/api/analytics/product-analysis/style")
@@ -6703,7 +6713,30 @@ def ibt_completed_keys():
 @app.get("/api/leaderboard/streaks")
 def stub_leaderboard_streaks(): return []
 @app.get("/api/notifications")
-def stub_notifications(): return []
+def notifications_list(request: Request):
+    # Surface pending access requests (app_users.status='pending') to admins so
+    # they get a real, actionable inbox item linking to the Users page. Other
+    # users see an empty inbox. Items are derived live (not stored), so they stay
+    # visible until the admin approves/rejects the user.
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        return []
+    rows = _users_exec(
+        "SELECT user_id, email, name, created_at FROM app_users "
+        "WHERE status='pending' ORDER BY created_at DESC", fetch=True) or []
+    out = []
+    for r in rows:
+        who = r.get("name") or r.get("email") or "A user"
+        out.append({
+            "event_id": "access:" + str(r["user_id"]),
+            "type": "access_request",
+            "title": "Access request",
+            "message": f"{who} requested access — review on the Users page.",
+            "link": "/users",
+            "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+            "read": False,
+        })
+    return out
 @app.get("/api/recommendations")
 def get_recommendations(item_type: str = Query(default=None)):
     if item_type:
@@ -8213,7 +8246,14 @@ def ibt_late_count():
     rows = _users_exec(q, fetch=True)
     return {"count": int(rows[0]["count"]) if rows else 0}
 @app.get("/api/notifications/unread-count")
-def stub_notifications_unread_count(): return {"unread": 0}
+def notifications_unread_count(request: Request):
+    # Badge count = number of pending access requests, admins only.
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        return {"unread": 0}
+    rows = _users_exec(
+        "SELECT COUNT(*) AS n FROM app_users WHERE status='pending'", fetch=True) or []
+    return {"unread": int(rows[0]["n"]) if rows else 0}
 @app.get("/api/leaderboard/store-of-the-week")
 def stub_leaderboard_store_of_the_week(): return {}
 @app.get("/api/thumbnails/lookup")

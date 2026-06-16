@@ -14,10 +14,11 @@ import { toast } from "sonner";
  */
 
 const TYPE_META = {
-  new_record: { emoji: "🏆", accent: "bg-emerald-50 border-emerald-200 text-emerald-900" },
-  stockout:   { emoji: "⚠️", accent: "bg-amber-50 border-amber-200 text-amber-900" },
-  vip_return: { emoji: "💎", accent: "bg-sky-50 border-sky-200 text-sky-900" },
-  anomaly:    { emoji: "🚨", accent: "bg-red-50 border-red-200 text-red-900" },
+  new_record:     { emoji: "🏆", accent: "bg-emerald-50 border-emerald-200 text-emerald-900" },
+  stockout:       { emoji: "⚠️", accent: "bg-amber-50 border-amber-200 text-amber-900" },
+  vip_return:     { emoji: "💎", accent: "bg-sky-50 border-sky-200 text-sky-900" },
+  anomaly:        { emoji: "🚨", accent: "bg-red-50 border-red-200 text-red-900" },
+  access_request: { emoji: "!",  accent: "bg-amber-50 border-amber-200 text-amber-900" },
 };
 
 const relative = (iso) => {
