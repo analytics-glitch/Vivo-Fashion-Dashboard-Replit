@@ -19,6 +19,7 @@
 - [vivowoman is primary Kenya POS](vivowoman-base-filter.md) — never exclude `vivowoman` in BASE_FILTERS; it's 84% of sales and all pre-2022 data, not a rollup.
 - [all_sales id is a per-row surrogate](all-sales-id-surrogate.md) — rebuild transform must give each row a unique id (md5 of grain), NOT line_item_id; reusing it collides sale+return under PK (id,store_id) and drops ~27k rows BQ keeps.
 - [Range Management endpoints](range-mgmt-endpoints.md) — /api/range-mgmt/* shape & filter contract: tier_summary keys need spaces, apply channel to inventory + BASE_FILTERS to sales.
+- [Range tier model](range-tier-model.md) — classify tier = 2026 PPT age-based lifecycle (T4<8wk/T3/T2/T1≥104wk), NOT Pareto; hard-retire overrides; nearby: walk-in/brand customer-count exclusion regex.
 - [Expo vector-icon font preload](expo-vector-icon-font-preload.md) — tab icons tofu on Android/Expo Go but fine on web → spread `Feather.font` into the gating `useFonts`.
 - [Expo first-build cold-cache port timeout](expo-cold-cache-port.md) — first Expo workflow start can fail DIDNT_OPEN_A_PORT on cold Metro cache; warm via background dev + /status poll, then restart.
 - [Mobile shares the API auth gate](mobile-shares-api-auth-gate.md) — Expo app hits the same gated /api as web; backend auth changes break mobile too. It sends a Bearer token from AsyncStorage (`vivo_token`).

@@ -64,6 +64,7 @@ export const PRIMARY_NAV = [
   { to: "/ibt", label: "IBT", icon: Truck, id: "ibt", group: "Inventory & Replenishment", desc: "Inter-branch transfer recommendations" },
   { to: "/allocations", label: "Allocations", icon: Stack, id: "allocations", group: "Inventory & Replenishment", desc: "Allocate incoming stock across stores" },
   { to: "/replenishments", label: "Replenishments", icon: ArrowsClockwise, id: "replenishments", group: "Inventory & Replenishment", desc: "Replenishment suggestions with last-sold dates" },
+  { to: "/fabric", label: "Fabric", icon: ChartBar, id: "fabric", external: true, group: "Inventory & Replenishment", desc: "Standalone Fabric BI dashboard (opens full-page)" },
   { to: "/targets", label: "Targets", icon: Target, id: "targets", group: "Planning & Quality", desc: "Track sales against targets" },
   { to: "/data-quality", label: "Data Quality", icon: Warning, id: "data-quality", group: "Planning & Quality", desc: "Data completeness and quality checks" },
   { to: "/catalogue", label: "Report Catalogue", icon: BookOpen, id: "catalogue", group: "Tools", desc: "Every report, what page it lives on, and all the calculation & business rules — with an AI finder" },

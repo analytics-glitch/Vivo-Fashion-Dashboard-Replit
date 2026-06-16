@@ -2323,6 +2323,12 @@ def get_footfall_weekday(
         "window": {"start": date_from, "end": date_to},
     }
 
+# Walk-in / placeholder / brand pseudo-accounts (matched case-insensitively on the
+# customer name) are not real identified customers and are excluded from the customer
+# universe (new / returning / repeat / total) wherever those counts are computed.
+_WALKIN_NAME_REGEX = r"(walk[ -]?in|vivo|safari|zoya)"
+
+
 @app.get("/api/customers")
 def get_customers(
     date_from: str = Query(default=str(date.today().replace(day=1))),
@@ -2333,7 +2339,27 @@ def get_customers(
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
     rows = run_query("""
-        WITH period_customers AS (
+        WITH excluded AS (
+            -- Walk-in / placeholder / brand pseudo-accounts are not real identified
+            -- customers, so they are dropped from the customer universe (new, returning,
+            -- repeat, total). Matched case-insensitively on the customer name.
+            SELECT DISTINCT customer_id
+            FROM all_customers
+            WHERE customer_id IS NOT NULL
+              AND (COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) ~* '""" + _WALKIN_NAME_REGEX + """'
+        ),
+        cust_profile AS (
+            -- One profile row per customer_id (best non-empty value across store rows),
+            -- used to flag identified customers whose profile is missing name/phone/email.
+            SELECT customer_id,
+                MAX(NULLIF(TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')), '')) AS prof_name,
+                MAX(NULLIF(TRIM(COALESCE(phone,'')), '')) AS prof_phone,
+                MAX(NULLIF(TRIM(COALESCE(email,'')), '')) AS prof_email
+            FROM all_customers
+            WHERE customer_id IS NOT NULL
+            GROUP BY customer_id
+        ),
+        period_customers AS (
             SELECT s.customer_id,
                 COUNT(DISTINCT s.order_id) AS order_count,
                 ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_spend
@@ -2342,6 +2368,7 @@ def get_customers(
             AND s.sale_kind IN ('sale','order')
             AND s.customer_id IS NOT NULL
             AND s.customer_id NOT IN ('None','null','')
+            AND s.customer_id NOT IN (SELECT customer_id FROM excluded)
             AND """ + BASE_FILTERS + " " + country_filter + " " + channel_filter + """
             GROUP BY s.customer_id
         ),
@@ -2379,11 +2406,15 @@ def get_customers(
                 AND a.first_ever_purchase < '""" + date_from + """'
                 THEN p.customer_id END) AS returning_customers,
             MAX(c.churned_count) AS churned_customers,
+            COUNT(DISTINCT CASE WHEN (cp.customer_id IS NULL
+                OR cp.prof_name IS NULL OR cp.prof_phone IS NULL OR cp.prof_email IS NULL)
+                THEN p.customer_id END) AS incomplete_profile_customers,
             ROUND(AVG(p.total_spend), 0) AS avg_customer_spend,
             ROUND(AVG(p.order_count), 2) AS avg_orders_per_customer,
             ROUND(MAX(c.churned_count) * 100.0 / NULLIF(MAX(c.eligible_base), 0), 2) AS churn_rate
         FROM period_customers p
         LEFT JOIN all_time a ON p.customer_id = a.customer_id
+        LEFT JOIN cust_profile cp ON p.customer_id = cp.customer_id
         CROSS JOIN churned c
     """, date_to=date_to)
     return rows[0] if rows else {}
@@ -2515,7 +2546,9 @@ def get_customer_trend(
     country:   str = Query(default=None),
 ):
     where = build_filters(date_from, date_to, country,
-        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')")
+        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')"
+        " AND s.customer_id NOT IN (SELECT customer_id FROM all_customers WHERE customer_id IS NOT NULL"
+        " AND (COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) ~* '" + _WALKIN_NAME_REGEX + "')")
     return run_query("""
         WITH all_time AS (
             SELECT customer_id, MIN(sale_date) AS first_purchase
@@ -6690,16 +6723,16 @@ def get_recommendations(item_type: str = Query(default=None)):
     return rows
 @app.get("/api/recommendations/wins")
 def stub_recommendations_wins(): return []
-# RAG target bands for the Range tier counts. Calibrated to the cumulative
-# sales-share Pareto distribution (doc 6.5): the active range is a steep long tail
-# (T1 tiny, T4 large), so these bracket the observed active-style counts. RAG is an
-# app-only health indicator — the docs specify the tier rule, not these target bands.
+# RAG target bands for the Range tier counts. Aligned to the 2026 Range Strategy
+# (PPT) lifecycle framework: a healthy active range of ~500-700 styles split across
+# the four lifecycle tiers. RAG is an app-only health indicator that brackets the
+# strategy's per-tier style-count targets.
 _RANGE_TARGETS = {
-    "total": [1500, 2800],
-    "Tier 1": [15, 60],
-    "Tier 2": [120, 320],
-    "Tier 3": [400, 800],
-    "Tier 4": [900, 1800],
+    "total": [500, 700],
+    "Tier 1": [30, 50],
+    "Tier 2": [200, 300],
+    "Tier 3": [150, 200],
+    "Tier 4": [60, 100],
 }
 
 def _parse_iso_date(s):
@@ -6826,16 +6859,18 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         full_price_pct = round(min(100.0, avg_price * 100.0 / original_price), 1) \
             if (avg_price and original_price) else None
 
-        # Age-based lifecycle stage. NOTE: this is NOT the Range tier — doc 6.5 defines
-        # tiers by cumulative sales share (assigned in the Pareto pass below). age_tier
-        # only drives the age-gated lifecycle: status, graduation gates, action copy.
+        # Range tier = the 2026 Range Strategy (PPT) lifecycle classification, driven by
+        # catalog age. Every new style starts in Tier 4 (New/Test, 8-week read); graduates
+        # to Tier 3 (Recent Performer) once past the 8-week test; Tier 2 (Core Performer) at
+        # 9+ months (~39 weeks, with 3+ reorders) and capped at 24 months; Tier 1 (Core
+        # Basics, permanent core) at 24+ months. Hard-retire (below) overrides regardless.
         if age_weeks is None:
             age_tier = "Tier 4"
         elif age_weeks >= 104:
             age_tier = "Tier 1"
         elif age_weeks >= 39:
             age_tier = "Tier 2"
-        elif age_weeks >= 13:
+        elif age_weeks >= 8:
             age_tier = "Tier 3"
         else:
             age_tier = "Tier 4"
@@ -6925,28 +6960,11 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                 "current_stock": current_stock, "last_sale_days": last_sale_days,
             })
 
-    # --- Range tier classification (doc 6.5): cumulative sales-share Pareto over the
-    # ACTIVE range. T1 <= 20% cum share, T2 <= 60%, T3 <= 90%, T4 the long tail.
-    # Styles never sold (no first_sale) or with zero lifetime sales fall to Tier 4.
-    ranked = sorted([m for m in meta if m[2] is not None and m[3] > 0],
-                    key=lambda m: m[3], reverse=True)
-    total_sales = sum(m[3] for m in ranked)
-    cum = 0.0
-    pareto = {}
-    for row, _at, _fs, sl, _fl in ranked:
-        cum += sl
-        share = cum / total_sales if total_sales > 0 else 1.0
-        if share <= 0.20:
-            pareto[id(row)] = "Tier 1"
-        elif share <= 0.60:
-            pareto[id(row)] = "Tier 2"
-        elif share <= 0.90:
-            pareto[id(row)] = "Tier 3"
-        else:
-            pareto[id(row)] = "Tier 4"
-
+    # --- Range tier classification (2026 Range Strategy / PPT): the tier IS the
+    # age-driven lifecycle stage computed above (Tier 4 New/Test -> Tier 3 Recent
+    # Performer -> Tier 2 Core Performer -> Tier 1 Core Basics). Hard-retire overrides.
     for row, _at, _fs, _sl, flagged in meta:
-        auto_tier = pareto.get(id(row), "Tier 4")
+        auto_tier = _at
         ov = _RANGE_OVERRIDES.get(row["style_name"])
         if ov:
             row["tier"], row["auto_tier"], row["override_reason"] = ov["tier"], auto_tier, ov.get("reason")
@@ -6982,7 +7000,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
     approaching = sum(1 for row in active
         if row["style_age_weeks"] is not None and (
             (row["age_tier"] == "Tier 3" and 0 <= (39 - row["style_age_weeks"]) <= 6) or
-            (row["age_tier"] == "Tier 4" and 0 <= (13 - row["style_age_weeks"]) <= 6)))
+            (row["age_tier"] == "Tier 4" and 0 <= (8 - row["style_age_weeks"]) <= 6)))
 
     rag = {"total": _rag(len(active), *_RANGE_TARGETS["total"])}
     for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"):
@@ -13923,6 +13941,18 @@ if build_dir.exists():
         # Never serve the SPA for API routes
         if full_path.startswith("api/"):
             return JSONResponse({"detail": "Not found"}, status_code=404)
+        # Standalone Fabric BI dashboard — a self-contained static HTML page served
+        # full-page (outside the React SPA) at /fabric. Auth is the general /api gate
+        # (cookie session sent on the full-page navigation), and /api/fabric/* is
+        # readable by any active user.
+        if full_path == "fabric" or full_path.startswith("fabric/"):
+            fabric = build_dir / "fabric.html"
+            if fabric.exists():
+                fr = FileResponse(str(fabric))
+                fr.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                fr.headers["Pragma"] = "no-cache"
+                fr.headers["Expires"] = "0"
+                return fr
         index = build_dir / "index.html"
         response = FileResponse(str(index))
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"

@@ -365,6 +365,7 @@ const TopNav = () => {
               key={`fav-${t.id}`}
               to={t.to}
               end={t.to === "/"}
+              reloadDocument={t.external}
               data-testid={`fav-${t.id}`}
               onMouseEnter={() => prefetchForRoute(t.id, prefetchFilters)}
               onFocus={() => prefetchForRoute(t.id, prefetchFilters)}
@@ -409,6 +410,7 @@ const TopNav = () => {
             key={t.id}
             to={t.to}
             end={t.to === "/"}
+            reloadDocument={t.external}
             data-testid={`nav-${t.id}`}
             onMouseEnter={() => prefetchForRoute(t.id, prefetchFilters)}
             onFocus={() => prefetchForRoute(t.id, prefetchFilters)}
@@ -477,6 +479,7 @@ const TopNav = () => {
                   key={`fav-m-${t.id}`}
                   to={t.to}
                   end={t.to === "/"}
+                  reloadDocument={t.external}
                   onClick={() => setMobileOpen(false)}
                   data-testid={`nav-mobile-fav-${t.id}`}
                   className={({ isActive }) =>
@@ -511,6 +514,7 @@ const TopNav = () => {
               key={t.id}
               to={t.to}
               end={t.to === "/"}
+              reloadDocument={t.external}
               onClick={() => setMobileOpen(false)}
               data-testid={`nav-mobile-${t.id}`}
               className={({ isActive }) =>

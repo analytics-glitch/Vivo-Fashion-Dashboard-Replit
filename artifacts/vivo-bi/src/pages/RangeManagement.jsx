@@ -530,9 +530,10 @@ const RangeManagement = () => {
               <strong>Note on age:</strong> Style age is computed from the persisted first-sale
               date in <code className="text-[10px]">style_launch_dates_by_number</code> + the by-name
               fallback collection, which together cover the last 5 years of Kenya trading history
-              (refreshed nightly). Tier assignments now reflect true catalog age — Tier 1 (24+ months
-              core), Tier 2 (9–24 months), Tier 3 (3–9 months under review), Tier 4 (&lt; 3 months
-              new). Use the graduation panel above to promote ready styles manually.
+              (refreshed nightly). Tier assignments follow the 2026 Range Strategy lifecycle — Tier 1
+              (24+ months core), Tier 2 (9–24 months, 3+ reorders), Tier 3 (8 weeks–9 months under
+              review), Tier 4 (&lt; 8 weeks new / test). Use the graduation panel above to promote
+              ready styles manually.
             </p>
           </div>
 

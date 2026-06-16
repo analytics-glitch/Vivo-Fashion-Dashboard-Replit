@@ -15,6 +15,7 @@ const Tile = ({ item }) => {
   return (
     <Link
       to={item.to}
+      reloadDocument={item.external}
       data-testid={`home-tile-${item.id}`}
       className="group card-white p-4 flex items-start gap-3 transition-all hover:-translate-y-0.5 hover:shadow-md hover:border-brand/50"
     >
