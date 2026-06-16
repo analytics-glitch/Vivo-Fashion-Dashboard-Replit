@@ -14119,6 +14119,19 @@ if build_dir.exists():
                 fr.headers["Pragma"] = "no-cache"
                 fr.headers["Expires"] = "0"
                 return fr
+        # Standalone CRM · Clienteling cockpit — a self-contained static HTML page
+        # served full-page (outside the React SPA) at /clienteling, the same way as
+        # /fabric. It calls the existing gated /api/crm/* endpoints (cookie session
+        # sent on the full-page navigation). Served at /clienteling, not /crm, to
+        # avoid colliding with the React SPA's /crm route.
+        if full_path == "clienteling" or full_path.startswith("clienteling/"):
+            crm = build_dir / "crm.html"
+            if crm.exists():
+                cr = FileResponse(str(crm))
+                cr.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                cr.headers["Pragma"] = "no-cache"
+                cr.headers["Expires"] = "0"
+                return cr
         index = build_dir / "index.html"
         response = FileResponse(str(index))
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
