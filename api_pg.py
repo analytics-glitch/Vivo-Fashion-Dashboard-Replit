@@ -4784,16 +4784,142 @@ def customers_walk_ins(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
+    channel:   str = Query(default=None),
 ):
-    where = build_filters(date_from, date_to, country,
-        extra="s.sale_kind IN ('sale','order') AND (s.customer_id IS NULL OR s.customer_id IN ('None','null',''))")
-    rows = run_query("""
-        SELECT COALESCE(COUNT(DISTINCT s.order_id), 0) AS orders,
+    # ── Walk-in (anonymous transaction) definition ─────────────────────────────
+    # An "anonymous transaction" = a sale with no real identified customer profile
+    # attached: in-store walk-ins for Retail + guest checkouts for Online.
+    # Counting rule: each anonymous TRANSACTION (order) counts as 1 walk-in
+    # customer. A transaction is anonymous when ANY of the following holds:
+    #   (a) customer_id is missing ('', NULL, 'None', 'null'),
+    #   (b) customer_type is the literal 'walk-in', or
+    #   (c) customer_id resolves to a placeholder / brand pseudo-account
+    #       (name matches _WALKIN_NAME_REGEX) — the SAME accounts /api/customers
+    #       excludes from the identified universe, so walk-ins + identified = total.
+    # (Counting only customer_id IS NULL — the old logic — missed buckets (b)/(c)
+    #  and surfaced as a near-zero walk-in count on the dashboard.)
+    where = build_filters(date_from, date_to, country, channel,
+        extra="s.sale_kind IN ('sale','order')")
+    anon_expr = (
+        "(s.customer_id IS NULL OR s.customer_id IN ('None','null','') "
+        "OR s.customer_type ILIKE 'walk-in' "
+        "OR ps.customer_id IS NOT NULL)"
+    )
+    pseudo_cte = (
+        "pseudo AS (SELECT DISTINCT customer_id FROM all_customers "
+        "WHERE customer_id IS NOT NULL AND (COALESCE(first_name,'') || ' ' || "
+        "COALESCE(last_name,'')) ~* '" + _WALKIN_NAME_REGEX + "')"
+    )
+
+    def _shares(r):
+        wi, tot = r.get("walk_in_orders") or 0, r.get("total_orders") or 0
+        ws, ts = float(r.get("walk_in_sales") or 0), float(r.get("total_sales") or 0)
+        r["walk_in_customers"] = wi
+        r["walk_in_share_orders_pct"] = round(wi * 100.0 / tot, 4) if tot else 0
+        r["walk_in_share_sales_pct"] = round(ws * 100.0 / ts, 4) if ts else 0
+        r["walk_in_avg_basket_kes"] = round(ws / wi, 0) if wi else 0
+        r["capture_rate_pct"] = round(100.0 - (wi * 100.0 / tot), 2) if tot else None
+        return r
+
+    agg_sql = "WITH " + pseudo_cte + """
+        SELECT
+            COUNT(DISTINCT s.order_id) AS total_orders,
+            COUNT(DISTINCT s.order_id) FILTER (WHERE """ + anon_expr + """) AS walk_in_orders,
             COALESCE(ROUND(SUM(s.total_sales_kes::numeric), 0), 0) AS total_sales,
-            COALESCE(SUM(s.ordered_item_quantity), 0) AS units
+            COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + anon_expr + """), 0), 0) AS walk_in_sales
         FROM all_sales s
-        WHERE """ + where, date_to=date_to)
-    return rows[0] if rows else {"orders": 0, "total_sales": 0, "units": 0}
+        LEFT JOIN pseudo ps ON ps.customer_id = s.customer_id
+        WHERE """ + where
+    top = run_query(agg_sql, date_to=date_to)
+    summary = _shares(top[0]) if top else {
+        "total_orders": 0, "walk_in_orders": 0, "total_sales": 0, "walk_in_sales": 0,
+        "walk_in_customers": 0, "walk_in_share_orders_pct": 0,
+        "walk_in_share_sales_pct": 0, "walk_in_avg_basket_kes": 0, "capture_rate_pct": None,
+    }
+
+    by_country = [
+        _shares(r) for r in run_query("WITH " + pseudo_cte + """
+            SELECT s.country AS country,
+                COUNT(DISTINCT s.order_id) AS total_orders,
+                COUNT(DISTINCT s.order_id) FILTER (WHERE """ + anon_expr + """) AS walk_in_orders,
+                COALESCE(ROUND(SUM(s.total_sales_kes::numeric), 0), 0) AS total_sales,
+                COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + anon_expr + """), 0), 0) AS walk_in_sales
+            FROM all_sales s
+            LEFT JOIN pseudo ps ON ps.customer_id = s.customer_id
+            WHERE """ + where + """ AND COALESCE(s.country,'') <> ''
+            GROUP BY s.country
+            HAVING COUNT(DISTINCT s.order_id) FILTER (WHERE """ + anon_expr + """) > 0
+            ORDER BY walk_in_orders DESC""", date_to=date_to)
+    ]
+
+    by_location = [
+        _shares(r) for r in run_query("WITH " + pseudo_cte + """
+            SELECT s.pos_location_name AS channel, MAX(s.country) AS country,
+                COUNT(DISTINCT s.order_id) AS total_orders,
+                COUNT(DISTINCT s.order_id) FILTER (WHERE """ + anon_expr + """) AS walk_in_orders,
+                COALESCE(ROUND(SUM(s.total_sales_kes::numeric), 0), 0) AS total_sales,
+                COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + anon_expr + """), 0), 0) AS walk_in_sales
+            FROM all_sales s
+            LEFT JOIN pseudo ps ON ps.customer_id = s.customer_id
+            WHERE """ + where + """ AND COALESCE(s.pos_location_name,'') <> ''
+            GROUP BY s.pos_location_name
+            HAVING COUNT(DISTINCT s.order_id) FILTER (WHERE """ + anon_expr + """) > 0
+            ORDER BY walk_in_orders DESC""", date_to=date_to)
+    ]
+
+    # ── Incomplete profile (identified customers missing name/phone/email) ──────
+    # Identified = real customers active in the period (have a customer_id, not a
+    # null/pseudo placeholder). Reuses the same exclusion as /api/customers so the
+    # "of N identified" denominator matches the Total Identified Customers tile.
+    country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    ip_rows = run_query("""
+        WITH excluded AS (
+            SELECT DISTINCT customer_id FROM all_customers
+            WHERE customer_id IS NOT NULL
+              AND (COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) ~* '""" + _WALKIN_NAME_REGEX + """'
+        ),
+        cust_profile AS (
+            SELECT customer_id,
+                MAX(NULLIF(TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')), '')) AS prof_name,
+                MAX(NULLIF(TRIM(COALESCE(phone,'')), '')) AS prof_phone,
+                MAX(NULLIF(TRIM(COALESCE(email,'')), '')) AS prof_email
+            FROM all_customers WHERE customer_id IS NOT NULL GROUP BY customer_id
+        ),
+        period_customers AS (
+            SELECT DISTINCT s.customer_id
+            FROM all_sales s
+            WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+              AND s.sale_kind IN ('sale','order')
+              AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')
+              AND s.customer_id NOT IN (SELECT customer_id FROM excluded)
+              AND """ + BASE_FILTERS + " " + country_filter + " " + channel_filter + """
+        )
+        SELECT
+            COUNT(*) AS identified_total,
+            COUNT(*) FILTER (WHERE cp.customer_id IS NULL
+                OR cp.prof_name IS NULL OR cp.prof_phone IS NULL OR cp.prof_email IS NULL) AS customers,
+            COUNT(*) FILTER (WHERE cp.customer_id IS NULL OR cp.prof_name  IS NULL) AS no_name,
+            COUNT(*) FILTER (WHERE cp.customer_id IS NULL OR cp.prof_phone IS NULL) AS no_phone,
+            COUNT(*) FILTER (WHERE cp.customer_id IS NULL OR cp.prof_email IS NULL) AS no_email
+        FROM period_customers p
+        LEFT JOIN cust_profile cp ON cp.customer_id = p.customer_id
+    """, date_to=date_to)
+    ip = ip_rows[0] if ip_rows else {"identified_total": 0, "customers": 0, "no_name": 0, "no_phone": 0, "no_email": 0}
+    ip_total = ip.get("identified_total") or 0
+    ip["share_pct"] = round((ip.get("customers") or 0) * 100.0 / ip_total, 1) if ip_total else 0
+
+    return {
+        **summary,
+        "walk_in_sales_kes": summary.get("walk_in_sales", 0),
+        "total_sales_kes": summary.get("total_sales", 0),
+        "detection_rule": "customer_id missing OR customer_type='walk-in' OR placeholder/brand pseudo-account",
+        "truncated": False,
+        "degraded": False,
+        "by_country": by_country,
+        "by_location": by_location,
+        "incomplete_profile": ip,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════

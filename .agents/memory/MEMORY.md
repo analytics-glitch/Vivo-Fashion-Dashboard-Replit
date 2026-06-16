@@ -35,3 +35,4 @@
 - [Product Analysis endpoint perf](product-analysis-perf.md) — don't scan all_sales twice; current_price = argmax inside the sales CTE (dim-grain when dims selected); 600s response cache keeps it warm.
 - [Notifications surface access requests](notifications-access-requests.md) — the notification bell is the discoverability path for pending app_users (status='pending'); endpoints derive live for admins, not stored.
 - [Manual style retirement](manual-style-retirement.md) — durable code-level list force-retires styles (not DB/overrides/Odoo active flag); ALL active/retired endpoints must honor _is_manually_retired or screens disagree.
+- [Walk-in / anonymous definition](walk-in-anonymous-definition.md) — walk-in count = anonymous orders (null id OR customer_type='walk-in' OR pseudo-account name); null-only undercounts; walk-ins + identified = total; dedup pseudo set before join.

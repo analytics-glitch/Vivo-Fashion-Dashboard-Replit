@@ -853,16 +853,6 @@ const Customers = () => {
                 if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
               }}}
             />
-            <KPICard
-              testId="kpi-incomplete-profile"
-              label="Incomplete Profile"
-              sub="missing name, phone or email"
-              formula={"Identified customers active in the period whose CRM profile is missing at least one of name, phone or email (or has no profile record at all). Walk-in / brand pseudo-accounts are excluded from the customer counts entirely."}
-              value={fmtNum(cust.incomplete_profile_customers || 0)}
-              icon={Warning}
-              higherIsBetter={false}
-              showDelta={false}
-            />
             {(() => {
               // Hide churn tiles when the selected period is shorter than the
               // churn cutoff. Mathematically a customer cannot both "purchase
