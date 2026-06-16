@@ -7,7 +7,6 @@ import { KPICard } from "@/components/KPICard";
 import SortableTable, { exportCSV } from "@/components/SortableTable";
 import StyleStatusToggle from "@/components/StyleStatusToggle";
 import MultiSelect from "@/components/MultiSelect";
-import VivoRangeManagement from "@/components/VivoRangeManagement";
 import { Loading, ErrorBox, Empty } from "@/components/common";
 import {
   Tag, Storefront, MagnifyingGlass, Sparkle, X as XIcon,
@@ -894,12 +893,6 @@ const ProductAnalysis = () => {
           </div>
         </>
       )}
-
-      {/* Vivo Range Management — live recreation of the June 2026 report.
-          Rendered outside the master-query gate so it lazy-loads on its own. */}
-      <div className="pt-2 border-t border-default">
-        <VivoRangeManagement />
-      </div>
     </div>
   );
 };

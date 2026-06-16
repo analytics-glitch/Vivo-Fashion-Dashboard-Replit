@@ -5,6 +5,7 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
 import SortableTable from "@/components/SortableTable";
 import WeeklySORHeatmap from "@/components/range-mgmt/WeeklySORHeatmap";
+import VivoRangeManagement from "@/components/VivoRangeManagement";
 import {
   Stack,
   MagnifyingGlass,
@@ -1119,6 +1120,12 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
             />
           )}
         </div>
+      </div>
+
+      {/* Vivo Range Management — live recreation of the June 2026 report.
+          Moved here from Product Analysis to keep that page light. */}
+      <div className="pt-2 border-t border-default">
+        <VivoRangeManagement />
       </div>
     </div>
   );
