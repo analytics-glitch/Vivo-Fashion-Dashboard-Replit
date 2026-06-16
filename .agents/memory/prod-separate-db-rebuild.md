@@ -61,3 +61,15 @@ source is already known complete & clean (basically never true on prod).
 the published app still shows wrong numbers — prod doesn't run the rebuild AND
 its source tables may be empty/dirty; use REBUILD_ON_BOOT with the source refresh
 ON, don't just re-publish or skip the refresh.
+
+## Same trap for any NEW raw source: it must be wired into the sync loop
+Adding a new Odoo/Shopify extract that writes its own `raw_*` tables (e.g.
+`extract_fabric.py` → `raw_fabric_*` feeding `/fabric`) and running it only by
+hand in dev means **prod's separate DB never gets the data** → the page shows all
+zeros after publish even though dev looks fine. Fix pattern: hook the extract into
+`sync_incremental.py` with **bootstrap-if-empty** (`SELECT to_regclass(...)` →
+NULL/0 rows ⇒ run it that cycle, so a fresh prod DB self-populates on the first
+sync after deploy, no manual gate) **plus** a nightly refresh in the existing
+21:00-UTC window. Only safe if the extract is a full TRUNCATE+upsert refresh.
+**Why:** the dev-watchdog and deploy-watchdog pipelines are independent; anything
+not in the supervised sync simply never runs in prod.

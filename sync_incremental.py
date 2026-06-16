@@ -704,6 +704,33 @@ def main():
         except Exception as e:
             log.error("Inventory sync error: %s", e)
 
+    # Fabric (Odoo) sync — feeds the /fabric dashboard (raw_fabric_* tables).
+    # Production runs on a SEPARATE DB that never ran extract_fabric.py, so the
+    # tables start empty and /fabric shows zeros. We bootstrap immediately when
+    # the tables are missing/empty (first deploy) so no manual step is needed,
+    # then refresh nightly in the same 21:00 UTC window. extract_fabric.py does a
+    # full TRUNCATE + upsert refresh, so it is safe to re-run.
+    fabric_empty = False
+    try:
+        cur.execute("SELECT to_regclass('public.raw_fabric_inventory')")
+        if cur.fetchone()[0] is None:
+            fabric_empty = True
+        else:
+            cur.execute("SELECT COUNT(*) FROM raw_fabric_inventory")
+            fabric_empty = (cur.fetchone()[0] == 0)
+        conn.commit()
+    except Exception as e:
+        log.error("Fabric presence check error: %s", e)
+        conn.rollback()
+    if fabric_empty or (21 <= now_utc.hour < 22 and now_utc.minute < 15):
+        try:
+            import subprocess, sys
+            log.info("Running fabric (Odoo) extract (bootstrap=%s)...", fabric_empty)
+            subprocess.run([sys.executable, '/home/runner/workspace/extract_fabric.py'], check=True)
+            log.info("✅ Fabric extract complete")
+        except Exception as e:
+            log.error("Fabric extract error: %s", e)
+
     # Chronic-stockout snapshot — once a day around midnight EAT (21:00 UTC).
     # The API endpoint dedupes to a weekly cadence, so running it on every cycle
     # in this window is harmless; we only narrow to the hour to avoid pointless
