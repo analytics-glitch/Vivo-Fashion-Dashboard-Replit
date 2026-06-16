@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/crm/"
+title = "Vivo CRM · Clienteling"
+version = "1.0.0"
+id = "artifacts/vivo-crm"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/crm/" ]
+localPort = 26235
+
+[services.development]
+run = "pnpm --filter @workspace/vivo-crm run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/vivo-crm", "run", "build" ]
+publicDir = "artifacts/vivo-crm/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "26235"
+BASE_PATH = "/crm/"
