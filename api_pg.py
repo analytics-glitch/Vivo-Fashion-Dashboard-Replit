@@ -3382,6 +3382,7 @@ def analytics_product_analysis(
     tier: str = Query(default=None),
     style_status: str = Query(default="all"),
     grain: str = Query(default="style"),
+    dims: str = Query(default=None),
     velocity_days: int = Query(default=30),
 ):
     df = _pa_safe_date(date_from, str(date.today() - timedelta(days=89)))
@@ -3389,9 +3390,26 @@ def analytics_product_analysis(
     vel = velocity_days if isinstance(velocity_days, int) and velocity_days > 0 else 30
     vel = min(vel, 3650)
     grain = (grain or "style").strip().lower()
-    if grain not in ("style", "color", "size"):
-        grain = "style"
-    dim_col = {"color": "color_print", "size": "size", "style": None}[grain]
+    # Row-explosion model: the table can be exploded to one value per row for any
+    # subset of {colour, print, size} via the `dims` CSV param (driven by the
+    # column picker). Each selected dimension becomes a GROUP BY key so a style
+    # with several colours / prints / sizes returns one row per combination.
+    # `grain` (legacy single dimension) is honoured as a fallback for old callers.
+    DIM_SPECS = {
+        # key -> (output column, source column in all_products_clean / all_inventory)
+        "color": ("color", "color_print"),
+        "print": ("print_plain", "print_plain"),
+        "size": ("size", "size"),
+    }
+    DIM_ORDER = ["color", "print", "size"]
+    if dims is not None:
+        req = {x.strip().lower() for x in dims.split(",")} - {""}
+    elif grain in ("color", "size"):
+        req = {grain}
+    else:
+        req = set()
+    sel_dims = [d for d in DIM_ORDER if d in req]
+
     style_status = (style_status or "all").strip().lower()
     if style_status not in ("active", "retired", "all"):
         style_status = "all"
@@ -3407,36 +3425,63 @@ def analytics_product_analysis(
     cat_pf = _pa_in_filter("category", category)
     subcat_pf = _pa_in_filter("product_type", subcategory)
 
-    if dim_col:
-        prod_dim_sel = ", COALESCE(NULLIF(TRIM(" + dim_col + "),''),'(none)') AS dim"
-        prod_dim_grp = ", COALESCE(NULLIF(TRIM(" + dim_col + "),''),'(none)')"
-        sales_dim_sel = ", COALESCE(NULLIF(TRIM(p." + dim_col + "),''),'(none)') AS dim"
-        sales_dim_grp = ", COALESCE(NULLIF(TRIM(p." + dim_col + "),''),'(none)')"
-        inv_dim_sel = ", COALESCE(NULLIF(TRIM(i." + dim_col + "),''),'(none)') AS dim"
-        inv_dim_grp = ", COALESCE(NULLIF(TRIM(i." + dim_col + "),''),'(none)')"
-        join_keys = " USING (style_name, dim)"
-        sel_dim = " p.dim,"
-    else:
-        prod_dim_sel = prod_dim_grp = sales_dim_sel = sales_dim_grp = ""
-        inv_dim_sel = inv_dim_grp = ""
-        join_keys = " USING (style_name)"
-        sel_dim = ""
+    # Build the per-CTE dimension fragments. A selected dim is a group key in
+    # prod / sales / stock and a USING join key; the colour / print / size
+    # display columns are the group key when selected, else aggregated (colour /
+    # print) or NULL (size). all_inventory has no print_plain, so when print is
+    # exploded the stock CTE joins all_products_clean by sku (sku is unique there,
+    # so no fan-out).
+    prod_grp = ""
+    sales_dim_sel = sales_dim_grp = ""
+    stock_dim_sel = stock_dim_grp = ""
+    join_dims = []
+    need_stock_pc = False
+    for d in sel_dims:
+        out, src = DIM_SPECS[d]
+        expr_p = "COALESCE(NULLIF(TRIM(" + src + "),''),'(none)')"
+        expr_sa = "COALESCE(NULLIF(TRIM(p." + src + "),''),'(none)')"
+        if d == "print":
+            expr_st = "COALESCE(NULLIF(TRIM(pc.print_plain),''),'(none)')"
+            need_stock_pc = True
+        else:
+            expr_st = "COALESCE(NULLIF(TRIM(i." + src + "),''),'(none)')"
+        prod_grp += ", " + expr_p
+        sales_dim_sel += ", " + expr_sa + " AS " + out
+        sales_dim_grp += ", " + expr_sa
+        stock_dim_sel += ", " + expr_st + " AS " + out
+        stock_dim_grp += ", " + expr_st
+        join_dims.append(out)
+
+    def _disp(key):
+        out, src = DIM_SPECS[key]
+        if key in sel_dims:
+            return "COALESCE(NULLIF(TRIM(" + src + "),''),'(none)') AS " + out
+        if key == "color":
+            return "string_agg(DISTINCT NULLIF(TRIM(color_print),''), ', ') AS color"
+        if key == "print":
+            return "string_agg(DISTINCT NULLIF(TRIM(print_plain),''), ', ') AS print_plain"
+        return "NULL::text AS size"
+
+    prod_disp = ", " + _disp("color") + ", " + _disp("print") + ", " + _disp("size")
+    stock_from = " FROM all_inventory i"
+    if need_stock_pc:
+        stock_from = " FROM all_inventory i JOIN all_products_clean pc ON pc.sku = i.sku"
+    join_keys = " USING (style_name" + ("".join(", " + j for j in join_dims)) + ")"
 
     sql = (
         "WITH prod AS ("
-        " SELECT style_name" + prod_dim_sel + ","
+        " SELECT style_name,"
         " MAX(brand) AS brand, MAX(category) AS category, MAX(product_type) AS subcategory,"
         " MAX(collection) AS collection, MAX(season) AS season, MAX(style_number) AS style_number,"
         " MAX(price) AS full_price,"
         " MIN(substring(style_launch_date,1,10)) FILTER ("
         " WHERE substring(style_launch_date,1,10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') AS launch_date,"
         " COUNT(DISTINCT NULLIF(TRIM(size),'')) AS sizes_count,"
-        " COUNT(DISTINCT NULLIF(TRIM(color_print),'')) AS colors_count,"
-        " string_agg(DISTINCT NULLIF(TRIM(color_print),''), ', ') AS color,"
-        " string_agg(DISTINCT NULLIF(TRIM(print_plain),''), ', ') AS print_plain"
+        " COUNT(DISTINCT NULLIF(TRIM(color_print),'')) AS colors_count"
+        + prod_disp +
         " FROM all_products_clean"
         " WHERE style_name IS NOT NULL AND style_name <> ''" + brand_pf + cat_pf + subcat_pf +
-        " GROUP BY style_name" + prod_dim_grp +
+        " GROUP BY style_name" + prod_grp +
         "),"
         "sales AS ("
         " SELECT p.style_name" + sales_dim_sel + ","
@@ -3460,12 +3505,12 @@ def analytics_product_analysis(
         " GROUP BY p.style_name" + sales_dim_grp +
         "),"
         "stock AS ("
-        " SELECT i.style_name" + inv_dim_sel + ","
+        " SELECT i.style_name" + stock_dim_sel + ","
         " COALESCE(SUM(i.available) FILTER (WHERE " + current_loc_clause + "),0) AS soh_current,"
         " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_warehouse,"
         " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_stores"
-        " FROM all_inventory i WHERE i.style_name IS NOT NULL AND i.style_name <> ''" + icf +
-        " GROUP BY i.style_name" + inv_dim_grp +
+        + stock_from + " WHERE i.style_name IS NOT NULL AND i.style_name <> ''" + icf +
+        " GROUP BY i.style_name" + stock_dim_grp +
         "),"
         "latest_price AS ("
         " SELECT DISTINCT ON (p.style_name) p.style_name, s.product_price_kes AS current_price"
@@ -3474,9 +3519,9 @@ def analytics_product_analysis(
         " AND s.product_price_kes IS NOT NULL AND s.product_price_kes > 0 AND " + BASE_FILTERS + cf + chf +
         " ORDER BY p.style_name, s.sale_date DESC"
         ")"
-        " SELECT p.style_name," + sel_dim +
+        " SELECT p.style_name,"
         " p.brand, p.category, p.subcategory, p.collection, p.season, p.style_number,"
-        " p.color, p.print_plain,"
+        " p.color, p.print_plain, p.size,"
         " p.full_price, p.launch_date, p.sizes_count, p.colors_count,"
         " COALESCE(sa.units_period,0) AS units_period, COALESCE(sa.revenue_period,0) AS revenue_period,"
         " COALESCE(sa.net_revenue_period,0) AS net_revenue_period, COALESCE(sa.gross_units_period,0) AS gross_units_period,"
@@ -3521,13 +3566,13 @@ def analytics_product_analysis(
         asp = round(revenue / gross_units) if gross_units > 0 else None
         rows.append({
             "style_name": r["style_name"],
-            "dim": (r["dim"] if dim_col else None),
             "style_number": r["style_number"],
             "brand": r["brand"],
             "category": r["category"],
             "subcategory": r["subcategory"],
             "color": r["color"],
             "print": r["print_plain"],
+            "size": r["size"],
             "collection": r["collection"],
             "season": r["season"],
             "units_sold": units,
@@ -3678,7 +3723,7 @@ def analytics_product_analysis(
         "scope": {
             "store": store or None, "country": country or None,
             "date_from": df, "date_to": dt, "velocity_days": vel,
-            "grain": grain, "style_status": style_status,
+            "grain": grain, "dims": ",".join(sel_dims), "style_status": style_status,
         },
     }
 

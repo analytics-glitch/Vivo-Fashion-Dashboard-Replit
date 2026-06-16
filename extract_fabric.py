@@ -98,37 +98,115 @@ def create_tables(cur):
     log.info("Tables ready")
 
 def extract_products(uid, models, cur, now):
-    log.info("Extracting fabric products...")
-    batch_size = 500
+    log.info("Extracting fabric products with attributes...")
+    
+    # First ensure table has new columns
+    cur.execute("""
+        ALTER TABLE raw_fabric_products 
+        ADD COLUMN IF NOT EXISTS kg_per_mtr NUMERIC,
+        ADD COLUMN IF NOT EXISTS width_m NUMERIC,
+        ADD COLUMN IF NOT EXISTS gsm NUMERIC,
+        ADD COLUMN IF NOT EXISTS plain_print TEXT,
+        ADD COLUMN IF NOT EXISTS fabric_structure TEXT,
+        ADD COLUMN IF NOT EXISTS fabric_category TEXT,
+        ADD COLUMN IF NOT EXISTS fabric_subcategory TEXT,
+        ADD COLUMN IF NOT EXISTS stretch_type TEXT,
+        ADD COLUMN IF NOT EXISTS weight_range TEXT,
+        ADD COLUMN IF NOT EXISTS fiber_content TEXT,
+        ADD COLUMN IF NOT EXISTS fabric_type TEXT,
+        ADD COLUMN IF NOT EXISTS supplier TEXT,
+        ADD COLUMN IF NOT EXISTS primary_color TEXT
+    """)
+
+    batch_size = 200
     offset = 0
     rows = []
+    
+    FABRIC_FIELDS = [
+        "name", "default_code", "categ_id", "uom_id", 
+        "standard_price", "active",
+        "x_vivo_attr_39",   # Kg/Mtr
+        "x_vivo_attr_25",   # Width (m)
+        "x_vivo_attr_38",   # GSM
+        "x_vivo_attr_100",  # Plain/Print
+        "x_vivo_attr_101",  # Fabric Structure
+        "x_vivo_attr_102",  # Fabric Category
+        "x_vivo_attr_103",  # Fabric Sub-Category
+        "x_vivo_attr_40",   # Stretch Type
+        "x_vivo_attr_45",   # Weight Range
+        "x_vivo_attr_46",   # Fiber Content %
+        "x_vivo_attr_47",   # Fabric Type
+        "x_vivo_attr_42",   # Vendor/Supplier
+        "x_vivo_attr_48",   # Primary Color
+    ]
+    
+    def get_m2o(val):
+        if isinstance(val, list) and len(val) > 1:
+            return str(val[1])
+        return None
+
     while True:
-        records = models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, 'product.product', 'search_read',
-            [[['categ_id', 'in', FABRIC_CATS]]],
-            {'fields': ['name','default_code','categ_id','uom_id','standard_price','active'],
-             'limit': batch_size, 'offset': offset})
+        records = models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, "product.product", "search_read",
+            [[["categ_id", "in", FABRIC_CATS]]],
+            {"fields": FABRIC_FIELDS, "limit": batch_size, "offset": offset})
         if not records:
             break
         for r in records:
-            cat = r['categ_id'][1] if r.get('categ_id') else None
-            category = 'Fabric' if '18' in str(r.get('categ_id','')) or 'Raw' in str(cat) else 'Trim'
+            cat = r.get("categ_id")
+            cat_name = cat[1] if cat else ""
+            category = "Fabric" if "Raw" in str(cat_name) else "Trim"
+            
+            kg_mtr = get_m2o(r.get("x_vivo_attr_39"))
+            width  = get_m2o(r.get("x_vivo_attr_25"))
+            gsm    = get_m2o(r.get("x_vivo_attr_38"))
+            
             rows.append((
-                r['id'], r['name'], r.get('default_code'),
+                r["id"],
+                r["name"],
+                r.get("default_code"),
                 category,
-                r['uom_id'][1] if r.get('uom_id') else None,
-                r.get('standard_price', 0),
-                r.get('active', True),
+                r["uom_id"][1] if r.get("uom_id") else None,
+                r.get("standard_price", 0),
+                r.get("active", True),
+                float(kg_mtr) if kg_mtr else None,
+                float(width) if width else None,
+                float(gsm) if gsm else None,
+                get_m2o(r.get("x_vivo_attr_100")),  # plain/print
+                get_m2o(r.get("x_vivo_attr_101")),  # structure
+                get_m2o(r.get("x_vivo_attr_102")),  # category
+                get_m2o(r.get("x_vivo_attr_103")),  # subcategory
+                get_m2o(r.get("x_vivo_attr_40")),   # stretch
+                get_m2o(r.get("x_vivo_attr_45")),   # weight range
+                get_m2o(r.get("x_vivo_attr_46")),   # fiber content
+                get_m2o(r.get("x_vivo_attr_47")),   # fabric type
+                get_m2o(r.get("x_vivo_attr_42")),   # supplier
+                get_m2o(r.get("x_vivo_attr_48")),   # primary color
                 now
             ))
         offset += batch_size
         if len(records) < batch_size:
             break
+
     cur.execute("TRUNCATE raw_fabric_products")
     execute_values(cur, """
-        INSERT INTO raw_fabric_products (id,name,default_code,category,uom,standard_price,active,_loaded_at)
-        VALUES %s ON CONFLICT (id) DO UPDATE SET
-            name=EXCLUDED.name, standard_price=EXCLUDED.standard_price, _loaded_at=EXCLUDED._loaded_at
-    """, rows, page_size=500)
+        INSERT INTO raw_fabric_products (
+            id, name, default_code, category, uom, standard_price, active,
+            kg_per_mtr, width_m, gsm, plain_print, fabric_structure,
+            fabric_category, fabric_subcategory, stretch_type, weight_range,
+            fiber_content, fabric_type, supplier, primary_color, _loaded_at
+        ) VALUES %s
+        ON CONFLICT (id) DO UPDATE SET
+            name=EXCLUDED.name, standard_price=EXCLUDED.standard_price,
+            kg_per_mtr=EXCLUDED.kg_per_mtr, width_m=EXCLUDED.width_m,
+            gsm=EXCLUDED.gsm, plain_print=EXCLUDED.plain_print,
+            fabric_structure=EXCLUDED.fabric_structure,
+            fabric_category=EXCLUDED.fabric_category,
+            fabric_subcategory=EXCLUDED.fabric_subcategory,
+            stretch_type=EXCLUDED.stretch_type, weight_range=EXCLUDED.weight_range,
+            fiber_content=EXCLUDED.fiber_content, fabric_type=EXCLUDED.fabric_type,
+            supplier=EXCLUDED.supplier, primary_color=EXCLUDED.primary_color,
+            _loaded_at=EXCLUDED._loaded_at
+    """, rows, page_size=200)
     log.info("✅ raw_fabric_products: %d rows", len(rows))
 
 def extract_inventory(uid, models, cur, now):

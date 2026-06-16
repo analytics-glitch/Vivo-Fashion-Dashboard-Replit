@@ -10,7 +10,7 @@ import MultiSelect from "@/components/MultiSelect";
 import { Loading, ErrorBox, Empty } from "@/components/common";
 import {
   Tag, Storefront, MagnifyingGlass, Sparkle, X as XIcon,
-  Package, Cube, Stack, Percent, ChartBar, Warehouse,
+  Package, Cube, Percent, ChartBar, Warehouse,
 } from "@phosphor-icons/react";
 
 /**
@@ -19,8 +19,8 @@ import {
  * Every figure on this page is rolled from a SINGLE master dataset
  * (/analytics/product-analysis) so the summary band, the per-brand and
  * per-subcategory snapshots, and the master table always reconcile —
- * at any grain (style / colour / size) and any scope (overall OR a
- * single store, for BOTH sales and stock).
+ * at any explosion (style, optionally split by colour / print / size) and any
+ * scope (overall OR a single store, for BOTH sales and stock).
  *
  * Per style the table carries: name, style#, brand, category, sub-category,
  * units sold (period), revenue, current stock, weeks-of-cover, sell-out
@@ -30,11 +30,10 @@ import {
  * what to act on.
  */
 
-const GRAINS = [
-  { key: "style", label: "Style", icon: Tag },
-  { key: "color", label: "Colour", icon: Cube },
-  { key: "size", label: "Size", icon: Stack },
-];
+// Colour / Print / Size are row-explosion dimensions, driven by the column
+// picker: showing one in the table groups it to one value per row (selecting
+// several multiplies the rows). The backend receives these as the `dims` param.
+const DIM_KEYS = ["color", "print", "size"];
 
 const fmtWoc = (v) => (v === null || v === undefined ? "—" : `${fmtDec(v, 1)} wk`);
 const fmtSor = (v) => (v === null || v === undefined ? "—" : `${fmtDec(v, 1)}%`);
@@ -136,7 +135,6 @@ const ProductAnalysis = () => {
   const [stores, setStores] = useState([]);         // [] = all stores (multi)
   const [tiers, setTiers] = useState([]);           // [] = all range tiers
   const [status, setStatus] = useState("active");   // active | retired | all
-  const [grain, setGrain] = useState("style");      // style | color | size
   const [brands, setBrands] = useState([]);         // [] = all
   const [cats, setCats] = useState([]);             // [] = all (category)
   const [subcats, setSubcats] = useState([]);       // [] = all
@@ -145,8 +143,14 @@ const ProductAnalysis = () => {
   // Master column show/hide. The newly-added analytical columns start hidden so
   // the default table stays readable; the picker (above the table) reveals them.
   const [hiddenCols, setHiddenCols] = useState(
-    () => new Set(["style_number", "color", "print", "tier", "units_life", "sor_since_launch", "launch_date"])
+    () => new Set(["color", "print", "size", "tier", "units_life", "sor_since_launch", "launch_date"])
   );
+
+  // Explosion dimensions = the colour / print / size columns currently shown.
+  // Showing a dimension explodes the table to one value per row for it; the
+  // backend groups by every selected dim (combinations multiply).
+  const dims = useMemo(() => DIM_KEYS.filter((k) => !hiddenCols.has(k)), [hiddenCols]);
+  const dimsParam = useMemo(() => dims.join(","), [dims]);
 
   // Local date scope — seeded from the global filter bar, with quick presets
   // (30/90/120 days) + a custom range that re-scope ONLY this page.
@@ -224,7 +228,7 @@ const ProductAnalysis = () => {
   // Reset the AI narrative whenever the scope changes — it described the
   // previous range.
   useEffect(() => { setAi(null); setAiError(null); }, [
-    localFrom, localTo, countryParam, storeParam, status, grain, velDays,
+    localFrom, localTo, countryParam, storeParam, status, dimsParam, velDays,
     brands.join(","), cats.join(","), subcats.join(","), tierParam,
   ]);
 
@@ -240,7 +244,7 @@ const ProductAnalysis = () => {
           country: countryParam,
           store: storeParam,
           style_status: status,
-          grain,
+          dims: dimsParam || undefined,
           velocity_days: velDays,
           brand: brands.length ? brands.join(",") : undefined,
           category: cats.length ? cats.join(",") : undefined,
@@ -274,14 +278,13 @@ const ProductAnalysis = () => {
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [localFrom, localTo, countryParam, storeParam, status, grain, velDays, brands, cats, subcats, tierParam, dataVersion]);
+  }, [localFrom, localTo, countryParam, storeParam, status, dimsParam, velDays, brands, cats, subcats, tierParam, dataVersion]);
 
   const rows = data?.rows || [];
   const summary = data?.summary || null;
   const byBrand = data?.by_brand || [];
   const bySubcat = data?.by_subcategory || [];
 
-  const showDim = grain !== "style";
   const drillParams = useMemo(
     () => ({
       date_from: localFrom,
@@ -307,8 +310,9 @@ const ProductAnalysis = () => {
     ? (stores.length === 1 ? stores[0] : `${stores.length} stores`)
     : (countries && countries.length ? countries.join(", ") : "All markets");
 
-  // Master table columns. The leading dimension column only appears when the
-  // grain is colour / size.
+  // Master table columns. Style # shows by default immediately after the Style
+  // name. Colour / Print / Size are explosion dimensions: showing one groups the
+  // table to one value per row for it.
   const columns = useMemo(() => {
     const cols = [
       {
@@ -316,28 +320,22 @@ const ProductAnalysis = () => {
         render: (r) => (
           <div className="min-w-[180px]">
             <div className="font-medium text-foreground break-words">{r.style_name}</div>
-            <div className="text-[10.5px] text-muted">
-              {r.style_number || "—"}
-              {r.launch_date ? <span className="ml-1.5">· launched {fmtDate(r.launch_date)}</span> : null}
-            </div>
+            {r.launch_date ? (
+              <div className="text-[10.5px] text-muted">launched {fmtDate(r.launch_date)}</div>
+            ) : null}
           </div>
         ),
         csv: (r) => r.style_name,
       },
-    ];
-    if (showDim) {
-      cols.push({
-        key: "dim", label: grain === "color" ? "Colour" : "Size",
-        render: (r) => r.dim || "(none)",
-      });
-    }
-    cols.push(
       { key: "style_number", label: "Style #", render: (r) => r.style_number || "—", csv: (r) => r.style_number || "" },
+    ];
+    cols.push(
       { key: "brand", label: "Brand", render: (r) => r.brand || "—" },
       { key: "category", label: "Category", render: (r) => r.category || "—" },
       { key: "subcategory", label: "Sub-category", render: (r) => r.subcategory || "—", csvLabel: "Sub-category" },
       { key: "color", label: "Colour", render: (r) => r.color || "—", csv: (r) => r.color || "" },
       { key: "print", label: "Print", render: (r) => r.print || "—", csv: (r) => r.print || "" },
+      { key: "size", label: "Size", render: (r) => r.size || "—", csv: (r) => r.size || "" },
       {
         key: "tier", label: "Tier",
         headerTitle: "Range tier by cumulative revenue — T1 top 20%, T2 next, T3, T4 tail",
@@ -376,14 +374,11 @@ const ProductAnalysis = () => {
       { key: "launch_date", label: "Launch Date", render: (r) => (r.launch_date ? fmtDate(r.launch_date) : "—"), csv: (r) => r.launch_date || "" },
     );
     return cols;
-  }, [showDim, grain]);
+  }, []);
 
-  // Column show/hide for the master table. The first two identity columns
-  // (Style, and the colour/size dim when not at style grain) are always shown.
-  const lockedCols = useMemo(
-    () => new Set(["style_name", ...(showDim ? ["dim"] : [])]),
-    [showDim]
-  );
+  // Column show/hide for the master table. The Style identity column is always
+  // shown; the colour / print / size dimension columns drive row explosion.
+  const lockedCols = useMemo(() => new Set(["style_name"]), []);
   const visibleColumns = useMemo(
     () => columns.filter((c) => lockedCols.has(c.key) || !hiddenCols.has(c.key)),
     [columns, hiddenCols, lockedCols]
@@ -400,13 +395,13 @@ const ProductAnalysis = () => {
   const exportMaster = useCallback(() => {
     const exportCols = [
       { key: "style_name", label: "Style", csv: (r) => r.style_name },
-      ...(showDim ? [{ key: "dim", label: grain === "color" ? "Colour" : "Size", csv: (r) => r.dim || "" }] : []),
       { key: "style_number", label: "Style Number", csv: (r) => r.style_number || "" },
       { key: "brand", label: "Brand", csv: (r) => r.brand || "" },
       { key: "category", label: "Category", csv: (r) => r.category || "" },
       { key: "subcategory", label: "Sub-category", csv: (r) => r.subcategory || "" },
       { key: "color", label: "Colour", csv: (r) => r.color || "" },
       { key: "print", label: "Print", csv: (r) => r.print || "" },
+      { key: "size", label: "Size", csv: (r) => r.size || "" },
       { key: "tier", label: "Tier", csv: (r) => r.tier || "" },
       { key: "units_sold", label: "Units Sold", csv: (r) => r.units_sold },
       { key: "revenue", label: "Revenue (KES)", csv: (r) => r.revenue },
@@ -424,19 +419,20 @@ const ProductAnalysis = () => {
     const scopeSlug = stores.length
       ? (stores.length === 1 ? stores[0] : `${stores.length}-stores`)
       : "overall";
-    exportCSV(filteredRows, exportCols, `product_analysis_${grain}_${scopeSlug.replace(/\s+/g, "-")}.csv`);
-  }, [filteredRows, showDim, grain, stores]);
+    const dimSlug = dims.length ? dims.join("-") : "style";
+    exportCSV(filteredRows, exportCols, `product_analysis_${dimSlug}_${scopeSlug.replace(/\s+/g, "-")}.csv`);
+  }, [filteredRows, dims, stores]);
 
   const generateAi = useCallback(() => {
     if (!summary) return;
     setAiLoading(true);
     setAiError(null);
     // Build the grounded fact lists from the same rows (style grain). When the
-    // master is at colour/size grain, roll dim rows up to STYLE grain and
-    // RECOMPUTE woc/sor from the aggregated totals (carrying a single dim
-    // row's woc/sor would mis-rank overstock / slow-movers).
+    // master is exploded by colour/print/size, roll the dim rows up to STYLE
+    // grain and RECOMPUTE woc/sor from the aggregated totals (carrying a single
+    // dim row's woc/sor would mis-rank overstock / slow-movers).
     let styleRows;
-    if (grain === "style") {
+    if (dims.length === 0) {
       styleRows = rows;
     } else {
       const agg = rows.reduce((acc, r) => {
@@ -497,7 +493,7 @@ const ProductAnalysis = () => {
       })
       .catch((e) => setAiError(e?.response?.data?.detail || e?.message || "AI request failed"))
       .finally(() => setAiLoading(false));
-  }, [summary, rows, grain, velDays, scopeLabel, rangeLabel]);
+  }, [summary, rows, dims, velDays, scopeLabel, rangeLabel]);
 
   return (
     <div className="space-y-5" data-testid="product-analysis-page">
@@ -510,8 +506,9 @@ const ProductAnalysis = () => {
         <p className="text-[12.5px] text-muted mt-1 max-w-3xl">
           One canonical style-level view of sales and stock that reconciles end to end.
           Scope it to all markets or a single store (sales and stock move together),
-          switch the grain between style, colour and size, and drill any style into its
-          size / colour split and where its stock is sitting. Narrow the date range with
+          explode it to one row per colour, print or size from the column picker, and
+          drill any style into its size / colour split and where its stock is sitting.
+          Narrow the date range with
           the presets (or a custom range), scope to one or more stores, and filter by
           range tier — all independent of the global filter bar.
         </p>
@@ -570,27 +567,6 @@ const ProductAnalysis = () => {
           width={210}
           testId="pa-store"
         />
-
-        <div className="inline-flex rounded-full border border-border overflow-hidden" data-testid="pa-grain">
-          {GRAINS.map((g) => {
-            const active = grain === g.key;
-            const Icon = g.icon;
-            return (
-              <button
-                key={g.key}
-                type="button"
-                onClick={() => setGrain(g.key)}
-                data-testid={`pa-grain-${g.key}`}
-                className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11.5px] font-semibold transition-colors ${
-                  active ? "bg-[#1a5c38] text-white" : "bg-white text-[#374151] hover:bg-[#f3f4f6]"
-                }`}
-                title={`Group rows by ${g.label.toLowerCase()}`}
-              >
-                <Icon size={12} /> {g.label}
-              </button>
-            );
-          })}
-        </div>
 
         <StyleStatusToggle value={status} onChange={setStatus} testIdPrefix="pa-status" />
 
@@ -813,7 +789,7 @@ const ProductAnalysis = () => {
             <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <div className="eyebrow">
                 Styles ({fmtNum(filteredRows.length)}{filteredRows.length !== rows.length ? ` of ${fmtNum(rows.length)}` : ""})
-                {showDim ? ` · by ${grain === "color" ? "colour" : "size"}` : ""}
+                {dims.length ? ` · by ${dims.map((d) => (d === "color" ? "colour" : d)).join(" × ")}` : ""}
               </div>
               <div className="flex items-center gap-2">
                 <details className="relative" data-testid="pa-columns">
@@ -862,8 +838,8 @@ const ProductAnalysis = () => {
                 initialSort={{ key: "revenue", dir: "desc" }}
                 pageSize={100}
                 mobileCards
-                rowKey={(r) => (showDim ? `${r.style_name}|${r.dim}` : r.style_name)}
-                renderExpanded={grain === "style" ? (r) => <StyleDrill styleName={r.style_name} params={drillParams} /> : null}
+                rowKey={(r) => (dims.length ? `${r.style_name}|${dims.map((d) => r[d] ?? "").join("|")}` : r.style_name)}
+                renderExpanded={dims.length === 0 ? (r) => <StyleDrill styleName={r.style_name} params={drillParams} /> : null}
                 emptyLabel="No styles match the filters."
               />
             ) : (
