@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vivo Fabric BI — Live</title>
+<style>
+:root{--bg-primary:#ffffff;--bg-secondary:#F5F3EE;--bg-tertiary:#FAF9F5;--text-primary:#1F1E1B;--text-secondary:#5F5E5A;--text-tertiary:#8A8980;--border-tertiary:rgba(31,30,27,0.10);--border-secondary:rgba(31,30,27,0.20);--danger-bg:#FCEBEB;--danger-text:#A32D2D;--warning-bg:#FAEEDA;--warning-text:#854F0B;--success-bg:#E1F5EE;--success-text:#0F6E56;--info-bg:#E6F1FB;--info-text:#185FA5;--brand:#D4537E;}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg-tertiary);color:var(--text-primary);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.5;-webkit-font-smoothing:antialiased;}
+h1,h2,h3{font-weight:500;}
+select,input{font-family:inherit;height:36px;border:0.5px solid var(--border-secondary);border-radius:8px;background:var(--bg-primary);color:var(--text-primary);padding:0 10px;font-size:13px;}
+.shell{max-width:1200px;margin:24px auto;display:flex;align-items:stretch;border:0.5px solid var(--border-tertiary);border-radius:12px;overflow:hidden;background:var(--bg-primary);}
+.aside{width:172px;flex-shrink:0;background:var(--bg-secondary);border-right:0.5px solid var(--border-tertiary);padding:1rem 0.5rem;}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;}
+.card{background:var(--bg-primary);border:0.5px solid var(--border-tertiary);border-radius:12px;padding:0.9rem 1.1rem;margin-bottom:1.1rem;}
+.nav-item{display:flex;align-items:center;gap:9px;padding:8px 9px;font-size:12.5px;color:var(--text-secondary);border-radius:8px;cursor:pointer;margin-bottom:2px;}
+.nav-item:hover{background:var(--bg-primary);}
+.nav-item.active{color:var(--brand);background:var(--bg-primary);border-left:3px solid var(--brand);border-radius:0 8px 8px 0;}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:1.1rem;}
+.kpi{background:var(--bg-secondary);border-radius:8px;padding:0.9rem;}
+.kpi p{margin:0;}
+.kpi .label{font-size:12.5px;color:var(--text-secondary);}
+.kpi .value{font-size:22px;font-weight:500;margin-top:4px;}
+.kpi .value.danger{color:var(--danger-text);}
+.kpi .value.warning{color:var(--warning-text);}
+.kpi .sub{font-size:11.5px;color:var(--text-tertiary);margin-top:2px;}
+.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+.bar-label{width:130px;font-size:12px;color:var(--text-secondary);flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.bar-track{flex:1;height:16px;background:var(--bg-secondary);border-radius:4px;overflow:hidden;}
+.bar-fill{height:100%;background:var(--brand);border-radius:4px;transition:width 0.5s ease;}
+.bar-qty{width:80px;text-align:right;font-size:12px;font-weight:500;flex-shrink:0;}
+.bar-sub{width:70px;text-align:right;font-size:11px;color:var(--text-tertiary);flex-shrink:0;}
+table{width:100%;border-collapse:collapse;font-size:12.5px;}
+th{padding:6px 8px;font-weight:500;color:var(--text-secondary);text-align:left;border-bottom:0.5px solid var(--border-secondary);white-space:nowrap;}
+td{padding:7px 8px;border-bottom:0.5px solid var(--border-tertiary);}
+.badge{font-size:11px;padding:2px 7px;border-radius:6px;display:inline-block;}
+.badge-plain{background:var(--bg-secondary);color:var(--text-secondary);}
+.badge-print{background:var(--info-bg);color:var(--info-text);}
+.badge-light{background:var(--success-bg);color:var(--success-text);}
+.badge-medium{background:var(--info-bg);color:var(--info-text);}
+.badge-heavy{background:var(--warning-bg);color:var(--warning-text);}
+.badge-done{background:var(--success-bg);color:var(--success-text);}
+.badge-draft{background:var(--bg-secondary);color:var(--text-secondary);}
+.loading{color:var(--text-tertiary);font-size:13px;padding:2rem;text-align:center;}
+.tab-bar{display:flex;gap:4px;background:var(--bg-secondary);padding:3px;border-radius:8px;margin-bottom:1rem;width:fit-content;}
+.tab{font-size:12px;padding:4px 12px;border-radius:6px;cursor:pointer;color:var(--text-secondary);}
+.tab.active{background:var(--bg-primary);color:var(--text-primary);font-weight:500;}
+@media(max-width:760px){.shell{flex-direction:column;}.aside{width:auto;border-right:none;border-bottom:0.5px solid var(--border-tertiary);}}
+</style>
+</head>
+<body>
+<div class="shell">
+ <aside class="aside">
+  <div style="display:flex;align-items:center;gap:8px;padding:0 8px 16px;">
+   <div style="width:26px;height:26px;border-radius:6px;background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:500;">V</div>
+   <div style="line-height:1.15;"><div style="font-size:15px;font-weight:500;color:var(--brand);">Vivo</div><div style="font-size:10.5px;color:var(--text-tertiary);">Fabric BI</div></div>
+  </div>
+  <div class="nav-item active" data-page="overview">📊 Overview</div>
+  <div class="nav-item" data-page="register">🧵 Fabric register</div>
+  <div class="nav-item" data-page="ageing">⏱ Stock & ageing</div>
+  <div class="nav-item" data-page="consumption">📉 Consumption</div>
+  <div class="nav-item" data-page="deadstock">⚠️ Dead stock</div>
+  <div class="nav-item" data-page="pos">🚚 Purchase orders</div>
+ </aside>
+ <main class="main">
+  <header style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:0.7rem 1.1rem;border-bottom:0.5px solid var(--border-tertiary);flex-wrap:wrap;">
+   <span id="page-title" style="font-size:13px;color:var(--text-secondary);">📊 Overview</span>
+   <div style="display:flex;align-items:center;gap:8px;">
+    <select id="location-filter" onchange="loadAll()">
+     <option value="RMAT/Stock">RMAT / Main Warehouse</option>
+     <option value="PROD/Stock">PROD / Production</option>
+     <option value="Dead/Stock Fabric">Dead Stock</option>
+    </select>
+    <span id="last-updated" style="font-size:12px;color:var(--text-tertiary);"></span>
+   </div>
+  </header>
+  <div style="padding:1rem 1.1rem;overflow:auto;flex:1;">
+
+   <!-- OVERVIEW -->
+   <div id="page-overview">
+    <div id="kpi-cards" class="kpi-grid"><div class="loading">Loading…</div></div>
+    <div class="card">
+     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <h3 style="margin:0;font-size:15px;">Stock by category</h3>
+      <span style="font-size:11.5px;color:var(--text-secondary);">metres · value (KES)</span>
+     </div>
+     <div id="category-bars"><div class="loading">Loading…</div></div>
+    </div>
+   </div>
+
+   <!-- REGISTER -->
+   <div id="page-register" style="display:none;">
+    <div style="display:flex;gap:8px;margin-bottom:1rem;flex-wrap:wrap;">
+     <input id="reg-search" placeholder="Search fabric…" oninput="loadRegister(0)" style="width:200px;">
+     <select id="reg-category" onchange="loadRegister(0)"><option value="">All categories</option></select>
+     <select id="reg-print" onchange="loadRegister(0)">
+      <option value="">Plain & Print</option>
+      <option value="Plain">Plain</option>
+      <option value="Print">Print</option>
+     </select>
+     <select id="reg-weight" onchange="loadRegister(0)">
+      <option value="">All weights</option>
+      <option value="Light">Light</option>
+      <option value="Medium">Medium</option>
+      <option value="Heavy">Heavy</option>
+     </select>
+    </div>
+    <div class="card" style="overflow:auto;padding:0;">
+     <table>
+      <thead><tr>
+       <th style="padding-left:1rem;">Fabric</th><th>Category</th><th>Finish</th>
+       <th>Weight</th><th style="text-align:right;">GSM</th><th style="text-align:right;">Kg/m</th>
+       <th style="text-align:right;">Metres</th><th style="text-align:right;">Kg</th>
+       <th style="text-align:right;">Value</th><th>Last move</th>
+      </tr></thead>
+      <tbody id="register-body"><tr><td colspan="10" class="loading">Loading…</td></tr></tbody>
+     </table>
+     <div id="reg-pagination" style="padding:10px 1rem;font-size:12px;color:var(--text-secondary);display:flex;justify-content:space-between;align-items:center;">
+      <span id="reg-info"></span>
+      <div style="display:flex;gap:6px;">
+       <button onclick="regPage(-1)" style="height:30px;padding:0 10px;border:0.5px solid var(--border-secondary);border-radius:6px;background:var(--bg-primary);cursor:pointer;font-size:12px;">← Prev</button>
+       <button onclick="regPage(1)" style="height:30px;padding:0 10px;border:0.5px solid var(--border-secondary);border-radius:6px;background:var(--bg-primary);cursor:pointer;font-size:12px;">Next →</button>
+      </div>
+     </div>
+    </div>
+   </div>
+
+   <!-- AGEING -->
+   <div id="page-ageing" style="display:none;">
+    <div class="card">
+     <h3 style="margin:0 0 12px;font-size:15px;">Stock ageing by last movement</h3>
+     <div id="ageing-bars"><div class="loading">Loading…</div></div>
+     <p style="margin:12px 0 0;font-size:11.5px;color:var(--text-tertiary);">Age bands based on days since last stock movement out of this location.</p>
+    </div>
+   </div>
+
+   <!-- CONSUMPTION -->
+   <div id="page-consumption" style="display:none;">
+    <div class="card">
+     <div style="display:flex;justify-content:space-between;margin-bottom:12px;align-items:center;">
+      <h3 style="margin:0;font-size:15px;">Fabric consumption (OUT moves)</h3>
+      <select id="cons-group" onchange="loadConsumption()">
+       <option value="month">Monthly</option>
+       <option value="week">Weekly</option>
+      </select>
+     </div>
+     <div id="consumption-bars"><div class="loading">Loading…</div></div>
+    </div>
+   </div>
+
+   <!-- DEAD STOCK -->
+   <div id="page-deadstock" style="display:none;">
+    <div id="dead-kpis" class="kpi-grid" style="margin-bottom:1rem;"></div>
+    <div class="card" style="overflow:auto;padding:0;">
+     <table>
+      <thead><tr>
+       <th style="padding-left:1rem;">Fabric</th><th>Category</th>
+       <th style="text-align:right;">Kg</th><th style="text-align:right;">Metres</th>
+       <th style="text-align:right;">Value (KES)</th><th>Last move</th>
+       <th style="text-align:right;">Days idle</th>
+      </tr></thead>
+      <tbody id="dead-body"><tr><td colspan="7" class="loading">Loading…</td></tr></tbody>
+     </table>
+    </div>
+   </div>
+
+   <!-- PURCHASE ORDERS -->
+   <div id="page-pos" style="display:none;">
+    <div class="card" style="overflow:auto;padding:0;">
+     <table>
+      <thead><tr>
+       <th style="padding-left:1rem;">PO</th><th>Supplier</th><th>Date</th><th>Status</th>
+       <th style="text-align:right;">Lines</th><th style="text-align:right;">Value</th>
+       <th style="text-align:right;">Ordered</th><th style="text-align:right;">Received</th>
+       <th style="text-align:right;">Outstanding</th>
+      </tr></thead>
+      <tbody id="po-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
+     </table>
+    </div>
+   </div>
+
+  </div>
+ </main>
+</div>
+<script>
+const API = '';
+let regOffset = 0;
+let regTotal = 0;
+const PAGE_SIZE = 50;
+
+const fmt = n => n == null ? '—' : Number(n).toLocaleString();
+const fmtKES = n => { if(n==null)return'—'; if(n>=1e6)return'KES '+(n/1e6).toFixed(1)+'M'; if(n>=1e3)return'KES '+(n/1e3).toFixed(0)+'K'; return'KES '+fmt(n); };
+const loc = () => document.getElementById('location-filter').value;
+
+// Navigation
+document.querySelectorAll('.nav-item').forEach(el => {
+  el.addEventListener('click', () => {
+    const page = el.dataset.page;
+    document.querySelectorAll('[id^="page-"]').forEach(p => p.style.display='none');
+    document.getElementById('page-'+page).style.display='';
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('page-title').textContent = el.textContent.trim();
+    if(page==='register') loadRegister(0);
+    if(page==='ageing') loadAgeing();
+    if(page==='consumption') loadConsumption();
+    if(page==='deadstock') loadDeadStock();
+    if(page==='pos') loadPOs();
+  });
+});
+
+async function apiFetch(path) {
+  const r = await fetch(API + path, {credentials:'include'});
+  if(!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+async function loadAll() {
+  await Promise.all([loadSummary(), loadCategories()]);
+  document.getElementById('last-updated').textContent = 'Updated '+new Date().toLocaleTimeString();
+}
+
+async function loadSummary() {
+  const d = await apiFetch('/api/fabric/summary');
+  document.getElementById('kpi-cards').innerHTML = `
+    <div class="kpi"><p class="label">Stock on hand</p><p class="value">${fmt(d.fabric_stock_metres)} m</p><p class="sub">${fmtKES(d.fabric_stock_value)}</p></div>
+    <div class="kpi"><p class="label">Total weight</p><p class="value">${fmt(d.fabric_stock_kg)} kg</p><p class="sub">${fmt(d.fabric_products)} fabric types</p></div>
+    <div class="kpi"><p class="label">Dead stock</p><p class="value danger">${fmt(d.dead_stock_kg)} kg</p><p class="sub">${fmtKES(d.dead_stock_value)}</p></div>
+    <div class="kpi"><p class="label">Consumed (30d)</p><p class="value">${fmt(d.consumption_30d_kg)} kg</p><p class="sub">&nbsp;</p></div>
+    <div class="kpi"><p class="label">Outstanding POs</p><p class="value">${fmt(d.outstanding_pos)}</p><p class="sub">${fmtKES(d.outstanding_po_value)}</p></div>
+    <div class="kpi"><p class="label">Styles w/ BOM</p><p class="value">${fmt(d.styles_with_bom)}</p><p class="sub">fabric linked</p></div>
+  `;
+}
+
+async function loadCategories() {
+  const data = await apiFetch('/api/fabric/by-category?location='+encodeURIComponent(loc()));
+  const cats = {};
+  data.forEach(r => {
+    if(!cats[r.category]) cats[r.category]={metres:0,value:0};
+    cats[r.category].metres += r.qty_metres||0;
+    cats[r.category].value += r.value_kes||0;
+  });
+  const sorted = Object.entries(cats).sort((a,b)=>b[1].value-a[1].value);
+  const maxVal = sorted[0]?.[1]?.value||1;
+  document.getElementById('category-bars').innerHTML = sorted.map(([cat,v])=>`
+    <div class="bar-row">
+      <span class="bar-label">${cat}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${(v.value/maxVal*100).toFixed(1)}%"></div></div>
+      <span class="bar-qty">${fmt(Math.round(v.metres))} m</span>
+      <span class="bar-sub">${fmtKES(v.value)}</span>
+    </div>
+  `).join('');
+}
+
+async function loadRegister(offset) {
+  regOffset = offset ?? regOffset;
+  const search = document.getElementById('reg-search').value;
+  const cat = document.getElementById('reg-category').value;
+  const print = document.getElementById('reg-print').value;
+  const weight = document.getElementById('reg-weight').value;
+  const params = new URLSearchParams({location:loc(),limit:PAGE_SIZE,offset:regOffset});
+  if(search) params.set('search',search);
+  if(cat) params.set('category',cat);
+  if(print) params.set('plain_print',print);
+  if(weight) params.set('weight_range',weight);
+  const d = await apiFetch('/api/fabric/register?'+params);
+  regTotal = d.total;
+  document.getElementById('register-body').innerHTML = d.items.map(r=>`
+    <tr>
+      <td style="padding-left:1rem;font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${r.name}">${r.name}</td>
+      <td style="color:var(--text-secondary);white-space:nowrap;">${r.fabric_subcategory||r.fabric_category||'—'}</td>
+      <td>${r.plain_print?`<span class="badge badge-${r.plain_print.toLowerCase()}">${r.plain_print}</span>`:'—'}</td>
+      <td>${r.weight_range?`<span class="badge badge-${r.weight_range.toLowerCase()}">${r.weight_range}</span>`:'—'}</td>
+      <td style="text-align:right;">${r.gsm||'—'}</td>
+      <td style="text-align:right;">${r.kg_per_mtr||'—'}</td>
+      <td style="text-align:right;font-weight:500;">${r.qty_metres!=null?fmt(r.qty_metres)+' m':'—'}</td>
+      <td style="text-align:right;">${fmt(r.qty_kg)} kg</td>
+      <td style="text-align:right;color:var(--text-tertiary);">${fmtKES(r.value_kes)}</td>
+      <td style="color:var(--text-tertiary);font-size:11.5px;white-space:nowrap;">${r.last_move||'—'}</td>
+    </tr>
+  `).join('');
+  document.getElementById('reg-info').textContent = 
+    `${regOffset+1}–${Math.min(regOffset+PAGE_SIZE,regTotal)} of ${fmt(regTotal)}`;
+}
+
+function regPage(dir) {
+  const newOffset = regOffset + dir*PAGE_SIZE;
+  if(newOffset < 0 || newOffset >= regTotal) return;
+  loadRegister(newOffset);
+}
+
+async function loadAgeing() {
+  const data = await apiFetch('/api/fabric/ageing?location='+encodeURIComponent(loc()));
+  const colors = ['#1D9E75','#378ADD','#EF9F27','#E24B4A'];
+  const labels = ['Fresh','Active','Ageing — watch','Obsolete candidate'];
+  const maxM = Math.max(...data.map(r=>r.qty_metres||0))||1;
+  document.getElementById('ageing-bars').innerHTML = data.map((r,i)=>`
+    <div class="bar-row" style="margin-bottom:14px;">
+      <span class="bar-label" style="width:140px;">${r.age_band}<br><span style="font-size:10.5px;color:var(--text-tertiary);">${labels[i]||''}</span></span>
+      <div class="bar-track"><div class="bar-fill" style="width:${((r.qty_metres||0)/maxM*100).toFixed(1)}%;background:${colors[i]};"></div></div>
+      <span class="bar-qty">${fmt(Math.round(r.qty_metres||0))} m</span>
+      <span class="bar-sub">${fmtKES(r.value_kes)}</span>
+    </div>
+  `).join('') || '<p style="color:var(--text-tertiary);font-size:13px;">No data</p>';
+}
+
+async function loadConsumption() {
+  const group = document.getElementById('cons-group').value;
+  const data = await apiFetch('/api/fabric/consumption?since=2025-01-01&group_by='+group);
+  const maxKg = Math.max(...data.map(r=>r.qty_kg||0))||1;
+  document.getElementById('consumption-bars').innerHTML = `<div style="display:flex;flex-direction:column;gap:8px;">
+    ${data.map(r=>`
+      <div class="bar-row">
+        <span class="bar-label" style="width:90px;">${r.period}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${((r.qty_kg||0)/maxKg*100).toFixed(1)}%;"></div></div>
+        <span class="bar-qty">${fmt(r.qty_kg)} kg</span>
+        <span class="bar-sub">${fmt(r.fabrics_used)} types</span>
+      </div>
+    `).join('')}
+  </div>`;
+}
+
+async function loadDeadStock() {
+  const d = await apiFetch('/api/fabric/dead-stock');
+  document.getElementById('dead-kpis').innerHTML = `
+    <div class="kpi"><p class="label">Total dead stock</p><p class="value danger">${fmtKES(d.total_value)}</p><p class="sub">${d.items.length} items</p></div>
+    <div class="kpi"><p class="label">Total weight</p><p class="value">${fmt(d.items.reduce((s,r)=>s+(r.qty_kg||0),0).toFixed(0))} kg</p></div>
+  `;
+  document.getElementById('dead-body').innerHTML = d.items.map(r=>`
+    <tr>
+      <td style="padding-left:1rem;font-weight:500;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${r.product_name}">${r.product_name}</td>
+      <td style="color:var(--text-secondary);">${r.fabric_subcategory||r.fabric_category||'—'}</td>
+      <td style="text-align:right;">${fmt(r.qty_kg)} kg</td>
+      <td style="text-align:right;">${r.qty_metres!=null?fmt(r.qty_metres)+' m':'—'}</td>
+      <td style="text-align:right;font-weight:500;">${fmtKES(r.value_kes)}</td>
+      <td style="color:var(--text-tertiary);font-size:11.5px;">${r.last_move||'—'}</td>
+      <td style="text-align:right;${(r.days_since_move||0)>180?'color:var(--danger-text);font-weight:500;':''}">${fmt(r.days_since_move)}</td>
+    </tr>
+  `).join('');
+}
+
+async function loadPOs() {
+  const data = await apiFetch('/api/fabric/purchase-orders');
+  document.getElementById('po-body').innerHTML = data.map(r=>`
+    <tr>
+      <td style="padding-left:1rem;font-weight:500;">${r.po_name}</td>
+      <td>${r.supplier||'—'}</td>
+      <td style="color:var(--text-secondary);white-space:nowrap;">${r.order_date||'—'}</td>
+      <td><span class="badge badge-${r.state}">${r.state}</span></td>
+      <td style="text-align:right;">${r.lines}</td>
+      <td style="text-align:right;font-weight:500;">${fmtKES(r.po_value)}</td>
+      <td style="text-align:right;">${fmt(r.qty_ordered)}</td>
+      <td style="text-align:right;">${fmt(r.qty_received)}</td>
+      <td style="text-align:right;${(r.outstanding||0)>0?'color:var(--warning-text);':''}">${fmt(r.outstanding)}</td>
+    </tr>
+  `).join('');
+}
+
+// Load filter options
+apiFetch('/api/fabric/filters').then(d => {
+  const sel = document.getElementById('reg-category');
+  d.categories.forEach(c => sel.add(new Option(c,c)));
+}).catch(()=>{});
+
+loadAll();
+</script>
+</body>
+</html>

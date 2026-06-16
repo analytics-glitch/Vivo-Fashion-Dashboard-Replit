@@ -332,6 +332,10 @@ def _cache_stats_payload():
 
 
 app = FastAPI(title="Vivo Fashion Group BI API")
+
+# Fabric BI routes
+from fabric_router import fabric_router
+app.include_router(fabric_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -13915,8 +13919,10 @@ if build_dir.exists():
 
     @app.get("/{full_path:path}")
     async def serve_react(full_path: str):
-        from fastapi.responses import FileResponse
-        from fastapi import Response
+        from fastapi.responses import FileResponse, JSONResponse
+        # Never serve the SPA for API routes
+        if full_path.startswith("api/"):
+            return JSONResponse({"detail": "Not found"}, status_code=404)
         index = build_dir / "index.html"
         response = FileResponse(str(index))
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"

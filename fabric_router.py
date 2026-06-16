@@ -6,12 +6,16 @@ Run: uvicorn fabric_api:app --port 8081
 import psycopg2.extras
 from fastapi import APIRouter, Query
 
-fabric_router = APIRouter(prefix="/api/fabric", tags=["fabric"])
+fabric_router = APIRouter(tags=["fabric"])
 
 def _get_conn():
     """Use the main app's connection pool."""
-    from api_pg import get_conn
-    return get_conn()
+    import sys, os
+    sys.path.insert(0, '/home/runner/workspace')
+    # Import lazily to avoid circular import at module load time
+    import importlib
+    api = importlib.import_module('api_pg')
+    return api.get_conn()
 
 def q(conn, sql, params=()):
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
