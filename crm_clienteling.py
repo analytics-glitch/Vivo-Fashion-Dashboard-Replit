@@ -1915,37 +1915,217 @@ def _reg_loyalty_mgr(app):
     @app.get("/api/loyalty/pulse")
     def cl_loy_pulse(request: Request):
         _staff(request)
-        m = _one(
-            "SELECT COUNT(*) AS members, "
-            " COALESCE(SUM(points_balance),0) AS points "
-            "FROM crm_loyalty_enrolment") or {}
-        v = _one(
+        cfg = A._crm_config_dict()
+        silver = _num(cfg.get("loyalty.tier_silver_kes"), 50000)
+        gold = _num(cfg.get("loyalty.tier_gold_kes"), 100000)
+        valid_days = int(_num(cfg.get("loyalty.voucher_validity_days"), 90) or 90)
+
+        # --- Close to upgrade: members in the 70–100% band of their next tier ---
+        up_rows = _ex(
+            "SELECT e.customer_id, e.tier, COALESCE(m.spend_kes,0) AS spend, "
+            + _name_sql("e") + " AS customer_name "
+            "FROM crm_loyalty_enrolment e "
+            "LEFT JOIN crm_loyalty_member m ON m.member_id=e.customer_id "
+            "WHERE (e.tier='Bronze' AND COALESCE(m.spend_kes,0) BETWEEN %s AND %s) "
+            "   OR (e.tier='Silver' AND COALESCE(m.spend_kes,0) BETWEEN %s AND %s) "
+            "ORDER BY (CASE WHEN e.tier='Bronze' THEN %s ELSE %s END "
+            "          - COALESCE(m.spend_kes,0)) ASC",
+            (silver * 0.7, silver, gold * 0.7, gold, silver, gold),
+            fetch=True) or []
+        up_items, max_needed = [], 0.0
+        for r in up_rows:
+            spend = _num(r["spend"])
+            target = silver if r["tier"] == "Bronze" else gold
+            needed = round(max(target - spend, 0), 2)
+            max_needed = max(max_needed, needed)
+            up_items.append({
+                "customer_id": r["customer_id"], "customer_name": r["customer_name"],
+                "needed_kes": needed,
+                "next_tier": "Silver" if r["tier"] == "Bronze" else "Gold",
+            })
+        close_to_upgrade = {
+            "count": len(up_items),
+            "within_kes": round(max_needed, 2),
+            "top": up_items[:3],
+        }
+
+        # --- Demotion risk: Silver/Gold whose enrolment anniversary is within 30
+        #     days AND whose spend is below their tier retention floor. ---
+        risk_rows = _ex(
+            "SELECT e.customer_id, e.tier, e.enrolment_date, "
+            " COALESCE(m.spend_kes,0) AS spend, " + _name_sql("e") + " AS customer_name "
+            "FROM crm_loyalty_enrolment e "
+            "LEFT JOIN crm_loyalty_member m ON m.member_id=e.customer_id "
+            "WHERE e.tier IN ('Silver','Gold')", fetch=True) or []
+        today = date.today()
+
+        def _days_to_anniv(enr):
+            if not enr:
+                return None
+            mth, day = enr.month, enr.day
+            for yr in (today.year, today.year + 1):
+                try:
+                    cand = date(yr, mth, day)
+                except ValueError:
+                    cand = date(yr, 3, 1)  # Feb 29 -> Mar 1
+                if cand >= today:
+                    return (cand - today).days
+            return None
+
+        risk_items = []
+        for r in risk_rows:
+            spend = _num(r["spend"])
+            floor = silver if r["tier"] == "Silver" else gold
+            if spend >= floor:
+                continue
+            dta = _days_to_anniv(r["enrolment_date"])
+            if dta is None or dta > 30:
+                continue
+            risk_items.append({
+                "customer_id": r["customer_id"], "customer_name": r["customer_name"],
+                "days_to_anniversary": dta,
+                "shortfall_kes": round(max(floor - spend, 0), 2),
+            })
+        risk_items.sort(key=lambda x: x["days_to_anniversary"])
+        demotion_risk = {"count": len(risk_items), "top": risk_items[:3]}
+
+        # --- Vouchers expiring within 7 days (expiry derived from issued_at +
+        #     the configured validity window, since codes have no expiry column). ---
+        exp_rows = _ex(
+            "SELECT r.kes_value, r.customer_id, "
+            " (r.issued_at + (%s||' days')::interval) AS expires_at, "
+            " COALESCE((SELECT NULLIF(TRIM(COALESCE(cc.first_name,'')||' '||"
+            "   COALESCE(cc.last_name,'')),'') FROM crm_customer cc "
+            "   WHERE cc.customer_id=r.customer_id LIMIT 1),'Guest') AS customer_name "
+            "FROM crm_redemptions r "
+            "WHERE r.code_status='issued' "
+            " AND (r.issued_at + (%s||' days')::interval) "
+            "     BETWEEN now() AND now()+interval '7 days' "
+            "ORDER BY expires_at ASC",
+            (valid_days, valid_days), fetch=True) or []
+        vouchers_expiring = {
+            "count": len(exp_rows),
+            "top": [{
+                "customer_id": r["customer_id"], "customer_name": r["customer_name"],
+                "amount_kes": round(_num(r["kes_value"]), 2),
+                "expires_at": _dt(r["expires_at"]),
+            } for r in exp_rows[:3]],
+        }
+
+        # --- Voucher activity over the last 30 days ---
+        act = _one(
             "SELECT COUNT(*) FILTER (WHERE issued_at>=now()-interval '30 days') AS issued, "
-            " COALESCE(SUM(kes_value) FILTER (WHERE code_status='used' "
-            "   AND used_at>=now()-interval '30 days'),0) AS redeemed_kes "
+            " COUNT(*) FILTER (WHERE code_status='used' "
+            "   AND used_at>=now()-interval '30 days') AS redeemed "
             "FROM crm_redemptions") or {}
+        issued = _int(act.get("issued"))
+        redeemed = _int(act.get("redeemed"))
+        voucher_activity_30d = {
+            "issued": issued, "redeemed": redeemed,
+            "redemption_rate": round(redeemed / issued * 100, 1) if issued else 0,
+        }
+
         return {
-            "active_members": _int(m.get("members")),
-            "points_outstanding": _int(m.get("points")),
-            "vouchers_issued_30d": _int(v.get("issued")),
-            "revenue_from_vouchers": round(_num(v.get("redeemed_kes")), 2),
+            "close_to_upgrade": close_to_upgrade,
+            "demotion_risk": demotion_risk,
+            "vouchers_expiring": vouchers_expiring,
+            "voucher_activity_30d": voucher_activity_30d,
         }
 
     @app.get("/api/loyalty/distribution")
-    def cl_loy_distribution(request: Request):
+    def cl_loy_distribution(request: Request, date_from: str = Query(None),
+                            date_to: str = Query(None)):
         _staff(request)
-        rows = _ex(
-            "SELECT tier, COUNT(*) AS n FROM crm_loyalty_enrolment GROUP BY tier",
-            fetch=True) or []
-        out = {"bronze": 0, "silver": 0, "gold": 0}
-        for r in rows:
-            key = str(r["tier"] or "").lower()
-            if key in out:
-                out[key] = _int(r["n"])
-        out["tiers"] = [{"tier": k.title(), "members": v}
-                        for k, v in (("bronze", out["bronze"]),
-                                     ("silver", out["silver"]), ("gold", out["gold"]))]
-        return out
+        cfg = A._crm_config_dict()
+        silver = _num(cfg.get("loyalty.tier_silver_kes"), 50000)
+        gold = _num(cfg.get("loyalty.tier_gold_kes"), 100000)
+        targets = {
+            "dormant": _num(cfg.get("loyalty.target_pct_dormant"), 25),
+            "bronze": _num(cfg.get("loyalty.target_pct_bronze"), 55),
+            "silver": _num(cfg.get("loyalty.target_pct_silver"), 15),
+            "gold": _num(cfg.get("loyalty.target_pct_gold"), 5),
+        }
+        discounts = {
+            "dormant": 0, "bronze": 0,
+            "silver": _num(cfg.get("loyalty.discount_silver_pct"), 5),
+            "gold": _num(cfg.get("loyalty.discount_gold_pct"), 10),
+        }
+
+        def _tier_of(s12):
+            if s12 <= 0:
+                return "dormant"
+            if s12 < silver:
+                return "bronze"
+            if s12 < gold:
+                return "silver"
+            return "gold"
+
+        # Classify EVERY customer by rolling-12-month net spend (the cached grid
+        # base already aggregates spend_12mo_kes + lifetime sales/orders).
+        agg = {t: {"count": 0, "sales": 0.0, "s12": 0.0, "orders": 0}
+               for t in ("dormant", "bronze", "silver", "gold")}
+        for r in _grid_base():
+            s12 = _num(r.get("spend_12mo_kes"))
+            a = agg[_tier_of(s12)]
+            a["count"] += 1
+            a["sales"] += _num(r.get("total_sales"))
+            a["s12"] += s12
+            a["orders"] += _int(r.get("total_orders"))
+        total_members = sum(a["count"] for a in agg.values())
+
+        # Optional sales window: per-tier sales realised inside [date_from,date_to]
+        # (tier membership still from rolling-12-month spend, window-independent).
+        def _vd(s):
+            try:
+                datetime.strptime(s, "%Y-%m-%d")
+                return True
+            except Exception:
+                return False
+
+        window_applied = bool(date_from and date_to and _vd(date_from) and _vd(date_to))
+        win_sales = {}
+        if window_applied:
+            wrows = _ex(
+                "WITH s12 AS ("
+                " SELECT s.customer_id, SUM(s.total_sales_kes::numeric) AS spend12 "
+                " FROM all_sales s WHERE s.customer_id IS NOT NULL AND s.customer_id<>'' "
+                " AND s.sale_date " + _ISO +
+                " AND s.sale_date::date >= CURRENT_DATE - INTERVAL '12 months' AND " +
+                A.BASE_FILTERS + " GROUP BY s.customer_id), "
+                "win AS ("
+                " SELECT s.customer_id, SUM(s.total_sales_kes::numeric) AS wsales "
+                " FROM all_sales s WHERE s.customer_id IS NOT NULL AND s.customer_id<>'' "
+                " AND s.sale_date " + _ISO +
+                " AND s.sale_date::date BETWEEN '" + date_from + "' AND '" + date_to + "' AND " +
+                A.BASE_FILTERS + " GROUP BY s.customer_id) "
+                "SELECT CASE WHEN COALESCE(s.spend12,0)<=0 THEN 'dormant' "
+                " WHEN s.spend12 < " + str(silver) + " THEN 'bronze' "
+                " WHEN s.spend12 < " + str(gold) + " THEN 'silver' ELSE 'gold' END AS tier, "
+                " COALESCE(SUM(w.wsales),0) AS wsales "
+                "FROM win w LEFT JOIN s12 s ON s.customer_id=w.customer_id GROUP BY 1",
+                fetch=True) or []
+            win_sales = {str(r["tier"]): _num(r["wsales"]) for r in wrows}
+
+        tiers = []
+        for t in ("dormant", "bronze", "silver", "gold"):
+            a = agg[t]
+            cnt = a["count"]
+            s12sum = round(a["s12"], 2)
+            disc = discounts[t]
+            tiers.append({
+                "tier": t,
+                "count": cnt,
+                "percent": round(cnt / total_members * 100, 1) if total_members else 0,
+                "target_percent": round(targets[t], 1),
+                "total_sales_kes": round(win_sales.get(t, 0) if window_applied else a["sales"], 2),
+                "total_12mo_sales_kes": s12sum,
+                "aov_kes": round(a["sales"] / a["orders"], 2) if a["orders"] else 0,
+                "frequency": round(a["orders"] / cnt, 2) if cnt else 0,
+                "discount_pct": disc,
+                "estimated_discount_kes_12mo": round(s12sum * disc / 100, 2),
+            })
+        return {"total_members": total_members, "window_applied": window_applied,
+                "tiers": tiers}
 
     @app.get("/api/loyalty/config")
     def cl_loy_config_get(request: Request):
@@ -1963,6 +2143,19 @@ def _reg_loyalty_mgr(app):
                 "bronze": _num(cfg.get("loyalty.earn_multiplier_bronze"), 1),
                 "silver": _num(cfg.get("loyalty.earn_multiplier_silver"), 2),
                 "gold": _num(cfg.get("loyalty.earn_multiplier_gold"), 3),
+            },
+            "qualify": {
+                "silver": _int(cfg.get("loyalty.tier_silver_kes"), 50000),
+                "gold": _int(cfg.get("loyalty.tier_gold_kes"), 100000),
+            },
+            "retain": {
+                "silver": _int(cfg.get("loyalty.retain_silver_kes"), 40000),
+                "gold": _int(cfg.get("loyalty.retain_gold_kes"), 80000),
+            },
+            "voucher_kes": {
+                "bronze": _int(cfg.get("loyalty.voucher_bronze_kes"), 2500),
+                "silver": _int(cfg.get("loyalty.voucher_silver_kes"), 5000),
+                "gold": _int(cfg.get("loyalty.voucher_gold_kes"), 10000),
             },
         }
 
@@ -2003,63 +2196,111 @@ def _reg_loyalty_mgr(app):
         return {"recomputed": updated}
 
     @app.get("/api/loyalty/anniversary-queue")
-    def cl_loy_anniv(request: Request, limit: int = Query(50)):
+    def cl_loy_anniv(request: Request, limit: int = Query(50),
+                     within_days: int = Query(30)):
         _staff(request)
         lim = _clamp(limit, 1, 300, 50)
+        wd = _clamp(within_days, 1, 366, 30)
+        cfg = A._crm_config_dict()
+        retain = {"Silver": _num(cfg.get("loyalty.retain_silver_kes"), 40000),
+                  "Gold": _num(cfg.get("loyalty.retain_gold_kes"), 80000)}
         rows = _ex(
             "SELECT e.customer_id, e.enrolment_date, e.tier, "
-            + _name_sql("e") + " AS customer_name "
+            " COALESCE(m.spend_kes,0) AS spend, " + _name_sql("e") + " AS customer_name "
             "FROM crm_loyalty_enrolment e "
-            "WHERE to_char(e.enrolment_date,'MM-DD') BETWEEN "
-            " to_char(CURRENT_DATE,'MM-DD') AND to_char(CURRENT_DATE+30,'MM-DD') "
-            "ORDER BY to_char(e.enrolment_date,'MM-DD') LIMIT %s", (lim,), fetch=True) or []
-        return [{
-            "customer_id": r["customer_id"], "customer_name": r["customer_name"],
-            "tier": r["tier"], "enrolment_date": _dt(r["enrolment_date"]),
-            "days_to_anniversary": None,
-        } for r in rows]
+            "LEFT JOIN crm_loyalty_member m ON m.member_id=e.customer_id "
+            "WHERE e.tier IN ('Silver','Gold')", fetch=True) or []
+        today = date.today()
+
+        def _dta(enr):
+            if not enr:
+                return None
+            for yr in (today.year, today.year + 1):
+                try:
+                    cand = date(yr, enr.month, enr.day)
+                except ValueError:
+                    cand = date(yr, enr.month, 28)
+                if cand >= today:
+                    return (cand - today).days
+            return None
+
+        out = []
+        for r in rows:
+            dta = _dta(r["enrolment_date"])
+            if dta is None or dta > wd:
+                continue
+            spend = _num(r["spend"])
+            req = retain.get(r["tier"], 0)
+            out.append({
+                "customer_id": r["customer_id"], "customer_name": r["customer_name"],
+                "loyalty_tier": str(r["tier"]).lower(),
+                "spend_12mo_kes": round(spend, 2),
+                "retention": {"required_kes": round(req, 2),
+                              "shortfall_kes": round(max(req - spend, 0), 2)},
+                "days_to_anniversary": dta,
+                "demotion_risk": spend < req,
+            })
+        out.sort(key=lambda x: x["days_to_anniversary"])
+        return out[:lim]
 
     @app.get("/api/loyalty/approaching-upgrade")
-    def cl_loy_approaching(request: Request, limit: int = Query(50)):
+    def cl_loy_approaching(request: Request, limit: int = Query(50),
+                           within_kes: float = Query(50000)):
         _staff(request)
         lim = _clamp(limit, 1, 300, 50)
+        try:
+            within = float(within_kes)
+        except (TypeError, ValueError):
+            within = 50000.0
+        if within <= 0:
+            within = 50000.0
         cfg = A._crm_config_dict()
         silver = _num(cfg.get("loyalty.tier_silver_kes"), 50000)
         gold = _num(cfg.get("loyalty.tier_gold_kes"), 100000)
-        rows = _ex(
-            "SELECT e.customer_id, e.tier, COALESCE(m.spend_kes,0) AS spend, "
-            + _name_sql("e") + " AS customer_name "
-            "FROM crm_loyalty_enrolment e "
-            "LEFT JOIN crm_loyalty_member m ON m.member_id=e.customer_id "
-            "WHERE (e.tier='Bronze' AND COALESCE(m.spend_kes,0) BETWEEN %s AND %s) "
-            "   OR (e.tier='Silver' AND COALESCE(m.spend_kes,0) BETWEEN %s AND %s) "
-            "ORDER BY spend DESC LIMIT %s",
-            (silver * 0.7, silver, gold * 0.7, gold, lim), fetch=True) or []
         out = []
-        for r in rows:
-            spend = _num(r["spend"])
-            target = silver if r["tier"] == "Bronze" else gold
-            nxt = "Silver" if r["tier"] == "Bronze" else "Gold"
+        for r in _grid_base():
+            s12 = _num(r.get("spend_12mo_kes"))
+            if s12 <= 0:
+                continue
+            if s12 < silver:
+                target, cur, nxt = silver, "bronze", "silver"
+            elif s12 < gold:
+                target, cur, nxt = gold, "silver", "gold"
+            else:
+                continue
+            needed = target - s12
+            if needed <= 0 or needed > within:
+                continue
             out.append({
-                "customer_id": r["customer_id"], "customer_name": r["customer_name"],
-                "tier": r["tier"], "next_tier": nxt,
-                "spend_needed": round(max(target - spend, 0), 2),
+                "customer_id": r["customer_id"],
+                "customer_name": r.get("customer_name"),
+                "city": r.get("city"),
+                "loyalty_tier": cur, "next_tier": nxt,
+                "needed_kes": round(needed, 2),
+                "percent": int(min(s12 / target * 100, 100)) if target else 0,
             })
-        return out
+        out.sort(key=lambda x: x["needed_kes"])
+        return out[:lim]
 
     @app.get("/api/loyalty/audit")
-    def cl_loy_audit(request: Request, limit: int = Query(100)):
+    def cl_loy_audit(request: Request, limit: int = Query(100),
+                     offset: int = Query(0)):
         _staff(request)
         lim = _clamp(limit, 1, 500, 100)
+        off = _clamp(offset, 0, 100000, 0)
+        total = _int((_one(
+            "SELECT COUNT(*) AS n FROM crm_audit "
+            "WHERE entity IN ('loyalty','redemption')") or {}).get("n"))
         rows = _ex(
             "SELECT id, entity, entity_id, action, detail, user_name, created_at "
             "FROM crm_audit WHERE entity IN ('loyalty','redemption') "
-            "ORDER BY created_at DESC LIMIT %s", (lim,), fetch=True) or []
-        return [{
-            "id": str(r["id"]), "action": r["action"], "detail": r["detail"],
-            "entity_id": r["entity_id"], "user_name": r["user_name"],
-            "created_at": _dt(r["created_at"]),
+            "ORDER BY created_at DESC LIMIT %s OFFSET %s", (lim, off), fetch=True) or []
+        out = [{
+            "audit_id": str(r["id"]), "action": r["action"], "data": r["detail"],
+            "customer_id": r["entity_id"], "user_name": r["user_name"],
+            "at": _dt(r["created_at"]),
         } for r in rows]
+        return {"rows": out, "total": total}
 
     @app.get("/api/loyalty/vouchers")
     def cl_loy_vouchers(request: Request, limit: int = Query(100),
@@ -2067,34 +2308,124 @@ def _reg_loyalty_mgr(app):
         _staff(request)
         lim = _clamp(limit, 1, 500, 100)
         off = _clamp(offset, 0, 100000, 0)
+        cfg = A._crm_config_dict()
+        valid_days = int(_num(cfg.get("loyalty.voucher_validity_days"), 90) or 90)
+        total = _int((_one("SELECT COUNT(*) AS n FROM crm_redemptions") or {}).get("n"))
         rows = _ex(
             "SELECT r.id, r.customer_id, r.discount_code, r.kes_value, r.points_redeemed, "
             " r.code_status, r.issued_at, r.used_at, "
+            " (r.issued_at + (%s||' days')::interval) AS expires_at, "
+            " COALESCE(le.tier,'Bronze') AS tier_at_issue, "
             " COALESCE((SELECT NULLIF(TRIM(COALESCE(cc.first_name,'')||' '||"
             "   COALESCE(cc.last_name,'')),'') FROM crm_customer cc "
             "   WHERE cc.customer_id=r.customer_id LIMIT 1),'Guest') AS customer_name "
-            "FROM crm_redemptions r ORDER BY r.issued_at DESC LIMIT %s OFFSET %s",
-            (lim, off), fetch=True) or []
-        return [{
-            "voucher_id": str(r["id"]), "customer_id": r["customer_id"],
-            "customer_name": r["customer_name"], "code": r["discount_code"],
-            "amount_kes": round(_num(r["kes_value"]), 2),
-            "points_redeemed": _int(r["points_redeemed"]),
-            "status": r["code_status"], "issued_at": _dt(r["issued_at"]),
-            "used_at": _dt(r["used_at"]),
-        } for r in rows]
+            "FROM crm_redemptions r "
+            "LEFT JOIN crm_loyalty_enrolment le ON le.customer_id=r.customer_id "
+            "ORDER BY r.issued_at DESC LIMIT %s OFFSET %s",
+            (valid_days, lim, off), fetch=True) or []
+        now = datetime.now()
+
+        def _status(cs, exp):
+            if cs == "used":
+                return "redeemed"
+            if exp is not None:
+                ref = now.replace(tzinfo=exp.tzinfo) if exp.tzinfo else now
+                if exp < ref:
+                    return "expired"
+            return cs or "issued"
+
+        out = []
+        for r in rows:
+            exp = r["expires_at"]
+            out.append({
+                "voucher_id": str(r["id"]), "customer_id": r["customer_id"],
+                "customer_name": r["customer_name"], "code": r["discount_code"],
+                "tier_at_issue": str(r["tier_at_issue"]).lower(),
+                "amount_kes": round(_num(r["kes_value"]), 2),
+                "points_redeemed": _int(r["points_redeemed"]),
+                "reason": "Points redemption",
+                "status": _status(r["code_status"], exp),
+                "issued_at": _dt(r["issued_at"]),
+                "expires_at": _dt(exp),
+                "used_at": _dt(r["used_at"]),
+            })
+        return {"total": total, "rows": out}
 
     @app.get("/api/loyalty/voucher-cost")
-    def cl_loy_voucher_cost(request: Request, days: int = Query(90)):
+    def cl_loy_voucher_cost(request: Request, date_from: str = Query(None),
+                            date_to: str = Query(None),
+                            redemption_rate: float = Query(0.5)):
         _staff(request)
-        d = _clamp(days, 1, 730, 90)
-        r = _one(
-            "SELECT COUNT(*) FILTER (WHERE issued_at>=now()-(%s||' days')::interval) AS issued, "
-            " COALESCE(SUM(kes_value) FILTER (WHERE code_status='used' "
-            "   AND used_at>=now()-(%s||' days')::interval),0) AS cost "
-            "FROM crm_redemptions", (d, d)) or {}
-        return {"issued": _int(r.get("issued")),
-                "realized_cost_kes": round(_num(r.get("cost")), 2)}
+        cfg = A._crm_config_dict()
+        silver = _num(cfg.get("loyalty.tier_silver_kes"), 50000)
+        gold = _num(cfg.get("loyalty.tier_gold_kes"), 100000)
+        vkes = {"bronze": _num(cfg.get("loyalty.voucher_bronze_kes"), 2500),
+                "silver": _num(cfg.get("loyalty.voucher_silver_kes"), 5000),
+                "gold": _num(cfg.get("loyalty.voucher_gold_kes"), 10000)}
+        try:
+            rr = float(redemption_rate)
+        except (TypeError, ValueError):
+            rr = 0.5
+        rr = max(0.0, min(1.0, rr))
+
+        def _vd(s):
+            try:
+                return datetime.strptime(s, "%Y-%m-%d").date()
+            except Exception:
+                return None
+
+        df = (_vd(date_from) if date_from else None) or date.today()
+        dt = (_vd(date_to) if date_to else None) or (date.today() + timedelta(days=30))
+        if dt < df:
+            df = date.today()
+            dt = df + timedelta(days=30)
+        days_in_window = (dt - df).days + 1
+        mmdd = {(df + timedelta(days=i)).strftime("%m-%d")
+                for i in range(min(days_in_window, 366))}
+
+        # Birthdays come from crm_customer.dob (the only DOB source — sparse, so
+        # most windows are legitimately small). Tier from rolling-12mo net spend.
+        rows = _ex(
+            "SELECT cc.dob, COALESCE(s.spend12,0) AS spend12 "
+            "FROM crm_customer cc "
+            "LEFT JOIN ( SELECT s.customer_id, SUM(s.total_sales_kes::numeric) AS spend12 "
+            "  FROM all_sales s WHERE s.sale_date " + _ISO +
+            "  AND s.sale_date::date >= CURRENT_DATE - INTERVAL '12 months' AND " +
+            A.BASE_FILTERS + " GROUP BY s.customer_id) s ON s.customer_id=cc.customer_id "
+            "WHERE cc.dob IS NOT NULL AND cc.dob<>''", fetch=True) or []
+        agg = {"bronze": 0, "silver": 0, "gold": 0}
+        for r in rows:
+            dob = str(r["dob"]).strip()
+            mm = None
+            try:
+                mm = datetime.strptime(dob[:10], "%Y-%m-%d").strftime("%m-%d")
+            except Exception:
+                if len(dob) >= 5 and dob[2] == "-":
+                    mm = dob[:5]
+            if mm is None or mm not in mmdd:
+                continue
+            s12 = _num(r["spend12"])
+            t = "gold" if s12 >= gold else ("silver" if s12 >= silver else "bronze")
+            agg[t] += 1
+
+        tiers = []
+        gross_total = exp_total = 0.0
+        cnt_total = 0
+        for t in ("bronze", "silver", "gold"):
+            cnt = agg[t]
+            gross = cnt * vkes[t]
+            exp = gross * rr
+            gross_total += gross
+            exp_total += exp
+            cnt_total += cnt
+            tiers.append({"tier": t, "count": cnt, "voucher_kes": round(vkes[t], 2),
+                          "gross_cost_kes": round(gross, 2),
+                          "expected_cost_kes": round(exp, 2)})
+        return {
+            "tiers": tiers, "days_in_window": days_in_window,
+            "totals": {"count": cnt_total, "gross_cost_kes": round(gross_total, 2),
+                       "expected_cost_kes": round(exp_total, 2)},
+        }
 
     @app.get("/api/loyalty/customer/{cid}")
     def cl_loy_customer(request: Request, cid: str):

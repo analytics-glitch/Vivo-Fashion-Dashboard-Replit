@@ -59,3 +59,17 @@ sites against registered routes, not route names alone.
 - **Grid + grid export must share one filter predicate** (`_grid_matched(flt, request)`) so `POST /api/customers/grid` and `POST /api/customers/grid/export` (CSV via `Response`) can never drift.
 - **Assignment is both POST and PUT** `/api/customers/{cid}/assignment` (assign with assignee_user_id+name; null → unassign/DELETE the row), `crm_assignment` has ON CONFLICT(customer_id).
 - `suggest-reply` uses shared `A._chat_llm([{role,content}], max_tokens=...)` with a sentiment-aware prompt; wrap in try/except and fall back to static sentiment templates (LLM needs AI_INTEGRATIONS_* and raises when unconfigured).
+
+## Triage before rebuilding — most endpoints already match
+A bulk authed GET probe across all page read-endpoints is the fastest way to find the real
+breakage. Result: the vast majority already return correct contract shapes; only a few pages had
+genuine shape mismatches. Verified-broken-then-fixed: Dashboard `loyalty/pulse` (nested shape) and
+the Loyalty page (`distribution`/`config`/`approaching-upgrade`/`anniversary-queue`/`vouchers`/
+`voucher-cost`/`audit`). The Loyalty list endpoints that paginate (`vouchers`, `audit`) must return
+`{rows,total}` (not a bare list) and the row keys must match the JSX exactly (audit rows read
+`audit_id/at/action/customer_id/data`).
+- **`/api/social/posts` 502 is NOT a code bug** — it's an expired `FACEBOOK_PAGE_ACCESS_TOKEN`
+  (Graph API "Session has expired"). Affects Inbox + ManagerDashboard live-post pulls only; the
+  other social endpoints (status/feedback/summary) work. Fix = refresh the Page token secret.
+- **Loyalty `distribution` dormant tier can show negative `total_12mo_sales_kes`** (net returns
+  exceed sales in the window) — mathematically valid real data, left unclamped on purpose.
