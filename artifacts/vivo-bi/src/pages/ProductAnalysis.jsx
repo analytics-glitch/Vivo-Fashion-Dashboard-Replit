@@ -33,7 +33,7 @@ import {
 // Colour / Print / Size are row-explosion dimensions, driven by the column
 // picker: showing one in the table groups it to one value per row (selecting
 // several multiplies the rows). The backend receives these as the `dims` param.
-const DIM_KEYS = ["print", "size", "pos_location"];
+const DIM_KEYS = ["color", "print", "size", "pos_location"];
 
 const fmtWoc = (v) => (v === null || v === undefined ? "—" : `${fmtDec(v, 1)} wk`);
 const fmtSor = (v) => (v === null || v === undefined ? "—" : `${fmtDec(v, 1)}%`);

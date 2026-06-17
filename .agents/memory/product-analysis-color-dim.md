@@ -1,34 +1,41 @@
 ---
-name: Product Analysis colour column
-description: Why colour must be an aggregated display column, not a row-explosion dim, in /api/analytics/product-analysis
+name: Product Analysis colour dim
+description: Colour is a row-explosion dim in /api/analytics/product-analysis; the "blank Colour" bug is an inventory join-key mismatch, NOT a reason to aggregate
 ---
 
-# Colour in Product Analysis must be aggregated, not exploded
+# Colour is an explosion dim — each colour is its own row
 
-`all_products_clean.color_print` is sparse per-SKU (many blanks). When colour is
-sent as an explosion `dim` to `/api/analytics/product-analysis`, the GROUP BY
-produces a dominant `'(none)'` bucket and the Colour column reads blank/"(none)".
+In Product Analysis the user EXPECTS one row per colour (colour is in the
+frontend `DIM_KEYS` along with print/size/pos_location). Do NOT "fix" a blank
+Colour column by removing colour from the dims and string_agg-ing it into one
+cell — that produces "Black, Navy Blue" in a single row, which is the WRONG
+behaviour. The user wants each colour as a separate row.
 
-**Rule:** keep colour OUT of the frontend `DIM_KEYS` so it stays a plain
-aggregated display column. The backend `_disp("color")` already does
-`string_agg(DISTINCT NULLIF(TRIM(color_print),''), ', ')` when colour is not in
-the selected dims — that path returns the real colours.
+## The real "blank Colour" bug (inventory join-key mismatch)
+When colour is exploded, the prod + sales CTEs key colour off
+`all_products_clean.color_print` (Title Case, e.g. "Black"), but the stock CTE
+used `all_inventory.color_print` directly — which is ~93% NULL and UPPERCASE
+where present ("BLACK"). The `USING(style_name, color)` join then collapsed and
+`activity_where` (soh>0) dropped almost everything, leaving ~13 "(none)" rows.
 
-**Why:** explosion = GROUP BY on a sparse column = a giant empty bucket;
-aggregation collapses a style's non-blank colours into one cell.
+**Fix:** derive the stock colour from the product master via sku
+(`need_stock_pc` → `JOIN all_products_clean pc ON pc.sku=i.sku`, use
+`pc.color_print`), exactly like `print` already does. Then all three CTEs share
+one consistent colour key and explosion returns real colours (3599 rows, 0
+blank). `all_inventory` has no reliable colour/print of its own — always join
+through the product master for those dims.
 
-**How to apply:** if asked to "show colour" or "fix blank colour" on Product
-Analysis, do NOT add colour to dims. Print/size/pos_location are fine as dims.
+**Why:** `all_inventory.color_print` and `all_products_clean.color_print` are
+formatted differently and inventory's is mostly NULL; never join sales/stock to
+products on raw colour/print strings.
 
 ## Primary Color (AI) field
-`_primary_color_map()` maps each style's aggregated colour tokens onto a fixed
-palette: in-process memo -> persistent `color_primary_map` table -> deterministic
-keyword rules -> ONE batched `_chat_llm` call for the long tail. Persists results
-so the LLM is consulted at most once per distinct colour ever; never raises
-(falls back to deterministic/"Other"). Too many distinct colours (~5.6k) for a
-per-request LLM call, so caching is essential.
+`_primary_color_map()` maps each style's colour tokens onto a fixed palette:
+in-process memo -> persistent `color_primary_map` table -> deterministic keyword
+rules -> ONE batched `_chat_llm` call for the long tail. Persists results, never
+raises. When colour is exploded each row has one colour -> one primary; when
+aggregated it maps each token and joins ("Black, Blue").
 
 ## Third Party exclusion
-Reporting on Product Analysis excludes the "Third Party" brand via
-`NOT ILIKE '%third party%'` in BOTH the prod and sales CTEs (rollups are derived
-in Python from rows, so they cascade automatically).
+Product Analysis excludes the "Third Party" brand via `NOT ILIKE '%third party%'`
+in BOTH the prod and sales CTEs (rollups derive from rows, so they cascade).

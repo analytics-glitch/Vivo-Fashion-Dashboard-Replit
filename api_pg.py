@@ -3684,6 +3684,15 @@ def analytics_product_analysis(
         if d == "print":
             expr_st = "COALESCE(NULLIF(TRIM(pc.print_plain),''),'(none)')"
             need_stock_pc = True
+        elif d == "color":
+            # all_inventory.color_print is ~93% NULL and UPPERCASE where present
+            # ('BLACK'), so it does NOT match all_products_clean.color_print
+            # ('Black'). Joining stock on i.color_print collapses the colour
+            # explosion to a handful of '(none)' rows (the "blank Colour" bug).
+            # Derive the stock colour from the product master via sku instead, so
+            # all three CTEs share one consistent colour key.
+            expr_st = "COALESCE(NULLIF(TRIM(pc.color_print),''),'(none)')"
+            need_stock_pc = True
         else:
             expr_st = "COALESCE(NULLIF(TRIM(i." + src + "),''),'(none)')"
         prod_grp += ", " + expr_p
