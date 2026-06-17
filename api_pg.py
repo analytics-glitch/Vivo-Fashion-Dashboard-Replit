@@ -7254,71 +7254,34 @@ def _passed_week12_backstop(lifetime_sor):
     return lifetime_sor is not None and lifetime_sor >= 80
 
 
-def _sop_classify(age_weeks, *, lifetime_sor, full_price_pct, last_sale_days, woc,
-                  reorder_count, units_since_launch=0, sold_last_14d=False,
-                  has_launch_date=True):
-    # 2026 Range Strategy (SOP) GATED lifecycle classifier — the single source of
-    # truth for the displayed tier. Age sets the stage but the performance gates
-    # decide whether a style graduates or retires at each stage. Returns the triple
-    # (tier, status, recommended_action): tier is one of 'Tier 1'..'Tier 4' or
-    # 'Retire' (a terminal bucket); status is 'On Track' | 'At Risk' | 'Retire'.
-    # Age boundaries follow the calendar (8wk read, 12wk backstop, ~9 months = 39wk,
-    # 24 months = 104wk) for consistency with the trackers/_RANGE_TARGETS. The
-    # SOP's nominal 36/96-week labels denote the same 9-/24-month milestones.
-    # Hard-retire overrides (manual list / Zoya / aged-out) are applied by the
-    # caller, NOT here.
+def _gated_range_tier(age_weeks, *, lifetime_sor, full_price_pct, last_sale_days,
+                      woc, reorder_count):
+    # 2026 Range Strategy (SOP) GATED lifecycle tier. Age sets the stage but the
+    # performance gates decide whether a style graduates or retires at each stage.
+    # Returns one of 'Tier 1'..'Tier 4' or 'Retire'. Age boundaries follow the
+    # calendar (8wk read, 12wk backstop, ~9 months = 39wk, 24 months = 104wk).
+    # Hard-retire overrides (manual list / Zoya / aged-out / flagged) are applied
+    # by the caller, NOT here.
+    if age_weeks is None:
+        return "Tier 4"
     w8 = _passed_week8_gate(lifetime_sor, full_price_pct, last_sale_days, woc)
     w12 = _passed_week12_backstop(lifetime_sor)
-    # Defensive guard: a long-trading, high-volume style whose launch date hasn't
-    # been resolved yet would otherwise default to age 0 and mis-land in Tier 4.
-    # Park it in Tier 2 (Core Performer) until the real launch date arrives.
-    if not has_launch_date:
-        if (units_since_launch or 0) >= 100 and (lifetime_sor or 0) >= 50:
-            return ("Tier 2", "On Track",
-                    "Long-trading style — exact launch date pending; treated as a Core Performer.")
-        age_weeks = 0
-    if age_weeks is None:
-        age_weeks = 0
-    if age_weeks < 8:                          # New / Test — pre Week-8 read
-        return ("Tier 4", "On Track" if sold_last_14d else "At Risk",
-                "New / test — monitor weekly until the Week-8 read.")
-    if age_weeks <= 12:                        # Week-8 read window
-        if w8:
-            return ("Tier 3", "On Track",
-                    "Passed the Week-8 read — promoted to Tier 3, monitor weekly.")
-        return ("Tier 4", "At Risk",
-                "Missed the Week-8 read — review again at Week-12.")
-    if age_weeks < 39:                          # Week-12 backstop .. ~9 months
-        if w8 or w12:
-            return ("Tier 3", "On Track",
-                    "Recent performer — graduate to Tier 2 after Month 9 if still performing.")
-        return ("Retire", "Retire",
-                "Failed the Week-8 and Week-12 reads — retire to outlet (4-week gap rule).")
-    if age_weeks < 104:                         # ~9-24 months
+    if age_weeks < 8:
+        return "Tier 4"                       # New / Test — pre Week-8 read
+    if age_weeks <= 12:
+        return "Tier 3" if w8 else "Tier 4"   # Week-8 read window
+    if age_weeks < 39:                         # Week-12 backstop .. ~9 months
+        return "Tier 3" if (w8 or w12) else "Retire"
+    if age_weeks < 104:                        # ~9-24 months
         if reorder_count >= 3 and (lifetime_sor or 0) > 60 \
                 and (full_price_pct is None or full_price_pct > 90):
-            return ("Tier 2", "On Track",
-                    "Open-buy core performer — monitor monthly.")
-        return ("Retire", "Retire",
-                "9-24 months without Core Performer criteria — retire and run out stock.")
+            return "Tier 2"
+        return "Retire"
     # 24+ months
     if reorder_count >= 5 and (full_price_pct is None or full_price_pct > 90) \
             and (lifetime_sor or 0) > 60:
-        return ("Tier 1", "On Track",
-                "Permanent core basic — auto-reorder when WOC <= 8 weeks.")
-    return ("Retire", "Retire",
-            "24+ months without Tier 1 criteria — retire and run out stock.")
-
-
-def _gated_range_tier(age_weeks, *, lifetime_sor, full_price_pct, last_sale_days,
-                      woc, reorder_count):
-    # Thin wrapper returning just the gated tier (used by Product Analysis's
-    # life_cycle mapping). The full tree + statuses live in _sop_classify.
-    tier, _status, _action = _sop_classify(
-        age_weeks, lifetime_sor=lifetime_sor, full_price_pct=full_price_pct,
-        last_sale_days=last_sale_days, woc=woc, reorder_count=reorder_count,
-        has_launch_date=age_weeks is not None)
-    return tier
+        return "Tier 1"
+    return "Retire"
 
 
 def _parse_iso_date(s):
