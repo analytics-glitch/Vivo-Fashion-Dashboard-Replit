@@ -50,3 +50,12 @@ Conventions to keep consistent when extending:
 - `crm_loyalty_ledger`'s points column is `points_change` (NOT `points`).
 - Modules with thin/no data source (social/training/lookbooks/wishlists) return designed empty
   states rather than 500.
+
+## Closing endpoint gaps: match the FRONTEND contract, not the route name
+A route can exist and still be "missing" to the frontend if its verb/path-param/body shape differs.
+The real source of truth is what the ported `.jsx` actually calls — diff `api.{get,post,put,delete}`
+sites against registered routes, not route names alone.
+- **Wishlist fulfill is keyed by `wishlist_id` in the PATH, no body**: `POST /api/insights/wishlists/{wishlist_id}/fulfill`. An earlier version treated the path param as `customer_id` (+ optional body `id`) so the UI's fulfill silently no-opped. The per-customer GET must also return a `wishlist_id` alias (frontend reads `w.wishlist_id` for fulfill/delete).
+- **Grid + grid export must share one filter predicate** (`_grid_matched(flt, request)`) so `POST /api/customers/grid` and `POST /api/customers/grid/export` (CSV via `Response`) can never drift.
+- **Assignment is both POST and PUT** `/api/customers/{cid}/assignment` (assign with assignee_user_id+name; null → unassign/DELETE the row), `crm_assignment` has ON CONFLICT(customer_id).
+- `suggest-reply` uses shared `A._chat_llm([{role,content}], max_tokens=...)` with a sentiment-aware prompt; wrap in try/except and fall back to static sentiment templates (LLM needs AI_INTEGRATIONS_* and raises when unconfigured).

@@ -24,7 +24,7 @@ import secrets
 from datetime import datetime, date, timedelta
 
 from fastapi import Request, Body, HTTPException, Query
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 
 # Set in register_clienteling_routes() to the fully-loaded api_pg module. Routes
 # only dereference it at request time, by which point it is populated.
@@ -204,13 +204,6 @@ def _ensure_cl_tables():
         " id serial PRIMARY KEY, name text, channel text, body text,"
         " bsp_status text DEFAULT 'approved', created_by text,"
         " created_at timestamptz DEFAULT now())",
-        "CREATE TABLE IF NOT EXISTS crm_walkin ("
-        " checkin_id text PRIMARY KEY, customer_id text, customer_name text,"
-        " note text, associate_user_id text, associate_name text,"
-        " served boolean DEFAULT false, served_at timestamptz, served_by text,"
-        " checked_in_at timestamptz DEFAULT now())",
-        "CREATE INDEX IF NOT EXISTS ix_crm_walkin_checked_in "
-        " ON crm_walkin(checked_in_at DESC)",
     ]
     for s in stmts:
         try:
@@ -420,6 +413,71 @@ def _grid_base():
     return A.run_query(sql) or []
 
 
+def _grid_matched(flt, request):
+    """Apply the customer-grid filter contract (identical for the grid + the CSV
+    export) to the cached invariant base, merging live assignments. Returns a
+    list of (row, assignee_name) tuples in base order."""
+    flt = flt or {}
+    base = _grid_base()
+    asg_map = {r["customer_id"]: r for r in (_ex(
+        "SELECT customer_id, assignee_user_id, assignee_name FROM crm_assignment",
+        fetch=True) or [])}
+
+    q = (flt.get("q") or "").strip().lower()
+    cities = set(str(c) for c in (flt.get("cities") or []) if isinstance(flt.get("cities"), list))
+    lts = set(str(c) for c in (flt.get("loyalty_tiers") or []) if isinstance(flt.get("loyalty_tiers"), list))
+    rts = set(str(c) for c in (flt.get("rfm_tiers") or []) if isinstance(flt.get("rfm_tiers"), list))
+    has_phone = bool(flt.get("has_phone"))
+    has_email = bool(flt.get("has_email"))
+    min_spend = _num(flt.get("min_spend_12mo")) if flt.get("min_spend_12mo") not in (None, "") else None
+    min_orders = _int(flt.get("min_orders")) if flt.get("min_orders") not in (None, "") else None
+    within = _int(flt.get("last_purchase_within_days")) if flt.get("last_purchase_within_days") not in (None, "") else None
+    beyond = _int(flt.get("last_purchase_beyond_days")) if flt.get("last_purchase_beyond_days") not in (None, "") else None
+    assignment = (flt.get("assignment") or "").strip().lower()
+    my_uid = None
+    if assignment == "mine":
+        my_uid, _n, _r = _actor(request)
+
+    matched = []
+    for r in base:
+        asg = asg_map.get(r["customer_id"])
+        assignee_uid = asg["assignee_user_id"] if asg else None
+        assignee_name = asg["assignee_name"] if asg else None
+        if q:
+            hay = (str(r.get("customer_name") or "").lower() + "\x00" +
+                   str(r.get("email") or "").lower() + "\x00" +
+                   str(r.get("phone") or "") + "\x00" + str(r["customer_id"]))
+            if q not in hay:
+                continue
+        if cities and (r.get("city") or "") not in cities:
+            continue
+        if lts and (r.get("loyalty_tier") or "") not in lts:
+            continue
+        if rts and (r.get("rfm_tier") or "") not in rts:
+            continue
+        if has_phone and not r.get("has_phone"):
+            continue
+        if has_email and not r.get("has_email"):
+            continue
+        if min_spend is not None and _num(r.get("spend_12mo_kes")) < min_spend:
+            continue
+        if min_orders is not None and _int(r.get("total_orders")) < min_orders:
+            continue
+        dsl = r.get("days_since_last_purchase")
+        if within is not None and (dsl is None or dsl > within):
+            continue
+        if beyond is not None and (dsl is None or dsl < beyond):
+            continue
+        if assignment == "assigned" and not assignee_name:
+            continue
+        if assignment == "unassigned" and assignee_name:
+            continue
+        if assignment == "mine" and assignee_uid != my_uid:
+            continue
+        matched.append((r, assignee_name))
+    return matched
+
+
 def _reg_customers(app):
     @app.post("/api/customers/grid")
     def cl_customers_grid(request: Request, payload: dict = Body(default=None)):
@@ -444,64 +502,7 @@ def _reg_customers(app):
         # served from run_query's cache. User filters / sort / pagination are
         # applied in Python. Live assignments are merged in fresh each call so the
         # assignment column and its filters are never stale.
-        base = _grid_base()
-        asg_map = {r["customer_id"]: r for r in (_ex(
-            "SELECT customer_id, assignee_user_id, assignee_name FROM crm_assignment",
-            fetch=True) or [])}
-
-        q = (flt.get("q") or "").strip().lower()
-        cities = set(str(c) for c in (flt.get("cities") or []) if isinstance(flt.get("cities"), list))
-        lts = set(str(c) for c in (flt.get("loyalty_tiers") or []) if isinstance(flt.get("loyalty_tiers"), list))
-        rts = set(str(c) for c in (flt.get("rfm_tiers") or []) if isinstance(flt.get("rfm_tiers"), list))
-        has_phone = bool(flt.get("has_phone"))
-        has_email = bool(flt.get("has_email"))
-        min_spend = _num(flt.get("min_spend_12mo")) if flt.get("min_spend_12mo") not in (None, "") else None
-        min_orders = _int(flt.get("min_orders")) if flt.get("min_orders") not in (None, "") else None
-        within = _int(flt.get("last_purchase_within_days")) if flt.get("last_purchase_within_days") not in (None, "") else None
-        beyond = _int(flt.get("last_purchase_beyond_days")) if flt.get("last_purchase_beyond_days") not in (None, "") else None
-        assignment = (flt.get("assignment") or "").strip().lower()
-        my_uid = None
-        if assignment == "mine":
-            my_uid, _n, _r = _actor(request)
-
-        matched = []
-        for r in base:
-            asg = asg_map.get(r["customer_id"])
-            assignee_uid = asg["assignee_user_id"] if asg else None
-            assignee_name = asg["assignee_name"] if asg else None
-            if q:
-                hay = (str(r.get("customer_name") or "").lower() + "\x00" +
-                       str(r.get("email") or "").lower() + "\x00" +
-                       str(r.get("phone") or "") + "\x00" + str(r["customer_id"]))
-                if q not in hay:
-                    continue
-            if cities and (r.get("city") or "") not in cities:
-                continue
-            if lts and (r.get("loyalty_tier") or "") not in lts:
-                continue
-            if rts and (r.get("rfm_tier") or "") not in rts:
-                continue
-            if has_phone and not r.get("has_phone"):
-                continue
-            if has_email and not r.get("has_email"):
-                continue
-            if min_spend is not None and _num(r.get("spend_12mo_kes")) < min_spend:
-                continue
-            if min_orders is not None and _int(r.get("total_orders")) < min_orders:
-                continue
-            dsl = r.get("days_since_last_purchase")
-            if within is not None and (dsl is None or dsl > within):
-                continue
-            if beyond is not None and (dsl is None or dsl < beyond):
-                continue
-            if assignment == "assigned" and not assignee_name:
-                continue
-            if assignment == "unassigned" and assignee_name:
-                continue
-            if assignment == "mine" and assignee_uid != my_uid:
-                continue
-            matched.append((r, assignee_name))
-
+        matched = _grid_matched(flt, request)
         total = len(matched)
         present = [m for m in matched if m[0].get(sort_col) is not None]
         absent = [m for m in matched if m[0].get(sort_col) is None]
@@ -577,6 +578,39 @@ def _reg_customers(app):
                 r["customer_id"], r["name"], r["email"], r["phone"], r["city"],
                 _int(r["orders"]), round(_num(r["spend"]), 2), r["last_order"]]))
         return "\n".join(lines)
+
+    @app.post("/api/customers/grid/export")
+    def cl_customers_grid_export(request: Request, payload: dict = Body(default=None)):
+        # Same filter contract as POST /grid, but emits the full matched set as a
+        # downloadable CSV (the frontend requests it as a blob). Bounded so a
+        # large unfiltered export still completes within HTTP limits.
+        payload = payload or {}
+        flt = payload.get("filters") or {}
+        cap = _clamp(payload.get("limit"), 1, 50000, 50000)
+        matched = _grid_matched(flt, request)
+        cols = ["customer_id", "customer_name", "loyalty_tier", "rfm_tier",
+                "spend_12mo_kes", "total_sales", "total_orders", "avg_order_value",
+                "last_purchase_date", "days_since_last_purchase", "city",
+                "assignee_name", "phone", "email"]
+        lines = [",".join(cols)]
+
+        def _csv(v):
+            s = "" if v is None else str(v)
+            return ('"' + s.replace('"', '""') + '"'
+                    if ("," in s or '"' in s or "\n" in s) else s)
+        for r, assignee_name in matched[:cap]:
+            lines.append(",".join(_csv(x) for x in [
+                r["customer_id"], r.get("customer_name"), r.get("loyalty_tier"),
+                r.get("rfm_tier"), round(_num(r.get("spend_12mo_kes")), 2),
+                round(_num(r.get("total_sales")), 2), _int(r.get("total_orders")),
+                round(_num(r.get("avg_order_value")), 2), r.get("last_purchase_date"),
+                r.get("days_since_last_purchase"), r.get("city"), assignee_name,
+                r.get("phone"), r.get("email")]))
+        csv = "\n".join(lines)
+        fname = "vivo-customers-" + _today() + ".csv"
+        return Response(content=csv, media_type="text/csv",
+                        headers={"Content-Disposition":
+                                 'attachment; filename="' + fname + '"'})
 
     @app.get("/api/my-customers")
     def cl_my_customers(request: Request):
@@ -755,6 +789,32 @@ def _reg_customers(app):
         target_name = (urow.get("name") or urow.get("email")) if urow else name
         if not payload.get("assignee_user_id"):
             target_name = name
+        _ex(
+            "INSERT INTO crm_assignment (customer_id, assignee_user_id, assignee_name, assigned_by) "
+            "VALUES (%s,%s,%s,%s) ON CONFLICT (customer_id) DO UPDATE "
+            "SET assignee_user_id=EXCLUDED.assignee_user_id, "
+            "assignee_name=EXCLUDED.assignee_name, assigned_by=EXCLUDED.assigned_by, "
+            "assigned_at=now()", (cid, target_uid, target_name, name))
+        A._crm_audit("customer", cid, "assign", "→ " + str(target_name), request)
+        return {"ok": True, "assignee_user_id": target_uid, "assignee_name": target_name}
+
+    @app.put("/api/customers/{cid}/assignment")
+    def cl_customer_assignment_put(request: Request, cid: str,
+                                   payload: dict = Body(default=None)):
+        # The grid/profile UI sends PUT to assign (assignee_user_id + name) and
+        # to unassign (assignee_user_id: null).
+        _uid, name, _r = _actor(request)
+        payload = payload or {}
+        target_uid = payload.get("assignee_user_id")
+        if not target_uid:
+            _ex("DELETE FROM crm_assignment WHERE customer_id=%s", (cid,))
+            A._crm_audit("customer", cid, "unassign", "cleared", request)
+            return {"ok": True, "assignee_user_id": None, "assignee_name": None}
+        target_name = (payload.get("assignee_name") or "").strip()
+        if not target_name:
+            urow = _one("SELECT name, email FROM app_users WHERE user_id=%s",
+                        (target_uid,))
+            target_name = (urow.get("name") or urow.get("email")) if urow else target_uid
         _ex(
             "INSERT INTO crm_assignment (customer_id, assignee_user_id, assignee_name, assigned_by) "
             "VALUES (%s,%s,%s,%s) ON CONFLICT (customer_id) DO UPDATE "
@@ -1238,89 +1298,6 @@ def _reg_bi(app):
             "return_rate": round(abs(returns) / gross * 100.0, 1) if gross else 0.0,
         }
 
-    @app.get("/api/bi/orders")
-    def cl_bi_orders(request: Request, date_from: str = Query(None),
-                     date_to: str = Query(None), country: str = Query(None),
-                     channel: str = Query(None), limit: int = Query(500)):
-        _staff(request)
-        w = _sales_where(date_from, date_to, country, channel)
-        n = _clamp(limit, 1, 5000, 500)
-        rows = _q(
-            "SELECT s.order_id, s.order_name, s.sale_date AS order_date, "
-            " s.customer_id, s.product_title, s.variant_sku AS sku, "
-            " COALESCE(s.ordered_item_quantity, s.net_quantity, 0) AS quantity, "
-            " ROUND(COALESCE(s.gross_sales_kes,0),2) AS gross_sales_kes, "
-            " ROUND(COALESCE(s.returns_kes,0),2) AS returns_kes, "
-            " ROUND(COALESCE(s.net_sales_kes,0),2) AS net_sales_kes "
-            "FROM all_sales s WHERE " + w +
-            " ORDER BY s.sale_date DESC, s.order_id LIMIT " + str(n))
-        return [{
-            "order_id": r["order_id"], "order_name": r["order_name"],
-            "order_date": r["order_date"], "customer_id": r["customer_id"],
-            "product_title": r["product_title"], "sku": r["sku"],
-            "quantity": _int(r["quantity"]),
-            "gross_sales_kes": _num(r["gross_sales_kes"]),
-            "returns_kes": _num(r["returns_kes"]),
-            "net_sales_kes": _num(r["net_sales_kes"]),
-        } for r in rows]
-
-    @app.get("/api/bi/inventory")
-    def cl_bi_inventory(request: Request, country: str = Query(None),
-                        channel: str = Query(None), limit: int = Query(500)):
-        _staff(request)
-        n = _clamp(limit, 1, 5000, 500)
-        w = ("i.available > 0" + _in_clause("i.country", country) +
-             _in_clause("i.pos_location_name", channel))
-        rows = _q(
-            "SELECT i.country, i.location_name, "
-            " COALESCE(p.product_name, i.product_name) AS product_name, "
-            " i.sku, i.brand, i.style_name, i.color_print, i.size, "
-            " i.available "
-            "FROM all_inventory i LEFT JOIN all_products_clean p ON p.sku=i.sku "
-            "WHERE " + w + " ORDER BY i.available DESC LIMIT " + str(n))
-        return [{
-            "country": r["country"], "location_name": r["location_name"],
-            "product_name": r["product_name"], "sku": r["sku"],
-            "brand": r["brand"], "style_name": r["style_name"],
-            "color_print": r["color_print"], "size": r["size"],
-            "available": _num(r["available"]),
-        } for r in rows]
-
-    @app.get("/api/bi/upt")
-    def cl_bi_upt(request: Request, date_from: str = Query(None),
-                  date_to: str = Query(None), country: str = Query(None),
-                  channel: str = Query(None)):
-        _staff(request)
-        w = _sales_where(date_from, date_to, country, channel)
-        r = _q1(
-            "SELECT COUNT(DISTINCT s.order_id) AS orders, "
-            " COALESCE(SUM(COALESCE(s.ordered_item_quantity, s.net_quantity, 0)),0) "
-            "  AS units FROM all_sales s WHERE " + w)
-        orders, units = _int(r.get("orders")), _int(r.get("units"))
-        return {
-            "upt": round(units / orders, 2) if orders else 0.0,
-            "total_orders": orders,
-            "total_units": units,
-        }
-
-    @app.get("/api/bi/frequency")
-    def cl_bi_frequency(request: Request, date_from: str = Query(None),
-                        date_to: str = Query(None), country: str = Query(None),
-                        channel: str = Query(None)):
-        _staff(request)
-        w = _sales_where(date_from, date_to, country, channel)
-        rows = _q(
-            "WITH oc AS (SELECT s.customer_id, COUNT(DISTINCT s.order_id) AS n "
-            " FROM all_sales s WHERE " + w + " AND s.customer_id IS NOT NULL "
-            " GROUP BY s.customer_id) "
-            "SELECT CASE WHEN n>=5 THEN '5+' ELSE n::text END AS frequency_bucket, "
-            " COUNT(*) AS customer_count, MIN(n) AS ord "
-            "FROM oc GROUP BY 1 ORDER BY ord")
-        return [{
-            "frequency_bucket": r["frequency_bucket"],
-            "customer_count": _int(r["customer_count"]),
-        } for r in rows]
-
     @app.get("/api/bi/sales-summary")
     def cl_bi_sales_summary(request: Request, date_from: str = Query(None),
                             date_to: str = Query(None)):
@@ -1515,74 +1492,6 @@ def _tier_label(spend):
 # STAGE 2 — Insights (overview, briefs, cohorts, wishlists, LTV, etc.)        #
 # --------------------------------------------------------------------------- #
 def _reg_insights(app):
-    @app.get("/api/insights/walkins")
-    def cl_walkins_list(request: Request, today_only: bool = Query(True)):
-        _staff(request)
-        where = ""
-        if today_only:
-            where = " WHERE checked_in_at >= '" + _today() + "'"
-        rows = _ex(
-            "SELECT checkin_id, customer_id, customer_name, note, "
-            " associate_user_id, associate_name, served, served_at, served_by, "
-            " checked_in_at FROM crm_walkin" + where +
-            " ORDER BY checked_in_at DESC LIMIT 500", fetch=True) or []
-        return [{
-            "checkin_id": r["checkin_id"], "customer_id": r["customer_id"],
-            "customer_name": r["customer_name"], "note": r["note"],
-            "associate_user_id": r["associate_user_id"],
-            "associate_name": r["associate_name"],
-            "served": bool(r["served"]), "served_at": _dt(r["served_at"]),
-            "served_by": r["served_by"], "checked_in_at": _dt(r["checked_in_at"]),
-        } for r in rows]
-
-    @app.post("/api/insights/walkins")
-    def cl_walkins_create(request: Request, payload: dict = Body(default=None)):
-        _staff(request)
-        uid, name, _ = _actor(request)
-        p = payload or {}
-        cid = (p.get("customer_id") or "").strip() or None
-        cname = (p.get("customer_name") or "").strip() or "Guest"
-        note = (p.get("note") or "").strip() or None
-        ckid = "wlk_" + secrets.token_hex(8)
-        _ex(
-            "INSERT INTO crm_walkin (checkin_id, customer_id, customer_name, note, "
-            " associate_user_id, associate_name) VALUES (%s,%s,%s,%s,%s,%s)",
-            (ckid, cid, cname, note, uid, name))
-        row = _one(
-            "SELECT checkin_id, customer_id, customer_name, note, "
-            " associate_user_id, associate_name, served, served_at, served_by, "
-            " checked_in_at FROM crm_walkin WHERE checkin_id=%s", (ckid,))
-        return {
-            "checkin_id": row["checkin_id"], "customer_id": row["customer_id"],
-            "customer_name": row["customer_name"], "note": row["note"],
-            "associate_user_id": row["associate_user_id"],
-            "associate_name": row["associate_name"], "served": bool(row["served"]),
-            "served_at": _dt(row["served_at"]), "served_by": row["served_by"],
-            "checked_in_at": _dt(row["checked_in_at"]),
-        }
-
-    @app.post("/api/insights/walkins/{checkin_id}/serve")
-    def cl_walkins_serve(checkin_id: str, request: Request):
-        _staff(request)
-        _, name, _ = _actor(request)
-        n = _ex(
-            "UPDATE crm_walkin SET served=true, served_at=now(), served_by=%s "
-            "WHERE checkin_id=%s AND served=false", (name, checkin_id))
-        row = _one(
-            "SELECT checkin_id, customer_id, customer_name, note, "
-            " associate_user_id, associate_name, served, served_at, served_by, "
-            " checked_in_at FROM crm_walkin WHERE checkin_id=%s", (checkin_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Check-in not found")
-        return {
-            "checkin_id": row["checkin_id"], "customer_id": row["customer_id"],
-            "customer_name": row["customer_name"], "note": row["note"],
-            "associate_user_id": row["associate_user_id"],
-            "associate_name": row["associate_name"], "served": bool(row["served"]),
-            "served_at": _dt(row["served_at"]), "served_by": row["served_by"],
-            "checked_in_at": _dt(row["checked_in_at"]),
-        }
-
     @app.get("/api/insights/overview")
     def cl_ins_overview(request: Request):
         _staff(request)
@@ -1941,21 +1850,61 @@ def _reg_insights(app):
             "FROM crm_wishlist WHERE customer_id=%s ORDER BY created_at DESC",
             (cid,), fetch=True) or []
         return [{
-            "id": str(r["id"]), "sku": None, "product_name": r["product_title"],
-            "note": r["note"], "fulfilled": bool(r["fulfilled"]),
-            "added_at": _dt(r["created_at"]),
+            "id": str(r["id"]), "wishlist_id": str(r["id"]), "sku": None,
+            "product_name": r["product_title"], "note": r["note"],
+            "fulfilled": bool(r["fulfilled"]), "added_at": _dt(r["created_at"]),
         } for r in rows]
 
-    @app.post("/api/insights/wishlists/{cid}/fulfill")
-    def cl_wishlist_fulfill(request: Request, cid: str,
-                            payload: dict = Body(default=None)):
+    @app.post("/api/insights/wishlists")
+    def cl_wishlist_add(request: Request, payload: dict = Body(default=None)):
         _staff(request)
-        wid = _int((payload or {}).get("id"))
-        if wid:
-            _ex("UPDATE crm_wishlist SET fulfilled=true WHERE id=%s AND customer_id=%s",
-                (wid, cid))
-        else:
-            _ex("UPDATE crm_wishlist SET fulfilled=true WHERE customer_id=%s", (cid,))
+        _uid, name, _r = _actor(request)
+        p = payload or {}
+        cid = (p.get("customer_id") or "").strip()
+        product = (p.get("product_title") or p.get("product_name") or "").strip()
+        if not cid or not product:
+            raise HTTPException(status_code=400,
+                                detail="customer_id and product_title required")
+        note = (p.get("note") or "").strip() or None
+        row = _one(
+            "INSERT INTO crm_wishlist (customer_id, product_title, note, created_by) "
+            "VALUES (%s,%s,%s,%s) RETURNING id, product_title, note, fulfilled, created_at",
+            (cid, product, note, name))
+        A._crm_audit("customer", cid, "wishlist.add", product, request)
+        return {
+            "id": str(row["id"]), "wishlist_id": str(row["id"]),
+            "customer_id": cid, "sku": None, "product_name": row["product_title"],
+            "note": row["note"], "fulfilled": bool(row["fulfilled"]),
+            "added_at": _dt(row["created_at"]),
+        }
+
+    @app.delete("/api/insights/wishlists/{wishlist_id}")
+    def cl_wishlist_delete(request: Request, wishlist_id: str):
+        _staff(request)
+        wid = _int(wishlist_id)
+        if not wid:
+            raise HTTPException(status_code=404, detail="Wishlist item not found")
+        row = _one("SELECT customer_id FROM crm_wishlist WHERE id=%s", (wid,))
+        if not row:
+            return {"deleted": 0}
+        _ex("DELETE FROM crm_wishlist WHERE id=%s", (wid,))
+        A._crm_audit("customer", row["customer_id"], "wishlist.remove",
+                     "wishlist #" + str(wid), request)
+        return {"deleted": 1}
+
+    @app.post("/api/insights/wishlists/{wishlist_id}/fulfill")
+    def cl_wishlist_fulfill(request: Request, wishlist_id: str):
+        # The frontend marks a single wishlist row fulfilled by its id (no body).
+        _staff(request)
+        wid = _int(wishlist_id)
+        if not wid:
+            raise HTTPException(status_code=404, detail="Wishlist item not found")
+        row = _one("SELECT customer_id FROM crm_wishlist WHERE id=%s", (wid,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Wishlist item not found")
+        _ex("UPDATE crm_wishlist SET fulfilled=true WHERE id=%s", (wid,))
+        A._crm_audit("customer", row["customer_id"], "wishlist.fulfill",
+                     "wishlist #" + str(wid), request)
         return {"status": "fulfilled"}
 
 
@@ -3155,19 +3104,42 @@ def _reg_misc(app):
     @app.post("/api/insights/social/suggest-reply")
     def cl_suggest_reply(request: Request, payload: dict = Body(default=None)):
         _staff(request, roles=("analyst", "exec", "admin"))
-        fid = (payload or {}).get("feedback_id")
-        fb = _one("SELECT body, sentiment FROM crm_social_feedback WHERE id=%s",
+        p = payload or {}
+        fid = p.get("feedback_id")
+        fb = _one("SELECT body, sentiment, author_name, platform "
+                  "FROM crm_social_feedback WHERE id=%s",
                   (_int(fid),)) if fid else None
+        body = (fb or {}).get("body") or (p.get("body") or "")
         sentiment = (fb or {}).get("sentiment") or "neutral"
-        if sentiment == "negative":
-            reply = ("We're sorry to hear this and want to make it right. Please DM "
-                     "us your order details and we'll follow up personally.")
-        elif sentiment == "positive":
-            reply = ("Thank you so much! We're thrilled you love it — see you again "
-                     "soon at Vivo.")
-        else:
-            reply = ("Thanks for reaching out! Let us know how we can help and we'll "
-                     "be glad to assist.")
+
+        def _template():
+            if sentiment == "negative":
+                return ("We're sorry to hear this and want to make it right. Please "
+                        "DM us your order details and we'll follow up personally.")
+            if sentiment == "positive":
+                return ("Thank you so much! We're thrilled you love it — see you "
+                        "again soon at Vivo.")
+            return ("Thanks for reaching out! Let us know how we can help and "
+                    "we'll be glad to assist.")
+
+        reply = None
+        if body.strip():
+            author = (fb or {}).get("author_name") or "the customer"
+            prompt = (
+                "You are a social-media community manager for Vivo Fashion Group, a "
+                "premium multi-brand fashion retailer in East Africa. Draft a short, "
+                "warm, on-brand public reply (max 60 words, no hashtags, no emojis) "
+                "to this " + sentiment + " comment from " + author + ":\n\n\"" +
+                body.strip()[:1000] + "\"\n\nReply with the message text only.")
+            try:
+                out = A._chat_llm(
+                    [{"role": "user", "content": prompt}], max_tokens=160)
+                if out and out.strip():
+                    reply = out.strip().strip('"')
+            except Exception:
+                reply = None
+        if not reply:
+            reply = _template()
         return {"reply": reply, "tone": sentiment}
 
 
