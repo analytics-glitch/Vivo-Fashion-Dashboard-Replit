@@ -7259,7 +7259,7 @@ def _gated_range_tier(age_weeks, *, lifetime_sor, full_price_pct, last_sale_days
     # 2026 Range Strategy (SOP) GATED lifecycle tier. Age sets the stage but the
     # performance gates decide whether a style graduates or retires at each stage.
     # Returns one of 'Tier 1'..'Tier 4' or 'Retire'. Age boundaries follow the
-    # calendar (8wk read, 12wk backstop, ~9 months = 39wk, 24 months = 104wk).
+    # calendar (8wk read, 12wk backstop, ~9 months = 36wk, 24 months = 96wk).
     # Hard-retire overrides (manual list / Zoya / aged-out / flagged) are applied
     # by the caller, NOT here.
     if age_weeks is None:
@@ -7270,9 +7270,9 @@ def _gated_range_tier(age_weeks, *, lifetime_sor, full_price_pct, last_sale_days
         return "Tier 4"                       # New / Test — pre Week-8 read
     if age_weeks <= 12:
         return "Tier 3" if w8 else "Tier 4"   # Week-8 read window
-    if age_weeks < 39:                         # Week-12 backstop .. ~9 months
+    if age_weeks < 36:                         # Week-12 backstop .. ~9 months
         return "Tier 3" if (w8 or w12) else "Retire"
-    if age_weeks < 104:                        # ~9-24 months
+    if age_weeks < 96:                         # ~9-24 months
         if reorder_count >= 3 and (lifetime_sor or 0) > 60 \
                 and (full_price_pct is None or full_price_pct > 90):
             return "Tier 2"
@@ -7427,8 +7427,9 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         # Week-12 backstop = SOR >= 80%; Tier 2 needs 3+ reorders & SOR > 60% & FP >
         # 90%; Tier 1 needs 5+ reorders & FP > 90% & SOR > 60%). A failed gate yields
         # the "Retire" verdict — but for a still-trading style that is a FLAG, not a
-        # move: it stays in the live range (Active) and is surfaced as
-        # "flagged for retirement". Only HARD retirement moves a style out.
+        # move: it stays in the live range (rows, but is NOT counted in the Active
+        # total) and is surfaced as "flagged for retirement". Only HARD retirement
+        # moves a style out.
         gated_tier = _gated_range_tier(
             age_weeks, lifetime_sor=sor_life, full_price_pct=full_price_pct,
             last_sale_days=last_sale_days, woc=woc, reorder_count=reorder_count)
@@ -7500,10 +7501,11 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
 
         # --- Range tier classification (2026 Range Strategy / SOP): the displayed
         # tier IS the GATED lifecycle outcome (_gated_range_tier above) — Tier 1..4
-        # or the flagged "Retire". The Active range holds ALL classified styles
-        # (Tier 1..4 PLUS the still-trading "Retire" flags), so the flagged set is
-        # surfaced as "flagged for retirement" while staying in Active — best-sellers
-        # are never dropped. ONLY hard/physical retirement (manual styles list / Zoya
+        # or the flagged "Retire". The Active range *count* is Tier 1..4 only; a
+        # still-trading "Retire" verdict is surfaced as "flagged for retirement" and
+        # its row stays in `rows`/`active` (never dropped into Retired) but is not
+        # counted in the Active total — best-sellers are never physically retired.
+        # ONLY hard/physical retirement (manual styles list / Zoya
         # / long-dead aged-out) moves a style into `retired`. A manual tier override
         # (_RANGE_OVERRIDES, Tier 1..4 only) re-buckets within the live range and beats
         # a gated "Retire"; `auto_tier` records the un-overridden gated outcome so the
@@ -7554,10 +7556,17 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
     for row in active:
         tier_counts[row["tier"]] = tier_counts.get(row["tier"], 0) + 1
 
+    # The "Active" range number is Tier 1..4 ONLY. A still-trading "Retire" verdict is
+    # a FLAG (surfaced as "flagged for retirement"), not part of the Active count and
+    # not a physical retirement — those rows stay in `active`/`rows` (never dropped
+    # into the Retired bucket) but are excluded from the Active total.
+    active_tier_rows = [row for row in active if row["tier"] != "Retire"]
+    active_tier_total = len(active_tier_rows)
+
     total_count = len(active) + len(retired)
     tier_summary = {
         "Total": _tier_summary_block(active + retired, total_count),
-        "Active": _tier_summary_block(active, total_count),
+        "Active": _tier_summary_block(active_tier_rows, total_count),
         "Retired": _tier_summary_block(retired, total_count),
     }
     for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"):
@@ -7570,16 +7579,17 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             (row["age_tier"] == "Tier 3" and 0 <= (39 - row["style_age_weeks"]) <= 6) or
             (row["age_tier"] == "Tier 4" and 0 <= (8 - row["style_age_weeks"]) <= 6)))
 
-    rag = {"total": _rag(len(active), *_RANGE_TARGETS["total"])}
+    rag = {"total": _rag(active_tier_total, *_RANGE_TARGETS["total"])}
     for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"):
         rag[t] = _rag(tier_counts.get(t, 0), *_RANGE_TARGETS[t])
 
     summary = {
-        # Active = ALL classified styles (Tier 1..4 PLUS the still-trading "Retire"
-        # flags); the flagged set stays in Active, not in Retired.
-        "total_active_styles": len(active),
+        # Active range number = Tier 1..4 only. The still-trading "Retire" flags are
+        # NOT counted here (they are surfaced via flagged_for_retirement) but stay in
+        # `rows`/`active`, never moved into the Retired bucket.
+        "total_active_styles": active_tier_total,
         # "Flagged for retirement" pill = the classifier's Retire bucket within
-        # Active (still trading, algorithm wants them on the markdown rail).
+        # the live range (still trading, algorithm wants them on the markdown rail).
         "flagged_for_retirement": tier_counts.get("Retire", 0),
         # Active styles still in Tier 4 past the 8-week read window — i.e. they
         # missed the Week-8 read and are awaiting the Week-12 backstop decision.

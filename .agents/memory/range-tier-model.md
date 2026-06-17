@@ -20,34 +20,38 @@ from `_gated_range_tier(age_weeks, *, lifetime_sor, full_price_pct, last_sale_da
 reorder_count)`. Age sets the stage; the performance gates decide promotion vs the Retire flag.
 Product Analysis's `life_cycle` mapping reuses the same helper.
 
-**The gated tree (calendar weeks 8/12/39/104 = 9-/24-month milestones; keeps trackers +
+**The gated tree (calendar weeks 8/12/36/96 = 9-/24-month milestones; keeps trackers +
 `_RANGE_TARGETS` consistent):**
 - age None → Tier 4.
 - <8wk → Tier 4 (New/Test).
 - 8–12wk → Week-8 read: pass → Tier 3; fail → Tier 4.
-- 12–39wk → pass Week-8 OR Week-12 backstop → Tier 3; else Retire.
-- 39–104wk → reorders≥3 AND lifetime SOR>60 AND (FP>90 or unknown) → Tier 2; else Retire.
-- ≥104wk → reorders≥5 AND (FP>90 or unknown) AND lifetime SOR>60 → Tier 1; else Retire.
+- 12–36wk → pass Week-8 OR Week-12 backstop → Tier 3; else Retire.
+- 36–96wk → reorders≥3 AND lifetime SOR>60 AND (FP>90 or unknown) → Tier 2; else Retire.
+- ≥96wk → reorders≥5 AND (FP>90 or unknown) AND lifetime SOR>60 → Tier 1; else Retire.
 - Gates: Week-8 = lifetime SOR>60 AND FP>90 AND sold within 7d AND WOC≤8; Week-12 = SOR≥80;
   fail closed when SOR/last-sale missing.
 
 **Partition / counter model (this is what the user's banner-math spec documents):**
-- `rows` (active) = ALL classified styles = Tier 1..4 PLUS the still-trading "Retire" flags.
+- `rows` (active) = ALL classified still-trading styles = Tier 1..4 PLUS the "Retire" flags.
 - `retired_rows` = HARD-retired only (manual list / Zoya / aged-out: ≥39w, 0 six-mo units, no
   sale 270d+).
-- `Active.count == len(rows)` (INCLUDES flagged Retire). So **Tier1+Tier2+Tier3+Tier4 != Active**
-  here — Active = T1+T2+T3+T4+Retire. (This supersedes the old "T1+..+T4==Active" invariant.)
-- `Total == Active + Retired`.
-- `flagged_for_retirement = tier_counts["Retire"]` (the in-Active flag count) — NOT len(pipeline).
+- **Active count = Tier1+Tier2+Tier3+Tier4 ONLY** (`total_active_styles == active_tier_total`,
+  `tier_summary["Active"].count` excludes Retire). The flagged "Retire" rows still live in
+  `rows`/`active` (never moved to `retired_rows`) but are NOT counted in Active. This is the
+  user's explicit rule "Tier 1,2,3,4 should make up active number" — it supersedes the earlier
+  "Active = T1+..+T4+Retire" model.
+- `flagged_for_retirement = tier_counts["Retire"]` — its own badge, separate from Active.
+- `Total == Active + flagged + Retired` (rows = T1-4 + Retire; Total.count = rows + retired_rows).
 - `overdue_for_week8_read` = active Tier 4 styles with age≥8wk (missed Week-8 read).
-- RAG total compares `len(active)` vs the Total target (500–700); per-tier vs `_RANGE_TARGETS`.
+- RAG total compares `active_tier_total` (Tier 1-4) vs the Total target (500–700); per-tier vs
+  `_RANGE_TARGETS`.
 - SOR per card = unit-volume-weighted avg (rows with 0 lifetime units excluded).
 
-**Why:** the user supplied a 140-line spec
-(attached_assets/Pasted-How-every-number-...txt) defining exactly this: counts["Retire"] is the
-"Flagged for retirement" badge of styles still trading INSIDE Active 926, the Retired 427 are
-physically retired upstream only. Expect Active ≈ most of the universe and a large flagged count
-(our catalog is older/broader than the SOP target → RAG red) — intended, not a bug.
+**Why:** the user supplied a banner-math spec defining three distinct counts — Tier 1-4 = the
+Active number, counts["Retire"] = the "Flagged for retirement" badge (still trading, not retired),
+retired_count = physically retired upstream only. On our live DB far fewer styles clear the
+reorder/SOR/FP gates than in the reference data, so Active comes out small and the flagged count
+large (RAG red) — that gap is DATA, not logic; the gate rules match the spec exactly.
 
 **How to apply / precedence:**
 - HARD-RETIRE wins and routes to `retired[]`: manual list, Zoya, aged-out. Checked first; on a

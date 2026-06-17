@@ -1024,7 +1024,7 @@ const RangeManagement = () => {
             drillTier === "Retired"
               ? (data?.retired_rows || [])
               : drillTier === "Active"
-                ? (data?.rows || [])
+                ? (data?.rows || []).filter((r) => r.tier !== "Retire")
                 : drillTier === "Total"
                   ? ([...(data?.rows || []), ...(data?.retired_rows || [])])
                   : (data?.rows || []).filter((r) => r.tier === drillTier)
