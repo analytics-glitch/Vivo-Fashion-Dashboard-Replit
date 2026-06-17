@@ -7232,14 +7232,13 @@ _RANGE_TARGETS = {
 
 
 def _passed_week8_gate(lifetime_sor, full_price_pct, last_sale_days, woc):
-    # 2026 Range Strategy Week-8 read: lifetime SOR > 60% AND full-price
-    # realisation > 90% (when known) AND a sale within the last 7 days AND
-    # weeks-of-cover <= 8. Missing SOR / last-sale data fails the gate closed.
+    # 2026 Range Strategy Week-8 read: lifetime SOR > 60% AND a sale within the
+    # last 7 days AND weeks-of-cover <= 8. (Full-price realisation is intentionally
+    # NOT gated — full_price_pct is kept only as a display column.) Missing SOR /
+    # last-sale data fails the gate closed.
     if lifetime_sor is None or last_sale_days is None:
         return False
     if lifetime_sor <= 60:
-        return False
-    if full_price_pct is not None and full_price_pct <= 90:
         return False
     if last_sale_days > 7:
         return False
@@ -7273,13 +7272,11 @@ def _gated_range_tier(age_weeks, *, lifetime_sor, full_price_pct, last_sale_days
     if age_weeks < 36:                         # Week-12 backstop .. ~9 months
         return "Tier 3" if (w8 or w12) else "Retire"
     if age_weeks < 96:                         # ~9-24 months
-        if reorder_count >= 3 and (lifetime_sor or 0) > 60 \
-                and (full_price_pct is None or full_price_pct > 90):
+        if reorder_count >= 3 and (lifetime_sor or 0) > 60:
             return "Tier 2"
         return "Retire"
     # 24+ months
-    if reorder_count >= 5 and (full_price_pct is None or full_price_pct > 90) \
-            and (lifetime_sor or 0) > 60:
+    if reorder_count >= 5 and (lifetime_sor or 0) > 60:
         return "Tier 1"
     return "Retire"
 
@@ -7423,9 +7420,9 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
 
         # Range tier = the 2026 Range Strategy (SOP) GATED lifecycle classification:
         # age sets the stage, but performance gates decide promotion vs retirement
-        # (Week-8 read = SOR > 60% + full-price > 90% + sold within 7d + WOC <= 8;
-        # Week-12 backstop = SOR >= 80%; Tier 2 needs 3+ reorders & SOR > 60% & FP >
-        # 90%; Tier 1 needs 5+ reorders & FP > 90% & SOR > 60%). A failed gate yields
+        # (Week-8 read = SOR > 60% + sold within 7d + WOC <= 8; Week-12 backstop =
+        # SOR >= 80%; Tier 2 needs 3+ reorders & SOR > 60%; Tier 1 needs 5+ reorders
+        # & SOR > 60%; full-price realisation is no longer gated). A failed gate yields
         # the "Retire" verdict — but for a still-trading style that is a FLAG, not a
         # move: it stays in the live range (rows, but is NOT counted in the Active
         # total) and is surfaced as "flagged for retirement". Only HARD retirement
@@ -7543,8 +7540,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             })
 
         if (age_band == "Tier 3" and age_weeks is not None and 0 <= (39 - age_weeks) <= 6
-                and reorder_count >= 3 and sor_life is not None and sor_life > 60
-                and full_price_pct is not None and full_price_pct > 90):
+                and reorder_count >= 3 and sor_life is not None and sor_life > 60):
             candidates.append({
                 "style_name": r["style_name"], "brand": r["brand"], "subcategory": r["subcategory"],
                 "weeks_to_gate": 39 - age_weeks, "lifetime_sor_pct": sor_life,

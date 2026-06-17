@@ -26,10 +26,14 @@ Product Analysis's `life_cycle` mapping reuses the same helper.
 - <8wk → Tier 4 (New/Test).
 - 8–12wk → Week-8 read: pass → Tier 3; fail → Tier 4.
 - 12–36wk → pass Week-8 OR Week-12 backstop → Tier 3; else Retire.
-- 36–96wk → reorders≥3 AND lifetime SOR>60 AND (FP>90 or unknown) → Tier 2; else Retire.
-- ≥96wk → reorders≥5 AND (FP>90 or unknown) AND lifetime SOR>60 → Tier 1; else Retire.
-- Gates: Week-8 = lifetime SOR>60 AND FP>90 AND sold within 7d AND WOC≤8; Week-12 = SOR≥80;
+- 36–96wk → reorders≥3 AND lifetime SOR>60 → Tier 2; else Retire.
+- ≥96wk → reorders≥5 AND lifetime SOR>60 → Tier 1; else Retire.
+- Gates: Week-8 = lifetime SOR>60 AND sold within 7d AND WOC≤8; Week-12 = SOR≥80;
   fail closed when SOR/last-sale missing.
+- **full_price_pct is NOT gated** (user removed it — best-sellers sold mostly on promo were
+  being flagged). It's still computed + shown as a display column; `_passed_week8_gate` /
+  `_gated_range_tier` keep the param but ignore it. The graduation-candidate predictor also
+  dropped its FP>90 condition.
 
 **Partition / counter model (this is what the user's banner-math spec documents):**
 - `rows` (active) = ALL classified still-trading styles = Tier 1..4 PLUS the "Retire" flags.
