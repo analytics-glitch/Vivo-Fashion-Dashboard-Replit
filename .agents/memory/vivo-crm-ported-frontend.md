@@ -1,6 +1,6 @@
 ---
 name: vivo-crm ported reference frontend
-description: The standalone Clienteling CRM artifact is a faithful port of an external React app; backend endpoints are staged and mostly missing.
+description: The standalone Clienteling CRM artifact is a faithful port of an external React app; its ~120 backend endpoints are now built in crm_clienteling.py.
 ---
 
 # vivo-crm — faithful port of the external Clienteling CRM
@@ -28,15 +28,25 @@ the BI app) — that one stays; this is a new standalone product the user wanted
   package is `type: module` (a `.js` CommonJS config throws "module is not defined in ES module scope").
 - tsconfig uses `allowJs:true, checkJs:false` (source is .jsx/.js).
 
-## The backend gap (next staged work)
-The ported frontend calls **~120 endpoints under names that DO NOT exist on `api_pg.py`** — e.g.
-`/api/dashboard/me`, `/api/my-customers`, `/api/dashboard/call-list`, `/api/customers/grid`,
-`/api/customers/{id}/{timeline,nba,brief,moments,...}`, `/api/insights/*`, `/api/bi/*`,
-`/api/loyalty/*` (different from existing `/api/crm/loyalty/*`), `/api/social/*`, `/api/training/*`,
-`/api/tasks`, `/api/templates`, `/api/segments/*`. The existing backend exposes `/api/crm/*` with
-different shapes. So after login every data page currently 404s. **Source of truth for the SQL/shape
-of each endpoint: the cloned reference backend at `/tmp/crm-ref/backend`** (`server.py`, `routes/`,
-`insights.py`, `loyalty.py`, `training.py`, `social.py`) — re-clone with
-`git clone --depth 1 https://github.com/analytics-glitch/CRM.git /tmp/crm-ref` if gone.
-Plan: build endpoints in stages (customers/360/loyalty/tasks/Overview/Insights/call-list first);
-modules with no data source (social/training/lookbooks/wishlists) render designed empty states.
+## The backend — now BUILT in `crm_clienteling.py`
+The ~120 endpoints the ported frontend calls are now all implemented in `crm_clienteling.py`
+(a standalone module registered onto the FastAPI app in `api_pg.py` BEFORE the StaticFiles SPA
+catch-all). Groups: dashboard, customers (grid/360/timeline/nba/brief/moments/duplicates/freshness),
+tasks, notes, messages, templates, segments, campaigns, insights/* (incl. cohorts), loyalty/*
+(manager-facing, distinct from `/api/crm/loyalty/*`), social/*, training/*, users, audit, plus
+public lookbook share links. **Source of truth for SQL/shape was the cloned reference backend**
+(`git clone --depth 1 https://github.com/analytics-glitch/CRM.git /tmp/crm-ref`).
+
+Conventions to keep consistent when extending:
+- Shared helpers live at the top of `crm_clienteling.py`: `_ex(sql, params, fetch=False)` /
+  `_one(sql, params, fetch=True)` run parameterized psycopg2; `_q` wraps SELECT→JSON. NEVER
+  f-string user input into SQL — coerce via `_int/_num/_clamp`, dates via `_safe_date`, `IN`-lists
+  via `_in_clause`.
+- `all_sales.sale_date` is TEXT: every `sale_date::date` cast MUST be preceded by the `_ISO` regex
+  guard in the SAME CTE's WHERE (a missed guard in a cohort CTE caused a 500 on dirty dates).
+- Auth: most CRM paths flow through `clerk_auth_gate` (analyst+). `/api/loyalty/*` and `/api/public/*`
+  are gate-BYPASSED in `api_pg.py`, so loyalty handlers re-check staff role via `_staff(request,
+  roles=...)` manually; public lookbook paths are intentionally token-gated only.
+- `crm_loyalty_ledger`'s points column is `points_change` (NOT `points`).
+- Modules with thin/no data source (social/training/lookbooks/wishlists) return designed empty
+  states rather than 500.

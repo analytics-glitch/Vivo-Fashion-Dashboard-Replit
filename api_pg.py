@@ -740,6 +740,13 @@ async def clerk_auth_gate(request: Request, call_next):
     if path.startswith("/api/loyalty"):
         return await call_next(request)
 
+    # Customer-facing public lookbook share links (no login): a stylist sends a
+    # shopper a tokenised lookbook URL; viewing it and registering interest must
+    # work without any staff or member session. The handlers validate the
+    # opaque share token internally and 404 on an unknown/expired token.
+    if path.startswith("/api/public/"):
+        return await call_next(request)
+
     # Resolve the session token (Bearer header or httpOnly cookie) to a user.
     # Fail closed: if the user store is unreachable we cannot prove identity, so
     # refuse with a deterministic 503 rather than leaking a generic 500.
@@ -14104,6 +14111,12 @@ async def loyalty_redeem(request: Request):
             "VALUES (%s,%s,%s,%s,'member:self')", (cid, points, kes_value, code))
     return {"ok": True, "discount_code": code, "kes_value": kes_value, "points_balance": new_bal}
 
+
+# Clienteling CRM endpoints (ported vivo-crm frontend at /crm/). Registered HERE,
+# before the StaticFiles SPA catch-all below, so the catch-all does not swallow
+# GET /api/* requests. The module sources data from this project's live Postgres.
+import crm_clienteling
+crm_clienteling.register_clienteling_routes(app)
 
 from fastapi.staticfiles import StaticFiles
 import pathlib
