@@ -27,7 +27,11 @@ Product Analysis's `life_cycle` mapping reuses the same helper.
 - 8–12wk → Week-8 read: pass → Tier 3; fail → Tier 4.
 - 12–36wk → pass Week-8 OR Week-12 backstop → Tier 3; else Retire.
 - 36–96wk → reorders≥3 AND lifetime SOR>60 → Tier 2; else Retire.
-- ≥96wk → reorders≥5 AND lifetime SOR>60 → Tier 1; else Retire.
+- ≥96wk → Tier 1 = ACTIVELY high-selling only: reorders≥5 AND last_sale_days≤30 AND
+  recent_sor (sor_6m)>60 → Tier 1; else Retire. (User: Tier 1 must be currently selling
+  well, NOT a style that merely sold well a long time ago — so lifetime SOR was REPLACED
+  by recent 6-month SOR + a 30-day recency gate. `_gated_range_tier` takes a `recent_sor`
+  param; both callers — range_mgmt_classify and Product Analysis `_life_cycle` — pass sor_6m.)
 - Gates: Week-8 = lifetime SOR>60 AND sold within 7d AND WOC≤8; Week-12 = SOR≥80;
   fail closed when SOR/last-sale missing.
 - **full_price_pct is NOT gated** (user removed it — best-sellers sold mostly on promo were

@@ -3840,7 +3840,7 @@ def analytics_product_analysis(
         return round(units * 100.0 / denom, 1) if denom > 0 else None
 
     def _life_cycle(aw, lifetime_sor=None, full_price_pct=None, last_sale_days=None,
-                    woc=None, reorder_count=0):
+                    woc=None, reorder_count=0, recent_sor=None):
         # Descriptive label for the 2026 Range Strategy GATED lifecycle tier (the
         # same gates as the Range Management classify endpoint), mapped to words
         # so it is not confused with the Pareto revenue "Tier" column. Styles that
@@ -3853,7 +3853,8 @@ def analytics_product_analysis(
             "Retire": "Retire",
         }.get(_gated_range_tier(
             aw, lifetime_sor=lifetime_sor, full_price_pct=full_price_pct,
-            last_sale_days=last_sale_days, woc=woc, reorder_count=reorder_count),
+            last_sale_days=last_sale_days, woc=woc, reorder_count=reorder_count,
+            recent_sor=recent_sor),
             "New / Test")
 
     rows = []
@@ -3896,7 +3897,8 @@ def analytics_product_analysis(
         sor_life = _sor(units_life, stock)
         last_sale_days = (today - r["last_sale"]).days if r["last_sale"] else None
         life_cycle = _life_cycle(age_weeks, sor_life, full_price_pct, last_sale_days,
-                                 _woc(stock, units_vel), reorder_count)
+                                 _woc(stock, units_vel), reorder_count,
+                                 recent_sor=sor_6m)
         rows.append({
             "style_name": r["style_name"],
             "style_number": r["style_number"],
@@ -7254,7 +7256,7 @@ def _passed_week12_backstop(lifetime_sor):
 
 
 def _gated_range_tier(age_weeks, *, lifetime_sor, full_price_pct, last_sale_days,
-                      woc, reorder_count):
+                      woc, reorder_count, recent_sor=None):
     # 2026 Range Strategy (SOP) GATED lifecycle tier. Age sets the stage but the
     # performance gates decide whether a style graduates or retires at each stage.
     # Returns one of 'Tier 1'..'Tier 4' or 'Retire'. Age boundaries follow the
@@ -7275,8 +7277,12 @@ def _gated_range_tier(age_weeks, *, lifetime_sor, full_price_pct, last_sale_days
         if reorder_count >= 3 and (lifetime_sor or 0) > 60:
             return "Tier 2"
         return "Retire"
-    # 24+ months
-    if reorder_count >= 5 and (lifetime_sor or 0) > 60:
+    # 24+ months — Tier 1 = Core, but ONLY an ACTIVELY high-selling style: it must
+    # have sold within the last 30 days AND still be selling through strongly in the
+    # recent 6-month window (recent SOR > 60), not merely a style that sold well a
+    # long time ago. Proven repeat demand (5+ reorders) is still required.
+    if (reorder_count >= 5 and last_sale_days is not None and last_sale_days <= 30
+            and (recent_sor or 0) > 60):
         return "Tier 1"
     return "Retire"
 
@@ -7421,15 +7427,18 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         # Range tier = the 2026 Range Strategy (SOP) GATED lifecycle classification:
         # age sets the stage, but performance gates decide promotion vs retirement
         # (Week-8 read = SOR > 60% + sold within 7d + WOC <= 8; Week-12 backstop =
-        # SOR >= 80%; Tier 2 needs 3+ reorders & SOR > 60%; Tier 1 needs 5+ reorders
-        # & SOR > 60%; full-price realisation is no longer gated). A failed gate yields
+        # SOR >= 80%; Tier 2 needs 3+ reorders & lifetime SOR > 60%; Tier 1 needs 5+
+        # reorders & a sale within 30d & recent 6-month SOR > 60% (actively high-
+        # selling, not historically); full-price realisation is no longer gated). A
+        # failed gate yields
         # the "Retire" verdict — but for a still-trading style that is a FLAG, not a
         # move: it stays in the live range (rows, but is NOT counted in the Active
         # total) and is surfaced as "flagged for retirement". Only HARD retirement
         # moves a style out.
         gated_tier = _gated_range_tier(
             age_weeks, lifetime_sor=sor_life, full_price_pct=full_price_pct,
-            last_sale_days=last_sale_days, woc=woc, reorder_count=reorder_count)
+            last_sale_days=last_sale_days, woc=woc, reorder_count=reorder_count,
+            recent_sor=sor_6m)
 
         # Hard (physical) retirement is the ONLY thing that moves a style into the
         # Retired bucket: the durable manual-retirement list (the styles list), every
