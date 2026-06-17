@@ -113,19 +113,28 @@ const RULES = [
     formula: "sell-through % = units_sold ÷ (units_sold + stock_on_hand)",
     notes: ["Banding mirrored across pages: ≥60% Fast, 30–60% Steady, <30% Slow."],
     used: ["/products", "/velocity", "/product-analysis"] },
-  { id: "range-tiers", title: "Range lifecycle tiers (T1–T4)", category: "Products",
-    formula: "2026 Range Strategy (SOP): age sets the stage, performance gates decide promotion vs retirement. T4 < 8w · T3 8–39w · T2 39–104w · T1 ≥ 104w, each subject to the gates below.",
+  { id: "range-tiers", title: "Range lifecycle tiers (T1–T4) — how a style is classified", category: "Products",
+    formula: "2026 Range Strategy (SOP). Each active style is classified by running it through the steps below in order: (0) hard-retire overrides, then (1) catalogue age sets the lifecycle stage, then (2) performance gates inside that stage decide whether the style is promoted to its tier or sent to Retire.",
     notes: [
-      "Tier 4 — New / Test: < 8 weeks, or 8–12 weeks that missed the Week-8 read. The trial window. Target 60–100.",
-      "Tier 3 — Recent Performer: passed the Week-8 read (or the Week-12 backstop), under ~9 months (39w). Target 150–200.",
-      "Tier 2 — Core Performer: ~9–24 months (39–104w) AND 3+ reorders AND lifetime SOR > 60% AND full-price > 90%. Target 200–300.",
-      "Tier 1 — Core Basics: 24+ months (≥ 104w) AND 5+ reorders AND full-price > 90% AND lifetime SOR > 60%. Permanent core; reorder when WOC ≤ 8w. Target 30–50.",
-      "Week-8 read (graduates T4 → T3): lifetime SOR > 60% AND full-price > 90% AND a sale within the last 7 days AND WOC ≤ 8 weeks. Missing SOR / last-sale data fails the read.",
-      "Week-12 backstop: a style that missed the Week-8 read still graduates if lifetime SOR ≥ 80%; otherwise it drops to Retire.",
-      "A style that fails its gate at any stage is classified 'Retire' — the gate criteria themselves can retire a style, separately from the hard-retire rules below.",
-      "Hard-retire overrides any tier to 'Retire': the manual retirement list, every Zoya-brand style, aged-out styles (≥ 39w with zero 6-month units and no sale in 270+ days), or flagged styles (≥ 39w with lifetime SOR < 40% and stock on hand). Merch can also pin a tier via a manual override.",
+      "The inputs. Four signals drive the decision, all measured over the style's lifetime: catalogue age in weeks (since launch); lifetime Sell-Out Rate (SOR % = units sold ÷ (units sold + current stock), warehouses excluded); full-price realisation (FP % = average selling price ÷ original ticket price, so a low FP means it only sold on discount); weeks of cover (WOC = current stock ÷ recent weekly velocity); and an estimated reorder count (⌊ weeks since launch ÷ 12 ⌋, one cycle per quarter).",
+
+      "Step 0 — Hard-retire (checked first, overrides every tier). A style is forced to 'Retire' regardless of performance if ANY of these is true: it is on the manual retirement list; it is a Zoya-brand style; it is aged-out (≥ 39 weeks old with zero units in the last 6 months and no sale in 270+ days); or it is flagged (≥ 39 weeks old with lifetime SOR < 40% while still holding stock). Merchandising can also pin a style to a specific tier with a manual override. If none of these apply, continue to Step 1.",
+
+      "Step 1 — Age sets the stage. The style's age in weeks places it into one of four lifecycle windows: under 8 weeks; 8–12 weeks; 12–39 weeks (up to ~9 months); 39–104 weeks (~9–24 months); or 104 weeks and over (24+ months). The window decides which gate is applied in Step 2.",
+
+      "The two performance gates used below. Week-8 read (the first real performance check): passes only if lifetime SOR > 60% AND full-price > 90% AND there has been a sale within the last 7 days AND WOC ≤ 8 weeks. Missing SOR or last-sale data fails the read (fail-closed). Week-12 backstop (a second chance for a style that missed the read): passes if lifetime SOR ≥ 80%.",
+
+      "Step 2a — Under 8 weeks → Tier 4 (New / Test). Still inside the trial window before its first read, so it is parked in T4 with no gate applied yet.",
+      "Step 2b — 8 to 12 weeks → Tier 3 if it passes the Week-8 read, otherwise it stays Tier 4. (It is not retired yet — it gets until the 12-week mark to prove itself.)",
+      "Step 2c — 12 to 39 weeks → Tier 3 if it passes the Week-8 read OR the Week-12 backstop; otherwise → Retire. This is where an underperforming newer style is first cleared out.",
+      "Step 2d — 39 to 104 weeks → Tier 2 (Core Performer) only if it has 3+ reorders AND lifetime SOR > 60% AND full-price > 90%; otherwise → Retire.",
+      "Step 2e — 104 weeks and over → Tier 1 (Core Basics) only if it has 5+ reorders AND full-price > 90% AND lifetime SOR > 60%; otherwise → Retire. Tier 1 is the permanent core — keep it in stock and reorder whenever WOC drops to 8 weeks or below.",
+
+      "Key point: the gates themselves can retire a style. A style that reaches a gate (Step 2c/2d/2e) but does not clear it is classified 'Retire' on performance grounds — this is separate from, and in addition to, the Step 0 hard-retire rules.",
+
+      "What the tiers mean, in plain terms. T4 New / Test = on trial, target 60–100 styles. T3 Recent Performer = proven recently, under ~9 months, target 150–200. T2 Core Performer = a dependable seller 9–24 months old that has been reordered and holds full price, target 200–300. T1 Core Basics = long-running 24+ month staples, target 30–50. A healthy total range is 500–700 live styles.",
     ],
-    thresholds: ["Week-8 read: SOR > 60% · FP > 90% · sold ≤ 7d · WOC ≤ 8w", "Week-12 backstop: SOR ≥ 80%", "Tier 2: 39–104w · 3+ reorders · SOR > 60% · FP > 90%", "Tier 1: ≥ 104w · 5+ reorders · SOR > 60% · FP > 90%", "Healthy total range 500–700 styles"],
+    thresholds: ["Step 0 hard-retire: manual list · Zoya brand · aged-out (≥39w, 0 units/6mo, no sale 270d+) · flagged (≥39w, SOR<40%, has stock)", "Week-8 read: SOR > 60% · FP > 90% · sold ≤ 7d · WOC ≤ 8w", "Week-12 backstop: SOR ≥ 80%", "Tier 2 (39–104w): 3+ reorders · SOR > 60% · FP > 90%", "Tier 1 (≥104w): 5+ reorders · SOR > 60% · FP > 90%", "Targets — T4 60–100 · T3 150–200 · T2 200–300 · T1 30–50 · total 500–700"],
     used: ["/range-mgmt", "/product-analysis"] },
   { id: "reorder-count", title: "No. of Reorders (estimated)", category: "Products",
     formula: "No. of Reorders = ⌊ weeks_since_launch ÷ 12 ⌋",
