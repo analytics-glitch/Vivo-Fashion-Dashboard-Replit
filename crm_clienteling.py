@@ -204,6 +204,13 @@ def _ensure_cl_tables():
         " id serial PRIMARY KEY, name text, channel text, body text,"
         " bsp_status text DEFAULT 'approved', created_by text,"
         " created_at timestamptz DEFAULT now())",
+        "CREATE TABLE IF NOT EXISTS crm_walkin ("
+        " checkin_id text PRIMARY KEY, customer_id text, customer_name text,"
+        " note text, associate_user_id text, associate_name text,"
+        " served boolean DEFAULT false, served_at timestamptz, served_by text,"
+        " checked_in_at timestamptz DEFAULT now())",
+        "CREATE INDEX IF NOT EXISTS ix_crm_walkin_checked_in "
+        " ON crm_walkin(checked_in_at DESC)",
     ]
     for s in stmts:
         try:
@@ -1231,6 +1238,89 @@ def _reg_bi(app):
             "return_rate": round(abs(returns) / gross * 100.0, 1) if gross else 0.0,
         }
 
+    @app.get("/api/bi/orders")
+    def cl_bi_orders(request: Request, date_from: str = Query(None),
+                     date_to: str = Query(None), country: str = Query(None),
+                     channel: str = Query(None), limit: int = Query(500)):
+        _staff(request)
+        w = _sales_where(date_from, date_to, country, channel)
+        n = _clamp(limit, 1, 5000, 500)
+        rows = _q(
+            "SELECT s.order_id, s.order_name, s.sale_date AS order_date, "
+            " s.customer_id, s.product_title, s.variant_sku AS sku, "
+            " COALESCE(s.ordered_item_quantity, s.net_quantity, 0) AS quantity, "
+            " ROUND(COALESCE(s.gross_sales_kes,0),2) AS gross_sales_kes, "
+            " ROUND(COALESCE(s.returns_kes,0),2) AS returns_kes, "
+            " ROUND(COALESCE(s.net_sales_kes,0),2) AS net_sales_kes "
+            "FROM all_sales s WHERE " + w +
+            " ORDER BY s.sale_date DESC, s.order_id LIMIT " + str(n))
+        return [{
+            "order_id": r["order_id"], "order_name": r["order_name"],
+            "order_date": r["order_date"], "customer_id": r["customer_id"],
+            "product_title": r["product_title"], "sku": r["sku"],
+            "quantity": _int(r["quantity"]),
+            "gross_sales_kes": _num(r["gross_sales_kes"]),
+            "returns_kes": _num(r["returns_kes"]),
+            "net_sales_kes": _num(r["net_sales_kes"]),
+        } for r in rows]
+
+    @app.get("/api/bi/inventory")
+    def cl_bi_inventory(request: Request, country: str = Query(None),
+                        channel: str = Query(None), limit: int = Query(500)):
+        _staff(request)
+        n = _clamp(limit, 1, 5000, 500)
+        w = ("i.available > 0" + _in_clause("i.country", country) +
+             _in_clause("i.pos_location_name", channel))
+        rows = _q(
+            "SELECT i.country, i.location_name, "
+            " COALESCE(p.product_name, i.product_name) AS product_name, "
+            " i.sku, i.brand, i.style_name, i.color_print, i.size, "
+            " i.available "
+            "FROM all_inventory i LEFT JOIN all_products_clean p ON p.sku=i.sku "
+            "WHERE " + w + " ORDER BY i.available DESC LIMIT " + str(n))
+        return [{
+            "country": r["country"], "location_name": r["location_name"],
+            "product_name": r["product_name"], "sku": r["sku"],
+            "brand": r["brand"], "style_name": r["style_name"],
+            "color_print": r["color_print"], "size": r["size"],
+            "available": _num(r["available"]),
+        } for r in rows]
+
+    @app.get("/api/bi/upt")
+    def cl_bi_upt(request: Request, date_from: str = Query(None),
+                  date_to: str = Query(None), country: str = Query(None),
+                  channel: str = Query(None)):
+        _staff(request)
+        w = _sales_where(date_from, date_to, country, channel)
+        r = _q1(
+            "SELECT COUNT(DISTINCT s.order_id) AS orders, "
+            " COALESCE(SUM(COALESCE(s.ordered_item_quantity, s.net_quantity, 0)),0) "
+            "  AS units FROM all_sales s WHERE " + w)
+        orders, units = _int(r.get("orders")), _int(r.get("units"))
+        return {
+            "upt": round(units / orders, 2) if orders else 0.0,
+            "total_orders": orders,
+            "total_units": units,
+        }
+
+    @app.get("/api/bi/frequency")
+    def cl_bi_frequency(request: Request, date_from: str = Query(None),
+                        date_to: str = Query(None), country: str = Query(None),
+                        channel: str = Query(None)):
+        _staff(request)
+        w = _sales_where(date_from, date_to, country, channel)
+        rows = _q(
+            "WITH oc AS (SELECT s.customer_id, COUNT(DISTINCT s.order_id) AS n "
+            " FROM all_sales s WHERE " + w + " AND s.customer_id IS NOT NULL "
+            " GROUP BY s.customer_id) "
+            "SELECT CASE WHEN n>=5 THEN '5+' ELSE n::text END AS frequency_bucket, "
+            " COUNT(*) AS customer_count, MIN(n) AS ord "
+            "FROM oc GROUP BY 1 ORDER BY ord")
+        return [{
+            "frequency_bucket": r["frequency_bucket"],
+            "customer_count": _int(r["customer_count"]),
+        } for r in rows]
+
     @app.get("/api/bi/sales-summary")
     def cl_bi_sales_summary(request: Request, date_from: str = Query(None),
                             date_to: str = Query(None)):
@@ -1425,6 +1515,74 @@ def _tier_label(spend):
 # STAGE 2 — Insights (overview, briefs, cohorts, wishlists, LTV, etc.)        #
 # --------------------------------------------------------------------------- #
 def _reg_insights(app):
+    @app.get("/api/insights/walkins")
+    def cl_walkins_list(request: Request, today_only: bool = Query(True)):
+        _staff(request)
+        where = ""
+        if today_only:
+            where = " WHERE checked_in_at >= '" + _today() + "'"
+        rows = _ex(
+            "SELECT checkin_id, customer_id, customer_name, note, "
+            " associate_user_id, associate_name, served, served_at, served_by, "
+            " checked_in_at FROM crm_walkin" + where +
+            " ORDER BY checked_in_at DESC LIMIT 500", fetch=True) or []
+        return [{
+            "checkin_id": r["checkin_id"], "customer_id": r["customer_id"],
+            "customer_name": r["customer_name"], "note": r["note"],
+            "associate_user_id": r["associate_user_id"],
+            "associate_name": r["associate_name"],
+            "served": bool(r["served"]), "served_at": _dt(r["served_at"]),
+            "served_by": r["served_by"], "checked_in_at": _dt(r["checked_in_at"]),
+        } for r in rows]
+
+    @app.post("/api/insights/walkins")
+    def cl_walkins_create(request: Request, payload: dict = Body(default=None)):
+        _staff(request)
+        uid, name, _ = _actor(request)
+        p = payload or {}
+        cid = (p.get("customer_id") or "").strip() or None
+        cname = (p.get("customer_name") or "").strip() or "Guest"
+        note = (p.get("note") or "").strip() or None
+        ckid = "wlk_" + secrets.token_hex(8)
+        _ex(
+            "INSERT INTO crm_walkin (checkin_id, customer_id, customer_name, note, "
+            " associate_user_id, associate_name) VALUES (%s,%s,%s,%s,%s,%s)",
+            (ckid, cid, cname, note, uid, name))
+        row = _one(
+            "SELECT checkin_id, customer_id, customer_name, note, "
+            " associate_user_id, associate_name, served, served_at, served_by, "
+            " checked_in_at FROM crm_walkin WHERE checkin_id=%s", (ckid,))
+        return {
+            "checkin_id": row["checkin_id"], "customer_id": row["customer_id"],
+            "customer_name": row["customer_name"], "note": row["note"],
+            "associate_user_id": row["associate_user_id"],
+            "associate_name": row["associate_name"], "served": bool(row["served"]),
+            "served_at": _dt(row["served_at"]), "served_by": row["served_by"],
+            "checked_in_at": _dt(row["checked_in_at"]),
+        }
+
+    @app.post("/api/insights/walkins/{checkin_id}/serve")
+    def cl_walkins_serve(checkin_id: str, request: Request):
+        _staff(request)
+        _, name, _ = _actor(request)
+        n = _ex(
+            "UPDATE crm_walkin SET served=true, served_at=now(), served_by=%s "
+            "WHERE checkin_id=%s AND served=false", (name, checkin_id))
+        row = _one(
+            "SELECT checkin_id, customer_id, customer_name, note, "
+            " associate_user_id, associate_name, served, served_at, served_by, "
+            " checked_in_at FROM crm_walkin WHERE checkin_id=%s", (checkin_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Check-in not found")
+        return {
+            "checkin_id": row["checkin_id"], "customer_id": row["customer_id"],
+            "customer_name": row["customer_name"], "note": row["note"],
+            "associate_user_id": row["associate_user_id"],
+            "associate_name": row["associate_name"], "served": bool(row["served"]),
+            "served_at": _dt(row["served_at"]), "served_by": row["served_by"],
+            "checked_in_at": _dt(row["checked_in_at"]),
+        }
+
     @app.get("/api/insights/overview")
     def cl_ins_overview(request: Request):
         _staff(request)
