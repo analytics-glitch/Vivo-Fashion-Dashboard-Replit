@@ -38,3 +38,4 @@
 - [Fabric BI full-page routing](fabric-page-routing.md) — /fabric is a static page served by api_pg's catch-all; it must be in api-server artifact.toml paths or the proxy routes it to the vivo-bi SPA (dead handler).
 - [vivo-crm ported reference frontend](vivo-crm-ported-frontend.md) — standalone Clienteling CRM artifact (/crm/) faithfully ports an external React app; auth rewired to this project's Postgres login; ~120 backend endpoints still missing (source: /tmp/crm-ref/backend).
 - [Walk-in / anonymous definition](walk-in-anonymous-definition.md) — walk-in count = anonymous orders (null id OR customer_type='walk-in' OR pseudo-account name); null-only undercounts; walk-ins + identified = total; dedup pseudo set before join.
+- [Range/PA inventory universe](range-inventory-universe.md) — Range Mgmt + Product Analysis Total = styles with current stock only; Active+Retired must reconcile to Total (don't re-add store-only stock guard or velocity-only summary count).

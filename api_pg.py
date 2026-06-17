@@ -3564,15 +3564,15 @@ def analytics_product_analysis(
         from_join = (" FROM sales sa FULL OUTER JOIN stock st" + spine_keys +
                      " JOIN prod p" + prod_keys)
         pos_out = " pos_location,"
-        # POS rows are current-relevance: a selling point appears if it sold in the
-        # date window OR currently holds stock (lifetime-only junk locations drop).
-        activity_where = (" WHERE (COALESCE(sa.units_period,0) <> 0"
-                          " OR COALESCE(st.soh_current,0) > 0)")
+        # Only selling points that currently hold inventory become rows (a style
+        # with no stock at a POS is not part of that location's live range).
+        activity_where = " WHERE COALESCE(st.soh_current,0) > 0"
     else:
         from_join = (" FROM prod p LEFT JOIN sales sa" + join_keys +
                      " LEFT JOIN stock st" + join_keys)
         pos_out = " st.store_locations AS pos_location,"
-        activity_where = (" WHERE (COALESCE(sa.units_life,0) <> 0 OR COALESCE(st.soh_current,0) > 0"
+        # Only styles that currently hold inventory (stores or warehouse) are in scope.
+        activity_where = (" WHERE (COALESCE(st.soh_current,0) > 0"
                           " OR COALESCE(st.soh_warehouse,0) > 0 OR COALESCE(st.soh_stores,0) > 0)")
 
     sql = (
@@ -3730,7 +3730,9 @@ def analytics_product_analysis(
         status_by_style[k] = "Active" if active else "Retired"
         if style_status == "active" and not active:
             continue
-        if style_status == "retired" and not manual_retired and (active or g["stock"] <= 0):
+        # Universe is already inventory-only, so "retired" = every non-active style
+        # (incl. warehouse-only stock); this keeps Active + Retired == Total.
+        if style_status == "retired" and active:
             continue
         keep.add(k)
 
@@ -3776,7 +3778,9 @@ def analytics_product_analysis(
     tot_vel = sum(g["units_vel"] for g in kept.values())
     summary = {
         "styles": len(kept),
-        "active_styles": sum(1 for g in kept.values() if _is_active(g)),
+        # Use the same effective status as the row-level style_status (velocity AND
+        # not manually retired) so active_styles == Total - Retired reconciles.
+        "active_styles": sum(1 for k in kept if status_by_style.get(k) == "Active"),
         "units": tot_units,
         "revenue": tot_rev,
         "net_revenue": tot_net,
@@ -7044,7 +7048,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         FROM prod p
         LEFT JOIN sales sa USING (style_name)
         LEFT JOIN stock st USING (style_name)
-        WHERE (COALESCE(sa.units_life, 0) > 0 OR COALESCE(st.soh_stores, 0) > 0 OR COALESCE(st.soh_warehouse, 0) > 0)
+        WHERE (COALESCE(st.soh_stores, 0) > 0 OR COALESCE(st.soh_warehouse, 0) > 0)
           AND COALESCE(p.brand, '') NOT ILIKE '%third party%'
     """)
     today = date.today()
