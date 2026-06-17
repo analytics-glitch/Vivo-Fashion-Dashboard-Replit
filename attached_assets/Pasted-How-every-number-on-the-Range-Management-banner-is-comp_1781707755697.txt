@@ -1,0 +1,140 @@
+How every number on the Range Management banner is computed
+Code path: /api/range-mgmt/classify → routes/range_mgmt.py calls → range_mgmt.classify_all() + range_mgmt.summarise(). Returned payload is what the frontend banner renders.
+
+The screenshot is one big aggregation over a single input: the list of rows returned by /api/analytics/sor-all-styles. Every number you see on it falls out of two roll-up passes — one over classified active rows, one over physically-retired rows.
+
+1. The input — two row sources
+sor_all_styles ──┬── classify_all(rows, include_retired=False)
+                 │       ↓
+                 │   classified[]   ← every active apparel style with its
+                 │                     tier verdict (Tier 1/2/3/4/Retire)
+                 │
+                 └── retired_rows = [r for r in sor_all_styles
+                                       if r.style_status == "retired"]
+The two streams are deliberately separated so that "physically retired upstream" (327 of those today) ≠ "auto-classifier wants to retire" (234 of those today).
+
+2. The five core counters
+counts["Tier 1"]  = 35   # passed 24+ mo + 5+ reorders + FP > 90 + SOR > 60
+counts["Tier 2"]  = 277  # passed 9-24 mo + 3+ reorders + FP > 90 + SOR > 60
+counts["Tier 3"]  = 296  # passed Week 8 or Week 12 gate, < 9 mo
+counts["Tier 4"]  = 84   # < 8 weeks OR pending Week-8 read
+counts["Retire"]  = 234  # ← THIS is the "Flagged for retirement" badge (top-right)
+retired_count     = 427  # physically retired upstream
+Every classified row is bucketed into exactly one of these counters. The decision tree that picks the bucket is documented in the previous answer — but the counts on this banner are simply how many fell into each bucket.
+
+3. Three roll-up cards (Total, Active, Retired)
+These are NOT independent counts — they're sums of the five core counters.
+
+active_count   = T1 + T2 + T3 + T4 + flagged_Retire = 35+277+296+84+234 = 926
+retired_count  = 427                                                   # physical only
+total_count    = active_count + retired_count        = 926 + 427      = 1,353
+So when you see:
+
+Total = 1,353 — Active classified rows + physically retired rows
+Active = 926 — every classified row regardless of tier verdict (includes the 234 "flagged for retirement")
+Retired = 427 — only rows whose style_status == "retired" upstream
+The "Flagged for retirement" pill = 234 = the classifier's counts["Retire"]. These are still trading physically, but the algorithm thinks they belong on the markdown rail. They're inside the Active 926, NOT in the Retired 427.
+
+4. The % of styles on every card
+Every percentage is computed against the same denominator: share_denom = active_count + retired_count = 1,353.
+
+def _pct(n): return round(n / 1353 * 100, 1)
+That's why your percentages add up cleanly:
+
+Card	Count	Calc	%
+Tier 1	35	35 / 1353	2.6 %
+Tier 2	277	277 / 1353	20.5 %
+Tier 3	296	296 / 1353	21.9 %
+Tier 4	84	84 / 1353	6.2 %
+Flagged Retire (inside Active)	234	234 / 1353	17.3 % (not surfaced explicitly)
+Retired (physical)	427	427 / 1353	31.6 %
+Active	926	926 / 1353	68.4 %
+Total	1,353	1353 / 1353	100.0 %
+Check: 68.4 + 31.6 = 100.0 ✓. Sub-check: 2.6 + 20.5 + 21.9 + 6.2 + 17.3 (flagged) = 68.5 ≈ Active 68.4 ✓.
+
+5. Revenue / Units / SOR per card
+These three numbers on each tier card are summed over the rows in that bucket.
+
+Revenue
+revenue[tier] = Σ sales_since_launch  # per row
+sales_since_launch is the lifetime KES revenue for that style — every sale from first_sale_iso through today, netted against returns by the standard returns_aggregator.py pipeline (so a return on 2024-11-15 reduces the Tier-1 number even though the original sale happened in 2020).
+
+Example: Tier 1 Revenue = KES 127,579,290 = sum of lifetime sales for the 35 styles that landed in Tier 1.
+
+Units
+units[tier] = Σ units_since_launch
+Same logic — lifetime units sold per style, summed.
+
+SOR (Sell-Out Rate)
+Volume-weighted average — bigger sellers move the average more:
+
+sor_weighted[tier]    += lifetime_sor_pct(row) × units_since_launch(row)
+sor_weight_sum[tier]  += units_since_launch(row)
+sor_lifetime_pct[tier] = sor_weighted[tier] / sor_weight_sum[tier]
+Rows with units_since_launch = 0 are excluded from the weighted average (otherwise a brand-new SKU with 0 sales would dilute the bucket).
+
+Example: Tier 1 SOR = 95.9 % means "the styles in Tier 1 collectively sold 95.9 % of every unit ever placed, weighted by unit volume". Not the average of percentages — the actual sell-through across the bucket as if it were one giant SKU.
+
+Roll-up cards (Total / Active / Retired)
+Same math, but the sums span the relevant set of rows:
+
+Active: Σ across Tier 1-4 + flagged Retire (= 926 styles)
+Retired: Σ across physically-retired rows
+Total: Active + Retired sums
+That's why for your screenshot:
+
+Active Revenue (2.36 bn KES) ≈ T1 + T2 + T3 + T4 = 127.6 m + 1.63 bn + 316.5 m + 35.0 m = 2.11 bn + an extra ~250m from the 234 flagged-Retire styles (which DO have lifetime revenue, they're just being marked for outlet).
+Total Revenue (2.86 bn KES) = Active 2.36 bn + Retired 499 m. ✓
+6. The three top-right counters
+flagged_for_retirement     = counts["Retire"]           # = 234
+overdue_for_week8_read     = sum of Tier 4 rows with    # = 24
+                              age_weeks ≥ 8 AND
+                              passed_week8 == False
+approaching_decision_gates = sum of rows with           # = 42
+                              near_week8 OR near_week12
+                              flags set during classify_style
+So:
+
+234 Flagged for retirement = counts["Retire"] straight from the classifier. These are active styles the algorithm wants moved to outlet.
+24 Overdue Week-8 read = a defensive subset of Tier 4 — styles that crossed 8 weeks but haven't been formally reviewed against the Week-8 gate. Action: human needs to make the read.
+42 Approaching gate = styles flagged near_week8 (age 7-8 weeks) or near_week12 (age 11-12 weeks). Action: gate decision coming up this week.
+7. The RAG banner ("In range" / "Out of range")
+For each tier and for Total, the count is compared against the SOP target range:
+
+TIER_TARGETS = {
+    "Tier 1": (30,  50),
+    "Tier 2": (200, 300),
+    "Tier 3": (150, 200),
+    "Tier 4": (60,  100),
+}
+TOTAL_TARGET = (500, 700)
+
+def rag_status(count, (lo, hi)):
+    if lo ≤ count ≤ hi:           return "green"   # In range
+    edge_lo = lo − 20%
+    edge_hi = hi + 20%
+    if edge_lo ≤ count ≤ edge_hi: return "amber"   # Close
+    else:                          return "red"    # Out of range
+For your screenshot:
+
+Card	Count	Target	Edge band (±20%)	Verdict
+Tier 1	35	30-50	24-60	✅ In range
+Tier 2	277	200-300	160-360	✅ In range
+Tier 3	296	150-200	120-240	❌ Out of range (> 240 cap)
+Tier 4	84	60-100	48-120	✅ In range
+Total/Active	926	500-700	400-840	❌ Out of range (> 840 cap)
+So Tier 3 is over-stocked (too many newly-promoted styles) and Total Active is well above the SOP-targeted range size. That's the message the banner is sending: the catalog is broader than the framework recommends, and the bulk of the bloat is in Tier 3 + the flagged-Retire backlog of 234 styles.
+
+8. The thin green progress bar under "Total Active Styles"
+filled_pct = clamp(0, 100, active_count / TOTAL_TARGET.upper × 100)
+           = clamp(0, 100, 926 / 700 × 100)
+           = 100   # bar is full because we're past the target ceiling
+It's purely a visual showing "how close are we to the upper edge of the target band". Once you're past the cap, it stays full.
+
+9. The "Updated 5:44:57 PM" timestamp
+This is data.updated_at from the API response — the moment the snapshot for /sor-all-styles was last warmed in Mongo. The banner re-renders whenever the response is re-fetched, but the underlying numbers only refresh when the snapshot warmup completes (default cadence ~10 min).
+
+10. Single-line summary
+Every active style is bucketed into Tier 1-4 or auto-Retire by the age/gate/reorder/FP/SOR rules. Counts in each card are simple len()s. Revenue and Units are simple Σs of the lifetime fields. SOR is a unit-volume-weighted average within the bucket. Total / Active / Retired are aggregate roll-ups of those same sums. RAG is a fixed comparison of each count against the SOP target range with a ±20 % amber buffer. The 234/24/42 corner counts are derived directly from the classifier's flags during the same single pass.
+
+Everything is pure Python with no upstream re-fetch — once sor_all_styles lands, the entire banner is computed in one pass in summarise() (line 289 of range_mgmt.py).

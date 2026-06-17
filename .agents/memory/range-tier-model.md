@@ -1,62 +1,66 @@
 ---
 name: Range tier model
-description: How range-mgmt classify assigns the displayed Tier 1-4 (now = SOP-2026 GATED lifecycle outcome; Retire is terminal/routed to Retired), Product Analysis Pareto T1-T4 + life_cycle, and the walk-in customer exclusion rule nearby
+description: How range-mgmt classify assigns the displayed Tier 1-4 (= SOP-2026 GATED outcome; "Retire" is an in-Active FLAG, NOT moved to Retired), why hard-retire is the only thing that fills Retired, Product Analysis Pareto T1-T4 + life_cycle, and the walk-in customer exclusion rule nearby
 ---
 
-# Range Mgmt 5-bucket framework: displayed tier = the GATED SOP read; Retire is a TERMINAL bucket
+# Range Mgmt 5-bucket framework: tier = GATED SOP read; "Retire" is a FLAG that STAYS IN ACTIVE
 
 `/api/range-mgmt/classify` powers the web "Vivo 4-Tier Framework" (RangeManagement.jsx
 + VivoRangeManagement.jsx, both hit the same endpoint).
 
-**Hard display invariants the user requires (assert these, they regressed before):**
-- `Tier 1 + Tier 2 + Tier 3 + Tier 4 == Active` (the four live tiers partition the active range).
-- `Active + Retired == Total` (every in-stock style is in exactly one bucket).
+**The single hard rule the user cares about:** a gated "Retire" verdict on a still-trading
+style is a FLAG ("flagged for retirement"), NOT a move. It stays in the Active range with
+`tier=="Retire"`. The Retired bucket is filled by HARD/physical retirement ONLY (the manual
+styles list the user supplies, every Zoya style, long-dead aged-out). **Never route gated-Retire
+into `retired[]`** — doing so retires best-sellers and is the exact regression the user rejected
+("Why are you retiring our best sellers?").
 
-**The displayed `row["tier"]` IS the SOP-2026 GATED lifecycle outcome** (not the catalogue
-age band). One helper `_sop_classify(...)` is the single source of truth: it returns the
-triple `(tier, status, recommended_action)` where tier ∈ Tier 1..4 or "Retire". Age sets the
-stage but the performance gates decide promotion vs retirement at each stage. A gate-failed
-style returns "Retire" and is routed OUT of the active tiers into `retired[]` — Retire is
-terminal, NOT an active tier. `_gated_range_tier(...)` is now a thin wrapper that calls
-`_sop_classify` and returns just the tier (Product Analysis's `life_cycle` mapping uses it;
-the wrapper preserves the old `age_weeks is None -> Tier 4` behavior).
+**The displayed `row["tier"]` IS the SOP-2026 GATED lifecycle outcome** (Tier 1..4 or "Retire"),
+from `_gated_range_tier(age_weeks, *, lifetime_sor, full_price_pct, last_sale_days, woc,
+reorder_count)`. Age sets the stage; the performance gates decide promotion vs the Retire flag.
+Product Analysis's `life_cycle` mapping reuses the same helper.
 
-**The gated tree (calendar weeks 8/12/39/104, NOT the SOP's nominal 36/96 — same 9-/24-month
-milestones; keeps trackers + `_RANGE_TARGETS` consistent):**
-- Defensive guard: no launch date AND units≥100 AND lifetime SOR≥50 → Tier 2 (long-trading
-  style whose launch date isn't healed yet); otherwise treat age as 0.
-- <8wk → Tier 4 (New/Test). status On Track if sold in last 14d else At Risk.
-- 8–12wk → Week-8 read: pass → Tier 3 (On Track); fail → Tier 4 (At Risk, review at Week-12).
+**The gated tree (calendar weeks 8/12/39/104 = 9-/24-month milestones; keeps trackers +
+`_RANGE_TARGETS` consistent):**
+- age None → Tier 4.
+- <8wk → Tier 4 (New/Test).
+- 8–12wk → Week-8 read: pass → Tier 3; fail → Tier 4.
 - 12–39wk → pass Week-8 OR Week-12 backstop → Tier 3; else Retire.
-- 39–104wk → reorders≥3 AND lifetime SOR>60 AND (FP>90 or FP unknown) → Tier 2; else Retire.
-- ≥104wk → reorders≥5 AND (FP>90 or FP unknown) AND lifetime SOR>60 → Tier 1; else Retire.
+- 39–104wk → reorders≥3 AND lifetime SOR>60 AND (FP>90 or unknown) → Tier 2; else Retire.
+- ≥104wk → reorders≥5 AND (FP>90 or unknown) AND lifetime SOR>60 → Tier 1; else Retire.
 - Gates: Week-8 = lifetime SOR>60 AND FP>90 AND sold within 7d AND WOC≤8; Week-12 = SOR≥80;
   fail closed when SOR/last-sale missing.
 
-**Status taxonomy is now On Track / At Risk / Retire ONLY** (no "Overdue"). status + action
-come straight from `_sop_classify`. `overdue_for_week8_read` KPI is derived: count of active
-Tier 4 styles with age>8wk (the 8–12wk group that missed the Week-8 read, awaiting Week-12).
+**Partition / counter model (this is what the user's banner-math spec documents):**
+- `rows` (active) = ALL classified styles = Tier 1..4 PLUS the still-trading "Retire" flags.
+- `retired_rows` = HARD-retired only (manual list / Zoya / aged-out: ≥39w, 0 six-mo units, no
+  sale 270d+).
+- `Active.count == len(rows)` (INCLUDES flagged Retire). So **Tier1+Tier2+Tier3+Tier4 != Active**
+  here — Active = T1+T2+T3+T4+Retire. (This supersedes the old "T1+..+T4==Active" invariant.)
+- `Total == Active + Retired`.
+- `flagged_for_retirement = tier_counts["Retire"]` (the in-Active flag count) — NOT len(pipeline).
+- `overdue_for_week8_read` = active Tier 4 styles with age≥8wk (missed Week-8 read).
+- RAG total compares `len(active)` vs the Total target (500–700); per-tier vs `_RANGE_TARGETS`.
+- SOR per card = unit-volume-weighted avg (rows with 0 lifetime units excluded).
 
-**Why:** The user explicitly applied the SOP-2026 gated decision tree and wants the displayed
-tiers to follow it (fewer Tier 1, gate-failed styles retired) — the REVERSE of the earlier
-pure-age model. Expect Active to drop sharply (~175 vs ~1106 total; RAG red vs the 500–700
-target) and Retired to balloon — that is intended, not a bug.
+**Why:** the user supplied a 140-line spec
+(attached_assets/Pasted-How-every-number-...txt) defining exactly this: counts["Retire"] is the
+"Flagged for retirement" badge of styles still trading INSIDE Active 926, the Retired 427 are
+physically retired upstream only. Expect Active ≈ most of the universe and a large flagged count
+(our catalog is older/broader than the SOP target → RAG red) — intended, not a bug.
 
 **How to apply / precedence:**
-- HARD-RETIRE always wins and routes OUT to `retired[]` regardless of gated outcome: manual
-  retirement list, every Zoya style, aged-out (≥39w, 0 six-mo units, no sale 270d+).
-- Manual override `_RANGE_OVERRIDES` (empty by default; only ever Tier 1..4) keeps a style in
-  the ACTIVE range at the override tier and beats a gated "Retire"; `auto_tier` records the
-  gated outcome so the frontend "override · auto-tier was X" hint stays meaningful.
-- Both frontends already tolerate `tier=="Retire"` rows (route to retired) — no FE change was
-  needed when the tier source flipped from age to gated.
-- Retirement pipeline = gated-Retire styles that still hold stock (`not is_retired and
-  current_stock>0`) — the actionable clear-stock list, not the long-dead/Zoya/manual set.
-- `tier_counts` still carries a "Retire" key but it is 0 for `active` (Retire rows live in
-  `retired[]`). Sum Tier 1..4 to reconcile against Active.
-- `marketing-candidates` reuses `range_mgmt_classify`, so it inherits this automatically.
-- Don't duplicate the age tree: `_gated_range_tier` MUST stay a wrapper over `_sop_classify`,
-  or the two will drift.
+- HARD-RETIRE wins and routes to `retired[]`: manual list, Zoya, aged-out. Checked first; on a
+  hard-retired style we `continue` before active bucketing.
+- Else the style goes into `active[]` with `tier = gated_tier` (may be "Retire").
+- Manual override `_RANGE_OVERRIDES` (empty by default; only Tier 1..4) re-buckets within Active
+  and BEATS a gated "Retire"; `auto_tier` records the un-overridden gated outcome.
+- Retirement pipeline = active rows with `tier=="Retire"` AND `current_stock>0` (markdown rail
+  overlay) — these still live in Active, the pipeline does not remove them.
+- VivoRangeManagement.jsx reads `rows` and itself splits `tier=="Retire"` into a flagged set; the
+  main RangeManagement.jsx banner reads `summary.*`. Backend must put gated-Retire in `rows`, not
+  `retired_rows`, for both to render correctly.
+- `marketing-candidates` reuses `range_mgmt_classify`, inheriting this automatically.
 
 # Product Analysis / Catalogue = a SEPARATE, different tier concept (don't conflate)
 

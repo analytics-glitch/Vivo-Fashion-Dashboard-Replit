@@ -7425,18 +7425,19 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         # age sets the stage, but performance gates decide promotion vs retirement
         # (Week-8 read = SOR > 60% + full-price > 90% + sold within 7d + WOC <= 8;
         # Week-12 backstop = SOR >= 80%; Tier 2 needs 3+ reorders & SOR > 60% & FP >
-        # 90%; Tier 1 needs 5+ reorders & FP > 90% & SOR > 60%). A failed gate drops
-        # the style to the terminal Retire bucket. _sop_classify returns the displayed
-        # tier together with the matching status + recommended action.
-        gated_tier, gated_status, gated_action = _sop_classify(
+        # 90%; Tier 1 needs 5+ reorders & FP > 90% & SOR > 60%). A failed gate yields
+        # the "Retire" verdict — but for a still-trading style that is a FLAG, not a
+        # move: it stays in the live range (Active) and is surfaced as
+        # "flagged for retirement". Only HARD retirement moves a style out.
+        gated_tier = _gated_range_tier(
             age_weeks, lifetime_sor=sor_life, full_price_pct=full_price_pct,
-            last_sale_days=last_sale_days, woc=woc, reorder_count=reorder_count,
-            units_since_launch=units_life, sold_last_14d=units_14d > 0,
-            has_launch_date=launch is not None)
+            last_sale_days=last_sale_days, woc=woc, reorder_count=reorder_count)
 
-        # Hard-retire overrides (orthogonal to the gated read): a long-dead aged-out
-        # style, every Zoya style, and the durable manual-retirement list always go
-        # to the Retired bucket regardless of the gated outcome.
+        # Hard (physical) retirement is the ONLY thing that moves a style into the
+        # Retired bucket: the durable manual-retirement list (the styles list), every
+        # Zoya style, and long-dead aged-out styles (>=39wk, no 6-month sales, no sale
+        # in 270 days). A gated "Retire" verdict on a still-trading best-seller never
+        # retires it — it stays Active, flagged.
         is_retired = (age_weeks is not None and age_weeks >= 39 and units_6m == 0
                       and (last_sale_days is None or last_sale_days > 270))
         if (r["brand"] or "").strip().lower() == "zoya":
@@ -7446,11 +7447,20 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
 
         if is_retired or gated_tier == "Retire":
             status = "Retire"
-            action = ("Mark down to outlet and clear remaining stock per the SOP 4-week gap rule."
-                      if is_retired else gated_action)
+            action = "Mark down to outlet and clear remaining stock per the SOP 4-week gap rule."
+        elif (age_band in ("Tier 3", "Tier 4") and age_weeks is not None
+                and age_weeks >= 12 and (sor_life is None or sor_life < 25)):
+            status = "Overdue"
+            action = "Overdue Week-8 read — review sell-through now and decide reorder or exit."
+        elif sor_life is not None and sor_life < 45:
+            status = "At Risk"
+            action = "Monitor weekly; consider a marketing push or price review to lift sell-through."
+        elif gated_tier == "Tier 3":
+            status = "On Track"
+            action = "On review — track toward the 9-month gate for graduation to Tier 2."
         else:
-            status = gated_status
-            action = gated_action
+            status = "On Track"
+            action = "Healthy — maintain replenishment to keep the core line in stock."
 
         row = {
             "style_name": r["style_name"],
@@ -7489,39 +7499,46 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         }
 
         # --- Range tier classification (2026 Range Strategy / SOP): the displayed
-        # tier IS the GATED lifecycle outcome (_sop_classify above). Each style
-        # falls into exactly one of five buckets — Tier 1..Tier 4 or the terminal
-        # Retire. Tier 1..4 form the live range (Active); a style whose gate fails
-        # is routed OUT of the active tiers into `retired`, so Tier1+Tier2+Tier3+
-        # Tier4 == Active and Active + Retired == Total still hold. A manual tier
-        # override (_RANGE_OVERRIDES, Tier 1..4 only) keeps a style in the active
-        # range regardless of its gated outcome; `auto_tier` records the gated
-        # outcome so the frontend's "override · auto-tier was X" hint stays useful.
-        # Hard-retire (manual list / Zoya / aged-out) always wins.
+        # tier IS the GATED lifecycle outcome (_gated_range_tier above) — Tier 1..4
+        # or the flagged "Retire". The Active range holds ALL classified styles
+        # (Tier 1..4 PLUS the still-trading "Retire" flags), so the flagged set is
+        # surfaced as "flagged for retirement" while staying in Active — best-sellers
+        # are never dropped. ONLY hard/physical retirement (manual styles list / Zoya
+        # / long-dead aged-out) moves a style into `retired`. A manual tier override
+        # (_RANGE_OVERRIDES, Tier 1..4 only) re-buckets within the live range and beats
+        # a gated "Retire"; `auto_tier` records the un-overridden gated outcome so the
+        # frontend's "override · auto-tier was X" hint stays useful.
+        if is_retired:
+            row["tier"] = row["auto_tier"] = "Retire"
+            retired.append(row)
+            continue
+
         ov = _RANGE_OVERRIDES.get(r["style_name"])
         ov_tier = ov["tier"] if (ov and ov.get("tier") in
                                   ("Tier 1", "Tier 2", "Tier 3", "Tier 4")) else None
-
-        if is_retired or (gated_tier == "Retire" and not ov_tier):
-            row["tier"] = row["auto_tier"] = "Retire"
-            retired.append(row)
-            # Actionable retirement pipeline: gate-failed styles that still hold
-            # stock to clear (not the long-dead / Zoya / manually-retired set).
-            if not is_retired and current_stock > 0:
-                rec = today + timedelta(days=14)
-                pipeline.append({**row,
-                    "recommended_retirement_date": str(rec),
-                    "outlet_discount_date": str(rec + timedelta(days=28)),
-                    "reason": "Aged %sw at %s%% lifetime SOR with %s units remaining — failed the SOP tier gate." % (
-                        row["style_age_weeks"], row["sor_since_launch"], row["current_stock"]),
-                })
-            continue
-
         if ov_tier:
             row["tier"], row["auto_tier"], row["override_reason"] = ov_tier, gated_tier, ov.get("reason")
+            # A manual override keeps the style in the live range, so a gated "Retire"
+            # status/action would be misleading — recompute against the effective tier.
+            if status == "Retire":
+                row["status"] = status = "On Track"
+                row["recommended_action"] = action = (
+                    "Manually held in the active range — maintain replenishment per the override.")
         else:
             row["tier"], row["auto_tier"], row["override_reason"] = gated_tier, gated_tier, None
         active.append(row)
+
+        # Actionable retirement pipeline: still-trading styles the classifier flags
+        # "Retire" that still hold stock to clear (the markdown rail). These remain
+        # in Active — the pipeline is an overlay, not a separate bucket.
+        if row["tier"] == "Retire" and current_stock > 0:
+            rec = today + timedelta(days=14)
+            pipeline.append({**row,
+                "recommended_retirement_date": str(rec),
+                "outlet_discount_date": str(rec + timedelta(days=28)),
+                "reason": "Flagged for retirement — aged %sw at %s%% lifetime SOR with %s units remaining." % (
+                    row["style_age_weeks"], row["sor_since_launch"], row["current_stock"]),
+            })
 
         if (age_band == "Tier 3" and age_weeks is not None and 0 <= (39 - age_weeks) <= 6
                 and reorder_count >= 3 and sor_life is not None and sor_life > 60
@@ -7558,12 +7575,16 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         rag[t] = _rag(tier_counts.get(t, 0), *_RANGE_TARGETS[t])
 
     summary = {
+        # Active = ALL classified styles (Tier 1..4 PLUS the still-trading "Retire"
+        # flags); the flagged set stays in Active, not in Retired.
         "total_active_styles": len(active),
-        "flagged_for_retirement": len(pipeline),
+        # "Flagged for retirement" pill = the classifier's Retire bucket within
+        # Active (still trading, algorithm wants them on the markdown rail).
+        "flagged_for_retirement": tier_counts.get("Retire", 0),
         # Active styles still in Tier 4 past the 8-week read window — i.e. they
         # missed the Week-8 read and are awaiting the Week-12 backstop decision.
         "overdue_for_week8_read": sum(1 for row in active
-            if row["tier"] == "Tier 4" and (row["style_age_weeks"] or 0) > 8),
+            if row["tier"] == "Tier 4" and (row["style_age_weeks"] or 0) >= 8),
         "approaching_decision_gates": approaching,
         "tier_counts": tier_counts,
         "targets": _RANGE_TARGETS,
