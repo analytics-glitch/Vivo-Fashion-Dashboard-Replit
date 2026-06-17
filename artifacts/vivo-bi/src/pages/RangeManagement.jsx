@@ -538,6 +538,12 @@ const RangeManagement = () => {
             </p>
           </div>
 
+          {/* Vivo Range Management — live recreation of the June 2026 report.
+              Surfaced near the top so it is easy to find. */}
+          <div className="pt-2 border-t border-default">
+            <VivoRangeManagement />
+          </div>
+
           {/* Section 1.5 — Tier 3 → Tier 2 graduation candidates */}
           {candidates.length > 0 && (
             <div
@@ -1120,12 +1126,6 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
             />
           )}
         </div>
-      </div>
-
-      {/* Vivo Range Management — live recreation of the June 2026 report.
-          Moved here from Product Analysis to keep that page light. */}
-      <div className="pt-2 border-t border-default">
-        <VivoRangeManagement />
       </div>
     </div>
   );
