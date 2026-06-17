@@ -33,7 +33,7 @@ import {
 // Colour / Print / Size are row-explosion dimensions, driven by the column
 // picker: showing one in the table groups it to one value per row (selecting
 // several multiplies the rows). The backend receives these as the `dims` param.
-const DIM_KEYS = ["color", "print", "size"];
+const DIM_KEYS = ["color", "print", "size", "pos_location"];
 
 const fmtWoc = (v) => (v === null || v === undefined ? "—" : `${fmtDec(v, 1)} wk`);
 const fmtSor = (v) => (v === null || v === undefined ? "—" : `${fmtDec(v, 1)}%`);
@@ -162,7 +162,7 @@ const ProductAnalysis = () => {
   // the default table stays readable; the picker (above the table) reveals them.
   const [hiddenCols, setHiddenCols] = useState(
     () => new Set([
-      "color", "print", "size", "tier", "units_life", "sor_since_launch", "launch_date",
+      "color", "print", "size", "pos_location", "tier", "units_life", "sor_since_launch", "launch_date",
       "days_since_last_sale", "soh_stores", "soh_warehouse",
     ])
   );
@@ -583,7 +583,7 @@ const ProductAnalysis = () => {
         <p className="text-[12.5px] text-muted mt-1 max-w-3xl">
           One canonical style-level view of sales and stock that reconciles end to end.
           Scope it to all markets or a single store (sales and stock move together),
-          explode it to one row per colour, print or size from the column picker, and
+          explode it to one row per colour, print, size or POS location from the column picker, and
           drill any style into its size / colour split and where its stock is sitting.
           Narrow the date range with
           the presets (or a custom range), scope to one or more stores, and filter by
@@ -866,7 +866,7 @@ const ProductAnalysis = () => {
             <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <div className="eyebrow">
                 Styles ({fmtNum(filteredRows.length)}{filteredRows.length !== rows.length ? ` of ${fmtNum(rows.length)}` : ""})
-                {dims.length ? ` · by ${dims.map((d) => (d === "color" ? "colour" : d)).join(" × ")}` : ""}
+                {dims.length ? ` · by ${dims.map((d) => (d === "color" ? "colour" : d === "pos_location" ? "POS" : d)).join(" × ")}` : ""}
               </div>
               <div className="flex items-center gap-2">
                 <details className="relative" data-testid="pa-columns">

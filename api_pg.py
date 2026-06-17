@@ -3465,6 +3465,13 @@ def analytics_product_analysis(
     else:
         req = set()
     sel_dims = [d for d in DIM_ORDER if d in req]
+    # POS location is a special dimension: it does not live on the product master
+    # (all_products_clean) but on the sales / inventory rows. When it is exploded
+    # the final assembly switches from "prod-driven" joins to a sales⟗stock key
+    # spine joined back to prod on style (see from_join below) so a style returns
+    # one row per selling point — exactly like colour / print / size.
+    pos_exploded = "pos_location" in req
+    all_sel = sel_dims + (["pos_location"] if pos_exploded else [])
 
     style_status = (style_status or "all").strip().lower()
     if style_status not in ("active", "retired", "all"):
@@ -3476,7 +3483,7 @@ def analytics_product_analysis(
     # (run_query also caches the SQL, but only ~120s; this keeps the page warm.)
     _pa_ck = "pa:" + "|".join(str(x) for x in (
         df, dt, country, store, brand, category, subcategory, tier,
-        style_status, grain, ",".join(sel_dims), vel))
+        style_status, grain, ",".join(all_sel), vel))
     _pa_cached = cache_get(_pa_ck)
     if _pa_cached is not None:
         return _pa_cached
@@ -3535,6 +3542,39 @@ def analytics_product_analysis(
         stock_from = " FROM all_inventory i JOIN all_products_clean pc ON pc.sku = i.sku"
     join_keys = " USING (style_name" + ("".join(", " + j for j in join_dims)) + ")"
 
+    # POS explosion: add pos_location_name as a group key in the sales & stock
+    # CTEs only (it is not a product attribute), drop warehouse rows from stock so
+    # only real selling points become rows, and switch the final FROM to a
+    # sales⟗stock spine joined back to prod on style (+ any product dims).
+    sales_pos_sel = sales_pos_grp = sales_pos_where = ""
+    stock_pos_sel = stock_pos_grp = stock_pos_where = ""
+    if pos_exploded:
+        sales_pos_sel = ", s.pos_location_name AS pos_location"
+        sales_pos_grp = ", s.pos_location_name"
+        stock_pos_sel = ", i.pos_location_name AS pos_location"
+        stock_pos_grp = ", i.pos_location_name"
+        # Only real selling points become rows: drop warehouse / holding locations
+        # from stock (current_loc_clause) and from sales (a store filter already
+        # restricts sales; otherwise exclude the same warehouse set).
+        stock_pos_where = " AND (" + current_loc_clause + ")"
+        if not store:
+            sales_pos_where = " AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")"
+        spine_keys = " USING (style_name" + ("".join(", " + j for j in join_dims)) + ", pos_location)"
+        prod_keys = " USING (style_name" + ("".join(", " + j for j in join_dims)) + ")"
+        from_join = (" FROM sales sa FULL OUTER JOIN stock st" + spine_keys +
+                     " JOIN prod p" + prod_keys)
+        pos_out = " pos_location,"
+        # POS rows are current-relevance: a selling point appears if it sold in the
+        # date window OR currently holds stock (lifetime-only junk locations drop).
+        activity_where = (" WHERE (COALESCE(sa.units_period,0) <> 0"
+                          " OR COALESCE(st.soh_current,0) > 0)")
+    else:
+        from_join = (" FROM prod p LEFT JOIN sales sa" + join_keys +
+                     " LEFT JOIN stock st" + join_keys)
+        pos_out = " st.store_locations AS pos_location,"
+        activity_where = (" WHERE (COALESCE(sa.units_life,0) <> 0 OR COALESCE(st.soh_current,0) > 0"
+                          " OR COALESCE(st.soh_warehouse,0) > 0 OR COALESCE(st.soh_stores,0) > 0)")
+
     sql = (
         "WITH prod AS ("
         " SELECT style_name,"
@@ -3551,7 +3591,7 @@ def analytics_product_analysis(
         " GROUP BY style_name" + prod_grp +
         "),"
         "sales AS ("
-        " SELECT p.style_name" + sales_dim_sel + ","
+        " SELECT p.style_name" + sales_dim_sel + sales_pos_sel + ","
         " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "'),0) AS units_period,"
         " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes"
         " WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)"
@@ -3573,18 +3613,18 @@ def analytics_product_analysis(
         " WHERE s.sale_kind IN ('sale','order') AND s.product_price_kes IS NOT NULL"
         " AND s.product_price_kes > 0))[1] AS current_price"
         " FROM all_products_clean p JOIN all_sales s ON s.variant_sku = p.sku"
-        " WHERE p.style_name IS NOT NULL AND p.style_name <> '' AND " + BASE_FILTERS + cf + chf +
-        " GROUP BY p.style_name" + sales_dim_grp +
+        " WHERE p.style_name IS NOT NULL AND p.style_name <> '' AND " + BASE_FILTERS + cf + chf + sales_pos_where +
+        " GROUP BY p.style_name" + sales_dim_grp + sales_pos_grp +
         "),"
         "stock AS ("
-        " SELECT i.style_name" + stock_dim_sel + ","
+        " SELECT i.style_name" + stock_dim_sel + stock_pos_sel + ","
         " COALESCE(SUM(i.available) FILTER (WHERE " + current_loc_clause + "),0) AS soh_current,"
         " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_warehouse,"
         " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_stores,"
         " string_agg(DISTINCT i.pos_location_name, ', ' ORDER BY i.pos_location_name)"
         " FILTER (WHERE i.available > 0 AND (" + current_loc_clause + ")) AS store_locations"
-        + stock_from + " WHERE i.style_name IS NOT NULL AND i.style_name <> ''" + icf +
-        " GROUP BY i.style_name" + stock_dim_grp +
+        + stock_from + " WHERE i.style_name IS NOT NULL AND i.style_name <> ''" + icf + stock_pos_where +
+        " GROUP BY i.style_name" + stock_dim_grp + stock_pos_grp +
         ")"
         " SELECT p.style_name,"
         " p.brand, p.category, p.subcategory, p.collection, p.season, p.style_number,"
@@ -3595,12 +3635,8 @@ def analytics_product_analysis(
         " COALESCE(sa.orders_period,0) AS orders_period, COALESCE(sa.units_vel,0) AS units_vel,"
         " COALESCE(sa.units_life,0) AS units_life, sa.last_sale, sa.first_sale,"
         " COALESCE(st.soh_current,0) AS soh_current, COALESCE(st.soh_warehouse,0) AS soh_warehouse,"
-        " COALESCE(st.soh_stores,0) AS soh_stores, st.store_locations, sa.current_price"
-        " FROM prod p"
-        " LEFT JOIN sales sa" + join_keys +
-        " LEFT JOIN stock st" + join_keys +
-        " WHERE (COALESCE(sa.units_life,0) <> 0 OR COALESCE(st.soh_current,0) > 0"
-        " OR COALESCE(st.soh_warehouse,0) > 0 OR COALESCE(st.soh_stores,0) > 0)"
+        " COALESCE(st.soh_stores,0) AS soh_stores," + pos_out + " sa.current_price"
+        + from_join + activity_where
     )
 
     raw = run_query(sql)
@@ -3648,7 +3684,7 @@ def analytics_product_analysis(
             "current_stock": stock,
             "warehouse_stock": int(r["soh_warehouse"] or 0),
             "store_stock": int(r["soh_stores"] or 0),
-            "pos_location": r["store_locations"] or None,
+            "pos_location": r["pos_location"] or None,
             "units_vel": units_vel,
             "units_life": units_life,
             "woc": _woc(stock, units_vel),
@@ -3794,7 +3830,7 @@ def analytics_product_analysis(
         "scope": {
             "store": store or None, "country": country or None,
             "date_from": df, "date_to": dt, "velocity_days": vel,
-            "grain": grain, "dims": ",".join(sel_dims), "style_status": style_status,
+            "grain": grain, "dims": ",".join(all_sel), "style_status": style_status,
         },
     }
     cache_set(_pa_ck, resp, ttl=600)
