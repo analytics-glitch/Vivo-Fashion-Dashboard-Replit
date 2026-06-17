@@ -3580,7 +3580,7 @@ def analytics_product_analysis(
         " SELECT style_name,"
         " MAX(brand) AS brand, MAX(category) AS category, MAX(product_type) AS subcategory,"
         " MAX(collection) AS collection, MAX(season) AS season, MAX(style_number) AS style_number,"
-        " MAX(price) AS full_price,"
+        " MAX(price) AS full_price, MIN(price) AS price_min, MAX(price) AS price_max,"
         " MIN(substring(style_launch_date,1,10)) FILTER ("
         " WHERE substring(style_launch_date,1,10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') AS launch_date,"
         " COUNT(DISTINCT NULLIF(TRIM(size),'')) AS sizes_count,"
@@ -3605,6 +3605,13 @@ def analytics_product_analysis(
         " AND s.sale_date BETWEEN '" + df + "' AND '" + dt + "') AS orders_period,"
         " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '" + str(vel) + " days'),0) AS units_vel,"
         " SUM(s.net_quantity) AS units_life,"
+        " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)),0) AS sales_life,"
+        " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days'),0) AS units_6m,"
+        " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days')),0) AS revenue_6m,"
+        " COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days'),0) AS gross_units_6m,"
+        " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '730 days'),0) AS units_24m,"
+        " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '730 days')),0) AS revenue_24m,"
+        " COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '730 days'),0) AS gross_units_24m,"
         " MAX(s.sale_date::date) AS last_sale,"
         " MIN(s.sale_date::date) FILTER (WHERE s.sale_kind IN ('sale','order')) AS first_sale,"
         # current_price = price of the most recent qualifying sale, computed in
@@ -3629,11 +3636,14 @@ def analytics_product_analysis(
         " SELECT p.style_name,"
         " p.brand, p.category, p.subcategory, p.collection, p.season, p.style_number,"
         " p.color, p.print_plain, p.size,"
-        " p.full_price, p.launch_date, p.sizes_count, p.colors_count,"
+        " p.full_price, p.price_min, p.price_max, p.launch_date, p.sizes_count, p.colors_count,"
         " COALESCE(sa.units_period,0) AS units_period, COALESCE(sa.revenue_period,0) AS revenue_period,"
         " COALESCE(sa.net_revenue_period,0) AS net_revenue_period, COALESCE(sa.gross_units_period,0) AS gross_units_period,"
         " COALESCE(sa.orders_period,0) AS orders_period, COALESCE(sa.units_vel,0) AS units_vel,"
-        " COALESCE(sa.units_life,0) AS units_life, sa.last_sale, sa.first_sale,"
+        " COALESCE(sa.units_life,0) AS units_life, COALESCE(sa.sales_life,0) AS sales_life,"
+        " COALESCE(sa.units_6m,0) AS units_6m, COALESCE(sa.revenue_6m,0) AS revenue_6m, COALESCE(sa.gross_units_6m,0) AS gross_units_6m,"
+        " COALESCE(sa.units_24m,0) AS units_24m, COALESCE(sa.revenue_24m,0) AS revenue_24m, COALESCE(sa.gross_units_24m,0) AS gross_units_24m,"
+        " sa.last_sale, sa.first_sale,"
         " COALESCE(st.soh_current,0) AS soh_current, COALESCE(st.soh_warehouse,0) AS soh_warehouse,"
         " COALESCE(st.soh_stores,0) AS soh_stores," + pos_out + " sa.current_price"
         + from_join + activity_where
@@ -3651,6 +3661,21 @@ def analytics_product_analysis(
         denom = units + stock
         return round(units * 100.0 / denom, 1) if denom > 0 else None
 
+    def _life_cycle(aw):
+        # Age-based lifecycle stage — same thresholds as the Range Management
+        # classify endpoint (Tier 4 < 8wk, Tier 3 8wk–9mo, Tier 2 9–24mo,
+        # Tier 1 24mo+), but labelled descriptively so it is not confused with
+        # the Pareto revenue "Tier" column.
+        if aw is None:
+            return "New / Test"
+        if aw >= 104:
+            return "Core"
+        if aw >= 39:
+            return "Core Performer"
+        if aw >= 8:
+            return "Recent Performer"
+        return "New / Test"
+
     rows = []
     for r in raw:
         units = int(r["units_period"] or 0)
@@ -3666,6 +3691,29 @@ def analytics_product_analysis(
         full_price = round(float(r["full_price"])) if r["full_price"] is not None else None
         current_price = round(float(r["current_price"])) if r["current_price"] is not None else None
         asp = round(revenue / gross_units) if gross_units > 0 else None
+        units_6m = int(r["units_6m"] or 0)
+        revenue_6m = float(r["revenue_6m"] or 0)
+        gross_units_6m = int(r["gross_units_6m"] or 0)
+        units_24m = int(r["units_24m"] or 0)
+        revenue_24m = float(r["revenue_24m"] or 0)
+        gross_units_24m = int(r["gross_units_24m"] or 0)
+        sales_life = float(r["sales_life"] or 0)
+        asp_6m = round(revenue_6m / gross_units_6m) if gross_units_6m > 0 else None
+        asp_24m = round(revenue_24m / gross_units_24m) if gross_units_24m > 0 else None
+        avg_price_life = round(sales_life / units_life) if units_life > 0 else None
+        # Full Price % = lifetime avg selling price ÷ full ticket price (capped at
+        # 100), matching the Range Management report's definition.
+        full_price_pct = round(min(100.0, avg_price_life * 100.0 / full_price), 1) \
+            if (avg_price_life is not None and full_price not in (None, 0)) else None
+        days_since_launch = (today - launch).days if launch else None
+        weeks_since_launch = round(days_since_launch / 7.0) if days_since_launch is not None else None
+        age_years = round(days_since_launch / 365.25, 1) if days_since_launch is not None else None
+        units_per_week = round(units_vel / wk, 1) if wk > 0 else None
+        reorder_count = int(age_weeks // 12) if age_weeks else 0
+        price_min = round(float(r["price_min"])) if r["price_min"] is not None else None
+        price_max = round(float(r["price_max"])) if r["price_max"] is not None else None
+        sor_6m = _sor(units_6m, stock)
+        life_cycle = _life_cycle(age_weeks)
         rows.append({
             "style_name": r["style_name"],
             "style_number": r["style_number"],
@@ -3695,6 +3743,24 @@ def analytics_product_analysis(
             "current_price": current_price,
             "launch_date": str(launch) if launch else None,
             "age_weeks": age_weeks,
+            "age_years": age_years,
+            "days_since_launch": days_since_launch,
+            "weeks_since_launch": weeks_since_launch,
+            "units_per_week": units_per_week,
+            "reorder_count": reorder_count,
+            "life_cycle": life_cycle,
+            "units_6m": units_6m,
+            "revenue_6m": round(revenue_6m),
+            "asp_6m": asp_6m,
+            "sor_6m": sor_6m,
+            "units_24m": units_24m,
+            "revenue_24m": round(revenue_24m),
+            "asp_24m": asp_24m,
+            "sales_life": round(sales_life),
+            "avg_price_life": avg_price_life,
+            "full_price_pct": full_price_pct,
+            "price_min": price_min,
+            "price_max": price_max,
             "last_sale": str(r["last_sale"]) if r["last_sale"] else None,
             "sizes_count": int(r["sizes_count"] or 0),
             "colors_count": int(r["colors_count"] or 0),

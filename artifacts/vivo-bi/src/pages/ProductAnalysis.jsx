@@ -444,6 +444,104 @@ const ProductAnalysis = () => {
       { key: "full_price", label: "Full Price", numeric: true, render: (r) => fmtPrice(r.full_price), csv: (r) => r.full_price ?? "" },
       { key: "current_price", label: "Current Price", numeric: true, render: (r) => fmtPrice(r.current_price), csv: (r) => r.current_price ?? "" },
       { key: "launch_date", label: "Launch Date", render: (r) => (r.launch_date ? fmtDate(r.launch_date) : "—"), csv: (r) => r.launch_date || "" },
+      {
+        key: "life_cycle", label: "Life Cycle",
+        headerTitle: "Age-based lifecycle stage — New/Test (<8wk), Recent Performer, Core Performer, Core (24mo+)",
+        render: (r) => r.life_cycle || "—", csv: (r) => r.life_cycle || "",
+      },
+      {
+        key: "reorder_count", label: "No. of Reorders", numeric: true,
+        headerTitle: "Estimated reorder cycles — one per ~12 weeks of style age",
+        render: (r) => fmtNum(r.reorder_count), csv: (r) => r.reorder_count ?? "",
+      },
+      {
+        key: "age_years", label: "Age (Years)", numeric: true,
+        headerTitle: "Style age in years since launch",
+        render: (r) => (r.age_years == null ? "—" : r.age_years),
+        sortValue: (r) => (r.age_years == null ? -1 : r.age_years),
+        csv: (r) => r.age_years ?? "",
+      },
+      {
+        key: "age_weeks", label: "Age (Weeks)", numeric: true,
+        headerTitle: "Style age in weeks since launch",
+        render: (r) => (r.age_weeks == null ? "—" : fmtNum(r.age_weeks)),
+        sortValue: (r) => (r.age_weeks == null ? -1 : r.age_weeks),
+        csv: (r) => r.age_weeks ?? "",
+      },
+      {
+        key: "days_since_launch", label: "Days Since Launch", numeric: true,
+        headerTitle: "Whole days since the style launched",
+        render: (r) => (r.days_since_launch == null ? "—" : fmtNum(r.days_since_launch)),
+        sortValue: (r) => (r.days_since_launch == null ? -1 : r.days_since_launch),
+        csv: (r) => r.days_since_launch ?? "",
+      },
+      {
+        key: "weeks_since_launch", label: "Weeks Since Launch", numeric: true,
+        headerTitle: "Whole weeks since the style launched",
+        render: (r) => (r.weeks_since_launch == null ? "—" : fmtNum(r.weeks_since_launch)),
+        sortValue: (r) => (r.weeks_since_launch == null ? -1 : r.weeks_since_launch),
+        csv: (r) => r.weeks_since_launch ?? "",
+      },
+      {
+        key: "units_per_week", label: "Units / Week", numeric: true,
+        headerTitle: "Average units sold per week over the velocity window",
+        render: (r) => (r.units_per_week == null ? "—" : r.units_per_week),
+        sortValue: (r) => (r.units_per_week == null ? -1 : r.units_per_week),
+        csv: (r) => r.units_per_week ?? "",
+      },
+      {
+        key: "full_price_pct", label: "Full Price %", numeric: true,
+        headerTitle: "Lifetime avg selling price ÷ full ticket price (capped at 100%)",
+        render: (r) => fmtSor(r.full_price_pct), pct: true,
+        sortValue: (r) => (r.full_price_pct == null ? -1 : r.full_price_pct),
+        csv: (r) => (r.full_price_pct == null ? "" : r.full_price_pct),
+      },
+      {
+        key: "price_range", label: "Price Range", numeric: true,
+        headerTitle: "Min–max full ticket price across the style's variants",
+        render: (r) => {
+          if (r.price_min == null && r.price_max == null) return "—";
+          if (r.price_min === r.price_max) return fmtPrice(r.price_min);
+          return `${fmtPrice(r.price_min)} – ${fmtPrice(r.price_max)}`;
+        },
+        sortValue: (r) => (r.price_max == null ? -1 : r.price_max),
+        csv: (r) => {
+          if (r.price_min == null && r.price_max == null) return "";
+          if (r.price_min === r.price_max) return r.price_min;
+          return `${r.price_min} - ${r.price_max}`;
+        },
+      },
+      {
+        key: "units_6m", label: "6M Units Sold", numeric: true,
+        headerTitle: "Net units sold in the last 180 days (rolling — ignores the date range)",
+        render: (r) => fmtNum(r.units_6m), csv: (r) => r.units_6m ?? "",
+      },
+      {
+        key: "revenue_6m", label: "6M Revenue", numeric: true,
+        headerTitle: "Revenue in the last 180 days (rolling — ignores the date range)",
+        render: (r) => fmtKES(r.revenue_6m), csv: (r) => r.revenue_6m ?? "",
+      },
+      {
+        key: "asp_6m", label: "6M Avg Price", numeric: true,
+        headerTitle: "Average selling price over the last 180 days",
+        render: (r) => fmtAsp(r.asp_6m), csv: (r) => r.asp_6m ?? "",
+      },
+      {
+        key: "sor_6m", label: "SOR (6m)", numeric: true,
+        headerTitle: "Sell-out rate over the last 180 days = 6m units ÷ (6m units + current stock)",
+        render: (r) => fmtSor(r.sor_6m), pct: true,
+        sortValue: (r) => (r.sor_6m == null ? -1 : r.sor_6m),
+      },
+      {
+        key: "revenue_24m", label: "24M Revenue", numeric: true,
+        headerTitle: "Revenue in the last 730 days (rolling — ignores the date range)",
+        render: (r) => fmtKES(r.revenue_24m), csv: (r) => r.revenue_24m ?? "",
+      },
+      {
+        key: "asp_24m", label: "24M Avg Price", numeric: true,
+        headerTitle: "Average selling price over the last 730 days",
+        render: (r) => fmtAsp(r.asp_24m), csv: (r) => r.asp_24m ?? "",
+      },
     );
     return cols;
   }, []);
@@ -492,6 +590,21 @@ const ProductAnalysis = () => {
       { key: "full_price", label: "Full Price (KES)", csv: (r) => r.full_price ?? "" },
       { key: "current_price", label: "Current Price (KES)", csv: (r) => r.current_price ?? "" },
       { key: "launch_date", label: "Launch Date", csv: (r) => r.launch_date || "" },
+      { key: "life_cycle", label: "Life Cycle", csv: (r) => r.life_cycle || "" },
+      { key: "reorder_count", label: "No. of Reorders", csv: (r) => r.reorder_count ?? "" },
+      { key: "age_years", label: "Age (Years)", csv: (r) => r.age_years ?? "" },
+      { key: "age_weeks", label: "Age (Weeks)", csv: (r) => r.age_weeks ?? "" },
+      { key: "days_since_launch", label: "Days Since Launch", csv: (r) => r.days_since_launch ?? "" },
+      { key: "weeks_since_launch", label: "Weeks Since Launch", csv: (r) => r.weeks_since_launch ?? "" },
+      { key: "units_per_week", label: "Units Sold per Week", csv: (r) => r.units_per_week ?? "" },
+      { key: "full_price_pct", label: "Full Price %", csv: (r) => (r.full_price_pct == null ? "" : r.full_price_pct), pct: true },
+      { key: "price_range", label: "Price Range", csv: (r) => { if (r.price_min == null && r.price_max == null) return ""; if (r.price_min === r.price_max) return r.price_min; return `${r.price_min} - ${r.price_max}`; } },
+      { key: "units_6m", label: "6 Months Units Sold", csv: (r) => r.units_6m ?? "" },
+      { key: "revenue_6m", label: "6 Months Revenue (KES)", csv: (r) => r.revenue_6m ?? "" },
+      { key: "asp_6m", label: "6 Month Avg Price (KES)", csv: (r) => r.asp_6m ?? "" },
+      { key: "sor_6m", label: "SOR (6m) %", csv: (r) => (r.sor_6m == null ? "" : r.sor_6m), pct: true },
+      { key: "revenue_24m", label: "24 Month Revenue (KES)", csv: (r) => r.revenue_24m ?? "" },
+      { key: "asp_24m", label: "24 Month Avg Price (KES)", csv: (r) => r.asp_24m ?? "" },
     ];
     const scopeSlug = stores.length
       ? (stores.length === 1 ? stores[0] : `${stores.length}-stores`)
