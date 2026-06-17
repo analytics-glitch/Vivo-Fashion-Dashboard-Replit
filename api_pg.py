@@ -7319,18 +7319,24 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                 "current_stock": current_stock, "last_sale_days": last_sale_days,
             })
 
-    # --- Range tier classification (2026 Range Strategy / PPT): the tier IS the
-    # age-driven lifecycle stage computed above (Tier 4 New/Test -> Tier 3 Recent
-    # Performer -> Tier 2 Core Performer -> Tier 1 Core Basics). Hard-retire overrides.
-    for row, _at, _fs, _sl, flagged in meta:
-        auto_tier = _at
+    # --- Range tier classification (2026 Range Strategy / PPT): the four tiers
+    # PARTITION the active range — every active style sits in exactly one of
+    # Tier 1..Tier 4 by its age-driven lifecycle stage (Tier 4 New/Test -> Tier 3
+    # Recent Performer -> Tier 2 Core Performer -> Tier 1 Core Basics), so
+    # Tier1+Tier2+Tier3+Tier4 == Active and (with the hard-retired bucket below)
+    # Active + Retired == Total. The 2026 SOP gated performance read (Week-8/12 +
+    # SOR/FP/reorder/WOC, computed above) drives the row STATUS and the retirement
+    # pipeline, NOT the tier bucket — a style that fails its gate but is still in
+    # the live range stays in its lifecycle tier and is surfaced via status/flag.
+    # Hard-retire (manual list / Zoya / aged-out) already removed those rows into
+    # `retired`. Manual tier overrides re-bucket an active style within Tier 1..4.
+    for row, _gated, _fs, _sl, flagged in meta:
+        age_tier = row["age_tier"]
         ov = _RANGE_OVERRIDES.get(row["style_name"])
-        if ov:
-            row["tier"], row["auto_tier"], row["override_reason"] = ov["tier"], auto_tier, ov.get("reason")
-        elif flagged:
-            row["tier"], row["auto_tier"], row["override_reason"] = "Retire", "Retire", None
+        if ov and ov.get("tier") in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"):
+            row["tier"], row["auto_tier"], row["override_reason"] = ov["tier"], age_tier, ov.get("reason")
         else:
-            row["tier"], row["auto_tier"], row["override_reason"] = auto_tier, auto_tier, None
+            row["tier"], row["auto_tier"], row["override_reason"] = age_tier, age_tier, None
 
         if flagged:
             rec = today + timedelta(days=14)
