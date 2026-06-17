@@ -7317,7 +7317,7 @@ def _tier_summary_block(rows, total_count):
 @app.get("/api/range-mgmt/classify")
 def range_mgmt_classify(country: str = Query(default=None), channel: str = Query(default=None)):
     cf, chf = _style_filters(country, channel, "s")
-    icf, _ = _style_filters(country, channel, "i")
+    icf, ichf = _style_filters(country, channel, "i")
     raw = run_query("""
         WITH prod AS (
             SELECT style_name,
@@ -7358,7 +7358,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                 COALESCE(SUM(available) FILTER (WHERE pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
                 COALESCE(SUM(available) FILTER (WHERE pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_warehouse
             FROM all_inventory i
-            WHERE style_name IS NOT NULL""" + icf + """
+            WHERE style_name IS NOT NULL""" + icf + ichf + """
             GROUP BY style_name
         )
         SELECT p.style_name, p.brand, p.subcategory, p.style_number, p.price, p.launch_date,
@@ -8448,7 +8448,7 @@ def inventory_style_counts(
 @app.get("/api/range-mgmt/weekly-sor")
 def range_mgmt_weekly_sor(country: str = Query(default=None), channel: str = Query(default=None)):
     cf, chf = _style_filters(country, channel, "s")
-    icf, _ = _style_filters(country, channel, "i")
+    icf, ichf = _style_filters(country, channel, "i")
     raw = run_query("""
         WITH prod AS (
             SELECT style_name,
@@ -8481,7 +8481,7 @@ def range_mgmt_weekly_sor(country: str = Query(default=None), channel: str = Que
             SELECT style_name, COALESCE(SUM(available), 0) AS current_stock
             FROM all_inventory i
             WHERE style_name IN (SELECT style_name FROM new_styles)
-              AND pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)""" + icf + """
+              AND pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)""" + icf + ichf + """
             GROUP BY style_name
         )
         SELECT n.style_name, n.brand, n.subcategory, n.style_number, n.launch_date,
