@@ -1,0 +1,133 @@
+I have the full picture. Here's the precise, code-truth documentation:
+
+Range Management — Tier Classification, Step by Step
+Code lives in /app/backend/range_mgmt.py (pure functions, no I/O) — invoked by /api/range-mgmt/classify after pulling rows from /api/analytics/sor-all-styles.
+
+The classifier runs the SOP-2026 framework, but a single style only ever falls into ONE of 5 buckets: Tier 1 · Tier 2 · Tier 3 · Tier 4 · Retire.
+
+0. The 6 inputs the classifier needs per style
+Each row from /sor-all-styles is expected to carry:
+
+Field	What it is	Source
+launch_date	First-ever sale date (ISO)	Mongo style_launch_dates_by_number (heal-sweep populated)
+style_age_weeks	Weeks since launch	Recomputed from launch_date (vendor metadata is unreliable)
+sor_since_launch	Lifetime Sell-Out Rate, units_sold ÷ (units_sold + current_stock) × 100	Upstream /sor
+days_since_last_sale	Days since most recent sale	Upstream /sor
+woc	Weeks of Cover, current_stock ÷ weekly_velocity_4w	Upstream /sor
+asp_6m, original_price	6-mo avg selling price, original/full price	Upstream /sor + Mongo first_sale_price_ke (= "Full Price" anchor)
+units_since_launch	Lifetime units	Upstream /sor
+1. Two derived metrics get computed first
+reorder_count (approximation, user-signed-off)
+def approx_reorder_count(age_weeks):
+    if age_weeks < 12: return 0
+    return age_weeks // 12     # one open-buy cycle every ~12 weeks
+12-week-age style → 1 reorder, 36-week → 3 reorders, 60-week (1y3m) → 5 reorders. This is the SOP-defined "open buy cadence" proxy because we don't have the real PO history wired in.
+
+full_price_pct (realised-price-vs-full-price %)
+def approx_full_price_pct(asp, original):
+    return clamp(0, 100, asp / original * 100)
+Returns None when either input is missing → UI renders "—" and the Tier 1/2 gates that depend on FP% are treated as PASS (defensive default).
+
+2. The two "gates" — Week 8 read and Week 12 backstop
+These appear inside the age-based decision tree, not as standalone tiers.
+
+Week 8 gate (SOP "first read after launch")
+A style passes Week 8 iff ALL of:
+
+lifetime_sor > 60 %
+full_price_pct > 90 % (PASS if missing)
+last_sale_days ≤ 7
+woc ≤ 8 weeks (PASS if missing)
+If any is missing-but-required (SOR, last_sale) → fails closed (you can't pass a read without data).
+
+Week 12 backstop ("late bloomer")
+A style passes Week 12 iff lifetime_sor ≥ 80 % — a single, more permissive threshold for styles that missed Week 8 but proved themselves by Week 12.
+
+3. The defensive guard — missing launch dates
+Before the main decision tree runs:
+
+if launch_date is missing:
+    if units_since_launch ≥ 100 AND sor_since_launch ≥ 50:
+        → Tier 2 (Core Performer)
+        reason: "Long-trading style — exact launch date pending heal-sweep"
+        EARLY RETURN
+Why this exists: When style_launch_dates_by_number is partially populated (e.g. production right after a deploy, or before the auto-heal sweep finishes), every undated style would default to age=0 and land in Tier 4. The defensive guard catches long-trading high-volume styles and parks them in Tier 2 until the real date arrives. Lower-volume undated styles continue through the tree (they'll land in Tier 4 or Retire, which is correct for them).
+
+4. The main decision tree — entirely age-driven
+The classifier walks age_weeks from 0 → ∞ and applies the SOP's gates in order. Age is recomputed from launch_date every time — the upstream style_age_weeks is ignored because vendor metadata frequently disagrees with the historically-observed first sale.
+
+Age range	What happens
+< 8 weeks	Tier 4 — New/Test · On Track if a sale in last 14 days, else At Risk · "Monitor weekly until Week 8 read"
+8 – 12 weeks	Apply Week 8 gate: passed → Tier 3 (On Track); failed → Tier 4 (At Risk, "Missed Week 8 — review again at Week 12")
+12 weeks – 9 months (< 36w)	Apply Week 8 OR Week 12 backstop: passed → Tier 3 (On Track, "Graduate to Tier 2 after Month 9 if still performing"); failed both → Retire (STATUS_RETIRE, "4-week gap rule, retire to outlet")
+9 – 24 months (36–96w)	Tier 2 — Core Performer iff: reorder_count ≥ 3 AND lifetime_sor > 60 AND full_price_pct > 90 (or null). Else Retire (At Risk)
+24+ months (≥ 96w)	Tier 1 — Core Basic iff: reorder_count ≥ 5 AND lifetime_sor > 60 AND full_price_pct > 90 (or null). Else Retire (STATUS_RETIRE, "24+ months without Tier 1 criteria — retire and run-out stock")
+5. The five terminal buckets
+Bucket	Meaning	Action surfaced in UI
+Tier 1 — Core Basic	24+ months, repeatedly reordered, full-price-realised, high SOR	"Permanent core basic — auto-reorder when WOC ≤ 8w"
+Tier 2 — Core Performer	9-24 months, 3+ reorder cycles, lifetime SOR > 60%, FP > 90%	"Open-buy core performer — monitor monthly"
+Tier 3 — Recent Performer	Passed Week 8 or Week 12 gate, < 9 months old	"Promoted to Tier 3 — monitor weekly" or "Graduate to Tier 2 after Month 9 if still performing"
+Tier 4 — New / Test	< 8 weeks OR failed Week 8 but pending Week 12	"Monitor weekly until Week 8 read" / "Review again at Week 12"
+Retire	Aged out without meeting the next-tier criteria (failed both gates, OR failed core-performer/basic criteria)	"Retire to outlet (4-week gap rule)" / "Retire and run-out stock"
+6. The three status flags (orthogonal to the tier)
+Every row also gets a status pill that lives independently of the tier number:
+
+Status	When
+On Track	Style is performing per spec for its tier
+At Risk	Style is in the right tier but a metric is degrading (recent sale gap, missed first gate)
+Retire	Style hit a hard retire trigger (overdue, aged out, failed criteria)
+Two styles can both be "Tier 3" but one is On Track and the other At Risk — the action recommended will differ.
+
+7. Range-wide targets (drives the RAG banner at the top of the page)
+After classifying every style, the totals are compared against:
+
+TIER_TARGETS = {
+    "Tier 1": (30, 50),    # min, max for healthy range size
+    "Tier 2": (200, 300),
+    "Tier 3": (150, 200),
+    "Tier 4": (60, 100),
+}
+TOTAL_TARGET = (500, 700)
+Range banner green if every tier sits inside its (min, max) AND total sits inside (500, 700)
+Amber if any single tier overshoots/undershoots by < 20 %
+Red if any tier is > 20 % out OR total is < 500 / > 700
+8. Output shape per style
+The classifier returns a flat dict with the original input fields + the derived ones:
+
+{
+  "style_name": "...", "brand": "...", "subcategory": "...", "category": "...",
+  "style_age_weeks": 14.3,
+  "lifetime_sor_pct": 68.2,
+  "current_stock": 22, "woc": 4.1, "last_sale_days": 2,
+  "reorder_count": 1,
+  "full_price_pct": 92.5,
+  "weekly_avg": 5.3,
+  "launch_date": "2025-12-04",
+  "style_number": "VSA0223...",
+  # passthroughs from sor-all-styles (so the table can render them
+  # without a second call):
+  "units_since_launch": 84, "sales_since_launch": 412000,
+  "original_price": 4500, "avg_price_since_launch": 4163,
+  "units_6m": 84, "sales_6m": 412000,
+  "sor_since_launch": 68.2, "sor_6m": 71.4,
+  "units_online": 22, "units_stores": 62,
+  "soh_stores": 15, "soh_warehouse": 7,
+  # the classification verdict:
+  "tier": "Tier 3",
+  "status": "On Track",
+  "recommended_action": "Promoted to Tier 3 — monitor weekly",
+  "passed_week8": True,
+  "passed_week12": True,
+}
+9. Three caveats to know
+Reorder count is an approximation. Until we wire actual PO data into Mongo, "reorders ≥ 3/5" is really "age ≥ 36w / ≥ 60w".
+Full-price % is an approximation. It's asp_6m / original_price, which treats consistent discounting as a drop in realised price. If a style has heavy markdown but full-price sell-through > 90 % via volume, this metric will under-state full-price performance.
+Missing launch date is the single biggest source of Tier 4 mis-classification. A style with no launch_date in Mongo falls through to age=0 → Tier 4 unless it has units_since_launch ≥ 100 AND sor ≥ 50 (defensive guard, iter 91q). This is why the auto-heal sweep on launch dates matters so much for accuracy.
+10. Where to change behaviour
+Change	Touch
+Tier age boundaries	classify_style() if/elif tree in range_mgmt.py
+Gate thresholds (SOR, FP%, WoC, last_sale)	_passed_week8_gate(), _passed_week12_backstop()
+Tier target ranges	TIER_TARGETS, TOTAL_TARGET dicts at top of range_mgmt.py
+Reorder approximation	approx_reorder_count()
+Full-price approximation	approx_full_price_pct()
+Defensive guard for missing launch dates	The if not _lnch: block inside classify_style()

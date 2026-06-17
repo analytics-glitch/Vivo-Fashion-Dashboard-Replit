@@ -1,60 +1,71 @@
 ---
 name: Range tier model
-description: How range-mgmt classify assigns the displayed Tier 1-4 (lifecycle/age band, partitions Active) vs the gated SOP read (status/pipeline), Product Analysis Pareto T1-T4, and the walk-in customer exclusion rule nearby
+description: How range-mgmt classify assigns the displayed Tier 1-4 (now = SOP-2026 GATED lifecycle outcome; Retire is terminal/routed to Retired), Product Analysis Pareto T1-T4 + life_cycle, and the walk-in customer exclusion rule nearby
 ---
 
-# Range Mgmt 4-tier framework: tiers PARTITION Active (lifecycle/age band); the gated SOP read is STATUS, not the tier
+# Range Mgmt 5-bucket framework: displayed tier = the GATED SOP read; Retire is a TERMINAL bucket
 
 `/api/range-mgmt/classify` powers the web "Vivo 4-Tier Framework" (RangeManagement.jsx
 + VivoRangeManagement.jsx, both hit the same endpoint).
 
 **Hard display invariants the user requires (assert these, they regressed before):**
-- `Tier 1 + Tier 2 + Tier 3 + Tier 4 == Active` (the four tiers partition the active range).
-- `Active + Retired == Total` (every in-stock style is in exactly one of the two buckets).
+- `Tier 1 + Tier 2 + Tier 3 + Tier 4 == Active` (the four live tiers partition the active range).
+- `Active + Retired == Total` (every in-stock style is in exactly one bucket).
 
-**The displayed `row["tier"]` = the lifecycle/AGE band** (`row["age_tier"]`, always
-Tier 1..Tier 4): <8wk→Tier 4 (New/Test), 8–39wk→Tier 3, 39–104wk→Tier 2, ≥104wk→Tier 1
-(None age → Tier 4). So every active style lands in exactly one tier. `_RANGE_OVERRIDES`
-(empty by default; the runtime override endpoint only ever sets Tier 1..4) can re-bucket
-within Tier 1..4; `auto_tier` stays the un-overridden age tier so the frontend's
-"manual override · auto-tier was X" hint stays meaningful.
+**The displayed `row["tier"]` IS the SOP-2026 GATED lifecycle outcome** (not the catalogue
+age band). One helper `_sop_classify(...)` is the single source of truth: it returns the
+triple `(tier, status, recommended_action)` where tier ∈ Tier 1..4 or "Retire". Age sets the
+stage but the performance gates decide promotion vs retirement at each stage. A gate-failed
+style returns "Retire" and is routed OUT of the active tiers into `retired[]` — Retire is
+terminal, NOT an active tier. `_gated_range_tier(...)` is now a thin wrapper that calls
+`_sop_classify` and returns just the tier (Product Analysis's `life_cycle` mapping uses it;
+the wrapper preserves the old `age_weeks is None -> Tier 4` behavior).
 
-**The 2026 SOP GATED read drives STATUS + the retirement pipeline, NOT the tier bucket.**
-`_gated_range_tier(age_weeks, *, lifetime_sor, full_price_pct, last_sale_days, woc,
-reorder_count)` (+ `_passed_week8_gate`, `_passed_week12_backstop`) returns Tier 1..4 or
-"Retire"; its "Retire" outcome only feeds `status` (set in the first loop: `gated_tier=="Retire"
-→ status="Retire"`). A still-in-range style that fails its gate keeps its lifecycle tier
-and surfaces the concern via `status`/`flagged` — it is NOT pulled out of the tier counts.
+**The gated tree (calendar weeks 8/12/39/104, NOT the SOP's nominal 36/96 — same 9-/24-month
+milestones; keeps trackers + `_RANGE_TARGETS` consistent):**
+- Defensive guard: no launch date AND units≥100 AND lifetime SOR≥50 → Tier 2 (long-trading
+  style whose launch date isn't healed yet); otherwise treat age as 0.
+- <8wk → Tier 4 (New/Test). status On Track if sold in last 14d else At Risk.
+- 8–12wk → Week-8 read: pass → Tier 3 (On Track); fail → Tier 4 (At Risk, review at Week-12).
+- 12–39wk → pass Week-8 OR Week-12 backstop → Tier 3; else Retire.
+- 39–104wk → reorders≥3 AND lifetime SOR>60 AND (FP>90 or FP unknown) → Tier 2; else Retire.
+- ≥104wk → reorders≥5 AND (FP>90 or FP unknown) AND lifetime SOR>60 → Tier 1; else Retire.
+- Gates: Week-8 = lifetime SOR>60 AND FP>90 AND sold within 7d AND WOC≤8; Week-12 = SOR≥80;
+  fail closed when SOR/last-sale missing.
 
-**Why:** A prior version assigned `row["tier"]` from `gated_tier`, so ~755 active styles
-that failed gates got tier "Retire" and fell outside Tier 1..4 — the four tiles summed to
-173 while Active showed 928. The user's mental model: Active (the headline, target band
-500–700) is fixed and the four tiers must add up to it; the gate read is a per-style
-status overlay, not a bucket. Restoring `tier = age_band` matches the endpoint's own
-documented intent and both invariants.
+**Status taxonomy is now On Track / At Risk / Retire ONLY** (no "Overdue"). status + action
+come straight from `_sop_classify`. `overdue_for_week8_read` KPI is derived: count of active
+Tier 4 styles with age>8wk (the 8–12wk group that missed the Week-8 read, awaiting Week-12).
 
-**How to apply:**
-- Don't reintroduce `tier = gated_tier`. Keep gated logic on `status` + the `flagged_for_retirement`
-  pipeline only. `flagged` (≥39w, lifetime SOR<40, stock>0) feeds the pipeline but the style
-  STAYS in its age tier (don't set its tier to "Retire").
-- HARD-RETIRE still routes rows OUT of `active` into `retired[]` BEFORE tiering: manual
-  retirement list, every Zoya style, aged-out (≥39w, 0 six-mo units, no sale 270d+). Those
-  are the ONLY things that move a style to Retired.
-- `tier_counts` still carries a "Retire" key but it is now ~0 for active styles (a gate-failed
-  active style is counted in its age tier). Sum Tier 1..4 to reconcile against Active.
-- Gates (for status): Week-8 read = lifetime SOR>60 AND FP>90 AND sold within 7d AND WOC≤8;
-  Week-12 backstop = lifetime SOR≥80; fail closed when SOR/last-sale missing. Calendar weeks
-  8/12/39/104 (NOT the SOP's 36/96) so trackers/`_RANGE_TARGETS` stay consistent.
+**Why:** The user explicitly applied the SOP-2026 gated decision tree and wants the displayed
+tiers to follow it (fewer Tier 1, gate-failed styles retired) — the REVERSE of the earlier
+pure-age model. Expect Active to drop sharply (~175 vs ~1106 total; RAG red vs the 500–700
+target) and Retired to balloon — that is intended, not a bug.
+
+**How to apply / precedence:**
+- HARD-RETIRE always wins and routes OUT to `retired[]` regardless of gated outcome: manual
+  retirement list, every Zoya style, aged-out (≥39w, 0 six-mo units, no sale 270d+).
+- Manual override `_RANGE_OVERRIDES` (empty by default; only ever Tier 1..4) keeps a style in
+  the ACTIVE range at the override tier and beats a gated "Retire"; `auto_tier` records the
+  gated outcome so the frontend "override · auto-tier was X" hint stays meaningful.
+- Both frontends already tolerate `tier=="Retire"` rows (route to retired) — no FE change was
+  needed when the tier source flipped from age to gated.
+- Retirement pipeline = gated-Retire styles that still hold stock (`not is_retired and
+  current_stock>0`) — the actionable clear-stock list, not the long-dead/Zoya/manual set.
+- `tier_counts` still carries a "Retire" key but it is 0 for `active` (Retire rows live in
+  `retired[]`). Sum Tier 1..4 to reconcile against Active.
 - `marketing-candidates` reuses `range_mgmt_classify`, so it inherits this automatically.
+- Don't duplicate the age tree: `_gated_range_tier` MUST stay a wrapper over `_sop_classify`,
+  or the two will drift.
 
 # Product Analysis / Catalogue = a SEPARATE, different tier concept (don't conflate)
 
 Product Analysis (`api_pg.py` ~line 3680+) has its OWN `tier` = Pareto cumulative-revenue
 share T1/T2/T3/T4 (T1≤20%, T2≤60%, T3≤90%, T4 rest) over the kept styles, and a descriptive
 `life_cycle` label (Core / Core Performer / Recent Performer / New / Test / Retire) mapped
-from `_gated_range_tier`. These are intentionally NOT the Range Mgmt lifecycle tiers and were
-NOT changed by the partition fix. Its Active/Retired is velocity-based (`units_vel>0` AND not
-manually retired) and reconciles Active+Retired==Total separately.
+from `_gated_range_tier`. These are intentionally NOT the Range Mgmt lifecycle tiers. Its
+Active/Retired is velocity-based (`units_vel>0` AND not manually retired) and reconciles
+Active+Retired==Total separately.
 
 # Walk-in / brand pseudo-account exclusion (customer counts)
 
