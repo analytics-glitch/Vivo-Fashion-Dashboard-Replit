@@ -13,6 +13,7 @@ import {
   ArrowUp,
   ArrowDown,
   Warning,
+  Storefront,
 } from "@phosphor-icons/react";
 
 // Tier colour tokens — Gold / Green / Blue / Grey / Red per spec.
@@ -248,8 +249,37 @@ const RangeManagement = () => {
   const [brandFilter, setBrandFilter] = useState([]);
   const [subcatFilter, setSubcatFilter] = useState([]);
   const [statusFilter, setStatusFilter] = useState([]);
+  // On-page POS Location filter — scopes EVERY section on this page to the
+  // selected store(s). Takes precedence over the global filter bar's POS
+  // selector; [] falls back to the global channels.
+  const [posFilter, setPosFilter] = useState([]);
+  const [posOptions, setPosOptions] = useState([]);
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
+
+  // Effective POS scope used by the page classifier, the Vivo range visual and
+  // the weekly SOR heatmap: the on-page filter when set, else the global one.
+  const effectiveChannels = posFilter.length ? posFilter : channels;
+
+  // Master store list (active POS), grouped by country, for the on-page filter.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get("/analytics/active-pos", { params: { n_days: 365 } })
+      .then((r) => {
+        if (cancelled) return;
+        const seen = new Map();
+        for (const s of (r.data || [])) {
+          if (s.channel && !seen.has(s.channel)) seen.set(s.channel, s.country || "Other");
+        }
+        const opts = Array.from(seen.entries())
+          .map(([channel, country]) => ({ value: channel, label: channel, group: country }))
+          .sort((a, b) => a.group.localeCompare(b.group) || a.value.localeCompare(b.value));
+        setPosOptions(opts);
+      })
+      .catch(() => { if (!cancelled) setPosOptions([]); });
+    return () => { cancelled = true; };
+  }, []);
   // Iter 91u — drill-down modal state: when set to a tier name, the
   // modal renders the top performing styles for that tier (or the
   // physically-retired list when set to "Retired").
@@ -265,7 +295,7 @@ const RangeManagement = () => {
     setLoading(true);
     setError(null);
     const countryCsv = countries.length ? countries.map((c) => c.toLowerCase()).join(",") : undefined;
-    const locationsCsv = channels.length ? channels.join(",") : undefined;
+    const locationsCsv = effectiveChannels.length ? effectiveChannels.join(",") : undefined;
     api
       .get("/range-mgmt/classify", { params: { country: countryCsv, channel: locationsCsv } })
       .then((r) => {
@@ -277,7 +307,7 @@ const RangeManagement = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [JSON.stringify(countries), JSON.stringify(channels), dataVersion, refreshToken]);
+  }, [JSON.stringify(countries), JSON.stringify(effectiveChannels), dataVersion, refreshToken]);
 
   const rows = data?.rows || [];
   const summary = data?.summary;
@@ -541,7 +571,7 @@ const RangeManagement = () => {
           {/* Vivo Range Management — live recreation of the June 2026 report.
               Surfaced near the top so it is easy to find. */}
           <div className="pt-2 border-t border-default">
-            <VivoRangeManagement />
+            <VivoRangeManagement channelsOverride={posFilter} />
           </div>
 
           {/* Section 1.5 — Tier 3 → Tier 2 graduation candidates */}
@@ -666,6 +696,13 @@ const RangeManagement = () => {
               {searchInput && (
                 <button type="button" onClick={() => setSearchInput("")} className="text-muted hover:text-foreground text-[12px] px-1">Clear</button>
               )}
+            </div>
+            <div>
+              <div className="eyebrow mb-1">POS Location</div>
+              <MultiSelect testId="range-filter-pos"
+                icon={Storefront}
+                options={posOptions}
+                value={posFilter} onChange={setPosFilter} placeholder="All stores" width={200} />
             </div>
             <div>
               <div className="eyebrow mb-1">Tier</div>
@@ -925,7 +962,7 @@ const RangeManagement = () => {
           </div>
 
           {/* Iter 91q — Weekly SOR heatmap for new styles (< 14 wks) */}
-          <WeeklySORHeatmap countries={countries} channels={channels} refreshToken={refreshToken} />
+          <WeeklySORHeatmap countries={countries} channels={effectiveChannels} refreshToken={refreshToken} />
 
           {/* Section 4 — Retirement pipeline */}
           <div className="card-white p-5" data-testid="range-retirement-pipeline">

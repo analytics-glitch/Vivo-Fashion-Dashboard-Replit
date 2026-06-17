@@ -3426,6 +3426,173 @@ def _pa_in_filter(col, val, lower=False):
     return " AND " + col + " IN (" + joined + ")"
 
 
+# Fixed primary-colour palette every raw colour string is mapped onto.
+_PRIMARY_COLORS = [
+    "Black", "White", "Grey", "Beige", "Brown", "Red", "Pink", "Orange",
+    "Yellow", "Green", "Blue", "Purple", "Gold", "Silver", "Multi", "Other",
+]
+
+# Deterministic keyword map: substring -> primary. Checked before the LLM so the
+# common long tail never needs a model call (and the page never breaks if the LLM
+# is down). Order matters — more specific phrases first.
+_PRIMARY_COLOR_RULES = [
+    ("multi", "Multi"), ("print", "Multi"), ("floral", "Multi"), ("animal", "Multi"),
+    ("stripe", "Multi"), ("check", "Multi"), ("aztec", "Multi"), ("ankara", "Multi"),
+    ("leopard", "Multi"), ("camo", "Multi"), ("assorted", "Multi"), ("mixed", "Multi"),
+    ("navy", "Blue"), ("denim", "Blue"), ("indigo", "Blue"), ("teal", "Blue"),
+    ("turquoise", "Blue"), ("cobalt", "Blue"), ("aqua", "Blue"), ("sky", "Blue"),
+    ("royal", "Blue"), ("blue", "Blue"),
+    ("maroon", "Red"), ("burgundy", "Red"), ("wine", "Red"), ("crimson", "Red"),
+    ("scarlet", "Red"), ("cherry", "Red"), ("red", "Red"),
+    ("fuchsia", "Pink"), ("magenta", "Pink"), ("rose", "Pink"), ("blush", "Pink"),
+    ("coral", "Pink"), ("salmon", "Pink"), ("pink", "Pink"),
+    ("lavender", "Purple"), ("lilac", "Purple"), ("violet", "Purple"),
+    ("plum", "Purple"), ("mauve", "Purple"), ("purple", "Purple"),
+    ("rust", "Orange"), ("terracotta", "Orange"), ("apricot", "Orange"),
+    ("peach", "Orange"), ("tangerine", "Orange"), ("orange", "Orange"),
+    ("mustard", "Yellow"), ("buttermilk", "Yellow"), ("lemon", "Yellow"),
+    ("ochre", "Yellow"), ("yellow", "Yellow"),
+    ("olive", "Green"), ("mint", "Green"), ("lime", "Green"), ("sage", "Green"),
+    ("emerald", "Green"), ("khaki", "Green"), ("green", "Green"),
+    ("chocolate", "Brown"), ("tan", "Brown"), ("camel", "Brown"), ("coffee", "Brown"),
+    ("mocha", "Brown"), ("caramel", "Brown"), ("bronze", "Brown"), ("brown", "Brown"),
+    ("cream", "Beige"), ("ivory", "Beige"), ("nude", "Beige"), ("beige", "Beige"),
+    ("taupe", "Beige"), ("sand", "Beige"), ("stone", "Beige"), ("oatmeal", "Beige"),
+    ("off white", "Beige"), ("offwhite", "Beige"), ("ecru", "Beige"),
+    ("charcoal", "Grey"), ("grey", "Grey"), ("gray", "Grey"), ("silver", "Silver"),
+    ("gold", "Gold"), ("white", "White"), ("black", "Black"),
+]
+
+_PRIMARY_COLOR_MEM = {}  # in-process cache: raw_lower -> primary
+
+
+def _primary_color_deterministic(raw):
+    low = " " + raw.lower().strip() + " "
+    for kw, prim in _PRIMARY_COLOR_RULES:
+        if kw in low:
+            return prim
+    return None
+
+
+def _primary_color_map(raw_colors):
+    """Map a set of distinct raw colour strings to the fixed primary palette.
+
+    Layered: in-process memo -> persistent ``color_primary_map`` table ->
+    deterministic keyword rules -> a single batched LLM call for the long tail.
+    Newly resolved values are persisted so the LLM is only ever consulted once
+    per distinct colour. Never raises: any failure falls back to deterministic /
+    'Other' so the endpoint always returns."""
+    out = {}
+    pending = []
+    for raw in raw_colors:
+        if not raw:
+            continue
+        key = raw.strip()
+        if not key:
+            continue
+        low = key.lower()
+        if low in _PRIMARY_COLOR_MEM:
+            out[key] = _PRIMARY_COLOR_MEM[low]
+        else:
+            pending.append(key)
+    if not pending:
+        return out
+
+    # Persistent cache lookup.
+    try:
+        _users_exec("""
+            CREATE TABLE IF NOT EXISTS color_primary_map (
+                raw_color     TEXT PRIMARY KEY,
+                primary_color TEXT NOT NULL,
+                source        TEXT,
+                created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+            )""")
+        lows = sorted({p.lower() for p in pending})
+        joined = ",".join("'" + v.replace("'", "''") + "'" for v in lows)
+        cached = _users_exec(
+            "SELECT raw_color, primary_color FROM color_primary_map"
+            " WHERE raw_color IN (" + joined + ")", fetch=True) or []
+        cmap = {r["raw_color"]: r["primary_color"] for r in cached}
+    except Exception:
+        cmap = {}
+
+    still = []
+    for key in pending:
+        low = key.lower()
+        if low in cmap:
+            _PRIMARY_COLOR_MEM[low] = cmap[low]
+            out[key] = cmap[low]
+        else:
+            still.append(key)
+
+    # Deterministic rules resolve most of the remaining tail with no LLM call.
+    llm_pending = []
+    resolved = {}  # low -> (primary, source)
+    for key in still:
+        det = _primary_color_deterministic(key)
+        if det:
+            resolved[key.lower()] = (det, "rule")
+            out[key] = det
+            _PRIMARY_COLOR_MEM[key.lower()] = det
+        else:
+            llm_pending.append(key)
+
+    # One batched LLM call for whatever the rules could not place.
+    if llm_pending:
+        ai = {}
+        try:
+            sample = llm_pending[:300]
+            palette = ", ".join(_PRIMARY_COLORS)
+            prompt = (
+                "You map retail product colour names to a base colour family. "
+                "Allowed families (use EXACTLY one per input): " + palette + ". "
+                "Use 'Multi' for prints/patterns/multicolour, 'Other' only if truly none fit. "
+                "Return ONLY a compact JSON object mapping each input string to its family.\n"
+                "Inputs: " + json.dumps(sample)
+            )
+            txt = _chat_llm([{"role": "user", "content": prompt}], max_tokens=2000)
+            if txt:
+                s = txt.find("{")
+                e = txt.rfind("}")
+                if s != -1 and e != -1 and e > s:
+                    parsed = json.loads(txt[s:e + 1])
+                    valid = {c.lower(): c for c in _PRIMARY_COLORS}
+                    for k, v in parsed.items():
+                        vc = valid.get(str(v).strip().lower())
+                        if vc:
+                            ai[k] = vc
+        except Exception:
+            ai = {}
+        for key in llm_pending:
+            prim = ai.get(key) or ai.get(key.lower()) or "Other"
+            resolved[key.lower()] = (prim, "llm" if key in ai or key.lower() in ai else "fallback")
+            out[key] = prim
+            _PRIMARY_COLOR_MEM[key.lower()] = prim
+
+    # Persist everything newly resolved (rules + llm + fallback) so it is cheap
+    # next time. Fallback 'Other' is persisted too but tagged so it can be
+    # re-derived later if rules improve.
+    if resolved:
+        try:
+            vals = ",".join(
+                "('" + low.replace("'", "''") + "','" + prim.replace("'", "''") +
+                "','" + src + "')"
+                for low, (prim, src) in resolved.items())
+            _users_exec(
+                "INSERT INTO color_primary_map (raw_color, primary_color, source) VALUES "
+                + vals + " ON CONFLICT (raw_color) DO NOTHING")
+        except Exception:
+            pass
+    return out
+
+
+def _split_colors(s):
+    """Split an aggregated colour cell ('Gold, Green') into its tokens."""
+    if not s:
+        return []
+    return [t.strip() for t in str(s).split(",") if t.strip()]
+
+
 @app.get("/api/analytics/product-analysis")
 def analytics_product_analysis(
     date_from: str = Query(default=None),
@@ -3587,7 +3754,8 @@ def analytics_product_analysis(
         " COUNT(DISTINCT NULLIF(TRIM(color_print),'')) AS colors_count"
         + prod_disp +
         " FROM all_products_clean"
-        " WHERE style_name IS NOT NULL AND style_name <> ''" + brand_pf + cat_pf + subcat_pf +
+        " WHERE style_name IS NOT NULL AND style_name <> ''"
+        " AND COALESCE(brand,'') NOT ILIKE '%third party%'" + brand_pf + cat_pf + subcat_pf +
         " GROUP BY style_name" + prod_grp +
         "),"
         "sales AS ("
@@ -3620,7 +3788,8 @@ def analytics_product_analysis(
         " WHERE s.sale_kind IN ('sale','order') AND s.product_price_kes IS NOT NULL"
         " AND s.product_price_kes > 0))[1] AS current_price"
         " FROM all_products_clean p JOIN all_sales s ON s.variant_sku = p.sku"
-        " WHERE p.style_name IS NOT NULL AND p.style_name <> '' AND " + BASE_FILTERS + cf + chf + sales_pos_where +
+        " WHERE p.style_name IS NOT NULL AND p.style_name <> ''"
+        " AND COALESCE(p.brand,'') NOT ILIKE '%third party%' AND " + BASE_FILTERS + cf + chf + sales_pos_where +
         " GROUP BY p.style_name" + sales_dim_grp + sales_pos_grp +
         "),"
         "stock AS ("
@@ -3896,6 +4065,27 @@ def analytics_product_analysis(
         ss["woc"] = _woc(ss["stock"], ss["units_vel"])
         by_subcategory.append(ss)
     by_subcategory.sort(key=lambda x: -x["revenue"])
+
+    # Primary colour (AI-assisted): map each row's raw colour string(s) onto a
+    # fixed base palette. Done over the final kept rows so we only classify the
+    # colours actually returned. Results are cached so the LLM is consulted at
+    # most once per distinct colour ever.
+    try:
+        tokens = set()
+        for r in rows:
+            for t in _split_colors(r.get("color")):
+                tokens.add(t)
+        cmap = _primary_color_map(tokens) if tokens else {}
+        for r in rows:
+            prims = []
+            for t in _split_colors(r.get("color")):
+                p = cmap.get(t) or cmap.get(t.strip())
+                if p and p not in prims:
+                    prims.append(p)
+            r["primary_color"] = ", ".join(prims) if prims else None
+    except Exception:
+        for r in rows:
+            r.setdefault("primary_color", None)
 
     resp = {
         "rows": rows,

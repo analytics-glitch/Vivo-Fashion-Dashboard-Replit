@@ -117,9 +117,13 @@ const TierBadge = ({ tier }) => {
   );
 };
 
-const VivoRangeManagement = () => {
+const VivoRangeManagement = ({ channelsOverride } = {}) => {
   const { applied } = useFilters();
-  const { countries, channels, dataVersion } = applied || {};
+  const { countries, channels: globalChannels, dataVersion } = applied || {};
+  // An on-page POS Location filter (RangeManagement) takes precedence over the
+  // global filter bar's POS selector when set, so the whole page scopes to the
+  // chosen store(s).
+  const channels = (channelsOverride && channelsOverride.length) ? channelsOverride : globalChannels;
 
   const wrapRef = useRef(null);
   const [shouldLoad, setShouldLoad] = useState(false);

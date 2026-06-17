@@ -33,7 +33,7 @@ import {
 // Colour / Print / Size are row-explosion dimensions, driven by the column
 // picker: showing one in the table groups it to one value per row (selecting
 // several multiplies the rows). The backend receives these as the `dims` param.
-const DIM_KEYS = ["color", "print", "size", "pos_location"];
+const DIM_KEYS = ["print", "size", "pos_location"];
 
 const fmtWoc = (v) => (v === null || v === undefined ? "—" : `${fmtDec(v, 1)} wk`);
 const fmtSor = (v) => (v === null || v === undefined ? "—" : `${fmtDec(v, 1)}%`);
@@ -147,7 +147,7 @@ const StyleDrill = ({ styleName, params }) => {
 
 const ProductAnalysis = () => {
   const { applied } = useFilters();
-  const { dateFrom, dateTo, countries, dataVersion } = applied;
+  const { countries, dataVersion } = applied;
 
   // Layered scope (on top of the global date + country filter bar).
   const [stores, setStores] = useState([]);         // [] = all stores (multi)
@@ -162,7 +162,7 @@ const ProductAnalysis = () => {
   // the default table stays readable; the picker (above the table) reveals them.
   const [hiddenCols, setHiddenCols] = useState(
     () => new Set([
-      "color", "print", "size", "pos_location", "tier", "units_life", "sor_since_launch", "launch_date",
+      "color", "primary_color", "print", "size", "pos_location", "tier", "units_life", "sor_since_launch", "launch_date",
       "days_since_last_sale", "soh_stores", "soh_warehouse",
     ])
   );
@@ -231,15 +231,8 @@ const ProductAnalysis = () => {
     [tiers]
   );
 
-  // Re-seed the local date scope whenever the global filter bar date changes —
-  // but NOT on first mount, so the page opens on its 30-day default.
-  const didMountDateRef = useRef(false);
-  useEffect(() => {
-    if (!didMountDateRef.current) { didMountDateRef.current = true; return; }
-    setLocalFrom(dateFrom);
-    setLocalTo(dateTo);
-    setDatePreset(null);
-  }, [dateFrom, dateTo]);
+  // The Sales Period is fully independent of the global filter bar and always
+  // opens on its 30-day default (the global date no longer re-seeds it).
 
   const applyPreset = useCallback((days) => {
     const today = new Date();
@@ -359,6 +352,11 @@ const ProductAnalysis = () => {
       { key: "category", label: "Category", render: (r) => r.category || "—" },
       { key: "subcategory", label: "Sub-category", render: (r) => r.subcategory || "—", csvLabel: "Sub-category" },
       { key: "color", label: "Colour", render: (r) => r.color || "—", csv: (r) => r.color || "" },
+      {
+        key: "primary_color", label: "Primary Color",
+        headerTitle: "Base colour family each style's colour maps onto (AI-assisted)",
+        render: (r) => r.primary_color || "—", csv: (r) => r.primary_color || "",
+      },
       { key: "print", label: "Print", render: (r) => r.print || "—", csv: (r) => r.print || "" },
       { key: "size", label: "Size", render: (r) => r.size || "—", csv: (r) => r.size || "" },
       {
@@ -711,6 +709,7 @@ const ProductAnalysis = () => {
 
       {/* Scope controls */}
       <div className="card-white p-3.5 flex flex-wrap items-center gap-2.5">
+        <span className="text-[11px] font-semibold text-muted uppercase tracking-wide">Sales Period</span>
         <div className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5" data-testid="pa-date">
           {[30, 90, 120].map((d) => (
             <button
