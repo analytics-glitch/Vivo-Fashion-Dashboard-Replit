@@ -446,7 +446,7 @@ const ProductAnalysis = () => {
       { key: "launch_date", label: "Launch Date", render: (r) => (r.launch_date ? fmtDate(r.launch_date) : "—"), csv: (r) => r.launch_date || "" },
       {
         key: "life_cycle", label: "Life Cycle",
-        headerTitle: "Age-based lifecycle stage — New/Test (<8wk), Recent Performer, Core Performer, Core (24mo+)",
+        headerTitle: "Gated lifecycle stage (2026 Range Strategy): New/Test → Recent Performer (passed the Week-8 read) → Core Performer (9–24mo, 3+ reorders) → Core (24mo+, 5+ reorders). Styles that fail their SOR / full-price / reorder gate show Retire.",
         render: (r) => r.life_cycle || "—", csv: (r) => r.life_cycle || "",
       },
       {

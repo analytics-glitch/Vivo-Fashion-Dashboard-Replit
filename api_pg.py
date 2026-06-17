@@ -3661,20 +3661,22 @@ def analytics_product_analysis(
         denom = units + stock
         return round(units * 100.0 / denom, 1) if denom > 0 else None
 
-    def _life_cycle(aw):
-        # Age-based lifecycle stage — same thresholds as the Range Management
-        # classify endpoint (Tier 4 < 8wk, Tier 3 8wk–9mo, Tier 2 9–24mo,
-        # Tier 1 24mo+), but labelled descriptively so it is not confused with
-        # the Pareto revenue "Tier" column.
-        if aw is None:
-            return "New / Test"
-        if aw >= 104:
-            return "Core"
-        if aw >= 39:
-            return "Core Performer"
-        if aw >= 8:
-            return "Recent Performer"
-        return "New / Test"
+    def _life_cycle(aw, lifetime_sor=None, full_price_pct=None, last_sale_days=None,
+                    woc=None, reorder_count=0):
+        # Descriptive label for the 2026 Range Strategy GATED lifecycle tier (the
+        # same gates as the Range Management classify endpoint), mapped to words
+        # so it is not confused with the Pareto revenue "Tier" column. Styles that
+        # fail their gate surface as "Retire".
+        return {
+            "Tier 1": "Core",
+            "Tier 2": "Core Performer",
+            "Tier 3": "Recent Performer",
+            "Tier 4": "New / Test",
+            "Retire": "Retire",
+        }.get(_gated_range_tier(
+            aw, lifetime_sor=lifetime_sor, full_price_pct=full_price_pct,
+            last_sale_days=last_sale_days, woc=woc, reorder_count=reorder_count),
+            "New / Test")
 
     rows = []
     for r in raw:
@@ -3713,7 +3715,10 @@ def analytics_product_analysis(
         price_min = round(float(r["price_min"])) if r["price_min"] is not None else None
         price_max = round(float(r["price_max"])) if r["price_max"] is not None else None
         sor_6m = _sor(units_6m, stock)
-        life_cycle = _life_cycle(age_weeks)
+        sor_life = _sor(units_life, stock)
+        last_sale_days = (today - r["last_sale"]).days if r["last_sale"] else None
+        life_cycle = _life_cycle(age_weeks, sor_life, full_price_pct, last_sale_days,
+                                 _woc(stock, units_vel), reorder_count)
         rows.append({
             "style_name": r["style_name"],
             "style_number": r["style_number"],
@@ -7026,6 +7031,60 @@ _RANGE_TARGETS = {
     "Tier 4": [60, 100],
 }
 
+
+def _passed_week8_gate(lifetime_sor, full_price_pct, last_sale_days, woc):
+    # 2026 Range Strategy Week-8 read: lifetime SOR > 60% AND full-price
+    # realisation > 90% (when known) AND a sale within the last 7 days AND
+    # weeks-of-cover <= 8. Missing SOR / last-sale data fails the gate closed.
+    if lifetime_sor is None or last_sale_days is None:
+        return False
+    if lifetime_sor <= 60:
+        return False
+    if full_price_pct is not None and full_price_pct <= 90:
+        return False
+    if last_sale_days > 7:
+        return False
+    if woc is not None and woc > 8:
+        return False
+    return True
+
+
+def _passed_week12_backstop(lifetime_sor):
+    # Week-12 backstop: a style that missed the Week-8 read still graduates if
+    # its lifetime sell-out rate has reached 80%.
+    return lifetime_sor is not None and lifetime_sor >= 80
+
+
+def _gated_range_tier(age_weeks, *, lifetime_sor, full_price_pct, last_sale_days,
+                      woc, reorder_count):
+    # 2026 Range Strategy (SOP) GATED lifecycle tier. Age sets the stage but the
+    # performance gates decide whether a style graduates or retires at each stage.
+    # Returns one of 'Tier 1'..'Tier 4' or 'Retire'. Age boundaries follow the
+    # calendar (8wk read, 12wk backstop, ~9 months = 39wk, 24 months = 104wk).
+    # Hard-retire overrides (manual list / Zoya / aged-out / flagged) are applied
+    # by the caller, NOT here.
+    if age_weeks is None:
+        return "Tier 4"
+    w8 = _passed_week8_gate(lifetime_sor, full_price_pct, last_sale_days, woc)
+    w12 = _passed_week12_backstop(lifetime_sor)
+    if age_weeks < 8:
+        return "Tier 4"                       # New / Test — pre Week-8 read
+    if age_weeks <= 12:
+        return "Tier 3" if w8 else "Tier 4"   # Week-8 read window
+    if age_weeks < 39:                         # Week-12 backstop .. ~9 months
+        return "Tier 3" if (w8 or w12) else "Retire"
+    if age_weeks < 104:                        # ~9-24 months
+        if reorder_count >= 3 and (lifetime_sor or 0) > 60 \
+                and (full_price_pct is None or full_price_pct > 90):
+            return "Tier 2"
+        return "Retire"
+    # 24+ months
+    if reorder_count >= 5 and (full_price_pct is None or full_price_pct > 90) \
+            and (lifetime_sor or 0) > 60:
+        return "Tier 1"
+    return "Retire"
+
+
 def _parse_iso_date(s):
     if not s:
         return None
@@ -7150,21 +7209,30 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         full_price_pct = round(min(100.0, avg_price * 100.0 / original_price), 1) \
             if (avg_price and original_price) else None
 
-        # Range tier = the 2026 Range Strategy (PPT) lifecycle classification, driven by
-        # catalog age. Every new style starts in Tier 4 (New/Test, 8-week read); graduates
-        # to Tier 3 (Recent Performer) once past the 8-week test; Tier 2 (Core Performer) at
-        # 9+ months (~39 weeks, with 3+ reorders) and capped at 24 months; Tier 1 (Core
-        # Basics, permanent core) at 24+ months. Hard-retire (below) overrides regardless.
+        # Pure catalogue-age band — used ONLY by the age-milestone trackers
+        # (approaching the Week-8 / 9-month gate) and the "Overdue read" status,
+        # never as the displayed tier.
         if age_weeks is None:
-            age_tier = "Tier 4"
+            age_band = "Tier 4"
         elif age_weeks >= 104:
-            age_tier = "Tier 1"
+            age_band = "Tier 1"
         elif age_weeks >= 39:
-            age_tier = "Tier 2"
+            age_band = "Tier 2"
         elif age_weeks >= 8:
-            age_tier = "Tier 3"
+            age_band = "Tier 3"
         else:
-            age_tier = "Tier 4"
+            age_band = "Tier 4"
+
+        # Range tier = the 2026 Range Strategy (SOP) GATED lifecycle classification:
+        # age sets the stage, but performance gates decide promotion vs retirement
+        # (Week-8 read = SOR > 60% + full-price > 90% + sold within 7d + WOC <= 8;
+        # Week-12 backstop = SOR >= 80%; Tier 2 needs 3+ reorders & SOR > 60% & FP >
+        # 90%; Tier 1 needs 5+ reorders & FP > 90% & SOR > 60%). A failed gate drops
+        # the style to Retire. Hard-retire (manual list / Zoya / aged-out / flagged,
+        # below) still overrides regardless.
+        gated_tier = _gated_range_tier(
+            age_weeks, lifetime_sor=sor_life, full_price_pct=full_price_pct,
+            last_sale_days=last_sale_days, woc=woc, reorder_count=reorder_count)
 
         is_retired = (age_weeks is not None and age_weeks >= 39 and units_6m == 0
                       and (last_sale_days is None or last_sale_days > 270))
@@ -7177,9 +7245,9 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         flagged = (not is_retired and age_weeks is not None and age_weeks >= 39
                    and sor_life is not None and sor_life < 40 and current_stock > 0)
 
-        if flagged or is_retired:
+        if flagged or is_retired or gated_tier == "Retire":
             status = "Retire"
-        elif age_tier in ("Tier 3", "Tier 4") and age_weeks is not None and age_weeks >= 12 \
+        elif age_band in ("Tier 3", "Tier 4") and age_weeks is not None and age_weeks >= 12 \
                 and (sor_life is None or sor_life < 25):
             status = "Overdue"
         elif sor_life is not None and sor_life < 45:
@@ -7193,7 +7261,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             action = "Overdue Week-8 read — review sell-through now and decide reorder or exit."
         elif status == "At Risk":
             action = "Monitor weekly; consider a marketing push or price review to lift sell-through."
-        elif age_tier == "Tier 3":
+        elif gated_tier == "Tier 3":
             action = "On review — track toward the 9-month gate for graduation to Tier 2."
         else:
             action = "Healthy — maintain replenishment to keep the core line in stock."
@@ -7209,7 +7277,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             "status": status,
             "recommended_action": action,
             "style_age_weeks": age_weeks,
-            "age_tier": age_tier,
+            "age_tier": age_band,
             "launch_date": str(launch) if launch else None,
             "reorder_count": reorder_count,
             "current_stock": current_stock,
@@ -7239,9 +7307,9 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             retired.append(row)
             continue
         active.append(row)
-        meta.append((row, age_tier, first_sale, sales_life, flagged))
+        meta.append((row, gated_tier, first_sale, sales_life, flagged))
 
-        if (age_tier == "Tier 3" and age_weeks is not None and 0 <= (39 - age_weeks) <= 6
+        if (age_band == "Tier 3" and age_weeks is not None and 0 <= (39 - age_weeks) <= 6
                 and reorder_count >= 3 and sor_life is not None and sor_life > 60
                 and full_price_pct is not None and full_price_pct > 90):
             candidates.append({
