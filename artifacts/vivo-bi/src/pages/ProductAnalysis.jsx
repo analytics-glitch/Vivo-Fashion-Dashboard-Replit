@@ -380,6 +380,36 @@ const ProductAnalysis = () => {
         render: (r) => fmtNum(r.warehouse_stock), csv: (r) => r.warehouse_stock ?? "",
       },
       {
+        key: "pos_location", label: "POS Location",
+        headerTitle: "Retail stores currently holding stock of this style",
+        render: (r) => (
+          <span className="block max-w-[260px] break-words">{r.pos_location || "—"}</span>
+        ),
+        csv: (r) => r.pos_location || "",
+      },
+      {
+        key: "style_status", label: "Style Status",
+        headerTitle: "Active = sold within the velocity window and not retired; otherwise Retired",
+        render: (r) => {
+          const s = r.style_status || "—";
+          if (s === "—") return "—";
+          const active = s === "Active";
+          return (
+            <span
+              className={
+                "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium " +
+                (active
+                  ? "bg-emerald-500/15 text-emerald-600"
+                  : "bg-muted text-muted-foreground")
+              }
+            >
+              {s}
+            </span>
+          );
+        },
+        csv: (r) => r.style_status || "",
+      },
+      {
         key: "days_since_last_sale", label: "Days Since Last Sale", numeric: true,
         headerTitle: "Whole days since this style last sold a unit",
         render: (r) => { const d = daysSinceSale(r.last_sale); return d == null ? "—" : fmtNum(d); },
@@ -448,6 +478,8 @@ const ProductAnalysis = () => {
       { key: "units_sold", label: "Units Sold", csv: (r) => r.units_sold },
       { key: "soh_stores", label: "SOH in Stores", csv: (r) => r.store_stock ?? "" },
       { key: "soh_warehouse", label: "SOH in Warehouse", csv: (r) => r.warehouse_stock ?? "" },
+      { key: "pos_location", label: "POS Location", csv: (r) => r.pos_location || "" },
+      { key: "style_status", label: "Style Status", csv: (r) => r.style_status || "" },
       { key: "days_since_last_sale", label: "Days Since Last Sale", csv: (r) => { const d = daysSinceSale(r.last_sale); return d == null ? "" : d; } },
       { key: "revenue", label: "Revenue (KES)", csv: (r) => r.revenue },
       { key: "net_revenue", label: "Net Revenue (KES)", csv: (r) => r.net_revenue },

@@ -3580,7 +3580,9 @@ def analytics_product_analysis(
         " SELECT i.style_name" + stock_dim_sel + ","
         " COALESCE(SUM(i.available) FILTER (WHERE " + current_loc_clause + "),0) AS soh_current,"
         " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_warehouse,"
-        " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_stores"
+        " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_stores,"
+        " string_agg(DISTINCT i.pos_location_name, ', ' ORDER BY i.pos_location_name)"
+        " FILTER (WHERE i.available > 0 AND (" + current_loc_clause + ")) AS store_locations"
         + stock_from + " WHERE i.style_name IS NOT NULL AND i.style_name <> ''" + icf +
         " GROUP BY i.style_name" + stock_dim_grp +
         ")"
@@ -3593,7 +3595,7 @@ def analytics_product_analysis(
         " COALESCE(sa.orders_period,0) AS orders_period, COALESCE(sa.units_vel,0) AS units_vel,"
         " COALESCE(sa.units_life,0) AS units_life, sa.last_sale, sa.first_sale,"
         " COALESCE(st.soh_current,0) AS soh_current, COALESCE(st.soh_warehouse,0) AS soh_warehouse,"
-        " COALESCE(st.soh_stores,0) AS soh_stores, sa.current_price"
+        " COALESCE(st.soh_stores,0) AS soh_stores, st.store_locations, sa.current_price"
         " FROM prod p"
         " LEFT JOIN sales sa" + join_keys +
         " LEFT JOIN stock st" + join_keys +
@@ -3646,6 +3648,7 @@ def analytics_product_analysis(
             "current_stock": stock,
             "warehouse_stock": int(r["soh_warehouse"] or 0),
             "store_stock": int(r["soh_stores"] or 0),
+            "pos_location": r["store_locations"] or None,
             "units_vel": units_vel,
             "units_life": units_life,
             "woc": _woc(stock, units_vel),
@@ -3682,11 +3685,13 @@ def analytics_product_analysis(
         return g["units_vel"] > 0
 
     keep = set()
+    status_by_style = {}
     for k, g in styles.items():
         manual_retired = _is_manually_retired(k)
         # A manually-retired style is force-treated as retired: never "active",
         # and it always satisfies the "retired" filter regardless of stock.
         active = _is_active(g) and not manual_retired
+        status_by_style[k] = "Active" if active else "Retired"
         if style_status == "active" and not active:
             continue
         if style_status == "retired" and not manual_retired and (active or g["stock"] <= 0):
@@ -3694,6 +3699,8 @@ def analytics_product_analysis(
         keep.add(k)
 
     rows = [r for r in rows if r["style_name"] in keep]
+    for r in rows:
+        r["style_status"] = status_by_style.get(r["style_name"])
     kept = {k: g for k, g in styles.items() if k in keep}
 
     # Range tier — Pareto on cumulative revenue share over the kept styles
