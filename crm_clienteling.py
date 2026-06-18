@@ -121,7 +121,8 @@ def _name_sql(alias):
 # defaults). Used as a fallback when the customer is not formally enrolled.
 def _tier_case(spend_expr):
     return (
-        "CASE WHEN " + spend_expr + " >= 100000 THEN 'Gold' "
+        "CASE WHEN " + spend_expr + " >= 300000 THEN 'VIP' "
+        "WHEN " + spend_expr + " >= 150000 THEN 'Gold' "
         "WHEN " + spend_expr + " >= 50000 THEN 'Silver' ELSE 'Bronze' END"
     )
 
@@ -732,6 +733,63 @@ def _reg_customers(app):
         events.sort(key=lambda e: str(e["ts"] or ""), reverse=True)
         return {"events": events[:120]}
 
+    @app.get("/api/customers/{cid}/transactions")
+    def cl_customer_transactions(request: Request, cid: str):
+        """Paginated, row-level transaction history (PRD 6.1/7.1).
+
+        One row per (order, sale_kind) so purchases and returns surface
+        distinctly. 20/page by default. ``all_sales`` carries no
+        source_system column, so it is derived (Online vs Retail POS)."""
+        page = _clamp(request.query_params.get("page"), 1, 100000, 1)
+        page_size = _clamp(request.query_params.get("page_size"), 1, 100, 20)
+        offset = (page - 1) * page_size
+        cid_l = (cid or "")[:128]
+        src_sql = ("CASE WHEN s.country='Online' "
+                   "OR bool_or(s.channel='Online') "
+                   "OR s.pos_location_name ILIKE '%%online%%' "
+                   "THEN 'Online' ELSE 'Retail POS' END")
+        total = _num((_ex(
+            "SELECT COUNT(*) AS c FROM ("
+            " SELECT 1 FROM all_sales s WHERE s.customer_id=%s "
+            "  AND s.sale_date " + _ISO +
+            "  GROUP BY s.order_id, s.sale_kind, s.sale_date) t",
+            (cid_l,), fetch=True) or [{}])[0].get("c"))
+        rows = _ex(
+            "SELECT s.sale_date AS ts, s.order_id, s.sale_kind, "
+            " COALESCE(NULLIF(MAX(s.channel),''), MAX(s.pos_location_name)) AS channel, "
+            " " + src_sql + " AS source_system, "
+            " SUM(s.total_sales_kes::numeric) AS amount, "
+            " SUM(s.ordered_item_quantity) AS units, "
+            " STRING_AGG(DISTINCT s.product_title, ', ') AS items "
+            "FROM all_sales s WHERE s.customer_id=%s "
+            " AND s.sale_date " + _ISO +
+            " GROUP BY s.order_id, s.sale_kind, s.sale_date, s.country, "
+            "  s.pos_location_name "
+            " ORDER BY s.sale_date DESC, s.order_id DESC "
+            " LIMIT %s OFFSET %s",
+            (cid_l, page_size, offset), fetch=True) or []
+        txns = []
+        for r in rows:
+            kind = (r["sale_kind"] or "").lower()
+            txns.append({
+                "date": _dt(r["ts"]),
+                "type": "Return" if kind == "return" else "Purchase",
+                "order_id": r["order_id"],
+                "amount_kes": round(_num(r["amount"]), 2),
+                "channel": r["channel"] or "—",
+                "source_system": r["source_system"],
+                "units": _int(r["units"]),
+                "items": (r["items"] or "")[:240],
+            })
+        total_i = int(total)
+        return {
+            "transactions": txns,
+            "page": page,
+            "page_size": page_size,
+            "total": total_i,
+            "total_pages": (total_i + page_size - 1) // page_size if page_size else 0,
+        }
+
     @app.get("/api/customers/{cid}/churn-reasoning")
     def cl_customer_churn(request: Request, cid: str):
         prof = _customer_profile(cid) or {}
@@ -897,7 +955,9 @@ def _crm_spend12(cid):
 
 def _tier_for_spend(spend):
     s = _num(spend)
-    if s >= 100000:
+    if s >= 300000:
+        return "VIP"
+    if s >= 150000:
         return "Gold"
     if s >= 50000:
         return "Silver"
@@ -1481,7 +1541,9 @@ def _reg_bi(app):
 
 def _tier_label(spend):
     s = _num(spend)
-    if s >= 100000:
+    if s >= 300000:
+        return "VIP"
+    if s >= 150000:
         return "Gold"
     if s >= 50000:
         return "Silver"
@@ -1527,7 +1589,7 @@ def _reg_insights(app):
             "AND EXTRACT(DAY FROM CURRENT_DATE)+7", fetch=True) or {}).get("n"))
         nv = _int((_one(
             "SELECT COUNT(*) AS n FROM crm_loyalty_enrolment "
-            "WHERE tier='Gold' AND tier_updated_at::date = CURRENT_DATE",
+            "WHERE tier='VIP' AND tier_updated_at::date = CURRENT_DATE",
             fetch=True) or {}).get("n"))
         return {"high_priority_tasks": hp, "upcoming_birthdays": bd,
                 "new_vips_today": nv}
@@ -1917,8 +1979,15 @@ def _reg_loyalty_mgr(app):
         _staff(request)
         cfg = A._crm_config_dict()
         silver = _num(cfg.get("loyalty.tier_silver_kes"), 50000)
-        gold = _num(cfg.get("loyalty.tier_gold_kes"), 100000)
+        gold = _num(cfg.get("loyalty.tier_gold_kes"), 150000)
+        vip = _num(cfg.get("loyalty.tier_vip_kes"), 300000)
         valid_days = int(_num(cfg.get("loyalty.voucher_validity_days"), 90) or 90)
+        # Next-tier target for each tier that can still climb.
+        _next_target = {
+            "Bronze": ("Silver", silver),
+            "Silver": ("Gold", gold),
+            "Gold": ("VIP", vip),
+        }
 
         # --- Close to upgrade: members in the 70–100% band of their next tier ---
         up_rows = _ex(
@@ -1926,23 +1995,25 @@ def _reg_loyalty_mgr(app):
             + _name_sql("e") + " AS customer_name "
             "FROM crm_loyalty_enrolment e "
             "LEFT JOIN crm_loyalty_member m ON m.member_id=e.customer_id "
-            "WHERE (e.tier='Bronze' AND COALESCE(m.spend_kes,0) BETWEEN %s AND %s) "
-            "   OR (e.tier='Silver' AND COALESCE(m.spend_kes,0) BETWEEN %s AND %s) "
-            "ORDER BY (CASE WHEN e.tier='Bronze' THEN %s ELSE %s END "
-            "          - COALESCE(m.spend_kes,0)) ASC",
-            (silver * 0.7, silver, gold * 0.7, gold, silver, gold),
+            "WHERE e.tier IN ('Bronze','Silver','Gold')",
             fetch=True) or []
         up_items, max_needed = [], 0.0
         for r in up_rows:
+            nt = _next_target.get(r["tier"])
+            if not nt:
+                continue
+            next_tier, target = nt
             spend = _num(r["spend"])
-            target = silver if r["tier"] == "Bronze" else gold
+            if target <= 0 or spend < target * 0.7 or spend >= target:
+                continue
             needed = round(max(target - spend, 0), 2)
             max_needed = max(max_needed, needed)
             up_items.append({
                 "customer_id": r["customer_id"], "customer_name": r["customer_name"],
                 "needed_kes": needed,
-                "next_tier": "Silver" if r["tier"] == "Bronze" else "Gold",
+                "next_tier": next_tier,
             })
+        up_items.sort(key=lambda x: x["needed_kes"])
         close_to_upgrade = {
             "count": len(up_items),
             "within_kes": round(max_needed, 2),
@@ -1956,8 +2027,9 @@ def _reg_loyalty_mgr(app):
             " COALESCE(m.spend_kes,0) AS spend, " + _name_sql("e") + " AS customer_name "
             "FROM crm_loyalty_enrolment e "
             "LEFT JOIN crm_loyalty_member m ON m.member_id=e.customer_id "
-            "WHERE e.tier IN ('Silver','Gold')", fetch=True) or []
+            "WHERE e.tier IN ('Silver','Gold','VIP')", fetch=True) or []
         today = date.today()
+        _retain_floor = {"Silver": silver, "Gold": gold, "VIP": vip}
 
         def _days_to_anniv(enr):
             if not enr:
@@ -1975,7 +2047,7 @@ def _reg_loyalty_mgr(app):
         risk_items = []
         for r in risk_rows:
             spend = _num(r["spend"])
-            floor = silver if r["tier"] == "Silver" else gold
+            floor = _retain_floor.get(r["tier"], gold)
             if spend >= floor:
                 continue
             dta = _days_to_anniv(r["enrolment_date"])
@@ -2038,7 +2110,7 @@ def _reg_loyalty_mgr(app):
         _staff(request)
         cfg = A._crm_config_dict()
         silver = _num(cfg.get("loyalty.tier_silver_kes"), 50000)
-        gold = _num(cfg.get("loyalty.tier_gold_kes"), 100000)
+        gold = _num(cfg.get("loyalty.tier_gold_kes"), 150000)
         targets = {
             "dormant": _num(cfg.get("loyalty.target_pct_dormant"), 25),
             "bronze": _num(cfg.get("loyalty.target_pct_bronze"), 55),
@@ -2137,25 +2209,30 @@ def _reg_loyalty_mgr(app):
             "points_expiry_months": _int(cfg.get("loyalty.points_expiry_months"), 12),
             "tiers": {
                 "silver": {"min_spend": _int(cfg.get("loyalty.tier_silver_kes"), 50000)},
-                "gold": {"min_spend": _int(cfg.get("loyalty.tier_gold_kes"), 100000)},
+                "gold": {"min_spend": _int(cfg.get("loyalty.tier_gold_kes"), 150000)},
+                "vip": {"min_spend": _int(cfg.get("loyalty.tier_vip_kes"), 300000)},
             },
             "earn_multipliers": {
                 "bronze": _num(cfg.get("loyalty.earn_multiplier_bronze"), 1),
                 "silver": _num(cfg.get("loyalty.earn_multiplier_silver"), 2),
                 "gold": _num(cfg.get("loyalty.earn_multiplier_gold"), 3),
+                "vip": _num(cfg.get("loyalty.earn_multiplier_vip"), 4),
             },
             "qualify": {
                 "silver": _int(cfg.get("loyalty.tier_silver_kes"), 50000),
-                "gold": _int(cfg.get("loyalty.tier_gold_kes"), 100000),
+                "gold": _int(cfg.get("loyalty.tier_gold_kes"), 150000),
+                "vip": _int(cfg.get("loyalty.tier_vip_kes"), 300000),
             },
             "retain": {
                 "silver": _int(cfg.get("loyalty.retain_silver_kes"), 40000),
                 "gold": _int(cfg.get("loyalty.retain_gold_kes"), 80000),
+                "vip": _int(cfg.get("loyalty.retain_vip_kes"), 240000),
             },
             "voucher_kes": {
                 "bronze": _int(cfg.get("loyalty.voucher_bronze_kes"), 2500),
                 "silver": _int(cfg.get("loyalty.voucher_silver_kes"), 5000),
                 "gold": _int(cfg.get("loyalty.voucher_gold_kes"), 10000),
+                "vip": _int(cfg.get("loyalty.voucher_vip_kes"), 20000),
             },
         }
 
@@ -2163,17 +2240,44 @@ def _reg_loyalty_mgr(app):
     def cl_loy_config_put(request: Request, payload: dict = Body(default=None)):
         _staff(request, roles=("admin",))
         p = payload or {}
-        mapping = {
+
+        def _set(ck, val):
+            if val is None or val == "":
+                return
+            _ex("INSERT INTO crm_config (key,value) VALUES (%s,%s) "
+                "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
+                (ck, str(val)))
+
+        flat = {
             "earn_rate_kes": "loyalty.earn_rate_kes",
             "point_value_kes": "loyalty.point_value_kes",
             "points_expiry_months": "loyalty.points_expiry_months",
+            "voucher_validity_days": "loyalty.voucher_validity_days",
+            "grace_period_days": "loyalty.grace_period_days",
         }
-        for k, ck in mapping.items():
+        for k, ck in flat.items():
             if k in p:
-                _ex(
-                    "INSERT INTO crm_config (key,value) VALUES (%s,%s) "
-                    "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
-                    (ck, str(p[k])))
+                _set(ck, p[k])
+        # Nested tier-scoped config (qualify thresholds, retention floors,
+        # birthday-voucher amounts, earn multipliers) — all four tiers.
+        q = p.get("qualify") or {}
+        _set("loyalty.tier_silver_kes", q.get("silver"))
+        _set("loyalty.tier_gold_kes", q.get("gold"))
+        _set("loyalty.tier_vip_kes", q.get("vip"))
+        rt = p.get("retain") or {}
+        _set("loyalty.retain_silver_kes", rt.get("silver"))
+        _set("loyalty.retain_gold_kes", rt.get("gold"))
+        _set("loyalty.retain_vip_kes", rt.get("vip"))
+        vk = p.get("voucher_kes") or {}
+        _set("loyalty.voucher_bronze_kes", vk.get("bronze"))
+        _set("loyalty.voucher_silver_kes", vk.get("silver"))
+        _set("loyalty.voucher_gold_kes", vk.get("gold"))
+        _set("loyalty.voucher_vip_kes", vk.get("vip"))
+        em = p.get("earn_multipliers") or {}
+        _set("loyalty.earn_multiplier_bronze", em.get("bronze"))
+        _set("loyalty.earn_multiplier_silver", em.get("silver"))
+        _set("loyalty.earn_multiplier_gold", em.get("gold"))
+        _set("loyalty.earn_multiplier_vip", em.get("vip"))
         A._crm_audit("loyalty", "config", "update", "loyalty config updated", request)
         return cl_loy_config_get(request)
 
@@ -2203,13 +2307,14 @@ def _reg_loyalty_mgr(app):
         wd = _clamp(within_days, 1, 366, 30)
         cfg = A._crm_config_dict()
         retain = {"Silver": _num(cfg.get("loyalty.retain_silver_kes"), 40000),
-                  "Gold": _num(cfg.get("loyalty.retain_gold_kes"), 80000)}
+                  "Gold": _num(cfg.get("loyalty.retain_gold_kes"), 80000),
+                  "VIP": _num(cfg.get("loyalty.retain_vip_kes"), 240000)}
         rows = _ex(
             "SELECT e.customer_id, e.enrolment_date, e.tier, "
             " COALESCE(m.spend_kes,0) AS spend, " + _name_sql("e") + " AS customer_name "
             "FROM crm_loyalty_enrolment e "
             "LEFT JOIN crm_loyalty_member m ON m.member_id=e.customer_id "
-            "WHERE e.tier IN ('Silver','Gold')", fetch=True) or []
+            "WHERE e.tier IN ('Silver','Gold','VIP')", fetch=True) or []
         today = date.today()
 
         def _dta(enr):
@@ -2256,7 +2361,7 @@ def _reg_loyalty_mgr(app):
             within = 50000.0
         cfg = A._crm_config_dict()
         silver = _num(cfg.get("loyalty.tier_silver_kes"), 50000)
-        gold = _num(cfg.get("loyalty.tier_gold_kes"), 100000)
+        gold = _num(cfg.get("loyalty.tier_gold_kes"), 150000)
         out = []
         for r in _grid_base():
             s12 = _num(r.get("spend_12mo_kes"))
@@ -2358,7 +2463,7 @@ def _reg_loyalty_mgr(app):
         _staff(request)
         cfg = A._crm_config_dict()
         silver = _num(cfg.get("loyalty.tier_silver_kes"), 50000)
-        gold = _num(cfg.get("loyalty.tier_gold_kes"), 100000)
+        gold = _num(cfg.get("loyalty.tier_gold_kes"), 150000)
         vkes = {"bronze": _num(cfg.get("loyalty.voucher_bronze_kes"), 2500),
                 "silver": _num(cfg.get("loyalty.voucher_silver_kes"), 5000),
                 "gold": _num(cfg.get("loyalty.voucher_gold_kes"), 10000)}
@@ -2458,13 +2563,17 @@ def _reg_loyalty_mgr(app):
                     "progress": None, "voucher": None, "styling": {"remaining": 0}}
         cfg = A._crm_config_dict()
         silver = _num(cfg.get("loyalty.tier_silver_kes"), 50000)
-        gold = _num(cfg.get("loyalty.tier_gold_kes"), 100000)
+        gold = _num(cfg.get("loyalty.tier_gold_kes"), 150000)
+        vip = _num(cfg.get("loyalty.tier_vip_kes"), 300000)
         spend = _num(e["spend"])
-        if e["tier"] == "Gold":
+        _nt = {"Bronze": ("Silver", silver), "Silver": ("Gold", gold),
+               "Gold": ("VIP", vip)}
+        nt = _nt.get(e["tier"])
+        if not nt:  # VIP (top tier) or unknown
             progress = {"next_tier": None, "percent": 100}
         else:
-            target = silver if e["tier"] == "Bronze" else gold
-            progress = {"next_tier": "Silver" if e["tier"] == "Bronze" else "Gold",
+            next_tier, target = nt
+            progress = {"next_tier": next_tier,
                         "percent": int(min(spend / target * 100, 100)) if target else 0}
         v = _one(
             "SELECT discount_code, code_status, kes_value FROM crm_redemptions "
@@ -2479,7 +2588,7 @@ def _reg_loyalty_mgr(app):
             "progress": progress,
             "voucher": ({"code": v["discount_code"], "status": v["code_status"],
                          "amount_kes": round(_num(v["kes_value"]), 2)} if v else None),
-            "styling": {"remaining": 1 if e["tier"] in ("Silver", "Gold") else 0},
+            "styling": {"remaining": 1 if e["tier"] in ("Silver", "Gold", "VIP") else 0},
         }
 
     @app.get("/api/loyalty/mobile/me/{cid}")
@@ -2607,7 +2716,7 @@ def _reg_segments(app):
             "ORDER BY city LIMIT 200")
         return {
             "rfm_tiers": ["Champion", "Loyal", "Promising", "New", "At Risk", "Dormant"],
-            "loyalty_tiers": ["Bronze", "Silver", "Gold"],
+            "loyalty_tiers": ["Bronze", "Silver", "Gold", "VIP"],
             "cities": [r["city"] for r in cities],
         }
 

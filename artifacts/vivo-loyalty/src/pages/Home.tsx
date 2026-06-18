@@ -23,6 +23,7 @@ const TIER_COLORS: Record<string, string> = {
   Bronze: "#b08d57",
   Silver: "#8c93a1",
   Gold: "#c9a227",
+  VIP: "#1a5c38",
 };
 
 export default function Home() {
@@ -66,11 +67,13 @@ export default function Home() {
   const memberMultiplier = config.earn_multipliers?.[member.tier] ?? 1;
 
   const silverMin = config.tiers?.Silver ?? 50000;
-  const goldMin = config.tiers?.Gold ?? 100000;
+  const goldMin = config.tiers?.Gold ?? 150000;
+  const vipMin = config.tiers?.VIP ?? 300000;
   const tierRows: { name: string; min: number; max: number | null }[] = [
     { name: "Bronze", min: 1, max: silverMin - 1 },
     { name: "Silver", min: silverMin, max: goldMin - 1 },
-    { name: "Gold", min: goldMin, max: null },
+    { name: "Gold", min: goldMin, max: vipMin - 1 },
+    { name: "VIP", min: vipMin, max: null },
   ];
   const tierRange = (min: number, max: number | null) =>
     max === null ? `${fmtKES(min)}+` : `${fmtKES(min)} – ${fmtKES(max)}`;

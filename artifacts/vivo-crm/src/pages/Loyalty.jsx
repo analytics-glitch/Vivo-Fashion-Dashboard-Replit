@@ -88,7 +88,7 @@ export default function Loyalty() {
       <div className="flex items-start justify-between gap-4 mb-2">
         <div>
           <div className="eyebrow inline-flex items-center gap-1.5"><Award className="h-3.5 w-3.5"/>Vivo Loyalty</div>
-          <h1 className="font-display text-3xl md:text-4xl mt-1">Bronze · Silver · Gold</h1>
+          <h1 className="font-display text-3xl md:text-4xl mt-1">Bronze · Silver · Gold · VIP</h1>
           <div className="text-sm text-[var(--vivo-muted)] mt-1">
             Tier qualification based on rolling 12-month net spend.
           </div>
@@ -255,11 +255,12 @@ export default function Loyalty() {
 
             <Card className="vivo-card p-5 rounded-sm mt-6">
               <div className="text-sm font-semibold mb-3">How members move between tiers</div>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs text-[var(--vivo-muted)]">
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-4 text-xs text-[var(--vivo-muted)]">
                 <div><strong className="text-[var(--vivo-navy)]">Dormant:</strong> No purchase in the last 12 months. Re-engagement campaign target.</div>
                 <div><strong className="text-[var(--vivo-navy)]">Bronze:</strong> Any first purchase, under {fmtKES(config?.qualify?.silver)} in 12 mo. Retains with 1 purchase in any 12-mo period.</div>
                 <div><strong className="text-[var(--vivo-navy)]">Silver:</strong> Over {fmtKES(config?.qualify?.silver)} in 12 mo. Retains at {fmtKES(config?.retain?.silver)}. 5% off full-price.</div>
                 <div><strong className="text-[var(--vivo-navy)]">Gold:</strong> Over {fmtKES(config?.qualify?.gold)} in 12 mo. Retains at {fmtKES(config?.retain?.gold)}. 10% off full-price.</div>
+                <div><strong className="text-[var(--vivo-navy)]">VIP:</strong> Over {fmtKES(config?.qualify?.vip)} in 12 mo. Retains at {fmtKES(config?.retain?.vip)}. Top-tier styling &amp; events.</div>
               </div>
             </Card>
           </TabsContent>
@@ -459,11 +460,14 @@ function LoyaltyConfigEditor({ config, onSaved }) {
   const [form, setForm] = useState(() => ({
     silverQ: config?.qualify?.silver,
     goldQ: config?.qualify?.gold,
+    vipQ: config?.qualify?.vip,
     silverR: config?.retain?.silver,
     goldR: config?.retain?.gold,
+    vipR: config?.retain?.vip,
     vBronze: config?.voucher_kes?.bronze,
     vSilver: config?.voucher_kes?.silver,
     vGold: config?.voucher_kes?.gold,
+    vVip: config?.voucher_kes?.vip,
     validity: config?.voucher_validity_days,
     grace: config?.grace_period_days,
   }));
@@ -473,9 +477,9 @@ function LoyaltyConfigEditor({ config, onSaved }) {
     setSaving(true);
     try {
       await api.put("/loyalty/config", {
-        qualify: { silver: Number(form.silverQ), gold: Number(form.goldQ) },
-        retain: { silver: Number(form.silverR), gold: Number(form.goldR) },
-        voucher_kes: { bronze: Number(form.vBronze), silver: Number(form.vSilver), gold: Number(form.vGold) },
+        qualify: { silver: Number(form.silverQ), gold: Number(form.goldQ), vip: Number(form.vipQ) },
+        retain: { silver: Number(form.silverR), gold: Number(form.goldR), vip: Number(form.vipR) },
+        voucher_kes: { bronze: Number(form.vBronze), silver: Number(form.vSilver), gold: Number(form.vGold), vip: Number(form.vVip) },
         voucher_validity_days: Number(form.validity),
         grace_period_days: Number(form.grace),
       });
@@ -501,24 +505,27 @@ function LoyaltyConfigEditor({ config, onSaved }) {
       <div className="space-y-5">
         <section>
           <div className="text-xs uppercase tracking-wider text-[var(--vivo-navy)] mb-2">Qualify (rolling 12 mo)</div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <F k="silverQ" label="Silver entry threshold"/>
             <F k="goldQ" label="Gold entry threshold"/>
+            <F k="vipQ" label="VIP entry threshold"/>
           </div>
         </section>
         <section>
           <div className="text-xs uppercase tracking-wider text-[var(--vivo-navy)] mb-2">Retain (annual)</div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <F k="silverR" label="Silver retention floor"/>
             <F k="goldR" label="Gold retention floor"/>
+            <F k="vipR" label="VIP retention floor"/>
           </div>
         </section>
         <section>
           <div className="text-xs uppercase tracking-wider text-[var(--vivo-navy)] mb-2">Birthday vouchers</div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <F k="vBronze" label="Bronze voucher"/>
             <F k="vSilver" label="Silver voucher"/>
             <F k="vGold" label="Gold voucher"/>
+            <F k="vVip" label="VIP voucher"/>
           </div>
         </section>
         <section>

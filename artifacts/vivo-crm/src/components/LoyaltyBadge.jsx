@@ -5,6 +5,7 @@ const TIERS = {
   bronze: { label: "Bronze", bg: "#F1E0CE", border: "#B07A47", text: "#6B3B17", emoji: "" },
   silver: { label: "Silver", bg: "#E8EAED", border: "#9CA3AF", text: "#3F4855", emoji: "" },
   gold:   { label: "Gold",   bg: "#FAEBC3", border: "#D4A93B", text: "#7A5A12", emoji: "" },
+  vip:    { label: "VIP",    bg: "#D7E6DC", border: "#1a5c38", text: "#0F3D24", emoji: "" },
 };
 
 export function LoyaltyBadge({ tier, size = "md", className = "", testid }) {

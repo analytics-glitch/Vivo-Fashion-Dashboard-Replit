@@ -24,6 +24,7 @@ import {
   DeviceMobile,
   ArrowSquareOut,
   FacebookLogo,
+  Star,
 } from "@phosphor-icons/react";
 
 // ---------------------------------------------------------------------------
@@ -571,21 +572,35 @@ const Customer360 = ({ customerId, isAdmin, team, onClose, onChanged }) => {
             )}
 
             {tab === "tickets" && (
-              data.tickets?.length ? (
-                <ul className="space-y-2">
-                  {data.tickets.map((t) => (
-                    <li key={t.id} className="rounded-md border border-border/60 p-2 text-[12.5px]">
-                      <div className="flex justify-between">
-                        <span className="font-semibold">{t.ticket_number} · {t.subject}</span>
-                        <Pill color={STATUS_COLORS[t.status] || "#6b7280"} subtle>{t.status}</Pill>
-                      </div>
-                      <div className="text-[11px] text-muted">{t.inbound_channel} · {fmtDate(t.created_at)}</div>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <Empty label="No tickets for this customer." />
-              )
+              <>
+                {data.repeat_complaints?.length ? (
+                  <div className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-[12px] text-amber-700 dark:text-amber-400">
+                    Repeat complainer: {data.repeat_complaints.map((rc) => `${rc.category.replace(/_/g, " ")} (${rc.count}×)`).join(", ")}
+                  </div>
+                ) : null}
+                {data.tickets?.length ? (
+                  <ul className="space-y-2">
+                    {data.tickets.map((t) => (
+                      <li key={t.id} className="rounded-md border border-border/60 p-2 text-[12.5px]">
+                        <div className="flex justify-between gap-2">
+                          <span className="font-semibold">{t.ticket_number} · {t.subject}</span>
+                          <Pill color={STATUS_COLORS[t.status] || "#6b7280"} subtle>{t.status}</Pill>
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted">
+                          <span>{t.inbound_channel} · {fmtDate(t.created_at)}</span>
+                          {t.is_complaint && <Pill color="#dc2626" subtle>{(t.issue_category || "complaint").replace(/_/g, " ")}</Pill>}
+                          {t.escalation_level && t.escalation_level !== "associate" && (
+                            <Pill color="#ea580c" subtle>{t.escalation_level.replace(/_/g, " ")}</Pill>
+                          )}
+                          {t.product_sku && <span className="text-muted">SKU {t.product_sku}</span>}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <Empty label="No tickets for this customer." />
+                )}
+              </>
             )}
 
             {tab === "loyalty" && (
@@ -873,6 +888,8 @@ const TicketsTab = ({ brand, team }) => {
 };
 
 const CHANNELS = ["whatsapp", "meta", "tiktok", "email", "in_store", "phone"];
+const COMPLAINT_CATEGORIES = ["product_quality", "sizing", "delivery", "returns", "staff_conduct"];
+const ESCALATION_LADDER = ["associate", "team_lead", "head_of_cx"];
 
 const CreateTicketModal = ({ open, onClose, brand, team, onCreated }) => {
   const [form, setForm] = useState({});
@@ -901,7 +918,16 @@ const CreateTicketModal = ({ open, onClose, brand, team, onCreated }) => {
             <input className={inputCls} value={form.customer_id || ""} onChange={(e) => set("customer_id", e.target.value)} />
           </Field>
           <Field label="Issue category">
-            <input className={inputCls} value={form.issue_category || ""} onChange={(e) => set("issue_category", e.target.value)} />
+            <select className={inputCls} value={form.issue_category || ""} onChange={(e) => set("issue_category", e.target.value)}>
+              <option value="">General enquiry</option>
+              <optgroup label="Complaints">
+                {COMPLAINT_CATEGORIES.map((c) => <option key={c} value={c}>{c.replace(/_/g, " ")}</option>)}
+              </optgroup>
+              <option value="other">Other</option>
+            </select>
+          </Field>
+          <Field label="Product SKU (optional)">
+            <input className={inputCls} value={form.product_sku || ""} onChange={(e) => set("product_sku", e.target.value)} placeholder="Link to product for merchandising" />
           </Field>
           <Field label="Inbound channel">
             <select className={inputCls} value={form.inbound_channel} onChange={(e) => set("inbound_channel", e.target.value)}>
@@ -958,7 +984,15 @@ const TicketDetail = ({ ticketId, team, onClose, onChanged }) => {
       .catch((e) => toast.error(errOf(e)));
   };
 
+  const escalate = () => {
+    api.post(`/crm/tickets/${ticketId}/escalate`, {})
+      .then((r) => { toast.success(`Escalated to ${(r.data?.escalation_level || "").replace(/_/g, " ")}`); load(); onChanged?.(); })
+      .catch((e) => toast.error(errOf(e)));
+  };
+
   const t = data?.ticket;
+  const isComplaint = t && COMPLAINT_CATEGORIES.includes((t.issue_category || "").toLowerCase());
+  const atTopLevel = t && (t.escalation_level || "associate") === "head_of_cx";
   return (
     <Modal open onClose={onClose} wide title={t ? `${t.ticket_number} · ${t.subject}` : "Ticket"}>
       {loading ? (
@@ -988,7 +1022,17 @@ const TicketDetail = ({ ticketId, team, onClose, onChanged }) => {
             </Field>
             {(t.status === "resolved" || t.status === "closed") && (
               <Field label="CSAT (1–5)">
-                <select className={inputCls} value={t.csat_score || ""} onChange={(e) => patch({ csat_score: e.target.value })}>
+                <select
+                  className={inputCls}
+                  value={t.csat_score || ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (!v) return;
+                    api.post("/crm/csat/respond", { ticket_id: ticketId, score: parseInt(v, 10) })
+                      .then(() => { toast.success("CSAT recorded"); load(); onChanged?.(); })
+                      .catch((err) => toast.error(errOf(err)));
+                  }}
+                >
                   <option value="">—</option>
                   {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
                 </select>
@@ -999,7 +1043,22 @@ const TicketDetail = ({ ticketId, team, onClose, onChanged }) => {
           <div className="text-[12px] text-muted">
             Channel {t.inbound_channel} · created {fmtDate(t.created_at)} · SLA target {t.sla_target_minutes} min
             {t.sla_breached && <span className="ml-2 font-semibold text-danger">SLA breached</span>}
+            {t.product_sku && <span className="ml-2">· SKU {t.product_sku}</span>}
           </div>
+
+          {(isComplaint || (t.escalation_level && t.escalation_level !== "associate")) && (
+            <div className="flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-panel/40 p-2 text-[12px]">
+              {isComplaint && <Pill color="#dc2626" subtle>{(t.issue_category || "complaint").replace(/_/g, " ")}</Pill>}
+              <span className="text-muted">Escalation:</span>
+              <Pill color={t.escalation_level === "head_of_cx" ? "#dc2626" : t.escalation_level === "team_lead" ? "#ea580c" : "#6b7280"} subtle>
+                {(t.escalation_level || "associate").replace(/_/g, " ")}
+              </Pill>
+              {t.escalation_reason && <span className="text-[11px] text-muted">({t.escalation_reason})</span>}
+              {!atTopLevel && t.status !== "resolved" && t.status !== "closed" && (
+                <button className={btnGhost} onClick={escalate}>Escalate</button>
+              )}
+            </div>
+          )}
 
           <div className="max-h-[35vh] space-y-2 overflow-y-auto rounded-md bg-panel/50 p-3">
             {data.messages?.length ? data.messages.map((m) => (
@@ -1915,6 +1974,177 @@ const MobilePreviewTab = () => {
   );
 };
 
+const CSAT_SCORE_COLORS = {
+  1: "bg-rose-500", 2: "bg-orange-400", 3: "bg-amber-400", 4: "bg-lime-400", 5: "bg-emerald-500",
+};
+
+const CSATTab = () => {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+
+  const load = useCallback(() => {
+    setLoading(true);
+    const params = from && to ? { date_from: from, date_to: to } : undefined;
+    crmGet("/crm/csat/dashboard", params)
+      .then((r) => setData(r.data))
+      .catch((e) => setError(errOf(e)))
+      .finally(() => setLoading(false));
+  }, [from, to]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const s = data?.summary;
+  const maxDist = s ? Math.max(1, ...Object.values(s.distribution || {})) : 1;
+
+  return (
+    <div className="space-y-4">
+      <SectionTitle
+        title="Customer satisfaction (CSAT)"
+        subtitle="Per-ticket surveys on resolve and post-purchase surveys (24–48h). Scores 1–5."
+        action={
+          <div className="flex items-center gap-2">
+            <input type="date" className={`${inputCls} w-auto`} value={from} onChange={(e) => setFrom(e.target.value)} />
+            <span className="text-[12px] text-muted">to</span>
+            <input type="date" className={`${inputCls} w-auto`} value={to} onChange={(e) => setTo(e.target.value)} />
+            {(from || to) && (
+              <button className={btnGhost} onClick={() => { setFrom(""); setTo(""); }}>Clear</button>
+            )}
+          </div>
+        }
+      />
+
+      {loading ? (
+        <Loading label="Loading CSAT…" />
+      ) : error ? (
+        <ErrorBox message={error} />
+      ) : s ? (
+        <>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+            <div className="card-white p-3">
+              <div className="text-[11px] uppercase text-muted">Surveys requested</div>
+              <div className="text-[20px] font-bold">{fmtNum(s.requested)}</div>
+            </div>
+            <div className="card-white p-3">
+              <div className="text-[11px] uppercase text-muted">Responses</div>
+              <div className="text-[20px] font-bold">{fmtNum(s.responses)}</div>
+            </div>
+            <div className="card-white p-3">
+              <div className="text-[11px] uppercase text-muted">Response rate</div>
+              <div className="text-[20px] font-bold">{fmtPct(s.response_rate)}</div>
+            </div>
+            <div className="card-white p-3">
+              <div className="text-[11px] uppercase text-muted">Avg score</div>
+              <div className="text-[20px] font-bold">{s.avg_score != null ? s.avg_score.toFixed(2) : "—"}</div>
+            </div>
+            <div className="card-white p-3">
+              <div className="text-[11px] uppercase text-muted">Skipped (window closed)</div>
+              <div className="text-[20px] font-bold">{fmtNum(s.skipped)}</div>
+            </div>
+          </div>
+
+          <div className="card-white p-4">
+            <div className="mb-3 text-[12px] font-semibold uppercase text-muted">Score distribution</div>
+            <div className="space-y-2">
+              {[5, 4, 3, 2, 1].map((n) => {
+                const v = s.distribution?.[String(n)] || 0;
+                return (
+                  <div key={n} className="flex items-center gap-3">
+                    <div className="w-6 text-right text-[12px] font-semibold">{n}</div>
+                    <div className="h-4 flex-1 overflow-hidden rounded bg-panel/60">
+                      <div className={`h-full ${CSAT_SCORE_COLORS[n]}`} style={{ width: `${(v / maxDist) * 100}%` }} />
+                    </div>
+                    <div className="w-12 text-right text-[12px] tabular-nums">{fmtNum(v)}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <div className="card-white p-4">
+              <div className="mb-2 text-[12px] font-semibold uppercase text-muted">By survey type</div>
+              <CSATTable
+                rows={data.by_type}
+                cols={[
+                  ["survey_type", "Type", (v) => (v || "").replace(/_/g, " ")],
+                  ["requested", "Requested", fmtNum],
+                  ["responses", "Responses", fmtNum],
+                  ["avg_score", "Avg", (v) => (v != null ? Number(v).toFixed(2) : "—")],
+                ]}
+              />
+            </div>
+            <div className="card-white p-4">
+              <div className="mb-2 text-[12px] font-semibold uppercase text-muted">By channel</div>
+              <CSATTable
+                rows={data.by_channel}
+                cols={[
+                  ["channel", "Channel", (v) => v],
+                  ["responses", "Responses", fmtNum],
+                  ["avg_score", "Avg", (v) => (v != null ? Number(v).toFixed(2) : "—")],
+                ]}
+              />
+            </div>
+          </div>
+
+          <div className="card-white p-4">
+            <div className="mb-2 text-[12px] font-semibold uppercase text-muted">By store</div>
+            <CSATTable
+              rows={data.by_store}
+              empty="No store-attributed responses yet."
+              cols={[
+                ["store", "Store", (v) => v],
+                ["responses", "Responses", fmtNum],
+                ["avg_score", "Avg", (v) => (v != null ? Number(v).toFixed(2) : "—")],
+              ]}
+            />
+          </div>
+
+          <div className="card-white p-4">
+            <div className="mb-2 text-[12px] font-semibold uppercase text-muted">Weekly trend</div>
+            <CSATTable
+              rows={data.trend}
+              empty="No surveys in range."
+              cols={[
+                ["week", "Week of", (v) => v],
+                ["requested", "Requested", fmtNum],
+                ["responses", "Responses", fmtNum],
+                ["avg_score", "Avg", (v) => (v != null ? Number(v).toFixed(2) : "—")],
+              ]}
+            />
+          </div>
+        </>
+      ) : (
+        <Empty label="No CSAT data yet." />
+      )}
+    </div>
+  );
+};
+
+const CSATTable = ({ rows, cols, empty = "No data." }) => {
+  if (!rows || !rows.length) return <div className="text-[12.5px] text-muted">{empty}</div>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left text-[13px]">
+        <thead>
+          <tr className="border-b border-border text-[11px] uppercase text-muted">
+            {cols.map(([k, label]) => <th key={k} className="px-2 py-1.5 font-semibold">{label}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="border-b border-border/40">
+              {cols.map(([k, , fmt]) => <td key={k} className="px-2 py-1.5 tabular-nums">{fmt ? fmt(r[k]) : r[k]}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
 const TABS = [
   { key: "contacts", label: "Contacts", icon: MagnifyingGlass },
   { key: "tasks", label: "Tasks", icon: CheckCircle },
@@ -1922,6 +2152,7 @@ const TABS = [
   { key: "campaigns", label: "Campaigns", icon: Megaphone },
   { key: "messages", label: "Messages", icon: ChatText },
   { key: "loyalty", label: "Loyalty", icon: Crown },
+  { key: "csat", label: "CSAT", icon: Star },
   { key: "social", label: "Social", icon: FacebookLogo },
   { key: "mobile", label: "Mobile app", icon: DeviceMobile },
 ];
@@ -1932,7 +2163,7 @@ const CRM = () => {
   const initialTab = (() => {
     if (typeof window === "undefined") return "contacts";
     const requested = new URLSearchParams(window.location.search).get("tab");
-    const allowed = ["contacts", "tasks", "tickets", "campaigns", "messages", "loyalty", "social", "mobile"];
+    const allowed = ["contacts", "tasks", "tickets", "campaigns", "messages", "loyalty", "csat", "social", "mobile"];
     return allowed.includes(requested) ? requested : "contacts";
   })();
   const [tab, setTab] = useState(initialTab);
@@ -1984,6 +2215,7 @@ const CRM = () => {
       {tab === "campaigns" && <CampaignsTab brand={brand} />}
       {tab === "messages" && <MessagesTab />}
       {tab === "loyalty" && <LoyaltyTab isAdmin={isAdmin} onOpen360={setOpen360} />}
+      {tab === "csat" && <CSATTab />}
       {tab === "social" && <Social embedded />}
       {tab === "mobile" && <MobilePreviewTab />}
       {tab === "config" && isAdmin && <ConfigTab />}

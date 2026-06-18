@@ -72,6 +72,11 @@ export default function CustomerProfile() {
   const [recording, setRecording] = useState(false);
   const [recorder, setRecorder] = useState(null);
   const [voiceUploading, setVoiceUploading] = useState(false);
+  const [txns, setTxns] = useState([]);
+  const [txPage, setTxPage] = useState(1);
+  const [txTotal, setTxTotal] = useState(0);
+  const [txPages, setTxPages] = useState(0);
+  const [txLoading, setTxLoading] = useState(false);
 
   const reload = async () => {
     setLoading(true);
@@ -165,6 +170,22 @@ export default function CustomerProfile() {
     loadNba();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setTxLoading(true);
+    api.get(`/customers/${id}/transactions`, { params: { page: txPage, page_size: 20 } })
+      .then((r) => {
+        if (cancelled) return;
+        setTxns(r.data?.transactions || []);
+        setTxTotal(r.data?.total || 0);
+        setTxPages(r.data?.total_pages || 0);
+      })
+      .catch(() => { if (!cancelled) { setTxns([]); setTxTotal(0); setTxPages(0); } })
+      .finally(() => { if (!cancelled) setTxLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, txPage]);
 
   const addNote = async () => {
     if (!noteBody.trim()) return;
@@ -392,6 +413,7 @@ export default function CustomerProfile() {
           {[
             ["timeline_all", "Timeline", "profile-tab-timeline-all"],
             ["purchases", "Purchases", "profile-tab-purchases"],
+            ["transactions", "Transactions", "profile-tab-transactions"],
             ["preferences", "Preferences", "profile-tab-preferences"],
             ["wishlist", "Wishlist", "profile-tab-wishlist"],
             ["notes", "Notes", "profile-tab-notes"],
@@ -472,6 +494,45 @@ export default function CustomerProfile() {
                 </div>
               </div>
             ))}
+          </div>
+        </TabsContent>
+
+        <TabsContent value="transactions" className="mt-6" data-testid="profile-tab-transactions-content">
+          <div className="vivo-card rounded-sm overflow-hidden">
+            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-[var(--vivo-border)]">
+              <div className="text-sm text-[var(--vivo-muted)]">
+                {txLoading ? "Loading…" : `${formatNumber(txTotal)} transaction${txTotal === 1 ? "" : "s"}`}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" disabled={txLoading || txPage <= 1}
+                  onClick={() => setTxPage((p) => Math.max(1, p - 1))} data-testid="tx-prev">Prev</Button>
+                <span className="text-xs text-[var(--vivo-muted)] font-mono-num min-w-[80px] text-center">
+                  Page {txPage}{txPages ? ` / ${txPages}` : ""}
+                </span>
+                <Button variant="outline" size="sm" disabled={txLoading || (txPages > 0 && txPage >= txPages)}
+                  onClick={() => setTxPage((p) => p + 1)} data-testid="tx-next">Next</Button>
+              </div>
+            </div>
+            <div className="divide-y divide-[var(--vivo-border)]">
+              {!txLoading && txns.length === 0 && <div className="p-6 text-sm text-[var(--vivo-muted)]">No transactions.</div>}
+              {txns.map((t, i) => (
+                <div key={`${t.order_id}-${i}`} className="p-4 flex items-center justify-between gap-4" data-testid="tx-row">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Badge variant={t.type === "Return" ? "destructive" : "secondary"} className="rounded-sm text-[10px] uppercase tracking-wider">{t.type}</Badge>
+                      <span className="font-medium text-sm">{formatDate(t.date)}</span>
+                    </div>
+                    <div className="text-xs text-[var(--vivo-muted)] mt-1 truncate">
+                      {t.source_system}{t.channel ? ` · ${t.channel}` : ""}{t.order_id ? ` · #${t.order_id}` : ""}{t.items ? ` · ${t.items}` : ""}
+                    </div>
+                  </div>
+                  <div className="text-right text-sm">
+                    <div className={`font-mono-num ${Number(t.amount_kes) < 0 ? "text-red-600" : ""}`}>{formatKES(t.amount_kes)}</div>
+                    <div className="text-xs text-[var(--vivo-muted)]">{t.units ? `${t.units} unit${Math.abs(t.units) === 1 ? "" : "s"}` : ""}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </TabsContent>
 

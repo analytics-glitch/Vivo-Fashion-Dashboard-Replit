@@ -12011,24 +12011,65 @@ CRM_CONFIG_DEFAULTS = {
     "loyalty.points_per_kes_redeem": "100",  # 100 points = KES 1
     "loyalty.redemption_floor": "200",     # minimum points to redeem
     "loyalty.points_expiry_months": "12",  # points expire after this many months of no purchase
-    # Tier qualification by trailing-12-month spend (KES). Three tiers:
+    # Tier qualification by trailing-12-month spend (KES). Four tiers (PRD 5.3):
     #   Bronze   KES 1 – 49,999
-    #   Silver   KES 50,000 – 99,999
-    #   Gold     KES 100,000+
+    #   Silver   KES 50,000 – 149,999
+    #   Gold     KES 150,000 – 299,999
+    #   VIP      KES 300,000+
     "loyalty.tier_silver_kes": "50000",
-    "loyalty.tier_gold_kes": "100000",
-    "loyalty.tier_vip_kes": "300000",      # NOT a loyalty tier; only the CRM "vip" high-spender segment
+    "loyalty.tier_gold_kes": "150000",
+    "loyalty.tier_vip_kes": "300000",      # VIP loyalty tier threshold (also gates the CRM "vip" segment)
     # Points earned per KES 100 by tier (tiered earn-rate multipliers).
     "loyalty.earn_multiplier_bronze": "1",
     "loyalty.earn_multiplier_silver": "2",
     "loyalty.earn_multiplier_gold": "3",
+    "loyalty.earn_multiplier_vip": "4",
     "sla.meta_high_minutes": "120",
     "sla.tiktok_high_minutes": "240",
     "sla.whatsapp_high_minutes": "120",
     "sla.email_minutes": "1440",
     "sla.in_store_critical_minutes": "60",
     "sla.default_minutes": "480",
+    # Complaint/case SLA per category (minutes to first response/resolution).
+    # These OVERRIDE the channel SLA when the ticket's issue_category is a
+    # recognised complaint category (CEM 2.1).
+    "sla.category_product_quality_minutes": "240",
+    "sla.category_sizing_minutes": "480",
+    "sla.category_delivery_minutes": "240",
+    "sla.category_returns_minutes": "480",
+    "sla.category_staff_conduct_minutes": "120",
+    # Complaint escalation (CEM 2.1): associate -> team_lead -> head_of_cx.
+    # Gold/VIP loyalty members auto-escalate straight to Head of CX on create.
+    "escalation.gold_vip_auto_head_of_cx": "1",
+    # A second complaint in the same category within this many days flags the
+    # customer as a repeat complainer on their card.
+    "escalation.repeat_complaint_window_days": "90",
+    # CSAT (CEM 2.2). Per-ticket survey on resolve + post-purchase survey.
+    "csat.enabled": "1",
+    # Meta/WhatsApp can only message a user inside this many hours of their last
+    # inbound message; outside it we log + skip the survey rather than send.
+    "csat.meta_window_hours": "24",
+    # Post-purchase survey is requested for orders whose purchase date falls in
+    # this window (PRD: 24-48h after purchase). all_sales is date-grained, so we
+    # approximate at day resolution: orders from min..max days ago.
+    "csat.post_purchase_min_days": "1",
+    "csat.post_purchase_max_days": "2",
 }
+
+# Recognised complaint categories (CEM 2.1). issue_category values matching
+# these get a per-category SLA and participate in the complaint escalation /
+# repeat-complaint logic. Anything else is treated as a general enquiry.
+CRM_COMPLAINT_CATEGORIES = (
+    "product_quality", "sizing", "delivery", "returns", "staff_conduct",
+)
+
+# Complaint escalation ladder (lowest -> highest).
+CRM_ESCALATION_LADDER = ("associate", "team_lead", "head_of_cx")
+
+# Channels that enforce a customer-care-window messaging policy (CEM 2.2): a
+# survey can only be delivered within csat.meta_window_hours of the customer's
+# last inbound message; outside it we log + skip rather than send.
+CSAT_META_CHANNELS = ("facebook", "instagram", "messenger", "meta", "whatsapp")
 
 
 def _ensure_crm_tables():
@@ -12171,6 +12212,20 @@ def _ensure_crm_tables():
     _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_tickets_status ON crm_tickets(status)")
     _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_tickets_assigned ON crm_tickets(assigned_to)")
     _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_tickets_customer ON crm_tickets(customer_id)")
+    # Complaint/case management columns (CEM 2.1) — added idempotently so
+    # existing deployments pick them up without a migration.
+    for _col, _ddl in (
+        ("escalation_level", "TEXT NOT NULL DEFAULT 'associate'"),
+        ("escalated_at", "TIMESTAMPTZ"),
+        ("escalated_to", "TEXT"),
+        ("escalated_to_name", "TEXT"),
+        ("escalation_reason", "TEXT"),
+        ("product_sku", "TEXT"),
+        ("resolution_notified_at", "TIMESTAMPTZ"),
+        ("resolution_notify_channel", "TEXT"),
+    ):
+        _users_exec(f"ALTER TABLE crm_tickets ADD COLUMN IF NOT EXISTS {_col} {_ddl}")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_tickets_category ON crm_tickets(issue_category)")
     # Append-only ticket conversation.
     _users_exec("""
         CREATE TABLE IF NOT EXISTS crm_ticket_messages (
@@ -12183,6 +12238,33 @@ def _ensure_crm_tables():
             created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
         )""")
     _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_ticket_messages_ticket ON crm_ticket_messages(ticket_id)")
+    # CSAT surveys (CEM 2.2): per-ticket (on resolve) + post-purchase. One log
+    # row per survey; status requested -> responded | skipped.
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS crm_csat (
+            id            SERIAL PRIMARY KEY,
+            survey_type   TEXT NOT NULL DEFAULT 'ticket',
+            ticket_id     INTEGER REFERENCES crm_tickets(id) ON DELETE CASCADE,
+            customer_id   TEXT,
+            brand_code    TEXT NOT NULL DEFAULT 'vivo',
+            channel       TEXT,
+            store         TEXT,
+            order_id      TEXT,
+            score         INTEGER,
+            comment       TEXT,
+            status        TEXT NOT NULL DEFAULT 'requested',
+            skip_reason   TEXT,
+            requested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            responded_at  TIMESTAMPTZ
+        )""")
+    # One survey per ticket, and one post-purchase survey per order (idempotency
+    # for the lazy post-purchase trigger + re-resolve).
+    _users_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_crm_csat_ticket ON crm_csat(ticket_id) "
+                "WHERE survey_type='ticket' AND ticket_id IS NOT NULL")
+    _users_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_crm_csat_order ON crm_csat(order_id) "
+                "WHERE survey_type='post_purchase' AND order_id IS NOT NULL")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_csat_requested ON crm_csat(requested_at)")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_crm_csat_customer ON crm_csat(customer_id)")
     _users_exec("""
         CREATE TABLE IF NOT EXISTS crm_loyalty_enrolment (
             customer_id     TEXT PRIMARY KEY,
@@ -12357,9 +12439,12 @@ def _crm_cfg_num(cfg, key, default=0.0):
 
 
 def _crm_tier_for_spend(spend, cfg):
-    # Loyalty membership has three tiers, qualified by trailing-12-month spend.
+    # Loyalty membership has four tiers, qualified by trailing-12-month spend
+    # (PRD 5.3): Bronze / Silver / Gold / VIP.
     s = float(spend or 0)
-    if s >= _crm_cfg_num(cfg, "loyalty.tier_gold_kes", 100000):
+    if s >= _crm_cfg_num(cfg, "loyalty.tier_vip_kes", 300000):
+        return "VIP"
+    if s >= _crm_cfg_num(cfg, "loyalty.tier_gold_kes", 150000):
         return "Gold"
     if s >= _crm_cfg_num(cfg, "loyalty.tier_silver_kes", 50000):
         return "Silver"
@@ -12368,8 +12453,9 @@ def _crm_tier_for_spend(spend, cfg):
 
 def _crm_earn_multiplier(tier, cfg):
     """Points earned per KES 100 depends on the member's tier:
-    Bronze x1, Silver x2, Gold x3 (configurable). Always >= 1."""
+    Bronze x1, Silver x2, Gold x3, VIP x4 (configurable). Always >= 1."""
     key = {
+        "VIP": "loyalty.earn_multiplier_vip",
         "Gold": "loyalty.earn_multiplier_gold",
         "Silver": "loyalty.earn_multiplier_silver",
     }.get(tier, "loyalty.earn_multiplier_bronze")
@@ -12511,7 +12597,21 @@ def _member_enrolment(customer_id):
     return rows[0] if rows else None
 
 
-def _crm_sla_minutes(cfg, channel, priority):
+def _crm_is_complaint(category):
+    return (category or "").strip().lower() in CRM_COMPLAINT_CATEGORIES
+
+
+def _crm_sla_minutes(cfg, channel, priority, category=None):
+    # Recognised complaint categories take a per-category SLA that OVERRIDES
+    # the channel SLA (CEM 2.1).
+    cat = (category or "").strip().lower()
+    if cat in CRM_COMPLAINT_CATEGORIES:
+        key = f"sla.category_{cat}_minutes"
+        default = {
+            "product_quality": 240, "sizing": 480, "delivery": 240,
+            "returns": 480, "staff_conduct": 120,
+        }.get(cat, 480)
+        return int(_crm_cfg_num(cfg, key, default))
     ch = (channel or "").lower()
     pr = (priority or "normal").lower()
     if ch == "in_store" and pr in ("critical", "urgent", "high"):
@@ -12525,6 +12625,164 @@ def _crm_sla_minutes(cfg, channel, priority):
     if ch == "email":
         return int(_crm_cfg_num(cfg, "sla.email_minutes", 1440))
     return int(_crm_cfg_num(cfg, "sla.default_minutes", 480))
+
+
+def _crm_customer_tier(customer_id, cfg):
+    """Resolve a customer's loyalty tier: prefer the stored enrolment tier,
+    else compute from trailing-12-month spend. Returns 'Bronze' if unknown."""
+    if not customer_id:
+        return "Bronze"
+    r = _users_exec(
+        "SELECT tier FROM crm_loyalty_enrolment WHERE customer_id=%s",
+        (customer_id,), fetch=True)
+    if r and r[0].get("tier"):
+        return r[0]["tier"]
+    sp = _users_exec(
+        "SELECT COALESCE(SUM(total_sales_kes),0) AS s FROM all_sales "
+        "WHERE customer_id=%s AND sale_date::date >= (CURRENT_DATE - INTERVAL '365 days')",
+        (customer_id,), fetch=True)
+    return _crm_tier_for_spend((sp[0]["s"] if sp else 0), cfg)
+
+
+def _crm_repeat_complaint_count(customer_id, category, cfg, exclude_ticket_id=None):
+    """How many complaints this customer has filed in the same category within
+    the repeat-complaint window (CEM 2.1). Used to flag repeat complainers."""
+    if not customer_id or not _crm_is_complaint(category):
+        return 0
+    days = int(_crm_cfg_num(cfg, "escalation.repeat_complaint_window_days", 90))
+    params = [customer_id, category.strip().lower(), str(days)]
+    extra = ""
+    if exclude_ticket_id is not None:
+        extra = " AND id <> %s"
+        params.append(exclude_ticket_id)
+    r = _users_exec(
+        "SELECT COUNT(*) AS c FROM crm_tickets WHERE customer_id=%s "
+        "AND LOWER(issue_category)=%s "
+        "AND created_at >= (now() - (%s || ' days')::interval)" + extra,
+        tuple(params), fetch=True)
+    return int(r[0]["c"]) if r else 0
+
+
+def _crm_log_ticket_system(tid, body):
+    """Append an internal system note to a ticket thread (audit-style trail)."""
+    try:
+        _users_exec(
+            "INSERT INTO crm_ticket_messages (ticket_id, direction, sender_user_id, sender_name, body) "
+            "VALUES (%s,'system',%s,%s,%s)", (tid, "system", "System", body[:2000]))
+    except Exception:
+        pass
+
+
+def _crm_next_escalation(level):
+    """Return the next level up the ladder, or None if already at the top."""
+    lvl = (level or "associate").lower()
+    try:
+        i = CRM_ESCALATION_LADDER.index(lvl)
+    except ValueError:
+        i = 0
+    return CRM_ESCALATION_LADDER[i + 1] if i + 1 < len(CRM_ESCALATION_LADDER) else None
+
+
+def _crm_escalate_overdue(cfg=None):
+    """Lazy SLA sweep (no cron, like points expiry): any open complaint past
+    its SLA due time that has not yet reached head_of_cx is bumped one level up
+    the ladder and a system note is logged. Runs on ticket-list reads."""
+    try:
+        rows = _users_exec(
+            "SELECT id, escalation_level, ticket_number FROM crm_tickets "
+            "WHERE status NOT IN ('resolved','closed') AND sla_due_at IS NOT NULL "
+            "AND now() > sla_due_at AND COALESCE(escalation_level,'associate') <> 'head_of_cx' "
+            "AND LOWER(issue_category) = ANY(%s)",
+            (list(CRM_COMPLAINT_CATEGORIES),), fetch=True) or []
+    except Exception:
+        rows = []
+    for r in rows:
+        nxt = _crm_next_escalation(r.get("escalation_level"))
+        if not nxt:
+            continue
+        _users_exec(
+            "UPDATE crm_tickets SET escalation_level=%s, escalated_at=now(), "
+            "escalation_reason='SLA breach (auto)', sla_breached=TRUE WHERE id=%s",
+            (nxt, r["id"]))
+        _crm_log_ticket_system(r["id"], f"Auto-escalated to {nxt} on SLA breach.")
+
+
+def _crm_request_ticket_csat(ticket, cfg=None):
+    """On ticket resolve, request a per-ticket CSAT (1-5) via the originating
+    channel (CEM 2.2). Respects the Meta/WhatsApp customer-care window: if the
+    customer's last inbound message is older than csat.meta_window_hours, the
+    survey can't be delivered, so we record it as 'skipped' (log + skip) instead
+    of sending. Idempotent: one survey per ticket (uq_crm_csat_ticket)."""
+    cfg = cfg or _crm_config_dict()
+    if not int(_crm_cfg_num(cfg, "csat.enabled", 1)):
+        return None
+    tid = ticket.get("id")
+    if not tid:
+        return None
+    channel = (ticket.get("inbound_channel") or "in_store")
+    status, skip_reason = "requested", None
+    if channel.lower() in CSAT_META_CHANNELS:
+        win_h = _crm_cfg_num(cfg, "csat.meta_window_hours", 24)
+        r = _users_exec(
+            "SELECT EXTRACT(EPOCH FROM (now() - MAX(created_at)))/3600.0 AS age_h "
+            "FROM crm_ticket_messages WHERE ticket_id=%s AND direction='inbound'",
+            (tid,), fetch=True)
+        age_h = (r[0]["age_h"] if r else None)
+        if age_h is None or float(age_h) > win_h:
+            status, skip_reason = "skipped", f"outside {int(win_h)}h messaging window"
+    row = _users_exec(
+        "INSERT INTO crm_csat (survey_type, ticket_id, customer_id, brand_code, channel, status, skip_reason) "
+        "VALUES ('ticket',%s,%s,%s,%s,%s,%s) "
+        "ON CONFLICT (ticket_id) WHERE survey_type='ticket' AND ticket_id IS NOT NULL DO NOTHING "
+        "RETURNING id, status",
+        (tid, ticket.get("customer_id"), _crm_brand(ticket.get("brand_code")),
+         channel, status, skip_reason), fetch=True)
+    if not row:
+        return None
+    if status == "skipped":
+        _crm_log_ticket_system(tid, f"CSAT survey skipped: {skip_reason}.")
+    else:
+        _crm_log_ticket_system(tid, f"CSAT survey requested via {channel}.")
+    return {"survey_id": row[0]["id"], "status": status, "skip_reason": skip_reason}
+
+
+def _crm_trigger_post_purchase_csat(cfg=None):
+    """Lazy post-purchase CSAT trigger (no cron, like the SLA sweep): create a
+    survey for identified-customer orders whose purchase date falls in the
+    configured window (PRD 24-48h; approximated at day grain since all_sales is
+    date-only). Idempotent per order via uq_crm_csat_order. Returns #created."""
+    cfg = cfg or _crm_config_dict()
+    if not int(_crm_cfg_num(cfg, "csat.enabled", 1)):
+        return 0
+    min_d = int(_crm_cfg_num(cfg, "csat.post_purchase_min_days", 1))
+    max_d = int(_crm_cfg_num(cfg, "csat.post_purchase_max_days", 2))
+    try:
+        rows = _users_exec(
+            "SELECT order_id, MAX(customer_id) AS customer_id, "
+            "       MAX(pos_location_name) AS store, MAX(channel) AS channel "
+            "FROM all_sales "
+            "WHERE customer_id IS NOT NULL AND customer_id <> '' "
+            "  AND order_id IS NOT NULL AND order_id <> '' "
+            "  AND COALESCE(LOWER(customer_type),'') NOT IN ('walk-in','walk_in','anonymous') "
+            "  AND sale_kind IN ('sale','order') "
+            "  AND sale_date::date BETWEEN (CURRENT_DATE - %s) AND (CURRENT_DATE - %s) "
+            "GROUP BY order_id "
+            "HAVING COALESCE(SUM(total_sales_kes),0) > 0",
+            (max_d, min_d), fetch=True) or []
+    except Exception:
+        rows = []
+    created = 0
+    for r in rows:
+        ins = _users_exec(
+            "INSERT INTO crm_csat (survey_type, order_id, customer_id, channel, store, status) "
+            "VALUES ('post_purchase',%s,%s,%s,%s,'requested') "
+            "ON CONFLICT (order_id) WHERE survey_type='post_purchase' AND order_id IS NOT NULL "
+            "DO NOTHING RETURNING id",
+            (r.get("order_id"), r.get("customer_id"),
+             r.get("channel") or "post_purchase", r.get("store")), fetch=True)
+        if ins:
+            created += 1
+    return created
 
 
 # --- CRM: config + team ---------------------------------------------------
@@ -12738,9 +12996,21 @@ def crm_customer_detail(customer_id: str, request: Request):
         "SELECT * FROM crm_interactions WHERE customer_id=%s ORDER BY created_at DESC LIMIT 50",
         (customer_id,), fetch=True) or []
     tickets = _users_exec(
-        "SELECT id, ticket_number, subject, status, priority, inbound_channel, sla_breached, created_at "
+        "SELECT id, ticket_number, subject, status, priority, inbound_channel, issue_category, "
+        "escalation_level, product_sku, sla_breached, created_at, "
+        "(LOWER(issue_category) = ANY(%s)) AS is_complaint "
         "FROM crm_tickets WHERE customer_id=%s ORDER BY created_at DESC LIMIT 50",
-        (customer_id,), fetch=True) or []
+        (list(CRM_COMPLAINT_CATEGORIES), customer_id), fetch=True) or []
+    # Repeat-complaint flags: categories the customer has complained about >= 2x
+    # within the configured window (CEM 2.1 — surfaced on the customer card).
+    _cfg_rc = _crm_config_dict()
+    _rc_days = int(_crm_cfg_num(_cfg_rc, "escalation.repeat_complaint_window_days", 90))
+    repeat_complaints = _users_exec(
+        "SELECT LOWER(issue_category) AS category, COUNT(*) AS count "
+        "FROM crm_tickets WHERE customer_id=%s AND LOWER(issue_category) = ANY(%s) "
+        "AND created_at >= (now() - (%s || ' days')::interval) "
+        "GROUP BY LOWER(issue_category) HAVING COUNT(*) >= 2 ORDER BY COUNT(*) DESC",
+        (customer_id, list(CRM_COMPLAINT_CATEGORIES), str(_rc_days)), fetch=True) or []
     enrol = _users_exec("SELECT * FROM crm_loyalty_enrolment WHERE customer_id=%s", (customer_id,), fetch=True)
     ledger = _users_exec(
         "SELECT * FROM crm_loyalty_ledger WHERE customer_id=%s ORDER BY created_at DESC LIMIT 25",
@@ -12758,6 +13028,7 @@ def crm_customer_detail(customer_id: str, request: Request):
         "tasks": tasks,
         "interactions": interactions,
         "tickets": tickets,
+        "repeat_complaints": repeat_complaints,
         "loyalty": {
             "enrolment": enrol[0] if enrol else None,
             "ledger": ledger,
@@ -13161,6 +13432,8 @@ async def crm_campaign_mark_sent(campaign_id: int, request: Request):
 
 @app.get("/api/crm/tickets")
 def crm_tickets_list(request: Request):
+    # Lazy SLA-breach escalation sweep (no cron, like points expiry).
+    _crm_escalate_overdue()
     qp = request.query_params
     where, params = ["1=1"], []
     st = (qp.get("status") or "").strip().lower()
@@ -13175,17 +13448,24 @@ def crm_tickets_list(request: Request):
     if qp.get("customer_id"):
         where.append("customer_id=%s")
         params.append(qp.get("customer_id"))
+    if qp.get("escalation_level"):
+        where.append("escalation_level=%s")
+        params.append(qp.get("escalation_level"))
+    if (qp.get("complaints_only") or "").lower() in ("1", "true", "yes"):
+        where.append("LOWER(issue_category) = ANY(%s)")
+        params.append(list(CRM_COMPLAINT_CATEGORIES))
     brand = _crm_brand(qp.get("brand"), default="")
     if brand:
         where.append("brand_code=%s")
         params.append(brand)
     rows = _users_exec(
         f"SELECT t.*, (now() > t.sla_due_at AND t.status NOT IN ('resolved','closed')) AS sla_overdue, "
+        "(LOWER(t.issue_category) = ANY(%s)) AS is_complaint, "
         "(SELECT COALESCE(MAX(NULLIF(TRIM(CONCAT_WS(' ', ac.first_name, ac.last_name)),'')),'') "
         " FROM all_customers ac WHERE ac.customer_id=t.customer_id) AS customer_name "
         f"FROM crm_tickets t WHERE {' AND '.join(where)} "
         "ORDER BY (status IN ('resolved','closed')), sla_due_at NULLS LAST, created_at DESC LIMIT 500",
-        tuple(params) if params else None, fetch=True) or []
+        tuple([list(CRM_COMPLAINT_CATEGORIES)] + params), fetch=True) or []
     return {"tickets": rows}
 
 
@@ -13202,28 +13482,56 @@ async def crm_tickets_create(request: Request):
     cfg = _crm_config_dict()
     channel = body.get("inbound_channel") or "in_store"
     priority = body.get("priority") or "normal"
-    minutes = _crm_sla_minutes(cfg, channel, priority)
+    category = body.get("issue_category")
+    customer_id = body.get("customer_id")
+    minutes = _crm_sla_minutes(cfg, channel, priority, category)
     assigned = body.get("assigned_to")
     assigned_name = None
     if assigned:
         ar = _users_exec("SELECT name, email FROM app_users WHERE user_id=%s", (assigned,), fetch=True)
         if ar:
             assigned_name = ar[0].get("name") or ar[0].get("email")
+    product_sku = (body.get("product_sku") or "").strip() or None
+    # Gold/VIP complaints jump straight to Head of CX on intake (CEM 2.1).
+    escalation_level = "associate"
+    escalation_reason = None
+    escalated_at_sql = "NULL"
+    is_complaint = _crm_is_complaint(category)
+    tier = _crm_customer_tier(customer_id, cfg) if customer_id else "Bronze"
+    if is_complaint and tier in ("Gold", "VIP") and int(_crm_cfg_num(cfg, "escalation.gold_vip_auto_head_of_cx", 1)):
+        escalation_level = "head_of_cx"
+        escalation_reason = f"{tier} member complaint — auto-escalated to Head of CX"
+        escalated_at_sql = "now()"
     tnum = "TKT-" + secrets.token_hex(3).upper()
     rows = _users_exec(
         "INSERT INTO crm_tickets (ticket_number, customer_id, brand_code, inbound_channel, "
         "issue_category, subject, priority, assigned_to, assigned_to_name, status, "
-        "sla_target_minutes, sla_due_at, created_by, created_by_name) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'open',%s, now() + (%s || ' minutes')::interval, %s,%s) RETURNING id, ticket_number",
-        (tnum, body.get("customer_id"), _crm_brand(body.get("brand_code")), channel,
-         body.get("issue_category"), subject, priority, assigned, assigned_name,
-         minutes, str(minutes), uid, uname), fetch=True)
+        "sla_target_minutes, sla_due_at, created_by, created_by_name, "
+        "escalation_level, escalation_reason, escalated_at, product_sku) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'open',%s, now() + (%s || ' minutes')::interval, %s,%s, "
+        "%s,%s," + escalated_at_sql + ",%s) RETURNING id, ticket_number",
+        (tnum, customer_id, _crm_brand(body.get("brand_code")), channel,
+         category, subject, priority, assigned, assigned_name,
+         minutes, str(minutes), uid, uname,
+         escalation_level, escalation_reason, product_sku), fetch=True)
     tid = rows[0]["id"] if rows else None
     if body.get("description"):
         _users_exec(
             "INSERT INTO crm_ticket_messages (ticket_id, direction, sender_user_id, sender_name, body) "
             "VALUES (%s,'internal',%s,%s,%s)", (tid, uid, uname, body.get("description")))
-    return {"ok": True, "id": tid, "ticket_number": rows[0]["ticket_number"] if rows else None}
+    if escalation_reason:
+        _crm_log_ticket_system(tid, escalation_reason + ".")
+    # Repeat-complaint detection (same category in window): note it on the thread.
+    repeat = _crm_repeat_complaint_count(customer_id, category, cfg, exclude_ticket_id=tid)
+    if repeat >= 1:
+        _crm_log_ticket_system(
+            tid, f"Repeat complaint: customer has {repeat} prior '{category}' "
+            f"complaint(s) in the last {int(_crm_cfg_num(cfg, 'escalation.repeat_complaint_window_days', 90))} days.")
+    _crm_audit("ticket", tid, "create",
+               f"{category or 'enquiry'} via {channel}" + (f" [SKU {product_sku}]" if product_sku else ""), request)
+    return {"ok": True, "id": tid, "ticket_number": rows[0]["ticket_number"] if rows else None,
+            "escalation_level": escalation_level, "is_complaint": is_complaint,
+            "repeat_complaint": repeat >= 1}
 
 
 @app.get("/api/crm/tickets/{ticket_id}")
@@ -13242,8 +13550,13 @@ async def crm_ticket_patch(ticket_id: int, request: Request):
         body = await request.json()
     except Exception:
         body = {}
+    cur = _users_exec("SELECT * FROM crm_tickets WHERE id=%s", (ticket_id,), fetch=True)
+    if not cur:
+        return JSONResponse({"detail": "Ticket not found"}, status_code=404)
+    cur = cur[0]
+    cfg = _crm_config_dict()
     sets, vals = [], []
-    for k in ("status", "priority", "issue_category", "assigned_to", "csat_score"):
+    for k in ("status", "priority", "issue_category", "assigned_to", "csat_score", "product_sku"):
         if k in body:
             sets.append(f"{k}=%s")
             vals.append(body.get(k) or None)
@@ -13251,6 +13564,14 @@ async def crm_ticket_patch(ticket_id: int, request: Request):
         ar = _users_exec("SELECT name, email FROM app_users WHERE user_id=%s", (body.get("assigned_to"),), fetch=True)
         sets.append("assigned_to_name=%s")
         vals.append((ar[0].get("name") or ar[0].get("email")) if ar else None)
+    # If the category changes to/from a complaint category, recompute the SLA.
+    if "issue_category" in body and (body.get("issue_category") or "") != (cur.get("issue_category") or ""):
+        minutes = _crm_sla_minutes(cfg, cur.get("inbound_channel"), body.get("priority") or cur.get("priority"), body.get("issue_category"))
+        sets.append("sla_target_minutes=%s")
+        vals.append(minutes)
+        sets.append("sla_due_at=created_at + (%s || ' minutes')::interval")
+        vals.append(str(minutes))
+    now_resolving = body.get("status") in ("resolved", "closed") and cur.get("status") not in ("resolved", "closed")
     if body.get("status") in ("resolved", "closed"):
         sets.append("resolved_at=COALESCE(resolved_at, now())")
         sets.append("sla_breached=(now() > sla_due_at)")
@@ -13258,7 +13579,85 @@ async def crm_ticket_patch(ticket_id: int, request: Request):
         return {"ok": True}
     vals.append(ticket_id)
     _users_exec(f"UPDATE crm_tickets SET {', '.join(sets)} WHERE id=%s", vals)
-    return {"ok": True}
+    notify = None
+    if now_resolving:
+        notify = _crm_notify_resolution(ticket_id, cur, request)
+    _crm_audit("ticket", ticket_id, "update", ", ".join(sets and [s.split("=")[0] for s in sets]), request)
+    return {"ok": True, "notified": notify}
+
+
+def _crm_notify_resolution(ticket_id, ticket, request):
+    """Closed-loop resolution notification (CEM 2.1): notify the customer that
+    their case is resolved via their preferred channel. Real channel delivery
+    needs provider creds; for now we log the intent (interaction + system note
+    + audit) and stamp resolution_notified_at so it is auditable + idempotent."""
+    cid = ticket.get("customer_id")
+    channel = ticket.get("inbound_channel") or "in_store"
+    if cid:
+        pref = _users_exec(
+            "SELECT preferred_channel FROM crm_customer WHERE customer_id=%s",
+            (cid,), fetch=True)
+        if pref and pref[0].get("preferred_channel"):
+            channel = pref[0]["preferred_channel"]
+    # Idempotent at the DB level: only the request that flips resolution_notified_at
+    # from NULL emits the side effects, so concurrent resolves notify exactly once.
+    won = _users_exec(
+        "UPDATE crm_tickets SET resolution_notified_at=now(), resolution_notify_channel=%s "
+        "WHERE id=%s AND resolution_notified_at IS NULL RETURNING id",
+        (channel, ticket_id), fetch=True)
+    if not won:
+        return None
+    msg = (f"Case {ticket.get('ticket_number')} resolved — customer notified via {channel} "
+           "(logged; real-channel delivery pending provider credentials).")
+    _crm_log_ticket_system(ticket_id, msg)
+    if cid:
+        try:
+            _users_exec(
+                "INSERT INTO crm_interactions (customer_id, type, outcome, channel, notes, user_id, user_name) "
+                "VALUES (%s,'resolution_notice','resolved',%s,%s,%s,%s)",
+                (cid, channel, msg, "system", "System"))
+        except Exception:
+            pass
+    _crm_audit("ticket", ticket_id, "resolve_notify", msg, request)
+    # Request a per-ticket CSAT survey on resolve (CEM 2.2).
+    csat = None
+    try:
+        t2 = dict(ticket)
+        t2["id"] = ticket_id
+        csat = _crm_request_ticket_csat(t2)
+    except Exception:
+        csat = None
+    return {"channel": channel, "csat": csat}
+
+
+@app.post("/api/crm/tickets/{ticket_id}/escalate")
+async def crm_ticket_escalate(ticket_id: int, request: Request):
+    """Manually escalate a complaint one level up the ladder
+    (associate -> team_lead -> head_of_cx), or to an explicit level."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    cur = _users_exec("SELECT * FROM crm_tickets WHERE id=%s", (ticket_id,), fetch=True)
+    if not cur:
+        return JSONResponse({"detail": "Ticket not found"}, status_code=404)
+    cur = cur[0]
+    if not _crm_is_complaint(cur.get("issue_category")):
+        return JSONResponse(
+            {"detail": "Escalation ladder applies to complaint tickets only"}, status_code=400)
+    target = (body.get("level") or "").strip().lower()
+    if target and target not in CRM_ESCALATION_LADDER:
+        return JSONResponse({"detail": "Invalid escalation level"}, status_code=400)
+    nxt = target or _crm_next_escalation(cur.get("escalation_level"))
+    if not nxt:
+        return JSONResponse({"detail": "Already at the highest escalation level"}, status_code=400)
+    reason = (body.get("reason") or "").strip() or "Manual escalation"
+    _users_exec(
+        "UPDATE crm_tickets SET escalation_level=%s, escalated_at=now(), escalation_reason=%s WHERE id=%s",
+        (nxt, reason, ticket_id))
+    _crm_log_ticket_system(ticket_id, f"Escalated to {nxt}: {reason}")
+    _crm_audit("ticket", ticket_id, "escalate", f"{cur.get('escalation_level')} -> {nxt}: {reason}", request)
+    return {"ok": True, "escalation_level": nxt}
 
 
 @app.post("/api/crm/tickets/{ticket_id}/messages")
@@ -13276,6 +13675,165 @@ async def crm_ticket_message(ticket_id: int, request: Request):
         "VALUES (%s,%s,%s,%s,%s)",
         (ticket_id, body.get("direction") or "outbound", uid, uname, txt))
     return {"ok": True}
+
+
+# --- CRM: CSAT (CEM 2.2) --------------------------------------------------
+
+@app.post("/api/crm/csat/respond")
+async def crm_csat_respond(request: Request):
+    """Record a CSAT response (score 1-5). Locate the survey by survey_id, or by
+    ticket_id (creating the ticket survey if one wasn't requested yet — e.g. an
+    in-store agent capturing the score directly). Per-ticket scores also sync to
+    crm_tickets.csat_score so the ticket card stays consistent."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        score = int(body.get("score"))
+    except Exception:
+        return JSONResponse({"detail": "score must be an integer 1-5"}, status_code=400)
+    if score < 1 or score > 5:
+        return JSONResponse({"detail": "score must be between 1 and 5"}, status_code=400)
+    comment = (body.get("comment") or "").strip()[:1000] or None
+    sid = body.get("survey_id")
+    tid = body.get("ticket_id")
+    row = None
+    if sid:
+        row = _users_exec(
+            "UPDATE crm_csat SET score=%s, comment=%s, status='responded', responded_at=now() "
+            "WHERE id=%s RETURNING id, ticket_id, survey_type",
+            (score, comment, sid), fetch=True)
+    elif tid:
+        row = _users_exec(
+            "UPDATE crm_csat SET score=%s, comment=%s, status='responded', responded_at=now() "
+            "WHERE ticket_id=%s AND survey_type='ticket' RETURNING id, ticket_id, survey_type",
+            (score, comment, tid), fetch=True)
+        if not row:
+            # No survey requested yet (e.g. resolved before CSAT wired, or in-store
+            # direct capture): create a responded survey from the ticket.
+            t = _users_exec("SELECT id, customer_id, brand_code, inbound_channel FROM crm_tickets WHERE id=%s",
+                            (tid,), fetch=True)
+            if not t:
+                return JSONResponse({"detail": "Ticket not found"}, status_code=404)
+            t = t[0]
+            row = _users_exec(
+                "INSERT INTO crm_csat (survey_type, ticket_id, customer_id, brand_code, channel, "
+                "score, comment, status, responded_at) "
+                "VALUES ('ticket',%s,%s,%s,%s,%s,%s,'responded',now()) "
+                "ON CONFLICT (ticket_id) WHERE survey_type='ticket' AND ticket_id IS NOT NULL "
+                "DO UPDATE SET score=EXCLUDED.score, comment=EXCLUDED.comment, "
+                "status='responded', responded_at=now() "
+                "RETURNING id, ticket_id, survey_type",
+                (tid, t.get("customer_id"), _crm_brand(t.get("brand_code")),
+                 t.get("inbound_channel"), score, comment), fetch=True)
+    else:
+        return JSONResponse({"detail": "survey_id or ticket_id is required"}, status_code=400)
+    if not row:
+        return JSONResponse({"detail": "Survey not found"}, status_code=404)
+    r = row[0]
+    if r.get("ticket_id"):
+        _users_exec("UPDATE crm_tickets SET csat_score=%s WHERE id=%s", (score, r["ticket_id"]))
+    _crm_audit("csat", r["id"], "respond", f"score {score} ({r.get('survey_type')})", request)
+    return {"ok": True, "survey_id": r["id"], "score": score}
+
+
+@app.get("/api/crm/csat")
+def crm_csat_list(request: Request):
+    """Recent CSAT surveys (most recent first), optionally filtered by status,
+    survey_type, or customer_id."""
+    qp = request.query_params
+    where, params = ["1=1"], []
+    if qp.get("status"):
+        where.append("status=%s")
+        params.append(qp.get("status").strip().lower())
+    if qp.get("survey_type"):
+        where.append("survey_type=%s")
+        params.append(qp.get("survey_type").strip().lower())
+    if qp.get("customer_id"):
+        where.append("customer_id=%s")
+        params.append(qp.get("customer_id"))
+    try:
+        limit = min(int(qp.get("limit", 100)), 500)
+    except Exception:
+        limit = 100
+    rows = _users_exec(
+        "SELECT c.*, t.ticket_number FROM crm_csat c "
+        "LEFT JOIN crm_tickets t ON t.id=c.ticket_id "
+        f"WHERE {' AND '.join(where)} ORDER BY c.requested_at DESC LIMIT {limit}",
+        tuple(params), fetch=True) or []
+    return {"surveys": rows}
+
+
+@app.get("/api/crm/csat/dashboard")
+def crm_csat_dashboard(request: Request):
+    """CSAT dashboard (CEM 2.2): summary + breakdowns by store, channel, type,
+    and a weekly trend. Runs the lazy post-purchase trigger first. Optional
+    date_from/date_to scope requested_at (both required together or 400)."""
+    # Lazy post-purchase survey creation (no cron).
+    try:
+        _crm_trigger_post_purchase_csat()
+    except Exception:
+        pass
+    qp = request.query_params
+    df, dt = qp.get("date_from"), qp.get("date_to")
+    if bool(df) != bool(dt):
+        return JSONResponse({"detail": "date_from and date_to must be provided together"}, status_code=400)
+    dwhere, dparams = "", []
+    if df and dt:
+        dwhere = " AND requested_at::date BETWEEN %s AND %s"
+        dparams = [df, dt]
+    base = "FROM crm_csat WHERE 1=1" + dwhere
+    summ = _users_exec(
+        "SELECT COUNT(*) AS requested, "
+        "COUNT(*) FILTER (WHERE status='responded') AS responses, "
+        "COUNT(*) FILTER (WHERE status='skipped') AS skipped, "
+        "ROUND(AVG(score) FILTER (WHERE status='responded')::numeric, 2) AS avg_score, "
+        "COUNT(*) FILTER (WHERE score=1) AS s1, COUNT(*) FILTER (WHERE score=2) AS s2, "
+        "COUNT(*) FILTER (WHERE score=3) AS s3, COUNT(*) FILTER (WHERE score=4) AS s4, "
+        "COUNT(*) FILTER (WHERE score=5) AS s5 " + base,
+        tuple(dparams), fetch=True)
+    s = summ[0] if summ else {}
+    requested = int(s.get("requested") or 0)
+    responses = int(s.get("responses") or 0)
+    # Eligible = requested minus skipped (skipped surveys were never deliverable).
+    eligible = requested - int(s.get("skipped") or 0)
+    by_channel = _users_exec(
+        "SELECT COALESCE(channel,'(none)') AS channel, "
+        "COUNT(*) FILTER (WHERE status='responded') AS responses, "
+        "ROUND(AVG(score) FILTER (WHERE status='responded')::numeric,2) AS avg_score "
+        + base + " GROUP BY 1 ORDER BY responses DESC", tuple(dparams), fetch=True) or []
+    by_store = _users_exec(
+        "SELECT COALESCE(store,'(none)') AS store, "
+        "COUNT(*) FILTER (WHERE status='responded') AS responses, "
+        "ROUND(AVG(score) FILTER (WHERE status='responded')::numeric,2) AS avg_score "
+        + base + " AND store IS NOT NULL GROUP BY 1 ORDER BY responses DESC LIMIT 50",
+        tuple(dparams), fetch=True) or []
+    by_type = _users_exec(
+        "SELECT survey_type, COUNT(*) AS requested, "
+        "COUNT(*) FILTER (WHERE status='responded') AS responses, "
+        "ROUND(AVG(score) FILTER (WHERE status='responded')::numeric,2) AS avg_score "
+        + base + " GROUP BY 1 ORDER BY 1", tuple(dparams), fetch=True) or []
+    trend = _users_exec(
+        "SELECT to_char(date_trunc('week', requested_at),'YYYY-MM-DD') AS week, "
+        "COUNT(*) AS requested, "
+        "COUNT(*) FILTER (WHERE status='responded') AS responses, "
+        "ROUND(AVG(score) FILTER (WHERE status='responded')::numeric,2) AS avg_score "
+        + base + " GROUP BY 1 ORDER BY 1 DESC LIMIT 26", tuple(dparams), fetch=True) or []
+    return {
+        "summary": {
+            "requested": requested,
+            "responses": responses,
+            "skipped": int(s.get("skipped") or 0),
+            "response_rate": round(responses / eligible, 4) if eligible > 0 else 0,
+            "avg_score": float(s["avg_score"]) if s.get("avg_score") is not None else None,
+            "distribution": {str(i): int(s.get(f"s{i}") or 0) for i in range(1, 6)},
+        },
+        "by_channel": by_channel,
+        "by_store": by_store,
+        "by_type": by_type,
+        "trend": list(reversed(trend)),
+    }
 
 
 # --- CRM: loyalty ---------------------------------------------------------
@@ -14406,12 +14964,14 @@ def loyalty_me(request: Request):
             "points_expiry_months": int(_crm_cfg_num(cfg, "loyalty.points_expiry_months", 12)),
             "tiers": {
                 "Silver": _crm_cfg_num(cfg, "loyalty.tier_silver_kes", 50000),
-                "Gold": _crm_cfg_num(cfg, "loyalty.tier_gold_kes", 100000),
+                "Gold": _crm_cfg_num(cfg, "loyalty.tier_gold_kes", 150000),
+                "VIP": _crm_cfg_num(cfg, "loyalty.tier_vip_kes", 300000),
             },
             "earn_multipliers": {
                 "Bronze": _crm_earn_multiplier("Bronze", cfg),
                 "Silver": _crm_earn_multiplier("Silver", cfg),
                 "Gold": _crm_earn_multiplier("Gold", cfg),
+                "VIP": _crm_earn_multiplier("VIP", cfg),
             },
         },
     }
