@@ -138,6 +138,7 @@ def extract_products(uid, models, cur, now):
         "x_vivo_attr_47",   # Fabric Type
         "x_vivo_attr_42",   # Vendor/Supplier
         "x_vivo_attr_48",   # Primary Color
+        "barcode",
     ]
     
     def get_m2o(val):
@@ -181,6 +182,7 @@ def extract_products(uid, models, cur, now):
                 get_m2o(r.get("x_vivo_attr_47")),   # fabric type
                 get_m2o(r.get("x_vivo_attr_42")),   # supplier
                 get_m2o(r.get("x_vivo_attr_48")),   # primary color
+                r.get("barcode") or None,
                 now
             ))
         offset += batch_size
@@ -193,7 +195,7 @@ def extract_products(uid, models, cur, now):
             id, name, default_code, category, uom, standard_price, active,
             kg_per_mtr, width_m, gsm, plain_print, fabric_structure,
             fabric_category, fabric_subcategory, stretch_type, weight_range,
-            fiber_content, fabric_type, supplier, primary_color, _loaded_at
+            fiber_content, fabric_type, supplier, primary_color, barcode, _loaded_at
         ) VALUES %s
         ON CONFLICT (id) DO UPDATE SET
             name=EXCLUDED.name, standard_price=EXCLUDED.standard_price,

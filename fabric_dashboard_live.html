@@ -453,7 +453,7 @@ let ovCache=null;
 async function loadOverview(){
   try{
     const [d,cat,split]=await Promise.all([
-      apiFetch('/api/fabric/summary'),
+      apiFetch('/api/fabric/summary?location='+encodeURIComponent(loc())),
       apiFetch('/api/fabric/by-category?location='+encodeURIComponent(loc())),
       apiFetch('/api/fabric/attribute-split?location='+encodeURIComponent(loc())),
     ]);

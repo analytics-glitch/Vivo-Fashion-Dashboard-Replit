@@ -14,7 +14,6 @@ import StoreDeepDive from "@/components/StoreDeepDive";
 import LocationsAttentionPanel from "@/components/LocationsAttentionPanel";
 import MonthlyTargetsTracker from "@/components/MonthlyTargetsTracker";
 import StockToSalesBySubcategory from "@/components/StockToSalesBySubcategory";
-import StoreQuadrant from "@/components/locations/StoreQuadrant";
 import StoreHeatmap from "@/components/locations/StoreHeatmap";
 import { Storefront, ArrowsDownUp, ArrowUpRight, Warning, CaretDown, CaretRight, Footprints, Target, Coins, Stack, Tag } from "@phosphor-icons/react";
 import { useAuth } from "@/lib/auth";
@@ -889,11 +888,9 @@ const Locations = () => {
                 })}
               </div>
 
-              {/* At-a-glance visuals (graduated from the canvas): a plain-English
-                  quadrant (who buys / how much they spend) and a per-store
+              {/* At-a-glance visual (graduated from the canvas): a per-store
                   heatmap. Placed below the store cards so the cards sit directly
                   under the main KPI cards. */}
-              <StoreQuadrant stores={storeViz} network={vizNetwork} />
               <StoreHeatmap stores={storeViz} network={vizNetwork} />
 
               {/* Stock-to-Sales · by Subcategory — moved from the bottom
