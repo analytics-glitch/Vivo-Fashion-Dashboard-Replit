@@ -16538,6 +16538,11 @@ if build_dir.exists():
                 cr.headers["Expires"] = "0"
                 return cr
         index = build_dir / "index.html"
+        # Never FileResponse an absent file: a missing index.html raises during
+        # response streaming and surfaces as an opaque 500 (this was the original
+        # /fabric + /clienteling prod failure). Return a clean 404 instead.
+        if not index.exists():
+            return JSONResponse({"detail": "Not found"}, status_code=404)
         response = FileResponse(str(index))
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
