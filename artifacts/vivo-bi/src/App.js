@@ -39,7 +39,6 @@ const SizeHealth = React.lazy(() => import("@/pages/SizeHealth"));
 const MarkdownClearance = React.lazy(() => import("@/pages/MarkdownClearance"));
 const Margin = React.lazy(() => import("@/pages/Margin"));
 const RFM = React.lazy(() => import("@/pages/RFM"));
-const CRM = React.lazy(() => import("@/pages/CRM"));
 const Catalogue = React.lazy(() => import("@/pages/Catalogue"));
 const Login = React.lazy(() => import("@/pages/Login"));
 const AuthCallback = React.lazy(() => import("@/pages/AuthCallback"));
@@ -109,6 +108,18 @@ const ProtectedShell = ({ children, adminOnly = false, pageId }) => (
   </ProtectedRoute>
 );
 
+// The CRM is a SEPARATE app served by the proxy at /crm/ (not an in-SPA route).
+// Clicking the "CRM" nav item routes here, which does a real browser navigation
+// into that standalone app rather than rendering the old in-app CRM page.
+const ExternalRedirect = ({ to }) => {
+  React.useEffect(() => { window.location.replace(to); }, [to]);
+  return (
+    <div className="min-h-screen grid place-items-center">
+      <Loading label="Opening CRM…" />
+    </div>
+  );
+};
+
 function App() {
   return (
     <div className="App">
@@ -133,8 +144,8 @@ function App() {
                 <Route path="/size-health" element={<ProtectedShell pageId="size-health"><SizeHealth /></ProtectedShell>} />
                 <Route path="/margin" element={<ProtectedShell pageId="margin"><Margin /></ProtectedShell>} />
                 <Route path="/rfm" element={<ProtectedShell pageId="rfm"><RFM /></ProtectedShell>} />
-                <Route path="/crm" element={<ProtectedShell pageId="crm"><CRM /></ProtectedShell>} />
-                <Route path="/social" element={<Navigate to="/crm?tab=social" replace />} />
+                <Route path="/crm" element={<ExternalRedirect to="/crm/" />} />
+                <Route path="/social" element={<ExternalRedirect to="/crm/inbox" />} />
                 <Route path="/exports" element={<ProtectedShell pageId="exports"><Exports /></ProtectedShell>} />
                 <Route path="/customers" element={<ProtectedShell pageId="customers"><Customers /></ProtectedShell>} />
                 <Route path="/customer-details" element={<ProtectedShell pageId="customer-details"><CustomerDetails /></ProtectedShell>} />
