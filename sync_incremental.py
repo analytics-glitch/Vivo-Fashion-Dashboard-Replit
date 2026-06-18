@@ -811,6 +811,16 @@ def main():
         except Exception as e:
             log.error("Inventory sync error: %s", e)
 
+    # Accounting sync — nightly at 21:00 UTC
+    if 21 <= now_utc.hour < 22:
+        try:
+            import subprocess, sys
+            log.info('Running nightly accounting sync...')
+            subprocess.run([sys.executable, '/home/runner/workspace/sync_accounting.py'], check=True)
+            log.info('✅ Accounting sync complete')
+        except Exception as e:
+            log.error('Accounting sync error: %s', e)
+
     # Fabric (Odoo) sync — feeds the /fabric dashboard (raw_fabric_* tables).
     # Production runs on a SEPARATE DB that never ran extract_fabric.py, so the
     # tables start empty and /fabric shows zeros. We bootstrap immediately when

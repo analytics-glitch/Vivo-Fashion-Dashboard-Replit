@@ -2593,7 +2593,13 @@ def get_kpis(
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
                           WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS net_sales,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS total_orders,
-            SUM(s.net_quantity) AS total_units,
+            -- Units sold = GROSS units on sale/order rows, the single canonical
+            -- definition (= _UNITS) used by country-summary, products,
+            -- sales-summary, the report builder and /api/analytics/canonical-
+            -- units-sold. Do NOT use SUM(net_quantity) here: that nets returned
+            -- units and made the per-country Σ drift from this headline by the
+            -- return volume (recon "country units sum eq kpis" failure).
+            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS total_units,
             ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size,
             ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END), 0), 0) AS avg_selling_price,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)
@@ -4060,10 +4066,14 @@ def analytics_sor_all_styles(
 # A single read-only endpoint that returns the CEO-grade style master for the
 # selected period + scope, with sales AND current stock BOTH scoped by the
 # store/country filter (store-scoped current stock, warehouse-excluded when
-# "Overall", is the key fix that makes every figure tie out). Metric defs
-# mirror /api/kpis: units = SUM(net_quantity); revenue = SUM(total_sales_kes
-# for sale/order) - SUM(returns_kes for return); net revenue likewise on
-# net_sales_kes; ASP = revenue / SUM(ordered_item_quantity for sale/order).
+# "Overall", is the key fix that makes every figure tie out). Revenue defs
+# mirror /api/kpis: revenue = SUM(total_sales_kes for sale/order) -
+# SUM(returns_kes for return); net revenue likewise on net_sales_kes; ASP =
+# revenue / SUM(ordered_item_quantity for sale/order). NOTE: this cockpit's
+# `units` deliberately use SUM(net_quantity) (returns-netted, velocity/
+# lifecycle-oriented) and therefore differ by the return volume from the gross
+# "units sold" headline (/api/kpis.total_units, country-summary, products),
+# which all use SUM(ordered_item_quantity for sale/order) = _UNITS.
 # WOC + SOR reuse the shared velocity/sell-out shapes used elsewhere. The
 # summary band + by-brand + by-sub-category rollups are derived in Python from
 # the SAME canonical rows (rolled up to style grain) so they reconcile with
