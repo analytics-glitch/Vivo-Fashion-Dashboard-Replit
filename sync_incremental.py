@@ -161,6 +161,113 @@ def get_vat(pos_location, store_vat=1.16):
 # (incremental overlap); the watchdog widens this for recovery backfills via the
 # --days flag / SYNC_LOOKBACK_DAYS env var.
 LOOKBACK_DAYS = int(os.environ.get("SYNC_LOOKBACK_DAYS", "2"))
+# ── Attendance Sync ───────────────────────────────────────────────────────────
+ATTENDANCE_API_URL = os.environ.get("ATTENDANCE_API_URL", "https://beverly-noncontending-bertram.ngrok-free.dev")
+
+def ensure_attendance_table(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS vivo_attendance (
+            user_id             INTEGER,
+            employee_name       TEXT,
+            privilege_level     TEXT,
+            branch_name         TEXT,
+            branch_country      TEXT,
+            location            TEXT,
+            device_type         TEXT,
+            device_ip           TEXT,
+            device_port         INTEGER,
+            device_status       TEXT,
+            device_fail_count   INTEGER,
+            device_last_seen    TIMESTAMPTZ,
+            attendance_date     DATE,
+            check_in_time       TIMESTAMPTZ,
+            check_out_time      TIMESTAMPTZ,
+            hours_worked        FLOAT,
+            is_complete         BOOLEAN,
+            punch_count         INTEGER,
+            attendance_status   TEXT,
+            synced_at           TIMESTAMPTZ,
+            pushed_at           TIMESTAMPTZ,
+            PRIMARY KEY (user_id, branch_name, attendance_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_vivo_att_date     ON vivo_attendance (attendance_date);
+        CREATE INDEX IF NOT EXISTS idx_vivo_att_branch   ON vivo_attendance (branch_name);
+        CREATE INDEX IF NOT EXISTS idx_vivo_att_employee ON vivo_attendance (employee_name);
+        CREATE INDEX IF NOT EXISTS idx_vivo_att_location ON vivo_attendance (location);
+    """)
+
+def get_attendance_cursor(cur):
+    cur.execute("SELECT MAX(attendance_date) FROM vivo_attendance")
+    result = cur.fetchone()[0]
+    if result:
+        from datetime import timedelta
+        return (result - timedelta(days=2)).strftime("%Y-%m-%d")
+    return "2000-01-01"
+
+def sync_attendance(cur):
+    since = get_attendance_cursor(cur)
+    log.info("Syncing attendance since %s", since)
+    headers = {"ngrok-skip-browser-warning": "true"}
+    resp = requests.get(
+        f"{ATTENDANCE_API_URL}/attendance",
+        params={"since": since},
+        headers=headers,
+        timeout=120
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    rows = data.get("rows", [])
+    if not rows:
+        log.info("Attendance — no new records")
+        return 0
+    # Deduplicate by primary key before inserting
+    seen = set()
+    deduped = []
+    for r in rows:
+        key = (r["user_id"], r["branch_name"], r["attendance_date"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
+    log.info("Attendance — %d records after dedup (from %d)", len(deduped), len(rows))
+
+    values = [
+        (
+            r["user_id"], r["employee_name"], r["privilege_level"],
+            r["branch_name"], r["branch_country"], r["location"],
+            r["device_type"], r["device_ip"], r["device_port"],
+            r["device_status"], r["device_fail_count"], r["device_last_seen"],
+            r["attendance_date"], r["check_in_time"], r["check_out_time"],
+            r["hours_worked"], r["is_complete"], r["punch_count"],
+            r["attendance_status"], r["synced_at"], r["pushed_at"]
+        )
+        for r in deduped
+    ]
+    execute_values(cur, """
+        INSERT INTO vivo_attendance (
+            user_id, employee_name, privilege_level,
+            branch_name, branch_country, location,
+            device_type, device_ip, device_port,
+            device_status, device_fail_count, device_last_seen,
+            attendance_date, check_in_time, check_out_time,
+            hours_worked, is_complete, punch_count,
+            attendance_status, synced_at, pushed_at
+        ) VALUES %s
+        ON CONFLICT (user_id, branch_name, attendance_date)
+        DO UPDATE SET
+            check_in_time     = EXCLUDED.check_in_time,
+            check_out_time    = EXCLUDED.check_out_time,
+            hours_worked      = EXCLUDED.hours_worked,
+            is_complete       = EXCLUDED.is_complete,
+            punch_count       = EXCLUDED.punch_count,
+            attendance_status = EXCLUDED.attendance_status,
+            device_status     = EXCLUDED.device_status,
+            device_fail_count = EXCLUDED.device_fail_count,
+            device_last_seen  = EXCLUDED.device_last_seen,
+            synced_at         = EXCLUDED.synced_at,
+            pushed_at         = EXCLUDED.pushed_at
+    """, values, page_size=500)
+    log.info("✅ Attendance — %d records upserted", len(rows))
+    return len(rows)
 
 def get_last_sync(cur, store_id):
     cur.execute("SELECT MAX(sale_date::date) FROM all_sales WHERE store_id = %s", (store_id,))
@@ -769,6 +876,16 @@ def main():
                 log.warning("Data-quality log skipped — SESSION_SECRET unset")
     except Exception as e:
         log.error("Data-quality log error: %s", e)
+    # Attendance sync
+    try:
+        ensure_attendance_table(cur)
+        conn.commit()
+        sync_attendance(cur)
+        conn.commit()
+        write_heartbeat(conn, "attendance")
+    except Exception as e:
+        log.error("Attendance sync error: %s", e)
+        conn.rollback()
 
     write_heartbeat(conn, "ok")
     conn.close()
