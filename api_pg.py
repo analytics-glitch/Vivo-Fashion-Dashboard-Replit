@@ -15791,7 +15791,12 @@ if build_dir.exists():
         # (cookie session sent on the full-page navigation), and /api/fabric/* is
         # readable by any active user.
         if full_path == "fabric" or full_path.startswith("fabric/"):
-            fabric = build_dir / "fabric.html"
+            # Prefer the git-tracked source at the repo root so the page reliably
+            # ships on deploy — dashboard/build is gitignored CRA output and is not
+            # guaranteed to be present in a fresh build. Fall back to the build copy.
+            fabric = pathlib.Path(__file__).parent / "fabric_dashboard_live.html"
+            if not fabric.exists():
+                fabric = build_dir / "fabric.html"
             if fabric.exists():
                 fr = FileResponse(str(fabric))
                 fr.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"

@@ -109,10 +109,24 @@ def register(
     location: str = Query(default="RMAT/Stock"),
     search: str = Query(default=None),
     min_qty: float = Query(default=0),
+    sort: str = Query(default="value_kes"),
+    dir: str = Query(default="desc"),
     limit: int = Query(default=200),
     offset: int = Query(default=0),
 ):
     with _get_conn() as conn:
+        # Whitelist of sortable output columns (aliases in the SELECT below) so the
+        # client can drive ORDER BY without any SQL-injection surface.
+        ALLOWED_SORT = {
+            "default_code", "name", "fabric_category", "fabric_subcategory",
+            "plain_print", "weight_range", "fabric_structure", "gsm", "width_m",
+            "kg_per_mtr", "fiber_content", "fabric_type", "supplier", "primary_color",
+            "qty_kg", "available_kg", "qty_metres", "available_metres", "value_kes",
+            "last_move", "days_since_move",
+        }
+        sort_col = sort if sort in ALLOWED_SORT else "value_kes"
+        sort_dir = "ASC" if str(dir).lower() == "asc" else "DESC"
+        order_by = f"ORDER BY {sort_col} {sort_dir} NULLS LAST"
         where = ["i.quantity > %s", "i.location_name = %s"]
         params = [min_qty, location]
         if category:
@@ -144,7 +158,7 @@ def register(
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE {' AND '.join(where)}
-            ORDER BY i.total_value DESC
+            {order_by}
             LIMIT %s OFFSET %s
         """, params + [limit, offset])
 

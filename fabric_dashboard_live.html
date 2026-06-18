@@ -3,507 +3,830 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vivo Fabric BI — Live</title>
+<title>Vivo Fabric BI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-:root{--bg-primary:#ffffff;--bg-secondary:#F5F3EE;--bg-tertiary:#FAF9F5;--text-primary:#1F1E1B;--text-secondary:#5F5E5A;--text-tertiary:#8A8980;--border-tertiary:rgba(31,30,27,0.10);--border-secondary:rgba(31,30,27,0.20);--danger-bg:#FCEBEB;--danger-text:#A32D2D;--warning-bg:#FAEEDA;--warning-text:#854F0B;--success-bg:#E1F5EE;--success-text:#0F6E56;--info-bg:#E6F1FB;--info-text:#185FA5;--brand:#D4537E;}
+:root{
+  --bg:#fed7aa; --panel:#ffedd5; --card:#ffffff; --border:#fdba74; --border-strong:#fb923c;
+  --text:#1a1a1a; --text-sub:#4b5563; --muted:#6b7280;
+  --accent:#1a5c38; --accent-deep:#0f3d24; --accent-strong:#00c853;
+  --danger:#dc2626; --amber:#d97706;
+  --radius:12px;
+}
 *{box-sizing:border-box;}
-body{margin:0;background:var(--bg-tertiary);color:var(--text-primary);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.5;-webkit-font-smoothing:antialiased;}
-h1,h2,h3{font-weight:500;}
-select,input{font-family:inherit;height:36px;border:0.5px solid var(--border-secondary);border-radius:8px;background:var(--bg-primary);color:var(--text-primary);padding:0 10px;font-size:13px;}
-.shell{max-width:1200px;margin:24px auto;display:flex;align-items:stretch;border:0.5px solid var(--border-tertiary);border-radius:12px;overflow:hidden;background:var(--bg-primary);}
-.aside{width:172px;flex-shrink:0;background:var(--bg-secondary);border-right:0.5px solid var(--border-tertiary);padding:1rem 0.5rem;}
+html,body{margin:0;}
+body{background:var(--bg);color:var(--text);font-family:"Plus Jakarta Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased;font-feature-settings:"ss01";line-height:1.5;}
+a{color:inherit;}
+.num{font-variant-numeric:tabular-nums;}
+::selection{background:var(--accent);color:#fff;}
+select,input{font-family:inherit;height:38px;border:1px solid var(--border);border-radius:10px;background:var(--card);color:var(--text);padding:0 11px;font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s;}
+select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26,92,56,.1);}
+
+.layout{display:flex;min-height:100vh;}
+.aside{width:212px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);padding:1.1rem .7rem;position:sticky;top:0;height:100vh;overflow:auto;}
 .main{flex:1;min-width:0;display:flex;flex-direction:column;}
-.card{background:var(--bg-primary);border:0.5px solid var(--border-tertiary);border-radius:12px;padding:0.9rem 1.1rem;margin-bottom:1.1rem;}
-.nav-item{display:flex;align-items:center;gap:9px;padding:8px 9px;font-size:12.5px;color:var(--text-secondary);border-radius:8px;cursor:pointer;margin-bottom:2px;}
-.nav-item:hover{background:var(--bg-primary);}
-.nav-item.active{color:var(--brand);background:var(--bg-primary);border-left:3px solid var(--brand);border-radius:0 8px 8px 0;}
-.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:1.1rem;}
-.kpi{background:var(--bg-secondary);border-radius:8px;padding:0.9rem;}
-.kpi p{margin:0;}
-.kpi .label{font-size:12.5px;color:var(--text-secondary);}
-.kpi .value{font-size:22px;font-weight:500;margin-top:4px;}
-.kpi .value.danger{color:var(--danger-text);}
-.kpi .value.warning{color:var(--warning-text);}
-.kpi .sub{font-size:11.5px;color:var(--text-tertiary);margin-top:2px;}
-.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
-.bar-label{width:130px;font-size:12px;color:var(--text-secondary);flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.bar-track{flex:1;height:16px;background:var(--bg-secondary);border-radius:4px;overflow:hidden;}
-.bar-fill{height:100%;background:var(--brand);border-radius:4px;transition:width 0.5s ease;}
-.bar-qty{width:80px;text-align:right;font-size:12px;font-weight:500;flex-shrink:0;}
-.bar-sub{width:70px;text-align:right;font-size:11px;color:var(--text-tertiary);flex-shrink:0;}
-table{width:100%;border-collapse:collapse;font-size:12.5px;}
-th{padding:6px 8px;font-weight:500;color:var(--text-secondary);text-align:left;border-bottom:0.5px solid var(--border-secondary);white-space:nowrap;}
-td{padding:7px 8px;border-bottom:0.5px solid var(--border-tertiary);}
-.badge{font-size:11px;padding:2px 7px;border-radius:6px;display:inline-block;}
-.badge-plain{background:var(--bg-secondary);color:var(--text-secondary);}
-.badge-print{background:var(--info-bg);color:var(--info-text);}
-.badge-light{background:var(--success-bg);color:var(--success-text);}
-.badge-medium{background:var(--info-bg);color:var(--info-text);}
-.badge-heavy{background:var(--warning-bg);color:var(--warning-text);}
-.badge-done{background:var(--success-bg);color:var(--success-text);}
-.badge-draft{background:var(--bg-secondary);color:var(--text-secondary);}
-.loading{color:var(--text-tertiary);font-size:13px;padding:2rem;text-align:center;}
-.tab-bar{display:flex;gap:4px;background:var(--bg-secondary);padding:3px;border-radius:8px;margin-bottom:1rem;width:fit-content;}
-.tab{font-size:12px;padding:4px 12px;border-radius:6px;cursor:pointer;color:var(--text-secondary);}
-.tab.active{background:var(--bg-primary);color:var(--text-primary);font-weight:500;}
-.seg{display:inline-flex;background:var(--bg-secondary);padding:2px;border-radius:7px;gap:2px;}
-.seg button{height:28px;padding:0 11px;border:0;border-radius:5px;background:transparent;color:var(--text-secondary);font-size:12px;cursor:pointer;font-family:inherit;}
-.seg button.active{background:var(--bg-primary);color:var(--text-primary);font-weight:500;box-shadow:0 1px 2px rgba(0,0,0,.06);}
-.legend-row{display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:8px;}
-.legend-dot{width:10px;height:10px;border-radius:3px;flex-shrink:0;}
-.col-menu{position:relative;}
-.col-panel{position:absolute;right:0;top:40px;z-index:20;background:var(--bg-primary);border:0.5px solid var(--border-secondary);border-radius:8px;padding:8px;box-shadow:0 6px 24px rgba(0,0,0,.12);max-height:340px;overflow:auto;width:200px;}
-.col-panel label{display:flex;align-items:center;gap:7px;font-size:12.5px;padding:4px 6px;border-radius:5px;cursor:pointer;color:var(--text-primary);}
-.col-panel label:hover{background:var(--bg-secondary);}
-.col-panel input{height:auto;}
-@media(max-width:760px){.shell{flex-direction:column;}.aside{width:auto;border-right:none;border-bottom:0.5px solid var(--border-tertiary);}}
+
+.brand-row{display:flex;align-items:center;gap:10px;padding:0 8px 16px;}
+.brandmark{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#1a5c38,#0f3d24);color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:800;box-shadow:0 4px 12px rgba(26,92,56,.2);}
+.brand-name{font-size:16px;font-weight:800;color:var(--accent);letter-spacing:-.01em;}
+.brand-sub{font-size:10.5px;color:var(--muted);font-weight:500;}
+.nav-group{font-size:.62rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:700;padding:14px 9px 5px;}
+.nav-item{display:flex;align-items:center;gap:9px;padding:9px 11px;font-size:13.5px;font-weight:500;color:var(--text-sub);border-radius:9px;cursor:pointer;margin-bottom:2px;transition:background .12s,color .12s;}
+.nav-item:hover{background:rgba(26,92,56,.06);color:var(--text);}
+.nav-item.active{color:#fff;background:var(--accent);font-weight:600;}
+.back-link{display:block;padding:16px 9px 0;font-size:12px;color:var(--muted);text-decoration:none;}
+.back-link:hover{color:var(--accent);}
+
+.topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:1rem 1.4rem;border-bottom:1px solid var(--border);background:var(--panel);flex-wrap:wrap;}
+.topbar h1{margin:0;font-size:19px;font-weight:800;letter-spacing:-.02em;}
+.topbar .sub{font-size:12px;color:var(--muted);margin-top:1px;}
+.topctl{display:flex;align-items:center;gap:9px;flex-wrap:wrap;}
+.content{padding:1.4rem;overflow:auto;flex:1;}
+
+.eyebrow{text-transform:uppercase;letter-spacing:.09em;font-size:.62rem;font-weight:700;color:var(--muted);}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.1rem 1.25rem;margin-bottom:1.2rem;box-shadow:0 1px 2px rgba(16,40,24,.04);}
+.card-accent{background:linear-gradient(135deg,#1a5c38 0%,#0f3d24 100%);border:1px solid #1a5c38;color:#fff;box-shadow:0 4px 12px rgba(26,92,56,.2);}
+.card-accent .eyebrow,.card-accent .kpi-sub{color:rgba(255,255,255,.72)!important;}
+.section-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+.section-head h3{margin:0;font-size:15.5px;font-weight:700;letter-spacing:-.01em;}
+.muted{font-size:12px;color:var(--muted);}
+
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:.85rem;margin-bottom:1.2rem;}
+.kpi{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1rem 1.1rem;box-shadow:0 1px 2px rgba(16,40,24,.04);transition:transform .18s,box-shadow .18s,border-color .18s;}
+.kpi:hover{transform:translateY(-2px);border-color:var(--accent);box-shadow:0 8px 24px rgba(26,92,56,.1);}
+.kpi.accent{background:linear-gradient(135deg,#1a5c38,#0f3d24);border-color:#1a5c38;color:#fff;box-shadow:0 4px 12px rgba(26,92,56,.2);}
+.kpi-value{font-size:26px;font-weight:800;letter-spacing:-.02em;line-height:1.05;margin:6px 0 0;font-variant-numeric:tabular-nums;}
+.kpi-value.danger{color:var(--danger);}
+.kpi-value.amber{color:var(--amber);}
+.kpi.accent .kpi-value{color:#fff;}
+.kpi-sub{font-size:11.5px;color:var(--muted);margin-top:4px;}
+
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1.2rem;}
+@media(max-width:900px){.grid-2{grid-template-columns:1fr;}}
+
+.bar-row{display:flex;align-items:center;gap:11px;margin-bottom:11px;}
+.bar-label{width:150px;font-size:12.5px;color:var(--text-sub);flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;}
+.bar-track{flex:1;height:18px;background:#fff4e6;border:1px solid var(--border);border-radius:6px;overflow:hidden;}
+.bar-fill{height:100%;background:var(--accent);border-radius:5px 0 0 5px;transition:width .5s ease;}
+.bar-qty{width:90px;text-align:right;font-size:12.5px;font-weight:700;flex-shrink:0;font-variant-numeric:tabular-nums;}
+.bar-sub{width:80px;text-align:right;font-size:11px;color:var(--muted);flex-shrink:0;font-variant-numeric:tabular-nums;}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:7px;flex-shrink:0;}
+
+table.data{width:100%;border-collapse:collapse;font-size:13px;}
+table.data th{font-weight:600;color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;padding:.7rem .75rem;text-align:left;border-bottom:1px solid var(--border);background:var(--bg);white-space:nowrap;position:sticky;top:0;}
+table.data th.r{text-align:right;}
+table.data td{padding:.7rem .75rem;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle;}
+table.data td.r{text-align:right;font-variant-numeric:tabular-nums;}
+table.data tr:last-child td{border-bottom:none;}
+table.data tbody tr:hover td{background:rgba(26,92,56,.03);}
+.tbl-wrap{overflow:auto;border-radius:var(--radius);}
+.row-click{cursor:pointer;}
+
+.pill{display:inline-flex;align-items:center;gap:.3rem;padding:.12rem .55rem;border-radius:999px;font-size:.7rem;font-weight:600;white-space:nowrap;}
+.pill-green{background:#dcfce7;color:#166534;}
+.pill-red{background:#fee2e2;color:#991b1b;}
+.pill-amber{background:#fef3c7;color:#92400e;}
+.pill-blue{background:#dbeafe;color:#1e40af;}
+.pill-neutral{background:#f3f4f6;color:#1f2937;}
+
+.btn{height:38px;padding:0 14px;border:1px solid var(--border);border-radius:10px;background:var(--card);cursor:pointer;font-size:13px;font-weight:500;color:var(--text);transition:border-color .15s,background .15s;}
+.btn:hover{border-color:var(--accent);background:#fff7ed;}
+.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600;}
+.btn-primary:hover{background:var(--accent-deep);}
+.loading{color:var(--muted);font-size:13px;padding:2rem;text-align:center;}
+.banner{padding:.85rem 1.1rem;border-radius:var(--radius);font-size:13px;margin-bottom:1.2rem;}
+.banner-err{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;}
+.flex{display:flex;gap:9px;flex-wrap:wrap;align-items:center;}
+@media(max-width:760px){.layout{flex-direction:column;}.aside{width:auto;height:auto;position:static;border-right:none;border-bottom:1px solid var(--border);}}
+
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;}
+.seg .unit-btn{height:36px;padding:0 14px;border:none;background:var(--card);color:var(--text-sub);font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;}
+.seg .unit-btn:not(:last-child){border-right:1px solid var(--border);}
+.seg .unit-btn.active{background:var(--accent);color:#fff;}
+.popwrap{position:relative;display:inline-block;}
+.popover{position:absolute;top:42px;left:0;z-index:30;background:var(--card);border:1px solid var(--border-strong);border-radius:10px;box-shadow:0 10px 30px rgba(16,40,24,.15);padding:6px;min-width:200px;max-height:360px;overflow:auto;}
+.col-opt{display:flex;align-items:center;gap:8px;padding:6px 8px;font-size:13px;border-radius:7px;cursor:pointer;user-select:none;}
+.col-opt:hover{background:rgba(26,92,56,.06);}
+.col-opt input{height:auto;width:auto;margin:0;}
+table.data th.sortable{cursor:pointer;}
+table.data th.sortable:hover{color:var(--accent);}
+.donut-wrap{display:flex;align-items:center;gap:18px;flex-wrap:wrap;}
+.donut-legend{flex:1;min-width:170px;}
+.leg-row{display:flex;align-items:center;gap:8px;font-size:13px;padding:4px 0;}
 </style>
 </head>
 <body>
-<div class="shell">
+<div class="layout">
  <aside class="aside">
-  <div style="display:flex;align-items:center;gap:8px;padding:0 8px 16px;">
-   <div style="width:26px;height:26px;border-radius:6px;background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:500;">V</div>
-   <div style="line-height:1.15;"><div style="font-size:15px;font-weight:500;color:var(--brand);">Vivo</div><div style="font-size:10.5px;color:var(--text-tertiary);">Fabric BI</div></div>
-  </div>
-  <div class="nav-item active" data-page="overview">📊 Overview</div>
-  <div class="nav-item" data-page="register">🧵 Fabric register</div>
-  <div class="nav-item" data-page="ageing">⏱ Stock & ageing</div>
-  <div class="nav-item" data-page="consumption">📉 Consumption</div>
-  <div class="nav-item" data-page="deadstock">⚠️ Dead stock</div>
-  <div class="nav-item" data-page="pos">🚚 Purchase orders</div>
- </aside>
- <main class="main">
-  <header style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:0.7rem 1.1rem;border-bottom:0.5px solid var(--border-tertiary);flex-wrap:wrap;">
-   <span id="page-title" style="font-size:13px;color:var(--text-secondary);">📊 Overview</span>
-   <div style="display:flex;align-items:center;gap:8px;">
-    <select id="location-filter" onchange="loadAll()">
-     <option value="RMAT/Stock">RMAT / Main Warehouse</option>
-     <option value="PROD/Stock">PROD / Production</option>
-     <option value="Dead/Stock Fabric">Dead Stock</option>
-    </select>
-    <div id="unit-toggle" class="seg">
-     <button data-unit="metres" class="active">Metres</button>
-     <button data-unit="kg">Kg</button>
-    </div>
-    <span id="last-updated" style="font-size:12px;color:var(--text-tertiary);"></span>
+  <div class="brand-row">
+   <div class="brandmark">V</div>
+   <div>
+    <div class="brand-name">Vivo</div>
+    <div class="brand-sub">Fabric BI</div>
    </div>
-  </header>
-  <div style="padding:1rem 1.1rem;overflow:auto;flex:1;">
+  </div>
+  <div class="nav-group">Inventory</div>
+  <div class="nav-item active" data-page="overview">Overview</div>
+  <div class="nav-item" data-page="register">Fabric register</div>
+  <div class="nav-item" data-page="ageing">Stock &amp; ageing</div>
+  <div class="nav-item" data-page="deadstock">Dead stock</div>
+  <div class="nav-group">Flow</div>
+  <div class="nav-item" data-page="movement">Movement &amp; use</div>
+  <div class="nav-item" data-page="pos">Purchase orders</div>
+  <div class="nav-item" data-page="suppliers">Suppliers</div>
+  <div class="nav-group">Production</div>
+  <div class="nav-item" data-page="bom">BOM explorer</div>
+  <a href="/" class="back-link">&larr; Back to Vivo BI</a>
+ </aside>
+
+ <main class="main">
+  <div class="topbar">
+   <div>
+    <h1 id="page-title">Overview</h1>
+    <div class="sub" id="page-desc">Fabric stock, value and health across the warehouse</div>
+   </div>
+   <div class="topctl">
+    <span class="muted">Units</span>
+    <div class="seg" id="unit-seg">
+     <button class="unit-btn active" data-unit="m" onclick="setUnit('m')">Metres</button>
+     <button class="unit-btn" data-unit="kg" onclick="setUnit('kg')">Kg</button>
+    </div>
+    <span class="muted">Location</span>
+    <select id="location-filter" onchange="onLocationChange()"></select>
+    <span id="last-updated" class="muted"></span>
+   </div>
+  </div>
+  <div class="content">
 
    <!-- OVERVIEW -->
-   <div id="page-overview">
+   <section id="page-overview">
     <div id="kpi-cards" class="kpi-grid"><div class="loading">Loading…</div></div>
-    <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:1rem;align-items:start;">
+    <div class="grid-2">
      <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-       <h3 style="margin:0;font-size:15px;">Stock by category</h3>
-       <span id="cat-unit-note" style="font-size:11.5px;color:var(--text-secondary);">metres · value (KES)</span>
-      </div>
+      <div class="section-head"><h3>Stock by category</h3><span class="muted">metres &middot; value (KES)</span></div>
       <div id="category-bars"><div class="loading">Loading…</div></div>
      </div>
      <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-       <h3 style="margin:0;font-size:15px;">Plain vs Print</h3>
-       <span id="pie-unit-note" style="font-size:11.5px;color:var(--text-secondary);">metres</span>
-      </div>
-      <div id="plain-print-pie"><div class="loading">Loading…</div></div>
+      <div class="section-head"><h3>Plain vs print</h3><span class="muted" id="split-print-unit">share by metres</span></div>
+      <div id="split-print"><div class="loading">Loading…</div></div>
+      <div class="section-head" style="margin-top:20px;"><h3>Weight class</h3><span class="muted">by value</span></div>
+      <div id="split-weight"><div class="loading">Loading…</div></div>
      </div>
     </div>
-   </div>
+    <div class="grid-2">
+     <div class="card">
+      <div class="section-head"><h3>Fabric structure</h3><span class="muted">knit / woven by value</span></div>
+      <div id="split-structure"><div class="loading">Loading…</div></div>
+     </div>
+     <div class="card">
+      <div class="section-head"><h3>Top fiber content</h3><span class="muted">declared fibers by value</span></div>
+      <div id="split-fiber"><div class="loading">Loading…</div></div>
+     </div>
+    </div>
+   </section>
 
    <!-- REGISTER -->
-   <div id="page-register" style="display:none;">
-    <div style="display:flex;gap:8px;margin-bottom:1rem;flex-wrap:wrap;">
-     <input id="reg-search" placeholder="Search fabric…" oninput="loadRegister(0)" style="width:200px;">
+   <section id="page-register" style="display:none;">
+    <div class="flex" style="margin-bottom:1.1rem;">
+     <input id="reg-search" placeholder="Search fabric or code…" oninput="debouncedRegister()" style="width:220px;">
      <select id="reg-category" onchange="loadRegister(0)"><option value="">All categories</option></select>
-     <select id="reg-print" onchange="loadRegister(0)">
-      <option value="">Plain & Print</option>
-      <option value="Plain">Plain</option>
-      <option value="Print">Print</option>
-     </select>
-     <select id="reg-weight" onchange="loadRegister(0)">
-      <option value="">All weights</option>
-      <option value="Light">Light</option>
-      <option value="Medium">Medium</option>
-      <option value="Heavy">Heavy</option>
-     </select>
-     <div class="col-menu" style="margin-left:auto;">
-      <button id="col-btn" onclick="toggleColPanel()" style="height:36px;padding:0 12px;border:0.5px solid var(--border-secondary);border-radius:8px;background:var(--bg-primary);color:var(--text-primary);cursor:pointer;font-size:13px;">Columns</button>
-      <div id="col-panel" class="col-panel" style="display:none;"></div>
+     <select id="reg-print" onchange="loadRegister(0)"><option value="">Plain &amp; print</option><option value="Plain">Plain</option><option value="Print">Print</option></select>
+     <select id="reg-weight" onchange="loadRegister(0)"><option value="">All weights</option><option value="Light">Light</option><option value="Medium">Medium</option><option value="Heavy">Heavy</option></select>
+     <div class="popwrap">
+      <button class="btn" onclick="toggleColPicker(event)">Columns &#9662;</button>
+      <div id="col-picker" class="popover" style="display:none;"></div>
      </div>
+     <button class="btn" onclick="exportRegister()">Export CSV</button>
     </div>
-    <div class="card" style="overflow:auto;padding:0;">
-     <table>
-      <thead id="register-head"></thead>
-      <tbody id="register-body"><tr><td class="loading">Loading…</td></tr></tbody>
-     </table>
-     <div id="reg-pagination" style="padding:10px 1rem;font-size:12px;color:var(--text-secondary);display:flex;justify-content:space-between;align-items:center;">
-      <span id="reg-info"></span>
-      <div style="display:flex;gap:6px;">
-       <button onclick="regPage(-1)" style="height:30px;padding:0 10px;border:0.5px solid var(--border-secondary);border-radius:6px;background:var(--bg-primary);cursor:pointer;font-size:12px;">← Prev</button>
-       <button onclick="regPage(1)" style="height:30px;padding:0 10px;border:0.5px solid var(--border-secondary);border-radius:6px;background:var(--bg-primary);cursor:pointer;font-size:12px;">Next →</button>
+    <div class="card" style="padding:0;">
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead id="register-head"></thead>
+       <tbody id="register-body"><tr><td class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
+     <div class="flex" style="justify-content:space-between;padding:.8rem 1rem;border-top:1px solid var(--border);">
+      <span id="reg-info" class="muted"></span>
+      <div class="flex">
+       <button class="btn" onclick="regPage(-1)">&larr; Prev</button>
+       <button class="btn" onclick="regPage(1)">Next &rarr;</button>
       </div>
      </div>
     </div>
-   </div>
+   </section>
 
    <!-- AGEING -->
-   <div id="page-ageing" style="display:none;">
+   <section id="page-ageing" style="display:none;">
+    <div id="ageing-kpis" class="kpi-grid"></div>
     <div class="card">
-     <h3 style="margin:0 0 12px;font-size:15px;">Stock ageing by last movement</h3>
+     <div class="section-head"><h3>Stock ageing by last movement</h3><span class="muted">metres &middot; value (KES)</span></div>
      <div id="ageing-bars"><div class="loading">Loading…</div></div>
-     <p style="margin:12px 0 0;font-size:11.5px;color:var(--text-tertiary);">Age bands based on days since last stock movement out of this location.</p>
+     <p class="muted" style="margin:14px 0 0;">Age bands are based on days since the last stock movement out of this location.</p>
     </div>
-   </div>
-
-   <!-- CONSUMPTION -->
-   <div id="page-consumption" style="display:none;">
-    <div class="card">
-     <div style="display:flex;justify-content:space-between;margin-bottom:12px;align-items:center;gap:8px;flex-wrap:wrap;">
-      <h3 style="margin:0;font-size:15px;">Fabric consumption (OUT moves)</h3>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-       <label style="font-size:12px;color:var(--text-secondary);">From</label>
-       <input type="date" id="cons-since" onchange="loadConsumption()">
-       <label style="font-size:12px;color:var(--text-secondary);">To</label>
-       <input type="date" id="cons-until" onchange="loadConsumption()">
-       <select id="cons-group" onchange="loadConsumption()">
-        <option value="month">Monthly</option>
-        <option value="week">Weekly</option>
-        <option value="day">Daily</option>
-        <option value="category">By category</option>
-        <option value="fabric">By fabric</option>
-       </select>
-      </div>
-     </div>
-     <div id="consumption-bars"><div class="loading">Loading…</div></div>
-    </div>
-   </div>
+   </section>
 
    <!-- DEAD STOCK -->
-   <div id="page-deadstock" style="display:none;">
-    <div id="dead-kpis" class="kpi-grid" style="margin-bottom:1rem;"></div>
-    <div class="card" style="overflow:auto;padding:0;">
-     <table>
-      <thead><tr>
-       <th style="padding-left:1rem;">Fabric</th><th>Category</th>
-       <th style="text-align:right;">Kg</th><th style="text-align:right;">Metres</th>
-       <th style="text-align:right;">Value (KES)</th><th>Last move</th>
-       <th style="text-align:right;">Days idle</th>
-      </tr></thead>
-      <tbody id="dead-body"><tr><td colspan="7" class="loading">Loading…</td></tr></tbody>
-     </table>
+   <section id="page-deadstock" style="display:none;">
+    <div id="dead-kpis" class="kpi-grid"></div>
+    <div class="card" style="padding:0;">
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr>
+        <th>Fabric</th><th>Category</th><th class="r">Kg</th><th class="r">Metres</th>
+        <th class="r">Value (KES)</th><th>Last move</th><th class="r">Days idle</th>
+       </tr></thead>
+       <tbody id="dead-body"><tr><td colspan="7" class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
     </div>
-   </div>
+   </section>
+
+   <!-- MOVEMENT & USE -->
+   <section id="page-movement" style="display:none;">
+    <div class="card">
+     <div class="section-head"><h3>Stock flow by month</h3><span class="muted">received (IN) vs consumed (OUT), kg</span></div>
+     <div id="flow-bars"><div class="loading">Loading…</div></div>
+    </div>
+    <div class="grid-2">
+     <div class="card">
+      <div class="section-head">
+       <h3>Top consumed fabrics</h3>
+       <select id="consumed-days" onchange="loadMovement()">
+        <option value="30">Last 30 days</option><option value="90" selected>Last 90 days</option><option value="180">Last 180 days</option>
+       </select>
+      </div>
+      <div class="tbl-wrap">
+       <table class="data">
+        <thead><tr><th>Fabric</th><th class="r">Consumed (kg)</th><th class="r">Stock (kg)</th><th class="r">Wks cover</th><th>Last out</th></tr></thead>
+        <tbody id="consumed-body"><tr><td colspan="5" class="loading">Loading…</td></tr></tbody>
+       </table>
+      </div>
+     </div>
+     <div class="card">
+      <div class="section-head">
+       <h3>Consumption trend</h3>
+       <div class="flex">
+        <input type="date" id="cons-since" onchange="loadConsTrend()" title="From" style="width:140px;">
+        <input type="date" id="cons-until" onchange="loadConsTrend()" title="To" style="width:140px;">
+        <select id="cons-group" onchange="loadConsTrend()"><option value="month">Monthly</option><option value="week">Weekly</option><option value="day">Daily</option></select>
+       </div>
+      </div>
+      <div id="cons-summary" class="muted" style="margin-bottom:10px;"></div>
+      <div id="consumption-bars"><div class="loading">Loading…</div></div>
+     </div>
+    </div>
+   </section>
 
    <!-- PURCHASE ORDERS -->
-   <div id="page-pos" style="display:none;">
-    <div class="card" style="overflow:auto;padding:0;">
-     <table>
-      <thead><tr>
-       <th style="padding-left:1rem;">PO</th><th>Supplier</th><th>Date</th><th>Status</th>
-       <th style="text-align:right;">Lines</th><th style="text-align:right;">Value</th>
-       <th style="text-align:right;">Ordered</th><th style="text-align:right;">Received</th>
-       <th style="text-align:right;">Outstanding</th>
-      </tr></thead>
-      <tbody id="po-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
-     </table>
+   <section id="page-pos" style="display:none;">
+    <div id="po-kpis" class="kpi-grid"></div>
+    <div class="card">
+     <div class="section-head"><h3>Purchase order value by month</h3><span class="muted">ordered value (KES)</span></div>
+     <div id="po-month-bars"><div class="loading">Loading…</div></div>
     </div>
-   </div>
+    <div class="flex" style="margin-bottom:1.1rem;">
+     <input id="po-search" placeholder="Filter supplier…" oninput="debouncedPOs()" style="width:230px;">
+    </div>
+    <div class="card" style="padding:0;">
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr>
+        <th>PO</th><th>Supplier</th><th>Date</th><th>Status</th>
+        <th class="r">Lines</th><th class="r">Value</th><th class="r">Ordered</th><th class="r">Received</th><th class="r">Outstanding</th>
+       </tr></thead>
+       <tbody id="po-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
+    </div>
+   </section>
+
+   <!-- SUPPLIERS -->
+   <section id="page-suppliers" style="display:none;">
+    <div class="card">
+     <div class="section-head"><h3>Outstanding exposure by supplier</h3><span class="muted">undelivered PO value (KES)</span></div>
+     <div id="supplier-bars"><div class="loading">Loading…</div></div>
+    </div>
+    <div class="card" style="padding:0;">
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr>
+        <th>Supplier</th><th class="r">POs</th><th class="r">Total value</th><th class="r">Outstanding qty</th><th class="r">Outstanding value</th>
+       </tr></thead>
+       <tbody id="supplier-body"><tr><td colspan="5" class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
+    </div>
+   </section>
+
+   <!-- BOM -->
+   <section id="page-bom" style="display:none;">
+    <div class="flex" style="margin-bottom:1.1rem;">
+     <input id="bom-search" placeholder="Search style name or SKU…" style="width:300px;" oninput="debouncedBomStyles()">
+     <span class="muted" id="bom-count"></span>
+    </div>
+    <div class="grid-2">
+     <div class="card" style="padding:0;">
+      <div class="section-head" style="padding:1rem 1.25rem 0;"><h3>Styles</h3><span class="muted">click a style for its fabrics</span></div>
+      <div class="tbl-wrap" style="max-height:560px;">
+       <table class="data">
+        <thead><tr><th>Style</th><th class="r">Comps</th><th class="r">Fabric kg</th><th class="r">Trims</th></tr></thead>
+        <tbody id="bom-styles-body"><tr><td colspan="4" class="loading">Loading…</td></tr></tbody>
+       </table>
+      </div>
+     </div>
+     <div class="card">
+      <div class="section-head"><h3 id="bom-detail-title">Bill of materials</h3></div>
+      <div id="bom-detail"><p class="muted">Select a style on the left to see the fabrics and trims it consumes, with current stock.</p></div>
+     </div>
+    </div>
+    <div class="card">
+     <div class="section-head"><h3>Where used</h3><span class="muted">find every style that uses a fabric</span></div>
+     <div class="flex" style="margin-bottom:1rem;">
+      <input id="wu-search" placeholder="Fabric / component name…" style="width:320px;" onkeydown="if(event.key==='Enter')loadWhereUsed()">
+      <button class="btn btn-primary" onclick="loadWhereUsed()">Search</button>
+     </div>
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr><th>Style</th><th>Component fabric</th><th class="r">Qty</th><th>UoM</th></tr></thead>
+       <tbody id="wu-body"><tr><td colspan="4" class="muted" style="padding:1rem;">Enter a fabric name to see which styles consume it.</td></tr></tbody>
+      </table>
+     </div>
+    </div>
+   </section>
 
   </div>
  </main>
 </div>
+
 <script>
-const API = '';
-let regOffset = 0;
-let regTotal = 0;
-const PAGE_SIZE = 50;
+const PAGE_SIZE=50;
+let regOffset=0, regTotal=0, lastRegItems=[], poCache=[];
+const fmt=n=>n==null?'—':Number(n).toLocaleString(undefined,{maximumFractionDigits:0});
+const fmt1=n=>n==null?'—':Number(n).toLocaleString(undefined,{maximumFractionDigits:1});
+const fmtKES=n=>{if(n==null)return'—';const a=Math.abs(n);if(a>=1e6)return'KES '+(n/1e6).toFixed(1)+'M';if(a>=1e3)return'KES '+(n/1e3).toFixed(0)+'K';return'KES '+fmt(n);};
+const fmtKg=n=>{if(n==null)return'—';const a=Math.abs(n);if(a>=1e6)return(n/1e6).toFixed(1)+'M kg';if(a>=1e3)return(n/1e3).toFixed(1)+'k kg';return fmt1(n)+' kg';};
+const loc=()=>document.getElementById('location-filter').value||'RMAT/Stock';
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const PAL=['#1a5c38','#d97706','#2563eb','#9333ea','#dc2626','#0891b2','#65a30d','#6b7280'];
 
-const fmt = n => n == null ? '—' : Number(n).toLocaleString();
-const fmtKES = n => { if(n==null)return'—'; if(n>=1e6)return'KES '+(n/1e6).toFixed(1)+'M'; if(n>=1e3)return'KES '+(n/1e3).toFixed(0)+'K'; return'KES '+fmt(n); };
-const loc = () => document.getElementById('location-filter').value;
-// Escape ERP-sourced text before it goes into innerHTML (XSS guard)
-const esc = s => s == null ? '—' : String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const badgeClass = s => String(s).toLowerCase().replace(/[^a-z]/g,'');
+// ── Units (page-level metres / kg toggle) ──
+let UNIT=localStorage.getItem('fabricUnit')==='kg'?'kg':'m';
+const unitLabel=()=>UNIT==='kg'?'kg':'m';
+const fmtUnit=v=>v==null?'—':(UNIT==='kg'?fmt1(v)+' kg':fmt(v)+' m');
+function currentPage(){const a=document.querySelector('.nav-item.active');return a?a.dataset.page:'overview';}
+function setUnit(u){
+  if(UNIT===u)return; UNIT=u; localStorage.setItem('fabricUnit',u);
+  document.querySelectorAll('.unit-btn').forEach(b=>b.classList.toggle('active',b.dataset.unit===u));
+  const p=currentPage();
+  if(p==='overview')renderOverviewCached();
+  else if(p==='register')renderRegisterTable();
+  else if(p==='ageing')loadAgeing();
+  else if(p==='movement')loadConsTrend();
+}
 
-// Global metres ↔ kg unit toggle
-let UNIT = 'metres';
-const unitLabel = () => UNIT === 'metres' ? 'm' : 'kg';
-const unitVal = r => UNIT === 'metres' ? (r.qty_metres||0) : (r.qty_kg||0);
+// ── Donut renderer (SVG) ──
+function donut(slices){
+  const total=slices.reduce((s,x)=>s+(x.value||0),0);
+  if(total<=0)return '<p class="muted">No data.</p>';
+  const r=52,cx=60,cy=60,c=2*Math.PI*r; let off=0;
+  const segs=slices.map(s=>{
+    const len=(s.value||0)/total*c;
+    const el=`<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${s.color}" stroke-width="16" stroke-dasharray="${len.toFixed(2)} ${(c-len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"/>`;
+    off+=len; return el;
+  }).join('');
+  const center=total>=1000?(total/1000).toFixed(1)+'k':String(Math.round(total));
+  const legend=slices.map(s=>`<div class="leg-row"><span class="dot" style="background:${s.color}"></span><span style="flex:1">${esc(s.label)}</span><span class="num" style="font-weight:700">${((s.value||0)/total*100).toFixed(1)}%</span><span class="num muted" style="width:92px;text-align:right">${esc(s.note||'')}</span></div>`).join('');
+  return `<div class="donut-wrap"><svg viewBox="0 0 120 120" width="120" height="120" aria-hidden="true">${segs}<text x="60" y="64" text-anchor="middle" font-size="13" font-weight="800" fill="var(--text)">${center}</text></svg><div class="donut-legend">${legend}</div></div>`;
+}
 
-// Register column model (F1 code column + F2 selectable columns)
-const REG_COLUMNS = [
-  {key:'name',            label:'Fabric',    always:true, def:true,  cell:r=>`<td style="padding-left:1rem;font-weight:500;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.name)}">${esc(r.name)}</td>`},
-  {key:'default_code',    label:'Code',                   def:true,  cell:r=>`<td style="color:var(--text-secondary);white-space:nowrap;">${esc(r.default_code)}</td>`},
-  {key:'category',        label:'Category',               def:true,  cell:r=>`<td style="color:var(--text-secondary);white-space:nowrap;">${esc(r.fabric_subcategory||r.fabric_category)}</td>`},
-  {key:'plain_print',     label:'Finish',                 def:true,  cell:r=>`<td>${r.plain_print?`<span class="badge badge-${badgeClass(r.plain_print)}">${esc(r.plain_print)}</span>`:'—'}</td>`},
-  {key:'weight_range',    label:'Weight',                 def:true,  cell:r=>`<td>${r.weight_range?`<span class="badge badge-${badgeClass(r.weight_range)}">${esc(r.weight_range)}</span>`:'—'}</td>`},
-  {key:'fabric_structure',label:'Structure',              def:false, cell:r=>`<td style="color:var(--text-secondary);white-space:nowrap;">${esc(r.fabric_structure)}</td>`},
-  {key:'fiber_content',   label:'Fiber',                  def:false, cell:r=>`<td style="color:var(--text-secondary);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.fiber_content)}">${esc(r.fiber_content)}</td>`},
-  {key:'fabric_type',     label:'Type',                   def:false, cell:r=>`<td style="color:var(--text-secondary);white-space:nowrap;">${esc(r.fabric_type)}</td>`},
-  {key:'primary_color',   label:'Color',                  def:false, cell:r=>`<td style="color:var(--text-secondary);white-space:nowrap;">${esc(r.primary_color)}</td>`},
-  {key:'supplier',        label:'Supplier',               def:false, cell:r=>`<td style="color:var(--text-secondary);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.supplier)}">${esc(r.supplier)}</td>`},
-  {key:'uom',             label:'UoM',                    def:false, num:true, cell:r=>`<td style="text-align:right;">${esc(r.uom)}</td>`},
-  {key:'gsm',             label:'GSM',                    def:true,  num:true, cell:r=>`<td style="text-align:right;">${r.gsm||'—'}</td>`},
-  {key:'width_m',         label:'Width (m)',              def:false, num:true, cell:r=>`<td style="text-align:right;">${r.width_m||'—'}</td>`},
-  {key:'kg_per_mtr',      label:'Kg/m',                   def:true,  num:true, cell:r=>`<td style="text-align:right;">${r.kg_per_mtr||'—'}</td>`},
-  {key:'qty_metres',      label:'Metres',                 def:true,  num:true, cell:r=>`<td style="text-align:right;font-weight:500;">${r.qty_metres!=null?fmt(r.qty_metres)+' m':'—'}</td>`},
-  {key:'qty_kg',          label:'Kg',                     def:true,  num:true, cell:r=>`<td style="text-align:right;">${fmt(r.qty_kg)} kg</td>`},
-  {key:'available_metres',label:'Avail (m)',              def:false, num:true, cell:r=>`<td style="text-align:right;">${r.available_metres!=null?fmt(r.available_metres)+' m':'—'}</td>`},
-  {key:'available_kg',    label:'Avail (kg)',             def:false, num:true, cell:r=>`<td style="text-align:right;">${r.available_kg!=null?fmt(r.available_kg)+' kg':'—'}</td>`},
-  {key:'standard_price',  label:'Price',                  def:false, num:true, cell:r=>`<td style="text-align:right;">${fmtKES(r.standard_price)}</td>`},
-  {key:'value_kes',       label:'Value',                  def:true,  num:true, cell:r=>`<td style="text-align:right;color:var(--text-tertiary);">${fmtKES(r.value_kes)}</td>`},
-  {key:'last_move',       label:'Last move',              def:true,  cell:r=>`<td style="color:var(--text-tertiary);font-size:11.5px;white-space:nowrap;">${r.last_move||'—'}</td>`},
-];
-let regCols = (()=>{ try{const s=JSON.parse(localStorage.getItem('fabricRegCols'));if(Array.isArray(s)&&s.length)return s;}catch(e){} return REG_COLUMNS.filter(c=>c.def).map(c=>c.key); })();
-const visibleCols = () => REG_COLUMNS.filter(c => c.always || regCols.includes(c.key));
-
-// Navigation
-document.querySelectorAll('.nav-item').forEach(el => {
-  el.addEventListener('click', () => {
-    const page = el.dataset.page;
-    document.querySelectorAll('[id^="page-"]').forEach(p => p.style.display='none');
-    document.getElementById('page-'+page).style.display='';
-    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-    el.classList.add('active');
-    document.getElementById('page-title').textContent = el.textContent.trim();
-    if(page==='register') loadRegister(0);
-    if(page==='ageing') loadAgeing();
-    if(page==='consumption') loadConsumption();
-    if(page==='deadstock') loadDeadStock();
-    if(page==='pos') loadPOs();
-  });
-});
-
-async function apiFetch(path) {
-  const r = await fetch(API + path, {credentials:'include'});
-  if(!r.ok) throw new Error(r.status);
+async function apiFetch(path){
+  const r=await fetch(path,{credentials:'include'});
+  if(r.status===401||r.status===403) throw new Error('auth');
+  if(!r.ok) throw new Error('http '+r.status);
   return r.json();
 }
+function errHtml(e){return e&&e.message==='auth'
+  ?'Your session has expired. <a href="/login">Sign in to Vivo BI</a> and reopen this page.'
+  :'Could not load data. Please try again.';}
+function showErr(id,e){const el=document.getElementById(id);if(el)el.innerHTML='<div class="banner banner-err">'+errHtml(e)+'</div>';}
+function rowErr(id,cols,e){const el=document.getElementById(id);if(el)el.innerHTML='<tr><td colspan="'+cols+'" style="padding:1rem;color:var(--danger);">'+errHtml(e)+'</td></tr>';}
 
-async function loadAll() {
-  await Promise.all([loadSummary(), loadCategories(), loadOverviewPie()]);
-  document.getElementById('last-updated').textContent = 'Updated '+new Date().toLocaleTimeString();
+// ── Bar renderer ──
+function bars(id,rows,labelKey,valKey,subFmt,colored){
+  const el=document.getElementById(id); if(!el)return;
+  const max=Math.max(...rows.map(r=>Math.abs(r[valKey]||0)),1);
+  el.innerHTML=rows.length?rows.map((r,i)=>{
+    const c=colored?PAL[i%PAL.length]:'var(--accent)';
+    const dot=colored?`<span class="dot" style="background:${c}"></span>`:'';
+    return `<div class="bar-row"><span class="bar-label" title="${esc(r[labelKey])}">${dot}${esc(r[labelKey])}</span>
+     <div class="bar-track"><div class="bar-fill" style="width:${(Math.abs(r[valKey]||0)/max*100).toFixed(1)}%;background:${c}"></div></div>
+     <span class="bar-qty">${r._qty}</span><span class="bar-sub">${subFmt?subFmt(r):''}</span></div>`;
+  }).join(''):'<p class="muted">No data.</p>';
 }
 
-async function loadSummary() {
-  const d = await apiFetch('/api/fabric/summary?location='+encodeURIComponent(loc()));
-  document.getElementById('kpi-cards').innerHTML = `
-    <div class="kpi"><p class="label">Stock on hand</p><p class="value">${fmt(d.fabric_stock_metres)} m</p><p class="sub">${fmtKES(d.fabric_stock_value)}</p></div>
-    <div class="kpi"><p class="label">Total weight</p><p class="value">${fmt(d.fabric_stock_kg)} kg</p><p class="sub">${fmt(d.fabric_products)} fabric types</p></div>
-    <div class="kpi"><p class="label">Dead stock</p><p class="value danger">${fmt(d.dead_stock_kg)} kg</p><p class="sub">${fmtKES(d.dead_stock_value)}</p></div>
-    <div class="kpi"><p class="label">Consumed (30d)</p><p class="value">${fmt(d.consumption_30d_kg)} kg</p><p class="sub">&nbsp;</p></div>
-    <div class="kpi"><p class="label">Outstanding POs</p><p class="value">${fmt(d.outstanding_pos)}</p><p class="sub">${fmtKES(d.outstanding_po_value)}</p></div>
-    <div class="kpi"><p class="label">Styles w/ BOM</p><p class="value">${fmt(d.styles_with_bom)}</p><p class="sub">fabric linked</p></div>
-  `;
-}
-
-async function loadCategories() {
-  const data = await apiFetch('/api/fabric/by-category?location='+encodeURIComponent(loc()));
-  document.getElementById('cat-unit-note').textContent = unitLabel()+' · value (KES)';
-  const cats = {};
-  data.forEach(r => {
-    if(!cats[r.category]) cats[r.category]={qty:0,value:0};
-    cats[r.category].qty += unitVal(r);
-    cats[r.category].value += r.value_kes||0;
-  });
-  const sorted = Object.entries(cats).sort((a,b)=>b[1].value-a[1].value);
-  const maxVal = sorted[0]?.[1]?.value||1;
-  document.getElementById('category-bars').innerHTML = sorted.map(([cat,v])=>`
-    <div class="bar-row">
-      <span class="bar-label">${esc(cat)}</span>
-      <div class="bar-track"><div class="bar-fill" style="width:${(v.value/maxVal*100).toFixed(1)}%"></div></div>
-      <span class="bar-qty">${fmt(Math.round(v.qty))} ${unitLabel()}</span>
-      <span class="bar-sub">${fmtKES(v.value)}</span>
-    </div>
-  `).join('') || '<p style="color:var(--text-tertiary);font-size:13px;">No data</p>';
-}
-
-async function loadOverviewPie() {
-  const d = await apiFetch('/api/fabric/attribute-split?location='+encodeURIComponent(loc()));
-  document.getElementById('pie-unit-note').textContent = unitLabel();
-  const rows = (d.plain_print||[]).filter(r => unitVal(r) > 0);
-  const total = rows.reduce((s,r)=>s+unitVal(r),0);
-  const colors = {Plain:'#1D9E75', Print:'#378ADD', Unknown:'#9aa0a6'};
-  const el = document.getElementById('plain-print-pie');
-  if(!total){ el.innerHTML = '<p style="color:var(--text-tertiary);font-size:13px;">No data</p>'; return; }
-  let acc = 0;
-  const segs = rows.map(r => {
-    const start = acc/total*360; acc += unitVal(r); const end = acc/total*360;
-    return `${colors[r.value]||'#ccc'} ${start.toFixed(2)}deg ${end.toFixed(2)}deg`;
-  }).join(',');
-  const legend = rows.map(r => {
-    const v = unitVal(r), pct = (v/total*100);
-    return `<div class="legend-row">
-      <span class="legend-dot" style="background:${colors[r.value]||'#ccc'};"></span>
-      <span style="flex:1;">${esc(r.value)}</span>
-      <span style="color:var(--text-secondary);">${fmt(Math.round(v))} ${unitLabel()}</span>
-      <span style="color:var(--text-tertiary);width:42px;text-align:right;">${pct.toFixed(1)}%</span>
-    </div>`;
-  }).join('');
-  el.innerHTML = `<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;">
-    <div style="width:128px;height:128px;border-radius:50%;background:conic-gradient(${segs});flex-shrink:0;
-      -webkit-mask:radial-gradient(circle 38px at center,transparent 98%,#000 100%);
-      mask:radial-gradient(circle 38px at center,transparent 98%,#000 100%);"></div>
-    <div style="flex:1;min-width:160px;">${legend}</div>
-  </div>`;
-}
-
-async function loadRegister(offset) {
-  regOffset = offset ?? regOffset;
-  const search = document.getElementById('reg-search').value;
-  const cat = document.getElementById('reg-category').value;
-  const print = document.getElementById('reg-print').value;
-  const weight = document.getElementById('reg-weight').value;
-  const params = new URLSearchParams({location:loc(),limit:PAGE_SIZE,offset:regOffset});
-  if(search) params.set('search',search);
-  if(cat) params.set('category',cat);
-  if(print) params.set('plain_print',print);
-  if(weight) params.set('weight_range',weight);
-  const d = await apiFetch('/api/fabric/register?'+params);
-  regTotal = d.total;
-  const cols = visibleCols();
-  document.getElementById('register-head').innerHTML =
-    '<tr>'+cols.map(c=>`<th${c.num?' style="text-align:right;"':(c.key==='name'?' style="padding-left:1rem;"':'')}>${c.label}</th>`).join('')+'</tr>';
-  document.getElementById('register-body').innerHTML = d.items.length
-    ? d.items.map(r=>'<tr>'+cols.map(c=>c.cell(r)).join('')+'</tr>').join('')
-    : `<tr><td colspan="${cols.length}" class="loading">No fabrics match.</td></tr>`;
-  document.getElementById('reg-info').textContent =
-    `${regTotal?regOffset+1:0}–${Math.min(regOffset+PAGE_SIZE,regTotal)} of ${fmt(regTotal)}`;
-}
-
-function regPage(dir) {
-  const newOffset = regOffset + dir*PAGE_SIZE;
-  if(newOffset < 0 || newOffset >= regTotal) return;
-  loadRegister(newOffset);
-}
-
-async function loadAgeing() {
-  const data = await apiFetch('/api/fabric/ageing?location='+encodeURIComponent(loc()));
-  const colors = ['#1D9E75','#378ADD','#EF9F27','#E24B4A'];
-  const labels = ['Fresh','Active','Ageing — watch','Obsolete candidate'];
-  const maxM = Math.max(...data.map(r=>r.qty_metres||0))||1;
-  document.getElementById('ageing-bars').innerHTML = data.map((r,i)=>`
-    <div class="bar-row" style="margin-bottom:14px;">
-      <span class="bar-label" style="width:140px;">${r.age_band}<br><span style="font-size:10.5px;color:var(--text-tertiary);">${labels[i]||''}</span></span>
-      <div class="bar-track"><div class="bar-fill" style="width:${((r.qty_metres||0)/maxM*100).toFixed(1)}%;background:${colors[i]};"></div></div>
-      <span class="bar-qty">${fmt(Math.round(r.qty_metres||0))} m</span>
-      <span class="bar-sub">${fmtKES(r.value_kes)}</span>
-    </div>
-  `).join('') || '<p style="color:var(--text-tertiary);font-size:13px;">No data</p>';
-}
-
-async function loadConsumption() {
-  const group = document.getElementById('cons-group').value;
-  const since = document.getElementById('cons-since').value || '2025-01-01';
-  const until = document.getElementById('cons-until').value || '2099-12-31';
-  const dim = (group==='category' || group==='fabric');
-  const data = await apiFetch(`/api/fabric/consumption?since=${since}&until=${until}&group_by=${group}`);
-  const maxV = Math.max(...data.map(r=>unitVal(r)))||1;
-  const lblW = dim ? 200 : 90;
-  document.getElementById('consumption-bars').innerHTML = data.length ? `<div style="display:flex;flex-direction:column;gap:8px;">
-    ${data.map(r=>`
-      <div class="bar-row">
-        <span class="bar-label" style="width:${lblW}px;${dim?'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;':''}" title="${esc(r.period)}">${esc(r.period)}</span>
-        <div class="bar-track"><div class="bar-fill" style="width:${(unitVal(r)/maxV*100).toFixed(1)}%;"></div></div>
-        <span class="bar-qty">${fmt(Math.round(unitVal(r)))} ${unitLabel()}</span>
-        <span class="bar-sub">${fmt(r.fabrics_used)} types</span>
-      </div>
-    `).join('')}
-  </div>` : '<p style="color:var(--text-tertiary);font-size:13px;">No consumption in this period.</p>';
-}
-
-async function loadDeadStock() {
-  const d = await apiFetch('/api/fabric/dead-stock');
-  document.getElementById('dead-kpis').innerHTML = `
-    <div class="kpi"><p class="label">Total dead stock</p><p class="value danger">${fmtKES(d.total_value)}</p><p class="sub">${d.items.length} items</p></div>
-    <div class="kpi"><p class="label">Total weight</p><p class="value">${fmt(d.items.reduce((s,r)=>s+(r.qty_kg||0),0).toFixed(0))} kg</p></div>
-  `;
-  document.getElementById('dead-body').innerHTML = d.items.map(r=>`
-    <tr>
-      <td style="padding-left:1rem;font-weight:500;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${r.product_name}">${r.product_name}</td>
-      <td style="color:var(--text-secondary);">${r.fabric_subcategory||r.fabric_category||'—'}</td>
-      <td style="text-align:right;">${fmt(r.qty_kg)} kg</td>
-      <td style="text-align:right;">${r.qty_metres!=null?fmt(r.qty_metres)+' m':'—'}</td>
-      <td style="text-align:right;font-weight:500;">${fmtKES(r.value_kes)}</td>
-      <td style="color:var(--text-tertiary);font-size:11.5px;">${r.last_move||'—'}</td>
-      <td style="text-align:right;${(r.days_since_move||0)>180?'color:var(--danger-text);font-weight:500;':''}">${fmt(r.days_since_move)}</td>
-    </tr>
-  `).join('');
-}
-
-async function loadPOs() {
-  const data = await apiFetch('/api/fabric/purchase-orders');
-  document.getElementById('po-body').innerHTML = data.map(r=>`
-    <tr>
-      <td style="padding-left:1rem;font-weight:500;">${r.po_name}</td>
-      <td>${r.supplier||'—'}</td>
-      <td style="color:var(--text-secondary);white-space:nowrap;">${r.order_date||'—'}</td>
-      <td><span class="badge badge-${r.state}">${r.state}</span></td>
-      <td style="text-align:right;">${r.lines}</td>
-      <td style="text-align:right;font-weight:500;">${fmtKES(r.po_value)}</td>
-      <td style="text-align:right;">${fmt(r.qty_ordered)}</td>
-      <td style="text-align:right;">${fmt(r.qty_received)}</td>
-      <td style="text-align:right;${(r.outstanding||0)>0?'color:var(--warning-text);':''}">${fmt(r.outstanding)}</td>
-    </tr>
-  `).join('');
-}
-
-// Column picker (F2)
-function renderColPanel() {
-  const panel = document.getElementById('col-panel');
-  panel.innerHTML = REG_COLUMNS.map(c => {
-    const checked = c.always || regCols.includes(c.key);
-    return `<label><input type="checkbox" data-col="${c.key}" ${checked?'checked':''} ${c.always?'disabled':''}> ${c.label}</label>`;
-  }).join('');
-  panel.querySelectorAll('input[data-col]').forEach(cb => {
-    cb.addEventListener('change', () => {
-      const key = cb.dataset.col;
-      if(cb.checked) { if(!regCols.includes(key)) regCols.push(key); }
-      else regCols = regCols.filter(k => k !== key);
-      localStorage.setItem('fabricRegCols', JSON.stringify(regCols));
-      loadRegister();
-    });
-  });
-}
-function toggleColPanel() {
-  const panel = document.getElementById('col-panel');
-  const show = panel.style.display === 'none';
-  panel.style.display = show ? '' : 'none';
-  if(show) renderColPanel();
-}
-document.addEventListener('click', e => {
-  const menu = document.querySelector('.col-menu');
-  if(menu && !menu.contains(e.target)) document.getElementById('col-panel').style.display = 'none';
-});
-
-// Unit toggle (F3/F4) — re-render anything unit-aware
-document.querySelectorAll('#unit-toggle button').forEach(btn => {
-  btn.addEventListener('click', () => {
-    UNIT = btn.dataset.unit;
-    document.querySelectorAll('#unit-toggle button').forEach(b => b.classList.toggle('active', b === btn));
-    loadCategories(); loadOverviewPie();
-    if(document.getElementById('page-consumption').style.display !== 'none') loadConsumption();
+// ── Navigation ──
+const LOADERS={register:()=>loadRegister(0),ageing:loadAgeing,deadstock:loadDeadStock,movement:loadMovementPage,pos:loadPOsPage,suppliers:loadSuppliers,bom:loadBomPage};
+const DESCS={overview:'Fabric stock, value and health across the warehouse',register:'Searchable register of every fabric in stock',ageing:'How long stock has sat since its last movement',deadstock:'Fabric parked in the dead-stock location',movement:'What is coming in, going out and being consumed',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',bom:'Bills of material — which fabrics each style consumes'};
+const loadedOnce={};
+document.querySelectorAll('.nav-item').forEach(el=>{
+  el.addEventListener('click',()=>{
+    const page=el.dataset.page;
+    document.querySelectorAll('section[id^="page-"]').forEach(p=>p.style.display='none');
+    document.getElementById('page-'+page).style.display='';
+    document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('page-title').textContent=el.textContent.trim();
+    document.getElementById('page-desc').textContent=DESCS[page]||'';
+    if(LOADERS[page]&&!loadedOnce[page]){loadedOnce[page]=true;LOADERS[page]();}
   });
 });
+function onLocationChange(){
+  loadedOnce.ageing=false;loadedOnce.register=false;
+  loadOverview();
+  if(document.getElementById('page-ageing').style.display!=='none'){loadedOnce.ageing=true;loadAgeing();}
+  if(document.getElementById('page-register').style.display!=='none'){loadedOnce.register=true;loadRegister(0);}
+}
 
-// Default consumption window: last 12 months
-(function() {
-  const today = new Date(), start = new Date();
-  start.setMonth(start.getMonth() - 12);
-  const iso = d => d.toISOString().slice(0,10);
-  document.getElementById('cons-until').value = iso(today);
-  document.getElementById('cons-since').value = iso(start);
-})();
+// ── Overview ──
+let ovCache=null;
+async function loadOverview(){
+  try{
+    const [d,cat,split]=await Promise.all([
+      apiFetch('/api/fabric/summary'),
+      apiFetch('/api/fabric/by-category?location='+encodeURIComponent(loc())),
+      apiFetch('/api/fabric/attribute-split?location='+encodeURIComponent(loc())),
+    ]);
+    ovCache={d,cat,split};
+    renderOverviewCached();
+    document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString();
+  }catch(e){showErr('kpi-cards',e);['category-bars','split-print','split-weight','split-structure','split-fiber'].forEach(id=>{const el=document.getElementById(id);if(el&&el.querySelector('.loading'))el.innerHTML='';});}
+}
+function renderOverviewCached(){
+  if(!ovCache)return;
+  renderKpis(ovCache.d);
+  renderCategories(ovCache.cat);
+  renderPrintDonut(ovCache.split.plain_print);
+  renderSplit('split-weight',ovCache.split.weight_range);
+  renderSplit('split-structure',ovCache.split.structure);
+  renderSplit('split-fiber',ovCache.split.fiber);
+}
+function renderKpis(d){
+  const totalVal=(d.fabric_stock_value||0)+(d.dead_stock_value||0);
+  const deadPct=totalVal>0?(d.dead_stock_value/totalVal*100):0;
+  const cover=d.consumption_30d_kg>0?(d.fabric_stock_kg/d.consumption_30d_kg):null;
+  const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
+  document.getElementById('kpi-cards').innerHTML=`
+   <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value">${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub">${fmtKES(d.fabric_stock_value)} &middot; ${fmt(d.fabric_products)} fabrics</p></div>
+   <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value">${fmt(d.fabric_stock_kg)}</p><p class="kpi-sub">kg in main warehouse</p></div>
+   <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value">${fmt(d.consumption_30d_kg)}</p><p class="kpi-sub">kg of OUT moves</p></div>
+   <div class="kpi"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}">${cover!=null?fmt1(cover):'—'}</p><p class="kpi-sub">stock &divide; monthly use</p></div>
+   <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger">${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">${fmt(d.dead_stock_kg)} kg &middot; ${deadPct.toFixed(0)}% of value</p></div>
+   <div class="kpi"><span class="eyebrow">Outstanding POs</span><p class="kpi-value">${fmt(d.outstanding_pos)}</p><p class="kpi-sub">${fmtKES(d.outstanding_po_value)} inbound</p></div>
+   <div class="kpi"><span class="eyebrow">Styles with BOM</span><p class="kpi-value">${fmt(d.styles_with_bom)}</p><p class="kpi-sub">linked to fabric</p></div>`;
+}
+function renderCategories(data){
+  const cats={};
+  data.forEach(r=>{const k=r.category||'Other';if(!cats[k])cats[k]={m:0,kg:0,v:0};cats[k].m+=r.qty_metres||0;cats[k].kg+=r.qty_kg||0;cats[k].v+=r.value_kes||0;});
+  const rows=Object.entries(cats).sort((a,b)=>b[1].v-a[1].v).map(([c,v])=>({label:c,v:v.v,_qty:fmtUnit(UNIT==='kg'?v.kg:v.m),sub:v.v}));
+  bars('category-bars',rows,'label','v',r=>fmtKES(r.sub),false);
+}
+function renderSplit(id,rows){
+  const data=(rows||[]).map(r=>({label:r.value,v:r.value_kes,_qty:fmtKES(r.value_kes),fabrics:r.fabrics}));
+  bars(id,data,'label','v',r=>fmt(r.fabrics)+' fab',true);
+}
+function renderPrintDonut(rows){
+  rows=rows||[];
+  const colorFor=v=>/print/i.test(v)?'#d97706':/plain/i.test(v)?'#1a5c38':'#6b7280';
+  const slices=rows.map(r=>{const val=UNIT==='kg'?r.qty_kg:r.qty_metres;return {label:r.value,value:val||0,color:colorFor(r.value),note:fmtUnit(val)};});
+  document.getElementById('split-print').innerHTML=donut(slices);
+  const su=document.getElementById('split-print-unit');if(su)su.textContent='share by '+(UNIT==='kg'?'kg':'metres');
+}
 
-// Load filter options
-apiFetch('/api/fabric/filters').then(d => {
-  const sel = document.getElementById('reg-category');
-  d.categories.forEach(c => sel.add(new Option(c,c)));
-}).catch(()=>{});
+// ── Register ──
+// Selectable columns. "Code" is the internal SKU (default_code) — fabrics have no
+// dedicated barcode; the search box already matches name OR code server-side.
+const REG_COLS=[
+  {k:'default_code',label:'Code',type:'code'},
+  {k:'name',label:'Fabric',type:'name'},
+  {k:'fabric_category',label:'Category',type:'text'},
+  {k:'fabric_subcategory',label:'Subcategory',type:'text'},
+  {k:'plain_print',label:'Finish',type:'pill'},
+  {k:'weight_range',label:'Weight',type:'wpill'},
+  {k:'fabric_structure',label:'Structure',type:'text'},
+  {k:'gsm',label:'GSM',type:'num'},
+  {k:'width_m',label:'Width (m)',type:'num1'},
+  {k:'kg_per_mtr',label:'Kg/m',type:'num1'},
+  {k:'fiber_content',label:'Fiber',type:'text'},
+  {k:'fabric_type',label:'Type',type:'text'},
+  {k:'supplier',label:'Supplier',type:'text'},
+  {k:'primary_color',label:'Color',type:'text'},
+  {k:'qty_metres',label:'Metres',type:'numb'},
+  {k:'qty_kg',label:'Kg',type:'num1'},
+  {k:'available_metres',label:'Avail (m)',type:'num1'},
+  {k:'available_kg',label:'Avail (kg)',type:'num1'},
+  {k:'value_kes',label:'Value',type:'kes'},
+  {k:'last_move',label:'Last move',type:'date'},
+  {k:'days_since_move',label:'Days idle',type:'num'},
+];
+const REG_DEFAULT=['default_code','name','fabric_subcategory','plain_print','weight_range','gsm','qty_metres','qty_kg','value_kes','last_move'];
+const NUM_TYPES={num:1,num1:1,numb:1,kes:1};
+let regCols=(()=>{try{const s=JSON.parse(localStorage.getItem('fabricRegCols'));return Array.isArray(s)&&s.length?s.filter(k=>REG_COLS.some(c=>c.k===k)):REG_DEFAULT.slice();}catch(_){return REG_DEFAULT.slice();}})();
+let regSort={key:'value_kes',dir:'desc'};
+let regTimer;
+function debouncedRegister(){clearTimeout(regTimer);regTimer=setTimeout(()=>loadRegister(0),300);}
+async function loadRegister(offset){
+  regOffset=offset??regOffset;
+  const params=new URLSearchParams({location:loc(),limit:PAGE_SIZE,offset:regOffset,sort:regSort.key,dir:regSort.dir});
+  const s=document.getElementById('reg-search').value;if(s)params.set('search',s);
+  const c=document.getElementById('reg-category').value;if(c)params.set('category',c);
+  const p=document.getElementById('reg-print').value;if(p)params.set('plain_print',p);
+  const w=document.getElementById('reg-weight').value;if(w)params.set('weight_range',w);
+  try{
+    const d=await apiFetch('/api/fabric/register?'+params);
+    regTotal=d.total;lastRegItems=d.items;
+    renderRegisterTable();
+    document.getElementById('reg-info').textContent=regTotal?`${regOffset+1}–${Math.min(regOffset+PAGE_SIZE,regTotal)} of ${fmt(regTotal)}`:'0 results';
+  }catch(e){rowErr('register-body',regCols.length||1,e);}
+}
+function regCell(col,r){
+  const v=r[col.k];
+  switch(col.type){
+    case 'name':return `<td style="font-weight:600;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(v)}">${esc(v||'—')}</td>`;
+    case 'code':return `<td class="num" style="font-size:12px;color:var(--text-sub);white-space:nowrap;">${esc(v||'—')}</td>`;
+    case 'pill':return `<td>${v?`<span class="pill pill-neutral">${esc(v)}</span>`:'—'}</td>`;
+    case 'wpill':return `<td>${v?`<span class="pill ${({Light:'pill-green',Medium:'pill-blue',Heavy:'pill-amber'})[v]||'pill-neutral'}">${esc(v)}</span>`:'—'}</td>`;
+    case 'num':return `<td class="r">${v!=null&&v!==''?fmt(v):'—'}</td>`;
+    case 'num1':return `<td class="r">${v!=null&&v!==''?fmt1(v):'—'}</td>`;
+    case 'numb':return `<td class="r" style="font-weight:600;">${v!=null&&v!==''?fmt(v):'—'}</td>`;
+    case 'kes':return `<td class="r" style="color:var(--muted);">${fmtKES(v)}</td>`;
+    case 'date':return `<td style="color:var(--muted);font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
+    default:return `<td style="color:var(--text-sub);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
+  }
+}
+function renderRegisterTable(){
+  const cols=REG_COLS.filter(c=>regCols.includes(c.k));
+  document.getElementById('register-head').innerHTML='<tr>'+cols.map(c=>{
+    const arrow=regSort.key===c.k?(regSort.dir==='asc'?' \u25B2':' \u25BC'):'';
+    return `<th class="${NUM_TYPES[c.type]?'r ':''}sortable" onclick="sortReg('${c.k}')">${esc(c.label)}${arrow}</th>`;
+  }).join('')+'</tr>';
+  const body=document.getElementById('register-body');
+  body.innerHTML=lastRegItems.length
+    ? lastRegItems.map(r=>'<tr>'+cols.map(c=>regCell(c,r)).join('')+'</tr>').join('')
+    : `<tr><td colspan="${cols.length||1}" class="loading">No fabrics match these filters.</td></tr>`;
+}
+function sortReg(k){
+  if(regSort.key===k)regSort.dir=regSort.dir==='asc'?'desc':'asc';
+  else{regSort.key=k;regSort.dir='desc';}
+  loadRegister(0);
+}
+function buildColPicker(){
+  document.getElementById('col-picker').innerHTML=REG_COLS.map(c=>
+    `<label class="col-opt"><input type="checkbox" ${regCols.includes(c.k)?'checked':''} onchange="toggleCol('${c.k}',this.checked)"> ${esc(c.label)}</label>`
+  ).join('')+`<div style="padding:6px 8px;border-top:1px solid var(--border);"><a href="#" onclick="resetCols(event)" style="font-size:12px;color:var(--accent);">Reset to default</a></div>`;
+}
+function toggleColPicker(e){e.stopPropagation();const p=document.getElementById('col-picker');const show=p.style.display==='none';buildColPicker();p.style.display=show?'block':'none';}
+function toggleCol(k,on){
+  if(on){if(!regCols.includes(k))regCols.push(k);}else{regCols=regCols.filter(x=>x!==k);}
+  if(!regCols.length)regCols=['name'];
+  localStorage.setItem('fabricRegCols',JSON.stringify(regCols));
+  renderRegisterTable();
+}
+function resetCols(e){e.preventDefault();regCols=REG_DEFAULT.slice();localStorage.setItem('fabricRegCols',JSON.stringify(regCols));buildColPicker();renderRegisterTable();}
+function regPage(dir){const o=regOffset+dir*PAGE_SIZE;if(o<0||o>=regTotal)return;loadRegister(o);}
+function exportRegister(){
+  if(!lastRegItems.length)return;
+  const cols=REG_COLS.filter(c=>regCols.includes(c.k));
+  const csv=[cols.map(c=>c.label).join(',')]
+    .concat(lastRegItems.map(r=>cols.map(c=>JSON.stringify(r[c.k]??'')).join(',')))
+    .join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='fabric_register.csv';a.click();
+}
 
-loadAll();
+// ── Ageing ──
+async function loadAgeing(){
+  try{
+    const data=await apiFetch('/api/fabric/ageing?location='+encodeURIComponent(loc()));
+    const colors=['#1a5c38','#2563eb','#d97706','#dc2626'];
+    const labels=['Fresh','Active','Ageing — watch','Obsolete candidate'];
+    const totalV=data.reduce((s,r)=>s+(r.value_kes||0),0);
+    const oldV=data.filter(r=>r.sort_order>=3).reduce((s,r)=>s+(r.value_kes||0),0);
+    document.getElementById('ageing-kpis').innerHTML=`
+     <div class="kpi accent"><span class="eyebrow">Total stock value</span><p class="kpi-value">${fmtKES(totalV)}</p><p class="kpi-sub">at this location</p></div>
+     <div class="kpi"><span class="eyebrow">Over 6 months old</span><p class="kpi-value amber">${fmtKES(oldV)}</p><p class="kpi-sub">${totalV>0?(oldV/totalV*100).toFixed(0):0}% of value at risk</p></div>`;
+    const max=Math.max(...data.map(r=>r.qty_metres||0),1);
+    document.getElementById('ageing-bars').innerHTML=data.map((r,i)=>`
+     <div class="bar-row" style="margin-bottom:15px;">
+      <span class="bar-label" style="width:160px;flex-direction:column;align-items:flex-start;">${esc(r.age_band)}<span style="font-size:10.5px;color:var(--muted);">${esc(labels[i]||'')}</span></span>
+      <div class="bar-track"><div class="bar-fill" style="width:${((r.qty_metres||0)/max*100).toFixed(1)}%;background:${colors[i]||colors[3]};"></div></div>
+      <span class="bar-qty">${fmt(r.qty_metres)} m</span><span class="bar-sub">${fmtKES(r.value_kes)}</span></div>`).join('')||'<p class="muted">No data.</p>';
+  }catch(e){showErr('ageing-bars',e);}
+}
+
+// ── Dead stock ──
+async function loadDeadStock(){
+  try{
+    const d=await apiFetch('/api/fabric/dead-stock');
+    const kg=d.items.reduce((s,r)=>s+(r.qty_kg||0),0);
+    document.getElementById('dead-kpis').innerHTML=`
+     <div class="kpi accent"><span class="eyebrow">Total dead stock</span><p class="kpi-value">${fmtKES(d.total_value)}</p><p class="kpi-sub">${d.items.length} items</p></div>
+     <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value">${fmt(kg)}</p><p class="kpi-sub">kg parked</p></div>`;
+    document.getElementById('dead-body').innerHTML=d.items.length?d.items.map(r=>`
+     <tr>
+      <td style="font-weight:600;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.product_name)}">${esc(r.product_name)}</td>
+      <td style="color:var(--text-sub);">${esc(r.fabric_subcategory||r.fabric_category||'—')}</td>
+      <td class="r">${fmt1(r.qty_kg)}</td><td class="r">${r.qty_metres!=null?fmt(r.qty_metres):'—'}</td>
+      <td class="r" style="font-weight:600;">${fmtKES(r.value_kes)}</td>
+      <td style="color:var(--muted);">${esc(r.last_move||'—')}</td>
+      <td class="r">${r.days_since_move!=null?`<span class="pill ${r.days_since_move>365?'pill-red':'pill-amber'}">${fmt(r.days_since_move)}</span>`:'—'}</td>
+     </tr>`).join(''):'<tr><td colspan="7" class="loading">No dead stock recorded.</td></tr>';
+  }catch(e){rowErr('dead-body',7,e);}
+}
+
+// ── Movement & use ──
+function loadMovementPage(){loadFlow();loadMovement();loadConsTrend();}
+async function loadFlow(){
+  try{
+    const data=await apiFetch('/api/fabric/movement-flow?months=6');
+    const max=Math.max(...data.map(r=>Math.max(r.in_kg||0,r.out_kg||0)),1);
+    document.getElementById('flow-bars').innerHTML=data.length?data.map(r=>{
+      const m=new Date(r.period).toLocaleDateString(undefined,{month:'short',year:'2-digit'});
+      return `<div style="margin-bottom:14px;">
+       <div class="muted" style="margin-bottom:5px;font-weight:600;color:var(--text-sub);">${m}</div>
+       <div class="bar-row" style="margin-bottom:6px;"><span class="bar-label" style="width:60px;"><span class="dot" style="background:#1a5c38"></span>In</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${((r.in_kg||0)/max*100).toFixed(1)}%;background:#1a5c38"></div></div><span class="bar-qty">${fmtKg(r.in_kg)}</span><span class="bar-sub"></span></div>
+       <div class="bar-row"><span class="bar-label" style="width:60px;"><span class="dot" style="background:#d97706"></span>Out</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${((r.out_kg||0)/max*100).toFixed(1)}%;background:#d97706"></div></div><span class="bar-qty">${fmtKg(r.out_kg)}</span><span class="bar-sub"></span></div>
+      </div>`;
+    }).join(''):'<p class="muted">No movement data.</p>';
+  }catch(e){showErr('flow-bars',e);}
+}
+async function loadMovement(){
+  try{
+    const days=document.getElementById('consumed-days').value;
+    const data=await apiFetch('/api/fabric/top-consumed?days='+days+'&limit=20');
+    document.getElementById('consumed-body').innerHTML=data.length?data.map(r=>`
+     <tr>
+      <td style="font-weight:600;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.product_name)}">${esc(r.product_name)}</td>
+      <td class="r" style="font-weight:600;">${fmt1(r.consumed_kg)}</td>
+      <td class="r">${fmt1(r.stock_kg)}</td>
+      <td class="r">${r.weeks_cover!=null?`<span class="pill ${r.weeks_cover<2?'pill-red':r.weeks_cover<6?'pill-amber':'pill-green'}">${fmt1(r.weeks_cover)}</span>`:'—'}</td>
+      <td style="color:var(--muted);">${esc(r.last_out||'—')}</td>
+     </tr>`).join(''):'<tr><td colspan="5" class="loading">No consumption in this period.</td></tr>';
+  }catch(e){rowErr('consumed-body',5,e);}
+}
+async function loadConsTrend(){
+  try{
+    const g=document.getElementById('cons-group').value;
+    const since=document.getElementById('cons-since').value;
+    const until=document.getElementById('cons-until').value;
+    const params=new URLSearchParams({group_by:g});
+    params.set('since',since||'2025-01-01');
+    if(until)params.set('until',until);
+    const data=await apiFetch('/api/fabric/consumption?'+params);
+    const dateFmt=g==='day'?{month:'short',day:'numeric'}:g==='week'?{month:'short',day:'numeric'}:{month:'short',year:'2-digit'};
+    const useKg=UNIT==='kg';
+    const rows=data.map(r=>({label:new Date(r.period).toLocaleDateString(undefined,dateFmt),v:useKg?r.qty_kg:(r.qty_metres||0),_qty:fmtUnit(useKg?r.qty_kg:r.qty_metres),f:r.fabrics_used}));
+    bars('consumption-bars',rows,'label','v',r=>fmt(r.f)+' types',false);
+    const totKg=data.reduce((s,r)=>s+(r.qty_kg||0),0);
+    const totM=data.reduce((s,r)=>s+(r.qty_metres||0),0);
+    document.getElementById('cons-summary').innerHTML=data.length
+      ?`Total consumed: <strong>${fmt(totM)} m</strong> &middot; <strong>${fmt1(totKg)} kg</strong> over ${data.length} ${g==='month'?'months':g==='week'?'weeks':'days'}`
+      :'No consumption in this range.';
+  }catch(e){showErr('consumption-bars',e);document.getElementById('cons-summary').textContent='';}
+}
+
+// ── Purchase orders ──
+function loadPOsPage(){loadPOPerf();loadPOs();}
+async function loadPOPerf(){
+  try{
+    const d=await apiFetch('/api/fabric/po-performance');
+    const k=d.kpis||{};
+    document.getElementById('po-kpis').innerHTML=`
+     <div class="kpi accent"><span class="eyebrow">Ordered value</span><p class="kpi-value">${fmtKES(k.ordered_value)}</p><p class="kpi-sub">${fmt(k.pos)} POs &middot; ${fmt(k.lines)} lines</p></div>
+     <div class="kpi"><span class="eyebrow">Received value</span><p class="kpi-value">${fmtKES(k.received_value)}</p><p class="kpi-sub">delivered to date</p></div>
+     <div class="kpi"><span class="eyebrow">Fill rate</span><p class="kpi-value">${k.fill_rate!=null?k.fill_rate+'%':'—'}</p><p class="kpi-sub">received &divide; ordered</p></div>
+     <div class="kpi"><span class="eyebrow">Avg lead time</span><p class="kpi-value">${k.avg_lead_days!=null?fmt(k.avg_lead_days):'—'}</p><p class="kpi-sub">days order &rarr; planned</p></div>
+     <div class="kpi"><span class="eyebrow">Overdue open</span><p class="kpi-value ${k.overdue_open>0?'danger':''}">${fmt(k.overdue_open)}</p><p class="kpi-sub">past planned date</p></div>`;
+    const rows=(d.by_month||[]).map(r=>({label:new Date(r.period).toLocaleDateString(undefined,{month:'short',year:'2-digit'}),v:r.value_kes,_qty:fmtKES(r.value_kes),pos:r.pos}));
+    bars('po-month-bars',rows,'label','v',r=>fmt(r.pos)+' PO',false);
+  }catch(e){showErr('po-kpis',e);}
+}
+let poTimer;
+function debouncedPOs(){clearTimeout(poTimer);poTimer=setTimeout(loadPOs,300);}
+async function loadPOs(){
+  try{
+    const s=document.getElementById('po-search').value;
+    const data=await apiFetch('/api/fabric/purchase-orders'+(s?'?supplier='+encodeURIComponent(s):''));
+    poCache=data;
+    document.getElementById('po-body').innerHTML=data.length?data.map(r=>`
+     <tr>
+      <td style="font-weight:600;">${esc(r.po_name)}</td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.supplier||'')}">${esc(r.supplier||'—')}</td>
+      <td style="color:var(--muted);white-space:nowrap;">${esc(r.order_date||'—')}</td>
+      <td><span class="pill ${r.state==='done'?'pill-green':'pill-neutral'}">${esc(r.state||'—')}</span></td>
+      <td class="r">${fmt(r.lines)}</td><td class="r" style="font-weight:600;">${fmtKES(r.po_value)}</td>
+      <td class="r">${fmt1(r.qty_ordered)}</td><td class="r">${fmt1(r.qty_received)}</td>
+      <td class="r">${r.outstanding>0?`<span class="pill pill-amber">${fmt1(r.outstanding)}</span>`:fmt1(r.outstanding)}</td>
+     </tr>`).join(''):'<tr><td colspan="9" class="loading">No purchase orders found.</td></tr>';
+  }catch(e){rowErr('po-body',9,e);}
+}
+
+// ── Suppliers ──
+async function loadSuppliers(){
+  try{
+    const data=await apiFetch('/api/fabric/suppliers');
+    const top=data.filter(r=>r.outstanding_value>0).slice(0,12);
+    const rows=top.map(r=>({label:r.supplier,v:r.outstanding_value,_qty:fmtKES(r.outstanding_value),pos:r.pos}));
+    bars('supplier-bars',rows.length?rows:[{label:'No outstanding exposure',v:0,_qty:'—'}],'label','v',r=>fmt(r.pos)+' PO',false);
+    document.getElementById('supplier-body').innerHTML=data.length?data.map(r=>`
+     <tr>
+      <td style="font-weight:600;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.supplier)}">${esc(r.supplier)}</td>
+      <td class="r">${fmt(r.pos)}</td><td class="r">${fmtKES(r.po_value)}</td>
+      <td class="r">${fmt1(r.outstanding_qty)}</td>
+      <td class="r" style="font-weight:600;">${r.outstanding_value>0?`<span class="pill pill-amber">${fmtKES(r.outstanding_value)}</span>`:fmtKES(r.outstanding_value)}</td>
+     </tr>`).join(''):'<tr><td colspan="5" class="loading">No suppliers found.</td></tr>';
+  }catch(e){rowErr('supplier-body',5,e);showErr('supplier-bars',e);}
+}
+
+// ── BOM explorer ──
+function loadBomPage(){loadBomStyles();}
+let bomTimer;
+function debouncedBomStyles(){clearTimeout(bomTimer);bomTimer=setTimeout(loadBomStyles,300);}
+async function loadBomStyles(){
+  try{
+    const s=document.getElementById('bom-search').value;
+    const d=await apiFetch('/api/fabric/bom-styles?limit=300'+(s?'&search='+encodeURIComponent(s):''));
+    document.getElementById('bom-count').textContent=fmt(d.total_styles)+' styles with a BOM';
+    const body=document.getElementById('bom-styles-body');
+    body.innerHTML=d.items.length?d.items.map(r=>`
+     <tr class="row-click" data-style="${esc(r.style)}">
+      <td style="font-weight:600;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.style)}">${esc(r.style)}</td>
+      <td class="r">${fmt(r.components)}</td><td class="r">${fmt1(r.fabric_kg)}</td><td class="r">${fmt(r.trim_pieces)}</td>
+     </tr>`).join(''):'<tr><td colspan="4" class="loading">No styles match.</td></tr>';
+    body.querySelectorAll('tr.row-click').forEach(tr=>tr.addEventListener('click',()=>showBom(tr.dataset.style)));
+  }catch(e){rowErr('bom-styles-body',4,e);}
+}
+async function showBom(style){
+  document.getElementById('bom-detail-title').textContent=style;
+  document.getElementById('bom-detail').innerHTML='<div class="loading">Loading…</div>';
+  try{
+    const data=await apiFetch('/api/fabric/bom?style='+encodeURIComponent(style));
+    const rows=data.filter(r=>r.finished_product_name===style);
+    const use=rows.length?rows:data;
+    document.getElementById('bom-detail').innerHTML=use.length?`
+     <div class="tbl-wrap"><table class="data">
+      <thead><tr><th>Component</th><th class="r">Needed</th><th class="r">Stock</th><th>Location</th></tr></thead>
+      <tbody>${use.map(r=>`<tr>
+       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.component_name)}">${esc(r.component_name)}</td>
+       <td class="r">${fmt1(r.component_qty)} ${esc(r.component_uom||'')}</td>
+       <td class="r">${r.stock_kg!=null?fmt1(r.stock_kg)+' kg':'—'}</td>
+       <td style="color:var(--muted);">${esc(r.location_name||'—')}</td>
+      </tr>`).join('')}</tbody>
+     </table></div>`:'<p class="muted">No components found for this style.</p>';
+  }catch(e){showErr('bom-detail',e);}
+}
+async function loadWhereUsed(){
+  const c=document.getElementById('wu-search').value.trim();
+  if(!c){document.getElementById('wu-body').innerHTML='<tr><td colspan="4" class="muted" style="padding:1rem;">Enter a fabric name to search.</td></tr>';return;}
+  document.getElementById('wu-body').innerHTML='<tr><td colspan="4" class="loading">Searching…</td></tr>';
+  try{
+    const data=await apiFetch('/api/fabric/where-used?component='+encodeURIComponent(c));
+    document.getElementById('wu-body').innerHTML=data.length?data.map(r=>`
+     <tr>
+      <td style="font-weight:600;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.style)}">${esc(r.style)}</td>
+      <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-sub);" title="${esc(r.component_name)}">${esc(r.component_name)}</td>
+      <td class="r">${fmt1(r.component_qty)}</td><td>${esc(r.component_uom||'—')}</td>
+     </tr>`).join(''):'<tr><td colspan="4" class="muted" style="padding:1rem;">No styles use a fabric matching that name.</td></tr>';
+  }catch(e){rowErr('wu-body',4,e);}
+}
+
+// ── Boot ──
+async function init(){
+  // Units segmented control reflects stored preference
+  document.querySelectorAll('.unit-btn').forEach(b=>b.classList.toggle('active',b.dataset.unit===UNIT));
+  // Column picker + close-on-outside-click
+  buildColPicker();
+  document.addEventListener('click',e=>{
+    const p=document.getElementById('col-picker');
+    if(p&&p.style.display!=='none'&&!e.target.closest('.popwrap'))p.style.display='none';
+  });
+  // Default consumption date range: last 12 months → today (local time, ISO date)
+  const today=new Date();
+  const yago=new Date(today.getFullYear()-1,today.getMonth(),today.getDate());
+  const iso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  document.getElementById('cons-since').value=iso(yago);
+  document.getElementById('cons-until').value=iso(today);
+  try{
+    const f=await apiFetch('/api/fabric/filters');
+    const sel=document.getElementById('location-filter');
+    sel.innerHTML=f.locations.map(l=>`<option value="${esc(l)}"${l==='RMAT/Stock'?' selected':''}>${esc(l)}</option>`).join('');
+    const catSel=document.getElementById('reg-category');
+    catSel.innerHTML='<option value="">All categories</option>'+f.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  }catch(e){/* overview will surface the auth error */}
+  loadOverview();
+}
+init();
 </script>
 </body>
 </html>
