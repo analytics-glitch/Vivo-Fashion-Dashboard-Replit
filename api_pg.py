@@ -13193,6 +13193,278 @@ def crm_segments(request: Request):
     return {"segments": segs}
 
 
+# --- CRM: segmentation export + reports (PRD 6.5 / 7.5) -------------------
+
+def _validate_date_param(v):
+    """Validate an optional YYYY-MM-DD date param. Returns the string when valid,
+    None for empty/missing/invalid (values are always passed as bound params, so an
+    ignored invalid value can never reach SQL unparameterised)."""
+    s = (v or "").strip()
+    if not s:
+        return None
+    import re as _re
+    if not _re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return None
+    try:
+        from datetime import datetime as _dt
+        _dt.strptime(s, "%Y-%m-%d")
+    except Exception:
+        return None
+    return s
+
+
+def _crm_tier_spend_range(tier, cfg):
+    """Map a tier name to a [min_spend, max_spend) KES range for SQL filtering."""
+    silver = _crm_cfg_num(cfg, "loyalty.tier_silver_kes", 50000)
+    gold = _crm_cfg_num(cfg, "loyalty.tier_gold_kes", 150000)
+    vip = _crm_cfg_num(cfg, "loyalty.tier_vip_kes", 300000)
+    return {
+        "bronze": (0, silver),
+        "silver": (silver, gold),
+        "gold": (gold, vip),
+        "vip": (vip, None),
+    }.get((tier or "").strip().lower())
+
+
+@app.get("/api/crm/segments/export")
+def crm_segments_export(request: Request):
+    """Combinable-filter customer segmentation export as CSV (PRD 6.5).
+    Filters (all optional, combinable): tier, min_orders, max_orders (frequency),
+    channel (dominant), store_id, country, affinity (dominant product_type).
+    Hard-capped at 10,000 rows."""
+    import csv as _csv
+    import io as _io
+    from fastapi.responses import StreamingResponse
+    qp = request.query_params
+    cfg = _crm_config_dict()
+    where, params = ["1=1"], []
+
+    def _int(v):
+        try:
+            return int(str(v).strip())
+        except Exception:
+            return None
+
+    mo = _int(qp.get("min_orders"))
+    if mo is not None:
+        where.append("COALESCE(ac.total_orders,0) >= %s")
+        params.append(mo)
+    xo = _int(qp.get("max_orders"))
+    if xo is not None:
+        where.append("COALESCE(ac.total_orders,0) <= %s")
+        params.append(xo)
+    if qp.get("store_id"):
+        where.append("ac.store_id = %s")
+        params.append(qp.get("store_id"))
+    if qp.get("country"):
+        where.append("ac.country = %s")
+        params.append(qp.get("country"))
+    tier = (qp.get("tier") or "").strip()
+    if tier:
+        rng = _crm_tier_spend_range(tier, cfg)
+        if rng:
+            where.append("COALESCE(ac.total_spend_kes,0) >= %s")
+            params.append(rng[0])
+            if rng[1] is not None:
+                where.append("COALESCE(ac.total_spend_kes,0) < %s")
+                params.append(rng[1])
+
+    outer, outer_params = [], []
+    affinity = (qp.get("affinity") or "").strip()
+    if affinity:
+        outer.append("a.product_type = %s")
+        outer_params.append(affinity)
+    channel = (qp.get("channel") or "").strip()
+    if channel:
+        outer.append("c.channel = %s")
+        outer_params.append(channel)
+    outer_sql = (" AND " + " AND ".join(outer)) if outer else ""
+
+    sql = (
+        "WITH base AS ("
+        "  SELECT ac.customer_id,"
+        "         NULLIF(TRIM(CONCAT_WS(' ', ac.first_name, ac.last_name)),'') AS name,"
+        "         ac.phone, ac.email, ac.country, ac.store_id,"
+        "         COALESCE(ac.total_orders,0) AS total_orders,"
+        "         COALESCE(ac.total_spend_kes,0) AS total_spend_kes,"
+        "         ac.last_order_date"
+        f"  FROM all_customers ac WHERE {' AND '.join(where)}"
+        "), "
+        "aff AS ("
+        "  SELECT customer_id, product_type FROM ("
+        "    SELECT customer_id, product_type,"
+        "           ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY SUM(COALESCE(net_quantity,0)) DESC NULLS LAST) AS rn"
+        "    FROM all_sales WHERE customer_id IN (SELECT customer_id FROM base)"
+        "      AND product_type IS NOT NULL AND product_type <> ''"
+        "    GROUP BY customer_id, product_type) q WHERE rn = 1"
+        "), "
+        "ch AS ("
+        "  SELECT customer_id, channel FROM ("
+        "    SELECT customer_id, channel,"
+        "           ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY COUNT(*) DESC) AS rn"
+        "    FROM all_sales WHERE customer_id IN (SELECT customer_id FROM base)"
+        "      AND channel IS NOT NULL AND channel <> ''"
+        "    GROUP BY customer_id, channel) q WHERE rn = 1"
+        ") "
+        "SELECT b.customer_id, b.name, b.phone, b.email, b.country, b.store_id,"
+        "       b.total_orders, b.total_spend_kes, b.last_order_date,"
+        "       a.product_type AS top_product_type, c.channel AS top_channel "
+        "FROM base b "
+        "LEFT JOIN aff a ON a.customer_id = b.customer_id "
+        "LEFT JOIN ch c ON c.customer_id = b.customer_id "
+        f"WHERE 1=1{outer_sql} "
+        "ORDER BY b.total_spend_kes DESC LIMIT 10000"
+    )
+    rows = _users_exec(sql, tuple(params + outer_params), fetch=True) or []
+
+    buf = _io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(["customer_id", "name", "phone", "email", "country", "store_id",
+                "total_orders", "total_spend_kes", "tier", "top_product_type",
+                "top_channel", "last_order_date"])
+    for r in rows:
+        tier_val = _crm_tier_for_spend(r.get("total_spend_kes"), cfg)
+        w.writerow([
+            r.get("customer_id") or "", r.get("name") or "", r.get("phone") or "",
+            r.get("email") or "", r.get("country") or "", r.get("store_id") or "",
+            int(r.get("total_orders") or 0), float(r.get("total_spend_kes") or 0),
+            tier_val, r.get("top_product_type") or "", r.get("top_channel") or "",
+            r.get("last_order_date") or "",
+        ])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="vfg_segment_export.csv"'})
+
+
+@app.get("/api/crm/reports/customers-by-segment")
+def crm_report_customers_by_segment(request: Request):
+    cfg = _crm_config_dict()
+    vip = _crm_cfg_num(cfg, "loyalty.tier_vip_kes", 300000)
+    rows = _users_exec(
+        "WITH c AS (SELECT customer_id, SUM(COALESCE(total_orders,0)) AS orders, "
+        "SUM(COALESCE(total_spend_kes,0)) AS spend, MAX(last_order_date) AS last "
+        "FROM all_customers GROUP BY customer_id), "
+        "d AS (SELECT *, CASE WHEN last ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN (CURRENT_DATE - last::date) END AS days FROM c) "
+        "SELECT "
+        "COUNT(*) FILTER (WHERE orders <= 1) AS new_count, "
+        "COALESCE(SUM(spend) FILTER (WHERE orders <= 1),0) AS new_spend, "
+        "COUNT(*) FILTER (WHERE orders >= 5) AS loyal_count, "
+        "COALESCE(SUM(spend) FILTER (WHERE orders >= 5),0) AS loyal_spend, "
+        "COUNT(*) FILTER (WHERE spend >= %s) AS vip_count, "
+        "COALESCE(SUM(spend) FILTER (WHERE spend >= %s),0) AS vip_spend, "
+        "COUNT(*) FILTER (WHERE days BETWEEN 90 AND 180) AS at_risk_count, "
+        "COALESCE(SUM(spend) FILTER (WHERE days BETWEEN 90 AND 180),0) AS at_risk_spend, "
+        "COUNT(*) FILTER (WHERE days > 180) AS churned_count, "
+        "COALESCE(SUM(spend) FILTER (WHERE days > 180),0) AS churned_spend "
+        "FROM d", (vip, vip), fetch=True)
+    r = rows[0] if rows else {}
+    segs = [
+        {"key": "new", "label": "New (≤1 order)", "count": int(r.get("new_count") or 0), "spend_kes": float(r.get("new_spend") or 0)},
+        {"key": "loyal", "label": "Loyal (5+ orders)", "count": int(r.get("loyal_count") or 0), "spend_kes": float(r.get("loyal_spend") or 0)},
+        {"key": "vip", "label": "VIP spend", "count": int(r.get("vip_count") or 0), "spend_kes": float(r.get("vip_spend") or 0)},
+        {"key": "at_risk", "label": "At risk (90–180d)", "count": int(r.get("at_risk_count") or 0), "spend_kes": float(r.get("at_risk_spend") or 0)},
+        {"key": "churned", "label": "Churned (>180d)", "count": int(r.get("churned_count") or 0), "spend_kes": float(r.get("churned_spend") or 0)},
+    ]
+    tiers = _users_exec(
+        "SELECT tier, COUNT(*) AS n, COALESCE(SUM(points_balance),0) AS pts "
+        "FROM crm_loyalty_enrolment GROUP BY tier", fetch=True) or []
+    return {"segments": segs, "by_tier": [
+        {"tier": t.get("tier") or "Bronze", "members": int(t.get("n") or 0), "points_balance": int(t.get("pts") or 0)}
+        for t in tiers]}
+
+
+@app.get("/api/crm/reports/loyalty-engagement")
+def crm_report_loyalty_engagement(request: Request):
+    enrol = _users_exec(
+        "SELECT COUNT(*) AS members, COALESCE(SUM(points_balance),0) AS bal, "
+        "COALESCE(AVG(points_balance),0) AS avg_bal, COALESCE(SUM(points_lifetime),0) AS lifetime "
+        "FROM crm_loyalty_enrolment", fetch=True)
+    e = enrol[0] if enrol else {}
+    by_tier = _users_exec(
+        "SELECT tier, COUNT(*) AS n, COALESCE(SUM(points_balance),0) AS pts "
+        "FROM crm_loyalty_enrolment GROUP BY tier", fetch=True) or []
+    led = _users_exec(
+        "SELECT "
+        "COALESCE(SUM(points_change) FILTER (WHERE reason='earn'),0) AS earned, "
+        "COALESCE(SUM(points_change) FILTER (WHERE reason ILIKE 'redempt%%' OR reason='redemption'),0) AS redeemed, "
+        "COALESCE(SUM(points_change) FILTER (WHERE reason='expire'),0) AS expired, "
+        "COUNT(DISTINCT customer_id) FILTER (WHERE reason='earn' AND created_at > now() - interval '90 days') AS active_90d "
+        "FROM crm_loyalty_ledger", fetch=True)
+    l = led[0] if led else {}
+    return {
+        "summary": {
+            "members": int(e.get("members") or 0),
+            "points_balance": int(e.get("bal") or 0),
+            "avg_balance": round(float(e.get("avg_bal") or 0), 1),
+            "points_lifetime": int(e.get("lifetime") or 0),
+            "points_earned": int(l.get("earned") or 0),
+            "points_redeemed": abs(int(l.get("redeemed") or 0)),
+            "points_expired": abs(int(l.get("expired") or 0)),
+            "active_members_90d": int(l.get("active_90d") or 0),
+        },
+        "by_tier": [
+            {"tier": t.get("tier") or "Bronze", "members": int(t.get("n") or 0), "points_balance": int(t.get("pts") or 0)}
+            for t in by_tier],
+    }
+
+
+@app.get("/api/crm/reports/service-metrics")
+def crm_report_service_metrics(request: Request):
+    qp = request.query_params
+    where, params = ["1=1"], []
+    raw_df, raw_dt = qp.get("date_from"), qp.get("date_to")
+    df = _validate_date_param(raw_df)
+    dt = _validate_date_param(raw_dt)
+    if (raw_df and df is None) or (raw_dt and dt is None):
+        raise HTTPException(status_code=400, detail="date_from/date_to must be YYYY-MM-DD")
+    if df:
+        where.append("created_at::date >= %s")
+        params.append(df)
+    if dt:
+        where.append("created_at::date <= %s")
+        params.append(dt)
+    w = " AND ".join(where)
+    p = tuple(params) if params else None
+    summ = _users_exec(
+        "SELECT COUNT(*) AS total, "
+        "COUNT(*) FILTER (WHERE status NOT IN ('resolved','closed')) AS open, "
+        "COUNT(*) FILTER (WHERE status IN ('resolved','closed')) AS closed, "
+        "COUNT(*) FILTER (WHERE sla_breached) AS breached, "
+        "COALESCE(AVG(EXTRACT(EPOCH FROM (resolved_at - created_at))/3600.0) "
+        "  FILTER (WHERE resolved_at IS NOT NULL),0) AS avg_resolution_hours, "
+        "COALESCE(AVG(csat_score) FILTER (WHERE csat_score IS NOT NULL),0) AS avg_csat, "
+        "COUNT(*) FILTER (WHERE csat_score IS NOT NULL) AS csat_responses "
+        f"FROM crm_tickets WHERE {w}", p, fetch=True)
+    s = summ[0] if summ else {}
+    closed = int(s.get("closed") or 0)
+    breached = int(s.get("breached") or 0)
+    by_channel = _users_exec(
+        f"SELECT COALESCE(inbound_channel,'unknown') AS k, COUNT(*) AS n FROM crm_tickets WHERE {w} GROUP BY 1 ORDER BY 2 DESC", p, fetch=True) or []
+    by_category = _users_exec(
+        f"SELECT COALESCE(issue_category,'enquiry') AS k, COUNT(*) AS n FROM crm_tickets WHERE {w} GROUP BY 1 ORDER BY 2 DESC", p, fetch=True) or []
+    by_status = _users_exec(
+        f"SELECT COALESCE(status,'open') AS k, COUNT(*) AS n FROM crm_tickets WHERE {w} GROUP BY 1 ORDER BY 2 DESC", p, fetch=True) or []
+    by_escalation = _users_exec(
+        f"SELECT COALESCE(escalation_level,'associate') AS k, COUNT(*) AS n FROM crm_tickets WHERE {w} GROUP BY 1 ORDER BY 2 DESC", p, fetch=True) or []
+    return {
+        "summary": {
+            "total": int(s.get("total") or 0),
+            "open": int(s.get("open") or 0),
+            "closed": closed,
+            "breached": breached,
+            "breach_rate": round((breached / closed) * 100, 1) if closed else 0.0,
+            "avg_resolution_hours": round(float(s.get("avg_resolution_hours") or 0), 1),
+            "avg_csat": round(float(s.get("avg_csat") or 0), 2),
+            "csat_responses": int(s.get("csat_responses") or 0),
+        },
+        "by_status": [{"key": r.get("k"), "count": int(r.get("n") or 0)} for r in by_status],
+        "by_channel": [{"key": r.get("k"), "count": int(r.get("n") or 0)} for r in by_channel],
+        "by_category": [{"key": r.get("k"), "count": int(r.get("n") or 0)} for r in by_category],
+        "by_escalation": [{"key": r.get("k"), "count": int(r.get("n") or 0)} for r in by_escalation],
+    }
+
+
 # --- CRM: tasks (shared follow-up queue) ----------------------------------
 
 @app.get("/api/crm/tasks")

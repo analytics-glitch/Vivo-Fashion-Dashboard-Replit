@@ -27,18 +27,18 @@ const COMPLAINT_CATEGORIES = [
   "returns",
   "staff_conduct",
 ];
-const CHANNELS = ["whatsapp", "meta", "tiktok", "email", "in_store", "phone"];
-const ESCALATION_LADDER = ["associate", "team_lead", "head_of_cx"];
+export const CHANNELS = ["whatsapp", "meta", "tiktok", "email", "in_store", "phone"];
+export const ESCALATION_LADDER = ["associate", "team_lead", "head_of_cx"];
 
-const errOf = (e) =>
+export const errOf = (e) =>
   e?.response?.data?.detail || e?.message || "Something went wrong";
 
-const titleCase = (s) =>
+export const titleCase = (s) =>
   (s || "")
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
 
-const fmtDate = (s) => {
+export const fmtDate = (s) => {
   if (!s) return "—";
   try {
     return new Date(s).toLocaleString(undefined, {
@@ -52,24 +52,24 @@ const fmtDate = (s) => {
   }
 };
 
-const PRIORITY_COLORS = {
+export const PRIORITY_COLORS = {
   low: "#6B7280",
   normal: "#0F4D31",
   high: "#ED7C2A",
   critical: "#DC2626",
 };
-const STATUS_COLORS = {
+export const STATUS_COLORS = {
   open: "#ED7C2A",
   resolved: "#0F4D31",
   closed: "#6B7280",
 };
-const ESC_COLORS = {
+export const ESC_COLORS = {
   associate: "#6B7280",
   team_lead: "#ED7C2A",
   head_of_cx: "#DC2626",
 };
 
-function Pill({ color = "#6B7280", children }) {
+export function Pill({ color = "#6B7280", children }) {
   return (
     <span
       className="inline-flex items-center rounded-sm px-2 py-0.5 text-[11px] font-semibold capitalize"
@@ -81,7 +81,7 @@ function Pill({ color = "#6B7280", children }) {
 }
 
 // Remaining SLA budget rendered as a human countdown / breach badge.
-function SlaCell({ t }) {
+export function SlaCell({ t }) {
   if (t.status === "resolved" || t.status === "closed") {
     return t.sla_breached ? (
       <Pill color="#DC2626">Breached</Pill>
@@ -275,7 +275,7 @@ function CreateTicketModal({ open, onClose, team, onCreated }) {
 }
 
 // --- Ticket detail / workspace ---------------------------------------------
-function TicketDetail({ ticketId, team, onClose, onChanged }) {
+export function TicketDetail({ ticketId, team, onClose, onChanged }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
