@@ -118,7 +118,7 @@ def register(
         # Whitelist of sortable output columns (aliases in the SELECT below) so the
         # client can drive ORDER BY without any SQL-injection surface.
         ALLOWED_SORT = {
-            "default_code", "name", "fabric_category", "fabric_subcategory",
+            "default_code", "barcode", "name", "fabric_category", "fabric_subcategory",
             "plain_print", "weight_range", "fabric_structure", "gsm", "width_m",
             "kg_per_mtr", "fiber_content", "fabric_type", "supplier", "primary_color",
             "qty_kg", "available_kg", "qty_metres", "available_metres", "value_kes",
@@ -138,12 +138,12 @@ def register(
         if weight_range:
             where.append("p.weight_range = %s"); params.append(weight_range)
         if search:
-            where.append("(p.name ILIKE %s OR p.default_code ILIKE %s)")
-            params.extend([f"%{search}%", f"%{search}%"])
+            where.append("(p.name ILIKE %s OR p.default_code ILIKE %s OR p.barcode ILIKE %s)")
+            params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
 
         rows = q(conn, f"""
             SELECT 
-              p.id, p.name, p.default_code, p.fabric_category, p.fabric_subcategory,
+              p.id, p.name, p.default_code, p.barcode, p.fabric_category, p.fabric_subcategory,
               p.fabric_structure, p.plain_print, p.weight_range, p.gsm,
               p.width_m, p.kg_per_mtr, p.fiber_content, p.fabric_type,
               p.supplier, p.primary_color, p.standard_price, p.uom,

@@ -504,10 +504,11 @@ function renderPrintDonut(rows){
 }
 
 // ── Register ──
-// Selectable columns. "Code" is the internal SKU (default_code) — fabrics have no
-// dedicated barcode; the search box already matches name OR code server-side.
+// Selectable columns. "Code" is the internal SKU (default_code) and "Barcode" is
+// the Odoo barcode; the search box matches name, code OR barcode server-side.
 const REG_COLS=[
   {k:'default_code',label:'Code',type:'code'},
+  {k:'barcode',label:'Barcode',type:'code'},
   {k:'name',label:'Fabric',type:'name'},
   {k:'fabric_category',label:'Category',type:'text'},
   {k:'fabric_subcategory',label:'Subcategory',type:'text'},
