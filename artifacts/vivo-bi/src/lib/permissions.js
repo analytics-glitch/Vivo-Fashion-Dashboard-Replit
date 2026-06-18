@@ -12,11 +12,11 @@
 const VIEWER = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "feedback", "catalogue", "fabric"];
 // Store managers see ONLY: Locations (retail), Exports (inventory only),
 // IBT, Feedback. Per-page filters enforced inside the page components.
-const STORE_MANAGER = ["locations", "ibt", "exports", "feedback", "replenishments"];
+const STORE_MANAGER = ["locations", "ibt", "exports", "feedback", "replenishments", "replenish-by-item"];
 // Warehouse staff: stock-movement operational pages + Inventory export.
 // Mirror of `_WAREHOUSE` in /app/backend/auth.py.
-const WAREHOUSE = ["inventory", "replenishments", "ibt", "re-order", "allocations", "exports", "feedback"];
-const ANALYST = [...VIEWER, "inventory", "re-order", "ibt", "products", "data-quality", "allocations", "replenishments", "marketing", "range-mgmt", "markdown-clearance", "custom-report", "velocity", "size-health", "margin", "rfm", "crm", "social"];
+const WAREHOUSE = ["inventory", "replenishments", "replenish-by-item", "ibt", "re-order", "allocations", "exports", "feedback"];
+const ANALYST = [...VIEWER, "inventory", "re-order", "ibt", "products", "data-quality", "allocations", "replenishments", "replenish-by-item", "marketing", "range-mgmt", "markdown-clearance", "custom-report", "velocity", "size-health", "margin", "rfm", "crm", "social"];
 const EXEC = [...ANALYST, "targets", "exports", "exec-summary"];
 const ADMIN = [...EXEC, "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters"];
 

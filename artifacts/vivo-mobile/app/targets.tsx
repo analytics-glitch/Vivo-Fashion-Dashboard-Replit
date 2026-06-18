@@ -188,7 +188,7 @@ export default function TargetsScreen() {
 
           <SectionHeader
             title={`Monthly Targets${monthLabel ? ` · ${monthLabel}` : ""}`}
-            caption="Month-to-date target vs actual by market"
+            caption="Month-to-date target vs actual by store"
           />
           {monthlyQ.isLoading ? (
             <LoadingState />

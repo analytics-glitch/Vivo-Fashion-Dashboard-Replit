@@ -97,6 +97,9 @@ const Replenishments = () => {
   // we send `actual_units_replenished` so the server snapshot can compute
   // a real fulfilment rate.
   const [actuals, setActuals] = useState({});
+  // Per-row optional transfer reference (e.g. an IBT/transfer doc number)
+  // logged alongside the mark so the completed report shows the paperwork.
+  const [transferRefs, setTransferRefs] = useState({});
   const [savingKey, setSavingKey] = useState(null);
   // Search across all visible columns.
   const [search, setSearch] = useState("");
@@ -276,6 +279,7 @@ const Replenishments = () => {
       toast.error("Actual replenished must be ≥ 0");
       return;
     }
+    const transferRef = (transferRefs[k] ?? "").trim();
     setSavingKey(k);
     try {
       await api.post("/analytics/replenishment-report/mark", {
@@ -285,6 +289,7 @@ const Replenishments = () => {
         barcode: row.barcode,
         replenished: true,
         actual_units_replenished: actual,
+        transfer_ref: transferRef,
         owner: row.owner,
         product_name: row.product_name,
         size: row.size,
@@ -300,7 +305,7 @@ const Replenishments = () => {
         ...prev,
         rows: (prev.rows || []).map((r) =>
           r.pos_location === row.pos_location && r.barcode === row.barcode
-            ? { ...r, replenished: true, actual_units_replenished: actual }
+            ? { ...r, replenished: true, actual_units_replenished: actual, transfer_ref: transferRef }
             : r
         ),
       }));
@@ -850,6 +855,7 @@ const Replenishments = () => {
                     <SortableTh sortKey="soh_wh" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">SOH WH</SortableTh>
                     <SortableTh sortKey="replenish" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Suggested</SortableTh>
                     <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Actual replenished</th>
+                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Transfer ref</th>
                     <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Action</th>
                   </tr>
                 </thead>
@@ -956,6 +962,17 @@ const Replenishments = () => {
                             data-testid={`replen-actual-${idx}`}
                           />
                         </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            placeholder="Transfer ref"
+                            value={transferRefs[k] ?? ""}
+                            onChange={(e) => setTransferRefs((prev) => ({ ...prev, [k]: e.target.value }))}
+                            className="w-28 h-9 px-2 border border-border rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-brand/40"
+                            title="Optional — log an IBT / transfer document reference for this replenishment"
+                            data-testid={`replen-transfer-ref-${idx}`}
+                          />
+                        </td>
                         <td className="px-3 py-2 whitespace-nowrap">
                           <button
                             type="button"
@@ -972,7 +989,7 @@ const Replenishments = () => {
                       </tr>
                       {isOpen && hasBreakdown && (
                         <tr className="bg-emerald-50/40 border-t border-border/40" data-testid={`replen-size-row-${idx}`}>
-                          <td colSpan={14} className="px-4 py-2.5">
+                          <td colSpan={15} className="px-4 py-2.5">
                             <div className="flex flex-wrap items-center gap-1.5">
                               <span className="text-[11px] font-semibold text-muted mr-1">Size mix:</span>
                               {r.size_breakdown.map((s, si) => (
@@ -1158,6 +1175,7 @@ const Replenishments = () => {
                     <SortableTh sortKey="barcode" sort={completedSort.sort} onSort={completedSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Barcode</SortableTh>
                     <SortableTh sortKey="replenish" sort={completedSort.sort} onSort={completedSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Qty to replenish</SortableTh>
                     <SortableTh sortKey="actual" sort={completedSort.sort} onSort={completedSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Qty replenished</SortableTh>
+                    <SortableTh sortKey="transfer_ref" sort={completedSort.sort} onSort={completedSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Transfer ref</SortableTh>
                     <SortableTh sortKey="fulfilment_pct" sort={completedSort.sort} onSort={completedSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Fulfilment %</SortableTh>
                     <SortableTh sortKey="soh_after" sort={completedSort.sort} onSort={completedSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Qty after replenish</SortableTh>
                   </tr>
@@ -1172,6 +1190,7 @@ const Replenishments = () => {
                     barcode: (r) => r.barcode || "",
                     replenish: (r) => Number(r.replenish ?? 0),
                     actual: (r) => Number(r.actual_units_replenished ?? 0),
+                    transfer_ref: (r) => r.transfer_ref || "",
                     fulfilment_pct: (r) => {
                       const t = Number(r.replenish ?? 0);
                       const a = Number(r.actual_units_replenished ?? 0);
@@ -1194,6 +1213,11 @@ const Replenishments = () => {
                       <td className="px-3 py-2 whitespace-nowrap font-mono text-[11px]">{r.barcode}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.units_to_replenish)}</td>
                       <td className="px-3 py-2 text-right tabular-nums font-bold text-emerald-700">{fmtNum(r.actual_units_replenished)}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {r.transfer_ref
+                          ? <span className="inline-flex items-center bg-sky-100 text-sky-900 text-[11px] font-semibold px-2 py-0.5 rounded-full font-mono" data-testid={`completed-transfer-ref`}>{r.transfer_ref}</span>
+                          : <span className="text-muted">—</span>}
+                      </td>
                       <td className="px-3 py-2 text-right tabular-nums">
                         {r.fulfilment_pct == null ? (
                           <span className="text-muted">—</span>

@@ -1212,7 +1212,7 @@ def _set_hidden_pages(pages):
 def _replen_marks():
     """All replenishment marks keyed by (pos_location, kind, value)."""
     rows = _users_exec(
-        "SELECT rec_key, actual_units FROM recommendation_actions "
+        "SELECT rec_key, actual_units, transfer_ref FROM recommendation_actions "
         "WHERE rec_type='replenish' AND status='done'", fetch=True) or []
     marks = {}
     for r in rows:
@@ -1221,21 +1221,24 @@ def _replen_marks():
             marks[(parts[0], parts[1], parts[2])] = {
                 "replenished": True,
                 "actual_units_replenished": int(r["actual_units"] or 0),
+                "transfer_ref": r.get("transfer_ref") or "",
             }
     return marks
 
 
-def _set_replen_mark(pos_location, kind, value, replenished, actual, acted_by=None):
+def _set_replen_mark(pos_location, kind, value, replenished, actual,
+                     acted_by=None, transfer_ref=None):
     rec_key = f"{pos_location}|{kind}|{value}"
     if replenished:
         _users_exec(
             "INSERT INTO recommendation_actions "
-            "(rec_type, rec_key, status, actual_units, acted_by, acted_at) "
-            "VALUES ('replenish', %s, 'done', %s, %s, now()) "
+            "(rec_type, rec_key, status, actual_units, acted_by, acted_at, transfer_ref) "
+            "VALUES ('replenish', %s, 'done', %s, %s, now(), %s) "
             "ON CONFLICT (rec_type, rec_key) DO UPDATE SET "
             "status='done', actual_units=EXCLUDED.actual_units, "
-            "acted_by=EXCLUDED.acted_by, acted_at=now()",
-            (rec_key, actual, acted_by))
+            "acted_by=EXCLUDED.acted_by, acted_at=now(), "
+            "transfer_ref=EXCLUDED.transfer_ref",
+            (rec_key, actual, acted_by, (transfer_ref or None)))
     else:
         _users_exec(
             "DELETE FROM recommendation_actions "
@@ -5800,18 +5803,75 @@ def allocations_styles(subcategory: str = Query(default=None)):
     return {"styles": [r["style"] for r in rows if r.get("style")]}
 @app.get("/api/analytics/allocations")
 def stub_analytics_allocations(): return []
+# Canonical annual-target buckets. These names are the contract the Targets
+# page (TargetsTracker.jsx BUCKETS.source) keys on, and they match the
+# leadership Budget workbook's Quarterly Summary breakdown.
+_TARGET_BUCKETS = ["Kenya - Retail", "Kenya - Online", "Uganda", "Rwanda"]
+
+# Map a sales row to one of the 4 buckets (mirrors the budget split). Online
+# (Shop Zetu) is "Kenya - Online"; the rest split by country. Warehouse / staff
+# rows are already excluded by BASE_FILTERS, leaving exactly these 4 countries.
+_ACTUAL_BUCKET_CASE = (
+    "CASE WHEN s.country = 'Online' OR s.pos_location_name ILIKE '%online%' THEN 'Kenya - Online' "
+    "WHEN s.country = 'Kenya' THEN 'Kenya - Retail' "
+    "WHEN s.country = 'Uganda' THEN 'Uganda' "
+    "WHEN s.country = 'Rwanda' THEN 'Rwanda' "
+    "ELSE 'Other' END"
+)
+
+_TARGETS_DDL = """
+CREATE TABLE IF NOT EXISTS targets_monthly (
+    id          BIGSERIAL PRIMARY KEY,
+    scope       TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    country     TEXT,
+    month       DATE NOT NULL,
+    target_kes  NUMERIC NOT NULL,
+    source      TEXT NOT NULL,
+    updated_at  TIMESTAMP NOT NULL DEFAULT now(),
+    UNIQUE (scope, name, month, source)
+);
+"""
+
+
+def _ensure_targets_table():
+    try:
+        conn = get_conn()
+        try:
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute(_TARGETS_DDL)
+            cur.close()
+        finally:
+            conn.close()
+    except Exception as e:  # pragma: no cover - best effort, never block boot
+        print(f"[targets] ensure table failed: {e}", flush=True)
+
+
+@app.on_event("startup")
+def _targets_startup():
+    _ensure_targets_table()
+    # Optional free-text transfer/PO reference attached when a replenishment is
+    # marked done (IBT moves already carry po_number in ibt_completions).
+    try:
+        _users_exec("ALTER TABLE recommendation_actions "
+                    "ADD COLUMN IF NOT EXISTS transfer_ref TEXT")
+    except Exception as e:  # pragma: no cover - best effort
+        print(f"[targets] ensure transfer_ref column failed: {e}", flush=True)
+
+
 @app.get("/api/analytics/annual-targets")
 def analytics_annual_targets(year: int = Query(default=None)):
-    # Targets are derived as prior-year actuals + a 15% stretch (no separate
-    # targets table exists in the warehouse).
+    # Targets come from the stored leadership budget (targets_monthly,
+    # scope='region', source='budget'). When no budget exists for a year (e.g.
+    # the prior-year YoY lookup), we fall back to prior-year actuals + a 15%
+    # stretch so the comparison column still renders.
     yr = int(year) if year else date.today().year
     growth = 1.15
 
     def actuals(y):
         return run_query("""
-            SELECT
-                CASE WHEN s.country = 'Online' OR s.pos_location_name ILIKE '%online%' THEN 'Online'
-                     ELSE COALESCE(NULLIF(s.country, ''), 'Other') END AS bucket,
+            SELECT """ + _ACTUAL_BUCKET_CASE + """ AS bucket,
                 EXTRACT(QUARTER FROM s.sale_date::date)::int AS q,
                 ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric ELSE 0 END)) AS net
             FROM all_sales s
@@ -5830,7 +5890,19 @@ def analytics_annual_targets(year: int = Query(default=None)):
         return m
 
     cur_m, prev_m = to_map(actuals(yr)), to_map(actuals(yr - 1))
-    names = sorted(set(list(cur_m.keys()) + list(prev_m.keys())))
+
+    # Stored budget targets for this year, summed into quarters per bucket.
+    budget = {}
+    for r in run_query(
+        "SELECT name, EXTRACT(QUARTER FROM month)::int AS q, "
+        "SUM(target_kes)::numeric AS tgt FROM targets_monthly "
+        "WHERE scope = 'region' AND source = 'budget' "
+        "AND EXTRACT(YEAR FROM month) = " + str(yr) + " GROUP BY 1, 2"
+    ):
+        q = int(r["q"]) if r["q"] else 0
+        if q in (1, 2, 3, 4):
+            budget.setdefault(r["name"], {1: 0, 2: 0, 3: 0, 4: 0})[q] += float(r["tgt"] or 0)
+
     start, end = date(yr, 1, 1), date(yr, 12, 31)
     days_total = (end - start).days + 1
     today = date.today()
@@ -5840,7 +5912,11 @@ def analytics_annual_targets(year: int = Query(default=None)):
     def make_bucket(name):
         pq = prev_m.get(name, {1: 0, 2: 0, 3: 0, 4: 0})
         cq = cur_m.get(name, {1: 0, 2: 0, 3: 0, 4: 0})
-        target_annual = round(sum(pq.values()) * growth)
+        bq = budget.get(name)
+        # Quarter targets: stored budget when present, else prior-year + 15%.
+        tq = {q: (round(bq.get(q, 0)) if bq is not None else round(pq[q] * growth))
+              for q in (1, 2, 3, 4)}
+        target_annual = sum(tq.values())
         actual_ytd = round(sum(cq.values()))
         projected_year = round(actual_ytd / frac) if frac else actual_ytd
         return {
@@ -5849,11 +5925,14 @@ def analytics_annual_targets(year: int = Query(default=None)):
             "projected_year": projected_year,
             "pct_of_target_projected": round(100.0 * projected_year / target_annual, 1) if target_annual else 0.0,
             "variance_projected": projected_year - target_annual,
-            "quarters": {("Q%d" % q): round(pq[q] * growth) for q in (1, 2, 3, 4)},
+            "quarters": {("Q%d" % q): tq[q] for q in (1, 2, 3, 4)},
             "actual_quarters": {("Q%d" % q): round(cq[q]) for q in (1, 2, 3, 4)},
         }
 
-    buckets = [make_bucket(n) for n in names]
+    # Always emit the 4 canonical buckets in order (matches the budget + the
+    # frontend bucket list). 'Other' actuals (mislabeled rows) are dropped so
+    # the page reconciles to the budget total.
+    buckets = [make_bucket(n) for n in _TARGET_BUCKETS]
     tt_target = sum(b["target_annual"] for b in buckets)
     tt_actual = sum(b["actual_ytd"] for b in buckets)
     tt_proj = round(tt_actual / frac) if frac else tt_actual
@@ -5871,10 +5950,18 @@ def analytics_annual_targets(year: int = Query(default=None)):
     }
 @app.get("/api/analytics/monthly-targets")
 def analytics_monthly_targets(month: str = Query(default=None)):
-    # Per-market daily target tracker. Target = prior-year same-month
-    # actual + 15% stretch, spread evenly across the days of the month.
-    mstart = (date.fromisoformat(month[:10]).replace(day=1) if month
-              else date.today().replace(day=1))
+    # Per-STORE daily target tracker (pos_location_name). The monthly target
+    # is the typed leadership number (targets_monthly, scope='store', manual
+    # preferred over budget); when none is stored for a store we fall back to
+    # prior-year same-month actual + a 15% stretch so the tracker still works.
+    # The "Suggested Daily Need" on remaining days is the gap re-weighted by
+    # the store's trailing-6-month day-of-week sales pattern (not flat), and
+    # suggested quantity / basket size derive from the store's ASP + orders pace.
+    try:
+        mstart = (date.fromisoformat(month[:10]).replace(day=1) if month
+                  else date.today().replace(day=1))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid month (expected YYYY-MM-DD)")
     nstart = (date(mstart.year + 1, 1, 1) if mstart.month == 12
               else date(mstart.year, mstart.month + 1, 1))
     mend = nstart - timedelta(days=1)
@@ -5883,18 +5970,36 @@ def analytics_monthly_targets(month: str = Query(default=None)):
     growth = 1.15
     py_start = mstart.replace(year=mstart.year - 1)
     py_end = mend.replace(year=mend.year - 1)
-    market = ("CASE WHEN s.country = 'Online' OR s.pos_location_name ILIKE '%online%' "
-              "THEN 'Online' ELSE COALESCE(NULLIF(s.country, ''), 'Other') END")
-    py = run_query("""
-        SELECT """ + market + """ AS channel,
+    pat_start = mstart - timedelta(days=183)
+
+    def _pgdow(d):  # Python weekday() (Mon=0) -> Postgres DOW (Sun=0..Sat=6)
+        return (d.weekday() + 1) % 7
+
+    # Stored per-store targets for the month (manual wins over budget).
+    target_map = {}
+    for r in run_query(
+        "SELECT name, source, target_kes::numeric AS t FROM targets_monthly "
+        "WHERE scope = 'store' AND month = '" + str(mstart) + "'"
+    ):
+        nm, src, t = r["name"], r["source"], float(r["t"] or 0)
+        cur = target_map.get(nm)
+        if cur is None or (cur[1] != "manual" and src == "manual"):
+            target_map[nm] = (t, src)
+
+    # Prior-year same-month per-store actuals (fallback target basis).
+    py_map = {r["store"]: float(r["net"] or 0) for r in run_query("""
+        SELECT s.pos_location_name AS store,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric ELSE 0 END)) AS net
         FROM all_sales s
         WHERE s.sale_date BETWEEN '""" + str(py_start) + """' AND '""" + str(py_end) + """'
           AND s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + """
         GROUP BY 1
-    """)
-    daily = run_query("""
-        SELECT """ + market + """ AS channel, s.sale_date::date AS d,
+    """)}
+
+    # This-month per-store daily actuals.
+    dmap = {}
+    for r in run_query("""
+        SELECT s.pos_location_name AS store, s.sale_date::date AS d,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric ELSE 0 END)) AS net,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_quantity ELSE 0 END) AS units,
             COUNT(DISTINCT s.order_id) AS orders
@@ -5902,13 +6007,32 @@ def analytics_monthly_targets(month: str = Query(default=None)):
         WHERE s.sale_date BETWEEN '""" + str(mstart) + """' AND '""" + str(mend) + """'
           AND s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + """
         GROUP BY 1, 2
-    """)
-    py_map = {r["channel"]: float(r["net"] or 0) for r in py}
-    dmap = {}
-    for r in daily:
-        dmap.setdefault(r["channel"], {})[str(r["d"])] = {
+    """):
+        dmap.setdefault(r["store"], {})[str(r["d"])] = {
             "net": float(r["net"] or 0), "units": float(r["units"] or 0), "orders": float(r["orders"] or 0)}
-    channels = sorted(set(list(py_map.keys()) + list(dmap.keys())))
+
+    # Trailing-6-month per-store day-of-week pattern → average net + orders per
+    # weekday (for suggested-need weighting + basket pace) and a stable ASP.
+    pat_net, pat_ord, asp_acc = {}, {}, {}
+    for r in run_query("""
+        SELECT s.pos_location_name AS store,
+            EXTRACT(DOW FROM s.sale_date::date)::int AS dow,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric ELSE 0 END) AS net,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_quantity ELSE 0 END) AS units,
+            COUNT(DISTINCT s.order_id) AS orders,
+            COUNT(DISTINCT s.sale_date::date) AS ndays
+        FROM all_sales s
+        WHERE s.sale_date >= '""" + str(pat_start) + """' AND s.sale_date < '""" + str(mstart) + """'
+          AND s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + """
+        GROUP BY 1, 2
+    """):
+        st, dow, nd = r["store"], int(r["dow"]), float(r["ndays"] or 0)
+        net, units, orders = float(r["net"] or 0), float(r["units"] or 0), float(r["orders"] or 0)
+        if nd > 0:
+            pat_net.setdefault(st, {})[dow] = net / nd
+            pat_ord.setdefault(st, {})[dow] = orders / nd
+        a = asp_acc.setdefault(st, [0.0, 0.0]); a[0] += net; a[1] += units
+
     if mstart.year == today.year and mstart.month == today.month:
         days_complete = today.day
     elif today < mstart:
@@ -5916,39 +6040,80 @@ def analytics_monthly_targets(month: str = Query(default=None)):
     else:
         days_complete = days_in_month
     days_remaining = days_in_month - days_complete
+
+    # Store universe: every store with a stored target, plus every store with
+    # actuals this month (so no live store's sales are hidden).
+    store_names = set(target_map.keys()) | set(dmap.keys())
     stores = []
-    for ch in channels:
-        sales_target = round(py_map.get(ch, 0) * growth)
+    for st in store_names:
+        if st in target_map:
+            sales_target, tgt_source = round(target_map[st][0]), target_map[st][1]
+        else:
+            sales_target, tgt_source = round(py_map.get(st, 0) * growth), "derived"
         daily_target = sales_target / days_in_month if days_in_month else 0
-        ch_daily = dmap.get(ch, {})
-        days, mtd_actual, mtd_units, mtd_orders, cum_var = [], 0.0, 0.0, 0.0, 0.0
+        ch_daily = dmap.get(st, {})
+
+        # Month-to-date actuals.
+        mtd_actual = mtd_units = mtd_orders = 0.0
+        for dd in range(1, days_complete + 1):
+            a = ch_daily.get(str(date(mstart.year, mstart.month, dd)))
+            if a:
+                mtd_actual += a["net"]; mtd_units += a["units"]; mtd_orders += a["orders"]
+        gap = sales_target - round(mtd_actual)
+        gap_pos = max(0, gap)
+
+        # Stable per-store ASP (6-month) for suggested quantity; MTD fallback.
+        a = asp_acc.get(st, [0.0, 0.0])
+        store_asp = (a[0] / a[1]) if a[1] else (mtd_actual / mtd_units if mtd_units else 0)
+
+        # Future-day weights from the DOW net-sales pattern.
+        future_days = [date(mstart.year, mstart.month, dd) for dd in range(1, days_in_month + 1)
+                       if date(mstart.year, mstart.month, dd) > today]
+        wsum = sum(pat_net.get(st, {}).get(_pgdow(d), 0.0) for d in future_days)
+
+        days, cum_var = [], 0.0
         for dd in range(1, days_in_month + 1):
             day = date(mstart.year, mstart.month, dd)
             a = ch_daily.get(str(day))
             actual = a["net"] if a else 0.0
             is_future = day > today
-            if not is_future:
-                mtd_actual += actual
-                if a:
-                    mtd_units += a["units"]
-                    mtd_orders += a["orders"]
             dt = round(daily_target)
             ksh_var = round(actual - dt)
             cum_var += ksh_var
-            days.append({
+            row = {
                 "date": str(day), "day_of_week": day.strftime("%a"),
                 "ratio": round(100.0 / days_in_month, 1),
-                "daily_target": dt, "suggested_daily_target": dt,
+                "daily_target": dt,
+                "suggested_daily_target": None,
+                "suggested_daily_quantity": None,
+                "suggested_basket_size": None,
                 "actual": round(actual),
                 "variance_pct": round(100.0 * (actual - dt) / dt, 1) if dt else 0.0,
                 "ksh_variance": ksh_var, "ksh_variance_cumulative": round(cum_var),
                 "is_future": is_future, "is_today": day == today,
-            })
+            }
+            if is_future:
+                dow = _pgdow(day)
+                w = pat_net.get(st, {}).get(dow, 0.0)
+                if gap_pos <= 0:
+                    sdt = 0
+                elif wsum > 0:
+                    sdt = gap_pos * (w / wsum)
+                elif future_days:
+                    sdt = gap_pos / len(future_days)
+                else:
+                    sdt = 0
+                sdt = max(0, round(sdt))
+                row["suggested_daily_target"] = sdt
+                row["suggested_daily_quantity"] = round(sdt / store_asp) if store_asp > 0 else None
+                opace = pat_ord.get(st, {}).get(dow, 0.0)
+                row["suggested_basket_size"] = round(sdt / opace) if opace > 0 else None
+            days.append(row)
+
         mtd_target = round(daily_target * days_complete)
         projected = round(mtd_actual / days_complete * days_in_month) if days_complete else 0
-        gap = sales_target - round(mtd_actual)
         stores.append({
-            "channel": ch, "sales_target": sales_target, "mtd_actual": round(mtd_actual),
+            "channel": st, "sales_target": sales_target, "mtd_actual": round(mtd_actual),
             "mtd_target": mtd_target, "projected_landing": projected,
             "pct_of_target_projected": round(100.0 * projected / sales_target, 1) if sales_target else 0.0,
             "ksh_variance_total": round(mtd_actual) - mtd_target,
@@ -5956,8 +6121,9 @@ def analytics_monthly_targets(month: str = Query(default=None)):
             "days_remaining": days_remaining,
             "avg_suggested_remaining": round(gap / days_remaining) if days_remaining > 0 else 0,
             "gap_to_target": gap,
-            "asp": round(mtd_actual / mtd_units) if mtd_units else 0,
+            "asp": round(mtd_actual / mtd_units) if mtd_units else round(store_asp),
             "basket_kes": round(mtd_actual / mtd_orders) if mtd_orders else 0,
+            "target_source": tgt_source,
             "daily": days,
         })
     stores.sort(key=lambda x: x["sales_target"], reverse=True)
@@ -6884,7 +7050,7 @@ def analytics_replenish_by_color(
 @app.get("/api/analytics/replenishment-completed")
 def analytics_replenishment_completed(days: int = Query(default=30)):
     rows = _users_exec(
-        "SELECT rec_key, actual_units, acted_by, acted_at "
+        "SELECT rec_key, actual_units, acted_by, acted_at, transfer_ref "
         "FROM recommendation_actions "
         "WHERE rec_type='replenish' AND status='done' "
         "AND acted_at >= now() - (%s || ' days')::interval "
@@ -6902,10 +7068,186 @@ def analytics_replenishment_completed(days: int = Query(default=30)):
             "sku": value if kind == "sku" else None,
             "replenished": True,
             "actual_units_replenished": int(r["actual_units"] or 0),
+            "transfer_ref": r.get("transfer_ref") or "",
             "completed_by": r["acted_by"],
             "completed_at": r["acted_at"].isoformat() if r.get("acted_at") else None,
         })
     return {"rows": out, "total": sum(x["actual_units_replenished"] for x in out)}
+
+
+def _replen_clean_text(s, maxlen=80):
+    # Free-text search/value sanitiser for inlined SQL literals: strip the
+    # chars that could break out of a string literal. Values are matched with
+    # doubled single-quotes at the call site for exact-match literals.
+    return (str(s or "")).replace("\\", "").replace(";", "").strip()[:maxlen]
+
+
+@app.get("/api/analytics/replenish-options")
+def analytics_replenish_options(mode: str = Query(default="style"),
+                                q: str = Query(default="")):
+    # Typeahead options for the Replenish-by-Item picker. mode='style' returns
+    # distinct style names; mode='sku' returns sku + product name + barcode.
+    qq = _replen_clean_text(q, 60).lower().replace("'", "")
+    like = "%" + qq + "%"
+    if mode == "sku":
+        rows = run_query(
+            "SELECT sku AS value, "
+            "COALESCE(NULLIF(product_name, ''), sku) AS label, "
+            "COALESCE(barcode, '') AS barcode, "
+            "COALESCE(style_name, '') AS style_name "
+            "FROM all_products_clean "
+            "WHERE LOWER(sku) LIKE '" + like + "' "
+            "OR LOWER(COALESCE(product_name, '')) LIKE '" + like + "' "
+            "OR LOWER(COALESCE(barcode, '')) LIKE '" + like + "' "
+            "ORDER BY product_name NULLS LAST, sku LIMIT 50")
+    else:
+        rows = run_query(
+            "SELECT style_name AS value, style_name AS label, "
+            "COUNT(*) AS sku_count "
+            "FROM all_products_clean "
+            "WHERE style_name IS NOT NULL AND style_name <> '' "
+            "AND LOWER(style_name) LIKE '" + like + "' "
+            "GROUP BY style_name ORDER BY style_name LIMIT 50")
+    return {"mode": "sku" if mode == "sku" else "style", "options": rows}
+
+
+@app.get("/api/analytics/replenish-by-item")
+def analytics_replenish_by_item(
+    mode: str = Query(default="style"),
+    value: str = Query(default=""),
+    date_from: str = Query(default=None),
+    date_to: str = Query(default=None),
+    low_threshold: int = Query(default=2),
+):
+    # Item-centric allocation: pick one style (all its sizes/colours) or one
+    # sku, then list the retail stores that are understocked (current store SOH
+    # below ``low_threshold``) while the warehouse still has units to send.
+    val = _replen_clean_text(value, 120)
+    if not val:
+        return {"mode": mode, "value": "", "warehouse_soh": 0, "rows": []}
+    if not date_from or not date_to:
+        date_to = str(date.today())
+        date_from = str(date.today() - timedelta(days=90))
+    lit = val.replace("'", "''")
+    thr = max(0, int(low_threshold))
+    sku_pred = ("sku = '" + lit + "'") if mode == "sku" else ("style_name = '" + lit + "'")
+    item_skus = "(SELECT sku FROM all_products_clean WHERE " + sku_pred + ")"
+
+    sold = {r["pos_location_name"]: int(r["units_sold"] or 0) for r in run_query("""
+        SELECT s.pos_location_name, SUM(s.net_quantity) AS units_sold
+        FROM all_sales s
+        WHERE s.sale_kind IN ('sale','order')
+          AND s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+          AND """ + BASE_FILTERS + """
+          AND s.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+          AND (s.pos_location_name NOT ILIKE '%online%'
+               OR s.pos_location_name = 'Online - Shop Zetu')
+          AND s.variant_sku IN """ + item_skus + """
+        GROUP BY 1
+    """)}
+    store_soh = {r["pos_location_name"]: int(r["soh"] or 0) for r in run_query("""
+        SELECT i.pos_location_name, SUM(i.available) AS soh
+        FROM all_inventory i
+        WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+          AND i.sku IN """ + item_skus + """
+        GROUP BY 1
+    """)}
+    wh_rows = run_query("""
+        SELECT SUM(i.available) AS soh_wh
+        FROM all_inventory i
+        WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+          AND i.sku IN """ + item_skus + """
+    """)
+    wh_soh = int((wh_rows[0]["soh_wh"] if wh_rows else 0) or 0)
+
+    out = []
+    for st in sorted(set(sold) | set(store_soh)):
+        if st.lower().find("online") >= 0 and st != "Online - Shop Zetu":
+            continue
+        soh = store_soh.get(st, 0)
+        units = sold.get(st, 0)
+        if soh < thr and wh_soh > 0:
+            out.append({
+                "pos_location": st, "soh_store": soh, "units_sold": units,
+                "suggested_units": max(thr - soh, 0),
+            })
+    out.sort(key=lambda x: (x["units_sold"], -x["soh_store"]), reverse=True)
+    return {"mode": "sku" if mode == "sku" else "style", "value": val,
+            "warehouse_soh": wh_soh, "date_from": date_from, "date_to": date_to,
+            "low_threshold": thr, "rows": out}
+
+
+@app.get("/api/analytics/replenish-gaps")
+def analytics_replenish_gaps(
+    store: str = Query(default=""),
+    date_from: str = Query(default=None),
+    date_to: str = Query(default=None),
+    low_threshold: int = Query(default=2),
+    limit: int = Query(default=300),
+):
+    # Store-centric gap finder: items a store SOLD in the window but barely
+    # stocks now (store SOH below ``low_threshold``) while the warehouse has
+    # units to send — i.e. proven local demand the store can't currently serve.
+    st = _replen_clean_text(store, 120)
+    if not st:
+        return {"store": "", "rows": []}
+    if not date_from or not date_to:
+        date_to = str(date.today())
+        date_from = str(date.today() - timedelta(days=90))
+    lit = st.replace("'", "''")
+    thr = max(0, int(low_threshold))
+    rows = run_query("""
+        WITH sold AS (
+            SELECT s.variant_sku AS sku,
+                SUM(s.net_quantity) AS units_sold,
+                MAX(s.product_title) AS product_name,
+                MAX(s.sale_date) AS last_sale
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+              AND s.pos_location_name = '""" + lit + """'
+              AND """ + BASE_FILTERS + """
+              AND s.variant_sku IS NOT NULL AND s.variant_sku <> ''
+            GROUP BY s.variant_sku
+            HAVING SUM(s.net_quantity) > 0
+        ),
+        store_soh AS (
+            SELECT i.sku, SUM(i.available) AS soh
+            FROM all_inventory i
+            WHERE i.pos_location_name = '""" + lit + """'
+            GROUP BY i.sku
+        ),
+        wh_soh AS (
+            SELECT i.sku, SUM(i.available) AS soh_wh
+            FROM all_inventory i
+            WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+            GROUP BY i.sku
+        )
+        SELECT sold.sku, sold.product_name, sold.units_sold, sold.last_sale,
+            COALESCE(ss.soh, 0) AS soh_store, COALESCE(w.soh_wh, 0) AS soh_wh,
+            COALESCE(p.style_name, '') AS style_name,
+            COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode
+        FROM sold
+        LEFT JOIN store_soh ss ON ss.sku = sold.sku
+        LEFT JOIN wh_soh w ON w.sku = sold.sku
+        LEFT JOIN all_products_clean p ON p.sku = sold.sku
+        WHERE COALESCE(ss.soh, 0) < """ + str(thr) + """ AND COALESCE(w.soh_wh, 0) > 0
+        ORDER BY sold.units_sold DESC
+        LIMIT """ + str(int(limit)))
+    out = []
+    for r in rows:
+        soh = int(r["soh_store"] or 0)
+        out.append({
+            "sku": r["sku"], "barcode": r.get("barcode") or "",
+            "product_name": r.get("product_name") or "",
+            "style_name": r.get("style_name") or "", "size": r.get("size") or "",
+            "units_sold": int(r["units_sold"] or 0), "soh_store": soh,
+            "soh_wh": int(r["soh_wh"] or 0),
+            "suggested_units": max(thr - soh, 0),
+            "last_sale": str(r["last_sale"]) if r.get("last_sale") else None,
+        })
+    return {"store": st, "date_from": date_from, "date_to": date_to,
+            "low_threshold": thr, "rows": out}
 @app.get("/api/analytics/replenishment-report")
 def analytics_replenishment_report(
     date_from: str = Query(default=None),
@@ -6987,6 +7329,7 @@ def analytics_replenishment_report(
             "units_sold": units_sold, "soh_store": soh_store, "soh_wh": soh_wh,
             "replenish": replenish, "replenished": bool(mark.get("replenished", False)),
             "actual_units_replenished": int(mark.get("actual_units_replenished", 0)),
+            "transfer_ref": mark.get("transfer_ref") or "",
             "days_lapsed": days_lapsed,
         })
     by_owner = {}
@@ -9486,17 +9829,19 @@ async def analytics_replenishment_report_mark(request: Request):
         raise HTTPException(status_code=400, detail="pos_location and one of sku/barcode are required")
     replenished = bool(body.get("replenished", True))
     actual = int(body.get("actual_units_replenished") or 0)
+    transfer_ref = (body.get("transfer_ref") or "").strip() or None
     acting = getattr(request.state, "user", None) or {}
     acted_by = acting.get("name") or acting.get("email")
     # Callers identify rows by either sku (Replenishments) or barcode
     # (ReplenishmentReport); store under both so either GET row matches.
     if sku:
-        _set_replen_mark(pos_location, "sku", sku, replenished, actual, acted_by)
+        _set_replen_mark(pos_location, "sku", sku, replenished, actual, acted_by, transfer_ref)
     if barcode:
-        _set_replen_mark(pos_location, "barcode", barcode, replenished, actual, acted_by)
+        _set_replen_mark(pos_location, "barcode", barcode, replenished, actual, acted_by, transfer_ref)
     return {
         "ok": True, "sku": sku, "barcode": barcode, "pos_location": pos_location,
         "replenished": replenished, "actual_units_replenished": actual,
+        "transfer_ref": transfer_ref or "",
     }
 @app.post("/api/ibt/complete")
 async def ibt_complete(request: Request):

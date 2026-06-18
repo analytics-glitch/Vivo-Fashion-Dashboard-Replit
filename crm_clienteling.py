@@ -1557,24 +1557,131 @@ def _reg_insights(app):
     @app.get("/api/insights/overview")
     def cl_ins_overview(request: Request):
         _staff(request)
-        r = _q1(
-            "WITH c AS (SELECT customer_id, SUM(total_orders) AS orders, "
-            " SUM(total_spend_kes::numeric) AS spend, MAX(last_order_date) AS lod "
-            " FROM all_customers GROUP BY customer_id) "
-            "SELECT "
-            " COUNT(*) FILTER (WHERE lod " + _ISO +
-            "   AND (CURRENT_DATE - lod::date) <= 365) AS active, "
-            " COUNT(*) FILTER (WHERE COALESCE(spend,0) >= 100000) AS vip, "
-            " COUNT(*) FILTER (WHERE lod " + _ISO +
-            "   AND (CURRENT_DATE - lod::date) BETWEEN 180 AND 540 "
-            "   AND COALESCE(orders,0) >= 2) AS at_risk, "
-            " COALESCE(AVG(NULLIF(spend,0)),0) AS avg_ltv FROM c")
-        return {
-            "active_customers": _int(r.get("active")),
-            "vip_count": _int(r.get("vip")),
-            "at_risk_count": _int(r.get("at_risk")),
-            "avg_ltv": round(_num(r.get("avg_ltv")), 2),
+        kpis = {
+            "total_customers": 0, "new_customers_30d": 0,
+            "new_customers_delta_pct": None, "active_customers_30d": 0,
+            "active_customers_delta_pct": None, "vip_customers": 0,
+            "at_risk_customers": 0, "avg_basket_kes": 0.0,
+            "avg_basket_delta_pct": None, "messages_sent_30d": 0,
+            "messages_delta_pct": None, "social_sentiment_net": 0,
+            "social_feedback_30d": 0,
         }
+        tier_distribution = {"Bronze": 0, "Silver": 0, "Gold": 0, "VIP": 0}
+        callouts = []
+
+        def _pct(cur, prev):
+            cur, prev = _num(cur), _num(prev)
+            if prev <= 0:
+                return None
+            return round((cur - prev) / prev * 100.0, 1)
+
+        # Customer base: totals, tiers, VIP & at-risk counts ------------------ #
+        try:
+            r = _q1(
+                "WITH c AS (SELECT customer_id, SUM(total_orders) AS orders, "
+                " SUM(total_spend_kes::numeric) AS spend, MAX(last_order_date) AS lod "
+                " FROM all_customers GROUP BY customer_id) "
+                "SELECT COUNT(*) AS total, "
+                " COUNT(*) FILTER (WHERE COALESCE(spend,0) < 50000) AS bronze, "
+                " COUNT(*) FILTER (WHERE COALESCE(spend,0) BETWEEN 50000 AND 149999) AS silver, "
+                " COUNT(*) FILTER (WHERE COALESCE(spend,0) BETWEEN 150000 AND 299999) AS gold, "
+                " COUNT(*) FILTER (WHERE COALESCE(spend,0) >= 300000) AS vip, "
+                " COUNT(*) FILTER (WHERE lod " + _ISO +
+                "   AND (CURRENT_DATE - lod::date) BETWEEN 180 AND 540 "
+                "   AND COALESCE(orders,0) >= 2) AS at_risk FROM c") or {}
+            kpis["total_customers"] = _int(r.get("total"))
+            kpis["vip_customers"] = _int(r.get("vip"))
+            kpis["at_risk_customers"] = _int(r.get("at_risk"))
+            tier_distribution = {
+                "Bronze": _int(r.get("bronze")), "Silver": _int(r.get("silver")),
+                "Gold": _int(r.get("gold")), "VIP": _int(r.get("vip")),
+            }
+        except Exception:
+            pass
+
+        # New customers (first-ever sale) in last 30d vs prior 30d ------------ #
+        try:
+            r = _q1(
+                "WITH firsts AS (SELECT s.customer_id, MIN(s.sale_date::date) AS fs "
+                " FROM all_sales s WHERE s.sale_date " + _ISO + " AND " + _bf() +
+                "   AND s.customer_id IS NOT NULL GROUP BY s.customer_id) "
+                "SELECT COUNT(*) FILTER (WHERE fs >= CURRENT_DATE - 30) AS cur, "
+                " COUNT(*) FILTER (WHERE fs >= CURRENT_DATE - 60 AND fs < CURRENT_DATE - 30) AS prev "
+                "FROM firsts") or {}
+            kpis["new_customers_30d"] = _int(r.get("cur"))
+            kpis["new_customers_delta_pct"] = _pct(r.get("cur"), r.get("prev"))
+        except Exception:
+            pass
+
+        # Active customers + avg basket, last 30d vs prior 30d --------------- #
+        try:
+            r = _q1(
+                "SELECT "
+                " COUNT(DISTINCT customer_id) FILTER (WHERE sale_date::date >= CURRENT_DATE - 30) AS act_cur, "
+                " COUNT(DISTINCT customer_id) FILTER (WHERE sale_date::date >= CURRENT_DATE - 60 "
+                "   AND sale_date::date < CURRENT_DATE - 30) AS act_prev, "
+                " SUM(total_sales_kes) FILTER (WHERE sale_date::date >= CURRENT_DATE - 30) AS rev_cur, "
+                " COUNT(DISTINCT order_id) FILTER (WHERE sale_date::date >= CURRENT_DATE - 30) AS ord_cur, "
+                " SUM(total_sales_kes) FILTER (WHERE sale_date::date >= CURRENT_DATE - 60 "
+                "   AND sale_date::date < CURRENT_DATE - 30) AS rev_prev, "
+                " COUNT(DISTINCT order_id) FILTER (WHERE sale_date::date >= CURRENT_DATE - 60 "
+                "   AND sale_date::date < CURRENT_DATE - 30) AS ord_prev "
+                "FROM all_sales s WHERE s.sale_date " + _ISO + " AND " + _bf() +
+                " AND s.customer_id IS NOT NULL") or {}
+            kpis["active_customers_30d"] = _int(r.get("act_cur"))
+            kpis["active_customers_delta_pct"] = _pct(r.get("act_cur"), r.get("act_prev"))
+            ord_cur = _num(r.get("ord_cur"))
+            basket_cur = (_num(r.get("rev_cur")) / ord_cur) if ord_cur > 0 else 0.0
+            ord_prev = _num(r.get("ord_prev"))
+            basket_prev = (_num(r.get("rev_prev")) / ord_prev) if ord_prev > 0 else 0.0
+            kpis["avg_basket_kes"] = round(basket_cur, 2)
+            kpis["avg_basket_delta_pct"] = _pct(basket_cur, basket_prev)
+        except Exception:
+            pass
+
+        # Messages sent (CRM interactions) last 30d vs prior 30d ------------- #
+        try:
+            r = _one(
+                "SELECT COUNT(*) FILTER (WHERE created_at >= now() - interval '30 days') AS cur, "
+                " COUNT(*) FILTER (WHERE created_at >= now() - interval '60 days' "
+                "   AND created_at < now() - interval '30 days') AS prev "
+                "FROM crm_interactions WHERE type='message'", fetch=True) or {}
+            kpis["messages_sent_30d"] = _int(r.get("cur"))
+            kpis["messages_delta_pct"] = _pct(r.get("cur"), r.get("prev"))
+        except Exception:
+            pass
+
+        # Social sentiment (net positive − negative) last 30d --------------- #
+        try:
+            r = _one(
+                "SELECT COUNT(*) AS feedback, "
+                " COUNT(*) FILTER (WHERE lower(COALESCE(sentiment,''))='positive') "
+                "  - COUNT(*) FILTER (WHERE lower(COALESCE(sentiment,''))='negative') AS net "
+                "FROM crm_social_feedback WHERE posted_at >= now() - interval '30 days'",
+                fetch=True) or {}
+            kpis["social_feedback_30d"] = _int(r.get("feedback"))
+            kpis["social_sentiment_net"] = _int(r.get("net"))
+        except Exception:
+            pass
+
+        # Derived callouts --------------------------------------------------- #
+        try:
+            if kpis["new_customers_delta_pct"] is not None and kpis["new_customers_delta_pct"] >= 10:
+                callouts.append({"tone": "positive",
+                                 "text": f"New customers up {kpis['new_customers_delta_pct']}% vs prior 30 days"})
+            elif kpis["new_customers_delta_pct"] is not None and kpis["new_customers_delta_pct"] <= -10:
+                callouts.append({"tone": "negative",
+                                 "text": f"New customers down {abs(kpis['new_customers_delta_pct'])}% vs prior 30 days"})
+            if kpis["at_risk_customers"] > 0:
+                callouts.append({"tone": "negative",
+                                 "text": f"{_int(kpis['at_risk_customers'])} repeat customers at risk of churn"})
+            if kpis["social_sentiment_net"] < 0:
+                callouts.append({"tone": "negative",
+                                 "text": f"Net social sentiment negative ({kpis['social_sentiment_net']})"})
+        except Exception:
+            pass
+
+        return {"kpis": kpis, "tier_distribution": tier_distribution, "callouts": callouts}
 
     @app.get("/api/insights/daily-brief")
     def cl_ins_daily_brief(request: Request):
