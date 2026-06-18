@@ -18,6 +18,8 @@ import Templates from "@/pages/Templates";
 import AuditLog from "@/pages/AuditLog";
 import Lookbooks from "@/pages/Lookbooks";
 import Inbox from "@/pages/Inbox";
+import Service from "@/pages/Service";
+import CSAT from "@/pages/CSAT";
 import Overview from "@/pages/Overview";
 import FollowUps from "@/pages/FollowUps";
 import DataQuality from "@/pages/DataQuality";
@@ -42,12 +44,14 @@ function ProtectedRoutes() {
         <Route path="/lookbooks" element={<Lookbooks />} />
         <Route path="/lookbooks/new" element={<LookbookBuilder />} />
         <Route path="/inbox" element={<Inbox />} />
+        <Route path="/service" element={<Service />} />
         <Route path="/follow-ups" element={<FollowUps />} />
         <Route path="/overview" element={user.role === "manager" ? <Overview /> : <Navigate to="/dashboard" replace />} />
         <Route path="/cohorts" element={user.role === "manager" ? <CohortsPage /> : <Navigate to="/dashboard" replace />} />
         <Route path="/operations" element={user.role === "manager" ? <OperationsPage /> : <Navigate to="/dashboard" replace />} />
         <Route path="/data-quality" element={user.role === "manager" ? <DataQuality /> : <Navigate to="/dashboard" replace />} />
         <Route path="/training" element={user.role === "manager" ? <Training /> : <Navigate to="/dashboard" replace />} />
+        <Route path="/csat" element={user.role === "manager" ? <CSAT /> : <Navigate to="/dashboard" replace />} />
         <Route path="/loyalty" element={user.role === "manager" ? <Loyalty /> : <Navigate to="/dashboard" replace />} />
         <Route path="/loyalty/app-preview" element={user.role === "manager" ? <LoyaltyAppPreview /> : <Navigate to="/dashboard" replace />} />
         <Route path="/data-requests" element={user.role === "manager" ? <DataRequests /> : <Navigate to="/dashboard" replace />} />

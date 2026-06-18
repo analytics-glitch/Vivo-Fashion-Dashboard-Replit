@@ -73,3 +73,14 @@ the Loyalty page (`distribution`/`config`/`approaching-upgrade`/`anniversary-que
   other social endpoints (status/feedback/summary) work. Fix = refresh the Page token secret.
 - **Loyalty `distribution` dormant tier can show negative `total_12mo_sales_kes`** (net returns
   exceed sales in the window) — mathematically valid real data, left unclamped on purpose.
+
+## All NEW CRM web UI belongs here, NOT in the BI app's CRM.jsx
+The BI app's `artifacts/vivo-bi/src/pages/CRM.jsx` is now **dead code** — it is no longer
+imported and the BI `/crm` route redirects to this standalone app. Any CRM/CEM/loyalty web
+UI (service tickets, CSAT, etc.) must be built as pages in `artifacts/vivo-crm/src/pages/`,
+routed in `App.jsx` (manager-gated via `user.role === "manager" ? <Page/> : <Navigate/>`),
+and added to the `NAV` array in `components/AppShell.jsx` (groups: floor / relationship /
+analytics["Strategic lens"] / admin). CRM.jsx can still be read as a styling/logic reference
+to port from, but editing it ships nothing to users.
+**Why:** W3/W4 UI was first written into CRM.jsx and stranded invisibly; verify the route is
+actually mounted before assuming a CRM page is live.

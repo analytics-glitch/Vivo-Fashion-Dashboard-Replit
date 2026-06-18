@@ -26,6 +26,8 @@ import {
   ArrowRight,
   AlertOctagon,
   Settings,
+  LifeBuoy,
+  SmilePlus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PoweredFooter, ChangelogButton } from "@/components/Polish";
@@ -36,6 +38,7 @@ const NAV = [
   { to: "/customers", label: "Customers", icon: Users, testid: "nav-customers", group: "floor" },
   { to: "/customers/database", label: "Database", icon: BarChart3, testid: "nav-database", manager: true, group: "floor" },
   { to: "/inbox", label: "Inbox", icon: Inbox, testid: "nav-inbox", group: "floor" },
+  { to: "/service", label: "Service", icon: LifeBuoy, testid: "nav-service", group: "floor" },
   { to: "/lookbooks", label: "Lookbooks", icon: BookImage, testid: "nav-lookbooks", group: "floor" },
   // Act 2 — The relationship
   { to: "/loyalty", label: "Loyalty", icon: Award, testid: "nav-loyalty", manager: true, group: "relationship" },
@@ -44,6 +47,7 @@ const NAV = [
   { to: "/manager", label: "Insights", icon: BarChart3, testid: "nav-manager", manager: true, group: "analytics" },
   { to: "/cohorts", label: "Cohorts", icon: Layers, testid: "nav-cohorts", manager: true, group: "analytics" },
   { to: "/operations", label: "Operations", icon: ClipboardList, testid: "nav-operations", manager: true, group: "analytics" },
+  { to: "/csat", label: "CSAT", icon: SmilePlus, testid: "nav-csat", manager: true, group: "analytics" },
   // Act 4 — Team & admin
   { to: "/training", label: "Training", icon: GraduationCap, testid: "nav-training", manager: true, group: "admin" },
   { to: "/templates", label: "Templates", icon: MessageSquare, testid: "nav-templates", manager: true, group: "admin" },
