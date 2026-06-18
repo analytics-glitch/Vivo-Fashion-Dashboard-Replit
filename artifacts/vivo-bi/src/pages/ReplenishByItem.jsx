@@ -1,21 +1,26 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api, fmtNum } from "@/lib/api";
+import { toast } from "sonner";
 import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
 import { useTableSort, SortableTh } from "@/lib/useTableSort";
 import {
   MagnifyingGlass, Package, Storefront, ArrowsClockwise,
-  CaretDown, Check, X as XIcon, Warehouse,
+  CaretDown, Check, X as XIcon, Warehouse, CheckCircle,
 } from "@phosphor-icons/react";
 
 /**
  * Replenish by Style / SKU.
  *
  * Two complementary replenishment views, both warehouse-gated (only ever
- * suggests sending stock that the warehouse actually holds):
+ * suggests sending stock that the warehouse actually holds). Both tables carry
+ * the SAME column set as the main Replenishment list (owner, days-lapsed,
+ * product, size, barcode, bin, sold, store SOH, WH SOH, suggested, actual
+ * replenished, transfer ref + a Mark As Done action) so each is a drop-in,
+ * item- or store-filtered equivalent of the operational pick list:
  *
  *  • By Item — pick one style (all its sizes/colours) or a single SKU, then
- *    see every retail store that is understocked (store SOH below the
- *    threshold) while the warehouse still has units. Item-centric allocation.
+ *    see every retail store understocked for that item while the warehouse
+ *    still has units. Item-centric allocation.
  *  • Store Gaps — pick a store, then see items it SOLD in the window but
  *    barely stocks now while the warehouse can refill — proven local demand
  *    the store cannot currently serve.
@@ -27,6 +32,8 @@ const fmtDateInput = (d) => {
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
 };
+
+const rowKey = (r) => `${r.pos_location}|${r.sku || r.barcode}`;
 
 // ---- Searchable item picker (debounced typeahead over /replenish-options) ----
 const ItemPicker = ({ mode, value, label, onPick }) => {
@@ -122,6 +129,111 @@ const ItemPicker = ({ mode, value, label, onPick }) => {
   );
 };
 
+// ---- Shared full-parity replenishment table (mirrors the main Replenishment
+// list column-for-column) ----
+const ReplenTable = ({ rows, sort, toggleSort, actuals, setActual, refs, setRef, savingKey, onMarkDone, done }) => (
+  <div className="overflow-auto">
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="border-b border-border text-left text-xs text-muted-foreground">
+          <th className="px-3 py-2"><SortableTh sortKey="owner" sort={sort} onSort={toggleSort}>Owner</SortableTh></th>
+          <th className="px-3 py-2"><SortableTh sortKey="pos_location" sort={sort} onSort={toggleSort}>POS Location</SortableTh></th>
+          <th className="px-3 py-2 text-right"><SortableTh sortKey="days_lapsed" sort={sort} onSort={toggleSort} numeric>Days lapsed</SortableTh></th>
+          <th className="px-3 py-2"><SortableTh sortKey="product_name" sort={sort} onSort={toggleSort}>Product</SortableTh></th>
+          <th className="px-3 py-2"><SortableTh sortKey="size" sort={sort} onSort={toggleSort}>Size</SortableTh></th>
+          <th className="px-3 py-2"><SortableTh sortKey="barcode" sort={sort} onSort={toggleSort}>Barcode</SortableTh></th>
+          <th className="px-3 py-2"><SortableTh sortKey="bin" sort={sort} onSort={toggleSort}>Bin</SortableTh></th>
+          <th className="px-3 py-2 text-right"><SortableTh sortKey="units_sold" sort={sort} onSort={toggleSort} numeric>Sold</SortableTh></th>
+          <th className="px-3 py-2 text-right"><SortableTh sortKey="soh_store" sort={sort} onSort={toggleSort} numeric>SOH Store</SortableTh></th>
+          <th className="px-3 py-2 text-right"><SortableTh sortKey="soh_wh" sort={sort} onSort={toggleSort} numeric>SOH WH</SortableTh></th>
+          <th className="px-3 py-2 text-right"><SortableTh sortKey="suggested_units" sort={sort} onSort={toggleSort} numeric>Suggested</SortableTh></th>
+          <th className="px-3 py-2 text-right">Actual replenished</th>
+          <th className="px-3 py-2">Transfer ref</th>
+          <th className="px-3 py-2">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => {
+          const k = rowKey(r);
+          const isDone = done.has(k) || r.replenished === true;
+          const dl = r.days_lapsed;
+          return (
+            <tr key={k} className={`border-b border-border/60 hover:bg-muted/40 ${isDone ? "opacity-50" : ""}`} data-testid={`row-replen-${k}`}>
+              <td className="px-3 py-2 whitespace-nowrap">
+                <span className="inline-flex items-center bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{r.owner || "—"}</span>
+              </td>
+              <td className="px-3 py-2 whitespace-nowrap font-semibold">{r.pos_location}</td>
+              <td className="px-3 py-2 text-right tabular-nums">
+                {dl == null ? <span className="text-muted-foreground">—</span>
+                  : dl > 2 ? <span className="inline-flex items-center bg-rose-100 text-rose-800 border border-rose-300 font-bold px-2 py-0.5 rounded-full">{dl}d</span>
+                  : <span className="text-muted-foreground">{dl}d</span>}
+              </td>
+              <td className="px-3 py-2 min-w-[180px] max-w-[280px]">
+                <div className="font-medium break-words">{r.style_name || r.product_name || "—"}</div>
+                <div className="text-xs text-muted-foreground">{r.sku}{r.barcode ? ` · ${r.barcode}` : ""}</div>
+              </td>
+              <td className="px-3 py-2 whitespace-nowrap">{r.size || "—"}</td>
+              <td className="px-3 py-2 whitespace-nowrap font-mono text-[11px]">{r.barcode || "—"}</td>
+              <td className="px-3 py-2 whitespace-nowrap">
+                {r.bin
+                  ? <span className="inline-flex items-center bg-amber-100 text-amber-900 text-[10.5px] font-bold px-1.5 py-0.5 rounded">{r.bin}</span>
+                  : <span className="text-muted-foreground text-[11px]">—</span>}
+              </td>
+              <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.units_sold)}</td>
+              <td className={`px-3 py-2 text-right tabular-nums ${r.soh_store === 0 ? "text-rose-700 font-bold" : ""}`}>{fmtNum(r.soh_store)}</td>
+              <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.soh_wh)}</td>
+              <td className="px-3 py-2 text-right tabular-nums">
+                <span className="inline-flex items-center bg-emerald-100 text-emerald-900 font-bold px-2 py-0.5 rounded-full">{fmtNum(r.suggested_units)}</span>
+              </td>
+              <td className="px-3 py-2 text-right">
+                <input
+                  type="number" min={0} inputMode="numeric"
+                  placeholder={String(r.suggested_units)}
+                  value={actuals[k] ?? ""}
+                  onChange={(e) => setActual(k, e.target.value)}
+                  disabled={isDone}
+                  className="w-20 h-9 px-2 text-right tabular-nums border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50"
+                  data-testid={`input-actual-${k}`}
+                />
+              </td>
+              <td className="px-3 py-2">
+                <input
+                  type="text" placeholder="Transfer ref"
+                  value={refs[k] ?? ""}
+                  onChange={(e) => setRef(k, e.target.value)}
+                  disabled={isDone}
+                  title="Optional — log an IBT / transfer document reference for this replenishment"
+                  className="w-28 h-9 px-2 border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50"
+                  data-testid={`input-transfer-ref-${k}`}
+                />
+              </td>
+              <td className="px-3 py-2 whitespace-nowrap">
+                {isDone ? (
+                  <span className="inline-flex items-center gap-1.5 text-[11.5px] font-bold text-emerald-700">
+                    <CheckCircle size={13} weight="fill" /> Done
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onMarkDone(r)}
+                    disabled={savingKey === k}
+                    className="inline-flex items-center gap-1.5 text-[11.5px] font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 px-3 py-2 rounded-md whitespace-nowrap"
+                    data-testid={`button-mark-done-${k}`}
+                    title="Log the actual units replenished and remove this row from the open list"
+                  >
+                    <CheckCircle size={13} weight="fill" />
+                    {savingKey === k ? "Saving…" : "Mark As Done"}
+                  </button>
+                )}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  </div>
+);
+
 const ReplenishByItem = () => {
   const [tab, setTab] = useState("item"); // "item" | "gaps"
 
@@ -135,6 +247,51 @@ const ReplenishByItem = () => {
   const [dateFrom, setDateFrom] = useState(fmtDateInput(ninety));
   const [dateTo, setDateTo] = useState(fmtDateInput(today));
   const [threshold, setThreshold] = useState(2);
+
+  // ---- mark-as-done shared state (keyed by `${pos_location}|${sku}`) ----
+  const [actuals, setActuals] = useState({});
+  const [refs, setRefs] = useState({});
+  const [savingKey, setSavingKey] = useState(null);
+  const [done, setDone] = useState(() => new Set());
+  const setActual = (k, v) => setActuals((p) => ({ ...p, [k]: v }));
+  const setRef = (k, v) => setRefs((p) => ({ ...p, [k]: v }));
+
+  const markAsDone = async (row) => {
+    const k = rowKey(row);
+    const raw = actuals[k];
+    const actual = raw === "" || raw == null ? row.suggested_units : Number(raw);
+    if (Number.isNaN(actual) || actual < 0) {
+      toast.error("Actual replenished must be ≥ 0");
+      return;
+    }
+    const transferRef = (refs[k] ?? "").trim();
+    setSavingKey(k);
+    try {
+      await api.post("/analytics/replenishment-report/mark", {
+        date_from: dateFrom,
+        date_to: dateTo,
+        pos_location: row.pos_location,
+        barcode: row.barcode,
+        sku: row.sku,
+        replenished: true,
+        actual_units_replenished: actual,
+        transfer_ref: transferRef,
+        owner: row.owner,
+        product_name: row.product_name,
+        size: row.size,
+        country: row.country,
+        units_to_replenish: row.suggested_units,
+        soh_store: row.soh_store,
+        soh_wh: row.soh_wh,
+      });
+      setDone((prev) => new Set(prev).add(k));
+      toast.success("Marked done.");
+    } catch (e) {
+      toast.error("Couldn't save — " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setSavingKey(null);
+    }
+  };
 
   // ---- By Item state ----
   const [mode, setMode] = useState("style"); // "style" | "sku"
@@ -221,7 +378,7 @@ const ReplenishByItem = () => {
     <div className="space-y-5">
       <SectionTitle
         title="Replenish by Style / SKU"
-        subtitle="Warehouse-gated replenishment — find where to send a style or SKU, or fill a single store's proven demand gaps."
+        subtitle="Warehouse-gated replenishment — find where to send a style or SKU, or fill a single store's proven demand gaps. Same columns as the main Replenishment list."
       />
 
       {/* Tabs */}
@@ -314,7 +471,7 @@ const ReplenishByItem = () => {
                   Warehouse SOH: <span className="font-semibold">{fmtNum(itemData.warehouse_soh)}</span>
                 </span>
                 <span className="text-muted-foreground">
-                  {itemRows.length} understocked store{itemRows.length === 1 ? "" : "s"}
+                  {itemRows.length} understocked line{itemRows.length === 1 ? "" : "s"}
                 </span>
                 {itemData.warehouse_soh === 0 && (
                   <span className="text-amber-600">No warehouse stock — nothing to send.</span>
@@ -323,28 +480,11 @@ const ReplenishByItem = () => {
               {itemRows.length === 0
                 ? <Empty label="No understocked stores for this item (or warehouse is empty)." />
                 : (
-                  <div className="overflow-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                          <th className="px-3 py-2"><SortableTh sortKey="pos_location" sort={itemSort} onSort={itemToggle}>Store</SortableTh></th>
-                          <th className="px-3 py-2 text-right"><SortableTh sortKey="units_sold" sort={itemSort} onSort={itemToggle} numeric>Units sold</SortableTh></th>
-                          <th className="px-3 py-2 text-right"><SortableTh sortKey="soh_store" sort={itemSort} onSort={itemToggle} numeric>Store SOH</SortableTh></th>
-                          <th className="px-3 py-2 text-right"><SortableTh sortKey="suggested_units" sort={itemSort} onSort={itemToggle} numeric>Suggested send</SortableTh></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {itemSorted.map((r) => (
-                          <tr key={r.pos_location} className="border-b border-border/60 hover:bg-muted/40" data-testid={`row-item-${r.pos_location}`}>
-                            <td className="px-3 py-2">{r.pos_location}</td>
-                            <td className="px-3 py-2 text-right">{fmtNum(r.units_sold)}</td>
-                            <td className="px-3 py-2 text-right">{fmtNum(r.soh_store)}</td>
-                            <td className="px-3 py-2 text-right font-semibold">{fmtNum(r.suggested_units)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <ReplenTable
+                    rows={itemSorted} sort={itemSort} toggleSort={itemToggle}
+                    actuals={actuals} setActual={setActual} refs={refs} setRef={setRef}
+                    savingKey={savingKey} onMarkDone={markAsDone} done={done}
+                  />
                 )}
             </>
           )}
@@ -369,37 +509,11 @@ const ReplenishByItem = () => {
               {gapRows.length === 0
                 ? <Empty label="No demand gaps — this store stocks what it sells (or warehouse is empty)." />
                 : (
-                  <div className="overflow-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                          <th className="px-3 py-2"><SortableTh sortKey="product_name" sort={gapSort} onSort={gapToggle}>Product</SortableTh></th>
-                          <th className="px-3 py-2"><SortableTh sortKey="size" sort={gapSort} onSort={gapToggle}>Size</SortableTh></th>
-                          <th className="px-3 py-2 text-right"><SortableTh sortKey="units_sold" sort={gapSort} onSort={gapToggle} numeric>Units sold</SortableTh></th>
-                          <th className="px-3 py-2 text-right"><SortableTh sortKey="soh_store" sort={gapSort} onSort={gapToggle} numeric>Store SOH</SortableTh></th>
-                          <th className="px-3 py-2 text-right"><SortableTh sortKey="soh_wh" sort={gapSort} onSort={gapToggle} numeric>WH SOH</SortableTh></th>
-                          <th className="px-3 py-2 text-right"><SortableTh sortKey="suggested_units" sort={gapSort} onSort={gapToggle} numeric>Suggested send</SortableTh></th>
-                          <th className="px-3 py-2"><SortableTh sortKey="last_sale" sort={gapSort} onSort={gapToggle}>Last sale</SortableTh></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {gapSorted.map((r) => (
-                          <tr key={r.sku} className="border-b border-border/60 hover:bg-muted/40" data-testid={`row-gap-${r.sku}`}>
-                            <td className="px-3 py-2">
-                              <div className="font-medium">{r.style_name || r.product_name}</div>
-                              <div className="text-xs text-muted-foreground">{r.sku}{r.barcode ? ` · ${r.barcode}` : ""}</div>
-                            </td>
-                            <td className="px-3 py-2">{r.size || "—"}</td>
-                            <td className="px-3 py-2 text-right">{fmtNum(r.units_sold)}</td>
-                            <td className="px-3 py-2 text-right">{fmtNum(r.soh_store)}</td>
-                            <td className="px-3 py-2 text-right">{fmtNum(r.soh_wh)}</td>
-                            <td className="px-3 py-2 text-right font-semibold">{fmtNum(r.suggested_units)}</td>
-                            <td className="px-3 py-2 text-xs text-muted-foreground">{r.last_sale || "—"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <ReplenTable
+                    rows={gapSorted} sort={gapSort} toggleSort={gapToggle}
+                    actuals={actuals} setActual={setActual} refs={refs} setRef={setRef}
+                    savingKey={savingKey} onMarkDone={markAsDone} done={done}
+                  />
                 )}
             </>
           )}

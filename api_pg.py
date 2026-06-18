@@ -4508,7 +4508,7 @@ def analytics_product_analysis(
         return round(units * 100.0 / denom, 1) if denom > 0 else None
 
     def _life_cycle(aw, lifetime_sor=None, full_price_pct=None, last_sale_days=None,
-                    woc=None, reorder_count=0, recent_sor=None):
+                    woc=None, reorder_count=0, recent_sor=None, recent_units=None):
         # Descriptive label for the 2026 Range Strategy GATED lifecycle tier (the
         # same gates as the Range Management classify endpoint), mapped to words
         # so it is not confused with the Pareto revenue "Tier" column. Styles that
@@ -4522,7 +4522,7 @@ def analytics_product_analysis(
         }.get(_gated_range_tier(
             aw, lifetime_sor=lifetime_sor, full_price_pct=full_price_pct,
             last_sale_days=last_sale_days, woc=woc, reorder_count=reorder_count,
-            recent_sor=recent_sor),
+            recent_sor=recent_sor, recent_units=recent_units),
             "New / Test")
 
     rows = []
@@ -4566,7 +4566,7 @@ def analytics_product_analysis(
         last_sale_days = (today - r["last_sale"]).days if r["last_sale"] else None
         life_cycle = _life_cycle(age_weeks, sor_life, full_price_pct, last_sale_days,
                                  _woc(stock, units_vel), reorder_count,
-                                 recent_sor=sor_6m)
+                                 recent_sor=sor_6m, recent_units=units_6m)
         rows.append({
             "style_name": r["style_name"],
             "style_number": r["style_number"],
@@ -7736,44 +7736,103 @@ def analytics_replenish_by_item(
     sku_pred = ("sku = '" + lit + "'") if mode == "sku" else ("style_name = '" + lit + "'")
     item_skus = "(SELECT sku FROM all_products_clean WHERE " + sku_pred + ")"
 
-    sold = {r["pos_location_name"]: int(r["units_sold"] or 0) for r in run_query("""
-        SELECT s.pos_location_name, SUM(s.net_quantity) AS units_sold
-        FROM all_sales s
-        WHERE s.sale_kind IN ('sale','order')
-          AND s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
-          AND """ + BASE_FILTERS + """
-          AND s.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
-          AND (s.pos_location_name NOT ILIKE '%online%'
-               OR s.pos_location_name = 'Online - Shop Zetu')
-          AND s.variant_sku IN """ + item_skus + """
-        GROUP BY 1
-    """)}
-    store_soh = {r["pos_location_name"]: int(r["soh"] or 0) for r in run_query("""
-        SELECT i.pos_location_name, SUM(i.available) AS soh
-        FROM all_inventory i
-        WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
-          AND i.sku IN """ + item_skus + """
-        GROUP BY 1
-    """)}
+    # Per (store, sku) understocked rows carrying the SAME column set as the main
+    # Replenishment list (owner, days-lapsed, product, size, barcode, bin, sold,
+    # store SOH, WH SOH, suggested + the mark fields) so this view is a drop-in
+    # item-filtered equivalent. A store appears when its SOH for an item SKU is
+    # below the threshold while the warehouse still holds units to send.
+    rows = run_query("""
+        WITH sold AS (
+            SELECT s.pos_location_name, s.variant_sku AS sku,
+                SUM(s.net_quantity) AS units_sold,
+                MAX(s.product_title) AS product_name,
+                MAX(s.country) AS country,
+                MAX(s.sale_date) AS last_sale
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+              AND """ + BASE_FILTERS + """
+              AND s.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+              AND (s.pos_location_name NOT ILIKE '%online%'
+                   OR s.pos_location_name = 'Online - Shop Zetu')
+              AND s.variant_sku IN """ + item_skus + """
+            GROUP BY 1, 2
+        ),
+        store_soh AS (
+            SELECT i.pos_location_name, i.sku,
+                SUM(i.available) AS soh_store, MAX(i.location_name) AS bin
+            FROM all_inventory i
+            WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+              AND i.sku IN """ + item_skus + """
+            GROUP BY 1, 2
+        ),
+        wh_soh AS (
+            SELECT i.sku, SUM(i.available) AS soh_wh
+            FROM all_inventory i
+            WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+              AND i.sku IN """ + item_skus + """
+            GROUP BY 1
+        )
+        SELECT COALESCE(sold.pos_location_name, ss.pos_location_name) AS pos_location,
+            COALESCE(sold.sku, ss.sku) AS sku,
+            COALESCE(sold.units_sold, 0) AS units_sold,
+            sold.product_name, sold.country, sold.last_sale,
+            COALESCE(ss.soh_store, 0) AS soh_store, COALESCE(ss.bin, '') AS bin,
+            COALESCE(w.soh_wh, 0) AS soh_wh,
+            COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode,
+            p.product_name AS pname
+        FROM sold
+        FULL OUTER JOIN store_soh ss
+          ON ss.pos_location_name = sold.pos_location_name AND ss.sku = sold.sku
+        LEFT JOIN wh_soh w ON w.sku = COALESCE(sold.sku, ss.sku)
+        LEFT JOIN all_products_clean p ON p.sku = COALESCE(sold.sku, ss.sku)
+        WHERE COALESCE(ss.soh_store, 0) < """ + str(thr) + """
+          AND COALESCE(w.soh_wh, 0) > 0
+    """)
+    # Warehouse SOH is computed independently of the understock rows so the
+    # header signal is correct even when no store is currently understocked.
     wh_rows = run_query("""
-        SELECT SUM(i.available) AS soh_wh
+        SELECT COALESCE(SUM(i.available), 0) AS soh_wh
         FROM all_inventory i
         WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
           AND i.sku IN """ + item_skus + """
     """)
     wh_soh = int((wh_rows[0]["soh_wh"] if wh_rows else 0) or 0)
-
+    owners = _replen_owners()
+    marks_all = _replen_marks()
+    today = date.today()
     out = []
-    for st in sorted(set(sold) | set(store_soh)):
+    for r in rows:
+        st = r.get("pos_location") or ""
         if st.lower().find("online") >= 0 and st != "Online - Shop Zetu":
             continue
-        soh = store_soh.get(st, 0)
-        units = sold.get(st, 0)
-        if soh < thr and wh_soh > 0:
-            out.append({
-                "pos_location": st, "soh_store": soh, "units_sold": units,
-                "suggested_units": max(thr - soh, 0),
-            })
+        soh = int(r["soh_store"] or 0)
+        units = int(r["units_sold"] or 0)
+        soh_wh = int(r["soh_wh"] or 0)
+        barcode = r.get("barcode") or ""
+        sku = r.get("sku")
+        days_lapsed = None
+        if r.get("last_sale"):
+            try:
+                days_lapsed = (today - date.fromisoformat(str(r["last_sale"])[:10])).days
+            except ValueError:
+                days_lapsed = None
+        mark = (marks_all.get((st, "sku", sku))
+                or marks_all.get((st, "barcode", barcode)) or {})
+        out.append({
+            "pos_location": st, "sku": sku, "barcode": barcode,
+            "product_name": r.get("product_name") or r.get("pname") or "",
+            "size": r.get("size") or "", "bin": r.get("bin") or "",
+            "country": r.get("country"),
+            "units_sold": units, "soh_store": soh, "soh_wh": soh_wh,
+            "suggested_units": min(max(thr - soh, 0), soh_wh),
+            "days_lapsed": days_lapsed,
+            "replenished": bool(mark.get("replenished", False)),
+            "actual_units_replenished": int(mark.get("actual_units_replenished", 0)),
+            "transfer_ref": mark.get("transfer_ref") or "",
+        })
+    for idx, row in enumerate(sorted(out, key=lambda x: (x["units_sold"], -x["soh_store"]), reverse=True)):
+        row["owner"] = owners[idx % len(owners)] if owners else "—"
     out.sort(key=lambda x: (x["units_sold"], -x["soh_store"]), reverse=True)
     return {"mode": "sku" if mode == "sku" else "style", "value": val,
             "warehouse_soh": wh_soh, "date_from": date_from, "date_to": date_to,
@@ -7815,7 +7874,7 @@ def analytics_replenish_gaps(
             HAVING SUM(s.net_quantity) > 0
         ),
         store_soh AS (
-            SELECT i.sku, SUM(i.available) AS soh
+            SELECT i.sku, SUM(i.available) AS soh, MAX(i.location_name) AS bin
             FROM all_inventory i
             WHERE i.pos_location_name = '""" + lit + """'
             GROUP BY i.sku
@@ -7827,7 +7886,8 @@ def analytics_replenish_gaps(
             GROUP BY i.sku
         )
         SELECT sold.sku, sold.product_name, sold.units_sold, sold.last_sale,
-            COALESCE(ss.soh, 0) AS soh_store, COALESCE(w.soh_wh, 0) AS soh_wh,
+            COALESCE(ss.soh, 0) AS soh_store, COALESCE(ss.bin, '') AS bin,
+            COALESCE(w.soh_wh, 0) AS soh_wh,
             COALESCE(p.style_name, '') AS style_name,
             COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode
         FROM sold
@@ -7837,17 +7897,37 @@ def analytics_replenish_gaps(
         WHERE COALESCE(ss.soh, 0) < """ + str(thr) + """ AND COALESCE(w.soh_wh, 0) > 0
         ORDER BY sold.units_sold DESC
         LIMIT """ + str(int(limit)))
+    owners = _replen_owners()
+    marks_all = _replen_marks()
+    today = date.today()
     out = []
-    for r in rows:
+    for idx, r in enumerate(rows):
         soh = int(r["soh_store"] or 0)
+        soh_wh = int(r["soh_wh"] or 0)
+        barcode = r.get("barcode") or ""
+        sku = r["sku"]
+        days_lapsed = None
+        if r.get("last_sale"):
+            try:
+                days_lapsed = (today - date.fromisoformat(str(r["last_sale"])[:10])).days
+            except ValueError:
+                days_lapsed = None
+        mark = (marks_all.get((st, "sku", sku))
+                or marks_all.get((st, "barcode", barcode)) or {})
         out.append({
-            "sku": r["sku"], "barcode": r.get("barcode") or "",
+            "pos_location": st, "owner": owners[idx % len(owners)] if owners else "—",
+            "sku": sku, "barcode": barcode,
             "product_name": r.get("product_name") or "",
             "style_name": r.get("style_name") or "", "size": r.get("size") or "",
+            "bin": r.get("bin") or "",
             "units_sold": int(r["units_sold"] or 0), "soh_store": soh,
-            "soh_wh": int(r["soh_wh"] or 0),
-            "suggested_units": max(thr - soh, 0),
+            "soh_wh": soh_wh,
+            "suggested_units": min(max(thr - soh, 0), soh_wh),
+            "days_lapsed": days_lapsed,
             "last_sale": str(r["last_sale"]) if r.get("last_sale") else None,
+            "replenished": bool(mark.get("replenished", False)),
+            "actual_units_replenished": int(mark.get("actual_units_replenished", 0)),
+            "transfer_ref": mark.get("transfer_ref") or "",
         })
     return {"store": st, "date_from": date_from, "date_to": date_to,
             "low_threshold": thr, "rows": out}
@@ -8267,7 +8347,7 @@ def _passed_week12_backstop(lifetime_sor):
 
 
 def _gated_range_tier(age_weeks, *, lifetime_sor, full_price_pct, last_sale_days,
-                      woc, reorder_count, recent_sor=None):
+                      woc, reorder_count, recent_sor=None, recent_units=None):
     # 2026 Range Strategy (SOP) GATED lifecycle tier. Age sets the stage but the
     # performance gates decide whether a style graduates or retires at each stage.
     # Returns one of 'Tier 1'..'Tier 4' or 'Retire'. Age boundaries follow the
@@ -8288,12 +8368,16 @@ def _gated_range_tier(age_weeks, *, lifetime_sor, full_price_pct, last_sale_days
         if reorder_count >= 3 and (lifetime_sor or 0) > 60:
             return "Tier 2"
         return "Retire"
-    # 24+ months — Tier 1 = Core, but ONLY an ACTIVELY high-selling style: it must
-    # have sold within the last 30 days AND still be selling through strongly in the
-    # recent 6-month window (recent SOR > 60), not merely a style that sold well a
-    # long time ago. Proven repeat demand (5+ reorders) is still required.
+    # 24+ months — Tier 1 = Core, a deliberately tight "hero core" range (target
+    # 30-50 styles). It must be an ACTIVELY high-selling style on BOTH rate and
+    # volume: sold within the last 30 days, still selling through strongly in the
+    # recent 6-month window (recent SOR > 75), AND carrying real recent demand
+    # (>= 300 units in the last 6 months) — not merely a style that sold well a
+    # long time ago or clears a tiny residual stock at a high rate. Proven repeat
+    # demand (5+ reorders) is still required. Missing recent-volume data fails the
+    # gate closed (treated as 0 units), consistent with the other gates.
     if (reorder_count >= 5 and last_sale_days is not None and last_sale_days <= 30
-            and (recent_sor or 0) > 60):
+            and (recent_sor or 0) > 75 and (recent_units or 0) >= 300):
         return "Tier 1"
     return "Retire"
 
@@ -8438,9 +8522,10 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         # Range tier = the 2026 Range Strategy (SOP) GATED lifecycle classification:
         # age sets the stage, but performance gates decide promotion vs retirement
         # (Week-8 read = SOR > 60% + sold within 7d + WOC <= 8; Week-12 backstop =
-        # SOR >= 80%; Tier 2 needs 3+ reorders & lifetime SOR > 60%; Tier 1 needs 5+
-        # reorders & a sale within 30d & recent 6-month SOR > 60% (actively high-
-        # selling, not historically); full-price realisation is no longer gated). A
+        # SOR >= 80%; Tier 2 needs 3+ reorders & lifetime SOR > 60%; Tier 1 = tight
+        # "hero core" needing 5+ reorders & a sale within 30d & recent 6-month SOR
+        # > 75% & >= 300 recent-6m units (actively high-selling on rate AND volume,
+        # not historically); full-price realisation is no longer gated). A
         # failed gate yields
         # the "Retire" verdict — but for a still-trading style that is a FLAG, not a
         # move: it stays in the live range (rows, but is NOT counted in the Active
@@ -8449,7 +8534,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         gated_tier = _gated_range_tier(
             age_weeks, lifetime_sor=sor_life, full_price_pct=full_price_pct,
             last_sale_days=last_sale_days, woc=woc, reorder_count=reorder_count,
-            recent_sor=sor_6m)
+            recent_sor=sor_6m, recent_units=units_6m)
 
         # Hard (physical) retirement is the ONLY thing that moves a style into the
         # Retired bucket: the durable manual-retirement list (the styles list), every
@@ -16377,6 +16462,39 @@ crm_clienteling.register_clienteling_routes(app)
 
 from fastapi.staticfiles import StaticFiles
 import pathlib
+
+# Standalone Fabric BI dashboard, served full-page at /fabric. Registered HERE,
+# OUTSIDE the `if build_dir.exists()` guard below, because `dashboard/build` is
+# gitignored and never ships to production. Previously the only /fabric handler
+# lived inside that guard (the SPA catch-all), so in prod the route either did
+# not exist or fell through to FileResponse on a missing index.html — raising
+# during response streaming and surfacing as a 500. The page source
+# (fabric_dashboard_live.html) is git-tracked at the repo root, so serve it
+# directly and 404 cleanly if it is somehow absent (never fall through).
+def _serve_fabric_page():
+    from fastapi.responses import FileResponse
+    here = pathlib.Path(__file__).parent
+    fabric = here / "fabric_dashboard_live.html"
+    if not fabric.exists():
+        fabric = here / "dashboard" / "build" / "fabric.html"
+    if not fabric.exists():
+        return JSONResponse({"detail": "Fabric dashboard not available"}, status_code=404)
+    fr = FileResponse(str(fabric))
+    fr.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    fr.headers["Pragma"] = "no-cache"
+    fr.headers["Expires"] = "0"
+    return fr
+
+
+@app.get("/fabric")
+async def serve_fabric_page():
+    return _serve_fabric_page()
+
+
+@app.get("/fabric/{sub_path:path}")
+async def serve_fabric_subpath(sub_path: str):
+    return _serve_fabric_page()
+
 
 # Serve React build as static files
 build_dir = pathlib.Path(__file__).parent / "dashboard" / "build"

@@ -94,26 +94,41 @@ export default function Overview() {
   const [channel, setChannel] = useState(null);
   const [returnTrend, setReturnTrend] = useState(null);
   const [winbackBusy, setWinbackBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  // Number of headline sections that failed to load (drives the "data
+  // unavailable" banner so the page is never a silent wall of dashes).
+  const [failures, setFailures] = useState(0);
   // Global date range (shared with Insights, Training, etc. — persisted to localStorage)
   const { range, setRange, compare, compareOn, windowDays } = useDateRange();
 
   useEffect(() => {
+    let alive = true;
+    setLoading(true);
     (async () => {
-      try {
-        const [a, b, d, ch, rt] = await Promise.all([
-          api.get("/insights/overview"),
-          api.get("/insights/purchase-frequency"),
-          api.get(`/insights/dropoff-forecast?days=${windowDays}`),
-          api.get(`/bi/channel-attribution?days=${windowDays}`).catch(() => ({ data: { rows: [] } })),
-          api.get("/bi/return-rate-trend").catch(() => ({ data: { windows: [] } })),
-        ]);
-        setOv(a.data);
-        setFreq(b.data);
-        setDrop(d.data);
-        setChannel(ch.data);
-        setReturnTrend(rt.data);
-      } catch { /* ignore */ }
+      // Resilient to partial endpoint failures: each section loads
+      // independently so one 404 no longer discards every sibling result.
+      const results = await Promise.allSettled([
+        api.get("/insights/overview"),
+        api.get("/insights/purchase-frequency"),
+        api.get(`/insights/dropoff-forecast?days=${windowDays}`),
+        api.get(`/bi/channel-attribution?days=${windowDays}`),
+        api.get("/bi/return-rate-trend"),
+      ]);
+      if (!alive) return;
+      const [a, b, d, ch, rt] = results;
+      let fails = 0;
+      // Only treat overview as loaded when the payload has the `kpis` shape the
+      // KPI strip dereferences — a malformed-but-200 body must not crash render.
+      if (a.status === "fulfilled" && a.value?.data?.kpis) setOv(a.value.data);
+      else { setOv(null); fails++; }
+      if (b.status === "fulfilled") setFreq(b.value.data); else { setFreq(null); fails++; }
+      if (d.status === "fulfilled") setDrop(d.value.data); else { setDrop(null); fails++; }
+      setChannel(ch.status === "fulfilled" ? ch.value.data : { rows: [] });
+      setReturnTrend(rt.status === "fulfilled" ? rt.value.data : { windows: [] });
+      setFailures(fails);
+      setLoading(false);
     })();
+    return () => { alive = false; };
   }, [windowDays]);
 
   const runWinback = async () => {
@@ -164,6 +179,22 @@ export default function Overview() {
           <div className="text-[10px] text-[var(--vivo-muted)] mt-1">{windowDays} day{windowDays === 1 ? "" : "s"} lookback</div>
         </div>
       </div>
+
+      {/* Data-availability banner — keeps the page from being a silent wall of
+          dashes when one or more headline sections are unavailable. */}
+      {!loading && failures > 0 && (
+        <div
+          className="flex items-start gap-3 mt-6 p-4 rounded-sm border border-amber-200 bg-amber-50 text-amber-800"
+          data-testid="overview-data-unavailable"
+        >
+          <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />
+          <div className="text-sm">
+            {failures >= 3
+              ? "Overview metrics are not available right now. Sections that load will appear below; the rest will fill in once their data sources are connected."
+              : "Some overview metrics couldn't be loaded. The sections below show whatever data is currently available."}
+          </div>
+        </div>
+      )}
 
       {/* Callouts */}
       {(ov?.callouts || []).length > 0 && (
