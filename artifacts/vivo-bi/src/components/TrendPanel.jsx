@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
-  ResponsiveContainer, ComposedChart, Line, Bar, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceLine,
+  ResponsiveContainer, ComposedChart, Line, Bar, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceLine, LabelList,
 } from "recharts";
 import { api, fmtKES, fmtNum, fmtPct, fmtAxisKES, fmtDelta } from "@/lib/api";
 import { Loading, ErrorBox } from "@/components/common";
@@ -343,9 +343,27 @@ const TrendPanel = ({
                   isAnimationActive={false}
                   connectNulls
                   name={cfg.label}
-                />
+                >
+                  {chartData.length <= 16 && (
+                    <LabelList
+                      dataKey="value"
+                      position="top"
+                      formatter={(v) => (v == null ? "" : cfg.axisFmt(v))}
+                      style={{ fontSize: 9, fill: "#6b7280" }}
+                    />
+                  )}
+                </Line>
               ) : (
-                <Bar dataKey="value" fill={cfg.color} radius={[3, 3, 0, 0]} isAnimationActive={false} name={cfg.label} />
+                <Bar dataKey="value" fill={cfg.color} radius={[3, 3, 0, 0]} isAnimationActive={false} name={cfg.label}>
+                  {chartData.length <= 16 && (
+                    <LabelList
+                      dataKey="value"
+                      position="top"
+                      formatter={(v) => (v == null ? "" : cfg.axisFmt(v))}
+                      style={{ fontSize: 9, fill: "#6b7280" }}
+                    />
+                  )}
+                </Bar>
               )}
             </ComposedChart>
           </ResponsiveContainer>
