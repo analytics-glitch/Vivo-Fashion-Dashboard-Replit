@@ -197,7 +197,7 @@ table.data th.sortable:hover{color:var(--accent);}
       <button class="btn" onclick="toggleColPicker(event)">Columns &#9662;</button>
       <div id="col-picker" class="popover" style="display:none;"></div>
      </div>
-     <button class="btn" onclick="exportRegister()">Export CSV</button>
+     <button class="btn" onclick="exportRegister(this)">Export CSV</button>
     </div>
     <div class="card" style="padding:0;">
      <div class="tbl-wrap">
@@ -595,13 +595,27 @@ function toggleCol(k,on){
 }
 function resetCols(e){e.preventDefault();regCols=REG_DEFAULT.slice();localStorage.setItem('fabricRegCols',JSON.stringify(regCols));buildColPicker();renderRegisterTable();}
 function regPage(dir){const o=regOffset+dir*PAGE_SIZE;if(o<0||o>=regTotal)return;loadRegister(o);}
-function exportRegister(){
-  if(!lastRegItems.length)return;
+async function exportRegister(btn){
+  // Export the FULL filtered/sorted register, not just the visible 50-row page.
+  // Re-fetch all matching rows (offset 0, large limit) so the CSV is complete.
   const cols=REG_COLS.filter(c=>regCols.includes(c.k));
-  const csv=[cols.map(c=>c.label).join(',')]
-    .concat(lastRegItems.map(r=>cols.map(c=>JSON.stringify(r[c.k]??'')).join(',')))
-    .join('\n');
-  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='fabric_register.csv';a.click();
+  const params=new URLSearchParams({location:loc(),limit:1000000,offset:0,sort:regSort.key,dir:regSort.dir});
+  const s=document.getElementById('reg-search').value;if(s)params.set('search',s);
+  const c=document.getElementById('reg-category').value;if(c)params.set('category',c);
+  const p=document.getElementById('reg-print').value;if(p)params.set('plain_print',p);
+  const w=document.getElementById('reg-weight').value;if(w)params.set('weight_range',w);
+  const orig=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='Exporting…';}
+  try{
+    const d=await apiFetch('/api/fabric/register?'+params);
+    const items=(d&&d.items)||[];
+    if(!items.length){alert('No fabrics match these filters — nothing to export.');return;}
+    const csv=[cols.map(c=>c.label).join(',')]
+      .concat(items.map(r=>cols.map(c=>JSON.stringify(r[c.k]??'')).join(',')))
+      .join('\n');
+    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='fabric_register.csv';a.click();
+  }catch(e){alert('Export failed: '+(e&&e.message?e.message:e));}
+  finally{if(btn){btn.disabled=false;btn.textContent=orig;}}
 }
 
 // ── Ageing ──

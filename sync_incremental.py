@@ -811,6 +811,18 @@ def main():
         except Exception as e:
             log.error("Inventory sync error: %s", e)
 
+    # Attendance sync — nightly at 21:00 UTC
+    if 21 <= now_utc.hour < 22:
+        try:
+            ensure_attendance_table(cur)
+            conn.commit()
+            sync_attendance(cur)
+            conn.commit()
+            write_heartbeat(conn, "attendance")
+        except Exception as e:
+            log.error("Attendance sync error: %s", e)
+            conn.rollback()
+
     # Accounting sync — nightly at 21:00 UTC
     if 21 <= now_utc.hour < 22:
         try:
@@ -886,16 +898,7 @@ def main():
                 log.warning("Data-quality log skipped — SESSION_SECRET unset")
     except Exception as e:
         log.error("Data-quality log error: %s", e)
-    # Attendance sync
-    try:
-        ensure_attendance_table(cur)
-        conn.commit()
-        sync_attendance(cur)
-        conn.commit()
-        write_heartbeat(conn, "attendance")
-    except Exception as e:
-        log.error("Attendance sync error: %s", e)
-        conn.rollback()
+
 
     write_heartbeat(conn, "ok")
     conn.close()
