@@ -2383,30 +2383,44 @@ def _reg_loyalty_mgr(app):
         mmdd = {(df + timedelta(days=i)).strftime("%m-%d")
                 for i in range(min(days_in_window, 366))}
 
-        # Birthdays come from crm_customer.dob (the only DOB source — sparse, so
-        # most windows are legitimately small). Tier from rolling-12mo net spend.
-        rows = _ex(
-            "SELECT cc.dob, COALESCE(s.spend12,0) AS spend12 "
-            "FROM crm_customer cc "
-            "LEFT JOIN ( SELECT s.customer_id, SUM(s.total_sales_kes::numeric) AS spend12 "
-            "  FROM all_sales s WHERE s.sale_date " + _ISO +
-            "  AND s.sale_date::date >= CURRENT_DATE - INTERVAL '12 months' AND " +
-            A.BASE_FILTERS + " GROUP BY s.customer_id) s ON s.customer_id=cc.customer_id "
-            "WHERE cc.dob IS NOT NULL AND cc.dob<>''", fetch=True) or []
+        # A customer's "birthday" = the anniversary of their FIRST-EVER purchase
+        # (all_customers.first_order_date). Tier from rolling-12mo net spend;
+        # dormant customers (no spend in the last 12 months) fall into bronze.
+        # all_customers is keyed by customer_id+store_id, so collapse to one row
+        # per customer (earliest first_order_date) before matching the window.
+        in_list = ",".join("'" + m + "'" for m in sorted(mmdd))
+        gold_l = repr(float(gold))
+        silver_l = repr(float(silver))
         agg = {"bronze": 0, "silver": 0, "gold": 0}
-        for r in rows:
-            dob = str(r["dob"]).strip()
-            mm = None
-            try:
-                mm = datetime.strptime(dob[:10], "%Y-%m-%d").strftime("%m-%d")
-            except Exception:
-                if len(dob) >= 5 and dob[2] == "-":
-                    mm = dob[:5]
-            if mm is None or mm not in mmdd:
-                continue
-            s12 = _num(r["spend12"])
-            t = "gold" if s12 >= gold else ("silver" if s12 >= silver else "bronze")
-            agg[t] += 1
+        if in_list:
+            sql = (
+                "WITH cust AS ("
+                "  SELECT customer_id, MIN(first_order_date) AS fod "
+                "  FROM all_customers WHERE first_order_date " + _ISO +
+                "  GROUP BY customer_id"
+                "), spend AS ("
+                "  SELECT s.customer_id, SUM(s.total_sales_kes::numeric) AS spend12 "
+                "  FROM all_sales s WHERE s.sale_date " + _ISO +
+                "   AND s.sale_date::date >= CURRENT_DATE - INTERVAL '12 months' AND " +
+                A.BASE_FILTERS +
+                "  GROUP BY s.customer_id"
+                ") "
+                "SELECT CASE "
+                "  WHEN COALESCE(sp.spend12,0) >= " + gold_l + " THEN 'gold' "
+                "  WHEN COALESCE(sp.spend12,0) >= " + silver_l + " THEN 'silver' "
+                "  ELSE 'bronze' END AS tier, COUNT(*) AS cnt "
+                "FROM cust c LEFT JOIN spend sp ON sp.customer_id = c.customer_id "
+                # Feb-29 anniversaries observe Feb-28 so they are not dropped in
+                # non-leap-year windows (standard birthday-observed policy).
+                "WHERE (CASE WHEN to_char(c.fod::date, 'MM-DD') = '02-29' "
+                "  THEN '02-28' ELSE to_char(c.fod::date, 'MM-DD') END) "
+                "  IN (" + in_list + ") "
+                "GROUP BY 1"
+            )
+            for r in (_ex(sql, fetch=True) or []):
+                t = str(r["tier"])
+                if t in agg:
+                    agg[t] = _int(r["cnt"])
 
         tiers = []
         gross_total = exp_total = 0.0
