@@ -25,6 +25,7 @@ import {
   AddressBook,
   ChartBar,
   BookOpen,
+  Eye,
 } from "@phosphor-icons/react";
 
 /**
@@ -78,6 +79,7 @@ export const ADMIN_NAV = [
   { to: "/admin/activity-logs", label: "Activity Logs", icon: ClockClockwise, id: "admin-activity-logs", group: "Administration", desc: "Audit authenticated API activity" },
   { to: "/admin/feedback", label: "Feedback Inbox", icon: ChatCircleDots, id: "admin-feedback", group: "Administration", desc: "Review submitted feedback" },
   { to: "/admin/store-clusters", label: "Store Clusters", icon: Stack, id: "admin-store-clusters", group: "Administration", desc: "Manage store clusters" },
+  { to: "/admin/page-visibility", label: "Page Visibility", icon: Eye, id: "admin-page-visibility", group: "Administration", desc: "Show or hide BI pages for all users" },
 ];
 
 // Group display order for the Home landing page.

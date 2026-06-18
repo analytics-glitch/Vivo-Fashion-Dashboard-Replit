@@ -36,6 +36,10 @@ export const ROLE_PAGES = {
  */
 export const canAccessPage = (user, pageId) => {
   if (!user) return false;
+  // Globally hidden pages (admin-controlled, applies to everyone). Admin
+  // management pages can never be hidden (enforced server-side too).
+  const hidden = Array.isArray(user.hidden_pages) ? user.hidden_pages : [];
+  if (hidden.includes(pageId)) return false;
   if (Array.isArray(user.allowed_pages)) return user.allowed_pages.includes(pageId);
   const role = (user.role || "viewer").toLowerCase();
   const pages = ROLE_PAGES[role] || ROLE_PAGES.viewer;

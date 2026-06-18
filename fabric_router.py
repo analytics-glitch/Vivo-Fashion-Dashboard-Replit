@@ -24,7 +24,7 @@ def q(conn, sql, params=()):
 
 # ── Summary cards ──────────────────────────────────────────
 @fabric_router.get("/api/fabric/summary")
-def summary():
+def summary(location: str = Query(default="RMAT/Stock")):
     with _get_conn() as conn:
         # Stock by location
         stock = q(conn, """
@@ -41,7 +41,7 @@ def summary():
             GROUP BY i.location_name, p.category
         """)
         
-        rmat = [r for r in stock if r['location_name'] == 'RMAT/Stock' and r['category'] == 'Fabric']
+        rmat = [r for r in stock if r['location_name'] == location and r['category'] == 'Fabric']
         dead = [r for r in stock if r['location_name'] == 'Dead/Stock Fabric']
         trim = [r for r in stock if r['category'] == 'Trim']
         
@@ -124,7 +124,8 @@ def register(
         if weight_range:
             where.append("p.weight_range = %s"); params.append(weight_range)
         if search:
-            where.append("p.name ILIKE %s"); params.append(f"%{search}%")
+            where.append("(p.name ILIKE %s OR p.default_code ILIKE %s)")
+            params.extend([f"%{search}%", f"%{search}%"])
 
         rows = q(conn, f"""
             SELECT 
@@ -204,17 +205,35 @@ def consumption(
     until: str = Query(default="2099-12-31"),
     group_by: str = Query(default="month"),
 ):
-    trunc = {"day":"day","week":"week"}.get(group_by, "month")
     with _get_conn() as conn:
+        kg_expr = "CASE WHEN m.uom='g' THEN m.qty/1000 ELSE m.qty END"
+        mtr_expr = f"CASE WHEN p.kg_per_mtr>0 THEN ({kg_expr})/p.kg_per_mtr ELSE 0 END"
+        base_where = ("m.move_type='OUT' AND m.uom IN ('g','kg') "
+                      "AND m.date BETWEEN %s AND %s")
+        metrics = (f"COUNT(DISTINCT m.product_id) as fabrics_used, "
+                   f"ROUND(SUM({kg_expr})::numeric,1) as qty_kg, "
+                   f"ROUND(SUM({mtr_expr})::numeric,0) as qty_metres, "
+                   f"COUNT(*) as moves")
+        # Dimension breakdowns (by fabric category or individual fabric) vs.
+        # the default time-series (day/week/month).
+        if group_by in ("category", "fabric"):
+            dim = ("COALESCE(NULLIF(p.fabric_category,''),'Unknown')"
+                   if group_by == "category"
+                   else "COALESCE(NULLIF(m.product_name,''),'Unknown')")
+            limit = "" if group_by == "category" else "LIMIT 50"
+            return q(conn, f"""
+                SELECT {dim} as period, {metrics}
+                FROM raw_fabric_moves m
+                LEFT JOIN raw_fabric_products p ON p.id = m.product_id
+                WHERE {base_where}
+                GROUP BY 1 ORDER BY qty_kg DESC NULLS LAST {limit}
+            """, (since, until))
+        trunc = {"day": "day", "week": "week"}.get(group_by, "month")
         return q(conn, f"""
-            SELECT 
-              DATE_TRUNC('{trunc}', date)::date as period,
-              COUNT(DISTINCT product_id) as fabrics_used,
-              ROUND(SUM(CASE WHEN uom='g' THEN qty/1000 ELSE qty END)::numeric,1) as qty_kg,
-              COUNT(*) as moves
-            FROM raw_fabric_moves
-            WHERE move_type='OUT' AND uom IN ('g','kg')
-              AND date BETWEEN %s AND %s
+            SELECT DATE_TRUNC('{trunc}', m.date)::date as period, {metrics}
+            FROM raw_fabric_moves m
+            LEFT JOIN raw_fabric_products p ON p.id = m.product_id
+            WHERE {base_where}
             GROUP BY 1 ORDER BY 1
         """, (since, until))
 
@@ -296,6 +315,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock")):
             return q(conn, f"""
                 SELECT COALESCE(NULLIF(p.{col},''),'Unknown') as value,
                   COUNT(DISTINCT i.product_id) as fabrics,
+                  ROUND(SUM(i.quantity)::numeric,0) as qty_kg,
                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,0) as qty_metres,
                   ROUND(SUM(i.total_value)::numeric,0) as value_kes
                 FROM raw_fabric_inventory i

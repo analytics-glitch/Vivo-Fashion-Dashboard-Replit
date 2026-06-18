@@ -999,6 +999,7 @@ BASE_FILTERS = """
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%shopping bag%'
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%gift card%'
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%gift voucher%'
+    AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%voucher%'
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%on specific products%'
     AND LOWER(COALESCE(s.variant_sku,'')) NOT LIKE '%vb00%'
 """
@@ -1168,6 +1169,44 @@ def _set_replen_owners(owners):
         "VALUES ('replenishment_owners', %s::jsonb, now()) "
         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
         (json.dumps(owners),))
+
+
+def _hidden_pages():
+    """Globally hidden page IDs (admin-controlled, applies to ALL users).
+
+    Stored in app_config key 'hidden_pages' as a JSON array of page ids that
+    match the frontend nav/permission ids. Returns [] when unset/unreadable.
+    """
+    try:
+        rows = _users_exec(
+            "SELECT value FROM app_config WHERE key='hidden_pages'", fetch=True)
+    except Exception:
+        rows = None
+    if rows:
+        val = rows[0].get("value")
+        if isinstance(val, str):
+            try:
+                val = json.loads(val)
+            except Exception:
+                val = None
+        if isinstance(val, list):
+            return [str(p).strip() for p in val if str(p).strip()]
+    return []
+
+
+def _set_hidden_pages(pages):
+    # Never allow hiding admin management pages — that would lock admins out of
+    # the control used to unhide pages.
+    clean = sorted({
+        str(p).strip() for p in pages
+        if str(p).strip() and not str(p).strip().startswith("admin-")
+    })
+    _users_exec(
+        "INSERT INTO app_config (key, value, updated_at) "
+        "VALUES ('hidden_pages', %s::jsonb, now()) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+        (json.dumps(clean),))
+    return clean
 
 
 def _replen_marks():
@@ -2896,7 +2935,29 @@ def _login_cookie_kwargs():
 
 @app.get("/api/auth/me")
 def auth_me(request: Request):
-    return getattr(request.state, "user", None) or {}
+    u = getattr(request.state, "user", None) or {}
+    if u:
+        u = dict(u)
+        u["hidden_pages"] = _hidden_pages()
+    return u
+
+
+@app.get("/api/admin/page-visibility")
+def admin_page_visibility_get(request: Request):
+    return {"hidden_pages": _hidden_pages()}
+
+
+@app.put("/api/admin/page-visibility")
+async def admin_page_visibility_put(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    pages = body.get("hidden_pages")
+    if not isinstance(pages, list):
+        return JSONResponse(
+            {"detail": "hidden_pages must be a list"}, status_code=400)
+    return {"ok": True, "hidden_pages": _set_hidden_pages(pages)}
 
 
 @app.get("/api/auth/me/status")
@@ -2932,6 +2993,7 @@ async def auth_login(request: Request):
     except Exception:
         pass
     user = _user_dict(rec)
+    user["hidden_pages"] = _hidden_pages()
     resp = JSONResponse({"token": token, "user": user})
     resp.set_cookie("session_token", token, **_login_cookie_kwargs())
     return resp
@@ -6865,7 +6927,10 @@ def analytics_replenishment_report(
               AND s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
               AND """ + BASE_FILTERS + """
               AND s.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
-              AND s.pos_location_name NOT ILIKE '%online%'
+              -- Include Online (Shop Zetu) as a replenishable channel; other
+              -- online channels (e.g. Online - vivo-uganda) stay excluded.
+              AND (s.pos_location_name NOT ILIKE '%online%'
+                   OR s.pos_location_name = 'Online - Shop Zetu')
               AND s.variant_sku IS NOT NULL AND s.variant_sku <> ''
             GROUP BY s.pos_location_name, s.variant_sku
             HAVING SUM(s.net_quantity) > 0

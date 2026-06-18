@@ -198,6 +198,9 @@ def main():
 
             if not sku:
                 continue
+            # Skip carrier/shopping bags — not sellable inventory (mirrors sales BASE_FILTERS)
+            if "shopping bag" in (name or "").lower():
+                continue
             # Skip excluded internal locations
             if any(exc.lower() in location.lower() for exc in EXCLUDED_LOCATIONS):
                 continue

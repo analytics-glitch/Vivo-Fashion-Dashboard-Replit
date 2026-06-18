@@ -10,6 +10,7 @@
  */
 import React, { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { useTableSort, SortableTh } from "@/lib/useTableSort";
 
 const fmtNum = (v) => (v == null || Number.isNaN(v) ? "—" : Number(v).toLocaleString());
 const fmtPct = (v) => (v == null ? "—" : `${Number(v).toFixed(1)}%`);
@@ -32,6 +33,7 @@ export default function MarketingActionTracker({ countries = [], channels = [], 
   const [error, setError] = useState(null);
   const [openForm, setOpenForm] = useState(null);  // style_number whose form is open
   const [bump, setBump] = useState(0);
+  const { sort: candSort, toggleSort: candToggle, sortRows: candSortRows } = useTableSort();
 
   const loadAll = () => {
     setLoading(true);
@@ -83,23 +85,35 @@ export default function MarketingActionTracker({ countries = [], channels = [], 
           <div className="overflow-x-auto">
             <table className="w-full text-[11.5px] border-collapse">
               <thead>
-                <tr className="border-b border-border text-left">
-                  <th className="p-2 font-semibold text-muted">Style</th>
-                  <th className="p-2 font-semibold text-muted">Style #</th>
-                  <th className="p-2 font-semibold text-muted">Launch</th>
-                  <th className="p-2 text-right font-semibold text-muted">Age</th>
-                  <th className="p-2 text-right font-semibold text-muted">SOR Lifetime</th>
-                  <th className="p-2 text-right font-semibold text-muted">Units Online</th>
-                  <th className="p-2 text-right font-semibold text-muted">Units Stores</th>
-                  <th className="p-2 text-right font-semibold text-muted">Stock WH</th>
-                  <th className="p-2 text-right font-semibold text-muted">Stock Stores</th>
-                  <th className="p-2 text-right font-semibold text-muted">Stock Total</th>
-                  <th className="p-2 text-right font-semibold text-muted">Last Sale</th>
+                <tr className="border-b border-border text-left [&>th]:p-2 [&>th]:font-semibold [&>th]:text-muted">
+                  <SortableTh sortKey="style" sort={candSort} onSort={candToggle}>Style</SortableTh>
+                  <SortableTh sortKey="style_number" sort={candSort} onSort={candToggle}>Style #</SortableTh>
+                  <SortableTh sortKey="launch" sort={candSort} onSort={candToggle}>Launch</SortableTh>
+                  <SortableTh sortKey="age" sort={candSort} onSort={candToggle} numeric>Age</SortableTh>
+                  <SortableTh sortKey="sor" sort={candSort} onSort={candToggle} numeric>SOR Lifetime</SortableTh>
+                  <SortableTh sortKey="units_online" sort={candSort} onSort={candToggle} numeric>Units Online</SortableTh>
+                  <SortableTh sortKey="units_stores" sort={candSort} onSort={candToggle} numeric>Units Stores</SortableTh>
+                  <SortableTh sortKey="soh_wh" sort={candSort} onSort={candToggle} numeric>Stock WH</SortableTh>
+                  <SortableTh sortKey="soh_stores" sort={candSort} onSort={candToggle} numeric>Stock Stores</SortableTh>
+                  <SortableTh sortKey="stock_total" sort={candSort} onSort={candToggle} numeric>Stock Total</SortableTh>
+                  <SortableTh sortKey="last_sale" sort={candSort} onSort={candToggle} numeric>Last Sale</SortableTh>
                   <th className="p-2 font-semibold text-muted">Action</th>
                 </tr>
               </thead>
               <tbody>
-                {candidates.map((c) => (
+                {candSortRows(candidates, {
+                  style: (r) => r.style_name,
+                  style_number: (r) => r.style_number,
+                  launch: (r) => r.launch_date,
+                  age: (r) => r.age_weeks,
+                  sor: (r) => r.sor_lifetime,
+                  units_online: (r) => r.units_online,
+                  units_stores: (r) => r.units_stores,
+                  soh_wh: (r) => r.soh_warehouse,
+                  soh_stores: (r) => r.soh_stores,
+                  stock_total: (r) => r.current_stock,
+                  last_sale: (r) => r.days_since_last_sale,
+                }).map((c) => (
                   <React.Fragment key={c.style_number}>
                     <tr className="border-b border-zinc-100">
                       <td className="p-2">

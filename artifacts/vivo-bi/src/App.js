@@ -24,6 +24,7 @@ const ReOrder = React.lazy(() => import("@/pages/ReOrder"));
 const IBT = React.lazy(() => import("@/pages/IBT"));
 const DataQuality = React.lazy(() => import("@/pages/DataQuality"));
 const Users = React.lazy(() => import("@/pages/Users"));
+const PageVisibility = React.lazy(() => import("@/pages/PageVisibility"));
 const ActivityLogs = React.lazy(() => import("@/pages/ActivityLogs"));
 const Feedback = React.lazy(() => import("@/pages/Feedback"));
 const AdminFeedback = React.lazy(() => import("@/pages/AdminFeedback"));
@@ -167,6 +168,7 @@ function App() {
                 <Route path="/admin/activity-logs" element={<ProtectedShell adminOnly pageId="admin-activity-logs"><ActivityLogs /></ProtectedShell>} />
                 <Route path="/admin/feedback" element={<ProtectedShell adminOnly pageId="admin-feedback"><AdminFeedback /></ProtectedShell>} />
                 <Route path="/admin/store-clusters" element={<ProtectedShell adminOnly pageId="admin-store-clusters"><StoreClusters /></ProtectedShell>} />
+                <Route path="/admin/page-visibility" element={<ProtectedShell adminOnly pageId="admin-page-visibility"><PageVisibility /></ProtectedShell>} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </FiltersProvider>

@@ -160,6 +160,9 @@ def main():
 
                 if not sku or available <= 0:
                     continue
+                # Skip carrier/shopping bags — not sellable inventory (mirrors sales BASE_FILTERS)
+                if "shopping bag" in (product_title or "").lower():
+                    continue
                 if store_id == "shop-zetu" and not any(k.lower() in product_title.lower() for k in store.get("vendor_filter", [])):
                     continue
 

@@ -675,8 +675,8 @@ const Replenishments = () => {
         <p className="text-[12.5px] text-muted mt-1 max-w-3xl">
           For each POS where shop-floor stock is below 2 units AND units sold &gt; 0 in
           the window we recommend a top-up to <b>2 units per SKU</b>, drawn from the
-          warehouse. Online channels excluded. Lines distribute equally across your
-          team, sorted by POS ascending.
+          warehouse. Includes Online (Shop Zetu); other online channels excluded.
+          Lines distribute equally across your team, sorted by POS ascending.
         </p>
       </div>
 

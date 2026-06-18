@@ -136,6 +136,9 @@ def main():
             available = int(float(level.get("available") or 0))
             if available <= 0:
                 continue
+            # Skip carrier/shopping bags — not sellable inventory (mirrors sales BASE_FILTERS)
+            if "shopping bag" in (variant.get("title") or "").lower():
+                continue
 
             rows.append((
                 variant["sku"],
