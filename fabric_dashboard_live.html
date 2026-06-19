@@ -479,7 +479,7 @@ function renderKpis(d){
   document.getElementById('kpi-cards').innerHTML=`
    <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value">${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub">${fmtKES(d.fabric_stock_value)} &middot; ${fmt(d.fabric_products)} fabrics</p></div>
    <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value">${fmt(d.fabric_stock_kg)}</p><p class="kpi-sub">kg in main warehouse</p></div>
-   <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value">${fmt(d.consumption_30d_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
+   <div class="kpi"><span class="eyebrow">Consumed / month</span><p class="kpi-value">${fmt(d.consumption_30d_kg)}</p><p class="kpi-sub">kg avg, net of returns</p></div>
    <div class="kpi"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}">${cover!=null?fmt1(cover):'—'}</p><p class="kpi-sub">stock &divide; monthly use</p></div>
    <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger">${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">${fmt(d.dead_stock_kg)} kg &middot; ${deadPct.toFixed(0)}% of value</p></div>
    <div class="kpi"><span class="eyebrow">Outstanding POs</span><p class="kpi-value">${fmt(d.outstanding_pos)}</p><p class="kpi-sub">${fmtKES(d.outstanding_po_value)} inbound</p></div>

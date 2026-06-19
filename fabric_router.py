@@ -97,12 +97,20 @@ def summary(location: str = Query(default="RMAT/Stock")):
             WHERE qty_ordered > qty_received AND state != 'cancel'
         """)[0]
         
-        # Consumption last 30 days — net of fabric returned from production
+        # Average net consumption per month over the whole move history (not a
+        # trailing 30-day window) — net monthly run-rate is what "months of cover"
+        # divides into. Monthly net swings wildly (returns are batch-booked), so a
+        # running 30-day total is misleading; total net ÷ months-spanned is stable.
         cons = q(conn, f"""
-            SELECT ROUND(SUM({_net_kg('m')})::numeric,1) as kg
-            FROM raw_fabric_moves m
-            WHERE {_net_cons_where('m')}
-              AND m.date >= NOW() - INTERVAL '30 days'
+            WITH c AS (
+              SELECT m.date::date AS d, {_net_kg('m')} AS net_kg
+              FROM raw_fabric_moves m
+              WHERE {_net_cons_where('m')}
+            )
+            SELECT ROUND(
+                     (SUM(net_kg) / GREATEST((MAX(d) - MIN(d) + 1) / {DAYS_PER_MONTH}, 1))::numeric,
+                     1) AS kg
+            FROM c
         """)[0]
         
         # BOM styles

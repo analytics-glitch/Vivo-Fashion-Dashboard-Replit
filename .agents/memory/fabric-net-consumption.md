@@ -19,9 +19,15 @@ consumption reported net of returned fabric.
 **How to apply:** use the `_net_kg` / `_net_cons_where` helpers in `fabric_router.py`
 (they put OUT positive, INTERNAL-from-production negative). The return arm is
 restricted to `move_type='INTERNAL'` so a future non-INTERNAL row from the production
-location can't silently net out. Net consumption is wired into `/api/fabric/summary`
-(consumed 30d), `/api/fabric/consumption`, and `/api/fabric/top-consumed`.
+location can't silently net out. Net consumption is wired into `/api/fabric/summary`,
+`/api/fabric/consumption`, and `/api/fabric/top-consumed`.
 `/api/fabric/movement-flow` intentionally still shows raw IN/OUT/INTERNAL separately.
+
+The summary "Consumed / month" KPI (`consumption_30d_kg` field name kept for
+compat) is the **average monthly run-rate over the whole move history**, NOT a
+trailing 30-day total: total net ÷ (span_days / 30.4375). Monthly net swings wildly
+(returns are batch-booked — a single calendar month can even be negative), so a
+running 30-day window is misleading. "Months of cover" = stock ÷ this monthly use.
 
 # Weeks-of-cover uses a monthly-average run-rate
 `/api/fabric/top-consumed` weeks_cover = stock ÷ weekly_rate, where
