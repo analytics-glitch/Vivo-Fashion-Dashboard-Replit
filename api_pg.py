@@ -6432,6 +6432,16 @@ _ACTUAL_BUCKET_CASE = (
     "ELSE 'Other' END"
 )
 
+# Achievement is measured on the SAME canonical revenue basis as the headline
+# KPIs (total_sales_kes net of returns) — NOT net_sales_kes, which is net of
+# discounts and reads ~12-14% low (e.g. Kenya YTD 370M vs the real 422M). Any
+# query using this expression must include 'return' rows in its WHERE clause
+# (sale_kind IN ('sale','order','return')) so the returns subtraction applies.
+_TARGET_REVENUE = (
+    "SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) "
+    "- SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)"
+)
+
 _TARGETS_DDL = """
 CREATE TABLE IF NOT EXISTS targets_monthly (
     id          BIGSERIAL PRIMARY KEY,
@@ -6486,10 +6496,10 @@ def analytics_annual_targets(year: int = Query(default=None)):
         return run_query("""
             SELECT """ + _ACTUAL_BUCKET_CASE + """ AS bucket,
                 EXTRACT(QUARTER FROM s.sale_date::date)::int AS q,
-                ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric ELSE 0 END)) AS net
+                ROUND(""" + _TARGET_REVENUE + """) AS net
             FROM all_sales s
             WHERE s.sale_date BETWEEN '""" + str(y) + """-01-01' AND '""" + str(y) + """-12-31'
-              AND s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + """
+              AND s.sale_kind IN ('sale','order','return') AND """ + BASE_FILTERS + """
             GROUP BY 1, 2
         """)
 
@@ -6599,26 +6609,28 @@ def analytics_monthly_targets(month: str = Query(default=None)):
         if cur is None or (cur[1] != "manual" and src == "manual"):
             target_map[nm] = (t, src)
 
-    # Prior-year same-month per-store actuals (fallback target basis).
+    # Prior-year same-month per-store actuals (fallback target basis). Canonical
+    # revenue basis (total_sales_kes net of returns), matching the headline KPIs.
     py_map = {r["store"]: float(r["net"] or 0) for r in run_query("""
         SELECT s.pos_location_name AS store,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric ELSE 0 END)) AS net
+            ROUND(""" + _TARGET_REVENUE + """) AS net
         FROM all_sales s
         WHERE s.sale_date BETWEEN '""" + str(py_start) + """' AND '""" + str(py_end) + """'
-          AND s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + """
+          AND s.sale_kind IN ('sale','order','return') AND """ + BASE_FILTERS + """
         GROUP BY 1
     """)}
 
-    # This-month per-store daily actuals.
+    # This-month per-store daily actuals. "net" is canonical revenue
+    # (total_sales_kes net of returns); units/orders stay sale/order-only.
     dmap = {}
     for r in run_query("""
         SELECT s.pos_location_name AS store, s.sale_date::date AS d,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric ELSE 0 END)) AS net,
+            ROUND(""" + _TARGET_REVENUE + """) AS net,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_quantity ELSE 0 END) AS units,
-            COUNT(DISTINCT s.order_id) AS orders
+            COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders
         FROM all_sales s
         WHERE s.sale_date BETWEEN '""" + str(mstart) + """' AND '""" + str(mend) + """'
-          AND s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + """
+          AND s.sale_kind IN ('sale','order','return') AND """ + BASE_FILTERS + """
         GROUP BY 1, 2
     """):
         dmap.setdefault(r["store"], {})[str(r["d"])] = {
