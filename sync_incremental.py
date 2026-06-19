@@ -291,6 +291,7 @@ def fetch_orders(store_url, token, since, limit=250):
         "order": "updated_at asc",
     }
     all_orders = []
+    seen_ids = set()
     while url:
         for attempt in range(3):
             try:
@@ -304,7 +305,10 @@ def fetch_orders(store_url, token, since, limit=250):
                 log.warning("Retry %d: %s", attempt + 1, e)
                 time.sleep(10)
         orders = resp.json().get("orders", [])
-        all_orders.extend(orders)
+        for o in orders:
+            if o["id"] not in seen_ids:
+                seen_ids.add(o["id"])
+                all_orders.append(o)
         link = resp.headers.get("Link", "")
         next_url = None
         for part in link.split(","):

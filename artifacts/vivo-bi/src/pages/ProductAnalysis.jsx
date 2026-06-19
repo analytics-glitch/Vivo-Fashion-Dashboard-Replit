@@ -157,6 +157,9 @@ const ProductAnalysis = () => {
   const [cats, setCats] = useState([]);             // [] = all (category)
   const [subcats, setSubcats] = useState([]);       // [] = all
   const [velDays, setVelDays] = useState(30);       // velocity window (days)
+  // Whether warehouse / holding-location stock is counted in the figures.
+  // false (default) = retail stores only; true = stores + warehouse.
+  const [includeWarehouse, setIncludeWarehouse] = useState(false);
   const [search, setSearch] = useState("");
   // Master column show/hide. The newly-added analytical columns start hidden so
   // the default table stays readable; the picker (above the table) reveals them.
@@ -264,6 +267,7 @@ const ProductAnalysis = () => {
           style_status: status,
           dims: dimsParam || undefined,
           velocity_days: velDays,
+          include_warehouse: includeWarehouse || undefined,
           brand: brands.length ? brands.join(",") : undefined,
           category: cats.length ? cats.join(",") : undefined,
           subcategory: subcats.length ? subcats.join(",") : undefined,
@@ -296,7 +300,7 @@ const ProductAnalysis = () => {
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [localFrom, localTo, countryParam, storeParam, status, dimsParam, velDays, brands, cats, subcats, tierParam, dataVersion]);
+  }, [localFrom, localTo, countryParam, storeParam, status, dimsParam, velDays, includeWarehouse, brands, cats, subcats, tierParam, dataVersion]);
 
   const rows = data?.rows || [];
   const summary = data?.summary || null;
@@ -756,6 +760,29 @@ const ProductAnalysis = () => {
           width={210}
           testId="pa-store"
         />
+
+        <div
+          className="inline-flex items-center rounded-full border border-border p-0.5 text-[11.5px]"
+          data-testid="pa-warehouse-toggle"
+          title="Include or exclude warehouse / holding-location stock in the figures"
+        >
+          <button
+            type="button"
+            onClick={() => setIncludeWarehouse(false)}
+            className={`px-2.5 py-1 rounded-full transition-colors ${!includeWarehouse ? "bg-brand text-white" : "text-muted hover:text-foreground"}`}
+            data-testid="pa-warehouse-exclude"
+          >
+            Stores only
+          </button>
+          <button
+            type="button"
+            onClick={() => setIncludeWarehouse(true)}
+            className={`px-2.5 py-1 rounded-full transition-colors ${includeWarehouse ? "bg-brand text-white" : "text-muted hover:text-foreground"}`}
+            data-testid="pa-warehouse-include"
+          >
+            Incl. warehouse
+          </button>
+        </div>
 
         <StyleStatusToggle value={status} onChange={setStatus} testIdPrefix="pa-status" />
 

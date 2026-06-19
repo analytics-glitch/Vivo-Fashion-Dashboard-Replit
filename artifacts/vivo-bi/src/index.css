@@ -242,6 +242,17 @@ body {
     table.data tr:hover td {
         background: rgba(26, 92, 56, 0.03);
     }
+    /* Per-column expand: the SortableTable header toggle adds `col-expanded`
+       to every cell in a column, releasing its width cap / ellipsis so the
+       full content wraps into view. */
+    table.data td.col-expanded,
+    table.data td.col-expanded * {
+        max-width: none !important;
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        word-break: break-word;
+    }
     /* Compact density (~30% shorter rows) for high-row-count tables that use a
        sticky header + scroll body instead of pagination. */
     table.data.abv-compact th {

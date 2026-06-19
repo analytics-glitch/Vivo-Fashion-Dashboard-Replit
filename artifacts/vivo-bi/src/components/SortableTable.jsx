@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { CaretUp, CaretDown, CaretRight, Download } from "@phosphor-icons/react";
+import { CaretUp, CaretDown, CaretRight, Download, ArrowsHorizontal } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 /**
@@ -176,6 +176,10 @@ export const SortableTable = ({
 }) => {
   const [sort, setSort] = useState(initialSort || null); // { key, dir }
   const [expanded, setExpanded] = useState(() => new Set());
+  // Per-column "expand" set — each key in here releases that column's width
+  // cap / ellipsis so the full cell content wraps into view (see `col-expanded`
+  // in index.css). Toggled from the small arrows icon in each column header.
+  const [expandedCols, setExpandedCols] = useState(() => new Set());
   const [limit, setLimit] = useState(pageSize || null);
 
   const sorted = useMemo(() => {
@@ -209,6 +213,14 @@ export const SortableTable = ({
   }, [rows, sort, columns, secondarySort]);
 
   const visible = limit ? sorted.slice(0, limit) : sorted;
+
+  const toggleColExpand = (key) => {
+    setExpandedCols((s) => {
+      const n = new Set(s);
+      if (n.has(key)) n.delete(key); else n.add(key);
+      return n;
+    });
+  };
 
   const toggleSort = (key) => {
     const col = columns.find((c) => c.key === key);
@@ -278,7 +290,7 @@ export const SortableTable = ({
                 return (
                   <th
                     key={c.key}
-                    className={`${c.align === "right" || c.numeric ? "text-right" : "text-left"} ${c.sortable === false ? "" : "cursor-pointer hover:text-brand"} select-none ${isFirst ? "sticky left-0 z-30 bg-white" : ""}`}
+                    className={`group ${c.align === "right" || c.numeric ? "text-right" : "text-left"} ${c.sortable === false ? "" : "cursor-pointer hover:text-brand"} select-none ${isFirst ? "sticky left-0 z-30 bg-white" : ""}`}
                     onClick={() => toggleSort(c.key)}
                     style={c.width ? { width: c.width } : undefined}
                     title={c.headerTitle || undefined}
@@ -286,6 +298,15 @@ export const SortableTable = ({
                     <span className="inline-flex items-center gap-1">
                       {c.label}
                       {sort && sort.key === c.key && (sort.dir === "asc" ? <CaretUp size={11} /> : <CaretDown size={11} />)}
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); toggleColExpand(c.key); }}
+                        className={`inline-flex items-center align-middle transition-opacity ${expandedCols.has(c.key) ? "opacity-100 text-brand" : "opacity-0 group-hover:opacity-50 hover:!opacity-100"}`}
+                        title={expandedCols.has(c.key) ? "Collapse column" : "Expand column to show full content"}
+                        aria-label="Toggle column width"
+                      >
+                        <ArrowsHorizontal size={11} weight="bold" />
+                      </button>
                     </span>
                   </th>
                 );
@@ -334,7 +355,7 @@ export const SortableTable = ({
                       return (
                         <td
                           key={c.key}
-                          className={`${c.align === "right" || c.numeric ? "text-right num" : "text-left"} ${c.className || ""} ${isFirst ? "sticky left-0 z-10 bg-white" : ""}`}
+                          className={`${c.align === "right" || c.numeric ? "text-right num" : "text-left"} ${c.className || ""} ${expandedCols.has(c.key) ? "col-expanded" : ""} ${isFirst ? "sticky left-0 z-10 bg-white" : ""}`}
                         >
                           {c.render ? c.render(r, i) : r[c.key]}
                         </td>

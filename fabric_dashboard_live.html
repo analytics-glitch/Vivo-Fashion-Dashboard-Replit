@@ -119,6 +119,14 @@ table.data th.sortable:hover{color:var(--accent);}
 .donut-wrap{display:flex;align-items:center;gap:18px;flex-wrap:wrap;}
 .donut-legend{flex:1;min-width:170px;}
 .leg-row{display:flex;align-items:center;gap:8px;font-size:13px;padding:4px 0;}
+/* Per-column expand: a small toggle injected into every data-table header
+   lets any column release its truncation (max-width + ellipsis) so the full
+   cell content wraps into view. */
+.col-exp{display:inline-flex;align-items:center;margin-left:5px;color:var(--muted);opacity:.32;cursor:pointer;vertical-align:middle;transition:opacity .12s,color .12s;}
+table.data th:hover .col-exp{opacity:.65;}
+.col-exp:hover{opacity:1;color:var(--accent);}
+.col-exp.active{opacity:1;color:var(--accent);}
+table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-space:normal !important;overflow:visible !important;text-overflow:clip !important;word-break:break-word;}
 </style>
 </head>
 <body>
@@ -1129,6 +1137,66 @@ async function init(){
   }catch(e){/* overview will surface the auth error */}
   loadOverview();
 }
+
+// ---------------------------------------------------------------------------
+// Per-column expand — injects a small toggle into every data-table header so
+// any column can release its truncation (max-width + ellipsis) and wrap its
+// full content into view. Works across ALL tables (static + dynamically
+// re-rendered like the register / reservations) via a MutationObserver that
+// re-applies the affordance + remembered expanded columns after each render.
+// ---------------------------------------------------------------------------
+(function(){
+  const EXP = Object.create(null);   // "sectionId|colIdx" -> true (remembered)
+  const ICON = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 3 12 9 18"></polyline><polyline points="15 6 21 12 15 18"></polyline></svg>';
+  function tkey(table, idx){
+    const sec = table.closest('[id]');
+    return (sec ? sec.id : 'tbl') + '|' + idx;
+  }
+  function applyExpansion(table){
+    const ths = table.querySelectorAll('thead th');
+    const rows = table.querySelectorAll('tbody tr');
+    ths.forEach((th, idx) => {
+      const on = !!EXP[tkey(table, idx)];
+      const ic = th.querySelector('.col-exp');
+      if(ic) ic.classList.toggle('active', on);
+      rows.forEach(tr => {
+        const td = tr.children[idx];
+        if(td) td.classList.toggle('cell-exp', on);
+      });
+    });
+  }
+  let observer = null;
+  function enhance(){
+    document.querySelectorAll('table.data').forEach(table => {
+      table.querySelectorAll('thead th').forEach((th, idx) => {
+        if(th.querySelector('.col-exp')) return;
+        const b = document.createElement('span');
+        b.className = 'col-exp';
+        b.title = 'Expand column to show full content';
+        b.innerHTML = ICON;
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const k = tkey(table, idx);
+          EXP[k] = !EXP[k];
+          applyExpansion(table);
+        });
+        th.appendChild(b);
+      });
+      applyExpansion(table);
+    });
+  }
+  function boot(){
+    enhance();
+    observer = new MutationObserver(() => {
+      clearTimeout(boot._t);
+      boot._t = setTimeout(enhance, 90);
+    });
+    observer.observe(document.body, { childList:true, subtree:true });
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
+})();
+
 init();
 </script>
 </body>

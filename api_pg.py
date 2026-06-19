@@ -4285,6 +4285,7 @@ def analytics_product_analysis(
     grain: str = Query(default="style"),
     dims: str = Query(default=None),
     velocity_days: int = Query(default=30),
+    include_warehouse: bool = Query(default=False),
 ):
     df = _pa_safe_date(date_from, str(date.today() - timedelta(days=89)))
     dt = _pa_safe_date(date_to, str(date.today()))
@@ -4328,7 +4329,7 @@ def analytics_product_analysis(
     # (run_query also caches the SQL, but only ~120s; this keeps the page warm.)
     _pa_ck = "pa:" + "|".join(str(x) for x in (
         df, dt, country, store, brand, category, subcategory, tier,
-        style_status, grain, ",".join(all_sel), vel))
+        style_status, grain, ",".join(all_sel), vel, int(include_warehouse)))
     _pa_cached = cache_get(_pa_ck)
     if _pa_cached is not None:
         return _pa_cached
@@ -4337,6 +4338,10 @@ def analytics_product_analysis(
     icf, _ = _style_filters(country, None, "i")      # inventory country scope
     if store:
         current_loc_clause = "i.pos_location_name IN (" + csv_to_sql(store) + ")"
+    elif include_warehouse:
+        # Explicit "include warehouse" toggle: count stock in EVERY location
+        # (retail stores + warehouse / holding locations) in the current scope.
+        current_loc_clause = "i.pos_location_name IS NOT NULL"
     else:
         current_loc_clause = "i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")"
 
@@ -4411,7 +4416,7 @@ def analytics_product_analysis(
         # from stock (current_loc_clause) and from sales (a store filter already
         # restricts sales; otherwise exclude the same warehouse set).
         stock_pos_where = " AND (" + current_loc_clause + ")"
-        if not store:
+        if not store and not include_warehouse:
             sales_pos_where = " AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")"
         spine_keys = " USING (style_name" + ("".join(", " + j for j in join_dims)) + ", pos_location)"
         prod_keys = " USING (style_name" + ("".join(", " + j for j in join_dims)) + ")"
