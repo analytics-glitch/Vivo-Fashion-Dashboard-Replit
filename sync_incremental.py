@@ -447,11 +447,31 @@ def process_shopify_store(store, cur, now, rates):
                 gross_sales_kes, discounts_kes, net_sales_kes,
                 total_sales_kes, net_quantity, returns_kes, loaded_at
             ) VALUES %s
-            ON CONFLICT (store_id, order_id, product_title, COALESCE(variant_sku,''), sale_kind, sale_date) DO NOTHING
-        """, rows, page_size=500)
+        """, _dedup_all_sales_rows(rows), page_size=500)
 
     log.info("✅ %s — %d orders, %d lines synced", store_id, len(orders), len(rows))
     return len(rows)
+
+def _dedup_all_sales_rows(rows):
+    """Collapse duplicate sync rows on the all_sales business grain
+    (store_id, order_id, product_title, variant_sku, sale_kind, sale_date),
+    keeping the first occurrence. Replaces the former DB-level arbiter
+    `ON CONFLICT (...) DO NOTHING` (the uq_all_sales_line unique index, which
+    production never had and could not accept due to legacy duplicate rows).
+    The per-order DELETE-by-window before each INSERT handles cross-run
+    idempotency; this only removes intra-batch duplicates. Tuple positions
+    match the INSERT column order: 1=store_id, 2=order_id, 4=sale_date,
+    11=sale_kind, 12=product_title, 13=variant_sku."""
+    seen = set()
+    out = []
+    for r in rows:
+        key = (r[1], r[2], r[12], r[13] or "", r[11], r[4])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
 
 def sync_odoo(cur, now, rates):
     import xmlrpc.client
@@ -601,9 +621,7 @@ def sync_odoo(cur, now, rates):
                 gross_sales_kes, discounts_kes, net_sales_kes,
                 total_sales_kes, net_quantity, returns_kes, loaded_at
             ) VALUES %s
-            ON CONFLICT (store_id, order_id, product_title, COALESCE(variant_sku,''), sale_kind, sale_date)
-            DO NOTHING
-        """, rows, page_size=500)
+        """, _dedup_all_sales_rows(rows), page_size=500)
 
     log.info("✅ Odoo — %d orders, %d lines synced", len(orders), len(rows))
     return len(rows)
