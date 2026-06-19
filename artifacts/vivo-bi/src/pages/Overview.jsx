@@ -778,7 +778,7 @@ const Overview = () => {
   // Channel -> country map for filtering footfall by country selection
   const channelCountryMap = useMemo(() => {
     const m = {};
-    for (const l of locations) m[l.channel] = l.country;
+    for (const l of locations) m[l.location_name] = l.country;
     return m;
   }, [locations]);
 
