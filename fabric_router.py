@@ -104,7 +104,15 @@ def summary(location: str = Query(default="RMAT/Stock")):
             WHERE {_net_cons_where('m')}
               AND m.date >= NOW() - INTERVAL '30 days'
         """)[0]
-        
+
+        # Consumption so far today — net of production returns (m.date is a date/ts)
+        cons_today = q(conn, f"""
+            SELECT ROUND(SUM({_net_kg('m')})::numeric,1) as kg
+            FROM raw_fabric_moves m
+            WHERE {_net_cons_where('m')}
+              AND m.date >= CURRENT_DATE
+        """)[0]
+
         # BOM styles
         bom = q(conn, "SELECT COUNT(DISTINCT finished_product_name) as styles FROM raw_fabric_boms")[0]
         
@@ -119,6 +127,7 @@ def summary(location: str = Query(default="RMAT/Stock")):
             "outstanding_pos": pos['count'] or 0,
             "outstanding_po_value": pos['value'] or 0,
             "consumption_30d_kg": cons['kg'] or 0,
+            "consumption_today_kg": cons_today['kg'] or 0,
             "styles_with_bom": bom['styles'] or 0,
         }
 
@@ -167,6 +176,7 @@ def register(
             "plain_print", "weight_range", "fabric_structure", "gsm", "width_m",
             "kg_per_mtr", "fiber_content", "fabric_type", "supplier", "primary_color",
             "qty_kg", "available_kg", "qty_metres", "available_metres", "value_kes",
+            "cost_kes", "cost_per_kg", "cost_metre", "weeks_cover",
             "last_move", "days_since_move",
         }
         sort_col = sort if sort in ALLOWED_SORT else "value_kes"
@@ -189,22 +199,35 @@ def register(
             where.append("(p.name ILIKE %s OR p.default_code ILIKE %s OR p.barcode ILIKE %s)")
             params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
 
+        # Trailing-30-day net consumption per product → weekly run-rate → weeks of cover.
         rows = q(conn, f"""
+            WITH cons30 AS (
+              SELECT m.product_id, SUM({_net_kg('m')}) as consumed_30d_kg
+              FROM raw_fabric_moves m
+              WHERE {_net_cons_where('m')}
+                AND m.date >= NOW() - INTERVAL '30 days'
+              GROUP BY m.product_id
+            )
             SELECT 
               p.id, p.name, p.default_code, p.barcode, p.fabric_category, p.fabric_subcategory,
               p.fabric_structure, p.plain_print, p.weight_range, p.gsm,
               p.width_m, p.kg_per_mtr, p.fiber_content, p.fabric_type,
               p.supplier, p.primary_color, p.standard_price, p.uom,
+              ROUND(p.standard_price::numeric,2) as cost_kes,
+              ROUND(p.standard_price::numeric,2) as cost_per_kg,
+              ROUND(CASE WHEN p.kg_per_mtr>0 THEN p.standard_price*p.kg_per_mtr ELSE NULL END::numeric,2) as cost_metre,
               ROUND(i.quantity::numeric,2) as qty_kg,
               ROUND(i.reserved_qty::numeric,2) as reserved_kg,
               ROUND(i.available::numeric,2) as available_kg,
               ROUND(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE NULL END::numeric,1) as qty_metres,
               ROUND(CASE WHEN p.kg_per_mtr>0 THEN i.available/p.kg_per_mtr ELSE NULL END::numeric,1) as available_metres,
               ROUND(i.total_value::numeric,0) as value_kes,
+              ROUND((i.quantity / NULLIF((COALESCE(c.consumed_30d_kg,0) / ({DAYS_PER_MONTH}/7.0)), 0))::numeric,1) as weeks_cover,
               (SELECT MAX(date)::date FROM raw_fabric_moves m WHERE m.product_id=i.product_id) as last_move,
               CURRENT_DATE - (SELECT MAX(date)::date FROM raw_fabric_moves m WHERE m.product_id=i.product_id) as days_since_move
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
+            LEFT JOIN cons30 c ON c.product_id = i.product_id
             WHERE {' AND '.join(where)}
             {order_by}
             LIMIT %s OFFSET %s
@@ -299,6 +322,72 @@ def consumption(
             WHERE {base_where}
             GROUP BY 1 ORDER BY 1
         """, (since, until))
+
+# ── Stock vs consumption by category/subcategory ────────────
+@fabric_router.get("/api/fabric/category-stock-consumption")
+def category_stock_consumption(
+    location: str = Query(default="RMAT/Stock"),
+    days: int = Query(default=30),
+):
+    """Nested category→subcategory stock (location-scoped) vs net consumption
+    (warehouse-wide, trailing N days). Derived %s / cover / SOR / variance / risk
+    are computed client-side from these raw kg figures + the returned totals."""
+    days = max(1, min(int(days or 30), 730))
+    with _get_conn() as conn:
+        loc_sql, loc_params = _loc_filter(location)
+        stock = q(conn, f"""
+            SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
+                   COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') as subcategory,
+                   ROUND(SUM(i.quantity)::numeric,1) as stock_kg
+            FROM raw_fabric_inventory i
+            JOIN raw_fabric_products p ON p.id = i.product_id
+            WHERE i.quantity > 0 {loc_sql}
+            GROUP BY 1, 2
+        """, loc_params)
+        cons = q(conn, f"""
+            SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
+                   COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') as subcategory,
+                   ROUND(SUM({_net_kg('m')})::numeric,1) as consumed_kg
+            FROM raw_fabric_moves m
+            LEFT JOIN raw_fabric_products p ON p.id = m.product_id
+            WHERE {_net_cons_where('m')}
+              AND m.date >= NOW() - (%s || ' days')::interval
+            GROUP BY 1, 2
+        """, (days,))
+
+        cats = {}
+        def _cat(name):
+            return cats.setdefault(name, {"category": name, "stock_kg": 0.0,
+                                          "consumed_kg": 0.0, "_subs": {}})
+        def _sub(cat, name):
+            c = _cat(cat)
+            return c["_subs"].setdefault(name, {"subcategory": name,
+                                                "stock_kg": 0.0, "consumed_kg": 0.0})
+        for r in stock:
+            v = float(r["stock_kg"] or 0)
+            _cat(r["category"])["stock_kg"] += v
+            _sub(r["category"], r["subcategory"])["stock_kg"] += v
+        for r in cons:
+            v = float(r["consumed_kg"] or 0)
+            _cat(r["category"])["consumed_kg"] += v
+            _sub(r["category"], r["subcategory"])["consumed_kg"] += v
+
+        out = []
+        for c in cats.values():
+            subs = sorted(c.pop("_subs").values(),
+                          key=lambda s: s["consumed_kg"], reverse=True)
+            c["stock_kg"] = round(c["stock_kg"], 1)
+            c["consumed_kg"] = round(c["consumed_kg"], 1)
+            c["subcategories"] = subs
+            out.append(c)
+        out.sort(key=lambda c: c["consumed_kg"], reverse=True)
+
+        return {
+            "days": days,
+            "total_stock_kg": round(sum(c["stock_kg"] for c in out), 1),
+            "total_consumed_kg": round(sum(c["consumed_kg"] for c in out), 1),
+            "categories": out,
+        }
 
 # ── Dead stock ──────────────────────────────────────────────
 @fabric_router.get("/api/fabric/dead-stock")

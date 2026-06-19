@@ -161,6 +161,10 @@ def get_vat(pos_location, store_vat=1.16):
 # (incremental overlap); the watchdog widens this for recovery backfills via the
 # --days flag / SYNC_LOOKBACK_DAYS env var.
 LOOKBACK_DAYS = int(os.environ.get("SYNC_LOOKBACK_DAYS", "2"))
+# Module-level guard so the fabric (Odoo) extract runs at most once per hour even
+# though main() is invoked every 60s by the supervising loop. Persists for the
+# lifetime of the process.
+_LAST_FABRIC_EXTRACT = None
 # ── Attendance Sync ───────────────────────────────────────────────────────────
 ATTENDANCE_API_URL = os.environ.get("ATTENDANCE_API_URL", "https://beverly-noncontending-bertram.ngrok-free.dev")
 
@@ -741,6 +745,14 @@ def categorise_products(cur):
         END
         WHERE category IS NULL OR TRIM(category) = ''
     """)
+    # Sync NOOS flag from noos_styles table
+    cur.execute("""
+        UPDATE all_products_clean SET is_noos = FALSE WHERE is_noos = TRUE;
+        UPDATE all_products_clean p
+        SET is_noos = TRUE
+        FROM noos_styles n
+        WHERE p.product_name = n.product_name AND n.active = TRUE;
+    """)
     log.info("✅ Product categorisation done")
 
 def main():
@@ -837,8 +849,11 @@ def main():
     # Production runs on a SEPARATE DB that never ran extract_fabric.py, so the
     # tables start empty and /fabric shows zeros. We bootstrap immediately when
     # the tables are missing/empty (first deploy) so no manual step is needed,
-    # then refresh nightly in the same 21:00 UTC window. extract_fabric.py does a
-    # full TRUNCATE + upsert refresh, so it is safe to re-run.
+    # then refresh HOURLY thereafter (the dashboard wants near-real-time fabric
+    # figures). extract_fabric.py does a full TRUNCATE + upsert refresh, so it is
+    # safe to re-run. A module-level guard rate-limits to once per hour even
+    # though main() runs every 60s.
+    global _LAST_FABRIC_EXTRACT
     fabric_empty = False
     try:
         cur.execute("SELECT to_regclass('public.raw_fabric_inventory')")
@@ -851,7 +866,12 @@ def main():
     except Exception as e:
         log.error("Fabric presence check error: %s", e)
         conn.rollback()
-    if fabric_empty or (21 <= now_utc.hour < 22 and now_utc.minute < 15):
+    fabric_due = (_LAST_FABRIC_EXTRACT is None
+                  or (now_utc - _LAST_FABRIC_EXTRACT).total_seconds() >= 3600)
+    if fabric_empty or fabric_due:
+        # Stamp the attempt time up front so a transient failure waits an hour
+        # (when still empty, the fabric_empty branch retries on the next cycle).
+        _LAST_FABRIC_EXTRACT = now_utc
         try:
             import subprocess, sys
             log.info("Running fabric (Odoo) extract (bootstrap=%s)...", fabric_empty)

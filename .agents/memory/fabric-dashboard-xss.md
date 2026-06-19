@@ -22,3 +22,11 @@ column picker over ~21 product attributes) that widened the unescaped surface.
 `esc(...)` (both the cell text and any `title="..."` attribute). The constrained-enum
 backend params (consumption `group_by` ∈ category/fabric/day/week/month) are safe to
 interpolate into SQL only because they are allowlisted before reaching the query.
+
+**`esc()` is HTML-escaping, NOT JS-string-escaping.** Never interpolate ERP text into an
+inline event handler (`onclick="fn('${esc(v)}')"`) — HTML entities are decoded before the
+JS string is evaluated, so a crafted value (quotes/backslashes) breaks out and executes.
+For row/element handlers carrying untrusted values (e.g. the collapsible category table's
+`toggleConsCat`), put the value in a `data-*` attribute (`esc()`'d, attribute context) and
+read it back via a single delegated `addEventListener` on the container. A code review
+caught this on the new cat/subcat consumption-stock table.

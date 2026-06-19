@@ -154,6 +154,9 @@ table.data th.sortable:hover{color:var(--accent);}
     </div>
     <span class="muted">Location</span>
     <select id="location-filter" onchange="onLocationChange()"></select>
+    <span class="muted">Date range</span>
+    <input type="date" id="g-since" onchange="onDateRangeChange()" title="From" style="width:140px;">
+    <input type="date" id="g-until" onchange="onDateRangeChange()" title="To" style="width:140px;">
     <span id="last-updated" class="muted"></span>
    </div>
   </div>
@@ -267,13 +270,30 @@ table.data th.sortable:hover{color:var(--accent);}
       <div class="section-head">
        <h3>Consumption trend</h3>
        <div class="flex">
-        <input type="date" id="cons-since" onchange="loadConsTrend()" title="From" style="width:140px;">
-        <input type="date" id="cons-until" onchange="loadConsTrend()" title="To" style="width:140px;">
+        <span class="muted">uses topbar date range</span>
         <select id="cons-group" onchange="loadConsTrend()"><option value="month">Monthly</option><option value="week">Weekly</option><option value="day">Daily</option></select>
        </div>
       </div>
       <div id="cons-summary" class="muted" style="margin-bottom:10px;"></div>
       <div id="consumption-bars"><div class="loading">Loading…</div></div>
+     </div>
+    </div>
+    <div class="card" style="padding:0;">
+     <div class="section-head" style="padding:1rem 1rem 0;">
+      <h3>Consumption &amp; stock by category</h3>
+      <span class="muted" id="cons-stock-note">net consumption over the selected range vs current stock</span>
+     </div>
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr>
+        <th>Category / subcategory</th>
+        <th class="r">Units consumed (kg)</th><th class="r">Stock (kg)</th>
+        <th class="r">% Consumed</th><th class="r">% Stock</th>
+        <th class="r">Cover (wks)</th><th class="r">SOR %</th>
+        <th class="r">Variance</th><th>Risk flag</th>
+       </tr></thead>
+       <tbody id="cons-stock-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
+      </table>
      </div>
     </div>
    </section>
@@ -478,7 +498,9 @@ function renderKpis(d){
   const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
   document.getElementById('kpi-cards').innerHTML=`
    <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value">${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub">${fmtKES(d.fabric_stock_value)} &middot; ${fmt(d.fabric_products)} fabrics</p></div>
+   <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value">${fmtKES(totalVal)}</p><p class="kpi-sub">stock + dead stock</p></div>
    <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value">${fmt(d.fabric_stock_kg)}</p><p class="kpi-sub">kg in main warehouse</p></div>
+   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value">${fmt(d.consumption_today_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value">${fmt(d.consumption_30d_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
    <div class="kpi"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}">${cover!=null?fmt1(cover):'—'}</p><p class="kpi-sub">stock &divide; monthly use</p></div>
    <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger">${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">${fmt(d.dead_stock_kg)} kg &middot; ${deadPct.toFixed(0)}% of value</p></div>
@@ -507,31 +529,34 @@ function renderPrintDonut(rows){
 // Selectable columns. "Code" is the internal SKU (default_code) and "Barcode" is
 // the Odoo barcode; the search box matches name, code OR barcode server-side.
 const REG_COLS=[
-  {k:'default_code',label:'Code',type:'code'},
-  {k:'barcode',label:'Barcode',type:'code'},
+  {k:'default_code',label:'Barcode',type:'code'},
   {k:'name',label:'Fabric',type:'name'},
   {k:'fabric_category',label:'Category',type:'text'},
   {k:'fabric_subcategory',label:'Subcategory',type:'text'},
+  {k:'fiber_content',label:'Fabric Composition (%)',type:'text'},
   {k:'plain_print',label:'Finish',type:'pill'},
   {k:'weight_range',label:'Weight',type:'wpill'},
   {k:'fabric_structure',label:'Structure',type:'text'},
   {k:'gsm',label:'GSM',type:'num'},
   {k:'width_m',label:'Width (m)',type:'num1'},
   {k:'kg_per_mtr',label:'Kg/m',type:'num1'},
-  {k:'fiber_content',label:'Fiber',type:'text'},
   {k:'fabric_type',label:'Type',type:'text'},
   {k:'supplier',label:'Supplier',type:'text'},
   {k:'primary_color',label:'Color',type:'text'},
+  {k:'cost_kes',label:'Cost (KES)',type:'kesc'},
+  {k:'cost_per_kg',label:'Cost/kg',type:'kesc'},
+  {k:'cost_metre',label:'Cost/metre',type:'kesc'},
   {k:'qty_metres',label:'Metres',type:'numb'},
   {k:'qty_kg',label:'Kg',type:'num1'},
   {k:'available_metres',label:'Avail (m)',type:'num1'},
   {k:'available_kg',label:'Avail (kg)',type:'num1'},
   {k:'value_kes',label:'Value',type:'kes'},
+  {k:'weeks_cover',label:'Wks cover',type:'wcover'},
   {k:'last_move',label:'Last move',type:'date'},
   {k:'days_since_move',label:'Days idle',type:'num'},
 ];
-const REG_DEFAULT=['default_code','name','fabric_subcategory','plain_print','weight_range','gsm','qty_metres','qty_kg','value_kes','last_move'];
-const NUM_TYPES={num:1,num1:1,numb:1,kes:1};
+const REG_DEFAULT=['default_code','name','fabric_subcategory','plain_print','weight_range','gsm','cost_kes','qty_metres','qty_kg','value_kes','weeks_cover','last_move'];
+const NUM_TYPES={num:1,num1:1,numb:1,kes:1,kesc:1,wcover:1};
 let regCols=(()=>{try{const s=JSON.parse(localStorage.getItem('fabricRegCols'));return Array.isArray(s)&&s.length?s.filter(k=>REG_COLS.some(c=>c.k===k)):REG_DEFAULT.slice();}catch(_){return REG_DEFAULT.slice();}})();
 let regSort={key:'value_kes',dir:'desc'};
 let regTimer;
@@ -561,6 +586,8 @@ function regCell(col,r){
     case 'num1':return `<td class="r">${v!=null&&v!==''?fmt1(v):'—'}</td>`;
     case 'numb':return `<td class="r" style="font-weight:600;">${v!=null&&v!==''?fmt(v):'—'}</td>`;
     case 'kes':return `<td class="r" style="color:var(--muted);">${fmtKES(v)}</td>`;
+    case 'kesc':return `<td class="r" style="white-space:nowrap;">${v!=null&&v!==''?'KES '+fmt1(v):'—'}</td>`;
+    case 'wcover':return `<td class="r">${v!=null&&v!==''?`<span class="pill ${v<2?'pill-red':v<6?'pill-amber':'pill-green'}">${fmt1(v)}</span>`:'—'}</td>`;
     case 'date':return `<td style="color:var(--muted);font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
     default:return `<td style="color:var(--text-sub);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
   }
@@ -659,7 +686,90 @@ async function loadDeadStock(){
 }
 
 // ── Movement & use ──
-function loadMovementPage(){loadFlow();loadMovement();loadConsTrend();}
+function loadMovementPage(){loadFlow();loadMovement();loadConsTrend();loadConsStock();}
+// Reload date-range-driven content for whatever date-sensitive page is visible.
+function onDateRangeChange(){
+  if(document.getElementById('page-movement').style.display!=='none'){
+    loadConsTrend();loadConsStock();
+  }
+}
+function riskFlag(variance){
+  // variance = %consumed − %stock (percentage points). Faster consumption than
+  // stock share (positive) → stockout risk; slower (negative) → overstock risk.
+  const a=Math.abs(variance);
+  if(a<1)return {label:'Healthy',cls:'pill-green'};
+  if(a<3)return variance>0?{label:'Monitor (Stockout watch)',cls:'pill-amber'}
+                          :{label:'Monitor (Overstock watch)',cls:'pill-amber'};
+  return variance>0?{label:'Stockout Risk',cls:'pill-red'}
+                   :{label:'Overstock Risk',cls:'pill-red'};
+}
+let consStockOpen={};
+function consStockRow(r,totC,totS,days,isCat){
+  const pctC=totC>0?(r.consumed_kg/totC*100):0;
+  const pctS=totS>0?(r.stock_kg/totS*100):0;
+  const weekly=r.consumed_kg>0?(r.consumed_kg/(days/7)):0;
+  const cover=weekly>0?(r.stock_kg/weekly):null;
+  const denom=r.consumed_kg+r.stock_kg;
+  const sor=denom>0?(r.consumed_kg/denom*100):0;
+  const variance=pctC-pctS;
+  const rf=riskFlag(variance);
+  const name=isCat?esc(r.category):esc(r.subcategory);
+  const label=isCat
+    ? `<td style="font-weight:700;"><span class="caret">${consStockOpen[r.category]?'▾':'▸'}</span> ${name}</td>`
+    : `<td style="padding-left:28px;color:var(--text-sub);">${name}</td>`;
+  // Category value is carried in a data-* attribute (HTML-escaped) and read back
+  // via event delegation — never interpolated into a JS string handler (XSS-safe).
+  const click=isCat?` data-cat="${esc(r.category)}" style="cursor:pointer;"`:'';
+  const trcls=isCat?'cat-row':'sub-row';
+  return `<tr class="${trcls}"${click}>${label}
+    <td class="r"${isCat?' style="font-weight:600;"':''}>${fmt1(r.consumed_kg)}</td>
+    <td class="r"${isCat?' style="font-weight:600;"':''}>${fmt1(r.stock_kg)}</td>
+    <td class="r">${pctC.toFixed(1)}%</td>
+    <td class="r">${pctS.toFixed(1)}%</td>
+    <td class="r">${cover!=null?fmt1(cover):'—'}</td>
+    <td class="r">${sor.toFixed(1)}%</td>
+    <td class="r">${variance>0?'+':''}${variance.toFixed(2)}%</td>
+    <td><span class="pill ${rf.cls}">${rf.label}</span></td>
+  </tr>`;
+}
+let consStockCache=null,consStockBound=false;
+function toggleConsCat(cat){consStockOpen[cat]=!consStockOpen[cat];renderConsStock();}
+function renderConsStock(){
+  const d=consStockCache;if(!d)return;
+  const body=document.getElementById('cons-stock-body');
+  if(!consStockBound){
+    // Event delegation: read the (untrusted) category from a data-* attribute,
+    // never from an inline JS handler. Bound once.
+    body.addEventListener('click',e=>{
+      const tr=e.target.closest('tr.cat-row');
+      if(tr&&tr.dataset.cat!=null)toggleConsCat(tr.dataset.cat);
+    });
+    consStockBound=true;
+  }
+  if(!d.categories.length){body.innerHTML='<tr><td colspan="9" class="loading">No consumption in this period.</td></tr>';return;}
+  const totC=d.total_consumed_kg,totS=d.total_stock_kg,days=d.days;
+  let html='';
+  d.categories.forEach(c=>{
+    html+=consStockRow(c,totC,totS,days,true);
+    if(consStockOpen[c.category]){
+      c.subcategories.forEach(s=>{html+=consStockRow(s,totC,totS,days,false);});
+    }
+  });
+  body.innerHTML=html;
+}
+async function loadConsStock(){
+  try{
+    const since=document.getElementById('g-since').value;
+    const until=document.getElementById('g-until').value;
+    let days=30;
+    if(since&&until){const ms=new Date(until)-new Date(since);if(ms>0)days=Math.max(1,Math.round(ms/86400000)+1);}
+    const note=document.getElementById('cons-stock-note');
+    if(note)note.textContent=`net consumption over ${days} days vs current stock`;
+    const params=new URLSearchParams({location:loc(),days});
+    consStockCache=await apiFetch('/api/fabric/category-stock-consumption?'+params);
+    renderConsStock();
+  }catch(e){rowErr('cons-stock-body',9,e);}
+}
 async function loadFlow(){
   try{
     const data=await apiFetch('/api/fabric/movement-flow?months=6');
@@ -693,8 +803,8 @@ async function loadMovement(){
 async function loadConsTrend(){
   try{
     const g=document.getElementById('cons-group').value;
-    const since=document.getElementById('cons-since').value;
-    const until=document.getElementById('cons-until').value;
+    const since=document.getElementById('g-since').value;
+    const until=document.getElementById('g-until').value;
     const params=new URLSearchParams({group_by:g});
     params.set('since',since||'2025-01-01');
     if(until)params.set('until',until);
@@ -826,12 +936,12 @@ async function init(){
     const p=document.getElementById('col-picker');
     if(p&&p.style.display!=='none'&&!e.target.closest('.popwrap'))p.style.display='none';
   });
-  // Default consumption date range: last 12 months → today (local time, ISO date)
+  // Default global date range: last 30 days → today (local time, ISO date)
   const today=new Date();
-  const yago=new Date(today.getFullYear()-1,today.getMonth(),today.getDate());
+  const ago=new Date(today.getFullYear(),today.getMonth(),today.getDate()-29);
   const iso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  document.getElementById('cons-since').value=iso(yago);
-  document.getElementById('cons-until').value=iso(today);
+  document.getElementById('g-since').value=iso(ago);
+  document.getElementById('g-until').value=iso(today);
   try{
     const f=await apiFetch('/api/fabric/filters');
     const sel=document.getElementById('location-filter');
