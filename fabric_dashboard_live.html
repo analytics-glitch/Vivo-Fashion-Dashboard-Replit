@@ -35,6 +35,11 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .nav-item{display:flex;align-items:center;gap:9px;padding:9px 11px;font-size:13.5px;font-weight:500;color:var(--text-sub);border-radius:9px;cursor:pointer;margin-bottom:2px;transition:background .12s,color .12s;}
 .nav-item:hover{background:rgba(26,92,56,.06);color:var(--text);}
 .nav-item.active{color:#fff;background:var(--accent);font-weight:600;}
+.rsv-lbl{display:block;font-size:11px;font-weight:600;color:var(--text-sub);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;}
+.resv-dropdown{position:absolute;top:100%;left:0;z-index:30;width:340px;max-height:280px;overflow:auto;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.12);margin-top:4px;}
+.resv-opt{padding:8px 11px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border);}
+.resv-opt:hover{background:rgba(26,92,56,.07);}
+.resv-opt .ro-code{color:var(--text-sub);font-size:11px;}
 .back-link{display:block;padding:16px 9px 0;font-size:12px;color:var(--muted);text-decoration:none;}
 .back-link:hover{color:var(--accent);}
 
@@ -137,6 +142,8 @@ table.data th.sortable:hover{color:var(--accent);}
   <div class="nav-item" data-page="suppliers">Suppliers</div>
   <div class="nav-group">Production</div>
   <div class="nav-item" data-page="bom">BOM explorer</div>
+  <div class="nav-group">Buying</div>
+  <div class="nav-item" data-page="reservations">Fabric reservations</div>
   <a href="/" class="back-link">&larr; Back to Vivo BI</a>
  </aside>
 
@@ -375,6 +382,59 @@ table.data th.sortable:hover{color:var(--accent);}
     </div>
    </section>
 
+   <!-- RESERVATIONS -->
+   <section id="page-reservations" style="display:none;">
+    <div class="card">
+     <div class="section-head"><h3>Reserve fabric for a style</h3><span class="muted">earmark stock so it isn't double-allocated</span></div>
+     <div id="resv-form-err"></div>
+     <div class="flex" style="flex-wrap:wrap;gap:12px;align-items:flex-end;">
+      <div style="position:relative;">
+       <label class="rsv-lbl">Fabric</label>
+       <input id="resv-fabric-search" placeholder="Search fabric name or code…" autocomplete="off" style="width:280px;" oninput="debouncedProductSearch()" onfocus="debouncedProductSearch()">
+       <input type="hidden" id="resv-product-id">
+       <div id="resv-fabric-list" class="resv-dropdown" style="display:none;"></div>
+      </div>
+      <div>
+       <label class="rsv-lbl">Quantity</label>
+       <input id="resv-qty" type="number" min="0" step="any" placeholder="0" style="width:110px;">
+      </div>
+      <div>
+       <label class="rsv-lbl">Unit</label>
+       <select id="resv-uom" style="width:90px;"><option value="m">metres</option><option value="kg">kg</option></select>
+      </div>
+      <div>
+       <label class="rsv-lbl">Style name</label>
+       <input id="resv-style" placeholder="e.g. SS26 Wrap Dress" style="width:220px;">
+      </div>
+      <div>
+       <label class="rsv-lbl">Note (optional)</label>
+       <input id="resv-note" placeholder="optional" style="width:180px;">
+      </div>
+      <button class="btn btn-primary" onclick="createReservation()">Reserve</button>
+     </div>
+     <div id="resv-fabric-hint" class="muted" style="margin-top:8px;font-size:12px;"></div>
+    </div>
+    <div class="flex" style="margin-bottom:1.1rem;gap:10px;">
+     <select id="resv-status" onchange="loadReservations()">
+      <option value="active">Open reservations</option>
+      <option value="used">Used</option>
+      <option value="all">All</option>
+     </select>
+     <input id="resv-search" placeholder="Filter fabric / style…" oninput="debouncedResvSearch()" style="width:240px;">
+    </div>
+    <div class="card" style="padding:0;">
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr>
+        <th>Fabric</th><th>Style</th><th class="r">Reserved</th><th>Reserved on</th>
+        <th class="r">Days held</th><th>By</th><th>Status</th><th></th>
+       </tr></thead>
+       <tbody id="resv-body"><tr><td colspan="8" class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
+    </div>
+   </section>
+
   </div>
  </main>
 </div>
@@ -446,8 +506,8 @@ function bars(id,rows,labelKey,valKey,subFmt,colored){
 }
 
 // ── Navigation ──
-const LOADERS={register:()=>loadRegister(0),ageing:loadAgeing,deadstock:loadDeadStock,movement:loadMovementPage,pos:loadPOsPage,suppliers:loadSuppliers,bom:loadBomPage};
-const DESCS={overview:'Fabric stock, value and health across the warehouse',register:'Searchable register of every fabric in stock',ageing:'How long stock has sat since its last movement',deadstock:'Fabric parked in the dead-stock location',movement:'What is coming in, going out and being consumed',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',bom:'Bills of material — which fabrics each style consumes'};
+const LOADERS={register:()=>loadRegister(0),ageing:loadAgeing,deadstock:loadDeadStock,movement:loadMovementPage,pos:loadPOsPage,suppliers:loadSuppliers,bom:loadBomPage,reservations:loadReservations};
+const DESCS={overview:'Fabric stock, value and health across the warehouse',register:'Searchable register of every fabric in stock',ageing:'How long stock has sat since its last movement',deadstock:'Fabric parked in the dead-stock location',movement:'What is coming in, going out and being consumed',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',bom:'Bills of material — which fabrics each style consumes',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used'};
 const loadedOnce={};
 document.querySelectorAll('.nav-item').forEach(el=>{
   el.addEventListener('click',()=>{
@@ -550,13 +610,15 @@ const REG_COLS=[
   {k:'qty_kg',label:'Kg',type:'num1'},
   {k:'available_metres',label:'Avail (m)',type:'num1'},
   {k:'available_kg',label:'Avail (kg)',type:'num1'},
+  {k:'team_reserved_metres',label:'Reserved (m)',type:'rsv'},
+  {k:'team_reserved_kg',label:'Reserved (kg)',type:'rsv'},
   {k:'value_kes',label:'Value',type:'kes'},
   {k:'weeks_cover',label:'Wks cover',type:'wcover'},
   {k:'last_move',label:'Last move',type:'date'},
   {k:'days_since_move',label:'Days idle',type:'num'},
 ];
-const REG_DEFAULT=['default_code','name','fabric_subcategory','plain_print','weight_range','gsm','cost_kes','qty_metres','qty_kg','value_kes','weeks_cover','last_move'];
-const NUM_TYPES={num:1,num1:1,numb:1,kes:1,kesc:1,wcover:1};
+const REG_DEFAULT=['default_code','name','fabric_subcategory','plain_print','weight_range','gsm','cost_kes','qty_metres','qty_kg','team_reserved_kg','value_kes','weeks_cover','last_move'];
+const NUM_TYPES={num:1,num1:1,numb:1,kes:1,kesc:1,wcover:1,rsv:1};
 let regCols=(()=>{try{const s=JSON.parse(localStorage.getItem('fabricRegCols'));return Array.isArray(s)&&s.length?s.filter(k=>REG_COLS.some(c=>c.k===k)):REG_DEFAULT.slice();}catch(_){return REG_DEFAULT.slice();}})();
 let regSort={key:'value_kes',dir:'desc'};
 let regTimer;
@@ -588,6 +650,7 @@ function regCell(col,r){
     case 'kes':return `<td class="r" style="color:var(--muted);">${fmtKES(v)}</td>`;
     case 'kesc':return `<td class="r" style="white-space:nowrap;">${v!=null&&v!==''?'KES '+fmt1(v):'—'}</td>`;
     case 'wcover':return `<td class="r">${v!=null&&v!==''?`<span class="pill ${v<2?'pill-red':v<6?'pill-amber':'pill-green'}">${fmt1(v)}</span>`:'—'}</td>`;
+    case 'rsv':return `<td class="r">${v!=null&&v!==''&&Number(v)>0?`<span class="pill pill-amber">${fmt1(v)}</span>`:'—'}</td>`;
     case 'date':return `<td style="color:var(--muted);font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
     default:return `<td style="color:var(--text-sub);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
   }
@@ -926,6 +989,114 @@ async function loadWhereUsed(){
   }catch(e){rowErr('wu-body',4,e);}
 }
 
+// ── Reservations (buying team) ──
+let psTimer, resvTimer, resvBound=false;
+function debouncedProductSearch(){clearTimeout(psTimer);psTimer=setTimeout(runProductSearch,250);}
+function debouncedResvSearch(){clearTimeout(resvTimer);resvTimer=setTimeout(loadReservations,300);}
+async function runProductSearch(){
+  const term=document.getElementById('resv-fabric-search').value.trim();
+  const box=document.getElementById('resv-fabric-list');
+  try{
+    const rows=await apiFetch('/api/fabric/product-search?q='+encodeURIComponent(term));
+    if(!rows.length){box.innerHTML='<div class="resv-opt muted">No matching fabric.</div>';box.style.display='';return;}
+    box.innerHTML=rows.map(r=>{
+      const sub=[r.default_code?('#'+esc(r.default_code)):'',r.available_metres!=null?fmt1(r.available_metres)+' m avail':'',r.available_kg!=null?fmt1(r.available_kg)+' kg avail':''].filter(Boolean).join(' · ');
+      return `<div class="resv-opt" data-id="${r.id}" data-name="${esc(r.name)}" data-kgm="${r.kg_per_mtr||0}">${esc(r.name||'—')}<div class="ro-code">${sub}</div></div>`;
+    }).join('');
+    box.style.display='';
+  }catch(e){box.innerHTML='<div class="resv-opt muted">Could not search.</div>';box.style.display='';}
+}
+function pickFabric(el){
+  document.getElementById('resv-product-id').value=el.dataset.id;
+  document.getElementById('resv-fabric-search').value=el.dataset.name;
+  document.getElementById('resv-fabric-list').style.display='none';
+  const kgm=Number(el.dataset.kgm)||0;
+  document.getElementById('resv-fabric-hint').textContent=kgm>0?('Conversion: '+kgm+' kg per metre'):'No kg/metre factor on this fabric — reserve it in kg.';
+}
+async function createReservation(){
+  const errEl=document.getElementById('resv-form-err');
+  errEl.innerHTML='';
+  const pid=document.getElementById('resv-product-id').value;
+  const qty=parseFloat(document.getElementById('resv-qty').value);
+  const uom=document.getElementById('resv-uom').value;
+  const style=document.getElementById('resv-style').value.trim();
+  const note=document.getElementById('resv-note').value.trim();
+  if(!pid){errEl.innerHTML='<div class="banner banner-err">Pick a fabric from the list first.</div>';return;}
+  if(!(qty>0)){errEl.innerHTML='<div class="banner banner-err">Enter a quantity greater than zero.</div>';return;}
+  if(!style){errEl.innerHTML='<div class="banner banner-err">Enter the style name this fabric is reserved for.</div>';return;}
+  try{
+    const r=await fetch('/api/fabric/reservations',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({product_id:Number(pid),qty,uom,style_name:style,note})});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
+    // reset form
+    document.getElementById('resv-product-id').value='';
+    document.getElementById('resv-fabric-search').value='';
+    document.getElementById('resv-qty').value='';
+    document.getElementById('resv-style').value='';
+    document.getElementById('resv-note').value='';
+    document.getElementById('resv-fabric-hint').textContent='';
+    loadedOnce.register=false; // register reserved column will refresh on next visit
+    loadReservations();
+  }catch(e){errEl.innerHTML='<div class="banner banner-err">'+esc(e.message==='auth'?'Your session has expired. Sign in again.':('Could not reserve: '+e.message))+'</div>';}
+}
+async function loadReservations(){
+  const status=document.getElementById('resv-status').value;
+  const search=document.getElementById('resv-search').value.trim();
+  const body=document.getElementById('resv-body');
+  if(!resvBound){
+    body.addEventListener('click',e=>{
+      const useBtn=e.target.closest('button[data-use]');
+      const delBtn=e.target.closest('button[data-del]');
+      if(useBtn)markReservationUsed(useBtn.dataset.use);
+      else if(delBtn)deleteReservation(delBtn.dataset.del);
+    });
+    resvBound=true;
+  }
+  const params=new URLSearchParams({status});if(search)params.set('search',search);
+  try{
+    const d=await apiFetch('/api/fabric/reservations?'+params);
+    renderReservations(d.items||[]);
+  }catch(e){rowErr('resv-body',8,e);}
+}
+function renderReservations(items){
+  const body=document.getElementById('resv-body');
+  if(!items.length){body.innerHTML='<tr><td colspan="8" class="muted" style="padding:1rem;">No reservations.</td></tr>';return;}
+  body.innerHTML=items.map(r=>{
+    const qtyTxt=r.uom==='kg'?(fmt1(r.qty_kg)+' kg'):(fmt1(r.qty)+' m');
+    const isActive=r.status==='active';
+    const stPill=isActive?'<span class="pill pill-amber">Open</span>':(r.status==='used'?'<span class="pill pill-green">Used</span>':'<span class="pill pill-neutral">'+esc(r.status)+'</span>');
+    const held=isActive?(r.days_reserved!=null?fmt(r.days_reserved)+'d':'—'):(r.days_to_use!=null?fmt(r.days_to_use)+'d to use':'—');
+    const act=isActive
+      ? `<button class="btn btn-primary" data-use="${r.id}" style="padding:4px 10px;font-size:12px;">Mark used</button> <button class="btn" data-del="${r.id}" style="padding:4px 8px;font-size:12px;">Delete</button>`
+      : `<button class="btn" data-del="${r.id}" style="padding:4px 8px;font-size:12px;">Delete</button>`;
+    const fab=esc(r.fabric_name||'—')+(r.default_code?` <span class="muted" style="font-size:11px;">#${esc(r.default_code)}</span>`:'');
+    return `<tr>
+      <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.fabric_name||'')}">${fab}</td>
+      <td title="${esc(r.note||'')}">${esc(r.style_name||'—')}</td>
+      <td class="r" style="font-weight:600;white-space:nowrap;">${qtyTxt}</td>
+      <td style="white-space:nowrap;color:var(--muted);font-size:12px;">${esc(r.reserved_on||'—')}</td>
+      <td class="r" style="white-space:nowrap;">${held}</td>
+      <td style="font-size:12px;color:var(--text-sub);">${esc(r.reserved_by_name||'—')}</td>
+      <td>${stPill}</td>
+      <td style="white-space:nowrap;text-align:right;">${act}</td>
+    </tr>`;
+  }).join('');
+}
+async function markReservationUsed(id){
+  try{
+    const r=await fetch('/api/fabric/reservations/'+encodeURIComponent(id)+'/use',{method:'POST',credentials:'include'});
+    if(!r.ok)throw new Error('http '+r.status);
+    loadedOnce.register=false;loadReservations();
+  }catch(e){alert('Could not mark used.');}
+}
+async function deleteReservation(id){
+  if(!confirm('Delete this reservation?'))return;
+  try{
+    const r=await fetch('/api/fabric/reservations/'+encodeURIComponent(id),{method:'DELETE',credentials:'include'});
+    if(!r.ok)throw new Error('http '+r.status);
+    loadedOnce.register=false;loadReservations();
+  }catch(e){alert('Could not delete.');}
+}
+
 // ── Boot ──
 async function init(){
   // Units segmented control reflects stored preference
@@ -935,6 +1106,11 @@ async function init(){
   document.addEventListener('click',e=>{
     const p=document.getElementById('col-picker');
     if(p&&p.style.display!=='none'&&!e.target.closest('.popwrap'))p.style.display='none';
+    // Reservations fabric dropdown: pick / close-on-outside
+    const opt=e.target.closest('#resv-fabric-list .resv-opt');
+    if(opt&&opt.dataset.id){pickFabric(opt);return;}
+    const box=document.getElementById('resv-fabric-list');
+    if(box&&box.style.display!=='none'&&!e.target.closest('#resv-fabric-search')&&!e.target.closest('#resv-fabric-list'))box.style.display='none';
   });
   // Default global date range: last 30 days → today (local time, ISO date)
   const today=new Date();

@@ -4,9 +4,49 @@ Serves data for the Fabric BI dashboard
 Run: uvicorn fabric_api:app --port 8081
 """
 import psycopg2.extras
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request, Body, HTTPException
 
 fabric_router = APIRouter(tags=["fabric"])
+
+# Manual buying-team reservations are stored in an app-owned table created lazily
+# (idempotent) the first time a reservation endpoint is hit. This is distinct from
+# Odoo's own `raw_fabric_inventory.reserved_qty` (ERP allocations).
+_FABRIC_TABLES_READY = False
+
+def _ensure_fabric_tables(conn):
+    global _FABRIC_TABLES_READY
+    if _FABRIC_TABLES_READY:
+        return
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_reservations (
+                id               SERIAL PRIMARY KEY,
+                product_id       INTEGER NOT NULL,
+                qty              NUMERIC NOT NULL,
+                uom              TEXT NOT NULL,
+                qty_kg           NUMERIC NOT NULL,
+                style_name       TEXT NOT NULL,
+                note             TEXT,
+                status           TEXT NOT NULL DEFAULT 'active',
+                reserved_by      TEXT,
+                reserved_by_name TEXT,
+                reserved_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+                used_at          TIMESTAMPTZ,
+                used_by          TEXT
+            )""")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_resv_product "
+                    "ON fabric_reservations(product_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_resv_status "
+                    "ON fabric_reservations(status)")
+    conn.commit()
+    _FABRIC_TABLES_READY = True
+
+def _fabric_actor(request):
+    """(user_id, name) for the current signed-in user, mirroring CRM's actor helper."""
+    u = getattr(request.state, "user", None) or {}
+    uid = u.get("user_id") or u.get("id") or "system"
+    name = u.get("name") or u.get("email") or "system"
+    return uid, name
 
 def _get_conn():
     """Use the main app's connection pool."""
@@ -169,6 +209,9 @@ def register(
     offset: int = Query(default=0),
 ):
     with _get_conn() as conn:
+        # The register's `resv` CTE reads fabric_reservations; ensure it exists even
+        # on a fresh DB where no reservation endpoint has been hit yet.
+        _ensure_fabric_tables(conn)
         # Whitelist of sortable output columns (aliases in the SELECT below) so the
         # client can drive ORDER BY without any SQL-injection surface.
         ALLOWED_SORT = {
@@ -177,6 +220,7 @@ def register(
             "kg_per_mtr", "fiber_content", "fabric_type", "supplier", "primary_color",
             "qty_kg", "available_kg", "qty_metres", "available_metres", "value_kes",
             "cost_kes", "cost_per_kg", "cost_metre", "weeks_cover",
+            "team_reserved_kg", "team_reserved_metres",
             "last_move", "days_since_move",
         }
         sort_col = sort if sort in ALLOWED_SORT else "value_kes"
@@ -200,6 +244,7 @@ def register(
             params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
 
         # Trailing-30-day net consumption per product → weekly run-rate → weeks of cover.
+        # `resv` = sum of OPEN (active) buying-team reservations, in kg, per fabric.
         rows = q(conn, f"""
             WITH cons30 AS (
               SELECT m.product_id, SUM({_net_kg('m')}) as consumed_30d_kg
@@ -207,6 +252,11 @@ def register(
               WHERE {_net_cons_where('m')}
                 AND m.date >= NOW() - INTERVAL '30 days'
               GROUP BY m.product_id
+            ), resv AS (
+              SELECT product_id, SUM(qty_kg) as reserved_kg
+              FROM fabric_reservations
+              WHERE status='active'
+              GROUP BY product_id
             )
             SELECT 
               p.id, p.name, p.default_code, p.barcode, p.fabric_category, p.fabric_subcategory,
@@ -223,11 +273,14 @@ def register(
               ROUND(CASE WHEN p.kg_per_mtr>0 THEN i.available/p.kg_per_mtr ELSE NULL END::numeric,1) as available_metres,
               ROUND(i.total_value::numeric,0) as value_kes,
               ROUND((i.quantity / NULLIF((COALESCE(c.consumed_30d_kg,0) / ({DAYS_PER_MONTH}/7.0)), 0))::numeric,1) as weeks_cover,
+              ROUND(COALESCE(rv.reserved_kg,0)::numeric,2) as team_reserved_kg,
+              ROUND(CASE WHEN p.kg_per_mtr>0 THEN COALESCE(rv.reserved_kg,0)/p.kg_per_mtr ELSE NULL END::numeric,1) as team_reserved_metres,
               (SELECT MAX(date)::date FROM raw_fabric_moves m WHERE m.product_id=i.product_id) as last_move,
               CURRENT_DATE - (SELECT MAX(date)::date FROM raw_fabric_moves m WHERE m.product_id=i.product_id) as days_since_move
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             LEFT JOIN cons30 c ON c.product_id = i.product_id
+            LEFT JOIN resv rv ON rv.product_id = i.product_id
             WHERE {' AND '.join(where)}
             {order_by}
             LIMIT %s OFFSET %s
@@ -654,3 +707,133 @@ def filters():
             "plain_print": ["Plain", "Print"],
             "weight_range": ["Light", "Medium", "Heavy"],
         }
+
+# ── Buying-team manual reservations ─────────────────────────
+# Distinct from Odoo's ERP `reserved_qty`: the buying team earmarks fabric for a
+# specific style, tracks how long it has been held, then marks it used.
+_RESV_UOMS = {"m", "kg"}
+
+@fabric_router.get("/api/fabric/product-search")
+def product_search(q_: str = Query(default="", alias="q"), limit: int = Query(default=20)):
+    """Lightweight fabric picker for the reservation form."""
+    term = (q_ or "").strip()
+    limit = max(1, min(int(limit or 20), 50))
+    with _get_conn() as conn:
+        where = "i.quantity > 0"
+        params = []
+        if term:
+            where += " AND (p.name ILIKE %s OR p.default_code ILIKE %s OR p.barcode ILIKE %s)"
+            params += [f"%{term}%", f"%{term}%", f"%{term}%"]
+        return q(conn, f"""
+            SELECT p.id, p.name, p.default_code, p.uom,
+              ROUND(p.kg_per_mtr::numeric,4) as kg_per_mtr,
+              ROUND(SUM(i.available)::numeric,2) as available_kg,
+              ROUND(CASE WHEN p.kg_per_mtr>0 THEN SUM(i.available)/p.kg_per_mtr ELSE NULL END::numeric,1) as available_metres
+            FROM raw_fabric_inventory i
+            JOIN raw_fabric_products p ON p.id = i.product_id
+            WHERE {where}
+            GROUP BY p.id, p.name, p.default_code, p.uom, p.kg_per_mtr
+            ORDER BY p.name
+            LIMIT %s
+        """, params + [limit])
+
+@fabric_router.get("/api/fabric/reservations")
+def list_reservations(status: str = Query(default="active"), search: str = Query(default=None)):
+    with _get_conn() as conn:
+        _ensure_fabric_tables(conn)
+        where = ["1=1"]
+        params = []
+        if status and status.lower() != "all":
+            where.append("r.status = %s"); params.append(status.lower())
+        if search:
+            where.append("(p.name ILIKE %s OR p.default_code ILIKE %s OR r.style_name ILIKE %s)")
+            params += [f"%{search}%", f"%{search}%", f"%{search}%"]
+        rows = q(conn, f"""
+            SELECT r.id, r.product_id, r.qty, r.uom, r.qty_kg, r.style_name, r.note,
+              r.status, r.reserved_by_name, r.reserved_at::date as reserved_on,
+              r.used_at::date as used_on, r.used_by,
+              p.name as fabric_name, p.default_code, p.kg_per_mtr,
+              ROUND(CASE WHEN p.kg_per_mtr>0 THEN r.qty_kg/p.kg_per_mtr ELSE NULL END::numeric,1) as qty_metres,
+              (CURRENT_DATE - r.reserved_at::date) as days_reserved,
+              CASE WHEN r.used_at IS NOT NULL
+                   THEN (r.used_at::date - r.reserved_at::date) END as days_to_use
+            FROM fabric_reservations r
+            LEFT JOIN raw_fabric_products p ON p.id = r.product_id
+            WHERE {' AND '.join(where)}
+            ORDER BY (r.status='active') DESC, r.reserved_at DESC
+            LIMIT 500
+        """, params)
+        return {"items": rows}
+
+@fabric_router.post("/api/fabric/reservations")
+def create_reservation(request: Request, body: dict = Body(...)):
+    product_id = body.get("product_id")
+    style_name = (body.get("style_name") or "").strip()
+    uom = (body.get("uom") or "").strip().lower()
+    note = (body.get("note") or "").strip() or None
+    try:
+        qty = float(body.get("qty"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="qty must be a number")
+    if not product_id:
+        raise HTTPException(status_code=400, detail="product_id is required")
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="qty must be greater than zero")
+    if uom not in _RESV_UOMS:
+        raise HTTPException(status_code=400, detail="uom must be 'm' or 'kg'")
+    if not style_name:
+        raise HTTPException(status_code=400, detail="style_name is required")
+    uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_fabric_tables(conn)
+        prod = q(conn, "SELECT id, name, kg_per_mtr FROM raw_fabric_products WHERE id=%s",
+                 (product_id,))
+        if not prod:
+            raise HTTPException(status_code=404, detail="fabric not found")
+        kg_per_mtr = prod[0].get("kg_per_mtr") or 0
+        if uom == "kg":
+            qty_kg = qty
+        else:  # metres → kg
+            if not kg_per_mtr or kg_per_mtr <= 0:
+                raise HTTPException(status_code=400,
+                    detail="this fabric has no kg/m factor; reserve it in kg instead")
+            qty_kg = qty * float(kg_per_mtr)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                INSERT INTO fabric_reservations
+                  (product_id, qty, uom, qty_kg, style_name, note, reserved_by, reserved_by_name)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+            """, (product_id, qty, uom, round(qty_kg, 3), style_name, note, uid, name))
+            new_id = cur.fetchone()["id"]
+        conn.commit()
+        return {"id": new_id, "ok": True}
+
+@fabric_router.post("/api/fabric/reservations/{resv_id}/use")
+def mark_reservation_used(resv_id: int, request: Request):
+    uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_fabric_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE fabric_reservations
+                SET status='used', used_at=now(), used_by=%s
+                WHERE id=%s AND status='active'
+            """, (name, resv_id))
+            updated = cur.rowcount
+        conn.commit()
+        if not updated:
+            raise HTTPException(status_code=404,
+                detail="reservation not found or already closed")
+        return {"ok": True}
+
+@fabric_router.delete("/api/fabric/reservations/{resv_id}")
+def delete_reservation(resv_id: int, request: Request):
+    with _get_conn() as conn:
+        _ensure_fabric_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM fabric_reservations WHERE id=%s", (resv_id,))
+            deleted = cur.rowcount
+        conn.commit()
+        if not deleted:
+            raise HTTPException(status_code=404, detail="reservation not found")
+        return {"ok": True}
