@@ -24,6 +24,7 @@ import {
   Search,
   Bell,
   ArrowRight,
+  ArrowLeft,
   AlertOctagon,
   Settings,
   LifeBuoy,
@@ -159,6 +160,17 @@ export default function AppShell() {
               <div className="text-[9px] uppercase tracking-[0.2em] text-[var(--vivo-muted)]">Clienteling</div>
             </div>
           </Link>
+
+          {/* Back to main BI Dashboard (full navigation out of the CRM SPA) */}
+          <a
+            href="/"
+            className="hidden md:inline-flex items-center gap-1.5 h-9 px-2.5 mr-1 rounded-sm border border-[var(--vivo-border)] bg-[var(--vivo-bg)] text-[12px] text-[var(--vivo-muted)] hover:text-[var(--vivo-navy)] hover:border-[var(--vivo-navy)] transition shrink-0"
+            data-testid="back-to-dashboard"
+            title="Back to main BI Dashboard"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            <span className="hidden lg:inline">Dashboard</span>
+          </a>
 
           {/* Desktop nav */}
           <nav className="hidden md:flex items-center gap-0 flex-1 min-w-0 overflow-x-auto no-scrollbar" data-testid="top-nav-items">
@@ -386,6 +398,15 @@ export default function AppShell() {
         {mobileOpen && (
           <div className="md:hidden border-t border-[var(--vivo-border)] bg-white" data-testid="mobile-menu">
             <nav className="px-3 py-2">
+              <a
+                href="/"
+                onClick={() => setMobileOpen(false)}
+                className="flex items-center gap-3 px-3 py-2.5 text-sm rounded-sm text-[var(--vivo-muted)] hover:text-[var(--vivo-navy)] border-b border-[var(--vivo-border)] mb-1"
+                data-testid="back-to-dashboard-mobile"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                Back to Dashboard
+              </a>
               {items.map((item, idx) => {
                 const prev = items[idx - 1];
                 const needsHeader = !prev || prev.group !== item.group;
