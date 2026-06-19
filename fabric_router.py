@@ -22,6 +22,45 @@ def q(conn, sql, params=()):
         cur.execute(sql, params)
         return [dict(r) for r in cur.fetchall()]
 
+# ── Consumption / returns model ─────────────────────────────
+# Fabric is "consumed" by an OUT move to production. Some of it comes back as a
+# return — an INTERNAL move whose location_from is the production virtual
+# location. Net consumption = OUT − returns. The production location is a single
+# fixed value (no LIKE needed), which also avoids the psycopg2 literal-% trap.
+PROD_LOC = "Virtual Locations/Production"
+
+def _kg(alias="m"):
+    return f"(CASE WHEN {alias}.uom='g' THEN {alias}.qty/1000 ELSE {alias}.qty END)"
+
+def _net_kg(alias="m"):
+    """Signed kg per move row: +kg for OUT (consumption), −kg for production returns.
+    A return is specifically an INTERNAL move out of the production location."""
+    kg = _kg(alias)
+    return (f"CASE WHEN {alias}.move_type='OUT' THEN {kg} "
+            f"WHEN {alias}.move_type='INTERNAL' AND {alias}.location_from = '{PROD_LOC}' THEN -{kg} "
+            f"ELSE 0 END")
+
+def _net_cons_where(alias="m"):
+    """Rows that make up net consumption: OUT moves plus INTERNAL production returns."""
+    return (f"({alias}.move_type='OUT' "
+            f"OR ({alias}.move_type='INTERNAL' AND {alias}.location_from = '{PROD_LOC}')) "
+            f"AND {alias}.uom IN ('g','kg')")
+
+# Number of weeks in a calendar month, used to turn a monthly average run-rate
+# into a weekly run-rate for weeks-of-cover.
+WEEKS_PER_MONTH = 52.0 / 12.0
+DAYS_PER_MONTH = 30.4375
+
+# ── Location filter ─────────────────────────────────────────
+# A location of "All" (or empty) means aggregate across every location.
+_ALL_LOC = {"", "all", "__all__"}
+
+def _loc_filter(location, alias="i"):
+    """Return (sql_fragment, params) for an optional location_name filter."""
+    if location is None or str(location).strip().lower() in _ALL_LOC:
+        return ("", [])
+    return (f" AND {alias}.location_name = %s", [location])
+
 # ── Summary cards ──────────────────────────────────────────
 @fabric_router.get("/api/fabric/summary")
 def summary(location: str = Query(default="RMAT/Stock")):
@@ -41,7 +80,12 @@ def summary(location: str = Query(default="RMAT/Stock")):
             GROUP BY i.location_name, p.category
         """)
         
-        rmat = [r for r in stock if r['location_name'] == location and r['category'] == 'Fabric']
+        all_loc = location is None or str(location).strip().lower() in _ALL_LOC
+        # For "All", fabric stock is every Fabric row except the dead-stock
+        # location (reported separately); otherwise just the chosen location.
+        rmat = [r for r in stock if r['category'] == 'Fabric'
+                and (r['location_name'] != 'Dead/Stock Fabric' if all_loc
+                     else r['location_name'] == location)]
         dead = [r for r in stock if r['location_name'] == 'Dead/Stock Fabric']
         trim = [r for r in stock if r['category'] == 'Trim']
         
@@ -53,23 +97,23 @@ def summary(location: str = Query(default="RMAT/Stock")):
             WHERE qty_ordered > qty_received AND state != 'cancel'
         """)[0]
         
-        # Consumption last 30 days
-        cons = q(conn, """
-            SELECT ROUND(SUM(CASE WHEN uom='g' THEN qty/1000 ELSE qty END)::numeric,1) as kg
-            FROM raw_fabric_moves
-            WHERE move_type='OUT' AND uom IN ('g','kg')
-              AND date >= NOW() - INTERVAL '30 days'
+        # Consumption last 30 days — net of fabric returned from production
+        cons = q(conn, f"""
+            SELECT ROUND(SUM({_net_kg('m')})::numeric,1) as kg
+            FROM raw_fabric_moves m
+            WHERE {_net_cons_where('m')}
+              AND m.date >= NOW() - INTERVAL '30 days'
         """)[0]
         
         # BOM styles
         bom = q(conn, "SELECT COUNT(DISTINCT finished_product_name) as styles FROM raw_fabric_boms")[0]
         
-        rmat_row = rmat[0] if rmat else {}
+        # "All" yields one row per location — aggregate; a single location is one row.
         return {
-            "fabric_stock_kg": rmat_row.get("qty_kg", 0),
-            "fabric_stock_metres": rmat_row.get("qty_metres", 0),
-            "fabric_stock_value": rmat_row.get("value_kes", 0),
-            "fabric_products": rmat_row.get("products", 0),
+            "fabric_stock_kg": round(sum(r['qty_kg'] or 0 for r in rmat), 1),
+            "fabric_stock_metres": round(sum(r['qty_metres'] or 0 for r in rmat)),
+            "fabric_stock_value": round(sum(r['value_kes'] or 0 for r in rmat)),
+            "fabric_products": sum(r['products'] or 0 for r in rmat),
             "dead_stock_value": sum(r['value_kes'] or 0 for r in dead),
             "dead_stock_kg": sum(r['qty_kg'] or 0 for r in dead),
             "outstanding_pos": pos['count'] or 0,
@@ -82,7 +126,8 @@ def summary(location: str = Query(default="RMAT/Stock")):
 @fabric_router.get("/api/fabric/by-category")
 def by_category(location: str = Query(default="RMAT/Stock")):
     with _get_conn() as conn:
-        return q(conn, """
+        loc_sql, loc_params = _loc_filter(location)
+        return q(conn, f"""
             SELECT 
               p.fabric_category as category,
               p.fabric_subcategory as subcategory,
@@ -93,11 +138,11 @@ def by_category(location: str = Query(default="RMAT/Stock")):
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE i.quantity > 0
-              AND i.location_name = %s
+              {loc_sql}
               AND p.fabric_category IS NOT NULL
             GROUP BY p.fabric_category, p.fabric_subcategory
             ORDER BY value_kes DESC
-        """, (location,))
+        """, loc_params)
 
 # ── Fabric register (full list) ────────────────────────────
 @fabric_router.get("/api/fabric/register")
@@ -127,8 +172,11 @@ def register(
         sort_col = sort if sort in ALLOWED_SORT else "value_kes"
         sort_dir = "ASC" if str(dir).lower() == "asc" else "DESC"
         order_by = f"ORDER BY {sort_col} {sort_dir} NULLS LAST"
-        where = ["i.quantity > %s", "i.location_name = %s"]
-        params = [min_qty, location]
+        where = ["i.quantity > %s"]
+        params = [min_qty]
+        loc_sql, loc_params = _loc_filter(location)
+        if loc_sql:
+            where.append(loc_sql.replace(" AND ", "", 1)); params.extend(loc_params)
         if category:
             where.append("p.fabric_category = %s"); params.append(category)
         if subcategory:
@@ -174,7 +222,8 @@ def register(
 @fabric_router.get("/api/fabric/ageing")
 def ageing(location: str = Query(default="RMAT/Stock")):
     with _get_conn() as conn:
-        return q(conn, """
+        loc_sql, loc_params = _loc_filter(location)
+        return q(conn, f"""
             SELECT 
               CASE 
                 WHEN days_since <= 90  THEN '0-3 months'
@@ -205,12 +254,12 @@ def ageing(location: str = Query(default="RMAT/Stock")):
               FROM raw_fabric_inventory i
               JOIN raw_fabric_products p ON p.id = i.product_id
               LEFT JOIN raw_fabric_moves m ON m.product_id = i.product_id
-              WHERE i.quantity > 0 AND i.location_name = %s
+              WHERE i.quantity > 0 {loc_sql}
               GROUP BY i.product_id, i.quantity, p.kg_per_mtr, i.total_value
             ) sub
             GROUP BY age_band, sort_order
             ORDER BY sort_order
-        """, (location,))
+        """, loc_params)
 
 # ── Consumption over time ───────────────────────────────────
 @fabric_router.get("/api/fabric/consumption")
@@ -220,14 +269,14 @@ def consumption(
     group_by: str = Query(default="month"),
 ):
     with _get_conn() as conn:
-        kg_expr = "CASE WHEN m.uom='g' THEN m.qty/1000 ELSE m.qty END"
+        kg_expr = _net_kg("m")  # net of returns: +OUT, −production returns
         mtr_expr = f"CASE WHEN p.kg_per_mtr>0 THEN ({kg_expr})/p.kg_per_mtr ELSE 0 END"
-        base_where = ("m.move_type='OUT' AND m.uom IN ('g','kg') "
+        base_where = (f"{_net_cons_where('m')} "
                       "AND m.date BETWEEN %s AND %s")
-        metrics = (f"COUNT(DISTINCT m.product_id) as fabrics_used, "
+        metrics = (f"COUNT(DISTINCT m.product_id) FILTER (WHERE m.move_type='OUT') as fabrics_used, "
                    f"ROUND(SUM({kg_expr})::numeric,1) as qty_kg, "
                    f"ROUND(SUM({mtr_expr})::numeric,0) as qty_metres, "
-                   f"COUNT(*) as moves")
+                   f"COUNT(*) FILTER (WHERE m.move_type='OUT') as moves")
         # Dimension breakdowns (by fabric category or individual fabric) vs.
         # the default time-series (day/week/month).
         if group_by in ("category", "fabric"):
@@ -325,6 +374,7 @@ def bom_lookup(sku: str = Query(default=None), style: str = Query(default=None))
 @fabric_router.get("/api/fabric/attribute-split")
 def attribute_split(location: str = Query(default="RMAT/Stock")):
     with _get_conn() as conn:
+        loc_sql, loc_params = _loc_filter(location)
         def split(col):
             return q(conn, f"""
                 SELECT COALESCE(NULLIF(p.{col},''),'Unknown') as value,
@@ -334,25 +384,25 @@ def attribute_split(location: str = Query(default="RMAT/Stock")):
                   ROUND(SUM(i.total_value)::numeric,0) as value_kes
                 FROM raw_fabric_inventory i
                 JOIN raw_fabric_products p ON p.id = i.product_id
-                WHERE i.quantity > 0 AND i.location_name = %s
+                WHERE i.quantity > 0 {loc_sql}
                 GROUP BY 1
                 ORDER BY value_kes DESC NULLS LAST
-            """, (location,))
+            """, loc_params)
         # Fiber content: many rows blank — keep only fabrics that declare a fiber,
         # rolled up to the top values by stock value.
-        fiber = q(conn, """
+        fiber = q(conn, f"""
             SELECT p.fiber_content as value,
               COUNT(DISTINCT i.product_id) as fabrics,
               ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,0) as qty_metres,
               ROUND(SUM(i.total_value)::numeric,0) as value_kes
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            WHERE i.quantity > 0 AND i.location_name = %s
+            WHERE i.quantity > 0 {loc_sql}
               AND p.fiber_content IS NOT NULL AND p.fiber_content <> ''
             GROUP BY 1
             ORDER BY value_kes DESC NULLS LAST
             LIMIT 8
-        """, (location,))
+        """, loc_params)
         return {
             "plain_print": split("plain_print"),
             "weight_range": split("weight_range"),
@@ -364,15 +414,21 @@ def attribute_split(location: str = Query(default="RMAT/Stock")):
 @fabric_router.get("/api/fabric/top-consumed")
 def top_consumed(days: int = Query(default=90), limit: int = Query(default=20)):
     with _get_conn() as conn:
-        return q(conn, """
+        # weeks_cover uses the average monthly run-rate: total net consumption over
+        # the window ÷ number of months in the window = monthly average, converted
+        # to a weekly rate (÷ weeks/month), then stock ÷ weekly rate.
+        return q(conn, f"""
             WITH out_moves AS (
-              SELECT product_id, product_name,
-                SUM(CASE WHEN uom='g' THEN qty/1000 ELSE qty END) as consumed_kg,
-                COUNT(*) as moves, MAX(date)::date as last_out
+              SELECT product_id,
+                MAX(product_name) FILTER (WHERE move_type='OUT') as product_name,
+                SUM({_net_kg('raw_fabric_moves')}) as consumed_kg,
+                COUNT(*) FILTER (WHERE move_type='OUT') as moves,
+                MAX(date) FILTER (WHERE move_type='OUT')::date as last_out
               FROM raw_fabric_moves
-              WHERE move_type='OUT' AND uom IN ('g','kg')
+              WHERE {_net_cons_where('raw_fabric_moves')}
                 AND date >= NOW() - (%s || ' days')::interval
-              GROUP BY 1,2
+              GROUP BY product_id
+              HAVING SUM({_net_kg('raw_fabric_moves')}) > 0
             ), stock AS (
               SELECT product_id, SUM(quantity) as qty_kg
               FROM raw_fabric_inventory WHERE quantity>0 GROUP BY 1
@@ -381,7 +437,8 @@ def top_consumed(days: int = Query(default=90), limit: int = Query(default=20)):
               ROUND(o.consumed_kg::numeric,1) as consumed_kg,
               o.moves, o.last_out,
               ROUND(COALESCE(s.qty_kg,0)::numeric,1) as stock_kg,
-              ROUND((COALESCE(s.qty_kg,0) / NULLIF(o.consumed_kg/(%s/7.0),0))::numeric,1) as weeks_cover
+              ROUND((COALESCE(s.qty_kg,0) / NULLIF(
+                (o.consumed_kg / ((%s)::numeric/{DAYS_PER_MONTH})) / {WEEKS_PER_MONTH}, 0))::numeric,1) as weeks_cover
             FROM out_moves o
             LEFT JOIN stock s ON s.product_id = o.product_id
             ORDER BY o.consumed_kg DESC
