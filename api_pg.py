@@ -1067,6 +1067,23 @@ LEAD_TIME_WEEKS = 4.0
 SAFETY_WEEKS    = 1.0
 REORDER_COVER_WEEKS = LEAD_TIME_WEEKS + SAFETY_WEEKS
 
+# Canonical sku -> style map. all_inventory.style_name is free-text and often
+# disagrees with all_products_clean.style_name (e.g. word-order differences like
+# "Knee Length Tent" vs "Tent Knee Length"), which silently drops styles from any
+# style_name-keyed stock join (stock resolves to 0, then a "soh > 0" filter
+# removes the style entirely). all_inventory / all_sales carry NO barcode, but
+# sku matches the product master for ~99.5% of inventory rows, so we resolve each
+# inventory row's authoritative style via sku instead. DISTINCT ON keeps exactly
+# one row per sku (active rows win) so the LEFT JOIN can never fan out the
+# available SUM. Falls back to the raw inventory style_name for the ~0.5% of skus
+# absent from the product master.
+SKU_STYLE_MAP = (
+    "(SELECT DISTINCT ON (sku) sku, style_name, style_number "
+    "FROM all_products_clean "
+    "WHERE style_name IS NOT NULL AND style_name <> '' AND sku IS NOT NULL "
+    "ORDER BY sku, (active IS TRUE) DESC, style_number)"
+)
+
 WAREHOUSE_LOCATIONS = (
     "'Warehouse Finished Goods','Warehouse Receiving','In Transit',"
     "'Holding Warehouse Finished Goods','Finished Goods Production','Production',"
@@ -3988,12 +4005,13 @@ def analytics_sor_all_styles(
             GROUP BY p.style_name
         ),
         stock AS (
-            SELECT style_name,
-                COALESCE(SUM(available) FILTER (WHERE pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
-                COALESCE(SUM(available) FILTER (WHERE pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_warehouse
+            SELECT COALESCE(m.style_name, i.style_name) AS style_name,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_warehouse
             FROM all_inventory i
-            WHERE style_name IS NOT NULL
-            GROUP BY style_name
+            LEFT JOIN """ + SKU_STYLE_MAP + """ m ON m.sku = i.sku
+            WHERE COALESCE(m.style_name, i.style_name) IS NOT NULL
+            GROUP BY 1
         )
         SELECT p.style_name, p.brand, p.collection, p.subcategory, p.style_number,
             COALESCE(sa.units_6m, 0) AS units_6m, COALESCE(sa.sales_6m, 0) AS sales_6m,
@@ -4396,9 +4414,9 @@ def analytics_product_analysis(
         return "NULL::text AS size"
 
     prod_disp = ", " + _disp("color") + ", " + _disp("print") + ", " + _disp("size")
-    stock_from = " FROM all_inventory i"
+    stock_from = " FROM all_inventory i LEFT JOIN " + SKU_STYLE_MAP + " m ON m.sku = i.sku"
     if need_stock_pc:
-        stock_from = " FROM all_inventory i JOIN all_products_clean pc ON pc.sku = i.sku"
+        stock_from += " JOIN all_products_clean pc ON pc.sku = i.sku"
     join_keys = " USING (style_name" + ("".join(", " + j for j in join_dims)) + ")"
 
     # POS explosion: add pos_location_name as a group key in the sales & stock
@@ -4485,14 +4503,14 @@ def analytics_product_analysis(
         " GROUP BY p.style_name" + sales_dim_grp + sales_pos_grp +
         "),"
         "stock AS ("
-        " SELECT i.style_name" + stock_dim_sel + stock_pos_sel + ","
+        " SELECT COALESCE(m.style_name, i.style_name) AS style_name" + stock_dim_sel + stock_pos_sel + ","
         " COALESCE(SUM(i.available) FILTER (WHERE " + current_loc_clause + "),0) AS soh_current,"
         " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_warehouse,"
         " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_stores,"
         " string_agg(DISTINCT i.pos_location_name, ', ' ORDER BY i.pos_location_name)"
         " FILTER (WHERE i.available > 0 AND (" + current_loc_clause + ")) AS store_locations"
-        + stock_from + " WHERE i.style_name IS NOT NULL AND i.style_name <> ''" + icf + stock_pos_where +
-        " GROUP BY i.style_name" + stock_dim_grp + stock_pos_grp +
+        + stock_from + " WHERE COALESCE(m.style_name, i.style_name) IS NOT NULL AND COALESCE(m.style_name, i.style_name) <> ''" + icf + stock_pos_where +
+        " GROUP BY 1" + stock_dim_grp + stock_pos_grp +
         ")"
         " SELECT p.style_name,"
         " p.brand, p.category, p.subcategory, p.collection, p.season, p.style_number,"
@@ -8527,12 +8545,13 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             GROUP BY p.style_name
         ),
         stock AS (
-            SELECT style_name,
-                COALESCE(SUM(available) FILTER (WHERE pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
-                COALESCE(SUM(available) FILTER (WHERE pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_warehouse
+            SELECT COALESCE(m.style_name, i.style_name) AS style_name,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_warehouse
             FROM all_inventory i
-            WHERE style_name IS NOT NULL""" + icf + ichf + """
-            GROUP BY style_name
+            LEFT JOIN """ + SKU_STYLE_MAP + """ m ON m.sku = i.sku
+            WHERE COALESCE(m.style_name, i.style_name) IS NOT NULL""" + icf + ichf + """
+            GROUP BY 1
         )
         SELECT p.style_name, p.brand, p.subcategory, p.style_number, p.price, p.launch_date,
             COALESCE(sa.units_life, 0) AS units_life, COALESCE(sa.sales_life, 0) AS sales_life,
@@ -8895,12 +8914,13 @@ def analytics_sor_new_styles_l10(
             GROUP BY p.style_name
         ),
         stock AS (
-            SELECT style_name,
-                COALESCE(SUM(available) FILTER (WHERE pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
-                COALESCE(SUM(available) FILTER (WHERE pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_warehouse
+            SELECT COALESCE(m.style_name, i.style_name) AS style_name,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_warehouse
             FROM all_inventory i
-            WHERE style_name IS NOT NULL
-            GROUP BY style_name
+            LEFT JOIN """ + SKU_STYLE_MAP + """ m ON m.sku = i.sku
+            WHERE COALESCE(m.style_name, i.style_name) IS NOT NULL
+            GROUP BY 1
         )
         SELECT p.style_name, p.brand, p.collection, p.subcategory, p.style_number,
             COALESCE(sa.units_6m, 0) AS units_6m, COALESCE(sa.sales_6m, 0) AS sales_6m,
@@ -9686,11 +9706,12 @@ def range_mgmt_weekly_sor(country: str = Query(default=None), channel: str = Que
             GROUP BY p.style_name, s.sale_date::date
         ),
         stock AS (
-            SELECT style_name, COALESCE(SUM(available), 0) AS current_stock
+            SELECT COALESCE(m.style_name, i.style_name) AS style_name, COALESCE(SUM(i.available), 0) AS current_stock
             FROM all_inventory i
-            WHERE style_name IN (SELECT style_name FROM new_styles)
-              AND pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)""" + icf + ichf + """
-            GROUP BY style_name
+            LEFT JOIN """ + SKU_STYLE_MAP + """ m ON m.sku = i.sku
+            WHERE COALESCE(m.style_name, i.style_name) IN (SELECT style_name FROM new_styles)
+              AND i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)""" + icf + ichf + """
+            GROUP BY 1
         )
         SELECT n.style_name, n.brand, n.subcategory, n.style_number, n.launch_date,
             COALESCE(st.current_stock, 0) AS current_stock, sa.sd, sa.units

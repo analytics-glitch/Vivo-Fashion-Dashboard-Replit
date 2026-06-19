@@ -447,6 +447,7 @@ def process_shopify_store(store, cur, now, rates):
                 gross_sales_kes, discounts_kes, net_sales_kes,
                 total_sales_kes, net_quantity, returns_kes, loaded_at
             ) VALUES %s
+            ON CONFLICT (store_id, order_id, product_title, COALESCE(variant_sku,''), sale_kind, sale_date) DO NOTHING
         """, rows, page_size=500)
 
     log.info("✅ %s — %d orders, %d lines synced", store_id, len(orders), len(rows))
@@ -600,6 +601,8 @@ def sync_odoo(cur, now, rates):
                 gross_sales_kes, discounts_kes, net_sales_kes,
                 total_sales_kes, net_quantity, returns_kes, loaded_at
             ) VALUES %s
+            ON CONFLICT (store_id, order_id, product_title, COALESCE(variant_sku,''), sale_kind, sale_date)
+            DO NOTHING
         """, rows, page_size=500)
 
     log.info("✅ Odoo — %d orders, %d lines synced", len(orders), len(rows))
