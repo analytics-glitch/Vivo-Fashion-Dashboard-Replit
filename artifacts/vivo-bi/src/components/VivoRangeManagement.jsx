@@ -164,13 +164,13 @@ const VivoRangeManagement = ({ channelsOverride } = {}) => {
   const model = useMemo(() => {
     if (!data) return null;
     const ts = data.summary?.tier_summary || {};
-    // Flagged-for-retirement styles now carry a real Tier 1..4 in `rows` (they stay
-    // PART of the live Active range). This recreation report keeps treating them as
-    // "retired" in its portfolio split, so exclude them from active and capture them
-    // via the `flagged_for_retirement` flag to reproduce the June 2026 report split.
-    const active = (data.rows || []).filter((r) => TIERS.includes(r.tier) && !r.flagged_for_retirement);
-    const flaggedRetire = (data.rows || []).filter((r) => r.flagged_for_retirement);
-    const retired = [...(data.retired_rows || []), ...flaggedRetire];
+    // Flagged-for-retirement styles carry a real Tier 1..4 in `rows` and stay PART of
+    // the live Active range, so they are counted as Active here too (matching the main
+    // banner). Only HARD-retired styles (`retired_rows`) fill the Retired side, so this
+    // report's Active/Retired totals reconcile with the page banner (Active + Retired
+    // == Total) and never contradict it.
+    const active = (data.rows || []).filter((r) => TIERS.includes(r.tier));
+    const retired = [...(data.retired_rows || [])];
     const all = [...active, ...retired];
 
     // Brand × tier matrix

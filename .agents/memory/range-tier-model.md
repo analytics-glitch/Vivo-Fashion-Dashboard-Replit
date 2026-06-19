@@ -73,9 +73,11 @@ Analysis's `life_cycle` mapping still reads the raw `_gated_range_tier` label di
   RangeManagement **status** filter keeps a "Retire" option (distinct from the removed tier
   option). The tier MultiSelect + tier pills are Tier 1..4 only; a FLAGGED rose badge renders in
   the Tier column when `r.flagged_for_retirement`.
-- `VivoRangeManagement.jsx` (legacy recreation report) reads `flagged_for_retirement` to keep
-  treating flagged styles as "retired" in ITS portfolio split, and EXCLUDES them from its active
-  filter so they are not double-counted. The main RangeManagement banner reads `summary.*`.
+- `VivoRangeManagement.jsx` (legacy recreation report, embedded on the same page) MUST count
+  flagged styles as Active (they carry a real Tier 1..4) with Retired = hard-`retired_rows` only,
+  so its Active/Retired/Total reconcile with the main banner. Do NOT exclude flagged from its
+  active filter — that makes the report show a smaller Active count than the banner above it
+  (the "total/active styles reduced" report). The main RangeManagement banner reads `summary.*`.
 - `marketing-candidates` reuses `range_mgmt_classify`, inheriting all of this automatically.
 
 # Product Analysis / Catalogue = a SEPARATE, different tier concept (don't conflate)
