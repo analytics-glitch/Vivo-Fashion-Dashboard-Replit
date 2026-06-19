@@ -8,11 +8,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Search, Reply, Link2, Inbox as InboxIcon, MessageSquare, AtSign, Star, RefreshCw, Facebook, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Search, Reply, Link2, Inbox as InboxIcon, MessageSquare, AtSign, Star, RefreshCw, Facebook, AlertTriangle, CheckCircle2, FileText, ExternalLink, CornerDownRight } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
 const PLATFORMS = ["all", "instagram", "facebook", "tiktok", "x", "whatsapp"];
-const TYPES = ["all", "comment", "mention", "dm", "review"];
+const TYPES = ["all", "post", "comment", "mention", "dm", "review"];
 const SENTIMENTS = ["all", "positive", "neutral", "negative"];
 
 const SENTIMENT_STYLE = {
@@ -21,7 +21,7 @@ const SENTIMENT_STYLE = {
   negative: "bg-red-50 text-red-700 border-red-200",
 };
 
-const TYPE_ICON = { comment: MessageSquare, mention: AtSign, dm: InboxIcon, review: Star };
+const TYPE_ICON = { post: FileText, comment: MessageSquare, mention: AtSign, dm: InboxIcon, review: Star };
 
 export default function Inbox() {
   const [items, setItems] = useState([]);
@@ -249,6 +249,12 @@ export default function Inbox() {
                             <span className="text-[10px] uppercase tracking-wider text-[var(--vivo-muted)] shrink-0">{timeAgo(i.posted_at)}</span>
                           </div>
                           <div className="text-[11px] text-[var(--vivo-muted)] uppercase tracking-wider mt-0.5">{i.platform} · {i.type}</div>
+                          {i.type === "comment" && i.parent_excerpt && (
+                            <div className="flex items-start gap-1 text-[11px] text-[var(--vivo-muted)] mt-1.5 italic">
+                              <CornerDownRight className="h-3 w-3 mt-0.5 shrink-0" />
+                              <span className="line-clamp-1">on: {i.parent_excerpt}</span>
+                            </div>
+                          )}
                           <p className="text-sm mt-2 line-clamp-2">{i.body}</p>
                           <div className="flex items-center gap-2 mt-2">
                             {i.sentiment && (
@@ -288,8 +294,29 @@ export default function Inbox() {
                 )}
               </div>
 
+              {selected.type === "comment" && selected.parent_excerpt && (
+                <div className="mt-4 rounded-sm border border-[var(--vivo-border)] bg-[var(--vivo-bg)] px-4 py-3">
+                  <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-[var(--vivo-muted)]">
+                    <CornerDownRight className="h-3.5 w-3.5" /> In reply to post
+                  </div>
+                  <p className="text-sm mt-1 text-[var(--vivo-muted)] italic line-clamp-2">{selected.parent_excerpt}</p>
+                </div>
+              )}
+
               <div className="vivo-divider my-5" />
               <p className="text-base leading-relaxed whitespace-pre-wrap">{selected.body}</p>
+
+              {selected.permalink && (
+                <a
+                  href={selected.permalink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 mt-4 text-sm text-[var(--vivo-navy)] hover:underline"
+                  data-testid="inbox-view-on-facebook"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" /> View on Facebook
+                </a>
+              )}
 
               {selected.themes?.length > 0 && (
                 <div className="mt-5 flex flex-wrap gap-2">
@@ -507,7 +534,7 @@ function FacebookStatusStrip({ status }) {
           <span>Manual sync — click "Sync from Facebook" to refresh</span>
           <span>
             {counts.real_posts ?? 0} live posts ·{" "}
-            {counts.real_feedback ?? 0} live comments
+            {counts.real_feedback ?? 0} live items
           </span>
         </div>
       </div>

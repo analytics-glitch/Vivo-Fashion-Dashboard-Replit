@@ -72,5 +72,30 @@ audience + engagement, and read/reply to comments with AI sentiment.
   NOT derive "last synced" from `max(created_at)`; it's persisted explicitly in
   `crm_config` key `social.fb.last_synced_at` each sync). **There is NO auto-sync
   scheduler** — sync is manual only, so `auto_sync_minutes` is `null` and the UI
-  copy says "Manual sync". Graph withholds commenter identity ⇒ `author_name`
-  falls back to "Facebook user".
+  copy says "Manual sync".
+
+- **Sync stores BOTH posts and comments in `crm_social_feedback`.** Each Page post
+  is persisted as its own row `type='post'`, `source_id='fbpost:<id>'`,
+  `author_name` = the Page name (e.g. "Vivo Woman"), with `permalink` + a body =
+  caption or a `[Photo post]`/`[Post]` placeholder. Each comment additionally
+  stores `parent_source_id`, `parent_excerpt` (~90-char post-caption snippet, or
+  the same placeholder), and a `permalink` (comment `permalink_url`, falling back
+  to the post link). New columns added idempotently via `ALTER TABLE … ADD COLUMN
+  IF NOT EXISTS`. **Why:** the Inbox must show ALL synced posts (not just the
+  subset that had comments) and make each comment's parent post obvious + linkable.
+  - **Re-sync does NOT backfill new columns** (ON CONFLICT DO NOTHING). After
+    adding columns, `DELETE FROM crm_social_feedback WHERE platform='facebook'`
+    then re-sync to populate them on existing rows.
+  - **Posts must be EXCLUDED from feedback aggregations.** Because posts share the
+    table, every consumer that treats rows as customer "feedback" — `/api/social/
+    summary` (counts + by_platform), `/api/social/mentions`, `/api/social/
+    influencers`, and the dashboard `social_feedback_30d` KPI — filters
+    `type IS DISTINCT FROM 'post'`, or the brand's own posts inflate feedback
+    counts and the Page tops the influencer ranking. The Inbox list
+    (`/api/social/feedback`) intentionally keeps posts.
+
+- **Graph withholds public commenter identity** ⇒ `author_name` falls back to
+  "Facebook user" for comments; only the Page's own posts/replies carry the real
+  name. This is a hard FB privacy limitation, **not a bug** — do NOT fabricate
+  names. Mitigation: every item carries a `permalink` ("View on Facebook") so
+  staff can inspect the author on Facebook itself.

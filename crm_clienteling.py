@@ -205,6 +205,10 @@ def _ensure_cl_tables():
         "ALTER TABLE crm_social_feedback ADD COLUMN IF NOT EXISTS source_id text",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_crm_social_feedback_source "
         " ON crm_social_feedback(source_id) WHERE source_id IS NOT NULL",
+        # Post/comment context: open-on-Facebook link + which post a comment is on.
+        "ALTER TABLE crm_social_feedback ADD COLUMN IF NOT EXISTS permalink text",
+        "ALTER TABLE crm_social_feedback ADD COLUMN IF NOT EXISTS parent_source_id text",
+        "ALTER TABLE crm_social_feedback ADD COLUMN IF NOT EXISTS parent_excerpt text",
         "CREATE TABLE IF NOT EXISTS crm_template ("
         " id serial PRIMARY KEY, name text, channel text, body text,"
         " bsp_status text DEFAULT 'approved', created_by text,"
@@ -1661,7 +1665,8 @@ def _reg_insights(app):
                 "SELECT COUNT(*) AS feedback, "
                 " COUNT(*) FILTER (WHERE lower(COALESCE(sentiment,''))='positive') "
                 "  - COUNT(*) FILTER (WHERE lower(COALESCE(sentiment,''))='negative') AS net "
-                "FROM crm_social_feedback WHERE posted_at >= now() - interval '30 days'",
+                "FROM crm_social_feedback WHERE posted_at >= now() - interval '30 days' "
+                " AND type IS DISTINCT FROM 'post'",
                 fetch=True) or {}
             kpis["social_feedback_30d"] = _int(r.get("feedback"))
             kpis["social_sentiment_net"] = _int(r.get("net"))
@@ -2950,12 +2955,14 @@ def _reg_social(app):
             " COUNT(*) FILTER (WHERE sentiment='positive') AS pos, "
             " COUNT(*) FILTER (WHERE sentiment='neutral') AS neu, "
             " COUNT(*) FILTER (WHERE sentiment='negative') AS neg "
-            "FROM crm_social_feedback WHERE posted_at::date BETWEEN %s AND %s",
+            "FROM crm_social_feedback WHERE posted_at::date BETWEEN %s AND %s "
+            " AND type IS DISTINCT FROM 'post'",
             (f, t)) or {}
         by = _ex(
             "SELECT COALESCE(platform,'other') AS platform, COUNT(*) AS feedback, "
             " COUNT(*) FILTER (WHERE sentiment='positive') AS positive "
             "FROM crm_social_feedback WHERE posted_at::date BETWEEN %s AND %s "
+            " AND type IS DISTINCT FROM 'post' "
             "GROUP BY platform", (f, t), fetch=True) or []
         return {
             "totals": {"feedback": _int(agg.get("feedback")), "posts": 0,
@@ -2980,7 +2987,8 @@ def _reg_social(app):
         rows = _ex(
             "SELECT id, platform, author_handle, author_name, body, sentiment, "
             " posted_at FROM crm_social_feedback "
-            "WHERE posted_at::date BETWEEN %s AND %s ORDER BY posted_at DESC LIMIT %s",
+            "WHERE posted_at::date BETWEEN %s AND %s AND type IS DISTINCT FROM 'post' "
+            "ORDER BY posted_at DESC LIMIT %s",
             (f, t, lim), fetch=True) or []
         return [{
             "feedback_id": str(r["id"]), "platform": r["platform"],
@@ -2997,7 +3005,8 @@ def _reg_social(app):
             "SELECT COALESCE(author_handle,author_name,'unknown') AS handle, "
             " MAX(author_name) AS name, COUNT(*) AS feedback_count, "
             " array_agg(DISTINCT platform) AS platforms "
-            "FROM crm_social_feedback GROUP BY 1 ORDER BY feedback_count DESC LIMIT %s",
+            "FROM crm_social_feedback WHERE type IS DISTINCT FROM 'post' "
+            "GROUP BY 1 ORDER BY feedback_count DESC LIMIT %s",
             (lim,), fetch=True) or []
         return [{
             "handle": r["handle"], "name": r["name"],
@@ -3108,7 +3117,8 @@ def _reg_social(app):
         params.append(lim)
         rows = _ex(
             "SELECT id, platform, type, author_name, author_handle, body, sentiment, "
-            " themes, customer_id, reply_body, replied_at, posted_at "
+            " themes, customer_id, reply_body, replied_at, posted_at, "
+            " permalink, parent_source_id, parent_excerpt "
             "FROM crm_social_feedback WHERE " + " AND ".join(conds) +
             " ORDER BY posted_at DESC LIMIT %s", tuple(params), fetch=True) or []
         return [{
@@ -3117,6 +3127,9 @@ def _reg_social(app):
             "body": r["body"], "sentiment": r["sentiment"], "themes": r["themes"] or [],
             "customer_id": r["customer_id"], "reply_body": r["reply_body"],
             "replied_at": _dt(r["replied_at"]), "posted_at": _dt(r["posted_at"]),
+            "permalink": r.get("permalink"),
+            "parent_source_id": r.get("parent_source_id"),
+            "parent_excerpt": r.get("parent_excerpt"),
         } for r in rows]
 
     @app.post("/api/social/feedback")
@@ -3276,22 +3289,50 @@ def _reg_social(app):
         if not A._fb_configured():
             raise HTTPException(400, "Facebook is not configured on the server.")
         page_id = A._fb_page_id()
+        # Page name labels the brand's own posts/replies (commenters' real names
+        # are withheld by the Graph API for privacy, so they show "Facebook user").
+        try:
+            page_name = (A._fb_get(page_id, {"fields": "name"}) or {}).get("name")
+        except Exception:
+            page_name = None
+        page_name = page_name or "Our Page"
         try:
             feed = A._fb_get(f"{page_id}/posts",
-                             {"fields": A._FB_POST_FIELDS, "limit": 25})
+                             {"fields": "message,permalink_url,created_time,"
+                                        "full_picture", "limit": 25})
         except Exception as e:
             raise HTTPException(502, f"Facebook sync failed: {e}")
         posts = feed.get("data") or []
         scopes_missing = set()
         new_comments = 0
+        new_posts = 0
         total_comments = 0
         for p in posts:
             pid = p.get("id")
             if not pid:
                 continue
+            p_msg = (p.get("message") or "").strip()
+            p_link = p.get("permalink_url")
+            # A short, human label for the post so comments can show "on: …".
+            p_excerpt = (p_msg[:90] + "…") if len(p_msg) > 90 else (
+                p_msg or ("[Photo post]" if p.get("full_picture") else "[Post]"))
+            # Store the brand's own post as a feed item (so the inbox reflects the
+            # real number of posts, not only the posts that happen to have comments).
+            rid = _ex(
+                "INSERT INTO crm_social_feedback "
+                "(platform,type,author_name,author_handle,body,sentiment,"
+                " source_id,permalink,posted_at) VALUES "
+                "('facebook','post',%s,NULL,%s,NULL,%s,%s,"
+                " COALESCE(%s::timestamptz, now())) "
+                "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
+                "DO NOTHING RETURNING id",
+                (page_name, p_msg or p_excerpt, "fbpost:" + str(pid),
+                 p_link, _fb_ts(p.get("created_time"))), fetch=True)
+            if rid:
+                new_posts += 1
             try:
                 cres = A._fb_get(f"{pid}/comments", {
-                    "fields": "message,from,created_time,like_count",
+                    "fields": "message,from,created_time,like_count,permalink_url",
                     "order": "reverse_chronological", "limit": 50})
             except Exception as e:
                 m = str(e).lower()
@@ -3308,16 +3349,21 @@ def _reg_social(app):
                 if not cid or not body:
                     continue
                 frm = c.get("from") or {}
+                # Author of a comment is the page itself only when it replied to
+                # its own post; otherwise the Graph API withholds the identity.
+                author = frm.get("name") or "Facebook user"
                 rid = _ex(
                     "INSERT INTO crm_social_feedback "
                     "(platform,type,author_name,author_handle,body,sentiment,"
-                    " source_id,posted_at) VALUES "
-                    "('facebook','comment',%s,NULL,%s,%s,%s,"
+                    " source_id,permalink,parent_source_id,parent_excerpt,"
+                    " posted_at) VALUES "
+                    "('facebook','comment',%s,NULL,%s,%s,%s,%s,%s,%s,"
                     " COALESCE(%s::timestamptz, now())) "
                     "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
                     "DO NOTHING RETURNING id",
-                    (frm.get("name") or "Facebook user", body, sents.get(i),
-                     "fb:" + str(cid),
+                    (author, body, sents.get(i), "fb:" + str(cid),
+                     c.get("permalink_url") or p_link,
+                     "fbpost:" + str(pid), p_excerpt,
                      _fb_ts(c.get("created_time"))), fetch=True)
                 if rid:
                     new_comments += 1
