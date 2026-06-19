@@ -426,10 +426,10 @@ table.data th.sortable:hover{color:var(--accent);}
      <div class="tbl-wrap">
       <table class="data">
        <thead><tr>
-        <th>Fabric</th><th>Style</th><th class="r">Reserved</th><th>Reserved on</th>
+        <th>Fabric</th><th>Style</th><th class="r">Reserved</th><th class="r">Current SOH</th><th>Reserved on</th>
         <th class="r">Days held</th><th>By</th><th>Status</th><th></th>
        </tr></thead>
-       <tbody id="resv-body"><tr><td colspan="8" class="loading">Loading…</td></tr></tbody>
+       <tbody id="resv-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
     </div>
@@ -1069,10 +1069,12 @@ function renderReservations(items){
       ? `<button class="btn btn-primary" data-use="${r.id}" style="padding:4px 10px;font-size:12px;">Mark used</button> <button class="btn" data-del="${r.id}" style="padding:4px 8px;font-size:12px;">Delete</button>`
       : `<button class="btn" data-del="${r.id}" style="padding:4px 8px;font-size:12px;">Delete</button>`;
     const fab=esc(r.fabric_name||'—')+(r.default_code?` <span class="muted" style="font-size:11px;">#${esc(r.default_code)}</span>`:'');
+    const soh=r.soh_kg!=null?(fmt1(r.soh_kg)+' kg'+(r.soh_metres!=null?' · '+fmt1(r.soh_metres)+' m':'')):'—';
     return `<tr>
       <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.fabric_name||'')}">${fab}</td>
       <td title="${esc(r.note||'')}">${esc(r.style_name||'—')}</td>
       <td class="r" style="font-weight:600;white-space:nowrap;">${qtyTxt}</td>
+      <td class="r" style="white-space:nowrap;color:var(--text-sub);">${soh}</td>
       <td style="white-space:nowrap;color:var(--muted);font-size:12px;">${esc(r.reserved_on||'—')}</td>
       <td class="r" style="white-space:nowrap;">${held}</td>
       <td style="font-size:12px;color:var(--text-sub);">${esc(r.reserved_by_name||'—')}</td>

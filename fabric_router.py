@@ -748,17 +748,26 @@ def list_reservations(status: str = Query(default="active"), search: str = Query
         if search:
             where.append("(p.name ILIKE %s OR p.default_code ILIKE %s OR r.style_name ILIKE %s)")
             params += [f"%{search}%", f"%{search}%", f"%{search}%"]
+        # `soh` = current total stock on hand (kg) per fabric across all locations.
         rows = q(conn, f"""
+            WITH soh AS (
+              SELECT product_id, SUM(quantity) as soh_kg
+              FROM raw_fabric_inventory
+              GROUP BY product_id
+            )
             SELECT r.id, r.product_id, r.qty, r.uom, r.qty_kg, r.style_name, r.note,
               r.status, r.reserved_by_name, r.reserved_at::date as reserved_on,
               r.used_at::date as used_on, r.used_by,
               p.name as fabric_name, p.default_code, p.kg_per_mtr,
               ROUND(CASE WHEN p.kg_per_mtr>0 THEN r.qty_kg/p.kg_per_mtr ELSE NULL END::numeric,1) as qty_metres,
+              ROUND(COALESCE(s.soh_kg,0)::numeric,2) as soh_kg,
+              ROUND(CASE WHEN p.kg_per_mtr>0 THEN COALESCE(s.soh_kg,0)/p.kg_per_mtr ELSE NULL END::numeric,1) as soh_metres,
               (CURRENT_DATE - r.reserved_at::date) as days_reserved,
               CASE WHEN r.used_at IS NOT NULL
                    THEN (r.used_at::date - r.reserved_at::date) END as days_to_use
             FROM fabric_reservations r
             LEFT JOIN raw_fabric_products p ON p.id = r.product_id
+            LEFT JOIN soh s ON s.product_id = r.product_id
             WHERE {' AND '.join(where)}
             ORDER BY (r.status='active') DESC, r.reserved_at DESC
             LIMIT 500
