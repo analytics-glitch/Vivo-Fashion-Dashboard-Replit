@@ -15810,6 +15810,83 @@ def _fb_configured():
     return bool(_fb_token() and _fb_page_id())
 
 
+# The configured FACEBOOK_PAGE_ACCESS_TOKEN may be a USER token rather than the
+# Page token (a very common mistake in Graph API Explorer). A user token cannot
+# read a Page's posts/comments or publish on its behalf. When that happens we
+# transparently derive the Page access token for FACEBOOK_PAGE_ID from the user
+# token (via the Page node's `access_token` field, falling back to /me/accounts).
+# If the raw token is already the Page token (or resolution fails) we use it as-is.
+# Cache only SUCCESSFUL resolutions, keyed by (raw token, page id) and with a
+# TTL so a revoked/rotated derived token is eventually re-resolved. A failed
+# resolution is never cached (we fall back to the raw token for that one call),
+# so a transient Graph/network error can't get stuck.
+_fb_page_token_cache = {"key": None, "resolved": None, "ts": 0.0}
+_fb_page_token_lock = threading.Lock()
+_FB_PAGE_TOKEN_TTL = 600  # seconds
+
+
+def _fb_resolve_page_token(raw, page_id):
+    if not raw or not page_id:
+        return raw
+    key = (raw, str(page_id))
+    now = time.time()
+    with _fb_page_token_lock:
+        if (_fb_page_token_cache.get("key") == key
+                and _fb_page_token_cache.get("resolved")
+                and (now - _fb_page_token_cache.get("ts", 0.0))
+                < _FB_PAGE_TOKEN_TTL):
+            return _fb_page_token_cache["resolved"]
+    resolved = None  # None => resolution failed; fall back to raw, don't cache
+    try:
+        me = requests.get(_FB_GRAPH + "/me",
+                          params={"fields": "id", "access_token": raw},
+                          timeout=20)
+        if me.ok:
+            if str((me.json() or {}).get("id")) == str(page_id):
+                resolved = raw  # already the Page token
+            else:
+                tok = None
+                try:
+                    pr = requests.get(_FB_GRAPH + "/" + str(page_id),
+                                      params={"fields": "access_token",
+                                              "access_token": raw}, timeout=20)
+                    if pr.ok:
+                        tok = (pr.json() or {}).get("access_token")
+                except Exception:
+                    tok = None
+                if not tok:
+                    url = _FB_GRAPH + "/me/accounts"
+                    params = {"fields": "id,access_token", "limit": 100,
+                              "access_token": raw}
+                    for _ in range(10):  # bounded pagination
+                        rr = requests.get(url, params=params, timeout=20)
+                        if not rr.ok:
+                            break
+                        j = rr.json() or {}
+                        for p in (j.get("data") or []):
+                            if (str(p.get("id")) == str(page_id)
+                                    and p.get("access_token")):
+                                tok = p["access_token"]
+                                break
+                        nxt = (j.get("paging") or {}).get("next")
+                        if tok or not nxt:
+                            break
+                        url, params = nxt, None
+                if tok:
+                    resolved = tok
+    except Exception:
+        resolved = None
+    if resolved:
+        with _fb_page_token_lock:
+            _fb_page_token_cache.update(key=key, resolved=resolved, ts=now)
+        return resolved
+    return raw  # could not resolve this call; surface the real Graph error
+
+
+def _fb_page_token():
+    return _fb_resolve_page_token(_fb_token(), _fb_page_id())
+
+
 def _fb_error_detail(resp):
     try:
         err = (resp.json() or {}).get("error") or {}
@@ -15823,7 +15900,7 @@ def _fb_error_detail(resp):
 
 def _fb_get(path, params=None):
     p = dict(params or {})
-    p["access_token"] = _fb_token()
+    p["access_token"] = _fb_page_token()
     resp = requests.get(_FB_GRAPH.rstrip("/") + "/" + str(path).lstrip("/"),
                         params=p, timeout=30)
     if not resp.ok:
@@ -15833,7 +15910,7 @@ def _fb_get(path, params=None):
 
 def _fb_post(path, data=None):
     d = dict(data or {})
-    d["access_token"] = _fb_token()
+    d["access_token"] = _fb_page_token()
     resp = requests.post(_FB_GRAPH.rstrip("/") + "/" + str(path).lstrip("/"),
                          data=d, timeout=30)
     if not resp.ok:
