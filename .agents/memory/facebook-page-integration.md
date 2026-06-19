@@ -58,3 +58,19 @@ audience + engagement, and read/reply to comments with AI sentiment.
   (added to ANALYST in `permissions.js`, nav in `navItems.jsx`,
   route in `App.js`). Mirrors `CRM.jsx` styling (no React Query; plain
   `api.get/post` with `forceFresh`). Web-only — not ported to the Expo app.
+
+- **Standalone CRM Inbox is a SECOND consumer** (`artifacts/vivo-crm`, `/crm/`),
+  served by `crm_clienteling.py` `/api/social/facebook/{status,discover,pages,sync}`
+  (same analyst+ gate). It reuses api_pg's `_fb_*` helpers via the module alias
+  `A`, so the Page comes from the SAME secrets — there is **no real multi-page
+  user-token discovery** despite the Inbox "Connect Facebook" dialog: `status`
+  just auto-reports the one secret-configured Page as a `discovered_page` when
+  reachable (empty ⇒ Inbox shows its "demo data" banner). `sync` pulls Page posts
+  + their comments and upserts comments into `crm_social_feedback`
+  (`platform='facebook'`), deduped by a `source_id` partial-unique index +
+  `ON CONFLICT ... DO NOTHING` (so a re-sync with no new comments inserts 0 — do
+  NOT derive "last synced" from `max(created_at)`; it's persisted explicitly in
+  `crm_config` key `social.fb.last_synced_at` each sync). **There is NO auto-sync
+  scheduler** — sync is manual only, so `auto_sync_minutes` is `null` and the UI
+  copy says "Manual sync". Graph withholds commenter identity ⇒ `author_name`
+  falls back to "Facebook user".

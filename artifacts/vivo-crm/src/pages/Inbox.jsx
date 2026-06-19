@@ -459,7 +459,6 @@ function FacebookStatusStrip({ status }) {
   if (!status) return null;
   const pages = status.discovered_pages || [];
   const lastSynced = status.last_synced_at;
-  const minutes = status.auto_sync_minutes ?? 15;
   const counts = status.counts || {};
   const scopesMissing = new Set();
   pages.forEach((p) => (p.last_sync_scopes_missing || []).forEach((s) => scopesMissing.add(s)));
@@ -475,7 +474,7 @@ function FacebookStatusStrip({ status }) {
           <div className="flex-1">
             <div className="font-medium text-base">Facebook is not connected yet.</div>
             <div className="text-xs text-[var(--vivo-muted)] mt-1">
-              You're seeing <strong>demo data</strong>. Click <strong>"Connect Facebook"</strong> above to link your Vivo pages and start pulling real-time posts &amp; comments. The auto-sync scheduler will then keep your inbox fresh every {minutes} minutes, 24/7.
+              You're seeing <strong>demo data</strong>. Click <strong>"Connect Facebook"</strong> above to link your Vivo pages and start pulling real posts &amp; comments. Once connected, use <strong>"Sync from Facebook"</strong> anytime to refresh the inbox with the latest activity.
             </div>
           </div>
         </div>
@@ -505,7 +504,7 @@ function FacebookStatusStrip({ status }) {
               {ago === null ? "never" : ago === 0 ? "just now" : `${ago} min ago`}
             </span>
           </span>
-          <span>Auto-sync every {minutes} min</span>
+          <span>Manual sync — click "Sync from Facebook" to refresh</span>
           <span>
             {counts.real_posts ?? 0} live posts ·{" "}
             {counts.real_feedback ?? 0} live comments

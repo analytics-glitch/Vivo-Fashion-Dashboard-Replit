@@ -201,6 +201,10 @@ def _ensure_cl_tables():
         " sentiment text, themes jsonb DEFAULT '[]'::jsonb,"
         " customer_id text, reply_body text, replied_at timestamptz,"
         " posted_at timestamptz DEFAULT now(), created_at timestamptz DEFAULT now())",
+        # source_id de-dupes real Facebook comments across repeated syncs.
+        "ALTER TABLE crm_social_feedback ADD COLUMN IF NOT EXISTS source_id text",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_crm_social_feedback_source "
+        " ON crm_social_feedback(source_id) WHERE source_id IS NOT NULL",
         "CREATE TABLE IF NOT EXISTS crm_template ("
         " id serial PRIMARY KEY, name text, channel text, body text,"
         " bsp_status text DEFAULT 'approved', created_by text,"
@@ -3175,35 +3179,159 @@ def _reg_social(app):
             classified += 1
         return {"classified": classified}
 
+    # ----- Live Facebook wiring -------------------------------------------- #
+    # The server already holds a long-lived Page token (secrets), resolved by
+    # api_pg's _fb_* helpers. We auto-report that configured Page as "connected"
+    # (no user token to paste) and pull its real posts + comments into
+    # crm_social_feedback so this inbox shows live data instead of demo rows.
+
+    def _cfg_get(key):
+        r = _one("SELECT value FROM crm_config WHERE key=%s", (key,))
+        return r["value"] if r else None
+
+    def _cfg_set(key, val):
+        _ex("INSERT INTO crm_config (key,value) VALUES (%s,%s) "
+            "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
+            (key, str(val)))
+
+    def _fb_ts(s):
+        if not s:
+            return None
+        from datetime import datetime
+        try:
+            return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S%z")
+        except Exception:
+            return None
+
     @app.get("/api/social/facebook/status")
     def cl_soc_fb_status(request: Request):
         _staff(request, roles=("analyst", "exec", "admin"))
-        import os
-        ok = bool(os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN")
-                  and os.environ.get("FACEBOOK_PAGE_ID"))
-        return {"pages": [], "total_posts": 0, "total_feedback": 0, "config_ok": ok}
+        empty = {"discovered_pages": [], "last_synced_at": None,
+                 "auto_sync_minutes": 15,
+                 "counts": {"real_posts": 0, "real_feedback": 0}}
+        if not A._fb_configured():
+            return empty
+        try:
+            page = A._fb_get(A._fb_page_id(), {"fields": "name"})
+        except Exception:
+            return empty  # token invalid/unreachable -> show connect banner
+        agg = _one("SELECT count(*) AS feedback FROM crm_social_feedback "
+                   "WHERE platform='facebook'") or {}
+        posts_n = _int(_cfg_get("social.fb.last_sync_posts"), 0)
+        comments_n = _int(_cfg_get("social.fb.last_sync_comments"), 0)
+        scopes = [s for s in (_cfg_get("social.fb.last_scopes_missing") or "").split(",") if s]
+        last_at = _cfg_get("social.fb.last_synced_at")
+        return {
+            "discovered_pages": [{
+                "page_id": A._fb_page_id(),
+                "page_name": page.get("name") or "Facebook Page",
+                "last_sync_posts": posts_n,
+                "last_sync_comments": comments_n,
+                "last_sync_scopes_missing": scopes,
+            }],
+            "last_synced_at": last_at or None,
+            "auto_sync_minutes": None,
+            "counts": {"real_posts": posts_n,
+                       "real_feedback": _int(agg.get("feedback"), 0)},
+        }
 
     @app.post("/api/social/facebook/discover")
     def cl_soc_fb_discover(request: Request, payload: dict = Body(default=None)):
         _staff(request, roles=("analyst", "exec", "admin"))
-        return {"discovered": []}
+        # The Page is connected server-side via secrets; a pasted user token is
+        # not required. Report the configured Page as discovered when reachable.
+        if not A._fb_configured():
+            raise HTTPException(400, "Facebook is not configured on the server.")
+        try:
+            A._fb_get(A._fb_page_id(), {"fields": "name"})
+        except Exception as e:
+            raise HTTPException(502, f"Facebook connection failed: {e}")
+        return {"discovered": 1}
 
     @app.get("/api/social/facebook/pages")
     def cl_soc_fb_pages(request: Request):
         _staff(request, roles=("analyst", "exec", "admin"))
-        return []
+        if not A._fb_configured():
+            return []
+        try:
+            page = A._fb_get(A._fb_page_id(), {"fields": "name"})
+        except Exception:
+            return []
+        return [{"page_id": A._fb_page_id(),
+                 "page_name": page.get("name") or "Facebook Page"}]
 
     @app.delete("/api/social/facebook/pages/{page_id}")
     def cl_soc_fb_page_del(request: Request, page_id: str):
         _staff(request, roles=("analyst", "exec", "admin"))
+        # The Page comes from server secrets, not a stored connection, so there
+        # is nothing to disconnect here; clear cached sync metadata only.
+        for k in ("social.fb.last_sync_posts", "social.fb.last_sync_comments",
+                  "social.fb.last_scopes_missing"):
+            _ex("DELETE FROM crm_config WHERE key=%s", (k,))
         return {"ok": True, "page_id": page_id}
 
     @app.post("/api/social/facebook/sync")
     def cl_soc_fb_sync(request: Request, payload: dict = Body(default=None)):
         _staff(request, roles=("analyst", "exec", "admin"))
-        return {"status": "skipped", "synced_pages": 0, "new_posts": 0,
-                "new_feedback": 0,
-                "note": "Use the BI app Social page for live Facebook posting."}
+        if not A._fb_configured():
+            raise HTTPException(400, "Facebook is not configured on the server.")
+        page_id = A._fb_page_id()
+        try:
+            feed = A._fb_get(f"{page_id}/posts",
+                             {"fields": A._FB_POST_FIELDS, "limit": 25})
+        except Exception as e:
+            raise HTTPException(502, f"Facebook sync failed: {e}")
+        posts = feed.get("data") or []
+        scopes_missing = set()
+        new_comments = 0
+        total_comments = 0
+        for p in posts:
+            pid = p.get("id")
+            if not pid:
+                continue
+            try:
+                cres = A._fb_get(f"{pid}/comments", {
+                    "fields": "message,from,created_time,like_count",
+                    "order": "reverse_chronological", "limit": 50})
+            except Exception as e:
+                m = str(e).lower()
+                if ("permission" in m or "scope" in m
+                        or "#10" in m or "#200" in m):
+                    scopes_missing.add("pages_read_user_content")
+                continue
+            craw = cres.get("data") or []
+            total_comments += len(craw)
+            sents = A._fb_sentiment([(c.get("message") or "") for c in craw])
+            for i, c in enumerate(craw):
+                cid = c.get("id")
+                body = (c.get("message") or "").strip()
+                if not cid or not body:
+                    continue
+                frm = c.get("from") or {}
+                rid = _ex(
+                    "INSERT INTO crm_social_feedback "
+                    "(platform,type,author_name,author_handle,body,sentiment,"
+                    " source_id,posted_at) VALUES "
+                    "('facebook','comment',%s,NULL,%s,%s,%s,"
+                    " COALESCE(%s::timestamptz, now())) "
+                    "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
+                    "DO NOTHING RETURNING id",
+                    (frm.get("name") or "Facebook user", body, sents.get(i),
+                     "fb:" + str(cid),
+                     _fb_ts(c.get("created_time"))), fetch=True)
+                if rid:
+                    new_comments += 1
+        from datetime import datetime, timezone
+        _cfg_set("social.fb.last_synced_at",
+                 datetime.now(timezone.utc).isoformat())
+        _cfg_set("social.fb.last_sync_posts", len(posts))
+        _cfg_set("social.fb.last_sync_comments", total_comments)
+        _cfg_set("social.fb.last_scopes_missing", ",".join(sorted(scopes_missing)))
+        A._crm_audit("social", page_id, "sync",
+                     f"facebook sync: {len(posts)} posts, "
+                     f"{new_comments} new comments", request)
+        return {"pages_synced": 1, "posts": len(posts),
+                "comments": new_comments, "scopes_missing": sorted(scopes_missing)}
 
 
 def _quick_sentiment(text):
