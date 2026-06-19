@@ -707,7 +707,7 @@ const RangeManagement = () => {
             <div>
               <div className="eyebrow mb-1">Tier</div>
               <MultiSelect testId="range-filter-tier"
-                options={["Tier 1", "Tier 2", "Tier 3", "Tier 4", "Retire"].map((t) => ({ value: t, label: t }))}
+                options={["Tier 1", "Tier 2", "Tier 3", "Tier 4"].map((t) => ({ value: t, label: t }))}
                 value={tierFilter} onChange={setTierFilter} placeholder="All tiers" width={130} />
             </div>
             <div>
@@ -746,7 +746,7 @@ const RangeManagement = () => {
             >
               All ({fmtNum(rows.length)})
             </button>
-            {["Tier 1", "Tier 2", "Tier 3", "Tier 4", "Retire"].map((t) => {
+            {["Tier 1", "Tier 2", "Tier 3", "Tier 4"].map((t) => {
               const active = tierFilter.includes(t);
               const count = summary?.tier_counts?.[t] ?? 0;
               const style = TIER_STYLES[t] || TIER_STYLES["Tier 4"];
@@ -815,6 +815,15 @@ const RangeManagement = () => {
                             data-testid={`tier-override-badge-${r.style_name}`}
                           >
                             MANUAL
+                          </span>
+                        )}
+                        {r.flagged_for_retirement && (
+                          <span
+                            className="inline-block px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 text-rose-800"
+                            title="Flagged for retirement — failed an SOP performance gate but kept in the active range for the markdown rail."
+                            data-testid={`tier-flagged-badge-${r.style_name}`}
+                          >
+                            FLAGGED
                           </span>
                         )}
                       </span>
@@ -1024,7 +1033,7 @@ const RangeManagement = () => {
             drillTier === "Retired"
               ? (data?.retired_rows || [])
               : drillTier === "Active"
-                ? (data?.rows || []).filter((r) => r.tier !== "Retire")
+                ? (data?.rows || [])
                 : drillTier === "Total"
                   ? ([...(data?.rows || []), ...(data?.retired_rows || [])])
                   : (data?.rows || []).filter((r) => r.tier === drillTier)

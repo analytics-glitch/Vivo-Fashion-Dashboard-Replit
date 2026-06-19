@@ -130,7 +130,7 @@ const RULES = [
       "Step 2d — 39 to 104 weeks → Tier 2 (Core Performer) only if it has 3+ reorders AND lifetime SOR > 60% AND full-price > 90%; otherwise → Retire.",
       "Step 2e — 104 weeks and over → Tier 1 (Core Basics) only if it has 5+ reorders AND full-price > 90% AND lifetime SOR > 60%; otherwise → Retire. Tier 1 is the permanent core — keep it in stock and reorder whenever WOC drops to 8 weeks or below.",
 
-      "Key point: the gates themselves can retire a style. A style that reaches a gate (Step 2c/2d/2e) but does not clear it is classified 'Retire' on performance grounds — this is separate from, and in addition to, the Step 0 hard-retire rules.",
+      "Key point: the gates flag a style for retirement, they do not move it out. A still-trading style that reaches a gate (Step 2c/2d/2e) but does not clear it stays PART of the live Active range — it keeps a real tier (its catalogue-age band: T1 24+ months, T2 9–24 months, T3 8 weeks–9 months, T4 under 8 weeks) and is marked 'flagged for retirement' for the markdown rail. Only the Step 0 hard-retire rules actually move a style into the Retired bucket.",
 
       "What the tiers mean, in plain terms. T4 New / Test = on trial, target 60–100 styles. T3 Recent Performer = proven recently, under ~9 months, target 150–200. T2 Core Performer = a dependable seller 9–24 months old that has been reordered and holds full price, target 200–300. T1 Core Basics = long-running 24+ month staples, target 30–50. A healthy total range is 500–700 live styles.",
     ],

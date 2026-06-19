@@ -1,12 +1,25 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api, fmtNum } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
 import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
 import { useTableSort, SortableTh } from "@/lib/useTableSort";
+import ReplenishmentRosterCard from "@/components/ReplenishmentRosterCard";
 import {
   MagnifyingGlass, Package, Storefront, ArrowsClockwise,
   CaretDown, Check, X as XIcon, Warehouse, CheckCircle,
 } from "@phosphor-icons/react";
+
+// Sentinel store value: fan the Store Gaps query out across every selling store.
+const ALL_STORES = "__all__";
+// Online channel that participates in cross-store replenishment (others excluded).
+const ONLINE_SHOP_ZETU = "Online - Shop Zetu";
+
+const _isAdminOrOwner = (user) => {
+  if (!user) return false;
+  const r = (user.role || "").toLowerCase();
+  return r === "admin" || r === "owner";
+};
 
 /**
  * Replenish by Style / SKU.
@@ -235,6 +248,8 @@ const ReplenTable = ({ rows, sort, toggleSort, actuals, setActual, refs, setRef,
 );
 
 const ReplenishByItem = () => {
+  const { user } = useAuth();
+  const isAdmin = _isAdminOrOwner(user);
   const [tab, setTab] = useState("item"); // "item" | "gaps"
 
   // shared date window (last 90 days)
@@ -435,6 +450,8 @@ const ReplenishByItem = () => {
               data-testid="select-store"
             >
               <option value="">Select a store…</option>
+              <option value={ALL_STORES}>All stores</option>
+              <option value={ONLINE_SHOP_ZETU}>{ONLINE_SHOP_ZETU}</option>
               {stores.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
@@ -502,7 +519,7 @@ const ReplenishByItem = () => {
               <div className="flex flex-wrap items-center gap-4 border-b border-border px-4 py-3 text-sm">
                 <span className="flex items-center gap-2 font-medium">
                   <ArrowsClockwise size={16} className="text-muted-foreground" />
-                  {gapRows.length} gap{gapRows.length === 1 ? "" : "s"} for {store}
+                  {gapRows.length} gap{gapRows.length === 1 ? "" : "s"} for {store === ALL_STORES ? "all stores" : store}
                 </span>
                 <span className="text-muted-foreground">Sold in window but store SOH &lt; {threshold} and warehouse can refill.</span>
               </div>
@@ -518,6 +535,13 @@ const ReplenishByItem = () => {
             </>
           )}
         </div>
+      )}
+
+      {tab === "gaps" && isAdmin && (
+        <ReplenishmentRosterCard
+          isAdmin={isAdmin}
+          subtitle="Who is picking these gaps today? Saving here redistributes line owners across the roster (shared with Daily Replenishments) — POS sorted ascending so each person owns a contiguous block of stores."
+        />
       )}
     </div>
   );

@@ -7883,52 +7883,100 @@ def analytics_replenish_gaps(
     if not date_from or not date_to:
         date_to = str(date.today())
         date_from = str(date.today() - timedelta(days=90))
-    lit = st.replace("'", "''")
     thr = max(0, int(low_threshold))
-    rows = run_query("""
-        WITH sold AS (
-            SELECT s.variant_sku AS sku,
-                SUM(s.net_quantity) AS units_sold,
-                MAX(s.product_title) AS product_name,
-                MAX(s.sale_date) AS last_sale
-            FROM all_sales s
-            WHERE s.sale_kind IN ('sale','order')
-              AND s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
-              AND s.pos_location_name = '""" + lit + """'
-              AND """ + BASE_FILTERS + """
-              AND s.variant_sku IS NOT NULL AND s.variant_sku <> ''
-            GROUP BY s.variant_sku
-            HAVING SUM(s.net_quantity) > 0
-        ),
-        store_soh AS (
-            SELECT i.sku, SUM(i.available) AS soh, MAX(i.location_name) AS bin
-            FROM all_inventory i
-            WHERE i.pos_location_name = '""" + lit + """'
-            GROUP BY i.sku
-        ),
-        wh_soh AS (
-            SELECT i.sku, SUM(i.available) AS soh_wh
-            FROM all_inventory i
-            WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
-            GROUP BY i.sku
-        )
-        SELECT sold.sku, sold.product_name, sold.units_sold, sold.last_sale,
-            COALESCE(ss.soh, 0) AS soh_store, COALESCE(ss.bin, '') AS bin,
-            COALESCE(w.soh_wh, 0) AS soh_wh,
-            COALESCE(p.style_name, '') AS style_name,
-            COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode
-        FROM sold
-        LEFT JOIN store_soh ss ON ss.sku = sold.sku
-        LEFT JOIN wh_soh w ON w.sku = sold.sku
-        LEFT JOIN all_products_clean p ON p.sku = sold.sku
-        WHERE COALESCE(ss.soh, 0) < """ + str(thr) + """ AND COALESCE(w.soh_wh, 0) > 0
-        ORDER BY sold.units_sold DESC
-        LIMIT """ + str(int(limit)))
+    # "__all__" = every selling store at once (one row per store × sku). Warehouses
+    # are excluded and online channels are dropped except Online - Shop Zetu, matching
+    # the cross-store replenishment report. A single store name uses an exact match.
+    all_stores = (st == "__all__")
+    if all_stores:
+        rows = run_query("""
+            WITH sold AS (
+                SELECT s.pos_location_name AS pos_location, s.variant_sku AS sku,
+                    SUM(s.net_quantity) AS units_sold,
+                    MAX(s.product_title) AS product_name,
+                    MAX(s.sale_date) AS last_sale
+                FROM all_sales s
+                WHERE s.sale_kind IN ('sale','order')
+                  AND s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+                  AND """ + BASE_FILTERS + """
+                  AND s.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+                  AND (s.pos_location_name NOT ILIKE '%online%'
+                       OR s.pos_location_name = 'Online - Shop Zetu')
+                  AND s.variant_sku IS NOT NULL AND s.variant_sku <> ''
+                GROUP BY s.pos_location_name, s.variant_sku
+                HAVING SUM(s.net_quantity) > 0
+            ),
+            store_soh AS (
+                SELECT i.pos_location_name, i.sku, SUM(i.available) AS soh, MAX(i.location_name) AS bin
+                FROM all_inventory i
+                WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+                GROUP BY i.pos_location_name, i.sku
+            ),
+            wh_soh AS (
+                SELECT i.sku, SUM(i.available) AS soh_wh
+                FROM all_inventory i
+                WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+                GROUP BY i.sku
+            )
+            SELECT sold.pos_location, sold.sku, sold.product_name, sold.units_sold, sold.last_sale,
+                COALESCE(ss.soh, 0) AS soh_store, COALESCE(ss.bin, '') AS bin,
+                COALESCE(w.soh_wh, 0) AS soh_wh,
+                COALESCE(p.style_name, '') AS style_name,
+                COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode
+            FROM sold
+            LEFT JOIN store_soh ss ON ss.pos_location_name = sold.pos_location AND ss.sku = sold.sku
+            LEFT JOIN wh_soh w ON w.sku = sold.sku
+            LEFT JOIN all_products_clean p ON p.sku = sold.sku
+            WHERE COALESCE(ss.soh, 0) < """ + str(thr) + """ AND COALESCE(w.soh_wh, 0) > 0
+            ORDER BY sold.units_sold DESC
+            LIMIT """ + str(int(limit)))
+    else:
+        lit = st.replace("'", "''")
+        rows = run_query("""
+            WITH sold AS (
+                SELECT s.variant_sku AS sku,
+                    SUM(s.net_quantity) AS units_sold,
+                    MAX(s.product_title) AS product_name,
+                    MAX(s.sale_date) AS last_sale
+                FROM all_sales s
+                WHERE s.sale_kind IN ('sale','order')
+                  AND s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+                  AND s.pos_location_name = '""" + lit + """'
+                  AND """ + BASE_FILTERS + """
+                  AND s.variant_sku IS NOT NULL AND s.variant_sku <> ''
+                GROUP BY s.variant_sku
+                HAVING SUM(s.net_quantity) > 0
+            ),
+            store_soh AS (
+                SELECT i.sku, SUM(i.available) AS soh, MAX(i.location_name) AS bin
+                FROM all_inventory i
+                WHERE i.pos_location_name = '""" + lit + """'
+                GROUP BY i.sku
+            ),
+            wh_soh AS (
+                SELECT i.sku, SUM(i.available) AS soh_wh
+                FROM all_inventory i
+                WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+                GROUP BY i.sku
+            )
+            SELECT sold.sku, sold.product_name, sold.units_sold, sold.last_sale,
+                COALESCE(ss.soh, 0) AS soh_store, COALESCE(ss.bin, '') AS bin,
+                COALESCE(w.soh_wh, 0) AS soh_wh,
+                COALESCE(p.style_name, '') AS style_name,
+                COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode
+            FROM sold
+            LEFT JOIN store_soh ss ON ss.sku = sold.sku
+            LEFT JOIN wh_soh w ON w.sku = sold.sku
+            LEFT JOIN all_products_clean p ON p.sku = sold.sku
+            WHERE COALESCE(ss.soh, 0) < """ + str(thr) + """ AND COALESCE(w.soh_wh, 0) > 0
+            ORDER BY sold.units_sold DESC
+            LIMIT """ + str(int(limit)))
     owners = _replen_owners()
     marks_all = _replen_marks()
     today = date.today()
     out = []
     for idx, r in enumerate(rows):
+        loc = (r.get("pos_location") or "") if all_stores else st
         soh = int(r["soh_store"] or 0)
         soh_wh = int(r["soh_wh"] or 0)
         barcode = r.get("barcode") or ""
@@ -7939,10 +7987,10 @@ def analytics_replenish_gaps(
                 days_lapsed = (today - date.fromisoformat(str(r["last_sale"])[:10])).days
             except ValueError:
                 days_lapsed = None
-        mark = (marks_all.get((st, "sku", sku))
-                or marks_all.get((st, "barcode", barcode)) or {})
+        mark = (marks_all.get((loc, "sku", sku))
+                or marks_all.get((loc, "barcode", barcode)) or {})
         out.append({
-            "pos_location": st, "owner": owners[idx % len(owners)] if owners else "—",
+            "pos_location": loc, "owner": owners[idx % len(owners)] if owners else "—",
             "sku": sku, "barcode": barcode,
             "product_name": r.get("product_name") or "",
             "style_name": r.get("style_name") or "", "size": r.get("size") or "",
@@ -8628,19 +8676,27 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             "full_price_pct": full_price_pct,
         }
 
-        # --- Range tier classification (2026 Range Strategy / SOP): the displayed
-        # tier IS the GATED lifecycle outcome (_gated_range_tier above) — Tier 1..4
-        # or the flagged "Retire". The Active range *count* is Tier 1..4 only; a
-        # still-trading "Retire" verdict is surfaced as "flagged for retirement" and
-        # its row stays in `rows`/`active` (never dropped into Retired) but is not
-        # counted in the Active total — best-sellers are never physically retired.
-        # ONLY hard/physical retirement (manual styles list / Zoya
-        # / long-dead aged-out) moves a style into `retired`. A manual tier override
-        # (_RANGE_OVERRIDES, Tier 1..4 only) re-buckets within the live range and beats
-        # a gated "Retire"; `auto_tier` records the un-overridden gated outcome so the
-        # frontend's "override · auto-tier was X" hint stays useful.
+        # --- Range tier classification (2026 Range Strategy / SOP): every style in
+        # the live range carries a real displayed Tier 1..4 so the per-tier counts
+        # add up to the Active total. A still-trading style whose GATED verdict is
+        # "Retire" (_gated_range_tier above) is NOT dropped to a "Retire" tier — it
+        # is reclassified into its catalogue-age band (Tier 1..4) AND marked with a
+        # `flagged_for_retirement` flag that drives the markdown rail + the "flagged"
+        # pill. So flagged best-sellers stay PART of the Active range and its tier
+        # breakdown, while still being surfaced for the retirement decision.
+        # ONLY hard/physical retirement (manual styles list / Zoya / long-dead
+        # aged-out) moves a style into `retired`. A manual tier override
+        # (_RANGE_OVERRIDES, Tier 1..4 only) re-buckets within the live range, clears
+        # the flag, and beats a gated "Retire"; `auto_tier` records the un-overridden
+        # tier so the frontend's "override · auto-tier was X" hint stays useful.
+        flagged = (gated_tier == "Retire")
+        # The displayed tier for a flagged style is its catalogue-age band (Tier 1..4);
+        # otherwise it is the gated lifecycle tier (already Tier 1..4).
+        effective_tier = age_band if flagged else gated_tier
+
         if is_retired:
             row["tier"] = row["auto_tier"] = "Retire"
+            row["flagged_for_retirement"] = False
             retired.append(row)
             continue
 
@@ -8648,21 +8704,24 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         ov_tier = ov["tier"] if (ov and ov.get("tier") in
                                   ("Tier 1", "Tier 2", "Tier 3", "Tier 4")) else None
         if ov_tier:
-            row["tier"], row["auto_tier"], row["override_reason"] = ov_tier, gated_tier, ov.get("reason")
-            # A manual override keeps the style in the live range, so a gated "Retire"
-            # status/action would be misleading — recompute against the effective tier.
+            row["tier"], row["auto_tier"], row["override_reason"] = ov_tier, effective_tier, ov.get("reason")
+            # A manual override keeps the style in the live range and removes the
+            # retirement flag, so a gated "Retire" status/action would be misleading
+            # — recompute against the effective tier.
+            flagged = False
             if status == "Retire":
                 row["status"] = status = "On Track"
                 row["recommended_action"] = action = (
                     "Manually held in the active range — maintain replenishment per the override.")
         else:
-            row["tier"], row["auto_tier"], row["override_reason"] = gated_tier, gated_tier, None
+            row["tier"], row["auto_tier"], row["override_reason"] = effective_tier, effective_tier, None
+        row["flagged_for_retirement"] = flagged
         active.append(row)
 
-        # Actionable retirement pipeline: still-trading styles the classifier flags
-        # "Retire" that still hold stock to clear (the markdown rail). These remain
-        # in Active — the pipeline is an overlay, not a separate bucket.
-        if row["tier"] == "Retire" and current_stock > 0:
+        # Actionable retirement pipeline: still-trading flagged styles that still
+        # hold stock to clear (the markdown rail). These remain in Active — the
+        # pipeline is an overlay, not a separate bucket.
+        if flagged and current_stock > 0:
             rec = today + timedelta(days=14)
             pipeline.append({**row,
                 "recommended_retirement_date": str(rec),
@@ -8680,21 +8739,21 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                 "current_stock": current_stock, "last_sale_days": last_sale_days,
             })
 
-    tier_counts = {t: 0 for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4", "Retire")}
+    tier_counts = {t: 0 for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4")}
     for row in active:
         tier_counts[row["tier"]] = tier_counts.get(row["tier"], 0) + 1
 
-    # The "Active" range number is Tier 1..4 ONLY. A still-trading "Retire" verdict is
-    # a FLAG (surfaced as "flagged for retirement"), not part of the Active count and
-    # not a physical retirement — those rows stay in `active`/`rows` (never dropped
-    # into the Retired bucket) but are excluded from the Active total.
-    active_tier_rows = [row for row in active if row["tier"] != "Retire"]
-    active_tier_total = len(active_tier_rows)
+    # Every active style now carries a real Tier 1..4 (flagged-for-retirement styles
+    # are reclassified into their age band rather than a "Retire" tier), so the Active
+    # range total == len(active) == the sum of the per-tier counts. Flagged styles
+    # stay PART of Active and are surfaced separately via `flagged_for_retirement`.
+    active_tier_total = len(active)
+    flagged_count = sum(1 for row in active if row.get("flagged_for_retirement"))
 
     total_count = len(active) + len(retired)
     tier_summary = {
         "Total": _tier_summary_block(active + retired, total_count),
-        "Active": _tier_summary_block(active_tier_rows, total_count),
+        "Active": _tier_summary_block(active, total_count),
         "Retired": _tier_summary_block(retired, total_count),
     }
     for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"):
@@ -8712,13 +8771,13 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         rag[t] = _rag(tier_counts.get(t, 0), *_RANGE_TARGETS[t])
 
     summary = {
-        # Active range number = Tier 1..4 only. The still-trading "Retire" flags are
-        # NOT counted here (they are surfaced via flagged_for_retirement) but stay in
-        # `rows`/`active`, never moved into the Retired bucket.
+        # Active range number = every live style (all carry a real Tier 1..4), so
+        # this equals len(active) and the sum of the per-tier counts. Flagged styles
+        # are PART of this total and surfaced separately via flagged_for_retirement.
         "total_active_styles": active_tier_total,
-        # "Flagged for retirement" pill = the classifier's Retire bucket within
-        # the live range (still trading, algorithm wants them on the markdown rail).
-        "flagged_for_retirement": tier_counts.get("Retire", 0),
+        # "Flagged for retirement" pill = active styles the classifier flags for the
+        # markdown rail (failed an SOP gate but kept in the live range).
+        "flagged_for_retirement": flagged_count,
         # Active styles still in Tier 4 past the 8-week read window — i.e. they
         # missed the Week-8 read and are awaiting the Week-12 backstop decision.
         "overdue_for_week8_read": sum(1 for row in active
