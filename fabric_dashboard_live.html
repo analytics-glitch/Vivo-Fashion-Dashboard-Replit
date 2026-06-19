@@ -119,13 +119,14 @@ table.data th.sortable:hover{color:var(--accent);}
 .donut-wrap{display:flex;align-items:center;gap:18px;flex-wrap:wrap;}
 .donut-legend{flex:1;min-width:170px;}
 .leg-row{display:flex;align-items:center;gap:8px;font-size:13px;padding:4px 0;}
-/* Per-column expand: a small toggle injected into every data-table header
-   lets any column release its truncation (max-width + ellipsis) so the full
-   cell content wraps into view. */
-.col-exp{display:inline-flex;align-items:center;margin-left:5px;color:var(--muted);opacity:.32;cursor:pointer;vertical-align:middle;transition:opacity .12s,color .12s;}
-table.data th:hover .col-exp{opacity:.65;}
-.col-exp:hover{opacity:1;color:var(--accent);}
-.col-exp.active{opacity:1;color:var(--accent);}
+/* Per-column expand: a clearly visible toggle button injected into every
+   data-table header lets any column release its truncation (max-width +
+   ellipsis) so the full cell content wraps into view. Clicking again collapses
+   it. State is remembered (by column key for the register) across re-renders. */
+.col-exp{display:inline-flex;align-items:center;justify-content:center;width:19px;height:19px;margin-left:6px;padding:0;border:1px solid var(--border-strong);border-radius:5px;background:var(--card);color:var(--muted);opacity:.9;cursor:pointer;vertical-align:middle;transition:background .12s,color .12s,border-color .12s,opacity .12s;}
+table.data th:hover .col-exp{opacity:1;border-color:var(--accent);color:var(--accent);}
+.col-exp:hover{opacity:1;color:#fff;background:var(--accent);border-color:var(--accent);}
+.col-exp.active{opacity:1;color:#fff;background:var(--accent);border-color:var(--accent);}
 table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-space:normal !important;overflow:visible !important;text-overflow:clip !important;word-break:break-word;}
 </style>
 </head>
@@ -665,12 +666,13 @@ function renderRegisterTable(){
   const cols=REG_COLS.filter(c=>regCols.includes(c.k));
   document.getElementById('register-head').innerHTML='<tr>'+cols.map(c=>{
     const arrow=regSort.key===c.k?(regSort.dir==='asc'?' \u25B2':' \u25BC'):'';
-    return `<th class="${NUM_TYPES[c.type]?'r ':''}sortable" onclick="sortReg('${c.k}')">${esc(c.label)}${arrow}</th>`;
+    return `<th class="${NUM_TYPES[c.type]?'r ':''}sortable" data-key="${esc(c.k)}" onclick="sortReg('${c.k}')">${esc(c.label)}${arrow}</th>`;
   }).join('')+'</tr>';
   const body=document.getElementById('register-body');
   body.innerHTML=lastRegItems.length
     ? lastRegItems.map(r=>'<tr>'+cols.map(c=>regCell(c,r)).join('')+'</tr>').join('')
     : `<tr><td colspan="${cols.length||1}" class="loading">No fabrics match these filters.</td></tr>`;
+  if(window.__fabricEnhanceTables)window.__fabricEnhanceTables();
 }
 function sortReg(k){
   if(regSort.key===k)regSort.dir=regSort.dir==='asc'?'desc':'asc';
@@ -1144,19 +1146,31 @@ async function init(){
 // re-applies the affordance + remembered expanded columns after each render.
 // ---------------------------------------------------------------------------
 (function(){
-  const EXP = Object.create(null);   // "sectionId|colIdx" -> true (remembered)
-  const ICON = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 3 12 9 18"></polyline><polyline points="15 6 21 12 15 18"></polyline></svg>';
-  function tkey(table, idx){
+  const EXP = Object.create(null);   // "sectionId|colKey-or-idx" -> true (remembered)
+  // Chevrons pointing outward = "expand"; inward = "collapse" (shown when active).
+  const EXPAND_ICON = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 3 12 9 18"></polyline><polyline points="15 6 21 12 15 18"></polyline></svg>';
+  const COLLAPSE_ICON = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 6 10 12 4 18"></polyline><polyline points="20 6 14 12 20 18"></polyline></svg>';
+  // Key a column by its stable identity (data-key, e.g. the register's column
+  // key) when present, falling back to positional index for tables without one.
+  // This makes the register's expand state survive column-picker add/remove and
+  // re-ordering, not just paging/sorting/filter re-renders.
+  function tkey(table, th, idx){
     const sec = table.closest('[id]');
-    return (sec ? sec.id : 'tbl') + '|' + idx;
+    const base = sec ? sec.id : 'tbl';
+    const key = th && th.dataset ? th.dataset.key : '';
+    return base + '|' + (key || idx);
   }
   function applyExpansion(table){
     const ths = table.querySelectorAll('thead th');
     const rows = table.querySelectorAll('tbody tr');
     ths.forEach((th, idx) => {
-      const on = !!EXP[tkey(table, idx)];
+      const on = !!EXP[tkey(table, th, idx)];
       const ic = th.querySelector('.col-exp');
-      if(ic) ic.classList.toggle('active', on);
+      if(ic){
+        ic.classList.toggle('active', on);
+        ic.innerHTML = on ? COLLAPSE_ICON : EXPAND_ICON;
+        ic.title = on ? 'Collapse column' : 'Expand column to show full content';
+      }
       rows.forEach(tr => {
         const td = tr.children[idx];
         if(td) td.classList.toggle('cell-exp', on);
@@ -1170,11 +1184,15 @@ async function init(){
         if(th.querySelector('.col-exp')) return;
         const b = document.createElement('span');
         b.className = 'col-exp';
+        b.setAttribute('role', 'button');
+        b.setAttribute('aria-label', 'Toggle column width');
         b.title = 'Expand column to show full content';
-        b.innerHTML = ICON;
+        b.innerHTML = EXPAND_ICON;
         b.addEventListener('click', (e) => {
           e.stopPropagation();
-          const k = tkey(table, idx);
+          const colTh = e.currentTarget.closest('th');
+          const colIdx = Array.prototype.indexOf.call(colTh.parentNode.children, colTh);
+          const k = tkey(table, colTh, colIdx);
           EXP[k] = !EXP[k];
           applyExpansion(table);
         });
@@ -1183,6 +1201,7 @@ async function init(){
       applyExpansion(table);
     });
   }
+  window.__fabricEnhanceTables = enhance;
   function boot(){
     enhance();
     observer = new MutationObserver(() => {
