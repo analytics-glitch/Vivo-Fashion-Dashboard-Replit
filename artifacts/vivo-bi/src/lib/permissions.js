@@ -17,7 +17,7 @@ const STORE_MANAGER = ["locations", "ibt", "exports", "feedback", "replenishment
 // Mirror of `_WAREHOUSE` in /app/backend/auth.py.
 const WAREHOUSE = ["inventory", "replenishments", "replenish-by-item", "ibt", "re-order", "allocations", "exports", "feedback"];
 const ANALYST = [...VIEWER, "inventory", "re-order", "ibt", "products", "data-quality", "allocations", "replenishments", "replenish-by-item", "marketing", "range-mgmt", "markdown-clearance", "custom-report", "velocity", "size-health", "margin", "rfm", "crm", "social"];
-const EXEC = [...ANALYST, "targets", "exports", "exec-summary"];
+const EXEC = [...ANALYST, "targets", "exports", "exec-summary", "hr"];
 const ADMIN = [...EXEC, "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters"];
 
 export const ROLE_PAGES = {

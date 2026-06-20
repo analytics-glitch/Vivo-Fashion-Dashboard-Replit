@@ -9,6 +9,7 @@ import { vivoClient, monthStartISO, todayISO } from "../lib/api";
 import { exportToExcel } from "../lib/exports";
 import {
   ArrowUpDown, FileDown, Building2, AlarmClock, Clock, Briefcase,
+  ChevronDown, ChevronRight, TrendingDown, TrendingUp,
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell,
@@ -69,6 +70,43 @@ function minToClock(min) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
+function PerfList({ title, icon: Icon, tone, people }) {
+  const bad = tone === "bad";
+  const accent = bad ? "text-rose-600" : "text-emerald-600";
+  const dot = bad ? "bg-rose-500" : "bg-emerald-500";
+  const list = Array.isArray(people) ? people : [];
+  return (
+    <div className="rounded-xl border border-border bg-card p-3">
+      <div className={`flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider mb-2 ${accent}`}>
+        <Icon className="h-3.5 w-3.5" />{title}
+      </div>
+      {list.length === 0 ? (
+        <div className="text-[12px] text-muted-foreground py-2">Not enough tracked days to rank.</div>
+      ) : (
+        <div className="space-y-1.5">
+          {list.map((p, i) => (
+            <div key={i} className="flex items-center gap-2 text-[12px]">
+              <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${dot}`} />
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold truncate">{p.employee_name}</div>
+                {p.designation ? <div className="text-[10px] text-muted-foreground truncate">{p.designation}</div> : null}
+              </div>
+              <div className="flex items-center gap-3 font-mono tabular-nums text-right shrink-0">
+                <span className={p.attendance_rate >= 90 ? "text-emerald-600" : p.attendance_rate < 70 ? "text-rose-600" : ""} title="Attendance rate">
+                  {p.attendance_rate}%
+                </span>
+                <span className="text-muted-foreground" title="Late days">{p.late_days}L</span>
+                <span className="text-muted-foreground" title="Absent days">{p.absent_days}A</span>
+                <span className="text-muted-foreground hidden sm:inline" title="Avg check-in">{p.avg_check_in || "—"}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Departments() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -79,6 +117,7 @@ export default function Departments() {
   const [entity, setEntity] = useState("all");
   const [entities, setEntities] = useState([]);
   const [sort, setSort] = useState({ key: "employees", dir: "desc" });
+  const [expanded, setExpanded] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true); setErr("");
@@ -250,9 +289,22 @@ export default function Departments() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sorted.map((r, i) => (
-                    <tr key={r.department} className="border-t border-border hover:bg-panel/40 transition-colors" data-testid={`dept-row-${i}`}>
-                      <td className="px-3 py-2.5 font-semibold whitespace-nowrap">{r.department}</td>
+                  {sorted.map((r, i) => {
+                    const isOpen = expanded === r.department;
+                    const hasPerf = (r.worst_performers?.length || 0) > 0 || (r.best_performers?.length || 0) > 0;
+                    return (
+                    <React.Fragment key={r.department}>
+                    <tr
+                      className={`border-t border-border transition-colors ${hasPerf ? "cursor-pointer hover:bg-panel/40" : ""} ${isOpen ? "bg-panel/40" : ""}`}
+                      data-testid={`dept-row-${i}`}
+                      onClick={() => hasPerf && setExpanded(isOpen ? null : r.department)}
+                    >
+                      <td className="px-3 py-2.5 font-semibold whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1.5">
+                          {hasPerf ? (isOpen ? <ChevronDown className="h-3.5 w-3.5 text-brand" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />) : <span className="w-3.5" />}
+                          {r.department}
+                        </span>
+                      </td>
                       <td className="px-3 py-2.5 text-right font-mono tabular-nums">{r.employees}</td>
                       <td className="px-3 py-2.5 text-right font-mono tabular-nums">
                         <span className={r.attendance_rate >= 90 ? "text-emerald-600 font-semibold" : r.attendance_rate < 70 ? "text-rose-600 font-semibold" : ""}>
@@ -269,7 +321,29 @@ export default function Departments() {
                       <td className="px-3 py-2.5 text-right font-mono tabular-nums">{r.avg_check_in || "—"}</td>
                       <td className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground">{r.undertime_days}</td>
                     </tr>
-                  ))}
+                    {isOpen && hasPerf && (
+                      <tr className="border-t border-border bg-panel/20" data-testid={`dept-perf-${i}`}>
+                        <td colSpan={8} className="px-3 py-4">
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                            <PerfList
+                              title="Needs attention"
+                              icon={TrendingDown}
+                              tone="bad"
+                              people={r.worst_performers}
+                            />
+                            <PerfList
+                              title="Top performers"
+                              icon={TrendingUp}
+                              tone="good"
+                              people={r.best_performers}
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

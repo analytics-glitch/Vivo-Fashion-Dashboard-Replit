@@ -77,10 +77,14 @@ route added to a ported app must be checked against existing api_pg/crm routes.
   not enough.
 - Notes had only list/create/delete; added `PUT /api/hr/notes/{id}` (note/flag/
   resolved) wired to a Resolve/Reopen toggle in LeaveAndNotes.jsx.
-- No training dataset exists: `lib/training.js` is a stub. `/filters` MUST return
-  an OBJECT (categories/…/earliest_date/latest_date), not `[]`, or Training.jsx
-  date-picker seeding breaks. `/overview`→null, `/lateness`→{by_training,detail},
-  rest→[].
+- Training is now LIVE off the real Google Sheet: `lib/training.js` is a real axios
+  client (baseURL `/api/hr/training`, Bearer `vivo_token`); backend sync + read
+  endpoints live in `hr_attendance.py` (`_sync_training`/`_training_autosync`,
+  `_ensure_training_tables`). Shape contract still holds: `/filters` MUST return an
+  OBJECT (categories/…/earliest_date/latest_date), not `[]`, or Training.jsx
+  date-picker seeding breaks; `/overview`→object, `/lateness`→{by_training,detail},
+  most others→[]. Extra `/coverage` + `/targets` endpoints exist but Training.jsx
+  doesn't consume them yet (optional enrichment).
 - The reference login screen shows cosmetic "demo accounts" hints
   (exec@vivofashion.com …) — they fill the form but are not real accounts.
 - `@radix-ui/react-visually-hidden` had to be added (BranchDetailSheet.jsx).

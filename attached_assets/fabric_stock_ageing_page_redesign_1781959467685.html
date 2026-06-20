@@ -1,0 +1,154 @@
+<h2 class="sr-only">Redesigned Stock and ageing page for the Vivo Fabric Dashboard, showing total value, value at risk, dead stock, ageing distribution, breakdown by fabric type, and a worst-offenders table.</h2>
+
+<div style="padding: 0.5rem 0 0;">
+
+  <div style="display:flex; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:1.25rem;">
+    <div>
+      <h2 style="margin:0; font-size:18px; font-weight:500;">Stock &amp; ageing</h2>
+      <p style="margin:2px 0 0; font-size:13px; color:var(--color-text-secondary);">Days since fabric was last <strong style="font-weight:500;">issued to production or sold</strong> — not since it was relocated</p>
+    </div>
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+      <div style="display:inline-flex; border:0.5px solid var(--color-border-secondary); border-radius:var(--border-radius-md); overflow:hidden;">
+        <span style="padding:6px 12px; font-size:13px; background:#27500a; color:#fff;">Metres</span>
+        <span style="padding:6px 12px; font-size:13px; color:var(--color-text-secondary);">Kg</span>
+      </div>
+      <select style="width:auto; min-width:150px;"><option>Main Fabric Store</option><option>Dead/Stock Fabric</option><option>All locations</option></select>
+      <span style="font-size:12px; color:var(--color-text-tertiary);">22 May – 20 Jun 2026</span>
+    </div>
+  </div>
+
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:12px; margin-bottom:1rem;">
+    <div style="background:var(--color-background-secondary); border-radius:var(--border-radius-md); padding:1rem;">
+      <p style="margin:0; font-size:12px; color:var(--color-text-secondary); text-transform:uppercase; letter-spacing:.04em;">Total stock value</p>
+      <p style="margin:6px 0 2px; font-size:24px; font-weight:500;">KES 28.2M</p>
+      <p style="margin:0; font-size:12px; color:var(--color-text-tertiary);">14,310 m · 6 fabric types</p>
+    </div>
+    <div style="background:var(--color-background-danger); border-radius:var(--border-radius-md); padding:1rem;">
+      <p style="margin:0; font-size:12px; color:var(--color-text-danger); text-transform:uppercase; letter-spacing:.04em;">Value at risk &gt;6m</p>
+      <p style="margin:6px 0 2px; font-size:24px; font-weight:500; color:var(--color-text-danger);">KES 7.2M</p>
+      <p style="margin:0; font-size:12px; color:var(--color-text-danger);">26% of stock value</p>
+    </div>
+    <div style="background:var(--color-background-secondary); border-radius:var(--border-radius-md); padding:1rem;">
+      <p style="margin:0; font-size:12px; color:var(--color-text-secondary); text-transform:uppercase; letter-spacing:.04em;">Dead / non-moving</p>
+      <p style="margin:6px 0 2px; font-size:24px; font-weight:500; color:#A32D2D;">KES 3.1M</p>
+      <p style="margin:0; font-size:12px; color:var(--color-text-tertiary);">12m+ · no issue since</p>
+    </div>
+    <div style="background:var(--color-background-secondary); border-radius:var(--border-radius-md); padding:1rem;">
+      <p style="margin:0; font-size:12px; color:var(--color-text-secondary); text-transform:uppercase; letter-spacing:.04em;">Avg age · cover</p>
+      <p style="margin:6px 0 2px; font-size:24px; font-weight:500;">142 d</p>
+      <p style="margin:0; font-size:12px; color:var(--color-text-tertiary);">86 days of cover</p>
+    </div>
+  </div>
+
+  <div style="background:var(--color-background-primary); border:0.5px solid var(--color-border-tertiary); border-radius:var(--border-radius-lg); padding:1.1rem 1.25rem; margin-bottom:1rem;">
+    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:14px;">
+      <p style="margin:0; font-size:15px; font-weight:500;">Ageing by last issue</p>
+      <p style="margin:0; font-size:12px; color:var(--color-text-secondary);">metres · value (KES) · suggested provision <strong style="font-weight:500;">KES 3.8M</strong></p>
+    </div>
+
+    <div style="display:flex; height:26px; width:100%; border-radius:6px; overflow:hidden; margin-bottom:10px;">
+      <div style="width:50%; background:#639922;"></div>
+      <div style="width:24%; background:#BA7517;"></div>
+      <div style="width:15%; background:#D85A30;"></div>
+      <div style="width:11%; background:#A32D2D;"></div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px;">
+      <div style="display:flex; gap:8px; align-items:flex-start;">
+        <span style="width:10px;height:10px;border-radius:2px;background:#639922;margin-top:4px;flex:none;"></span>
+        <div><p style="margin:0;font-size:13px;font-weight:500;">0–3m · Fresh</p><p style="margin:0;font-size:12px;color:var(--color-text-secondary);">7,150 m · KES 14.2M · 50%</p></div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:flex-start;">
+        <span style="width:10px;height:10px;border-radius:2px;background:#BA7517;margin-top:4px;flex:none;"></span>
+        <div><p style="margin:0;font-size:13px;font-weight:500;">3–6m · Watch</p><p style="margin:0;font-size:12px;color:var(--color-text-secondary);">3,440 m · KES 6.8M · 24%</p></div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:flex-start;">
+        <span style="width:10px;height:10px;border-radius:2px;background:#D85A30;margin-top:4px;flex:none;"></span>
+        <div><p style="margin:0;font-size:13px;font-weight:500;">6–12m · Slow</p><p style="margin:0;font-size:12px;color:var(--color-text-secondary);">2,070 m · KES 4.1M · 15%</p></div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:flex-start;">
+        <span style="width:10px;height:10px;border-radius:2px;background:#A32D2D;margin-top:4px;flex:none;"></span>
+        <div><p style="margin:0;font-size:13px;font-weight:500;">12m+ · Dead</p><p style="margin:0;font-size:12px;color:var(--color-text-secondary);">1,650 m · KES 3.1M · 11%</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:grid; grid-template-columns:1fr; gap:1rem;">
+    <div style="background:var(--color-background-primary); border:0.5px solid var(--color-border-tertiary); border-radius:var(--border-radius-lg); padding:1.1rem 1.25rem;">
+      <p style="margin:0 0 14px; font-size:15px; font-weight:500;">By fabric type — value &amp; % aged (&gt;6m)</p>
+
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <div>
+          <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;"><span>Polyester knit</span><span style="color:#A32D2D;">KES 4.9M · 41% aged</span></div>
+          <div style="height:8px; background:var(--color-background-secondary); border-radius:4px; overflow:hidden;"><div style="width:70%; height:100%; background:#639922;"></div></div>
+        </div>
+        <div>
+          <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;"><span>Linen</span><span style="color:#BA7517;">KES 3.8M · 33% aged</span></div>
+          <div style="height:8px; background:var(--color-background-secondary); border-radius:4px; overflow:hidden;"><div style="width:54%; height:100%; background:#639922;"></div></div>
+        </div>
+        <div>
+          <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;"><span>Denim</span><span style="color:#BA7517;">KES 7.2M · 18% aged</span></div>
+          <div style="height:8px; background:var(--color-background-secondary); border-radius:4px; overflow:hidden;"><div style="width:100%; height:100%; background:#639922;"></div></div>
+        </div>
+        <div>
+          <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;"><span>Viscose</span><span style="color:var(--color-text-secondary);">KES 3.1M · 12% aged</span></div>
+          <div style="height:8px; background:var(--color-background-secondary); border-radius:4px; overflow:hidden;"><div style="width:43%; height:100%; background:#639922;"></div></div>
+        </div>
+        <div>
+          <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;"><span>Cotton poplin</span><span style="color:var(--color-text-secondary);">KES 5.6M · 9% aged</span></div>
+          <div style="height:8px; background:var(--color-background-secondary); border-radius:4px; overflow:hidden;"><div style="width:78%; height:100%; background:#639922;"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="background:var(--color-background-primary); border:0.5px solid var(--color-border-tertiary); border-radius:var(--border-radius-lg); padding:1.1rem 1.25rem;">
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px;">
+        <p style="margin:0; font-size:15px; font-weight:500;">Worst offenders — act on these</p>
+        <span style="font-size:12px; color:var(--color-text-secondary);">roll / lot level</span>
+      </div>
+      <table style="width:100%; table-layout:fixed; border-collapse:collapse; font-size:12.5px;">
+        <thead>
+          <tr style="text-align:left; color:var(--color-text-secondary);">
+            <th style="width:30%; padding:6px 4px; font-weight:500;">Fabric · colour</th>
+            <th style="width:18%; padding:6px 4px; font-weight:500;">Supplier</th>
+            <th style="width:13%; padding:6px 4px; font-weight:500; text-align:right;">Value</th>
+            <th style="width:11%; padding:6px 4px; font-weight:500; text-align:right;">Age</th>
+            <th style="width:28%; padding:6px 4px; font-weight:500;">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-top:0.5px solid var(--color-border-tertiary);">
+            <td style="padding:8px 4px;">Polyester knit · Lime</td>
+            <td style="padding:8px 4px; color:var(--color-text-secondary);">Shaoxing</td>
+            <td style="padding:8px 4px; text-align:right;">1.1M</td>
+            <td style="padding:8px 4px; text-align:right; color:#A32D2D;">276 d</td>
+            <td style="padding:8px 4px;"><span style="background:#FCEBEB; color:#791F1F; padding:2px 8px; border-radius:6px;">Provision 60%</span></td>
+          </tr>
+          <tr style="border-top:0.5px solid var(--color-border-tertiary);">
+            <td style="padding:8px 4px;">Linen · Rust</td>
+            <td style="padding:8px 4px; color:var(--color-text-secondary);">Arvind</td>
+            <td style="padding:8px 4px; text-align:right;">740k</td>
+            <td style="padding:8px 4px; text-align:right; color:#A32D2D;">230 d</td>
+            <td style="padding:8px 4px;"><span style="background:#FAEEDA; color:#633806; padding:2px 8px; border-radius:6px;">Promo / clear</span></td>
+          </tr>
+          <tr style="border-top:0.5px solid var(--color-border-tertiary);">
+            <td style="padding:8px 4px;">Denim · Acid wash</td>
+            <td style="padding:8px 4px; color:var(--color-text-secondary);">Local</td>
+            <td style="padding:8px 4px; text-align:right;">680k</td>
+            <td style="padding:8px 4px; text-align:right; color:#BA7517;">188 d</td>
+            <td style="padding:8px 4px;"><span style="background:#EAF3DE; color:#27500A; padding:2px 8px; border-radius:6px;">Reallocate</span></td>
+          </tr>
+          <tr style="border-top:0.5px solid var(--color-border-tertiary);">
+            <td style="padding:8px 4px;">Viscose print · Floral</td>
+            <td style="padding:8px 4px; color:var(--color-text-secondary);">Guangzhou</td>
+            <td style="padding:8px 4px; text-align:right;">520k</td>
+            <td style="padding:8px 4px; text-align:right; color:#BA7517;">166 d</td>
+            <td style="padding:8px 4px;"><span style="background:#FAEEDA; color:#633806; padding:2px 8px; border-radius:6px;">Remnant bundle</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <button onclick="sendPrompt('Show me the full worst-offenders list with recommended provisions and a write-down summary for the board')" style="margin-top:12px; font-size:13px;">See full list &amp; provision summary ↗</button>
+    </div>
+  </div>
+
+</div>
