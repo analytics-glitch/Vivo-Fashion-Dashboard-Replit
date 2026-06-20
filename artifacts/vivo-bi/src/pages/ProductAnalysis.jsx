@@ -713,41 +713,55 @@ const ProductAnalysis = () => {
 
       {/* Scope controls */}
       <div className="card-white p-3.5 flex flex-wrap items-center gap-2.5">
-        <span className="text-[11px] font-semibold text-muted uppercase tracking-wide">Sales Period</span>
-        <div className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5" data-testid="pa-date">
-          {[30, 90, 120].map((d) => (
-            <button
-              key={d}
-              type="button"
-              onClick={() => applyPreset(d)}
-              data-testid={`pa-date-${d}`}
-              className={`px-2 py-0.5 text-[11.5px] font-semibold rounded-full transition-colors ${
-                datePreset === d ? "bg-[#1a5c38] text-white" : "text-[#374151] hover:bg-[#f3f4f6]"
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2.5">
+            <span className="text-[11px] font-semibold text-muted uppercase tracking-wide">Sales Period</span>
+            <div className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5" data-testid="pa-date">
+              {[30, 90, 120].map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => applyPreset(d)}
+                  data-testid={`pa-date-${d}`}
+                  className={`px-2 py-0.5 text-[11.5px] font-semibold rounded-full transition-colors ${
+                    datePreset === d ? "bg-[#1a5c38] text-white" : "text-[#374151] hover:bg-[#f3f4f6]"
+                  }`}
+                  title={`Last ${d} days`}
+                >
+                  {d}D
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center gap-2.5">
+            <span className="text-[11px] font-semibold text-muted uppercase tracking-wide">Custom</span>
+            <div
+              className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 ${
+                datePreset === "custom" ? "border-[#1a5c38]" : "border-border"
               }`}
-              title={`Last ${d} days`}
+              data-testid="pa-date-custom"
             >
-              {d}D
-            </button>
-          ))}
-          <input
-            type="date"
-            value={localFrom || ""}
-            max={localTo || undefined}
-            onChange={(e) => { setLocalFrom(e.target.value); setDatePreset("custom"); }}
-            className="bg-transparent text-[11.5px] text-foreground outline-none"
-            data-testid="pa-date-from"
-            aria-label="From date"
-          />
-          <span className="text-muted text-[11px]">–</span>
-          <input
-            type="date"
-            value={localTo || ""}
-            min={localFrom || undefined}
-            onChange={(e) => { setLocalTo(e.target.value); setDatePreset("custom"); }}
-            className="bg-transparent text-[11.5px] text-foreground outline-none"
-            data-testid="pa-date-to"
-            aria-label="To date"
-          />
+              <input
+                type="date"
+                value={localFrom || ""}
+                max={localTo || undefined}
+                onChange={(e) => { setLocalFrom(e.target.value); setDatePreset("custom"); }}
+                className="bg-transparent text-[11.5px] text-foreground outline-none"
+                data-testid="pa-date-from"
+                aria-label="From date"
+              />
+              <span className="text-muted text-[11px]">–</span>
+              <input
+                type="date"
+                value={localTo || ""}
+                min={localFrom || undefined}
+                onChange={(e) => { setLocalTo(e.target.value); setDatePreset("custom"); }}
+                className="bg-transparent text-[11.5px] text-foreground outline-none"
+                data-testid="pa-date-to"
+                aria-label="To date"
+              />
+            </div>
+          </div>
         </div>
 
         <MultiSelect
