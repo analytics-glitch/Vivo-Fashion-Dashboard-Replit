@@ -86,8 +86,18 @@ def _filters(qp, allow):
         "branch": "branch_name",
         "employee": "employee_name",
     }
+    # A concrete branch fully determines its location (branch_name -> location is
+    # 1:1 in vivo_attendance), so an extra location filter is at best redundant
+    # and at worst contradictory: e.g. location=Stores AND branch=HQ returns zero
+    # rows because HQ's location is "HQ", not "Stores". The frontend injects the
+    # active location filter into every request, so when a specific branch is
+    # selected we must drop the location filter to avoid an empty result.
+    branch_val = (qp.get("branch") or "").strip() if "branch" in allow else ""
+    skip_location = bool(branch_val) and branch_val.lower() != "all"
     where, params = [], {}
     for key in allow:
+        if key == "location" and skip_location:
+            continue
         v = (qp.get(key) or "").strip()
         if v and v.lower() != "all":
             where.append(f"{cmap[key]} = %({key})s")
