@@ -200,6 +200,7 @@ def register(
     subcategory: str = Query(default=None),
     plain_print: str = Query(default=None),
     weight_range: str = Query(default=None),
+    fabric_color: str = Query(default=None),
     location: str = Query(default="RMAT/Stock"),
     search: str = Query(default=None),
     min_qty: float = Query(default=0),
@@ -217,7 +218,7 @@ def register(
         ALLOWED_SORT = {
             "default_code", "barcode", "name", "fabric_category", "fabric_subcategory",
             "plain_print", "weight_range", "fabric_structure", "gsm", "width_m",
-            "kg_per_mtr", "fiber_content", "fabric_type", "supplier", "primary_color",
+            "kg_per_mtr", "fiber_content", "fabric_type", "supplier", "primary_color", "fabric_color",
             "qty_kg", "available_kg", "qty_metres", "available_metres", "value_kes",
             "cost_kes", "cost_per_kg", "cost_metre", "weeks_cover",
             "team_reserved_kg", "team_reserved_metres",
@@ -239,6 +240,8 @@ def register(
             where.append("p.plain_print = %s"); params.append(plain_print)
         if weight_range:
             where.append("p.weight_range = %s"); params.append(weight_range)
+        if fabric_color:
+            where.append("UPPER(BTRIM(p.fabric_color)) = UPPER(BTRIM(%s))"); params.append(fabric_color)
         if search:
             where.append("(p.name ILIKE %s OR p.default_code ILIKE %s OR p.barcode ILIKE %s)")
             params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
@@ -262,7 +265,8 @@ def register(
               p.id, p.name, p.default_code, p.barcode, p.fabric_category, p.fabric_subcategory,
               p.fabric_structure, p.plain_print, p.weight_range, p.gsm,
               p.width_m, p.kg_per_mtr, p.fiber_content, p.fabric_type,
-              p.supplier, p.primary_color, p.standard_price, p.uom,
+              p.supplier, p.primary_color, INITCAP(BTRIM(p.fabric_color)) as fabric_color,
+              p.standard_price, p.uom,
               ROUND(p.standard_price::numeric,2) as cost_kes,
               ROUND(p.standard_price::numeric,2) as cost_per_kg,
               ROUND(CASE WHEN p.kg_per_mtr>0 THEN p.standard_price*p.kg_per_mtr ELSE NULL END::numeric,2) as cost_metre,
@@ -700,10 +704,15 @@ def filters():
             SELECT DISTINCT location_name as value FROM raw_fabric_inventory
             WHERE quantity > 0 ORDER BY 1
         """)
+        colors = q(conn, """
+            SELECT DISTINCT INITCAP(BTRIM(fabric_color)) as value FROM raw_fabric_products
+            WHERE fabric_color IS NOT NULL AND btrim(fabric_color) <> '' ORDER BY 1
+        """)
         return {
             "categories": [r['value'] for r in cats],
             "subcategories": subcats,
             "locations": [r['value'] for r in locs],
+            "fabric_colors": [r['value'] for r in colors],
             "plain_print": ["Plain", "Print"],
             "weight_range": ["Light", "Medium", "Heavy"],
         }

@@ -219,6 +219,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <select id="reg-category" onchange="loadRegister(0)"><option value="">All categories</option></select>
      <select id="reg-print" onchange="loadRegister(0)"><option value="">Plain &amp; print</option><option value="Plain">Plain</option><option value="Print">Print</option></select>
      <select id="reg-weight" onchange="loadRegister(0)"><option value="">All weights</option><option value="Light">Light</option><option value="Medium">Medium</option><option value="Heavy">Heavy</option></select>
+     <select id="reg-color" onchange="loadRegister(0)"><option value="">All colors</option></select>
      <div class="popwrap">
       <button class="btn" onclick="toggleColPicker(event)">Columns &#9662;</button>
       <div id="col-picker" class="popover" style="display:none;"></div>
@@ -617,6 +618,7 @@ const REG_COLS=[
   {k:'kg_per_mtr',label:'Kg/m',type:'num1'},
   {k:'supplier',label:'Supplier',type:'text'},
   {k:'primary_color',label:'Color',type:'text'},
+  {k:'fabric_color',label:'Fabric Color',type:'text'},
   {k:'cost_kes',label:'Cost (KES)',type:'kesc'},
   {k:'cost_per_kg',label:'Cost/kg',type:'kesc'},
   {k:'cost_metre',label:'Cost/metre',type:'kesc'},
@@ -631,7 +633,7 @@ const REG_COLS=[
   {k:'last_move',label:'Last move',type:'date'},
   {k:'days_since_move',label:'Days idle',type:'num'},
 ];
-const REG_DEFAULT=['default_code','name','fabric_subcategory','plain_print','gsm','cost_kes','qty_metres','qty_kg','team_reserved_kg','value_kes','weeks_cover','last_move'];
+const REG_DEFAULT=['default_code','name','fabric_subcategory','fabric_color','plain_print','gsm','cost_kes','qty_metres','qty_kg','team_reserved_kg','value_kes','weeks_cover','last_move'];
 const NUM_TYPES={num:1,num1:1,numb:1,kes:1,kesc:1,wcover:1,rsv:1};
 let regCols=(()=>{try{const s=JSON.parse(localStorage.getItem('fabricRegCols'));return Array.isArray(s)&&s.length?s.filter(k=>REG_COLS.some(c=>c.k===k)):REG_DEFAULT.slice();}catch(_){return REG_DEFAULT.slice();}})();
 let regSort={key:'value_kes',dir:'desc'};
@@ -644,6 +646,7 @@ async function loadRegister(offset){
   const c=document.getElementById('reg-category').value;if(c)params.set('category',c);
   const p=document.getElementById('reg-print').value;if(p)params.set('plain_print',p);
   const w=document.getElementById('reg-weight').value;if(w)params.set('weight_range',w);
+  const fc=document.getElementById('reg-color').value;if(fc)params.set('fabric_color',fc);
   try{
     const d=await apiFetch('/api/fabric/register?'+params);
     regTotal=d.total;lastRegItems=d.items;
@@ -709,6 +712,7 @@ async function exportRegister(btn){
   const c=document.getElementById('reg-category').value;if(c)params.set('category',c);
   const p=document.getElementById('reg-print').value;if(p)params.set('plain_print',p);
   const w=document.getElementById('reg-weight').value;if(w)params.set('weight_range',w);
+  const fc=document.getElementById('reg-color').value;if(fc)params.set('fabric_color',fc);
   const orig=btn?btn.textContent:'';
   if(btn){btn.disabled=true;btn.textContent='Exporting…';}
   try{
@@ -1141,6 +1145,8 @@ async function init(){
     sel.innerHTML='<option value="All">All locations</option>'+f.locations.map(l=>`<option value="${esc(l)}"${l==='RMAT/Stock'?' selected':''}>${esc(l)}</option>`).join('');
     const catSel=document.getElementById('reg-category');
     catSel.innerHTML='<option value="">All categories</option>'+f.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    const colSel=document.getElementById('reg-color');
+    if(colSel&&Array.isArray(f.fabric_colors))colSel.innerHTML='<option value="">All colors</option>'+f.fabric_colors.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
   }catch(e){/* overview will surface the auth error */}
   loadOverview();
 }
