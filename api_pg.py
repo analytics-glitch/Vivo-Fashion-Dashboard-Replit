@@ -7754,6 +7754,7 @@ def analytics_replenish_options(mode: str = Query(default="style"),
             "COUNT(*) AS sku_count "
             "FROM all_products_clean "
             "WHERE style_name IS NOT NULL AND style_name <> '' "
+            "AND brand IN ('Vivo', 'Safari', 'Zoya') "
             "AND LOWER(style_name) LIKE '" + like + "' "
             "GROUP BY style_name ORDER BY style_name LIMIT 50")
     return {"mode": "sku" if mode == "sku" else "style", "options": rows}
@@ -7872,6 +7873,7 @@ def analytics_replenish_by_item(
             "units_sold": units, "soh_store": soh, "soh_wh": soh_wh,
             "suggested_units": min(max(thr - soh, 0), soh_wh),
             "days_lapsed": days_lapsed,
+            "last_sale": str(r["last_sale"]) if r.get("last_sale") else None,
             "replenished": bool(mark.get("replenished", False)),
             "actual_units_replenished": int(mark.get("actual_units_replenished", 0)),
             "transfer_ref": mark.get("transfer_ref") or "",

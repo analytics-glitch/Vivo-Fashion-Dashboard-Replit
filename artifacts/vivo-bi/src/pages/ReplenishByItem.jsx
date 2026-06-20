@@ -46,6 +46,8 @@ const fmtDateInput = (d) => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
+const fmtLastSold = (s) => (s ? String(s).slice(0, 10) : "—");
+
 const rowKey = (r) => `${r.pos_location}|${r.sku || r.barcode}`;
 
 // ---- Searchable item picker (debounced typeahead over /replenish-options) ----
@@ -149,17 +151,18 @@ const ReplenTable = ({ rows, sort, toggleSort, actuals, setActual, refs, setRef,
     <table className="w-full text-sm">
       <thead>
         <tr className="border-b border-border text-left text-xs text-muted-foreground">
-          <th className="px-3 py-2"><SortableTh sortKey="owner" sort={sort} onSort={toggleSort}>Owner</SortableTh></th>
-          <th className="px-3 py-2"><SortableTh sortKey="pos_location" sort={sort} onSort={toggleSort}>POS Location</SortableTh></th>
-          <th className="px-3 py-2 text-right"><SortableTh sortKey="days_lapsed" sort={sort} onSort={toggleSort} numeric>Days lapsed</SortableTh></th>
-          <th className="px-3 py-2"><SortableTh sortKey="product_name" sort={sort} onSort={toggleSort}>Product</SortableTh></th>
-          <th className="px-3 py-2"><SortableTh sortKey="size" sort={sort} onSort={toggleSort}>Size</SortableTh></th>
-          <th className="px-3 py-2"><SortableTh sortKey="barcode" sort={sort} onSort={toggleSort}>Barcode</SortableTh></th>
-          <th className="px-3 py-2"><SortableTh sortKey="bin" sort={sort} onSort={toggleSort}>Bin</SortableTh></th>
-          <th className="px-3 py-2 text-right"><SortableTh sortKey="units_sold" sort={sort} onSort={toggleSort} numeric>Sold</SortableTh></th>
-          <th className="px-3 py-2 text-right"><SortableTh sortKey="soh_store" sort={sort} onSort={toggleSort} numeric>SOH Store</SortableTh></th>
-          <th className="px-3 py-2 text-right"><SortableTh sortKey="soh_wh" sort={sort} onSort={toggleSort} numeric>SOH WH</SortableTh></th>
-          <th className="px-3 py-2 text-right"><SortableTh sortKey="suggested_units" sort={sort} onSort={toggleSort} numeric>Suggested</SortableTh></th>
+          <SortableTh sortKey="owner" sort={sort} onSort={toggleSort} className="px-3 py-2">Owner</SortableTh>
+          <SortableTh sortKey="pos_location" sort={sort} onSort={toggleSort} className="px-3 py-2">POS Location</SortableTh>
+          <SortableTh sortKey="days_lapsed" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Days lapsed</SortableTh>
+          <SortableTh sortKey="last_sale" sort={sort} onSort={toggleSort} className="px-3 py-2">Last sold</SortableTh>
+          <SortableTh sortKey="product_name" sort={sort} onSort={toggleSort} className="px-3 py-2">Product</SortableTh>
+          <SortableTh sortKey="size" sort={sort} onSort={toggleSort} className="px-3 py-2">Size</SortableTh>
+          <SortableTh sortKey="barcode" sort={sort} onSort={toggleSort} className="px-3 py-2">Barcode</SortableTh>
+          <SortableTh sortKey="bin" sort={sort} onSort={toggleSort} className="px-3 py-2">Bin</SortableTh>
+          <SortableTh sortKey="units_sold" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Sold</SortableTh>
+          <SortableTh sortKey="soh_store" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">SOH Store</SortableTh>
+          <SortableTh sortKey="soh_wh" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">SOH WH</SortableTh>
+          <SortableTh sortKey="suggested_units" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Suggested</SortableTh>
           <th className="px-3 py-2 text-right">Actual replenished</th>
           <th className="px-3 py-2">Transfer ref</th>
           <th className="px-3 py-2">Action</th>
@@ -181,6 +184,7 @@ const ReplenTable = ({ rows, sort, toggleSort, actuals, setActual, refs, setRef,
                   : dl > 2 ? <span className="inline-flex items-center bg-rose-100 text-rose-800 border border-rose-300 font-bold px-2 py-0.5 rounded-full">{dl}d</span>
                   : <span className="text-muted-foreground">{dl}d</span>}
               </td>
+              <td className="px-3 py-2 whitespace-nowrap tabular-nums text-muted-foreground">{fmtLastSold(r.last_sale)}</td>
               <td className="px-3 py-2 min-w-[180px] max-w-[280px]">
                 <div className="font-medium break-words">{r.style_name || r.product_name || "—"}</div>
                 <div className="text-xs text-muted-foreground">{r.sku}{r.barcode ? ` · ${r.barcode}` : ""}</div>
@@ -476,6 +480,13 @@ const ReplenishByItem = () => {
 
       {/* ---- By Item view ---- */}
       {tab === "item" && (
+        <>
+        {isAdmin && (
+          <ReplenishmentRosterCard
+            isAdmin={isAdmin}
+            subtitle="Who is picking these replenishments today? Saving here redistributes line owners across the roster (shared with Daily Replenishments) — POS sorted ascending so each person owns a contiguous block of stores."
+          />
+        )}
         <div className="rounded-lg border border-border bg-card">
           {!item && <Empty label={`Pick a ${mode === "sku" ? "SKU" : "style"} above to see understocked stores.`} />}
           {item && itemLoading && <Loading label="Finding understocked stores…" />}
@@ -506,10 +517,18 @@ const ReplenishByItem = () => {
             </>
           )}
         </div>
+        </>
       )}
 
       {/* ---- Store Gaps view ---- */}
       {tab === "gaps" && (
+        <>
+        {isAdmin && (
+          <ReplenishmentRosterCard
+            isAdmin={isAdmin}
+            subtitle="Who is picking these gaps today? Saving here redistributes line owners across the roster (shared with Daily Replenishments) — POS sorted ascending so each person owns a contiguous block of stores."
+          />
+        )}
         <div className="rounded-lg border border-border bg-card">
           {!store && <Empty label="Pick a store above to see its proven demand gaps." />}
           {store && gapLoading && <Loading label="Finding demand gaps…" />}
@@ -535,13 +554,7 @@ const ReplenishByItem = () => {
             </>
           )}
         </div>
-      )}
-
-      {tab === "gaps" && isAdmin && (
-        <ReplenishmentRosterCard
-          isAdmin={isAdmin}
-          subtitle="Who is picking these gaps today? Saving here redistributes line owners across the roster (shared with Daily Replenishments) — POS sorted ascending so each person owns a contiguous block of stores."
-        />
+        </>
       )}
     </div>
   );
