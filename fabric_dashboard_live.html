@@ -23,16 +23,16 @@ a{color:inherit;}
 select,input{font-family:inherit;height:38px;border:1px solid var(--border);border-radius:10px;background:var(--card);color:var(--text);padding:0 11px;font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s;}
 select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26,92,56,.1);}
 
-.layout{display:flex;min-height:100vh;}
-.aside{width:212px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);padding:1.1rem .7rem;position:sticky;top:0;height:100vh;overflow:auto;}
+.layout{display:flex;flex-direction:column;min-height:100vh;}
+.aside{display:flex;align-items:center;gap:4px;flex-wrap:wrap;background:var(--panel);border-bottom:1px solid var(--border);padding:.55rem 1.1rem;position:sticky;top:0;z-index:40;overflow-x:auto;}
 .main{flex:1;min-width:0;display:flex;flex-direction:column;}
 
-.brand-row{display:flex;align-items:center;gap:10px;padding:0 8px 16px;}
+.brand-row{display:flex;align-items:center;gap:10px;padding:0 14px 0 0;margin-right:6px;border-right:1px solid var(--border);flex-shrink:0;}
 .brandmark{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#1a5c38,#0f3d24);color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:800;box-shadow:0 4px 12px rgba(26,92,56,.2);}
 .brand-name{font-size:16px;font-weight:800;color:var(--accent);letter-spacing:-.01em;}
 .brand-sub{font-size:10.5px;color:var(--muted);font-weight:500;}
-.nav-group{font-size:.62rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:700;padding:14px 9px 5px;}
-.nav-item{display:flex;align-items:center;gap:9px;padding:9px 11px;font-size:13.5px;font-weight:500;color:var(--text-sub);border-radius:9px;cursor:pointer;margin-bottom:2px;transition:background .12s,color .12s;}
+.nav-group{font-size:.62rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:700;padding:0 4px 0 10px;align-self:center;flex-shrink:0;}
+.nav-item{display:flex;align-items:center;gap:9px;padding:9px 11px;font-size:13.5px;font-weight:500;color:var(--text-sub);border-radius:9px;cursor:pointer;margin-bottom:0;white-space:nowrap;flex-shrink:0;transition:background .12s,color .12s;}
 .nav-item:hover{background:rgba(26,92,56,.06);color:var(--text);}
 .nav-item.active{color:#fff;background:var(--accent);font-weight:600;}
 .rsv-lbl{display:block;font-size:11px;font-weight:600;color:var(--text-sub);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;}
@@ -40,7 +40,7 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .resv-opt{padding:8px 11px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border);}
 .resv-opt:hover{background:rgba(26,92,56,.07);}
 .resv-opt .ro-code{color:var(--text-sub);font-size:11px;}
-.back-link{display:block;padding:16px 9px 0;font-size:12px;color:var(--muted);text-decoration:none;}
+.back-link{display:block;margin-left:auto;padding:0 9px;font-size:12px;color:var(--muted);text-decoration:none;white-space:nowrap;flex-shrink:0;}
 .back-link:hover{color:var(--accent);}
 
 .topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:1rem 1.4rem;border-bottom:1px solid var(--border);background:var(--panel);flex-wrap:wrap;}
@@ -103,7 +103,7 @@ table.data tbody tr:hover td{background:rgba(26,92,56,.03);}
 .banner{padding:.85rem 1.1rem;border-radius:var(--radius);font-size:13px;margin-bottom:1.2rem;}
 .banner-err{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;}
 .flex{display:flex;gap:9px;flex-wrap:wrap;align-items:center;}
-@media(max-width:760px){.layout{flex-direction:column;}.aside{width:auto;height:auto;position:static;border-right:none;border-bottom:1px solid var(--border);}}
+@media(max-width:760px){.aside{flex-wrap:nowrap;overflow-x:auto;}.brand-row{margin-right:4px;padding-right:8px;}.back-link{margin-left:8px;}}
 
 .seg{display:inline-flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;}
 .seg .unit-btn{height:36px;padding:0 14px;border:none;background:var(--card);color:var(--text-sub);font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;}
