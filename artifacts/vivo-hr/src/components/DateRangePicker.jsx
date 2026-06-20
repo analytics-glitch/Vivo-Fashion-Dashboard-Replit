@@ -3,7 +3,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Calendar } from "./ui/calendar";
-import { PRESETS, matchPreset, parseISO, yesterday } from "../lib/dates";
+import { PRESETS, matchPreset, parseISO, toISO, yesterday } from "../lib/dates";
 import { CalendarIcon } from "lucide-react";
 
 const fmt = (iso) => {
@@ -39,6 +39,9 @@ export default function DateRangePicker({ value, onChange, testId = "date-range"
 
   const apply = () => {
     let f = draftFrom, t = draftTo;
+    // Single-day selection: only one end picked → use it for both.
+    if (f && !t) t = f;
+    if (t && !f) f = t;
     if (f && t && f > t) [f, t] = [t, f];
     onChange?.({ from: f, to: t });
     setOpen(false);
@@ -117,9 +120,12 @@ export default function DateRangePicker({ value, onChange, testId = "date-range"
               selected={selected}
               onSelect={(r) => {
                 if (!r) { setDraftFrom(""); setDraftTo(""); return; }
-                if (r.from) setDraftFrom(r.from.toISOString().slice(0, 10));
-                if (r.to)   setDraftTo(r.to.toISOString().slice(0, 10));
-                else if (r.from) setDraftTo(r.from.toISOString().slice(0, 10));
+                // Mirror exactly what react-day-picker computes for the range.
+                // Use local-time formatting (toISO) — toISOString() would shift
+                // the date back a day in UTC+3. Leave `to` empty after the first
+                // click so the second click can extend into a real range.
+                setDraftFrom(toISO(r.from));
+                setDraftTo(toISO(r.to));
               }}
               defaultMonth={selected?.from || new Date()}
             />

@@ -6,6 +6,11 @@ const iso = (d) => {
   return `${y}-${m}-${day}`;
 };
 
+// Local-time YYYY-MM-DD formatter for Date objects coming from the calendar.
+// NEVER use Date.toISOString() for this — it converts to UTC, which shifts the
+// date back a day in East Africa (UTC+3) and selects the wrong day.
+export const toISO = (d) => (d ? iso(d) : "");
+
 const addDays = (d, n) => { const c = new Date(d); c.setDate(c.getDate() + n); return c; };
 
 const startOfWeek = (d) => {
