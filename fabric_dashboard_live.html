@@ -24,14 +24,17 @@ select,input{font-family:inherit;height:38px;border:1px solid var(--border);bord
 select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26,92,56,.1);}
 
 .layout{display:flex;flex-direction:column;min-height:100vh;}
-.aside{display:flex;align-items:center;gap:4px;flex-wrap:wrap;background:var(--panel);border-bottom:1px solid var(--border);padding:.55rem 1.1rem;position:sticky;top:0;z-index:40;overflow-x:auto;}
+.aside{display:flex;flex-direction:column;background:var(--panel);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:40;}
+.nav-head{display:flex;align-items:center;gap:10px;padding:.6rem 1.4rem;border-bottom:1px solid var(--border);}
+.nav-body{display:flex;align-items:center;flex-wrap:wrap;gap:5px 6px;padding:.5rem 1.4rem .6rem;}
 .main{flex:1;min-width:0;display:flex;flex-direction:column;}
 
-.brand-row{display:flex;align-items:center;gap:10px;padding:0 14px 0 0;margin-right:6px;border-right:1px solid var(--border);flex-shrink:0;}
+.brand-row{display:flex;align-items:center;gap:10px;flex-shrink:0;}
 .brandmark{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#1a5c38,#0f3d24);color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:800;box-shadow:0 4px 12px rgba(26,92,56,.2);}
 .brand-name{font-size:16px;font-weight:800;color:var(--accent);letter-spacing:-.01em;}
 .brand-sub{font-size:10.5px;color:var(--muted);font-weight:500;}
 .nav-group{font-size:.62rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:700;padding:0 4px 0 10px;align-self:center;flex-shrink:0;}
+.nav-body .nav-group:first-child{padding-left:0;}
 .nav-item{display:flex;align-items:center;gap:9px;padding:9px 11px;font-size:13.5px;font-weight:500;color:var(--text-sub);border-radius:9px;cursor:pointer;margin-bottom:0;white-space:nowrap;flex-shrink:0;transition:background .12s,color .12s;}
 .nav-item:hover{background:rgba(26,92,56,.06);color:var(--text);}
 .nav-item.active{color:#fff;background:var(--accent);font-weight:600;}
@@ -103,7 +106,7 @@ table.data tbody tr:hover td{background:rgba(26,92,56,.03);}
 .banner{padding:.85rem 1.1rem;border-radius:var(--radius);font-size:13px;margin-bottom:1.2rem;}
 .banner-err{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;}
 .flex{display:flex;gap:9px;flex-wrap:wrap;align-items:center;}
-@media(max-width:760px){.aside{flex-wrap:nowrap;overflow-x:auto;}.brand-row{margin-right:4px;padding-right:8px;}.back-link{margin-left:8px;}}
+@media(max-width:760px){.nav-head,.nav-body{padding-left:1rem;padding-right:1rem;}.nav-body{flex-wrap:nowrap;overflow-x:auto;}}
 
 .seg{display:inline-flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;}
 .seg .unit-btn{height:36px;padding:0 14px;border:none;background:var(--card);color:var(--text-sub);font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;}
@@ -133,27 +136,31 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
 <body>
 <div class="layout">
  <aside class="aside">
-  <div class="brand-row">
-   <div class="brandmark">V</div>
-   <div>
-    <div class="brand-name">Vivo</div>
-    <div class="brand-sub">Fabric BI</div>
+  <div class="nav-head">
+   <div class="brand-row">
+    <div class="brandmark">V</div>
+    <div>
+     <div class="brand-name">Vivo Fabric Group</div>
+     <div class="brand-sub">FABRIC BI &middot; EAST AFRICA</div>
+    </div>
    </div>
+   <a href="/" class="back-link">&larr; Back to Vivo BI</a>
   </div>
-  <div class="nav-group">Inventory</div>
-  <div class="nav-item active" data-page="overview">Overview</div>
-  <div class="nav-item" data-page="register">Fabric register</div>
-  <div class="nav-item" data-page="ageing">Stock &amp; ageing</div>
-  <div class="nav-item" data-page="deadstock">Dead stock</div>
-  <div class="nav-group">Flow</div>
-  <div class="nav-item" data-page="movement">Movement &amp; use</div>
-  <div class="nav-item" data-page="pos">Purchase orders</div>
-  <div class="nav-item" data-page="suppliers">Suppliers</div>
-  <div class="nav-group">Production</div>
-  <div class="nav-item" data-page="bom">BOM explorer</div>
-  <div class="nav-group">Buying</div>
-  <div class="nav-item" data-page="reservations">Fabric reservations</div>
-  <a href="/" class="back-link">&larr; Back to Vivo BI</a>
+  <nav class="nav-body">
+   <div class="nav-group">Inventory</div>
+   <div class="nav-item active" data-page="overview">Overview</div>
+   <div class="nav-item" data-page="register">Fabric register</div>
+   <div class="nav-item" data-page="ageing">Stock &amp; ageing</div>
+   <div class="nav-item" data-page="deadstock">Dead stock</div>
+   <div class="nav-group">Flow</div>
+   <div class="nav-item" data-page="movement">Movement &amp; use</div>
+   <div class="nav-item" data-page="pos">Purchase orders</div>
+   <div class="nav-item" data-page="suppliers">Suppliers</div>
+   <div class="nav-group">Production</div>
+   <div class="nav-item" data-page="bom">BOM explorer</div>
+   <div class="nav-group">Buying</div>
+   <div class="nav-item" data-page="reservations">Fabric reservations</div>
+  </nav>
  </aside>
 
  <main class="main">

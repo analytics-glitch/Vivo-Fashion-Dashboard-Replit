@@ -97,11 +97,38 @@ def create_tables(cur):
     """)
     log.info("Tables ready")
 
+FABRIC_COLORS = [
+    'Black','White','Navy Blue','Navy','Red','Dark Red','Burgundy','Maroon',
+    'Mustard','Yellow','Olive','Dark Olive','Light Olive','Olive Green',
+    'Green','Dark Green','Light Green','Sea Green','Mint Green','Mint',
+    'Blue','Dark Blue','Light Blue','Sky Blue','Teal','Dark Teal','Turquoise',
+    'Pink','Dark Pink','Light Pink','Dusty Pink','Hot Pink','Rose',
+    'Purple','Lilac','Lavender','Plum','Mauve',
+    'Orange','Dark Orange','Rust','Burnt Orange','Coral',
+    'Brown','Dark Brown','Chocolate','Caramel','Tan','Taupe','Dark Taupe',
+    'Grey','Gray','Dark Grey','Light Grey','Mid Grey','Charcoal',
+    'Cream','Ivory','Off White','Beige','Sand','Nude','Ecru',
+    'Camel','Khaki','Stone','Blush','Salmon','Peach',
+    'Multicolor','Multi','Print','Stripe','Check','Checked',
+    'Light Navy','Dark Navy','Dark Mustard','Light Mustard',
+]
+_COLORS_SORTED = sorted(set(FABRIC_COLORS), key=len, reverse=True)
+
+def _derive_color(name):
+    import re
+    for color in _COLORS_SORTED:
+        if re.search(r"\b" + re.escape(color) + r"\b", name or "", re.IGNORECASE):
+            return color.title()
+    return None
+
 def extract_products(uid, models, cur, now):
     log.info("Extracting fabric products with attributes...")
     
     # First ensure table has new columns
     cur.execute("""
+        ALTER TABLE raw_fabric_products
+        ADD COLUMN IF NOT EXISTS derived_color TEXT,
+        ADD COLUMN IF NOT EXISTS fabric_color TEXT;
         ALTER TABLE raw_fabric_products 
         ADD COLUMN IF NOT EXISTS kg_per_mtr NUMERIC,
         ADD COLUMN IF NOT EXISTS width_m NUMERIC,
@@ -139,6 +166,7 @@ def extract_products(uid, models, cur, now):
         "x_vivo_attr_42",   # Vendor/Supplier
         "x_vivo_attr_48",   # Primary Color
         "barcode",
+        "x_vivo_color",
     ]
     
     def get_m2o(val):
@@ -183,6 +211,9 @@ def extract_products(uid, models, cur, now):
                 get_m2o(r.get("x_vivo_attr_42")),   # supplier
                 get_m2o(r.get("x_vivo_attr_48")),   # primary color
                 r.get("barcode") or None,
+                r["x_vivo_color"][1] if isinstance(r.get("x_vivo_color"), list) else None,
+                _derive_color(r.get("name","")),
+                (r["x_vivo_color"][1] if isinstance(r.get("x_vivo_color"), list) else None) or _derive_color(r.get("name","")),
                 now
             ))
         offset += batch_size
@@ -195,7 +226,8 @@ def extract_products(uid, models, cur, now):
             id, name, default_code, category, uom, standard_price, active,
             kg_per_mtr, width_m, gsm, plain_print, fabric_structure,
             fabric_category, fabric_subcategory, stretch_type, weight_range,
-            fiber_content, fabric_type, supplier, primary_color, barcode, _loaded_at
+            fiber_content, fabric_type, supplier, primary_color, barcode, color,
+            derived_color, fabric_color, _loaded_at
         ) VALUES %s
         ON CONFLICT (id) DO UPDATE SET
             name=EXCLUDED.name, standard_price=EXCLUDED.standard_price,
@@ -207,6 +239,7 @@ def extract_products(uid, models, cur, now):
             stretch_type=EXCLUDED.stretch_type, weight_range=EXCLUDED.weight_range,
             fiber_content=EXCLUDED.fiber_content, fabric_type=EXCLUDED.fabric_type,
             supplier=EXCLUDED.supplier, primary_color=EXCLUDED.primary_color,
+            derived_color=EXCLUDED.derived_color, fabric_color=EXCLUDED.fabric_color,
             _loaded_at=EXCLUDED._loaded_at
     """, rows, page_size=200)
     log.info("✅ raw_fabric_products: %d rows", len(rows))
