@@ -165,6 +165,10 @@ LOOKBACK_DAYS = int(os.environ.get("SYNC_LOOKBACK_DAYS", "2"))
 # though main() is invoked every 60s by the supervising loop. Persists for the
 # lifetime of the process.
 _LAST_FABRIC_EXTRACT = None
+# Module-level guard so attendance syncs at most once per hour even though main()
+# runs every 60s. None on boot so the first cycle after a (re)start refreshes
+# immediately. Persists for the lifetime of the process.
+_LAST_ATTENDANCE_SYNC = None
 # ── Attendance Sync ───────────────────────────────────────────────────────────
 ATTENDANCE_API_URL = os.environ.get("ATTENDANCE_API_URL", "https://beverly-noncontending-bertram.ngrok-free.dev")
 
@@ -848,8 +852,15 @@ def main():
         except Exception as e:
             log.error("Inventory sync error: %s", e)
 
-    # Attendance sync — nightly at 21:00 UTC
-    if 21 <= now_utc.hour < 22:
+    # Attendance sync — HOURLY (the HR dashboard wants near-real-time figures).
+    # Rate-limited to once per hour via a module-level guard even though main()
+    # runs every 60s; runs immediately on the first cycle after a (re)start.
+    global _LAST_ATTENDANCE_SYNC
+    attendance_due = (_LAST_ATTENDANCE_SYNC is None
+                      or (now_utc - _LAST_ATTENDANCE_SYNC).total_seconds() >= 3600)
+    if attendance_due:
+        # Stamp up front so a transient failure waits an hour before retrying.
+        _LAST_ATTENDANCE_SYNC = now_utc
         try:
             ensure_attendance_table(cur)
             conn.commit()
