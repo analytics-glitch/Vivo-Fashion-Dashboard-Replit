@@ -72,12 +72,16 @@ const DEFAULT_ROLE = "store_manager";
  */
 export const canAccessPage = (user, pageId) => {
   if (!user) return false;
+  // Admin always sees every page — no per-page list to keep in sync (this is the
+  // single source of truth, so a new page can never be accidentally hidden from
+  // admins the way the explicit ADMIN list could drift).
+  const role = (user.role || DEFAULT_ROLE).toLowerCase();
+  if (role === "admin") return true;
   // Globally hidden pages (admin-controlled, applies to everyone). Admin
   // management pages can never be hidden (enforced server-side too).
   const hidden = Array.isArray(user.hidden_pages) ? user.hidden_pages : [];
   if (hidden.includes(pageId)) return false;
   if (Array.isArray(user.allowed_pages)) return user.allowed_pages.includes(pageId);
-  const role = (user.role || DEFAULT_ROLE).toLowerCase();
   const pages = ROLE_PAGES[role] || ROLE_PAGES[DEFAULT_ROLE];
   return pages.includes(pageId);
 };
