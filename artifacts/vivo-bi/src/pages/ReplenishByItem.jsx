@@ -7,7 +7,7 @@ import { useTableSort, SortableTh } from "@/lib/useTableSort";
 import ReplenishmentRosterCard from "@/components/ReplenishmentRosterCard";
 import {
   MagnifyingGlass, Package, Storefront, ArrowsClockwise,
-  CaretDown, Check, X as XIcon, Warehouse, CheckCircle,
+  CaretDown, Check, X as XIcon, Warehouse, CheckCircle, DownloadSimple,
 } from "@phosphor-icons/react";
 
 // Sentinel store value: fan the Store Gaps query out across every selling store.
@@ -393,6 +393,40 @@ const ReplenishByItem = () => {
   const itemSorted = itemSortRows(itemRows);
   const gapSorted = gapSortRows(gapRows);
 
+  // Excel export — server-built XLSX (same pattern as Replenishments/IBT). The
+  // axios cookie auth rides along; the file mirrors the visible table columns.
+  const [exporting, setExporting] = useState(false);
+  const downloadXlsx = async (path, params, filename) => {
+    setExporting(true);
+    try {
+      const resp = await api.get(path, { params, responseType: "blob", forceFresh: true, timeout: 120000 });
+      const blob = resp?.data instanceof Blob ? resp.data : new Blob([resp.data]);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Excel export downloaded.");
+    } catch (e) {
+      toast.error("Export failed — " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setExporting(false);
+    }
+  };
+  const exportItem = () => downloadXlsx(
+    "/analytics/replenish-by-item/export",
+    { mode, value: item?.value || "", date_from: dateFrom, date_to: dateTo, low_threshold: threshold },
+    `Replenish_By_${mode === "sku" ? "SKU" : "Style"}_${(item?.value || "item").replace(/[^A-Za-z0-9._-]+/g, "_")}.xlsx`,
+  );
+  const exportGaps = () => downloadXlsx(
+    "/analytics/replenish-gaps/export",
+    { store, date_from: dateFrom, date_to: dateTo, low_threshold: threshold },
+    `Replenish_Gaps_${(store === ALL_STORES ? "All_Stores" : store || "store").replace(/[^A-Za-z0-9._-]+/g, "_")}.xlsx`,
+  );
+
   return (
     <div className="space-y-5">
       <SectionTitle
@@ -504,6 +538,16 @@ const ReplenishByItem = () => {
                 {itemData.warehouse_soh === 0 && (
                   <span className="text-amber-600">No warehouse stock — nothing to send.</span>
                 )}
+                <button
+                  type="button"
+                  onClick={exportItem}
+                  disabled={exporting || itemRows.length === 0}
+                  className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 py-1.5 text-[12px] font-medium hover:bg-muted/50 disabled:opacity-50"
+                  data-testid="export-by-item"
+                  title="Download this view as an Excel file"
+                >
+                  <DownloadSimple size={14} weight="bold" /> {exporting ? "Exporting…" : "Export Excel"}
+                </button>
               </div>
               {itemRows.length === 0
                 ? <Empty label="No understocked stores for this item (or warehouse is empty)." />
@@ -541,6 +585,16 @@ const ReplenishByItem = () => {
                   {gapRows.length} gap{gapRows.length === 1 ? "" : "s"} for {store === ALL_STORES ? "all stores" : store}
                 </span>
                 <span className="text-muted-foreground">Sold in window but store SOH &lt; {threshold} and warehouse can refill.</span>
+                <button
+                  type="button"
+                  onClick={exportGaps}
+                  disabled={exporting || gapRows.length === 0}
+                  className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 py-1.5 text-[12px] font-medium hover:bg-muted/50 disabled:opacity-50"
+                  data-testid="export-gaps"
+                  title="Download this view as an Excel file"
+                >
+                  <DownloadSimple size={14} weight="bold" /> {exporting ? "Exporting…" : "Export Excel"}
+                </button>
               </div>
               {gapRows.length === 0
                 ? <Empty label="No demand gaps — this store stocks what it sells (or warehouse is empty)." />

@@ -8026,6 +8026,87 @@ def analytics_replenish_gaps(
         })
     return {"store": st, "date_from": date_from, "date_to": date_to,
             "low_threshold": thr, "rows": out}
+
+
+# Shared XLSX column set for the Replenish by Style / SKU exports — mirrors the
+# ReplenTable columns shown in the UI for both the By Item and Store Gaps views.
+_REPLEN_ITEM_XLSX_COLS = [
+    "Owner", "Store", "Days Lapsed", "Last Sold", "Product", "Size",
+    "Barcode", "Bin", "Units Sold", "Store SOH", "WH SOH",
+    "Suggested", "Actual Replenished", "Transfer Ref",
+]
+
+
+def _replen_item_xlsx_row(r):
+    return [
+        r.get("owner") or "—", r.get("pos_location") or "",
+        r.get("days_lapsed") if r.get("days_lapsed") is not None else "",
+        (str(r.get("last_sale"))[:10] if r.get("last_sale") else ""),
+        r.get("product_name") or "", r.get("size") or "",
+        r.get("barcode") or "", r.get("bin") or "",
+        int(r.get("units_sold") or 0), int(r.get("soh_store") or 0),
+        int(r.get("soh_wh") or 0), int(r.get("suggested_units") or 0),
+        int(r.get("actual_units_replenished") or 0), r.get("transfer_ref") or "",
+    ]
+
+
+@app.get("/api/analytics/replenish-by-item/export")
+def analytics_replenish_by_item_export(
+    mode: str = Query(default="style"),
+    value: str = Query(default=""),
+    date_from: str = Query(default=None),
+    date_to: str = Query(default=None),
+    low_threshold: int = Query(default=2),
+):
+    # Excel export of the By Item replenishment view. Reuses the JSON endpoint's
+    # row builder verbatim (no SQL duplication) and writes the same columns the
+    # UI table shows.
+    from openpyxl import Workbook
+    data = analytics_replenish_by_item(
+        mode=mode, value=value, date_from=date_from, date_to=date_to,
+        low_threshold=low_threshold)
+    rows = data.get("rows", [])
+    wb = Workbook()
+    ws = wb.active
+    ws.title = _xlsx_sheet_title(
+        ("SKU " if mode == "sku" else "Style ") + (data.get("value") or "Replenish"),
+        set())
+    _xlsx_header(ws, _REPLEN_ITEM_XLSX_COLS)
+    for r in rows:
+        ws.append(_replen_item_xlsx_row(r))
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", (data.get("value") or "item")).strip("_") or "item"
+    label = "SKU" if mode == "sku" else "Style"
+    return _xlsx_response(
+        wb, f"Replenish_By_{label}_{safe}_{date.today().isoformat()}.xlsx")
+
+
+@app.get("/api/analytics/replenish-gaps/export")
+def analytics_replenish_gaps_export(
+    store: str = Query(default=""),
+    date_from: str = Query(default=None),
+    date_to: str = Query(default=None),
+    low_threshold: int = Query(default=2),
+    limit: int = Query(default=300),
+):
+    # Excel export of the Store Gaps view — same reuse pattern as By Item.
+    from openpyxl import Workbook
+    data = analytics_replenish_gaps(
+        store=store, date_from=date_from, date_to=date_to,
+        low_threshold=low_threshold, limit=limit)
+    rows = data.get("rows", [])
+    st = data.get("store") or "store"
+    title = "All Stores" if st == "__all__" else st
+    wb = Workbook()
+    ws = wb.active
+    ws.title = _xlsx_sheet_title("Gaps " + title, set())
+    _xlsx_header(ws, _REPLEN_ITEM_XLSX_COLS)
+    for r in rows:
+        ws.append(_replen_item_xlsx_row(r))
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("_") or "store"
+    return _xlsx_response(
+        wb, f"Replenish_Gaps_{safe}_{date.today().isoformat()}.xlsx")
+
+
 @app.get("/api/analytics/replenishment-report")
 def analytics_replenishment_report(
     date_from: str = Query(default=None),
