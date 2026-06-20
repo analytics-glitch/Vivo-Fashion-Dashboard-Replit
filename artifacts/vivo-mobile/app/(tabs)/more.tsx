@@ -30,9 +30,9 @@ const GROUPS: Group[] = [
   },
   {
     title: "CRM",
-    // CRM is an analyst+ surface (matches the web nav + backend role gate);
-    // hidden for viewer / store_manager / warehouse roles.
-    roles: ["analyst", "exec", "admin"],
+    // CRM is a customer-facing surface (matches the web nav + backend role gate);
+    // shown only to Customer Service, Marketing, Senior Leadership and Admin.
+    roles: ["customer_service", "marketing", "leadership", "admin"],
     items: [
       { label: "Contacts", caption: "Search profiles & 360 view", icon: "user", route: "/crm-contacts" },
       { label: "Tasks", caption: "Follow-up queue", icon: "check-square", route: "/crm-tasks" },

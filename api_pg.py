@@ -371,9 +371,26 @@ _DATE_QUERY_PARAMS = ("date_from", "date_to", "compare_from", "compare_to")
 # first time we see it. New sign-ups land as `pending` with a default role and
 # can only reach their own auth/identity endpoints until an admin approves them.
 # Roles persist here (NOT in Clerk) so an admin can grant least-privilege access.
-VALID_ROLES = ("viewer", "store_manager", "warehouse", "analyst", "exec", "admin")
+# Business-friendly DEPARTMENT GROUPS (plus admin). Replaces the retired
+# technical tiers (viewer/analyst/exec). See ROLE_PAGES in
+# artifacts/vivo-bi/src/lib/permissions.js for the page mapping.
+VALID_ROLES = (
+    "product_development", "retail", "warehouse", "store_manager",
+    "leadership", "customer_service", "marketing", "admin",
+)
 VALID_STATUSES = ("pending", "active", "rejected", "disabled")
+# Lowest-access department a self-signup lands on while pending; an admin
+# re-assigns the right group at approval time.
 DEFAULT_NEW_ROLE = "store_manager"
+# One-time idempotent migration of retired technical roles onto the new
+# department groups so existing users aren't stranded after the change.
+LEGACY_ROLE_MAP = {
+    "viewer": "store_manager",
+    "analyst": "leadership",
+    "exec": "leadership",
+    "manager": "leadership",
+    "hr": "leadership",
+}
 # Paths a signed-in but not-yet-active user may still reach (so the frontend can
 # read its own status and poll for approval / sign out).
 _AUTH_SELF_PATHS = {
@@ -780,26 +797,30 @@ async def clerk_auth_gate(request: Request, call_next):
     if path.startswith("/api/admin") and user.get("role") != "admin":
         return JSONResponse({"detail": "Admin access required"}, status_code=403)
 
-    # CRM is an analyst+ surface (analyst / exec / admin). Enforce server-side so
-    # client-side nav/route hiding can never be bypassed (e.g. direct API or
-    # mobile). Specific CRM mutations still apply their own finer-grained checks
-    # (e.g. loyalty adjust / config require admin via _crm_is_admin).
-    if path.startswith("/api/crm") and user.get("role") not in ("analyst", "exec", "admin"):
-        return JSONResponse({"detail": "CRM access requires an analyst, exec or admin role"}, status_code=403)
+    # CRM is a customer-facing surface (customer service / marketing / leadership
+    # / admin). Enforce server-side so client-side nav/route hiding can never be
+    # bypassed (e.g. direct API or mobile). Specific CRM mutations still apply
+    # their own finer-grained checks (e.g. loyalty adjust / config require admin
+    # via _crm_is_admin).
+    if path.startswith("/api/crm") and user.get("role") not in (
+        "customer_service", "marketing", "leadership", "admin"
+    ):
+        return JSONResponse({"detail": "CRM access requires a customer service, marketing, leadership or admin role"}, status_code=403)
 
-    # Social (Facebook Page) management is the same analyst+ surface as CRM:
-    # publishing offers and replying to customers is a marketing action.
-    if path.startswith("/api/social") and user.get("role") not in ("analyst", "exec", "admin"):
-        return JSONResponse({"detail": "Social access requires an analyst, exec or admin role"}, status_code=403)
+    # Social (Facebook Page) management is a marketing action: publishing offers
+    # and replying to customers. Marketing + leadership + admin only.
+    if path.startswith("/api/social") and user.get("role") not in (
+        "marketing", "leadership", "admin"
+    ):
+        return JSONResponse({"detail": "Social access requires a marketing, leadership or admin role"}, status_code=403)
 
-    # HR attendance dashboard (/api/hr/*) is a staff surface. Map the project's
-    # roles onto the reference app's three: executive (admin/exec), hr_manager
-    # (analyst/manager/hr) and branch_manager (store_manager). Pure viewer /
-    # warehouse roles have no HR mandate and are blocked server-side so hidden
-    # web nav / mobile routes can't be bypassed. Finer write/branch-scope checks
-    # live in hr_attendance.py.
+    # HR attendance dashboard (/api/hr/*) is a staff surface. Leadership + admin
+    # get the executive/HR-manager view; store managers map to branch managers
+    # (own-branch scope); retail gets a read view. Other departments have no HR
+    # mandate and are blocked server-side so hidden web nav / mobile routes can't
+    # be bypassed. Finer write/branch-scope checks live in hr_attendance.py.
     if path.startswith("/api/hr") and user.get("role") not in (
-        "admin", "exec", "analyst", "manager", "hr", "store_manager"
+        "admin", "leadership", "store_manager", "retail"
     ):
         return JSONResponse({"detail": "HR dashboard access requires a staff role"}, status_code=403)
 
@@ -812,6 +833,18 @@ def _init_user_store():
         _ensure_users_table()
     except Exception:
         pass
+
+
+@app.on_event("startup")
+def _migrate_legacy_roles():
+    # One-time idempotent migration: map retired technical roles
+    # (viewer/analyst/exec/manager/hr) onto the new department groups so existing
+    # users keep equivalent access. warehouse/store_manager/admin are unchanged.
+    try:
+        for old, new in LEGACY_ROLE_MAP.items():
+            _users_exec("UPDATE app_users SET role=%s WHERE role=%s", (new, old))
+    except Exception as e:
+        log.error("Legacy role migration failed: %s", e)
 
 
 @app.on_event("startup")
@@ -10700,7 +10733,7 @@ async def admin_users_create(request: Request):
     email = (body.get("email") or "").strip().lower()
     name = (body.get("name") or "").strip()
     password = body.get("password") or ""
-    role = body.get("role") or "viewer"
+    role = body.get("role") or DEFAULT_NEW_ROLE
     if role not in VALID_ROLES:
         return JSONResponse({"detail": "Invalid role"}, status_code=400)
     if not email or "@" not in email:
@@ -13717,7 +13750,7 @@ def _crm_actor(request):
     u = getattr(request.state, "user", None) or {}
     uid = u.get("user_id") or u.get("id") or "system"
     name = u.get("name") or u.get("email") or "system"
-    role = (u.get("role") or "viewer").lower()
+    role = (u.get("role") or DEFAULT_NEW_ROLE).lower()
     return uid, name, role
 
 

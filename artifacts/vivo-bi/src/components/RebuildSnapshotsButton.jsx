@@ -15,12 +15,12 @@ import { ArrowsClockwise, CheckCircle, Warning } from "@phosphor-icons/react";
  * a backend classifier (walk-in rule, customer segmentation, etc.)
  * has changed and the page still shows old aggregated values.
  *
- * Visible to admin / exec roles only.
+ * Visible to admin / leadership roles only.
  */
 const RebuildSnapshotsButton = () => {
   const { user } = useAuth();
   const role = (user?.role || "").toLowerCase();
-  const allowed = role === "admin" || role === "exec";
+  const allowed = role === "admin" || role === "leadership";
 
   const [state, setState] = useState("idle"); // idle | confirming | running | success | error
   const [msg, setMsg] = useState("");

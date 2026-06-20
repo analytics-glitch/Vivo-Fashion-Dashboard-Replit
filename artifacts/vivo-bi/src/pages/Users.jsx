@@ -4,6 +4,7 @@ import { SectionTitle, Loading, ErrorBox } from "@/components/common";
 import { UserPlus, Trash, ShieldCheck, Eye, X } from "@phosphor-icons/react";
 import SortableTable from "@/components/SortableTable";
 import { useAuth } from "@/lib/auth";
+import { ROLE_OPTIONS, roleLabel } from "@/lib/permissions";
 
 const Users = () => {
   const { user } = useAuth();
@@ -11,7 +12,7 @@ const Users = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ email: "", name: "", password: "", role: "viewer" });
+  const [form, setForm] = useState({ email: "", name: "", password: "", role: "store_manager" });
   const [formErr, setFormErr] = useState(null);
 
   const load = useCallback(() => {
@@ -29,7 +30,7 @@ const Users = () => {
     setFormErr(null);
     try {
       await api.post("/admin/users", form);
-      setForm({ email: "", name: "", password: "", role: "viewer" });
+      setForm({ email: "", name: "", password: "", role: "store_manager" });
       setCreating(false);
       load();
     } catch (err) {
@@ -75,7 +76,7 @@ const Users = () => {
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-muted text-[13px] mt-0.5">
-            Manage who can access the dashboard. Google sign-in auto-creates viewer accounts for whitelisted domains.
+            Manage who can access the dashboard. Google sign-in auto-creates pending Store Manager accounts for whitelisted domains — pick a department before approving.
           </p>
         </div>
         <button
@@ -98,12 +99,9 @@ const Users = () => {
             value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} data-testid="create-user-password" />
           <select className="px-3 py-2 rounded-lg border border-border text-[13px]" value={form.role}
             onChange={(e) => setForm({ ...form, role: e.target.value })} data-testid="create-user-role">
-            <option value="viewer">Viewer — PII masked</option>
-            <option value="store_manager">Store Manager — names visible</option>
-            <option value="warehouse">Warehouse — stock ops + inventory export</option>
-            <option value="analyst">Analyst — full PII (logged)</option>
-            <option value="exec">Exec — full PII (logged)</option>
-            <option value="admin">Admin — full access</option>
+            {ROLE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label} — {o.desc}</option>
+            ))}
           </select>
           {formErr && <div className="col-span-full text-danger text-[12px]">{formErr}</div>}
           <button type="submit" className="col-span-full sm:col-span-1 py-2 rounded-lg bg-brand text-white font-semibold text-[13px]" data-testid="create-user-submit">Create</button>
@@ -141,11 +139,9 @@ const Users = () => {
                   onChange={(e) => updateRole(u, e.target.value)}
                   data-testid={`pending-role-${u.email}`}
                 >
-                  <option value="viewer">Viewer</option>
-                  <option value="store_manager">Store Manager</option>
-                  <option value="analyst">Analyst</option>
-                  <option value="exec">Exec</option>
-                  <option value="admin">Admin</option>
+                  {ROLE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
                 </select>
                 <button
                   onClick={() => setStatus(u, "active")}
@@ -182,16 +178,12 @@ const Users = () => {
                 label: "Role",
                 align: "left",
                 render: (r) => {
-                  const cls = r.role === "admin" ? "pill-green"
-                    : r.role === "exec" ? "pill-green"
-                    : r.role === "analyst" ? "pill-amber"
-                    : r.role === "store_manager" ? "pill-amber"
-                    : r.role === "warehouse" ? "pill-amber"
-                    : "pill-neutral";
-                  const icon = (r.role === "admin" || r.role === "exec") ? <ShieldCheck size={11} /> : <Eye size={11} />;
+                  const cls = (r.role === "admin" || r.role === "leadership") ? "pill-green"
+                    : "pill-amber";
+                  const icon = (r.role === "admin" || r.role === "leadership") ? <ShieldCheck size={11} /> : <Eye size={11} />;
                   return (
                     <span className={`${cls} inline-flex items-center gap-1`}>
-                      {icon}{r.role}
+                      {icon}{roleLabel(r.role)}
                     </span>
                   );
                 },
@@ -225,12 +217,9 @@ const Users = () => {
                       data-testid={`role-select-${r.user_id}`}
                       disabled={r.user_id === user.user_id}
                     >
-                      <option value="viewer">Viewer</option>
-                      <option value="store_manager">Store Manager</option>
-                      <option value="warehouse">Warehouse</option>
-                      <option value="analyst">Analyst</option>
-                      <option value="exec">Exec</option>
-                      <option value="admin">Admin</option>
+                      {ROLE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
                     </select>
                     <button
                       className={`text-[11px] px-1.5 py-1 rounded border ${r.active ? "border-amber text-amber" : "border-brand text-brand"}`}

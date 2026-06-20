@@ -73,13 +73,14 @@ SHOWED = "attendance_status IN ('Present','Missing Check-Out')"
 CIN_LOCAL = f"to_char({_LIN}, 'YYYY-MM-DD\"T\"HH24:MI:SS')"
 COUT_LOCAL = f"to_char({_LOUT}, 'YYYY-MM-DD\"T\"HH24:MI:SS')"
 
-# Raw backend roles that may write notes/leaves (map to exec / hr_manager on the
-# frontend). Plain store_manager (-> branch_manager) is read-only.
-_WRITER_ROLES = {"admin", "exec", "analyst", "manager", "hr"}
-# Roles that see ALL branches' notes/leaves (executive + hr_manager). Any other
-# permitted HR role (store_manager -> branch_manager) is scoped to its own
-# branch only — fail-closed: a branch with no resolvable assignment sees none.
-_GLOBAL_VIEW_ROLES = _WRITER_ROLES
+# Department groups that may write notes/leaves (executive / HR-manager view).
+# Plain store_manager (-> branch_manager) is read-only.
+_WRITER_ROLES = {"admin", "leadership"}
+# Roles that see ALL branches' notes/leaves (executive + HR-manager + retail
+# oversight). Any other permitted HR role (store_manager -> branch_manager) is
+# scoped to its own branch only — fail-closed: a branch with no resolvable
+# assignment sees none.
+_GLOBAL_VIEW_ROLES = {"admin", "leadership", "retail"}
 
 
 # --------------------------------------------------------------------------- #
@@ -1151,7 +1152,7 @@ def register_hr_routes(app):
     @app.post("/api/hr/employees/rematch")
     def hr_employees_rematch(request: Request):
         _, _, role = _actor(request)
-        if role not in ("admin", "exec"):
+        if role not in ("admin", "leadership"):
             return JSONResponse({"detail": "forbidden"}, status_code=403)
         use_ai = (request.query_params.get("ai") or "1") != "0"
         try:

@@ -43,7 +43,7 @@ const BackendUrlWarningPill = () => {
     };
   }, []);
 
-  if (!user || (user.role !== "admin" && user.role !== "exec")) return null;
+  if (!user || (user.role !== "admin" && user.role !== "leadership")) return null;
   if (!mismatch) return null;
 
   const tooltip =
