@@ -43,6 +43,7 @@ const DEFAULT_MEASURES = [
 // with the server whitelist (_REPORT_MEASURES / _INVENTORY_MEASURES in api_pg.py).
 const MONEY_MEASURES = new Set([
   "revenue", "net_revenue", "gross_revenue", "returns", "discounts", "aov", "asp",
+  "price_min", "price_max", "revenue_since_launch",
 ]);
 
 // Group chips under their `group` so the (now longer) field lists stay scannable.
@@ -316,8 +317,12 @@ const CustomReport = () => {
             ))}
           </div>
           <p className="text-[11.5px] text-muted mt-2">
-            Stock on Hand and Sell-Through % are inventory measures — they can only
-            be grouped by Country, Store, Brand, Category or Subcategory (not Channel or Month).
+            Stock on Hand, Sell-Through % and Weeks of Cover are inventory measures —
+            they can only be grouped by Country, Store, Brand, Category, Subcategory,
+            Style, Size, Collection, Season, Colour or Print (not Channel or Month).
+            Weekly Velocity and Weeks of Cover are a current run-rate (trailing 30 days,
+            matching the Product Analysis page), and the "Since Launch" measures cover a
+            style's whole history — both ignore the date range above.
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">

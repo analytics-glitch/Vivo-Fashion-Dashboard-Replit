@@ -10,6 +10,7 @@ import IBTOutcomes from "@/components/IBTOutcomes";
 import WarehouseToStoreIBT from "@/components/WarehouseToStoreIBT";
 import IBTCompletedMoves from "@/components/IBTCompletedMoves";
 import IBTMarkAsDoneModal from "@/components/IBTMarkAsDoneModal";
+import AgedStockReport from "@/components/AgedStockReport";
 import { useRecommendationState } from "@/lib/useRecommendationState";
 import { toast } from "sonner";
 import {
@@ -51,6 +52,10 @@ const IBT = () => {
   const setClusteringPersist = (on) => {
     setUseClustering(on);
     try { localStorage.setItem("vivo_ibt_clustering", on ? "on" : "off"); } catch { /* private browsing */ }
+  };
+  const scrollToSection = (id) => {
+    const el = typeof document !== "undefined" && document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
   const [exporting, setExporting] = useState(false);
   // Sensitivity preset for the FROM/TO velocity bands. Persists across
@@ -282,6 +287,27 @@ const IBT = () => {
             <KPICard testId="ibt-kpi-stores" label="Stores Involved" value={fmtNum(kpis.storesInvolved)} showDelta={false} />
           </div>
 
+          <div className="card-white p-3 flex flex-wrap items-center gap-2" data-testid="ibt-jump-nav">
+            <span className="text-[11.5px] font-semibold text-muted">Jump to:</span>
+            {[
+              { id: "ibt-sec-priority", label: "Priority transfers" },
+              { id: "ibt-sec-store", label: "Store → Store list" },
+              { id: "ibt-sec-warehouse", label: "Warehouse → Store" },
+              ...(canSeeCompletedMoves ? [{ id: "ibt-sec-completed", label: "Completed moves" }] : []),
+              { id: "ibt-sec-aged", label: "Aged stock" },
+            ].map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => scrollToSection(s.id)}
+                data-testid={`ibt-jump-${s.id}`}
+                className="inline-flex items-center text-[11.5px] font-semibold px-2.5 py-1 rounded-lg border border-border bg-white text-foreground/70 hover:border-brand/40 hover:text-brand-deep transition-colors"
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+
           <div className="card-white p-3 flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-2 input-pill flex-1 min-w-[200px]">
               <MagnifyingGlass size={14} className="text-muted" />
@@ -378,7 +404,7 @@ const IBT = () => {
             </button>
           </div>
 
-          <div className="card-white p-4 sm:p-5" data-testid="ibt-priority-card">
+          <div id="ibt-sec-priority" className="card-white p-4 sm:p-5 scroll-mt-24" data-testid="ibt-priority-card">
             <SectionTitle
               title="Priority transfers"
               subtitle="Grouped by style and ranked by transfer score (donor surplus + destination demand). Expand a style to see every donor → needer pair, store revenue-cluster (A/B/C), the projected weeks-of-cover left at source, and the SKU-level size run. Select rows for bulk Mark Done / Dismiss / Export."
@@ -395,7 +421,7 @@ const IBT = () => {
             />
           </div>
 
-          <div className="card-white p-4 sm:p-5" data-testid="ibt-table-card">
+          <div id="ibt-sec-store" className="card-white p-4 sm:p-5 scroll-mt-24" data-testid="ibt-table-card">
             <SectionTitle
               title={`Store → Store transfer list · ${visible.length} suggestions`}
               subtitle="Each row is one SKU (color × size). Type the units you actually transferred, then tap Mark As Done to log the PO and remove it from this list. Tablet-friendly — scroll horizontally to see all columns."
@@ -455,6 +481,7 @@ const IBT = () => {
             </div>
           </div>
 
+          <div id="ibt-sec-warehouse" className="scroll-mt-24">
           <WarehouseToStoreIBT
             dateFrom={dateFrom}
             dateTo={dateTo}
@@ -493,10 +520,17 @@ const IBT = () => {
             }}
             completedSkuKeys={completedSkuKeys}
           />
+          </div>
 
           {canSeeCompletedMoves && (
-            <IBTCompletedMoves refreshKey={completedRefresh} />
+            <div id="ibt-sec-completed" className="scroll-mt-24">
+              <IBTCompletedMoves refreshKey={completedRefresh} />
+            </div>
           )}
+
+          <div id="ibt-sec-aged" className="scroll-mt-24">
+            <AgedStockReport />
+          </div>
 
           {doneModalRow && (
             <IBTMarkAsDoneModal

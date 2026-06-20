@@ -2415,6 +2415,9 @@ _REPORT_DIMENSIONS = {
     "style_number": {"sales": "p.style_number",                     "inv": "p.style_number",       "pjoin": True,  "label": "Style Number",  "group": "Product"},
     "color":        {"sales": "p.color_print",                      "inv": "p.color_print",        "pjoin": True,  "label": "Colour",        "group": "Product"},
     "print":        {"sales": "p.print_plain",                      "inv": "p.print_plain",        "pjoin": True,  "label": "Print",         "group": "Product"},
+    "size":         {"sales": "p.size",                             "inv": "i.size",               "pjoin": True,  "label": "Size",          "group": "Product"},
+    "collection":   {"sales": "p.collection",                       "inv": "p.collection",         "pjoin": True,  "label": "Collection",    "group": "Product"},
+    "season":       {"sales": "p.season",                           "inv": "p.season",             "pjoin": True,  "label": "Season",        "group": "Product"},
     "launch":       {"sales": "substring(p.style_launch_date,1,10)", "inv": "substring(p.style_launch_date,1,10)", "pjoin": True, "label": "Launch Date", "group": "Product"},
     "month":        {"sales": "to_char(s.sale_date::date,'YYYY-MM')", "inv": None,                 "pjoin": False, "label": "Month",         "group": "Time"},
 }
@@ -2439,6 +2442,8 @@ _REPORT_MEASURES = {
     "customers":    {"sql": "COUNT(DISTINCT s.customer_id)",                                                                   "label": "Customers",            "group": "Customers"},
     "aov":          {"sql": f"ROUND(SUM(s.total_sales_kes::numeric) / NULLIF({_ORDERS}, 0), 0)",                              "label": "Avg Order Value (KES)","group": "Sales"},
     "asp":          {"sql": f"ROUND(SUM(s.total_sales_kes::numeric) / NULLIF({_UNITS}, 0), 0)",                               "label": "Avg Selling Price (KES)","group": "Sales"},
+    "price_min":    {"sql": "ROUND(MIN(CASE WHEN s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 THEN s.total_sales_kes::numeric / s.ordered_item_quantity END), 0)", "label": "Lowest Selling Price (KES)",  "group": "Sales"},
+    "price_max":    {"sql": "ROUND(MAX(CASE WHEN s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 THEN s.total_sales_kes::numeric / s.ordered_item_quantity END), 0)", "label": "Highest Selling Price (KES)", "group": "Sales"},
 }
 # Inventory-grain measures. soh = current store stock on hand (SUM available,
 # warehouse excluded — matches the SOR convention used by /subcategory-stock-sales).
@@ -2454,8 +2459,19 @@ _INVENTORY_MEASURES = {
 # best paired with a product dimension (Style / Style Number); sor_since_launch
 # needs the stock snapshot so it inherits the inventory dimension restriction.
 _LIFETIME_MEASURES = {
-    "units_since_launch": {"label": "Units Sold (Since Launch)", "group": "Lifetime"},
-    "sor_since_launch":   {"label": "Sell-Through % (Since Launch)", "group": "Lifetime"},
+    "units_since_launch":   {"label": "Units Sold (Since Launch)", "group": "Lifetime"},
+    "revenue_since_launch": {"label": "Net Revenue (Since Launch, KES)", "group": "Lifetime"},
+    "sor_since_launch":     {"label": "Sell-Through % (Since Launch)", "group": "Lifetime"},
+}
+# Velocity measures mirror the Product Analysis page: a recency-weighted weekly
+# run-rate over the trailing 56 days (the most recent 28 days count double) and
+# weeks-of-cover (current store stock / weekly velocity). These ignore the
+# report's date range (they are a "current run-rate" snapshot relative to today),
+# exactly like the Product Analysis columns. `woc` needs the stock snapshot so it
+# inherits the inventory dimension restriction.
+_VELOCITY_MEASURES = {
+    "units_per_week": {"label": "Weekly Velocity (units)", "group": "Velocity"},
+    "woc":            {"label": "Weeks of Cover", "group": "Velocity"},
 }
 
 
@@ -2463,6 +2479,7 @@ def _report_field_catalog():
     dims = [{"id": k, "label": v["label"], "group": v["group"]} for k, v in _REPORT_DIMENSIONS.items()]
     meas = [{"id": k, "label": v["label"], "group": v["group"]} for k, v in _REPORT_MEASURES.items()]
     meas += [{"id": k, "label": v["label"], "group": v["group"]} for k, v in _INVENTORY_MEASURES.items()]
+    meas += [{"id": k, "label": v["label"], "group": v["group"]} for k, v in _VELOCITY_MEASURES.items()]
     meas += [{"id": k, "label": v["label"], "group": v["group"]} for k, v in _LIFETIME_MEASURES.items()]
     return dims, meas
 
@@ -2487,13 +2504,14 @@ def custom_report(
         raise HTTPException(status_code=400, detail="Pick at least one dimension")
     if not meas:
         raise HTTPException(status_code=400, detail="Pick at least one measure")
-    all_measures = {**_REPORT_MEASURES, **_INVENTORY_MEASURES, **_LIFETIME_MEASURES}
+    all_measures = {**_REPORT_MEASURES, **_INVENTORY_MEASURES, **_VELOCITY_MEASURES, **_LIFETIME_MEASURES}
     bad = [d for d in dims if d not in _REPORT_DIMENSIONS] + [m for m in meas if m not in all_measures]
     if bad:
         raise HTTPException(status_code=400, detail=f"Unknown field(s): {', '.join(bad)}")
 
     inv_meas = [m for m in meas if m in _INVENTORY_MEASURES]
     life_meas = [m for m in meas if m in _LIFETIME_MEASURES]
+    vel_meas = [m for m in meas if m in _VELOCITY_MEASURES]
     sales_meas = [m for m in meas if m in _REPORT_MEASURES]
     needs_pjoin = any(_REPORT_DIMENSIONS[d]["pjoin"] for d in dims)
     safe_limit = max(1, min(int(limit or 500), 5000))
@@ -2506,7 +2524,7 @@ def custom_report(
             [{"id": m, "label": all_measures[m]["label"]} for m in meas],
         )
 
-    if not inv_meas and not life_meas:
+    if not inv_meas and not life_meas and not vel_meas:
         # ---- Sales-only path: one grouped scan of all_sales (+product join). ----
         select_parts, group_idx = [], []
         for idx, d in enumerate(dims, start=1):
@@ -2532,8 +2550,9 @@ def custom_report(
     # with each measure source (period sales / lifetime sales / current stock)
     # LEFT JOINed back onto it. This generalises the old sales+stock FULL OUTER
     # JOIN so it can also carry the lifetime ("since launch") measures. ----
-    needs_stock = bool(inv_meas) or ("sor_since_launch" in life_meas)
+    needs_stock = bool(inv_meas) or ("sor_since_launch" in life_meas) or ("woc" in vel_meas)
     needs_life = bool(life_meas)
+    needs_vel = bool(vel_meas)
 
     # Stock is a current snapshot with no channel / time dimension, so any
     # stock-dependent measure can't be grouped by those.
@@ -2543,10 +2562,10 @@ def custom_report(
             names = ", ".join(_REPORT_DIMENSIONS[d]["label"] for d in incompatible)
             raise HTTPException(
                 status_code=400,
-                detail=f"Stock on Hand / Sell-Through can't be grouped by {names} "
+                detail=f"Stock on Hand / Sell-Through / Weeks of Cover can't be grouped by {names} "
                        "(inventory is a current snapshot with no channel or time). "
                        "Use Country, POS Location, Brand, Category, Subcategory, "
-                       "Style, Style Number, Colour, Print or Launch Date.",
+                       "Style, Style Number, Colour, Print, Size, Collection, Season or Launch Date.",
             )
 
     keys = [f"k{i}" for i in range(1, len(dims) + 1)]
@@ -2578,10 +2597,34 @@ def custom_report(
         life_where = " AND ".join(life_parts)
         life_cte = ("SELECT " + ", ".join(sales_sel) +
                     ", COALESCE(SUM(s.net_quantity), 0) AS units_since_launch"
+                    f", ROUND(COALESCE({_NET}, 0), 0) AS revenue_since_launch"
                     " FROM all_sales s" + sales_join + " WHERE " + life_where +
                     " GROUP BY " + grp)
         cte_defs.append("life AS (" + life_cte + ")")
         spine_sources.append("SELECT " + ", ".join(keys) + " FROM life")
+
+    if needs_vel:
+        # Weekly velocity mirrors the Product Analysis page's default: net units
+        # (signed, returns included) over the trailing _VEL_DAYS days, divided by
+        # that window in weeks — i.e. units_per_week = units_vel / (days/7). It is
+        # a current run-rate snapshot so it ignores the report date range. No
+        # sale_kind filter (net_quantity is already signed). sale_date is TEXT so
+        # cast ::date.
+        _VEL_DAYS = 30
+        vel_parts = [BASE_FILTERS,
+                     f"s.sale_date::date >= CURRENT_DATE - INTERVAL '{_VEL_DAYS} days'"]
+        if country:
+            vel_parts.append("s.country IN (" + csv_to_sql(country) + ")")
+        if channel:
+            vel_parts.append("s.pos_location_name IN (" + csv_to_sql(channel) + ")")
+        vel_where = " AND ".join(vel_parts)
+        weekly_sql = f"ROUND(COALESCE(SUM(s.net_quantity), 0) / ({_VEL_DAYS} / 7.0), 1)"
+        vel_cte = ("SELECT " + ", ".join(sales_sel) +
+                   ", " + weekly_sql + " AS weekly_units"
+                   " FROM all_sales s" + sales_join + " WHERE " + vel_where +
+                   " GROUP BY " + grp)
+        cte_defs.append("vel AS (" + vel_cte + ")")
+        spine_sources.append("SELECT " + ", ".join(keys) + " FROM vel")
 
     if needs_stock:
         inv_sel = [f'{_REPORT_DIMENSIONS[d]["inv"]} AS {keys[i]}' for i, d in enumerate(dims)]
@@ -2605,6 +2648,8 @@ def custom_report(
     join_sql_parts = [" LEFT JOIN s ON " + _on("s")]
     if needs_life:
         join_sql_parts.append(" LEFT JOIN life ON " + _on("life"))
+    if needs_vel:
+        join_sql_parts.append(" LEFT JOIN vel ON " + _on("vel"))
     if needs_stock:
         join_sql_parts.append(" LEFT JOIN stock ON " + _on("stock"))
 
@@ -2617,10 +2662,17 @@ def custom_report(
                              'NULLIF(COALESCE(s."__units",0)+COALESCE(stock.soh,0),0), 1) AS "sor"')
         elif m == "units_since_launch":
             out_parts.append('COALESCE(life.units_since_launch, 0) AS "units_since_launch"')
+        elif m == "revenue_since_launch":
+            out_parts.append('COALESCE(life.revenue_since_launch, 0) AS "revenue_since_launch"')
         elif m == "sor_since_launch":
             out_parts.append('ROUND(COALESCE(life.units_since_launch,0)*100.0 / '
                              'NULLIF(COALESCE(life.units_since_launch,0)+COALESCE(stock.soh,0),0), 1) '
                              'AS "sor_since_launch"')
+        elif m == "units_per_week":
+            out_parts.append('COALESCE(vel.weekly_units, 0) AS "units_per_week"')
+        elif m == "woc":
+            out_parts.append('ROUND(COALESCE(stock.soh,0) / '
+                             'NULLIF(GREATEST(vel.weekly_units, 0), 0), 1) AS "woc"')
         else:
             out_parts.append(f'COALESCE(s."{m}", 0) AS "{m}"')
 
