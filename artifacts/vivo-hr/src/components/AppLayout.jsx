@@ -19,6 +19,7 @@ import {
   Sun,
   RefreshCw,
   Menu,
+  ArrowLeft,
 } from "lucide-react";
 import { useAuth, roleLabel } from "../lib/auth";
 import { Button } from "./ui/button";
@@ -172,6 +173,15 @@ export default function AppLayout({ children, onRefresh }) {
             <div className="lg:hidden"><VivoLogo size={26} /></div>
 
             <div className="ml-auto flex items-center gap-2">
+              <a
+                href="/"
+                data-testid="back-to-main"
+                className="inline-flex items-center h-8 rounded-full px-3 text-[11px] font-bold uppercase tracking-wider text-brand-deep hover:bg-white/60"
+              >
+                <ArrowLeft className="mr-1.5 h-3 w-3" />
+                <span className="hidden sm:inline">Main Dashboard</span>
+                <span className="sm:hidden">Back</span>
+              </a>
               <span className="hidden sm:inline-flex pill" data-testid="status-live">
                 <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-success animate-pulse" />Live
               </span>
