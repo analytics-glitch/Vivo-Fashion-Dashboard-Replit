@@ -895,6 +895,7 @@ const ProductAnalysis = () => {
                 small showDelta={false} testId="pa-kpi-styles"
                 label="Styles" value={fmtNum(summary.styles)} icon={Tag}
                 sub={`${fmtNum(summary.active_styles)} actively selling`}
+                formula="Total styles counts only Vivo Fashion Group styles that currently hold stock (third-party consignment and zero-stock styles are excluded)."
               />
               <KPICard
                 small showDelta={false} accent testId="pa-kpi-revenue"

@@ -6085,6 +6085,28 @@ def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim, use_cluste
              / NULLIF(COALESCE(sa.u56, 0) + iv.avail, 0) < 0.05
              OR (COALESCE(sa.u56, 0) + iv.avail) = 0)
     ),
+    -- "Too new to transfer" guard: never recommend moving a style that has only
+    -- recently entered the range. Retail inventory carries no per-store received
+    -- date, so the catalogue launch date is the reliable proxy for how long the
+    -- item has been in the stores. Styles launched within the last 3 weeks are
+    -- held back on BOTH the donor (source) and recipient (receiving) side so
+    -- freshly-introduced product gets time to sell before it can be flagged for
+    -- a transfer. A missing/unparseable launch date is NOT excluded (so the
+    -- guard never silently drops legitimate, established styles).
+    style_age AS (
+      SELECT style_name AS style,
+             MIN(substring(style_launch_date,1,10)) FILTER (
+               WHERE substring(style_launch_date,1,10) ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$'
+             )::date AS launch
+      FROM all_products_clean
+      WHERE COALESCE(style_name,'') <> ''
+      GROUP BY 1
+    ),
+    too_new AS (
+      SELECT style FROM style_age
+      WHERE launch IS NOT NULL
+        AND launch > (CURRENT_DATE - INTERVAL '21 days')
+    ),
     froms AS (
       SELECT c.style, c.store, c.available, c.units_sold,
              COALESCE(stt.tier_n, 3) AS tier_n
@@ -6093,6 +6115,7 @@ def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim, use_cluste
       LEFT JOIN store_tier stt ON stt.store = c.store
       WHERE c.available >= 3
         AND NOT EXISTS (SELECT 1 FROM dead d WHERE d.style = c.style)
+        AND NOT EXISTS (SELECT 1 FROM too_new tn WHERE tn.style = c.style)
     ),
     tos AS (
       SELECT c.style, c.store, c.available, c.units_sold,
@@ -6102,6 +6125,7 @@ def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim, use_cluste
       LEFT JOIN store_tier stt ON stt.store = c.store
       WHERE c.available <= 2
         AND NOT EXISTS (SELECT 1 FROM dead d WHERE d.style = c.style)
+        AND NOT EXISTS (SELECT 1 FROM too_new tn WHERE tn.style = c.style)
     ),
     pairs AS (
       SELECT f.style,
@@ -8585,6 +8609,7 @@ def _tier_summary_block(rows, total_count):
         "pct_styles": round(len(rows) * 100.0 / total_count, 1) if total_count else 0,
         "revenue_lifetime": round(rev),
         "units_lifetime": units,
+        "stock_available": stock,
         "sor_lifetime_pct": round(units * 100.0 / denom, 1) if denom else None,
     }
 

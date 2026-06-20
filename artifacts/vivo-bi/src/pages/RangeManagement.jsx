@@ -180,7 +180,7 @@ const fmt = {
 
 // Iter 91u — extended card.
 // Iter 91v — also surfaces SOR % per bucket.
-const TierKpiCard = ({ tier, count, pctStyles, revenueLifetime, unitsLifetime, sorPct, target, rag, testId, onClick, tone: customTone }) => {
+const TierKpiCard = ({ tier, count, pctStyles, revenueLifetime, unitsLifetime, availableUnits, sorPct, target, rag, testId, onClick, tone: customTone }) => {
   const tone = RAG[rag] || RAG.amber;
   const t = customTone || TIER_STYLES[tier] || TIER_STYLES["Tier 4"];
   const [lo, hi] = target || [0, 0];
@@ -211,6 +211,10 @@ const TierKpiCard = ({ tier, count, pctStyles, revenueLifetime, unitsLifetime, s
         <div className="flex justify-between">
           <span style={{ opacity: 0.7 }}>Units</span>
           <span className="font-semibold num">{fmtNum(unitsLifetime || 0)}</span>
+        </div>
+        <div className="flex justify-between" title="Quantity available — units currently on hand across this tier's styles">
+          <span style={{ opacity: 0.7 }}>Available</span>
+          <span className="font-semibold num">{availableUnits == null ? "—" : fmtNum(availableUnits)}</span>
         </div>
         <div className="flex justify-between">
           <span style={{ opacity: 0.7 }}>SOR</span>
@@ -505,6 +509,7 @@ const RangeManagement = () => {
                 pctStyles={summary.tier_summary?.Total?.pct_styles}
                 revenueLifetime={summary.tier_summary?.Total?.revenue_lifetime}
                 unitsLifetime={summary.tier_summary?.Total?.units_lifetime}
+                availableUnits={summary.tier_summary?.Total?.stock_available}
                 sorPct={summary.tier_summary?.Total?.sor_lifetime_pct}
                 tone={{ bg: "#e0e7ff", text: "#1e3a8a", label: "Total" }}
                 testId="tier-card-Total"
@@ -517,6 +522,7 @@ const RangeManagement = () => {
                 pctStyles={summary.tier_summary?.Active?.pct_styles}
                 revenueLifetime={summary.tier_summary?.Active?.revenue_lifetime}
                 unitsLifetime={summary.tier_summary?.Active?.units_lifetime}
+                availableUnits={summary.tier_summary?.Active?.stock_available}
                 sorPct={summary.tier_summary?.Active?.sor_lifetime_pct}
                 tone={{ bg: "#dcfce7", text: "#14532d", label: "Active" }}
                 testId="tier-card-Active"
@@ -532,6 +538,7 @@ const RangeManagement = () => {
                     pctStyles={ts.pct_styles}
                     revenueLifetime={ts.revenue_lifetime}
                     unitsLifetime={ts.units_lifetime}
+                    availableUnits={ts.stock_available}
                     sorPct={ts.sor_lifetime_pct}
                     target={summary.targets?.[t]}
                     rag={summary.rag?.[t]}
@@ -545,6 +552,7 @@ const RangeManagement = () => {
                 tier="Retired"
                 count={summary.tier_summary?.Retired?.count ?? 0}
                 pctStyles={summary.tier_summary?.Retired?.pct_styles}
+                availableUnits={summary.tier_summary?.Retired?.stock_available}
                 revenueLifetime={summary.tier_summary?.Retired?.revenue_lifetime}
                 unitsLifetime={summary.tier_summary?.Retired?.units_lifetime}
                 sorPct={summary.tier_summary?.Retired?.sor_lifetime_pct}
