@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/hr/"
+title = "Vivo HR · Attendance"
+version = "1.0.0"
+id = "artifacts/vivo-hr"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/hr/" ]
+localPort = 22891
+
+[services.development]
+run = "pnpm --filter @workspace/vivo-hr run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/vivo-hr", "run", "build" ]
+publicDir = "artifacts/vivo-hr/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22891"
+BASE_PATH = "/hr/"

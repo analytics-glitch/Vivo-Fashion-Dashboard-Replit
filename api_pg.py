@@ -792,6 +792,17 @@ async def clerk_auth_gate(request: Request, call_next):
     if path.startswith("/api/social") and user.get("role") not in ("analyst", "exec", "admin"):
         return JSONResponse({"detail": "Social access requires an analyst, exec or admin role"}, status_code=403)
 
+    # HR attendance dashboard (/api/hr/*) is a staff surface. Map the project's
+    # roles onto the reference app's three: executive (admin/exec), hr_manager
+    # (analyst/manager/hr) and branch_manager (store_manager). Pure viewer /
+    # warehouse roles have no HR mandate and are blocked server-side so hidden
+    # web nav / mobile routes can't be bypassed. Finer write/branch-scope checks
+    # live in hr_attendance.py.
+    if path.startswith("/api/hr") and user.get("role") not in (
+        "admin", "exec", "analyst", "manager", "hr", "store_manager"
+    ):
+        return JSONResponse({"detail": "HR dashboard access requires a staff role"}, status_code=403)
+
     return await call_next(request)
 
 @app.on_event("startup")
@@ -16751,6 +16762,12 @@ async def loyalty_redeem(request: Request):
 # GET /api/* requests. The module sources data from this project's live Postgres.
 import crm_clienteling
 crm_clienteling.register_clienteling_routes(app)
+
+# HR attendance dashboard endpoints (ported vivo-hr frontend at /hr/). Same
+# placement rationale as the CRM module above — before the StaticFiles catch-all.
+# Sources data from this project's live vivo_attendance Postgres table.
+import hr_attendance
+hr_attendance.register_hr_routes(app)
 
 from fastapi.staticfiles import StaticFiles
 import pathlib

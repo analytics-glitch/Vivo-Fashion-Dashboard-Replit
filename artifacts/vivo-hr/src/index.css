@@ -1,0 +1,158 @@
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: 'Plus Jakarta Sans', 'DM Sans', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+code, .font-mono {
+  font-family: 'JetBrains Mono', source-code-pro, Menlo, Monaco, Consolas, monospace;
+}
+
+.font-serif { font-family: 'Playfair Display', Georgia, serif; }
+.tabular-nums, .num { font-variant-numeric: tabular-nums; }
+
+@layer base {
+  :root {
+    /* Warm linen base */
+    --background: 36 60% 96%;       /* #fdf8f0 — page bg */
+    --panel:      36 50% 92%;       /* #f5ead8 — panels */
+    --foreground: 0 0% 12%;
+    --muted:      36 50% 92%;
+    --muted-foreground: 0 0% 45%;
+    --border:     36 30% 80%;       /* warm beige */
+    --input:      36 30% 80%;
+    --ring:       150 56% 23%;
+
+    /* Cards — pure white on linen page */
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 12%;
+
+    /* Brand — Vivo forest green */
+    --brand:      150 56% 23%;      /* #1a5c38 */
+    --brand-deep: 150 60% 16%;      /* #103f25 */
+    --primary:    150 56% 23%;
+    --primary-foreground: 36 60% 96%;
+    --secondary:  36 50% 92%;
+    --secondary-foreground: 150 60% 16%;
+    --accent:     30 95% 85%;
+    --accent-foreground: 24 80% 25%;
+
+    /* Orange accents */
+    --accent-soft: 30 95% 85%;      /* #fed7aa */
+    --accent-mid:  25 95% 53%;      /* #f97316 */
+    --accent-deep: 24 80% 35%;      /* burnt */
+
+    /* Status */
+    --success: 142 70% 35%;
+    --warning: 35 92% 50%;
+    --danger:  348 75% 50%;
+    --destructive: 348 75% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Charts */
+    --chart-1: 150 56% 23%;         /* brand green */
+    --chart-2: 25 95% 53%;          /* orange */
+    --chart-3: 24 80% 35%;          /* burnt */
+    --chart-4: 35 92% 50%;          /* warning gold */
+    --chart-5: 150 40% 45%;         /* sage */
+
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    /* Dark mode — warm dark linen, keeps forest brand */
+    --background: 30 12% 8%;
+    --panel:      30 10% 13%;
+    --foreground: 36 50% 94%;
+    --muted: 30 10% 16%;
+    --muted-foreground: 36 12% 65%;
+    --border: 30 10% 22%;
+    --input: 30 10% 22%;
+    --ring: 150 60% 50%;
+
+    --card: 30 10% 11%;
+    --card-foreground: 36 50% 94%;
+    --popover: 30 10% 11%;
+    --popover-foreground: 36 50% 94%;
+
+    --brand: 150 60% 50%;
+    --brand-deep: 150 50% 75%;
+    --primary: 150 60% 50%;
+    --primary-foreground: 30 12% 8%;
+    --secondary: 30 10% 16%;
+    --secondary-foreground: 36 50% 94%;
+    --accent: 24 60% 25%;
+    --accent-foreground: 30 95% 85%;
+
+    --accent-soft: 24 60% 25%;
+    --accent-mid: 25 90% 60%;
+    --accent-deep: 30 95% 75%;
+
+    --success: 142 60% 50%;
+    --warning: 35 92% 60%;
+    --danger:  348 75% 60%;
+    --destructive: 348 75% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --chart-1: 150 60% 55%;
+    --chart-2: 25 95% 60%;
+    --chart-3: 30 95% 75%;
+    --chart-4: 35 92% 60%;
+    --chart-5: 150 40% 55%;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  body { @apply bg-background text-foreground; }
+}
+
+/* Custom utilities for the Warm Linen + Forest theme */
+@layer utilities {
+  .eyebrow {
+    @apply text-[10.5px] font-bold uppercase tracking-wider;
+    color: hsl(var(--brand-deep));
+  }
+  .pill {
+    @apply rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider;
+    background: hsl(var(--accent-soft));
+    color: hsl(var(--accent-deep));
+  }
+  .pill-brand {
+    @apply rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider;
+    background: hsl(var(--brand));
+    color: hsl(var(--background));
+  }
+  .pill-success { background: hsl(var(--success) / 0.15); color: hsl(var(--success)); }
+  .pill-warning { background: hsl(var(--warning) / 0.18); color: hsl(var(--accent-deep)); }
+  .pill-danger  { background: hsl(var(--danger) / 0.15); color: hsl(var(--danger)); }
+  .num, .tabular-nums { font-variant-numeric: tabular-nums; }
+  .animate-stagger > * {
+    opacity: 0;
+    animation: fadeUp 0.5s ease-out forwards;
+  }
+  .animate-stagger > *:nth-child(1) { animation-delay: 0.05s; }
+  .animate-stagger > *:nth-child(2) { animation-delay: 0.1s; }
+  .animate-stagger > *:nth-child(3) { animation-delay: 0.15s; }
+  .animate-stagger > *:nth-child(4) { animation-delay: 0.2s; }
+  .animate-stagger > *:nth-child(5) { animation-delay: 0.25s; }
+  .animate-stagger > *:nth-child(6) { animation-delay: 0.3s; }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 4px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+}
