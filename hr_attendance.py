@@ -15,9 +15,17 @@ match order matters — the catch-all would otherwise swallow GET /api/*).
 The source table has NO is_late / is_overtime / absent columns and only two
 attendance_status values ('Present', 'Missing Check-Out') — every derived
 metric (lateness, early departure, over/undertime, absence, hours lost,
-consecutive absences) is COMPUTED here. Timestamps are stored in UTC and
-converted to Africa/Nairobi wall-clock for all time-of-day derivations and for
-display (so the frontend's TIME_OFFSET_HOURS is 0).
+consecutive absences) is COMPUTED here.
+
+Timezone note: the biometric devices record East-Africa (UTC+3) wall-clock
+times, but the source feeds them to us WITHOUT the offset, so check_in_time /
+check_out_time / device_last_seen land in Postgres as that wall-clock mislabeled
+as +00 (e.g. a 09:41 EAT check-in is stored as 09:41:55+00). They must therefore
+be read back AT TIME ZONE 'UTC' (SRC_TZ) — which returns the stored wall-clock
+unchanged = the correct EAT time. Reading them AT TIME ZONE 'Africa/Nairobi'
+would WRONGLY add a second +3h (showing 09:41 as 12:41). App-written timestamps
+(note/leave created_at) are genuine UTC instants from now() and ARE converted to
+Africa/Nairobi (TZ) for display. So the frontend's TIME_OFFSET_HOURS is 0.
 """
 
 from datetime import date, timedelta
@@ -30,7 +38,12 @@ from fastapi.responses import JSONResponse
 A = None
 
 # --- Derivation parameters (a standard 09:00-18:00, 9h work day) ----------- #
-TZ = "Africa/Nairobi"
+TZ = "Africa/Nairobi"     # for genuine-UTC app timestamps (note/leave created_at)
+# Device/source timestamps (check_in_time, check_out_time, device_last_seen) are
+# EAT wall-clock stored mislabeled as +00 (see module docstring). Reading them at
+# 'UTC' returns that wall-clock as-is = the real East-Africa time. Do NOT use TZ
+# here or you double-shift by +3h.
+SRC_TZ = "UTC"
 WORK_START_MIN = 9 * 60   # 09:00 — arrivals after this are "late"
 WORK_END_MIN = 18 * 60    # 18:00 — departures before this are "early"
 EXPECTED_HOURS = 9.0      # full scheduled day
@@ -38,8 +51,8 @@ ALLOWABLE_HOURS = 8.0     # minimum acceptable worked hours before "lost"
 ROSTER_DAYS = 30          # trailing window that defines a branch's active roster
 
 # Reusable SQL fragments (only integer/float constants interpolated — no params).
-_LIN = f"(check_in_time AT TIME ZONE '{TZ}')"
-_LOUT = f"(check_out_time AT TIME ZONE '{TZ}')"
+_LIN = f"(check_in_time AT TIME ZONE '{SRC_TZ}')"
+_LOUT = f"(check_out_time AT TIME ZONE '{SRC_TZ}')"
 IS_LATE = (f"(check_in_time IS NOT NULL AND "
            f"(EXTRACT(HOUR FROM {_LIN})*60 + EXTRACT(MINUTE FROM {_LIN})) > {WORK_START_MIN})")
 IS_EARLY = (f"(check_out_time IS NOT NULL AND "
@@ -821,7 +834,7 @@ def register_hr_routes(app):
         dev = _rows(f"""
             SELECT DISTINCT ON (branch_name) branch_name, branch_country, device_type,
                    COALESCE(device_fail_count,0) AS fail_count,
-                   to_char(device_last_seen AT TIME ZONE '{TZ}', 'YYYY-MM-DD"T"HH24:MI:SS') AS last_seen,
+                   to_char(device_last_seen AT TIME ZONE '{SRC_TZ}', 'YYYY-MM-DD"T"HH24:MI:SS') AS last_seen,
                    device_status
             FROM vivo_attendance
             WHERE attendance_date BETWEEN %(d0)s AND %(d)s{wsql}
