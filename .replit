@@ -124,3 +124,8 @@ packages = ["cargo", "libiconv", "libxcrypt", "openssl", "pkg-config", "rustc"]
 
 [run]
 args = ["bash", "/home/runner/workspace/start_all.sh"]
+
+[userenv]
+
+[userenv.shared]
+WAREHOUSE_BINS_SHEET_ID = "1PDPHZttZbYFYaDyaopLG6_hiuZ2Te7qilN4xNI6s-0k"

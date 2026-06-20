@@ -6386,6 +6386,7 @@ def ibt_warehouse_to_store(
     country:   str = Query(default=None),
     limit:     int = Query(default=300),
 ):
+    _warehouse_bins_refresh()
     today = date.today()
     date_to = date_to or today.isoformat()
     date_from = date_from or (today - timedelta(days=30)).isoformat()
@@ -6422,14 +6423,24 @@ def ibt_warehouse_to_store(
       WHERE i.pos_location_name = 'Warehouse Finished Goods'
         AND COALESCE(p.style_name,'') <> ''
       GROUP BY 1
+    ),
+    sb AS (
+      SELECT p.style_name AS style,
+             string_agg(DISTINCT wb.bin, ', ' ORDER BY wb.bin) AS bins
+      FROM warehouse_bins wb
+      JOIN all_products_clean p ON p.barcode = wb.barcode
+      WHERE COALESCE(wb.bin,'') <> '' AND COALESCE(p.style_name,'') <> ''
+      GROUP BY 1
     )
     SELECT sv.style AS style_name, pp.brand, pp.category AS subcategory,
            sv.store AS to_store,
            GREATEST(LEAST(wh.available, sv.units_sold - COALESCE(si.available, 0)), 1)::int AS suggested_qty,
-           sv.units_sold::int AS to_qty_sold_28d
+           sv.units_sold::int AS to_qty_sold_28d,
+           COALESCE(sb.bins, '') AS bins
     FROM sv
     JOIN wh ON wh.style = sv.style AND wh.available > 0
     LEFT JOIN si ON si.style = sv.style AND si.store = sv.store
+    LEFT JOIN sb ON sb.style = sv.style
     LEFT JOIN LATERAL (
       SELECT brand, category FROM all_products_clean WHERE style_name = sv.style LIMIT 1
     ) pp ON TRUE
