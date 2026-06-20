@@ -76,6 +76,7 @@ args = "python3 extract_shopzetu_sales.py --since=2022-01-01 --until=2026-06-13"
 [agent]
 stack = "PNPM_WORKSPACE"
 expertMode = true
+integrations = ["google-sheet:1.0.0"]
 
 [postMerge]
 path = "scripts/post-merge.sh"
