@@ -412,7 +412,7 @@ _DATE_QUERY_PARAMS = ("date_from", "date_to", "compare_from", "compare_to")
 # artifacts/vivo-bi/src/lib/permissions.js for the page mapping.
 VALID_ROLES = (
     "product_development", "retail", "warehouse", "store_manager",
-    "leadership", "customer_service", "marketing", "admin",
+    "leadership", "customer_service", "marketing", "hr", "admin",
 )
 VALID_STATUSES = ("pending", "active", "rejected", "disabled")
 # Lowest-access department a self-signup lands on while pending; an admin
@@ -425,7 +425,6 @@ LEGACY_ROLE_MAP = {
     "analyst": "leadership",
     "exec": "leadership",
     "manager": "leadership",
-    "hr": "leadership",
 }
 # Paths a signed-in but not-yet-active user may still reach (so the frontend can
 # read its own status and poll for approval / sign out).
@@ -856,7 +855,7 @@ async def clerk_auth_gate(request: Request, call_next):
     # mandate and are blocked server-side so hidden web nav / mobile routes can't
     # be bypassed. Finer write/branch-scope checks live in hr_attendance.py.
     if path.startswith("/api/hr") and user.get("role") not in (
-        "admin", "leadership", "store_manager", "retail"
+        "admin", "leadership", "store_manager", "retail", "hr"
     ):
         return JSONResponse({"detail": "HR dashboard access requires a staff role"}, status_code=403)
 

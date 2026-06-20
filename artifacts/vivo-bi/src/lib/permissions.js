@@ -4,25 +4,26 @@
  * fall back to this static map.
  *
  * Roles are business-friendly DEPARTMENT GROUPS (plus Admin), not technical
- * tiers. The eight groups are:
+ * tiers. The nine groups are:
  *   product_development · retail · warehouse · store_manager ·
- *   leadership · customer_service · marketing · admin
+ *   leadership · customer_service · marketing · hr · admin
  *
  * Page IDs match the `id` field on `tabs` in `components/Sidebar.jsx` /
  * `navItems.jsx`. Admin-only pages use the `admin-` prefix.
  */
 
 // Base analytical set shared by the broadest groups.
-const VIEWER = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "feedback", "catalogue", "fabric"];
+const VIEWER = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "fabric"];
 
-const PRODUCT_DEVELOPMENT = ["overview", "products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports"];
-const RETAIL = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "customer-details", "products", "product-analysis", "replenishments", "replenish-by-item", "ibt", "feedback", "exports"];
-const WAREHOUSE = ["inventory", "replenishments", "replenish-by-item", "ibt", "re-order", "allocations", "data-quality", "exports", "feedback"];
-const STORE_MANAGER = ["overview", "locations", "footfall", "customers", "replenishments", "replenish-by-item", "ibt", "feedback", "exports"];
+const PRODUCT_DEVELOPMENT = ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports"];
+const RETAIL = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "replenishments", "replenish-by-item", "ibt", "exports"];
+const WAREHOUSE = ["inventory", "replenishments", "replenish-by-item", "ibt", "re-order", "allocations", "data-quality", "exports"];
+const STORE_MANAGER = ["locations", "footfall", "replenishments", "replenish-by-item", "ibt"];
 const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "marketing", "social", "crm", "data-quality", "exports", "hr"])];
-const CUSTOMER_SERVICE = ["overview", "customers", "customer-details", "crm", "feedback", "footfall", "rfm"];
-const MARKETING = ["overview", "marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm"];
-const ADMIN = [...new Set([...LEADERSHIP, "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters"])];
+const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "footfall", "rfm"];
+const MARKETING = ["marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm"];
+const HR = ["hr"];
+const ADMIN = [...new Set([...LEADERSHIP, "feedback", "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters"])];
 
 export const ROLE_PAGES = {
   product_development: PRODUCT_DEVELOPMENT,
@@ -32,11 +33,12 @@ export const ROLE_PAGES = {
   leadership: LEADERSHIP,
   customer_service: CUSTOMER_SERVICE,
   marketing: MARKETING,
+  hr: HR,
   admin: ADMIN,
 };
 
 /**
- * The 8 selectable department groups, with human-readable labels + short
+ * The 9 selectable department groups, with human-readable labels + short
  * descriptions. Drives the approval / create-user dropdowns on the Users page.
  * `store_manager` is the lowest-access default a self-signup gets while pending.
  */
@@ -46,8 +48,9 @@ export const ROLE_OPTIONS = [
   { value: "warehouse", label: "Warehouse Team", desc: "Stock movement & inventory ops" },
   { value: "store_manager", label: "Store Managers", desc: "Store performance & replenishment" },
   { value: "leadership", label: "Senior Leadership", desc: "Full analytical & executive access" },
-  { value: "customer_service", label: "Customer Service", desc: "Customers, CRM & feedback" },
+  { value: "customer_service", label: "Customer Service", desc: "Customers, CRM & service" },
   { value: "marketing", label: "Marketing", desc: "Marketing, social, CRM & customers" },
+  { value: "hr", label: "HR Team", desc: "HR & attendance only" },
   { value: "admin", label: "Admin", desc: "Full access + user management" },
 ];
 
