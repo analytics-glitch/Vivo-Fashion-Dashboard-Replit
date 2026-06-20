@@ -24,10 +24,15 @@ module pattern (`A=api_pg`, `_ex`/`_rows` via `A._users_exec`, `A._crm_audit`,
 **The source table has NO is_late / is_overtime / absent columns** and only two
 `attendance_status` values: `Present`, `Missing Check-Out` (a row exists only
 when someone punched — there are NO absent rows). Everything is DERIVED:
-- Timestamps stored UTC; convert with `AT TIME ZONE 'Africa/Nairobi'` for every
-  time-of-day derivation AND for display.
-- is_late = local check-in > 09:00; is_early = local check-out < 18:00;
-  is_overtime = hours_worked > 9; is_undertime = complete AND < 8.
+- Device timestamps (check_in/out, device_last_seen) are EAT wall-clock stored
+  mislabeled as +00; read them `AT TIME ZONE 'UTC'` (SRC_TZ) for every time-of-day
+  derivation AND display (NOT 'Africa/Nairobi' — that double-shifts +3h). App
+  `created_at` is genuine now() UTC → stays 'Africa/Nairobi' (TZ). See
+  hr-attendance-tz-mislabel.md.
+- Work day is 08:00–17:00 (WORK_START_MIN/WORK_END_MIN): is_late = local check-in
+  > 08:00; is_early = local check-out < 17:00; is_overtime = hours_worked > 9;
+  is_undertime = complete AND < 8. (Thresholds are policy constants — confirm
+  current values in hr_attendance.py before relying on them.)
 - **absent is derived** = roster − showed-up, where roster = `COUNT(DISTINCT
   user_id)` in a trailing window (`ROSTER_DAYS=30` for snapshot endpoints;
   range-wide distinct for trend/heatmap). "Open days" = distinct attendance_date

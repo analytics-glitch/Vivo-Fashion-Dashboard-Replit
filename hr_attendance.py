@@ -37,16 +37,16 @@ from fastapi.responses import JSONResponse
 # dereference it at request time, by which point it is populated.
 A = None
 
-# --- Derivation parameters (a standard 09:00-18:00, 9h work day) ----------- #
+# --- Derivation parameters (a standard 08:00-17:00, 9h work day) ----------- #
 TZ = "Africa/Nairobi"     # for genuine-UTC app timestamps (note/leave created_at)
 # Device/source timestamps (check_in_time, check_out_time, device_last_seen) are
 # EAT wall-clock stored mislabeled as +00 (see module docstring). Reading them at
 # 'UTC' returns that wall-clock as-is = the real East-Africa time. Do NOT use TZ
 # here or you double-shift by +3h.
 SRC_TZ = "UTC"
-WORK_START_MIN = 9 * 60   # 09:00 — arrivals after this are "late"
-WORK_END_MIN = 18 * 60    # 18:00 — departures before this are "early"
-EXPECTED_HOURS = 9.0      # full scheduled day
+WORK_START_MIN = 8 * 60   # 08:00 — arrivals after this are "late"
+WORK_END_MIN = 17 * 60    # 17:00 — departures before this are "early"
+EXPECTED_HOURS = 9.0      # full scheduled day (08:00–17:00 = 9h)
 ALLOWABLE_HOURS = 8.0     # minimum acceptable worked hours before "lost"
 ROSTER_DAYS = 30          # trailing window that defines a branch's active roster
 
