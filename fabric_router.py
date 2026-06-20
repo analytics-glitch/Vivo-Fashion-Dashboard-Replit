@@ -218,7 +218,7 @@ def register(
         ALLOWED_SORT = {
             "default_code", "barcode", "name", "fabric_category", "fabric_subcategory",
             "plain_print", "weight_range", "fabric_structure", "gsm", "width_m",
-            "kg_per_mtr", "fiber_content", "fabric_type", "supplier", "primary_color", "fabric_color",
+            "kg_per_mtr", "fiber_content", "fabric_type", "supplier", "primary_color", "fabric_color", "color",
             "qty_kg", "available_kg", "qty_metres", "available_metres", "value_kes",
             "cost_kes", "cost_per_kg", "cost_metre", "weeks_cover",
             "team_reserved_kg", "team_reserved_metres",
@@ -266,6 +266,7 @@ def register(
               p.fabric_structure, p.plain_print, p.weight_range, p.gsm,
               p.width_m, p.kg_per_mtr, p.fiber_content, p.fabric_type,
               p.supplier, p.primary_color, INITCAP(BTRIM(p.fabric_color)) as fabric_color,
+              NULLIF(INITCAP(BTRIM(p.color)),'') as color,
               p.standard_price, p.uom,
               ROUND(p.standard_price::numeric,2) as cost_kes,
               ROUND(p.standard_price::numeric,2) as cost_per_kg,
