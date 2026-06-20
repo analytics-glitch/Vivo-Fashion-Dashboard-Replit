@@ -13,6 +13,7 @@ import Trends from "./pages/Trends";
 import Alerts from "./pages/Alerts";
 import EmployeeProfile from "./pages/EmployeeProfile";
 import EmployeeDirectory from "./pages/EmployeeDirectory";
+import Departments from "./pages/Departments";
 import Training from "./pages/Training";
 import MonthlyReport from "./pages/MonthlyReport";
 import LeaveAndNotes from "./pages/LeaveAndNotes";
@@ -37,6 +38,7 @@ function App() {
             <Route path="/alerts" element={<ProtectedRoute><Alerts /></ProtectedRoute>} />
             <Route path="/employees" element={<ProtectedRoute><EmployeeProfile /></ProtectedRoute>} />
             <Route path="/directory" element={<ProtectedRoute><EmployeeDirectory /></ProtectedRoute>} />
+            <Route path="/departments" element={<ProtectedRoute><Departments /></ProtectedRoute>} />
             <Route path="/training" element={<ProtectedRoute><Training /></ProtectedRoute>} />
             <Route path="/reports" element={<ProtectedRoute><MonthlyReport /></ProtectedRoute>} />
             <Route path="/days-worked" element={<ProtectedRoute><DaysWorked /></ProtectedRoute>} />

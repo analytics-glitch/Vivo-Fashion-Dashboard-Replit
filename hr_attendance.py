@@ -646,6 +646,11 @@ def register_hr_routes(app):
         params["df"] = dfrom
         params["dt"] = dto
         wsql = (" AND " + " AND ".join(where)) if where else ""
+        lin_b = _LIN.replace("check_in_time", "b.check_in_time")
+        is_late_b = IS_LATE.replace("check_in_time", "b.check_in_time")
+        checkin_sec_b = (f"(EXTRACT(HOUR FROM {lin_b})*3600 + "
+                         f"EXTRACT(MINUTE FROM {lin_b})*60 + "
+                         f"EXTRACT(SECOND FROM {lin_b}))")
         rows = _rows(f"""
             WITH base AS (
                 SELECT * FROM vivo_attendance
@@ -661,6 +666,10 @@ def register_hr_routes(app):
                    MAX(o.open_days) AS total_days,
                    AVG(b.hours_worked) FILTER (WHERE COALESCE(b.is_complete,false)
                                                AND b.hours_worked IS NOT NULL) AS avg_hours,
+                   COUNT(*) FILTER (WHERE {is_late_b})            AS late_days,
+                   COUNT(*) FILTER (WHERE b.check_in_time IS NOT NULL) AS checkin_days,
+                   AVG({checkin_sec_b}) FILTER (WHERE b.check_in_time IS NOT NULL)
+                                                                  AS avg_checkin_sec,
                    MAX(e.name)        AS roster_name,
                    MAX(e.department)  AS department,
                    MAX(e.team)        AS team,
@@ -678,6 +687,8 @@ def register_hr_routes(app):
             present = int(r["days_present"] or 0)
             total = int(r["total_days"] or 0)
             absent = max(0, total - present)
+            late = int(r["late_days"] or 0)
+            checkin_days = int(r["checkin_days"] or 0)
             out.append({
                 "employee_name": r["employee_name"],
                 "user_id": r["user_id"],
@@ -688,6 +699,9 @@ def register_hr_routes(app):
                 "days_absent": absent,
                 "total_days": total,
                 "avg_hours": round(float(r["avg_hours"]), 2) if r["avg_hours"] is not None else 0,
+                "late_days": late,
+                "late_rate": round(late / checkin_days * 100, 1) if checkin_days else 0,
+                "avg_check_in": _fmt_clock(r["avg_checkin_sec"]),
                 "roster_name": r["roster_name"],
                 "department": r["department"],
                 "team": r["team"],
@@ -867,6 +881,94 @@ def register_hr_routes(app):
                      f"ai={use_ai} matched={matched}/{len(results)}", request)
         return {"processed": len(results), "matched": matched,
                 "unmatched": len(results) - matched, "by_method": methods}
+
+    @app.get("/api/hr/department-performance")
+    def hr_department_performance(request: Request):
+        qp = request.query_params
+        dfrom, dto = _range(qp)
+        where, params = _filters(qp, ["location", "branch"])
+        params["df"] = dfrom
+        params["dt"] = dto
+        entity = (qp.get("entity") or "").strip()
+        if entity and entity.lower() != "all":
+            where.append("e.entity = %(entity)s")
+            params["entity"] = entity
+        wsql = (" AND " + " AND ".join(where)) if where else ""
+        # b-aliased fragments (base is aliased `b` in per_emp)
+        lin_b = _LIN.replace("check_in_time", "b.check_in_time")
+        is_late_b = IS_LATE.replace("check_in_time", "b.check_in_time")
+        is_ut_b = IS_UT.replace("check_in_time", "b.check_in_time").replace("check_out_time", "b.check_out_time")
+        checkin_sec_b = (f"(EXTRACT(HOUR FROM {lin_b})*3600 + "
+                         f"EXTRACT(MINUTE FROM {lin_b})*60 + "
+                         f"EXTRACT(SECOND FROM {lin_b}))")
+        # vivo_attendance has no Absent rows, so attendance rate must use a real
+        # expected-days baseline: per-employee branch open-days (same as employee-summary),
+        # summed up to the department.
+        rows = _rows(f"""
+            WITH base AS (
+                SELECT va.*, COALESCE(NULLIF(TRIM(e.department), ''), 'Unassigned') AS dept
+                FROM vivo_attendance va
+                JOIN hr_employee_match m ON m.employee_name = va.employee_name
+                                        AND m.employee_id IS NOT NULL
+                JOIN hr_employees e ON e.id = m.employee_id
+                WHERE va.attendance_date BETWEEN %(df)s AND %(dt)s{wsql}
+            ),
+            opendays AS (
+                SELECT branch_name, COUNT(DISTINCT attendance_date) AS open_days
+                FROM base GROUP BY branch_name
+            ),
+            per_emp AS (
+                SELECT b.dept, b.employee_name,
+                       COUNT(DISTINCT b.attendance_date)               AS days_present,
+                       MAX(o.open_days)                                AS expected_days,
+                       COUNT(*) FILTER (WHERE {is_late_b})             AS late_days,
+                       COUNT(*) FILTER (WHERE b.check_in_time IS NOT NULL) AS checkin_days,
+                       COUNT(*) FILTER (WHERE {is_ut_b})               AS undertime_days,
+                       SUM(b.hours_worked) FILTER (WHERE COALESCE(b.is_complete,false)
+                                                   AND b.hours_worked IS NOT NULL) AS hours_sum,
+                       COUNT(*) FILTER (WHERE COALESCE(b.is_complete,false)
+                                        AND b.hours_worked IS NOT NULL) AS complete_days,
+                       SUM({checkin_sec_b}) FILTER (WHERE b.check_in_time IS NOT NULL)
+                                                                       AS checkin_sec_sum
+                FROM base b JOIN opendays o ON o.branch_name = b.branch_name
+                GROUP BY b.dept, b.employee_name
+            )
+            SELECT dept AS department,
+                   COUNT(*)              AS employees,
+                   SUM(days_present)     AS present_days,
+                   SUM(expected_days)    AS expected_days,
+                   SUM(late_days)        AS late_days,
+                   SUM(checkin_days)     AS checkin_days,
+                   SUM(undertime_days)   AS undertime_days,
+                   SUM(hours_sum)        AS hours_sum,
+                   SUM(complete_days)    AS complete_days,
+                   SUM(checkin_sec_sum)  AS checkin_sec_sum
+            FROM per_emp
+            GROUP BY dept
+            ORDER BY employees DESC, department
+        """, params)
+        out = []
+        for r in rows:
+            present = int(r["present_days"] or 0)
+            expected = int(r["expected_days"] or 0)
+            late = int(r["late_days"] or 0)
+            checkin = int(r["checkin_days"] or 0)
+            hours_sum = float(r["hours_sum"]) if r["hours_sum"] is not None else 0.0
+            complete = int(r["complete_days"] or 0)
+            checkin_sec_sum = float(r["checkin_sec_sum"]) if r["checkin_sec_sum"] is not None else None
+            out.append({
+                "department": r["department"],
+                "employees": int(r["employees"] or 0),
+                "present_days": present,
+                "expected_days": expected,
+                "late_days": late,
+                "undertime_days": int(r["undertime_days"] or 0),
+                "attendance_rate": round(present / expected * 100, 1) if expected else 0,
+                "late_rate": round(late / checkin * 100, 1) if checkin else 0,
+                "avg_hours": round(hours_sum / complete, 2) if complete else 0,
+                "avg_check_in": _fmt_clock(checkin_sec_sum / checkin) if checkin and checkin_sec_sum is not None else None,
+            })
+        return out
 
     @app.get("/api/hr/trends")
     def hr_trends(request: Request):
