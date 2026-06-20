@@ -617,7 +617,6 @@ const REG_COLS=[
   {k:'width_m',label:'Width (m)',type:'num1'},
   {k:'kg_per_mtr',label:'Kg/m',type:'num1'},
   {k:'supplier',label:'Supplier',type:'text'},
-  {k:'primary_color',label:'Color',type:'text'},
   {k:'fabric_color',label:'Fabric Color',type:'text'},
   {k:'cost_kes',label:'Cost (KES)',type:'kesc'},
   {k:'cost_per_kg',label:'Cost/kg',type:'kesc'},
@@ -635,7 +634,7 @@ const REG_COLS=[
 ];
 const REG_DEFAULT=['default_code','name','fabric_subcategory','fabric_color','plain_print','gsm','cost_kes','qty_metres','qty_kg','team_reserved_kg','value_kes','weeks_cover','last_move'];
 const NUM_TYPES={num:1,num1:1,numb:1,kes:1,kesc:1,wcover:1,rsv:1};
-let regCols=(()=>{try{const s=JSON.parse(localStorage.getItem('fabricRegCols'));return Array.isArray(s)&&s.length?s.filter(k=>REG_COLS.some(c=>c.k===k)):REG_DEFAULT.slice();}catch(_){return REG_DEFAULT.slice();}})();
+let regCols=(()=>{try{const s=JSON.parse(localStorage.getItem('fabricRegCols'));if(Array.isArray(s)&&s.length){const mapped=s.map(k=>k==='primary_color'?'fabric_color':k);return [...new Set(mapped)].filter(k=>REG_COLS.some(c=>c.k===k));}return REG_DEFAULT.slice();}catch(_){return REG_DEFAULT.slice();}})();
 let regSort={key:'value_kes',dir:'desc'};
 let regTimer;
 function debouncedRegister(){clearTimeout(regTimer);regTimer=setTimeout(()=>loadRegister(0),300);}
