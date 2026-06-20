@@ -264,6 +264,42 @@ def run_query(query, date_to=None):
     return rows
 
 
+_wb_last_attempt = 0.0
+_wb_attempt_lock = threading.Lock()
+_WB_ATTEMPT_THROTTLE_SEC = 300
+
+
+def _warehouse_bins_refresh():
+    """Trigger a best-effort BACKGROUND refresh of the warehouse_bins table. NEVER
+    blocks the request (the Google fetch runs in a daemon thread) and NEVER raises.
+    Throttled in-memory to at most once per _WB_ATTEMPT_THROTTLE_SEC; the real 6h
+    staleness gate + a cross-thread lock live in warehouse_bins.refresh(). Called at
+    the top of the Replenishment + IBT endpoints that surface warehouse bins."""
+    global _wb_last_attempt
+    try:
+        now = time.time()
+        with _wb_attempt_lock:
+            if now - _wb_last_attempt < _WB_ATTEMPT_THROTTLE_SEC:
+                return
+            _wb_last_attempt = now
+
+        def _bg():
+            try:
+                import warehouse_bins
+                pool = _get_pool()
+                conn = pool.getconn()
+                try:
+                    warehouse_bins.ensure_fresh(conn)
+                finally:
+                    pool.putconn(conn)
+            except Exception as e:
+                log.error("warehouse bins bg refresh failed: %s", e)
+
+        threading.Thread(target=_bg, name="wh-bins-refresh", daemon=True).start()
+    except Exception as e:
+        log.error("warehouse bins refresh trigger failed: %s", e)
+
+
 def _process_rss_mb():
     # Current resident set size in MB from /proc (Linux), else None.
     try:
@@ -6295,6 +6331,7 @@ def ibt_sku_breakdown(
     to_store:      str = Query(...),
     units_to_move: int = Query(default=0),
 ):
+    _warehouse_bins_refresh()
     st = _sql_str(style_name)
     fs = _sql_str(from_store)
     ts = _sql_str(to_store)
@@ -6311,6 +6348,7 @@ def ibt_sku_breakdown(
     fi AS (SELECT sku, SUM(available) AS av FROM all_inventory WHERE pos_location_name = '{fs}' GROUP BY sku),
     ti AS (SELECT sku, SUM(available) AS av FROM all_inventory WHERE pos_location_name = '{ts}' GROUP BY sku)
     SELECT s.sku, s.color, s.size, s.barcode,
+           COALESCE(wb.bin, '') AS bin,
            COALESCE(fi.av, 0)::int AS from_available,
            COALESCE(ti.av, 0)::int AS to_available,
            LEAST(
@@ -6326,6 +6364,7 @@ def ibt_sku_breakdown(
     FROM skus s
     LEFT JOIN fi ON fi.sku = s.sku
     LEFT JOIN ti ON ti.sku = s.sku
+    LEFT JOIN warehouse_bins wb ON wb.barcode = s.barcode
     WHERE COALESCE(fi.av,0) > 0 OR COALESCE(ti.av,0) > 0
     ORDER BY suggested_qty DESC, from_available DESC
     """
@@ -7891,6 +7930,7 @@ def analytics_replenish_by_item(
     # Item-centric allocation: pick one style (all its sizes/colours) or one
     # sku, then list the retail stores that are understocked (current store SOH
     # below ``low_threshold``) while the warehouse still has units to send.
+    _warehouse_bins_refresh()
     val = _replen_clean_text(value, 120)
     if not val:
         return {"mode": mode, "value": "", "warehouse_soh": 0, "rows": []}
@@ -7943,7 +7983,8 @@ def analytics_replenish_by_item(
             COALESCE(sold.sku, ss.sku) AS sku,
             COALESCE(sold.units_sold, 0) AS units_sold,
             sold.product_name, sold.country, sold.last_sale,
-            COALESCE(ss.soh_store, 0) AS soh_store, COALESCE(ss.bin, '') AS bin,
+            COALESCE(ss.soh_store, 0) AS soh_store,
+            COALESCE(NULLIF(wb.bin, ''), ss.bin, '') AS bin,
             COALESCE(w.soh_wh, 0) AS soh_wh,
             COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode,
             p.product_name AS pname
@@ -7952,6 +7993,7 @@ def analytics_replenish_by_item(
           ON ss.pos_location_name = sold.pos_location_name AND ss.sku = sold.sku
         LEFT JOIN wh_soh w ON w.sku = COALESCE(sold.sku, ss.sku)
         LEFT JOIN all_products_clean p ON p.sku = COALESCE(sold.sku, ss.sku)
+        LEFT JOIN warehouse_bins wb ON wb.barcode = p.barcode
         WHERE COALESCE(ss.soh_store, 0) < """ + str(thr) + """
           AND COALESCE(w.soh_wh, 0) > 0
     """)
@@ -8017,6 +8059,7 @@ def analytics_replenish_gaps(
     # Store-centric gap finder: items a store SOLD in the window but barely
     # stocks now (store SOH below ``low_threshold``) while the warehouse has
     # units to send — i.e. proven local demand the store can't currently serve.
+    _warehouse_bins_refresh()
     st = _replen_clean_text(store, 120)
     if not st:
         return {"store": "", "rows": []}
@@ -8059,7 +8102,8 @@ def analytics_replenish_gaps(
                 GROUP BY i.sku
             )
             SELECT sold.pos_location, sold.sku, sold.product_name, sold.units_sold, sold.last_sale,
-                COALESCE(ss.soh, 0) AS soh_store, COALESCE(ss.bin, '') AS bin,
+                COALESCE(ss.soh, 0) AS soh_store,
+                COALESCE(NULLIF(wb.bin, ''), ss.bin, '') AS bin,
                 COALESCE(w.soh_wh, 0) AS soh_wh,
                 COALESCE(p.style_name, '') AS style_name,
                 COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode
@@ -8067,6 +8111,7 @@ def analytics_replenish_gaps(
             LEFT JOIN store_soh ss ON ss.pos_location_name = sold.pos_location AND ss.sku = sold.sku
             LEFT JOIN wh_soh w ON w.sku = sold.sku
             LEFT JOIN all_products_clean p ON p.sku = sold.sku
+            LEFT JOIN warehouse_bins wb ON wb.barcode = p.barcode
             WHERE COALESCE(ss.soh, 0) < """ + str(thr) + """ AND COALESCE(w.soh_wh, 0) > 0
             ORDER BY sold.units_sold DESC
             LIMIT """ + str(int(limit)))
@@ -8100,7 +8145,8 @@ def analytics_replenish_gaps(
                 GROUP BY i.sku
             )
             SELECT sold.sku, sold.product_name, sold.units_sold, sold.last_sale,
-                COALESCE(ss.soh, 0) AS soh_store, COALESCE(ss.bin, '') AS bin,
+                COALESCE(ss.soh, 0) AS soh_store,
+                COALESCE(NULLIF(wb.bin, ''), ss.bin, '') AS bin,
                 COALESCE(w.soh_wh, 0) AS soh_wh,
                 COALESCE(p.style_name, '') AS style_name,
                 COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode
@@ -8108,6 +8154,7 @@ def analytics_replenish_gaps(
             LEFT JOIN store_soh ss ON ss.sku = sold.sku
             LEFT JOIN wh_soh w ON w.sku = sold.sku
             LEFT JOIN all_products_clean p ON p.sku = sold.sku
+            LEFT JOIN warehouse_bins wb ON wb.barcode = p.barcode
             WHERE COALESCE(ss.soh, 0) < """ + str(thr) + """ AND COALESCE(w.soh_wh, 0) > 0
             ORDER BY sold.units_sold DESC
             LIMIT """ + str(int(limit)))
@@ -8236,6 +8283,7 @@ def analytics_replenishment_report(
     if not date_from or not date_to:
         date_to = str(date.today())
         date_from = str(date.today() - timedelta(days=30))
+    _warehouse_bins_refresh()
     rows = run_query("""
         WITH sold AS (
             SELECT s.pos_location_name, s.variant_sku,
@@ -8273,12 +8321,14 @@ def analytics_replenishment_report(
         SELECT sold.pos_location_name AS pos_location, sold.country,
             sold.product_name, sold.variant_sku AS sku, sold.units_sold, sold.last_sale,
             p.size AS size, p.barcode,
-            COALESCE(ss.soh_store, 0) AS soh_store, COALESCE(ss.bin, '') AS bin,
+            COALESCE(ss.soh_store, 0) AS soh_store,
+            COALESCE(NULLIF(wb.bin, ''), ss.bin, '') AS bin,
             COALESCE(w.soh_wh, 0) AS soh_wh
         FROM sold
         LEFT JOIN store_soh ss ON ss.pos_location_name = sold.pos_location_name AND ss.sku = sold.variant_sku
         LEFT JOIN wh_soh w ON w.sku = sold.variant_sku
         LEFT JOIN all_products_clean p ON p.sku = sold.variant_sku
+        LEFT JOIN warehouse_bins wb ON wb.barcode = p.barcode
         WHERE COALESCE(ss.soh_store, 0) < sold.units_sold AND COALESCE(w.soh_wh, 0) > 0
         ORDER BY (sold.units_sold - COALESCE(ss.soh_store, 0)) DESC
         LIMIT """ + str(int(limit)))
@@ -16853,6 +16903,25 @@ crm_clienteling.register_clienteling_routes(app)
 # Sources data from this project's live vivo_attendance Postgres table.
 import hr_attendance
 hr_attendance.register_hr_routes(app)
+
+# Warehouse bins (barcode -> bin) mirrored from a daily-updated Google Sheet; the
+# Replenishment + IBT endpoints LEFT JOIN this by barcode. Idempotent table is
+# created on boot (safe on the separate prod DB); refresh is lazy + best-effort so
+# an unset sheet id / missing connector simply leaves the prior bins in place.
+import warehouse_bins
+
+
+@app.on_event("startup")
+def _init_warehouse_bins():
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+        try:
+            warehouse_bins.ensure_table(conn)
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        log.error("warehouse_bins table init failed: %s", e)
 
 from fastapi.staticfiles import StaticFiles
 import pathlib
