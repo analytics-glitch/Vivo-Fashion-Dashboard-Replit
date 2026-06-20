@@ -12,6 +12,7 @@ import BranchDeepDive from "./pages/BranchDeepDive";
 import Trends from "./pages/Trends";
 import Alerts from "./pages/Alerts";
 import EmployeeProfile from "./pages/EmployeeProfile";
+import EmployeeDirectory from "./pages/EmployeeDirectory";
 import Training from "./pages/Training";
 import MonthlyReport from "./pages/MonthlyReport";
 import LeaveAndNotes from "./pages/LeaveAndNotes";
@@ -35,6 +36,7 @@ function App() {
             <Route path="/trends" element={<ProtectedRoute><Trends /></ProtectedRoute>} />
             <Route path="/alerts" element={<ProtectedRoute><Alerts /></ProtectedRoute>} />
             <Route path="/employees" element={<ProtectedRoute><EmployeeProfile /></ProtectedRoute>} />
+            <Route path="/directory" element={<ProtectedRoute><EmployeeDirectory /></ProtectedRoute>} />
             <Route path="/training" element={<ProtectedRoute><Training /></ProtectedRoute>} />
             <Route path="/reports" element={<ProtectedRoute><MonthlyReport /></ProtectedRoute>} />
             <Route path="/days-worked" element={<ProtectedRoute><DaysWorked /></ProtectedRoute>} />

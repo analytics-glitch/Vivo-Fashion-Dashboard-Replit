@@ -28,6 +28,9 @@ would WRONGLY add a second +3h (showing 09:41 as 12:41). App-written timestamps
 Africa/Nairobi (TZ) for display. So the frontend's TIME_OFFSET_HOURS is 0.
 """
 
+import difflib
+import json
+import re
 from datetime import date, timedelta
 
 from fastapi import Request
@@ -214,6 +217,183 @@ def _ensure_hr_tables():
             created_by_name TEXT,
             created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
         )""")
+    # Authoritative employee roster imported from the company Google Sheet
+    # ("Replit Data" — one tab per entity). Only Vivo Kenya carries
+    # department/team; Rwanda/Uganda carry job_title; Shop Zetu name only.
+    _ex("""
+        CREATE TABLE IF NOT EXISTS hr_employees (
+            id              SERIAL PRIMARY KEY,
+            employee_id     TEXT,           -- PII / Staff No from the sheet
+            entity          TEXT NOT NULL,  -- tab: Vivo Kenya | Shop Zetu | Vivo Rwanda | Vivo Uganda
+            country         TEXT,           -- Kenya | Rwanda | Uganda
+            name            TEXT NOT NULL,
+            name_norm       TEXT,           -- normalized for name matching
+            department      TEXT,
+            team            TEXT,
+            job_title       TEXT,
+            source          TEXT NOT NULL DEFAULT 'google_sheet',
+            updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (entity, employee_id)
+        )""")
+    _ex("CREATE INDEX IF NOT EXISTS ix_hr_employees_name_norm ON hr_employees(name_norm)")
+    # Resolved link from a (messy) distinct vivo_attendance.employee_name to a
+    # roster row. employee_id NULL = could not be matched. match_method:
+    # exact | token | fuzzy | ai | none.
+    _ex("""
+        CREATE TABLE IF NOT EXISTS hr_employee_match (
+            employee_name   TEXT PRIMARY KEY,  -- raw distinct attendance name
+            employee_id     INTEGER REFERENCES hr_employees(id) ON DELETE SET NULL,
+            name_norm       TEXT,
+            match_method    TEXT NOT NULL DEFAULT 'none',
+            confidence      REAL NOT NULL DEFAULT 0,
+            matched_name    TEXT,              -- roster name it resolved to (debug/display)
+            updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    _ex("CREATE INDEX IF NOT EXISTS ix_hr_employee_match_eid ON hr_employee_match(employee_id)")
+
+
+# --------------------------------------------------------------------------- #
+# Roster name matching (attendance employee_name -> hr_employees)              #
+# --------------------------------------------------------------------------- #
+# Obvious non-employee tokens that biometric devices leave behind.
+_EMP_JUNK = {"unknown employee", "unknown", "test", "admin", "user", "n a", "na"}
+
+
+def _emp_norm(name):
+    """Normalize a name for matching: lowercase, strip punctuation, collapse
+    whitespace. (Does not insert spaces, so 'MaryMACHARIA' stays one token —
+    that gap is what the fuzzy/AI pass is for.)"""
+    s = (name or "").lower()
+    s = re.sub(r"[^a-z0-9 ]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _emp_tokkey(norm):
+    """Order-independent key so 'john otieno' == 'otieno john'."""
+    return " ".join(sorted(norm.split(" ")))
+
+
+def _emp_is_real(norm):
+    """Reject junk attendance identities (blanks, pure numbers, 'Unknown
+    Employee', single short fragments) so we don't waste AI calls on them."""
+    if not norm or len(norm) < 3 or norm in _EMP_JUNK or norm.isdigit():
+        return False
+    alpha_toks = [t for t in norm.split(" ") if any(c.isalpha() for c in t)]
+    return bool(alpha_toks)
+
+
+def _hr_ai_match(queue, batch=15):
+    """Resolve ambiguous (attendance_name, candidate roster rows) pairs with the
+    shared LLM. Returns a list of (employee_name, employee_id|None, method,
+    confidence, matched_name). Never raises — an AI failure degrades to 'none'."""
+    out = []
+    for i in range(0, len(queue), batch):
+        chunk = queue[i:i + batch]
+        items = [{"i": idx, "attendance_name": name,
+                  "candidates": [c["name"] for c in cands]}
+                 for idx, (name, _nn, cands) in enumerate(chunk)]
+        sys_prompt = (
+            "You match messy biometric attendance names to an official employee "
+            "roster. Names may have typos, missing or extra spaces, swapped or "
+            "dropped parts, or alternate spellings (e.g. 'William Manza' is the "
+            "same person as 'William Mwanza'). For each item pick the candidate "
+            "that is clearly the SAME person, or null if none clearly matches. "
+            "Reply with ONLY JSON: "
+            '{"matches":[{"i":0,"match":"<exact candidate text or null>",'
+            '"confidence":0.0}]}'
+        )
+        mp = {}
+        try:
+            content = A._chat_llm(
+                [{"role": "system", "content": sys_prompt},
+                 {"role": "user", "content": json.dumps({"items": items})}],
+                max_tokens=1500,
+            )
+            data = A._chat_extract_json(content) or {}
+            mp = {m.get("i"): m for m in (data.get("matches") or [])
+                  if isinstance(m, dict)}
+        except Exception as e:
+            A.log.warning("HR rematch: AI batch failed: %s", e)
+        for idx, (name, _nn, cands) in enumerate(chunk):
+            m = mp.get(idx) or {}
+            chosen = m.get("match")
+            try:
+                conf = float(m.get("confidence") or 0)
+            except Exception:
+                conf = 0.0
+            row = None
+            if chosen:
+                cn = _emp_norm(str(chosen))
+                for c in cands:
+                    if c["name"] == chosen or _emp_norm(c["name"]) == cn:
+                        row = c
+                        break
+            if row is not None and conf >= 0.6:
+                out.append((name, row["id"], "ai", round(conf, 3), row["name"]))
+            else:
+                out.append((name, None, "none", round(conf, 3), None))
+    return out
+
+
+def _hr_rematch(use_ai=True):
+    """Rebuild hr_employee_match for every distinct attendance employee_name.
+    Deterministic passes first (exact norm, order-independent tokens, high-ratio
+    fuzzy), then the LLM for the remaining ambiguous-but-plausible names."""
+    roster = _rows("SELECT id, name, name_norm FROM hr_employees")
+    norm_map, tok_map, norm_list = {}, {}, []
+    for r in roster:
+        nn = r["name_norm"] or _emp_norm(r["name"])
+        norm_map.setdefault(nn, r)
+        tok_map.setdefault(_emp_tokkey(nn), r)
+        norm_list.append(nn)
+
+    att = _rows("SELECT DISTINCT employee_name FROM vivo_attendance "
+                "WHERE employee_name IS NOT NULL AND employee_name <> ''")
+    results, ai_queue = [], []
+    for a in att:
+        name = a["employee_name"]
+        nn = _emp_norm(name)
+        if not _emp_is_real(nn):
+            results.append((name, None, "none", 0.0, None))
+            continue
+        if nn in norm_map:
+            r = norm_map[nn]
+            results.append((name, r["id"], "exact", 1.0, r["name"]))
+            continue
+        tk = _emp_tokkey(nn)
+        if tk in tok_map:
+            r = tok_map[tk]
+            results.append((name, r["id"], "token", 0.97, r["name"]))
+            continue
+        cands = difflib.get_close_matches(nn, norm_list, n=5, cutoff=0.6)
+        if not cands:
+            results.append((name, None, "none", 0.0, None))
+            continue
+        best = cands[0]
+        ratio = difflib.SequenceMatcher(None, nn, best).ratio()
+        if ratio >= 0.92:
+            r = norm_map[best]
+            results.append((name, r["id"], "fuzzy", round(ratio, 3), r["name"]))
+        elif use_ai:
+            ai_queue.append((name, nn, [norm_map[c] for c in cands]))
+        elif ratio >= 0.84:
+            r = norm_map[best]
+            results.append((name, r["id"], "fuzzy", round(ratio, 3), r["name"]))
+        else:
+            results.append((name, None, "none", round(ratio, 3), None))
+
+    if use_ai and ai_queue:
+        results.extend(_hr_ai_match(ai_queue))
+
+    _ex("DELETE FROM hr_employee_match")
+    for (name, eid, method, conf, mname) in results:
+        _ex("""INSERT INTO hr_employee_match
+                 (employee_name, employee_id, name_norm, match_method,
+                  confidence, matched_name)
+               VALUES (%(n)s,%(e)s,%(nn)s,%(m)s,%(c)s,%(mn)s)""",
+            {"n": name, "e": eid, "nn": _emp_norm(name),
+             "m": method, "c": conf, "mn": mname})
+    return results
 
 
 # --------------------------------------------------------------------------- #
@@ -480,8 +660,16 @@ def register_hr_routes(app):
                    COUNT(DISTINCT b.attendance_date) AS days_present,
                    MAX(o.open_days) AS total_days,
                    AVG(b.hours_worked) FILTER (WHERE COALESCE(b.is_complete,false)
-                                               AND b.hours_worked IS NOT NULL) AS avg_hours
+                                               AND b.hours_worked IS NOT NULL) AS avg_hours,
+                   MAX(e.name)        AS roster_name,
+                   MAX(e.department)  AS department,
+                   MAX(e.team)        AS team,
+                   MAX(e.job_title)   AS job_title,
+                   MAX(e.entity)      AS entity,
+                   MAX(e.employee_id) AS staff_no
             FROM base b JOIN opendays o ON o.branch_name=b.branch_name
+            LEFT JOIN hr_employee_match m ON m.employee_name = b.employee_name
+            LEFT JOIN hr_employees e ON e.id = m.employee_id
             GROUP BY b.employee_name, b.user_id, b.branch_name
             ORDER BY b.employee_name
         """, params)
@@ -500,6 +688,12 @@ def register_hr_routes(app):
                 "days_absent": absent,
                 "total_days": total,
                 "avg_hours": round(float(r["avg_hours"]), 2) if r["avg_hours"] is not None else 0,
+                "roster_name": r["roster_name"],
+                "department": r["department"],
+                "team": r["team"],
+                "job_title": r["job_title"],
+                "entity": r["entity"],
+                "staff_no": r["staff_no"],
             })
         return out
 
@@ -575,6 +769,104 @@ def register_hr_routes(app):
                 "avg_hours": round(float(r["avg_hours"]), 2) if r["avg_hours"] is not None else 0,
             })
         return out
+
+    # ---------------- Employee roster (from the Google Sheet) ------------- #
+
+    @app.get("/api/hr/employees")
+    def hr_employees(request: Request):
+        qp = request.query_params
+        entity = (qp.get("entity") or "").strip()
+        dept = (qp.get("department") or "").strip()
+        q = (qp.get("q") or "").strip()
+        matched = (qp.get("matched") or "").strip().lower()  # "yes" | "no" | ""
+        where, params = [], {}
+        if entity and entity.lower() != "all":
+            where.append("e.entity = %(entity)s")
+            params["entity"] = entity
+        if dept and dept.lower() != "all":
+            if dept.lower() in ("unassigned", "—", "-"):
+                where.append("COALESCE(NULLIF(e.department,''), NULL) IS NULL")
+            else:
+                where.append("e.department = %(dept)s")
+                params["dept"] = dept
+        if q:
+            where.append("(e.name ILIKE %(q)s OR COALESCE(e.employee_id,'') ILIKE %(q)s)")
+            params["q"] = f"%{q}%"
+        having = ""
+        if matched == "yes":
+            having = "HAVING COUNT(m.employee_name) > 0"
+        elif matched == "no":
+            having = "HAVING COUNT(m.employee_name) = 0"
+        wsql = (" WHERE " + " AND ".join(where)) if where else ""
+        rows = _rows(f"""
+            SELECT e.id, e.employee_id, e.entity, e.country, e.name,
+                   e.department, e.team, e.job_title,
+                   COUNT(DISTINCT m.employee_name) AS attendance_aliases
+            FROM hr_employees e
+            LEFT JOIN hr_employee_match m
+                   ON m.employee_id = e.id AND m.employee_id IS NOT NULL
+            {wsql}
+            GROUP BY e.id
+            {having}
+            ORDER BY e.entity, e.name
+        """, params)
+        for r in rows:
+            r["attendance_aliases"] = int(r["attendance_aliases"] or 0)
+            r["linked"] = r["attendance_aliases"] > 0
+        return rows
+
+    @app.get("/api/hr/employees/summary")
+    def hr_employees_summary(request: Request):
+        def _n(sql):
+            r = _rows(sql)
+            return int((r[0]["n"] if r else 0) or 0)
+
+        total = _n("SELECT COUNT(*) AS n FROM hr_employees")
+        linked = _n("SELECT COUNT(DISTINCT employee_id) AS n FROM "
+                    "hr_employee_match WHERE employee_id IS NOT NULL")
+        matched_aliases = _n("SELECT COUNT(*) AS n FROM hr_employee_match "
+                             "WHERE employee_id IS NOT NULL")
+        unmatched_aliases = _n("SELECT COUNT(*) AS n FROM hr_employee_match "
+                               "WHERE employee_id IS NULL")
+        by_entity = _rows("SELECT entity, COUNT(*) AS n FROM hr_employees "
+                          "GROUP BY entity ORDER BY n DESC")
+        by_dept = _rows("SELECT COALESCE(NULLIF(department,''),'Unassigned') AS k, "
+                        "COUNT(*) AS n FROM hr_employees GROUP BY 1 ORDER BY n DESC")
+        by_team = _rows("SELECT COALESCE(NULLIF(team,''),'Unassigned') AS k, "
+                        "COUNT(*) AS n FROM hr_employees GROUP BY 1 ORDER BY n DESC")
+        by_method = _rows("SELECT match_method AS k, COUNT(*) AS n FROM "
+                          "hr_employee_match GROUP BY 1 ORDER BY n DESC")
+        return {
+            "total_employees": total,
+            "linked_employees": linked,
+            "matched_aliases": matched_aliases,
+            "unmatched_aliases": unmatched_aliases,
+            "by_entity": [{"entity": r["entity"], "count": int(r["n"])} for r in by_entity],
+            "by_department": [{"department": r["k"], "count": int(r["n"])} for r in by_dept],
+            "by_team": [{"team": r["k"], "count": int(r["n"])} for r in by_team],
+            "by_match_method": [{"method": r["k"], "count": int(r["n"])} for r in by_method],
+        }
+
+    @app.post("/api/hr/employees/rematch")
+    def hr_employees_rematch(request: Request):
+        _, _, role = _actor(request)
+        if role not in ("admin", "exec"):
+            return JSONResponse({"detail": "forbidden"}, status_code=403)
+        use_ai = (request.query_params.get("ai") or "1") != "0"
+        try:
+            results = _hr_rematch(use_ai=use_ai)
+        except Exception as e:
+            A.log.error("HR rematch failed: %s", e)
+            return JSONResponse({"detail": "rematch_failed", "error": str(e)},
+                                status_code=500)
+        matched = sum(1 for r in results if r[1] is not None)
+        methods = {}
+        for r in results:
+            methods[r[2]] = methods.get(r[2], 0) + 1
+        A._crm_audit("hr_employee_match", 0, "rematch",
+                     f"ai={use_ai} matched={matched}/{len(results)}", request)
+        return {"processed": len(results), "matched": matched,
+                "unmatched": len(results) - matched, "by_method": methods}
 
     @app.get("/api/hr/trends")
     def hr_trends(request: Request):
