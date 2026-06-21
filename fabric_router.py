@@ -572,6 +572,121 @@ def category_stock_consumption(
             "categories": out,
         }
 
+# ── Fabric mix (consumption share vs stock share) ───────────
+@fabric_router.get("/api/fabric/mix")
+def fabric_mix(
+    group_by: str = Query(default="category"),
+    days: int = Query(default=90),
+    location: str = Query(default="RMAT/Stock"),
+):
+    """The fabric equivalent of the BI app's Stock Mix: compare each fabric
+    category's (or sub-category's) share of CONSUMPTION against its share of
+    AVAILABLE stock, and flag shortages/overstock.
+
+    Available stock is location-scoped (default RMAT/Stock); net consumption is
+    warehouse-wide over the trailing `days` window and ALWAYS reads through the
+    effective-moves view so the Jan–Apr 2026 Odoo correction applies. Metres are
+    derived per fabric via its kg-per-metre; kg with no kg-per-metre cannot be
+    converted, so each group carries the unconvertible kg (cons/avail) and a
+    `metres_incomplete` flag instead of silently showing 0. Derived columns are
+    returned in metres (the spreadsheet's primary unit); the raw kg + metres
+    figures + totals let the client re-derive everything for the Kg toggle."""
+    group_by = "subcategory" if str(group_by).lower().startswith("sub") else "category"
+    days = max(1, min(int(days or 90), 730))
+    months = days / DAYS_PER_MONTH
+    dimcol = "fabric_subcategory" if group_by == "subcategory" else "fabric_category"
+    with _get_conn() as conn:
+        _ensure_fabric_sheet(conn)
+        loc_sql, loc_params = _loc_filter(location)
+        stock = q(conn, f"""
+            SELECT COALESCE(NULLIF(p.{dimcol},''),'Unknown') as grp,
+                   ROUND(SUM(i.quantity)::numeric,1) as available_kg,
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,1) as available_metres,
+                   ROUND(SUM(CASE WHEN COALESCE(p.kg_per_mtr,0)<=0 THEN i.quantity ELSE 0 END)::numeric,1) as available_kg_nometre,
+                   ROUND(SUM(i.total_value)::numeric,0) as tied_up_kes
+            FROM raw_fabric_inventory i
+            JOIN raw_fabric_products p ON p.id = i.product_id
+            WHERE i.quantity > 0 {loc_sql}
+            GROUP BY 1
+        """, loc_params)
+        net = _net_kg('m')
+        cons = q(conn, f"""
+            SELECT COALESCE(NULLIF(p.{dimcol},''),'Unknown') as grp,
+                   ROUND(SUM({net})::numeric,1) as consumption_kg,
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN ({net})/p.kg_per_mtr ELSE 0 END)::numeric,1) as consumption_metres,
+                   ROUND(SUM(CASE WHEN COALESCE(p.kg_per_mtr,0)<=0 THEN ({net}) ELSE 0 END)::numeric,1) as consumption_kg_nometre
+            FROM {EFFECTIVE_MOVES} m
+            LEFT JOIN raw_fabric_products p ON p.id = m.product_id
+            WHERE {_net_cons_where('m')}
+              AND m.date >= NOW() - (%s || ' days')::interval
+            GROUP BY 1
+        """, (days,))
+
+        groups = {}
+        def g(name):
+            return groups.setdefault(name, {
+                "group": name, "consumption_kg": 0.0, "consumption_metres": 0.0,
+                "available_kg": 0.0, "available_metres": 0.0, "tied_up_kes": 0.0,
+                "_cons_kg_nometre": 0.0, "_avail_kg_nometre": 0.0})
+        for r in cons:
+            x = g(r["grp"])
+            x["consumption_kg"] += float(r["consumption_kg"] or 0)
+            x["consumption_metres"] += float(r["consumption_metres"] or 0)
+            x["_cons_kg_nometre"] += float(r["consumption_kg_nometre"] or 0)
+        for r in stock:
+            x = g(r["grp"])
+            x["available_kg"] += float(r["available_kg"] or 0)
+            x["available_metres"] += float(r["available_metres"] or 0)
+            x["tied_up_kes"] += float(r["tied_up_kes"] or 0)
+            x["_avail_kg_nometre"] += float(r["available_kg_nometre"] or 0)
+
+        tot_cons_kg = sum(x["consumption_kg"] for x in groups.values())
+        tot_cons_m = sum(x["consumption_metres"] for x in groups.values())
+        tot_avail_kg = sum(x["available_kg"] for x in groups.values())
+        tot_avail_m = sum(x["available_metres"] for x in groups.values())
+        tot_kes = sum(x["tied_up_kes"] for x in groups.values())
+
+        out = []
+        for x in groups.values():
+            c = x["consumption_metres"]
+            a = x["available_metres"]
+            pct_c = (c / tot_cons_m * 100) if tot_cons_m > 0 else 0.0
+            pct_a = (a / tot_avail_m * 100) if tot_avail_m > 0 else 0.0
+            variance = pct_c - pct_a
+            shortfall = a - c
+            covers = (a / (c / months)) if c > 0 else None
+            status = "Shortage" if (shortfall < 0 or (covers is not None and covers < 1)) else "OK"
+            metres_incomplete = (x["_cons_kg_nometre"] > 0.05 or x["_avail_kg_nometre"] > 0.05)
+            out.append({
+                "group": x["group"],
+                "consumption_kg": round(x["consumption_kg"], 1),
+                "consumption_metres": round(c, 1),
+                "available_kg": round(x["available_kg"], 1),
+                "available_metres": round(a, 1),
+                "tied_up_kes": round(x["tied_up_kes"]),
+                "pct_consumption": round(pct_c, 1),
+                "pct_available": round(pct_a, 1),
+                "variance_pp": round(variance, 1),
+                "shortfall_metres": round(shortfall, 1),
+                "monthly_covers": round(covers, 2) if covers is not None else None,
+                "status": status,
+                "metres_incomplete": metres_incomplete,
+                "cons_kg_nometre": round(x["_cons_kg_nometre"], 1),
+                "avail_kg_nometre": round(x["_avail_kg_nometre"], 1),
+            })
+        out.sort(key=lambda r: r["consumption_metres"], reverse=True)
+        return {
+            "group_by": group_by,
+            "days": days,
+            "months": round(months, 2),
+            "total_consumption_kg": round(tot_cons_kg, 1),
+            "total_consumption_metres": round(tot_cons_m, 1),
+            "total_available_kg": round(tot_avail_kg, 1),
+            "total_available_metres": round(tot_avail_m, 1),
+            "total_tied_up_kes": round(tot_kes),
+            "rows": out,
+        }
+
 # ── Dead stock ──────────────────────────────────────────────
 @fabric_router.get("/api/fabric/dead-stock")
 def dead_stock():
