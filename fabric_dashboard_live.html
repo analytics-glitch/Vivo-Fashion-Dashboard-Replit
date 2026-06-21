@@ -472,6 +472,11 @@ const fmt=n=>n==null?'—':Number(n).toLocaleString(undefined,{maximumFractionDi
 const fmt1=n=>n==null?'—':Number(n).toLocaleString(undefined,{maximumFractionDigits:1});
 const fmtKES=n=>{if(n==null)return'—';const a=Math.abs(n);if(a>=1e6)return'KES '+(n/1e6).toFixed(1)+'M';if(a>=1e3)return'KES '+(n/1e3).toFixed(0)+'K';return'KES '+fmt(n);};
 const fmtKg=n=>{if(n==null)return'—';const a=Math.abs(n);if(a>=1e6)return(n/1e6).toFixed(1)+'M kg';if(a>=1e3)return(n/1e3).toFixed(1)+'k kg';return fmt1(n)+' kg';};
+// Current calendar month in Africa/Nairobi (UTC+3), as "YYYY-MM".
+const _curYM=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Africa/Nairobi'}).slice(0,7);
+// Short month label (e.g. "Jun 26"); appends " — MTD" when the period is the
+// still-in-progress current month so partial months are clearly flagged.
+const monthLabel=p=>{const base=new Date(p).toLocaleDateString(undefined,{month:'short',year:'2-digit'});return String(p).slice(0,7)===_curYM()?base+' — MTD':base;};
 const loc=()=>document.getElementById('location-filter').value||'RMAT/Stock';
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const PAL=['#1a5c38','#d97706','#2563eb','#9333ea','#dc2626','#0891b2','#65a30d','#6b7280'];
@@ -866,7 +871,7 @@ async function loadFlow(){
     const data=await apiFetch('/api/fabric/movement-flow?months=6');
     const max=Math.max(...data.map(r=>Math.max(r.in_kg||0,r.out_kg||0)),1);
     document.getElementById('flow-bars').innerHTML=data.length?data.map(r=>{
-      const m=new Date(r.period).toLocaleDateString(undefined,{month:'short',year:'2-digit'});
+      const m=monthLabel(r.period);
       return `<div style="margin-bottom:14px;">
        <div class="muted" style="margin-bottom:5px;font-weight:600;color:var(--text-sub);">${m}</div>
        <div class="bar-row" style="margin-bottom:6px;"><span class="bar-label" style="width:60px;"><span class="dot" style="background:#1a5c38"></span>In</span>
@@ -902,7 +907,7 @@ async function loadConsTrend(){
     const data=await apiFetch('/api/fabric/consumption?'+params);
     const dateFmt=g==='day'?{month:'short',day:'numeric'}:g==='week'?{month:'short',day:'numeric'}:{month:'short',year:'2-digit'};
     const useKg=UNIT==='kg';
-    const rows=data.map(r=>({label:new Date(r.period).toLocaleDateString(undefined,dateFmt),v:useKg?r.qty_kg:(r.qty_metres||0),_qty:fmtUnit(useKg?r.qty_kg:r.qty_metres),f:r.fabrics_used}));
+    const rows=data.map(r=>({label:g==='month'?monthLabel(r.period):new Date(r.period).toLocaleDateString(undefined,dateFmt),v:useKg?r.qty_kg:(r.qty_metres||0),_qty:fmtUnit(useKg?r.qty_kg:r.qty_metres),f:r.fabrics_used}));
     bars('consumption-bars',rows,'label','v',r=>fmt(r.f)+' types',false);
     const totKg=data.reduce((s,r)=>s+(r.qty_kg||0),0);
     const totM=data.reduce((s,r)=>s+(r.qty_metres||0),0);
@@ -924,7 +929,7 @@ async function loadPOPerf(){
      <div class="kpi"><span class="eyebrow">Fill rate</span><p class="kpi-value">${k.fill_rate!=null?k.fill_rate+'%':'—'}</p><p class="kpi-sub">received &divide; ordered</p></div>
      <div class="kpi"><span class="eyebrow">Avg lead time</span><p class="kpi-value">${k.avg_lead_days!=null?fmt(k.avg_lead_days):'—'}</p><p class="kpi-sub">days order &rarr; planned</p></div>
      <div class="kpi"><span class="eyebrow">Overdue open</span><p class="kpi-value ${k.overdue_open>0?'danger':''}">${fmt(k.overdue_open)}</p><p class="kpi-sub">past planned date</p></div>`;
-    const rows=(d.by_month||[]).map(r=>({label:new Date(r.period).toLocaleDateString(undefined,{month:'short',year:'2-digit'}),v:r.value_kes,_qty:fmtKES(r.value_kes),pos:r.pos}));
+    const rows=(d.by_month||[]).map(r=>({label:monthLabel(r.period),v:r.value_kes,_qty:fmtKES(r.value_kes),pos:r.pos}));
     bars('po-month-bars',rows,'label','v',r=>fmt(r.pos)+' PO',false);
   }catch(e){showErr('po-kpis',e);}
 }
