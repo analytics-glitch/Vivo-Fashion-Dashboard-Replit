@@ -59,9 +59,15 @@ DDL_VIEW = f"""
 CREATE OR REPLACE VIEW {EFFECTIVE_MOVES} AS
   -- 1) Raw Odoo moves, minus the OUT + production-return rows inside the override
   --    window. IN and non-production internal moves are always kept.
-  SELECT id, product_id, product_name, product_sku, qty, uom,
-         location_from, location_to, move_type, date, reference, category, _loaded_at
+  --    is_fabric: TRUE only when the move's product is classified Fabric (not Trim,
+  --    and not an unmatched/unknown product) in raw_fabric_products. Consumption &
+  --    movement reads filter on this so trims/accessories — even those measured in
+  --    kg — never inflate the fabric figures.
+  SELECT m.id, m.product_id, m.product_name, m.product_sku, m.qty, m.uom,
+         m.location_from, m.location_to, m.move_type, m.date, m.reference, m.category, m._loaded_at,
+         (fp.category = 'Fabric') AS is_fabric
   FROM raw_fabric_moves m
+  LEFT JOIN raw_fabric_products fp ON fp.id = m.product_id
   WHERE NOT (
         m.date >= DATE '{OVERRIDE_SINCE}' AND m.date < DATE '{OVERRIDE_UNTIL_EXCL}'
         AND ( m.move_type = 'OUT'
@@ -83,7 +89,8 @@ CREATE OR REPLACE VIEW {EFFECTIVE_MOVES} AS
       sc.month_start::timestamp                                         AS date,
       'sheet:consumption'                                               AS reference,
       NULL::text                                                        AS category,
-      sc._loaded_at                                                     AS _loaded_at
+      sc._loaded_at                                                     AS _loaded_at,
+      TRUE                                                              AS is_fabric
   FROM fabric_sheet_consumption sc
   LEFT JOIN raw_fabric_products pr ON BTRIM(pr.barcode) = sc.barcode
   UNION ALL
@@ -103,7 +110,8 @@ CREATE OR REPLACE VIEW {EFFECTIVE_MOVES} AS
       sr.month_start::timestamp                                        AS date,
       'sheet:return'                                                   AS reference,
       NULL::text                                                       AS category,
-      sr._loaded_at                                                    AS _loaded_at
+      sr._loaded_at                                                    AS _loaded_at,
+      TRUE                                                             AS is_fabric
   FROM fabric_sheet_returns sr
   LEFT JOIN raw_fabric_products pr ON BTRIM(pr.barcode) = sr.barcode;
 """

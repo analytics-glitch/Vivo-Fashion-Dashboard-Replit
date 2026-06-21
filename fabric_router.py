@@ -109,7 +109,8 @@ def _net_cons_where(alias="m"):
     """Rows that make up net consumption: OUT moves plus INTERNAL production returns."""
     return (f"({alias}.move_type='OUT' "
             f"OR ({alias}.move_type='INTERNAL' AND {alias}.location_from = '{PROD_LOC}')) "
-            f"AND {alias}.uom IN ('g','kg')")
+            f"AND {alias}.uom IN ('g','kg') "
+            f"AND {alias}.is_fabric")
 
 # Number of weeks in a calendar month, used to turn a monthly average run-rate
 # into a weekly run-rate for weeks-of-cover.
@@ -636,7 +637,7 @@ def movement_flow(months: int = Query(default=6)):
               ROUND(SUM(CASE WHEN move_type='OUT'      THEN (CASE WHEN uom='g' THEN qty/1000 ELSE qty END) ELSE 0 END)::numeric,1) as out_kg,
               ROUND(SUM(CASE WHEN move_type='INTERNAL' THEN (CASE WHEN uom='g' THEN qty/1000 ELSE qty END) ELSE 0 END)::numeric,1) as internal_kg
             FROM {EFFECTIVE_MOVES}
-            WHERE uom IN ('g','kg')
+            WHERE is_fabric AND uom IN ('g','kg')
               AND date >= DATE_TRUNC('month', NOW() - (%s || ' months')::interval)
             GROUP BY 1 ORDER BY 1
         """, (months,))
