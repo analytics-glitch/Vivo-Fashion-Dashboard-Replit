@@ -69,6 +69,10 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .kpi-value.amber{color:var(--amber);}
 .kpi.accent .kpi-value{color:#fff;}
 .kpi-sub{font-size:11.5px;color:var(--muted);margin-top:4px;}
+.trend{font-size:12px;font-weight:700;vertical-align:middle;margin-left:6px;white-space:nowrap;}
+.trend-up{color:var(--accent,#1a5c38);}
+.trend-down{color:var(--amber);}
+.trend-flat{color:var(--muted);font-weight:600;}
 
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1.2rem;}
 @media(max-width:900px){.grid-2{grid-template-columns:1fr;}}
@@ -593,7 +597,26 @@ function renderOverviewCached(){
 function renderKpis(d){
   const totalVal=(d.fabric_stock_value||0)+(d.dead_stock_value||0);
   const deadPct=totalVal>0?(d.dead_stock_value/totalVal*100):0;
-  const cover=d.consumption_30d_kg>0?(d.fabric_stock_kg/d.consumption_30d_kg):null;
+  // Months of cover = stock ÷ 6-month avg monthly run-rate, with the in-progress
+  // month projected to a full month (backend-computed). Trend vs the prior period.
+  const cover=(d.months_of_cover!=null)?d.months_of_cover:null;
+  const coverPrior=(d.months_of_cover_prior!=null)?d.months_of_cover_prior:null;
+  let coverTrend='';
+  if(cover!=null&&coverPrior!=null){
+    const delta=cover-coverPrior;
+    if(Math.abs(delta)>=0.05){
+      const up=delta>0;
+      // More cover = improving (green); less cover = worsening (amber).
+      const cls=up?'trend-up':'trend-down';
+      const arrow=up?'&#9650;':'&#9660;';
+      coverTrend=`<span class="trend ${cls}" title="${esc((up?'+':'')+fmt1(delta))} mo vs prior 6-mo period">${arrow} ${esc(fmt1(Math.abs(delta)))}</span>`;
+    }else{
+      coverTrend=`<span class="trend trend-flat" title="No material change vs prior 6-mo period">&#9644; flat</span>`;
+    }
+  }
+  const projMo=esc(d.projected_month_label||'');
+  const coverNote=(cover!=null)?`stock &divide; monthly use &middot; incl. projected ${projMo}`:'stock &divide; monthly use';
+  const coverTip=(cover!=null)?esc(`6-month avg run-rate; ${d.projected_month_label} projected to full month (${fmt(d.projected_month_mtd_kg)} kg so far → ${fmt(d.projected_month_kg)} kg est.)`):'';
   const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
   document.getElementById('kpi-cards').innerHTML=`
    <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value">${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub">${fmtKES(d.fabric_stock_value)} &middot; ${fmt(d.fabric_products)} fabrics</p></div>
@@ -601,7 +624,7 @@ function renderKpis(d){
    <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value">${fmt(d.fabric_stock_kg)}</p><p class="kpi-sub">kg in main warehouse</p></div>
    <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value">${fmt(d.consumption_today_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value">${fmt(d.consumption_30d_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
-   <div class="kpi"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}">${cover!=null?fmt1(cover):'—'}</p><p class="kpi-sub">stock &divide; monthly use</p></div>
+   <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}">${cover!=null?fmt1(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>
    <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger">${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">${fmt(d.dead_stock_kg)} kg &middot; ${deadPct.toFixed(0)}% of value</p></div>
    <div class="kpi"><span class="eyebrow">Outstanding POs</span><p class="kpi-value">${fmt(d.outstanding_pos)}</p><p class="kpi-sub">${fmtKES(d.outstanding_po_value)} inbound</p></div>
    <div class="kpi"><span class="eyebrow">Styles with BOM</span><p class="kpi-value">${fmt(d.styles_with_bom)}</p><p class="kpi-sub">linked to fabric</p></div>`;

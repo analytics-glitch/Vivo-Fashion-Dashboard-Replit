@@ -117,6 +117,70 @@ def _net_cons_where(alias="m"):
 WEEKS_PER_MONTH = 52.0 / 12.0
 DAYS_PER_MONTH = 30.4375
 
+def _months_of_cover(conn, fabric_stock_kg):
+    """Months-of-cover from a 6-month average monthly run-rate with the in-progress
+    month projected to its end-of-month figure, plus a prior-period value for a
+    trend indicator.
+
+    The current 6-month window is the 6 calendar months ending this month: the 5
+    completed months are taken as-is, and the current (incomplete) month is
+    projected = month-to-date + (days remaining × trailing daily rate), where the
+    trailing daily rate = total net consumption over the whole window ÷ elapsed
+    days in the window. The prior value uses the same current stock against the
+    average of the prior 6 completed months (window shifted back one month) so the
+    trend isolates the change in run-rate. Both windows divide by 6 and self-heal
+    as months roll forward. Consumption stays net-of-production-returns + fabric-only
+    via the shared net-consumption model.
+    """
+    months = q(conn, f"""
+        SELECT to_char(date_trunc('month', m.date::date),'YYYY-MM') AS mon,
+               SUM({_net_kg('m')})::numeric AS kg
+        FROM {EFFECTIVE_MOVES} m
+        WHERE {_net_cons_where('m')}
+          AND m.date::date >= (date_trunc('month', CURRENT_DATE) - INTERVAL '6 months')::date
+        GROUP BY 1
+    """)
+    mon_kg = {r['mon']: float(r['kg'] or 0) for r in months}
+    cal = q(conn, """
+        SELECT CURRENT_DATE AS today,
+               EXTRACT(DAY FROM CURRENT_DATE)::int AS dom,
+               EXTRACT(DAY FROM (date_trunc('month',CURRENT_DATE)+INTERVAL '1 month - 1 day'))::int AS dim,
+               (CURRENT_DATE - (date_trunc('month',CURRENT_DATE) - INTERVAL '5 months')::date + 1)::int AS win_days
+    """)[0]
+    today, dom, dim, win_days = cal['today'], cal['dom'], cal['dim'], cal['win_days']
+
+    def _key(delta):
+        idx = today.year * 12 + (today.month - 1) + delta
+        return f"{idx // 12:04d}-{idx % 12 + 1:02d}"
+
+    cur_key = _key(0)
+    complete = [_key(d) for d in range(-5, 0)]   # M-5 .. M-1 (completed months in window)
+    prior = [_key(d) for d in range(-6, 0)]      # M-6 .. M-1 (prior 6-month window)
+
+    mtd = mon_kg.get(cur_key, 0.0)
+    sum_complete = sum(mon_kg.get(k, 0.0) for k in complete)
+    sum_window = sum_complete + mtd              # total actual net consumption over last 6 months
+    trailing_daily = (sum_window / win_days) if win_days else 0.0
+    remaining = max(dim - dom, 0)
+    projected_month = mtd + remaining * trailing_daily
+    avg_monthly = (sum_complete + projected_month) / 6.0
+    cover_now = (fabric_stock_kg / avg_monthly) if avg_monthly > 0 else None
+
+    sum_prior = sum(mon_kg.get(k, 0.0) for k in prior)
+    avg_prior = sum_prior / 6.0
+    cover_prior = (fabric_stock_kg / avg_prior) if avg_prior > 0 else None
+
+    import calendar as _calmod
+    return {
+        "months_of_cover": round(cover_now, 2) if cover_now is not None else None,
+        "months_of_cover_prior": round(cover_prior, 2) if cover_prior is not None else None,
+        "avg_monthly_consumption_kg": round(avg_monthly, 1),
+        "projected_month_kg": round(projected_month, 1),
+        "projected_month_mtd_kg": round(mtd, 1),
+        "projected_month_label": _calmod.month_abbr[today.month],
+        "cover_window_months": 6,
+    }
+
 # ── Location filter ─────────────────────────────────────────
 # A location of "All" (or empty) means aggregate across every location.
 _ALL_LOC = {"", "all", "__all__"}
@@ -182,10 +246,16 @@ def summary(location: str = Query(default="RMAT/Stock")):
 
         # BOM styles
         bom = q(conn, "SELECT COUNT(DISTINCT finished_product_name) as styles FROM raw_fabric_boms")[0]
-        
+
+        # Months of cover — 6-month average monthly run-rate with the in-progress
+        # month projected to its end-of-month figure (fabric consumption is lumpy
+        # — production-run driven — so a single 30-day denominator swings wildly).
+        fabric_stock_kg = round(sum(r['qty_kg'] or 0 for r in rmat), 1)
+        cover = _months_of_cover(conn, fabric_stock_kg)
+
         # "All" yields one row per location — aggregate; a single location is one row.
         return {
-            "fabric_stock_kg": round(sum(r['qty_kg'] or 0 for r in rmat), 1),
+            "fabric_stock_kg": fabric_stock_kg,
             "fabric_stock_metres": round(sum(r['qty_metres'] or 0 for r in rmat)),
             "fabric_stock_value": round(sum(r['value_kes'] or 0 for r in rmat)),
             "fabric_products": sum(r['products'] or 0 for r in rmat),
@@ -196,6 +266,7 @@ def summary(location: str = Query(default="RMAT/Stock")):
             "consumption_30d_kg": cons['kg'] or 0,
             "consumption_today_kg": cons_today['kg'] or 0,
             "styles_with_bom": bom['styles'] or 0,
+            **cover,
         }
 
 # ── Stock by category ──────────────────────────────────────
