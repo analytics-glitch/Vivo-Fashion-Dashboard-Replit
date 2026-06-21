@@ -165,6 +165,8 @@ LOOKBACK_DAYS = int(os.environ.get("SYNC_LOOKBACK_DAYS", "2"))
 # though main() is invoked every 60s by the supervising loop. Persists for the
 # lifetime of the process.
 _LAST_FABRIC_EXTRACT = None
+# Same once-per-hour guard for the fabric consumption/returns sheet override loader.
+_LAST_FABRIC_SHEET_EXTRACT = None
 # Module-level guard so attendance syncs at most once per hour even though main()
 # runs every 60s. None on boot so the first cycle after a (re)start refreshes
 # immediately. Persists for the lifetime of the process.
@@ -915,6 +917,37 @@ def main():
             log.info("✅ Fabric extract complete")
         except Exception as e:
             log.error("Fabric extract error: %s", e)
+
+    # Fabric sheet override — the buying team's reconciled Jan–Apr 2026 consumption &
+    # returns (Google Sheet), which replace Odoo's inflated moves for that window via
+    # the fabric_moves_effective view. Lives in fabric_sheet_* tables (outside
+    # raw_fabric_*) so it survives the hourly Odoo TRUNCATE/rebuild. Bootstrap when
+    # the override is empty/missing (fresh prod DB), then refresh HOURLY. Runs after
+    # the Odoo fabric extract so raw_fabric_* exist when the view is (re)created.
+    global _LAST_FABRIC_SHEET_EXTRACT
+    sheet_empty = False
+    try:
+        cur.execute("SELECT to_regclass('public.fabric_sheet_consumption')")
+        if cur.fetchone()[0] is None:
+            sheet_empty = True
+        else:
+            cur.execute("SELECT COUNT(*) FROM fabric_sheet_consumption")
+            sheet_empty = (cur.fetchone()[0] == 0)
+        conn.commit()
+    except Exception as e:
+        log.error("Fabric sheet presence check error: %s", e)
+        conn.rollback()
+    sheet_due = (_LAST_FABRIC_SHEET_EXTRACT is None
+                 or (now_utc - _LAST_FABRIC_SHEET_EXTRACT).total_seconds() >= 3600)
+    if sheet_empty or sheet_due:
+        _LAST_FABRIC_SHEET_EXTRACT = now_utc
+        try:
+            import subprocess, sys
+            log.info("Running fabric sheet override extract (bootstrap=%s)...", sheet_empty)
+            subprocess.run([sys.executable, '/home/runner/workspace/extract_fabric_sheet.py'], check=True)
+            log.info("✅ Fabric sheet override extract complete")
+        except Exception as e:
+            log.error("Fabric sheet override extract error: %s", e)
 
     # Chronic-stockout snapshot — once a day around midnight EAT (21:00 UTC).
     # The API endpoint dedupes to a weekly cadence, so running it on every cycle

@@ -6,12 +6,37 @@ Run: uvicorn fabric_api:app --port 8081
 import psycopg2.extras
 from fastapi import APIRouter, Query, Request, Body, HTTPException
 
+import fabric_sheet_override as ov
+
 fabric_router = APIRouter(tags=["fabric"])
 
 # Manual buying-team reservations are stored in an app-owned table created lazily
 # (idempotent) the first time a reservation endpoint is hit. This is distinct from
 # Odoo's own `raw_fabric_inventory.reserved_qty` (ERP allocations).
 _FABRIC_TABLES_READY = False
+
+# The Jan–Apr 2026 consumption/returns sheet override (see fabric_sheet_override.py)
+# replaces Odoo's inflated moves for that window. Every consumption/returns read
+# goes through the `fabric_moves_effective` view (= ov.EFFECTIVE_MOVES) instead of
+# raw_fabric_moves; the view is created lazily here, mirroring _ensure_fabric_tables.
+EFFECTIVE_MOVES = ov.EFFECTIVE_MOVES
+_FABRIC_SHEET_READY = False
+
+def _ensure_fabric_sheet(conn):
+    """Create the override tables + the unified view (idempotent, once per process).
+    The view needs raw_fabric_moves/products to exist; if they don't yet (fresh DB),
+    create the tables now and retry the view on a later call."""
+    global _FABRIC_SHEET_READY
+    if _FABRIC_SHEET_READY:
+        return
+    with conn.cursor() as cur:
+        ov.ensure_tables(cur)
+        ready = ov.base_tables_exist(cur)
+        if ready:
+            ov.ensure_view(cur)
+    conn.commit()
+    if ready:
+        _FABRIC_SHEET_READY = True
 
 def _ensure_fabric_tables(conn):
     global _FABRIC_TABLES_READY
@@ -105,6 +130,7 @@ def _loc_filter(location, alias="i"):
 @fabric_router.get("/api/fabric/summary")
 def summary(location: str = Query(default="RMAT/Stock")):
     with _get_conn() as conn:
+        _ensure_fabric_sheet(conn)
         # Stock by location
         stock = q(conn, """
             SELECT 
@@ -140,7 +166,7 @@ def summary(location: str = Query(default="RMAT/Stock")):
         # Consumption last 30 days — net of fabric returned from production
         cons = q(conn, f"""
             SELECT ROUND(SUM({_net_kg('m')})::numeric,1) as kg
-            FROM raw_fabric_moves m
+            FROM {EFFECTIVE_MOVES} m
             WHERE {_net_cons_where('m')}
               AND m.date >= NOW() - INTERVAL '30 days'
         """)[0]
@@ -148,7 +174,7 @@ def summary(location: str = Query(default="RMAT/Stock")):
         # Consumption so far today — net of production returns (m.date is a date/ts)
         cons_today = q(conn, f"""
             SELECT ROUND(SUM({_net_kg('m')})::numeric,1) as kg
-            FROM raw_fabric_moves m
+            FROM {EFFECTIVE_MOVES} m
             WHERE {_net_cons_where('m')}
               AND m.date >= CURRENT_DATE
         """)[0]
@@ -213,6 +239,7 @@ def register(
         # The register's `resv` CTE reads fabric_reservations; ensure it exists even
         # on a fresh DB where no reservation endpoint has been hit yet.
         _ensure_fabric_tables(conn)
+        _ensure_fabric_sheet(conn)
         # Whitelist of sortable output columns (aliases in the SELECT below) so the
         # client can drive ORDER BY without any SQL-injection surface.
         ALLOWED_SORT = {
@@ -251,7 +278,7 @@ def register(
         rows = q(conn, f"""
             WITH cons30 AS (
               SELECT m.product_id, SUM({_net_kg('m')}) as consumed_30d_kg
-              FROM raw_fabric_moves m
+              FROM {EFFECTIVE_MOVES} m
               WHERE {_net_cons_where('m')}
                 AND m.date >= NOW() - INTERVAL '30 days'
               GROUP BY m.product_id
@@ -350,6 +377,7 @@ def consumption(
     group_by: str = Query(default="month"),
 ):
     with _get_conn() as conn:
+        _ensure_fabric_sheet(conn)
         kg_expr = _net_kg("m")  # net of returns: +OUT, −production returns
         mtr_expr = f"CASE WHEN p.kg_per_mtr>0 THEN ({kg_expr})/p.kg_per_mtr ELSE 0 END"
         base_where = (f"{_net_cons_where('m')} "
@@ -367,7 +395,7 @@ def consumption(
             limit = "" if group_by == "category" else "LIMIT 50"
             return q(conn, f"""
                 SELECT {dim} as period, {metrics}
-                FROM raw_fabric_moves m
+                FROM {EFFECTIVE_MOVES} m
                 LEFT JOIN raw_fabric_products p ON p.id = m.product_id
                 WHERE {base_where}
                 GROUP BY 1 ORDER BY qty_kg DESC NULLS LAST {limit}
@@ -375,7 +403,7 @@ def consumption(
         trunc = {"day": "day", "week": "week"}.get(group_by, "month")
         return q(conn, f"""
             SELECT DATE_TRUNC('{trunc}', m.date)::date as period, {metrics}
-            FROM raw_fabric_moves m
+            FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {base_where}
             GROUP BY 1 ORDER BY 1
@@ -392,6 +420,7 @@ def category_stock_consumption(
     are computed client-side from these raw kg figures + the returned totals."""
     days = max(1, min(int(days or 30), 730))
     with _get_conn() as conn:
+        _ensure_fabric_sheet(conn)
         loc_sql, loc_params = _loc_filter(location)
         stock = q(conn, f"""
             SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
@@ -406,7 +435,7 @@ def category_stock_consumption(
             SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
                    COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') as subcategory,
                    ROUND(SUM({_net_kg('m')})::numeric,1) as consumed_kg
-            FROM raw_fabric_moves m
+            FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {_net_cons_where('m')}
               AND m.date >= NOW() - (%s || ' days')::interval
@@ -561,21 +590,25 @@ def attribute_split(location: str = Query(default="RMAT/Stock")):
 @fabric_router.get("/api/fabric/top-consumed")
 def top_consumed(days: int = Query(default=90), limit: int = Query(default=20)):
     with _get_conn() as conn:
+        _ensure_fabric_sheet(conn)
         # weeks_cover uses the average monthly run-rate: total net consumption over
         # the window ÷ number of months in the window = monthly average, converted
         # to a weekly rate (÷ weeks/month), then stock ÷ weekly rate.
+        # product_id IS NOT NULL drops sheet rows whose barcode didn't match a
+        # product master — this is a per-fabric view that needs a product identity.
         return q(conn, f"""
             WITH out_moves AS (
-              SELECT product_id,
-                MAX(product_name) FILTER (WHERE move_type='OUT') as product_name,
-                SUM({_net_kg('raw_fabric_moves')}) as consumed_kg,
-                COUNT(*) FILTER (WHERE move_type='OUT') as moves,
-                MAX(date) FILTER (WHERE move_type='OUT')::date as last_out
-              FROM raw_fabric_moves
-              WHERE {_net_cons_where('raw_fabric_moves')}
-                AND date >= NOW() - (%s || ' days')::interval
-              GROUP BY product_id
-              HAVING SUM({_net_kg('raw_fabric_moves')}) > 0
+              SELECT m.product_id,
+                MAX(m.product_name) FILTER (WHERE m.move_type='OUT') as product_name,
+                SUM({_net_kg('m')}) as consumed_kg,
+                COUNT(*) FILTER (WHERE m.move_type='OUT') as moves,
+                MAX(m.date) FILTER (WHERE m.move_type='OUT')::date as last_out
+              FROM {EFFECTIVE_MOVES} m
+              WHERE {_net_cons_where('m')}
+                AND m.product_id IS NOT NULL
+                AND m.date >= NOW() - (%s || ' days')::interval
+              GROUP BY m.product_id
+              HAVING SUM({_net_kg('m')}) > 0
             ), stock AS (
               SELECT product_id, SUM(quantity) as qty_kg
               FROM raw_fabric_inventory WHERE quantity>0 GROUP BY 1
@@ -596,12 +629,13 @@ def top_consumed(days: int = Query(default=90), limit: int = Query(default=20)):
 @fabric_router.get("/api/fabric/movement-flow")
 def movement_flow(months: int = Query(default=6)):
     with _get_conn() as conn:
-        return q(conn, """
+        _ensure_fabric_sheet(conn)
+        return q(conn, f"""
             SELECT DATE_TRUNC('month', date)::date as period,
               ROUND(SUM(CASE WHEN move_type='IN'       THEN (CASE WHEN uom='g' THEN qty/1000 ELSE qty END) ELSE 0 END)::numeric,1) as in_kg,
               ROUND(SUM(CASE WHEN move_type='OUT'      THEN (CASE WHEN uom='g' THEN qty/1000 ELSE qty END) ELSE 0 END)::numeric,1) as out_kg,
               ROUND(SUM(CASE WHEN move_type='INTERNAL' THEN (CASE WHEN uom='g' THEN qty/1000 ELSE qty END) ELSE 0 END)::numeric,1) as internal_kg
-            FROM raw_fabric_moves
+            FROM {EFFECTIVE_MOVES}
             WHERE uom IN ('g','kg')
               AND date >= DATE_TRUNC('month', NOW() - (%s || ' months')::interval)
             GROUP BY 1 ORDER BY 1

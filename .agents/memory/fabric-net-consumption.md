@@ -20,8 +20,41 @@ consumption reported net of returned fabric.
 (they put OUT positive, INTERNAL-from-production negative). The return arm is
 restricted to `move_type='INTERNAL'` so a future non-INTERNAL row from the production
 location can't silently net out. Net consumption is wired into `/api/fabric/summary`,
-`/api/fabric/consumption`, and `/api/fabric/top-consumed`.
-`/api/fabric/movement-flow` intentionally still shows raw IN/OUT/INTERNAL separately.
+`/api/fabric/consumption`, and `/api/fabric/top-consumed`. `/api/fabric/movement-flow`
+shows IN/OUT/INTERNAL separately but ALSO reads the override view (its OUT + production-
+return INTERNAL bars reflect the sheet for the override window).
+
+# Sheet override replaces Odoo for Jan–Apr 2026 (do NOT read raw_fabric_moves directly)
+Odoo's `raw_fabric_moves` had badly inflated consumption/returns for early 2026 (e.g.
+~2.2M kg of fake March production returns). The buying team's reconciled Google Sheet
+is the source of truth for **OUT (consumption) and production returns** for the window
+`2026-01-01 .. 2026-04-30` ONLY. IN is ALWAYS Odoo; May 2026+ and all pre-2026 stay
+Odoo untouched.
+
+**Mechanism:** a DB view `fabric_moves_effective` = `raw_fabric_moves` MINUS in-window
+`OUT` and in-window `INTERNAL`-from-`Virtual Locations/Production`, UNION the sheet
+consumption rows (pseudo `OUT`) and sheet returns (pseudo `INTERNAL` from production).
+Every Fabric endpoint reads `EFFECTIVE_MOVES` (the view), never `raw_fabric_moves`
+directly, EXCEPT the register's `last_move` subqueries (latest physical move, must stay
+raw). Defined in `fabric_sheet_override.py` (DDL for view + the `fabric_sheet_*`
+tables); `fabric_router.py` calls `_ensure_fabric_sheet(conn)` to lazily (re)create
+them. **Why a view:** the existing `_net_kg`/`_net_cons_where` helpers and all SQL keep
+working unchanged.
+
+**Survives the hourly Odoo TRUNCATE rebuild:** the override lives in separate
+`fabric_sheet_consumption` / `fabric_sheet_returns` tables (NOT `raw_fabric_*`), and the
+view is recreated each boot. Loader `extract_fabric_sheet.py` does a full TRUNCATE+reload
+from the sheet and is hooked into `sync_incremental.py` (bootstrap-if-empty + hourly,
+running AFTER the Odoo fabric extract), so it also populates the **separate production
+DB** (prod never runs the dev rebuild — see `prod-separate-db-rebuild.md`).
+
+**Barcode→product match:** sheet rows carry a barcode joined to `raw_fabric_products.barcode`
+(UNIQUE, no fan-out) at query time via `BTRIM`. ~90% of consumption kg matches; unmatched
+rows keep `product_id=NULL` / name "Unmatched fabric (sheet)" and are STILL counted in
+aggregate totals (summary/trend/movement) but EXCLUDED from per-fabric views
+(`top-consumed` filters `product_id IS NOT NULL`).
+
+**Out of scope:** ageing / dead-stock are recency-only and intentionally NOT overridden.
 
 The summary "Consumed / month" KPI (`consumption_30d_kg` field name kept for
 compat) is the **average monthly run-rate over the whole move history**, NOT a
