@@ -132,6 +132,7 @@ def _months_of_cover(conn, fabric_stock_kg):
     as months roll forward. Consumption stays net-of-production-returns + fabric-only
     via the shared net-consumption model.
     """
+    fabric_stock_kg = float(fabric_stock_kg or 0)
     months = q(conn, f"""
         SELECT to_char(date_trunc('month', m.date::date),'YYYY-MM') AS mon,
                SUM({_net_kg('m')})::numeric AS kg
