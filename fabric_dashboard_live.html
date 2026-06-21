@@ -282,6 +282,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div class="card">
      <div class="section-head"><h3>Stock flow by month</h3><span class="muted">received (IN) vs consumed (OUT), kg</span></div>
      <div id="flow-bars"><div class="loading">Loading…</div></div>
+     <div id="flow-mtd-note" class="muted" style="margin-top:8px;font-size:.8rem;"></div>
      <div class="muted" style="margin-top:8px;font-size:.8rem;">Jan–Apr 2026 consumption (OUT) and returns are sourced from the buying team's reconciled sheet; incoming (IN) is from Odoo. All other periods are Odoo.</div>
     </div>
     <div class="grid-2">
@@ -309,6 +310,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </div>
       <div id="cons-summary" class="muted" style="margin-bottom:10px;"></div>
       <div id="consumption-bars"><div class="loading">Loading…</div></div>
+      <div id="cons-mtd-note" class="muted" style="margin-top:8px;font-size:.8rem;"></div>
      </div>
     </div>
     <div class="card" style="padding:0;">
@@ -337,6 +339,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div class="card">
      <div class="section-head"><h3>Purchase order value by month</h3><span class="muted">ordered value (KES)</span></div>
      <div id="po-month-bars"><div class="loading">Loading…</div></div>
+     <div id="po-mtd-note" class="muted" style="margin-top:8px;font-size:.8rem;"></div>
     </div>
     <div class="flex" style="margin-bottom:1.1rem;">
      <input id="po-search" placeholder="Filter supplier…" oninput="debouncedPOs()" style="width:230px;">
@@ -477,6 +480,11 @@ const _curYM=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Africa/Nairobi
 // Short month label (e.g. "Jun 26"); appends " — MTD" when the period is the
 // still-in-progress current month so partial months are clearly flagged.
 const monthLabel=p=>{const base=new Date(p).toLocaleDateString(undefined,{month:'short',year:'2-digit'});return String(p).slice(0,7)===_curYM()?base+' — MTD':base;};
+// "as of" date (Nairobi today, e.g. "21 Jun 2026") shown alongside the MTD month
+// so the team knows how far into the current month the partial figure covers.
+const _mtdAsOf=()=>new Date().toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric',timeZone:'Africa/Nairobi'});
+const _hasMTD=data=>Array.isArray(data)&&data.some(r=>String(r&&r.period||'').slice(0,7)===_curYM());
+const mtdNote=data=>_hasMTD(data)?`MTD month is partial — figures as of ${_mtdAsOf()}`:'';
 const loc=()=>document.getElementById('location-filter').value||'RMAT/Stock';
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const PAL=['#1a5c38','#d97706','#2563eb','#9333ea','#dc2626','#0891b2','#65a30d','#6b7280'];
@@ -880,7 +888,8 @@ async function loadFlow(){
         <div class="bar-track"><div class="bar-fill" style="width:${((r.out_kg||0)/max*100).toFixed(1)}%;background:#d97706"></div></div><span class="bar-qty">${fmtKg(r.out_kg)}</span><span class="bar-sub"></span></div>
       </div>`;
     }).join(''):'<p class="muted">No movement data.</p>';
-  }catch(e){showErr('flow-bars',e);}
+    document.getElementById('flow-mtd-note').textContent=mtdNote(data);
+  }catch(e){showErr('flow-bars',e);document.getElementById('flow-mtd-note').textContent='';}
 }
 async function loadMovement(){
   try{
@@ -909,12 +918,13 @@ async function loadConsTrend(){
     const useKg=UNIT==='kg';
     const rows=data.map(r=>({label:g==='month'?monthLabel(r.period):new Date(r.period).toLocaleDateString(undefined,dateFmt),v:useKg?r.qty_kg:(r.qty_metres||0),_qty:fmtUnit(useKg?r.qty_kg:r.qty_metres),f:r.fabrics_used}));
     bars('consumption-bars',rows,'label','v',r=>fmt(r.f)+' types',false);
+    document.getElementById('cons-mtd-note').textContent=g==='month'?mtdNote(data):'';
     const totKg=data.reduce((s,r)=>s+(r.qty_kg||0),0);
     const totM=data.reduce((s,r)=>s+(r.qty_metres||0),0);
     document.getElementById('cons-summary').innerHTML=data.length
       ?`Total consumed: <strong>${fmt(totM)} m</strong> &middot; <strong>${fmt1(totKg)} kg</strong> over ${data.length} ${g==='month'?'months':g==='week'?'weeks':'days'}`
       :'No consumption in this range.';
-  }catch(e){showErr('consumption-bars',e);document.getElementById('cons-summary').textContent='';}
+  }catch(e){showErr('consumption-bars',e);document.getElementById('cons-summary').textContent='';document.getElementById('cons-mtd-note').textContent='';}
 }
 
 // ── Purchase orders ──
@@ -931,7 +941,8 @@ async function loadPOPerf(){
      <div class="kpi"><span class="eyebrow">Overdue open</span><p class="kpi-value ${k.overdue_open>0?'danger':''}">${fmt(k.overdue_open)}</p><p class="kpi-sub">past planned date</p></div>`;
     const rows=(d.by_month||[]).map(r=>({label:monthLabel(r.period),v:r.value_kes,_qty:fmtKES(r.value_kes),pos:r.pos}));
     bars('po-month-bars',rows,'label','v',r=>fmt(r.pos)+' PO',false);
-  }catch(e){showErr('po-kpis',e);}
+    document.getElementById('po-mtd-note').textContent=mtdNote(d.by_month||[]);
+  }catch(e){showErr('po-kpis',e);document.getElementById('po-mtd-note').textContent='';}
 }
 let poTimer;
 function debouncedPOs(){clearTimeout(poTimer);poTimer=setTimeout(loadPOs,300);}
