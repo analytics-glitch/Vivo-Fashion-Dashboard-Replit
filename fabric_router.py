@@ -183,14 +183,23 @@ def _months_of_cover(conn, fabric_stock_kg):
     }
 
 # ── Location filter ─────────────────────────────────────────
-# A location of "All" (or empty) means aggregate across every location.
+# The business only tracks real fabric stock in two locations. "All"/empty must
+# resolve to the SET of these two (never every warehouse location); a specific
+# location filters to just that one. Any other/unknown location falls back to the
+# two-location set so excluded locations (FABRR/HQ/PROD/Samp/…) never leak in.
 _ALL_LOC = {"", "all", "__all__"}
+_FABRIC_LOCATIONS = ("RMAT/Stock", "Dead/Stock Fabric")
 
 def _loc_filter(location, alias="i"):
-    """Return (sql_fragment, params) for an optional location_name filter."""
-    if location is None or str(location).strip().lower() in _ALL_LOC:
-        return ("", [])
-    return (f" AND {alias}.location_name = %s", [location])
+    """Return (sql_fragment, params) for the location_name filter.
+
+    A recognised specific location → that location only. "All"/empty/unknown →
+    the two real fabric-stock locations (RMAT/Stock + Dead/Stock Fabric)."""
+    loc = None if location is None else str(location).strip()
+    if loc and loc.lower() not in _ALL_LOC and loc in _FABRIC_LOCATIONS:
+        return (f" AND {alias}.location_name = %s", [loc])
+    placeholders = ", ".join(["%s"] * len(_FABRIC_LOCATIONS))
+    return (f" AND {alias}.location_name IN ({placeholders})", list(_FABRIC_LOCATIONS))
 
 # ── Summary cards ──────────────────────────────────────────
 @fabric_router.get("/api/fabric/summary")
@@ -212,14 +221,22 @@ def summary(location: str = Query(default="RMAT/Stock")):
             GROUP BY i.location_name, p.category
         """)
         
-        all_loc = location is None or str(location).strip().lower() in _ALL_LOC
-        # For "All", fabric stock is every Fabric row except the dead-stock
-        # location (reported separately); otherwise just the chosen location.
+        sel = None if location is None else str(location).strip()
+        all_loc = sel is None or sel.lower() in _ALL_LOC or sel not in _FABRIC_LOCATIONS
+        # The two real fabric-stock buckets. Everything else (FABRR/HQ/PROD/Samp/…)
+        # is excluded entirely from the headline figures.
         rmat = [r for r in stock if r['category'] == 'Fabric'
-                and (r['location_name'] != 'Dead/Stock Fabric' if all_loc
-                     else r['location_name'] == location)]
+                and r['location_name'] == 'RMAT/Stock']
         dead = [r for r in stock if r['location_name'] == 'Dead/Stock Fabric']
         trim = [r for r in stock if r['category'] == 'Trim']
+        # Selected scope feeds the three headline KPIs. "All" = RMAT + Dead;
+        # a specific location = just that bucket (so totals reconcile: All = RMAT + Dead).
+        if all_loc:
+            scope = rmat + dead
+        elif sel == 'Dead/Stock Fabric':
+            scope = dead
+        else:  # RMAT/Stock
+            scope = rmat
         
         # POs outstanding
         pos = q(conn, """
@@ -251,16 +268,22 @@ def summary(location: str = Query(default="RMAT/Stock")):
         # Months of cover — 6-month average monthly run-rate with the in-progress
         # month projected to its end-of-month figure (fabric consumption is lumpy
         # — production-run driven — so a single 30-day denominator swings wildly).
-        fabric_stock_kg = round(sum(r['qty_kg'] or 0 for r in rmat), 1)
-        cover = _months_of_cover(conn, fabric_stock_kg)
+        # Cover always tracks the LIVE RMAT/Stock base (dead stock isn't "cover"),
+        # so it doesn't change with the selected scope.
+        rmat_stock_kg = round(sum(r['qty_kg'] or 0 for r in rmat), 1)
+        rmat_stock_value = round(sum(r['value_kes'] or 0 for r in rmat))
+        dead_stock_value = sum(r['value_kes'] or 0 for r in dead)
+        cover = _months_of_cover(conn, rmat_stock_kg)
 
-        # "All" yields one row per location — aggregate; a single location is one row.
+        # Headline KPIs reflect the selected scope; All = RMAT + Dead.
         return {
-            "fabric_stock_kg": fabric_stock_kg,
-            "fabric_stock_metres": round(sum(r['qty_metres'] or 0 for r in rmat)),
-            "fabric_stock_value": round(sum(r['value_kes'] or 0 for r in rmat)),
-            "fabric_products": sum(r['products'] or 0 for r in rmat),
-            "dead_stock_value": sum(r['value_kes'] or 0 for r in dead),
+            "fabric_stock_kg": round(sum(r['qty_kg'] or 0 for r in scope), 1),
+            "fabric_stock_metres": round(sum(r['qty_metres'] or 0 for r in scope)),
+            "fabric_stock_value": round(sum(r['value_kes'] or 0 for r in scope)),
+            "fabric_products": sum(r['products'] or 0 for r in scope),
+            # Stable grand total (RMAT + Dead) for the dead-stock % regardless of scope.
+            "total_fabric_value": rmat_stock_value + dead_stock_value,
+            "dead_stock_value": dead_stock_value,
             "dead_stock_kg": sum(r['qty_kg'] or 0 for r in dead),
             "outstanding_pos": pos['count'] or 0,
             "outstanding_po_value": pos['value'] or 0,

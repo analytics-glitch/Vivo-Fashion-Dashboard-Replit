@@ -514,9 +514,9 @@ const fx=t=>t?` data-fx="${esc(t)}"`:'';
 // Plain-language formulas / source notes, keyed for reuse across sub-pages.
 const FX={
   // Overview KPIs
-  stockOnHand:'Stock on hand = total on-hand fabric quantity at the selected location (Odoo inventory).',
-  totalFabricValue:'Total fabric value = stock value + dead-stock value (KES).',
-  totalWeight:'Total weight = sum of on-hand fabric weight in the main warehouse (kg).',
+  stockOnHand:'Stock on hand = total on-hand fabric quantity for the selected location scope (Odoo inventory). "All locations" = RMAT/Stock + Dead/Stock Fabric.',
+  totalFabricValue:'Total fabric value = stock value for the selected scope (KES). "All locations" = RMAT/Stock value + dead-stock value.',
+  totalWeight:'Total weight = sum of on-hand fabric weight for the selected location scope (kg).',
   consumedToday:'Consumed today = fabric used today (OUT moves) − fabric returned from production (kg).',
   consumed30d:'Consumed (30 days) = OUT moves − production returns over the last 30 days (kg).',
   monthsCover:'Months of cover = stock on hand (kg) ÷ last-30-day consumption (kg).',
@@ -752,8 +752,13 @@ function renderOverviewCached(){
   renderSplit('split-fiber',ovCache.split.fiber,FX.fiberValue);
 }
 function renderKpis(d){
-  const totalVal=(d.fabric_stock_value||0)+(d.dead_stock_value||0);
-  const deadPct=totalVal>0?(d.dead_stock_value/totalVal*100):0;
+  // Total fabric value = stock value for the SELECTED scope (All = RMAT + Dead).
+  const totalVal=d.fabric_stock_value||0;
+  // Dead-stock % uses the stable RMAT + Dead grand total so it doesn't swing with scope.
+  const grandVal=(d.total_fabric_value!=null)?d.total_fabric_value:((d.fabric_stock_value||0)+(d.dead_stock_value||0));
+  const deadPct=grandVal>0?(d.dead_stock_value/grandVal*100):0;
+  const _scope=loc();
+  const valSub=_scope==='RMAT/Stock'?'RMAT/Stock only':(_scope==='Dead/Stock Fabric'?'dead stock only':'RMAT + dead stock');
   // Months of cover = stock ÷ 6-month avg monthly run-rate, with the in-progress
   // month projected to a full month (backend-computed). Trend vs the prior period.
   const cover=(d.months_of_cover!=null)?d.months_of_cover:null;
@@ -778,8 +783,8 @@ function renderKpis(d){
   const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
   document.getElementById('kpi-cards').innerHTML=`
    <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value"${fx(FX.stockOnHand)}>${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub">${fmtKES(d.fabric_stock_value)} &middot; ${fmt(d.fabric_products)} fabrics</p></div>
-   <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value"${fx(FX.totalFabricValue)}>${fmtKES(totalVal)}</p><p class="kpi-sub">stock + dead stock</p></div>
-   <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value"${fx(FX.totalWeight)}>${fmt(d.fabric_stock_kg)}</p><p class="kpi-sub">kg in main warehouse</p></div>
+   <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value"${fx(FX.totalFabricValue)}>${fmtKES(totalVal)}</p><p class="kpi-sub">${valSub}</p></div>
+   <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value"${fx(FX.totalWeight)}>${fmt(d.fabric_stock_kg)}</p><p class="kpi-sub">kg on hand</p></div>
    <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(d.consumption_today_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.consumed30d)}>${fmt(d.consumption_30d_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
    <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}"${fx(FX.monthsCover)}>${cover!=null?coverFmt(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>
@@ -1354,7 +1359,10 @@ async function init(){
   try{
     const f=await apiFetch('/api/fabric/filters');
     const sel=document.getElementById('location-filter');
-    sel.innerHTML='<option value="All">All locations</option>'+f.locations.map(l=>`<option value="${esc(l)}"${l==='RMAT/Stock'?' selected':''}>${esc(l)}</option>`).join('');
+    // Fixed whitelist — the business only tracks real fabric stock in these two
+    // locations; "All locations" means the sum of RMAT/Stock + Dead/Stock Fabric.
+    const LOC_OPTS=[['All','All locations'],['RMAT/Stock','RMAT/Stock'],['Dead/Stock Fabric','Dead/Stock Fabric']];
+    sel.innerHTML=LOC_OPTS.map(([v,t])=>`<option value="${esc(v)}"${v==='RMAT/Stock'?' selected':''}>${esc(t)}</option>`).join('');
     const catSel=document.getElementById('reg-category');
     catSel.innerHTML='<option value="">All categories</option>'+f.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
     const colSel=document.getElementById('reg-color');

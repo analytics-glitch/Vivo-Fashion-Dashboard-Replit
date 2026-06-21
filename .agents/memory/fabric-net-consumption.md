@@ -69,9 +69,25 @@ months_in_window = window_days ÷ 30.4375. I.e. average per full month, then con
 to a weekly rate. (Numerically close to days/7 weekly, but the user asked for the
 monthly-average framing and it now runs on NET consumption.)
 
-# Location "All"
-The dashboard location filter has an "All locations" option (value `All`). Backend
-`_loc_filter()` drops the `location_name` predicate for `All`/empty across
-by-category, register, ageing, attribute-split; `summary` aggregates fabric stock
-across every location except `Dead/Stock Fabric` (reported separately) by summing the
-per-location rows (don't take rmat[0] — that was a bug that showed only one row).
+# Location "All" = RMAT/Stock + Dead/Stock Fabric ONLY (not every location)
+The dashboard location dropdown is a fixed whitelist of exactly three options — All
+locations, `RMAT/Stock`, `Dead/Stock Fabric` (default RMAT/Stock). The business only
+tracks real fabric stock in those two locations; every other warehouse location
+(FABRR/HQ/PROD/Samp/…) is excluded from the page entirely.
+
+Backend `_loc_filter()` (constant `_FABRIC_LOCATIONS`): a recognised specific
+location filters to just it; `All`/empty/unknown resolves to the SET
+`location_name IN ('RMAT/Stock','Dead/Stock Fabric')` (NOT a dropped predicate, NOT
+every location). Applies to by-category, register, ageing, attribute-split,
+category-stock-consumption.
+
+`summary` buckets: `rmat` = Fabric@RMAT/Stock, `dead` = Dead/Stock Fabric. The three
+headline KPIs (Stock on hand / Total fabric value / Total weight) reflect the selected
+scope: All = rmat+dead, else just that bucket — so they reconcile (All = RMAT + Dead).
+**Months-of-cover always uses the rmat-only kg base** regardless of scope (dead stock
+isn't "cover"). `total_fabric_value` (rmat+dead, scope-independent) is returned for the
+Dead-stock % so that card doesn't swing with the selection.
+
+**Why this matters:** the OLD behaviour dropped the predicate for All (every location)
+and summary summed "all Fabric except Dead". Don't reintroduce that — it leaks the
+excluded locations back in.
