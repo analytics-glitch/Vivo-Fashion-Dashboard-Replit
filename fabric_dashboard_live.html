@@ -135,6 +135,18 @@ table.data th:hover .col-exp{opacity:1;border-color:var(--accent);color:var(--ac
 .col-exp:hover{opacity:1;color:#fff;background:var(--accent);border-color:var(--accent);}
 .col-exp.active{opacity:1;color:#fff;background:var(--accent);border-color:var(--accent);}
 table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-space:normal !important;overflow:visible !important;text-overflow:clip !important;word-break:break-word;}
+
+/* Formula tooltips: any element carrying data-fx reveals a plain-language
+   formula on hover. A help cursor + faint dotted underline signal that the
+   number is hoverable; pills keep their shape (underline suppressed). The
+   floating tip (#fx-tip) is themed dark green, clamped to the viewport in JS,
+   and never intercepts the pointer. */
+[data-fx]{cursor:help;text-decoration:underline dotted rgba(26,92,56,.42);text-decoration-thickness:1px;text-underline-offset:3px;}
+.kpi.accent [data-fx],.card-accent [data-fx]{text-decoration-color:rgba(255,255,255,.5);}
+[data-fx]:hover{text-decoration-color:var(--accent);}
+.kpi.accent [data-fx]:hover,.card-accent [data-fx]:hover{text-decoration-color:#fff;}
+[data-fx] .pill,.pill[data-fx]{text-decoration:none;}
+#fx-tip{position:fixed;z-index:9999;display:none;pointer-events:none;max-width:320px;background:var(--accent-deep);color:#fff;font-size:12px;line-height:1.45;font-weight:500;padding:8px 11px;border-radius:9px;box-shadow:0 10px 30px rgba(16,40,24,.3);white-space:normal;}
 </style>
 </head>
 <body>
@@ -493,6 +505,150 @@ const loc=()=>document.getElementById('location-filter').value||'RMAT/Stock';
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const PAL=['#1a5c38','#d97706','#2563eb','#9333ea','#dc2626','#0891b2','#65a30d','#6b7280'];
 
+// ── Formula tooltips ──
+// fx(text) returns an attribute string (` data-fx="…"`) that any number element
+// can carry; on hover a single delegated controller shows the plain-language
+// formula. The text is HTML-escaped for the attribute and re-rendered with
+// textContent (never innerHTML), so it can never inject markup.
+const fx=t=>t?` data-fx="${esc(t)}"`:'';
+// Plain-language formulas / source notes, keyed for reuse across sub-pages.
+const FX={
+  // Overview KPIs
+  stockOnHand:'Stock on hand = total on-hand fabric quantity at the selected location (Odoo inventory).',
+  totalFabricValue:'Total fabric value = stock value + dead-stock value (KES).',
+  totalWeight:'Total weight = sum of on-hand fabric weight in the main warehouse (kg).',
+  consumedToday:'Consumed today = fabric used today (OUT moves) − fabric returned from production (kg).',
+  consumed30d:'Consumed (30 days) = OUT moves − production returns over the last 30 days (kg).',
+  monthsCover:'Months of cover = stock on hand (kg) ÷ last-30-day consumption (kg).',
+  deadStock:'Dead stock = value of fabric parked in the Dead/Stock location (KES).',
+  deadPct:'% of value = dead-stock value ÷ total fabric value.',
+  outstandingPOs:'Outstanding POs = purchase orders not yet fully received (excludes cancelled).',
+  stylesBom:'Styles with BOM = finished styles that have a bill of materials linked to fabric.',
+  // Overview charts
+  catStock:'Category stock = sum of on-hand quantity for fabrics in this category (value shown in KES).',
+  printShare:'Share = this pattern type\u2019s quantity ÷ total quantity across all patterns.',
+  weightValue:'Weight-class value = sum of stock value (KES) for fabrics in this weight band.',
+  structureValue:'Structure value = sum of stock value (KES) for fabrics of this structure (knit / woven).',
+  fiberValue:'Fiber value = sum of stock value (KES) for fabrics declaring this fiber content.',
+  // Ageing
+  ageTotalValue:'Total stock value = sum of stock value (KES) at the selected location.',
+  ageOver6:'Over 6 months old = stock value in the 6–12 month and 12+ month age bands (KES).',
+  ageAtRisk:'% at risk = over-6-months value ÷ total stock value.',
+  ageBand:'Age band = stock grouped by days since its last stock movement (metres shown; value in KES).',
+  // Slow moving
+  slowTotal:'Total slow moving = value of fabric parked in the Dead/Stock location (KES).',
+  slowWeight:'Total weight = sum of on-hand weight of slow-moving fabric (kg).',
+  slowKg:'On-hand quantity in kg (Odoo inventory).',
+  slowMetres:'Metres = on-hand kg ÷ kg-per-metre.',
+  slowValue:'Stock value = on-hand kg × standard cost (KES).',
+  slowDaysIdle:'Days idle = today − date of the last stock movement.',
+  // Movement & use
+  flowIn:'Received (IN) = fabric received into stock that month (kg, from Odoo).',
+  flowOut:'Consumed (OUT) = fabric used that month, net of production returns (kg).',
+  topConsumed:'Consumed = net consumption over the selected window = OUT moves − production returns (kg).',
+  topStock:'Stock = current on-hand quantity for this fabric (kg).',
+  topCover:'Weeks of cover = stock (kg) ÷ weekly run-rate (average monthly consumption ÷ ~4.35 weeks).',
+  consTotal:'Total consumed = sum of net consumption (OUT − production returns) across the selected range.',
+  consBar:'Net consumption for the period = OUT moves − production returns.',
+  csConsumed:'Units consumed = net consumption (OUT − production returns) over the selected range (kg).',
+  csStock:'Stock = current on-hand quantity at the selected location (kg).',
+  csPctConsumed:'% Consumed = this row\u2019s consumption ÷ total consumption across all categories.',
+  csPctStock:'% Stock = this row\u2019s stock ÷ total stock across all categories.',
+  csCover:'Cover (weeks) = stock (kg) ÷ weekly consumption (consumption ÷ (days ÷ 7)).',
+  csSor:'SOR % = consumption ÷ (consumption + stock) — share of this fabric that has been used.',
+  csVariance:'Variance = % Consumed − % Stock (percentage points); positive = used faster than its stock share.',
+  csRisk:'Risk flag = from Variance: |var|<1 Healthy, <3 Monitor, otherwise Stockout / Overstock Risk.',
+  // Purchase orders
+  poOrdered:'Ordered value = sum of ordered quantity × unit price across PO lines (KES).',
+  poReceived:'Received value = received quantity × unit price, delivered to date (KES).',
+  poFill:'Fill rate = total received quantity ÷ total ordered quantity.',
+  poLead:'Avg lead time = average days from order date to planned delivery date.',
+  poOverdue:'Overdue open = open POs whose planned date has passed and aren\u2019t fully received.',
+  poMonth:'Monthly PO value = sum of ordered value (KES) for POs placed that month.',
+  poLines:'Lines = number of order lines on this PO.',
+  poValue:'Value = total ordered value of this PO (KES).',
+  poQtyOrdered:'Ordered = total quantity ordered across this PO\u2019s lines.',
+  poQtyReceived:'Received = total quantity received against this PO.',
+  poOutstanding:'Outstanding = ordered quantity − received quantity.',
+  // Suppliers
+  supExposure:'Outstanding exposure = undelivered PO value = (ordered − received) × unit price (KES).',
+  supPos:'POs = number of purchase orders for this supplier.',
+  supValue:'Total value = sum of ordered value across this supplier\u2019s POs (KES).',
+  supOutQty:'Outstanding qty = sum of (ordered − received) across this supplier\u2019s POs.',
+  supOutValue:'Outstanding value = sum of (ordered − received) × unit price (KES).',
+  // BOM
+  bomComps:'Comps = number of components in this style\u2019s bill of materials.',
+  bomFabricKg:'Fabric kg = total fabric quantity required by this style\u2019s BOM (kg).',
+  bomTrims:'Trims = number of trim (piece) components in this style\u2019s BOM.',
+  bomNeeded:'Needed = quantity of this component required by the style\u2019s BOM.',
+  bomStock:'Stock = current on-hand quantity of this component (kg).',
+  wuQty:'Qty = quantity of this fabric the style consumes per its BOM.',
+  // Reservations
+  resvReserved:'Reserved = quantity the buying team earmarked for this style.',
+  resvSoh:'Current SOH = current stock on hand for this fabric (Odoo).',
+  resvDaysHeld:'Days held = days since the reservation was created (open) or until it was used.',
+};
+// Register column → formula / source note (numeric & derived columns only).
+const REG_FX={
+  default_code:'Internal SKU / barcode from Odoo.',
+  gsm:'GSM = grams per square metre (from Odoo).',
+  width_m:'Fabric width in metres (from Odoo).',
+  kg_per_mtr:'Kg/m = conversion factor: kilograms per metre (from Odoo).',
+  cost_kes:'Cost = standard cost per kg (Odoo standard price), KES.',
+  cost_per_kg:'Cost/kg = standard cost per kg (Odoo standard price), KES.',
+  cost_metre:'Cost/metre = cost per kg × kg per metre (KES).',
+  qty_metres:'Metres = on-hand kg ÷ kg per metre.',
+  qty_kg:'Kg = on-hand quantity (Odoo inventory).',
+  available_metres:'Avail (m) = available kg ÷ kg per metre.',
+  available_kg:'Avail (kg) = on-hand − ERP-reserved (Odoo).',
+  team_reserved_metres:'Reserved (m) = buying-team reservations (open), in metres.',
+  team_reserved_kg:'Reserved (kg) = buying-team reservations (open), in kg.',
+  value_kes:'Value = on-hand kg × standard cost (KES).',
+  weeks_cover:'Wks cover = on-hand kg ÷ weekly consumption (last-30-day net consumption ÷ ~4.35 weeks).',
+  last_move:'Last move = date of the most recent stock movement (Odoo).',
+  days_since_move:'Days idle = today − date of the last stock movement.',
+};
+// Single delegated tooltip controller — works for static and dynamically
+// re-rendered tables alike (no per-render rebinding). Positions the tip above
+// the number, flips below if clipped at the top, and clamps to the viewport.
+(function(){
+  let tip=null, cur=null;
+  function ensure(){
+    if(tip)return tip;
+    tip=document.createElement('div');tip.id='fx-tip';tip.setAttribute('role','tooltip');
+    document.body.appendChild(tip);return tip;
+  }
+  function place(el){
+    const r=el.getBoundingClientRect();
+    const t=tip.getBoundingClientRect();
+    let left=r.left+r.width/2-t.width/2;
+    let top=r.top-t.height-8;
+    if(top<8)top=r.bottom+8;                       // flip below if clipped at top
+    left=Math.max(8,Math.min(left,window.innerWidth-t.width-8));
+    top=Math.max(8,Math.min(top,window.innerHeight-t.height-8));
+    tip.style.left=left+'px';tip.style.top=top+'px';
+  }
+  function show(el){
+    const txt=el.getAttribute('data-fx');if(!txt)return;
+    cur=el;const tp=ensure();tp.textContent=txt;tp.style.display='block';place(el);
+  }
+  function hide(){if(tip)tip.style.display='none';cur=null;}
+  document.addEventListener('mouseover',e=>{
+    const el=e.target.closest&&e.target.closest('[data-fx]');
+    if(el&&el!==cur)show(el);
+  });
+  document.addEventListener('mouseout',e=>{
+    if(!cur)return;
+    const to=e.relatedTarget;
+    if(to&&to.closest&&to.closest('[data-fx]')===cur)return; // still within current
+    hide();
+  });
+  document.addEventListener('focusin',e=>{const el=e.target.closest&&e.target.closest('[data-fx]');if(el)show(el);});
+  document.addEventListener('focusout',hide);
+  window.addEventListener('scroll',hide,true);
+  window.addEventListener('resize',hide);
+})();
+
 // ── Units (page-level metres / kg toggle) ──
 let UNIT=localStorage.getItem('fabricUnit')==='kg'?'kg':'m';
 const unitLabel=()=>UNIT==='kg'?'kg':'m';
@@ -519,7 +675,7 @@ function donut(slices){
     off+=len; return el;
   }).join('');
   const center=total>=1000?(total/1000).toFixed(1)+'k':String(Math.round(total));
-  const legend=slices.map(s=>`<div class="leg-row"><span class="dot" style="background:${s.color}"></span><span style="flex:1">${esc(s.label)}</span><span class="num" style="font-weight:700">${((s.value||0)/total*100).toFixed(1)}%</span><span class="num muted" style="width:92px;text-align:right">${esc(s.note||'')}</span></div>`).join('');
+  const legend=slices.map(s=>`<div class="leg-row"><span class="dot" style="background:${s.color}"></span><span style="flex:1">${esc(s.label)}</span><span class="num" style="font-weight:700"${fx(s.fx)}>${((s.value||0)/total*100).toFixed(1)}%</span><span class="num muted" style="width:92px;text-align:right">${esc(s.note||'')}</span></div>`).join('');
   return `<div class="donut-wrap"><svg viewBox="0 0 120 120" width="120" height="120" aria-hidden="true">${segs}<text x="60" y="64" text-anchor="middle" font-size="13" font-weight="800" fill="var(--text)">${center}</text></svg><div class="donut-legend">${legend}</div></div>`;
 }
 
@@ -536,15 +692,16 @@ function showErr(id,e){const el=document.getElementById(id);if(el)el.innerHTML='
 function rowErr(id,cols,e){const el=document.getElementById(id);if(el)el.innerHTML='<tr><td colspan="'+cols+'" style="padding:1rem;color:var(--danger);">'+errHtml(e)+'</td></tr>';}
 
 // ── Bar renderer ──
-function bars(id,rows,labelKey,valKey,subFmt,colored){
+function bars(id,rows,labelKey,valKey,subFmt,colored,fxText){
   const el=document.getElementById(id); if(!el)return;
   const max=Math.max(...rows.map(r=>Math.abs(r[valKey]||0)),1);
+  const fa=fxText?fx(fxText):'';
   el.innerHTML=rows.length?rows.map((r,i)=>{
     const c=colored?PAL[i%PAL.length]:'var(--accent)';
     const dot=colored?`<span class="dot" style="background:${c}"></span>`:'';
     return `<div class="bar-row"><span class="bar-label" title="${esc(r[labelKey])}">${dot}${esc(r[labelKey])}</span>
      <div class="bar-track"><div class="bar-fill" style="width:${(Math.abs(r[valKey]||0)/max*100).toFixed(1)}%;background:${c}"></div></div>
-     <span class="bar-qty">${r._qty}</span><span class="bar-sub">${subFmt?subFmt(r):''}</span></div>`;
+     <span class="bar-qty"${fa}>${r._qty}</span><span class="bar-sub">${subFmt?subFmt(r):''}</span></div>`;
   }).join(''):'<p class="muted">No data.</p>';
 }
 
@@ -590,9 +747,9 @@ function renderOverviewCached(){
   renderKpis(ovCache.d);
   renderCategories(ovCache.cat);
   renderPrintDonut(ovCache.split.plain_print);
-  renderSplit('split-weight',ovCache.split.weight_range);
-  renderSplit('split-structure',ovCache.split.structure);
-  renderSplit('split-fiber',ovCache.split.fiber);
+  renderSplit('split-weight',ovCache.split.weight_range,FX.weightValue);
+  renderSplit('split-structure',ovCache.split.structure,FX.structureValue);
+  renderSplit('split-fiber',ovCache.split.fiber,FX.fiberValue);
 }
 function renderKpis(d){
   const totalVal=(d.fabric_stock_value||0)+(d.dead_stock_value||0);
@@ -619,30 +776,30 @@ function renderKpis(d){
   const coverTip=(cover!=null)?esc(`6-month avg run-rate; ${d.projected_month_label} projected to full month (${fmt(d.projected_month_mtd_kg)} kg so far → ${fmt(d.projected_month_kg)} kg est.)`):'';
   const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
   document.getElementById('kpi-cards').innerHTML=`
-   <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value">${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub">${fmtKES(d.fabric_stock_value)} &middot; ${fmt(d.fabric_products)} fabrics</p></div>
-   <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value">${fmtKES(totalVal)}</p><p class="kpi-sub">stock + dead stock</p></div>
-   <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value">${fmt(d.fabric_stock_kg)}</p><p class="kpi-sub">kg in main warehouse</p></div>
-   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value">${fmt(d.consumption_today_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
-   <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value">${fmt(d.consumption_30d_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
-   <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}">${cover!=null?fmt1(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>
-   <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger">${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">${fmt(d.dead_stock_kg)} kg &middot; ${deadPct.toFixed(0)}% of value</p></div>
-   <div class="kpi"><span class="eyebrow">Outstanding POs</span><p class="kpi-value">${fmt(d.outstanding_pos)}</p><p class="kpi-sub">${fmtKES(d.outstanding_po_value)} inbound</p></div>
-   <div class="kpi"><span class="eyebrow">Styles with BOM</span><p class="kpi-value">${fmt(d.styles_with_bom)}</p><p class="kpi-sub">linked to fabric</p></div>`;
+   <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value"${fx(FX.stockOnHand)}>${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub">${fmtKES(d.fabric_stock_value)} &middot; ${fmt(d.fabric_products)} fabrics</p></div>
+   <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value"${fx(FX.totalFabricValue)}>${fmtKES(totalVal)}</p><p class="kpi-sub">stock + dead stock</p></div>
+   <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value"${fx(FX.totalWeight)}>${fmt(d.fabric_stock_kg)}</p><p class="kpi-sub">kg in main warehouse</p></div>
+   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(d.consumption_today_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
+   <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.consumed30d)}>${fmt(d.consumption_30d_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
+   <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}"${fx(FX.monthsCover)}>${cover!=null?fmt1(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>
+   <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger"${fx(FX.deadStock)}>${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">${fmt(d.dead_stock_kg)} kg &middot; <span${fx(FX.deadPct)}>${deadPct.toFixed(0)}% of value</span></p></div>
+   <div class="kpi"><span class="eyebrow">Outstanding POs</span><p class="kpi-value"${fx(FX.outstandingPOs)}>${fmt(d.outstanding_pos)}</p><p class="kpi-sub">${fmtKES(d.outstanding_po_value)} inbound</p></div>
+   <div class="kpi"><span class="eyebrow">Styles with BOM</span><p class="kpi-value"${fx(FX.stylesBom)}>${fmt(d.styles_with_bom)}</p><p class="kpi-sub">linked to fabric</p></div>`;
 }
 function renderCategories(data){
   const cats={};
   data.forEach(r=>{const k=r.category||'Other';if(!cats[k])cats[k]={m:0,kg:0,v:0};cats[k].m+=r.qty_metres||0;cats[k].kg+=r.qty_kg||0;cats[k].v+=r.value_kes||0;});
   const rows=Object.entries(cats).sort((a,b)=>b[1].v-a[1].v).map(([c,v])=>({label:c,v:v.v,_qty:fmtUnit(UNIT==='kg'?v.kg:v.m),sub:v.v}));
-  bars('category-bars',rows,'label','v',r=>fmtKES(r.sub),false);
+  bars('category-bars',rows,'label','v',r=>fmtKES(r.sub),false,FX.catStock);
 }
-function renderSplit(id,rows){
+function renderSplit(id,rows,fxText){
   const data=(rows||[]).map(r=>({label:r.value,v:r.value_kes,_qty:fmtKES(r.value_kes),fabrics:r.fabrics}));
-  bars(id,data,'label','v',r=>fmt(r.fabrics)+' fab',true);
+  bars(id,data,'label','v',r=>fmt(r.fabrics)+' fab',true,fxText);
 }
 function renderPrintDonut(rows){
   rows=rows||[];
   const colorFor=v=>/print/i.test(v)?'#d97706':/plain/i.test(v)?'#1a5c38':'#6b7280';
-  const slices=rows.map(r=>{const val=UNIT==='kg'?r.qty_kg:r.qty_metres;return {label:r.value,value:val||0,color:colorFor(r.value),note:fmtUnit(val)};});
+  const slices=rows.map(r=>{const val=UNIT==='kg'?r.qty_kg:r.qty_metres;return {label:r.value,value:val||0,color:colorFor(r.value),note:fmtUnit(val),fx:FX.printShare};});
   document.getElementById('split-print').innerHTML=donut(slices);
   const su=document.getElementById('split-print-unit');if(su)su.textContent='share by '+(UNIT==='kg'?'kg':'metres');
 }
@@ -701,6 +858,8 @@ async function loadRegister(offset){
 }
 function regCell(col,r){
   const v=r[col.k];
+  const f=REG_FX[col.k]?fx(REG_FX[col.k]):'';
+  const cell=(()=>{
   switch(col.type){
     case 'name':return `<td style="font-weight:600;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(v)}">${esc(v||'—')}</td>`;
     case 'code':return `<td class="num" style="font-size:12px;color:var(--text-sub);white-space:nowrap;">${esc(v||'—')}</td>`;
@@ -716,6 +875,10 @@ function regCell(col,r){
     case 'date':return `<td style="color:var(--muted);font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
     default:return `<td style="color:var(--text-sub);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
   }
+  })();
+  // Inject the formula/source note (when defined for this column) into the cell's
+  // opening tag. f starts with a space, so it slots cleanly after `<td`.
+  return f?cell.replace('<td','<td'+f):cell;
 }
 function renderRegisterTable(){
   const cols=REG_COLS.filter(c=>regCols.includes(c.k));
@@ -781,14 +944,14 @@ async function loadAgeing(){
     const totalV=data.reduce((s,r)=>s+(r.value_kes||0),0);
     const oldV=data.filter(r=>r.sort_order>=3).reduce((s,r)=>s+(r.value_kes||0),0);
     document.getElementById('ageing-kpis').innerHTML=`
-     <div class="kpi accent"><span class="eyebrow">Total stock value</span><p class="kpi-value">${fmtKES(totalV)}</p><p class="kpi-sub">at this location</p></div>
-     <div class="kpi"><span class="eyebrow">Over 6 months old</span><p class="kpi-value amber">${fmtKES(oldV)}</p><p class="kpi-sub">${totalV>0?(oldV/totalV*100).toFixed(0):0}% of value at risk</p></div>`;
+     <div class="kpi accent"><span class="eyebrow">Total stock value</span><p class="kpi-value"${fx(FX.ageTotalValue)}>${fmtKES(totalV)}</p><p class="kpi-sub">at this location</p></div>
+     <div class="kpi"><span class="eyebrow">Over 6 months old</span><p class="kpi-value amber"${fx(FX.ageOver6)}>${fmtKES(oldV)}</p><p class="kpi-sub"><span${fx(FX.ageAtRisk)}>${totalV>0?(oldV/totalV*100).toFixed(0):0}% of value at risk</span></p></div>`;
     const max=Math.max(...data.map(r=>r.qty_metres||0),1);
     document.getElementById('ageing-bars').innerHTML=data.map((r,i)=>`
      <div class="bar-row" style="margin-bottom:15px;">
       <span class="bar-label" style="width:160px;flex-direction:column;align-items:flex-start;">${esc(r.age_band)}<span style="font-size:10.5px;color:var(--muted);">${esc(labels[i]||'')}</span></span>
       <div class="bar-track"><div class="bar-fill" style="width:${((r.qty_metres||0)/max*100).toFixed(1)}%;background:${colors[i]||colors[3]};"></div></div>
-      <span class="bar-qty">${fmt(r.qty_metres)} m</span><span class="bar-sub">${fmtKES(r.value_kes)}</span></div>`).join('')||'<p class="muted">No data.</p>';
+      <span class="bar-qty"${fx(FX.ageBand)}>${fmt(r.qty_metres)} m</span><span class="bar-sub">${fmtKES(r.value_kes)}</span></div>`).join('')||'<p class="muted">No data.</p>';
   }catch(e){showErr('ageing-bars',e);}
 }
 
@@ -798,16 +961,16 @@ async function loadDeadStock(){
     const d=await apiFetch('/api/fabric/dead-stock');
     const kg=d.items.reduce((s,r)=>s+(r.qty_kg||0),0);
     document.getElementById('dead-kpis').innerHTML=`
-     <div class="kpi accent"><span class="eyebrow">Total slow moving</span><p class="kpi-value">${fmtKES(d.total_value)}</p><p class="kpi-sub">${d.items.length} items</p></div>
-     <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value">${fmt(kg)}</p><p class="kpi-sub">kg parked</p></div>`;
+     <div class="kpi accent"><span class="eyebrow">Total slow moving</span><p class="kpi-value"${fx(FX.slowTotal)}>${fmtKES(d.total_value)}</p><p class="kpi-sub">${d.items.length} items</p></div>
+     <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value"${fx(FX.slowWeight)}>${fmt(kg)}</p><p class="kpi-sub">kg parked</p></div>`;
     document.getElementById('dead-body').innerHTML=d.items.length?d.items.map(r=>`
      <tr>
       <td style="font-weight:600;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.product_name)}">${esc(r.product_name)}</td>
       <td style="color:var(--text-sub);">${esc(r.fabric_subcategory||r.fabric_category||'—')}</td>
-      <td class="r">${fmt1(r.qty_kg)}</td><td class="r">${r.qty_metres!=null?fmt(r.qty_metres):'—'}</td>
-      <td class="r" style="font-weight:600;">${fmtKES(r.value_kes)}</td>
+      <td class="r"${fx(FX.slowKg)}>${fmt1(r.qty_kg)}</td><td class="r"${fx(FX.slowMetres)}>${r.qty_metres!=null?fmt(r.qty_metres):'—'}</td>
+      <td class="r" style="font-weight:600;"${fx(FX.slowValue)}>${fmtKES(r.value_kes)}</td>
       <td style="color:var(--muted);">${esc(r.last_move||'—')}</td>
-      <td class="r">${r.days_since_move!=null?`<span class="pill ${r.days_since_move>365?'pill-red':'pill-amber'}">${fmt(r.days_since_move)}</span>`:'—'}</td>
+      <td class="r"${fx(FX.slowDaysIdle)}>${r.days_since_move!=null?`<span class="pill ${r.days_since_move>365?'pill-red':'pill-amber'}">${fmt(r.days_since_move)}</span>`:'—'}</td>
      </tr>`).join(''):'<tr><td colspan="7" class="loading">No slow moving stock recorded.</td></tr>';
   }catch(e){rowErr('dead-body',7,e);}
 }
@@ -849,14 +1012,14 @@ function consStockRow(r,totC,totS,days,isCat){
   const click=isCat?` data-cat="${esc(r.category)}" style="cursor:pointer;"`:'';
   const trcls=isCat?'cat-row':'sub-row';
   return `<tr class="${trcls}"${click}>${label}
-    <td class="r"${isCat?' style="font-weight:600;"':''}>${fmt1(r.consumed_kg)}</td>
-    <td class="r"${isCat?' style="font-weight:600;"':''}>${fmt1(r.stock_kg)}</td>
-    <td class="r">${pctC.toFixed(1)}%</td>
-    <td class="r">${pctS.toFixed(1)}%</td>
-    <td class="r">${cover!=null?fmt1(cover):'—'}</td>
-    <td class="r">${sor.toFixed(1)}%</td>
-    <td class="r">${variance>0?'+':''}${variance.toFixed(2)}%</td>
-    <td><span class="pill ${rf.cls}">${rf.label}</span></td>
+    <td class="r"${isCat?' style="font-weight:600;"':''}${fx(FX.csConsumed)}>${fmt1(r.consumed_kg)}</td>
+    <td class="r"${isCat?' style="font-weight:600;"':''}${fx(FX.csStock)}>${fmt1(r.stock_kg)}</td>
+    <td class="r"${fx(FX.csPctConsumed)}>${pctC.toFixed(1)}%</td>
+    <td class="r"${fx(FX.csPctStock)}>${pctS.toFixed(1)}%</td>
+    <td class="r"${fx(FX.csCover)}>${cover!=null?fmt1(cover):'—'}</td>
+    <td class="r"${fx(FX.csSor)}>${sor.toFixed(1)}%</td>
+    <td class="r"${fx(FX.csVariance)}>${variance>0?'+':''}${variance.toFixed(2)}%</td>
+    <td${fx(FX.csRisk)}><span class="pill ${rf.cls}">${rf.label}</span></td>
   </tr>`;
 }
 let consStockCache=null,consStockBound=false;
@@ -906,9 +1069,9 @@ async function loadFlow(){
       return `<div style="margin-bottom:14px;">
        <div class="muted" style="margin-bottom:5px;font-weight:600;color:var(--text-sub);">${m}</div>
        <div class="bar-row" style="margin-bottom:6px;"><span class="bar-label" style="width:60px;"><span class="dot" style="background:#1a5c38"></span>In</span>
-        <div class="bar-track"><div class="bar-fill" style="width:${((r.in_kg||0)/max*100).toFixed(1)}%;background:#1a5c38"></div></div><span class="bar-qty">${fmtKg(r.in_kg)}</span><span class="bar-sub"></span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${((r.in_kg||0)/max*100).toFixed(1)}%;background:#1a5c38"></div></div><span class="bar-qty"${fx(FX.flowIn)}>${fmtKg(r.in_kg)}</span><span class="bar-sub"></span></div>
        <div class="bar-row"><span class="bar-label" style="width:60px;"><span class="dot" style="background:#d97706"></span>Out</span>
-        <div class="bar-track"><div class="bar-fill" style="width:${((r.out_kg||0)/max*100).toFixed(1)}%;background:#d97706"></div></div><span class="bar-qty">${fmtKg(r.out_kg)}</span><span class="bar-sub"></span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${((r.out_kg||0)/max*100).toFixed(1)}%;background:#d97706"></div></div><span class="bar-qty"${fx(FX.flowOut)}>${fmtKg(r.out_kg)}</span><span class="bar-sub"></span></div>
       </div>`;
     }).join(''):'<p class="muted">No movement data.</p>';
     document.getElementById('flow-mtd-note').textContent=mtdNote(data);
@@ -921,9 +1084,9 @@ async function loadMovement(){
     document.getElementById('consumed-body').innerHTML=data.length?data.map(r=>`
      <tr>
       <td style="font-weight:600;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.product_name)}">${esc(r.product_name)}</td>
-      <td class="r" style="font-weight:600;">${fmt1(r.consumed_kg)}</td>
-      <td class="r">${fmt1(r.stock_kg)}</td>
-      <td class="r">${r.weeks_cover!=null?`<span class="pill ${r.weeks_cover<2?'pill-red':r.weeks_cover<6?'pill-amber':'pill-green'}">${fmt1(r.weeks_cover)}</span>`:'—'}</td>
+      <td class="r" style="font-weight:600;"${fx(FX.topConsumed)}>${fmt1(r.consumed_kg)}</td>
+      <td class="r"${fx(FX.topStock)}>${fmt1(r.stock_kg)}</td>
+      <td class="r"${fx(FX.topCover)}>${r.weeks_cover!=null?`<span class="pill ${r.weeks_cover<2?'pill-red':r.weeks_cover<6?'pill-amber':'pill-green'}">${fmt1(r.weeks_cover)}</span>`:'—'}</td>
       <td style="color:var(--muted);">${esc(r.last_out||'—')}</td>
      </tr>`).join(''):'<tr><td colspan="5" class="loading">No consumption in this period.</td></tr>';
   }catch(e){rowErr('consumed-body',5,e);}
@@ -940,12 +1103,12 @@ async function loadConsTrend(){
     const dateFmt=g==='day'?{month:'short',day:'numeric'}:g==='week'?{month:'short',day:'numeric'}:{month:'short',year:'2-digit'};
     const useKg=UNIT==='kg';
     const rows=data.map(r=>({label:g==='month'?monthLabel(r.period):new Date(r.period).toLocaleDateString(undefined,dateFmt),v:useKg?r.qty_kg:(r.qty_metres||0),_qty:fmtUnit(useKg?r.qty_kg:r.qty_metres),f:r.fabrics_used}));
-    bars('consumption-bars',rows,'label','v',r=>fmt(r.f)+' types',false);
+    bars('consumption-bars',rows,'label','v',r=>fmt(r.f)+' types',false,FX.consBar);
     document.getElementById('cons-mtd-note').textContent=g==='month'?mtdNote(data):'';
     const totKg=data.reduce((s,r)=>s+(r.qty_kg||0),0);
     const totM=data.reduce((s,r)=>s+(r.qty_metres||0),0);
     document.getElementById('cons-summary').innerHTML=data.length
-      ?`Total consumed: <strong>${fmt(totM)} m</strong> &middot; <strong>${fmt1(totKg)} kg</strong> over ${data.length} ${g==='month'?'months':g==='week'?'weeks':'days'}`
+      ?`Total consumed: <strong${fx(FX.consTotal)}>${fmt(totM)} m</strong> &middot; <strong${fx(FX.consTotal)}>${fmt1(totKg)} kg</strong> over ${data.length} ${g==='month'?'months':g==='week'?'weeks':'days'}`
       :'No consumption in this range.';
   }catch(e){showErr('consumption-bars',e);document.getElementById('cons-summary').textContent='';document.getElementById('cons-mtd-note').textContent='';}
 }
@@ -957,13 +1120,13 @@ async function loadPOPerf(){
     const d=await apiFetch('/api/fabric/po-performance');
     const k=d.kpis||{};
     document.getElementById('po-kpis').innerHTML=`
-     <div class="kpi accent"><span class="eyebrow">Ordered value</span><p class="kpi-value">${fmtKES(k.ordered_value)}</p><p class="kpi-sub">${fmt(k.pos)} POs &middot; ${fmt(k.lines)} lines</p></div>
-     <div class="kpi"><span class="eyebrow">Received value</span><p class="kpi-value">${fmtKES(k.received_value)}</p><p class="kpi-sub">delivered to date</p></div>
-     <div class="kpi"><span class="eyebrow">Fill rate</span><p class="kpi-value">${k.fill_rate!=null?k.fill_rate+'%':'—'}</p><p class="kpi-sub">received &divide; ordered</p></div>
-     <div class="kpi"><span class="eyebrow">Avg lead time</span><p class="kpi-value">${k.avg_lead_days!=null?fmt(k.avg_lead_days):'—'}</p><p class="kpi-sub">days order &rarr; planned</p></div>
-     <div class="kpi"><span class="eyebrow">Overdue open</span><p class="kpi-value ${k.overdue_open>0?'danger':''}">${fmt(k.overdue_open)}</p><p class="kpi-sub">past planned date</p></div>`;
+     <div class="kpi accent"><span class="eyebrow">Ordered value</span><p class="kpi-value"${fx(FX.poOrdered)}>${fmtKES(k.ordered_value)}</p><p class="kpi-sub">${fmt(k.pos)} POs &middot; ${fmt(k.lines)} lines</p></div>
+     <div class="kpi"><span class="eyebrow">Received value</span><p class="kpi-value"${fx(FX.poReceived)}>${fmtKES(k.received_value)}</p><p class="kpi-sub">delivered to date</p></div>
+     <div class="kpi"><span class="eyebrow">Fill rate</span><p class="kpi-value"${fx(FX.poFill)}>${k.fill_rate!=null?k.fill_rate+'%':'—'}</p><p class="kpi-sub">received &divide; ordered</p></div>
+     <div class="kpi"><span class="eyebrow">Avg lead time</span><p class="kpi-value"${fx(FX.poLead)}>${k.avg_lead_days!=null?fmt(k.avg_lead_days):'—'}</p><p class="kpi-sub">days order &rarr; planned</p></div>
+     <div class="kpi"><span class="eyebrow">Overdue open</span><p class="kpi-value ${k.overdue_open>0?'danger':''}"${fx(FX.poOverdue)}>${fmt(k.overdue_open)}</p><p class="kpi-sub">past planned date</p></div>`;
     const rows=(d.by_month||[]).map(r=>({label:monthLabel(r.period),v:r.value_kes,_qty:fmtKES(r.value_kes),pos:r.pos}));
-    bars('po-month-bars',rows,'label','v',r=>fmt(r.pos)+' PO',false);
+    bars('po-month-bars',rows,'label','v',r=>fmt(r.pos)+' PO',false,FX.poMonth);
     document.getElementById('po-mtd-note').textContent=mtdNote(d.by_month||[]);
   }catch(e){showErr('po-kpis',e);document.getElementById('po-mtd-note').textContent='';}
 }
@@ -980,9 +1143,9 @@ async function loadPOs(){
       <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.supplier||'')}">${esc(r.supplier||'—')}</td>
       <td style="color:var(--muted);white-space:nowrap;">${esc(r.order_date||'—')}</td>
       <td><span class="pill ${r.state==='done'?'pill-green':'pill-neutral'}">${esc(r.state||'—')}</span></td>
-      <td class="r">${fmt(r.lines)}</td><td class="r" style="font-weight:600;">${fmtKES(r.po_value)}</td>
-      <td class="r">${fmt1(r.qty_ordered)}</td><td class="r">${fmt1(r.qty_received)}</td>
-      <td class="r">${r.outstanding>0?`<span class="pill pill-amber">${fmt1(r.outstanding)}</span>`:fmt1(r.outstanding)}</td>
+      <td class="r"${fx(FX.poLines)}>${fmt(r.lines)}</td><td class="r" style="font-weight:600;"${fx(FX.poValue)}>${fmtKES(r.po_value)}</td>
+      <td class="r"${fx(FX.poQtyOrdered)}>${fmt1(r.qty_ordered)}</td><td class="r"${fx(FX.poQtyReceived)}>${fmt1(r.qty_received)}</td>
+      <td class="r"${fx(FX.poOutstanding)}>${r.outstanding>0?`<span class="pill pill-amber">${fmt1(r.outstanding)}</span>`:fmt1(r.outstanding)}</td>
      </tr>`).join(''):'<tr><td colspan="9" class="loading">No purchase orders found.</td></tr>';
   }catch(e){rowErr('po-body',9,e);}
 }
@@ -993,13 +1156,13 @@ async function loadSuppliers(){
     const data=await apiFetch('/api/fabric/suppliers');
     const top=data.filter(r=>r.outstanding_value>0).slice(0,12);
     const rows=top.map(r=>({label:r.supplier,v:r.outstanding_value,_qty:fmtKES(r.outstanding_value),pos:r.pos}));
-    bars('supplier-bars',rows.length?rows:[{label:'No outstanding exposure',v:0,_qty:'—'}],'label','v',r=>fmt(r.pos)+' PO',false);
+    bars('supplier-bars',rows.length?rows:[{label:'No outstanding exposure',v:0,_qty:'—'}],'label','v',r=>fmt(r.pos)+' PO',false,FX.supExposure);
     document.getElementById('supplier-body').innerHTML=data.length?data.map(r=>`
      <tr>
       <td style="font-weight:600;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.supplier)}">${esc(r.supplier)}</td>
-      <td class="r">${fmt(r.pos)}</td><td class="r">${fmtKES(r.po_value)}</td>
-      <td class="r">${fmt1(r.outstanding_qty)}</td>
-      <td class="r" style="font-weight:600;">${r.outstanding_value>0?`<span class="pill pill-amber">${fmtKES(r.outstanding_value)}</span>`:fmtKES(r.outstanding_value)}</td>
+      <td class="r"${fx(FX.supPos)}>${fmt(r.pos)}</td><td class="r"${fx(FX.supValue)}>${fmtKES(r.po_value)}</td>
+      <td class="r"${fx(FX.supOutQty)}>${fmt1(r.outstanding_qty)}</td>
+      <td class="r" style="font-weight:600;"${fx(FX.supOutValue)}>${r.outstanding_value>0?`<span class="pill pill-amber">${fmtKES(r.outstanding_value)}</span>`:fmtKES(r.outstanding_value)}</td>
      </tr>`).join(''):'<tr><td colspan="5" class="loading">No suppliers found.</td></tr>';
   }catch(e){rowErr('supplier-body',5,e);showErr('supplier-bars',e);}
 }
@@ -1017,7 +1180,7 @@ async function loadBomStyles(){
     body.innerHTML=d.items.length?d.items.map(r=>`
      <tr class="row-click" data-style="${esc(r.style)}">
       <td style="font-weight:600;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.style)}">${esc(r.style)}</td>
-      <td class="r">${fmt(r.components)}</td><td class="r">${fmt1(r.fabric_kg)}</td><td class="r">${fmt(r.trim_pieces)}</td>
+      <td class="r"${fx(FX.bomComps)}>${fmt(r.components)}</td><td class="r"${fx(FX.bomFabricKg)}>${fmt1(r.fabric_kg)}</td><td class="r"${fx(FX.bomTrims)}>${fmt(r.trim_pieces)}</td>
      </tr>`).join(''):'<tr><td colspan="4" class="loading">No styles match.</td></tr>';
     body.querySelectorAll('tr.row-click').forEach(tr=>tr.addEventListener('click',()=>showBom(tr.dataset.style)));
   }catch(e){rowErr('bom-styles-body',4,e);}
@@ -1034,8 +1197,8 @@ async function showBom(style){
       <thead><tr><th>Component</th><th class="r">Needed</th><th class="r">Stock</th><th>Location</th></tr></thead>
       <tbody>${use.map(r=>`<tr>
        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.component_name)}">${esc(r.component_name)}</td>
-       <td class="r">${fmt1(r.component_qty)} ${esc(r.component_uom||'')}</td>
-       <td class="r">${r.stock_kg!=null?fmt1(r.stock_kg)+' kg':'—'}</td>
+       <td class="r"${fx(FX.bomNeeded)}>${fmt1(r.component_qty)} ${esc(r.component_uom||'')}</td>
+       <td class="r"${fx(FX.bomStock)}>${r.stock_kg!=null?fmt1(r.stock_kg)+' kg':'—'}</td>
        <td style="color:var(--muted);">${esc(r.location_name||'—')}</td>
       </tr>`).join('')}</tbody>
      </table></div>`:'<p class="muted">No components found for this style.</p>';
@@ -1051,7 +1214,7 @@ async function loadWhereUsed(){
      <tr>
       <td style="font-weight:600;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.style)}">${esc(r.style)}</td>
       <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-sub);" title="${esc(r.component_name)}">${esc(r.component_name)}</td>
-      <td class="r">${fmt1(r.component_qty)}</td><td>${esc(r.component_uom||'—')}</td>
+      <td class="r"${fx(FX.wuQty)}>${fmt1(r.component_qty)}</td><td>${esc(r.component_uom||'—')}</td>
      </tr>`).join(''):'<tr><td colspan="4" class="muted" style="padding:1rem;">No styles use a fabric matching that name.</td></tr>';
   }catch(e){rowErr('wu-body',4,e);}
 }
@@ -1140,10 +1303,10 @@ function renderReservations(items){
     return `<tr>
       <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.fabric_name||'')}">${fab}</td>
       <td title="${esc(r.note||'')}">${esc(r.style_name||'—')}</td>
-      <td class="r" style="font-weight:600;white-space:nowrap;">${qtyTxt}</td>
-      <td class="r" style="white-space:nowrap;color:var(--text-sub);">${soh}</td>
+      <td class="r" style="font-weight:600;white-space:nowrap;"${fx(FX.resvReserved)}>${qtyTxt}</td>
+      <td class="r" style="white-space:nowrap;color:var(--text-sub);"${fx(FX.resvSoh)}>${soh}</td>
       <td style="white-space:nowrap;color:var(--muted);font-size:12px;">${esc(r.reserved_on||'—')}</td>
-      <td class="r" style="white-space:nowrap;">${held}</td>
+      <td class="r" style="white-space:nowrap;"${fx(FX.resvDaysHeld)}>${held}</td>
       <td style="font-size:12px;color:var(--text-sub);">${esc(r.reserved_by_name||'—')}</td>
       <td>${stPill}</td>
       <td style="white-space:nowrap;text-align:right;">${act}</td>
