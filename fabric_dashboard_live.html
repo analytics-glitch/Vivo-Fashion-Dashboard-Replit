@@ -120,6 +120,18 @@ table.data tbody tr:hover td{background:rgba(26,92,56,.03);}
 .popover{position:absolute;top:42px;left:0;z-index:30;background:var(--card);border:1px solid var(--border-strong);border-radius:10px;box-shadow:0 10px 30px rgba(16,40,24,.15);padding:6px;min-width:200px;max-height:360px;overflow:auto;}
 .col-opt{display:flex;align-items:center;gap:8px;padding:6px 8px;font-size:13px;border-radius:7px;cursor:pointer;user-select:none;}
 .col-opt:hover{background:rgba(26,92,56,.06);}
+.modal-overlay{position:fixed;inset:0;z-index:100;background:rgba(16,40,24,.45);display:flex;align-items:center;justify-content:center;padding:20px;}
+.modal-card{background:var(--card);border:1px solid var(--border-strong);border-radius:14px;box-shadow:0 20px 60px rgba(16,40,24,.3);max-width:640px;width:100%;max-height:85vh;overflow:auto;}
+.modal-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:18px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--card);z-index:1;}
+.modal-close{background:none;border:none;font-size:26px;line-height:1;cursor:pointer;color:var(--muted);padding:0 4px;}
+.modal-close:hover{color:var(--text);}
+.modal-body{padding:6px 20px 18px;}
+.detail-grid{display:grid;grid-template-columns:1fr 1fr;}
+.detail-item{display:flex;flex-direction:column;gap:3px;padding:11px 14px 11px 0;border-bottom:1px solid var(--border);}
+.detail-item:nth-child(even){padding-left:14px;padding-right:0;}
+.detail-item .dl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);}
+.detail-item .dv{font-size:14px;color:var(--text);}
+@media(max-width:560px){.detail-grid{grid-template-columns:1fr;}.detail-item:nth-child(even){padding-left:0;}}
 .col-opt input{height:auto;width:auto;margin:0;}
 table.data th.sortable{cursor:pointer;}
 table.data th.sortable:hover{color:var(--accent);}
@@ -286,6 +298,20 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      </div>
     </div>
    </section>
+
+   <!-- FABRIC DETAIL (barcode click) -->
+   <div id="fab-detail-overlay" class="modal-overlay" style="display:none;" onclick="closeFabricDetail()">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="fab-detail-title" onclick="event.stopPropagation()">
+     <div class="modal-head">
+      <div>
+       <h3 id="fab-detail-title" style="margin:0;font-size:1.05rem;"></h3>
+       <p id="fab-detail-sub" class="muted" style="margin:.25rem 0 0;font-size:12px;"></p>
+      </div>
+      <button class="modal-close" onclick="closeFabricDetail()" aria-label="Close">&times;</button>
+     </div>
+     <div id="fab-detail-body" class="modal-body"></div>
+    </div>
+   </div>
 
    <!-- AGEING -->
    <section id="page-ageing" style="display:none;">
@@ -1047,9 +1073,15 @@ const REG_COLS=[
   {k:'last_move',label:'Last move',type:'date'},
   {k:'days_since_move',label:'Days idle',type:'num'},
 ];
-const REG_DEFAULT=['default_code','name','fabric_subcategory','fabric_color','plain_print','gsm','cost_kes','qty_metres','qty_kg','team_reserved_kg','value_kes','weeks_cover','last_move'];
+const REG_DEFAULT=['default_code','name','fabric_category','fabric_subcategory','cost_per_kg','cost_metre','available_metres','available_kg','color'];
+// Fields shown in the per-fabric barcode detail view (everything not in the
+// default 9 columns above), in display order.
+const DETAIL_KEYS=['fiber_content','plain_print','fabric_structure','gsm','width_m','kg_per_mtr','supplier','fabric_color','cost_kes','qty_metres','qty_kg','team_reserved_metres','team_reserved_kg','value_kes','weeks_cover','last_move','days_since_move'];
 const NUM_TYPES={num:1,num1:1,numb:1,kes:1,kesc:1,wcover:1,rsv:1};
-let regCols=(()=>{try{const s=JSON.parse(localStorage.getItem('fabricRegCols'));if(Array.isArray(s)&&s.length){const mapped=s.map(k=>k==='primary_color'?'fabric_color':k);return [...new Set(mapped)].filter(k=>REG_COLS.some(c=>c.k===k));}return REG_DEFAULT.slice();}catch(_){return REG_DEFAULT.slice();}})();
+// Persisted-selection key is versioned (_v2): bumping it retires every user's
+// old saved column set so they pick up the new 9-column default once.
+const REG_COLS_KEY='fabricRegCols_v2';
+let regCols=(()=>{try{const s=JSON.parse(localStorage.getItem(REG_COLS_KEY));if(Array.isArray(s)&&s.length){const mapped=s.map(k=>k==='primary_color'?'fabric_color':k);return [...new Set(mapped)].filter(k=>REG_COLS.some(c=>c.k===k));}return REG_DEFAULT.slice();}catch(_){return REG_DEFAULT.slice();}})();
 let regSort={key:'value_kes',dir:'desc'};
 let regTimer;
 function debouncedRegister(){clearTimeout(regTimer);regTimer=setTimeout(()=>loadRegister(0),300);}
@@ -1068,30 +1100,66 @@ async function loadRegister(offset){
     document.getElementById('reg-info').textContent=regTotal?`${regOffset+1}–${Math.min(regOffset+PAGE_SIZE,regTotal)} of ${fmt(regTotal)}`:'0 results';
   }catch(e){rowErr('register-body',regCols.length||1,e);}
 }
+// Format just the inner value HTML for a column/row (pills, KES, dates, "—" for
+// blanks). Shared by the register table cells AND the barcode detail view so
+// formatting never drifts between them.
+function regValueHtml(col,r){
+  const v=r[col.k];
+  switch(col.type){
+    case 'name':return esc(v||'—');
+    case 'code':return esc(v||'—');
+    case 'pill':return v?`<span class="pill pill-neutral">${esc(v)}</span>`:'—';
+    case 'wpill':return v?`<span class="pill ${({Light:'pill-green',Medium:'pill-blue',Heavy:'pill-amber'})[v]||'pill-neutral'}">${esc(v)}</span>`:'—';
+    case 'num':return v!=null&&v!==''?fmt(v):'—';
+    case 'num1':return v!=null&&v!==''?fmt1(v):'—';
+    case 'numb':return v!=null&&v!==''?fmt(v):'—';
+    case 'kes':return fmtKES(v);
+    case 'kesc':return v!=null&&v!==''?'KES '+fmt1(v):'—';
+    case 'wcover':return v!=null&&v!==''?`<span class="pill ${v<2?'pill-red':v<6?'pill-amber':'pill-green'}">${fmt1(v)}</span>`:'—';
+    case 'rsv':return v!=null&&v!==''&&Number(v)>0?`<span class="pill pill-amber">${fmt1(v)}</span>`:'—';
+    case 'date':return esc(v||'—');
+    default:return esc(v||'—');
+  }
+}
 function regCell(col,r){
   const v=r[col.k];
   const f=REG_FX[col.k]?fx(REG_FX[col.k]):'';
+  const inner=regValueHtml(col,r);
   const cell=(()=>{
   switch(col.type){
-    case 'name':return `<td style="font-weight:600;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(v)}">${esc(v||'—')}</td>`;
-    case 'code':return `<td class="num" style="font-size:12px;color:var(--text-sub);white-space:nowrap;">${esc(v||'—')}</td>`;
-    case 'pill':return `<td>${v?`<span class="pill pill-neutral">${esc(v)}</span>`:'—'}</td>`;
-    case 'wpill':return `<td>${v?`<span class="pill ${({Light:'pill-green',Medium:'pill-blue',Heavy:'pill-amber'})[v]||'pill-neutral'}">${esc(v)}</span>`:'—'}</td>`;
-    case 'num':return `<td class="r">${v!=null&&v!==''?fmt(v):'—'}</td>`;
-    case 'num1':return `<td class="r">${v!=null&&v!==''?fmt1(v):'—'}</td>`;
-    case 'numb':return `<td class="r" style="font-weight:600;">${v!=null&&v!==''?fmt(v):'—'}</td>`;
-    case 'kes':return `<td class="r" style="color:var(--muted);">${fmtKES(v)}</td>`;
-    case 'kesc':return `<td class="r" style="white-space:nowrap;">${v!=null&&v!==''?'KES '+fmt1(v):'—'}</td>`;
-    case 'wcover':return `<td class="r">${v!=null&&v!==''?`<span class="pill ${v<2?'pill-red':v<6?'pill-amber':'pill-green'}">${fmt1(v)}</span>`:'—'}</td>`;
-    case 'rsv':return `<td class="r">${v!=null&&v!==''&&Number(v)>0?`<span class="pill pill-amber">${fmt1(v)}</span>`:'—'}</td>`;
-    case 'date':return `<td style="color:var(--muted);font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
-    default:return `<td style="color:var(--text-sub);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
+    case 'name':return `<td style="font-weight:600;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(v)}">${inner}</td>`;
+    case 'code':return `<td class="num" style="font-size:12px;white-space:nowrap;"><a href="#" class="reg-barcode" data-fab-id="${esc(r.id)}" title="View all fabric details" style="color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px;">${inner}</a></td>`;
+    case 'pill':return `<td>${inner}</td>`;
+    case 'wpill':return `<td>${inner}</td>`;
+    case 'num':return `<td class="r">${inner}</td>`;
+    case 'num1':return `<td class="r">${inner}</td>`;
+    case 'numb':return `<td class="r" style="font-weight:600;">${inner}</td>`;
+    case 'kes':return `<td class="r" style="color:var(--muted);">${inner}</td>`;
+    case 'kesc':return `<td class="r" style="white-space:nowrap;">${inner}</td>`;
+    case 'wcover':return `<td class="r">${inner}</td>`;
+    case 'rsv':return `<td class="r">${inner}</td>`;
+    case 'date':return `<td style="color:var(--muted);font-size:12px;white-space:nowrap;">${inner}</td>`;
+    default:return `<td style="color:var(--text-sub);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${inner}</td>`;
   }
   })();
   // Inject the formula/source note (when defined for this column) into the cell's
   // opening tag. f starts with a space, so it slots cleanly after `<td`.
   return f?cell.replace('<td','<td'+f):cell;
 }
+// ── Barcode detail view ──
+function openFabricDetail(id){
+  const r=(lastRegItems||[]).find(x=>String(x.id)===String(id));
+  if(!r)return;
+  document.getElementById('fab-detail-title').textContent=r.name||'Fabric detail';
+  document.getElementById('fab-detail-sub').textContent='Barcode: '+(r.default_code||'—');
+  document.getElementById('fab-detail-body').innerHTML='<div class="detail-grid">'+DETAIL_KEYS.map(k=>{
+    const col=REG_COLS.find(c=>c.k===k);if(!col)return '';
+    const f=REG_FX[k]?fx(REG_FX[k]):'';
+    return `<div class="detail-item"><span class="dl"${f}>${esc(col.label)}</span><span class="dv">${regValueHtml(col,r)}</span></div>`;
+  }).join('')+'</div>';
+  document.getElementById('fab-detail-overlay').style.display='flex';
+}
+function closeFabricDetail(){document.getElementById('fab-detail-overlay').style.display='none';}
 function renderRegisterTable(){
   const cols=REG_COLS.filter(c=>regCols.includes(c.k));
   document.getElementById('register-head').innerHTML='<tr>'+cols.map(c=>{
@@ -1118,10 +1186,10 @@ function toggleColPicker(e){e.stopPropagation();const p=document.getElementById(
 function toggleCol(k,on){
   if(on){if(!regCols.includes(k))regCols.push(k);}else{regCols=regCols.filter(x=>x!==k);}
   if(!regCols.length)regCols=['name'];
-  localStorage.setItem('fabricRegCols',JSON.stringify(regCols));
+  localStorage.setItem(REG_COLS_KEY,JSON.stringify(regCols));
   renderRegisterTable();
 }
-function resetCols(e){e.preventDefault();regCols=REG_DEFAULT.slice();localStorage.setItem('fabricRegCols',JSON.stringify(regCols));buildColPicker();renderRegisterTable();}
+function resetCols(e){e.preventDefault();regCols=REG_DEFAULT.slice();localStorage.setItem(REG_COLS_KEY,JSON.stringify(regCols));buildColPicker();renderRegisterTable();}
 function regPage(dir){const o=regOffset+dir*PAGE_SIZE;if(o<0||o>=regTotal)return;loadRegister(o);}
 async function exportRegister(btn){
   // Export the FULL filtered/sorted register, not just the visible 50-row page.
@@ -1555,6 +1623,16 @@ async function init(){
     if(opt&&opt.dataset.id){pickFabric(opt);return;}
     const box=document.getElementById('resv-fabric-list');
     if(box&&box.style.display!=='none'&&!e.target.closest('#resv-fabric-search')&&!e.target.closest('#resv-fabric-list'))box.style.display='none';
+  });
+  // Register barcode → open the per-fabric detail view (delegated; survives table
+  // re-renders). The barcode is a td link, so it never triggers column sorting.
+  document.getElementById('register-body').addEventListener('click',e=>{
+    const a=e.target.closest('.reg-barcode');
+    if(a){e.preventDefault();openFabricDetail(a.dataset.fabId);}
+  });
+  // Esc closes the fabric detail modal.
+  document.addEventListener('keydown',e=>{
+    if(e.key==='Escape'&&document.getElementById('fab-detail-overlay').style.display!=='none')closeFabricDetail();
   });
   // Default global date range: last 30 days → today (local time, ISO date)
   const today=new Date();
