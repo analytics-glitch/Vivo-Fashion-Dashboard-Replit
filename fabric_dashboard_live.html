@@ -758,6 +758,7 @@ function renderKpis(d){
   // month projected to a full month (backend-computed). Trend vs the prior period.
   const cover=(d.months_of_cover!=null)?d.months_of_cover:null;
   const coverPrior=(d.months_of_cover_prior!=null)?d.months_of_cover_prior:null;
+  const coverFmt=n=>Number(n).toLocaleString(undefined,{minimumFractionDigits:1,maximumFractionDigits:1});
   let coverTrend='';
   if(cover!=null&&coverPrior!=null){
     const delta=cover-coverPrior;
@@ -781,7 +782,7 @@ function renderKpis(d){
    <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value"${fx(FX.totalWeight)}>${fmt(d.fabric_stock_kg)}</p><p class="kpi-sub">kg in main warehouse</p></div>
    <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(d.consumption_today_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.consumed30d)}>${fmt(d.consumption_30d_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
-   <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}"${fx(FX.monthsCover)}>${cover!=null?fmt1(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>
+   <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}"${fx(FX.monthsCover)}>${cover!=null?coverFmt(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>
    <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger"${fx(FX.deadStock)}>${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">${fmt(d.dead_stock_kg)} kg &middot; <span${fx(FX.deadPct)}>${deadPct.toFixed(0)}% of value</span></p></div>
    <div class="kpi"><span class="eyebrow">Outstanding POs</span><p class="kpi-value"${fx(FX.outstandingPOs)}>${fmt(d.outstanding_pos)}</p><p class="kpi-sub">${fmtKES(d.outstanding_po_value)} inbound</p></div>
    <div class="kpi"><span class="eyebrow">Styles with BOM</span><p class="kpi-value"${fx(FX.stylesBom)}>${fmt(d.styles_with_bom)}</p><p class="kpi-sub">linked to fabric</p></div>`;
