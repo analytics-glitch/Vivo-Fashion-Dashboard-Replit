@@ -1020,9 +1020,7 @@ function renderKpis(d){
    <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(d.consumption_today_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.consumed30d)}>${fmt(d.consumption_30d_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
    <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}"${fx(FX.monthsCover)}>${cover!=null?coverFmt(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>
-   <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger"${fx(FX.deadStock)}>${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">${fmt(d.dead_stock_kg)} kg &middot; <span${fx(FX.deadPct)}>${deadPct.toFixed(0)}% of value</span></p></div>
-   <div class="kpi"><span class="eyebrow">Outstanding POs</span><p class="kpi-value"${fx(FX.outstandingPOs)}>${fmt(d.outstanding_pos)}</p><p class="kpi-sub">${fmtKES(d.outstanding_po_value)} inbound</p></div>
-   <div class="kpi"><span class="eyebrow">Styles with BOM</span><p class="kpi-value"${fx(FX.stylesBom)}>${fmt(d.styles_with_bom)}</p><p class="kpi-sub">linked to fabric</p></div>`;
+   <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger"${fx(FX.deadStock)}>${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">${fmt(d.dead_stock_kg)} kg &middot; <span${fx(FX.deadPct)}>${deadPct.toFixed(0)}% of value</span></p></div>`;
 }
 function renderCategories(data){
   const cats={};
