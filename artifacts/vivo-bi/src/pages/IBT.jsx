@@ -3,22 +3,15 @@ import { useFilters } from "@/lib/filters";
 import { useAuth } from "@/lib/auth";
 import { api, fmtKES, fmtNum } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
-import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import IBTFlatTable from "@/components/IBTFlatTable";
-import IBTSuggestionsTable from "@/components/IBTSuggestionsTable";
-import IBTOutcomes from "@/components/IBTOutcomes";
-import WarehouseToStoreIBT from "@/components/WarehouseToStoreIBT";
 import IBTCompletedMoves from "@/components/IBTCompletedMoves";
 import IBTMarkAsDoneModal from "@/components/IBTMarkAsDoneModal";
-import AgedStockReport from "@/components/AgedStockReport";
-import { useRecommendationState } from "@/lib/useRecommendationState";
 import { toast } from "sonner";
 import {
   Truck, Coins, Package, MagnifyingGlass, DownloadSimple,
-  ListChecks, ChartLineUp, Stack,
+  Stack,
 } from "@phosphor-icons/react";
-
-const ibtKey = (r) => `${r.style_name}||${r.from_store}||${r.to_store}`;
 
 const IBT = () => {
   const { applied, touchLastUpdated, setPreset } = useFilters();
@@ -41,8 +34,6 @@ const IBT = () => {
   const [completedSkuKeys, setCompletedSkuKeys] = useState(new Set());
   const [completedRefresh, setCompletedRefresh] = useState(0);
   const [doneModalRow, setDoneModalRow] = useState(null);
-  // B1 — top-level view tabs: live suggestions vs. realised outcomes.
-  const [tab, setTab] = useState("suggestions");
   // B1 — cluster-aware matching (A/B/C revenue tiers). Default ON per spec;
   // persisted so a buyer's preference survives reloads.
   const [useClustering, setUseClustering] = useState(() => {
@@ -75,14 +66,6 @@ const IBT = () => {
     setSensitivity(key);
     try { localStorage.setItem("vivo_ibt_sensitivity", key); } catch { /* private browsing */ }
   };
-  // Recommendation pill state retained at module level only because
-  // useRecommendationState writes to MongoDB; we no longer surface the
-  // pill UI per leadership request — Mark As Done is the single
-  // workflow.
-  // B1 — full hook: read state + refresh after bulk actions in the
-  // priority suggestions accordion.
-  const ibtRecState = useRecommendationState("ibt");
-
   // ALWAYS force "Last 30 days" on this page — leadership directive so
   // store managers don't see stale narrow date windows. Runs once on
   // mount, then subsequent filter-bar changes are respected.
@@ -244,39 +227,10 @@ const IBT = () => {
         </p>
       </div>
 
-      <div className="flex items-center gap-1 border-b border-border" role="tablist" data-testid="ibt-tabs">
-        {[
-          { id: "suggestions", label: "Suggestions", icon: ListChecks },
-          { id: "outcomes", label: "Outcomes", icon: ChartLineUp },
-        ].map((t) => {
-          const TabIcon = t.icon;
-          const active = tab === t.id;
-          return (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() => setTab(t.id)}
-              data-testid={`ibt-tab-${t.id}`}
-              className={`inline-flex items-center gap-1.5 px-4 py-2 text-[13px] font-semibold border-b-2 -mb-px transition-colors ${
-                active
-                  ? "border-brand text-brand-deep"
-                  : "border-transparent text-muted hover:text-foreground"
-              }`}
-            >
-              <TabIcon size={15} weight={active ? "fill" : "regular"} /> {t.label}
-            </button>
-          );
-        })}
-      </div>
+      {loading && <Loading label="Analyzing sell-through across stores…" />}
+      {error && <ErrorBox message={error} />}
 
-      {tab === "outcomes" && <IBTOutcomes dataVersion={dataVersion} />}
-
-      {tab === "suggestions" && loading && <Loading label="Analyzing sell-through across stores…" />}
-      {tab === "suggestions" && error && <ErrorBox message={error} />}
-
-      {tab === "suggestions" && !loading && !error && (
+      {!loading && !error && (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <KPICard testId="ibt-kpi-moves" accent label="Open moves"
@@ -290,11 +244,8 @@ const IBT = () => {
           <div className="card-white p-3 flex flex-wrap items-center gap-2" data-testid="ibt-jump-nav">
             <span className="text-[11.5px] font-semibold text-muted">Jump to:</span>
             {[
-              { id: "ibt-sec-priority", label: "Priority transfers" },
               { id: "ibt-sec-store", label: "Store → Store list" },
-              { id: "ibt-sec-warehouse", label: "Warehouse → Store" },
               ...(canSeeCompletedMoves ? [{ id: "ibt-sec-completed", label: "Completed moves" }] : []),
-              { id: "ibt-sec-aged", label: "Aged stock" },
             ].map((s) => (
               <button
                 key={s.id}
@@ -404,23 +355,6 @@ const IBT = () => {
             </button>
           </div>
 
-          <div id="ibt-sec-priority" className="card-white p-4 sm:p-5 scroll-mt-24" data-testid="ibt-priority-card">
-            <SectionTitle
-              title="Priority transfers"
-              subtitle="Grouped by style and ranked by transfer score (donor surplus + destination demand). Expand a style to see every donor → needer pair, store revenue-cluster (A/B/C), the projected weeks-of-cover left at source, and the SKU-level size run. Select rows for bulk Mark Done / Dismiss / Export."
-            />
-            <IBTSuggestionsTable
-              suggestions={visible}
-              recState={ibtRecState}
-              onMarkDone={(payload) => setDoneModalRow(payload)}
-              emptyLabel={
-                filtered.length === 0
-                  ? "No transfer opportunities found for the current window. Try widening the date range or turning off cluster-aware matching."
-                  : "All transfer moves have been actioned."
-              }
-            />
-          </div>
-
           <div id="ibt-sec-store" className="card-white p-4 sm:p-5 scroll-mt-24" data-testid="ibt-table-card">
             <SectionTitle
               title={`Store → Store transfer list · ${visible.length} suggestions`}
@@ -481,56 +415,11 @@ const IBT = () => {
             </div>
           </div>
 
-          <div id="ibt-sec-warehouse" className="scroll-mt-24">
-          <WarehouseToStoreIBT
-            dateFrom={dateFrom}
-            dateTo={dateTo}
-            countries={countries}
-            onMarkDone={async (r) => {
-              // Iter 88t — One-click "Done" for warehouse→store IBT.
-              // Skips the modal entirely; the backend fills in PO#,
-              // completed-by name, and transfer date with sensible
-              // defaults. The store→store flow still uses the modal
-              // (it surfaces the audit fields the picker fills in by
-              // hand).
-              try {
-                await api.post("/ibt/complete", {
-                  style_name: r.style_name,
-                  brand: r.brand || null,
-                  subcategory: r.subcategory || null,
-                  from_store: r.from_store,
-                  to_store: r.to_store,
-                  units_to_move: Number(r.units_to_move || r.suggested_units || 1),
-                  actual_units_moved: Number(r.units_to_move || r.suggested_units || 1),
-                  flow: "warehouse_to_store",
-                  sku: r.sku || null,
-                  color: r.color || null,
-                  size: r.size || null,
-                  barcode: r.barcode || null,
-                });
-                // Trigger the completed-moves list + parent SKU-keys
-                // refresh so the row vanishes from the live table.
-                setCompletedRefresh((k) => k + 1);
-              } catch (e) {
-                // Surface failure inline so the row isn't silently lost.
-                // eslint-disable-next-line no-console
-                console.error("[IBT warehouse→store] one-click done failed:", e);
-                alert(e?.response?.data?.detail || e?.message || "Failed to mark as done");
-              }
-            }}
-            completedSkuKeys={completedSkuKeys}
-          />
-          </div>
-
           {canSeeCompletedMoves && (
             <div id="ibt-sec-completed" className="scroll-mt-24">
               <IBTCompletedMoves refreshKey={completedRefresh} />
             </div>
           )}
-
-          <div id="ibt-sec-aged" className="scroll-mt-24">
-            <AgedStockReport />
-          </div>
 
           {doneModalRow && (
             <IBTMarkAsDoneModal
