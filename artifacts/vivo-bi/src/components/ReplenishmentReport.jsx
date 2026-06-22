@@ -24,16 +24,8 @@ const fmtDateInput = (d) => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
-// Combine colour + print into a single deduped "Colour / Print" display value.
-const colourPrint = (r) => {
-  const seen = new Set();
-  const out = [];
-  for (const v of [r?.color_print, r?.print_plain]) {
-    const s = (v || "").trim();
-    if (s && !seen.has(s.toLowerCase())) { seen.add(s.toLowerCase()); out.push(s); }
-  }
-  return out.join(" · ");
-};
+// Colour only — show the colour name; the generic print/plain value is dropped.
+const colourPrint = (r) => (r?.color_print || "").trim();
 
 const ReplenishmentReport = () => {
   const yesterday = useMemo(() => {
@@ -120,7 +112,7 @@ const ReplenishmentReport = () => {
     { key: "bin", label: "Bin", align: "left",
       render: (r) => r.bin ? <span className="pill-amber">{r.bin}</span> : <span className="text-muted text-[11px]">—</span>,
       csv: (r) => r.bin || "" },
-    { key: "colour_print", label: "Colour / Print", align: "left",
+    { key: "colour_print", label: "Colour", align: "left",
       sortValue: (r) => colourPrint(r),
       render: (r) => {
         const v = colourPrint(r);

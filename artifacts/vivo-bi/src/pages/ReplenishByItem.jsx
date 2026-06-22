@@ -15,16 +15,8 @@ const ALL_STORES = "__all__";
 // Online channel that participates in cross-store replenishment (others excluded).
 const ONLINE_SHOP_ZETU = "Online - Shop Zetu";
 
-// Combine colour + print into a single deduped "Colour / Print" display value.
-const fmtColourPrint = (r) => {
-  const seen = new Set();
-  const out = [];
-  for (const v of [r?.color_print, r?.print_plain]) {
-    const s = (v || "").trim();
-    if (s && !seen.has(s.toLowerCase())) { seen.add(s.toLowerCase()); out.push(s); }
-  }
-  return out.join(" · ");
-};
+// Colour only — show the colour name; the generic print/plain value is dropped.
+const fmtColourPrint = (r) => (r?.color_print || "").trim();
 
 const _isAdminOrOwner = (user) => {
   if (!user) return false;
@@ -157,24 +149,24 @@ const ItemPicker = ({ mode, value, label, onPick }) => {
 
 // ---- Shared full-parity replenishment table (mirrors the main Replenishment
 // list column-for-column) ----
-const ReplenTable = ({ rows, sort, toggleSort, actuals, setActual, refs, setRef, savingKey, onMarkDone, done }) => (
+const ReplenTable = ({ rows, sort, sorts, toggleSort, actuals, setActual, refs, setRef, savingKey, onMarkDone, done }) => (
   <div className="overflow-auto">
     <table className="w-full text-sm">
       <thead>
         <tr className="border-b border-border text-left text-xs text-muted-foreground">
-          <SortableTh sortKey="owner" sort={sort} onSort={toggleSort} className="px-3 py-2">Owner</SortableTh>
-          <SortableTh sortKey="pos_location" sort={sort} onSort={toggleSort} className="px-3 py-2">POS Location</SortableTh>
-          <SortableTh sortKey="days_lapsed" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Days lapsed</SortableTh>
-          <SortableTh sortKey="last_sale" sort={sort} onSort={toggleSort} className="px-3 py-2">Last sold</SortableTh>
-          <SortableTh sortKey="product_name" sort={sort} onSort={toggleSort} className="px-3 py-2">Product</SortableTh>
-          <SortableTh sortKey="size" sort={sort} onSort={toggleSort} className="px-3 py-2">Size</SortableTh>
-          <SortableTh sortKey="barcode" sort={sort} onSort={toggleSort} className="px-3 py-2">Barcode</SortableTh>
-          <SortableTh sortKey="bin" sort={sort} onSort={toggleSort} className="px-3 py-2">Bin</SortableTh>
-          <SortableTh sortKey="color_print" sort={sort} onSort={toggleSort} className="px-3 py-2">Colour / Print</SortableTh>
-          <SortableTh sortKey="units_sold" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Sold</SortableTh>
-          <SortableTh sortKey="soh_store" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">SOH Store</SortableTh>
-          <SortableTh sortKey="soh_wh" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">SOH WH</SortableTh>
-          <SortableTh sortKey="suggested_units" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Suggested</SortableTh>
+          <SortableTh sortKey="owner" sort={sort} sorts={sorts} onSort={toggleSort} className="px-3 py-2">Owner</SortableTh>
+          <SortableTh sortKey="pos_location" sort={sort} sorts={sorts} onSort={toggleSort} className="px-3 py-2">POS Location</SortableTh>
+          <SortableTh sortKey="days_lapsed" sort={sort} sorts={sorts} onSort={toggleSort} numeric className="px-3 py-2">Days lapsed</SortableTh>
+          <SortableTh sortKey="last_sale" sort={sort} sorts={sorts} onSort={toggleSort} className="px-3 py-2">Last sold</SortableTh>
+          <SortableTh sortKey="product_name" sort={sort} sorts={sorts} onSort={toggleSort} className="px-3 py-2">Product</SortableTh>
+          <SortableTh sortKey="size" sort={sort} sorts={sorts} onSort={toggleSort} className="px-3 py-2">Size</SortableTh>
+          <SortableTh sortKey="barcode" sort={sort} sorts={sorts} onSort={toggleSort} className="px-3 py-2">Barcode</SortableTh>
+          <SortableTh sortKey="bin" sort={sort} sorts={sorts} onSort={toggleSort} className="px-3 py-2">Bin</SortableTh>
+          <SortableTh sortKey="color_print" sort={sort} sorts={sorts} onSort={toggleSort} className="px-3 py-2">Colour</SortableTh>
+          <SortableTh sortKey="units_sold" sort={sort} sorts={sorts} onSort={toggleSort} numeric className="px-3 py-2">Sold</SortableTh>
+          <SortableTh sortKey="soh_store" sort={sort} sorts={sorts} onSort={toggleSort} numeric className="px-3 py-2">SOH Store</SortableTh>
+          <SortableTh sortKey="soh_wh" sort={sort} sorts={sorts} onSort={toggleSort} numeric className="px-3 py-2">SOH WH</SortableTh>
+          <SortableTh sortKey="suggested_units" sort={sort} sorts={sorts} onSort={toggleSort} numeric className="px-3 py-2">Suggested</SortableTh>
           <th className="px-3 py-2 text-right">Actual replenished</th>
           <th className="px-3 py-2">Transfer ref</th>
           <th className="px-3 py-2">Action</th>
@@ -270,6 +262,7 @@ const ReplenishByItem = () => {
   const { user } = useAuth();
   const isAdmin = _isAdminOrOwner(user);
   const [tab, setTab] = useState("item"); // "item" | "gaps"
+  const [ownerFilter, setOwnerFilter] = useState(""); // "" = all owners
 
   // shared date window (last 90 days)
   const today = useMemo(() => new Date(), []);
@@ -403,10 +396,21 @@ const ReplenishByItem = () => {
 
   const itemRows = itemData?.rows || [];
   const gapRows = gapData?.rows || [];
-  const { sort: itemSort, toggleSort: itemToggle, sortRows: itemSortRows } = useTableSort({ key: "units_sold", dir: "desc" });
-  const { sort: gapSort, toggleSort: gapToggle, sortRows: gapSortRows } = useTableSort({ key: "units_sold", dir: "desc" });
-  const itemSorted = itemSortRows(itemRows);
-  const gapSorted = gapSortRows(gapRows);
+  const { sort: itemSort, sorts: itemSorts, toggleSort: itemToggle, sortRows: itemSortRows } = useTableSort({ key: "units_sold", dir: "desc" });
+  const { sort: gapSort, sorts: gapSorts, toggleSort: gapToggle, sortRows: gapSortRows } = useTableSort({ key: "units_sold", dir: "desc" });
+  // Owner filter — distinct owners present in each view; applied before sorting.
+  const itemOwners = useMemo(
+    () => [...new Set(itemRows.map((r) => r.owner).filter(Boolean))].sort(),
+    [itemRows],
+  );
+  const gapOwners = useMemo(
+    () => [...new Set(gapRows.map((r) => r.owner).filter(Boolean))].sort(),
+    [gapRows],
+  );
+  const activeOwners = tab === "item" ? itemOwners : gapOwners;
+  const ownerMatch = (r) => !ownerFilter || r.owner === ownerFilter;
+  const itemSorted = itemSortRows(itemRows.filter(ownerMatch));
+  const gapSorted = gapSortRows(gapRows.filter(ownerMatch));
 
   // Excel export — server-built XLSX (same pattern as Replenishments/IBT). The
   // axios cookie auth rides along; the file mirrors the visible table columns.
@@ -510,6 +514,19 @@ const ReplenishByItem = () => {
           </div>
         )}
         <div className="flex flex-col gap-1">
+          <span className="text-xs text-muted-foreground">Owner</span>
+          <select
+            value={ownerFilter}
+            onChange={(e) => setOwnerFilter(e.target.value)}
+            className="rounded-lg border border-border bg-card px-3 py-2 text-sm"
+            style={{ minWidth: 160 }}
+            data-testid="select-owner"
+          >
+            <option value="">All owners</option>
+            {activeOwners.map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+        <div className="flex flex-col gap-1">
           <span className="text-xs text-muted-foreground">Sold from</span>
           <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
             className="rounded-lg border border-border bg-card px-3 py-2 text-sm" data-testid="input-date-from" />
@@ -525,6 +542,9 @@ const ReplenishByItem = () => {
             onChange={(e) => setThreshold(Math.max(0, parseInt(e.target.value || "0", 10)))}
             className="w-24 rounded-lg border border-border bg-card px-3 py-2 text-sm" data-testid="input-threshold" />
         </div>
+        <p className="w-full text-[11px] text-muted-foreground">
+          Tip: click a column header to sort. <strong>Shift-click</strong> another header to sort by multiple columns (e.g. Owner, then POS Location).
+        </p>
       </div>
 
       {/* ---- By Item view ---- */}
@@ -568,7 +588,7 @@ const ReplenishByItem = () => {
                 ? <Empty label="No understocked stores for this item (or warehouse is empty)." />
                 : (
                   <ReplenTable
-                    rows={itemSorted} sort={itemSort} toggleSort={itemToggle}
+                    rows={itemSorted} sort={itemSort} sorts={itemSorts} toggleSort={itemToggle}
                     actuals={actuals} setActual={setActual} refs={refs} setRef={setRef}
                     savingKey={savingKey} onMarkDone={markAsDone} done={done}
                   />
@@ -615,7 +635,7 @@ const ReplenishByItem = () => {
                 ? <Empty label="No demand gaps — this store stocks what it sells (or warehouse is empty)." />
                 : (
                   <ReplenTable
-                    rows={gapSorted} sort={gapSort} toggleSort={gapToggle}
+                    rows={gapSorted} sort={gapSort} sorts={gapSorts} toggleSort={gapToggle}
                     actuals={actuals} setActual={setActual} refs={refs} setRef={setRef}
                     savingKey={savingKey} onMarkDone={markAsDone} done={done}
                   />

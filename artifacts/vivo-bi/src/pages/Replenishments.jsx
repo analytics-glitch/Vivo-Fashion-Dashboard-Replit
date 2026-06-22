@@ -48,16 +48,8 @@ const _isAdminOrOwner = (user) => {
   return r === "admin" || r === "owner";
 };
 
-// Combine colour + print into a single deduped "Colour / Print" display value.
-const fmtColourPrint = (r) => {
-  const seen = new Set();
-  const out = [];
-  for (const v of [r?.color_print, r?.print_plain]) {
-    const s = (v || "").trim();
-    if (s && !seen.has(s.toLowerCase())) { seen.add(s.toLowerCase()); out.push(s); }
-  }
-  return out.join(" · ");
-};
+// Colour only — show the colour name; the generic print/plain value is dropped.
+const fmtColourPrint = (r) => (r?.color_print || "").trim();
 
 const PRIO_RANK = { critical: 0, high: 1, medium: 2 };
 
@@ -548,7 +540,7 @@ const Replenishments = () => {
     doc.text(`${rows.length} lines · ${totUnits} units`, margin, 66);
 
     // Hand-rolled table (avoids the jspdf-autotable runtime dep).
-    const headers = ["POS", "Days", "Product", "Colour / Print", "Size", "Barcode", "Bin", "Sold", "Store", "WH", "Need", "Actual"];
+    const headers = ["POS", "Days", "Product", "Colour", "Size", "Barcode", "Bin", "Sold", "Store", "WH", "Need", "Actual"];
     const colWidths = [104, 30, 168, 86, 36, 66, 50, 34, 36, 34, 38, 46];
     const startX = margin;
     let y = 88;
@@ -886,6 +878,9 @@ const Replenishments = () => {
             } />
           ) : (
             <div className="overflow-x-auto rounded-lg border border-border bg-white">
+              <p className="px-3 py-2 text-[11px] text-muted border-b border-border">
+                Tip: click a column header to sort. <strong>Shift-click</strong> another header to sort by multiple columns (e.g. Owner, then POS Location).
+              </p>
               <table className="w-full min-w-max text-[12.5px]" data-testid="replen-table">
                 <thead className="bg-panel sticky top-0 z-10">
                   <tr className="text-left">
@@ -899,18 +894,18 @@ const Replenishments = () => {
                         className="accent-emerald-700"
                       />
                     </th>
-                    <SortableTh sortKey="owner" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Owner</SortableTh>
-                    <SortableTh sortKey="pos_location" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">POS Location</SortableTh>
-                    <SortableTh sortKey="days_lapsed" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Days since this SKU first appeared on the replenishment list. RED when > 2.">Days lapsed</SortableTh>
-                    <SortableTh sortKey="product_name" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold sticky left-0 bg-panel z-20 min-w-[200px] max-w-[280px]">Product</SortableTh>
-                    <SortableTh sortKey="size" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Size</SortableTh>
-                    <SortableTh sortKey="barcode" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Barcode</SortableTh>
-                    <SortableTh sortKey="bin" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Bin</SortableTh>
-                    <SortableTh sortKey="colour_print" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Colour / Print</SortableTh>
-                    <SortableTh sortKey="units_sold" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Sold</SortableTh>
-                    <SortableTh sortKey="soh_store" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">SOH Store</SortableTh>
-                    <SortableTh sortKey="soh_wh" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">SOH WH</SortableTh>
-                    <SortableTh sortKey="replenish" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Suggested</SortableTh>
+                    <SortableTh sortKey="owner" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Owner</SortableTh>
+                    <SortableTh sortKey="pos_location" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">POS Location</SortableTh>
+                    <SortableTh sortKey="days_lapsed" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Days since this SKU first appeared on the replenishment list. RED when > 2.">Days lapsed</SortableTh>
+                    <SortableTh sortKey="product_name" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold sticky left-0 bg-panel z-20 min-w-[200px] max-w-[280px]">Product</SortableTh>
+                    <SortableTh sortKey="size" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Size</SortableTh>
+                    <SortableTh sortKey="barcode" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Barcode</SortableTh>
+                    <SortableTh sortKey="bin" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Bin</SortableTh>
+                    <SortableTh sortKey="colour_print" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Colour</SortableTh>
+                    <SortableTh sortKey="units_sold" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Sold</SortableTh>
+                    <SortableTh sortKey="soh_store" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">SOH Store</SortableTh>
+                    <SortableTh sortKey="soh_wh" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">SOH WH</SortableTh>
+                    <SortableTh sortKey="replenish" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Suggested</SortableTh>
                     <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Actual replenished</th>
                     <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Transfer ref</th>
                     <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Action</th>

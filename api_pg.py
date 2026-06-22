@@ -7929,6 +7929,41 @@ def analytics_replenish_options(mode: str = Query(default="style"),
     return {"mode": "sku" if mode == "sku" else "style", "options": rows}
 
 
+def _cap_replenish_to_warehouse(rows, *, need_key, out_key,
+                                sku_key="sku", wh_key="soh_wh",
+                                sold_key="units_sold", loc_key="pos_location"):
+    """Cap suggested replenishment so the units recommended for a SKU across all
+    stores never exceed that SKU's warehouse stock-on-hand (soh_wh).
+
+    A SKU's finite warehouse units are a shared pool: independently suggesting
+    ``need`` for every understocked store double-counts that pool, so the page can
+    recommend sending more than the warehouse physically holds. Here each SKU's
+    warehouse SOH is ALLOCATED to the TOP-PERFORMING stores first (most units sold
+    in the window), then by largest unmet need, then store name for a stable,
+    deterministic split. Mutates ``rows`` in place (sets ``out_key``) and returns
+    them. Single-store SKUs simply get min(need, soh_wh)."""
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for r in rows:
+        groups[r.get(sku_key)].append(r)
+    for grp in groups.values():
+        # soh_wh is a per-SKU figure (every row in the group should carry the same
+        # value); take the max defensively so an upstream NULL/anomaly on one row
+        # can't shrink the pool below the SKU's true warehouse stock.
+        remaining = max((int(r.get(wh_key) or 0) for r in grp), default=0)
+        grp.sort(key=lambda r: (
+            -(int(r.get(sold_key) or 0)),
+            -(int(r.get(need_key) or 0)),
+            str(r.get(loc_key) or ""),
+        ))
+        for r in grp:
+            need = max(0, int(r.get(need_key) or 0))
+            alloc = min(need, remaining) if remaining > 0 else 0
+            r[out_key] = alloc
+            remaining -= alloc
+    return rows
+
+
 @app.get("/api/analytics/replenish-by-item")
 def analytics_replenish_by_item(
     mode: str = Query(default="style"),
@@ -8045,13 +8080,16 @@ def analytics_replenish_by_item(
             "color_print": r.get("color_print") or "", "print_plain": r.get("print_plain") or "",
             "country": r.get("country"),
             "units_sold": units, "soh_store": soh, "soh_wh": soh_wh,
-            "suggested_units": min(max(thr - soh, 0), soh_wh),
+            "suggested_units": max(thr - soh, 0),
             "days_lapsed": days_lapsed,
             "last_sale": str(r["last_sale"]) if r.get("last_sale") else None,
             "replenished": bool(mark.get("replenished", False)),
             "actual_units_replenished": int(mark.get("actual_units_replenished", 0)),
             "transfer_ref": mark.get("transfer_ref") or "",
         })
+    # Allocate each SKU's warehouse pool across stores (top sellers first) so the
+    # suggested total per SKU never exceeds its warehouse stock.
+    _cap_replenish_to_warehouse(out, need_key="suggested_units", out_key="suggested_units")
     for idx, row in enumerate(sorted(out, key=lambda x: (x["units_sold"], -x["soh_store"]), reverse=True)):
         row["owner"] = owners[idx % len(owners)] if owners else "—"
     out.sort(key=lambda x: (x["units_sold"], -x["soh_store"]), reverse=True)
@@ -8199,13 +8237,16 @@ def analytics_replenish_gaps(
             "color_print": r.get("color_print") or "", "print_plain": r.get("print_plain") or "",
             "units_sold": int(r["units_sold"] or 0), "soh_store": soh,
             "soh_wh": soh_wh,
-            "suggested_units": min(max(thr - soh, 0), soh_wh),
+            "suggested_units": max(thr - soh, 0),
             "days_lapsed": days_lapsed,
             "last_sale": str(r["last_sale"]) if r.get("last_sale") else None,
             "replenished": bool(mark.get("replenished", False)),
             "actual_units_replenished": int(mark.get("actual_units_replenished", 0)),
             "transfer_ref": mark.get("transfer_ref") or "",
         })
+    # Allocate each SKU's warehouse pool across stores (top sellers first) so the
+    # suggested total per SKU never exceeds its warehouse stock.
+    _cap_replenish_to_warehouse(out, need_key="suggested_units", out_key="suggested_units")
     return {"store": st, "date_from": date_from, "date_to": date_to,
             "low_threshold": thr, "rows": out}
 
@@ -8213,20 +8254,14 @@ def analytics_replenish_gaps(
 # Shared XLSX column set for the Replenish by Style / SKU exports — mirrors the
 # ReplenTable columns shown in the UI for both the By Item and Store Gaps views.
 def _replen_colour_print(r):
-    # Combine colour + print into one display value (deduped, case-insensitive)
-    # so every replenishment surface shows a single "Colour / Print" column.
-    parts, seen = [], set()
-    for v in (r.get("color_print"), r.get("print_plain")):
-        v = (v or "").strip()
-        if v and v.lower() not in seen:
-            seen.add(v.lower())
-            parts.append(v)
-    return " · ".join(parts)
+    # Colour only — the colour name (color_print) is the meaningful descriptor;
+    # the generic print_plain ("Print"/"Plain") is dropped per ops request.
+    return (r.get("color_print") or "").strip()
 
 
 _REPLEN_ITEM_XLSX_COLS = [
     "Owner", "Store", "Days Lapsed", "Last Sold", "Product", "Size",
-    "Barcode", "Bin", "Colour / Print", "Units Sold", "Store SOH", "WH SOH",
+    "Barcode", "Bin", "Colour", "Units Sold", "Store SOH", "WH SOH",
     "Suggested", "Actual Replenished", "Transfer Ref",
 ]
 
@@ -8369,7 +8404,10 @@ def analytics_replenishment_report(
         units_sold = int(r["units_sold"] or 0)
         soh_store = int(r["soh_store"] or 0)
         soh_wh = int(r["soh_wh"] or 0)
-        replenish = max(0, min(units_sold - soh_store, soh_wh))
+        # Uncapped per-store need; the finite warehouse pool is allocated across
+        # stores (top sellers first) by _cap_replenish_to_warehouse below so the
+        # SKU's total suggested never exceeds soh_wh.
+        replenish = max(0, units_sold - soh_store)
         days_lapsed = 0
         if r.get("last_sale"):
             try:
@@ -8391,6 +8429,9 @@ def analytics_replenishment_report(
             "transfer_ref": mark.get("transfer_ref") or "",
             "days_lapsed": days_lapsed,
         })
+    # Allocate each SKU's warehouse pool across stores (top sellers first) so the
+    # suggested ("replenish") never exceeds warehouse stock for that SKU.
+    _cap_replenish_to_warehouse(out_rows, need_key="replenish", out_key="replenish")
     by_owner = {}
     for r in out_rows:
         o = by_owner.setdefault(r["owner"], {"owner": r["owner"], "lines": 0, "units": 0, "stores": set()})
