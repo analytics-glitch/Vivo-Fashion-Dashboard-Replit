@@ -856,7 +856,6 @@ const MIX_COLS=[
   {k:'pctC',label:'% Consumption',type:'pct'},
   {k:'pctA',label:'% Available',type:'pct'},
   {k:'gap',label:'Gap (pp)',type:'gap'},
-  {k:'shortfall',label:'Shortfall',type:'unit'},
   {k:'covers',label:'Weeks of Cover',type:'cover'},
   {k:'tied',label:'Stock Value KES',type:'kes'},
 ];
@@ -870,7 +869,6 @@ const MIX_FX={
   pctC:'% Consumption = this category\u2019s consumption ÷ total consumption across all categories.',
   pctA:'% Available = this category\u2019s available stock ÷ total available stock across all categories.',
   gap:'Gap (pp) = % Available − % Consumption (percentage points). Positive = overstock (held more than used); negative = short (used faster than its stock share).',
-  shortfall:'Shortfall = Available − Consumption over the period (active unit). Negative = consumed more than is in stock.',
   covers:'Weekly covers = Available ÷ (Consumption ÷ weeks in the period). Below 1 = under a week of cover left.',
   tied:'Tied-up KES = capital locked in this category\u2019s available stock (stock value).',
   verdict:'Verdict = Buy (short: shortfall < 0, cover < ~4 weeks, or Gap ≤ −3pp), Clear (overstock: Gap ≥ +3pp or > ~52 weeks cover), Idle (stock but ~no usage in the window), else Hold (balanced).',
@@ -1204,7 +1202,6 @@ function renderFabricMix(){
    <td class="r">100.0%</td>
    <td class="r">100.0%</td>
    <td class="r">—</td>
-   <td class="r">${fmtUnit(totA-totC)}</td>
    <td class="r">—</td>
    <td class="r" style="color:var(--muted);">${fmtKES(d.total_tied_up_kes)}</td>
   </tr>`;
@@ -1325,7 +1322,6 @@ function exportFabricMix(btn){
     ['% Consumption',r=>r.pctC.toFixed(1)],
     ['% Available',r=>r.pctA.toFixed(1)],
     ['Gap (pp)',r=>r.gap.toFixed(1)],
-    ['Shortfall ('+unit+')',r=>r.shortfall],
     [mixCoverBasis==='months'?'Monthly covers':'Weeks of Cover',r=>{const v=mixCoverBasis==='months'?r.coversMonthly:r.covers;return v==null?'':v.toFixed(2);}],
     ['Stock Value KES',r=>r.tied],
     ['Verdict',r=>r.verdict.label],
