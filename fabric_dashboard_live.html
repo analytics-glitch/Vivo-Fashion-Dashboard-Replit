@@ -1171,10 +1171,37 @@ function sortMix(k){
   else{mixSort.key=k;mixSort.dir=(k==='group')?'asc':'desc';}
   renderFabricMix();
 }
+// ISO (local-time) date string — shared by the mix window sync helpers.
+const fabIso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+// If [from,to] is exactly an N-day window ending today, return N for a known
+// preset (30/90/180/365); otherwise null (i.e. a custom range).
+function fabPresetForRange(from,to){
+  if(!from||!to)return null;
+  const a=new Date(from+'T00:00:00'), b=new Date(to+'T00:00:00'), now=new Date();
+  if(isNaN(a)||isNaN(b))return null;
+  if(fabIso(b)!==fabIso(now))return null;          // must end today
+  const span=Math.round((b-a)/86400000)+1;         // inclusive day count
+  return [30,90,180,365].includes(span)?span:null;
+}
+// The top Date range (g-since/g-until) is the single source of truth for the
+// mix consumption window. Mirror it into the in-page custom pickers and reflect
+// the preset dropdown (selected when the window matches a preset, de-selected
+// for a custom range). Programmatic .value sets never fire onchange, so this is
+// fetch-free.
+function fabSyncMixInputs(){
+  const from=document.getElementById('g-since').value;
+  const to=document.getElementById('g-until').value;
+  document.getElementById('mix-from').value=from;
+  document.getElementById('mix-to').value=to;
+  const sel=document.getElementById('mix-period');
+  const n=fabPresetForRange(from,to);
+  if(n!=null)sel.value=String(n); else sel.selectedIndex=-1;
+}
 async function loadFabricMix(){
   try{
-    const from=document.getElementById('mix-from').value;
-    const to=document.getElementById('mix-to').value;
+    fabSyncMixInputs();   // keep the in-page controls in lock-step with the top range
+    const from=document.getElementById('g-since').value;
+    const to=document.getElementById('g-until').value;
     const params=new URLSearchParams({group_by:mixGroup,location:loc()});
     if(from&&to){params.set('date_from',from);params.set('date_to',to);}
     else{params.set('days',document.getElementById('mix-period').value||90);}
@@ -1183,22 +1210,30 @@ async function loadFabricMix(){
     document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString();
   }catch(e){rowErr('mix-body',MIX_COLS.length,e);document.getElementById('mix-narrative').innerHTML='';}
 }
-// Preset and custom range are mutually exclusive: picking a preset clears the
-// custom dates; clearing the custom range falls back to the preset.
+// In-page preset → compute concrete from/to (window ends today), write them into
+// the top Date range, then a single reload. Both controls then agree.
 function onMixPreset(){
-  document.getElementById('mix-from').value='';
-  document.getElementById('mix-to').value='';
+  const n=parseInt(document.getElementById('mix-period').value,10)||90;
+  const today=new Date();
+  const ago=new Date(today.getFullYear(),today.getMonth(),today.getDate()-(n-1));
+  document.getElementById('g-since').value=fabIso(ago);
+  document.getElementById('g-until').value=fabIso(today);
   loadFabricMix();
 }
+// In-page custom range → push into the top Date range, then a single reload.
 function onMixRange(){
   const from=document.getElementById('mix-from').value;
   const to=document.getElementById('mix-to').value;
-  if((from&&to)||(!from&&!to))loadFabricMix();   // wait until both set (or both cleared)
+  if(from&&to){
+    document.getElementById('g-since').value=from;
+    document.getElementById('g-until').value=to;
+    loadFabricMix();
+  }
 }
+// Clear the custom range → fall back to the default 90-day preset.
 function clearMixRange(){
-  document.getElementById('mix-from').value='';
-  document.getElementById('mix-to').value='';
-  loadFabricMix();
+  document.getElementById('mix-period').value='90';
+  onMixPreset();
 }
 function exportFabricMix(btn){
   const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
@@ -1589,6 +1624,10 @@ function loadMovementPage(){loadFlow();loadMovement();loadConsTrend();loadConsSt
 function onDateRangeChange(){
   if(document.getElementById('page-movement').style.display!=='none'){
     loadConsTrend();loadConsStock();
+  }
+  // The Fabric mix KPIs follow the same top Date range when that page is shown.
+  if(document.getElementById('page-dashboard').style.display!=='none'){
+    loadFabricMix();
   }
 }
 function riskFlag(gap){
