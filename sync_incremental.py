@@ -161,13 +161,13 @@ def get_vat(pos_location, store_vat=1.16):
 # (incremental overlap); the watchdog widens this for recovery backfills via the
 # --days flag / SYNC_LOOKBACK_DAYS env var.
 LOOKBACK_DAYS = int(os.environ.get("SYNC_LOOKBACK_DAYS", "2"))
-# Module-level guard so the fabric (Odoo) extract runs at most once per hour even
+# Module-level guard so the fabric (Odoo) extract runs at most once per minute even
 # though main() is invoked every 60s by the supervising loop. Persists for the
 # lifetime of the process.
 _LAST_FABRIC_EXTRACT = None
-# Same once-per-hour guard for the fabric consumption/returns sheet override loader.
+# Same once-per-minute guard for the fabric consumption/returns sheet override loader.
 _LAST_FABRIC_SHEET_EXTRACT = None
-# Same once-per-hour guard for the production tracker (Odoo DPS buying orders).
+# Same once-per-minute guard for the production tracker (Odoo DPS buying orders).
 _LAST_PRODUCTION_SYNC = None
 # Module-level guard so attendance syncs at most once per hour even though main()
 # runs every 60s. None on boot so the first cycle after a (re)start refreshes
@@ -889,9 +889,9 @@ def main():
     # Production runs on a SEPARATE DB that never ran extract_fabric.py, so the
     # tables start empty and /fabric shows zeros. We bootstrap immediately when
     # the tables are missing/empty (first deploy) so no manual step is needed,
-    # then refresh HOURLY thereafter (the dashboard wants near-real-time fabric
+    # then refresh EVERY MINUTE thereafter (the dashboard wants near-real-time fabric
     # figures). extract_fabric.py does a full TRUNCATE + upsert refresh, so it is
-    # safe to re-run. A module-level guard rate-limits to once per hour even
+    # safe to re-run. A module-level guard rate-limits to once per minute even
     # though main() runs every 60s.
     global _LAST_FABRIC_EXTRACT
     fabric_empty = False
@@ -907,9 +907,9 @@ def main():
         log.error("Fabric presence check error: %s", e)
         conn.rollback()
     fabric_due = (_LAST_FABRIC_EXTRACT is None
-                  or (now_utc - _LAST_FABRIC_EXTRACT).total_seconds() >= 3600)
+                  or (now_utc - _LAST_FABRIC_EXTRACT).total_seconds() >= 60)
     if fabric_empty or fabric_due:
-        # Stamp the attempt time up front so a transient failure waits an hour
+        # Stamp the attempt time up front so a transient failure waits a minute
         # (when still empty, the fabric_empty branch retries on the next cycle).
         _LAST_FABRIC_EXTRACT = now_utc
         try:
@@ -923,8 +923,8 @@ def main():
     # Fabric sheet override — the buying team's reconciled Jan–Apr 2026 consumption &
     # returns (Google Sheet), which replace Odoo's inflated moves for that window via
     # the fabric_moves_effective view. Lives in fabric_sheet_* tables (outside
-    # raw_fabric_*) so it survives the hourly Odoo TRUNCATE/rebuild. Bootstrap when
-    # the override is empty/missing (fresh prod DB), then refresh HOURLY. Runs after
+    # raw_fabric_*) so it survives the Odoo TRUNCATE/rebuild. Bootstrap when
+    # the override is empty/missing (fresh prod DB), then refresh EVERY MINUTE. Runs after
     # the Odoo fabric extract so raw_fabric_* exist when the view is (re)created.
     global _LAST_FABRIC_SHEET_EXTRACT
     sheet_empty = False
@@ -940,7 +940,7 @@ def main():
         log.error("Fabric sheet presence check error: %s", e)
         conn.rollback()
     sheet_due = (_LAST_FABRIC_SHEET_EXTRACT is None
-                 or (now_utc - _LAST_FABRIC_SHEET_EXTRACT).total_seconds() >= 3600)
+                 or (now_utc - _LAST_FABRIC_SHEET_EXTRACT).total_seconds() >= 60)
     if sheet_empty or sheet_due:
         _LAST_FABRIC_SHEET_EXTRACT = now_utc
         try:
@@ -955,11 +955,11 @@ def main():
     # stage_movements). New Odoo buying orders (DPS documents) won't appear until
     # this runs, so fold it into the supervised loop instead of the manual
     # standalone run. Production runs on a SEPARATE DB, so bootstrap immediately
-    # when production_orders is empty (fresh prod DB), then refresh HOURLY.
+    # when production_orders is empty (fresh prod DB), then refresh EVERY MINUTE.
     # sync_production_tracker.py is idempotent — it upserts on order_ref and only
     # appends the intake DELTA per DPS, so re-running never doubles intake. Runs
     # as a subprocess like the other Odoo extracts. A module-level guard
-    # rate-limits to once per hour even though main() runs every 60s. The
+    # rate-limits to once per minute even though main() runs every 60s. The
     # production_orders/stage_movements tables are created by api_pg's startup
     # hook (_ensure_production_tables), and the watchdog brings the API up before
     # this loop, so we skip entirely if the table is missing and let the next
@@ -979,9 +979,9 @@ def main():
         log.error("Production tracker presence check error: %s", e)
         conn.rollback()
     production_due = (_LAST_PRODUCTION_SYNC is None
-                     or (now_utc - _LAST_PRODUCTION_SYNC).total_seconds() >= 3600)
+                     or (now_utc - _LAST_PRODUCTION_SYNC).total_seconds() >= 60)
     if not production_table_missing and (production_empty or production_due):
-        # Stamp the attempt time up front so a transient failure waits an hour
+        # Stamp the attempt time up front so a transient failure waits a minute
         # (when still empty, the production_empty branch retries next cycle).
         _LAST_PRODUCTION_SYNC = now_utc
         try:
