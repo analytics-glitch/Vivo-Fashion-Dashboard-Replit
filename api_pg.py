@@ -7360,51 +7360,89 @@ def _es_categories(cur_from, cur_to, ly_from, ly_to, country):
     subs.sort(key=lambda x: x["cur"], reverse=True)
     return {"subcategories": subs}
 
-def _es_targets(as_of, country):
-    # Yearly-target pacing per market. annual = prior full-year net * 1.15;
-    # ytd = full elapsed months * 1.15 + current month * 1.15 * day-fraction.
-    growth = 1.15
-    year_ly = as_of.year - 1
-    market = ("CASE WHEN s.country = 'Online' OR s.pos_location_name ILIKE '%online%' "
-              "THEN 'Online' ELSE COALESCE(NULLIF(s.country, ''), 'Other') END")
-    rows = run_query("""
-        SELECT """ + market + """ AS bucket,
-            EXTRACT(MONTH FROM s.sale_date::date)::int AS m,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric ELSE 0 END)) AS net
-        FROM all_sales s
-        WHERE s.sale_date BETWEEN '""" + str(year_ly) + """-01-01' AND '""" + str(year_ly) + """-12-31'
-          AND s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + """
-        GROUP BY 1, 2
-    """)
-    by_bucket = {}
-    for r in rows:
-        b = r["bucket"]; m = int(r["m"]) if r["m"] else 0
-        by_bucket.setdefault(b, {})[m] = float(r["net"] or 0)
-    dim = calendar.monthrange(as_of.year, as_of.month)[1]
-    month_frac = as_of.day / dim if dim else 1.0
-    cur_month = as_of.month
+# Panel row -> stored-budget bucket name. The finance budget workbook splits
+# Kenya into Retail vs Online; the Exec-Summary panel surfaces these as the
+# "Kenya" and "Online" rows (matching _es_countries' country names, which is
+# what the frontend joins the YTD actuals on). Uganda / Rwanda pass through.
+_ES_TARGET_BUCKET_MAP = [
+    ("Kenya", "Kenya - Retail"),
+    ("Online", "Kenya - Online"),
+    ("Uganda", "Uganda"),
+    ("Rwanda", "Rwanda"),
+]
 
-    def country_target(b):
-        months = by_bucket.get(b, {})
-        annual = round(sum(months.values()) * growth)
+
+def _es_targets(as_of, country):
+    # YTD-vs-yearly-target pacing per market, fed from the stored finance
+    # budget (targets_monthly, scope='region', source='budget') for as_of's
+    # year — the SAME source the Annual Targets page / /api/analytics/
+    # annual-targets reads. annual = sum of the 12 monthly budget rows;
+    # ytd = full elapsed months + (current month x day_in_month/days_in_month).
+    # The YTD actual the panel compares against is supplied by the frontend
+    # from _es_countries / the YTD KPIs (total_sales_kes net of returns, the
+    # canonical _TARGET_REVENUE basis), so target and actual share a basis and
+    # a country at true budget pace reads ~100%. When no budget exists for the
+    # year we fall back to prior-year actuals x 1.15 on that same net-of-returns
+    # basis (a clearly-labelled stretch) so the panel still renders.
+    yr = as_of.year
+    cur_month = as_of.month
+    dim = calendar.monthrange(yr, cur_month)[1]
+    month_frac = as_of.day / dim if dim else 1.0
+
+    # Monthly stored budget per bucket: {bucket_name: {month_int: target_kes}}.
+    budget = {}
+    for r in run_query(
+        "SELECT name, EXTRACT(MONTH FROM month)::int AS m, "
+        "SUM(target_kes)::numeric AS tgt FROM targets_monthly "
+        "WHERE scope = 'region' AND source = 'budget' "
+        "AND EXTRACT(YEAR FROM month) = " + str(yr) + " GROUP BY 1, 2"
+    ):
+        m = int(r["m"]) if r["m"] else 0
+        if 1 <= m <= 12:
+            budget.setdefault(r["name"], {})[m] = float(r["tgt"] or 0)
+
+    has_budget = bool(budget)
+
+    # Fallback: prior-year actuals x 1.15 (same net-of-returns basis as the
+    # actuals) when there is no stored budget for the year.
+    fallback = {}
+    if not has_budget:
+        growth = 1.15
+        for r in run_query("""
+            SELECT """ + _ACTUAL_BUCKET_CASE + """ AS bucket,
+                EXTRACT(MONTH FROM s.sale_date::date)::int AS m,
+                ROUND(""" + _TARGET_REVENUE + """) AS net
+            FROM all_sales s
+            WHERE s.sale_date BETWEEN '""" + str(yr - 1) + """-01-01' AND '""" + str(yr - 1) + """-12-31'
+              AND s.sale_kind IN ('sale','order','return') AND """ + BASE_FILTERS + """
+            GROUP BY 1, 2
+        """):
+            m = int(r["m"]) if r["m"] else 0
+            if 1 <= m <= 12:
+                fallback.setdefault(r["bucket"], {})[m] = float(r["net"] or 0) * growth
+
+    source = budget if has_budget else fallback
+
+    def country_target(panel_name, budget_bucket):
+        months = source.get(budget_bucket, {})
+        annual = round(sum(months.values()))
         ytd = 0.0
         for m in range(1, cur_month):
-            ytd += months.get(m, 0) * growth
-        ytd += months.get(cur_month, 0) * growth * month_frac
-        return {"country": b, "ytd": round(ytd), "annual": annual}
+            ytd += months.get(m, 0)
+        ytd += months.get(cur_month, 0) * month_frac
+        return {"country": panel_name, "ytd": round(ytd), "annual": annual}
 
-    names = [b for b in ["Kenya", "Uganda", "Rwanda", "Online"] if b in by_bucket]
-    for b in by_bucket:
-        if b not in names:
-            names.append(b)
+    rows = list(_ES_TARGET_BUCKET_MAP)
     if country:
         cset = {c.strip() for c in country.split(",")}
-        names = [b for b in names if b in cset]
-    countries = [country_target(b) for b in names]
+        rows = [(p, b) for (p, b) in rows if p in cset]
+    countries = [country_target(p, b) for (p, b) in rows]
     return {
         "countries": countries,
         "total": {"ytd": sum(c["ytd"] for c in countries),
                   "annual": sum(c["annual"] for c in countries)},
+        "source": "budget" if has_budget else "prior_year_stretch",
+        "year": yr,
     }
 
 def _es_stock_mix(sold_from, sold_to, window_days, country):
