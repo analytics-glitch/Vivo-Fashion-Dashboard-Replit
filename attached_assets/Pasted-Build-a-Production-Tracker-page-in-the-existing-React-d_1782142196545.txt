@@ -1,0 +1,72 @@
+Build a "Production Tracker" page in the existing React dashboard (in the `dashboard/` folder). Do NOT build any backend — a standalone FastAPI service is already running on port 8002 and exposes the API below. Your job is the frontend plus the proxy wiring.
+
+=== EXISTING API (port 8002, do not modify) ===
+GET  /api/production/stages
+  -> { "stages": [ { stage_key, stage_name, sort_order, is_terminal,
+                     allowed_next: [stage_key...], orders_here, units_here,
+                     avg_days_in_stage, oldest_days_in_stage } ] }
+  Stages in order: buying_order, cutting, waiting_sewing, sewing, washing,
+  finishing, repairs, warehouse.
+
+GET  /api/production/board
+  -> { "cards": [ { order_ref, stage, qty_here, days_in_stage,
+                    style_number, product_name, order_qty, date_ordered } ] }
+  One card per (order x stage) that currently holds units.
+
+GET  /api/production/orders/{order_ref}
+  -> { "order": {...}, "balances": [ { stage, stage_name, qty_here, days_in_stage } ],
+       "history": [ { from_stage, to_stage, qty, moved_at, moved_by, note } ] }
+
+POST /api/production/move
+  body: { order_ref, from_stage, to_stage, qty, moved_by?, note? }
+  -> returns the same shape as the order detail above.
+  -> returns HTTP 400 with { detail: "..." } if the move is invalid
+     (e.g. skips a stage, or moves more units than are available).
+
+=== PROXY ===
+The dashboard already has dashboard/src/setupProxy.js which proxies /api to
+http://localhost:8000. Add a MORE SPECIFIC rule for /api/production pointing to
+http://localhost:8002, and place it BEFORE the existing /api rule so it isn't
+swallowed. Restart the dev server after editing the proxy.
+
+=== PAGE: Production Tracker (route /production) ===
+Add a new route /production and a nav link to it if the app has a nav/sidebar.
+
+Layout: a horizontal kanban board, one column per stage in sort_order
+(Buying Order -> Cutting & Bundling -> Waiting Sewing -> Sewing -> Washing ->
+Finishing -> Repairs -> Warehouse). The board scrolls horizontally; each column
+scrolls vertically.
+
+Column header: stage name, total units (units_here), order count (orders_here),
+and oldest days-in-stage if > 0.
+
+Cards (from /board, grouped by stage): show order_ref, style_number,
+product_name (truncate), qty_here (prominent), and "X days here" colored by age
+(green < 2 days, amber 2-7, red > 7). A card is clickable.
+
+Add a search box that filters cards by order_ref / style_number / product_name.
+Add a Refresh button that re-fetches /stages and /board.
+
+Clicking a card opens a modal for that order (fetch /orders/{order_ref}).
+The modal shows the order header (ref, style, product, ordered qty, date) and a
+"Where it is now" section listing each balance row (stage_name, qty_here, days).
+Because quantities split across stages, EACH balance row gets its own move
+control:
+  - a quantity input (default = qty_here for that row, max = qty_here),
+  - a "to" dropdown whose options are ONLY the allowed_next stages of that row's
+    stage (look these up from /stages; show stage_name as the label),
+  - an optional "your name" field (sent as moved_by),
+  - a Move button that POSTs to /api/production/move.
+If a stage's allowed_next is empty (warehouse), show "Final stage — no further
+moves" instead of a control.
+
+On a successful move: update the modal with the returned fresh order detail AND
+re-fetch the board behind it. On a 400, show the returned detail message inline
+near that move control (do not close the modal).
+
+Also show the order's recent movement history (last ~6 from history): qty,
+from_stage -> to_stage, moved_by, and a readable timestamp.
+
+Style it cleanly to match the existing dashboard. Handle loading and error
+states (if the API is unreachable, show a clear message that the service on
+:8002 may be down).
