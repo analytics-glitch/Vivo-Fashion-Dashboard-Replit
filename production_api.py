@@ -1,33 +1,17 @@
 #!/usr/bin/env python3
-"""
-production_api.py
------------------
-FastAPI router for the production tracker. Mount in api_pg.py:
-
-    from production_api import router as production_router
-    app.include_router(production_router)
-
-Endpoints (all under /api/production):
-    GET  /stages              stage reference + live counts (board columns)
-    GET  /board               every order's current balance per stage (board cards)
-    GET  /orders/{order_ref}  one order: header, balances, full movement history
-    POST /move                move a quantity between stages (the board's action)
-
-The move endpoint is the only writer. It validates two things before inserting:
-  1. the transition is allowed (to_stage is in from_stage.allowed_next)
-  2. there are enough units at from_stage to move
-…so the ledger can never go negative or skip stages.
-"""
+"""Standalone FastAPI service for the production tracker (port 8002)."""
 
 import os
 from typing import Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 DATABASE_URL = os.environ["DATABASE_URL"]
+PORT = int(os.environ.get("PRODUCTION_API_PORT", "8002"))
 
 router = APIRouter(prefix="/api/production", tags=["production"])
 
@@ -36,22 +20,31 @@ def get_conn():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 
-# ----------------------------------------------------------------------
-# Reads
-# ----------------------------------------------------------------------
+@router.get("/health")
+def health():
+    try:
+        conn = get_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        conn.close()
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(503, f"db unavailable: {e}")
+
+
 @router.get("/stages")
 def list_stages():
-    """Stage definitions with live order/unit counts — drives the board columns."""
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT s.stage_key, s.stage_name, s.sort_order,
                        s.is_terminal, s.allowed_next,
-                       COALESCE(w.orders_here, 0)        AS orders_here,
-                       COALESCE(w.units_here, 0)         AS units_here,
-                       COALESCE(w.avg_days_in_stage, 0)  AS avg_days_in_stage,
-                       COALESCE(w.oldest_days_in_stage,0) AS oldest_days_in_stage
+                       COALESCE(w.orders_here, 0)          AS orders_here,
+                       COALESCE(w.units_here, 0)           AS units_here,
+                       COALESCE(w.avg_days_in_stage, 0)    AS avg_days_in_stage,
+                       COALESCE(w.oldest_days_in_stage, 0) AS oldest_days_in_stage
                 FROM production_stages s
                 LEFT JOIN v_wip_summary w ON w.stage = s.stage_key
                 ORDER BY s.sort_order
@@ -63,19 +56,15 @@ def list_stages():
 
 @router.get("/board")
 def board():
-    """Every (order x stage) slice that currently holds units — the board cards."""
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT b.order_ref,
-                       b.stage,
-                       b.qty_here,
+                SELECT b.order_ref, b.stage, b.qty_here,
                        ROUND(b.days_since_last_in::numeric, 1) AS days_in_stage,
-                       po.style_number,
-                       po.product_name,
-                       po.order_qty,
-                       po.date_ordered
+                       po.style_number, po.style_name, po.product_name,
+                       po.order_qty, po.date_ordered, po.expected_delivery_date,
+                       po.buyer
                 FROM v_stage_balances b
                 JOIN production_orders po ON po.order_ref = b.order_ref
                 JOIN production_stages s   ON s.stage_key  = b.stage
@@ -100,9 +89,19 @@ def order_detail(order_ref: str):
 
             cur.execute(
                 """
-                SELECT b.stage,
-                       s.stage_name,
-                       b.qty_here,
+                SELECT colour, product_sku, product_name, total_qty,
+                       planned_qty, remaining_qty, line_state
+                FROM production_order_lines
+                WHERE order_ref = %s
+                ORDER BY total_qty DESC
+            """,
+                (order_ref,),
+            )
+            lines = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT b.stage, s.stage_name, b.qty_here,
                        ROUND(b.days_since_last_in::numeric, 1) AS days_in_stage
                 FROM v_stage_balances b
                 JOIN production_stages s ON s.stage_key = b.stage
@@ -124,14 +123,16 @@ def order_detail(order_ref: str):
             )
             history = cur.fetchall()
 
-        return {"order": order, "balances": balances, "history": history}
+        return {
+            "order": order,
+            "lines": lines,
+            "balances": balances,
+            "history": history,
+        }
     finally:
         conn.close()
 
 
-# ----------------------------------------------------------------------
-# Write
-# ----------------------------------------------------------------------
 class MoveIn(BaseModel):
     order_ref: str
     from_stage: str
@@ -145,12 +146,10 @@ class MoveIn(BaseModel):
 def move(m: MoveIn):
     if m.from_stage == m.to_stage:
         raise HTTPException(400, "from_stage and to_stage are the same")
-
     conn = get_conn()
     try:
-        with conn:  # commits on success, rolls back on raise
+        with conn:
             with conn.cursor() as cur:
-                # 1. transition allowed?
                 cur.execute(
                     "SELECT allowed_next FROM production_stages WHERE stage_key = %s",
                     (m.from_stage,),
@@ -162,8 +161,6 @@ def move(m: MoveIn):
                     raise HTTPException(
                         400, f"Cannot move from {m.from_stage} to {m.to_stage}"
                     )
-
-                # 2. enough units at from_stage?
                 cur.execute(
                     """
                     SELECT qty_here FROM v_stage_balances
@@ -177,8 +174,6 @@ def move(m: MoveIn):
                     raise HTTPException(
                         400, f"Only {available:g} units available at {m.from_stage}"
                     )
-
-                # 3. record the move
                 cur.execute(
                     """
                     INSERT INTO stage_movements
@@ -189,16 +184,13 @@ def move(m: MoveIn):
                 )
     finally:
         conn.close()
-
-    # return the order's fresh state so the UI can update in place
     return order_detail(m.order_ref)
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Vivo Production Tracker API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"],
-                   allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+)
 app.include_router(router)
 
 
@@ -209,5 +201,5 @@ def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0",
-                port=int(os.environ.get("PRODUCTION_API_PORT", "8002")))
+
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

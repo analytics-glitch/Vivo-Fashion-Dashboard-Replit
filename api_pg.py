@@ -17385,6 +17385,50 @@ def _ensure_production_tables():
         )""")
     _users_exec("CREATE INDEX IF NOT EXISTS idx_prod_orders_style ON production_orders(style_number)")
     _users_exec("CREATE INDEX IF NOT EXISTS idx_prod_orders_date  ON production_orders(date_ordered)")
+    # Richer buying-order header (added incrementally; idempotent so a fresh/prod
+    # DB picks them up without the standalone migration file).
+    _users_exec("""
+        ALTER TABLE production_orders
+            ADD COLUMN IF NOT EXISTS buyer                  TEXT,
+            ADD COLUMN IF NOT EXISTS style_name             TEXT,
+            ADD COLUMN IF NOT EXISTS expected_delivery_date DATE,
+            ADD COLUMN IF NOT EXISTS production_type        TEXT,
+            ADD COLUMN IF NOT EXISTS lifecycle_type         TEXT,
+            ADD COLUMN IF NOT EXISTS bo_state               TEXT,
+            ADD COLUMN IF NOT EXISTS notes_html             TEXT""")
+    # Per-colour breakdown of each buying order (one row per BO line).
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS production_order_lines (
+            id            BIGSERIAL PRIMARY KEY,
+            order_ref     TEXT NOT NULL REFERENCES production_orders(order_ref) ON DELETE CASCADE,
+            odoo_line_id  BIGINT,
+            product_sku   TEXT,
+            product_name  TEXT,
+            colour        TEXT,
+            total_qty     NUMERIC,
+            planned_qty   NUMERIC,
+            remaining_qty NUMERIC,
+            line_state    TEXT,
+            UNIQUE (order_ref, odoo_line_id)
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_pol_order ON production_order_lines(order_ref)")
+    # Per-size breakdown (the "variant breakdown" under each colour line): one row
+    # per (BO line x size). size + product_sku are parsed from the Odoo variant
+    # label during sync. Lets the report build a colour x size matrix.
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS production_order_variants (
+            id              BIGSERIAL PRIMARY KEY,
+            odoo_variant_id BIGINT UNIQUE,
+            order_ref       TEXT NOT NULL REFERENCES production_orders(order_ref) ON DELETE CASCADE,
+            odoo_line_id    BIGINT,
+            product_sku     TEXT,
+            variant_name    TEXT,
+            colour          TEXT,
+            size            TEXT,
+            qty             NUMERIC
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_pov_order ON production_order_variants(order_ref)")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_pov_line  ON production_order_variants(odoo_line_id)")
     _users_exec("""
         CREATE TABLE IF NOT EXISTS stage_movements (
             id          BIGSERIAL PRIMARY KEY,
@@ -17462,7 +17506,21 @@ def _production_order_detail(order_ref):
         FROM stage_movements
         WHERE order_ref = %s
         ORDER BY moved_at DESC, id DESC""", (order_ref,), fetch=True)
-    return {"order": order_rows[0], "balances": balances, "history": history}
+    # Per-colour lines and the per-size variant breakdown under each colour, so
+    # the UI can render "how many colours / what sizes" and a colour x size matrix.
+    lines = _users_exec("""
+        SELECT colour, product_sku, product_name, odoo_line_id,
+               total_qty, planned_qty, remaining_qty, line_state
+        FROM production_order_lines
+        WHERE order_ref = %s
+        ORDER BY total_qty DESC NULLS LAST, colour""", (order_ref,), fetch=True)
+    variants = _users_exec("""
+        SELECT odoo_line_id, colour, size, product_sku, variant_name, qty
+        FROM production_order_variants
+        WHERE order_ref = %s
+        ORDER BY colour, size""", (order_ref,), fetch=True)
+    return {"order": order_rows[0], "balances": balances, "history": history,
+            "lines": lines, "variants": variants}
 
 
 @app.get("/api/production/stages")
@@ -17493,6 +17551,93 @@ def production_board():
         JOIN production_stages s  ON s.stage_key  = b.stage
         ORDER BY s.sort_order, b.days_since_last_in DESC""", fetch=True)
     return {"cards": rows}
+
+
+@app.get("/api/production/summary")
+def production_summary():
+    """Portfolio-level roll-ups for the Production Report: totals plus
+    breakdowns by lifecycle type (New / Replenishment / Re-order), production
+    type, buying-order state, current WIP stage, and buyer. Plus a flat row per
+    buying order (with its colour/size/variant counts and per-stage unit split)
+    so the report can list every order and export it without N detail calls."""
+    totals = _users_exec("""
+        SELECT COUNT(*)                         AS orders,
+               COALESCE(SUM(order_qty), 0)      AS units,
+               COUNT(DISTINCT style_number)     AS styles
+        FROM production_orders""", fetch=True)
+
+    def _grouped(col):
+        return _users_exec(f"""
+            SELECT COALESCE({col}, 'Unspecified') AS label,
+                   COUNT(*)                       AS orders,
+                   COALESCE(SUM(order_qty), 0)    AS units
+            FROM production_orders
+            GROUP BY 1
+            ORDER BY units DESC""", fetch=True)
+
+    by_stage = _users_exec("""
+        SELECT s.stage_key, s.stage_name, s.sort_order,
+               COALESCE(w.orders_here, 0) AS orders,
+               COALESCE(w.units_here, 0)  AS units
+        FROM production_stages s
+        LEFT JOIN v_wip_summary w ON w.stage = s.stage_key
+        ORDER BY s.sort_order""", fetch=True)
+
+    by_buyer = _users_exec("""
+        SELECT COALESCE(buyer, 'Unspecified') AS label,
+               COUNT(*)                       AS orders,
+               COALESCE(SUM(order_qty), 0)    AS units
+        FROM production_orders
+        GROUP BY 1
+        ORDER BY units DESC
+        LIMIT 30""", fetch=True)
+
+    # One row per buying order with colour/size/variant counts + per-stage units.
+    orders = _users_exec("""
+        WITH line_rollup AS (
+            SELECT order_ref,
+                   COUNT(DISTINCT colour) AS colours,
+                   COUNT(*)               AS lines
+            FROM production_order_lines
+            GROUP BY order_ref
+        ),
+        var_rollup AS (
+            SELECT order_ref,
+                   COUNT(*)             AS variants,
+                   COUNT(DISTINCT size) AS sizes
+            FROM production_order_variants
+            GROUP BY order_ref
+        ),
+        bal AS (
+            SELECT b.order_ref,
+                   jsonb_object_agg(b.stage, b.qty_here) AS stage_qty,
+                   SUM(b.qty_here)                       AS units_in_progress
+            FROM v_stage_balances b
+            GROUP BY b.order_ref
+        )
+        SELECT po.order_ref, po.style_number, po.style_name, po.product_name,
+               po.buyer, po.order_qty, po.date_ordered, po.expected_delivery_date,
+               po.production_type, po.lifecycle_type, po.bo_state,
+               COALESCE(lr.colours, 0)  AS colours,
+               COALESCE(vr.sizes, 0)    AS sizes,
+               COALESCE(vr.variants, 0) AS variants,
+               COALESCE(bal.units_in_progress, 0) AS units_in_progress,
+               bal.stage_qty
+        FROM production_orders po
+        LEFT JOIN line_rollup lr ON lr.order_ref = po.order_ref
+        LEFT JOIN var_rollup  vr ON vr.order_ref = po.order_ref
+        LEFT JOIN bal            ON bal.order_ref = po.order_ref
+        ORDER BY po.date_ordered DESC NULLS LAST, po.order_ref DESC""", fetch=True)
+
+    return {
+        "totals": (totals[0] if totals else {"orders": 0, "units": 0, "styles": 0}),
+        "by_lifecycle": _grouped("lifecycle_type"),
+        "by_production_type": _grouped("production_type"),
+        "by_state": _grouped("bo_state"),
+        "by_stage": by_stage,
+        "by_buyer": by_buyer,
+        "orders": orders,
+    }
 
 
 @app.get("/api/production/orders/{order_ref}")

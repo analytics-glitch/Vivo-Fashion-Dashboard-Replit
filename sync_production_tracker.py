@@ -43,6 +43,7 @@ ODOO_PASSWORD = os.environ["ODOO_PASSWORD"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 
 SKU_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
+SIZE_RE = re.compile(r"\(([^)]*)\)\s*$")
 
 
 # ----------------------------------------------------------------------
@@ -101,11 +102,30 @@ def fetch_lines(uid, models, line_ids):
                 "planned_qty",
                 "remaining_qty",
                 "state",
+                "variant_line_ids",
             ]
         },
     )
     log.info("Fetched %s buying order lines", len(lines))
     return lines
+
+
+def fetch_variants(uid, models, variant_ids):
+    """The per-size 'variant breakdown' under each colour line. Each variant
+    carries a product.product (label '[SKU] Style - Colour (SIZE)') and a qty."""
+    if not variant_ids:
+        return []
+    variants = models.execute_kw(
+        ODOO_DB,
+        uid,
+        ODOO_PASSWORD,
+        "vivo.buying.order.line.variant",
+        "read",
+        [variant_ids],
+        {"fields": ["line_id", "product_id", "qty"]},
+    )
+    log.info("Fetched %s buying order line variants", len(variants))
+    return variants
 
 
 # ----------------------------------------------------------------------
@@ -140,27 +160,73 @@ def as_date(v):
 # ----------------------------------------------------------------------
 # Reshape
 # ----------------------------------------------------------------------
-def build(bos, lines):
+def parse_variant(product_field):
+    """[id, '[SKU] Style - Colour (SIZE)'] -> (sku, full_label, size)."""
+    if not product_field:
+        return None, None, None
+    label = (
+        product_field[1]
+        if isinstance(product_field, (list, tuple))
+        else str(product_field)
+    )
+    label = label.strip()
+    m = SKU_RE.match(label)
+    sku = m.group(1).strip() if m else None
+    rest = m.group(2).strip() if m else label
+    sz = SIZE_RE.search(rest)
+    size = sz.group(1).strip() if sz else None
+    return sku, label, size
+
+
+def build(bos, lines, variants):
     lines_by_bo = defaultdict(list)
     for ln in lines:
         bo_id = ln["order_id"][0] if ln.get("order_id") else None
         if bo_id is not None:
             lines_by_bo[bo_id].append(ln)
 
-    orders, order_lines = [], []
+    # Variants grouped by their parent BO line id.
+    variants_by_line = defaultdict(list)
+    for v in variants:
+        line_id = v["line_id"][0] if v.get("line_id") else None
+        if line_id is not None:
+            variants_by_line[line_id].append(v)
+
+    orders, order_lines, order_variants = [], [], []
     for b in bos:
         blines = lines_by_bo.get(b["id"], [])
         skus, total = [], 0.0
         for ln in blines:
             sku, name, colour = parse_label(ln.get("product_tmpl_id"))
-            if sku:
-                skus.append(sku)
+            # Per-size variant breakdown under this colour line.
+            line_var_skus = []
+            for v in variants_by_line.get(ln["id"], []):
+                vsku, vlabel, vsize = parse_variant(v.get("product_id"))
+                if vsku:
+                    line_var_skus.append(vsku)
+                order_variants.append(
+                    {
+                        "odoo_variant_id": v["id"],
+                        "order_ref": b["name"],
+                        "odoo_line_id": ln["id"],
+                        "product_sku": vsku,
+                        "variant_name": vlabel,
+                        "colour": colour,
+                        "size": vsize,
+                        "qty": v.get("qty") or 0.0,
+                    }
+                )
+            # Colour-line SKU: prefer the explicit template SKU, else the common
+            # prefix of its size variants' SKUs (the style-colour code).
+            line_sku = sku or common_prefix(line_var_skus)
+            if line_sku:
+                skus.append(line_sku)
             total += ln.get("total_qty") or 0.0
             order_lines.append(
                 {
                     "order_ref": b["name"],
                     "odoo_line_id": ln["id"],
-                    "product_sku": sku,
+                    "product_sku": line_sku,
                     "product_name": name,
                     "colour": colour,
                     "total_qty": ln.get("total_qty") or 0.0,
@@ -191,8 +257,11 @@ def build(bos, lines):
             }
         )
 
-    log.info("Built %s orders and %s order lines", len(orders), len(order_lines))
-    return orders, order_lines
+    log.info(
+        "Built %s orders, %s order lines, %s variants",
+        len(orders), len(order_lines), len(order_variants),
+    )
+    return orders, order_lines, order_variants
 
 
 # ----------------------------------------------------------------------
@@ -287,6 +356,69 @@ def upsert_lines(cur, order_lines):
     log.info("Upserted %s production_order_lines", len(rows))
 
 
+def upsert_variants(cur, order_variants):
+    if not order_variants:
+        return
+    rows = [
+        (
+            v["odoo_variant_id"],
+            v["order_ref"],
+            v["odoo_line_id"],
+            v["product_sku"],
+            v["variant_name"],
+            v["colour"],
+            v["size"],
+            v["qty"],
+        )
+        for v in order_variants
+    ]
+    execute_values(
+        cur,
+        """
+        INSERT INTO production_order_variants
+            (odoo_variant_id, order_ref, odoo_line_id, product_sku,
+             variant_name, colour, size, qty)
+        VALUES %s
+        ON CONFLICT (odoo_variant_id) DO UPDATE SET
+            order_ref    = EXCLUDED.order_ref,
+            odoo_line_id = EXCLUDED.odoo_line_id,
+            product_sku  = EXCLUDED.product_sku,
+            variant_name = EXCLUDED.variant_name,
+            colour       = EXCLUDED.colour,
+            size         = EXCLUDED.size,
+            qty          = EXCLUDED.qty
+    """,
+        rows,
+    )
+    log.info("Upserted %s production_order_variants", len(rows))
+
+
+def prune_lines(cur, keep_line_ids):
+    """Remove colour lines that no longer exist in Odoo. Guarded: only prune
+    when we actually fetched lines, so a degenerate empty fetch can't wipe the
+    table (the surrounding transaction also rolls back on any error)."""
+    if not keep_line_ids:
+        return
+    cur.execute(
+        "DELETE FROM production_order_lines WHERE NOT (odoo_line_id = ANY(%s))",
+        (list(keep_line_ids),),
+    )
+    if cur.rowcount:
+        log.info("Pruned %s stale production_order_lines", cur.rowcount)
+
+
+def prune_variants(cur, keep_variant_ids):
+    """Remove size variants that no longer exist in Odoo (same guard as above)."""
+    if not keep_variant_ids:
+        return
+    cur.execute(
+        "DELETE FROM production_order_variants WHERE NOT (odoo_variant_id = ANY(%s))",
+        (list(keep_variant_ids),),
+    )
+    if cur.rowcount:
+        log.info("Pruned %s stale production_order_variants", cur.rowcount)
+
+
 def sync_intake(cur, orders):
     inserted = 0
     for o in orders:
@@ -325,10 +457,20 @@ def main():
     bos = fetch_buying_orders(uid, models)
     all_line_ids = [lid for b in bos for lid in b.get("line_ids", [])]
     lines = fetch_lines(uid, models, all_line_ids)
-    orders, order_lines = build(bos, lines)
+    all_variant_ids = [
+        vid for ln in lines for vid in (ln.get("variant_line_ids") or [])
+    ]
+    variants = fetch_variants(uid, models, all_variant_ids)
+    orders, order_lines, order_variants = build(bos, lines, variants)
 
     # Only orders with a quantity get an intake movement.
     orders_with_qty = [o for o in orders if o["order_qty"] > 0]
+
+    # The fetch is a FULL refresh of every BO, so any colour line / size variant
+    # not in these sets has been removed upstream in Odoo and must be pruned, or
+    # the report's colour/size counts drift above Odoo truth over time.
+    line_keep = {l["odoo_line_id"] for l in order_lines}
+    variant_keep = {v["odoo_variant_id"] for v in order_variants}
 
     conn = psycopg2.connect(DATABASE_URL)
     try:
@@ -336,6 +478,9 @@ def main():
             with conn.cursor() as cur:
                 upsert_orders(cur, orders)
                 upsert_lines(cur, order_lines)
+                prune_lines(cur, line_keep)
+                upsert_variants(cur, order_variants)
+                prune_variants(cur, variant_keep)
                 sync_intake(cur, orders_with_qty)
         log.info("Done: %s buying orders synced", len(orders))
     finally:

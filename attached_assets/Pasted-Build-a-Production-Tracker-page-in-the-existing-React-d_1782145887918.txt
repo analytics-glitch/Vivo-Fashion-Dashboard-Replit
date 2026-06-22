@@ -1,0 +1,69 @@
+Build a "Production Tracker" page in the existing React dashboard (dashboard/ folder). Do NOT build a backend or database — a FastAPI service already runs on port 8002 with the API below. Build only the frontend and the proxy wiring.
+
+=== PROXY ===
+dashboard/src/setupProxy.js already proxies /api -> http://localhost:8000. Add a
+MORE SPECIFIC rule for /api/production -> http://localhost:8002, placed BEFORE the
+/api rule. Restart the dev server after editing.
+
+=== API (port 8002, do not modify) ===
+GET /api/production/stages
+  -> { stages: [ { stage_key, stage_name, sort_order, is_terminal,
+                   allowed_next:[stage_key...], orders_here, units_here,
+                   avg_days_in_stage, oldest_days_in_stage } ] }
+  Order: buying_order, cutting, waiting_sewing, sewing, washing, finishing,
+  repairs, warehouse.
+
+GET /api/production/board
+  -> { cards: [ { order_ref, stage, qty_here, days_in_stage, style_number,
+                  style_name, product_name, order_qty, date_ordered,
+                  expected_delivery_date, buyer } ] }
+  One card per (order x stage) currently holding units.
+
+GET /api/production/orders/{order_ref}
+  -> { order: { order_ref, buyer, style_name, style_number, order_qty,
+                date_ordered, expected_delivery_date, production_type,
+                lifecycle_type, bo_state, notes_html, ... },
+       lines: [ { colour, product_sku, product_name, total_qty,
+                  planned_qty, remaining_qty, line_state } ],
+       balances: [ { stage, stage_name, qty_here, days_in_stage } ],
+       history: [ { from_stage, to_stage, qty, moved_at, moved_by, note } ] }
+
+POST /api/production/move
+  body: { order_ref, from_stage, to_stage, qty, moved_by?, note? }
+  -> returns the same shape as order detail above.
+  -> HTTP 400 { detail: "..." } if invalid (skips a stage or exceeds available qty).
+
+=== PAGE (route /production, add a nav link) ===
+Horizontal kanban, one column per stage in sort_order. Board scrolls
+horizontally; each column scrolls vertically.
+
+Column header: stage_name, units_here total, orders_here count, and oldest
+days-in-stage if > 0.
+
+Cards (from /board grouped by stage): show order_ref (e.g. BO00334), style_name,
+buyer, qty_here (prominent), and "X days here" colored by age (green <2, amber
+2-7, red >7). Clickable.
+
+Search box filters by order_ref / style_name / buyer. Refresh button re-fetches
+/stages and /board.
+
+Clicking a card opens a modal (fetch /orders/{order_ref}) showing:
+  - Header: order_ref, buyer, style_name, ordered qty, order date, expected
+    delivery date, production_type, lifecycle_type, bo_state.
+  - Colour breakdown: a small table from `lines` (colour, product_sku, total_qty).
+  - Fabric / trims spec: render order.notes_html as HTML (it contains tables);
+    sanitize it. Collapsible is fine.
+  - "Where it is now": each balances row (stage_name, qty_here, days) with its
+    OWN move control: a qty input (default & max = qty_here), a "to" dropdown
+    whose options are ONLY that stage's allowed_next (labels from /stages
+    stage_name), an optional "your name" field (moved_by), and a Move button that
+    POSTs to /move. If allowed_next is empty (warehouse), show "Final stage — no
+    further moves".
+  - Recent moves: last ~6 from history (qty, from->to, moved_by, timestamp).
+
+On successful move: replace modal contents with the returned fresh detail AND
+re-fetch the board behind it. On 400: show detail message inline by that control,
+keep modal open.
+
+Match the existing dashboard styling. Handle loading and error states (if the API
+is unreachable, show a clear message that the service on :8002 may be down).

@@ -32,6 +32,116 @@ function fmtWhen(ts) {
   }
 }
 
+/**
+ * Colour x size matrix for one buying order. Rows are colours (the buying-order
+ * lines), columns are the distinct sizes seen across that order's variants, and
+ * each cell is the ordered qty for that (colour, size). A trailing column / row
+ * carries the totals so a buyer can sanity-check the size curve at a glance.
+ */
+function ColourSizeMatrix({ lines, variants }) {
+  const { sizes, byColour, colTotals, grand } = React.useMemo(() => {
+    const sizeOrder = [];
+    const seenSize = new Set();
+    const byColour = new Map();
+    const colTotals = new Map();
+    let grand = 0;
+    for (const v of variants || []) {
+      const colour = v.colour || "—";
+      const size = v.size || "—";
+      const qty = Number(v.qty) || 0;
+      if (!seenSize.has(size)) { seenSize.add(size); sizeOrder.push(size); }
+      if (!byColour.has(colour)) byColour.set(colour, { cells: new Map(), total: 0 });
+      const row = byColour.get(colour);
+      row.cells.set(size, (row.cells.get(size) || 0) + qty);
+      row.total += qty;
+      colTotals.set(size, (colTotals.get(size) || 0) + qty);
+      grand += qty;
+    }
+    // Keep a deterministic, human-friendly size order (XS→S→M→L→… then the rest).
+    const RANK = ["XS", "XS/S", "S", "S/M", "M", "M/L", "L", "L/1X", "1X", "1X/2X", "2X", "2X/3X", "3X", "XL", "XXL"];
+    sizeOrder.sort((a, b) => {
+      const ia = RANK.indexOf(a), ib = RANK.indexOf(b);
+      if (ia !== -1 && ib !== -1) return ia - ib;
+      if (ia !== -1) return -1;
+      if (ib !== -1) return 1;
+      return String(a).localeCompare(String(b));
+    });
+    return { sizes: sizeOrder, byColour, colTotals, grand };
+  }, [variants]);
+
+  const colourRows = React.useMemo(() => {
+    // Prefer the line list for colour ordering/labels (it carries SKU + qty),
+    // but fall back to whatever colours the variants surfaced.
+    const fromLines = (lines || []).map((l) => l.colour || "—");
+    const fromVariants = Array.from(byColour.keys());
+    const ordered = [];
+    const seen = new Set();
+    for (const c of [...fromLines, ...fromVariants]) {
+      if (!seen.has(c)) { seen.add(c); ordered.push(c); }
+    }
+    return ordered;
+  }, [lines, byColour]);
+
+  if (!variants || variants.length === 0) {
+    // No size variants — fall back to a simple colour list from the lines.
+    if (!lines || lines.length === 0) return null;
+    return (
+      <div className="flex flex-wrap gap-1.5">
+        {lines.map((l, i) => (
+          <span key={i} className="inline-flex items-center gap-1 text-[11.5px] bg-panel/60 border border-line rounded-full px-2 py-0.5">
+            <span className="font-semibold text-[#0f3d24]">{l.colour || "—"}</span>
+            <span className="text-muted">{fmtQty(l.total_qty)}</span>
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="border border-line rounded-lg overflow-x-auto">
+      <table className="w-full text-[12px] border-collapse">
+        <thead className="bg-panel/60 text-muted">
+          <tr>
+            <th className="text-left font-semibold px-3 py-1.5 sticky left-0 bg-panel/60 z-10">Colour</th>
+            {sizes.map((s) => (
+              <th key={s} className="text-right font-semibold px-2.5 py-1.5 whitespace-nowrap">{s}</th>
+            ))}
+            <th className="text-right font-semibold px-3 py-1.5 bg-panel">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {colourRows.map((colour) => {
+            const row = byColour.get(colour) || { cells: new Map(), total: 0 };
+            return (
+              <tr key={colour} className="border-t border-line">
+                <td className="px-3 py-1.5 font-semibold text-[#0f3d24] whitespace-nowrap sticky left-0 bg-white z-10">{colour}</td>
+                {sizes.map((s) => {
+                  const v = row.cells.get(s) || 0;
+                  return (
+                    <td key={s} className={`px-2.5 py-1.5 text-right tabular-nums ${v ? "" : "text-line"}`}>
+                      {v ? fmtQty(v) : "·"}
+                    </td>
+                  );
+                })}
+                <td className="px-3 py-1.5 text-right font-bold tabular-nums bg-panel/40">{fmtQty(row.total)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr className="border-t-2 border-line bg-panel/40">
+            <td className="px-3 py-1.5 font-bold text-[#0f3d24] sticky left-0 bg-panel/40 z-10">Total</td>
+            {sizes.map((s) => (
+              <td key={s} className="px-2.5 py-1.5 text-right font-bold tabular-nums">{fmtQty(colTotals.get(s) || 0)}</td>
+            ))}
+            <td className="px-3 py-1.5 text-right font-extrabold tabular-nums text-brand">{fmtQty(grand)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
 function StageMoveRow({ orderRef, balance, stageName, onMoved }) {
   const allowed = balance.allowed_next || [];
   const isTerminal = balance.is_terminal || allowed.length === 0;
@@ -157,6 +267,16 @@ export default function ProductionOrderModal({ orderRef, onClose, onChanged }) {
   const order = detail?.order;
   const balances = detail?.balances || [];
   const history = detail?.history || [];
+  const lines = detail?.lines || [];
+  const variants = detail?.variants || [];
+  const colourCount = React.useMemo(
+    () => new Set([...lines.map((l) => l.colour || "—"), ...variants.map((v) => v.colour || "—")].filter(Boolean)).size,
+    [lines, variants]
+  );
+  const sizeCount = React.useMemo(
+    () => new Set(variants.map((v) => v.size).filter(Boolean)).size,
+    [variants]
+  );
 
   return (
     <div
@@ -191,6 +311,25 @@ export default function ProductionOrderModal({ orderRef, onClose, onChanged }) {
 
         {!loading && !error && (
           <>
+            <div className="mb-2 eyebrow flex items-center gap-2 flex-wrap">
+              <span>Colours &amp; sizes</span>
+              <span className="text-[10.5px] font-semibold text-[#0f3d24] bg-emerald-50 border border-emerald-200 rounded-full px-1.5 py-0.5">
+                {colourCount} colour{colourCount === 1 ? "" : "s"}
+              </span>
+              {sizeCount > 0 && (
+                <span className="text-[10.5px] font-semibold text-[#0f3d24] bg-emerald-50 border border-emerald-200 rounded-full px-1.5 py-0.5">
+                  {sizeCount} size{sizeCount === 1 ? "" : "s"}
+                </span>
+              )}
+            </div>
+            <div className="mb-5">
+              {lines.length === 0 && variants.length === 0 ? (
+                <div className="text-[12px] text-muted italic">No colour / size breakdown available for this order.</div>
+              ) : (
+                <ColourSizeMatrix lines={lines} variants={variants} />
+              )}
+            </div>
+
             <div className="mb-2 eyebrow">Where the units are now</div>
             {balances.length === 0 ? (
               <div className="text-[12px] text-muted italic mb-4">No units currently in progress for this order.</div>
