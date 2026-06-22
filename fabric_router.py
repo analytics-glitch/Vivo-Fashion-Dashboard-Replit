@@ -771,6 +771,14 @@ def fabric_mix(
                        if p.get("_pid") is not None})
         det_by_pid = {}
         if pids:
+            # Anchor on the product master (the ids already collected from the mix
+            # tree) and LEFT JOIN the location-scoped inventory, so every product
+            # in the tree gets a detail row (carrying default_code/name/identity)
+            # even when it has no stock in the selected location — that is what
+            # lets consumption-only / zero-stock rows still show a barcode. The
+            # inventory is pre-aggregated per product within the location (inv CTE)
+            # so multi-row products don't duplicate and no-row products yield NULL
+            # metrics that degrade gracefully.
             det_rows = q(conn, f"""
                 WITH cons_win AS (
                   SELECT m.product_id, SUM({_net_kg('m')}) as consumed_kg
@@ -783,6 +791,14 @@ def fabric_mix(
                   FROM fabric_reservations
                   WHERE status='active'
                   GROUP BY product_id
+                ), inv AS (
+                  SELECT i.product_id,
+                         SUM(i.quantity) as quantity,
+                         SUM(i.available) as available,
+                         SUM(i.total_value) as total_value
+                  FROM raw_fabric_inventory i
+                  WHERE i.product_id = ANY(%s) {loc_sql}
+                  GROUP BY i.product_id
                 )
                 SELECT
                   p.id, p.name, p.default_code, p.barcode, p.fabric_category, p.fabric_subcategory,
@@ -794,27 +810,27 @@ def fabric_mix(
                   ROUND(p.standard_price::numeric,2) as cost_per_kg,
                   ROUND(CASE WHEN p.kg_per_mtr>0 THEN p.standard_price*p.kg_per_mtr ELSE NULL END::numeric,2) as cost_metre,
                   ROUND(CASE WHEN p.kg_per_mtr>0 THEN 1.0/p.kg_per_mtr ELSE NULL END::numeric,3) as m_per_kg,
-                  ROUND(i.quantity::numeric,2) as qty_kg,
-                  ROUND(i.available::numeric,2) as available_kg,
-                  ROUND(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE NULL END::numeric,1) as qty_metres,
-                  ROUND(CASE WHEN p.kg_per_mtr>0 THEN i.available/p.kg_per_mtr ELSE NULL END::numeric,1) as available_metres,
-                  ROUND(i.total_value::numeric,0) as value_kes,
-                  CASE WHEN COALESCE(c.consumed_kg,0) > 0
-                       THEN ROUND((i.quantity * ({days}/7.0) / c.consumed_kg)::numeric,1)
+                  ROUND(inv.quantity::numeric,2) as qty_kg,
+                  ROUND(inv.available::numeric,2) as available_kg,
+                  ROUND(CASE WHEN p.kg_per_mtr>0 THEN inv.quantity/p.kg_per_mtr ELSE NULL END::numeric,1) as qty_metres,
+                  ROUND(CASE WHEN p.kg_per_mtr>0 THEN inv.available/p.kg_per_mtr ELSE NULL END::numeric,1) as available_metres,
+                  ROUND(inv.total_value::numeric,0) as value_kes,
+                  CASE WHEN COALESCE(c.consumed_kg,0) > 0 AND inv.quantity IS NOT NULL
+                       THEN ROUND((inv.quantity * ({days}/7.0) / c.consumed_kg)::numeric,1)
                        ELSE NULL END as weeks_cover,
-                  CASE WHEN COALESCE(c.consumed_kg,0) > 0
-                       THEN ROUND((i.quantity * ({days}/{DAYS_PER_MONTH}) / c.consumed_kg)::numeric,1)
+                  CASE WHEN COALESCE(c.consumed_kg,0) > 0 AND inv.quantity IS NOT NULL
+                       THEN ROUND((inv.quantity * ({days}/{DAYS_PER_MONTH}) / c.consumed_kg)::numeric,1)
                        ELSE NULL END as months_cover,
                   ROUND(COALESCE(rv.reserved_kg,0)::numeric,2) as team_reserved_kg,
                   ROUND(CASE WHEN p.kg_per_mtr>0 THEN COALESCE(rv.reserved_kg,0)/p.kg_per_mtr ELSE NULL END::numeric,1) as team_reserved_metres,
-                  (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=i.product_id) as last_move,
-                  CURRENT_DATE - (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=i.product_id) as days_since_move
-                FROM raw_fabric_inventory i
-                JOIN raw_fabric_products p ON p.id = i.product_id
-                LEFT JOIN cons_win c ON c.product_id = i.product_id
-                LEFT JOIN resv rv ON rv.product_id = i.product_id
-                WHERE i.product_id = ANY(%s) {loc_sql}
-            """, [pids] + list(loc_params))
+                  (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id) as last_move,
+                  CURRENT_DATE - (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id) as days_since_move
+                FROM raw_fabric_products p
+                LEFT JOIN inv ON inv.product_id = p.id
+                LEFT JOIN cons_win c ON c.product_id = p.id
+                LEFT JOIN resv rv ON rv.product_id = p.id
+                WHERE p.id = ANY(%s)
+            """, [pids] + list(loc_params) + [pids])
             for dr in det_rows:
                 if dr["id"] not in det_by_pid:
                     det_by_pid[dr["id"]] = dr
