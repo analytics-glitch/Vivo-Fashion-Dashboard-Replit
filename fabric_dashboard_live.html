@@ -302,6 +302,17 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <select id="reg-print" onchange="loadRegister(0)"><option value="">Plain &amp; print</option><option value="Plain">Plain</option><option value="Print">Print</option></select>
      <select id="reg-weight" onchange="loadRegister(0)"><option value="">All weights</option><option value="Light">Light</option><option value="Medium">Medium</option><option value="Heavy">Heavy</option></select>
      <select id="reg-color" onchange="loadRegister(0)"><option value="">All colors</option></select>
+     <div class="seg" id="reg-cover-seg" title="Switch the Covers column between weekly and monthly basis">
+      <button class="unit-btn active" data-cov="weeks" onclick="setRegCover('weeks')">Weeks</button>
+      <button class="unit-btn" data-cov="months" onclick="setRegCover('months')">Months</button>
+     </div>
+     <span class="muted">Consumption period</span>
+     <select id="reg-period" onchange="loadRegister(0)" title="Window used for the Covers column — same presets as the Fabric mix page">
+      <option value="30">30 days (1 mo)</option>
+      <option value="90" selected>90 days (3 mo)</option>
+      <option value="180">180 days (6 mo)</option>
+      <option value="365">365 days (12 mo)</option>
+     </select>
      <div class="popwrap">
       <button class="btn" onclick="toggleColPicker(event)">Columns &#9662;</button>
       <div id="col-picker" class="popover" style="display:none;"></div>
@@ -1249,11 +1260,22 @@ const NUM_TYPES={num:1,num1:1,numb:1,kes:1,kesc:1,wcover:1,rsv:1};
 const REG_COLS_KEY='fabricRegCols_v3';
 let regCols=(()=>{try{const s=JSON.parse(localStorage.getItem(REG_COLS_KEY));if(Array.isArray(s)&&s.length){const mapped=s.map(k=>k==='primary_color'?'fabric_color':k);return [...new Set(mapped)].filter(k=>REG_COLS.some(c=>c.k===k));}return REG_DEFAULT.slice();}catch(_){return REG_DEFAULT.slice();}})();
 let regSort={key:'value_kes',dir:'desc'};
+// Covers column basis: 'weeks' (default) | 'months' — mirrors the Fabric mix
+// page's Weeks/Months toggle. Both values come from the backend per row, so the
+// toggle only swaps the displayed value/header (no refetch); the order is
+// identical either way since months_cover is a positive constant × weeks_cover.
+let regCoverBasis='weeks';
 let regTimer;
 function debouncedRegister(){clearTimeout(regTimer);regTimer=setTimeout(()=>loadRegister(0),300);}
+function setRegCover(basis){
+  if(regCoverBasis===basis)return; regCoverBasis=basis;
+  document.querySelectorAll('#reg-cover-seg .unit-btn').forEach(b=>b.classList.toggle('active',b.dataset.cov===basis));
+  renderRegisterTable();
+}
+function regPeriodDays(){return document.getElementById('reg-period').value||90;}
 async function loadRegister(offset){
   regOffset=offset??regOffset;
-  const params=new URLSearchParams({location:loc(),limit:PAGE_SIZE,offset:regOffset,sort:regSort.key,dir:regSort.dir});
+  const params=new URLSearchParams({location:loc(),limit:PAGE_SIZE,offset:regOffset,sort:regSort.key,dir:regSort.dir,days:regPeriodDays()});
   const s=document.getElementById('reg-search').value;if(s)params.set('search',s);
   const c=document.getElementById('reg-category').value;if(c)params.set('category',c);
   const p=document.getElementById('reg-print').value;if(p)params.set('plain_print',p);
@@ -1281,7 +1303,14 @@ function regValueHtml(col,r){
     case 'numb':return v!=null&&v!==''?fmt(v):'—';
     case 'kes':return fmtKES(v);
     case 'kesc':return v!=null&&v!==''?'KES '+fmt1(v):'—';
-    case 'wcover':return v!=null&&v!==''?`<span class="pill ${v<2?'pill-red':v<6?'pill-amber':'pill-green'}">${fmt1(v)}</span>`:'—';
+    case 'wcover':{
+      // Show weeks or months per the toggle; colour stays keyed to the WEEKS value
+      // (like the mix page) so the urgency banding doesn't shift with the unit.
+      const wk=r.weeks_cover, disp=regCoverBasis==='months'?r.months_cover:wk;
+      if(disp==null||disp==='')return '—';
+      const cls=wk==null?'pill-neutral':wk<2?'pill-red':wk<6?'pill-amber':'pill-green';
+      return `<span class="pill ${cls}">${fmt1(disp)}</span>`;
+    }
     case 'rsv':return v!=null&&v!==''&&Number(v)>0?`<span class="pill pill-amber">${fmt1(v)}</span>`:'—';
     case 'date':return esc(v||'—');
     default:return esc(v||'—');
@@ -1330,7 +1359,8 @@ function renderRegisterTable(){
   const cols=REG_COLS.filter(c=>regCols.includes(c.k));
   document.getElementById('register-head').innerHTML='<tr>'+cols.map(c=>{
     const arrow=regSort.key===c.k?(regSort.dir==='asc'?' \u25B2':' \u25BC'):'';
-    return `<th class="${NUM_TYPES[c.type]?'r ':''}sortable" data-key="${esc(c.k)}" onclick="sortReg('${c.k}')">${esc(c.label)}${arrow}</th>`;
+    const label=c.k==='weeks_cover'?(regCoverBasis==='months'?'Monthly Covers':'Weekly Covers'):c.label;
+    return `<th class="${NUM_TYPES[c.type]?'r ':''}sortable" data-key="${esc(c.k)}" onclick="sortReg('${c.k}')">${esc(label)}${arrow}</th>`;
   }).join('')+'</tr>';
   const body=document.getElementById('register-body');
   body.innerHTML=lastRegItems.length
@@ -1361,7 +1391,7 @@ async function exportRegister(btn){
   // Export the FULL filtered/sorted register, not just the visible 50-row page.
   // Re-fetch all matching rows (offset 0, large limit) so the CSV is complete.
   const cols=REG_COLS.filter(c=>regCols.includes(c.k));
-  const params=new URLSearchParams({location:loc(),limit:1000000,offset:0,sort:regSort.key,dir:regSort.dir});
+  const params=new URLSearchParams({location:loc(),limit:1000000,offset:0,sort:regSort.key,dir:regSort.dir,days:regPeriodDays()});
   const s=document.getElementById('reg-search').value;if(s)params.set('search',s);
   const c=document.getElementById('reg-category').value;if(c)params.set('category',c);
   const p=document.getElementById('reg-print').value;if(p)params.set('plain_print',p);
