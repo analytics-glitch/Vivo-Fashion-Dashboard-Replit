@@ -346,7 +346,7 @@ def register(
         ALLOWED_SORT = {
             "default_code", "barcode", "name", "fabric_category", "fabric_subcategory",
             "plain_print", "weight_range", "fabric_structure", "gsm", "width_m",
-            "kg_per_mtr", "fiber_content", "fabric_type", "supplier", "primary_color", "fabric_color", "color",
+            "kg_per_mtr", "m_per_kg", "fiber_content", "fabric_type", "supplier", "primary_color", "fabric_color", "color",
             "qty_kg", "available_kg", "qty_metres", "available_metres", "value_kes",
             "cost_kes", "cost_per_kg", "cost_metre", "weeks_cover", "months_cover",
             "team_reserved_kg", "team_reserved_metres",
@@ -406,6 +406,7 @@ def register(
               ROUND(p.standard_price::numeric,2) as cost_kes,
               ROUND(p.standard_price::numeric,2) as cost_per_kg,
               ROUND(CASE WHEN p.kg_per_mtr>0 THEN p.standard_price*p.kg_per_mtr ELSE NULL END::numeric,2) as cost_metre,
+              ROUND(CASE WHEN p.kg_per_mtr>0 THEN 1.0/p.kg_per_mtr ELSE NULL END::numeric,3) as m_per_kg,
               ROUND(i.quantity::numeric,2) as qty_kg,
               ROUND(i.reserved_qty::numeric,2) as reserved_kg,
               ROUND(i.available::numeric,2) as available_kg,
@@ -644,6 +645,9 @@ def fabric_mix(
     months = days / DAYS_PER_MONTH
     with _get_conn() as conn:
         _ensure_fabric_sheet(conn)
+        # The per-product detail query (below) joins fabric_reservations, which is
+        # created lazily — ensure it exists even on a fresh DB.
+        _ensure_fabric_tables(conn)
         loc_sql, loc_params = _loc_filter(location)
         stock = q(conn, f"""
             SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
@@ -690,7 +694,13 @@ def fabric_mix(
         def _sub(cat, name):
             return _cat(cat)["_subs"].setdefault(name, {"_node": _node(name), "_prods": {}})
         def _prod(cat, sub, pid, name):
-            return _sub(cat, sub)["_prods"].setdefault(pid, _node(name))
+            prods = _sub(cat, sub)["_prods"]
+            node = prods.get(pid)
+            if node is None:
+                node = _node(name)
+                node["_pid"] = pid
+                prods[pid] = node
+            return node
         for r in cons:
             cv_kg = float(r["consumption_kg"] or 0)
             cv_m = float(r["consumption_metres"] or 0)
@@ -751,9 +761,76 @@ def fabric_mix(
                 "avail_kg_nometre": round(x["_avail_kg_nometre"], 1),
             }
 
+        # Per-product register detail (same data source/maths as the register page)
+        # so each product drill-down row can open the shared fabric detail card.
+        # Keyed by product_id; location-scoped + same consumption window as the
+        # cover columns. m_per_kg (metres per kg) is the inverse of kg_per_mtr.
+        pids = sorted({p["_pid"] for c in cats.values()
+                       for s in c["_subs"].values()
+                       for p in s["_prods"].values()
+                       if p.get("_pid") is not None})
+        det_by_pid = {}
+        if pids:
+            det_rows = q(conn, f"""
+                WITH cons_win AS (
+                  SELECT m.product_id, SUM({_net_kg('m')}) as consumed_kg
+                  FROM {EFFECTIVE_MOVES} m
+                  WHERE {_net_cons_where('m')}
+                    AND m.date >= NOW() - INTERVAL '{days} days'
+                  GROUP BY m.product_id
+                ), resv AS (
+                  SELECT product_id, SUM(qty_kg) as reserved_kg
+                  FROM fabric_reservations
+                  WHERE status='active'
+                  GROUP BY product_id
+                )
+                SELECT
+                  p.id, p.name, p.default_code, p.barcode, p.fabric_category, p.fabric_subcategory,
+                  p.fabric_structure, p.plain_print, p.weight_range, p.gsm,
+                  p.width_m, p.kg_per_mtr, p.fiber_content, p.fabric_type,
+                  p.supplier, p.primary_color, INITCAP(BTRIM(p.fabric_color)) as fabric_color,
+                  NULLIF(INITCAP(BTRIM(p.color)),'') as color,
+                  ROUND(p.standard_price::numeric,2) as cost_kes,
+                  ROUND(p.standard_price::numeric,2) as cost_per_kg,
+                  ROUND(CASE WHEN p.kg_per_mtr>0 THEN p.standard_price*p.kg_per_mtr ELSE NULL END::numeric,2) as cost_metre,
+                  ROUND(CASE WHEN p.kg_per_mtr>0 THEN 1.0/p.kg_per_mtr ELSE NULL END::numeric,3) as m_per_kg,
+                  ROUND(i.quantity::numeric,2) as qty_kg,
+                  ROUND(i.available::numeric,2) as available_kg,
+                  ROUND(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE NULL END::numeric,1) as qty_metres,
+                  ROUND(CASE WHEN p.kg_per_mtr>0 THEN i.available/p.kg_per_mtr ELSE NULL END::numeric,1) as available_metres,
+                  ROUND(i.total_value::numeric,0) as value_kes,
+                  CASE WHEN COALESCE(c.consumed_kg,0) > 0
+                       THEN ROUND((i.quantity * ({days}/7.0) / c.consumed_kg)::numeric,1)
+                       ELSE NULL END as weeks_cover,
+                  CASE WHEN COALESCE(c.consumed_kg,0) > 0
+                       THEN ROUND((i.quantity * ({days}/{DAYS_PER_MONTH}) / c.consumed_kg)::numeric,1)
+                       ELSE NULL END as months_cover,
+                  ROUND(COALESCE(rv.reserved_kg,0)::numeric,2) as team_reserved_kg,
+                  ROUND(CASE WHEN p.kg_per_mtr>0 THEN COALESCE(rv.reserved_kg,0)/p.kg_per_mtr ELSE NULL END::numeric,1) as team_reserved_metres,
+                  (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=i.product_id) as last_move,
+                  CURRENT_DATE - (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=i.product_id) as days_since_move
+                FROM raw_fabric_inventory i
+                JOIN raw_fabric_products p ON p.id = i.product_id
+                LEFT JOIN cons_win c ON c.product_id = i.product_id
+                LEFT JOIN resv rv ON rv.product_id = i.product_id
+                WHERE i.product_id = ANY(%s) {loc_sql}
+            """, [pids] + list(loc_params))
+            for dr in det_rows:
+                if dr["id"] not in det_by_pid:
+                    det_by_pid[dr["id"]] = dr
+
         def _finalize_sub(s):
             srow = _finalize(s["_node"])
-            prods = [_finalize(p) for p in s["_prods"].values()]
+            prods = []
+            for p in s["_prods"].values():
+                prow = _finalize(p)
+                pid = p.get("_pid")
+                prow["id"] = pid
+                det = det_by_pid.get(pid)
+                if det:
+                    prow["default_code"] = det.get("default_code")
+                    prow["detail"] = det
+                prods.append(prow)
             prods.sort(key=lambda r: r["consumption_metres"], reverse=True)
             srow["products"] = prods
             return srow
