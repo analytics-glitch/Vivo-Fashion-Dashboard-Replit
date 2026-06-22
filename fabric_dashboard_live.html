@@ -230,6 +230,10 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <button class="unit-btn active" data-grp="category" onclick="setMixGroup('category')">By Category</button>
       <button class="unit-btn" data-grp="subcategory" onclick="setMixGroup('subcategory')">By Sub-Category</button>
      </div>
+     <div class="seg" id="mix-cover-seg" title="Switch the Covers column between weekly and monthly basis">
+      <button class="unit-btn active" data-cov="weeks" onclick="setMixCover('weeks')">Weeks</button>
+      <button class="unit-btn" data-cov="months" onclick="setMixCover('months')">Months</button>
+     </div>
      <span class="muted">Consumption period</span>
      <select id="mix-period" onchange="onMixPreset()">
       <option value="30">30 days (1 mo)</option>
@@ -808,6 +812,7 @@ function onLocationChange(){
 
 // ── Fabric mix (consumption share vs available-stock share) ──
 let mixCache=null, mixGroup='category';
+let mixCoverBasis='weeks';        // covers column basis: 'weeks' (default) | 'months'
 let mixSort={key:'consumption',dir:'desc'};
 let mixOpen={};                 // category → expanded? (in-place sub-category drill-down)
 let mixAction={has:false};      // last action-banner state (any Buy/Clear/Idle rows?)
@@ -860,6 +865,13 @@ function setMixGroup(g){
   document.querySelectorAll('#mix-group-seg .unit-btn').forEach(b=>b.classList.toggle('active',b.dataset.grp===g));
   loadFabricMix();
 }
+// Weeks/Months toggle for the Covers column — re-renders from cache (no refetch);
+// covers values are already derived for both bases, so only the display switches.
+function setMixCover(basis){
+  if(mixCoverBasis===basis)return; mixCoverBasis=basis;
+  document.querySelectorAll('#mix-cover-seg .unit-btn').forEach(b=>b.classList.toggle('active',b.dataset.cov===basis));
+  renderFabricMix();
+}
 // Derive a single row's display metrics for the active unit. `subcategories`
 // (present on category rows when grouping by category) are derived recursively so
 // the drill-down rows use the same Gap/verdict logic + grand-total denominators.
@@ -871,7 +883,11 @@ function deriveMixRow(r,totC,totA,weeks,useKg){
   const gap=pctA-pctC;
   const shortfall=a-c;
   const covers=c>0?(a/(c/weeks)):null;
-  const out={group:r.group,consumption:c,available:a,pctC,pctA,gap,shortfall,covers,
+  // Monthly covers derived from the same weekly value via the days-per-month
+  // constant; verdict/colour logic keeps using the weekly `covers` so only the
+  // displayed Covers value/header switch with the toggle.
+  const coversMonthly=covers==null?null:covers*(7/MIX_DAYS_PER_MONTH);
+  const out={group:r.group,consumption:c,available:a,pctC,pctA,gap,shortfall,covers,coversMonthly,
     tied:r.tied_up_kes,idle:!!r.idle,incomplete:!!r.metres_incomplete&&!useKg};
   out.verdict=mixVerdict(out);
   if(Array.isArray(r.subcategories))
@@ -953,7 +969,8 @@ function mixCell(col,r,kind){
     case 'unit':cell=`<td class="r">${fmtUnit(r[col.k])}</td>`;break;
     case 'pct':cell=`<td class="r">${(r[col.k]||0).toFixed(1)}%</td>`;break;
     case 'gap':cell=`<td class="r">${gapChip(r.gap)}</td>`;break;
-    case 'cover':{const v=r[col.k];const c=v==null?'pill-neutral':v<1?'pill-red':v<3?'pill-amber':v>12?'pill-blue':'pill-green';
+    case 'cover':{const wk=r.covers;const v=mixCoverBasis==='months'?r.coversMonthly:wk;
+      const c=wk==null?'pill-neutral':wk<1?'pill-red':wk<3?'pill-amber':wk>12?'pill-blue':'pill-green';
       cell=`<td class="r">${v==null?'—':`<span class="pill ${c}">${fmt1(v)}</span>`}</td>`;break;}
     case 'kes':cell=`<td class="r" style="color:var(--muted);">${fmtKES(r[col.k])}</td>`;break;
     case 'verdict':{const v=r.verdict||mixVerdict(r);
@@ -983,7 +1000,8 @@ function renderFabricMix(){
   // Header
   document.getElementById('mix-head').innerHTML='<tr>'+MIX_COLS.map(c=>{
     const arrow=mixSort.key===c.k?(mixSort.dir==='asc'?' \u25B2':' \u25BC'):'';
-    const label=c.k==='group'?(mixGroup==='subcategory'?'Fabric sub-category':'Fabric category'):c.label;
+    const label=c.k==='group'?(mixGroup==='subcategory'?'Fabric sub-category':'Fabric category')
+      :(c.k==='covers'?(mixCoverBasis==='months'?'Monthly covers':'Weekly covers'):c.label);
     return `<th class="${MIX_NUM[c.type]?'r ':''}sortable" onclick="sortMix('${c.k}')">${esc(label)}${arrow}</th>`;
   }).join('')+'</tr>';
   const body=document.getElementById('mix-body');
@@ -1073,7 +1091,7 @@ function exportFabricMix(btn){
     ['% Available',r=>r.pctA.toFixed(1)],
     ['Gap (pp)',r=>r.gap.toFixed(1)],
     ['Shortfall ('+unit+')',r=>r.shortfall],
-    ['Weekly covers',r=>r.covers==null?'':r.covers.toFixed(2)],
+    [mixCoverBasis==='months'?'Monthly covers':'Weekly covers',r=>{const v=mixCoverBasis==='months'?r.coversMonthly:r.covers;return v==null?'':v.toFixed(2);}],
     ['Tied-up KES',r=>r.tied],
     ['Verdict',r=>r.verdict.label],
   ];
@@ -1100,7 +1118,7 @@ function exportFabricMixActions(btn){
     ['Consumption ('+unit+')',r=>r.consumption],
     ['Shortage units ('+unit+')',r=>shortUnits(r).toFixed(1)],
     ['Shortage exposure KES',r=>shortKes(r)],
-    ['Weekly covers',r=>r.covers==null?'':r.covers.toFixed(2)],
+    [mixCoverBasis==='months'?'Monthly covers':'Weekly covers',r=>{const v=mixCoverBasis==='months'?r.coversMonthly:r.covers;return v==null?'':v.toFixed(2);}],
     ['Tied-up KES',r=>r.tied],
   ];
   const csv=[cols.map(c=>c[0]).join(',')]
