@@ -249,8 +249,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div class="muted" style="margin-top:.7rem;display:grid;gap:.45rem;font-size:.85rem;line-height:1.45;">
       <div><b>% Consumption / % Available</b> — each group's share of total net usage vs. total available stock over the window.</div>
       <div><b>Gap (pp)</b> = % Available − % Consumption. <span class="pill pill-amber">+ overstock</span> holds more than it uses · <span class="pill pill-red">− short</span> uses faster than its stock share · <span class="pill pill-green">± balanced</span> within ±3pp.</div>
-      <div><b>Monthly covers</b> = Available ÷ (Consumption ÷ months). Below 1 = under a month of cover.</div>
-      <div><b>Verdict</b> — <span class="pill pill-red">Buy</span> short (shortfall &lt; 0, cover &lt; 1mo, or Gap ≤ −3pp) · <span class="pill pill-amber">Clear</span> overstock (Gap ≥ +3pp or &gt; 12mo cover) · <span class="pill pill-blue">Idle</span> stock but ~no usage in the window · <span class="pill pill-green">Hold</span> balanced.</div>
+      <div><b>Weekly covers</b> = Available ÷ (Consumption ÷ weeks). Below 1 = under a week of cover.</div>
+      <div><b>Verdict</b> — <span class="pill pill-red">Buy</span> short (shortfall &lt; 0, cover &lt; ~4wk, or Gap ≤ −3pp) · <span class="pill pill-amber">Clear</span> overstock (Gap ≥ +3pp or &gt; ~52wk cover) · <span class="pill pill-blue">Idle</span> stock but ~no usage in the window · <span class="pill pill-green">Hold</span> balanced.</div>
       <div><b>Tied-up KES</b> — capital locked in the group's available stock.</div>
      </div>
     </details>
@@ -820,7 +820,7 @@ const MIX_COLS=[
   {k:'pctA',label:'% Available',type:'pct'},
   {k:'gap',label:'Gap (pp)',type:'gap'},
   {k:'shortfall',label:'Shortfall',type:'unit'},
-  {k:'covers',label:'Monthly covers',type:'cover'},
+  {k:'covers',label:'Weekly covers',type:'cover'},
   {k:'tied',label:'Tied-up KES',type:'kes'},
   {k:'verdict',label:'Verdict',type:'verdict'},
 ];
@@ -831,9 +831,9 @@ const MIX_FX={
   pctA:'% Available = this category\u2019s available stock ÷ total available stock across all categories.',
   gap:'Gap (pp) = % Available − % Consumption (percentage points). Positive = overstock (held more than used); negative = short (used faster than its stock share).',
   shortfall:'Shortfall = Available − Consumption over the period (active unit). Negative = consumed more than is in stock.',
-  covers:'Monthly covers = Available ÷ (Consumption ÷ months in the period). Below 1 = under a month of cover left.',
+  covers:'Weekly covers = Available ÷ (Consumption ÷ weeks in the period). Below 1 = under a week of cover left.',
   tied:'Tied-up KES = capital locked in this category\u2019s available stock (stock value).',
-  verdict:'Verdict = Buy (short: shortfall < 0, cover < 1 month, or Gap ≤ −3pp), Clear (overstock: Gap ≥ +3pp or > 12 months cover), Idle (stock but ~no usage in the window), else Hold (balanced).',
+  verdict:'Verdict = Buy (short: shortfall < 0, cover < ~4 weeks, or Gap ≤ −3pp), Clear (overstock: Gap ≥ +3pp or > ~52 weeks cover), Idle (stock but ~no usage in the window), else Hold (balanced).',
 };
 const MIX_NUM={unit:1,pct:1,gap:1,cover:1,kes:1};
 // Shared "Gap (pp)" chip — % Available − % Consumption, positive = overstock.
@@ -849,8 +849,8 @@ function gapChip(v){
 // Same buckets as the old narrative, just re-sourced from Gap + an Idle override.
 function mixVerdict(r){
   if(r.idle) return {key:'idle', label:'Idle — no usage', cls:'pill-blue'};
-  const buy   = r.shortfall<0 || (r.covers!=null&&r.covers<1) || r.gap<=-3;
-  const clear = r.gap>=3 || (r.covers!=null&&r.covers>12);
+  const buy   = r.shortfall<0 || (r.covers!=null&&r.covers<4.35) || r.gap<=-3;
+  const clear = r.gap>=3 || (r.covers!=null&&r.covers>52.2);
   if(buy)   return {key:'buy',   label:'Buy — short',         cls:'pill-red'};
   if(clear) return {key:'clear', label:'Clear — overstocked', cls:'pill-amber'};
   return {key:'hold', label:'Hold — balanced', cls:'pill-green'};
@@ -863,27 +863,30 @@ function setMixGroup(g){
 // Derive a single row's display metrics for the active unit. `subcategories`
 // (present on category rows when grouping by category) are derived recursively so
 // the drill-down rows use the same Gap/verdict logic + grand-total denominators.
-function deriveMixRow(r,totC,totA,months,useKg){
+function deriveMixRow(r,totC,totA,weeks,useKg){
   const c=useKg?r.consumption_kg:r.consumption_metres;
   const a=useKg?r.available_kg:r.available_metres;
   const pctC=totC>0?(c/totC*100):0;
   const pctA=totA>0?(a/totA*100):0;
   const gap=pctA-pctC;
   const shortfall=a-c;
-  const covers=c>0?(a/(c/months)):null;
+  const covers=c>0?(a/(c/weeks)):null;
   const out={group:r.group,consumption:c,available:a,pctC,pctA,gap,shortfall,covers,
     tied:r.tied_up_kes,idle:!!r.idle,incomplete:!!r.metres_incomplete&&!useKg};
   out.verdict=mixVerdict(out);
   if(Array.isArray(r.subcategories))
-    out.subcategories=r.subcategories.map(s=>deriveMixRow(s,totC,totA,months,useKg));
+    out.subcategories=r.subcategories.map(s=>deriveMixRow(s,totC,totA,weeks,useKg));
   return out;
 }
+// Days-per-month constant mirrors the backend (fabric_router.py DAYS_PER_MONTH).
+const MIX_DAYS_PER_MONTH=30.4375;
 function deriveMixRows(d){
   const useKg=UNIT==='kg';
   const totC=useKg?d.total_consumption_kg:d.total_consumption_metres;
   const totA=useKg?d.total_available_kg:d.total_available_metres;
   const months=d.months||1;
-  return (d.rows||[]).map(r=>deriveMixRow(r,totC,totA,months,useKg));
+  const weeks=months*(MIX_DAYS_PER_MONTH/7);
+  return (d.rows||[]).map(r=>deriveMixRow(r,totC,totA,weeks,useKg));
 }
 // Quantified action banner: money + units at risk for CLEAR / BUY / IDLE,
 // each with a count, units, KES and named example categories.
@@ -1070,7 +1073,7 @@ function exportFabricMix(btn){
     ['% Available',r=>r.pctA.toFixed(1)],
     ['Gap (pp)',r=>r.gap.toFixed(1)],
     ['Shortfall ('+unit+')',r=>r.shortfall],
-    ['Monthly covers',r=>r.covers==null?'':r.covers.toFixed(2)],
+    ['Weekly covers',r=>r.covers==null?'':r.covers.toFixed(2)],
     ['Tied-up KES',r=>r.tied],
     ['Verdict',r=>r.verdict.label],
   ];
@@ -1097,7 +1100,7 @@ function exportFabricMixActions(btn){
     ['Consumption ('+unit+')',r=>r.consumption],
     ['Shortage units ('+unit+')',r=>shortUnits(r).toFixed(1)],
     ['Shortage exposure KES',r=>shortKes(r)],
-    ['Monthly covers',r=>r.covers==null?'':r.covers.toFixed(2)],
+    ['Weekly covers',r=>r.covers==null?'':r.covers.toFixed(2)],
     ['Tied-up KES',r=>r.tied],
   ];
   const csv=[cols.map(c=>c[0]).join(',')]
