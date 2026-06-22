@@ -83,6 +83,7 @@ export default function ReplenishmentTransferReport({
 } = {}) {
   const [from, setFrom] = useState(() => daysAgoYmd(60));
   const [to, setTo] = useState(() => todayYmd());
+  const [posFilter, setPosFilter] = useState("");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -162,11 +163,29 @@ export default function ReplenishmentTransferReport({
 
   const groups = data?.groups || [];
 
+  // POS locations present in the loaded report, for the filter dropdown.
+  const locations = useMemo(() => {
+    const set = new Set();
+    for (const g of groups) if (g.pos_location) set.add(g.pos_location);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [groups]);
+
+  // If the active filter no longer matches anything (e.g. after a reload),
+  // fall back to "all" so the operator never sees a permanently empty report.
+  useEffect(() => {
+    if (posFilter && !locations.includes(posFilter)) setPosFilter("");
+  }, [locations, posFilter]);
+
+  const visibleGroups = useMemo(
+    () => (posFilter ? groups.filter((g) => g.pos_location === posFilter) : groups),
+    [groups, posFilter],
+  );
+
   const summary = useMemo(() => ({
-    groupCount: data?.group_count || 0,
-    totalUnits: data?.total_units || 0,
-    assigned: groups.filter((g) => (g.transfer_ref || "").trim()).length,
-  }), [data, groups]);
+    groupCount: visibleGroups.length,
+    totalUnits: visibleGroups.reduce((s, g) => s + (g.total_units || 0), 0),
+    assigned: visibleGroups.filter((g) => (g.transfer_ref || "").trim()).length,
+  }), [visibleGroups]);
 
   const exportCsv = useCallback(() => {
     const header = [
@@ -174,7 +193,7 @@ export default function ReplenishmentTransferReport({
       "SKU", "Barcode", "Units", "Done by", "Done at",
     ];
     const lines = [header.map(csvCell).join(",")];
-    for (const g of groups) {
+    for (const g of visibleGroups) {
       for (const it of g.items || []) {
         lines.push([
           g.pos_location, g.day, it.transfer_ref || "",
@@ -238,10 +257,22 @@ export default function ReplenishmentTransferReport({
             data-testid="input-transfer-to"
             aria-label="To date"
           />
+          <select
+            value={posFilter}
+            onChange={(e) => setPosFilter(e.target.value)}
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+            data-testid="select-transfer-pos"
+            aria-label="Filter by POS location"
+          >
+            <option value="">All locations</option>
+            {locations.map((loc) => (
+              <option key={loc} value={loc}>{loc}</option>
+            ))}
+          </select>
           <button
             type="button"
             onClick={exportCsv}
-            disabled={groups.length === 0}
+            disabled={visibleGroups.length === 0}
             className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-2 py-1 text-sm hover:bg-accent disabled:opacity-50"
             data-testid="button-export-transfer-report"
           >
@@ -266,9 +297,15 @@ export default function ReplenishmentTransferReport({
         <div className="p-4"><Loading /></div>
       ) : error ? (
         <div className="p-4"><ErrorBox message={error} /></div>
-      ) : groups.length === 0 ? (
+      ) : visibleGroups.length === 0 ? (
         <div className="p-4">
-          <Empty label={`No ${noun} have been marked done in this date range yet.`} />
+          <Empty
+            label={
+              posFilter
+                ? `No ${noun} have been marked done at ${posFilter} in this date range.`
+                : `No ${noun} have been marked done in this date range yet.`
+            }
+          />
         </div>
       ) : (
         <>
