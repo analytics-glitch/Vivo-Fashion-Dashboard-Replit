@@ -3618,9 +3618,21 @@ def get_sor(
     # total_sales is NET of returns (gross − returns) per the metrics spec.
     # Return rows are included so returns_kes is subtracted; units_sold (which
     # drives sor_percent) stays sale+order only.
+    #
+    # Response cache: the Catalog "Styles Tracked" KPI + SOR table now show every
+    # qualifying style (uncapped), so a wide date range full-scans all_sales and
+    # can take ~8s for ~1800 rows. The result is identical for every user and
+    # changes slowly, so cache the fully-computed response for 10 min keyed on
+    # all filter params (mirrors /api/analytics/sor-all-styles via the run_query
+    # cache, but pins a longer TTL so wide ranges ending today stay warm — the
+    # bare run_query cache would only hold ~120s when date_to >= today).
+    _sor_ck = "sor:" + "|".join(str(x) for x in (date_from, date_to, country, channel))
+    _sor_cached = cache_get(_sor_ck)
+    if _sor_cached is not None:
+        return _sor_cached
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order','return') AND p.style_name IS NOT NULL")
-    return run_query("""
+    rows = run_query("""
         SELECT p.style_name, p.collection, p.brand, p.product_type,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
@@ -3642,6 +3654,8 @@ def get_sor(
         ORDER BY units_sold DESC
         LIMIT 50000
     """, date_to=date_to)
+    cache_set(_sor_ck, rows, ttl=600)
+    return rows
 
 @app.get("/api/subcategory-stock-sales")
 def get_subcategory_stock_sales(
