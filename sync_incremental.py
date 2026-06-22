@@ -167,6 +167,8 @@ LOOKBACK_DAYS = int(os.environ.get("SYNC_LOOKBACK_DAYS", "2"))
 _LAST_FABRIC_EXTRACT = None
 # Same once-per-hour guard for the fabric consumption/returns sheet override loader.
 _LAST_FABRIC_SHEET_EXTRACT = None
+# Same once-per-hour guard for the production tracker (Odoo DPS buying orders).
+_LAST_PRODUCTION_SYNC = None
 # Module-level guard so attendance syncs at most once per hour even though main()
 # runs every 60s. None on boot so the first cycle after a (re)start refreshes
 # immediately. Persists for the lifetime of the process.
@@ -948,6 +950,47 @@ def main():
             log.info("✅ Fabric sheet override extract complete")
         except Exception as e:
             log.error("Fabric sheet override extract error: %s", e)
+
+    # Production tracker sync — feeds the /production board (production_orders +
+    # stage_movements). New Odoo buying orders (DPS documents) won't appear until
+    # this runs, so fold it into the supervised loop instead of the manual
+    # standalone run. Production runs on a SEPARATE DB, so bootstrap immediately
+    # when production_orders is empty (fresh prod DB), then refresh HOURLY.
+    # sync_production_tracker.py is idempotent — it upserts on order_ref and only
+    # appends the intake DELTA per DPS, so re-running never doubles intake. Runs
+    # as a subprocess like the other Odoo extracts. A module-level guard
+    # rate-limits to once per hour even though main() runs every 60s. The
+    # production_orders/stage_movements tables are created by api_pg's startup
+    # hook (_ensure_production_tables), and the watchdog brings the API up before
+    # this loop, so we skip entirely if the table is missing and let the next
+    # cycle pick it up once it exists (avoids erroring every 60s on a cold DB).
+    global _LAST_PRODUCTION_SYNC
+    production_table_missing = False
+    production_empty = False
+    try:
+        cur.execute("SELECT to_regclass('public.production_orders')")
+        if cur.fetchone()[0] is None:
+            production_table_missing = True
+        else:
+            cur.execute("SELECT COUNT(*) FROM production_orders")
+            production_empty = (cur.fetchone()[0] == 0)
+        conn.commit()
+    except Exception as e:
+        log.error("Production tracker presence check error: %s", e)
+        conn.rollback()
+    production_due = (_LAST_PRODUCTION_SYNC is None
+                     or (now_utc - _LAST_PRODUCTION_SYNC).total_seconds() >= 3600)
+    if not production_table_missing and (production_empty or production_due):
+        # Stamp the attempt time up front so a transient failure waits an hour
+        # (when still empty, the production_empty branch retries next cycle).
+        _LAST_PRODUCTION_SYNC = now_utc
+        try:
+            import subprocess, sys
+            log.info("Running production tracker (Odoo) sync (bootstrap=%s)...", production_empty)
+            subprocess.run([sys.executable, '/home/runner/workspace/sync_production_tracker.py'], check=True)
+            log.info("✅ Production tracker sync complete")
+        except Exception as e:
+            log.error("Production tracker sync error: %s", e)
 
     # Chronic-stockout snapshot — once a day around midnight EAT (21:00 UTC).
     # The API endpoint dedupes to a weekly cadence, so running it on every cycle
