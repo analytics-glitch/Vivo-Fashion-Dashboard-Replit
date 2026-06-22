@@ -1015,9 +1015,9 @@ function mixCell(col,r,kind,opts){
         // opens the shared fabric detail card from the carried register detail.
         let link='';
         if(r.detail&&r.detail.default_code){
-          link=` <a href="#" class="mix-barcode" data-fab-id="${esc(r.id)}" title="View all fabric details" style="color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px;font-size:.92em;">${esc(r.detail.default_code)}</a>`;
+          link=`<a href="#" class="mix-barcode" data-fab-id="${esc(r.id)}" title="View all fabric details" style="color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px;font-size:.92em;margin-right:8px;">${esc(r.detail.default_code)}</a>`;
         }
-        cell=`<td style="padding-left:52px;color:var(--muted);font-size:.9em;">${esc(r.group)}${flag}${link}</td>`;
+        cell=`<td style="padding-left:52px;color:var(--muted);font-size:.9em;">${link}${esc(r.group)}${flag}</td>`;
       }else{
         cell=`<td style="font-weight:700;">${esc(r.group)}${flag}</td>`;
       }
