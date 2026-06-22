@@ -3640,7 +3640,7 @@ def get_sor(
         WHERE """ + where + """
         GROUP BY p.style_name, p.collection, p.brand, p.product_type
         ORDER BY units_sold DESC
-        LIMIT 200
+        LIMIT 50000
     """, date_to=date_to)
 
 @app.get("/api/subcategory-stock-sales")
