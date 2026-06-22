@@ -150,7 +150,7 @@ export default function IBTFlatTable({
         // the table doesn't appear empty during the fan-out.
         out.push({
           __stub: true,
-          rowKey: `${s.style_name}||${s.to_store}||__stub`,
+          rowKey: `${s.style_name}||${fromStore}||${s.to_store}||__stub`,
           style_name: s.style_name,
           brand: s.brand,
           subcategory: s.subcategory,
@@ -187,7 +187,7 @@ export default function IBTFlatTable({
       }
       for (const sk of skus) {
         out.push({
-          rowKey: `${s.style_name}||${s.to_store}||${sk.sku}`,
+          rowKey: `${s.style_name}||${fromStore}||${s.to_store}||${sk.sku}`,
           style_name: s.style_name,
           brand: s.brand,
           subcategory: s.subcategory,
