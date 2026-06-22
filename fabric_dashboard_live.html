@@ -844,6 +844,10 @@ const MIX_COLS=[
   {k:'tied',label:'Tied-up KES',type:'kes'},
   {k:'verdict',label:'Verdict',type:'verdict'},
 ];
+// Effective columns for the current render. The Barcode column is conditionally
+// dropped when no product rows are on screen (see renderFabricMix), so the
+// header, body rows, colspans and totals row all key off this list.
+let mixActiveCols=MIX_COLS;
 const MIX_FX={
   consumption:'Consumption = net fabric used over the selected period (OUT moves − production returns), warehouse-wide, in the active unit.',
   available:'Available = current on-hand stock for this category at the selected location, in the active unit.',
@@ -1052,7 +1056,28 @@ function mixRowHtml(r,kind,opts){
   }else if(kind==='prod'){
     attrs=' class="prod-row"';
   }
-  return `<tr${attrs}>`+MIX_COLS.map(c=>mixCell(c,r,kind,opts)).join('')+'</tr>';
+  return `<tr${attrs}>`+mixActiveCols.map(c=>mixCell(c,r,kind,opts)).join('')+'</tr>';
+}
+// Will the upcoming render put any product (deepest) rows on screen? Mirrors the
+// body-builder's visibility logic so the Barcode column can be shown/hidden in
+// lockstep. When searching, any matching product counts; otherwise a product is
+// visible only when its sub-category is expanded.
+function mixHasVisibleProducts(rows,searching,SEP){
+  return rows.some(r=>{
+    if(mixGroup==='subcategory'){
+      const prods=Array.isArray(r.products)?r.products:[];
+      if(searching)return prods.some(mixProdMatches);
+      const subKey=(r.category||'')+SEP+r.group;
+      return !!mixSubOpen[subKey]&&prods.length>0;
+    }
+    const subs=Array.isArray(r.subcategories)?r.subcategories:[];
+    if(searching)return subs.some(s=>(Array.isArray(s.products)?s.products:[]).some(mixProdMatches));
+    if(!mixOpen[r.group])return false;
+    return subs.some(s=>{
+      const subKey=r.group+SEP+s.group;
+      return !!mixSubOpen[subKey]&&(Array.isArray(s.products)?s.products:[]).length>0;
+    });
+  });
 }
 function renderFabricMix(){
   const d=mixCache;if(!d)return;
@@ -1069,8 +1094,15 @@ function renderFabricMix(){
   const rows=mixSortRows(deriveMixRows(d));
   indexMixDetails(rows);
   mixActionBanner(rows);
+  // The Barcode column only ever carries a value on product (deepest) rows, so
+  // it is hidden entirely until product rows are actually on screen — i.e. a
+  // sub-category is drilled down to its products, or a search surfaces matches.
+  const searching=!!mixSearch;
+  const SEP='\u0001';
+  const showBarcode=mixHasVisibleProducts(rows,searching,SEP);
+  mixActiveCols=showBarcode?MIX_COLS:MIX_COLS.filter(c=>c.k!=='barcode');
   // Header
-  document.getElementById('mix-head').innerHTML='<tr>'+MIX_COLS.map(c=>{
+  document.getElementById('mix-head').innerHTML='<tr>'+mixActiveCols.map(c=>{
     const arrow=mixSort.key===c.k?(mixSort.dir==='asc'?' \u25B2':' \u25BC'):'';
     const label=c.k==='group'?(mixGroup==='subcategory'?'Fabric sub-category':'Fabric category')
       :(c.k==='covers'?(mixCoverBasis==='months'?'Monthly covers':'Weekly covers'):c.label);
@@ -1092,7 +1124,7 @@ function renderFabricMix(){
     });
     mixBound=true;
   }
-  if(!rows.length){body.innerHTML=`<tr><td colspan="${MIX_COLS.length}" class="loading">No consumption or stock in this period.</td></tr>`;return;}
+  if(!rows.length){body.innerHTML=`<tr><td colspan="${mixActiveCols.length}" class="loading">No consumption or stock in this period.</td></tr>`;return;}
   // Three-level in-place drill-down: category → sub-category → individual product.
   // Category mode nests subs (expandable) under each category; sub-category mode
   // renders a flat list of subs. Either way a sub-row with products is expandable
@@ -1102,8 +1134,6 @@ function renderFabricMix(){
   // category/sub-category auto-expand and only the matching product rows show
   // (non-matching rows/branches are hidden). Clearing the search restores the
   // normal mixOpen/mixSubOpen collapsed view.
-  const searching=!!mixSearch;
-  const SEP='\u0001';
   let html='';
   rows.forEach(r=>{
     if(mixGroup==='subcategory'){
@@ -1147,12 +1177,12 @@ function renderFabricMix(){
     }
   });
   if(searching&&!html){
-    body.innerHTML=`<tr><td colspan="${MIX_COLS.length}" class="loading">No product matches “${esc(mixSearch)}”.</td></tr>`;
+    body.innerHTML=`<tr><td colspan="${mixActiveCols.length}" class="loading">No product matches “${esc(mixSearch)}”.</td></tr>`;
     return;
   }
   // Totals row
   html+=`<tr style="border-top:2px solid var(--border);font-weight:700;background:var(--bg);">
-   <td style="font-weight:800;">Total</td>
+   ${showBarcode?'<td></td>':''}<td style="font-weight:800;">Total</td>
    <td class="r">${fmtUnit(totC)}</td>
    <td class="r">${fmtUnit(totA)}</td>
    <td class="r">100.0%</td>
@@ -1208,7 +1238,7 @@ async function loadFabricMix(){
     mixCache=await apiFetch('/api/fabric/mix?'+params);
     renderFabricMix();
     document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString();
-  }catch(e){rowErr('mix-body',MIX_COLS.length,e);document.getElementById('mix-narrative').innerHTML='';}
+  }catch(e){rowErr('mix-body',mixActiveCols.length,e);document.getElementById('mix-narrative').innerHTML='';}
 }
 // In-page preset → compute concrete from/to (window ends today), write them into
 // the top Date range, then a single reload. Both controls then agree.
