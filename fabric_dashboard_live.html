@@ -863,11 +863,11 @@ const MIX_NUM={unit:1,pct:1,gap:1,cover:1,kes:1};
 // Shared "Gap (pp)" chip — % Available − % Consumption, positive = overstock.
 // Reused by the Fabric mix table AND the Movement page consumption/stock table so
 // the sign convention reads identically in both places.
-function gapChip(v){
+function gapChip(v,short){
   v=Number(v)||0; const a=Math.abs(v).toFixed(1);
-  if(v>=3)  return `<span class="pill pill-amber" title="Held more than it is being used (overstock).">+${a}pp overstock</span>`;
-  if(v<=-3) return `<span class="pill pill-red" title="Used faster than its stock share (short).">\u2212${a}pp short</span>`;
-  return `<span class="pill pill-green" title="Consumption and stock shares are in balance.">\u00B1${a}pp balanced</span>`;
+  if(v>=3)  return `<span class="pill pill-amber" title="Held more than it is being used (overstock).">+${a}${short?'':'pp overstock'}</span>`;
+  if(v<=-3) return `<span class="pill pill-red" title="Used faster than its stock share (short).">\u2212${a}${short?'':'pp short'}</span>`;
+  return `<span class="pill pill-green" title="Consumption and stock shares are in balance.">\u00B1${a}${short?'':'pp balanced'}</span>`;
 }
 // Plain-English Buy/Hold/Clear/Idle verdict from the flipped-sign metrics.
 // Same buckets as the old narrative, just re-sourced from Gap + an Idle override.
@@ -1033,7 +1033,7 @@ function mixCell(col,r,kind,opts){
       break;}
     case 'unit':cell=`<td class="r">${fmtUnit(r[col.k])}</td>`;break;
     case 'pct':cell=`<td class="r">${(r[col.k]||0).toFixed(1)}%</td>`;break;
-    case 'gap':cell=`<td class="r">${gapChip(r.gap)}</td>`;break;
+    case 'gap':cell=`<td class="r">${gapChip(r.gap,true)}</td>`;break;
     case 'cover':{const wk=r.covers;const v=mixCoverBasis==='months'?r.coversMonthly:wk;
       const c=wk==null?'pill-neutral':wk<1?'pill-red':wk<3?'pill-amber':wk>12?'pill-blue':'pill-green';
       cell=`<td class="r">${v==null?'—':`<span class="pill ${c}">${fmt1(v)}</span>`}</td>`;break;}
