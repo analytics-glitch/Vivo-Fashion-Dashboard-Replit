@@ -17475,6 +17475,43 @@ def _ensure_production_tables():
         JOIN production_stages s ON s.stage_key = b.stage
         GROUP BY b.stage, s.stage_name, s.sort_order
         ORDER BY s.sort_order""")
+    # SKU-level movement tracking. A move can carry the variant SKU (+ size) it
+    # applies to so the team can move one colour/size at a time. Legacy rows have
+    # NULL sku/size and stay valid — the order-level v_stage_balances above
+    # ignores sku, so it keeps summing every order's units correctly regardless
+    # of whether the underlying moves are per-SKU or whole-order.
+    _users_exec("ALTER TABLE stage_movements ADD COLUMN IF NOT EXISTS sku  TEXT")
+    _users_exec("ALTER TABLE stage_movements ADD COLUMN IF NOT EXISTS size TEXT")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_stage_moves_sku ON stage_movements(order_ref, sku)")
+    # Per (order x sku x size x stage) balance — same in/out arithmetic as the
+    # order-level view but at the variant grain. NULL sku/size form a single
+    # "whole order" bucket (legacy / variant-less orders); the in/out join uses
+    # IS NOT DISTINCT FROM so those NULL buckets reconcile too.
+    _users_exec("""
+        CREATE OR REPLACE VIEW v_stage_sku_balances AS
+        WITH inbound AS (
+            SELECT order_ref, sku, size, to_stage AS stage,
+                   SUM(qty) AS qty_in, MIN(moved_at) AS first_in, MAX(moved_at) AS last_in
+            FROM stage_movements
+            GROUP BY order_ref, sku, size, to_stage
+        ),
+        outbound AS (
+            SELECT order_ref, sku, size, from_stage AS stage, SUM(qty) AS qty_out
+            FROM stage_movements
+            WHERE from_stage IS NOT NULL
+            GROUP BY order_ref, sku, size, from_stage
+        )
+        SELECT i.order_ref, i.sku, i.size, i.stage,
+               (i.qty_in - COALESCE(o.qty_out, 0)) AS qty_here,
+               i.first_in, i.last_in,
+               EXTRACT(EPOCH FROM (now() - i.last_in)) / 86400.0 AS days_since_last_in
+        FROM inbound i
+        LEFT JOIN outbound o
+               ON o.order_ref = i.order_ref
+              AND o.sku  IS NOT DISTINCT FROM i.sku
+              AND o.size IS NOT DISTINCT FROM i.size
+              AND o.stage = i.stage
+        WHERE (i.qty_in - COALESCE(o.qty_out, 0)) > 0""")
 
 
 @app.on_event("startup")
@@ -17502,7 +17539,7 @@ def _production_order_detail(order_ref):
         WHERE b.order_ref = %s
         ORDER BY s.sort_order""", (order_ref,), fetch=True)
     history = _users_exec("""
-        SELECT from_stage, to_stage, qty, moved_at, moved_by, note
+        SELECT from_stage, to_stage, qty, sku, size, moved_at, moved_by, note
         FROM stage_movements
         WHERE order_ref = %s
         ORDER BY moved_at DESC, id DESC""", (order_ref,), fetch=True)
@@ -17519,8 +17556,33 @@ def _production_order_detail(order_ref):
         FROM production_order_variants
         WHERE order_ref = %s
         ORDER BY colour, size""", (order_ref,), fetch=True)
+    # Per-SKU (variant) balances — drives the SKU-level mover. colour/variant_name
+    # are recovered from the order's variant master by product_sku (one lookup per
+    # sku). NULL-sku rows are the legacy/whole-order bucket.
+    sku_balances = _users_exec("""
+        SELECT sb.stage, s.stage_name, s.sort_order, s.allowed_next, s.is_terminal,
+               sb.sku, sb.size, sb.qty_here,
+               ROUND(sb.days_since_last_in::numeric, 1) AS days_in_stage,
+               v.colour, v.variant_name
+        FROM v_stage_sku_balances sb
+        JOIN production_stages s ON s.stage_key = sb.stage
+        LEFT JOIN LATERAL (
+            SELECT colour, variant_name
+            FROM production_order_variants
+            WHERE order_ref = sb.order_ref AND product_sku = sb.sku
+            LIMIT 1
+        ) v ON sb.sku IS NOT NULL
+        WHERE sb.order_ref = %s
+        ORDER BY s.sort_order, v.colour NULLS LAST, sb.size NULLS LAST, sb.sku""",
+        (order_ref,), fetch=True)
+    # Stage reference (ordered) so the UI can build the journey stepper / mover
+    # without a second round-trip.
+    stages = _users_exec("""
+        SELECT stage_key, stage_name, sort_order, allowed_next, is_terminal
+        FROM production_stages ORDER BY sort_order""", fetch=True)
     return {"order": order_rows[0], "balances": balances, "history": history,
-            "lines": lines, "variants": variants}
+            "lines": lines, "variants": variants,
+            "sku_balances": sku_balances, "stages": stages}
 
 
 @app.get("/api/production/stages")
@@ -17551,6 +17613,123 @@ def production_board():
         JOIN production_stages s  ON s.stage_key  = b.stage
         ORDER BY s.sort_order, b.days_since_last_in DESC""", fetch=True)
     return {"cards": rows}
+
+
+def _production_flow_stages():
+    """The stage flow: one row per stage with units, distinct orders & styles in
+    it now, its % of all in-progress units, plus the stage's sort order and
+    allowed transitions so the UI can draw the arrows. Returns (rows, total)."""
+    rows = _users_exec("""
+        WITH bal AS (
+            SELECT b.stage,
+                   SUM(b.qty_here)               AS units,
+                   COUNT(DISTINCT b.order_ref)   AS orders,
+                   COUNT(DISTINCT po.style_number) AS styles
+            FROM v_stage_balances b
+            JOIN production_orders po ON po.order_ref = b.order_ref
+            GROUP BY b.stage
+        )
+        SELECT s.stage_key, s.stage_name, s.sort_order, s.is_terminal, s.allowed_next,
+               COALESCE(bal.units, 0)  AS units,
+               COALESCE(bal.orders, 0) AS orders,
+               COALESCE(bal.styles, 0) AS styles
+        FROM production_stages s
+        LEFT JOIN bal ON bal.stage = s.stage_key
+        ORDER BY s.sort_order""", fetch=True)
+    total = sum(float(r["units"] or 0) for r in rows)
+    for r in rows:
+        u = float(r["units"] or 0)
+        r["pct"] = round(u / total * 100, 1) if total else 0.0
+    return rows, total
+
+
+@app.get("/api/production/flow")
+def production_flow():
+    """Overall stage flow for the flow-chart visualization."""
+    rows, total = _production_flow_stages()
+    return {"stages": rows, "total_units": total}
+
+
+@app.get("/api/production/expected-drops")
+def production_expected_drops():
+    """Buying orders bucketed into weekly 'expected drop' windows by their Odoo
+    expected_delivery_date — Overdue, the current week + the next 7 weeks, and a
+    'Later' catch-all. Only orders that still have units to deliver (order_qty
+    minus what already reached the warehouse) are listed. pending_qty drives the
+    unit totals; styles count distinct style numbers per bucket."""
+    from datetime import datetime as _DT, timedelta as _TD
+    from collections import defaultdict as _DD
+
+    rows = _users_exec("""
+        WITH wh AS (
+            SELECT order_ref, SUM(qty_here) AS wh_qty
+            FROM v_stage_balances
+            WHERE stage = 'warehouse'
+            GROUP BY order_ref
+        )
+        SELECT po.order_ref, po.style_number, po.style_name, po.product_name,
+               po.order_qty, po.expected_delivery_date, po.lifecycle_type,
+               COALESCE(wh.wh_qty, 0) AS warehouse_qty,
+               GREATEST(po.order_qty - COALESCE(wh.wh_qty, 0), 0) AS pending_qty
+        FROM production_orders po
+        LEFT JOIN wh ON wh.order_ref = po.order_ref
+        WHERE po.expected_delivery_date IS NOT NULL
+          AND (po.order_qty - COALESCE(wh.wh_qty, 0)) > 0
+        ORDER BY po.expected_delivery_date""", fetch=True)
+
+    # East-Africa (UTC+3) "today" so the week strip aligns with the buyers' calendar.
+    today = (_DT.utcnow() + _TD(hours=3)).date()
+    this_monday = today - _TD(days=today.weekday())
+    WEEKS = 8
+    week_starts = [this_monday + _TD(weeks=i) for i in range(WEEKS)]
+    after_last = week_starts[-1] + _TD(weeks=1)
+
+    def _mk(key, label, kind, ws=None, we=None):
+        return {"key": key, "label": label, "kind": kind,
+                "week_start": ws.isoformat() if ws else None,
+                "week_end": we.isoformat() if we else None,
+                "styles": 0, "units": 0.0, "orders": []}
+
+    overdue = _mk("overdue", "Overdue", "overdue")
+    week_buckets = [_mk(ws.isoformat(), None, "week", ws, ws + _TD(days=6))
+                    for ws in week_starts]
+    later = _mk("later", "Later", "later")
+    style_sets = _DD(set)
+
+    for r in rows:
+        d = r["expected_delivery_date"]
+        ws_mon = d - _TD(days=d.weekday())
+        if d < this_monday:
+            b = overdue
+        elif ws_mon >= after_last:
+            b = later
+        else:
+            b = week_buckets[(ws_mon - this_monday).days // 7]
+        b["units"] += float(r["pending_qty"] or 0)
+        b["orders"].append({
+            "order_ref": r["order_ref"],
+            "style_number": r["style_number"],
+            "style_name": r["style_name"],
+            "product_name": r["product_name"],
+            "lifecycle_type": r["lifecycle_type"],
+            "order_qty": r["order_qty"],
+            "pending_qty": r["pending_qty"],
+            "warehouse_qty": r["warehouse_qty"],
+            "expected_delivery_date": r["expected_delivery_date"],
+        })
+        if r["style_number"]:
+            style_sets[b["key"]].add(r["style_number"])
+
+    out = []
+    if overdue["orders"]:
+        out.append(overdue)
+    out.extend(week_buckets)
+    if later["orders"]:
+        out.append(later)
+    for b in out:
+        b["styles"] = len(style_sets[b["key"]])
+        b["units"] = round(b["units"], 2)
+    return {"buckets": out, "today": today.isoformat()}
 
 
 @app.get("/api/production/summary")
@@ -17662,6 +17841,14 @@ async def production_move(request: Request):
     from_stage = (body.get("from_stage") or "").strip()
     to_stage = (body.get("to_stage") or "").strip()
     note = (body.get("note") or "").strip() or None
+    # Optional SKU-level move. When sku is given, validate + record at the
+    # variant grain; otherwise it's a whole-order move (legacy shape).
+    sku = body.get("sku")
+    sku = sku.strip() if isinstance(sku, str) else sku
+    sku = sku or None
+    size = body.get("size")
+    size = size.strip() if isinstance(size, str) else size
+    size = size or None
     if not order_ref or not from_stage or not to_stage:
         return JSONResponse(
             {"detail": "order_ref, from_stage and to_stage are required"},
@@ -17682,6 +17869,16 @@ async def production_move(request: Request):
         u.get("name") or u.get("email") or "unknown")
 
     with _users_tx() as cur:
+        # Serialize concurrent moves on the SAME order so the availability check
+        # below and the insert are atomic w.r.t. other movers — two requests for
+        # the same (stage, sku) can't both pass the check and over-subscribe.
+        cur.execute(
+            "SELECT 1 FROM production_orders WHERE order_ref = %s FOR UPDATE",
+            (order_ref,))
+        if not cur.fetchone():
+            cur.connection.rollback()
+            return JSONResponse(
+                {"detail": f"Unknown order: {order_ref}"}, status_code=404)
         cur.execute(
             "SELECT allowed_next FROM production_stages WHERE stage_key = %s",
             (from_stage,))
@@ -17695,21 +17892,36 @@ async def production_move(request: Request):
             return JSONResponse(
                 {"detail": f"Cannot move from {from_stage} to {to_stage}"},
                 status_code=400)
-        cur.execute(
-            "SELECT qty_here FROM v_stage_balances WHERE order_ref = %s AND stage = %s",
-            (order_ref, from_stage))
-        bal = cur.fetchone()
-        available = float(bal["qty_here"]) if bal else 0.0
-        if qty > available:
-            cur.connection.rollback()
-            return JSONResponse(
-                {"detail": f"Only {available:g} units available at {from_stage}"},
-                status_code=400)
+        if sku:
+            # SKU-level: only as many units of this exact variant at this stage.
+            cur.execute(
+                "SELECT COALESCE(SUM(qty_here), 0) AS avail "
+                "FROM v_stage_sku_balances "
+                "WHERE order_ref = %s AND sku IS NOT DISTINCT FROM %s "
+                "AND size IS NOT DISTINCT FROM %s AND stage = %s",
+                (order_ref, sku, size, from_stage))
+            available = float(cur.fetchone()["avail"])
+            if qty > available:
+                cur.connection.rollback()
+                return JSONResponse(
+                    {"detail": f"Only {available:g} units of {sku} available at {from_stage}"},
+                    status_code=400)
+        else:
+            cur.execute(
+                "SELECT qty_here FROM v_stage_balances WHERE order_ref = %s AND stage = %s",
+                (order_ref, from_stage))
+            bal = cur.fetchone()
+            available = float(bal["qty_here"]) if bal else 0.0
+            if qty > available:
+                cur.connection.rollback()
+                return JSONResponse(
+                    {"detail": f"Only {available:g} units available at {from_stage}"},
+                    status_code=400)
         cur.execute(
             "INSERT INTO stage_movements "
-            "(order_ref, from_stage, to_stage, qty, moved_by, note) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (order_ref, from_stage, to_stage, qty, moved_by, note))
+            "(order_ref, from_stage, to_stage, qty, moved_by, note, sku, size) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (order_ref, from_stage, to_stage, qty, moved_by, note, sku, size))
 
     # Return the order's fresh state so the UI can update in place.
     return _production_order_detail(order_ref)

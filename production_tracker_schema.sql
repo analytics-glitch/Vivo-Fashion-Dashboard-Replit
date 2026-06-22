@@ -67,12 +67,17 @@ CREATE TABLE IF NOT EXISTS stage_movements (
     qty         NUMERIC NOT NULL CHECK (qty > 0),
     moved_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     moved_by    TEXT,
-    note        TEXT
+    note        TEXT,
+    -- Optional variant grain: a move can target one SKU (+ size). NULL = a
+    -- whole-order move (legacy / variant-less orders).
+    sku         TEXT,
+    size        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_stage_moves_order ON stage_movements(order_ref);
 CREATE INDEX IF NOT EXISTS idx_stage_moves_to    ON stage_movements(to_stage);
 CREATE INDEX IF NOT EXISTS idx_stage_moves_from  ON stage_movements(from_stage);
+CREATE INDEX IF NOT EXISTS idx_stage_moves_sku   ON stage_movements(order_ref, sku);
 
 -- ------------------------------------------------------------
 -- View: current balance per order x stage.

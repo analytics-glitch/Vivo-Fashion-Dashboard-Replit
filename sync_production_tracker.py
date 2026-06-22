@@ -419,36 +419,91 @@ def prune_variants(cur, keep_variant_ids):
         log.info("Pruned %s stale production_order_variants", cur.rowcount)
 
 
-def sync_intake(cur, orders):
+def sync_intake(cur, orders, order_variants):
+    """Seed the 'buying_order' intake movements. Orders that have size variants
+    get one intake row PER (sku, size) so the ledger tracks production at the
+    variant grain; variant-less orders fall back to a single whole-order intake
+    (legacy shape, sku NULL).
+
+    Idempotent + prod-safe: each variant's intake is the delta vs what is already
+    recorded for that (order, sku, size). The FIRST time an order gains variants
+    we also delete its legacy whole-order intake row (from_stage IS NULL AND
+    sku IS NULL) so the two shapes never double-count; on later runs that delete
+    matches nothing."""
+    from collections import defaultdict
+
+    variants_by_order = defaultdict(list)
+    for v in order_variants:
+        variants_by_order[v["order_ref"]].append(v)
+
     inserted = 0
+    migrated = 0
     for o in orders:
-        cur.execute(
-            """
-            SELECT COALESCE(SUM(qty), 0) FROM stage_movements
-            WHERE order_ref = %s AND from_stage IS NULL
-        """,
-            (o["order_ref"],),
-        )
-        existing = float(cur.fetchone()[0] or 0)
-        delta = round(float(o["order_qty"]) - existing, 2)
-        if delta > 0:
+        ref = o["order_ref"]
+        variants = variants_by_order.get(ref)
+        if variants:
+            # Drop any legacy whole-order intake now that per-variant intake exists.
             cur.execute(
-                """
-                INSERT INTO stage_movements
-                    (order_ref, from_stage, to_stage, qty, moved_by, note)
-                VALUES (%s, NULL, 'buying_order', %s, 'odoo_sync', 'Intake from Odoo')
-            """,
-                (o["order_ref"], delta),
+                "DELETE FROM stage_movements "
+                "WHERE order_ref = %s AND from_stage IS NULL AND sku IS NULL",
+                (ref,),
             )
-            inserted += 1
-        elif delta < 0:
-            log.warning(
-                "BO %s quantity shrank (was %.1f, now %.1f) - left as-is",
-                o["order_ref"],
-                existing,
-                o["order_qty"],
+            migrated += cur.rowcount or 0
+            for v in variants:
+                qty = float(v.get("qty") or 0)
+                if qty <= 0:
+                    continue
+                sku = v.get("product_sku")
+                size = v.get("size")
+                cur.execute(
+                    "SELECT COALESCE(SUM(qty), 0) FROM stage_movements "
+                    "WHERE order_ref = %s AND from_stage IS NULL "
+                    "AND sku IS NOT DISTINCT FROM %s AND size IS NOT DISTINCT FROM %s",
+                    (ref, sku, size),
+                )
+                existing = float(cur.fetchone()[0] or 0)
+                delta = round(qty - existing, 2)
+                if delta > 0:
+                    cur.execute(
+                        "INSERT INTO stage_movements "
+                        "(order_ref, from_stage, to_stage, qty, moved_by, note, sku, size) "
+                        "VALUES (%s, NULL, 'buying_order', %s, 'odoo_sync', "
+                        "'Intake from Odoo', %s, %s)",
+                        (ref, delta, sku, size),
+                    )
+                    inserted += 1
+        else:
+            # Count ALL existing intake for the order (any sku bucket), not only
+            # the sku-NULL row, so an order that previously had per-variant intake
+            # but now appears variant-less can't double-count: its per-sku intake
+            # already covers the qty, so delta <= 0 and nothing is re-inserted.
+            cur.execute(
+                "SELECT COALESCE(SUM(qty), 0) FROM stage_movements "
+                "WHERE order_ref = %s AND from_stage IS NULL",
+                (ref,),
             )
-    log.info("Inserted intake movements for %s orders", inserted)
+            existing = float(cur.fetchone()[0] or 0)
+            delta = round(float(o["order_qty"]) - existing, 2)
+            if delta > 0:
+                cur.execute(
+                    "INSERT INTO stage_movements "
+                    "(order_ref, from_stage, to_stage, qty, moved_by, note) "
+                    "VALUES (%s, NULL, 'buying_order', %s, 'odoo_sync', 'Intake from Odoo')",
+                    (ref, delta),
+                )
+                inserted += 1
+            elif delta < 0:
+                log.warning(
+                    "BO %s quantity shrank (was %.1f, now %.1f) - left as-is",
+                    ref,
+                    existing,
+                    o["order_qty"],
+                )
+    log.info(
+        "Intake: inserted %s movements; migrated %s legacy whole-order rows",
+        inserted,
+        migrated,
+    )
 
 
 # ----------------------------------------------------------------------
@@ -481,7 +536,7 @@ def main():
                 prune_lines(cur, line_keep)
                 upsert_variants(cur, order_variants)
                 prune_variants(cur, variant_keep)
-                sync_intake(cur, orders_with_qty)
+                sync_intake(cur, orders_with_qty, order_variants)
         log.info("Done: %s buying orders synced", len(orders))
     finally:
         conn.close()

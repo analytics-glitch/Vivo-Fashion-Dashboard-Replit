@@ -4,24 +4,25 @@ import { SectionTitle, Loading, ErrorBox, Empty } from "@/components/common";
 import ProductionOrderModal from "@/components/ProductionOrderModal";
 import {
   ArrowsClockwise,
-  Factory,
   MagnifyingGlass,
   X,
   DownloadSimple,
+  ArrowRight,
+  CalendarBlank,
+  Funnel,
 } from "@phosphor-icons/react";
 
 /**
- * Production Report — a detailed, structured read of every buying order in the
- * Production Tracker. It answers three questions for the buying team:
- *   1. Per order: how many colours, what sizes, and "what is where" (the unit
- *      split across manufacturing stages). Click a row to open the full
- *      colour x size matrix + stage balances modal.
- *   2. Across orders: roll-ups by lifecycle (New / Replenishment / Re-order),
- *      production type, buying-order state, current WIP stage and buyer.
- *   3. The whole order table exports to CSV.
- *
- * Reads GET /api/production/summary (one round-trip: totals + breakdowns + a
- * flat row per order with colour/size/variant counts and per-stage units).
+ * Production Report — a flow cockpit over the Production Tracker. It answers:
+ *   1. The line as a FLOW: a horizontal stage-flow diagram (units / #styles / %
+ *      per stage with arrows). Click a stage to filter the order table to it.
+ *   2. When is product landing: a weekly "expected drops" strip by Odoo
+ *      expected_delivery_date (Overdue / this week / next weeks / Later). Click a
+ *      week to filter the table to that drop window.
+ *   3. Per order: colours, sizes and "what is where". Click a row to open the
+ *      style's journey + SKU-level move modal.
+ *   4. Cross-order roll-ups (order type, BO state, current stage) with % graphics.
+ * Reads /api/production/summary + /flow + /expected-drops.
  */
 function fmtQty(n) {
   const v = Number(n) || 0;
@@ -38,6 +39,15 @@ function fmtDate(d) {
       month: "short",
       day: "numeric",
     });
+  } catch {
+    return String(d);
+  }
+}
+
+function fmtDayShort(d) {
+  if (!d) return "—";
+  try {
+    return new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   } catch {
     return String(d);
   }
@@ -60,7 +70,7 @@ function lifecycleBadge(label) {
   return LIFECYCLE_STYLE[label] || "bg-gray-50 text-gray-600 border-gray-200";
 }
 
-/** A labelled roll-up card: a small table of {label, orders, units}. */
+/** A labelled roll-up card: a small list of {label, orders, units} with % bars. */
 function BreakdownCard({ title, rows, accent }) {
   const total = useMemo(
     () => (rows || []).reduce((s, r) => s + (Number(r.units) || 0), 0),
@@ -82,7 +92,7 @@ function BreakdownCard({ title, rows, accent }) {
                     {r.stage_name || titleize(r.label)}
                   </span>
                   <span className="text-muted whitespace-nowrap tabular-nums">
-                    {fmtQty(r.units)} u · {fmtQty(r.orders)} ord
+                    {fmtQty(r.units)} u · {pct.toFixed(0)}%
                   </span>
                 </div>
                 <div className="mt-1 h-1.5 rounded-full bg-panel/70 overflow-hidden">
@@ -112,25 +122,190 @@ function Kpi({ label, value, sub }) {
   );
 }
 
+/**
+ * The horizontal stage-flow diagram: a node per stage (units, #styles, % of all
+ * in-progress units) connected by arrows in board order. Clicking a node filters
+ * the order table to orders currently holding units in that stage.
+ */
+function FlowDiagram({ stages, activeStage, onPick }) {
+  const flowing = useMemo(
+    () => (stages || []).filter((s) => !s.is_terminal),
+    [stages]
+  );
+  // Show every stage that either has units or sits on the active path; keep it
+  // readable by always rendering the full ordered chain.
+  const nodes = stages || [];
+  if (nodes.length === 0) {
+    return <Empty label="No stage flow available yet." />;
+  }
+  return (
+    <div className="card-white p-4">
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="eyebrow">Stage flow — where units sit across the line</div>
+        {activeStage && (
+          <button
+            type="button"
+            onClick={() => onPick(null)}
+            className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0f3d24] bg-panel/60 border border-line rounded-full px-2 py-0.5 hover:bg-panel"
+          >
+            Clear stage filter <X size={11} />
+          </button>
+        )}
+      </div>
+      <div className="flex items-stretch gap-0 overflow-x-auto pb-1">
+        {nodes.map((s, i) => {
+          const isActive = s.stage_key === activeStage;
+          const units = Number(s.units) || 0;
+          const empty = units === 0;
+          return (
+            <React.Fragment key={s.stage_key}>
+              <button
+                type="button"
+                onClick={() => onPick(isActive ? null : s.stage_key)}
+                className={`shrink-0 text-left rounded-lg border px-3 py-2.5 min-w-[140px] transition ${
+                  isActive
+                    ? "border-[#1a5c38] bg-emerald-50 ring-1 ring-[#1a5c38]"
+                    : empty
+                    ? "border-line bg-white opacity-60 hover:opacity-100"
+                    : "border-line bg-white hover:border-[#1a5c38]/50 hover:bg-panel/30"
+                }`}
+                data-testid={`prod-flow-stage-${s.stage_key}`}
+              >
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[11.5px] font-semibold text-[#0f3d24] truncate">
+                    {s.stage_name}
+                  </span>
+                  {s.is_terminal && (
+                    <span className="text-[9px] text-muted uppercase tracking-wide">end</span>
+                  )}
+                </div>
+                <div className="text-[20px] font-extrabold text-brand leading-tight mt-0.5 tabular-nums">
+                  {fmtQty(units)}
+                </div>
+                <div className="text-[10.5px] text-muted">
+                  {fmtQty(s.styles)} style{Number(s.styles) === 1 ? "" : "s"} · {fmtQty(s.orders)} ord
+                </div>
+                <div className="mt-1.5 h-1.5 rounded-full bg-panel/70 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-[#1a5c38]"
+                    style={{ width: `${Math.max(Number(s.pct) || 0, (Number(s.pct) || 0) > 0 ? 3 : 0)}%` }}
+                  />
+                </div>
+                <div className="text-[10px] text-muted mt-0.5 tabular-nums">
+                  {(Number(s.pct) || 0).toFixed(1)}% of WIP
+                </div>
+              </button>
+              {i < nodes.length - 1 && (
+                <div className="shrink-0 flex items-center justify-center px-1.5">
+                  <ArrowRight size={18} weight="bold" className="text-line" />
+                </div>
+              )}
+            </React.Fragment>
+          );
+        })}
+      </div>
+      {flowing.length === 0 && (
+        <div className="text-[11.5px] text-muted italic mt-2">All units have reached the final stage.</div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Weekly "expected drops" strip — when product is due to land, by Odoo
+ * expected_delivery_date. Click a week to filter the table to that window.
+ */
+function DropStrip({ buckets, today, activeDrop, onPick }) {
+  if (!buckets || buckets.length === 0) {
+    return null;
+  }
+  const kindStyle = (b, isActive) => {
+    if (isActive) return "border-[#1a5c38] bg-emerald-50 ring-1 ring-[#1a5c38]";
+    if (b.kind === "overdue") return "border-rose-200 bg-rose-50 hover:bg-rose-100";
+    if (b.kind === "later") return "border-line bg-white opacity-70 hover:opacity-100";
+    return "border-line bg-white hover:border-[#1a5c38]/50 hover:bg-panel/30";
+  };
+  const isThisWeek = (b) => b.kind === "week" && b.week_start && b.week_start <= today && today <= b.week_end;
+  return (
+    <div className="card-white p-4">
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="eyebrow flex items-center gap-1.5">
+          <CalendarBlank size={13} /> Expected drops — pending units by delivery week
+        </div>
+        {activeDrop && (
+          <button
+            type="button"
+            onClick={() => onPick(null)}
+            className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0f3d24] bg-panel/60 border border-line rounded-full px-2 py-0.5 hover:bg-panel"
+          >
+            Clear week filter <X size={11} />
+          </button>
+        )}
+      </div>
+      <div className="flex items-stretch gap-2 overflow-x-auto pb-1">
+        {buckets.map((b) => {
+          const isActive = b.key === activeDrop;
+          const label =
+            b.kind === "week"
+              ? `${fmtDayShort(b.week_start)}–${fmtDayShort(b.week_end)}`
+              : b.label;
+          const empty = Number(b.units) === 0;
+          return (
+            <button
+              key={b.key}
+              type="button"
+              disabled={empty}
+              onClick={() => onPick(isActive ? null : b.key)}
+              className={`shrink-0 text-left rounded-lg border px-3 py-2 min-w-[110px] transition ${kindStyle(b, isActive)} ${empty ? "cursor-default" : ""}`}
+              data-testid={`prod-drop-${b.key}`}
+            >
+              <div className="flex items-center gap-1 text-[11px] font-semibold text-[#0f3d24]">
+                <span className="truncate">{label}</span>
+                {isThisWeek(b) && (
+                  <span className="text-[8.5px] uppercase tracking-wide text-[#1a5c38] bg-emerald-100 rounded px-1">now</span>
+                )}
+              </div>
+              <div className={`text-[18px] font-extrabold leading-tight mt-0.5 tabular-nums ${b.kind === "overdue" ? "text-rose-700" : "text-brand"}`}>
+                {fmtQty(b.units)}
+              </div>
+              <div className="text-[10px] text-muted">
+                {fmtQty(b.styles)} style{Number(b.styles) === 1 ? "" : "s"}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function ProductionReport() {
   const [data, setData] = useState(null);
+  const [flow, setFlow] = useState(null);
+  const [drops, setDrops] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
   const [lifecycleFilter, setLifecycleFilter] = useState("");
+  const [stageFilter, setStageFilter] = useState(null);
+  const [dropFilter, setDropFilter] = useState(null);
   const [openOrder, setOpenOrder] = useState(null);
 
   const load = useCallback(async (force = false) => {
     if (force) setRefreshing(true);
     else setLoading(true);
     setError(null);
+    const opts = force ? { forceFresh: true } : {};
     try {
-      const { data } = await api.get(
-        "/production/summary",
-        force ? { forceFresh: true } : {}
-      );
-      setData(data);
+      const [summaryRes, flowRes, dropsRes] = await Promise.all([
+        api.get("/production/summary", opts),
+        api.get("/production/flow", opts),
+        api.get("/production/expected-drops", opts),
+      ]);
+      setData(summaryRes.data);
+      setFlow(flowRes.data);
+      setDrops(dropsRes.data);
     } catch (err) {
       setError(
         err?.response?.data?.detail ||
@@ -150,8 +325,8 @@ export default function ProductionReport() {
   const totals = data?.totals || { orders: 0, units: 0, styles: 0 };
   const byStage = data?.by_stage || [];
   const orders = data?.orders || [];
+  const flowStages = flow?.stages || [];
 
-  // Stage columns in board order, for the per-order "what is where" mini-split.
   const stageCols = useMemo(
     () => byStage.map((s) => ({ key: s.stage_key, name: s.stage_name })),
     [byStage]
@@ -162,16 +337,32 @@ export default function ProductionReport() {
     [byStage]
   );
 
+  // Order refs in the currently-selected drop bucket (for the table filter).
+  const dropOrderRefs = useMemo(() => {
+    if (!dropFilter) return null;
+    const b = (drops?.buckets || []).find((x) => x.key === dropFilter);
+    if (!b) return null;
+    return new Set((b.orders || []).map((o) => o.order_ref));
+  }, [dropFilter, drops]);
+
+  const activeStageName = useMemo(
+    () => flowStages.find((s) => s.stage_key === stageFilter)?.stage_name || "",
+    [flowStages, stageFilter]
+  );
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return orders.filter((o) => {
       if (lifecycleFilter && (o.lifecycle_type || "") !== lifecycleFilter)
         return false;
+      if (stageFilter && !(Number((o.stage_qty || {})[stageFilter]) > 0))
+        return false;
+      if (dropOrderRefs && !dropOrderRefs.has(o.order_ref)) return false;
       if (!q) return true;
       return [o.order_ref, o.style_number, o.style_name, o.product_name, o.buyer]
         .some((v) => String(v || "").toLowerCase().includes(q));
     });
-  }, [orders, query, lifecycleFilter]);
+  }, [orders, query, lifecycleFilter, stageFilter, dropOrderRefs]);
 
   const lifecycleOptions = useMemo(
     () =>
@@ -239,11 +430,13 @@ export default function ProductionReport() {
   if (loading) return <Loading label="Loading the production report…" />;
   if (error) return <ErrorBox message={error} />;
 
+  const hasTableFilter = stageFilter || dropFilter || lifecycleFilter || query;
+
   return (
     <div className="space-y-5" data-testid="production-report">
       <SectionTitle
         title="Production Report"
-        subtitle="Every buying order — colours, sizes and where the units sit across the line, with cross-order roll-ups by order type, production type and stage."
+        subtitle="The line as a flow — where every buying order's units sit across the stages, when product is due to land, and the colour/size detail behind each style."
         action={
           <div className="flex items-center gap-2">
             <button
@@ -284,17 +477,27 @@ export default function ProductionReport() {
         />
       </div>
 
+      {/* Stage flow diagram */}
+      <FlowDiagram
+        stages={flowStages}
+        activeStage={stageFilter}
+        onPick={setStageFilter}
+      />
+
+      {/* Expected drops strip */}
+      <DropStrip
+        buckets={drops?.buckets}
+        today={drops?.today}
+        activeDrop={dropFilter}
+        onPick={setDropFilter}
+      />
+
       {/* Breakdowns */}
       <div className="grid gap-3 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
         <BreakdownCard
           title="By order type"
           rows={data?.by_lifecycle}
           accent="bg-emerald-500"
-        />
-        <BreakdownCard
-          title="By production type"
-          rows={data?.by_production_type}
-          accent="bg-sky-500"
         />
         <BreakdownCard
           title="By buying-order state"
@@ -305,11 +508,6 @@ export default function ProductionReport() {
           title="What is where (current stage)"
           rows={(byStage || []).filter((s) => Number(s.units) > 0)}
           accent="bg-violet-500"
-        />
-        <BreakdownCard
-          title="By buyer"
-          rows={(data?.by_buyer || []).slice(0, 8)}
-          accent="bg-rose-500"
         />
       </div>
 
@@ -358,6 +556,42 @@ export default function ProductionReport() {
             </div>
           </div>
         </div>
+
+        {/* Active filter chips */}
+        {hasTableFilter && (
+          <div className="flex items-center gap-1.5 flex-wrap mb-3 text-[11.5px]">
+            <span className="text-muted inline-flex items-center gap-1">
+              <Funnel size={12} /> Filtered by:
+            </span>
+            {stageFilter && (
+              <button
+                type="button"
+                onClick={() => setStageFilter(null)}
+                className="inline-flex items-center gap-1 font-semibold text-[#0f3d24] bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5"
+              >
+                Stage: {activeStageName} <X size={11} />
+              </button>
+            )}
+            {dropFilter && (
+              <button
+                type="button"
+                onClick={() => setDropFilter(null)}
+                className="inline-flex items-center gap-1 font-semibold text-[#0f3d24] bg-sky-50 border border-sky-200 rounded-full px-2 py-0.5"
+              >
+                Drop window <X size={11} />
+              </button>
+            )}
+            {lifecycleFilter && (
+              <button
+                type="button"
+                onClick={() => setLifecycleFilter("")}
+                className="inline-flex items-center gap-1 font-semibold text-[#0f3d24] bg-violet-50 border border-violet-200 rounded-full px-2 py-0.5"
+              >
+                {lifecycleFilter} <X size={11} />
+              </button>
+            )}
+          </div>
+        )}
 
         {filtered.length === 0 ? (
           <Empty label="No orders match the current search / filter." />
@@ -436,7 +670,11 @@ export default function ProductionReport() {
                             {active.map((s) => (
                               <span
                                 key={s.key}
-                                className="inline-flex items-center gap-1 text-[10.5px] bg-panel/70 border border-line rounded-full px-1.5 py-0.5 whitespace-nowrap"
+                                className={`inline-flex items-center gap-1 text-[10.5px] border rounded-full px-1.5 py-0.5 whitespace-nowrap ${
+                                  s.key === stageFilter
+                                    ? "bg-emerald-50 border-emerald-300"
+                                    : "bg-panel/70 border-line"
+                                }`}
                                 title={s.name}
                               >
                                 <span className="text-[#0f3d24]">{s.name}</span>
