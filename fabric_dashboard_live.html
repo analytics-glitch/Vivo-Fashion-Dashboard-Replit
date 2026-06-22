@@ -859,7 +859,6 @@ const MIX_COLS=[
   {k:'shortfall',label:'Shortfall',type:'unit'},
   {k:'covers',label:'Weekly covers',type:'cover'},
   {k:'tied',label:'Tied-up KES',type:'kes'},
-  {k:'verdict',label:'Verdict',type:'verdict'},
 ];
 // Effective columns for the current render. The Barcode column is conditionally
 // dropped when no product rows are on screen (see renderFabricMix), so the
@@ -1208,7 +1207,6 @@ function renderFabricMix(){
    <td class="r">${fmtUnit(totA-totC)}</td>
    <td class="r">—</td>
    <td class="r" style="color:var(--muted);">${fmtKES(d.total_tied_up_kes)}</td>
-   <td>—</td>
   </tr>`;
   body.innerHTML=html;
   if(window.__fabricEnhanceTables)window.__fabricEnhanceTables();
