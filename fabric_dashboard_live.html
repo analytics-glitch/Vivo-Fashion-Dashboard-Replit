@@ -227,9 +227,11 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <input type="date" id="mix-to-top" onchange="onMixRangeTop()" title="Custom range to (overrides the preset)" style="width:140px;">
      <button class="btn ghost" onclick="clearMixRangeTop()" title="Clear the custom range and use the preset">Clear</button>
     </span>
-    <span class="muted">Date range</span>
-    <input type="date" id="g-since" onchange="onDateRangeChange()" title="From" style="width:140px;">
-    <input type="date" id="g-until" onchange="onDateRangeChange()" title="To" style="width:140px;">
+    <span id="daterange-topbar" style="align-items:center;gap:.5rem;">
+     <span class="muted">Date range</span>
+     <input type="date" id="g-since" onchange="onDateRangeChange()" title="From" style="width:140px;">
+     <input type="date" id="g-until" onchange="onDateRangeChange()" title="To" style="width:140px;">
+    </span>
     <span id="last-updated" class="muted"></span>
    </div>
   </div>
@@ -1305,8 +1307,13 @@ function clearMixRangeTop(){
 }
 // The top-bar consumption-period cluster only belongs on the Fabric Mix page.
 function fabSyncMixTopbarVisibility(){
+  const onMix=currentPage()==='dashboard';
   const el=document.getElementById('mix-period-topbar');
-  if(el)el.style.display=(currentPage()==='dashboard')?'inline-flex':'none';
+  if(el)el.style.display=onMix?'inline-flex':'none';
+  // The redundant Date range box is hidden on the Fabric Mix page (the
+  // Consumption period cluster drives that page), but stays for every other page.
+  const dr=document.getElementById('daterange-topbar');
+  if(dr)dr.style.display=onMix?'none':'inline-flex';
 }
 function exportFabricMix(btn){
   const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
