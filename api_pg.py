@@ -8029,7 +8029,7 @@ def analytics_replenish_by_item(
             COALESCE(sold.units_sold, 0) AS units_sold,
             sold.product_name, sold.country, sold.last_sale,
             COALESCE(ss.soh_store, 0) AS soh_store,
-            COALESCE(NULLIF(wb.bin, ''), ss.bin, '') AS bin,
+            COALESCE(NULLIF(wb.bin, ''), '') AS bin,
             COALESCE(w.soh_wh, 0) AS soh_wh,
             COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode,
             COALESCE(p.color_print, '') AS color_print, COALESCE(p.print_plain, '') AS print_plain,
@@ -8090,6 +8090,9 @@ def analytics_replenish_by_item(
     # Allocate each SKU's warehouse pool across stores (top sellers first) so the
     # suggested total per SKU never exceeds its warehouse stock.
     _cap_replenish_to_warehouse(out, need_key="suggested_units", out_key="suggested_units")
+    # Drop rows the warehouse pool can no longer cover (suggested capped to 0) — a
+    # zero-unit suggestion is not actionable and must not appear in the list.
+    out = [r for r in out if int(r.get("suggested_units") or 0) > 0]
     for idx, row in enumerate(sorted(out, key=lambda x: (x["units_sold"], -x["soh_store"]), reverse=True)):
         row["owner"] = owners[idx % len(owners)] if owners else "—"
     out.sort(key=lambda x: (x["units_sold"], -x["soh_store"]), reverse=True)
@@ -8153,7 +8156,7 @@ def analytics_replenish_gaps(
             )
             SELECT sold.pos_location, sold.sku, sold.product_name, sold.units_sold, sold.last_sale,
                 COALESCE(ss.soh, 0) AS soh_store,
-                COALESCE(NULLIF(wb.bin, ''), ss.bin, '') AS bin,
+                COALESCE(NULLIF(wb.bin, ''), '') AS bin,
                 COALESCE(w.soh_wh, 0) AS soh_wh,
                 COALESCE(p.style_name, '') AS style_name,
                 COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode,
@@ -8197,7 +8200,7 @@ def analytics_replenish_gaps(
             )
             SELECT sold.sku, sold.product_name, sold.units_sold, sold.last_sale,
                 COALESCE(ss.soh, 0) AS soh_store,
-                COALESCE(NULLIF(wb.bin, ''), ss.bin, '') AS bin,
+                COALESCE(NULLIF(wb.bin, ''), '') AS bin,
                 COALESCE(w.soh_wh, 0) AS soh_wh,
                 COALESCE(p.style_name, '') AS style_name,
                 COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode,
@@ -8247,6 +8250,9 @@ def analytics_replenish_gaps(
     # Allocate each SKU's warehouse pool across stores (top sellers first) so the
     # suggested total per SKU never exceeds its warehouse stock.
     _cap_replenish_to_warehouse(out, need_key="suggested_units", out_key="suggested_units")
+    # Drop rows the warehouse pool can no longer cover (suggested capped to 0) — a
+    # zero-unit suggestion is not actionable and must not appear in the list.
+    out = [r for r in out if int(r.get("suggested_units") or 0) > 0]
     return {"store": st, "date_from": date_from, "date_to": date_to,
             "low_threshold": thr, "rows": out}
 
@@ -8386,7 +8392,7 @@ def analytics_replenishment_report(
             p.size AS size, p.barcode,
             COALESCE(p.color_print, '') AS color_print, COALESCE(p.print_plain, '') AS print_plain,
             COALESCE(ss.soh_store, 0) AS soh_store,
-            COALESCE(NULLIF(wb.bin, ''), ss.bin, '') AS bin,
+            COALESCE(NULLIF(wb.bin, ''), '') AS bin,
             COALESCE(w.soh_wh, 0) AS soh_wh
         FROM sold
         LEFT JOIN store_soh ss ON ss.pos_location_name = sold.pos_location_name AND ss.sku = sold.variant_sku
@@ -8432,6 +8438,10 @@ def analytics_replenishment_report(
     # Allocate each SKU's warehouse pool across stores (top sellers first) so the
     # suggested ("replenish") never exceeds warehouse stock for that SKU.
     _cap_replenish_to_warehouse(out_rows, need_key="replenish", out_key="replenish")
+    # Drop rows the warehouse pool can no longer cover (replenish capped to 0) — a
+    # zero-unit suggestion is not actionable, so it must not appear in the list nor
+    # inflate the per-owner line/unit counts or the size-mix below.
+    out_rows = [r for r in out_rows if int(r.get("replenish") or 0) > 0]
     by_owner = {}
     for r in out_rows:
         o = by_owner.setdefault(r["owner"], {"owner": r["owner"], "lines": 0, "units": 0, "stores": set()})
