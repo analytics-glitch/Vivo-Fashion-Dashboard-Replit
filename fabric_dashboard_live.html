@@ -106,6 +106,13 @@ table.data tbody tr:hover td{background:rgba(26,92,56,.03);}
 .btn:hover{border-color:var(--accent);background:#fff7ed;}
 .btn-primary{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600;}
 .btn-primary:hover{background:var(--accent-deep);}
+.btn.ghost{background:transparent;color:var(--text-sub);}
+.caret{display:inline-block;width:1em;color:var(--muted);font-size:.85em;}
+tr.cat-row:hover td{background:#fff7ed;}
+tr.sub-row td{background:var(--bg);font-size:12.5px;}
+.action-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.8rem;}
+.action-tile{border:1px solid var(--border);border-radius:10px;padding:.7rem .85rem;background:var(--bg);display:flex;flex-direction:column;gap:.3rem;}
+.action-figs{font-size:1.05rem;color:var(--text-sub);font-weight:600;}
 .loading{color:var(--muted);font-size:13px;padding:2rem;text-align:center;}
 .banner{padding:.85rem 1.1rem;border-radius:var(--radius);font-size:13px;margin-bottom:1.2rem;}
 .banner-err{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;}
@@ -224,14 +231,29 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <button class="unit-btn" data-grp="subcategory" onclick="setMixGroup('subcategory')">By Sub-Category</button>
      </div>
      <span class="muted">Consumption period</span>
-     <select id="mix-period" onchange="loadFabricMix()">
+     <select id="mix-period" onchange="onMixPreset()">
       <option value="30">30 days (1 mo)</option>
       <option value="90" selected>90 days (3 mo)</option>
       <option value="180">180 days (6 mo)</option>
       <option value="365">365 days (12 mo)</option>
      </select>
+     <span class="muted">or</span>
+     <input type="date" id="mix-from" onchange="onMixRange()" title="Custom range from (overrides the preset)">
+     <span class="muted">→</span>
+     <input type="date" id="mix-to" onchange="onMixRange()" title="Custom range to (overrides the preset)">
+     <button class="btn ghost" onclick="clearMixRange()" title="Clear the custom range and use the preset">Clear</button>
      <button class="btn" style="margin-left:auto;" onclick="exportFabricMix(this)">Export CSV</button>
     </div>
+    <details class="card" style="margin-bottom:1.1rem;">
+     <summary style="cursor:pointer;font-weight:700;">Metric definitions</summary>
+     <div class="muted" style="margin-top:.7rem;display:grid;gap:.45rem;font-size:.85rem;line-height:1.45;">
+      <div><b>% Consumption / % Available</b> — each group's share of total net usage vs. total available stock over the window.</div>
+      <div><b>Gap (pp)</b> = % Available − % Consumption. <span class="pill pill-amber">+ overstock</span> holds more than it uses · <span class="pill pill-red">− short</span> uses faster than its stock share · <span class="pill pill-green">± balanced</span> within ±3pp.</div>
+      <div><b>Monthly covers</b> = Available ÷ (Consumption ÷ months). Below 1 = under a month of cover.</div>
+      <div><b>Verdict</b> — <span class="pill pill-red">Buy</span> short (shortfall &lt; 0, cover &lt; 1mo, or Gap ≤ −3pp) · <span class="pill pill-amber">Clear</span> overstock (Gap ≥ +3pp or &gt; 12mo cover) · <span class="pill pill-blue">Idle</span> stock but ~no usage in the window · <span class="pill pill-green">Hold</span> balanced.</div>
+      <div><b>Tied-up KES</b> — capital locked in the group's available stock.</div>
+     </div>
+    </details>
     <div class="card" style="padding:0;">
      <div class="tbl-wrap">
       <table class="data">
@@ -395,7 +417,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
         <th class="r">Units consumed (kg)</th><th class="r">Stock (kg)</th>
         <th class="r">% Consumed</th><th class="r">% Stock</th>
         <th class="r">Cover (wks)</th><th class="r">SOR %</th>
-        <th class="r">Variance</th><th>Risk flag</th>
+        <th class="r">Gap (pp)</th><th>Risk flag</th>
        </tr></thead>
        <tbody id="cons-stock-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
       </table>
@@ -610,8 +632,8 @@ const FX={
   csPctStock:'% Stock = this row\u2019s stock ÷ total stock across all categories.',
   csCover:'Cover (weeks) = stock (kg) ÷ weekly consumption (consumption ÷ (days ÷ 7)).',
   csSor:'SOR % = consumption ÷ (consumption + stock) — share of this fabric that has been used.',
-  csVariance:'Variance = % Consumed − % Stock (percentage points); positive = used faster than its stock share.',
-  csRisk:'Risk flag = from Variance: |var|<1 Healthy, <3 Monitor, otherwise Stockout / Overstock Risk.',
+  csVariance:'Gap (pp) = % Stock − % Consumed (percentage points); positive = overstock (held more than used), negative = short (used faster than its stock share).',
+  csRisk:'Risk flag = from Gap: |gap|<1 Healthy, <3 Monitor, otherwise Stockout (negative) / Overstock (positive) Risk.',
   // Purchase orders
   poOrdered:'Ordered value = sum of ordered quantity × unit price across PO lines (KES).',
   poReceived:'Received value = received quantity × unit price, delivered to date (KES).',
@@ -787,69 +809,116 @@ function onLocationChange(){
 // ── Fabric mix (consumption share vs available-stock share) ──
 let mixCache=null, mixGroup='category';
 let mixSort={key:'consumption',dir:'desc'};
+let mixOpen={};                 // category → expanded? (in-place sub-category drill-down)
+let mixAction={has:false};      // last action-banner state (any Buy/Clear/Idle rows?)
+let mixBound=false;             // delegated click handler bound once
 const MIX_COLS=[
   {k:'group',label:'Fabric category',type:'name'},
   {k:'consumption',label:'Consumption',type:'unit'},
   {k:'available',label:'Available',type:'unit'},
   {k:'pctC',label:'% Consumption',type:'pct'},
   {k:'pctA',label:'% Available',type:'pct'},
-  {k:'variance',label:'Variance (pp)',type:'var'},
+  {k:'gap',label:'Gap (pp)',type:'gap'},
   {k:'shortfall',label:'Shortfall',type:'unit'},
   {k:'covers',label:'Monthly covers',type:'cover'},
   {k:'tied',label:'Tied-up KES',type:'kes'},
-  {k:'status',label:'Status',type:'status'},
+  {k:'verdict',label:'Verdict',type:'verdict'},
 ];
 const MIX_FX={
   consumption:'Consumption = net fabric used over the selected period (OUT moves − production returns), warehouse-wide, in the active unit.',
   available:'Available = current on-hand stock for this category at the selected location, in the active unit.',
   pctC:'% Consumption = this category\u2019s consumption ÷ total consumption across all categories.',
   pctA:'% Available = this category\u2019s available stock ÷ total available stock across all categories.',
-  variance:'Variance = % Consumption − % Available (percentage points). Positive = used faster than its stock share (shortage risk); negative = held more than used (overstock).',
+  gap:'Gap (pp) = % Available − % Consumption (percentage points). Positive = overstock (held more than used); negative = short (used faster than its stock share).',
   shortfall:'Shortfall = Available − Consumption over the period (active unit). Negative = consumed more than is in stock.',
   covers:'Monthly covers = Available ÷ (Consumption ÷ months in the period). Below 1 = under a month of cover left.',
   tied:'Tied-up KES = capital locked in this category\u2019s available stock (stock value).',
-  status:'Status = Shortage when shortfall < 0 OR monthly covers < 1; otherwise OK.',
+  verdict:'Verdict = Buy (short: shortfall < 0, cover < 1 month, or Gap ≤ −3pp), Clear (overstock: Gap ≥ +3pp or > 12 months cover), Idle (stock but ~no usage in the window), else Hold (balanced).',
 };
-const MIX_NUM={unit:1,pct:1,var:1,cover:1,kes:1};
+const MIX_NUM={unit:1,pct:1,gap:1,cover:1,kes:1};
+// Shared "Gap (pp)" chip — % Available − % Consumption, positive = overstock.
+// Reused by the Fabric mix table AND the Movement page consumption/stock table so
+// the sign convention reads identically in both places.
+function gapChip(v){
+  v=Number(v)||0; const a=Math.abs(v).toFixed(1);
+  if(v>=3)  return `<span class="pill pill-amber" title="Held more than it is being used (overstock).">+${a}pp overstock</span>`;
+  if(v<=-3) return `<span class="pill pill-red" title="Used faster than its stock share (short).">\u2212${a}pp short</span>`;
+  return `<span class="pill pill-green" title="Consumption and stock shares are in balance.">\u00B1${a}pp balanced</span>`;
+}
+// Plain-English Buy/Hold/Clear/Idle verdict from the flipped-sign metrics.
+// Same buckets as the old narrative, just re-sourced from Gap + an Idle override.
+function mixVerdict(r){
+  if(r.idle) return {key:'idle', label:'Idle — no usage', cls:'pill-blue'};
+  const buy   = r.shortfall<0 || (r.covers!=null&&r.covers<1) || r.gap<=-3;
+  const clear = r.gap>=3 || (r.covers!=null&&r.covers>12);
+  if(buy)   return {key:'buy',   label:'Buy — short',         cls:'pill-red'};
+  if(clear) return {key:'clear', label:'Clear — overstocked', cls:'pill-amber'};
+  return {key:'hold', label:'Hold — balanced', cls:'pill-green'};
+}
 function setMixGroup(g){
   if(mixGroup===g)return; mixGroup=g;
   document.querySelectorAll('#mix-group-seg .unit-btn').forEach(b=>b.classList.toggle('active',b.dataset.grp===g));
   loadFabricMix();
+}
+// Derive a single row's display metrics for the active unit. `subcategories`
+// (present on category rows when grouping by category) are derived recursively so
+// the drill-down rows use the same Gap/verdict logic + grand-total denominators.
+function deriveMixRow(r,totC,totA,months,useKg){
+  const c=useKg?r.consumption_kg:r.consumption_metres;
+  const a=useKg?r.available_kg:r.available_metres;
+  const pctC=totC>0?(c/totC*100):0;
+  const pctA=totA>0?(a/totA*100):0;
+  const gap=pctA-pctC;
+  const shortfall=a-c;
+  const covers=c>0?(a/(c/months)):null;
+  const out={group:r.group,consumption:c,available:a,pctC,pctA,gap,shortfall,covers,
+    tied:r.tied_up_kes,idle:!!r.idle,incomplete:!!r.metres_incomplete&&!useKg};
+  out.verdict=mixVerdict(out);
+  if(Array.isArray(r.subcategories))
+    out.subcategories=r.subcategories.map(s=>deriveMixRow(s,totC,totA,months,useKg));
+  return out;
 }
 function deriveMixRows(d){
   const useKg=UNIT==='kg';
   const totC=useKg?d.total_consumption_kg:d.total_consumption_metres;
   const totA=useKg?d.total_available_kg:d.total_available_metres;
   const months=d.months||1;
-  return (d.rows||[]).map(r=>{
-    const c=useKg?r.consumption_kg:r.consumption_metres;
-    const a=useKg?r.available_kg:r.available_metres;
-    const pctC=totC>0?(c/totC*100):0;
-    const pctA=totA>0?(a/totA*100):0;
-    const variance=pctC-pctA;
-    const shortfall=a-c;
-    const covers=c>0?(a/(c/months)):null;
-    const status=(shortfall<0||(covers!=null&&covers<1))?'Shortage':'OK';
-    return {group:r.group,consumption:c,available:a,pctC,pctA,variance,shortfall,covers,
-      tied:r.tied_up_kes,status,incomplete:!!r.metres_incomplete&&!useKg};
-  });
+  return (d.rows||[]).map(r=>deriveMixRow(r,totC,totA,months,useKg));
 }
-function mixNarrative(rows){
-  const buys=rows.filter(r=>r.status==='Shortage'||r.variance>=3)
-    .sort((a,b)=>b.variance-a.variance).slice(0,3);
-  const clears=rows.filter(r=>r.variance<=-3||(r.covers!=null&&r.covers>12))
-    .sort((a,b)=>a.variance-b.variance).slice(0,3);
-  const part=(arr,verb)=>arr.map(r=>{
-    const cov=r.covers!=null?`${fmt1(r.covers)} mo cover`:'no cover';
-    return `${esc(r.group)} (${r.variance>0?'+':''}${r.variance.toFixed(1)}pp, ${cov})`;
-  }).join(', ');
-  let html='<div class="card" style="margin-bottom:1.2rem;"><div class="section-head" style="margin-bottom:.6rem;"><h3>Buy / Hold / Clear</h3><span class="muted">auto-flagged from mix variance &amp; cover</span></div>';
-  if(!buys.length&&!clears.length){
-    html+='<p class="muted" style="margin:0;">Consumption and stock are broadly in balance — no categories flagged for action in this period.</p>';
+// Quantified action banner: money + units at risk for CLEAR / BUY / IDLE,
+// each with a count, units, KES and named example categories.
+function mixActionBanner(rows){
+  const clears=rows.filter(r=>r.verdict.key==='clear');
+  const buys=rows.filter(r=>r.verdict.key==='buy');
+  const idles=rows.filter(r=>r.verdict.key==='idle');
+  mixAction.has=!!(clears.length||buys.length||idles.length);
+  const sum=(arr,f)=>arr.reduce((s,r)=>s+(f(r)||0),0);
+  const shortUnits=r=>Math.max(0,r.consumption-r.available);            // unmet usage
+  const shortKes=r=>r.available>0?shortUnits(r)*(r.tied/r.available):0;  // × implied unit value
+  const names=arr=>arr.slice(0,3).map(r=>esc(r.group)).join(', ')||'—';
+  const clearU=sum(clears,r=>r.available), clearK=sum(clears,r=>r.tied);
+  const buyU=sum(buys,shortUnits),         buyK=sum(buys,shortKes);
+  const idleU=sum(idles,r=>r.available),   idleK=sum(idles,r=>r.tied);
+  const exClears=clears.slice().sort((a,b)=>b.tied-a.tied);
+  const exBuys=buys.slice().sort((a,b)=>shortUnits(b)-shortUnits(a));
+  const exIdles=idles.slice().sort((a,b)=>b.tied-a.tied);
+  const tile=(cls,tag,head,n,units,kes,ex)=>`
+    <div class="action-tile">
+     <div><span class="pill ${cls}" style="margin-right:.4rem;">${tag}</span><b>${n}</b> ${esc(head)}</div>
+     <div class="action-figs">${fmtUnit(units)} &middot; <span style="color:var(--text);font-weight:700;">${fmtKES(kes)}</span></div>
+     <div class="muted" style="font-size:.78rem;">e.g. ${ex}</div>
+    </div>`;
+  let html='<div class="card" style="margin-bottom:1.2rem;">'
+    +'<div class="section-head" style="margin-bottom:.7rem;"><h3>Action — money &amp; units at risk</h3>'
+    +'<button class="btn" onclick="exportFabricMixActions(this)">Export action rows</button></div>';
+  if(!mixAction.has){
+    html+='<p class="muted" style="margin:0;">Consumption and stock are broadly in balance — nothing flagged to Buy, Clear or as Idle in this period.</p>';
   }else{
-    if(buys.length)html+=`<p style="margin:.2rem 0;"><span class="pill pill-red" style="margin-right:.5rem;">BUY</span>Restock — consuming faster than stock share: ${part(buys)}.</p>`;
-    if(clears.length)html+=`<p style="margin:.2rem 0;"><span class="pill pill-blue" style="margin-right:.5rem;">CLEAR</span>Overstock — holding more than is being used: ${part(clears)}.</p>`;
-    html+='<p style="margin:.2rem 0;"><span class="pill pill-green" style="margin-right:.5rem;">HOLD</span>All other categories are in balance.</p>';
+    html+='<div class="action-grid">'
+      +tile('pill-amber','CLEAR','overstocked categories — tied-up capital',clears.length,clearU,clearK,names(exClears))
+      +tile('pill-red','BUY','short categories — shortage exposure',buys.length,buyU,buyK,names(exBuys))
+      +tile('pill-blue','IDLE','categories with stock but no usage',idles.length,idleU,idleK,names(exIdles))
+      +'</div>';
   }
   html+='</div>';
   document.getElementById('mix-narrative').innerHTML=html;
@@ -863,39 +932,51 @@ function mixSortRows(rows){
     return (x-y)*dir;
   });
 }
-function mixCell(col,r){
+function mixCell(col,r,kind){
   const f=MIX_FX[col.k]?fx(MIX_FX[col.k]):'';
   let cell;
   switch(col.type){
     case 'name':{
       const flag=r.incomplete?` <span class="pill pill-amber" title="Some stock/usage has no kg-per-metre, so metres are understated. Switch to Kg for the full figure.">m?</span>`:'';
-      cell=`<td style="font-weight:700;">${esc(r.group)}${flag}</td>`;break;}
+      if(kind==='cat'){
+        const caret=`<span class="caret">${mixOpen[r.group]?'▾':'▸'}</span> `;
+        cell=`<td style="font-weight:700;">${caret}${esc(r.group)}${flag}</td>`;
+      }else if(kind==='sub'){
+        cell=`<td style="padding-left:28px;color:var(--text-sub);">${esc(r.group)}${flag}</td>`;
+      }else{
+        cell=`<td style="font-weight:700;">${esc(r.group)}${flag}</td>`;
+      }
+      break;}
     case 'unit':cell=`<td class="r">${fmtUnit(r[col.k])}</td>`;break;
     case 'pct':cell=`<td class="r">${(r[col.k]||0).toFixed(1)}%</td>`;break;
-    case 'var':{const v=r[col.k]||0;const c=v>=3?'pill-red':v<=-3?'pill-blue':'pill-neutral';
-      cell=`<td class="r"><span class="pill ${c}">${v>0?'+':''}${v.toFixed(1)}</span></td>`;break;}
+    case 'gap':cell=`<td class="r">${gapChip(r.gap)}</td>`;break;
     case 'cover':{const v=r[col.k];const c=v==null?'pill-neutral':v<1?'pill-red':v<3?'pill-amber':v>12?'pill-blue':'pill-green';
       cell=`<td class="r">${v==null?'—':`<span class="pill ${c}">${fmt1(v)}</span>`}</td>`;break;}
     case 'kes':cell=`<td class="r" style="color:var(--muted);">${fmtKES(r[col.k])}</td>`;break;
-    case 'status':{const c=r.status==='Shortage'?'pill-red':'pill-green';
-      cell=`<td><span class="pill ${c}">${esc(r.status)}</span></td>`;break;}
+    case 'verdict':{const v=r.verdict||mixVerdict(r);
+      cell=`<td><span class="pill ${v.cls}">${esc(v.label)}</span></td>`;break;}
     default:cell=`<td>${esc(r[col.k])}</td>`;
   }
   return f?cell.replace('<td','<td'+f):cell;
+}
+function mixRowHtml(r,kind){
+  const click=kind==='cat'?` class="cat-row" data-cat="${esc(r.group)}" style="cursor:pointer;"`:(kind==='sub'?' class="sub-row"':'');
+  return `<tr${click}>`+MIX_COLS.map(c=>mixCell(c,r,kind)).join('')+'</tr>';
 }
 function renderFabricMix(){
   const d=mixCache;if(!d)return;
   const useKg=UNIT==='kg';
   const totC=useKg?d.total_consumption_kg:d.total_consumption_metres;
   const totA=useKg?d.total_available_kg:d.total_available_metres;
+  const win=(d.date_from&&d.date_to)?`${d.date_from} → ${d.date_to}`:`${fmt1(d.months)} months`;
   // Header band
   document.getElementById('mix-kpis').innerHTML=`
-   <div class="kpi accent"><span class="eyebrow">Consumption period</span><p class="kpi-value">${fmt(d.days)} days</p><p class="kpi-sub">${fmt1(d.months)} months &middot; ${mixGroup==='subcategory'?'by sub-category':'by category'}</p></div>
+   <div class="kpi accent"><span class="eyebrow">Consumption period</span><p class="kpi-value">${fmt(d.days)} days</p><p class="kpi-sub">${esc(win)} &middot; ${mixGroup==='subcategory'?'by sub-category':'by category'}</p></div>
    <div class="kpi"><span class="eyebrow">Total consumption</span><p class="kpi-value">${fmtUnit(totC)}</p><p class="kpi-sub">net used (OUT − returns)</p></div>
    <div class="kpi"><span class="eyebrow">Total SOH</span><p class="kpi-value">${fmtUnit(totA)}</p><p class="kpi-sub">available stock on hand</p></div>
    <div class="kpi"><span class="eyebrow">Tied-up capital</span><p class="kpi-value">${fmtKES(d.total_tied_up_kes)}</p><p class="kpi-sub">value of available stock</p></div>`;
   const rows=mixSortRows(deriveMixRows(d));
-  mixNarrative(rows);
+  mixActionBanner(rows);
   // Header
   document.getElementById('mix-head').innerHTML='<tr>'+MIX_COLS.map(c=>{
     const arrow=mixSort.key===c.k?(mixSort.dir==='asc'?' \u25B2':' \u25BC'):'';
@@ -903,10 +984,30 @@ function renderFabricMix(){
     return `<th class="${MIX_NUM[c.type]?'r ':''}sortable" onclick="sortMix('${c.k}')">${esc(label)}${arrow}</th>`;
   }).join('')+'</tr>';
   const body=document.getElementById('mix-body');
+  if(!mixBound){
+    // Delegated expand/collapse: read the (untrusted) category from a data-*
+    // attribute, never from an inline JS handler (XSS-safe).
+    body.addEventListener('click',e=>{
+      const tr=e.target.closest('tr.cat-row');
+      if(tr&&tr.dataset.cat!=null){mixOpen[tr.dataset.cat]=!mixOpen[tr.dataset.cat];renderFabricMix();}
+    });
+    mixBound=true;
+  }
   if(!rows.length){body.innerHTML=`<tr><td colspan="${MIX_COLS.length}" class="loading">No consumption or stock in this period.</td></tr>`;return;}
-  let html=rows.map(r=>'<tr>'+MIX_COLS.map(c=>mixCell(c,r)).join('')+'</tr>').join('');
+  // In category mode each row is expandable to its sub-categories; sub-category
+  // mode renders a flat list (already at the finest grain).
+  let html='';
+  if(mixGroup==='subcategory'){
+    html=rows.map(r=>mixRowHtml(r,'flat')).join('');
+  }else{
+    rows.forEach(r=>{
+      html+=mixRowHtml(r,'cat');
+      if(mixOpen[r.group]&&Array.isArray(r.subcategories)){
+        mixSortRows(r.subcategories).forEach(s=>{html+=mixRowHtml(s,'sub');});
+      }
+    });
+  }
   // Totals row
-  const totVar=0;
   html+=`<tr style="border-top:2px solid var(--border);font-weight:700;background:var(--bg);">
    <td style="font-weight:800;">Total</td>
    <td class="r">${fmtUnit(totC)}</td>
@@ -929,12 +1030,32 @@ function sortMix(k){
 }
 async function loadFabricMix(){
   try{
-    const days=document.getElementById('mix-period').value||90;
-    const params=new URLSearchParams({group_by:mixGroup,days,location:loc()});
+    const from=document.getElementById('mix-from').value;
+    const to=document.getElementById('mix-to').value;
+    const params=new URLSearchParams({group_by:mixGroup,location:loc()});
+    if(from&&to){params.set('date_from',from);params.set('date_to',to);}
+    else{params.set('days',document.getElementById('mix-period').value||90);}
     mixCache=await apiFetch('/api/fabric/mix?'+params);
     renderFabricMix();
     document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString();
   }catch(e){rowErr('mix-body',MIX_COLS.length,e);document.getElementById('mix-narrative').innerHTML='';}
+}
+// Preset and custom range are mutually exclusive: picking a preset clears the
+// custom dates; clearing the custom range falls back to the preset.
+function onMixPreset(){
+  document.getElementById('mix-from').value='';
+  document.getElementById('mix-to').value='';
+  loadFabricMix();
+}
+function onMixRange(){
+  const from=document.getElementById('mix-from').value;
+  const to=document.getElementById('mix-to').value;
+  if((from&&to)||(!from&&!to))loadFabricMix();   // wait until both set (or both cleared)
+}
+function clearMixRange(){
+  document.getElementById('mix-from').value='';
+  document.getElementById('mix-to').value='';
+  loadFabricMix();
 }
 function exportFabricMix(btn){
   const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
@@ -947,17 +1068,43 @@ function exportFabricMix(btn){
     ['Available ('+unit+')',r=>r.available],
     ['% Consumption',r=>r.pctC.toFixed(1)],
     ['% Available',r=>r.pctA.toFixed(1)],
-    ['Variance (pp)',r=>r.variance.toFixed(1)],
+    ['Gap (pp)',r=>r.gap.toFixed(1)],
     ['Shortfall ('+unit+')',r=>r.shortfall],
     ['Monthly covers',r=>r.covers==null?'':r.covers.toFixed(2)],
     ['Tied-up KES',r=>r.tied],
-    ['Status',r=>r.status],
+    ['Verdict',r=>r.verdict.label],
   ];
   const csv=[cols.map(c=>c[0]).join(',')]
     .concat(rows.map(r=>cols.map(c=>JSON.stringify(c[1](r)??'')).join(',')))
     .join('\n');
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
   a.download=`fabric_mix_${mixGroup}_${d.days}d.csv`;a.click();
+}
+// Focused export: only the rows that need action (Buy / Clear / Idle), with the
+// quantified shortage/exposure figures the action banner is built from.
+function exportFabricMixActions(btn){
+  const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
+  const rows=mixSortRows(deriveMixRows(d)).filter(r=>r.verdict.key!=='hold');
+  if(!rows.length){alert('No action rows in this period.');return;}
+  const unit=UNIT==='kg'?'kg':'m';
+  const shortUnits=r=>Math.max(0,r.consumption-r.available);
+  const shortKes=r=>r.available>0?Math.round(shortUnits(r)*(r.tied/r.available)):0;
+  const cols=[
+    ['Verdict',r=>r.verdict.label],
+    ['Fabric '+mixGroup,r=>r.group],
+    ['Gap (pp)',r=>r.gap.toFixed(1)],
+    ['Available ('+unit+')',r=>r.available],
+    ['Consumption ('+unit+')',r=>r.consumption],
+    ['Shortage units ('+unit+')',r=>shortUnits(r).toFixed(1)],
+    ['Shortage exposure KES',r=>shortKes(r)],
+    ['Monthly covers',r=>r.covers==null?'':r.covers.toFixed(2)],
+    ['Tied-up KES',r=>r.tied],
+  ];
+  const csv=[cols.map(c=>c[0]).join(',')]
+    .concat(rows.map(r=>cols.map(c=>JSON.stringify(c[1](r)??'')).join(',')))
+    .join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download=`fabric_mix_actions_${mixGroup}_${d.days}d.csv`;a.click();
 }
 
 // ── Overview ──
@@ -1261,15 +1408,16 @@ function onDateRangeChange(){
     loadConsTrend();loadConsStock();
   }
 }
-function riskFlag(variance){
-  // variance = %consumed − %stock (percentage points). Faster consumption than
-  // stock share (positive) → stockout risk; slower (negative) → overstock risk.
-  const a=Math.abs(variance);
+function riskFlag(gap){
+  // gap = %stock − %consumed (percentage points), same convention as the Fabric
+  // mix table: positive = overstock (held more than used), negative = stockout
+  // (used faster than its stock share).
+  const a=Math.abs(gap);
   if(a<1)return {label:'Healthy',cls:'pill-green'};
-  if(a<3)return variance>0?{label:'Monitor (Stockout watch)',cls:'pill-amber'}
-                          :{label:'Monitor (Overstock watch)',cls:'pill-amber'};
-  return variance>0?{label:'Stockout Risk',cls:'pill-red'}
-                   :{label:'Overstock Risk',cls:'pill-red'};
+  if(a<3)return gap<0?{label:'Monitor (Stockout watch)',cls:'pill-amber'}
+                     :{label:'Monitor (Overstock watch)',cls:'pill-amber'};
+  return gap<0?{label:'Stockout Risk',cls:'pill-red'}
+              :{label:'Overstock Risk',cls:'pill-red'};
 }
 let consStockOpen={};
 function consStockRow(r,totC,totS,days,isCat){
@@ -1279,8 +1427,8 @@ function consStockRow(r,totC,totS,days,isCat){
   const cover=weekly>0?(r.stock_kg/weekly):null;
   const denom=r.consumed_kg+r.stock_kg;
   const sor=denom>0?(r.consumed_kg/denom*100):0;
-  const variance=pctC-pctS;
-  const rf=riskFlag(variance);
+  const gap=pctS-pctC;
+  const rf=riskFlag(gap);
   const name=isCat?esc(r.category):esc(r.subcategory);
   const label=isCat
     ? `<td style="font-weight:700;"><span class="caret">${consStockOpen[r.category]?'▾':'▸'}</span> ${name}</td>`
@@ -1296,7 +1444,7 @@ function consStockRow(r,totC,totS,days,isCat){
     <td class="r"${fx(FX.csPctStock)}>${pctS.toFixed(1)}%</td>
     <td class="r"${fx(FX.csCover)}>${cover!=null?fmt1(cover):'—'}</td>
     <td class="r"${fx(FX.csSor)}>${sor.toFixed(1)}%</td>
-    <td class="r"${fx(FX.csVariance)}>${variance>0?'+':''}${variance.toFixed(2)}%</td>
+    <td class="r"${fx(FX.csVariance)}>${gapChip(gap)}</td>
     <td${fx(FX.csRisk)}><span class="pill ${rf.cls}">${rf.label}</span></td>
   </tr>`;
 }
