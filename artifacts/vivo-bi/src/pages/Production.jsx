@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { api } from "@/lib/api";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
 import ProductionOrderModal from "@/components/ProductionOrderModal";
-import { ArrowsClockwise, Factory } from "@phosphor-icons/react";
+import { ArrowsClockwise, Factory, MagnifyingGlass, X } from "@phosphor-icons/react";
 
 /**
  * Production Tracker — a kanban board of every buying order's work-in-progress
@@ -43,6 +43,7 @@ export default function Production() {
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [openOrder, setOpenOrder] = useState(null);
+  const [query, setQuery] = useState("");
 
   const load = useCallback(async (force = false) => {
     if (force) setRefreshing(true); else setLoading(true);
@@ -64,21 +65,30 @@ export default function Production() {
 
   useEffect(() => { load(false); }, [load]);
 
+  const filteredCards = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return cards;
+    return cards.filter((c) =>
+      [c.style_number, c.product_name, c.order_ref]
+        .some((v) => String(v || "").toLowerCase().includes(q))
+    );
+  }, [cards, query]);
+
   const cardsByStage = React.useMemo(() => {
     const map = {};
-    for (const c of cards) {
+    for (const c of filteredCards) {
       (map[c.stage] ||= []).push(c);
     }
     return map;
-  }, [cards]);
+  }, [filteredCards]);
 
   const totalUnits = React.useMemo(
-    () => cards.reduce((s, c) => s + (Number(c.qty_here) || 0), 0),
-    [cards]
+    () => filteredCards.reduce((s, c) => s + (Number(c.qty_here) || 0), 0),
+    [filteredCards]
   );
   const totalOrders = React.useMemo(
-    () => new Set(cards.map((c) => c.order_ref)).size,
-    [cards]
+    () => new Set(filteredCards.map((c) => c.order_ref)).size,
+    [filteredCards]
   );
 
   return (
@@ -89,15 +99,38 @@ export default function Production() {
           subtitle="Work-in-progress across the manufacturing stages — move quantities forward as orders progress."
           testId="production-title"
         />
-        <button
-          onClick={() => load(true)}
-          disabled={refreshing || loading}
-          className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-brand border border-brand/30 hover:bg-brand/5 px-3 py-2 rounded-md disabled:opacity-50"
-          data-testid="production-refresh"
-        >
-          <ArrowsClockwise size={14} className={refreshing ? "animate-spin" : ""} />
-          {refreshing ? "Refreshing…" : "Refresh"}
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative">
+            <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search style name or number…"
+              className="w-60 text-[12.5px] border border-line rounded-md pl-8 pr-7 py-2 focus:outline-none focus:ring-2 focus:ring-brand/30"
+              data-testid="production-search"
+            />
+            {query && (
+              <button
+                onClick={() => setQuery("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-[#0f3d24]"
+                aria-label="Clear search"
+                data-testid="production-search-clear"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+          <button
+            onClick={() => load(true)}
+            disabled={refreshing || loading}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-brand border border-brand/30 hover:bg-brand/5 px-3 py-2 rounded-md disabled:opacity-50"
+            data-testid="production-refresh"
+          >
+            <ArrowsClockwise size={14} className={refreshing ? "animate-spin" : ""} />
+            {refreshing ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
       </div>
 
       {loading ? (
