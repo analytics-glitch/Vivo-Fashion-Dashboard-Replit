@@ -213,6 +213,20 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     </div>
     <span class="muted">Location</span>
     <select id="location-filter" onchange="onLocationChange()"></select>
+    <span id="mix-period-topbar" style="display:none;align-items:center;gap:.5rem;">
+     <span class="muted">Consumption period</span>
+     <select id="mix-period-top" onchange="onMixPresetTop()">
+      <option value="30">30 days (1 mo)</option>
+      <option value="90" selected>90 days (3 mo)</option>
+      <option value="180">180 days (6 mo)</option>
+      <option value="365">365 days (12 mo)</option>
+     </select>
+     <span class="muted">or</span>
+     <input type="date" id="mix-from-top" onchange="onMixRangeTop()" title="Custom range from (overrides the preset)" style="width:140px;">
+     <span class="muted">→</span>
+     <input type="date" id="mix-to-top" onchange="onMixRangeTop()" title="Custom range to (overrides the preset)" style="width:140px;">
+     <button class="btn ghost" onclick="clearMixRangeTop()" title="Clear the custom range and use the preset">Clear</button>
+    </span>
     <span class="muted">Date range</span>
     <input type="date" id="g-since" onchange="onDateRangeChange()" title="From" style="width:140px;">
     <input type="date" id="g-until" onchange="onDateRangeChange()" title="To" style="width:140px;">
@@ -811,6 +825,7 @@ document.querySelectorAll('.nav-item').forEach(el=>{
     el.classList.add('active');
     document.getElementById('page-title').textContent=el.textContent.trim();
     document.getElementById('page-desc').textContent=DESCS[page]||'';
+    fabSyncMixTopbarVisibility();
     if(LOADERS[page]&&!loadedOnce[page]){loadedOnce[page]=true;LOADERS[page]();}
   });
 });
@@ -1226,6 +1241,13 @@ function fabSyncMixInputs(){
   const sel=document.getElementById('mix-period');
   const n=fabPresetForRange(from,to);
   if(n!=null)sel.value=String(n); else sel.selectedIndex=-1;
+  // Mirror the same window into the top-bar copy so both stay visually in sync.
+  const fromTop=document.getElementById('mix-from-top');
+  const toTop=document.getElementById('mix-to-top');
+  const selTop=document.getElementById('mix-period-top');
+  if(fromTop)fromTop.value=from;
+  if(toTop)toTop.value=to;
+  if(selTop){if(n!=null)selTop.value=String(n); else selTop.selectedIndex=-1;}
 }
 async function loadFabricMix(){
   try{
@@ -1264,6 +1286,27 @@ function onMixRange(){
 function clearMixRange(){
   document.getElementById('mix-period').value='90';
   onMixPreset();
+}
+// Top-bar copies of the consumption-period controls. They drive the same top
+// Date range source of truth, so they reuse the in-page handlers after copying
+// their value across (fabSyncMixInputs mirrors the result back into both copies).
+function onMixPresetTop(){
+  document.getElementById('mix-period').value=document.getElementById('mix-period-top').value;
+  onMixPreset();
+}
+function onMixRangeTop(){
+  document.getElementById('mix-from').value=document.getElementById('mix-from-top').value;
+  document.getElementById('mix-to').value=document.getElementById('mix-to-top').value;
+  onMixRange();
+}
+function clearMixRangeTop(){
+  document.getElementById('mix-period-top').value='90';
+  onMixPresetTop();
+}
+// The top-bar consumption-period cluster only belongs on the Fabric Mix page.
+function fabSyncMixTopbarVisibility(){
+  const el=document.getElementById('mix-period-topbar');
+  if(el)el.style.display=(currentPage()==='dashboard')?'inline-flex':'none';
 }
 function exportFabricMix(btn){
   const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
@@ -2050,6 +2093,7 @@ async function init(){
     const colSel=document.getElementById('reg-color');
     if(colSel&&Array.isArray(f.fabric_colors))colSel.innerHTML='<option value="">All colors</option>'+f.fabric_colors.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
   }catch(e){/* overview will surface the auth error */}
+  fabSyncMixTopbarVisibility();
   loadOverview();
 }
 
