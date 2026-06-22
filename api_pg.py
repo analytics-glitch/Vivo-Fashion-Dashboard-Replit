@@ -7912,6 +7912,132 @@ def analytics_replenishment_completed(days: int = Query(default=30)):
     return {"rows": out, "total": sum(x["actual_units_replenished"] for x in out)}
 
 
+@app.get("/api/analytics/replenishment-transfer-report")
+def analytics_replenishment_transfer_report(days: int = Query(default=60)):
+    """DONE replenishments grouped by POS location + day, for tracking what was
+    marked done against the actual Odoo transfer document.
+
+    Once an item is marked done on the Replenishments / Replenishment-by-style
+    pages it lands in `recommendation_actions` (rec_type='replenish',
+    status='done'); this report rolls those rows up into one bucket per
+    (POS location, day) so an operator can record the single Odoo transfer
+    number that physically moved that store's items that day. Days bucket by
+    Africa/Nairobi (EAT) so a late-evening mark is not pushed to the next UTC
+    day. Items are enriched with product name/size/colour from
+    all_products_clean (same DB) and de-duplicated: marking done writes BOTH a
+    'sku' and a 'barcode' keyed row for the same physical item, so we collapse
+    them to one canonical SKU."""
+    rows = _users_exec(
+        "WITH done AS ("
+        "  SELECT split_part(rec_key,'|',1) AS pos_location,"
+        "         split_part(rec_key,'|',2) AS kind,"
+        "         split_part(rec_key,'|',3) AS value,"
+        "         (acted_at AT TIME ZONE 'Africa/Nairobi')::date AS day,"
+        "         COALESCE(actual_units,0) AS actual_units,"
+        "         COALESCE(transfer_ref,'') AS transfer_ref,"
+        "         acted_by, acted_at"
+        "  FROM recommendation_actions"
+        "  WHERE rec_type='replenish' AND status='done'"
+        "    AND acted_at >= now() - (%s || ' days')::interval"
+        ") "
+        "SELECT d.pos_location, d.kind, d.value, d.day, d.actual_units,"
+        "       d.transfer_ref, d.acted_by, d.acted_at,"
+        "       CASE WHEN d.kind='sku' THEN d.value ELSE p.sku END AS canon_sku,"
+        "       COALESCE(p.product_name,'') AS product_name,"
+        "       COALESCE(p.size,'') AS size,"
+        "       COALESCE(p.color_print,'') AS color_print,"
+        "       CASE WHEN d.kind='barcode' THEN d.value ELSE COALESCE(p.barcode,'') END AS barcode,"
+        "       CASE WHEN d.kind='sku' THEN d.value ELSE COALESCE(p.sku,'') END AS sku "
+        "FROM done d "
+        "LEFT JOIN all_products_clean p "
+        "  ON (d.kind='sku' AND p.sku = d.value) "
+        "  OR (d.kind='barcode' AND p.barcode = d.value) "
+        "ORDER BY d.day DESC, d.pos_location ASC, d.acted_at DESC",
+        (str(int(days)),), fetch=True) or []
+
+    groups = {}
+    for r in rows:
+        pos = r.get("pos_location") or ""
+        day = r["day"].isoformat() if r.get("day") else ""
+        gkey = (pos, day)
+        g = groups.get(gkey)
+        if g is None:
+            g = {"pos_location": pos, "day": day, "items": [],
+                 "_seen": set(), "_refs": set()}
+            groups[gkey] = g
+        # Collapse the twin sku/barcode rows written for one physical item.
+        canon = (r.get("canon_sku") or "").strip()
+        itemkey = canon if canon else f"{r.get('kind')}:{r.get('value')}"
+        if itemkey in g["_seen"]:
+            continue
+        g["_seen"].add(itemkey)
+        ref = (r.get("transfer_ref") or "").strip()
+        if ref:
+            g["_refs"].add(ref)
+        g["items"].append({
+            "sku": r.get("sku") or "",
+            "barcode": r.get("barcode") or "",
+            "product_name": r.get("product_name") or "",
+            "size": r.get("size") or "",
+            "color_print": r.get("color_print") or "",
+            "actual_units": int(r.get("actual_units") or 0),
+            "transfer_ref": ref,
+            "completed_by": r.get("acted_by") or "",
+            "completed_at": r["acted_at"].isoformat() if r.get("acted_at") else None,
+        })
+
+    out_groups = []
+    for g in groups.values():
+        refs = sorted(g.pop("_refs"))
+        g.pop("_seen", None)
+        g["transfer_ref"] = refs[0] if len(refs) == 1 else ""
+        g["transfer_ref_mixed"] = len(refs) > 1
+        g["transfer_refs"] = refs
+        g["item_count"] = len(g["items"])
+        g["total_units"] = sum(i["actual_units"] for i in g["items"])
+        out_groups.append(g)
+    # Most recent day first, then POS name.
+    out_groups.sort(key=lambda g: (g["day"], g["pos_location"]), reverse=True)
+    out_groups.sort(key=lambda g: g["pos_location"])
+    out_groups.sort(key=lambda g: g["day"], reverse=True)
+    return {
+        "groups": out_groups,
+        "group_count": len(out_groups),
+        "total_units": sum(g["total_units"] for g in out_groups),
+    }
+
+
+@app.post("/api/analytics/replenishment-transfer-report/assign")
+async def analytics_replenishment_transfer_assign(request: Request):
+    """Stamp ONE Odoo transfer number onto every done replenishment for a given
+    (POS location, day) bucket, so the marked-done items can be reconciled
+    against the physical transfer document. Day is the EAT calendar day used by
+    the report above."""
+    from fastapi import HTTPException
+    body = await request.json()
+    pos_location = (body.get("pos_location") or "").strip()
+    day = (body.get("day") or "").strip()
+    transfer_ref = (body.get("transfer_ref") or "").strip()
+    if not pos_location or not day:
+        raise HTTPException(status_code=400, detail="pos_location and day are required")
+    try:
+        date.fromisoformat(day)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="day must be YYYY-MM-DD")
+    updated = _users_exec(
+        "UPDATE recommendation_actions "
+        "SET transfer_ref = %s "
+        "WHERE rec_type='replenish' AND status='done' "
+        "  AND split_part(rec_key,'|',1) = %s "
+        "  AND (acted_at AT TIME ZONE 'Africa/Nairobi')::date = %s::date "
+        "RETURNING 1",
+        ((transfer_ref or None), pos_location, day), fetch=True) or []
+    return {
+        "ok": True, "pos_location": pos_location, "day": day,
+        "transfer_ref": transfer_ref, "updated": len(updated),
+    }
+
+
 def _replen_clean_text(s, maxlen=80):
     # Free-text search/value sanitiser for inlined SQL literals: strip the
     # chars that could break out of a string literal. Values are matched with

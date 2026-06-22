@@ -93,6 +93,8 @@ A multi-page executive cockpit with a persistent sidebar and a global filter bar
 
 Operational close-the-loop pages also exist (IBT transfer suggestions, Replenishments, Re-Order, Size Health, Store Clusters, Data Quality) with recommendation actions, bulk operations, and "Export to Operations" file downloads. The topbar carries a Data Quality status pill and a Replenishments pending-count badge.
 
+A **Transfer Tracking** report (shared component on both the Replenishments and Replenishment-by-style pages) rolls every DONE replenishment into one bucket per (POS location, EAT day) so an operator can stamp the single Odoo transfer-document number that physically moved that store's items that day and reconcile marked-done vs actually-transferred. Endpoints: `GET /api/analytics/replenishment-transfer-report?days=N` (grouped, product-enriched, twin sku/barcode rows de-duped to a canonical SKU) + `POST .../assign` (bulk-stamps transfer_ref onto the group). See `.agents/memory/replen-done-twin-rows.md`.
+
 Per-chart CSV export is available throughout.
 
 ### Standalone Clienteling CRM artifact (`artifacts/vivo-crm`, `/crm/`)

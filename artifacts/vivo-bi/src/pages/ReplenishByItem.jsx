@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
 import { useTableSort, SortableTh } from "@/lib/useTableSort";
 import ReplenishmentRosterCard from "@/components/ReplenishmentRosterCard";
+import ReplenishmentTransferReport from "@/components/ReplenishmentTransferReport";
 import {
   MagnifyingGlass, Package, Storefront, ArrowsClockwise,
   CaretDown, Check, X as XIcon, Warehouse, CheckCircle, DownloadSimple,
@@ -645,6 +646,11 @@ const ReplenishByItem = () => {
         </div>
         </>
       )}
+
+      {/* Transfer Tracking — same chain-wide report as the Replenishments page;
+          items marked done here appear grouped by store + day for Odoo
+          transfer-number reconciliation. */}
+      <ReplenishmentTransferReport />
     </div>
   );
 };

@@ -13,6 +13,7 @@ import {
 import { toast } from "sonner";
 import { jsPDF } from "jspdf";
 import ReplenishmentRosterCard from "@/components/ReplenishmentRosterCard";
+import ReplenishmentTransferReport from "@/components/ReplenishmentTransferReport";
 
 /**
  * Daily Replenishment Page — full workflow.
@@ -1190,6 +1191,10 @@ const Replenishments = () => {
           </div>
         </div>
       )}
+
+      {/* Transfer Tracking — reconcile marked-done items vs the Odoo transfer
+          document, grouped by store + day. Operational tool, visible to all. */}
+      <ReplenishmentTransferReport />
 
       {/* Completed report (admin/owner). */}
       {isAdmin && (
