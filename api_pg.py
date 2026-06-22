@@ -3209,39 +3209,42 @@ def get_customers(
                 HAVING MIN(sale_date::date) < CURRENT_DATE - INTERVAL '90 days'
             ) t
         ),
-        seg AS (
-            -- New vs Returning from the stored customer_type column (NOT a
-            -- first-purchase recompute). customer_id is not unified across
-            -- channels (Shopify online vs Odoo POS use different id formats) and
-            -- POS counter sales mint a fresh id per transaction, so recomputing
-            -- made every repeat POS shopper look "new" and undercounted the
-            -- period. 'registered' (POS counter sales) is treated as Returning;
-            -- anything not New/Returning/registered (walk-in, Guest, blank) is a
-            -- walk-in and is excluded from the identified New+Returning total
-            -- (walk-ins are surfaced separately by /api/customers/walk-ins).
-            -- Counts are DISTINCT order_id, matching /api/customer-type-spend.
-            SELECT
-                COUNT(DISTINCT s.order_id) FILTER (WHERE LOWER(s.customer_type) = 'new') AS new_c,
-                COUNT(DISTINCT s.order_id) FILTER (WHERE LOWER(s.customer_type) IN ('returning','registered')) AS ret_c,
-                COUNT(DISTINCT s.order_id) FILTER (WHERE LOWER(s.customer_type) IN ('new','returning','registered')) AS total_c
-            FROM all_sales s
-            WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
-            AND s.sale_kind = 'order'
-            """ + country_filter + " " + channel_filter + """
-        ),
         first_purchase AS (
             -- First-ever purchase date per customer_id across ALL history (not
             -- scoped to the selected window). sale_date is TEXT so cast ::date
-            -- before MIN. Used only by the additive "first-time registered"
-            -- metric below — it does NOT feed New/Returning (seg), which stays
-            -- driven by the stored customer_type to avoid the known
-            -- first-purchase-recompute inflation of "New".
+            -- before MIN. Drives BOTH the New/Returning split (seg) and the
+            -- additive "first-time registered" metric below.
             SELECT customer_id, MIN(sale_date::date) AS first_purchase_date
             FROM all_sales
             WHERE sale_kind IN ('sale','order')
               AND customer_id IS NOT NULL
               AND customer_id NOT IN ('None','null','')
             GROUP BY customer_id
+        ),
+        seg AS (
+            -- New vs Returning by FIRST-EVER purchase date, NOT the stored
+            -- customer_type. Kenya (and most POS) tags every counter sale
+            -- 'registered' and never 'new', so a customer_type='new' filter made
+            -- "New" structurally 0 and dumped every genuine first-time buyer
+            -- into Returning. 'registered' customer_ids are stable (~2.5
+            -- orders/id), so the first-purchase recompute is reliable here: a
+            -- customer whose first-EVER purchase falls in the window is New, one
+            -- who bought before is Returning. The identified universe is still
+            -- customer_type in new/returning/registered (walk-in / Guest / blank
+            -- are excluded and surfaced separately by /api/customers/walk-ins).
+            -- Counts are DISTINCT order_id, matching /api/customer-type-spend.
+            SELECT
+                COUNT(DISTINCT s.order_id) FILTER (
+                    WHERE fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date) AS new_c,
+                COUNT(DISTINCT s.order_id) FILTER (
+                    WHERE fp.first_purchase_date < '""" + date_from + """'::date) AS ret_c,
+                COUNT(DISTINCT s.order_id) AS total_c
+            FROM all_sales s
+            JOIN first_purchase fp ON fp.customer_id = s.customer_id
+            WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+            AND s.sale_kind = 'order'
+            AND LOWER(s.customer_type) IN ('new','returning','registered')
+            """ + country_filter + " " + channel_filter + """
         ),
         first_time_reg AS (
             -- Additive metric: registered (POS counter) orders whose customer's
@@ -3715,21 +3718,36 @@ def get_customer_type_spend(
     country:   str = Query(default=None),
 ):
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
-    # New vs Returning is taken from the customer_type already stored on each
-    # all_sales row, NOT recomputed from a first_purchase CTE. Recomputing
-    # undercounts because customer_id is not unified across channels (Shopify vs
-    # Odoo POS use different id formats), so a returning POS shopper looks new.
-    # The stored values are: New / Returning / registered / walk-in / Guest.
-    # 'registered' (POS counter sales) is treated as Returning; anything that is
-    # not New/Returning/registered (walk-in, Guest, blank) is a Walk-in.
+    # New vs Returning by FIRST-EVER purchase date, matching /api/customers seg.
+    # The stored customer_type can't express new-vs-returning for POS (every
+    # counter sale is tagged 'registered', never 'new'), so a customer_type='new'
+    # filter made "New" structurally 0. 'registered' customer_ids are stable, so
+    # the first-purchase recompute is reliable: a customer whose first-EVER
+    # purchase falls in the window is New, one who bought before is Returning.
+    # The identified universe is still customer_type in new/returning/registered;
+    # anything else (walk-in, Guest, blank) is a Walk-in.
     # customers == orders here (each distinct order_id is counted), so
     # spend_per_customer and avg_basket_value coincide.
     return run_query("""
+        WITH first_purchase AS (
+            SELECT customer_id, MIN(sale_date::date) AS first_purchase_date
+            FROM all_sales
+            WHERE sale_kind IN ('sale','order')
+              AND customer_id IS NOT NULL
+              AND customer_id NOT IN ('None','null','')
+            GROUP BY customer_id
+        )
         SELECT
             CASE
-                WHEN LOWER(s.customer_type) IN ('new') THEN 'New'
-                WHEN LOWER(s.customer_type) IN ('returning', 'registered') THEN 'Returning'
-                ELSE 'Walk-in'
+                -- COALESCE so a NULL customer_type maps to Walk-in (NULL NOT IN
+                -- (...) is NULL, which would otherwise fall through to Returning).
+                WHEN COALESCE(LOWER(s.customer_type),'') NOT IN ('new','returning','registered') THEN 'Walk-in'
+                -- No first_purchase match = unidentifiable (null/placeholder
+                -- customer_id) → Walk-in, so New/Returning stays in lockstep with
+                -- /api/customers seg (which INNER JOINs first_purchase).
+                WHEN fp.first_purchase_date IS NULL THEN 'Walk-in'
+                WHEN fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date THEN 'New'
+                ELSE 'Returning'
             END AS customer_segment,
             COUNT(DISTINCT s.order_id) AS customers,
             COUNT(DISTINCT s.order_id) AS orders,
@@ -3737,6 +3755,7 @@ def get_customer_type_spend(
             ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS spend_per_customer,
             ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_basket_value
         FROM all_sales s
+        LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
         WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
         AND s.sale_kind = 'order'
         """ + country_filter + """

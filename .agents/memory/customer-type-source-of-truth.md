@@ -1,15 +1,20 @@
 ---
 name: New/Returning source of truth
-description: Why customer New-vs-Returning segmentation must read the stored all_sales.customer_type column, not a recomputed first_purchase CTE.
+description: Why customer New-vs-Returning segmentation is recomputed from each customer's first-ever purchase date, NOT read from the stored all_sales.customer_type column.
 ---
 
 # New vs Returning classification
 
-**Rule:** Segment customers as New/Returning from the **stored `all_sales.customer_type`** column, not by recomputing each customer's first-ever purchase date from a `first_purchase` CTE keyed on `customer_id`.
+**Rule:** Segment customers as New/Returning by **recomputing each customer's first-EVER purchase date** (a `first_purchase` CTE = `MIN(sale_date::date)` per `customer_id` across all history). A customer whose first-ever purchase falls inside the selected window is **New**; one who bought before the window is **Returning**. The *identified universe* is still gated on `LOWER(customer_type) IN ('new','returning','registered')` — anything else (`walk-in`, `Guest`, blank) is a Walk-in and excluded from New+Returning.
 
-Mapping used by `/api/customer-type-spend` (`get_customer_type_spend`):
-`LOWER(customer_type)`: `new`→New; `returning`,`registered`→Returning; everything else (`walk-in`,`Guest`,blank)→Walk-in. `registered` = POS counter sales, treated as Returning per the business owner.
+Applies to both `/api/customers` (`get_customers` `seg` CTE) and `/api/customer-type-spend` (`get_customer_type_spend`). They must stay consistent.
 
-**Why:** `customer_id` is **not unified across channels** — Shopify (online) and Odoo POS use different id namespaces, and POS till sales mint a fresh numeric id almost every transaction with no profile in `all_customers`. So a first_purchase recompute makes every repeat POS shopper look "new" (it inflated New to ~75% of a week and undercounted total customers vs actual order volume). The stored `customer_type` already carries the correct upstream classification.
+**Why the flip (was: trust stored `customer_type`):** The stored column **cannot express new-vs-returning for POS** — Kenya (and most retail POS) tags *every* counter sale `'registered'` and never `'new'`. So a `customer_type='new'` filter made "New" structurally **0** for Kenya and dumped 100% of identified shoppers into Returning, even when ~1,748 of 2,415 in a week were genuine first-time buyers. The user flagged this twice as wrong.
 
-**How to apply:** Any New/Returning/Walk-in customer breakdown should trust `customer_type`. Counting `COUNT(DISTINCT order_id)` (orders) is the reliable volume — distinct `customer_id` is unreliable for POS. Both `/api/customer-type-spend` AND the Customers-page headline `/api/customers` (`get_customers`) now derive New/Returning/Total from `customer_type` this way; `/api/customers` keeps `repeat_customers` as a literal 0 (returning already folds in `registered`), excludes the Walk-in segment from the identified `total_customers` (= New + Returning; walk-ins still come from `/api/customers/walk-ins`), and keeps avg-spend/churn/incomplete-profile on the old identified-`customer_id` grain. The headline response keys are unchanged so `Customers.jsx` needs no edit.
+The old fear was that recompute inflates New because POS mints a fresh id per transaction. **That is not true of current `registered` data:** `registered` `customer_id`s are stable at ~2.5 orders/id, and the recompute on the Kenya week gave New=1,748 < total=2,415 (i.e. 667 had a prior purchase) — exactly matching the additive `first_time_registered` metric. Stable ids ⇒ recompute is reliable. (Residual cross-channel non-unification — same person with an online id and a separate POS id — only causes minor, acceptable over-count of New, far better than a hard 0.)
+
+**How to apply:**
+- New = `first_purchase_date BETWEEN date_from AND date_to`; Returning = `first_purchase_date < date_from`; Total = New + Returning (DISTINCT `order_id` counts).
+- In `get_customers`, the `first_purchase` CTE must be defined **before** `seg` (Postgres CTEs can't forward-reference). `seg` JOINs `first_purchase`; `repeat_customers` stays a literal 0; walk-ins still come from `/api/customers/walk-ins`; avg-spend/churn/incomplete-profile stay on the identified-`customer_id` grain.
+- Response keys are unchanged, so `Customers.jsx` needs no edit (label "customers with ≥2 orders" is loose copy, not a literal contract).
+- If you ever see "New = 0 / Returning = 100%" again, this recompute regressed back to a `customer_type='new'` filter.
