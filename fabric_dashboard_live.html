@@ -684,7 +684,7 @@ const REG_FX={
   team_reserved_metres:'Reserved (m) = buying-team reservations (open), in metres.',
   team_reserved_kg:'Reserved (kg) = buying-team reservations (open), in kg.',
   value_kes:'Value = on-hand kg × standard cost (KES).',
-  weeks_cover:'Wks cover = on-hand kg ÷ weekly consumption (last-30-day net consumption ÷ ~4.35 weeks).',
+  weeks_cover:'Weekly Covers = on-hand kg ÷ weekly run-rate, aligned with the Fabric mix page: warehouse-wide net consumption over the last 90 days (effective moves) converted to a weekly rate. Reconciles with the mix page (monthly covers × ~4.35 ≈ weeks).',
   last_move:'Last move = date of the most recent stock movement (Odoo).',
   days_since_move:'Days idle = today − date of the last stock movement.',
 };
@@ -1235,18 +1235,18 @@ const REG_COLS=[
   {k:'team_reserved_metres',label:'Reserved (m)',type:'rsv'},
   {k:'team_reserved_kg',label:'Reserved (kg)',type:'rsv'},
   {k:'value_kes',label:'Value',type:'kes'},
-  {k:'weeks_cover',label:'Wks cover',type:'wcover'},
+  {k:'weeks_cover',label:'Weekly Covers',type:'wcover'},
   {k:'last_move',label:'Last move',type:'date'},
   {k:'days_since_move',label:'Days idle',type:'num'},
 ];
-const REG_DEFAULT=['default_code','name','fabric_category','fabric_subcategory','cost_per_kg','cost_metre','available_metres','available_kg','color'];
+const REG_DEFAULT=['default_code','name','fabric_category','fabric_subcategory','cost_per_kg','cost_metre','available_metres','available_kg','color','weeks_cover'];
 // Fields shown in the per-fabric barcode detail view (everything not in the
-// default 9 columns above), in display order.
-const DETAIL_KEYS=['fiber_content','plain_print','fabric_structure','gsm','width_m','kg_per_mtr','supplier','fabric_color','cost_kes','qty_metres','qty_kg','team_reserved_metres','team_reserved_kg','value_kes','weeks_cover','last_move','days_since_move'];
+// default 10 columns above), in display order.
+const DETAIL_KEYS=['fiber_content','plain_print','fabric_structure','gsm','width_m','kg_per_mtr','supplier','fabric_color','cost_kes','qty_metres','qty_kg','team_reserved_metres','team_reserved_kg','value_kes','last_move','days_since_move'];
 const NUM_TYPES={num:1,num1:1,numb:1,kes:1,kesc:1,wcover:1,rsv:1};
-// Persisted-selection key is versioned (_v2): bumping it retires every user's
-// old saved column set so they pick up the new 9-column default once.
-const REG_COLS_KEY='fabricRegCols_v2';
+// Persisted-selection key is versioned (_v3): bumping it retires every user's
+// old saved column set so they pick up the new 10-column default once.
+const REG_COLS_KEY='fabricRegCols_v3';
 let regCols=(()=>{try{const s=JSON.parse(localStorage.getItem(REG_COLS_KEY));if(Array.isArray(s)&&s.length){const mapped=s.map(k=>k==='primary_color'?'fabric_color':k);return [...new Set(mapped)].filter(k=>REG_COLS.some(c=>c.k===k));}return REG_DEFAULT.slice();}catch(_){return REG_DEFAULT.slice();}})();
 let regSort={key:'value_kes',dir:'desc'};
 let regTimer;

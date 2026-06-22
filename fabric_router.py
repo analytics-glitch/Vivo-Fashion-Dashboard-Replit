@@ -370,14 +370,19 @@ def register(
             where.append("(p.name ILIKE %s OR p.default_code ILIKE %s OR p.barcode ILIKE %s)")
             params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
 
-        # Trailing-30-day net consumption per product → weekly run-rate → weeks of cover.
+        # Weekly cover aligned with the Fabric mix page: same location-scoped on-hand
+        # stock numerator, warehouse-wide net consumption through the effective-moves
+        # view, and the mix page's default 90-day window — just expressed in WEEKS.
+        # Weekly run-rate = (consumption / (90/DAYS_PER_MONTH)) / WEEKS_PER_MONTH, so a
+        # product's weeks_cover reconciles with its category's monthly_covers on the
+        # mix page (monthly_covers × WEEKS_PER_MONTH ≈ weeks_cover for the same scope).
         # `resv` = sum of OPEN (active) buying-team reservations, in kg, per fabric.
         rows = q(conn, f"""
-            WITH cons30 AS (
-              SELECT m.product_id, SUM({_net_kg('m')}) as consumed_30d_kg
+            WITH cons90 AS (
+              SELECT m.product_id, SUM({_net_kg('m')}) as consumed_90d_kg
               FROM {EFFECTIVE_MOVES} m
               WHERE {_net_cons_where('m')}
-                AND m.date >= NOW() - INTERVAL '30 days'
+                AND m.date >= NOW() - INTERVAL '90 days'
               GROUP BY m.product_id
             ), resv AS (
               SELECT product_id, SUM(qty_kg) as reserved_kg
@@ -401,14 +406,14 @@ def register(
               ROUND(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE NULL END::numeric,1) as qty_metres,
               ROUND(CASE WHEN p.kg_per_mtr>0 THEN i.available/p.kg_per_mtr ELSE NULL END::numeric,1) as available_metres,
               ROUND(i.total_value::numeric,0) as value_kes,
-              ROUND((i.quantity / NULLIF((COALESCE(c.consumed_30d_kg,0) / ({DAYS_PER_MONTH}/7.0)), 0))::numeric,1) as weeks_cover,
+              ROUND((i.quantity / NULLIF(((COALESCE(c.consumed_90d_kg,0) / (90/{DAYS_PER_MONTH})) / {WEEKS_PER_MONTH}), 0))::numeric,1) as weeks_cover,
               ROUND(COALESCE(rv.reserved_kg,0)::numeric,2) as team_reserved_kg,
               ROUND(CASE WHEN p.kg_per_mtr>0 THEN COALESCE(rv.reserved_kg,0)/p.kg_per_mtr ELSE NULL END::numeric,1) as team_reserved_metres,
               (SELECT MAX(date)::date FROM raw_fabric_moves m WHERE m.product_id=i.product_id) as last_move,
               CURRENT_DATE - (SELECT MAX(date)::date FROM raw_fabric_moves m WHERE m.product_id=i.product_id) as days_since_move
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            LEFT JOIN cons30 c ON c.product_id = i.product_id
+            LEFT JOIN cons90 c ON c.product_id = i.product_id
             LEFT JOIN resv rv ON rv.product_id = i.product_id
             WHERE {' AND '.join(where)}
             {order_by}
