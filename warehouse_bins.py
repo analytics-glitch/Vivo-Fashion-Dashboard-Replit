@@ -8,7 +8,7 @@ of the generic ``all_inventory.location_name``.
 
 Design notes:
   * Idempotent DDL — safe on the SEPARATE production DB on first boot.
-  * Lazy, best-effort refresh (NEVER raises) on a ~6h interval, triggered from the
+  * Lazy, best-effort refresh (NEVER raises) on a ~1h interval, triggered from the
     endpoints that read bins.
   * An empty / unset ``WAREHOUSE_BINS_SHEET_ID`` is a no-op: the table stays empty,
     the JOIN finds nothing, and callers fall back to their previous bin value, so
@@ -42,7 +42,7 @@ SHEET_ID = os.environ.get("WAREHOUSE_BINS_SHEET_ID", "").strip()
 # else auto-detect the first tab in the spreadsheet.
 SHEET_TAB = os.environ.get("WAREHOUSE_BINS_TAB", "").strip()
 SHEET_GID = os.environ.get("WAREHOUSE_BINS_GID", "").strip()
-REFRESH_INTERVAL_SEC = int(os.environ.get("WAREHOUSE_BINS_REFRESH_SEC", str(6 * 3600)))
+REFRESH_INTERVAL_SEC = int(os.environ.get("WAREHOUSE_BINS_REFRESH_SEC", str(3600)))
 
 _refresh_lock = threading.Lock()
 
