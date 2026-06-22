@@ -2902,14 +2902,14 @@ def get_inventory(
     where = " AND ".join(filters)
     return run_query("""
         SELECT i.country, i.pos_location_name AS location_name,
-            i.product_name, i.sku,
+            COALESCE(NULLIF(p.product_name, ''), i.product_name) AS product_name, i.sku,
             p.brand, p.product_type, p.style_name,
             p.color_print, p.size, p.barcode,
             SUM(i.available) AS available
         FROM all_inventory i
         LEFT JOIN all_products_clean p ON i.sku = p.sku
         WHERE """ + where + """
-        GROUP BY i.country, i.pos_location_name, i.product_name, i.sku,
+        GROUP BY i.country, i.pos_location_name, COALESCE(NULLIF(p.product_name, ''), i.product_name), i.sku,
                  p.brand, p.product_type, p.style_name, p.color_print, p.size, p.barcode
         ORDER BY available DESC
         LIMIT 100000
@@ -3660,7 +3660,7 @@ def get_orders(
         SELECT s.order_id, s.order_name, s.sale_date AS order_date,
             s.pos_location_name, s.country,
             s.customer_id, s.customer_type, s.sale_kind,
-            s.product_title, s.variant_sku AS sku,
+            COALESCE(NULLIF(p.product_name, ''), s.product_title) AS product_title, s.variant_sku AS sku,
             p.style_name, p.brand, p.collection,
             p.product_type AS subcategory, p.color_print AS color, p.size,
             s.ordered_item_quantity AS quantity,
@@ -5794,7 +5794,7 @@ def analytics_aged_stock(
         )
         SELECT i.pos_location_name AS pos_location,
             i.sku,
-            MAX(i.product_name) AS product_name,
+            COALESCE(NULLIF(MAX(p.product_name), ''), MAX(i.product_name)) AS product_name,
             MAX(p.size) AS size,
             MAX(p.barcode) AS barcode,
             MAX(i.color_print) AS color,
@@ -5882,7 +5882,7 @@ def analytics_warehouse_return_candidates(
         )
         SELECT i.pos_location_name AS pos_location,
             i.sku,
-            COALESCE(NULLIF(MAX(i.product_name), ''), MAX(p.style_name)) AS product_name,
+            COALESCE(NULLIF(MAX(p.product_name), ''), NULLIF(MAX(i.product_name), ''), MAX(p.style_name)) AS product_name,
             MAX(p.size) AS size,
             MAX(p.barcode) AS barcode,
             MAX(i.color_print) AS color,
@@ -8402,7 +8402,7 @@ def analytics_replenish_by_item(
                 or marks_all.get((st, "barcode", barcode)) or {})
         out.append({
             "pos_location": st, "sku": sku, "barcode": barcode,
-            "product_name": r.get("product_name") or r.get("pname") or "",
+            "product_name": r.get("pname") or r.get("product_name") or "",
             "size": r.get("size") or "", "bin": r.get("bin") or "",
             "color_print": r.get("color_print") or "", "print_plain": r.get("print_plain") or "",
             "country": r.get("country"),
@@ -8481,7 +8481,7 @@ def analytics_replenish_gaps(
                 WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
                 GROUP BY i.sku
             )
-            SELECT sold.pos_location, sold.sku, sold.product_name, sold.units_sold, sold.last_sale,
+            SELECT sold.pos_location, sold.sku, COALESCE(NULLIF(p.product_name, ''), sold.product_name) AS product_name, sold.units_sold, sold.last_sale,
                 COALESCE(ss.soh, 0) AS soh_store,
                 COALESCE(NULLIF(wb.bin, ''), '') AS bin,
                 COALESCE(w.soh_wh, 0) AS soh_wh,
@@ -8525,7 +8525,7 @@ def analytics_replenish_gaps(
                 WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
                 GROUP BY i.sku
             )
-            SELECT sold.sku, sold.product_name, sold.units_sold, sold.last_sale,
+            SELECT sold.sku, COALESCE(NULLIF(p.product_name, ''), sold.product_name) AS product_name, sold.units_sold, sold.last_sale,
                 COALESCE(ss.soh, 0) AS soh_store,
                 COALESCE(NULLIF(wb.bin, ''), '') AS bin,
                 COALESCE(w.soh_wh, 0) AS soh_wh,
@@ -8715,7 +8715,7 @@ def analytics_replenishment_report(
             GROUP BY i.sku
         )
         SELECT sold.pos_location_name AS pos_location, sold.country,
-            sold.product_name, sold.variant_sku AS sku, sold.units_sold, sold.last_sale,
+            COALESCE(NULLIF(p.product_name, ''), sold.product_name) AS product_name, sold.variant_sku AS sku, sold.units_sold, sold.last_sale,
             p.size AS size, p.barcode,
             COALESCE(p.color_print, '') AS color_print, COALESCE(p.print_plain, '') AS print_plain,
             COALESCE(ss.soh_store, 0) AS soh_store,
@@ -12016,7 +12016,7 @@ def replenishment_accuracy():
               AND actual_units > 0 AND acted_at IS NOT NULL
         )
         SELECT a.rec_key, a.store, a.actual_units, a.acted_at,
-            MAX(p.style_name) AS style_name, MAX(s.product_title) AS product_name,
+            MAX(p.style_name) AS style_name, COALESCE(NULLIF(MAX(p.product_name), ''), MAX(s.product_title)) AS product_name,
             COALESCE(SUM(s.net_quantity) FILTER (
                 WHERE s.sale_date::date BETWEEN a.acted_at::date
                   AND a.acted_at::date + 28), 0) AS sold_28d
@@ -12264,7 +12264,7 @@ def _replen_export_rows(country, channel):
             WHERE i.pos_location_name IN ({WAREHOUSE_LOCATIONS})
             GROUP BY 1
         )
-        SELECT sold.pos_location_name AS store, sold.country, sold.product_name,
+        SELECT sold.pos_location_name AS store, sold.country, COALESCE(NULLIF(p.product_name, ''), sold.product_name) AS product_name,
             sold.variant_sku AS sku, p.style_name, p.brand, p.size,
             sold.units_sold,
             COALESCE(ss.soh_store, 0) AS soh_store,
