@@ -507,6 +507,33 @@ def sync_intake(cur, orders, order_variants):
 
 
 # ----------------------------------------------------------------------
+def stamp_sync_heartbeat(cur, status, orders_synced):
+    """Record that a production-tracker sync just ran successfully.
+
+    Single-row table (id=1) holding the last successful run time, status, and
+    how many buying orders were synced. Written inside the same transaction as
+    the upserts so the stamp only lands when the data actually committed —
+    giving staff a trustworthy "last updated from Odoo" indicator on the board.
+    """
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS production_sync_heartbeat (
+            id            INT PRIMARY KEY DEFAULT 1,
+            last_run_at   TIMESTAMPTZ,
+            last_status   TEXT,
+            orders_synced INT,
+            CONSTRAINT production_sync_heartbeat_single CHECK (id = 1)
+        )
+    """)
+    cur.execute("""
+        INSERT INTO production_sync_heartbeat (id, last_run_at, last_status, orders_synced)
+        VALUES (1, now(), %s, %s)
+        ON CONFLICT (id) DO UPDATE
+            SET last_run_at   = now(),
+                last_status   = EXCLUDED.last_status,
+                orders_synced = EXCLUDED.orders_synced
+    """, (status, orders_synced))
+
+
 def main():
     uid, models = odoo_connect()
     bos = fetch_buying_orders(uid, models)
@@ -537,6 +564,7 @@ def main():
                 upsert_variants(cur, order_variants)
                 prune_variants(cur, variant_keep)
                 sync_intake(cur, orders_with_qty, order_variants)
+                stamp_sync_heartbeat(cur, "ok", len(orders))
         log.info("Done: %s buying orders synced", len(orders))
     finally:
         conn.close()

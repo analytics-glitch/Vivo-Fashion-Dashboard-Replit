@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { api } from "@/lib/api";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
 import ProductionOrderModal from "@/components/ProductionOrderModal";
-import { ArrowsClockwise, Factory, MagnifyingGlass, X } from "@phosphor-icons/react";
+import { ArrowsClockwise, Factory, MagnifyingGlass, X, CloudCheck, Warning } from "@phosphor-icons/react";
 
 /**
  * Production Tracker — a kanban board of every buying order's work-in-progress
@@ -36,9 +36,26 @@ function fmtDays(n) {
   return Number.isInteger(v) ? String(v) : v.toFixed(1);
 }
 
+function fmtNairobi(iso) {
+  if (!iso) return null;
+  try {
+    return new Date(iso).toLocaleString("en-GB", {
+      timeZone: "Africa/Nairobi",
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  } catch {
+    return null;
+  }
+}
+
 export default function Production() {
   const [stages, setStages] = useState([]);
   const [cards, setCards] = useState([]);
+  const [syncStatus, setSyncStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -49,12 +66,14 @@ export default function Production() {
     if (force) setRefreshing(true); else setLoading(true);
     setError(null);
     try {
-      const [stagesRes, boardRes] = await Promise.all([
+      const [stagesRes, boardRes, syncRes] = await Promise.all([
         api.get("/production/stages", force ? { forceFresh: true } : {}),
         api.get("/production/board", force ? { forceFresh: true } : {}),
+        api.get("/production/sync-status", { forceFresh: true }),
       ]);
       setStages(stagesRes.data?.stages || []);
       setCards(boardRes.data?.cards || []);
+      setSyncStatus(syncRes.data || null);
     } catch (err) {
       setError(err?.response?.data?.detail || err.message || "Failed to load the production board");
     } finally {
@@ -94,11 +113,36 @@ export default function Production() {
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
-        <SectionTitle
-          title="Production Tracker"
-          subtitle="Work-in-progress across the manufacturing stages — move quantities forward as orders progress."
-          testId="production-title"
-        />
+        <div className="min-w-0">
+          <SectionTitle
+            title="Production Tracker"
+            subtitle="Work-in-progress across the manufacturing stages — move quantities forward as orders progress."
+            testId="production-title"
+          />
+          {syncStatus && (
+            syncStatus.last_run_at ? (
+              <div
+                className={`mt-1 inline-flex items-center gap-1.5 text-[11.5px] font-medium ${
+                  syncStatus.stale ? "text-amber-700" : "text-muted"
+                }`}
+                data-testid="production-sync-status"
+                title={syncStatus.stale ? "The last Odoo sync is unusually old — it may have failed." : undefined}
+              >
+                {syncStatus.stale ? (
+                  <Warning size={13} weight="fill" className="text-amber-500" />
+                ) : (
+                  <CloudCheck size={13} className="text-emerald-500" />
+                )}
+                <span>Last updated from Odoo: {fmtNairobi(syncStatus.last_run_at)} EAT</span>
+                {syncStatus.stale && <span className="font-semibold">· may be out of date</span>}
+              </div>
+            ) : (
+              <div className="mt-1 text-[11.5px] text-muted" data-testid="production-sync-status">
+                Not yet synced from Odoo
+              </div>
+            )
+          )}
+        </div>
         <div className="flex items-center gap-2 flex-wrap">
           <div className="relative">
             <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />

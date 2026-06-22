@@ -17443,6 +17443,16 @@ def _ensure_production_tables():
     _users_exec("CREATE INDEX IF NOT EXISTS idx_stage_moves_order ON stage_movements(order_ref)")
     _users_exec("CREATE INDEX IF NOT EXISTS idx_stage_moves_to    ON stage_movements(to_stage)")
     _users_exec("CREATE INDEX IF NOT EXISTS idx_stage_moves_from  ON stage_movements(from_stage)")
+    # Single-row heartbeat stamped by sync_production_tracker.py on each
+    # successful Odoo sync, so the board can surface "last updated from Odoo".
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS production_sync_heartbeat (
+            id            INT PRIMARY KEY DEFAULT 1,
+            last_run_at   TIMESTAMPTZ,
+            last_status   TEXT,
+            orders_synced INT,
+            CONSTRAINT production_sync_heartbeat_single CHECK (id = 1)
+        )""")
     _users_exec("""
         CREATE OR REPLACE VIEW v_stage_balances AS
         WITH inbound AS (
@@ -17613,6 +17623,32 @@ def production_board():
         JOIN production_stages s  ON s.stage_key  = b.stage
         ORDER BY s.sort_order, b.days_since_last_in DESC""", fetch=True)
     return {"cards": rows}
+
+
+@app.get("/api/production/sync-status")
+def production_sync_status():
+    """When the production tracker last synced from Odoo.
+
+    Reflects the most recent SUCCESSFUL sync (stamped inside the sync's own
+    transaction), not just a page load. `stale` flags a sync older than 2 hours
+    so staff can spot a silently broken hourly sync. Returns null fields when no
+    sync has run yet (fresh DB)."""
+    rows = _users_exec("""
+        SELECT last_run_at, last_status, orders_synced,
+               EXTRACT(EPOCH FROM (now() - last_run_at)) AS age_seconds
+        FROM production_sync_heartbeat WHERE id = 1""", fetch=True)
+    if not rows or rows[0].get("last_run_at") is None:
+        return {"last_run_at": None, "last_status": None,
+                "orders_synced": None, "age_seconds": None, "stale": False}
+    r = rows[0]
+    age = float(r["age_seconds"]) if r["age_seconds"] is not None else None
+    return {
+        "last_run_at": r["last_run_at"].isoformat() if r["last_run_at"] else None,
+        "last_status": r["last_status"],
+        "orders_synced": r["orders_synced"],
+        "age_seconds": age,
+        "stale": age is not None and age > 7200,
+    }
 
 
 def _production_flow_stages():
