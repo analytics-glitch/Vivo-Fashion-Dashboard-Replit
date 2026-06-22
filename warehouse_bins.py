@@ -112,7 +112,9 @@ def _first_tab(sheet_id):
 
 def _parse_rows(values):
     """From a raw cell matrix, locate the barcode + bin columns by header name and
-    return a de-duplicated list of (barcode, bin) tuples (last value wins)."""
+    return a list of (barcode, bins) tuples. When a barcode appears in multiple rows
+    (or a single cell lists several bins), all DISTINCT bins are kept in first-seen
+    order and joined by ', ' so pickers see every location for that barcode."""
     if not values:
         return []
     header = [_norm_header(c) for c in values[0]]
@@ -134,9 +136,16 @@ def _parse_rows(values):
     for row in values[1:]:
         barcode = _norm_barcode(row[bc]) if len(row) > bc else ""
         binv = str(row[bn]).strip() if len(row) > bn else ""
-        if barcode:
-            out[barcode] = binv
-    return list(out.items())
+        if not barcode:
+            continue
+        bins = out.setdefault(barcode, [])
+        # A barcode may span several rows, and a single cell may itself list more
+        # than one bin (comma / semicolon / newline separated). Collect distinct.
+        for b in re.split(r"[,;\n]+", binv):
+            b = b.strip()
+            if b and b not in bins:
+                bins.append(b)
+    return [(barcode, ", ".join(bins)) for barcode, bins in out.items()]
 
 
 def _is_stale(conn):
