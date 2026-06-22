@@ -45,38 +45,49 @@ import {
  * gates both the nav and the Home tiles consistently.
  */
 export const PRIMARY_NAV = [
+  // Overview
   { to: "/overview", label: "Overview", icon: ChartPieSlice, id: "overview", group: "Performance", desc: "KPIs, sales trend and country, channel & brand mix" },
   { to: "/exec-summary", label: "Executive Summary", icon: Briefcase, id: "exec-summary", group: "Performance", desc: "One-screen executive snapshot of the business" },
-  { to: "/locations", label: "Locations", icon: MapPin, id: "locations", group: "Performance", desc: "Net sales, orders and active selling points by market" },
-  { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall", group: "Performance", desc: "Footfall, turn-in and conversion by store" },
   { to: "/trend-analysis", label: "Trend Analysis", icon: TrendUp, id: "trend-analysis", group: "Performance", desc: "Trend any KPI over time with per-KPI granularity and AI insight" },
-  { to: "/product-analysis", label: "Product Analysis", icon: ChartBar, id: "product-analysis", group: "Performance", desc: "Canonical style-level sales & stock cockpit with size/colour drill-down" },
-  { to: "/range-mgmt", label: "Range Mgmt", icon: Stack, id: "range-mgmt", group: "Products & Range", desc: "Range classification and assortment planning" },
-  { to: "/fabric", label: "Fabric", icon: ChartBar, id: "fabric", external: true, group: "Inventory & Replenishment", desc: "Standalone Fabric BI dashboard (opens full-page)" },
-  { to: "/customers", label: "Customers", icon: Users, id: "customers", group: "Customers & Marketing", desc: "New vs repeat customers, spend and churn" },
-  { to: "/customer-details", label: "Customer Details", icon: Users, id: "customer-details", group: "Customers & Marketing", desc: "Look up a single customer's purchase history" },
-  { to: "/marketing", label: "Marketing", icon: Megaphone, id: "marketing", group: "Customers & Marketing", desc: "Campaign and channel marketing performance" },
-  { to: "/rfm", label: "RFM Segments", icon: UsersThree, id: "rfm", group: "Customers & Marketing", desc: "Recency / frequency / monetary customer segments" },
-  { to: "/crm", label: "CRM", icon: AddressBook, id: "crm", group: "Customers & Marketing", desc: "Contacts, tasks, tickets, campaigns, loyalty and Facebook Page management" },
+
+  // Product pages
+  { to: "/product-analysis", label: "Product Analysis", icon: ChartBar, id: "product-analysis", group: "Products & Range", desc: "Canonical style-level sales & stock cockpit with size/colour drill-down" },
   { to: "/products", label: "Products", icon: Tag, id: "products", group: "Products & Range", desc: "Style and subcategory performance" },
+  { to: "/range-mgmt", label: "Range Mgmt", icon: Stack, id: "range-mgmt", group: "Products & Range", desc: "Range classification and assortment planning" },
   { to: "/margin", label: "Margin & Markdown", icon: Percent, id: "margin", group: "Products & Range", desc: "Discount impact on gross margin, COGS and margin %" },
   { to: "/markdown-clearance", label: "Markdown & Clearance", icon: Percent, id: "markdown-clearance", group: "Products & Range", desc: "Markdown candidates and clearance plan" },
+  { to: "/velocity", label: "Velocity", icon: Gauge, id: "velocity", group: "Products & Range", desc: "Sell-through rate of sale and weeks of cover by style" },
+  { to: "/size-health", label: "Size Health", icon: Ruler, id: "size-health", group: "Products & Range", desc: "Broken size-curve detection by style" },
+  { to: "/production", label: "Production Tracker", icon: Factory, id: "production", group: "Products & Range", desc: "Kanban board tracking buying orders through the manufacturing stages" },
+  { to: "/fabric", label: "Fabric", icon: ChartBar, id: "fabric", external: true, group: "Products & Range", desc: "Standalone Fabric BI dashboard (opens full-page)" },
+
+  // Retail pages
+  { to: "/locations", label: "Locations", icon: MapPin, id: "locations", group: "Retail", desc: "Net sales, orders and active selling points by market" },
+  { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall", group: "Retail", desc: "Footfall, turn-in and conversion by store" },
+  { to: "/targets", label: "Targets", icon: Target, id: "targets", group: "Retail", desc: "Track sales against targets" },
+
+  // Customer pages & marketing
+  { to: "/customers", label: "Customers", icon: Users, id: "customers", group: "Customers & Marketing", desc: "New vs repeat customers, spend and churn" },
+  { to: "/customer-details", label: "Customer Details", icon: Users, id: "customer-details", group: "Customers & Marketing", desc: "Look up a single customer's purchase history" },
+  { to: "/rfm", label: "RFM Segments", icon: UsersThree, id: "rfm", group: "Customers & Marketing", desc: "Recency / frequency / monetary customer segments" },
+  { to: "/crm", label: "CRM", icon: AddressBook, id: "crm", group: "Customers & Marketing", desc: "Contacts, tasks, tickets, campaigns, loyalty and Facebook Page management" },
+  { to: "/marketing", label: "Marketing", icon: Megaphone, id: "marketing", group: "Customers & Marketing", desc: "Campaign and channel marketing performance" },
+
+  // Warehouse operations & transfers
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory", group: "Inventory & Replenishment", desc: "Stock on hand, availability and cover by location" },
-  { to: "/velocity", label: "Velocity", icon: Gauge, id: "velocity", group: "Inventory & Replenishment", desc: "Sell-through rate of sale and weeks of cover by style" },
-  { to: "/size-health", label: "Size Health", icon: Ruler, id: "size-health", group: "Inventory & Replenishment", desc: "Broken size-curve detection by style" },
-  { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order", group: "Inventory & Replenishment", desc: "Styles to re-order based on demand" },
   { to: "/warehouse-returns", label: "Warehouse Returns", icon: Warehouse, id: "warehouse-returns", group: "Inventory & Replenishment", desc: "Pull aged / retired store stock back to the warehouse" },
   { to: "/ibt", label: "IBT", icon: Truck, id: "ibt", group: "Inventory & Replenishment", desc: "Inter-branch transfer recommendations" },
-  { to: "/production", label: "Production Tracker", icon: Factory, id: "production", group: "Products & Range", desc: "Kanban board tracking buying orders through the manufacturing stages" },
   { to: "/allocations", label: "Allocations", icon: Stack, id: "allocations", group: "Inventory & Replenishment", desc: "Allocate incoming stock across stores" },
   { to: "/replenishments", label: "Replenishments", icon: ArrowsClockwise, id: "replenishments", group: "Inventory & Replenishment", desc: "Replenishment suggestions with last-sold dates" },
   { to: "/replenish-by-item", label: "Replenish by Style/SKU", icon: Package, id: "replenish-by-item", group: "Inventory & Replenishment", desc: "Find understocked stores for a style/SKU, or a store's proven demand gaps" },
-  { to: "/hr/", label: "HR & Attendance", icon: UsersThree, id: "hr", external: true, group: "Planning & Quality", desc: "Staff attendance, department performance and training (opens the HR dashboard)" },
-  { to: "/targets", label: "Targets", icon: Target, id: "targets", group: "Planning & Quality", desc: "Track sales against targets" },
-  { to: "/data-quality", label: "Data Quality", icon: Warning, id: "data-quality", group: "Planning & Quality", desc: "Data completeness and quality checks" },
+  { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order", group: "Inventory & Replenishment", desc: "Styles to re-order based on demand" },
+
+  // Catalogues & others
   { to: "/catalogue", label: "Report Catalogue", icon: BookOpen, id: "catalogue", group: "Tools", desc: "Every report, what page it lives on, and all the calculation & business rules — with an AI finder" },
   { to: "/custom-report", label: "Custom Report", icon: Table, id: "custom-report", group: "Tools", desc: "Build your own breakdown by dimensions & measures, export CSV" },
   { to: "/exports", label: "Exports (Sales, Inventory)", icon: DownloadSimple, id: "exports", group: "Tools", desc: "Download sales and inventory data as CSV" },
+  { to: "/hr/", label: "HR & Attendance", icon: UsersThree, id: "hr", external: true, group: "Tools", desc: "Staff attendance, department performance and training (opens the HR dashboard)" },
+  { to: "/data-quality", label: "Data Quality", icon: Warning, id: "data-quality", group: "Tools", desc: "Data completeness and quality checks" },
   { to: "/feedback", label: "Feedback", icon: ChatCircleDots, id: "feedback", group: "Tools", desc: "Send feedback to the BI team" },
 ];
 
@@ -91,10 +102,10 @@ export const ADMIN_NAV = [
 // Group display order for the Home landing page.
 export const HOME_GROUP_ORDER = [
   "Performance",
-  "Customers & Marketing",
   "Products & Range",
+  "Retail",
+  "Customers & Marketing",
   "Inventory & Replenishment",
-  "Planning & Quality",
   "Tools",
   "Administration",
 ];
