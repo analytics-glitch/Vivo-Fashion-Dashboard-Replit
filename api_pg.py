@@ -3178,11 +3178,6 @@ def get_customers(
             AND """ + BASE_FILTERS + " " + country_filter + " " + channel_filter + """
             GROUP BY s.customer_id
         ),
-        all_time AS (
-            SELECT customer_id, MIN(sale_date) AS first_ever_purchase
-            FROM all_sales WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
-            GROUP BY customer_id
-        ),
         churned AS (
             -- Churn (doc 03.6.2): a customer is churned if they have not
             -- transacted in the last 90 days. The rate denominator is the
@@ -3201,27 +3196,53 @@ def get_customers(
                 GROUP BY customer_id
                 HAVING MIN(sale_date::date) < CURRENT_DATE - INTERVAL '90 days'
             ) t
+        ),
+        seg AS (
+            -- New vs Returning from the stored customer_type column (NOT a
+            -- first-purchase recompute). customer_id is not unified across
+            -- channels (Shopify online vs Odoo POS use different id formats) and
+            -- POS counter sales mint a fresh id per transaction, so recomputing
+            -- made every repeat POS shopper look "new" and undercounted the
+            -- period. 'registered' (POS counter sales) is treated as Returning;
+            -- anything not New/Returning/registered (walk-in, Guest, blank) is a
+            -- walk-in and is excluded from the identified New+Returning total
+            -- (walk-ins are surfaced separately by /api/customers/walk-ins).
+            -- Counts are DISTINCT order_id, matching /api/customer-type-spend.
+            SELECT
+                COUNT(DISTINCT s.order_id) FILTER (WHERE LOWER(s.customer_type) = 'new') AS new_c,
+                COUNT(DISTINCT s.order_id) FILTER (WHERE LOWER(s.customer_type) IN ('returning','registered')) AS ret_c,
+                COUNT(DISTINCT s.order_id) FILTER (WHERE LOWER(s.customer_type) IN ('new','returning','registered')) AS total_c
+            FROM all_sales s
+            WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+            AND s.sale_kind = 'order'
+            """ + country_filter + " " + channel_filter + """
+        ),
+        pc_agg AS (
+            -- Identified-customer aggregates (avg spend, profile completeness)
+            -- still keyed on customer_id over the cleaned period_customers set.
+            -- Always returns exactly one row (aggregate, no GROUP BY).
+            SELECT
+                COUNT(DISTINCT CASE WHEN (cp.customer_id IS NULL
+                    OR cp.prof_name IS NULL OR cp.prof_phone IS NULL OR cp.prof_email IS NULL)
+                    THEN p.customer_id END) AS incomplete_profile_customers,
+                ROUND(AVG(p.total_spend), 0) AS avg_customer_spend,
+                ROUND(AVG(p.order_count), 2) AS avg_orders_per_customer
+            FROM period_customers p
+            LEFT JOIN cust_profile cp ON p.customer_id = cp.customer_id
         )
         SELECT
-            COUNT(DISTINCT p.customer_id) AS total_customers,
-            COUNT(DISTINCT CASE WHEN p.order_count = 1
-                AND a.first_ever_purchase BETWEEN '""" + date_from + """' AND '""" + date_to + """'
-                THEN p.customer_id END) AS new_customers,
-            COUNT(DISTINCT CASE WHEN p.order_count > 1 THEN p.customer_id END) AS repeat_customers,
-            COUNT(DISTINCT CASE WHEN p.order_count = 1
-                AND a.first_ever_purchase < '""" + date_from + """'
-                THEN p.customer_id END) AS returning_customers,
-            MAX(c.churned_count) AS churned_customers,
-            COUNT(DISTINCT CASE WHEN (cp.customer_id IS NULL
-                OR cp.prof_name IS NULL OR cp.prof_phone IS NULL OR cp.prof_email IS NULL)
-                THEN p.customer_id END) AS incomplete_profile_customers,
-            ROUND(AVG(p.total_spend), 0) AS avg_customer_spend,
-            ROUND(AVG(p.order_count), 2) AS avg_orders_per_customer,
-            ROUND(MAX(c.churned_count) * 100.0 / NULLIF(MAX(c.eligible_base), 0), 2) AS churn_rate
-        FROM period_customers p
-        LEFT JOIN all_time a ON p.customer_id = a.customer_id
-        LEFT JOIN cust_profile cp ON p.customer_id = cp.customer_id
+            sg.total_c AS total_customers,
+            sg.new_c AS new_customers,
+            0 AS repeat_customers,
+            sg.ret_c AS returning_customers,
+            c.churned_count AS churned_customers,
+            pa.incomplete_profile_customers AS incomplete_profile_customers,
+            pa.avg_customer_spend AS avg_customer_spend,
+            pa.avg_orders_per_customer AS avg_orders_per_customer,
+            ROUND(c.churned_count * 100.0 / NULLIF(c.eligible_base, 0), 2) AS churn_rate
+        FROM seg sg
         CROSS JOIN churned c
+        CROSS JOIN pc_agg pa
     """, date_to=date_to)
     return rows[0] if rows else {}
 
