@@ -3651,32 +3651,31 @@ def get_customer_type_spend(
     country:   str = Query(default=None),
 ):
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    # New vs Returning is taken from the customer_type already stored on each
+    # all_sales row, NOT recomputed from a first_purchase CTE. Recomputing
+    # undercounts because customer_id is not unified across channels (Shopify vs
+    # Odoo POS use different id formats), so a returning POS shopper looks new.
+    # The stored values are: New / Returning / registered / walk-in / Guest.
+    # 'registered' (POS counter sales) is treated as Returning; anything that is
+    # not New/Returning/registered (walk-in, Guest, blank) is a Walk-in.
+    # customers == orders here (each distinct order_id is counted), so
+    # spend_per_customer and avg_basket_value coincide.
     return run_query("""
-        WITH first_purchase AS (
-            SELECT customer_id, MIN(sale_date) AS first_purchase_date
-            FROM all_sales WHERE sale_kind = 'order' AND customer_id IS NOT NULL
-            GROUP BY customer_id
-        ),
-        window_sales AS (
-            SELECT s.customer_id,
-                COUNT(DISTINCT s.order_id) AS orders,
-                SUM(s.total_sales_kes::numeric) AS total_sales
-            FROM all_sales s
-            WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
-            AND s.sale_kind = 'order' AND s.customer_id IS NOT NULL
-            """ + country_filter + """
-            GROUP BY s.customer_id
-        )
         SELECT
-            CASE WHEN f.first_purchase_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
-                THEN 'New' ELSE 'Returning' END AS customer_segment,
-            COUNT(DISTINCT w.customer_id) AS customers,
-            SUM(w.orders) AS orders,
-            ROUND(SUM(w.total_sales), 0) AS total_sales,
-            ROUND(SUM(w.total_sales) / NULLIF(COUNT(DISTINCT w.customer_id), 0), 0) AS spend_per_customer,
-            ROUND(SUM(w.total_sales) / NULLIF(SUM(w.orders), 0), 0) AS avg_basket_value
-        FROM window_sales w
-        JOIN first_purchase f ON w.customer_id = f.customer_id
+            CASE
+                WHEN LOWER(s.customer_type) IN ('new') THEN 'New'
+                WHEN LOWER(s.customer_type) IN ('returning', 'registered') THEN 'Returning'
+                ELSE 'Walk-in'
+            END AS customer_segment,
+            COUNT(DISTINCT s.order_id) AS customers,
+            COUNT(DISTINCT s.order_id) AS orders,
+            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
+            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS spend_per_customer,
+            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_basket_value
+        FROM all_sales s
+        WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+        AND s.sale_kind = 'order'
+        """ + country_filter + """
         GROUP BY customer_segment
         ORDER BY customer_segment
     """, date_to=date_to)
