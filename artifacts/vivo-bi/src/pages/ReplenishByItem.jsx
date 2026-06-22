@@ -15,6 +15,17 @@ const ALL_STORES = "__all__";
 // Online channel that participates in cross-store replenishment (others excluded).
 const ONLINE_SHOP_ZETU = "Online - Shop Zetu";
 
+// Combine colour + print into a single deduped "Colour / Print" display value.
+const fmtColourPrint = (r) => {
+  const seen = new Set();
+  const out = [];
+  for (const v of [r?.color_print, r?.print_plain]) {
+    const s = (v || "").trim();
+    if (s && !seen.has(s.toLowerCase())) { seen.add(s.toLowerCase()); out.push(s); }
+  }
+  return out.join(" · ");
+};
+
 const _isAdminOrOwner = (user) => {
   if (!user) return false;
   const r = (user.role || "").toLowerCase();
@@ -159,6 +170,7 @@ const ReplenTable = ({ rows, sort, toggleSort, actuals, setActual, refs, setRef,
           <SortableTh sortKey="size" sort={sort} onSort={toggleSort} className="px-3 py-2">Size</SortableTh>
           <SortableTh sortKey="barcode" sort={sort} onSort={toggleSort} className="px-3 py-2">Barcode</SortableTh>
           <SortableTh sortKey="bin" sort={sort} onSort={toggleSort} className="px-3 py-2">Bin</SortableTh>
+          <SortableTh sortKey="color_print" sort={sort} onSort={toggleSort} className="px-3 py-2">Colour / Print</SortableTh>
           <SortableTh sortKey="units_sold" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Sold</SortableTh>
           <SortableTh sortKey="soh_store" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">SOH Store</SortableTh>
           <SortableTh sortKey="soh_wh" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">SOH WH</SortableTh>
@@ -195,6 +207,9 @@ const ReplenTable = ({ rows, sort, toggleSort, actuals, setActual, refs, setRef,
                 {r.bin
                   ? <span className="inline-flex items-center bg-amber-100 text-amber-900 text-[10.5px] font-bold px-1.5 py-0.5 rounded">{r.bin}</span>
                   : <span className="text-muted-foreground text-[11px]">—</span>}
+              </td>
+              <td className="px-3 py-2 whitespace-nowrap">
+                {fmtColourPrint(r) || <span className="text-muted-foreground text-[11px]">—</span>}
               </td>
               <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.units_sold)}</td>
               <td className={`px-3 py-2 text-right tabular-nums ${r.soh_store === 0 ? "text-rose-700 font-bold" : ""}`}>{fmtNum(r.soh_store)}</td>
@@ -344,7 +359,7 @@ const ReplenishByItem = () => {
 
   // ---- Store Gaps state ----
   const [stores, setStores] = useState([]);
-  const [store, setStore] = useState("");
+  const [store, setStore] = useState(ALL_STORES);
   const [gapData, setGapData] = useState(null);
   const [gapLoading, setGapLoading] = useState(false);
   const [gapError, setGapError] = useState(null);

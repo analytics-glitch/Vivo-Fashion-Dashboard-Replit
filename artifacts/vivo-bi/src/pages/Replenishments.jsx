@@ -48,6 +48,17 @@ const _isAdminOrOwner = (user) => {
   return r === "admin" || r === "owner";
 };
 
+// Combine colour + print into a single deduped "Colour / Print" display value.
+const fmtColourPrint = (r) => {
+  const seen = new Set();
+  const out = [];
+  for (const v of [r?.color_print, r?.print_plain]) {
+    const s = (v || "").trim();
+    if (s && !seen.has(s.toLowerCase())) { seen.add(s.toLowerCase()); out.push(s); }
+  }
+  return out.join(" · ");
+};
+
 const PRIO_RANK = { critical: 0, high: 1, medium: 2 };
 
 const Replenishments = () => {
@@ -103,6 +114,7 @@ const Replenishments = () => {
   const [savingKey, setSavingKey] = useState(null);
   // Search across all visible columns.
   const [search, setSearch] = useState("");
+  const [ownerFilter, setOwnerFilter] = useState("");
 
   // Completed report.
   const [completed, setCompleted] = useState({ rows: [], total: 0 });
@@ -236,6 +248,7 @@ const Replenishments = () => {
     const q = search.trim().toLowerCase();
     return (data.rows || [])
       .filter((r) => !r.replenished)
+      .filter((r) => !ownerFilter || (r.owner || "") === ownerFilter)
       .filter((r) => {
         if (!q) return true;
         return (
@@ -246,9 +259,27 @@ const Replenishments = () => {
           || (r.barcode || "").toLowerCase().includes(q)
           || (r.sku || "").toLowerCase().includes(q)
           || (r.bin || "").toLowerCase().includes(q)
+          || fmtColourPrint(r).toLowerCase().includes(q)
         );
       });
-  }, [data.rows, search]);
+  }, [data.rows, search, ownerFilter]);
+
+  // Distinct owners present in the open list — drives the owner filter dropdown.
+  // Recomputes after a roster redistribution (data.rows is re-fetched), so the
+  // options always reflect the current assignment.
+  const ownerOptions = useMemo(() => {
+    const set = new Set();
+    for (const r of (data.rows || [])) {
+      if (!r.replenished && r.owner) set.add(r.owner);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [data.rows]);
+
+  // Drop a stale owner selection if that owner no longer has open lines
+  // (e.g. after redistribution reassigns everything away from them).
+  useEffect(() => {
+    if (ownerFilter && !ownerOptions.includes(ownerFilter)) setOwnerFilter("");
+  }, [ownerOptions, ownerFilter]);
 
   // Iter 89 — Sortable view of visibleRows. Default ordering is the
   // server-side picker assignment (owner / pos / bin) so the natural
@@ -262,6 +293,7 @@ const Replenishments = () => {
       size: (r) => r.size || "",
       barcode: (r) => r.barcode || "",
       bin: (r) => r.bin || "",
+      colour_print: (r) => fmtColourPrint(r),
       units_sold: (r) => Number(r.units_sold ?? 0),
       soh_store: (r) => Number(r.soh_store ?? 0),
       soh_wh: (r) => Number(r.soh_wh ?? 0),
@@ -516,8 +548,8 @@ const Replenishments = () => {
     doc.text(`${rows.length} lines · ${totUnits} units`, margin, 66);
 
     // Hand-rolled table (avoids the jspdf-autotable runtime dep).
-    const headers = ["POS", "Days", "Product", "Size", "Barcode", "Bin", "Sold", "Store", "WH", "Need", "Actual"];
-    const colWidths = [110, 32, 200, 40, 70, 56, 38, 38, 38, 38, 50];
+    const headers = ["POS", "Days", "Product", "Colour / Print", "Size", "Barcode", "Bin", "Sold", "Store", "WH", "Need", "Actual"];
+    const colWidths = [104, 30, 168, 86, 36, 66, 50, 34, 36, 34, 38, 46];
     const startX = margin;
     let y = 88;
 
@@ -559,6 +591,7 @@ const Replenishments = () => {
         r.pos_location || "",
         r.days_lapsed != null ? `${r.days_lapsed}d` : "—",
         r.product_name || "",
+        fmtColourPrint(r),
         r.size || "",
         r.barcode || "",
         r.bin || "",
@@ -782,16 +815,39 @@ const Replenishments = () => {
 
         {/* B2 — list view: search, bulk bar, and the SKU pick-list table. */}
         {viewMode === "list" && (<>
-        {/* Search */}
-        <div className="flex items-center gap-2 input-pill mb-3" style={{ maxWidth: 360 }}>
-          <MagnifyingGlass size={14} className="text-muted" />
-          <input
-            placeholder="Search owner / store / SKU / barcode…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            data-testid="replen-search"
-            className="bg-transparent outline-none text-[13px] w-full"
-          />
+        {/* Search + owner filter */}
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <div className="flex items-center gap-2 input-pill" style={{ maxWidth: 360, flex: "1 1 240px" }}>
+            <MagnifyingGlass size={14} className="text-muted" />
+            <input
+              placeholder="Search owner / store / SKU / barcode…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              data-testid="replen-search"
+              className="bg-transparent outline-none text-[13px] w-full"
+            />
+          </div>
+          {ownerOptions.length > 0 && (
+            <select
+              value={ownerFilter}
+              onChange={(e) => setOwnerFilter(e.target.value)}
+              data-testid="replen-owner-filter"
+              title="Filter the pick-list by assigned owner"
+              className="input-pill text-[13px] py-1.5 px-3"
+            >
+              <option value="">All owners</option>
+              {ownerOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          )}
+          {ownerFilter && (
+            <button
+              type="button"
+              onClick={() => setOwnerFilter("")}
+              className="text-[11.5px] font-semibold text-muted hover:text-foreground"
+            >
+              Clear owner
+            </button>
+          )}
         </div>
 
         {/* B2 — bulk action bar (appears once lines are selected). */}
@@ -850,6 +906,7 @@ const Replenishments = () => {
                     <SortableTh sortKey="size" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Size</SortableTh>
                     <SortableTh sortKey="barcode" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Barcode</SortableTh>
                     <SortableTh sortKey="bin" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Bin</SortableTh>
+                    <SortableTh sortKey="colour_print" sort={liveSort.sort} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Colour / Print</SortableTh>
                     <SortableTh sortKey="units_sold" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Sold</SortableTh>
                     <SortableTh sortKey="soh_store" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">SOH Store</SortableTh>
                     <SortableTh sortKey="soh_wh" sort={liveSort.sort} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">SOH WH</SortableTh>
@@ -930,6 +987,9 @@ const Replenishments = () => {
                             ? <span className="inline-flex items-center bg-amber-100 text-amber-900 text-[10.5px] font-bold px-1.5 py-0.5 rounded">{r.bin}</span>
                             : <span className="text-muted text-[11px]">—</span>}
                         </td>
+                        <td className="px-3 py-3 whitespace-nowrap">
+                          {fmtColourPrint(r) || <span className="text-muted text-[11px]">—</span>}
+                        </td>
                         <td className="px-3 py-3 text-right tabular-nums">{fmtNum(r.units_sold)}</td>
                         <td className={`px-3 py-3 text-right tabular-nums ${r.soh_store === 0 ? "text-rose-700 font-bold" : ""}`}>
                           {fmtNum(r.soh_store)}
@@ -989,7 +1049,7 @@ const Replenishments = () => {
                       </tr>
                       {isOpen && hasBreakdown && (
                         <tr className="bg-emerald-50/40 border-t border-border/40" data-testid={`replen-size-row-${idx}`}>
-                          <td colSpan={15} className="px-4 py-2.5">
+                          <td colSpan={16} className="px-4 py-2.5">
                             <div className="flex flex-wrap items-center gap-1.5">
                               <span className="text-[11px] font-semibold text-muted mr-1">Size mix:</span>
                               {r.size_breakdown.map((s, si) => (

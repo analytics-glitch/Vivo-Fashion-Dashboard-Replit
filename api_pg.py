@@ -7997,6 +7997,7 @@ def analytics_replenish_by_item(
             COALESCE(NULLIF(wb.bin, ''), ss.bin, '') AS bin,
             COALESCE(w.soh_wh, 0) AS soh_wh,
             COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode,
+            COALESCE(p.color_print, '') AS color_print, COALESCE(p.print_plain, '') AS print_plain,
             p.product_name AS pname
         FROM sold
         FULL OUTER JOIN store_soh ss
@@ -8041,6 +8042,7 @@ def analytics_replenish_by_item(
             "pos_location": st, "sku": sku, "barcode": barcode,
             "product_name": r.get("product_name") or r.get("pname") or "",
             "size": r.get("size") or "", "bin": r.get("bin") or "",
+            "color_print": r.get("color_print") or "", "print_plain": r.get("print_plain") or "",
             "country": r.get("country"),
             "units_sold": units, "soh_store": soh, "soh_wh": soh_wh,
             "suggested_units": min(max(thr - soh, 0), soh_wh),
@@ -8116,7 +8118,8 @@ def analytics_replenish_gaps(
                 COALESCE(NULLIF(wb.bin, ''), ss.bin, '') AS bin,
                 COALESCE(w.soh_wh, 0) AS soh_wh,
                 COALESCE(p.style_name, '') AS style_name,
-                COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode
+                COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode,
+                COALESCE(p.color_print, '') AS color_print, COALESCE(p.print_plain, '') AS print_plain
             FROM sold
             LEFT JOIN store_soh ss ON ss.pos_location_name = sold.pos_location AND ss.sku = sold.sku
             LEFT JOIN wh_soh w ON w.sku = sold.sku
@@ -8159,7 +8162,8 @@ def analytics_replenish_gaps(
                 COALESCE(NULLIF(wb.bin, ''), ss.bin, '') AS bin,
                 COALESCE(w.soh_wh, 0) AS soh_wh,
                 COALESCE(p.style_name, '') AS style_name,
-                COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode
+                COALESCE(p.size, '') AS size, COALESCE(p.barcode, '') AS barcode,
+                COALESCE(p.color_print, '') AS color_print, COALESCE(p.print_plain, '') AS print_plain
             FROM sold
             LEFT JOIN store_soh ss ON ss.sku = sold.sku
             LEFT JOIN wh_soh w ON w.sku = sold.sku
@@ -8192,6 +8196,7 @@ def analytics_replenish_gaps(
             "product_name": r.get("product_name") or "",
             "style_name": r.get("style_name") or "", "size": r.get("size") or "",
             "bin": r.get("bin") or "",
+            "color_print": r.get("color_print") or "", "print_plain": r.get("print_plain") or "",
             "units_sold": int(r["units_sold"] or 0), "soh_store": soh,
             "soh_wh": soh_wh,
             "suggested_units": min(max(thr - soh, 0), soh_wh),
@@ -8207,9 +8212,21 @@ def analytics_replenish_gaps(
 
 # Shared XLSX column set for the Replenish by Style / SKU exports — mirrors the
 # ReplenTable columns shown in the UI for both the By Item and Store Gaps views.
+def _replen_colour_print(r):
+    # Combine colour + print into one display value (deduped, case-insensitive)
+    # so every replenishment surface shows a single "Colour / Print" column.
+    parts, seen = [], set()
+    for v in (r.get("color_print"), r.get("print_plain")):
+        v = (v or "").strip()
+        if v and v.lower() not in seen:
+            seen.add(v.lower())
+            parts.append(v)
+    return " · ".join(parts)
+
+
 _REPLEN_ITEM_XLSX_COLS = [
     "Owner", "Store", "Days Lapsed", "Last Sold", "Product", "Size",
-    "Barcode", "Bin", "Units Sold", "Store SOH", "WH SOH",
+    "Barcode", "Bin", "Colour / Print", "Units Sold", "Store SOH", "WH SOH",
     "Suggested", "Actual Replenished", "Transfer Ref",
 ]
 
@@ -8221,6 +8238,7 @@ def _replen_item_xlsx_row(r):
         (str(r.get("last_sale"))[:10] if r.get("last_sale") else ""),
         r.get("product_name") or "", r.get("size") or "",
         r.get("barcode") or "", r.get("bin") or "",
+        _replen_colour_print(r),
         int(r.get("units_sold") or 0), int(r.get("soh_store") or 0),
         int(r.get("soh_wh") or 0), int(r.get("suggested_units") or 0),
         int(r.get("actual_units_replenished") or 0), r.get("transfer_ref") or "",
@@ -8331,6 +8349,7 @@ def analytics_replenishment_report(
         SELECT sold.pos_location_name AS pos_location, sold.country,
             sold.product_name, sold.variant_sku AS sku, sold.units_sold, sold.last_sale,
             p.size AS size, p.barcode,
+            COALESCE(p.color_print, '') AS color_print, COALESCE(p.print_plain, '') AS print_plain,
             COALESCE(ss.soh_store, 0) AS soh_store,
             COALESCE(NULLIF(wb.bin, ''), ss.bin, '') AS bin,
             COALESCE(w.soh_wh, 0) AS soh_wh
@@ -8365,6 +8384,7 @@ def analytics_replenishment_report(
             "pos_location": r.get("pos_location"), "product_name": r.get("product_name"),
             "size": r.get("size") or "", "barcode": r.get("barcode") or "",
             "sku": r.get("sku"), "bin": r.get("bin") or "",
+            "color_print": r.get("color_print") or "", "print_plain": r.get("print_plain") or "",
             "units_sold": units_sold, "soh_store": soh_store, "soh_wh": soh_wh,
             "replenish": replenish, "replenished": bool(mark.get("replenished", False)),
             "actual_units_replenished": int(mark.get("actual_units_replenished", 0)),

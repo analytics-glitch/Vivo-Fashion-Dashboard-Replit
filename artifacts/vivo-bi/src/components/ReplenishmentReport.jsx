@@ -24,6 +24,17 @@ const fmtDateInput = (d) => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
+// Combine colour + print into a single deduped "Colour / Print" display value.
+const colourPrint = (r) => {
+  const seen = new Set();
+  const out = [];
+  for (const v of [r?.color_print, r?.print_plain]) {
+    const s = (v || "").trim();
+    if (s && !seen.has(s.toLowerCase())) { seen.add(s.toLowerCase()); out.push(s); }
+  }
+  return out.join(" · ");
+};
+
 const ReplenishmentReport = () => {
   const yesterday = useMemo(() => {
     const d = new Date();
@@ -109,6 +120,15 @@ const ReplenishmentReport = () => {
     { key: "bin", label: "Bin", align: "left",
       render: (r) => r.bin ? <span className="pill-amber">{r.bin}</span> : <span className="text-muted text-[11px]">—</span>,
       csv: (r) => r.bin || "" },
+    { key: "colour_print", label: "Colour / Print", align: "left",
+      sortValue: (r) => colourPrint(r),
+      render: (r) => {
+        const v = colourPrint(r);
+        return v
+          ? <span className="break-words" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>{v}</span>
+          : <span className="text-muted text-[11px]">—</span>;
+      },
+      csv: (r) => colourPrint(r) },
     { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
     { key: "last_sale", label: "Last Sold", align: "left",
       sortValue: (r) => (r.last_sale ? new Date(r.last_sale).getTime() : 0),
