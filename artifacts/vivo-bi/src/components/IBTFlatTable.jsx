@@ -73,7 +73,20 @@ const useFlatRows = (suggestions, flow) => {
           },
           timeout: 60000,
         });
-        const skus = (data?.skus || []).filter((x) => x.suggested_qty > 0);
+        // Which SKU rows to surface.
+        //  • Warehouse → store: the warehouse always holds deep stock, so the
+        //    conservative per-SKU recommendation (`suggested_qty > 0`) is a good
+        //    actionable filter and keeps the picking list tight.
+        //  • Store → store: the donor often holds a *thin* size run (1 unit per
+        //    size). The style-level surplus passes the ≥3 gate, but the per-SKU
+        //    "keep 1 on the shelf" rule (`from_available - 1`) then zeroes out
+        //    `suggested_qty` for every SKU — which used to drop ALL rows and
+        //    render a blank stub (Color/Size/SKU/Barcode = "—", Inv = 0). Show
+        //    every SKU the donor actually holds so those columns are populated;
+        //    the Suggested column still carries the conservative per-SKU qty.
+        const skus = (data?.skus || []).filter((x) =>
+          _isWh(flow) ? x.suggested_qty > 0 : (x.from_available ?? 0) > 0
+        );
         _skuCache.set(cacheKey, skus);
         next.set(cacheKey, skus);
       } catch {
