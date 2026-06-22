@@ -130,3 +130,4 @@ args = ["bash", "/home/runner/workspace/start_all.sh"]
 [userenv.shared]
 WAREHOUSE_BINS_SHEET_ID = "1XiY1gRSqW2f3W_UJIp4_EcmW2QDjZfFhRyIkXppxq30"
 WAREHOUSE_BINS_GID = "403172947"
+WAREHOUSE_BINS_REFRESH_SEC = "3600"
