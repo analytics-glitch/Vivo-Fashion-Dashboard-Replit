@@ -2306,6 +2306,49 @@ def build_filters(date_from, date_to, country=None, channel=None, extra=None):
         parts.append(extra)
     return " AND ".join(parts)
 
+def _unified_first_purchase_ctes(out_cte="first_purchase", out_col="first_purchase_date"):
+    # Returns three chained CTEs (must be the LEADING CTEs in a WITH clause, i.e.
+    # immediately after `WITH `) that expose <out_cte>(customer_id, <out_col>):
+    # the first-EVER purchase date per customer, computed over a UNIFIED customer
+    # identity that bridges the 2026-03-20 Kenya system switch.
+    #
+    # Background: post-cutover Kenya tags sales with short 6-7 digit Odoo customer
+    # ids (e.g. '109387'), a different namespace from the legacy 13-digit Shopify
+    # ids (e.g. '2625069973600'). raw_odoo_customers.shopify_user_id links an Odoo
+    # customer id to its legacy Shopify id, so we collapse an Odoo id to its linked
+    # Shopify id (canonical key) and take MIN(sale_date) across BOTH. A returning
+    # shopper whose history sits under the legacy id is then no longer mislabelled
+    # "New" when they reappear under a fresh Odoo id. Odoo ids are <=6 digits and
+    # Shopify ids are 13, so the id::text join can never false-bridge a legacy id.
+    #
+    # The final CTE re-maps the unified date back onto every RAW all_sales
+    # customer_id, so callers keep joining on s.customer_id unchanged while the
+    # date reflects the bridged identity. <out_col> is a DATE.
+    return ("""
+        _id_bridge AS (
+            SELECT DISTINCT s.customer_id,
+                COALESCE(oc.shopify_user_id::text, s.customer_id) AS canon_id
+            FROM all_sales s
+            LEFT JOIN raw_odoo_customers oc
+                   ON oc.id::text = s.customer_id
+                  AND oc.shopify_user_id IS NOT NULL
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.customer_id IS NOT NULL
+              AND s.customer_id NOT IN ('None','null','')
+        ),
+        _canon_fp AS (
+            SELECT b.canon_id, MIN(s.sale_date::date) AS first_purchase_date
+            FROM all_sales s
+            JOIN _id_bridge b ON b.customer_id = s.customer_id
+            WHERE s.sale_kind IN ('sale','order')
+            GROUP BY b.canon_id
+        ),
+        """ + out_cte + """ AS (
+            SELECT b.customer_id, f.first_purchase_date AS """ + out_col + """
+            FROM _id_bridge b
+            JOIN _canon_fp f ON f.canon_id = b.canon_id
+        )""")
+
 def _country_channel_filter(country=None, channel=None):
     # BASE_FILTERS + optional country/channel, but NO date range — used for the
     # fixed trailing-window (28d/56d) recency-weighted velocity (Phase 2 A6).
@@ -3209,18 +3252,11 @@ def get_customers(
                 HAVING MIN(sale_date::date) < CURRENT_DATE - INTERVAL '90 days'
             ) t
         ),
-        first_purchase AS (
-            -- First-ever purchase date per customer_id across ALL history (not
-            -- scoped to the selected window). sale_date is TEXT so cast ::date
-            -- before MIN. Drives BOTH the New/Returning split (seg) and the
-            -- additive "first-time registered" metric below.
-            SELECT customer_id, MIN(sale_date::date) AS first_purchase_date
-            FROM all_sales
-            WHERE sale_kind IN ('sale','order')
-              AND customer_id IS NOT NULL
-              AND customer_id NOT IN ('None','null','')
-            GROUP BY customer_id
-        ),
+        -- First-ever purchase date per customer across ALL history, computed over
+        -- a UNIFIED identity that bridges the 2026-03-20 Kenya Odoo/Shopify id
+        -- switch (see _unified_first_purchase_ctes). Drives BOTH the New/Returning
+        -- split (seg) and the additive "first-time registered" metric below.
+        """ + _unified_first_purchase_ctes() + """,
         seg AS (
             -- New vs Returning by FIRST-EVER purchase date, NOT the stored
             -- customer_type. Kenya (and most POS) tags every counter sale
@@ -3423,15 +3459,11 @@ def get_customer_trend(
         " AND s.customer_id NOT IN (SELECT customer_id FROM all_customers WHERE customer_id IS NOT NULL"
         " AND (COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) ~* '" + _WALKIN_NAME_REGEX + "')")
     return run_query("""
-        WITH all_time AS (
-            SELECT customer_id, MIN(sale_date) AS first_purchase
-            FROM all_sales WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
-            GROUP BY customer_id
-        )
+        WITH """ + _unified_first_purchase_ctes("all_time", "first_purchase") + """
         SELECT s.sale_date AS day,
             COUNT(DISTINCT s.customer_id) AS total_customers,
-            COUNT(DISTINCT CASE WHEN a.first_purchase = s.sale_date THEN s.customer_id END) AS new_customers,
-            COUNT(DISTINCT CASE WHEN a.first_purchase < s.sale_date THEN s.customer_id END) AS returning_customers
+            COUNT(DISTINCT CASE WHEN a.first_purchase = s.sale_date::date THEN s.customer_id END) AS new_customers,
+            COUNT(DISTINCT CASE WHEN a.first_purchase < s.sale_date::date THEN s.customer_id END) AS returning_customers
         FROM all_sales s
         LEFT JOIN all_time a ON s.customer_id = a.customer_id
         WHERE """ + where + """
@@ -3447,15 +3479,11 @@ def get_customers_by_location(
     where = build_filters(date_from, date_to, country,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')")
     return run_query("""
-        WITH all_time AS (
-            SELECT customer_id, MIN(sale_date) AS first_purchase
-            FROM all_sales WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
-            GROUP BY customer_id
-        )
+        WITH """ + _unified_first_purchase_ctes("all_time", "first_purchase") + """
         SELECT s.pos_location_name, s.country,
             COUNT(DISTINCT s.customer_id) AS total_customers,
-            COUNT(DISTINCT CASE WHEN a.first_purchase BETWEEN '""" + date_from + """' AND '""" + date_to + """' THEN s.customer_id END) AS new_customers,
-            COUNT(DISTINCT CASE WHEN a.first_purchase < '""" + date_from + """' THEN s.customer_id END) AS returning_customers,
+            COUNT(DISTINCT CASE WHEN a.first_purchase BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date THEN s.customer_id END) AS new_customers,
+            COUNT(DISTINCT CASE WHEN a.first_purchase < '""" + date_from + """'::date THEN s.customer_id END) AS returning_customers,
             ROUND(COUNT(DISTINCT s.customer_id) * 100.0 / NULLIF(SUM(COUNT(DISTINCT s.customer_id)) OVER(), 0), 1) AS pct_of_total
         FROM all_sales s
         LEFT JOIN all_time a ON s.customer_id = a.customer_id
@@ -3729,14 +3757,7 @@ def get_customer_type_spend(
     # customers == orders here (each distinct order_id is counted), so
     # spend_per_customer and avg_basket_value coincide.
     return run_query("""
-        WITH first_purchase AS (
-            SELECT customer_id, MIN(sale_date::date) AS first_purchase_date
-            FROM all_sales
-            WHERE sale_kind IN ('sale','order')
-              AND customer_id IS NOT NULL
-              AND customer_id NOT IN ('None','null','')
-            GROUP BY customer_id
-        )
+        WITH """ + _unified_first_purchase_ctes() + """
         SELECT
             CASE
                 -- COALESCE so a NULL customer_type maps to Walk-in (NULL NOT IN
