@@ -37,6 +37,7 @@ const ExecutiveSummary = React.lazy(() => import("@/pages/ExecutiveSummary"));
 const Marketing = React.lazy(() => import("@/pages/Marketing"));
 const CustomReport = React.lazy(() => import("@/pages/CustomReport"));
 const RangeManagement = React.lazy(() => import("@/pages/RangeManagement"));
+const Production = React.lazy(() => import("@/pages/Production"));
 const Velocity = React.lazy(() => import("@/pages/Velocity"));
 const SizeHealth = React.lazy(() => import("@/pages/SizeHealth"));
 const MarkdownClearance = React.lazy(() => import("@/pages/MarkdownClearance"));
@@ -163,6 +164,7 @@ function App() {
                 <Route path="/re-order" element={<ProtectedShell pageId="re-order"><ReOrder /></ProtectedShell>} />
                 <Route path="/warehouse-returns" element={<ProtectedShell pageId="warehouse-returns"><WarehouseReturns /></ProtectedShell>} />
                 <Route path="/ibt" element={<ProtectedShell pageId="ibt"><IBT /></ProtectedShell>} />
+                <Route path="/production" element={<ProtectedShell pageId="production"><Production /></ProtectedShell>} />
                 <Route path="/data-quality" element={<ProtectedShell pageId="data-quality"><DataQuality /></ProtectedShell>} />
                 <Route path="/feedback" element={<ProtectedShell pageId="feedback"><Feedback /></ProtectedShell>} />
                 <Route path="/allocations" element={<ProtectedShell pageId="allocations"><Allocations /></ProtectedShell>} />

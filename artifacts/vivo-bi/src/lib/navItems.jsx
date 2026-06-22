@@ -27,6 +27,7 @@ import {
   ChartBar,
   BookOpen,
   Eye,
+  Factory,
 } from "@phosphor-icons/react";
 
 /**
@@ -66,6 +67,7 @@ export const PRIMARY_NAV = [
   { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order", group: "Inventory & Replenishment", desc: "Styles to re-order based on demand" },
   { to: "/warehouse-returns", label: "Warehouse Returns", icon: Warehouse, id: "warehouse-returns", group: "Inventory & Replenishment", desc: "Pull aged / retired store stock back to the warehouse" },
   { to: "/ibt", label: "IBT", icon: Truck, id: "ibt", group: "Inventory & Replenishment", desc: "Inter-branch transfer recommendations" },
+  { to: "/production", label: "Production Tracker", icon: Factory, id: "production", group: "Products & Range", desc: "Kanban board tracking buying orders through the manufacturing stages" },
   { to: "/allocations", label: "Allocations", icon: Stack, id: "allocations", group: "Inventory & Replenishment", desc: "Allocate incoming stock across stores" },
   { to: "/replenishments", label: "Replenishments", icon: ArrowsClockwise, id: "replenishments", group: "Inventory & Replenishment", desc: "Replenishment suggestions with last-sold dates" },
   { to: "/replenish-by-item", label: "Replenish by Style/SKU", icon: Package, id: "replenish-by-item", group: "Inventory & Replenishment", desc: "Find understocked stores for a style/SKU, or a store's proven demand gaps" },
