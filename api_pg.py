@@ -5863,7 +5863,7 @@ def analytics_warehouse_return_candidates(
         )
         SELECT i.pos_location_name AS pos_location,
             i.sku,
-            MAX(i.product_name) AS product_name,
+            COALESCE(NULLIF(MAX(i.product_name), ''), MAX(p.style_name)) AS product_name,
             MAX(p.size) AS size,
             MAX(p.barcode) AS barcode,
             MAX(i.color_print) AS color,
