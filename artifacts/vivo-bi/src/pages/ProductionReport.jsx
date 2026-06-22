@@ -291,6 +291,7 @@ export default function ProductionReport() {
   const [stageFilter, setStageFilter] = useState(null);
   const [dropFilter, setDropFilter] = useState(null);
   const [openOrder, setOpenOrder] = useState(null);
+  const [showCompleted, setShowCompleted] = useState(false);
 
   const load = useCallback(async (force = false) => {
     if (force) setRefreshing(true);
@@ -350,19 +351,57 @@ export default function ProductionReport() {
     [flowStages, stageFilter]
   );
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return orders.filter((o) => {
+  // Terminal (warehouse) stage keys — an order is "complete" once ALL of its
+  // units have arrived there and none remain in any earlier stage.
+  const terminalKeys = useMemo(
+    () => new Set(flowStages.filter((s) => s.is_terminal).map((s) => s.stage_key)),
+    [flowStages]
+  );
+  const isComplete = useCallback(
+    (o) => {
+      const sq = o.stage_qty || {};
+      let term = 0;
+      let nonTerm = 0;
+      for (const [k, v] of Object.entries(sq)) {
+        const n = Number(v) || 0;
+        if (terminalKeys.has(k)) term += n;
+        else nonTerm += n;
+      }
+      return term > 0 && nonTerm === 0;
+    },
+    [terminalKeys]
+  );
+
+  const matchesText = useCallback(
+    (o) => {
+      const q = query.trim().toLowerCase();
       if (lifecycleFilter && (o.lifecycle_type || "") !== lifecycleFilter)
         return false;
-      if (stageFilter && !(Number((o.stage_qty || {})[stageFilter]) > 0))
-        return false;
-      if (dropOrderRefs && !dropOrderRefs.has(o.order_ref)) return false;
       if (!q) return true;
       return [o.order_ref, o.style_number, o.style_name, o.product_name, o.buyer]
         .some((v) => String(v || "").toLowerCase().includes(q));
+    },
+    [query, lifecycleFilter]
+  );
+
+  // Active orders honour every filter (incl. stage-flow + drop window); completed
+  // orders have all arrived, so the WIP-oriented stage/drop filters don't apply to
+  // them — only the text + lifecycle filters do.
+  const filtered = useMemo(() => {
+    return orders.filter((o) => {
+      if (isComplete(o)) return false;
+      if (!matchesText(o)) return false;
+      if (stageFilter && !(Number((o.stage_qty || {})[stageFilter]) > 0))
+        return false;
+      if (dropOrderRefs && !dropOrderRefs.has(o.order_ref)) return false;
+      return true;
     });
-  }, [orders, query, lifecycleFilter, stageFilter, dropOrderRefs]);
+  }, [orders, matchesText, isComplete, stageFilter, dropOrderRefs]);
+
+  const completedOrders = useMemo(
+    () => orders.filter((o) => isComplete(o) && matchesText(o)),
+    [orders, isComplete, matchesText]
+  );
 
   const lifecycleOptions = useMemo(
     () =>
@@ -696,6 +735,112 @@ export default function ProductionReport() {
             </table>
           </div>
         )}
+      </div>
+
+      {/* Completed orders — everything that has fully landed in the warehouse. */}
+      <div className="card-white p-4" data-testid="production-completed">
+        <button
+          type="button"
+          onClick={() => setShowCompleted((v) => !v)}
+          className="w-full flex items-center justify-between gap-3"
+        >
+          <span className="eyebrow flex items-center gap-1.5">
+            <ArrowRight size={13} weight="bold" className="text-[#1a5c38]" />
+            Completed orders — fully in warehouse ({fmtQty(completedOrders.length)})
+          </span>
+          <span className="text-[11.5px] font-semibold text-[#0f3d24] bg-panel/60 border border-line rounded-full px-2 py-0.5">
+            {showCompleted ? "Hide" : "Show"}
+          </span>
+        </button>
+
+        {showCompleted &&
+          (completedOrders.length === 0 ? (
+            <div className="mt-3">
+              <Empty label="No orders have fully reached the warehouse yet." />
+            </div>
+          ) : (
+            <div className="overflow-x-auto mt-3">
+              <table className="w-full text-[12px] border-collapse">
+                <thead className="bg-panel/60 text-muted">
+                  <tr>
+                    <th className="text-left font-semibold px-3 py-2">Order</th>
+                    <th className="text-left font-semibold px-3 py-2">Style</th>
+                    <th className="text-left font-semibold px-3 py-2">Buyer</th>
+                    <th className="text-left font-semibold px-3 py-2">Type</th>
+                    <th className="text-right font-semibold px-2.5 py-2">Colours</th>
+                    <th className="text-right font-semibold px-2.5 py-2">Sizes</th>
+                    <th className="text-right font-semibold px-2.5 py-2">Order qty</th>
+                    <th className="text-right font-semibold px-2.5 py-2">In warehouse</th>
+                    <th className="text-left font-semibold px-3 py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {completedOrders.map((o) => {
+                    const sq = o.stage_qty || {};
+                    const inWh = Object.entries(sq).reduce(
+                      (s, [k, v]) => (terminalKeys.has(k) ? s + (Number(v) || 0) : s),
+                      0
+                    );
+                    return (
+                      <tr
+                        key={o.order_ref}
+                        className="border-t border-line hover:bg-panel/40 cursor-pointer"
+                        onClick={() => setOpenOrder(o.order_ref)}
+                        data-testid={`production-completed-row-${o.order_ref}`}
+                      >
+                        <td className="px-3 py-2 font-semibold text-brand whitespace-nowrap">
+                          {o.order_ref}
+                        </td>
+                        <td className="px-3 py-2 max-w-[200px]">
+                          <div className="font-semibold text-[#0f3d24] truncate">
+                            {o.style_name || o.product_name || o.style_number || "—"}
+                          </div>
+                          {o.style_number && (
+                            <div className="text-[10.5px] text-muted truncate">
+                              {o.style_number}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-muted whitespace-nowrap max-w-[120px] truncate">
+                          {o.buyer || "—"}
+                        </td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          {o.lifecycle_type ? (
+                            <span
+                              className={`inline-block text-[10.5px] font-semibold px-1.5 py-0.5 rounded border ${lifecycleBadge(
+                                o.lifecycle_type
+                              )}`}
+                            >
+                              {o.lifecycle_type}
+                            </span>
+                          ) : (
+                            <span className="text-muted">—</span>
+                          )}
+                        </td>
+                        <td className="px-2.5 py-2 text-right tabular-nums">
+                          {fmtQty(o.colours)}
+                        </td>
+                        <td className="px-2.5 py-2 text-right tabular-nums">
+                          {fmtQty(o.sizes)}
+                        </td>
+                        <td className="px-2.5 py-2 text-right font-semibold tabular-nums">
+                          {fmtQty(o.order_qty)}
+                        </td>
+                        <td className="px-2.5 py-2 text-right font-semibold tabular-nums">
+                          {fmtQty(inWh)}
+                        </td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1 text-[10.5px] font-semibold px-1.5 py-0.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">
+                            Arrived
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ))}
       </div>
 
       {openOrder && (
