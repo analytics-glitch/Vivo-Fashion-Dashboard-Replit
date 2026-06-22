@@ -17016,18 +17016,25 @@ import pathlib
 # (fabric_dashboard_live.html) is git-tracked at the repo root, so serve it
 # directly and 404 cleanly if it is somehow absent (never fall through).
 def _serve_fabric_page():
-    from fastapi.responses import FileResponse
+    from fastapi.responses import HTMLResponse
     here = pathlib.Path(__file__).parent
     fabric = here / "fabric_dashboard_live.html"
     if not fabric.exists():
         fabric = here / "dashboard" / "build" / "fabric.html"
     if not fabric.exists():
         return JSONResponse({"detail": "Fabric dashboard not available"}, status_code=404)
-    fr = FileResponse(str(fabric))
-    fr.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    fr.headers["Pragma"] = "no-cache"
-    fr.headers["Expires"] = "0"
-    return fr
+    # Return an in-memory HTMLResponse, NOT a FileResponse. Under GZipMiddleware a
+    # FileResponse can emit the ASGI `http.response.pathsend` zero-copy extension,
+    # which GZipMiddleware does not understand and raises on mid-stream — surfacing
+    # as a 500 ONLY on the deployed server (whose uvicorn negotiates pathsend; the
+    # dev server did not, so /fabric was 200 in dev but 500 in prod). A plain
+    # in-memory body compresses cleanly on every server/uvicorn version.
+    html = fabric.read_text(encoding="utf-8")
+    resp = HTMLResponse(content=html)
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @app.get("/fabric")
@@ -17047,7 +17054,7 @@ if build_dir.exists():
 
     @app.get("/{full_path:path}")
     async def serve_react(full_path: str):
-        from fastapi.responses import FileResponse, JSONResponse
+        from fastapi.responses import HTMLResponse, JSONResponse
         # Never serve the SPA for API routes
         if full_path.startswith("api/"):
             return JSONResponse({"detail": "Not found"}, status_code=404)
@@ -17063,7 +17070,11 @@ if build_dir.exists():
             if not fabric.exists():
                 fabric = build_dir / "fabric.html"
             if fabric.exists():
-                fr = FileResponse(str(fabric))
+                # In-memory HTMLResponse, not FileResponse: a FileResponse under
+                # GZipMiddleware can emit the ASGI `http.response.pathsend` zero-copy
+                # extension that GZipMiddleware raises on mid-stream (500 in prod,
+                # fine in dev). A plain body compresses cleanly everywhere.
+                fr = HTMLResponse(content=fabric.read_text(encoding="utf-8"))
                 fr.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                 fr.headers["Pragma"] = "no-cache"
                 fr.headers["Expires"] = "0"
@@ -17076,18 +17087,20 @@ if build_dir.exists():
         if full_path == "clienteling" or full_path.startswith("clienteling/"):
             crm = build_dir / "crm.html"
             if crm.exists():
-                cr = FileResponse(str(crm))
+                cr = HTMLResponse(content=crm.read_text(encoding="utf-8"))
                 cr.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                 cr.headers["Pragma"] = "no-cache"
                 cr.headers["Expires"] = "0"
                 return cr
         index = build_dir / "index.html"
-        # Never FileResponse an absent file: a missing index.html raises during
-        # response streaming and surfaces as an opaque 500 (this was the original
-        # /fabric + /clienteling prod failure). Return a clean 404 instead.
+        # Never serve an absent file: a missing index.html surfaces as an opaque
+        # 500 (this was the original /fabric + /clienteling prod failure). Return a
+        # clean 404 instead. Serve as an in-memory HTMLResponse rather than a
+        # FileResponse so GZipMiddleware never hits the `http.response.pathsend`
+        # extension (which raised mid-stream → 500 in prod, fine in dev).
         if not index.exists():
             return JSONResponse({"detail": "Not found"}, status_code=404)
-        response = FileResponse(str(index))
+        response = HTMLResponse(content=index.read_text(encoding="utf-8"))
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
