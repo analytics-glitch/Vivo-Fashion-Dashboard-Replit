@@ -188,6 +188,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    <div class="nav-item" data-page="ageing">Stock &amp; ageing</div>
    <div class="nav-item" data-page="deadstock">Slow Moving</div>
    <div class="nav-item" data-page="defects">Defects</div>
+   <div class="nav-item" data-page="dataquality">Data quality</div>
    <div class="nav-group">Flow</div>
    <div class="nav-item" data-page="movement">Movement &amp; use</div>
    <div class="nav-item" data-page="pos">Purchase orders</div>
@@ -398,6 +399,25 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div class="card" style="text-align:center;padding:48px 24px;">
      <h3 style="margin:0 0 8px;">Defects — coming soon</h3>
      <p class="muted" style="margin:0;">Fabric defect tracking and reporting will appear here.</p>
+    </div>
+   </section>
+
+   <!-- DATA QUALITY: missing kg-per-metre -->
+   <section id="page-dataquality" style="display:none;">
+    <div id="dq-kpis" class="kpi-grid"><div class="loading">Loading…</div></div>
+    <div class="card" style="margin-bottom:1.1rem;">
+     <p class="muted" style="margin:0;">These fabrics have stock on hand or recorded usage but <b>no kg-per-metre</b> on the Odoo product master, so their quantities can only be shown in kg — never metres. Fix each one by entering its kg-per-metre on the product in Odoo; it then drops off this list. <span class="pill pill-blue">Stock</span> only on hand · <span class="pill pill-amber">Usage</span> only consumed · <span class="pill pill-red">Both</span>.</p>
+    </div>
+    <div class="flex" style="margin-bottom:1.1rem;justify-content:flex-end;">
+     <button class="btn" onclick="exportDataQuality(this)">Export CSV</button>
+    </div>
+    <div class="card" style="padding:0;">
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead id="dq-head"></thead>
+       <tbody id="dq-body"><tr><td class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
     </div>
    </section>
 
@@ -815,8 +835,8 @@ function bars(id,rows,labelKey,valKey,subFmt,colored,fxText){
 }
 
 // ── Navigation ──
-const LOADERS={dashboard:loadFabricMix,register:()=>loadRegister(0),ageing:loadAgeing,deadstock:loadDeadStock,movement:loadMovementPage,pos:loadPOsPage,suppliers:loadSuppliers,bom:loadBomPage,reservations:loadReservations};
-const DESCS={dashboard:'Fabric Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'How long stock has sat since its last movement',deadstock:'Fabric that has been sitting without movement',defects:'Fabric defect tracking and reporting',movement:'What is coming in, going out and being consumed',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',bom:'Bills of material — which fabrics each style consumes',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used'};
+const LOADERS={dashboard:loadFabricMix,register:()=>loadRegister(0),ageing:loadAgeing,deadstock:loadDeadStock,dataquality:loadDataQuality,movement:loadMovementPage,pos:loadPOsPage,suppliers:loadSuppliers,bom:loadBomPage,reservations:loadReservations};
+const DESCS={dashboard:'Fabric Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'How long stock has sat since its last movement',deadstock:'Fabric that has been sitting without movement',defects:'Fabric defect tracking and reporting',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',movement:'What is coming in, going out and being consumed',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',bom:'Bills of material — which fabrics each style consumes',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used'};
 const loadedOnce={};
 document.querySelectorAll('.nav-item').forEach(el=>{
   el.addEventListener('click',()=>{
@@ -1690,6 +1710,86 @@ async function loadDeadStock(){
       <td class="r"${fx(FX.slowDaysIdle)}>${r.days_since_move!=null?`<span class="pill ${r.days_since_move>365?'pill-red':'pill-amber'}">${fmt(r.days_since_move)}</span>`:'—'}</td>
      </tr>`).join(''):'<tr><td colspan="7" class="loading">No slow moving stock recorded.</td></tr>';
   }catch(e){rowErr('dead-body',7,e);}
+}
+
+// ── Data quality: fabrics missing kg-per-metre ──
+const DQ_SRC={stock:{label:'Stock only',cls:'pill-blue'},usage:{label:'Usage only',cls:'pill-amber'},both:{label:'Both',cls:'pill-red'}};
+const DQ_COLS=[
+  {k:'default_code',label:'Style code'},
+  {k:'name',label:'Fabric name'},
+  {k:'fabric_category',label:'Category'},
+  {k:'fabric_subcategory',label:'Subcategory'},
+  {k:'supplier',label:'Supplier'},
+  {k:'width_m',label:'Width (m)'},
+  {k:'gsm',label:'GSM'},
+  {k:'fiber_content',label:'Fibre content'},
+  {k:'source',label:'Affected'},
+  {k:'stock_kg',label:'Stock (kg)'},
+  {k:'usage_kg',label:'Usage (kg)'},
+  {k:'last_move',label:'Last move'},
+];
+let dqCache=null, dqSort={key:'stock_kg',dir:'desc'};
+function dqSortRows(items){
+  const k=dqSort.key, dir=dqSort.dir==='asc'?1:-1;
+  const NUM={width_m:1,gsm:1,stock_kg:1,usage_kg:1};
+  return items.slice().sort((a,b)=>{
+    let x=a[k], y=b[k];
+    if(NUM[k]){x=Number(x)||0;y=Number(y)||0;return (x-y)*dir;}
+    x=(x==null?'':String(x)).toLowerCase();y=(y==null?'':String(y)).toLowerCase();
+    return x<y?-1*dir:x>y?1*dir:0;
+  });
+}
+function sortDq(k){
+  if(dqSort.key===k)dqSort.dir=dqSort.dir==='asc'?'desc':'asc';
+  else{dqSort.key=k;dqSort.dir=(k==='stock_kg'||k==='usage_kg'||k==='gsm'||k==='width_m')?'desc':'asc';}
+  renderDataQuality();
+}
+function dqCell(c,r){
+  const v=r[c.k];
+  if(c.k==='name')return `<td style="font-weight:600;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
+  if(c.k==='default_code')return `<td class="num" style="font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
+  if(c.k==='source'){const s=DQ_SRC[v]||{label:v||'—',cls:'pill-neutral'};return `<td><span class="pill ${s.cls}">${esc(s.label)}</span></td>`;}
+  if(c.k==='stock_kg'||c.k==='usage_kg')return `<td class="r" style="font-weight:600;">${v!=null?fmt1(v):'—'}</td>`;
+  if(c.k==='width_m')return `<td class="r">${v!=null&&v!==''?fmt1(v):'—'}</td>`;
+  if(c.k==='gsm')return `<td class="r">${v!=null&&v!==''?fmt(v):'—'}</td>`;
+  if(c.k==='last_move')return `<td style="color:var(--muted);font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
+  return `<td style="color:var(--text-sub);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
+}
+function renderDataQuality(){
+  const d=dqCache; if(!d)return;
+  document.getElementById('dq-kpis').innerHTML=`
+   <div class="kpi accent"><span class="eyebrow">Fabrics affected</span><p class="kpi-value">${fmt(d.count)}</p><p class="kpi-sub">missing kg-per-metre</p></div>
+   <div class="kpi"><span class="eyebrow">Unconvertible total</span><p class="kpi-value">${fmt1(d.total_unconvertible_kg)}</p><p class="kpi-sub">kg (stock + usage)</p></div>
+   <div class="kpi"><span class="eyebrow">Stock unconvertible</span><p class="kpi-value">${fmt1(d.total_stock_kg)}</p><p class="kpi-sub">kg on hand</p></div>
+   <div class="kpi"><span class="eyebrow">Usage unconvertible</span><p class="kpi-value">${fmt1(d.total_usage_kg)}</p><p class="kpi-sub">kg consumed, net of returns</p></div>`;
+  const NUM={width_m:1,gsm:1,stock_kg:1,usage_kg:1};
+  document.getElementById('dq-head').innerHTML='<tr>'+DQ_COLS.map(c=>{
+    const arrow=dqSort.key===c.k?(dqSort.dir==='asc'?' \u25B2':' \u25BC'):'';
+    return `<th class="${NUM[c.k]?'r ':''}sortable" onclick="sortDq('${c.k}')">${esc(c.label)}${arrow}</th>`;
+  }).join('')+'</tr>';
+  const rows=dqSortRows(d.items);
+  document.getElementById('dq-body').innerHTML=rows.length
+    ? rows.map(r=>'<tr>'+DQ_COLS.map(c=>dqCell(c,r)).join('')+'</tr>').join('')
+    : `<tr><td colspan="${DQ_COLS.length}" class="loading">No fabrics are missing a kg-per-metre. 🎉</td></tr>`;
+  if(window.__fabricEnhanceTables)window.__fabricEnhanceTables();
+}
+async function loadDataQuality(){
+  try{
+    dqCache=await apiFetch('/api/fabric/data-quality/missing-kg-per-metre');
+    renderDataQuality();
+  }catch(e){rowErr('dq-body',DQ_COLS.length,e);}
+}
+function exportDataQuality(btn){
+  const d=dqCache; if(!d||!d.items.length){alert('Nothing to export yet.');return;}
+  const rows=dqSortRows(d.items);
+  const csv=[DQ_COLS.map(c=>c.label).join(',')]
+    .concat(rows.map(r=>DQ_COLS.map(c=>{
+      const v=c.k==='source'?(DQ_SRC[r[c.k]]||{}).label||r[c.k]:r[c.k];
+      return JSON.stringify(v??'');
+    }).join(',')))
+    .join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='fabric_missing_kg_per_metre.csv';a.click();
 }
 
 // ── Movement & use ──

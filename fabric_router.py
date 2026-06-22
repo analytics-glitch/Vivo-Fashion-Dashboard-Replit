@@ -883,6 +883,74 @@ def fabric_mix(
             "rows": out,
         }
 
+# ── Data quality: fabrics missing kg-per-metre ──────────────
+@fabric_router.get("/api/fabric/data-quality/missing-kg-per-metre")
+def missing_kg_per_metre():
+    """Every fabric product with NO usable kg-per-metre on the Odoo product master
+    (kg_per_mtr missing or <= 0) that still has stock on hand OR recorded usage —
+    i.e. real quantities that can only be shown in kg, never metres. Stock is the
+    on-hand quantity across the two real fabric-stock locations; usage is net
+    consumption (OUT − production returns) through the same effective-moves source
+    every other fabric view uses, so the numbers reconcile. A `source` flag marks
+    each row as stock-only / usage-only / both. Aggregate count + total
+    unconvertible kg are returned so progress is visible as conversions get
+    backfilled in Odoo."""
+    with _get_conn() as conn:
+        _ensure_fabric_sheet(conn)
+        # Stock across the two real fabric-stock locations (the "All" resolution).
+        loc_sql, loc_params = _loc_filter("All")
+        rows = q(conn, f"""
+            WITH stock AS (
+              SELECT i.product_id, SUM(i.quantity) AS stock_kg
+              FROM raw_fabric_inventory i
+              WHERE i.quantity > 0 {loc_sql}
+              GROUP BY i.product_id
+            ), usage AS (
+              SELECT m.product_id, SUM({_net_kg('m')}) AS usage_kg
+              FROM {EFFECTIVE_MOVES} m
+              WHERE {_net_cons_where('m')}
+              GROUP BY m.product_id
+            )
+            SELECT
+              p.id, p.default_code, p.name,
+              COALESCE(NULLIF(p.fabric_category,''),'Unknown') AS fabric_category,
+              COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') AS fabric_subcategory,
+              p.supplier, p.width_m, p.gsm, p.fiber_content,
+              ROUND(COALESCE(st.stock_kg,0)::numeric,1) AS stock_kg,
+              ROUND(GREATEST(COALESCE(us.usage_kg,0),0)::numeric,1) AS usage_kg,
+              (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id) AS last_move
+            FROM raw_fabric_products p
+            LEFT JOIN stock st ON st.product_id = p.id
+            LEFT JOIN usage us ON us.product_id = p.id
+            WHERE COALESCE(p.kg_per_mtr,0) <= 0
+              AND (COALESCE(st.stock_kg,0) > 0 OR COALESCE(us.usage_kg,0) > 0.05)
+        """, list(loc_params))
+
+        tot_stock = 0.0
+        tot_usage = 0.0
+        for r in rows:
+            sk = float(r["stock_kg"] or 0)
+            uk = float(r["usage_kg"] or 0)
+            tot_stock += sk
+            tot_usage += uk
+            if sk > 0 and uk > 0.05:
+                r["source"] = "both"
+            elif uk > 0.05:
+                r["source"] = "usage"
+            else:
+                r["source"] = "stock"
+            r["last_move"] = r["last_move"].isoformat() if r.get("last_move") else None
+        # Most material gaps first (biggest unconvertible quantity).
+        rows.sort(key=lambda r: (float(r["stock_kg"] or 0) + float(r["usage_kg"] or 0)),
+                  reverse=True)
+        return {
+            "count": len(rows),
+            "total_stock_kg": round(tot_stock, 1),
+            "total_usage_kg": round(tot_usage, 1),
+            "total_unconvertible_kg": round(tot_stock + tot_usage, 1),
+            "items": rows,
+        }
+
 # ── Dead stock ──────────────────────────────────────────────
 @fabric_router.get("/api/fabric/dead-stock")
 def dead_stock():
