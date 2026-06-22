@@ -857,8 +857,8 @@ const MIX_COLS=[
   {k:'pctA',label:'% Available',type:'pct'},
   {k:'gap',label:'Gap (pp)',type:'gap'},
   {k:'shortfall',label:'Shortfall',type:'unit'},
-  {k:'covers',label:'Weekly covers',type:'cover'},
-  {k:'tied',label:'Tied-up KES',type:'kes'},
+  {k:'covers',label:'Weeks of Cover',type:'cover'},
+  {k:'tied',label:'Stock Value KES',type:'kes'},
 ];
 // Effective columns for the current render. The Barcode column is conditionally
 // dropped when no product rows are on screen (see renderFabricMix), so the
@@ -1121,7 +1121,7 @@ function renderFabricMix(){
   document.getElementById('mix-head').innerHTML='<tr>'+mixActiveCols.map(c=>{
     const arrow=mixSort.key===c.k?(mixSort.dir==='asc'?' \u25B2':' \u25BC'):'';
     const label=c.k==='group'?(mixGroup==='subcategory'?'Fabric sub-category':'Fabric category')
-      :(c.k==='covers'?(mixCoverBasis==='months'?'Monthly covers':'Weekly covers'):c.label);
+      :(c.k==='covers'?(mixCoverBasis==='months'?'Monthly covers':'Weeks of Cover'):c.label);
     return `<th class="${MIX_NUM[c.type]?'r ':''}sortable" onclick="sortMix('${c.k}')">${esc(label)}${arrow}</th>`;
   }).join('')+'</tr>';
   const body=document.getElementById('mix-body');
@@ -1326,8 +1326,8 @@ function exportFabricMix(btn){
     ['% Available',r=>r.pctA.toFixed(1)],
     ['Gap (pp)',r=>r.gap.toFixed(1)],
     ['Shortfall ('+unit+')',r=>r.shortfall],
-    [mixCoverBasis==='months'?'Monthly covers':'Weekly covers',r=>{const v=mixCoverBasis==='months'?r.coversMonthly:r.covers;return v==null?'':v.toFixed(2);}],
-    ['Tied-up KES',r=>r.tied],
+    [mixCoverBasis==='months'?'Monthly covers':'Weeks of Cover',r=>{const v=mixCoverBasis==='months'?r.coversMonthly:r.covers;return v==null?'':v.toFixed(2);}],
+    ['Stock Value KES',r=>r.tied],
     ['Verdict',r=>r.verdict.label],
   ];
   const csv=[cols.map(c=>c[0]).join(',')]
@@ -1353,8 +1353,8 @@ function exportFabricMixActions(btn){
     ['Consumption ('+unit+')',r=>r.consumption],
     ['Shortage units ('+unit+')',r=>shortUnits(r).toFixed(1)],
     ['Shortage exposure KES',r=>shortKes(r)],
-    [mixCoverBasis==='months'?'Monthly covers':'Weekly covers',r=>{const v=mixCoverBasis==='months'?r.coversMonthly:r.covers;return v==null?'':v.toFixed(2);}],
-    ['Tied-up KES',r=>r.tied],
+    [mixCoverBasis==='months'?'Monthly covers':'Weeks of Cover',r=>{const v=mixCoverBasis==='months'?r.coversMonthly:r.covers;return v==null?'':v.toFixed(2);}],
+    ['Stock Value KES',r=>r.tied],
   ];
   const csv=[cols.map(c=>c[0]).join(',')]
     .concat(rows.map(r=>cols.map(c=>JSON.stringify(c[1](r)??'')).join(',')))
