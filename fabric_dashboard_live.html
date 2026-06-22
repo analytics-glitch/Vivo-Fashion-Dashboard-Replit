@@ -826,6 +826,7 @@ let mixCache=null, mixGroup='category';
 let mixCoverBasis='weeks';        // covers column basis: 'weeks' (default) | 'months'
 let mixSort={key:'consumption',dir:'desc'};
 let mixOpen={};                 // category → expanded? (in-place sub-category drill-down)
+let mixSubOpen={};              // "category\u0001subcategory" → expanded? (product drill-down)
 let mixAction={has:false};      // last action-banner state (any Buy/Clear/Idle rows?)
 let mixBound=false;             // delegated click handler bound once
 const MIX_COLS=[
@@ -903,6 +904,8 @@ function deriveMixRow(r,totC,totA,weeks,useKg){
   out.verdict=mixVerdict(out);
   if(Array.isArray(r.subcategories))
     out.subcategories=r.subcategories.map(s=>deriveMixRow(s,totC,totA,weeks,useKg));
+  if(Array.isArray(r.products))
+    out.products=r.products.map(p=>deriveMixRow(p,totC,totA,weeks,useKg));
   return out;
 }
 // Days-per-month constant mirrors the backend (fabric_router.py DAYS_PER_MONTH).
@@ -962,17 +965,22 @@ function mixSortRows(rows){
     return (x-y)*dir;
   });
 }
-function mixCell(col,r,kind){
+function mixCell(col,r,kind,opts){
   const f=MIX_FX[col.k]?fx(MIX_FX[col.k]):'';
   let cell;
   switch(col.type){
     case 'name':{
       const flag=r.incomplete?` <span class="pill pill-amber" title="Some stock/usage has no kg-per-metre, so metres are understated. Switch to Kg for the full figure.">m?</span>`:'';
+      const caret=o=>`<span class="caret">${o?'▾':'▸'}</span> `;
+      const exp=opts&&opts.expandable;
       if(kind==='cat'){
-        const caret=`<span class="caret">${mixOpen[r.group]?'▾':'▸'}</span> `;
-        cell=`<td style="font-weight:700;">${caret}${esc(r.group)}${flag}</td>`;
+        cell=`<td style="font-weight:700;">${caret(opts&&opts.opened)}${esc(r.group)}${flag}</td>`;
+      }else if(kind==='subflat'){
+        cell=`<td style="font-weight:700;">${exp?caret(opts.opened):''}${esc(r.group)}${flag}</td>`;
       }else if(kind==='sub'){
-        cell=`<td style="padding-left:28px;color:var(--text-sub);">${esc(r.group)}${flag}</td>`;
+        cell=`<td style="padding-left:28px;color:var(--text-sub);">${exp?caret(opts.opened):''}${esc(r.group)}${flag}</td>`;
+      }else if(kind==='prod'){
+        cell=`<td style="padding-left:52px;color:var(--muted);font-size:.9em;">${esc(r.group)}${flag}</td>`;
       }else{
         cell=`<td style="font-weight:700;">${esc(r.group)}${flag}</td>`;
       }
@@ -990,9 +998,19 @@ function mixCell(col,r,kind){
   }
   return f?cell.replace('<td','<td'+f):cell;
 }
-function mixRowHtml(r,kind){
-  const click=kind==='cat'?` class="cat-row" data-cat="${esc(r.group)}" style="cursor:pointer;"`:(kind==='sub'?' class="sub-row"':'');
-  return `<tr${click}>`+MIX_COLS.map(c=>mixCell(c,r,kind)).join('')+'</tr>';
+function mixRowHtml(r,kind,opts){
+  opts=opts||{};
+  let attrs='';
+  if(kind==='cat'){
+    attrs=` class="cat-row" data-cat="${esc(r.group)}" style="cursor:pointer;"`;
+  }else if((kind==='sub'||kind==='subflat')&&opts.expandable){
+    attrs=` class="sub-exp" data-subkey="${esc(opts.subKey)}" style="cursor:pointer;"`;
+  }else if(kind==='sub'){
+    attrs=' class="sub-row"';
+  }else if(kind==='prod'){
+    attrs=' class="prod-row"';
+  }
+  return `<tr${attrs}>`+MIX_COLS.map(c=>mixCell(c,r,kind,opts)).join('')+'</tr>';
 }
 function renderFabricMix(){
   const d=mixCache;if(!d)return;
@@ -1020,25 +1038,43 @@ function renderFabricMix(){
     // Delegated expand/collapse: read the (untrusted) category from a data-*
     // attribute, never from an inline JS handler (XSS-safe).
     body.addEventListener('click',e=>{
-      const tr=e.target.closest('tr.cat-row');
-      if(tr&&tr.dataset.cat!=null){mixOpen[tr.dataset.cat]=!mixOpen[tr.dataset.cat];renderFabricMix();}
+      const tc=e.target.closest('tr.cat-row');
+      if(tc&&tc.dataset.cat!=null){mixOpen[tc.dataset.cat]=!mixOpen[tc.dataset.cat];renderFabricMix();return;}
+      const ts=e.target.closest('tr.sub-exp');
+      if(ts&&ts.dataset.subkey!=null){mixSubOpen[ts.dataset.subkey]=!mixSubOpen[ts.dataset.subkey];renderFabricMix();return;}
     });
     mixBound=true;
   }
   if(!rows.length){body.innerHTML=`<tr><td colspan="${MIX_COLS.length}" class="loading">No consumption or stock in this period.</td></tr>`;return;}
-  // In category mode each row is expandable to its sub-categories; sub-category
-  // mode renders a flat list (already at the finest grain).
+  // Three-level in-place drill-down: category → sub-category → individual product.
+  // Category mode nests subs (expandable) under each category; sub-category mode
+  // renders a flat list of subs. Either way a sub-row with products is expandable
+  // to its product rows. Sub-keys join category+sub so identical sub names across
+  // categories never share an open-state.
+  const SEP='\u0001';
   let html='';
-  if(mixGroup==='subcategory'){
-    html=rows.map(r=>mixRowHtml(r,'flat')).join('');
-  }else{
-    rows.forEach(r=>{
-      html+=mixRowHtml(r,'cat');
-      if(mixOpen[r.group]&&Array.isArray(r.subcategories)){
-        mixSortRows(r.subcategories).forEach(s=>{html+=mixRowHtml(s,'sub');});
+  rows.forEach(r=>{
+    if(mixGroup==='subcategory'){
+      const subKey=(r.category||'')+SEP+r.group;
+      const prods=Array.isArray(r.products)?r.products:[];
+      html+=mixRowHtml(r,'subflat',{subKey,expandable:prods.length>0,opened:!!mixSubOpen[subKey]});
+      if(prods.length&&mixSubOpen[subKey]){
+        mixSortRows(prods).forEach(p=>{html+=mixRowHtml(p,'prod');});
       }
-    });
-  }
+    }else{
+      html+=mixRowHtml(r,'cat',{opened:!!mixOpen[r.group],expandable:true});
+      if(mixOpen[r.group]&&Array.isArray(r.subcategories)){
+        mixSortRows(r.subcategories).forEach(s=>{
+          const subKey=r.group+SEP+s.group;
+          const prods=Array.isArray(s.products)?s.products:[];
+          html+=mixRowHtml(s,'sub',{subKey,expandable:prods.length>0,opened:!!mixSubOpen[subKey]});
+          if(prods.length&&mixSubOpen[subKey]){
+            mixSortRows(prods).forEach(p=>{html+=mixRowHtml(p,'prod');});
+          }
+        });
+      }
+    }
+  });
   // Totals row
   html+=`<tr style="border-top:2px solid var(--border);font-weight:700;background:var(--bg);">
    <td style="font-weight:800;">Total</td>

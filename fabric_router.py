@@ -648,6 +648,8 @@ def fabric_mix(
         stock = q(conn, f"""
             SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
                    COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') as subcategory,
+                   i.product_id as product_id,
+                   COALESCE(NULLIF(p.name,''), NULLIF(p.default_code,''), 'Unknown') as product_name,
                    ROUND(SUM(i.quantity)::numeric,1) as available_kg,
                    ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,1) as available_metres,
                    ROUND(SUM(CASE WHEN COALESCE(p.kg_per_mtr,0)<=0 THEN i.quantity ELSE 0 END)::numeric,1) as available_kg_nometre,
@@ -655,7 +657,7 @@ def fabric_mix(
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE i.quantity > 0 {loc_sql}
-            GROUP BY 1, 2
+            GROUP BY 1, 2, 3, 4
         """, loc_params)
         net = _net_kg('m')
         if win_from and win_to:
@@ -667,13 +669,15 @@ def fabric_mix(
         cons = q(conn, f"""
             SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
                    COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') as subcategory,
+                   m.product_id as product_id,
+                   COALESCE(NULLIF(p.name,''), NULLIF(p.default_code,''), 'Unknown') as product_name,
                    ROUND(SUM({net})::numeric,1) as consumption_kg,
                    ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN ({net})/p.kg_per_mtr ELSE 0 END)::numeric,1) as consumption_metres,
                    ROUND(SUM(CASE WHEN COALESCE(p.kg_per_mtr,0)<=0 THEN ({net}) ELSE 0 END)::numeric,1) as consumption_kg_nometre
             FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {cons_where}
-            GROUP BY 1, 2
+            GROUP BY 1, 2, 3, 4
         """, cons_params)
 
         def _node(name):
@@ -684,12 +688,16 @@ def fabric_mix(
         def _cat(name):
             return cats.setdefault(name, {"_node": _node(name), "_subs": {}})
         def _sub(cat, name):
-            return _cat(cat)["_subs"].setdefault(name, _node(name))
+            return _cat(cat)["_subs"].setdefault(name, {"_node": _node(name), "_prods": {}})
+        def _prod(cat, sub, pid, name):
+            return _sub(cat, sub)["_prods"].setdefault(pid, _node(name))
         for r in cons:
             cv_kg = float(r["consumption_kg"] or 0)
             cv_m = float(r["consumption_metres"] or 0)
             cv_nm = float(r["consumption_kg_nometre"] or 0)
-            for x in (_cat(r["category"])["_node"], _sub(r["category"], r["subcategory"])):
+            for x in (_cat(r["category"])["_node"],
+                      _sub(r["category"], r["subcategory"])["_node"],
+                      _prod(r["category"], r["subcategory"], r["product_id"], r["product_name"])):
                 x["consumption_kg"] += cv_kg
                 x["consumption_metres"] += cv_m
                 x["_cons_kg_nometre"] += cv_nm
@@ -698,7 +706,9 @@ def fabric_mix(
             av_m = float(r["available_metres"] or 0)
             av_nm = float(r["available_kg_nometre"] or 0)
             kes = float(r["tied_up_kes"] or 0)
-            for x in (_cat(r["category"])["_node"], _sub(r["category"], r["subcategory"])):
+            for x in (_cat(r["category"])["_node"],
+                      _sub(r["category"], r["subcategory"])["_node"],
+                      _prod(r["category"], r["subcategory"], r["product_id"], r["product_name"])):
                 x["available_kg"] += av_kg
                 x["available_metres"] += av_m
                 x["tied_up_kes"] += kes
@@ -741,16 +751,27 @@ def fabric_mix(
                 "avail_kg_nometre": round(x["_avail_kg_nometre"], 1),
             }
 
+        def _finalize_sub(s):
+            srow = _finalize(s["_node"])
+            prods = [_finalize(p) for p in s["_prods"].values()]
+            prods.sort(key=lambda r: r["consumption_metres"], reverse=True)
+            srow["products"] = prods
+            return srow
+
         if group_by == "subcategory":
             out = []
             for c in cats.values():
-                out.extend(_finalize(s) for s in c["_subs"].values())
+                cat_name = c["_node"]["group"]
+                for s in c["_subs"].values():
+                    srow = _finalize_sub(s)
+                    srow["category"] = cat_name
+                    out.append(srow)
             out.sort(key=lambda r: r["consumption_metres"], reverse=True)
         else:
             out = []
             for c in cats.values():
                 row = _finalize(c["_node"])
-                subs = [_finalize(s) for s in c["_subs"].values()]
+                subs = [_finalize_sub(s) for s in c["_subs"].values()]
                 subs.sort(key=lambda r: r["consumption_metres"], reverse=True)
                 row["subcategories"] = subs
                 out.append(row)
