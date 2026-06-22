@@ -3229,6 +3229,35 @@ def get_customers(
             AND s.sale_kind = 'order'
             """ + country_filter + " " + channel_filter + """
         ),
+        first_purchase AS (
+            -- First-ever purchase date per customer_id across ALL history (not
+            -- scoped to the selected window). sale_date is TEXT so cast ::date
+            -- before MIN. Used only by the additive "first-time registered"
+            -- metric below — it does NOT feed New/Returning (seg), which stays
+            -- driven by the stored customer_type to avoid the known
+            -- first-purchase-recompute inflation of "New".
+            SELECT customer_id, MIN(sale_date::date) AS first_purchase_date
+            FROM all_sales
+            WHERE sale_kind IN ('sale','order')
+              AND customer_id IS NOT NULL
+              AND customer_id NOT IN ('None','null','')
+            GROUP BY customer_id
+        ),
+        first_time_reg AS (
+            -- Additive metric: registered (POS counter) orders whose customer's
+            -- first-EVER purchase falls inside the selected window. Surfaces
+            -- genuine first-time registered shoppers WITHOUT changing the
+            -- New/Returning split (registered still rolls into Returning in
+            -- seg). Honors the same country/channel filters as the period.
+            SELECT COUNT(DISTINCT s.order_id) AS first_time_registered
+            FROM all_sales s
+            JOIN first_purchase fp ON fp.customer_id = s.customer_id
+            WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+            AND s.sale_kind = 'order'
+            AND LOWER(s.customer_type) = 'registered'
+            AND fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date
+            """ + country_filter + " " + channel_filter + """
+        ),
         pc_agg AS (
             -- Identified-customer aggregates (avg spend, profile completeness)
             -- still keyed on customer_id over the cleaned period_customers set.
@@ -3247,6 +3276,7 @@ def get_customers(
             sg.new_c AS new_customers,
             0 AS repeat_customers,
             sg.ret_c AS returning_customers,
+            ftr.first_time_registered AS first_time_registered,
             c.churned_count AS churned_customers,
             pa.incomplete_profile_customers AS incomplete_profile_customers,
             pa.avg_customer_spend AS avg_customer_spend,
@@ -3254,6 +3284,7 @@ def get_customers(
             ROUND(c.churned_count * 100.0 / NULLIF(c.eligible_base, 0), 2) AS churn_rate
         FROM seg sg
         CROSS JOIN churned c
+        CROSS JOIN first_time_reg ftr
         CROSS JOIN pc_agg pa
     """, date_to=date_to)
     return rows[0] if rows else {}

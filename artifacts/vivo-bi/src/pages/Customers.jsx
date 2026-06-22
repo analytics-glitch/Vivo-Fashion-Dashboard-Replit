@@ -844,6 +844,38 @@ const Customers = () => {
                       See VIPs <ArrowRight size={11} weight="bold" />
                     </button>
                   </div>
+                  {(() => {
+                    // Additive metric — does NOT change the New/Returning split
+                    // above. Counts POS counter (`registered`) orders whose
+                    // customer's first-EVER purchase falls inside the selected
+                    // window, i.e. genuine first-time registered shoppers.
+                    const FTR_TIP =
+                      "First-time registered customers — POS counter (registered) shoppers whose first-ever purchase falls in the selected period. This is an additive view of genuine first-timers; it does NOT change the New vs Returning breakdown (registered still counts as Returning everywhere). Respects the date, country, and channel filters.";
+                    const ftr = cust.first_time_registered || 0;
+                    return (
+                      <div
+                        className="card-white p-3.5 sm:p-5"
+                        data-testid="kpi-first-time-registered"
+                        title={FTR_TIP}
+                      >
+                        <div className="flex items-center gap-2">
+                          <UserPlus size={16} className="text-brand" />
+                          <div className="eyebrow">First-time Registered</div>
+                          <span title={FTR_TIP} className="text-muted text-[10px] cursor-help">ⓘ</span>
+                        </div>
+                        <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight">
+                          {fmtNum(ftr)}
+                        </div>
+                        <div className="text-[10.5px] text-muted mt-0.5">first-ever purchase in period</div>
+                        {compareLbl && (
+                          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                            <Delta curr={ftr} prev={custPrev?.first_time_registered} />
+                            <span className="text-[10px] text-muted">{compareLbl}</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </>
               );
             })()}
