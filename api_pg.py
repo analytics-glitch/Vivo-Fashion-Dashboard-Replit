@@ -2271,6 +2271,18 @@ _MANUAL_RETIRED_STYLES = [
 ]
 _RETIRED_STYLE_NORM = frozenset(_norm_style(s) for s in _MANUAL_RETIRED_STYLES)
 
+# SQL `IN (...)` literal of the manually-retired style names (single quotes
+# doubled) so the warehouse-return "retired" mode can force-include them even
+# when they still have recent sales. Falls back to '' (matches nothing) when the
+# list is empty.
+_MANUAL_RETIRED_IN_SQL = (
+    "'" + "','".join(s.replace("'", "''") for s in _MANUAL_RETIRED_STYLES) + "'"
+    if _MANUAL_RETIRED_STYLES else "''"
+)
+
+# Rec types that the shared Transfer Tracking report + assign endpoints accept.
+_TRANSFER_REC_TYPES = {"replenish", "warehouse_return"}
+
 def _is_manually_retired(style_name):
     return _norm_style(style_name) in _RETIRED_STYLE_NORM
 
@@ -5760,6 +5772,95 @@ def analytics_aged_stock(
         r["velocity_method"] = "ewma_56d"
     return rows
 
+@app.get("/api/analytics/warehouse-return-candidates")
+def analytics_warehouse_return_candidates(
+    mode:     str = Query(default="aged"),
+    min_days: int = Query(default=30),
+):
+    """Store SKUs that are candidates to be returned to the warehouse, for the
+    Warehouse Returns page. Two modes:
+
+      * 'aged'    — stock that has not sold AT ITS STORE in >= min_days days
+                    (never-sold SKUs included, surfaced with the 999 sentinel).
+      * 'retired' — stock of RETIRED styles: no company-wide sales in the last
+                    182 days, OR on the manual-retirement list (force-included
+                    even if they still sell, honouring _is_manually_retired so
+                    this page agrees with Range Mgmt / Product Analysis).
+
+    One row per SKU-store with store SOH (soh), warehouse SOH (soh_warehouse),
+    days-since-last-sale and `already_marked` (true once it has been marked for a
+    warehouse return). Warehouses themselves are excluded as the destination."""
+    m = "retired" if str(mode).lower() == "retired" else "aged"
+    n = max(0, int(min_days))
+    if m == "aged":
+        where_extra = ("AND (ls.last_sold IS NULL "
+                       "OR ls.last_sold::date < CURRENT_DATE - ("
+                       + str(n) + " || ' days')::interval)")
+    else:
+        where_extra = ("AND (COALESCE(ss.units_182, 0) = 0 "
+                       "OR p.style_name IN (" + _MANUAL_RETIRED_IN_SQL + "))")
+    rows = run_query("""
+        WITH last_sale AS (
+            SELECT pos_location_name AS pos_location, variant_sku AS sku,
+                MAX(sale_date) AS last_sold,
+                SUM(CASE WHEN sale_date::date >= CURRENT_DATE - INTERVAL '180 days'
+                         THEN ordered_item_quantity ELSE 0 END) AS units_180
+            FROM all_sales
+            WHERE sale_kind IN ('sale','order')
+            GROUP BY pos_location_name, variant_sku
+        ),
+        style_sales AS (
+            SELECT p.style_name,
+                SUM(CASE WHEN s.sale_date::date >= CURRENT_DATE - INTERVAL '182 days'
+                         THEN s.ordered_item_quantity ELSE 0 END) AS units_182
+            FROM all_sales s
+            JOIN all_products_clean p ON s.variant_sku = p.sku
+            WHERE s.sale_kind IN ('sale','order')
+            GROUP BY p.style_name
+        ),
+        wh AS (
+            SELECT sku, SUM(available) AS soh_warehouse
+            FROM all_inventory
+            WHERE pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+            GROUP BY sku
+        ),
+        marked AS (
+            SELECT split_part(rec_key,'|',1) AS pos_location,
+                   split_part(rec_key,'|',3) AS sku
+            FROM recommendation_actions
+            WHERE rec_type='warehouse_return' AND status='done'
+        )
+        SELECT i.pos_location_name AS pos_location,
+            i.sku,
+            MAX(i.product_name) AS product_name,
+            MAX(p.size) AS size,
+            MAX(p.barcode) AS barcode,
+            MAX(i.color_print) AS color,
+            MAX(p.style_name) AS style_name,
+            COALESCE(MAX(ls.units_180), 0) AS units_sold_180d,
+            SUM(i.available) AS soh,
+            COALESCE(MAX(wh.soh_warehouse), 0) AS soh_warehouse,
+            CASE WHEN MAX(ls.last_sold) IS NULL THEN 999
+                 ELSE (CURRENT_DATE - MAX(ls.last_sold)::date) END AS days_since_last_sale,
+            MAX(ls.last_sold) AS last_sale_date,
+            BOOL_OR(m.sku IS NOT NULL) AS already_marked
+        FROM all_inventory i
+        LEFT JOIN last_sale ls
+            ON i.sku = ls.sku AND i.pos_location_name = ls.pos_location
+        LEFT JOIN wh ON i.sku = wh.sku
+        LEFT JOIN all_products_clean p ON i.sku = p.sku
+        LEFT JOIN style_sales ss ON p.style_name = ss.style_name
+        LEFT JOIN marked m
+            ON m.pos_location = i.pos_location_name AND m.sku = i.sku
+        WHERE i.available > 0
+        AND i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+        """ + where_extra + """
+        GROUP BY i.pos_location_name, i.sku
+        ORDER BY days_since_last_sale DESC, soh DESC
+        LIMIT 1500
+    """)
+    return {"mode": m, "min_days": n, "rows": rows}
+
 @app.get("/api/inventory/freshness")
 def inventory_freshness():
     rows = _users_exec("""
@@ -7913,20 +8014,46 @@ def analytics_replenishment_completed(days: int = Query(default=30)):
 
 
 @app.get("/api/analytics/replenishment-transfer-report")
-def analytics_replenishment_transfer_report(days: int = Query(default=60)):
-    """DONE replenishments grouped by POS location + day, for tracking what was
+def analytics_replenishment_transfer_report(
+    days:      int = Query(default=60),
+    date_from: str = Query(default=None),
+    date_to:   str = Query(default=None),
+    rec_type:  str = Query(default="replenish"),
+):
+    """DONE recommendations grouped by POS location + day, for tracking what was
     marked done against the actual Odoo transfer document.
 
-    Once an item is marked done on the Replenishments / Replenishment-by-style
-    pages it lands in `recommendation_actions` (rec_type='replenish',
-    status='done'); this report rolls those rows up into one bucket per
+    Shared by two surfaces via `rec_type`: 'replenish' (Replenishments /
+    Replenishment-by-style) and 'warehouse_return' (the Warehouse Returns page).
+    Once an item is marked done it lands in `recommendation_actions`
+    (status='done'); this report rolls those rows up into one bucket per
     (POS location, day) so an operator can record the single Odoo transfer
-    number that physically moved that store's items that day. Days bucket by
-    Africa/Nairobi (EAT) so a late-evening mark is not pushed to the next UTC
-    day. Items are enriched with product name/size/colour from
-    all_products_clean (same DB) and de-duplicated: marking done writes BOTH a
-    'sku' and a 'barcode' keyed row for the same physical item, so we collapse
-    them to one canonical SKU."""
+    number that physically moved that store's items that day.
+
+    Window: by default the trailing `days` days; pass `date_from`/`date_to`
+    (YYYY-MM-DD, inclusive) to use a custom EAT calendar range instead. Days
+    bucket by Africa/Nairobi (EAT) so a late-evening mark is not pushed to the
+    next UTC day. Items are enriched with product name/size/colour from
+    all_products_clean (same DB) and de-duplicated: a replenish mark writes BOTH
+    a 'sku' and a 'barcode' keyed row for the same physical item, so we collapse
+    them to one canonical SKU (warehouse returns write a single sku row)."""
+    from fastapi import HTTPException
+    rt = rec_type if rec_type in _TRANSFER_REC_TYPES else "replenish"
+    df = (date_from or "").strip()
+    dt = (date_to or "").strip()
+    params = [rt]
+    if df and dt:
+        try:
+            date.fromisoformat(df); date.fromisoformat(dt)
+        except ValueError:
+            raise HTTPException(status_code=400,
+                                detail="date_from/date_to must be YYYY-MM-DD")
+        win_sql = ("    AND (acted_at AT TIME ZONE 'Africa/Nairobi')::date "
+                   "BETWEEN %s::date AND %s::date")
+        params += [df, dt]
+    else:
+        win_sql = "    AND acted_at >= now() - (%s || ' days')::interval"
+        params.append(str(int(days)))
     rows = _users_exec(
         "WITH done AS ("
         "  SELECT split_part(rec_key,'|',1) AS pos_location,"
@@ -7937,8 +8064,8 @@ def analytics_replenishment_transfer_report(days: int = Query(default=60)):
         "         COALESCE(transfer_ref,'') AS transfer_ref,"
         "         acted_by, acted_at"
         "  FROM recommendation_actions"
-        "  WHERE rec_type='replenish' AND status='done'"
-        "    AND acted_at >= now() - (%s || ' days')::interval"
+        "  WHERE rec_type=%s AND status='done'"
+        + win_sql +
         ") "
         "SELECT d.pos_location, d.kind, d.value, d.day, d.actual_units,"
         "       d.transfer_ref, d.acted_by, d.acted_at,"
@@ -7953,7 +8080,7 @@ def analytics_replenishment_transfer_report(days: int = Query(default=60)):
         "  ON (d.kind='sku' AND p.sku = d.value) "
         "  OR (d.kind='barcode' AND p.barcode = d.value) "
         "ORDER BY d.day DESC, d.pos_location ASC, d.acted_at DESC",
-        (str(int(days)),), fetch=True) or []
+        tuple(params), fetch=True) or []
 
     groups = {}
     for r in rows:
@@ -8004,20 +8131,24 @@ def analytics_replenishment_transfer_report(days: int = Query(default=60)):
         "groups": out_groups,
         "group_count": len(out_groups),
         "total_units": sum(g["total_units"] for g in out_groups),
+        "rec_type": rt,
     }
 
 
 @app.post("/api/analytics/replenishment-transfer-report/assign")
 async def analytics_replenishment_transfer_assign(request: Request):
-    """Stamp ONE Odoo transfer number onto every done replenishment for a given
+    """Stamp ONE Odoo transfer number onto every done recommendation for a given
     (POS location, day) bucket, so the marked-done items can be reconciled
     against the physical transfer document. Day is the EAT calendar day used by
-    the report above."""
+    the report above. `rec_type` selects the surface ('replenish' default, or
+    'warehouse_return')."""
     from fastapi import HTTPException
     body = await request.json()
     pos_location = (body.get("pos_location") or "").strip()
     day = (body.get("day") or "").strip()
     transfer_ref = (body.get("transfer_ref") or "").strip()
+    rec_type = (body.get("rec_type") or "replenish").strip()
+    rt = rec_type if rec_type in _TRANSFER_REC_TYPES else "replenish"
     if not pos_location or not day:
         raise HTTPException(status_code=400, detail="pos_location and day are required")
     try:
@@ -8027,14 +8158,14 @@ async def analytics_replenishment_transfer_assign(request: Request):
     updated = _users_exec(
         "UPDATE recommendation_actions "
         "SET transfer_ref = %s "
-        "WHERE rec_type='replenish' AND status='done' "
+        "WHERE rec_type=%s AND status='done' "
         "  AND split_part(rec_key,'|',1) = %s "
         "  AND (acted_at AT TIME ZONE 'Africa/Nairobi')::date = %s::date "
         "RETURNING 1",
-        ((transfer_ref or None), pos_location, day), fetch=True) or []
+        ((transfer_ref or None), rt, pos_location, day), fetch=True) or []
     return {
         "ok": True, "pos_location": pos_location, "day": day,
-        "transfer_ref": transfer_ref, "updated": len(updated),
+        "transfer_ref": transfer_ref, "updated": len(updated), "rec_type": rt,
     }
 
 

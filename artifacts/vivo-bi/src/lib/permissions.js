@@ -16,10 +16,10 @@
 const VIEWER = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "fabric"];
 
 const PRODUCT_DEVELOPMENT = ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports"];
-const RETAIL = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "replenishments", "replenish-by-item", "ibt", "exports"];
-const WAREHOUSE = ["inventory", "replenishments", "replenish-by-item", "ibt", "re-order", "allocations", "data-quality", "exports"];
-const STORE_MANAGER = ["locations", "footfall", "replenishments", "replenish-by-item", "ibt"];
-const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr"])];
+const RETAIL = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "exports"];
+const WAREHOUSE = ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "re-order", "allocations", "data-quality", "exports"];
+const STORE_MANAGER = ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "ibt"];
+const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr"])];
 const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "footfall", "rfm"];
 const MARKETING = ["marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm"];
 const HR = ["hr"];

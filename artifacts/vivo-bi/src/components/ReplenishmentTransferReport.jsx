@@ -4,13 +4,30 @@ import { toast } from "sonner";
 import { Loading, ErrorBox, Empty } from "@/components/common";
 import {
   ArrowsClockwise, CaretDown, CaretRight, Truck, Check, CheckCircle,
+  DownloadSimple,
 } from "@phosphor-icons/react";
 
-const DAY_OPTIONS = [
-  { label: "30 days", value: 30 },
-  { label: "60 days", value: 60 },
-  { label: "90 days", value: 90 },
+// Quick presets just pre-fill the custom from/to range with the trailing N days.
+const RANGE_PRESETS = [
+  { label: "30d", days: 30 },
+  { label: "60d", days: 60 },
+  { label: "90d", days: 90 },
 ];
+
+// Local (EAT-ish) YYYY-MM-DD — formatted in local time so the default range does
+// not shift by a day around midnight in East Africa (UTC+3).
+const ymd = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+const todayYmd = () => ymd(new Date());
+const daysAgoYmd = (n) => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return ymd(d);
+};
 
 const fmtDoneAt = (s) => {
   if (!s) return "—";
@@ -38,19 +55,34 @@ const fmtDay = (d) => {
 
 const groupKey = (g) => `${g.pos_location}__${g.day}`;
 
+const csvCell = (v) => {
+  const s = v == null ? "" : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
 /**
  * Transfer Tracking — Marked Done → Odoo.
  *
- * Rolls every DONE replenishment (marked from the Replenishments list or the
- * Replenish-by-style page — both write the same store) into one bucket per
- * (POS location, day) so an operator can record the single Odoo transfer
+ * Rolls every DONE recommendation of `recType` (marked from the Replenishments
+ * list / Replenish-by-style page, or the Warehouse Returns page) into one bucket
+ * per (POS location, day) so an operator can record the single Odoo transfer
  * document number that physically moved that store's items that day, and later
  * reconcile "this transfer number had the following items" against Odoo.
  *
- * Shared by Replenishments.jsx and ReplenishByItem.jsx.
+ * The window is a CUSTOM calendar range (from / to) with quick presets, and the
+ * whole report can be exported to CSV (flattened item rows).
+ *
+ * Shared by Replenishments.jsx, ReplenishByItem.jsx and WarehouseReturns.jsx.
  */
-export default function ReplenishmentTransferReport() {
-  const [days, setDays] = useState(60);
+export default function ReplenishmentTransferReport({
+  recType = "replenish",
+  title = "Transfer Tracking — Marked Done → Odoo",
+  description = "Items you mark as done land here, grouped by store and day. Enter the one Odoo transfer number that physically moved that store's items that day — it applies to every item in the group so you can reconcile the marked-done items against the actual transfer.",
+  noun = "replenishments",
+  exportPrefix = "transfer-tracking",
+} = {}) {
+  const [from, setFrom] = useState(() => daysAgoYmd(60));
+  const [to, setTo] = useState(() => todayYmd());
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -63,7 +95,7 @@ export default function ReplenishmentTransferReport() {
     setError(null);
     try {
       const { data: res } = await api.get("/analytics/replenishment-transfer-report", {
-        params: { days },
+        params: { rec_type: recType, date_from: from, date_to: to },
         forceFresh,
       });
       setData(res);
@@ -81,11 +113,16 @@ export default function ReplenishmentTransferReport() {
     } finally {
       setLoading(false);
     }
-  }, [days]);
+  }, [recType, from, to]);
 
   useEffect(() => { load(); }, [load]);
 
   const toggle = (k) => setExpanded((p) => ({ ...p, [k]: !p[k] }));
+
+  const applyPreset = (n) => {
+    setFrom(daysAgoYmd(n));
+    setTo(todayYmd());
+  };
 
   const saveTransfer = async (g) => {
     const k = groupKey(g);
@@ -94,7 +131,7 @@ export default function ReplenishmentTransferReport() {
     try {
       const { data: res } = await api.post(
         "/analytics/replenishment-transfer-report/assign",
-        { pos_location: g.pos_location, day: g.day, transfer_ref: ref },
+        { pos_location: g.pos_location, day: g.day, transfer_ref: ref, rec_type: recType },
       );
       // Patch locally so the badge updates without a full refetch.
       setData((prev) => ({
@@ -131,26 +168,85 @@ export default function ReplenishmentTransferReport() {
     assigned: groups.filter((g) => (g.transfer_ref || "").trim()).length,
   }), [data, groups]);
 
+  const exportCsv = useCallback(() => {
+    const header = [
+      "Store", "Day", "Transfer #", "Product", "Size", "Colour",
+      "SKU", "Barcode", "Units", "Done by", "Done at",
+    ];
+    const lines = [header.map(csvCell).join(",")];
+    for (const g of groups) {
+      for (const it of g.items || []) {
+        lines.push([
+          g.pos_location, g.day, it.transfer_ref || "",
+          it.product_name || "", it.size || "", it.color_print || "",
+          it.sku || "", it.barcode || "", it.actual_units ?? 0,
+          it.completed_by || "", it.completed_at || "",
+        ].map(csvCell).join(","));
+      }
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${exportPrefix}_${from}_to_${to}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [groups, from, to, exportPrefix]);
+
   return (
     <div className="rounded-xl border border-border bg-card">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
         <div className="flex items-center gap-2">
           <Truck size={18} weight="duotone" className="text-primary" />
           <h2 className="font-sans font-bold text-[16px] tracking-tight text-foreground">
-            Transfer Tracking — Marked Done → Odoo
+            {title}
           </h2>
         </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={days}
-            onChange={(e) => setDays(Number(e.target.value))}
-            className="rounded-md border border-input bg-background px-2 py-1 text-sm"
-            data-testid="select-transfer-days"
-          >
-            {DAY_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex overflow-hidden rounded-md border border-input" data-testid="transfer-range-presets">
+            {RANGE_PRESETS.map((p) => (
+              <button
+                key={p.days}
+                type="button"
+                onClick={() => applyPreset(p.days)}
+                className="px-2 py-1 text-xs font-semibold text-foreground hover:bg-accent"
+                data-testid={`button-transfer-preset-${p.days}`}
+              >
+                {p.label}
+              </button>
             ))}
-          </select>
+          </div>
+          <input
+            type="date"
+            value={from}
+            max={to}
+            onChange={(e) => setFrom(e.target.value)}
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+            data-testid="input-transfer-from"
+            aria-label="From date"
+          />
+          <span className="text-xs text-muted-foreground">to</span>
+          <input
+            type="date"
+            value={to}
+            min={from}
+            max={todayYmd()}
+            onChange={(e) => setTo(e.target.value)}
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+            data-testid="input-transfer-to"
+            aria-label="To date"
+          />
+          <button
+            type="button"
+            onClick={exportCsv}
+            disabled={groups.length === 0}
+            className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-2 py-1 text-sm hover:bg-accent disabled:opacity-50"
+            data-testid="button-export-transfer-report"
+          >
+            <DownloadSimple size={15} /> Export CSV
+          </button>
           <button
             type="button"
             onClick={() => load(true)}
@@ -163,10 +259,7 @@ export default function ReplenishmentTransferReport() {
       </div>
 
       <p className="px-4 pt-3 text-xs text-muted-foreground">
-        Items you mark as done land here, grouped by store and day. Enter the one
-        Odoo transfer number that physically moved that store's items that day —
-        it applies to every item in the group so you can reconcile the marked-done
-        items against the actual transfer.
+        {description}
       </p>
 
       {loading ? (
@@ -175,7 +268,7 @@ export default function ReplenishmentTransferReport() {
         <div className="p-4"><ErrorBox message={error} /></div>
       ) : groups.length === 0 ? (
         <div className="p-4">
-          <Empty label="No replenishments have been marked done in this window yet." />
+          <Empty label={`No ${noun} have been marked done in this date range yet.`} />
         </div>
       ) : (
         <>
