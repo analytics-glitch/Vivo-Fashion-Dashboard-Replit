@@ -37,8 +37,11 @@ log = logging.getLogger("warehouse_bins")
 # Set WAREHOUSE_BINS_SHEET_ID once the converted sheet link is available (both in
 # the workspace and as a deployment secret for production).
 SHEET_ID = os.environ.get("WAREHOUSE_BINS_SHEET_ID", "").strip()
-# Blank tab => auto-detect the first tab in the spreadsheet.
+# Worksheet selection. Priority: an explicit tab TITLE (WAREHOUSE_BINS_TAB), then a
+# tab GID (WAREHOUSE_BINS_GID — the stable numeric id in a sheet URL's #gid=...),
+# else auto-detect the first tab in the spreadsheet.
 SHEET_TAB = os.environ.get("WAREHOUSE_BINS_TAB", "").strip()
+SHEET_GID = os.environ.get("WAREHOUSE_BINS_GID", "").strip()
 REFRESH_INTERVAL_SEC = int(os.environ.get("WAREHOUSE_BINS_REFRESH_SEC", str(6 * 3600)))
 
 _refresh_lock = threading.Lock()
@@ -93,13 +96,16 @@ def ensure_table(conn):
     conn.commit()
 
 
-def _first_tab(sheet_id):
-    """Return the title of the first tab in the spreadsheet (used when no explicit
-    WAREHOUSE_BINS_TAB is configured)."""
+def _resolve_tab(sheet_id):
+    """Return the worksheet TITLE to read. Priority: an explicit WAREHOUSE_BINS_TAB
+    title (no API call needed), then a WAREHOUSE_BINS_GID match (resolved to its
+    title via the sheet metadata), else the first tab in the spreadsheet."""
+    if SHEET_TAB:
+        return SHEET_TAB
     tok = _connector_access_token("google-sheet")
     r = requests.get(
         f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}",
-        params={"fields": "sheets.properties.title"},
+        params={"fields": "sheets.properties(sheetId,title)"},
         headers={"Authorization": f"Bearer {tok}"},
         timeout=30,
     )
@@ -107,6 +113,13 @@ def _first_tab(sheet_id):
     sheets = (r.json() or {}).get("sheets") or []
     if not sheets:
         raise RuntimeError("spreadsheet has no tabs")
+    if SHEET_GID:
+        for s in sheets:
+            if str(s["properties"].get("sheetId")) == SHEET_GID:
+                return s["properties"]["title"]
+        raise RuntimeError(
+            f"WAREHOUSE_BINS_GID={SHEET_GID} not found among "
+            f"{[s['properties'].get('sheetId') for s in sheets]}")
     return sheets[0]["properties"]["title"]
 
 
@@ -184,7 +197,7 @@ def refresh(conn, force=False):
             return "in_progress"
         try:
             # Network fetch first — if it fails we never TRUNCATE.
-            tab = SHEET_TAB or _first_tab(SHEET_ID)
+            tab = _resolve_tab(SHEET_ID)
             values = _gsheet_values(SHEET_ID, tab, "A1:Z20000")
             pairs = _parse_rows(values)
             with conn.cursor() as cur:
