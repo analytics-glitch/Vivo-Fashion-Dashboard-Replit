@@ -2847,7 +2847,7 @@ def get_country_summary(
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END), 0) AS discounts,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS returns,
-            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size
+            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size
         FROM all_sales s
         WHERE """ + where + """
         GROUP BY s.country
@@ -2870,7 +2870,7 @@ def get_sales_summary(
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END), 0) AS discounts,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS returns,
-            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size
+            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size
         FROM all_sales s
         WHERE """ + where + """
         GROUP BY s.pos_location_name, s.country
@@ -2883,17 +2883,13 @@ def get_daily_trend(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
 ):
-    # Net of returns so the trend sums to the headline (variant A). Return rows
-    # are INCLUDED (no sale_kind filter) so returns_kes subtracts on the return's
-    # own date; orders/units/gross stay sale+order only.
-    where = build_filters(date_from, date_to, country)
+    where = build_filters(date_from, date_to, country, extra="s.sale_kind IN ('sale','order')")
     return run_query("""
         SELECT s.sale_date AS day, s.country,
-            COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
-            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
-                - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales
+            COUNT(DISTINCT s.order_id) AS orders,
+            SUM(s.ordered_item_quantity) AS units,
+            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
+            ROUND(SUM(s.gross_sales_kes::numeric), 0) AS gross_sales
         FROM all_sales s
         WHERE """ + where + """
         GROUP BY s.sale_date, s.country
@@ -4067,7 +4063,7 @@ def _country_summary_q(date_from, date_to, country=None, channel=None):
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END), 0) AS discounts,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS returns,
-            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size
+            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size
         FROM all_sales s
         WHERE """ + where + """
         GROUP BY s.country
@@ -4077,16 +4073,12 @@ def _country_summary_q(date_from, date_to, country=None, channel=None):
 def _daily_by_country_q(date_from, date_to, country=None, channel=None):
     if not date_from or not date_to:
         return {}
-    # Net of returns so the per-country daily series reconciles to the headline
-    # (variant A), matching /api/daily-trend. Returns subtract on their own date;
-    # orders/units stay sale+order only.
-    where = build_filters(date_from, date_to, country, channel)
+    where = build_filters(date_from, date_to, country, channel, extra="s.sale_kind IN ('sale','order')")
     rows = run_query("""
         SELECT s.sale_date AS day, s.country,
-            COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
-            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
-                - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales
+            COUNT(DISTINCT s.order_id) AS orders,
+            SUM(s.ordered_item_quantity) AS units,
+            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales
         FROM all_sales s
         WHERE """ + where + """
         GROUP BY s.sale_date, s.country
@@ -4164,7 +4156,7 @@ def analytics_total_sales_summary(
     where = build_filters(date_from, date_to, country, channel)
     rows = run_query("""
         SELECT
-            COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0), 0) AS total_sales,
+            COALESCE(ROUND(SUM(s.total_sales_kes::numeric), 0), 0) AS total_sales,
             COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
                           WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0), 0) AS net_sales,
             COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0), 0) AS gross_sales,
