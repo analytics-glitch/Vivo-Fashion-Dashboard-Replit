@@ -293,6 +293,7 @@ function ReportBulkToolbar({ fromStages, flowStages, count, busy, msg, onMove, o
   const [toStage, setToStage] = useState("");
   const [sewingLine, setSewingLine] = useState("");
   const [err, setErr] = useState(null);
+  const [confirm, setConfirm] = useState(null);
 
   const fromKeys = fromStages.map((s) => s.stage_key).join(",");
   useEffect(() => {
@@ -324,8 +325,42 @@ function ReportBulkToolbar({ fromStages, flowStages, count, busy, msg, onMove, o
     if (!fromStage) { setErr("Pick a current stage."); return; }
     if (!toStage) { setErr("Pick a destination."); return; }
     if (needLine && !sewingLine) { setErr("Pick a sewing line (A–E)."); return; }
-    onMove({ fromStage, toStage, sewingLine: intoSewing ? (sewingLine || undefined) : undefined });
+    setConfirm({ fromStage, toStage, sewingLine: intoSewing ? (sewingLine || undefined) : undefined });
   };
+
+  if (confirm) {
+    return (
+      <div className="mb-3 rounded-lg border border-[#1a5c38]/30 bg-brand/5 px-3 py-2.5" data-testid="production-report-bulkbar">
+        <div className="text-[12px] font-bold text-[#0f3d24] mb-1">Confirm move</div>
+        <div className="text-[12px] text-[#0f3d24] mb-2.5" data-testid="production-report-bulk-confirm-summary">
+          Move <span className="font-bold">{count}</span> order{count === 1 ? "" : "s"} from{" "}
+          <span className="font-semibold">{stageName(confirm.fromStage)}</span> to{" "}
+          <span className="font-semibold">{stageName(confirm.toStage)}</span>
+          {confirm.sewingLine ? <> · sewing line <span className="font-semibold">{confirm.sewingLine}</span></> : null}?
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => { const c = confirm; setConfirm(null); onMove(c); }}
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-3 py-1.5 rounded-md disabled:opacity-50"
+            data-testid="production-report-bulk-confirm"
+          >
+            {busy ? "Moving…" : "Confirm move"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirm(null)}
+            disabled={busy}
+            className="text-[12px] font-semibold text-[#0f3d24] border border-[#1a5c38]/30 hover:bg-white px-3 py-1.5 rounded-md disabled:opacity-50"
+            data-testid="production-report-bulk-cancel"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mb-3 rounded-lg border border-[#1a5c38]/30 bg-brand/5 px-3 py-2.5" data-testid="production-report-bulkbar">
