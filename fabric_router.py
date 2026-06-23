@@ -1231,7 +1231,7 @@ def filters():
             "subcategories": subcats,
             "locations": [r['value'] for r in locs],
             "fabric_colors": [r['value'] for r in colors],
-            "plain_print": ["Plain", "Print"],
+            "plain_print": ["Solid", "Print"],
             "weight_range": ["Light", "Medium", "Heavy"],
         }
 
