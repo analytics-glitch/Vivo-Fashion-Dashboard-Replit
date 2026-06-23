@@ -285,8 +285,6 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div class="card">
       <div class="section-head"><h3>Solid vs Print</h3><span class="muted" id="split-print-unit">share by metres</span></div>
       <div id="split-print"><div class="loading">Loading…</div></div>
-      <div class="section-head" style="margin-top:20px;"><h3>Weight class</h3><span class="muted">by value</span></div>
-      <div id="split-weight"><div class="loading">Loading…</div></div>
      </div>
     </div>
     <div class="grid-2">
@@ -643,7 +641,6 @@ const FX={
   // Overview charts
   catStock:'Category stock = sum of on-hand quantity for fabrics in this category (value shown in KES).',
   printShare:'Share = this pattern type\u2019s quantity ÷ total quantity across all patterns.',
-  weightValue:'Weight-class value = sum of stock value (KES) for fabrics in this weight band.',
   structureValue:'Structure value = sum of stock value (KES) for fabrics of this structure (knit / woven).',
   fiberValue:'Fiber value = sum of stock value (KES) for fabrics declaring this fiber content.',
   // Ageing
@@ -1392,14 +1389,13 @@ async function loadOverview(){
     ovCache={d,cat,split};
     renderOverviewCached();
     document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString();
-  }catch(e){showErr('kpi-cards',e);['category-bars','split-print','split-weight','split-structure','split-fiber'].forEach(id=>{const el=document.getElementById(id);if(el&&el.querySelector('.loading'))el.innerHTML='';});}
+  }catch(e){showErr('kpi-cards',e);['category-bars','split-print','split-structure','split-fiber'].forEach(id=>{const el=document.getElementById(id);if(el&&el.querySelector('.loading'))el.innerHTML='';});}
 }
 function renderOverviewCached(){
   if(!ovCache)return;
   renderKpis(ovCache.d);
   renderCategories(ovCache.cat);
   renderPrintDonut(ovCache.split.plain_print);
-  renderSplit('split-weight',ovCache.split.weight_range,FX.weightValue);
   renderSplit('split-structure',ovCache.split.structure,FX.structureValue);
   renderSplit('split-fiber',ovCache.split.fiber,FX.fiberValue);
 }
