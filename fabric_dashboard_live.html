@@ -928,7 +928,7 @@ function onMixSearch(){
 function mixProdMatches(p){
   if(!mixSearch)return true;
   const dc=p.detail||{};
-  const hay=[p.group,dc.name,dc.default_code,dc.barcode].filter(Boolean).join(' ').toLowerCase();
+  const hay=[p.group,dc.name,fabricClean(dc.default_code),fabricClean(dc.barcode)].filter(Boolean).join(' ').toLowerCase();
   return hay.indexOf(mixSearch)>=0;
 }
 // Index every product row's register detail by product_id so the barcode link can
@@ -1034,6 +1034,18 @@ function mixSortRows(rows){
     return (x-y)*dir;
   });
 }
+// Odoo leaves an empty Internal Reference / Barcode as the literal "false"
+// (extracted as text, not NULL), so treat "false"/blank as missing. The Stock
+// Mix "Barcode" column shows default_code (Odoo Internal Ref); when that is
+// missing, fall back to the real scannable barcode before giving up.
+function fabricClean(v){
+  if(v==null)return '';
+  const s=String(v).trim();
+  return (s===''||s.toLowerCase()==='false')?'':s;
+}
+function fabricCode(d){
+  return fabricClean(d&&d.default_code)||fabricClean(d&&d.barcode);
+}
 function mixCell(col,r,kind,opts){
   const f=MIX_FX[col.k]?fx(MIX_FX[col.k]):'';
   let cell;
@@ -1059,8 +1071,9 @@ function mixCell(col,r,kind,opts){
       // opens the shared fabric detail card from the carried register detail.
       // Product rows only; category/sub-category rows leave it empty.
       let link='';
-      if(kind==='prod'&&r.detail&&r.detail.default_code){
-        link=`<a href="#" class="mix-barcode" data-fab-id="${esc(r.id)}" title="View all fabric details" style="color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px;font-size:.92em;">${esc(r.detail.default_code)}</a>`;
+      if(kind==='prod'&&r.detail){
+        const code=fabricCode(r.detail);
+        if(code) link=`<a href="#" class="mix-barcode" data-fab-id="${esc(r.id)}" title="View all fabric details" style="color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px;font-size:.92em;">${esc(code)}</a>`;
       }
       cell=`<td>${link}</td>`;
       break;}
