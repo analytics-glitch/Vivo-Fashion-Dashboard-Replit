@@ -24,7 +24,7 @@ INSERT INTO production_stages (stage_key, stage_name, sort_order, is_terminal, a
   ('sewing',         'Sewing',              3, FALSE, ARRAY['finishing','washing']),
   ('washing',        'Washing',             4, FALSE, ARRAY['finishing','warehouse']),
   ('finishing',      'Finishing',           5, FALSE, ARRAY['warehouse','washing','repairs']),
-  ('repairs',        'Repairs',             6, FALSE, ARRAY['finishing','warehouse']),
+  ('repairs',        'Repairs',             6, FALSE, ARRAY['sewing','finishing','warehouse']),
   ('warehouse',      'Warehouse',           7, TRUE,  ARRAY[]::TEXT[])
 ON CONFLICT (stage_key) DO UPDATE
   SET stage_name   = EXCLUDED.stage_name,
@@ -71,7 +71,12 @@ CREATE TABLE IF NOT EXISTS stage_movements (
     -- Optional variant grain: a move can target one SKU (+ size). NULL = a
     -- whole-order move (legacy / variant-less orders).
     sku         TEXT,
-    size        TEXT
+    size        TEXT,
+    -- Sewing line (A–E) captured on each move INTO the sewing stage at the
+    -- (sku, size) grain. NULL on non-sewing moves and on legacy sewing moves;
+    -- repair (repairs -> sewing) auto-routing reuses the most recent non-NULL
+    -- line for that order+sku+size.
+    sewing_line TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_stage_moves_order ON stage_movements(order_ref);

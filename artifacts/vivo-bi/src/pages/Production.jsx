@@ -52,6 +52,88 @@ function fmtNairobi(iso) {
   }
 }
 
+const SEWING_LINE_OPTS = ["A", "B", "C", "D", "E"];
+
+/** Per-column bulk-advance bar shown when ≥1 card in this stage is selected. */
+function ColumnBulkBar({ stageKey, allowed, count, busy, onMove, onClear }) {
+  const [toStage, setToStage] = useState(allowed[0] || "");
+  const [sewingLine, setSewingLine] = useState("");
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    if (!allowed.includes(toStage)) setToStage(allowed[0] || "");
+  }, [allowed, toStage]);
+
+  const intoSewing = toStage === "sewing";
+  const fromRepairs = stageKey === "repairs";
+  // Repairs -> Sewing auto-routes each piece to its original line, so no line is
+  // required — but pieces with no line on record need a fallback, so still offer
+  // an OPTIONAL picker. Any other move into Sewing needs one chosen line.
+  const needLine = intoSewing && !fromRepairs;
+  const offerFallback = intoSewing && fromRepairs;
+
+  const submit = () => {
+    setErr(null);
+    if (!toStage) { setErr("Pick a destination."); return; }
+    if (needLine && !sewingLine) { setErr("Pick a sewing line (A–E)."); return; }
+    onMove({ toStage, sewingLine: intoSewing ? (sewingLine || undefined) : undefined });
+  };
+
+  return (
+    <div className="px-2 py-2 border-t border-line bg-brand/5" data-testid={`production-bulkbar-${stageKey}`}>
+      <div className="flex items-center justify-between gap-1 mb-1.5">
+        <span className="text-[11px] font-bold text-[#0f3d24]">{count} selected</span>
+        <button
+          type="button"
+          onClick={onClear}
+          className="text-[10.5px] text-muted hover:text-[#0f3d24] underline"
+          data-testid={`production-bulk-clear-${stageKey}`}
+        >
+          Clear
+        </button>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <select
+          value={toStage}
+          onChange={(e) => setToStage(e.target.value)}
+          className="input-pill text-[11px] py-1 flex-1 min-w-0"
+          data-testid={`production-bulk-to-${stageKey}`}
+        >
+          {allowed.map((s) => (
+            <option key={s} value={s}>{String(s).replace(/_/g, " ")}</option>
+          ))}
+        </select>
+        {(needLine || offerFallback) && (
+          <select
+            value={sewingLine}
+            onChange={(e) => setSewingLine(e.target.value)}
+            className="input-pill text-[11px] py-1"
+            data-testid={`production-bulk-line-${stageKey}`}
+          >
+            <option value="">{offerFallback ? "Fallback line…" : "Line…"}</option>
+            {SEWING_LINE_OPTS.map((l) => (
+              <option key={l} value={l}>Line {l}</option>
+            ))}
+          </select>
+        )}
+        <button
+          type="button"
+          onClick={submit}
+          disabled={busy}
+          className="text-[11px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-2.5 py-1.5 rounded-md disabled:opacity-50"
+          data-testid={`production-bulk-move-${stageKey}`}
+        >
+          {busy ? "…" : "Advance"}
+        </button>
+      </div>
+      {offerFallback && (
+        <div className="mt-1 text-[10px] text-muted italic">auto-routes to original line; fallback for unknowns</div>
+      )}
+      {err && <div className="mt-1 text-[10.5px] text-rose-700">{err}</div>}
+    </div>
+  );
+}
+
 export default function Production() {
   const [stages, setStages] = useState([]);
   const [cards, setCards] = useState([]);
@@ -61,6 +143,35 @@ export default function Production() {
   const [refreshing, setRefreshing] = useState(false);
   const [openOrder, setOpenOrder] = useState(null);
   const [query, setQuery] = useState("");
+  // Multi-BO selection is scoped to a single stage column (from_stage must be
+  // uniform for a bulk advance). Selecting a card in another stage resets it.
+  const [selStage, setSelStage] = useState(null);
+  const [selRefs, setSelRefs] = useState(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkMsg, setBulkMsg] = useState(null);
+
+  const clearSelection = useCallback(() => {
+    setSelStage(null);
+    setSelRefs(new Set());
+    setBulkMsg(null);
+  }, []);
+
+  const toggleSelect = useCallback((stage, ref) => {
+    setBulkMsg(null);
+    setSelStage((prevStage) => {
+      if (prevStage !== stage) {
+        setSelRefs(new Set([ref]));
+        return stage;
+      }
+      setSelRefs((prev) => {
+        const next = new Set(prev);
+        if (next.has(ref)) next.delete(ref); else next.add(ref);
+        if (next.size === 0) setSelStage(null);
+        return next;
+      });
+      return prevStage;
+    });
+  }, []);
 
   const load = useCallback(async (force = false) => {
     if (force) setRefreshing(true); else setLoading(true);
@@ -83,6 +194,43 @@ export default function Production() {
   }, []);
 
   useEffect(() => { load(false); }, [load]);
+
+  const bulkAdvance = useCallback(async ({ fromStage, toStage, sewingLine, refs }) => {
+    setBulkBusy(true);
+    setBulkMsg(null);
+    try {
+      const { data } = await api.post("/production/bulk-move", {
+        order_refs: refs,
+        from_stage: fromStage,
+        to_stage: toStage,
+        sewing_line: sewingLine || undefined,
+      });
+      const results = data?.results || [];
+      const moved = data?.moved_count || 0;
+      const failed = data?.failed_count || 0;
+      const movedRefs = results.filter((r) => r.ok !== false).map((r) => r.order_ref).filter(Boolean);
+      const failedRows = results.filter((r) => r.ok === false);
+      if (failed > 0) {
+        setBulkMsg({
+          kind: "warn",
+          text: `Moved ${moved} order${moved === 1 ? "" : "s"}, ${failed} failed`,
+          moved: movedRefs,
+          failed: failedRows.map((r) => ({ ref: r.order_ref, error: r.error })),
+        });
+        // Keep only the still-failing orders selected so the operator can retry.
+        setSelRefs(new Set(failedRows.map((r) => r.order_ref)));
+      } else {
+        setBulkMsg({ kind: "ok", text: `Moved ${moved} order${moved === 1 ? "" : "s"}`, moved: movedRefs, failed: [] });
+        setSelStage(null);
+        setSelRefs(new Set());
+      }
+      await load(true);
+    } catch (err) {
+      setBulkMsg({ kind: "warn", text: err?.response?.data?.detail || err.message || "Bulk move failed" });
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [load]);
 
   const filteredCards = React.useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -189,6 +337,44 @@ export default function Production() {
             <span><span className="font-extrabold text-[#0f3d24] text-[15px]">{stages.length}</span> stages</span>
           </div>
 
+          {bulkMsg && (
+            <div
+              className={`rounded-lg border px-3 py-2 text-[12px] ${
+                bulkMsg.kind === "ok"
+                  ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                  : "bg-amber-50 border-amber-200 text-amber-800"
+              }`}
+              data-testid="production-bulk-result"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold">{bulkMsg.text}</span>
+                <button
+                  type="button"
+                  onClick={() => setBulkMsg(null)}
+                  className="text-[11px] underline opacity-80 hover:opacity-100"
+                  data-testid="production-bulk-result-dismiss"
+                >
+                  Dismiss
+                </button>
+              </div>
+              {bulkMsg.failed && bulkMsg.failed.length > 0 && (
+                <ul className="mt-1.5 space-y-0.5">
+                  {bulkMsg.failed.map((f) => (
+                    <li key={f.ref} className="text-[11.5px]">
+                      <span className="font-mono font-semibold">{f.ref}</span>
+                      {f.error ? <span className="text-amber-700"> — {f.error}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {bulkMsg.moved && bulkMsg.moved.length > 0 && (
+                <div className="mt-1 text-[11px] opacity-80">
+                  Moved: <span className="font-mono">{bulkMsg.moved.join(", ")}</span>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="overflow-x-auto pb-2">
             <div className="flex gap-3 min-w-max">
               {stages.map((st) => {
@@ -218,37 +404,75 @@ export default function Production() {
                       {colCards.length === 0 ? (
                         <div className="text-[11px] text-muted/70 italic text-center py-4">Empty</div>
                       ) : (
-                        colCards.map((c) => (
-                          <button
-                            key={`${c.order_ref}-${c.stage}`}
-                            onClick={() => setOpenOrder(c.order_ref)}
-                            className={`w-full text-left rounded-lg border border-line border-l-4 bg-white hover:shadow-sm transition p-2.5 ${ageClasses(c.days_in_stage)}`}
-                            data-testid={`production-card-${c.order_ref}-${c.stage}`}
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0">
-                                <div className="font-semibold text-[12.5px] text-[#0f3d24] truncate">
-                                  {c.style_number || c.order_ref}
-                                </div>
-                                {c.product_name && (
-                                  <div className="text-[11px] text-muted truncate">{c.product_name}</div>
+                        colCards.map((c) => {
+                          const selectable = (st.allowed_next || []).length > 0;
+                          const selected = selStage === st.stage_key && selRefs.has(c.order_ref);
+                          return (
+                            <div
+                              key={`${c.order_ref}-${c.stage}`}
+                              className={`rounded-lg border border-line border-l-4 bg-white hover:shadow-sm transition p-2.5 ${ageClasses(c.days_in_stage)} ${selected ? "ring-2 ring-brand/50" : ""}`}
+                              data-testid={`production-card-${c.order_ref}-${c.stage}`}
+                            >
+                              <div className="flex items-start gap-2">
+                                {selectable && (
+                                  <input
+                                    type="checkbox"
+                                    checked={selected}
+                                    onChange={() => toggleSelect(st.stage_key, c.order_ref)}
+                                    className="mt-0.5 shrink-0 accent-[#1a5c38] cursor-pointer"
+                                    aria-label={`Select order ${c.order_ref}`}
+                                    data-testid={`production-card-select-${c.order_ref}-${c.stage}`}
+                                  />
                                 )}
-                              </div>
-                              <div className="text-right shrink-0">
-                                <div className="text-[15px] font-extrabold text-brand leading-none">{fmtQty(c.qty_here)}</div>
-                                <div className="eyebrow">units</div>
+                                <button
+                                  type="button"
+                                  onClick={() => setOpenOrder(c.order_ref)}
+                                  className="flex-1 min-w-0 text-left"
+                                >
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <div className="font-semibold text-[12.5px] text-[#0f3d24] truncate">
+                                        {c.style_number || c.order_ref}
+                                      </div>
+                                      {c.product_name && (
+                                        <div className="text-[11px] text-muted truncate">{c.product_name}</div>
+                                      )}
+                                    </div>
+                                    <div className="text-right shrink-0">
+                                      <div className="text-[15px] font-extrabold text-brand leading-none">{fmtQty(c.qty_here)}</div>
+                                      <div className="eyebrow">units</div>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center justify-between gap-2 mt-1.5">
+                                    <span className="text-[10.5px] text-muted font-mono truncate">{c.order_ref}</span>
+                                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${ageBadge(c.days_in_stage)}`}>
+                                      {fmtDays(c.days_in_stage)}d
+                                    </span>
+                                  </div>
+                                </button>
                               </div>
                             </div>
-                            <div className="flex items-center justify-between gap-2 mt-1.5">
-                              <span className="text-[10.5px] text-muted font-mono truncate">{c.order_ref}</span>
-                              <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${ageBadge(c.days_in_stage)}`}>
-                                {fmtDays(c.days_in_stage)}d
-                              </span>
-                            </div>
-                          </button>
-                        ))
+                          );
+                        })
                       )}
                     </div>
+                    {selStage === st.stage_key && selRefs.size > 0 && (st.allowed_next || []).length > 0 && (
+                      <ColumnBulkBar
+                        stageKey={st.stage_key}
+                        allowed={st.allowed_next || []}
+                        count={selRefs.size}
+                        busy={bulkBusy}
+                        onClear={clearSelection}
+                        onMove={({ toStage, sewingLine }) =>
+                          bulkAdvance({
+                            fromStage: st.stage_key,
+                            toStage,
+                            sewingLine,
+                            refs: Array.from(selRefs),
+                          })
+                        }
+                      />
+                    )}
                   </div>
                 );
               })}

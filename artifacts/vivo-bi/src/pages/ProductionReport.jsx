@@ -279,6 +279,148 @@ function DropStrip({ buckets, today, activeDrop, onPick }) {
   );
 }
 
+const SEWING_LINE_OPTS = ["A", "B", "C", "D", "E"];
+
+/**
+ * Bulk-advance toolbar for the active order table. The operator picks a FROM
+ * stage (only stages the selected orders actually hold units in), a destination
+ * (the from-stage's allowed next), and — when moving into Sewing from anywhere
+ * other than Repairs — a single sewing line A–E applied to the whole batch.
+ * Repairs → Sewing auto-routes each piece back to its original line.
+ */
+function ReportBulkToolbar({ fromStages, flowStages, count, busy, msg, onMove, onClear }) {
+  const [fromStage, setFromStage] = useState("");
+  const [toStage, setToStage] = useState("");
+  const [sewingLine, setSewingLine] = useState("");
+  const [err, setErr] = useState(null);
+
+  const fromKeys = fromStages.map((s) => s.stage_key).join(",");
+  useEffect(() => {
+    if (!fromStages.some((s) => s.stage_key === fromStage)) {
+      setFromStage(fromStages[0]?.stage_key || "");
+    }
+  }, [fromKeys, fromStage, fromStages]);
+
+  const allowed = useMemo(() => {
+    const s = flowStages.find((x) => x.stage_key === fromStage);
+    return (s?.allowed_next || []);
+  }, [flowStages, fromStage]);
+
+  useEffect(() => {
+    if (!allowed.includes(toStage)) setToStage(allowed[0] || "");
+  }, [allowed, toStage]);
+
+  const stageName = (key) => flowStages.find((s) => s.stage_key === key)?.stage_name || String(key).replace(/_/g, " ");
+  const intoSewing = toStage === "sewing";
+  const fromRepairs = fromStage === "repairs";
+  // Repairs -> Sewing auto-routes each piece to its original line, so no line is
+  // required — but pieces with no line on record need a fallback, so still offer
+  // an OPTIONAL picker. Any other move into Sewing needs one chosen line.
+  const needLine = intoSewing && !fromRepairs;
+  const offerFallback = intoSewing && fromRepairs;
+
+  const submit = () => {
+    setErr(null);
+    if (!fromStage) { setErr("Pick a current stage."); return; }
+    if (!toStage) { setErr("Pick a destination."); return; }
+    if (needLine && !sewingLine) { setErr("Pick a sewing line (A–E)."); return; }
+    onMove({ fromStage, toStage, sewingLine: intoSewing ? (sewingLine || undefined) : undefined });
+  };
+
+  return (
+    <div className="mb-3 rounded-lg border border-[#1a5c38]/30 bg-brand/5 px-3 py-2.5" data-testid="production-report-bulkbar">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[12px] font-bold text-[#0f3d24]">{count} selected</span>
+        <span className="text-muted text-[12px]">Advance from</span>
+        <select
+          value={fromStage}
+          onChange={(e) => setFromStage(e.target.value)}
+          className="input-pill text-[12px]"
+          data-testid="production-report-bulk-from"
+        >
+          {fromStages.length === 0 && <option value="">—</option>}
+          {fromStages.map((s) => (
+            <option key={s.stage_key} value={s.stage_key}>{s.stage_name}</option>
+          ))}
+        </select>
+        <span className="text-muted text-[12px]">to</span>
+        <select
+          value={toStage}
+          onChange={(e) => setToStage(e.target.value)}
+          className="input-pill text-[12px]"
+          data-testid="production-report-bulk-to"
+        >
+          {allowed.length === 0 && <option value="">—</option>}
+          {allowed.map((k) => (
+            <option key={k} value={k}>{stageName(k)}</option>
+          ))}
+        </select>
+        {(needLine || offerFallback) && (
+          <select
+            value={sewingLine}
+            onChange={(e) => setSewingLine(e.target.value)}
+            className="input-pill text-[12px]"
+            data-testid="production-report-bulk-line"
+          >
+            <option value="">{offerFallback ? "Fallback line…" : "Sewing line…"}</option>
+            {SEWING_LINE_OPTS.map((l) => (
+              <option key={l} value={l}>Line {l}</option>
+            ))}
+          </select>
+        )}
+        {offerFallback && (
+          <span className="text-[11px] text-muted italic">auto-routes to original line; fallback for unknowns</span>
+        )}
+        <button
+          type="button"
+          onClick={submit}
+          disabled={busy}
+          className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-3 py-1.5 rounded-md disabled:opacity-50"
+          data-testid="production-report-bulk-move"
+        >
+          {busy ? "Moving…" : "Advance selected"}
+        </button>
+        <button
+          type="button"
+          onClick={onClear}
+          className="text-[11.5px] text-muted hover:text-[#0f3d24] underline"
+          data-testid="production-report-bulk-clear"
+        >
+          Clear
+        </button>
+      </div>
+      {err && <div className="mt-1.5 text-[11.5px] text-rose-700">{err}</div>}
+      {msg && (
+        <div
+          className={`mt-1.5 rounded-md border px-2.5 py-1.5 text-[11.5px] ${
+            msg.kind === "ok"
+              ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+              : "bg-amber-50 border-amber-200 text-amber-800"
+          }`}
+          data-testid="production-report-bulk-result"
+        >
+          <span className="font-semibold">{msg.text}</span>
+          {msg.failed && msg.failed.length > 0 && (
+            <ul className="mt-1 space-y-0.5">
+              {msg.failed.map((f) => (
+                <li key={f.ref}>
+                  <span className="font-mono font-semibold">{f.ref}</span>
+                  {f.error ? <span className="text-amber-700"> — {f.error}</span> : null}
+                </li>
+              ))}
+            </ul>
+          )}
+          {msg.moved && msg.moved.length > 0 && (
+            <div className="mt-1 opacity-80">
+              Moved: <span className="font-mono">{msg.moved.join(", ")}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ProductionReport() {
   const [data, setData] = useState(null);
   const [flow, setFlow] = useState(null);
@@ -292,6 +434,10 @@ export default function ProductionReport() {
   const [dropFilter, setDropFilter] = useState(null);
   const [openOrder, setOpenOrder] = useState(null);
   const [showCompleted, setShowCompleted] = useState(false);
+  // Multi-BO bulk advance (active table only).
+  const [selRefs, setSelRefs] = useState(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkMsg, setBulkMsg] = useState(null);
 
   const load = useCallback(async (force = false) => {
     if (force) setRefreshing(true);
@@ -321,6 +467,56 @@ export default function ProductionReport() {
 
   useEffect(() => {
     load(false);
+  }, [load]);
+
+  const toggleSelect = useCallback((ref) => {
+    setBulkMsg(null);
+    setSelRefs((prev) => {
+      const next = new Set(prev);
+      if (next.has(ref)) next.delete(ref); else next.add(ref);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelRefs(new Set());
+    setBulkMsg(null);
+  }, []);
+
+  const bulkAdvance = useCallback(async ({ fromStage, toStage, sewingLine, refs }) => {
+    setBulkBusy(true);
+    setBulkMsg(null);
+    try {
+      const { data } = await api.post("/production/bulk-move", {
+        order_refs: refs,
+        from_stage: fromStage,
+        to_stage: toStage,
+        sewing_line: sewingLine || undefined,
+      });
+      const results = data?.results || [];
+      const moved = data?.moved_count || 0;
+      const failed = data?.failed_count || 0;
+      const movedRefs = results.filter((r) => r.ok !== false).map((r) => r.order_ref).filter(Boolean);
+      const failedRows = results.filter((r) => r.ok === false);
+      if (failed > 0) {
+        setBulkMsg({
+          kind: "warn",
+          text: `Moved ${moved} order${moved === 1 ? "" : "s"}, ${failed} failed`,
+          moved: movedRefs,
+          failed: failedRows.map((r) => ({ ref: r.order_ref, error: r.error })),
+        });
+        // Keep only the still-failing orders selected so the operator can retry.
+        setSelRefs(new Set(failedRows.map((r) => r.order_ref)));
+      } else {
+        setBulkMsg({ kind: "ok", text: `Moved ${moved} order${moved === 1 ? "" : "s"}`, moved: movedRefs, failed: [] });
+        setSelRefs(new Set());
+      }
+      await load(true);
+    } catch (err) {
+      setBulkMsg({ kind: "warn", text: err?.response?.data?.detail || err.message || "Bulk move failed" });
+    } finally {
+      setBulkBusy(false);
+    }
   }, [load]);
 
   const totals = data?.totals || { orders: 0, units: 0, styles: 0 };
@@ -403,6 +599,34 @@ export default function ProductionReport() {
     [orders, isComplete, matchesText]
   );
 
+  // Selection is scoped to the currently-visible active rows.
+  const selectedOrders = useMemo(
+    () => filtered.filter((o) => selRefs.has(o.order_ref)),
+    [filtered, selRefs]
+  );
+  const allActiveSelected = filtered.length > 0 && filtered.every((o) => selRefs.has(o.order_ref));
+  const someActiveSelected = selectedOrders.length > 0;
+  const toggleSelectAllActive = useCallback(() => {
+    setBulkMsg(null);
+    setSelRefs((prev) => {
+      const everySel = filtered.length > 0 && filtered.every((o) => prev.has(o.order_ref));
+      if (everySel) return new Set();
+      return new Set(filtered.map((o) => o.order_ref));
+    });
+  }, [filtered]);
+
+  // Stages that at least one selected order currently holds units in — these are
+  // the valid "from" stages for a bulk advance (one move per from-stage).
+  const selectableFromStages = useMemo(() => {
+    const keys = new Set();
+    for (const o of selectedOrders) {
+      for (const [k, v] of Object.entries(o.stage_qty || {})) {
+        if (Number(v) > 0 && !terminalKeys.has(k)) keys.add(k);
+      }
+    }
+    return flowStages.filter((s) => keys.has(s.stage_key));
+  }, [selectedOrders, flowStages, terminalKeys]);
+
   const lifecycleOptions = useMemo(
     () =>
       (data?.by_lifecycle || [])
@@ -414,6 +638,7 @@ export default function ProductionReport() {
   const exportCsv = useCallback(() => {
     const cols = [
       "Order",
+      "BO created",
       "Style number",
       "Style name",
       "Buyer",
@@ -425,7 +650,6 @@ export default function ProductionReport() {
       "Variants",
       "Order qty",
       "In progress",
-      "Date ordered",
       "Expected delivery",
       ...stageCols.map((s) => s.name),
     ];
@@ -441,6 +665,7 @@ export default function ProductionReport() {
       const sq = o.stage_qty || {};
       const row = [
         o.order_ref,
+        o.date_ordered ? String(o.date_ordered).slice(0, 10) : "",
         o.style_number,
         o.style_name,
         o.buyer,
@@ -452,7 +677,6 @@ export default function ProductionReport() {
         o.variants,
         o.order_qty,
         o.units_in_progress,
-        o.date_ordered ? String(o.date_ordered).slice(0, 10) : "",
         o.expected_delivery_date ? String(o.expected_delivery_date).slice(0, 10) : "",
         ...stageCols.map((s) => sq[s.key] || 0),
       ];
@@ -635,6 +859,25 @@ export default function ProductionReport() {
           </div>
         )}
 
+        {someActiveSelected && (
+          <ReportBulkToolbar
+            fromStages={selectableFromStages}
+            flowStages={flowStages}
+            count={selectedOrders.length}
+            busy={bulkBusy}
+            msg={bulkMsg}
+            onClear={clearSelection}
+            onMove={({ fromStage, toStage, sewingLine }) =>
+              bulkAdvance({
+                fromStage,
+                toStage,
+                sewingLine,
+                refs: selectedOrders.map((o) => o.order_ref),
+              })
+            }
+          />
+        )}
+
         {filtered.length === 0 ? (
           <Empty label="No orders match the current search / filter." />
         ) : (
@@ -642,7 +885,19 @@ export default function ProductionReport() {
             <table className="w-full text-[12px] border-collapse">
               <thead className="bg-panel/60 text-muted">
                 <tr>
+                  <th className="px-2 py-2 w-8">
+                    <input
+                      type="checkbox"
+                      className="accent-[#1a5c38] cursor-pointer"
+                      aria-label="Select all visible orders"
+                      checked={allActiveSelected}
+                      ref={(el) => { if (el) el.indeterminate = someActiveSelected && !allActiveSelected; }}
+                      onChange={toggleSelectAllActive}
+                      data-testid="production-report-select-all"
+                    />
+                  </th>
                   <th className="text-left font-semibold px-3 py-2">Order</th>
+                  <th className="text-left font-semibold px-3 py-2">BO created</th>
                   <th className="text-left font-semibold px-3 py-2">Style</th>
                   <th className="text-left font-semibold px-3 py-2">Buyer</th>
                   <th className="text-left font-semibold px-3 py-2">Type</th>
@@ -660,12 +915,25 @@ export default function ProductionReport() {
                   return (
                     <tr
                       key={o.order_ref}
-                      className="border-t border-line hover:bg-panel/40 cursor-pointer"
+                      className={`border-t border-line hover:bg-panel/40 cursor-pointer ${selRefs.has(o.order_ref) ? "bg-emerald-50/60" : ""}`}
                       onClick={() => setOpenOrder(o.order_ref)}
                       data-testid={`production-report-row-${o.order_ref}`}
                     >
+                      <td className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          className="accent-[#1a5c38] cursor-pointer"
+                          checked={selRefs.has(o.order_ref)}
+                          onChange={() => toggleSelect(o.order_ref)}
+                          aria-label={`Select order ${o.order_ref}`}
+                          data-testid={`production-report-select-${o.order_ref}`}
+                        />
+                      </td>
                       <td className="px-3 py-2 font-semibold text-brand whitespace-nowrap">
                         {o.order_ref}
+                      </td>
+                      <td className="px-3 py-2 text-muted whitespace-nowrap">
+                        {fmtDate(o.date_ordered)}
                       </td>
                       <td className="px-3 py-2 max-w-[200px]">
                         <div className="font-semibold text-[#0f3d24] truncate">
@@ -767,6 +1035,7 @@ export default function ProductionReport() {
                 <thead className="bg-panel/60 text-muted">
                   <tr>
                     <th className="text-left font-semibold px-3 py-2">Order</th>
+                    <th className="text-left font-semibold px-3 py-2">BO created</th>
                     <th className="text-left font-semibold px-3 py-2">Style</th>
                     <th className="text-left font-semibold px-3 py-2">Buyer</th>
                     <th className="text-left font-semibold px-3 py-2">Type</th>
@@ -793,6 +1062,9 @@ export default function ProductionReport() {
                       >
                         <td className="px-3 py-2 font-semibold text-brand whitespace-nowrap">
                           {o.order_ref}
+                        </td>
+                        <td className="px-3 py-2 text-muted whitespace-nowrap">
+                          {fmtDate(o.date_ordered)}
                         </td>
                         <td className="px-3 py-2 max-w-[200px]">
                           <div className="font-semibold text-[#0f3d24] truncate">

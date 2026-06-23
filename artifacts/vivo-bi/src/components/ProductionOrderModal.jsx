@@ -20,6 +20,8 @@ import {
  *   4. The full movement history.
  * The only writer is POST /api/production/move (optionally carrying sku + size).
  */
+const SEWING_LINE_OPTS = ["A", "B", "C", "D", "E"];
+
 function ageClasses(days) {
   const d = Number(days) || 0;
   if (d > 7) return "bg-rose-50 text-rose-700 border-rose-200";
@@ -215,6 +217,7 @@ function JourneyStepper({ steps }) {
 function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
   const [toStage, setToStage] = useState(allowed[0] || "");
   const [qty, setQty] = useState(row.qty_here);
+  const [sewingLine, setSewingLine] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -224,12 +227,20 @@ function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
     ? row.sku
     : "Whole order";
 
+  // A line is captured only when sending INTO sewing. Repairs -> Sewing
+  // auto-routes back to the piece's original line (read-only) when one is on
+  // record; otherwise the operator must pick one.
+  const intoSewing = toStage === "sewing";
+  const autoLine = row.stage === "repairs" ? row.last_sewing_line || null : null;
+  const needLinePicker = intoSewing && !autoLine;
+
   const move = async () => {
     setError(null);
     const q = Number(qty);
     if (!toStage) { setError("Pick a destination."); return; }
     if (!(q > 0)) { setError("Qty must be > 0."); return; }
     if (q > Number(row.qty_here)) { setError(`Only ${fmtQty(row.qty_here)} here.`); return; }
+    if (needLinePicker && !sewingLine) { setError("Pick a sewing line (A–E)."); return; }
     setSubmitting(true);
     try {
       const { data } = await api.post("/production/move", {
@@ -239,6 +250,7 @@ function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
         qty: q,
         sku: row.sku || undefined,
         size: row.size || undefined,
+        sewing_line: intoSewing ? (autoLine || sewingLine || undefined) : undefined,
       });
       onMoved?.(data);
     } catch (err) {
@@ -275,6 +287,28 @@ function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
                 <option key={s} value={s}>{stageLabel(s)}</option>
               ))}
             </select>
+            {intoSewing && autoLine && (
+              <span
+                className="text-[10.5px] font-semibold text-[#0f3d24] bg-emerald-50 border border-emerald-200 rounded px-1.5 py-1 whitespace-nowrap"
+                title="Returns to its original sewing line"
+                data-testid={`prod-move-autoline-${row.stage}-${row.sku || "whole"}`}
+              >
+                Line {autoLine}
+              </span>
+            )}
+            {needLinePicker && (
+              <select
+                value={sewingLine}
+                onChange={(e) => setSewingLine(e.target.value)}
+                className="input-pill text-[11.5px] py-1"
+                data-testid={`prod-move-line-${row.stage}-${row.sku || "whole"}`}
+              >
+                <option value="">Line…</option>
+                {SEWING_LINE_OPTS.map((l) => (
+                  <option key={l} value={l}>Line {l}</option>
+                ))}
+              </select>
+            )}
             <input
               type="number"
               min={1}
@@ -295,6 +329,92 @@ function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
             </button>
           </div>
         )}
+      </div>
+      {error && (
+        <div className="mt-1.5 text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1">
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Advance an entire stage's units to the next stage in one action. */
+function WholeStageMove({ orderRef, stage, allowed, onMoved }) {
+  const [toStage, setToStage] = useState(allowed[0] || "");
+  const [sewingLine, setSewingLine] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  const intoSewing = toStage === "sewing";
+  const fromRepairs = stage === "repairs";
+  // Repairs -> Sewing auto-routes each piece back to its own original line, so no
+  // line is required; but pieces with no line on record need a fallback, so we
+  // still offer an OPTIONAL picker. Any other move into Sewing requires one line.
+  const needLine = intoSewing && !fromRepairs;
+  const offerFallback = intoSewing && fromRepairs;
+
+  const move = async () => {
+    setError(null);
+    if (!toStage) { setError("Pick a destination."); return; }
+    if (needLine && !sewingLine) { setError("Pick a sewing line (A–E)."); return; }
+    setSubmitting(true);
+    try {
+      const { data } = await api.post("/production/bulk-move", {
+        order_refs: [orderRef],
+        from_stage: stage,
+        to_stage: toStage,
+        sewing_line: intoSewing ? (sewingLine || undefined) : undefined,
+      });
+      const r = data?.results?.[0];
+      if (r && r.ok === false) { setError(r.error || "Move failed"); return; }
+      onMoved?.();
+    } catch (err) {
+      setError(err?.response?.data?.detail || err.message || "Move failed");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="border-t border-line px-3 py-2 bg-panel/20" data-testid={`prod-whole-move-${stage}`}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[11px] font-semibold text-[#0f3d24] mr-1">Move whole order</span>
+        <select
+          value={toStage}
+          onChange={(e) => setToStage(e.target.value)}
+          className="input-pill text-[11.5px] py-1"
+          data-testid={`prod-whole-to-${stage}`}
+        >
+          {allowed.map((s) => (
+            <option key={s} value={s}>{stageLabel(s)}</option>
+          ))}
+        </select>
+        {(needLine || offerFallback) && (
+          <select
+            value={sewingLine}
+            onChange={(e) => setSewingLine(e.target.value)}
+            className="input-pill text-[11.5px] py-1"
+            data-testid={`prod-whole-line-${stage}`}
+          >
+            <option value="">{offerFallback ? "Fallback line…" : "Line…"}</option>
+            {SEWING_LINE_OPTS.map((l) => (
+              <option key={l} value={l}>Line {l}</option>
+            ))}
+          </select>
+        )}
+        {offerFallback && (
+          <span className="text-[10.5px] text-muted italic">auto-routes to original line; fallback for unknowns</span>
+        )}
+        <button
+          type="button"
+          onClick={move}
+          disabled={submitting}
+          className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-2.5 py-1.5 rounded-md disabled:opacity-50"
+          data-testid={`prod-whole-btn-${stage}`}
+        >
+          {submitting ? "…" : <>Move all <ArrowRight size={12} weight="bold" /></>}
+        </button>
       </div>
       {error && (
         <div className="mt-1.5 text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1">
@@ -335,6 +455,14 @@ function StageGroup({ orderRef, group, onMoved }) {
       </button>
       {open && (
         <div>
+          {!isTerminal && rows.length > 1 && (
+            <WholeStageMove
+              orderRef={orderRef}
+              stage={group.stage}
+              allowed={allowed}
+              onMoved={onMoved}
+            />
+          )}
           {rows.map((r) => (
             <SkuMoveRow
               key={`${r.sku || "whole"}|${r.size || ""}`}
@@ -372,7 +500,10 @@ export default function ProductionOrderModal({ orderRef, onClose, onChanged }) {
   useEffect(() => { load(); }, [load]);
 
   const handleMoved = (data) => {
+    // A SKU move returns the refreshed detail payload; a whole-order/bulk move
+    // does not, so reload the modal to avoid showing stale balances/history.
     if (data) setDetail(data);
+    else load();
     onChanged?.();
   };
 
@@ -530,6 +661,7 @@ export default function ProductionOrderModal({ orderRef, onClose, onChanged }) {
                       <th className="text-left font-semibold px-3 py-1.5">When</th>
                       <th className="text-left font-semibold px-3 py-1.5">SKU</th>
                       <th className="text-left font-semibold px-3 py-1.5">From → To</th>
+                      <th className="text-left font-semibold px-3 py-1.5">Line</th>
                       <th className="text-right font-semibold px-3 py-1.5">Qty</th>
                       <th className="text-left font-semibold px-3 py-1.5">By</th>
                     </tr>
@@ -549,6 +681,15 @@ export default function ProductionOrderModal({ orderRef, onClose, onChanged }) {
                           <span className="text-muted">{stageLabel(h.from_stage || "—")}</span>
                           {" → "}
                           <span className="font-semibold text-[#0f3d24]">{stageLabel(h.to_stage || "")}</span>
+                        </td>
+                        <td className="px-3 py-1.5">
+                          {h.sewing_line ? (
+                            <span className="text-[10.5px] font-semibold text-[#0f3d24] bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">
+                              {h.sewing_line}
+                            </span>
+                          ) : (
+                            <span className="text-line">—</span>
+                          )}
                         </td>
                         <td className="px-3 py-1.5 text-right font-semibold">{fmtQty(h.qty)}</td>
                         <td className="px-3 py-1.5 text-muted truncate max-w-[120px]">{h.moved_by || "—"}</td>

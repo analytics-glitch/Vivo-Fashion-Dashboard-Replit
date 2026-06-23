@@ -17613,7 +17613,7 @@ def _ensure_production_tables():
           ('sewing',         'Sewing',              3, FALSE, ARRAY['finishing','washing']),
           ('washing',        'Washing',             4, FALSE, ARRAY['finishing','warehouse']),
           ('finishing',      'Finishing',           5, FALSE, ARRAY['warehouse','washing','repairs']),
-          ('repairs',        'Repairs',             6, FALSE, ARRAY['finishing','warehouse']),
+          ('repairs',        'Repairs',             6, FALSE, ARRAY['sewing','finishing','warehouse']),
           ('warehouse',      'Warehouse',           7, TRUE,  ARRAY[]::TEXT[])
         ON CONFLICT (stage_key) DO UPDATE
           SET stage_name   = EXCLUDED.stage_name,
@@ -17744,6 +17744,11 @@ def _ensure_production_tables():
     _users_exec("ALTER TABLE stage_movements ADD COLUMN IF NOT EXISTS sku  TEXT")
     _users_exec("ALTER TABLE stage_movements ADD COLUMN IF NOT EXISTS size TEXT")
     _users_exec("CREATE INDEX IF NOT EXISTS idx_stage_moves_sku ON stage_movements(order_ref, sku)")
+    # Sewing line (A–E) captured on each move INTO the sewing stage at the (sku,
+    # size) grain. NULL on every non-sewing move and on legacy sewing moves made
+    # before lines were captured; repair auto-routing reuses the most recent
+    # non-NULL line for that order+sku+size.
+    _users_exec("ALTER TABLE stage_movements ADD COLUMN IF NOT EXISTS sewing_line TEXT")
     # Per (order x sku x size x stage) balance — same in/out arithmetic as the
     # order-level view but at the variant grain. NULL sku/size form a single
     # "whole order" bucket (legacy / variant-less orders); the in/out join uses
@@ -17800,7 +17805,7 @@ def _production_order_detail(order_ref):
         WHERE b.order_ref = %s
         ORDER BY s.sort_order""", (order_ref,), fetch=True)
     history = _users_exec("""
-        SELECT from_stage, to_stage, qty, sku, size, moved_at, moved_by, note
+        SELECT from_stage, to_stage, qty, sku, size, sewing_line, moved_at, moved_by, note
         FROM stage_movements
         WHERE order_ref = %s
         ORDER BY moved_at DESC, id DESC""", (order_ref,), fetch=True)
@@ -17824,7 +17829,7 @@ def _production_order_detail(order_ref):
         SELECT sb.stage, s.stage_name, s.sort_order, s.allowed_next, s.is_terminal,
                sb.sku, sb.size, sb.qty_here,
                ROUND(sb.days_since_last_in::numeric, 1) AS days_in_stage,
-               v.colour, v.variant_name
+               v.colour, v.variant_name, sl.sewing_line AS last_sewing_line
         FROM v_stage_sku_balances sb
         JOIN production_stages s ON s.stage_key = sb.stage
         LEFT JOIN LATERAL (
@@ -17833,6 +17838,16 @@ def _production_order_detail(order_ref):
             WHERE order_ref = sb.order_ref AND product_sku = sb.sku
             LIMIT 1
         ) v ON sb.sku IS NOT NULL
+        LEFT JOIN LATERAL (
+            SELECT sewing_line
+            FROM stage_movements
+            WHERE order_ref = sb.order_ref AND to_stage = 'sewing'
+              AND sewing_line IS NOT NULL
+              AND sku  IS NOT DISTINCT FROM sb.sku
+              AND size IS NOT DISTINCT FROM sb.size
+            ORDER BY moved_at DESC, id DESC
+            LIMIT 1
+        ) sl ON TRUE
         WHERE sb.order_ref = %s
         ORDER BY s.sort_order, v.colour NULLS LAST, sb.size NULLS LAST, sb.sku""",
         (order_ref,), fetch=True)
@@ -18114,6 +18129,100 @@ def production_order(order_ref: str):
     return detail
 
 
+SEWING_LINES = ("A", "B", "C", "D", "E")
+
+
+class _MoveError(Exception):
+    """A rejected production move. Carries the user-facing detail + HTTP status."""
+
+    def __init__(self, detail, status_code=400):
+        self.detail = detail
+        self.status_code = status_code
+        super().__init__(detail)
+
+
+def _derive_prior_sewing_line(cur, order_ref, sku, size):
+    """Most recent sewing line recorded for this order (+ sku/size) on a prior
+    move INTO sewing. Drives repair auto-routing: a piece returning from Repairs
+    goes back to the line it was originally sewn on."""
+    cur.execute(
+        "SELECT sewing_line FROM stage_movements "
+        "WHERE order_ref = %s AND to_stage = 'sewing' AND sewing_line IS NOT NULL "
+        "AND sku IS NOT DISTINCT FROM %s AND size IS NOT DISTINCT FROM %s "
+        "ORDER BY moved_at DESC, id DESC LIMIT 1",
+        (order_ref, sku, size))
+    r = cur.fetchone()
+    return r["sewing_line"] if r else None
+
+
+def _resolve_sewing_line(cur, order_ref, from_stage, to_stage, sku, size, supplied):
+    """Return the sewing line to record on a move, or None when to_stage is not
+    'sewing'. Repairs -> Sewing auto-routes to the piece's original line (falling
+    back to a supplied line only when none was ever recorded); every other move
+    into Sewing requires an explicit A–E line. Raises _MoveError on anything
+    missing or invalid."""
+    if to_stage != "sewing":
+        return None
+    supplied = (supplied or "").strip().upper() or None
+    if from_stage == "repairs":
+        line = _derive_prior_sewing_line(cur, order_ref, sku, size)
+        if not line:
+            line = supplied
+            if not line:
+                raise _MoveError(
+                    "No original sewing line is on record for this item — "
+                    "please choose a line (A–E).")
+    else:
+        line = supplied
+        if not line:
+            raise _MoveError("A sewing line (A–E) is required when moving into Sewing.")
+    if line not in SEWING_LINES:
+        raise _MoveError("Sewing line must be one of A, B, C, D or E.")
+    return line
+
+
+def _advance_whole_order(cur, order_ref, from_stage, to_stage, supplied_line, moved_by, note):
+    """Advance ALL units an order currently holds at from_stage to to_stage in a
+    single action, preserving each (sku, size) bucket's grain (so per-variant and
+    legacy whole-order orders both move cleanly). Into Sewing: a supplied line
+    applies to every bucket, except Repairs -> Sewing where each bucket auto-routes
+    to its own original line. Caller owns the transaction; raises _MoveError on
+    rejection. Returns the total quantity moved."""
+    cur.execute(
+        "SELECT 1 FROM production_orders WHERE order_ref = %s FOR UPDATE", (order_ref,))
+    if not cur.fetchone():
+        raise _MoveError(f"Unknown order: {order_ref}", 404)
+    cur.execute(
+        "SELECT allowed_next FROM production_stages WHERE stage_key = %s", (from_stage,))
+    row = cur.fetchone()
+    if not row:
+        raise _MoveError(f"Unknown stage: {from_stage}")
+    if to_stage not in (row["allowed_next"] or []):
+        raise _MoveError(f"Cannot move from {from_stage} to {to_stage}")
+    cur.execute(
+        "SELECT sku, size, qty_here FROM v_stage_sku_balances "
+        "WHERE order_ref = %s AND stage = %s AND qty_here > 0",
+        (order_ref, from_stage))
+    buckets = cur.fetchall()
+    if not buckets:
+        raise _MoveError(f"No units are currently at {from_stage}")
+    total = 0.0
+    for b in buckets:
+        qty = float(b["qty_here"])
+        if qty <= 0:
+            continue
+        line = _resolve_sewing_line(
+            cur, order_ref, from_stage, to_stage, b["sku"], b["size"], supplied_line)
+        cur.execute(
+            "INSERT INTO stage_movements "
+            "(order_ref, from_stage, to_stage, qty, moved_by, note, sku, size, sewing_line) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (order_ref, from_stage, to_stage, qty, moved_by, note,
+             b["sku"], b["size"], line))
+        total += qty
+    return total
+
+
 @app.post("/api/production/move")
 async def production_move(request: Request):
     """Move a quantity between stages — the board's only writer. Validates that
@@ -18204,14 +18313,80 @@ async def production_move(request: Request):
                 return JSONResponse(
                     {"detail": f"Only {available:g} units available at {from_stage}"},
                     status_code=400)
+        try:
+            sewing_line = _resolve_sewing_line(
+                cur, order_ref, from_stage, to_stage, sku, size,
+                body.get("sewing_line"))
+        except _MoveError as e:
+            cur.connection.rollback()
+            return JSONResponse({"detail": e.detail}, status_code=e.status_code)
         cur.execute(
             "INSERT INTO stage_movements "
-            "(order_ref, from_stage, to_stage, qty, moved_by, note, sku, size) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (order_ref, from_stage, to_stage, qty, moved_by, note, sku, size))
+            "(order_ref, from_stage, to_stage, qty, moved_by, note, sku, size, sewing_line) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (order_ref, from_stage, to_stage, qty, moved_by, note, sku, size, sewing_line))
 
     # Return the order's fresh state so the UI can update in place.
     return _production_order_detail(order_ref)
+
+
+@app.post("/api/production/bulk-move")
+async def production_bulk_move(request: Request):
+    """Advance one or more whole BOs from from_stage to to_stage in a single
+    request. Powers (a) the modal's 'move whole order' control (one order_ref),
+    (b) the board's multi-BO advance, and (c) the report's multi-BO advance.
+    Each order moves in its OWN transaction so one failure never rolls back the
+    rest; the response reports per-order success/failure. Into Sewing: a single
+    supplied line applies to every order's units (Repairs -> Sewing auto-routes
+    each piece to its original line instead)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    refs = body.get("order_refs")
+    if not isinstance(refs, list):
+        single = (body.get("order_ref") or "").strip()
+        refs = [single] if single else []
+    order_refs = []
+    for r in refs:
+        r = (r or "").strip() if isinstance(r, str) else None
+        if r and r not in order_refs:
+            order_refs.append(r)
+    from_stage = (body.get("from_stage") or "").strip()
+    to_stage = (body.get("to_stage") or "").strip()
+    note = (body.get("note") or "").strip() or None
+    supplied_line = body.get("sewing_line")
+    if not order_refs:
+        return JSONResponse({"detail": "order_refs is required"}, status_code=400)
+    if not from_stage or not to_stage:
+        return JSONResponse(
+            {"detail": "from_stage and to_stage are required"}, status_code=400)
+    if from_stage == to_stage:
+        return JSONResponse(
+            {"detail": "from_stage and to_stage are the same"}, status_code=400)
+
+    u = getattr(request.state, "user", None) or {}
+    moved_by = (body.get("moved_by") or "").strip() or (
+        u.get("name") or u.get("email") or "unknown")
+
+    results = []
+    moved_count = 0
+    failed_count = 0
+    for order_ref in order_refs:
+        try:
+            with _users_tx() as cur:
+                qty = _advance_whole_order(
+                    cur, order_ref, from_stage, to_stage, supplied_line, moved_by, note)
+            results.append({"order_ref": order_ref, "ok": True, "qty": qty})
+            moved_count += 1
+        except _MoveError as e:
+            results.append({"order_ref": order_ref, "ok": False, "error": e.detail})
+            failed_count += 1
+        except Exception as e:
+            results.append({"order_ref": order_ref, "ok": False, "error": str(e)})
+            failed_count += 1
+
+    return {"results": results, "moved_count": moved_count, "failed_count": failed_count}
 
 
 # Clienteling CRM endpoints (ported vivo-crm frontend at /crm/). Registered HERE,
