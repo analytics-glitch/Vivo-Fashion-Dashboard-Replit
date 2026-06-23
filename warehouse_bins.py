@@ -34,14 +34,18 @@ from hr_attendance import _connector_access_token, _gsheet_values
 log = logging.getLogger("warehouse_bins")
 
 # Native Google Sheet (barcode -> bin) maintained daily by the warehouse.
-# Set WAREHOUSE_BINS_SHEET_ID once the converted sheet link is available (both in
-# the workspace and as a deployment secret for production).
-SHEET_ID = os.environ.get("WAREHOUSE_BINS_SHEET_ID", "").strip()
+# This is the canonical bin source and is ALWAYS used by default, so the sync works
+# on a fresh deploy even if the WAREHOUSE_BINS_SHEET_ID secret is absent. The env
+# var still wins if explicitly set, but it defaults to this exact spreadsheet + tab.
+# https://docs.google.com/spreadsheets/d/1XiY1gRSqW2f3W_UJIp4_EcmW2QDjZfFhRyIkXppxq30/edit?gid=403172947
+_DEFAULT_SHEET_ID = "1XiY1gRSqW2f3W_UJIp4_EcmW2QDjZfFhRyIkXppxq30"
+_DEFAULT_SHEET_GID = "403172947"
+SHEET_ID = os.environ.get("WAREHOUSE_BINS_SHEET_ID", "").strip() or _DEFAULT_SHEET_ID
 # Worksheet selection. Priority: an explicit tab TITLE (WAREHOUSE_BINS_TAB), then a
 # tab GID (WAREHOUSE_BINS_GID — the stable numeric id in a sheet URL's #gid=...),
 # else auto-detect the first tab in the spreadsheet.
 SHEET_TAB = os.environ.get("WAREHOUSE_BINS_TAB", "").strip()
-SHEET_GID = os.environ.get("WAREHOUSE_BINS_GID", "").strip()
+SHEET_GID = os.environ.get("WAREHOUSE_BINS_GID", "").strip() or _DEFAULT_SHEET_GID
 REFRESH_INTERVAL_SEC = int(os.environ.get("WAREHOUSE_BINS_REFRESH_SEC", str(3600)))
 
 _refresh_lock = threading.Lock()
