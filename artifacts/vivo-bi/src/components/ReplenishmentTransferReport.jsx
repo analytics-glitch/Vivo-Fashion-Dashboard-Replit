@@ -7,8 +7,12 @@ import {
   DownloadSimple,
 } from "@phosphor-icons/react";
 
-// Quick presets just pre-fill the custom from/to range with the trailing N days.
+// The "All" view anchors the range well before any marked-done row can exist, so
+// EVERY done item lands in the report by default (not just a recent window). The
+// trailing-N-day presets just narrow the window when an operator wants a period.
+const ALL_FROM = "2020-01-01";
 const RANGE_PRESETS = [
+  { label: "All", from: ALL_FROM },
   { label: "30d", days: 30 },
   { label: "60d", days: 60 },
   { label: "90d", days: 90 },
@@ -81,7 +85,7 @@ export default function ReplenishmentTransferReport({
   noun = "replenishments",
   exportPrefix = "transfer-tracking",
 } = {}) {
-  const [from, setFrom] = useState(() => daysAgoYmd(60));
+  const [from, setFrom] = useState(() => ALL_FROM);
   const [to, setTo] = useState(() => todayYmd());
   const [posFilter, setPosFilter] = useState("");
   const [data, setData] = useState(null);
@@ -120,8 +124,8 @@ export default function ReplenishmentTransferReport({
 
   const toggle = (k) => setExpanded((p) => ({ ...p, [k]: !p[k] }));
 
-  const applyPreset = (n) => {
-    setFrom(daysAgoYmd(n));
+  const applyPreset = (p) => {
+    setFrom(p.from ? p.from : daysAgoYmd(p.days));
     setTo(todayYmd());
   };
 
@@ -227,11 +231,11 @@ export default function ReplenishmentTransferReport({
           <div className="inline-flex overflow-hidden rounded-md border border-input" data-testid="transfer-range-presets">
             {RANGE_PRESETS.map((p) => (
               <button
-                key={p.days}
+                key={p.label}
                 type="button"
-                onClick={() => applyPreset(p.days)}
+                onClick={() => applyPreset(p)}
                 className="px-2 py-1 text-xs font-semibold text-foreground hover:bg-accent"
-                data-testid={`button-transfer-preset-${p.days}`}
+                data-testid={`button-transfer-preset-${p.days || "all"}`}
               >
                 {p.label}
               </button>
