@@ -787,7 +787,7 @@ const Overview = () => {
     let fVisits = 0;
     let fOrders = 0;
     for (const r of rows || []) {
-      if (r.location === "Vivo Junction" && (r.conversion_rate || 0) > 50) continue; // data-quality rule (Vivo Junction sensor only)
+      if ((r.conversion_rate || 0) > 50) continue; // data-quality rule
       // Apply country filter if active
       if (countries.length) {
         const c = channelCountryMap[r.location];

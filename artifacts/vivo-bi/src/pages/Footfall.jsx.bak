@@ -150,7 +150,7 @@ const Footfall = () => {
 
   const channelCountry = useMemo(() => {
     const m = {};
-    for (const l of locations) m[l.location_name] = l.country;
+    for (const l of locations) m[l.channel] = l.country;
     return m;
   }, [locations]);
 
