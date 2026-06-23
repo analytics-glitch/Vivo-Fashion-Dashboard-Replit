@@ -3790,8 +3790,10 @@ def get_customer_type_spend(
     # purchase falls in the window is New, one who bought before is Returning.
     # The identified universe is still customer_type in new/returning/registered;
     # anything else (walk-in, Guest, blank) is a Walk-in.
-    # customers == orders here (each distinct order_id is counted), so
-    # spend_per_customer and avg_basket_value coincide.
+    # spend_per_customer divides by unique customers (COUNT DISTINCT customer_id)
+    # while avg_basket_value divides by orders (COUNT DISTINCT order_id), so the
+    # two diverge: since customers place >1 order on average, spend_per_customer
+    # is generally higher than ABV.
     return run_query("""
         WITH """ + _unified_first_purchase_ctes() + """
         SELECT
@@ -3806,10 +3808,10 @@ def get_customer_type_spend(
                 WHEN fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date THEN 'New'
                 ELSE 'Returning'
             END AS customer_segment,
-            COUNT(DISTINCT s.order_id) AS customers,
+            COUNT(DISTINCT s.customer_id) AS customers,
             COUNT(DISTINCT s.order_id) AS orders,
             ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
-            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS spend_per_customer,
+            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT s.customer_id), 0), 0) AS spend_per_customer,
             ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_basket_value
         FROM all_sales s
         LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
