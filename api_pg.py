@@ -269,19 +269,29 @@ _wb_attempt_lock = threading.Lock()
 _WB_ATTEMPT_THROTTLE_SEC = 300
 
 
-def _warehouse_bins_refresh():
+def _warehouse_bins_refresh(force=False):
     """Trigger a best-effort BACKGROUND refresh of the warehouse_bins table. NEVER
     blocks the request (the Google fetch runs in a daemon thread) and NEVER raises.
-    Throttled in-memory to at most once per _WB_ATTEMPT_THROTTLE_SEC; the real 6h
+    Throttled in-memory to at most once per _WB_ATTEMPT_THROTTLE_SEC; the real 1h
     staleness gate + a cross-thread lock live in warehouse_bins.refresh(). Called at
-    the top of the Replenishment + IBT endpoints that surface warehouse bins."""
+    the top of the Replenishment + IBT endpoints that surface warehouse bins.
+
+    force=True bypasses BOTH the in-memory throttle and the staleness gate and
+    re-fetches the WHOLE sheet now. Used once on startup so a freshly deployed
+    prod (a separate DB whose bins may have been written by older, capped code)
+    immediately gets the full current bin map instead of serving stale rows until
+    the hourly gate lapses."""
     global _wb_last_attempt
     try:
         now = time.time()
-        with _wb_attempt_lock:
-            if now - _wb_last_attempt < _WB_ATTEMPT_THROTTLE_SEC:
-                return
-            _wb_last_attempt = now
+        if not force:
+            with _wb_attempt_lock:
+                if now - _wb_last_attempt < _WB_ATTEMPT_THROTTLE_SEC:
+                    return
+                _wb_last_attempt = now
+        else:
+            with _wb_attempt_lock:
+                _wb_last_attempt = now
 
         def _bg():
             try:
@@ -289,7 +299,10 @@ def _warehouse_bins_refresh():
                 pool = _get_pool()
                 conn = pool.getconn()
                 try:
-                    warehouse_bins.ensure_fresh(conn)
+                    if force:
+                        warehouse_bins.refresh(conn, force=True)
+                    else:
+                        warehouse_bins.ensure_fresh(conn)
                 finally:
                     pool.putconn(conn)
             except Exception as e:
@@ -18043,6 +18056,13 @@ def _init_warehouse_bins():
             warehouse_bins.ensure_table(conn)
         finally:
             pool.putconn(conn)
+        # Force ONE full re-sync of the bin map on boot (background, best-effort).
+        # Prod is a SEPARATE DB whose bins may have been written by older, capped
+        # code; without this the hourly staleness gate would keep serving the
+        # stale rows for up to an hour after a deploy. force=True re-fetches the
+        # whole sheet now so a freshly deployed prod is immediately correct.
+        log.info("warehouse_bins: triggering one-shot forced refresh on startup")
+        _warehouse_bins_refresh(force=True)
     except Exception as e:
         log.error("warehouse_bins table init failed: %s", e)
 
