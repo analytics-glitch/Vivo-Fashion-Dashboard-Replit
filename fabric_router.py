@@ -660,7 +660,7 @@ def fabric_mix(
                    ROUND(SUM(i.total_value)::numeric,0) as tied_up_kes
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            WHERE i.quantity > 0 {loc_sql}
+            WHERE i.quantity > 0 AND p.category = 'Fabric' {loc_sql}
             GROUP BY 1, 2, 3, 4
         """, loc_params)
         net = _net_kg('m')
