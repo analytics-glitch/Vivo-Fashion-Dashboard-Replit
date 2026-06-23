@@ -298,15 +298,9 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <div id="split-print"><div class="loading">Loading…</div></div>
      </div>
     </div>
-    <div class="grid-2">
-     <div class="card">
-      <div class="section-head"><h3>Top fiber content</h3><span class="muted">declared fibers by value</span></div>
-      <div id="split-fiber"><div class="loading">Loading…</div></div>
-     </div>
-     <div class="card">
-      <div class="section-head"><h3>Fabric structure</h3></div>
-      <div id="split-structure"><div class="loading">Loading…</div></div>
-     </div>
+    <div class="card">
+     <div class="section-head"><h3>Fabric structure</h3></div>
+     <div id="split-structure"><div class="loading">Loading…</div></div>
     </div>
    </section>
 
@@ -661,7 +655,6 @@ const FX={
   catStock:'Category stock = sum of on-hand quantity for fabrics in this category (value shown in KES).',
   printShare:'Share = this pattern type\u2019s quantity ÷ total quantity across all patterns.',
   structureValue:'Structure value = sum of stock value (KES) for fabrics of this structure (knit / woven).',
-  fiberValue:'Fiber value = sum of stock value (KES) for fabrics declaring this fiber content.',
   // Ageing
   ageTotalValue:'Total stock value = sum of stock value (KES) at the selected location.',
   ageOver6:'Over 6 months old = stock value in the 6–12 month and 12+ month age bands (KES).',
@@ -1408,7 +1401,7 @@ async function loadOverview(){
     ovCache={d,cat,split};
     renderOverviewCached();
     document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString();
-  }catch(e){showErr('kpi-cards',e);['category-bars','split-print','split-structure','split-fiber'].forEach(id=>{const el=document.getElementById(id);if(el&&el.querySelector('.loading'))el.innerHTML='';});}
+  }catch(e){showErr('kpi-cards',e);['category-bars','split-print','split-structure'].forEach(id=>{const el=document.getElementById(id);if(el&&el.querySelector('.loading'))el.innerHTML='';});}
 }
 function renderOverviewCached(){
   if(!ovCache)return;
@@ -1416,7 +1409,6 @@ function renderOverviewCached(){
   renderCategories(ovCache.cat);
   renderPrintDonut(ovCache.split.plain_print);
   renderStructure('split-structure',ovCache.split.structure,FX.structureValue);
-  renderSplit('split-fiber',ovCache.split.fiber,FX.fiberValue);
 }
 function renderKpis(d){
   // Total fabric value = stock value for the SELECTED scope (All = RMAT + Dead).
