@@ -1056,21 +1056,22 @@ def dead_stock():
 @fabric_router.get("/api/fabric/purchase-orders")
 def purchase_orders(supplier: str = Query(default=None)):
     with _get_conn() as conn:
-        where = "1=1"
+        where = "p.category = 'Fabric'"
         params = []
         if supplier:
-            where = "supplier ILIKE %s"; params.append(f"%{supplier}%")
+            where += " AND po.supplier ILIKE %s"; params.append(f"%{supplier}%")
         return q(conn, f"""
-            SELECT po_name, supplier, order_date, state,
+            SELECT po.po_name, po.supplier, po.order_date, po.state,
               COUNT(*) as lines,
-              ROUND(SUM(total_value)::numeric,0) as po_value,
-              ROUND(SUM(qty_ordered)::numeric,2) as qty_ordered,
-              ROUND(SUM(qty_received)::numeric,2) as qty_received,
-              ROUND(SUM(qty_ordered-qty_received)::numeric,2) as outstanding
-            FROM raw_fabric_purchase_orders
+              ROUND(SUM(po.total_value)::numeric,0) as po_value,
+              ROUND(SUM(po.qty_ordered)::numeric,2) as qty_ordered,
+              ROUND(SUM(po.qty_received)::numeric,2) as qty_received,
+              ROUND(SUM(po.qty_ordered-po.qty_received)::numeric,2) as outstanding
+            FROM raw_fabric_purchase_orders po
+            JOIN raw_fabric_products p ON p.id = po.product_id
             WHERE {where}
-            GROUP BY po_name, supplier, order_date, state
-            ORDER BY order_date DESC
+            GROUP BY po.po_name, po.supplier, po.order_date, po.state
+            ORDER BY po.order_date DESC
         """, params)
 
 # ── BOM lookup ──────────────────────────────────────────────
@@ -1236,23 +1237,25 @@ def po_performance():
     with _get_conn() as conn:
         kpis = q(conn, """
             SELECT
-              COUNT(DISTINCT po_name) as pos,
+              COUNT(DISTINCT po.po_name) as pos,
               COUNT(*) as lines,
-              COUNT(DISTINCT po_name) FILTER (WHERE state='done') as done_pos,
-              ROUND(SUM(total_value)::numeric,0) as ordered_value,
-              ROUND(SUM(qty_received*price_unit)::numeric,0) as received_value,
-              ROUND((SUM(qty_received)/NULLIF(SUM(qty_ordered),0)*100)::numeric,1) as fill_rate,
-              ROUND(AVG(date_planned - order_date)::numeric,0) as avg_lead_days,
-              COUNT(DISTINCT po_name) FILTER (WHERE date_planned < CURRENT_DATE AND qty_ordered>qty_received) as overdue_open
-            FROM raw_fabric_purchase_orders
-            WHERE state != 'cancel'
+              COUNT(DISTINCT po.po_name) FILTER (WHERE po.state='done') as done_pos,
+              ROUND(SUM(po.total_value)::numeric,0) as ordered_value,
+              ROUND(SUM(po.qty_received*po.price_unit)::numeric,0) as received_value,
+              ROUND((SUM(po.qty_received)/NULLIF(SUM(po.qty_ordered),0)*100)::numeric,1) as fill_rate,
+              ROUND(AVG(po.date_planned - po.order_date)::numeric,0) as avg_lead_days,
+              COUNT(DISTINCT po.po_name) FILTER (WHERE po.date_planned < CURRENT_DATE AND po.qty_ordered>po.qty_received) as overdue_open
+            FROM raw_fabric_purchase_orders po
+            JOIN raw_fabric_products p ON p.id = po.product_id
+            WHERE po.state != 'cancel' AND p.category = 'Fabric'
         """)[0]
         by_month = q(conn, """
-            SELECT DATE_TRUNC('month', order_date)::date as period,
-              COUNT(DISTINCT po_name) as pos,
-              ROUND(SUM(total_value)::numeric,0) as value_kes
-            FROM raw_fabric_purchase_orders
-            WHERE state != 'cancel' AND order_date IS NOT NULL
+            SELECT DATE_TRUNC('month', po.order_date)::date as period,
+              COUNT(DISTINCT po.po_name) as pos,
+              ROUND(SUM(po.total_value)::numeric,0) as value_kes
+            FROM raw_fabric_purchase_orders po
+            JOIN raw_fabric_products p ON p.id = po.product_id
+            WHERE po.state != 'cancel' AND p.category = 'Fabric' AND po.order_date IS NOT NULL
             GROUP BY 1 ORDER BY 1
         """)
         return {"kpis": kpis, "by_month": by_month}
