@@ -25,6 +25,24 @@ UUID/vendor feed (single feed) — so neither is doubled, **only Uganda**.
 **Why it matters / fix shape:** the dedupe must drop only the Uganda overlap, NOT
 the whole vendor feed — Rwanda + Kenya-Online legitimately depend on
 `raw_shopify_vendor_sales`. The physical (`transform_shopify`, real line_item_id)
-copy is the likely authoritative one for Uganda's physical stores; confirm which
-feed is canonical with the data owner before deleting. Prod is a SEPARATE DB, so a
-dev rebuild won't correct prod history — needs the `REBUILD_ON_BOOT` watchdog gate.
+copy is authoritative for Uganda's physical stores.
+
+**RESOLVED (data owner chose the physical feed):** the live writer of the dup was
+`sync_incremental.py` — its channel default tagged every non-vivowoman store
+`'Online'`, so `vivo-uganda` got a 2nd copy. Fix: for `store_id='vivo-uganda'` the
+sync now writes `channel = pos_location` (the store name), matching the transform,
+so it can never emit an Online Uganda row again. The full rebuild already
+TRUNCATEs + never creates Uganda-Online (only physical), so it stays clean too.
+Dev DB was purged in one tx: delete Online rows that had a physical twin + delete
+blank-SKU Online artifacts + relabel the remaining real Online-only rows (the
+recent days the last rebuild hadn't reached) to `pos_location_name` so no real
+sale was lost. Ops check worth keeping: alert if any
+`store_id='vivo-uganda' AND channel='Online'` row exists.
+
+**Watch-outs:** recent days (after the last rebuild) existed ONLY as Online — a
+blind `DELETE channel='Online'` would lose them; relabel instead. A handful of
+`channel='Online - vivo-uganda'`, `country='Online'` rows are NOT dups (no physical
+twin) — they're genuine single Uganda-online sales in the Online bucket; leave them.
+Prod is a SEPARATE DB: publishing ships the sync fix (stops new dups) but does NOT
+purge prod's existing Online rows — run the `REBUILD_ON_BOOT` gate (TRUNCATE+repop
+drops them) or a one-time prod DELETE.
