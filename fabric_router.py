@@ -247,18 +247,24 @@ def summary(location: str = Query(default="RMAT/Stock")):
             WHERE qty_ordered > qty_received AND state != 'cancel'
         """)[0]
         
-        # Consumption last 30 days — net of fabric returned from production
+        # Consumption last 30 days — net of fabric returned from production.
+        # Metres = each move's net kg ÷ the fabric's kg-per-metre (skip rows with
+        # no/zero kg_per_mtr — negligible; RMAT/Stock has zero fabrics missing it).
         cons = q(conn, f"""
-            SELECT ROUND(SUM({_net_kg('m')})::numeric,1) as kg
+            SELECT ROUND(SUM({_net_kg('m')})::numeric,1) as kg,
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN ({_net_kg('m')})/p.kg_per_mtr ELSE 0 END)::numeric,0) as metres
             FROM {EFFECTIVE_MOVES} m
+            LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {_net_cons_where('m')}
               AND m.date >= NOW() - INTERVAL '30 days'
         """)[0]
 
         # Consumption so far today — net of production returns (m.date is a date/ts)
         cons_today = q(conn, f"""
-            SELECT ROUND(SUM({_net_kg('m')})::numeric,1) as kg
+            SELECT ROUND(SUM({_net_kg('m')})::numeric,1) as kg,
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN ({_net_kg('m')})/p.kg_per_mtr ELSE 0 END)::numeric,0) as metres
             FROM {EFFECTIVE_MOVES} m
+            LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {_net_cons_where('m')}
               AND m.date >= CURRENT_DATE
         """)[0]
@@ -289,7 +295,9 @@ def summary(location: str = Query(default="RMAT/Stock")):
             "outstanding_pos": pos['count'] or 0,
             "outstanding_po_value": pos['value'] or 0,
             "consumption_30d_kg": cons['kg'] or 0,
+            "consumption_30d_metres": cons['metres'] or 0,
             "consumption_today_kg": cons_today['kg'] or 0,
+            "consumption_today_metres": cons_today['metres'] or 0,
             "styles_with_bom": bom['styles'] or 0,
             **cover,
         }

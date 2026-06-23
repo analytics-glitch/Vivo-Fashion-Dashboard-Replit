@@ -643,9 +643,8 @@ const FX={
   // Overview KPIs
   stockOnHand:'Stock on hand = total on-hand fabric quantity for the selected location scope (Odoo inventory). "All locations" = RMAT/Stock + Dead/Stock Fabric.',
   totalFabricValue:'Total fabric value = stock value for the selected scope (KES). "All locations" = RMAT/Stock value + dead-stock value.',
-  totalWeight:'Total weight = sum of on-hand fabric weight for the selected location scope (kg).',
-  consumedToday:'Consumed today = fabric used today (OUT moves) − fabric returned from production (kg).',
-  consumed30d:'Consumed (30 days) = OUT moves − production returns over the last 30 days (kg).',
+  consumedToday:'Consumed today = fabric used today (OUT moves) − fabric returned from production. Shown in the selected unit (metres or kg).',
+  consumed30d:'Consumed (30 days) = OUT moves − production returns over the last 30 days. Shown in the selected unit (metres or kg).',
   monthsCover:'Months of cover = stock on hand (kg) ÷ average monthly consumption (kg), using a 6-month average run-rate with the current month projected to a full month. Consumption is net of production returns (fabric only).',
   deadStock:'Dead stock = value of fabric parked in the Dead/Stock location (KES).',
   deadPct:'% of value = dead-stock value ÷ total fabric value.',
@@ -1447,9 +1446,8 @@ function renderKpis(d){
   document.getElementById('kpi-cards').innerHTML=`
    <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value"${fx(FX.stockOnHand)}>${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub">${fmtKES(d.fabric_stock_value)} &middot; ${fmt(d.fabric_products)} fabrics</p></div>
    <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value"${fx(FX.totalFabricValue)}>${fmtKES(totalVal)}</p><p class="kpi-sub">${valSub}</p></div>
-   <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value"${fx(FX.totalWeight)}>${fmt(d.fabric_stock_kg)}</p><p class="kpi-sub">kg on hand</p></div>
-   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(d.consumption_today_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
-   <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.consumed30d)}>${fmt(d.consumption_30d_kg)}</p><p class="kpi-sub">kg, net of returns</p></div>
+   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
+   <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.consumed30d)}>${fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}"${fx(FX.monthsCover)}>${cover!=null?coverFmt(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>
    <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger"${fx(FX.deadStock)}>${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">${fmt(d.dead_stock_kg)} kg &middot; <span${fx(FX.deadPct)}>${deadPct.toFixed(0)}% of value</span></p></div>`;
 }
