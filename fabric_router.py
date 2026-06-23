@@ -273,15 +273,16 @@ def summary(location: str = Query(default="RMAT/Stock")):
         # RECEIVED quantity (what actually landed), converted to metres via the
         # product master's kg_per_mtr. Per-supplier breakdown lets a supplier whose
         # fabrics lack the conversion be pinpointed (its row + the headline → "—").
-        # (PO rows carry no category, so scope is the non-cancelled, received set.)
+        # Scoped to category='Fabric' (Raw Materials-Fabric) only, identically to
+        # the STOCK side above — Trim/unmatched PO lines are excluded entirely.
         pur_rows = q(conn, """
             SELECT po.supplier as supplier,
                    ROUND(SUM(po.qty_received*po.price_unit)::numeric,0) as value_kes,
                    ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN po.qty_received/p.kg_per_mtr ELSE 0 END)::numeric,2) as metres,
                    BOOL_OR(po.qty_received>0 AND COALESCE(p.kg_per_mtr,0)<=0) as incomplete
             FROM raw_fabric_purchase_orders po
-            LEFT JOIN raw_fabric_products p ON p.id = po.product_id
-            WHERE po.state != 'cancel' AND po.qty_received > 0
+            JOIN raw_fabric_products p ON p.id = po.product_id
+            WHERE po.state != 'cancel' AND po.qty_received > 0 AND p.category='Fabric'
             GROUP BY po.supplier
         """)
         purchases_by_supplier = []
