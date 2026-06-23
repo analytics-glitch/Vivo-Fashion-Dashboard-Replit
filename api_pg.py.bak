@@ -7239,31 +7239,23 @@ def _es_shift_year(d, years):
         return d.replace(year=d.year - years, day=28)
 
 def _es_footfall_by_country(date_from, date_to):
+    # {country: total_footfall_in} over [from,to]. footfall has no country
+    # column, so map pos_location_name -> pos_locations.country.
     rows = run_query("""
         SELECT COALESCE(pl.country, 'Other') AS country,
             SUM(f.a01_footfall_in) AS footfall
         FROM footfall f
         LEFT JOIN pos_locations pl ON """ + ff_canon_sql() + """ = pl.location_name
-        WHERE f.time BETWEEN \'""" + date_from + """\' AND \'""" + date_to + """\'
+        WHERE f.time BETWEEN '""" + date_from + """' AND '""" + date_to + """'
         GROUP BY COALESCE(pl.country, 'Other')
     """, date_to=date_to)
-    ff_map = {r["country"]: float(r["footfall"] or 0) for r in rows}
-    total_row = run_query("""
-        SELECT SUM(a01_footfall_in) AS total
-        FROM footfall
-        WHERE time BETWEEN \'""" + date_from + """\' AND \'""" + date_to + """\'
-    """, date_to=date_to)
-    ff_map["__total__"] = float((total_row[0]["total"] if total_row else 0) or 0)
-    return ff_map
-
+    return {r["country"]: float(r["footfall"] or 0) for r in rows}
 
 def _es_footfall_total(ff_map, country):
     if country:
         wanted = {c.strip().lower() for c in country.split(",")}
-        return sum(v for kc, v in ff_map.items()
-                   if kc != "__total__" and kc.lower() in wanted)
-    return ff_map.get("__total__", sum(v for k, v in ff_map.items() if k != "__total__"))
-
+        return sum(v for kc, v in ff_map.items() if kc.lower() in wanted)
+    return sum(ff_map.values())
 
 def _es_customer_windows(span_from, span_to, windows, country):
     # total / new / returning customer counts for several windows in ONE pass.
