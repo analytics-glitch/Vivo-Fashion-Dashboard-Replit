@@ -265,16 +265,6 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <button class="btn ghost" onclick="clearMixRange()" title="Clear the custom range and use the preset">Clear</button>
      <button class="btn" style="margin-left:auto;" onclick="exportFabricMix(this)">Export CSV</button>
     </div>
-    <details class="card" style="margin-bottom:1.1rem;">
-     <summary style="cursor:pointer;font-weight:700;">Metric definitions</summary>
-     <div class="muted" style="margin-top:.7rem;display:grid;gap:.45rem;font-size:.85rem;line-height:1.45;">
-      <div><b>% Consumption / % Available</b> — each group's share of total net usage vs. total available stock over the window.</div>
-      <div><b>Gap (pp)</b> = % Available − % Consumption. <span class="pill pill-amber">+ overstock</span> holds more than it uses · <span class="pill pill-red">− short</span> uses faster than its stock share · <span class="pill pill-green">± balanced</span> within ±3pp.</div>
-      <div><b>Weekly covers</b> = Available ÷ (Consumption ÷ weeks). Below 1 = under a week of cover.</div>
-      <div><b>Verdict</b> — <span class="pill pill-red">Buy</span> short (shortfall &lt; 0, cover &lt; ~4wk, or Gap ≤ −3pp) · <span class="pill pill-amber">Clear</span> overstock (Gap ≥ +3pp or &gt; ~52wk cover) · <span class="pill pill-blue">Idle</span> stock but ~no usage in the window · <span class="pill pill-green">Hold</span> balanced.</div>
-      <div><b>Tied-up KES</b> — capital locked in the group's available stock.</div>
-     </div>
-    </details>
     <div class="card" style="padding:0;">
      <div class="tbl-wrap">
       <table class="data">
