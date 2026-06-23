@@ -434,7 +434,10 @@ export default function ProductionReport() {
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const lines = [cols.join(",")];
-    for (const o of filtered) {
+    // Export the WHOLE order report the user is looking at: active orders that
+    // match every filter PLUS the completed (fully-landed) orders shown below.
+    // Otherwise completed orders silently drop out of the CSV.
+    for (const o of [...filtered, ...completedOrders]) {
       const sq = o.stage_qty || {};
       const row = [
         o.order_ref,
@@ -464,7 +467,7 @@ export default function ProductionReport() {
     a.download = `production-report-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [filtered, stageCols]);
+  }, [filtered, completedOrders, stageCols]);
 
   if (loading) return <Loading label="Loading the production report…" />;
   if (error) return <ErrorBox message={error} />;
