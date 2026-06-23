@@ -93,9 +93,16 @@ table.data td.r{text-align:right;font-variant-numeric:tabular-nums;}
 table.data tr:last-child td{border-bottom:none;}
 table.data tbody tr:hover td{background:rgba(26,92,56,.03);}
 .tbl-wrap{overflow:auto;border-radius:var(--radius);}
-/* Freeze the Fabric Mix table header during page scroll (scoped to the mix table only). The wrapper must not establish its own vertical scroll container, so the sticky header resolves against the scrolling content area instead. */
-#page-dashboard .tbl-wrap{overflow:visible;}
-#page-dashboard table.data th{z-index:20;}
+/* Stock Mix table only: constrain height so the header can stick, and give a
+   clearly visible horizontal scrollbar. Scoped to .mix-scroll so no other
+   Fabric dashboard table is affected. */
+.mix-scroll{max-height:calc(100vh - 230px);overflow:auto;border-radius:var(--radius);}
+.mix-scroll table.data thead th{position:sticky;top:0;z-index:3;background:var(--bg);box-shadow:inset 0 -1px 0 var(--border-strong);}
+.mix-scroll::-webkit-scrollbar{height:13px;width:13px;}
+.mix-scroll::-webkit-scrollbar-track{background:var(--panel);border-radius:8px;}
+.mix-scroll::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:8px;border:2px solid var(--panel);}
+.mix-scroll::-webkit-scrollbar-thumb:hover{background:var(--accent);}
+.mix-scroll{scrollbar-color:var(--border-strong) var(--panel);}
 .row-click{cursor:pointer;}
 
 .pill{display:inline-flex;align-items:center;gap:.3rem;padding:.12rem .55rem;border-radius:999px;font-size:.7rem;font-weight:600;white-space:nowrap;}
@@ -269,7 +276,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <button class="btn" style="margin-left:auto;" onclick="exportFabricMix(this)">Export CSV</button>
     </div>
     <div class="card" style="padding:0;">
-     <div class="tbl-wrap">
+     <div class="tbl-wrap mix-scroll">
       <table class="data">
        <thead id="mix-head"></thead>
        <tbody id="mix-body"><tr><td class="loading">Loading…</td></tr></tbody>
