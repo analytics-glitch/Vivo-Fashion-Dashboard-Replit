@@ -84,7 +84,9 @@ def global_checks():
     # legitimately share a style_name across many style_numbers). Mirrors the
     # MERCH_SUBCATEGORIES universe the KPIs report on.
     merch = api_pg.MERCH_SUBCATEGORIES_SQL
-    for col in ("collection", "brand", "style_number"):
+    # style_number intentionally excluded: one style_name can validly carry
+    # multiple style_numbers (e.g. season variants V1020035 vs V1220035).
+    for col in ("collection", "brand"):
         n = q("SELECT COUNT(*) AS n FROM (SELECT p.style_name FROM all_products_clean p "
               "WHERE p.style_name IS NOT NULL AND p.product_type IN (" + merch + ") "
               "GROUP BY p.style_name HAVING COUNT(DISTINCT p.%s) > 1) x" % col)
