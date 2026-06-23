@@ -18074,6 +18074,9 @@ def production_summary():
         LIMIT 30""", fetch=True)
 
     # One row per buying order with colour/size/variant counts + per-stage units.
+    # `sew` rolls up the distinct sewing line(s) every order's pieces ran on (any
+    # move INTO sewing carrying a line), so the report can show which line(s) an
+    # order is in / has passed through and filter the table by line.
     orders = _users_exec("""
         WITH line_rollup AS (
             SELECT order_ref,
@@ -18095,6 +18098,13 @@ def production_summary():
                    SUM(b.qty_here)                       AS units_in_progress
             FROM v_stage_balances b
             GROUP BY b.order_ref
+        ),
+        sew AS (
+            SELECT order_ref,
+                   array_agg(DISTINCT sewing_line ORDER BY sewing_line) AS sewing_lines
+            FROM stage_movements
+            WHERE to_stage = 'sewing' AND sewing_line IS NOT NULL
+            GROUP BY order_ref
         )
         SELECT po.order_ref, po.style_number, po.style_name, po.product_name,
                po.buyer, po.order_qty, po.date_ordered, po.expected_delivery_date,
@@ -18103,12 +18113,42 @@ def production_summary():
                COALESCE(vr.sizes, 0)    AS sizes,
                COALESCE(vr.variants, 0) AS variants,
                COALESCE(bal.units_in_progress, 0) AS units_in_progress,
-               bal.stage_qty
+               bal.stage_qty,
+               COALESCE(sew.sewing_lines, ARRAY[]::text[]) AS sewing_lines
         FROM production_orders po
         LEFT JOIN line_rollup lr ON lr.order_ref = po.order_ref
         LEFT JOIN var_rollup  vr ON vr.order_ref = po.order_ref
         LEFT JOIN bal            ON bal.order_ref = po.order_ref
+        LEFT JOIN sew            ON sew.order_ref = po.order_ref
         ORDER BY po.date_ordered DESC NULLS LAST, po.order_ref DESC""", fetch=True)
+
+    # Load now sitting in the Sewing stage, split by the line each piece ran on
+    # (its most recent sewing line) — units + distinct orders/styles per line so
+    # supervisors can see how work is balanced across lines A–E.
+    by_sewing_line = _users_exec("""
+        WITH cur AS (
+            SELECT sb.order_ref, sb.sku, sb.size, sb.qty_here, sl.sewing_line
+            FROM v_stage_sku_balances sb
+            LEFT JOIN LATERAL (
+                SELECT sewing_line
+                FROM stage_movements
+                WHERE order_ref = sb.order_ref AND to_stage = 'sewing'
+                  AND sewing_line IS NOT NULL
+                  AND sku  IS NOT DISTINCT FROM sb.sku
+                  AND size IS NOT DISTINCT FROM sb.size
+                ORDER BY moved_at DESC, id DESC
+                LIMIT 1
+            ) sl ON TRUE
+            WHERE sb.stage = 'sewing'
+        )
+        SELECT COALESCE(c.sewing_line, 'Unspecified') AS label,
+               COUNT(DISTINCT c.order_ref)            AS orders,
+               COALESCE(SUM(c.qty_here), 0)           AS units,
+               COUNT(DISTINCT po.style_number)        AS styles
+        FROM cur c
+        LEFT JOIN production_orders po ON po.order_ref = c.order_ref
+        GROUP BY 1
+        ORDER BY (COALESCE(c.sewing_line, 'Unspecified') = 'Unspecified'), label""", fetch=True)
 
     return {
         "totals": (totals[0] if totals else {"orders": 0, "units": 0, "styles": 0}),
@@ -18117,6 +18157,7 @@ def production_summary():
         "by_state": _grouped("bo_state"),
         "by_stage": by_stage,
         "by_buyer": by_buyer,
+        "by_sewing_line": by_sewing_line,
         "orders": orders,
     }
 

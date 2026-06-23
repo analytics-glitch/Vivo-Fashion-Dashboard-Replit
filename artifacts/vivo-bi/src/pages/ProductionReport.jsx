@@ -110,6 +110,65 @@ function BreakdownCard({ title, rows, accent }) {
   );
 }
 
+/**
+ * "By sewing line" roll-up — units currently sitting in the Sewing stage split
+ * by the line each piece is on (most-recent line), plus distinct orders/styles
+ * per line. Click a line chip to filter the order table to it. Pieces sewn
+ * before a line was recorded fall under "Unspecified".
+ */
+function SewingLineRollup({ rows, active, onPick }) {
+  const data = rows || [];
+  const total = useMemo(
+    () => data.reduce((s, r) => s + (Number(r.units) || 0), 0),
+    [data]
+  );
+  if (data.length === 0) return null;
+  return (
+    <div className="card-white p-4" data-testid="production-by-sewing-line">
+      <div className="eyebrow mb-3">By sewing line — load currently in Sewing</div>
+      <div className="flex items-stretch gap-2 overflow-x-auto pb-1">
+        {data.map((r) => {
+          const unspecified = r.label === "Unspecified";
+          const isActive = !unspecified && r.label === active;
+          const pct = total > 0 ? (Number(r.units) / total) * 100 : 0;
+          return (
+            <button
+              key={r.label}
+              type="button"
+              disabled={unspecified}
+              onClick={() => !unspecified && onPick(isActive ? "" : r.label)}
+              className={`shrink-0 text-left rounded-lg border px-3 py-2.5 min-w-[120px] transition ${
+                isActive
+                  ? "border-amber-400 bg-amber-50 ring-1 ring-amber-400"
+                  : unspecified
+                  ? "border-line bg-white opacity-70 cursor-default"
+                  : "border-line bg-white hover:border-amber-300 hover:bg-amber-50/40"
+              }`}
+              data-testid={`production-sewing-line-${r.label}`}
+            >
+              <div className="text-[11.5px] font-semibold text-[#0f3d24]">
+                {unspecified ? "Unspecified" : `Line ${r.label}`}
+              </div>
+              <div className="text-[20px] font-extrabold text-brand leading-tight mt-0.5 tabular-nums">
+                {fmtQty(r.units)}
+              </div>
+              <div className="text-[10.5px] text-muted">
+                {fmtQty(r.styles)} style{Number(r.styles) === 1 ? "" : "s"} · {fmtQty(r.orders)} ord
+              </div>
+              <div className="mt-1.5 h-1.5 rounded-full bg-panel/70 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-amber-500"
+                  style={{ width: `${Math.max(pct, pct > 0 ? 3 : 0)}%` }}
+                />
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function Kpi({ label, value, sub }) {
   return (
     <div className="card-white p-4">
@@ -465,6 +524,7 @@ export default function ProductionReport() {
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
   const [lifecycleFilter, setLifecycleFilter] = useState("");
+  const [sewingLineFilter, setSewingLineFilter] = useState("");
   const [stageFilter, setStageFilter] = useState(null);
   const [dropFilter, setDropFilter] = useState(null);
   const [openOrder, setOpenOrder] = useState(null);
@@ -608,11 +668,13 @@ export default function ProductionReport() {
       const q = query.trim().toLowerCase();
       if (lifecycleFilter && (o.lifecycle_type || "") !== lifecycleFilter)
         return false;
+      if (sewingLineFilter && !(o.sewing_lines || []).includes(sewingLineFilter))
+        return false;
       if (!q) return true;
       return [o.order_ref, o.style_number, o.style_name, o.product_name, o.buyer]
         .some((v) => String(v || "").toLowerCase().includes(q));
     },
-    [query, lifecycleFilter]
+    [query, lifecycleFilter, sewingLineFilter]
   );
 
   // Active orders honour every filter (incl. stage-flow + drop window); completed
@@ -670,6 +732,14 @@ export default function ProductionReport() {
     [data]
   );
 
+  // Every sewing line that appears on any order (so the filter only offers lines
+  // that actually ran), sorted A→E.
+  const sewingLineOptions = useMemo(() => {
+    const s = new Set();
+    for (const o of orders) for (const l of o.sewing_lines || []) if (l) s.add(l);
+    return Array.from(s).sort();
+  }, [orders]);
+
   const exportCsv = useCallback(() => {
     const cols = [
       "Order",
@@ -685,6 +755,7 @@ export default function ProductionReport() {
       "Variants",
       "Order qty",
       "In progress",
+      "Sewing line(s)",
       "Expected delivery",
       ...stageCols.map((s) => s.name),
     ];
@@ -712,6 +783,7 @@ export default function ProductionReport() {
         o.variants,
         o.order_qty,
         o.units_in_progress,
+        (o.sewing_lines || []).join(" / "),
         o.expected_delivery_date ? String(o.expected_delivery_date).slice(0, 10) : "",
         ...stageCols.map((s) => sq[s.key] || 0),
       ];
@@ -812,6 +884,13 @@ export default function ProductionReport() {
         />
       </div>
 
+      {/* By sewing line — load currently sitting in Sewing, split by line */}
+      <SewingLineRollup
+        rows={data?.by_sewing_line}
+        active={sewingLineFilter}
+        onPick={setSewingLineFilter}
+      />
+
       {/* Per-order table */}
       <div className="card-white p-4">
         <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
@@ -833,6 +912,21 @@ export default function ProductionReport() {
                 </option>
               ))}
             </select>
+            {sewingLineOptions.length > 0 && (
+              <select
+                value={sewingLineFilter}
+                onChange={(e) => setSewingLineFilter(e.target.value)}
+                className="input-pill text-[12px]"
+                data-testid="production-report-sewing-line"
+              >
+                <option value="">All sewing lines</option>
+                {sewingLineOptions.map((l) => (
+                  <option key={l} value={l}>
+                    Line {l}
+                  </option>
+                ))}
+              </select>
+            )}
             <div className="relative">
               <MagnifyingGlass
                 size={14}
@@ -891,6 +985,15 @@ export default function ProductionReport() {
                 {lifecycleFilter} <X size={11} />
               </button>
             )}
+            {sewingLineFilter && (
+              <button
+                type="button"
+                onClick={() => setSewingLineFilter("")}
+                className="inline-flex items-center gap-1 font-semibold text-[#0f3d24] bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5"
+              >
+                Line {sewingLineFilter} <X size={11} />
+              </button>
+            )}
           </div>
         )}
 
@@ -939,6 +1042,7 @@ export default function ProductionReport() {
                   <th className="text-right font-semibold px-2.5 py-2">Colours</th>
                   <th className="text-right font-semibold px-2.5 py-2">Sizes</th>
                   <th className="text-right font-semibold px-2.5 py-2">Order qty</th>
+                  <th className="text-left font-semibold px-3 py-2">Sewing line</th>
                   <th className="text-left font-semibold px-3 py-2">What is where</th>
                   <th className="text-left font-semibold px-3 py-2">Expected</th>
                 </tr>
@@ -1004,6 +1108,26 @@ export default function ProductionReport() {
                       </td>
                       <td className="px-2.5 py-2 text-right font-semibold tabular-nums">
                         {fmtQty(o.order_qty)}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {(o.sewing_lines || []).length === 0 ? (
+                          <span className="text-muted">—</span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1">
+                            {o.sewing_lines.map((l) => (
+                              <span
+                                key={l}
+                                className={`inline-flex items-center text-[10.5px] font-semibold border rounded-full px-1.5 py-0.5 ${
+                                  l === sewingLineFilter
+                                    ? "bg-amber-100 border-amber-300 text-amber-800"
+                                    : "bg-amber-50 border-amber-200 text-amber-700"
+                                }`}
+                              >
+                                {l}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </td>
                       <td className="px-3 py-2">
                         {active.length === 0 ? (
