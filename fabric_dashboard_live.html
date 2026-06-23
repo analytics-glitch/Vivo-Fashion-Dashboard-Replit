@@ -38,6 +38,7 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .nav-item{display:flex;align-items:center;gap:9px;padding:9px 11px;font-size:13.5px;font-weight:500;color:var(--text-sub);border-radius:9px;cursor:pointer;margin-bottom:0;white-space:nowrap;flex-shrink:0;transition:background .12s,color .12s;}
 .nav-item:hover{background:rgba(26,92,56,.06);color:var(--text);}
 .nav-item.active{color:#fff;background:var(--accent);font-weight:600;}
+.nav-acr{font-size:.84em;letter-spacing:.02em;}
 .rsv-lbl{display:block;font-size:11px;font-weight:600;color:var(--text-sub);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;}
 .resv-dropdown{position:absolute;top:100%;left:0;z-index:30;width:340px;max-height:280px;overflow:auto;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.12);margin-top:4px;}
 .resv-opt{padding:8px 11px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border);}
@@ -194,18 +195,18 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
   <nav class="nav-body">
    <div class="nav-item active" data-page="overview">Overview</div>
    <div class="nav-item" data-page="dashboard">Stock Mix</div>
-   <div class="nav-item" data-page="ageing">Stock &amp; ageing</div>
+   <div class="nav-item" data-page="ageing">Stock &amp; Ageing</div>
    <div class="nav-item" data-page="deadstock">Slow Moving</div>
    <div class="nav-item" data-page="defects">Defects</div>
-   <div class="nav-item" data-page="dataquality">Data quality</div>
+   <div class="nav-item" data-page="dataquality">Data Quality</div>
    <div class="nav-group">Flow</div>
-   <div class="nav-item" data-page="movement">Movement &amp; use</div>
-   <div class="nav-item" data-page="pos">Purchase orders</div>
+   <div class="nav-item" data-page="movement">Movement &amp; Use</div>
+   <div class="nav-item" data-page="pos">Purchase Orders</div>
    <div class="nav-item" data-page="suppliers">Suppliers</div>
    <div class="nav-group">Production</div>
-   <div class="nav-item" data-page="bom">BOM explorer</div>
+   <div class="nav-item" data-page="bom"><span class="nav-acr">BOM</span> Explorer</div>
    <div class="nav-group">Buying</div>
-   <div class="nav-item" data-page="reservations">Fabric reservations</div>
+   <div class="nav-item" data-page="reservations">Fabric Reservations</div>
   </nav>
  </aside>
 
