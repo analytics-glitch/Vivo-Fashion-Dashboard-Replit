@@ -292,7 +292,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     </div>
     <div class="grid-2">
      <div class="card">
-      <div class="section-head"><h3>Fabric structure</h3><span class="muted">knit / woven by value</span></div>
+      <div class="section-head"><h3>Fabric structure</h3><span class="muted" id="split-structure-unit">knit / woven by quantity</span></div>
       <div id="split-structure"><div class="loading">Loading…</div></div>
      </div>
      <div class="card">
@@ -1399,8 +1399,9 @@ function renderOverviewCached(){
   renderKpis(ovCache.d);
   renderCategories(ovCache.cat);
   renderPrintDonut(ovCache.split.plain_print);
-  renderSplit('split-structure',ovCache.split.structure,FX.structureValue);
+  renderStructure('split-structure',ovCache.split.structure,FX.structureValue);
   renderSplit('split-fiber',ovCache.split.fiber,FX.fiberValue);
+  const su=document.getElementById('split-structure-unit');if(su)su.textContent='knit / woven by '+(UNIT==='kg'?'kg':'metres');
 }
 function renderKpis(d){
   // Total fabric value = stock value for the SELECTED scope (All = RMAT + Dead).
@@ -1449,6 +1450,21 @@ function renderCategories(data){
 function renderSplit(id,rows,fxText){
   const data=(rows||[]).map(r=>({label:r.value,v:r.value_kes,_qty:fmtKES(r.value_kes),fabrics:r.fabrics}));
   bars(id,data,'label','v',r=>fmt(r.fabrics)+' fab',true,fxText);
+}
+function renderStructure(id,rows,fxText){
+  rows=rows||[];
+  const el=document.getElementById(id); if(!el)return;
+  const totalVal=rows.reduce((s,r)=>s+(r.value_kes||0),0);
+  const max=Math.max(...rows.map(r=>UNIT==='kg'?(r.qty_kg||0):(r.qty_metres||0)),1);
+  const fa=fxText?fx(fxText):'';
+  el.innerHTML=rows.length?rows.map((r,i)=>{
+    const c=PAL[i%PAL.length];
+    const q=UNIT==='kg'?(r.qty_kg||0):(r.qty_metres||0);
+    const pct=totalVal>0?(r.value_kes||0)/totalVal*100:0;
+    return `<div class="bar-row"><span class="bar-label" title="${esc(r.value)}"><span class="dot" style="background:${c}"></span>${esc(r.value)}</span>
+     <div class="bar-track"><div class="bar-fill" style="width:${(q/max*100).toFixed(1)}%;background:${c}"></div></div>
+     <span class="bar-qty"${fa}>${fmt(r.qty_metres)} m</span><span class="bar-qty">${fmt1(r.qty_kg)} kg</span><span class="bar-sub">${pct.toFixed(1)}%</span></div>`;
+  }).join(''):'<p class="muted">No data.</p>';
 }
 function renderPrintDonut(rows){
   rows=rows||[];
