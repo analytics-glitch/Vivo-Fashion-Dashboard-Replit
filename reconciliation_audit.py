@@ -1,4 +1,3 @@
-cat > reconciliation_audit.py << 'PYEOF'
 #!/usr/bin/env python3
 """
 reconciliation_audit.py
@@ -114,5 +113,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-PYEOF
-echo "written"
