@@ -9,6 +9,7 @@
 - [Multi-query partial-failure state](multi-query-partial-failure.md) — screens with several parallel queries must OR-compose error/loading (or per-section states); AND-composing hides partial API failures as fake-healthy zeroes.
 - [Mobile Overview filter mapping](mobile-overview-filter-mapping.md) — Expo All/Retail/Online segment maps to `country` (channel param=pos_location_name can't); period deltas = two /api/kpis calls.
 - [Auth identity email fallback](auth-identity-email-fallback.md) — resolve identity by user_id/sub, then fall back to UNIQUE email, or admin-created (local:) users collide with Google (google:) sign-in; redirect_uri_mismatch = Google Console config, not code.
+- [Google OAuth org_internal block](google-oauth-org-internal.md) — a 2nd company domain "Error 403: org_internal" (no app_users row) = consent screen User type=Internal; fix is External+Publish in Google Console, not the app allowlist.
 - [psycopg2 literal %](psycopg2-literal-percent.md) — a literal `%` in SQL run with no params raises "IndexError: tuple index out of range"; escape as `%%` (bit /api/ibt/late-count).
 - [Sync-loop idempotent endpoints](sync-loop-idempotent-endpoints.md) — sync_incremental's hour-gated "daily" POSTs actually fire ~60×/day; internal endpoints it calls must dedupe their own writes.
 - [Python deps in .pythonlibs](python-deps-pythonlibs.md) — pip & installLanguagePackages fail here; add backend pkgs via `uv pip install --target .pythonlibs/lib/python3.11/site-packages`.
