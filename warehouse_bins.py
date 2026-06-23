@@ -101,15 +101,18 @@ def ensure_table(conn):
 
 
 def _resolve_tab(sheet_id):
-    """Return the worksheet TITLE to read. Priority: an explicit WAREHOUSE_BINS_TAB
-    title (no API call needed), then a WAREHOUSE_BINS_GID match (resolved to its
-    title via the sheet metadata), else the first tab in the spreadsheet."""
+    """Return (worksheet TITLE, grid row_count) to read. Priority: an explicit
+    WAREHOUSE_BINS_TAB title (no API call needed → unknown row count), then a
+    WAREHOUSE_BINS_GID match (resolved to its title via the sheet metadata), else
+    the first tab in the spreadsheet. The row_count lets the caller fetch the WHOLE
+    grid instead of a fixed cap — the Bins tab has tens of thousands of rows, so a
+    too-small range silently drops every barcode past the cap."""
     if SHEET_TAB:
-        return SHEET_TAB
+        return SHEET_TAB, None
     tok = _connector_access_token("google-sheet")
     r = requests.get(
         f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}",
-        params={"fields": "sheets.properties(sheetId,title)"},
+        params={"fields": "sheets.properties(sheetId,title,gridProperties(rowCount))"},
         headers={"Authorization": f"Bearer {tok}"},
         timeout=30,
     )
@@ -117,14 +120,18 @@ def _resolve_tab(sheet_id):
     sheets = (r.json() or {}).get("sheets") or []
     if not sheets:
         raise RuntimeError("spreadsheet has no tabs")
+
+    def _rc(s):
+        return ((s["properties"].get("gridProperties") or {}).get("rowCount"))
+
     if SHEET_GID:
         for s in sheets:
             if str(s["properties"].get("sheetId")) == SHEET_GID:
-                return s["properties"]["title"]
+                return s["properties"]["title"], _rc(s)
         raise RuntimeError(
             f"WAREHOUSE_BINS_GID={SHEET_GID} not found among "
             f"{[s['properties'].get('sheetId') for s in sheets]}")
-    return sheets[0]["properties"]["title"]
+    return sheets[0]["properties"]["title"], _rc(sheets[0])
 
 
 def _parse_rows(values):
@@ -201,8 +208,12 @@ def refresh(conn, force=False):
             return "in_progress"
         try:
             # Network fetch first — if it fails we never TRUNCATE.
-            tab = _resolve_tab(SHEET_ID)
-            values = _gsheet_values(SHEET_ID, tab, "A1:Z20000")
+            # Read the WHOLE grid: the Bins tab has tens of thousands of rows, so a
+            # fixed cap would silently drop every barcode past it. Fall back to a
+            # generous bound when the row count is unknown (explicit-tab path).
+            tab, row_count = _resolve_tab(SHEET_ID)
+            last_row = int(row_count) if row_count else 200000
+            values = _gsheet_values(SHEET_ID, tab, f"A1:Z{last_row}")
             pairs = _parse_rows(values)
             with conn.cursor() as cur:
                 cur.execute("TRUNCATE warehouse_bins")
