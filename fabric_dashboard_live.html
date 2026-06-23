@@ -93,6 +93,9 @@ table.data td.r{text-align:right;font-variant-numeric:tabular-nums;}
 table.data tr:last-child td{border-bottom:none;}
 table.data tbody tr:hover td{background:rgba(26,92,56,.03);}
 .tbl-wrap{overflow:auto;border-radius:var(--radius);}
+/* Freeze the Fabric Mix table header during page scroll (scoped to the mix table only). The wrapper must not establish its own vertical scroll container, so the sticky header resolves against the scrolling content area instead. */
+#page-dashboard .tbl-wrap{overflow:visible;}
+#page-dashboard table.data th{z-index:20;}
 .row-click{cursor:pointer;}
 
 .pill{display:inline-flex;align-items:center;gap:.3rem;padding:.12rem .55rem;border-radius:999px;font-size:.7rem;font-weight:600;white-space:nowrap;}
