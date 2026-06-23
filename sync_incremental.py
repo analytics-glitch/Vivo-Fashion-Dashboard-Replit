@@ -173,6 +173,8 @@ _LAST_PRODUCTION_SYNC = None
 # runs every 60s. None on boot so the first cycle after a (re)start refreshes
 # immediately. Persists for the lifetime of the process.
 _LAST_ATTENDANCE_SYNC = None
+# Same once-per-hour guard for the production tracker (DPS buying orders) sync.
+_LAST_PRODUCTION_TRACKER_SYNC = None
 # ── Attendance Sync ───────────────────────────────────────────────────────────
 ATTENDANCE_API_URL = os.environ.get("ATTENDANCE_API_URL", "https://beverly-noncontending-bertram.ngrok-free.dev")
 
@@ -874,6 +876,41 @@ def main():
         except Exception as e:
             log.error("Attendance sync error: %s", e)
             conn.rollback()
+
+    # Production tracker (DPS buying orders) sync — feeds the /api/production
+    # board (production_orders + stage_movements). Production runs on a SEPARATE
+    # DB that ships code + schema but NO data rows, so the board starts empty.
+    # We bootstrap immediately when production_orders is missing/empty (first
+    # deploy) so no manual step is needed, then refresh HOURLY thereafter (so new
+    # DPS orders / growing quantities flow in). sync_production_tracker.py is
+    # idempotent (upsert on order_ref + append only the intake delta) and ensures
+    # its own schema, so it is safe to re-run on every cycle.
+    global _LAST_PRODUCTION_TRACKER_SYNC
+    prod_tracker_empty = False
+    try:
+        cur.execute("SELECT to_regclass('public.production_orders')")
+        if cur.fetchone()[0] is None:
+            prod_tracker_empty = True
+        else:
+            cur.execute("SELECT COUNT(*) FROM production_orders")
+            prod_tracker_empty = (cur.fetchone()[0] == 0)
+        conn.commit()
+    except Exception as e:
+        log.error("Production tracker presence check error: %s", e)
+        conn.rollback()
+    prod_tracker_due = (_LAST_PRODUCTION_TRACKER_SYNC is None
+                        or (now_utc - _LAST_PRODUCTION_TRACKER_SYNC).total_seconds() >= 3600)
+    if prod_tracker_empty or prod_tracker_due:
+        # Stamp the attempt time up front so a transient failure waits an hour
+        # (when still empty, the prod_tracker_empty branch retries next cycle).
+        _LAST_PRODUCTION_TRACKER_SYNC = now_utc
+        try:
+            import subprocess, sys
+            log.info("Running production tracker sync (bootstrap=%s)...", prod_tracker_empty)
+            subprocess.run([sys.executable, '/home/runner/workspace/sync_production_tracker.py'], check=True)
+            log.info("✅ Production tracker sync complete")
+        except Exception as e:
+            log.error("Production tracker sync error: %s", e)
 
     # Accounting sync — nightly at 21:00 UTC
     if 21 <= now_utc.hour < 22:

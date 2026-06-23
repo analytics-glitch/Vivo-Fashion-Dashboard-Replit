@@ -267,6 +267,18 @@ def build(bos, lines, variants):
 # ----------------------------------------------------------------------
 # Postgres
 # ----------------------------------------------------------------------
+def ensure_schema(cur):
+    """Idempotently create the production tracker schema (tables + stage seed +
+    views) before writing. Lets this script run safely against a fresh prod DB
+    (which ships code + schema but no data rows) and as a one-time backfill,
+    without depending on the API's startup hook having run first."""
+    schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "production_tracker_schema.sql")
+    with open(schema_path, "r", encoding="utf-8") as fh:
+        cur.execute(fh.read())
+    log.info("Ensured production tracker schema")
+
+
 def upsert_orders(cur, orders):
     rows = [
         (
@@ -558,6 +570,7 @@ def main():
     try:
         with conn:
             with conn.cursor() as cur:
+                ensure_schema(cur)
                 upsert_orders(cur, orders)
                 upsert_lines(cur, order_lines)
                 prune_lines(cur, line_keep)
