@@ -6952,6 +6952,31 @@ def analytics_annual_targets(year: int = Query(default=None)):
     days_elapsed = 0 if today < start else days_total if today > end else (today - start).days + 1
     frac = days_elapsed / days_total if days_total else 1
 
+    # Prior-year YTD bounded to the SAME calendar date as today, so the YoY
+    # comparison is apples-to-apples (this-year Jan 1..today vs last-year
+    # Jan 1..same MM-DD). Without this the frontend compared this-year-YTD
+    # against last-year's FULL year, making YoY read ~-55% mid-year. For a
+    # year that is fully in the past we use last year's whole span; for a
+    # year that has not started yet there is no YTD to compare.
+    if today > end:
+        ly_to = date(yr - 1, 12, 31)
+    elif today < start:
+        ly_to = None
+    else:
+        try:
+            ly_to = date(yr - 1, today.month, today.day)
+        except ValueError:
+            ly_to = date(yr - 1, 2, 28)  # Feb 29 in a non-leap prior year
+    ytd_ly = {}
+    if ly_to is not None:
+        for r in run_query(
+            "SELECT " + _ACTUAL_BUCKET_CASE + " AS bucket, "
+            "ROUND(" + _TARGET_REVENUE + ") AS net FROM all_sales s "
+            "WHERE s.sale_date BETWEEN '" + str(date(yr - 1, 1, 1)) + "' AND '" + str(ly_to) + "' "
+            "AND s.sale_kind IN ('sale','order','return') AND " + BASE_FILTERS + " GROUP BY 1"
+        ):
+            ytd_ly[r["bucket"]] = float(r["net"] or 0)
+
     def make_bucket(name):
         pq = prev_m.get(name, {1: 0, 2: 0, 3: 0, 4: 0})
         cq = cur_m.get(name, {1: 0, 2: 0, 3: 0, 4: 0})
@@ -6964,6 +6989,7 @@ def analytics_annual_targets(year: int = Query(default=None)):
         projected_year = round(actual_ytd / frac) if frac else actual_ytd
         return {
             "bucket": name, "target_annual": target_annual, "actual_ytd": actual_ytd,
+            "actual_ytd_ly": round(ytd_ly.get(name, 0)),
             "pct_of_target_ytd": round(100.0 * actual_ytd / target_annual, 1) if target_annual else 0.0,
             "projected_year": projected_year,
             "pct_of_target_projected": round(100.0 * projected_year / target_annual, 1) if target_annual else 0.0,
@@ -6978,9 +7004,11 @@ def analytics_annual_targets(year: int = Query(default=None)):
     buckets = [make_bucket(n) for n in _TARGET_BUCKETS]
     tt_target = sum(b["target_annual"] for b in buckets)
     tt_actual = sum(b["actual_ytd"] for b in buckets)
+    tt_actual_ly = sum(b["actual_ytd_ly"] for b in buckets)
     tt_proj = round(tt_actual / frac) if frac else tt_actual
     total = {
         "target_annual": tt_target, "actual_ytd": tt_actual,
+        "actual_ytd_ly": tt_actual_ly,
         "pct_of_target_ytd": round(100.0 * tt_actual / tt_target, 1) if tt_target else 0.0,
         "projected_year": tt_proj,
         "pct_of_target_projected": round(100.0 * tt_proj / tt_target, 1) if tt_target else 0.0,

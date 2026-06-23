@@ -375,12 +375,19 @@ export default function TargetsTracker() {
         if (mode === "annual") {
           target = b.target_annual || 0;
           achieved = b.actual_ytd || 0;
-          // YoY: compare to prior year's actual_ytd (same calendar date).
-          // The /analytics/annual-targets endpoint returns actual_ytd
-          // bounded by today's date even when looking up year-1, so
-          // this is an apples-to-apples year-to-date comparison.
-          const bp = byBucketPrev[source];
-          prior = bp ? (bp.actual_ytd || 0) : null;
+          // YoY: compare to the prior year's actuals over the SAME
+          // calendar window (Jan 1 → today's month/day). The endpoint
+          // returns this as `actual_ytd_ly` on the current-year response,
+          // so it is apples-to-apples. (Using prior year's actual_ytd
+          // would compare this-year-YTD against last-year's FULL year and
+          // make mid-year YoY read ~-55%.) Fall back to the year-1 fetch's
+          // actual_ytd only if the new field is absent (older backend).
+          if (b.actual_ytd_ly != null) {
+            prior = b.actual_ytd_ly || 0;
+          } else {
+            const bp = byBucketPrev[source];
+            prior = bp ? (bp.actual_ytd || 0) : null;
+          }
         } else {
           target = (b.quarters || {})[mode] || 0;
           achieved = (b.actual_quarters || {})[mode] || 0;
