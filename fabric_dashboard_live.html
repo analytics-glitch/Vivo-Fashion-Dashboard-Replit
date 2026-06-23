@@ -299,12 +299,12 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     </div>
     <div class="grid-2">
      <div class="card">
-      <div class="section-head"><h3>Fabric structure</h3><span class="muted" id="split-structure-unit">knit / woven by quantity</span></div>
-      <div id="split-structure"><div class="loading">Loading…</div></div>
-     </div>
-     <div class="card">
       <div class="section-head"><h3>Top fiber content</h3><span class="muted">declared fibers by value</span></div>
       <div id="split-fiber"><div class="loading">Loading…</div></div>
+     </div>
+     <div class="card">
+      <div class="section-head"><h3>Fabric structure</h3></div>
+      <div id="split-structure"><div class="loading">Loading…</div></div>
      </div>
     </div>
    </section>
@@ -1416,7 +1416,6 @@ function renderOverviewCached(){
   renderPrintDonut(ovCache.split.plain_print);
   renderStructure('split-structure',ovCache.split.structure,FX.structureValue);
   renderSplit('split-fiber',ovCache.split.fiber,FX.fiberValue);
-  const su=document.getElementById('split-structure-unit');if(su)su.textContent='knit / woven by '+(UNIT==='kg'?'kg':'metres');
 }
 function renderKpis(d){
   // Total fabric value = stock value for the SELECTED scope (All = RMAT + Dead).
