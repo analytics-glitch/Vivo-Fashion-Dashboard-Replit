@@ -290,7 +290,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div id="kpi-cards" class="kpi-grid"><div class="loading">Loading…</div></div>
     <div class="grid-2">
      <div class="card">
-      <div class="section-head"><h3>Stock by category</h3><span class="muted">metres &middot; value (KES)</span></div>
+      <div class="section-head"><h3>Stock by category</h3><span class="muted">Value KES</span></div>
       <div id="category-bars"><div class="loading">Loading…</div></div>
      </div>
      <div class="card">
@@ -612,6 +612,8 @@ let regOffset=0, regTotal=0, lastRegItems=[], poCache=[];
 const fmt=n=>n==null?'—':Number(n).toLocaleString(undefined,{maximumFractionDigits:0});
 const fmt1=n=>n==null?'—':Number(n).toLocaleString(undefined,{maximumFractionDigits:1});
 const fmtKES=n=>{if(n==null)return'—';const a=Math.abs(n);if(a>=1e6)return'KES '+(n/1e6).toFixed(1)+'M';if(a>=1e3)return'KES '+(n/1e3).toFixed(0)+'K';return'KES '+fmt(n);};
+// Same scaling as fmtKES but without the "KES " prefix (used by the Stock-by-category value column).
+const fmtKESval=n=>{if(n==null)return'—';const a=Math.abs(n);if(a>=1e6)return(n/1e6).toFixed(1)+'M';if(a>=1e3)return(n/1e3).toFixed(0)+'K';return fmt(n);};
 // Per-metre KES (small unit-rate figures): show the full value, never abbreviated.
 const fmtKESm=n=>n==null?'—':'KES '+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'/m';
 const fmtKg=n=>{if(n==null)return'—';const a=Math.abs(n);if(a>=1e6)return(n/1e6).toFixed(1)+'M kg';if(a>=1e3)return(n/1e3).toFixed(1)+'k kg';return fmt1(n)+' kg';};
@@ -1492,8 +1494,13 @@ function sortSupplierCost(key){
 function renderCategories(data){
   const cats={};
   data.forEach(r=>{const k=r.category||'Other';if(!cats[k])cats[k]={m:0,kg:0,v:0};cats[k].m+=r.qty_metres||0;cats[k].kg+=r.qty_kg||0;cats[k].v+=r.value_kes||0;});
-  const rows=Object.entries(cats).sort((a,b)=>b[1].v-a[1].v).map(([c,v])=>({label:c,v:v.v,_qty:fmtUnit(UNIT==='kg'?v.kg:v.m),sub:v.v}));
-  bars('category-bars',rows,'label','v',r=>fmtKES(r.sub),false,FX.catStock);
+  const rows=Object.entries(cats).sort((a,b)=>b[1].v-a[1].v).map(([c,v])=>({label:c,m:v.m,kg:v.kg,v:v.v}));
+  const el=document.getElementById('category-bars'); if(!el)return;
+  const max=Math.max(...rows.map(r=>Math.abs(r.v||0)),1);
+  const fa=fx(FX.catStock);
+  el.innerHTML=rows.length?rows.map(r=>`<div class="bar-row"><span class="bar-label" title="${esc(r.label)}">${esc(r.label)}</span>
+     <div class="bar-track"><div class="bar-fill" style="width:${(Math.abs(r.v||0)/max*100).toFixed(1)}%;background:var(--accent)"></div></div>
+     <span class="bar-qty"${fa}>${fmt(r.m)} m</span><span class="bar-qty">${fmt1(r.kg)} kg</span><span class="bar-sub">${fmtKESval(r.v)}</span></div>`).join(''):'<p class="muted">No data.</p>';
 }
 function renderSplit(id,rows,fxText){
   const data=(rows||[]).map(r=>({label:r.value,v:r.value_kes,_qty:fmtKES(r.value_kes),fabrics:r.fabrics}));
