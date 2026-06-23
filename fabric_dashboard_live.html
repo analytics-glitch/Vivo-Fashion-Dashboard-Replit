@@ -287,10 +287,6 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
 
    <section id="page-overview">
     <div id="kpi-cards" class="kpi-grid"><div class="loading">Loading…</div></div>
-    <details class="card" id="supplier-cost-card" style="margin-bottom:1rem;">
-     <summary style="cursor:pointer;font-weight:600;">Avg cost / metre by supplier <span class="muted" style="font-weight:400;">&middot; received purchases, all POs</span></summary>
-     <div id="supplier-cost" style="margin-top:.8rem;"><div class="loading">Loading…</div></div>
-    </details>
     <div class="grid-2">
      <div class="card">
       <div class="section-head"><h3>Stock by category</h3><span class="muted">metres &middot; value (KES)</span></div>
@@ -486,6 +482,10 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div id="po-month-bars"><div class="loading">Loading…</div></div>
      <div id="po-mtd-note" class="muted" style="margin-top:8px;font-size:.8rem;"></div>
     </div>
+    <details class="card" id="supplier-cost-card" style="margin-bottom:1.1rem;">
+     <summary style="cursor:pointer;font-weight:600;">Avg cost / metre by supplier <span class="muted" style="font-weight:400;">&middot; received purchases, all POs</span></summary>
+     <div id="supplier-cost" style="margin-top:.8rem;"><div class="loading">Loading…</div></div>
+    </details>
     <div class="flex" style="margin-bottom:1.1rem;">
      <input id="po-search" placeholder="Filter supplier…" oninput="debouncedPOs()" style="width:230px;">
     </div>
@@ -1454,20 +1454,18 @@ function renderKpis(d){
   const acpmS=d.avg_cost_per_metre_stock,acpmSInc=!!d.avg_cost_per_metre_stock_incomplete;
   const acpmP=d.avg_cost_per_metre_purchases,acpmPInc=!!d.avg_cost_per_metre_purchases_incomplete;
   const acpmFmt=(v,inc)=>inc||v==null?'&mdash;':fmtKESm(v);
-  const sup=d.purchases_by_supplier||[];
   document.getElementById('kpi-cards').innerHTML=`
    <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value"${fx(FX.stockOnHand)}>${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub">${fmtKES(d.fabric_stock_value)} &middot; ${fmt(d.fabric_products)} fabrics</p></div>
    <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value"${fx(FX.totalFabricValue)}>${fmtKES(totalVal)}</p><p class="kpi-sub">${valSub}</p></div>
    <div class="kpi"><span class="eyebrow">Avg cost / metre</span><p class="kpi-value"${fx(FX.avgCostMetreStock)}>${acpmFmt(acpmS,acpmSInc)}</p><p class="kpi-sub">${acpmSInc?'incomplete &middot; missing kg/m':'stock on hand &middot; RMAT/Stock'}</p></div>
-   <div class="kpi"><span class="eyebrow">Avg cost / metre (purchases)</span><p class="kpi-value"${fx(FX.avgCostMetrePurchases)}>${acpmFmt(acpmP,acpmPInc)}</p><p class="kpi-sub">${acpmPInc?'incomplete &middot; see suppliers below':'received &middot; all POs'}</p></div>
+   <div class="kpi"><span class="eyebrow">Avg cost / metre (purchases)</span><p class="kpi-value"${fx(FX.avgCostMetrePurchases)}>${acpmFmt(acpmP,acpmPInc)}</p><p class="kpi-sub">${acpmPInc?'incomplete &middot; missing kg/m':'received &middot; all POs'}</p></div>
    <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.consumed30d)}>${fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}"${fx(FX.monthsCover)}>${cover!=null?coverFmt(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>
    <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger"${fx(FX.deadStock)}>${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub"><span${fx(FX.deadPct)}>${deadPct.toFixed(0)}% of value</span></p></div>`;
-  renderSupplierCost(sup);
 }
 // Per-supplier avg cost per metre (purchases) — compact, sortable table tucked
-// below the overview KPIs. "—" rows are suppliers whose fabrics lack kg→metre.
+// onto the Purchase orders tab. "—" rows are suppliers whose fabrics lack kg→metre.
 let _supCostData=[],_supCostSort={key:'cost_per_metre',dir:-1};
 function renderSupplierCost(rows){
   _supCostData=rows||[];
@@ -2011,7 +2009,17 @@ async function loadConsTrend(){
 }
 
 // ── Purchase orders ──
-function loadPOsPage(){loadPOPerf();loadPOs();}
+function loadPOsPage(){loadPOPerf();loadPOs();loadSupplierCost();}
+// Source the avg cost/metre by supplier table from the overview summary endpoint.
+// Reuse the cached overview payload when it's already loaded; otherwise fetch it
+// so the PO tab renders without depending on Overview being visited first.
+async function loadSupplierCost(){
+  if(ovCache&&ovCache.d){renderSupplierCost(ovCache.d.purchases_by_supplier||[]);return;}
+  try{
+    const d=await apiFetch('/api/fabric/summary?location='+encodeURIComponent(loc()));
+    renderSupplierCost(d.purchases_by_supplier||[]);
+  }catch(e){showErr('supplier-cost',e);}
+}
 async function loadPOPerf(){
   try{
     const d=await apiFetch('/api/fabric/po-performance');
