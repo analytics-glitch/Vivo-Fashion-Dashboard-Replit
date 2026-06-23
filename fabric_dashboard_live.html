@@ -182,7 +182,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    <a href="/" class="back-link">&larr; Back to Vivo BI</a>
   </div>
   <nav class="nav-body">
-   <div class="nav-item" data-page="dashboard">Fabric mix</div>
+   <div class="nav-item" data-page="dashboard">Stock Mix</div>
    <div class="nav-item active" data-page="overview">Overview</div>
    <div class="nav-item" data-page="ageing">Stock &amp; ageing</div>
    <div class="nav-item" data-page="deadstock">Slow Moving</div>
@@ -324,7 +324,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <button class="unit-btn" data-cov="months" onclick="setRegCover('months')">Months</button>
      </div>
      <span class="muted">Consumption period</span>
-     <select id="reg-period" onchange="loadRegister(0)" title="Window used for the Covers column — same presets as the Fabric mix page">
+     <select id="reg-period" onchange="loadRegister(0)" title="Window used for the Covers column — same presets as the Stock Mix page">
       <option value="30">30 days (1 mo)</option>
       <option value="90" selected>90 days (3 mo)</option>
       <option value="180">180 days (6 mo)</option>
@@ -731,7 +731,7 @@ const REG_FX={
   team_reserved_metres:'Reserved (m) = buying-team reservations (open), in metres.',
   team_reserved_kg:'Reserved (kg) = buying-team reservations (open), in kg.',
   value_kes:'Value = on-hand kg × standard cost (KES).',
-  weeks_cover:'Weekly Covers = on-hand kg ÷ weekly run-rate, aligned with the Fabric mix page: warehouse-wide net consumption over the last 90 days (effective moves) converted to a weekly rate. Reconciles with the mix page (monthly covers × ~4.35 ≈ weeks).',
+  weeks_cover:'Weekly Covers = on-hand kg ÷ weekly run-rate, aligned with the Stock Mix page: warehouse-wide net consumption over the last 90 days (effective moves) converted to a weekly rate. Reconciles with the Stock Mix page (monthly covers × ~4.35 ≈ weeks).',
   last_move:'Last move = date of the most recent stock movement (Odoo).',
   days_since_move:'Days idle = today − date of the last stock movement.',
 };
@@ -835,7 +835,7 @@ function bars(id,rows,labelKey,valKey,subFmt,colored,fxText){
 
 // ── Navigation ──
 const LOADERS={dashboard:loadFabricMix,register:()=>loadRegister(0),ageing:loadAgeing,deadstock:loadDeadStock,dataquality:loadDataQuality,movement:loadMovementPage,pos:loadPOsPage,suppliers:loadSuppliers,bom:loadBomPage,reservations:loadReservations};
-const DESCS={dashboard:'Fabric Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'How long stock has sat since its last movement',deadstock:'Fabric that has been sitting without movement',defects:'Fabric defect tracking and reporting',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',movement:'What is coming in, going out and being consumed',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',bom:'Bills of material — which fabrics each style consumes',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used'};
+const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'How long stock has sat since its last movement',deadstock:'Fabric that has been sitting without movement',defects:'Fabric defect tracking and reporting',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',movement:'What is coming in, going out and being consumed',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',bom:'Bills of material — which fabrics each style consumes',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used'};
 const loadedOnce={};
 document.querySelectorAll('.nav-item').forEach(el=>{
   el.addEventListener('click',()=>{
@@ -858,7 +858,7 @@ function onLocationChange(){
   if(document.getElementById('page-dashboard').style.display!=='none'){loadedOnce.dashboard=true;loadFabricMix();}
 }
 
-// ── Fabric mix (consumption share vs available-stock share) ──
+// ── Stock Mix (consumption share vs available-stock share) ──
 let mixCache=null, mixGroup='category';
 let mixCoverBasis='weeks';        // covers column basis: 'weeks' (default) | 'months'
 let mixSort={key:'consumption',dir:'desc'};
@@ -894,7 +894,7 @@ const MIX_FX={
 };
 const MIX_NUM={unit:1,pct:1,gap:1,cover:1,kes:1};
 // Shared "Gap (pp)" chip — % Available − % Consumption, positive = overstock.
-// Reused by the Fabric mix table AND the Movement page consumption/stock table so
+// Reused by the Stock Mix table AND the Movement page consumption/stock table so
 // the sign convention reads identically in both places.
 function gapChip(v,short){
   v=Number(v)||0; const a=Math.abs(v).toFixed(1);
@@ -1494,11 +1494,11 @@ const REG_DEFAULT=['default_code','name','fabric_category','fabric_subcategory',
 // Fields shown in the per-fabric barcode detail view (everything not in the
 // default 10 columns above), in display order.
 const DETAIL_KEYS=['fiber_content','plain_print','fabric_structure','gsm','width_m','kg_per_mtr','m_per_kg','supplier','fabric_color','cost_kes','qty_metres','qty_kg','team_reserved_metres','team_reserved_kg','value_kes','last_move','days_since_move'];
-// Fields shown when opening the detail card from a Fabric mix product row. Unlike
+// Fields shown when opening the detail card from a Stock Mix product row. Unlike
 // the register popup (which complements the visible table columns), the mix table
 // shows none of these, so it carries the full register context.
 const MIX_DETAIL_KEYS=['fabric_category','fabric_subcategory','fiber_content','plain_print','fabric_structure','gsm','width_m','kg_per_mtr','m_per_kg','supplier','fabric_color','cost_per_kg','cost_metre','available_metres','available_kg','team_reserved_metres','value_kes','last_move','days_since_move'];
-// Populated on each Fabric mix render: product_id → register detail object.
+// Populated on each Stock Mix render: product_id → register detail object.
 let mixDetailById={};
 const NUM_TYPES={num:1,num1:1,numb:1,kes:1,kesc:1,wcover:1,rsv:1};
 // Persisted-selection key is versioned (_v3): bumping it retires every user's
@@ -1506,7 +1506,7 @@ const NUM_TYPES={num:1,num1:1,numb:1,kes:1,kesc:1,wcover:1,rsv:1};
 const REG_COLS_KEY='fabricRegCols_v3';
 let regCols=(()=>{try{const s=JSON.parse(localStorage.getItem(REG_COLS_KEY));if(Array.isArray(s)&&s.length){const mapped=s.map(k=>k==='primary_color'?'fabric_color':k);return [...new Set(mapped)].filter(k=>REG_COLS.some(c=>c.k===k));}return REG_DEFAULT.slice();}catch(_){return REG_DEFAULT.slice();}})();
 let regSort={key:'value_kes',dir:'desc'};
-// Covers column basis: 'weeks' (default) | 'months' — mirrors the Fabric mix
+// Covers column basis: 'weeks' (default) | 'months' — mirrors the Stock Mix
 // page's Weeks/Months toggle. Both values come from the backend per row, so the
 // toggle only swaps the displayed value/header (no refetch); the order is
 // identical either way since months_cover is a positive constant × weeks_cover.
@@ -1589,7 +1589,7 @@ function regCell(col,r){
 }
 // ── Barcode detail view ──
 // Render the shared fabric detail card from a register-shaped row + a key list.
-// Reused by the register barcode link (DETAIL_KEYS) and the Fabric mix product
+// Reused by the register barcode link (DETAIL_KEYS) and the Stock Mix product
 // barcode link (MIX_DETAIL_KEYS) so formatting + labels never drift.
 function renderFabricDetail(r,keys){
   keys=keys||DETAIL_KEYS;
@@ -1607,7 +1607,7 @@ function openFabricDetail(id){
   if(!r)return;
   renderFabricDetail(r,DETAIL_KEYS);
 }
-// Open the detail card for a Fabric mix product row (data was carried on the
+// Open the detail card for a Stock Mix product row (data was carried on the
 // mix response and indexed by product_id during render).
 function openFabricDetailFromMix(id){
   const r=mixDetailById[String(id)];
@@ -1798,7 +1798,7 @@ function onDateRangeChange(){
   if(document.getElementById('page-movement').style.display!=='none'){
     loadConsTrend();loadConsStock();
   }
-  // The Fabric mix KPIs follow the same top Date range when that page is shown.
+  // The Stock Mix KPIs follow the same top Date range when that page is shown.
   if(document.getElementById('page-dashboard').style.display!=='none'){
     loadFabricMix();
   }
