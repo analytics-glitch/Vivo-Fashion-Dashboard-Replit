@@ -174,12 +174,13 @@ const ReplenTable = ({ rows, sort, sorts, toggleSort, actuals, setActual, refs, 
         </tr>
       </thead>
       <tbody>
-        {rows.map((r) => {
+        {rows
+          .filter((r) => !(done.has(rowKey(r)) || r.replenished === true))
+          .map((r) => {
           const k = rowKey(r);
-          const isDone = done.has(k) || r.replenished === true;
           const dl = r.days_lapsed;
           return (
-            <tr key={k} className={`border-b border-border/60 hover:bg-muted/40 ${isDone ? "opacity-50" : ""}`} data-testid={`row-replen-${k}`}>
+            <tr key={k} className="border-b border-border/60 hover:bg-muted/40" data-testid={`row-replen-${k}`}>
               <td className="px-3 py-2 whitespace-nowrap">
                 <span className="inline-flex items-center bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{r.owner || "—"}</span>
               </td>
@@ -216,7 +217,6 @@ const ReplenTable = ({ rows, sort, sorts, toggleSort, actuals, setActual, refs, 
                   placeholder={String(r.suggested_units)}
                   value={actuals[k] ?? ""}
                   onChange={(e) => setActual(k, e.target.value)}
-                  disabled={isDone}
                   className="w-20 h-9 px-2 text-right tabular-nums border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50"
                   data-testid={`input-actual-${k}`}
                 />
@@ -226,30 +226,23 @@ const ReplenTable = ({ rows, sort, sorts, toggleSort, actuals, setActual, refs, 
                   type="text" placeholder="Transfer ref"
                   value={refs[k] ?? ""}
                   onChange={(e) => setRef(k, e.target.value)}
-                  disabled={isDone}
                   title="Optional — log an IBT / transfer document reference for this replenishment"
                   className="w-28 h-9 px-2 border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50"
                   data-testid={`input-transfer-ref-${k}`}
                 />
               </td>
               <td className="px-3 py-2 whitespace-nowrap">
-                {isDone ? (
-                  <span className="inline-flex items-center gap-1.5 text-[11.5px] font-bold text-emerald-700">
-                    <CheckCircle size={13} weight="fill" /> Done
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => onMarkDone(r)}
-                    disabled={savingKey === k}
-                    className="inline-flex items-center gap-1.5 text-[11.5px] font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 px-3 py-2 rounded-md whitespace-nowrap"
-                    data-testid={`button-mark-done-${k}`}
-                    title="Log the actual units replenished and remove this row from the open list"
-                  >
-                    <CheckCircle size={13} weight="fill" />
-                    {savingKey === k ? "Saving…" : "Mark As Done"}
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => onMarkDone(r)}
+                  disabled={savingKey === k}
+                  className="inline-flex items-center gap-1.5 text-[11.5px] font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 px-3 py-2 rounded-md whitespace-nowrap"
+                  data-testid={`button-mark-done-${k}`}
+                  title="Log the actual units replenished and remove this row from the open list"
+                >
+                  <CheckCircle size={13} weight="fill" />
+                  {savingKey === k ? "Saving…" : "Mark As Done"}
+                </button>
               </td>
             </tr>
           );
@@ -412,6 +405,12 @@ const ReplenishByItem = () => {
   const ownerMatch = (r) => !ownerFilter || r.owner === ownerFilter;
   const itemSorted = itemSortRows(itemRows.filter(ownerMatch));
   const gapSorted = gapSortRows(gapRows.filter(ownerMatch));
+  // "Open" rows = not yet marked done (optimistic `done` set) and not flagged
+  // replenished by the server. Marked-done items leave the open list and live
+  // only in the Transfer Tracking report below.
+  const isOpenRow = (r) => !(done.has(rowKey(r)) || r.replenished === true);
+  const itemVisible = itemSorted.filter(isOpenRow);
+  const gapVisible = gapSorted.filter(isOpenRow);
 
   // Excel export — server-built XLSX (same pattern as Replenishments/IBT). The
   // axios cookie auth rides along; the file mirrors the visible table columns.
@@ -585,11 +584,13 @@ const ReplenishByItem = () => {
                   <DownloadSimple size={14} weight="bold" /> {exporting ? "Exporting…" : "Export Excel"}
                 </button>
               </div>
-              {itemRows.length === 0
-                ? <Empty label="No understocked stores for this item (or warehouse is empty)." />
+              {itemVisible.length === 0
+                ? <Empty label={itemRows.length === 0
+                    ? "No understocked stores for this item (or warehouse is empty)."
+                    : "All lines marked done — see Transfer Tracking below."} />
                 : (
                   <ReplenTable
-                    rows={itemSorted} sort={itemSort} sorts={itemSorts} toggleSort={itemToggle}
+                    rows={itemVisible} sort={itemSort} sorts={itemSorts} toggleSort={itemToggle}
                     actuals={actuals} setActual={setActual} refs={refs} setRef={setRef}
                     savingKey={savingKey} onMarkDone={markAsDone} done={done}
                   />
@@ -632,11 +633,13 @@ const ReplenishByItem = () => {
                   <DownloadSimple size={14} weight="bold" /> {exporting ? "Exporting…" : "Export Excel"}
                 </button>
               </div>
-              {gapRows.length === 0
-                ? <Empty label="No demand gaps — this store stocks what it sells (or warehouse is empty)." />
+              {gapVisible.length === 0
+                ? <Empty label={gapRows.length === 0
+                    ? "No demand gaps — this store stocks what it sells (or warehouse is empty)."
+                    : "All gaps marked done — see Transfer Tracking below."} />
                 : (
                   <ReplenTable
-                    rows={gapSorted} sort={gapSort} sorts={gapSorts} toggleSort={gapToggle}
+                    rows={gapVisible} sort={gapSort} sorts={gapSorts} toggleSort={gapToggle}
                     actuals={actuals} setActual={setActual} refs={refs} setRef={setRef}
                     savingKey={savingKey} onMarkDone={markAsDone} done={done}
                   />
