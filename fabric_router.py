@@ -246,6 +246,68 @@ def summary(location: str = Query(default="RMAT/Stock")):
             FROM raw_fabric_purchase_orders
             WHERE qty_ordered > qty_received AND state != 'cancel'
         """)[0]
+
+        # Average cost per metre — STOCK ON HAND. Blended cost of the LIVE
+        # RMAT/Stock fabric base (excludes Dead/Production/Virtual — same base as
+        # the on-hand headline & Months of cover): total stock value (KES) ÷ total
+        # stock metres. If ANY in-scope fabric WITH stock is missing its kg→metre
+        # conversion (kg_per_mtr null/0), the figure is "incomplete" → render "—"
+        # (its value would be in the numerator but no metres in the denominator).
+        acpm_stock = q(conn, """
+            SELECT ROUND(SUM(i.total_value)::numeric,0) as value_kes,
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,2) as metres,
+                   BOOL_OR(COALESCE(p.kg_per_mtr,0)<=0) as incomplete
+            FROM raw_fabric_inventory i
+            JOIN raw_fabric_products p ON p.id = i.product_id
+            WHERE i.quantity > 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
+        """)[0]
+        acpm_stock_incomplete = bool(acpm_stock['incomplete'])
+        acpm_stock_metres = float(acpm_stock['metres'] or 0)
+        acpm_stock_value = float(acpm_stock['value_kes'] or 0)
+        avg_cost_per_metre_stock = (
+            round(acpm_stock_value / acpm_stock_metres, 2)
+            if (not acpm_stock_incomplete and acpm_stock_metres > 0) else None)
+
+        # Average cost per metre — PURCHASES. SUM(received qty × unit price) ÷
+        # SUM(received metres) over ALL non-cancelled POs (entire history), using
+        # RECEIVED quantity (what actually landed), converted to metres via the
+        # product master's kg_per_mtr. Per-supplier breakdown lets a supplier whose
+        # fabrics lack the conversion be pinpointed (its row + the headline → "—").
+        # (PO rows carry no category, so scope is the non-cancelled, received set.)
+        pur_rows = q(conn, """
+            SELECT po.supplier as supplier,
+                   ROUND(SUM(po.qty_received*po.price_unit)::numeric,0) as value_kes,
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN po.qty_received/p.kg_per_mtr ELSE 0 END)::numeric,2) as metres,
+                   BOOL_OR(po.qty_received>0 AND COALESCE(p.kg_per_mtr,0)<=0) as incomplete
+            FROM raw_fabric_purchase_orders po
+            LEFT JOIN raw_fabric_products p ON p.id = po.product_id
+            WHERE po.state != 'cancel' AND po.qty_received > 0
+            GROUP BY po.supplier
+        """)
+        purchases_by_supplier = []
+        pur_total_value = 0.0
+        pur_total_metres = 0.0
+        pur_any_incomplete = False
+        for r in pur_rows:
+            inc = bool(r['incomplete'])
+            val = float(r['value_kes'] or 0)
+            met = float(r['metres'] or 0)
+            pur_total_value += val
+            pur_total_metres += met
+            pur_any_incomplete = pur_any_incomplete or inc
+            purchases_by_supplier.append({
+                "supplier": r['supplier'] or "(unknown)",
+                "value_kes": round(val),
+                "metres": round(met, 1),
+                "cost_per_metre": (round(val / met, 2) if (not inc and met > 0) else None),
+                "incomplete": inc,
+            })
+        # Sort by cost per metre desc; incomplete (no figure) rows sink to bottom.
+        purchases_by_supplier.sort(
+            key=lambda x: (x['cost_per_metre'] is None, -(x['cost_per_metre'] or 0)))
+        avg_cost_per_metre_purchases = (
+            round(pur_total_value / pur_total_metres, 2)
+            if (not pur_any_incomplete and pur_total_metres > 0) else None)
         
         # Consumption last 30 days — net of fabric returned from production.
         # Metres = each move's net kg ÷ the fabric's kg-per-metre (skip rows with
@@ -294,6 +356,11 @@ def summary(location: str = Query(default="RMAT/Stock")):
             "dead_stock_kg": sum(r['qty_kg'] or 0 for r in dead),
             "outstanding_pos": pos['count'] or 0,
             "outstanding_po_value": pos['value'] or 0,
+            "avg_cost_per_metre_stock": avg_cost_per_metre_stock,
+            "avg_cost_per_metre_stock_incomplete": acpm_stock_incomplete,
+            "avg_cost_per_metre_purchases": avg_cost_per_metre_purchases,
+            "avg_cost_per_metre_purchases_incomplete": pur_any_incomplete,
+            "purchases_by_supplier": purchases_by_supplier,
             "consumption_30d_kg": cons['kg'] or 0,
             "consumption_30d_metres": cons['metres'] or 0,
             "consumption_today_kg": cons_today['kg'] or 0,
