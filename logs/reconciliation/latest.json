@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-23T13:42:36.571681Z",
+  "generated_at": "2026-06-23T13:53:30.820529Z",
   "date": "2026-06-23",
   "windows": {
     "yesterday": {
@@ -93,73 +93,73 @@
           "check": "total_sales: kpis == country-summary",
           "pass": true,
           "detail": {
-            "kpis": 24983428.0,
-            "country": 24983428.0
+            "kpis": 25025878.0,
+            "country": 25025878.0
           }
         },
         {
           "check": "total_sales: kpis == sales-summary",
           "pass": true,
           "detail": {
-            "kpis": 24983428.0,
-            "sales": 24983428.0
+            "kpis": 25025878.0,
+            "sales": 25025878.0
           }
         },
         {
           "check": "total_sales: kpis == daily-trend",
           "pass": true,
           "detail": {
-            "kpis": 24983428.0,
-            "trend": 24983429.0
+            "kpis": 25025878.0,
+            "trend": 25025879.0
           }
         },
         {
           "check": "total_sales: kpis == total-sales-summary",
           "pass": true,
           "detail": {
-            "kpis": 24983428.0,
-            "tss": 24983428.0
+            "kpis": 25025878.0,
+            "tss": 25025878.0
           }
         },
         {
           "check": "units: kpis == country-summary",
           "pass": true,
           "detail": {
-            "kpis": 5921.0,
-            "country": 5921.0
+            "kpis": 5928.0,
+            "country": 5928.0
           }
         },
         {
           "check": "units: kpis == sales-summary",
           "pass": true,
           "detail": {
-            "kpis": 5921.0,
-            "sales": 5921.0
+            "kpis": 5928.0,
+            "sales": 5928.0
           }
         },
         {
           "check": "orders: kpis == country-summary",
           "pass": true,
           "detail": {
-            "kpis": 2742.0,
-            "country": 2742.0
+            "kpis": 2747.0,
+            "country": 2747.0
           }
         },
         {
           "check": "orders: kpis == sales-summary",
           "pass": true,
           "detail": {
-            "kpis": 2742.0,
-            "sales": 2742.0
+            "kpis": 2747.0,
+            "sales": 2747.0
           }
         },
         {
           "check": "customers: new + returning == total",
           "pass": true,
           "detail": {
-            "new": 501.0,
-            "returning": 1608.0,
-            "total": 2109.0
+            "new": 502.0,
+            "returning": 1611.0,
+            "total": 2113.0
           }
         }
       ]
@@ -174,73 +174,73 @@
           "check": "total_sales: kpis == country-summary",
           "pass": true,
           "detail": {
-            "kpis": 73268621.0,
-            "country": 73268621.0
+            "kpis": 73311071.0,
+            "country": 73311071.0
           }
         },
         {
           "check": "total_sales: kpis == sales-summary",
           "pass": true,
           "detail": {
-            "kpis": 73268621.0,
-            "sales": 73268621.0
+            "kpis": 73311071.0,
+            "sales": 73311071.0
           }
         },
         {
           "check": "total_sales: kpis == daily-trend",
           "pass": true,
           "detail": {
-            "kpis": 73268621.0,
-            "trend": 73268620.0
+            "kpis": 73311071.0,
+            "trend": 73311070.0
           }
         },
         {
           "check": "total_sales: kpis == total-sales-summary",
           "pass": true,
           "detail": {
-            "kpis": 73268621.0,
-            "tss": 73268621.0
+            "kpis": 73311071.0,
+            "tss": 73311071.0
           }
         },
         {
           "check": "units: kpis == country-summary",
           "pass": true,
           "detail": {
-            "kpis": 17691.0,
-            "country": 17691.0
+            "kpis": 17698.0,
+            "country": 17698.0
           }
         },
         {
           "check": "units: kpis == sales-summary",
           "pass": true,
           "detail": {
-            "kpis": 17691.0,
-            "sales": 17691.0
+            "kpis": 17698.0,
+            "sales": 17698.0
           }
         },
         {
           "check": "orders: kpis == country-summary",
           "pass": true,
           "detail": {
-            "kpis": 8129.0,
-            "country": 8129.0
+            "kpis": 8134.0,
+            "country": 8134.0
           }
         },
         {
           "check": "orders: kpis == sales-summary",
           "pass": true,
           "detail": {
-            "kpis": 8129.0,
-            "sales": 8129.0
+            "kpis": 8134.0,
+            "sales": 8134.0
           }
         },
         {
           "check": "customers: new + returning == total",
           "pass": true,
           "detail": {
-            "new": 1621.0,
-            "returning": 4312.0,
-            "total": 5933.0
+            "new": 1622.0,
+            "returning": 4315.0,
+            "total": 5937.0
           }
         }
       ]
@@ -248,24 +248,24 @@
   },
   "global": [
     {
-      "check": "product master: one collection per style",
+      "check": "product master (merch): one collection per style",
       "pass": true,
       "detail": {
         "split_styles": 0
       }
     },
     {
-      "check": "product master: one brand per style",
+      "check": "product master (merch): one brand per style",
       "pass": true,
       "detail": {
         "split_styles": 0
       }
     },
     {
-      "check": "product master: one style_number per style",
+      "check": "product master (merch): one style_number per style",
       "pass": false,
       "detail": {
-        "split_styles": 302
+        "split_styles": 237
       }
     }
   ],

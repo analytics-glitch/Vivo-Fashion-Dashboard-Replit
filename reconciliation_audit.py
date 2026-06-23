@@ -80,11 +80,15 @@ def global_checks():
         r = api_pg.run_query(sql)
         r = rows_of(r)
         return int(r[0].get("n") or 0) if r else 0
+    # Merchandise only — exclude Accessories / Sample & Sale (fabrics, masks, trims
+    # legitimately share a style_name across many style_numbers). Mirrors the
+    # MERCH_SUBCATEGORIES universe the KPIs report on.
+    merch = api_pg.MERCH_SUBCATEGORIES_SQL
     for col in ("collection", "brand", "style_number"):
-        n = q("SELECT COUNT(*) AS n FROM (SELECT style_name FROM all_products_clean "
-              "WHERE style_name IS NOT NULL GROUP BY style_name "
-              "HAVING COUNT(DISTINCT %s) > 1) x" % col)
-        checks.append({"check": "product master: one %s per style" % col, "pass": n == 0, "detail": {"split_styles": n}})
+        n = q("SELECT COUNT(*) AS n FROM (SELECT p.style_name FROM all_products_clean p "
+              "WHERE p.style_name IS NOT NULL AND p.product_type IN (" + merch + ") "
+              "GROUP BY p.style_name HAVING COUNT(DISTINCT p.%s) > 1) x" % col)
+        checks.append({"check": "product master (merch): one %s per style" % col, "pass": n == 0, "detail": {"split_styles": n}})
     return checks
 
 def main():
