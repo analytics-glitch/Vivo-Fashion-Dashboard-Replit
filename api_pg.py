@@ -1289,6 +1289,111 @@ def _set_replen_owners(owners):
         (json.dumps(owners),))
 
 
+# ── Roster editing permission ────────────────────────────────────────────────
+# Saving the roster and triggering a redistribution is restricted to admins
+# plus these named operators (the only people who own the picking plan).
+_ROSTER_EDITOR_EMAILS = {
+    "esthert@vivofashiongroup.com",
+    "amos.kiliswa@vivofashiongroup.com",
+}
+
+
+def _can_manage_roster(user):
+    """True iff the user may SAVE the roster and trigger a redistribution.
+
+    Everyone signed-in can still VIEW the owner columns; only admins and the
+    two named operators may change/redistribute them.
+    """
+    if not user:
+        return False
+    if (user.get("role") or "").strip().lower() == "admin":
+        return True
+    return (user.get("email") or "").strip().lower() in _ROSTER_EDITOR_EMAILS
+
+
+# ── Store → owner assignment (the "redistribution") ──────────────────────────
+# Each picker owns a CONTIGUOUS block of stores (POS sorted ascending). The
+# assignment is persisted in app_config and is recomputed ONLY when an
+# authorised user clicks "Save & redistribute" — report GETs just read the
+# frozen map, so refreshing a page never reshuffles owners. New stores that
+# appear after the last redistribute show as "—" until the next redistribute.
+def _replen_store_universe():
+    """Distinct selling stores (POS locations) eligible for replenishment,
+    sorted ascending. Warehouses + online channels excluded."""
+    try:
+        rows = run_query(
+            "SELECT DISTINCT s.pos_location_name AS store "
+            "FROM all_sales s "
+            "WHERE s.sale_kind IN ('sale','order') "
+            "AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ") "
+            "AND s.pos_location_name NOT ILIKE '%%online%%' "
+            "AND COALESCE(s.pos_location_name,'') <> '' "
+            "AND " + BASE_FILTERS +
+            " ORDER BY 1", date_to=date.today().isoformat())
+    except Exception:
+        rows = []
+    return [r["store"] for r in (rows or []) if r.get("store")]
+
+
+def _compute_store_owner_map(owners, stores=None):
+    """Split the POS-sorted store list into len(owners) contiguous blocks so
+    each picker owns a contiguous run of stores. Returns {store: owner}."""
+    owners = [str(o).strip() for o in (owners or []) if str(o).strip()] \
+        or list(_DEFAULT_REPLEN_OWNERS)
+    if stores is None:
+        stores = _replen_store_universe()
+    n, k = len(stores), len(owners)
+    if n == 0 or k == 0:
+        return {}
+    return {store: owners[min(k - 1, (i * k) // n)] for i, store in enumerate(stores)}
+
+
+def _set_replen_store_owner_map(mapping):
+    _users_exec(
+        "INSERT INTO app_config (key, value, updated_at) "
+        "VALUES ('replenishment_store_owner_map', %s::jsonb, now()) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+        (json.dumps(mapping),))
+
+
+def _replen_store_owner_map(bootstrap=True):
+    """Persisted {store: owner} map. Read on every report GET so a refresh
+    never changes owners. If it has never been set, seed it once (one-time
+    bootstrap, NOT a per-refresh redistribution) so the columns aren't blank."""
+    try:
+        rows = _users_exec(
+            "SELECT value FROM app_config WHERE key='replenishment_store_owner_map'",
+            fetch=True)
+    except Exception:
+        rows = None
+    val = rows[0].get("value") if rows else None
+    if isinstance(val, str):
+        try:
+            val = json.loads(val)
+        except Exception:
+            val = None
+    if isinstance(val, dict) and val:
+        return {str(k): str(v) for k, v in val.items()}
+    if not bootstrap:
+        return {}
+    mapping = _compute_store_owner_map(_replen_owners())
+    if mapping:
+        try:
+            _set_replen_store_owner_map(mapping)
+        except Exception:
+            pass
+    return mapping
+
+
+def _redistribute_replen_owners(owners=None):
+    """The explicit redistribute action: recompute the store→owner map over the
+    current store universe and persist it. Called only from a gated trigger."""
+    owners = owners if owners is not None else _replen_owners()
+    mapping = _compute_store_owner_map(owners)
+    _set_replen_store_owner_map(mapping)
+    return mapping
+
+
 def _hidden_pages():
     """Globally hidden page IDs (admin-controlled, applies to ALL users).
 
@@ -6687,7 +6792,14 @@ def ibt_warehouse_to_store(
     ORDER BY suggested_qty DESC
     LIMIT {lim}
     """
-    return run_query(q, date_to=date_to)
+    rows = run_query(q, date_to=date_to)
+    # Attach the per-destination-store picker from the persisted roster map so
+    # the Owner column reflects the same store→owner assignment as the
+    # replenishment reports (recomputed only on an explicit redistribute).
+    store_map = _replen_store_owner_map()
+    for r in (rows or []):
+        r["owner"] = store_map.get(r.get("to_store")) or "—"
+    return rows
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -8522,7 +8634,7 @@ def analytics_replenish_by_item(
           AND i.sku IN """ + item_skus + """
     """)
     wh_soh = int((wh_rows[0]["soh_wh"] if wh_rows else 0) or 0)
-    owners = _replen_owners()
+    store_map = _replen_store_owner_map()
     marks_all = _replen_marks()
     today = date.today()
     out = []
@@ -8563,8 +8675,8 @@ def analytics_replenish_by_item(
     # Drop rows the warehouse pool can no longer cover (suggested capped to 0) — a
     # zero-unit suggestion is not actionable and must not appear in the list.
     out = [r for r in out if int(r.get("suggested_units") or 0) > 0]
-    for idx, row in enumerate(sorted(out, key=lambda x: (x["units_sold"], -x["soh_store"]), reverse=True)):
-        row["owner"] = owners[idx % len(owners)] if owners else "—"
+    for row in out:
+        row["owner"] = store_map.get(row.get("pos_location")) or "—"
     out.sort(key=lambda x: (x["units_sold"], -x["soh_store"]), reverse=True)
     return {"mode": "sku" if mode == "sku" else "style", "value": val,
             "warehouse_soh": wh_soh, "date_from": date_from, "date_to": date_to,
@@ -8683,7 +8795,7 @@ def analytics_replenish_gaps(
             WHERE COALESCE(ss.soh, 0) < """ + str(thr) + """ AND COALESCE(w.soh_wh, 0) > 0
             ORDER BY sold.units_sold DESC
             LIMIT """ + str(int(limit)))
-    owners = _replen_owners()
+    store_map = _replen_store_owner_map()
     marks_all = _replen_marks()
     today = date.today()
     out = []
@@ -8702,7 +8814,7 @@ def analytics_replenish_gaps(
         mark = (marks_all.get((loc, "sku", sku))
                 or marks_all.get((loc, "barcode", barcode)) or {})
         out.append({
-            "pos_location": loc, "owner": owners[idx % len(owners)] if owners else "—",
+            "pos_location": loc, "owner": store_map.get(loc) or "—",
             "sku": sku, "barcode": barcode,
             "product_name": r.get("product_name") or "",
             "style_name": r.get("style_name") or "", "size": r.get("size") or "",
@@ -8872,7 +8984,7 @@ def analytics_replenishment_report(
         WHERE COALESCE(ss.soh_store, 0) < sold.units_sold AND COALESCE(w.soh_wh, 0) > 0
         ORDER BY (sold.units_sold - COALESCE(ss.soh_store, 0)) DESC
         LIMIT """ + str(int(limit)))
-    owners = _replen_owners()
+    store_map = _replen_store_owner_map()
     marks_all = _replen_marks()
     today = date.today()
     out_rows = []
@@ -8894,7 +9006,7 @@ def analytics_replenishment_report(
                 or marks_all.get((r.get("pos_location"), "barcode", r.get("barcode")))
                 or {})
         out_rows.append({
-            "owner": owners[idx % len(owners)], "country": r.get("country"),
+            "owner": store_map.get(r.get("pos_location")) or "—", "country": r.get("country"),
             "pos_location": r.get("pos_location"), "product_name": r.get("product_name"),
             "size": r.get("size") or "", "barcode": r.get("barcode") or "",
             "sku": r.get("sku"), "bin": r.get("bin") or "",
@@ -10857,12 +10969,12 @@ def get_kpi_trend(
     rows = run_query("""
         SELECT
             date_trunc('""" + bucket + """', s.sale_date::date)::date AS bucket_date,
-            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
                           WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS net_sales,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
-            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size,
+            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END), 0) AS discount,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS returns
         FROM all_sales s
@@ -11552,7 +11664,33 @@ async def admin_replenishment_config_post(request: Request):
     owners = [str(o).strip() for o in (body.get("owners") or []) if str(o).strip()]
     owners = owners or list(_DEFAULT_REPLEN_OWNERS)
     _set_replen_owners(owners)
+    _redistribute_replen_owners(owners)
     return {"ok": True, "owners": owners}
+
+
+@app.get("/api/replenishment/roster")
+def replenishment_roster_get(request: Request):
+    """Current roster + whether the caller may save/redistribute it. Readable by
+    any signed-in user (the owner columns are visible to everyone)."""
+    user = getattr(request.state, "user", None)
+    return {"owners": _replen_owners(), "can_manage": _can_manage_roster(user)}
+
+
+@app.post("/api/replenishment/roster")
+async def replenishment_roster_post(request: Request):
+    """Save the roster AND redistribute the store→owner map (the only place a
+    redistribution is triggered). Restricted to admins + named operators."""
+    user = getattr(request.state, "user", None)
+    if not _can_manage_roster(user):
+        return JSONResponse(
+            {"detail": "You don't have permission to save or redistribute the roster."},
+            status_code=403)
+    body = await request.json()
+    owners = [str(o).strip() for o in (body.get("owners") or []) if str(o).strip()]
+    owners = owners or list(_DEFAULT_REPLEN_OWNERS)
+    _set_replen_owners(owners)
+    _redistribute_replen_owners(owners)
+    return {"ok": True, "owners": owners, "can_manage": True}
 # ── Conversational BI assistant (text-to-SQL over live Postgres) ──────────────
 # The widget (ChatWidget.jsx) POSTs {message, session_id, context} and renders
 # the {session_id, answer} reply as plain text. The assistant works in two LLM

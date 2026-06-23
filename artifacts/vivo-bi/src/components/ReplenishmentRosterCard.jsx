@@ -35,7 +35,7 @@ const ReplenishmentRosterCard = ({
   useEffect(() => {
     if (!isAdmin) return;
     let cancel = false;
-    api.get("/admin/replenishment-config")
+    api.get("/replenishment/roster")
       .then(({ data: cfg }) => {
         if (cancel) return;
         const names = (cfg?.owners || []).map(String);
@@ -61,7 +61,7 @@ const ReplenishmentRosterCard = ({
     setOwnerSaving(true);
     try {
       const cleaned = ownerNames.map((s) => s.trim()).filter(Boolean);
-      await api.post("/admin/replenishment-config", { owners: cleaned });
+      await api.post("/replenishment/roster", { owners: cleaned });
       toast.success(cleaned.length
         ? `Roster saved — ${cleaned.length} ${cleaned.length === 1 ? "person" : "people"}. Redistributing…`
         : "Roster reset to default. Redistributing…");

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { api, fmtNum } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { canManageRoster } from "@/lib/roster";
 import { useFilters } from "@/lib/filters";
 import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
 import { useTableSort, SortableTh } from "@/lib/useTableSort";
@@ -43,12 +44,6 @@ const fmtDateInput = (d) => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
-const _isAdminOrOwner = (user) => {
-  if (!user) return false;
-  const r = (user.role || "").toLowerCase();
-  return r === "admin" || r === "owner";
-};
-
 // Colour only — show the colour name; the generic print/plain value is dropped.
 const fmtColourPrint = (r) => (r?.color_print || "").trim();
 
@@ -56,7 +51,7 @@ const PRIO_RANK = { critical: 0, high: 1, medium: 2 };
 
 const Replenishments = () => {
   const { user } = useAuth();
-  const isAdmin = _isAdminOrOwner(user);
+  const isAdmin = canManageRoster(user);
 
   // Global filters drive the country/channel-scoped panels (chronic
   // stockouts, predictive alerts, the forward calendar and the Operations

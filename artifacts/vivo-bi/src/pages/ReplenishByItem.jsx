@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api, fmtNum } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { canManageRoster } from "@/lib/roster";
 import { toast } from "sonner";
 import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
 import { useTableSort, SortableTh } from "@/lib/useTableSort";
@@ -18,12 +19,6 @@ const ONLINE_SHOP_ZETU = "Online - Shop Zetu";
 
 // Colour only — show the colour name; the generic print/plain value is dropped.
 const fmtColourPrint = (r) => (r?.color_print || "").trim();
-
-const _isAdminOrOwner = (user) => {
-  if (!user) return false;
-  const r = (user.role || "").toLowerCase();
-  return r === "admin" || r === "owner";
-};
 
 /**
  * Replenish by Style / SKU.
@@ -254,7 +249,7 @@ const ReplenTable = ({ rows, sort, sorts, toggleSort, actuals, setActual, refs, 
 
 const ReplenishByItem = () => {
   const { user } = useAuth();
-  const isAdmin = _isAdminOrOwner(user);
+  const isAdmin = canManageRoster(user);
   const [tab, setTab] = useState("item"); // "item" | "gaps"
   const [ownerFilter, setOwnerFilter] = useState(""); // "" = all owners
 

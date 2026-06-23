@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api, fmtNum } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { canManageRoster } from "@/lib/roster";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import IBTFlatTable from "@/components/IBTFlatTable";
 import ReplenishmentRosterCard from "@/components/ReplenishmentRosterCard";
@@ -22,10 +23,9 @@ import { Warehouse } from "@phosphor-icons/react";
  */
 const WarehouseToStoreIBT = ({ dateFrom, dateTo, countries = [], onMarkDone, completedSkuKeys = new Set() }) => {
   const { user } = useAuth();
-  const role = (user?.role || "").toLowerCase();
   // Same gate as the Daily Replenishments page so the roster card
-  // honours one source of truth on who can edit it.
-  const canEditRoster = role === "admin" || role === "owner";
+  // honours one source of truth on who can edit it (admins + named operators).
+  const canEditRoster = canManageRoster(user);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
