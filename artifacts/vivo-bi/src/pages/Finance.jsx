@@ -138,6 +138,7 @@ const Finance = () => {
         setData({
           months: r.data?.months || [],
           opex_detail: r.data?.opex_detail || [],
+          all_months: r.data?.all_months || [],
         });
         touchLastUpdated();
       })

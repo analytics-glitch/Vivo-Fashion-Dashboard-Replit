@@ -1489,6 +1489,32 @@ function mixGroupColors(node){
   })(node);
   return Array.from(set).sort((a,b)=>a.localeCompare(b)).join(', ');
 }
+// Stock-value-weighted representative cost for a derived tree node — the group's
+// products weighted by their tied-up stock value (so a group of mostly expensive
+// fabric reads high). Products with a null cost-per-metre are excluded from the
+// per-metre average (not counted as zero). Returns {perKg, perMetre} (null when
+// no weight). CSV emits these as raw KES numbers like Stock Value KES.
+function mixGroupCost(node){
+  let wk=0,sk=0,wm=0,sm=0;
+  (function walk(n){
+    if(!n)return;
+    if(n.detail){
+      const w=Number(n.tied)||0, dc=n.detail;
+      if(dc.cost_per_kg!=null){wk+=w*Number(dc.cost_per_kg);sk+=w;}
+      if(dc.cost_metre!=null){wm+=w*Number(dc.cost_metre);sm+=w;}
+    }
+    (n.subcategories||[]).forEach(walk);
+    (n.products||[]).forEach(walk);
+  })(node);
+  const round2=v=>Math.round(v*100)/100;
+  return {perKg:sk>0?round2(wk/sk):null, perMetre:sm>0?round2(wm/sm):null};
+}
+// CSV cost value helpers: own per-product cost (All products) and group weighted
+// average (summaries + actions). Blank cell when the value is null.
+function mixCostKgVal(r){const v=r.detail&&r.detail.cost_per_kg;return v==null?'':v;}
+function mixCostMetreVal(r){const v=r.detail&&r.detail.cost_metre;return v==null?'':v;}
+function mixGroupCostKgVal(r){const v=mixGroupCost(r).perKg;return v==null?'':v;}
+function mixGroupCostMetreVal(r){const v=mixGroupCost(r).perMetre;return v==null?'':v;}
 // 1) Category summary — one row per fabric category.
 function exportFabricMix(){
   const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
@@ -1504,6 +1530,8 @@ function exportFabricMix(){
     ['Gap (pp)',r=>r.gap.toFixed(1)],
     [mixCoverHdr(),mixCoverVal],
     ['Stock Value KES',r=>r.tied],
+    ['Cost per Kg KES',mixGroupCostKgVal],
+    ['Cost per Metre KES',mixGroupCostMetreVal],
     ['Colors',r=>mixGroupColors(r)],
     ['Verdict',r=>r.verdict.label],
   ];
@@ -1527,6 +1555,8 @@ function exportFabricMixSub(){
     ['Gap (pp)',r=>r.gap.toFixed(1)],
     [mixCoverHdr(),mixCoverVal],
     ['Stock Value KES',r=>r.tied],
+    ['Cost per Kg KES',mixGroupCostKgVal],
+    ['Cost per Metre KES',mixGroupCostMetreVal],
     ['Colors',r=>mixGroupColors(r)],
     ['Verdict',r=>r.verdict.label],
   ];
@@ -1563,6 +1593,8 @@ function exportFabricMixProducts(){
     ['SOH metres',r=>r._sohM==null?'':r._sohM],
     ['SOH kg',r=>r._sohKg==null?'':r._sohKg],
     ['Stock Value KES',r=>r.tied],
+    ['Cost per Kg KES',mixCostKgVal],
+    ['Cost per Metre KES',mixCostMetreVal],
     ['Consumption ('+unit+')',r=>r.consumption],
     ['% Consumption',r=>r.pctC.toFixed(1)],
     ['% Available',r=>r.pctA.toFixed(1)],
@@ -1591,6 +1623,8 @@ function exportFabricMixActions(){
     ['Shortage exposure KES',r=>shortKes(r)],
     [mixCoverHdr(),mixCoverVal],
     ['Stock Value KES',r=>r.tied],
+    ['Cost per Kg KES',mixGroupCostKgVal],
+    ['Cost per Metre KES',mixGroupCostMetreVal],
     ['Colors',r=>mixGroupColors(r)],
   ];
   mixDownloadCsv(cols,rows,`fabric_mix_actions_${d.days}d.csv`);
