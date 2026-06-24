@@ -41,6 +41,9 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .nav-acr{font-size:.84em;letter-spacing:.02em;}
 .rsv-lbl{display:block;font-size:11px;font-weight:600;color:var(--text-sub);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;}
 .resv-dropdown{position:absolute;top:100%;left:0;z-index:30;width:340px;max-height:280px;overflow:auto;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.12);margin-top:4px;}
+.export-menu{position:absolute;top:100%;right:0;z-index:30;min-width:250px;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.12);margin-top:4px;padding:4px;}
+.export-menu button{display:block;width:100%;text-align:left;background:none;border:none;padding:.5rem .65rem;border-radius:6px;cursor:pointer;font-size:.85rem;color:var(--text);white-space:nowrap;}
+.export-menu button:hover{background:var(--bg);}
 .resv-opt{padding:8px 11px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border);}
 .resv-opt:hover{background:rgba(26,92,56,.07);}
 .resv-opt .ro-code{color:var(--text-sub);font-size:11px;}
@@ -274,7 +277,15 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <span class="muted">→</span>
      <input type="date" id="mix-to" onchange="onMixRange()" title="Custom range to (overrides the preset)">
      <button class="btn ghost" onclick="clearMixRange()" title="Clear the custom range and use the preset">Clear</button>
-     <button class="btn" style="margin-left:auto;" onclick="exportFabricMix(this)">Export CSV</button>
+     <div style="margin-left:auto;position:relative;">
+      <button class="btn" id="mix-export-btn" aria-haspopup="true" aria-expanded="false" onclick="toggleMixExportMenu(event)">Export CSV ▾</button>
+      <div class="export-menu" id="mix-export-menu" style="display:none;">
+       <button onclick="mixExport('category')">Category summary</button>
+       <button onclick="mixExport('subcategory')">Sub-category summary</button>
+       <button onclick="mixExport('products')">All products — full stock mix</button>
+       <button onclick="mixExport('actions')">Action items only</button>
+      </div>
+     </div>
     </div>
     <div class="card" style="padding:0;">
      <div class="tbl-wrap mix-scroll">
@@ -1340,53 +1351,173 @@ function fabSyncMixTopbarVisibility(){
   const dr=document.getElementById('daterange-topbar');
   if(dr)dr.style.display=onMix?'none':'inline-flex';
 }
-function exportFabricMix(btn){
+// ── Export dropdown ──────────────────────────────────────────────────────────
+// The Stock Mix "Export CSV" control is a dropdown of four warehouse-wide
+// exports. Every export reflects the WHOLE warehouse for the selected location +
+// the active consumption window/unit/cover-basis, independent of the on-screen
+// search box, drill-down state AND the By-Category / By-Sub-Category toggle.
+function toggleMixExportMenu(e){
+  if(e)e.stopPropagation();
+  const m=document.getElementById('mix-export-menu');
+  const btn=document.getElementById('mix-export-btn');
+  const open=!m||m.style.display==='none';
+  if(m)m.style.display=open?'block':'none';
+  if(btn)btn.setAttribute('aria-expanded',open?'true':'false');
+}
+function closeMixExportMenu(){
+  const m=document.getElementById('mix-export-menu');
+  if(m)m.style.display='none';
+  const btn=document.getElementById('mix-export-btn');
+  if(btn)btn.setAttribute('aria-expanded','false');
+}
+// Click-away: close the menu on any click outside the button/menu.
+document.addEventListener('click',e=>{
+  if(!(e.target.closest&&e.target.closest('#mix-export-menu,#mix-export-btn')))closeMixExportMenu();
+});
+function mixExport(kind){
+  closeMixExportMenu();
+  if(kind==='category')exportFabricMix();
+  else if(kind==='subcategory')exportFabricMixSub();
+  else if(kind==='products')exportFabricMixProducts();
+  else if(kind==='actions')exportFabricMixActions();
+}
+// Build a canonical category → sub-category → product tree from the cache,
+// REGARDLESS of the current group mode. In sub-category mode the cached top
+// level is sub-categories (each carrying a parent `category`), so they are
+// rolled back up into synthetic category nodes by summing the raw figures; the
+// derived metrics (%, gap, cover, verdict) then come out identical to the
+// on-screen render because the grand-total denominators are mode-independent.
+function mixCanonTree(d){
+  const rows=(d&&d.rows)||[];
+  if(rows.some(r=>Array.isArray(r.subcategories)))return rows;   // already category mode
+  const RAW=['consumption_kg','consumption_metres','available_kg','available_metres','tied_up_kes','cons_kg_nometre','avail_kg_nometre'];
+  const cats={};
+  rows.forEach(s=>{
+    const cn=s.category||'\u2014';
+    let c=cats[cn];
+    if(!c){c={group:cn,subcategories:[]};RAW.forEach(k=>{c[k]=0;});cats[cn]=c;}
+    RAW.forEach(k=>{c[k]+=Number(s[k])||0;});
+    c.subcategories.push(s);
+  });
+  return Object.values(cats).map(c=>{
+    c.metres_incomplete=(c.cons_kg_nometre>0.05||c.avail_kg_nometre>0.05);
+    c.idle=(c.available_kg>0&&Math.abs(c.consumption_kg)<=0.1);   // IDLE_KG_EPS (backend)
+    return c;
+  });
+}
+// Derived canonical tree: category rows, each with nested derived sub + product
+// rows, unit/totals applied exactly like the on-screen render.
+function mixDerivedTree(d){return deriveMixRows({...d,rows:mixCanonTree(d)});}
+// Shared CSV writer: cols = [[header, rowFn], …].
+function mixDownloadCsv(cols,rows,filename){
+  const csv=[cols.map(c=>c[0]).join(',')]
+    .concat(rows.map(r=>cols.map(c=>JSON.stringify(c[1](r)??'')).join(',')))
+    .join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download=filename;a.click();
+}
+// Covers column header + value follow the on-screen weeks/months toggle.
+function mixCoverHdr(){return mixCoverBasis==='months'?'Monthly covers':'Weeks of Cover';}
+function mixCoverVal(r){const v=mixCoverBasis==='months'?r.coversMonthly:r.covers;return v==null?'':v.toFixed(2);}
+// 1) Category summary — one row per fabric category.
+function exportFabricMix(){
   const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
-  const rows=mixSortRows(deriveMixRows(d));
+  const rows=mixSortRows(mixDerivedTree(d));
   if(!rows.length){alert('No data to export.');return;}
   const unit=UNIT==='kg'?'kg':'m';
   const cols=[
-    ['Fabric '+mixGroup,r=>r.group],
+    ['Fabric category',r=>r.group],
     ['Consumption ('+unit+')',r=>r.consumption],
     ['Available ('+unit+')',r=>r.available],
     ['% Consumption',r=>r.pctC.toFixed(1)],
     ['% Available',r=>r.pctA.toFixed(1)],
     ['Gap (pp)',r=>r.gap.toFixed(1)],
-    [mixCoverBasis==='months'?'Monthly covers':'Weeks of Cover',r=>{const v=mixCoverBasis==='months'?r.coversMonthly:r.covers;return v==null?'':v.toFixed(2);}],
+    [mixCoverHdr(),mixCoverVal],
     ['Stock Value KES',r=>r.tied],
     ['Verdict',r=>r.verdict.label],
   ];
-  const csv=[cols.map(c=>c[0]).join(',')]
-    .concat(rows.map(r=>cols.map(c=>JSON.stringify(c[1](r)??'')).join(',')))
-    .join('\n');
-  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
-  a.download=`fabric_mix_${mixGroup}_${d.days}d.csv`;a.click();
+  mixDownloadCsv(cols,rows,`fabric_mix_category_${d.days}d.csv`);
 }
-// Focused export: only the rows that need action (Buy / Clear / Idle), with the
-// quantified shortage/exposure figures the action banner is built from.
-function exportFabricMixActions(btn){
+// 2) Sub-category summary — one row per sub-category, with its parent category.
+function exportFabricMixSub(){
   const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
-  const rows=mixSortRows(deriveMixRows(d)).filter(r=>r.verdict.key!=='hold');
+  const rows=[];
+  mixDerivedTree(d).forEach(c=>(c.subcategories||[]).forEach(s=>{s._cat=c.group;rows.push(s);}));
+  const sorted=mixSortRows(rows);
+  if(!sorted.length){alert('No data to export.');return;}
+  const unit=UNIT==='kg'?'kg':'m';
+  const cols=[
+    ['Category',r=>r._cat],
+    ['Fabric sub-category',r=>r.group],
+    ['Consumption ('+unit+')',r=>r.consumption],
+    ['Available ('+unit+')',r=>r.available],
+    ['% Consumption',r=>r.pctC.toFixed(1)],
+    ['% Available',r=>r.pctA.toFixed(1)],
+    ['Gap (pp)',r=>r.gap.toFixed(1)],
+    [mixCoverHdr(),mixCoverVal],
+    ['Stock Value KES',r=>r.tied],
+    ['Verdict',r=>r.verdict.label],
+  ];
+  mixDownloadCsv(cols,sorted,`fabric_mix_subcategory_${d.days}d.csv`);
+}
+// 3) All products — one row per individual fabric across the whole warehouse.
+// Derived per-product so % / gap / cover / verdict match the table; SOH metres
+// and SOH kg are read from the raw node so BOTH units are emitted regardless of
+// the active unit toggle (Consumption + cover follow the active unit).
+function exportFabricMixProducts(){
+  const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
+  const useKg=UNIT==='kg';
+  const totC=useKg?d.total_consumption_kg:d.total_consumption_metres;
+  const totA=useKg?d.total_available_kg:d.total_available_metres;
+  const months=d.months||1, weeks=months*(MIX_DAYS_PER_MONTH/7);
+  const rows=[];
+  mixCanonTree(d).forEach(c=>(c.subcategories||[]).forEach(s=>(s.products||[]).forEach(praw=>{
+    const p=deriveMixRow(praw,totC,totA,weeks,useKg);
+    p._cat=c.group;p._sub=s.group;
+    p._sohM=praw.available_metres;p._sohKg=praw.available_kg;
+    rows.push(p);
+  })));
+  const sorted=mixSortRows(rows);
+  if(!sorted.length){alert('No products to export.');return;}
+  const unit=UNIT==='kg'?'kg':'m';
+  const cols=[
+    ['Fabric name',r=>r.group],
+    ['Barcode',r=>fabricCode(r.detail)],
+    ['Category',r=>r._cat],
+    ['Sub-category',r=>r._sub],
+    ['SOH metres',r=>r._sohM==null?'':r._sohM],
+    ['SOH kg',r=>r._sohKg==null?'':r._sohKg],
+    ['Stock Value KES',r=>r.tied],
+    ['Consumption ('+unit+')',r=>r.consumption],
+    ['% Consumption',r=>r.pctC.toFixed(1)],
+    ['% Available',r=>r.pctA.toFixed(1)],
+    ['Gap (pp)',r=>r.gap.toFixed(1)],
+    [mixCoverHdr(),mixCoverVal],
+    ['Verdict',r=>r.verdict.label],
+  ];
+  mixDownloadCsv(cols,sorted,`fabric_mix_all_products_${d.days}d.csv`);
+}
+// 4) Action items only — Buy / Clear / Idle categories with the quantified
+// shortage/exposure figures the action banner is built from.
+function exportFabricMixActions(){
+  const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
+  const rows=mixSortRows(mixDerivedTree(d)).filter(r=>r.verdict.key!=='hold');
   if(!rows.length){alert('No action rows in this period.');return;}
   const unit=UNIT==='kg'?'kg':'m';
   const shortUnits=r=>Math.max(0,r.consumption-r.available);
   const shortKes=r=>r.available>0?Math.round(shortUnits(r)*(r.tied/r.available)):0;
   const cols=[
     ['Verdict',r=>r.verdict.label],
-    ['Fabric '+mixGroup,r=>r.group],
+    ['Fabric category',r=>r.group],
     ['Gap (pp)',r=>r.gap.toFixed(1)],
     ['Available ('+unit+')',r=>r.available],
     ['Consumption ('+unit+')',r=>r.consumption],
     ['Shortage units ('+unit+')',r=>shortUnits(r).toFixed(1)],
     ['Shortage exposure KES',r=>shortKes(r)],
-    [mixCoverBasis==='months'?'Monthly covers':'Weeks of Cover',r=>{const v=mixCoverBasis==='months'?r.coversMonthly:r.covers;return v==null?'':v.toFixed(2);}],
+    [mixCoverHdr(),mixCoverVal],
     ['Stock Value KES',r=>r.tied],
   ];
-  const csv=[cols.map(c=>c[0]).join(',')]
-    .concat(rows.map(r=>cols.map(c=>JSON.stringify(c[1](r)??'')).join(',')))
-    .join('\n');
-  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
-  a.download=`fabric_mix_actions_${mixGroup}_${d.days}d.csv`;a.click();
+  mixDownloadCsv(cols,rows,`fabric_mix_actions_${d.days}d.csv`);
 }
 
 // ── Overview ──
