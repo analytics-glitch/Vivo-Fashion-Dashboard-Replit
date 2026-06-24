@@ -458,7 +458,7 @@ def _dedup(seq):
 
 
 _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "fabric"]
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "finance", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report"],
