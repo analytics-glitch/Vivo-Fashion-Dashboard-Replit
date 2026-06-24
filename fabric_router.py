@@ -1299,6 +1299,115 @@ def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Qu
             "fiber": fiber,
         }
 
+# ── Fabric base by primary colour ──────────────────────────
+@fabric_router.get("/api/fabric/color-mix")
+def color_mix(
+    location: str = Query(default="RMAT/Stock"),
+    days: int = Query(default=90),
+    scope: str = Query(default="main"),
+    date_from: str = Query(default=""),
+    date_to: str = Query(default=""),
+):
+    """Fabric base broken down by PRIMARY COLOUR, in two parallel panels for the
+    same colour list: ON-HAND stock (location-scoped, same basis as the
+    attribute-split / Stock-on-hand KPI — category='Fabric') and net CONSUMPTION
+    (warehouse-wide via the effective-moves view, over the selected window).
+
+    The primary colour is DERIVED in Python via the Vivo Colour Directory 2025
+    (`_derive_fabric_colors`) — the DB `primary_color` column is empty — so we
+    aggregate raw per-product kg/metres in SQL, then bucket by derived colour.
+    Metres come from each fabric's kg-per-metre; kg that can't be converted are
+    carried per panel as `*_kg_nometre` + a `*_metres_incomplete` flag rather
+    than silently showing 0 (same convention as the Stock Mix blocks). Colours
+    are sorted by on-hand metres descending; unresolved colours bucket to
+    'Unknown'. The window is the trailing `days` preset OR an explicit
+    `date_from`/`date_to` range (which wins and resets `days` to its span),
+    matching the other Stock Mix endpoints."""
+    win_from, win_to = _parse_date_range(date_from, date_to)
+    if win_from and win_to:
+        days = max(1, min((win_to - win_from).days + 1, 1825))
+    else:
+        days = max(1, min(int(days or 90), 730))
+    with _get_conn() as conn:
+        loc_sql, loc_params = _loc_filter(location)
+        # On-hand stock per product (Fabric only, location-scoped) — same basis as
+        # the Stock-on-hand KPI so the panel totals reconcile with the page.
+        stock = q(conn, f"""
+            SELECT i.product_id as product_id,
+                   COALESCE(NULLIF(p.name,''),'') as name,
+                   COALESCE(NULLIF(p.fabric_color,''),'') as fabric_color,
+                   ROUND(SUM(i.quantity)::numeric,1) as kg,
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,1) as metres,
+                   ROUND(SUM(CASE WHEN COALESCE(p.kg_per_mtr,0)<=0 THEN i.quantity ELSE 0 END)::numeric,1) as kg_nometre
+            FROM raw_fabric_inventory i
+            JOIN raw_fabric_products p ON p.id = i.product_id
+            WHERE i.quantity > 0 AND p.category = 'Fabric' {loc_sql}
+              AND {_scope_sql(scope)}
+            GROUP BY 1, 2, 3
+        """, loc_params)
+        net = _net_kg('m')
+        if win_from and win_to:
+            cons_where = f"{_net_cons_where('m')} AND {_scope_sql(scope)} AND m.date >= %s AND m.date < (%s::date + 1)"
+            cons_params = (win_from, win_to)
+        else:
+            cons_where = f"{_net_cons_where('m')} AND {_scope_sql(scope)} AND m.date >= NOW() - (%s || ' days')::interval"
+            cons_params = (days,)
+        cons = q(conn, f"""
+            SELECT m.product_id as product_id,
+                   COALESCE(NULLIF(p.name,''),'') as name,
+                   COALESCE(NULLIF(p.fabric_color,''),'') as fabric_color,
+                   ROUND(SUM({net})::numeric,1) as kg,
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN ({net})/p.kg_per_mtr ELSE 0 END)::numeric,1) as metres,
+                   ROUND(SUM(CASE WHEN COALESCE(p.kg_per_mtr,0)<=0 THEN ({net}) ELSE 0 END)::numeric,1) as kg_nometre
+            FROM {EFFECTIVE_MOVES} m
+            LEFT JOIN raw_fabric_products p ON p.id = m.product_id
+            WHERE {cons_where}
+            GROUP BY 1, 2, 3
+        """, cons_params)
+
+        buckets = {}
+        def _b(color):
+            return buckets.setdefault(color, {
+                "color": color,
+                "stock_kg": 0.0, "stock_metres": 0.0, "stock_kg_nometre": 0.0,
+                "cons_kg": 0.0, "cons_metres": 0.0, "cons_kg_nometre": 0.0,
+            })
+        for r in stock:
+            _, primary = _derive_fabric_colors(r["name"], r["fabric_color"])
+            b = _b(primary or "Unknown")
+            b["stock_kg"] += float(r["kg"] or 0)
+            b["stock_metres"] += float(r["metres"] or 0)
+            b["stock_kg_nometre"] += float(r["kg_nometre"] or 0)
+        for r in cons:
+            _, primary = _derive_fabric_colors(r["name"], r["fabric_color"])
+            b = _b(primary or "Unknown")
+            b["cons_kg"] += float(r["kg"] or 0)
+            b["cons_metres"] += float(r["metres"] or 0)
+            b["cons_kg_nometre"] += float(r["kg_nometre"] or 0)
+
+        rows = []
+        for b in buckets.values():
+            rows.append({
+                "color": b["color"],
+                "stock_kg": round(b["stock_kg"], 1),
+                "stock_metres": round(b["stock_metres"], 1),
+                "stock_metres_incomplete": b["stock_kg_nometre"] > 0.05,
+                "cons_kg": round(b["cons_kg"], 1),
+                "cons_metres": round(b["cons_metres"], 1),
+                "cons_metres_incomplete": b["cons_kg_nometre"] > 0.05,
+            })
+        # Sort by on-hand metres desc; colours with stock only in kg (no metres)
+        # fall back to kg so they don't all pile at the bottom in metre order.
+        rows.sort(key=lambda x: (x["stock_metres"], x["stock_kg"]), reverse=True)
+        return {
+            "days": days,
+            "rows": rows,
+            "total_stock_kg": round(sum(r["stock_kg"] for r in rows), 1),
+            "total_stock_metres": round(sum(r["stock_metres"] for r in rows), 1),
+            "total_cons_kg": round(sum(r["cons_kg"] for r in rows), 1),
+            "total_cons_metres": round(sum(r["cons_metres"] for r in rows), 1),
+        }
+
 # ── Top consumed fabrics (what's actually moving out) ───────
 @fabric_router.get("/api/fabric/top-consumed")
 def top_consumed(days: int = Query(default=90), limit: int = Query(default=20), scope: str = Query(default="main")):

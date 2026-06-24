@@ -312,6 +312,19 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <div id="split-structure"><div class="loading">Loading…</div></div>
      </div>
     </div>
+    <div class="card" style="margin-top:1.2rem;">
+     <div class="section-head"><h3>By primary colour</h3><span class="muted">% of total metres</span></div>
+     <div class="grid-2">
+      <div>
+       <div class="section-head" style="margin-bottom:.6rem;"><h4 style="margin:0;">On-hand stock</h4><span class="muted">at this location</span></div>
+       <div id="color-stock"><div class="loading">Loading…</div></div>
+      </div>
+      <div>
+       <div class="section-head" style="margin-bottom:.6rem;"><h4 style="margin:0;">Consumption</h4><span class="muted" id="color-cons-note">selected window</span></div>
+       <div id="color-cons"><div class="loading">Loading…</div></div>
+      </div>
+     </div>
+    </div>
    </section>
 
    <!-- SUPPORT FABRICS (Lining + Interfacing only) -->
@@ -1633,6 +1646,7 @@ function exportFabricMixActions(){
 // ── Overview ──
 let ovCache=null;
 async function loadOverview(){
+  loadColorMix();   // colour breakdown is fetched independently (own date window)
   try{
     const [d,cat,split]=await Promise.all([
       apiFetch('/api/fabric/summary?location='+encodeURIComponent(loc())),
@@ -1650,6 +1664,56 @@ function renderOverviewCached(){
   renderCategories(ovCache.cat);
   renderPrintDonut(ovCache.split.plain_print);
   renderStructure('split-structure',ovCache.split.structure,FX.structureValue);
+  renderColorMixCached();
+}
+// ── By primary colour (two panels: on-hand stock + consumption) ──
+// Representative swatch per derived primary colour (Vivo Colour Directory 2025).
+// White/light swatches get a faint border (added in renderColorPanel) so they
+// stay visible on the light card.
+const FABRIC_COLOR_SWATCH={Black:'#1f2937',Blue:'#2563eb',Brown:'#92400e',Green:'#16a34a',
+  Grey:'#9ca3af',Metallic:'#b08d57',Multicolor:'#a855f7',Orange:'#ea580c',Pink:'#ec4899',
+  Purple:'#7c3aed',Red:'#dc2626',White:'#f3f4f6',Yellow:'#eab308',None:'#cbd5e1',Unknown:'#cbd5e1'};
+let colorMixCache=null;
+async function loadColorMix(){
+  try{
+    const params=new URLSearchParams({location:loc()});
+    const from=document.getElementById('g-since').value;
+    const to=document.getElementById('g-until').value;
+    if(from&&to){params.set('date_from',from);params.set('date_to',to);}
+    colorMixCache=await apiFetch('/api/fabric/color-mix?'+params);
+    renderColorMixCached();
+  }catch(e){['color-stock','color-cons'].forEach(id=>showErr(id,e));}
+}
+function renderColorMixCached(){
+  const d=colorMixCache; if(!d)return;
+  renderColorPanel('color-stock',d.rows,'stock',d.total_stock_metres);
+  renderColorPanel('color-cons',d.rows,'cons',d.total_cons_metres);
+  // Reflect the consumption window in the panel's sub-label.
+  const note=document.getElementById('color-cons-note');
+  if(note){const from=document.getElementById('g-since').value,to=document.getElementById('g-until').value;
+    note.textContent=(from&&to)?`${from} → ${to}`:`last ${d.days||90} days`;}
+}
+// One colour panel in the "Fabric structure" dot+label+bar+m/kg/% style.
+// `key` selects the stock/cons figures; rows are pre-sorted by on-hand metres.
+// `pct` is always each colour's share of TOTAL METRES (per the chart spec); the
+// bar width follows the active unit. Colours whose metres are incomplete (some
+// kg lack a kg→metre conversion) carry a "*" marker rather than showing 0.
+function renderColorPanel(id,rows,key,totalMetres){
+  const el=document.getElementById(id); if(!el)return;
+  rows=(rows||[]).filter(r=>(r[key+'_kg']||0)>0||(r[key+'_metres']||0)>0);
+  const useKg=UNIT==='kg';
+  const max=Math.max(...rows.map(r=>useKg?(r[key+'_kg']||0):(r[key+'_metres']||0)),1);
+  el.innerHTML=rows.length?rows.map(r=>{
+    const c=FABRIC_COLOR_SWATCH[r.color]||'#6b7280';
+    const m=r[key+'_metres']||0, kg=r[key+'_kg']||0;
+    const q=useKg?kg:m;
+    const pct=totalMetres>0?(m/totalMetres*100):0;
+    const inc=!!r[key+'_metres_incomplete'];
+    const star=inc?'<span title="Some stock has no kg→metre conversion — its kg are counted but its metres are not." style="cursor:help;">*</span>':'';
+    return `<div class="bar-row"><span class="bar-label" title="${esc(r.color)}"><span class="dot" style="background:${c};border:1px solid rgba(0,0,0,.15)"></span>${esc(r.color)}</span>
+     <div class="bar-track"><div class="bar-fill" style="width:${(q/max*100).toFixed(1)}%;background:${c}"></div></div>
+     <span class="bar-qty">${fmt(m)} m${star}</span><span class="bar-qty">${fmt1(kg)} kg</span><span class="bar-sub">${pct.toFixed(1)}%</span></div>`;
+  }).join(''):'<p class="muted">No data.</p>';
 }
 function renderKpis(d){
   // Total fabric value = stock value for the SELECTED scope (All = RMAT + Dead).
@@ -2112,6 +2176,10 @@ function onDateRangeChange(){
   // The Stock Mix KPIs follow the same top Date range when that page is shown.
   if(document.getElementById('page-dashboard').style.display!=='none'){
     loadFabricMix();
+  }
+  // The Overview's "By primary colour" consumption panel follows the top range.
+  if(document.getElementById('page-overview').style.display!=='none'){
+    loadColorMix();
   }
 }
 function riskFlag(gap){
