@@ -6817,6 +6817,40 @@ def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim, use_cluste
         AND t.units_sold >= {high} * {avg_expr}
         {adj_filter}
     ),
+    -- ── Minimum range guard (≥ 3 distinct SKUs at the receiver post-transfer) ──
+    -- A style is only allocated to a receiving store if, AFTER the transfer, that
+    -- store will hold at least 3 distinct SKUs of the style. Post-transfer SKUs =
+    -- SKUs the receiver already stocks (av >= 1) UNION SKUs the donor will send
+    -- (donor av >= 2 so it keeps ≥1, and receiver currently has <= 1) — the same
+    -- per-SKU rule the SKU-breakdown applies (suggested_qty > 0 ⇔ from>=2,to<=1).
+    sku_av AS (
+      SELECT p.style_name AS style, i.pos_location_name AS store, i.sku AS sku,
+             SUM(i.available) AS av
+      FROM all_inventory i
+      JOIN all_products_clean p ON p.sku = i.sku
+      WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND COALESCE(i.pos_location_name,'') <> ''
+        AND COALESCE(p.style_name,'') <> '' {c_inv}
+      GROUP BY 1, 2, 3
+    ),
+    cand AS (SELECT DISTINCT style, from_store, to_store FROM pairs),
+    recv_have AS (
+      SELECT c.style, c.from_store, c.to_store, sa.sku
+      FROM cand c
+      JOIN sku_av sa ON sa.style = c.style AND sa.store = c.to_store AND sa.av >= 1
+    ),
+    recv_get AS (
+      SELECT c.style, c.from_store, c.to_store, df.sku
+      FROM cand c
+      JOIN sku_av df ON df.style = c.style AND df.store = c.from_store AND df.av >= 2
+      LEFT JOIN sku_av dt ON dt.style = c.style AND dt.store = c.to_store AND dt.sku = df.sku
+      WHERE COALESCE(dt.av, 0) <= 1
+    ),
+    recv_proj AS (
+      SELECT style, from_store, to_store, COUNT(DISTINCT sku) AS projected_skus
+      FROM (SELECT * FROM recv_have UNION SELECT * FROM recv_get) u
+      GROUP BY 1, 2, 3
+    ),
     scored AS (
       SELECT pr.*,
         ROUND(100 * (
@@ -6825,6 +6859,9 @@ def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim, use_cluste
         + 0.2 * COALESCE(pr.to_sold::numeric / NULLIF(pr.to_sold + pr.to_avail, 0), 0)
         ))::int AS score
       FROM pairs pr
+      JOIN recv_proj rp
+        ON rp.style = pr.style AND rp.from_store = pr.from_store AND rp.to_store = pr.to_store
+      WHERE rp.projected_skus >= 3
     )
     SELECT sc.style AS style_name, pp.brand, pp.category AS subcategory,
            sc.from_store, sc.to_store,
@@ -6974,6 +7011,47 @@ def ibt_warehouse_to_store(
       JOIN all_products_clean p ON p.barcode = wb.barcode
       WHERE COALESCE(wb.bin,'') <> '' AND COALESCE(p.style_name,'') <> ''
       GROUP BY 1
+    ),
+    -- ── Minimum range guard (≥ 3 distinct SKUs at the receiver post-transfer) ──
+    -- Only allocate a style to a store if, AFTER the warehouse transfer, the store
+    -- will hold ≥ 3 distinct SKUs of it. Post-transfer SKUs = SKUs the store already
+    -- stocks (av >= 1) UNION SKUs the warehouse will send (warehouse av >= 2 and the
+    -- store currently has <= 1) — matching the SKU-breakdown's suggested_qty > 0 rule.
+    sku_av AS (
+      SELECT p.style_name AS style, i.pos_location_name AS store, i.sku AS sku,
+             SUM(i.available) AS av
+      FROM all_inventory i
+      JOIN all_products_clean p ON p.sku = i.sku
+      WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND COALESCE(i.pos_location_name,'') <> ''
+        AND COALESCE(p.style_name,'') <> '' {c_inv}
+      GROUP BY 1, 2, 3
+    ),
+    wh_sku AS (
+      SELECT p.style_name AS style, i.sku AS sku, SUM(i.available) AS av
+      FROM all_inventory i
+      JOIN all_products_clean p ON p.sku = i.sku
+      WHERE i.pos_location_name = 'Warehouse Finished Goods'
+        AND COALESCE(p.style_name,'') <> ''
+      GROUP BY 1, 2
+    ),
+    cand AS (SELECT DISTINCT style, store FROM sv),
+    recv_have AS (
+      SELECT c.style, c.store, sa.sku
+      FROM cand c
+      JOIN sku_av sa ON sa.style = c.style AND sa.store = c.store AND sa.av >= 1
+    ),
+    recv_get AS (
+      SELECT c.style, c.store, w.sku
+      FROM cand c
+      JOIN wh_sku w ON w.style = c.style AND w.av >= 2
+      LEFT JOIN sku_av dt ON dt.style = c.style AND dt.store = c.store AND dt.sku = w.sku
+      WHERE COALESCE(dt.av, 0) <= 1
+    ),
+    recv_proj AS (
+      SELECT style, store, COUNT(DISTINCT sku) AS projected_skus
+      FROM (SELECT * FROM recv_have UNION SELECT * FROM recv_get) u
+      GROUP BY 1, 2
     )
     SELECT sv.style AS style_name, pp.brand, pp.category AS subcategory,
            sv.store AS to_store,
@@ -6987,7 +7065,9 @@ def ibt_warehouse_to_store(
     LEFT JOIN LATERAL (
       SELECT brand, category FROM all_products_clean WHERE style_name = sv.style LIMIT 1
     ) pp ON TRUE
+    JOIN recv_proj rp ON rp.style = sv.style AND rp.store = sv.store
     WHERE COALESCE(si.available, 0) <= 2
+      AND rp.projected_skus >= 3
     ORDER BY suggested_qty DESC
     LIMIT {lim}
     """
