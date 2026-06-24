@@ -1,0 +1,24 @@
+Build a Finance / P&L page in the dashboard (artifacts/vivo-bi).
+Data source: a new API endpoint GET /api/finance/pl?date_from=&date_to= reading the finance_pl_summary view (one row per month). Each row has: month, gross_sales, discounts, returns, net_revenue, cogs, gross_profit, gross_margin_pct, salaries, production_opex, admin_opex, total_opex, other_income, operating_income, has_accounting_data, is_closed, has_full_cogs, has_salaries.
+Critical data-integrity rules — the page MUST respect these:
+
+Two-tier layout: "Confirmed" vs "Provisional." Revenue and Operating Expenses are reliable; margin and operating income are NOT (COGS recognition is incomplete in Odoo and salaries aren't journaled). Put them in visually distinct sections.
+CONFIRMED section (show as fact):
+
+Net Revenue (KPI card + monthly bar chart)
+Operating Expenses, split into Production Opex and Admin Opex (two lines), with a category breakdown
+Only include months where is_closed = true
+
+
+PROVISIONAL section (separate, visually muted/bordered, with a warning banner):
+
+Gross Margin %, Gross Profit, Operating Income
+Banner text: "⚠️ Provisional — COGS recognition in Odoo is incomplete (implied margins are not yet reliable) and payroll is not yet journaled (~KES 40M/month). These figures will change once accounting is complete."
+Show the figures but clearly marked, never as headline KPIs.
+
+
+Open-month handling: any month with is_closed = false (the current month) gets a "month not closed — partial data" tag and is excluded from trend comparisons.
+Monthly P&L table (months as columns), rows in order: Gross Sales, Returns, Net Revenue, COGS (flag if has_full_cogs=false), Gross Profit (provisional), Gross Margin % (provisional), Production Opex, Admin Opex, Total Opex, Salaries (show "Not in Odoo" not 0), Operating Income (provisional).
+Use the existing dashboard design system. Add "Finance" to the main nav.
+
+The API endpoint (/api/finance/pl) should query finance_pl_summary, filter by date range, and also return a detail breakdown of opex by account (join raw_account_move_lines to finance_account_map where pl_group IN ('production_opex','admin_opex'), grouped by account_name) so the page can show category-level expense detail.

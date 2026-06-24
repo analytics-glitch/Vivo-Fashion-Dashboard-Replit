@@ -32,3 +32,17 @@ style-grain CTE and join it as a distinct field — do NOT revert to the global 
 
 **Staleness:** the 600s cache means manual-retirement overrides and very recent
 sales can lag up to 10 min on this page. Acceptable for range analysis.
+
+**Transient "Request failed with status code 500" on this page:** if the endpoint
+returns correct data for every filter combo AND the live route answers 401 (not
+500), the 500 is NOT a logic bug — it's the cold query (still ~6–14s, dominated by
+the all_sales scan/join I/O) getting its connection killed when the api-server
+**restarts mid-request** (e.g. a task merge / post-merge bounces the workflow,
+which also wipes the 600s warm cache). Confirm via 2× "Started server process" in
+the api-server log within the screenshot window. Not the gateway timeout (no
+uvicorn timeout flags; Replit's gateway is long). **Replacing `sale_date::date >=
+CURRENT_DATE - INTERVAL` casts with text comparisons does NOT reliably help** —
+measured 6–9s both ways; the bottleneck is the scan, not the casts. The only way
+to make cold loads reliably fast is a pre-aggregated summary table (per
+variant_sku lifetime/window rollup) refreshed in the sync loop — a real task with
+prod-separate-DB implications, not an inline fix.
