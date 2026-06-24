@@ -1410,6 +1410,46 @@ def _owner_for_store(store, store_map, owners):
     return owners[h % len(owners)]
 
 
+def _assign_replen_owners_by_units(rows, owners):
+    """Distribute the pick-list rows across the roster so each picker gets as
+    close to EQUAL UNITS as possible. Rows are first ordered by POS location
+    (then a stable SKU/barcode key) so every store's lines stay contiguous; a
+    store is split between two pickers ONLY when the equal-units boundary lands
+    inside it — i.e. one POS may be shared by more than one individual. Mutates
+    each row in place (sets r['owner']) and returns the (now POS-sorted) rows.
+
+    Nobody ever shows as '—': every row gets a real picker from the roster."""
+    owners = [str(o).strip() for o in (owners or []) if str(o).strip()] \
+        or list(_DEFAULT_REPLEN_OWNERS)
+    if not rows:
+        return rows
+    # Group each store's lines together; sku/barcode keep ordering deterministic.
+    rows.sort(key=lambda r: (str(r.get("pos_location") or ""),
+                             str(r.get("sku") or ""),
+                             str(r.get("barcode") or "")))
+    k = len(owners)
+    if k <= 1:
+        for r in rows:
+            r["owner"] = owners[0]
+        return rows
+    total = sum(int(r.get("replenish") or 0) for r in rows)
+    if total <= 0:
+        for i, r in enumerate(rows):
+            r["owner"] = owners[i % k]
+        return rows
+    target = total / k          # ideal units per picker
+    acc = 0                     # units assigned so far (including current row)
+    owner_idx = 0
+    for r in rows:
+        r["owner"] = owners[owner_idx]
+        acc += int(r.get("replenish") or 0)
+        # Advance once this picker has met their cumulative share, always
+        # leaving at least one picker for the remaining rows.
+        while owner_idx < k - 1 and acc >= target * (owner_idx + 1):
+            owner_idx += 1
+    return rows
+
+
 def _set_replen_store_owner_map(mapping):
     _users_exec(
         "INSERT INTO app_config (key, value, updated_at) "
@@ -9097,13 +9137,11 @@ def analytics_replenishment_report(
     limit: int = Query(default=400),
 ):
     out_rows = _compute_replenishment_report_rows(date_from, date_to, limit)
-    # Each whole store maps to ONE picker (balanced by units on the last
-    # redistribute); a store missing from the frozen map gets a stable owner so
-    # the list never shows an unassigned "—".
-    owners = _replen_owners()
-    store_map = _replen_store_owner_map()
-    for r in out_rows:
-        r["owner"] = _owner_for_store(r.get("pos_location"), store_map, owners)
+    # Distribute the pick list so each picker gets as close to EQUAL UNITS as
+    # possible. Rows are ordered by POS location, so each store's lines stay
+    # contiguous and a store is split between two pickers only when the
+    # equal-units boundary lands inside it (one POS may be shared by >1 picker).
+    _assign_replen_owners_by_units(out_rows, _replen_owners())
     by_owner = {}
     for r in out_rows:
         o = by_owner.setdefault(r["owner"], {"owner": r["owner"], "lines": 0, "units": 0, "stores": set()})

@@ -88,7 +88,7 @@ const ReplenishmentRosterCard = ({
         }
         subtitle={
           subtitle
-          || "How many people are picking today, and who? Save to redistribute across your roster — whole stores stay together (never split between pickers) and are balanced so each person picks roughly the same number of units."
+          || "How many people are picking today, and who? Lines are distributed so each person picks as close to the same number of units as possible — ordered by store, so a store is only shared between pickers when needed to keep units even."
         }
       />
       <div className="grid grid-cols-1 sm:grid-cols-[140px_1fr] gap-4 items-start">
