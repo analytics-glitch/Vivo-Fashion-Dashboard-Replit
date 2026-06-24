@@ -1420,6 +1420,19 @@ function mixDownloadCsv(cols,rows,filename){
 // Covers column header + value follow the on-screen weeks/months toggle.
 function mixCoverHdr(){return mixCoverBasis==='months'?'Monthly covers':'Weeks of Cover';}
 function mixCoverVal(r){const v=mixCoverBasis==='months'?r.coversMonthly:r.covers;return v==null?'':v.toFixed(2);}
+// Distinct, sorted, comma-joined Odoo Color values (detail.color = x_vivo_color)
+// across a derived tree node's descendant product rows. Used by the aggregate
+// exports where a single per-row color isn't meaningful.
+function mixGroupColors(node){
+  const set=new Set();
+  (function walk(n){
+    if(!n)return;
+    if(n.detail&&n.detail.color)set.add(n.detail.color);
+    (n.subcategories||[]).forEach(walk);
+    (n.products||[]).forEach(walk);
+  })(node);
+  return Array.from(set).sort((a,b)=>a.localeCompare(b)).join(', ');
+}
 // 1) Category summary — one row per fabric category.
 function exportFabricMix(){
   const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
@@ -1435,6 +1448,7 @@ function exportFabricMix(){
     ['Gap (pp)',r=>r.gap.toFixed(1)],
     [mixCoverHdr(),mixCoverVal],
     ['Stock Value KES',r=>r.tied],
+    ['Colors',r=>mixGroupColors(r)],
     ['Verdict',r=>r.verdict.label],
   ];
   mixDownloadCsv(cols,rows,`fabric_mix_category_${d.days}d.csv`);
@@ -1457,6 +1471,7 @@ function exportFabricMixSub(){
     ['Gap (pp)',r=>r.gap.toFixed(1)],
     [mixCoverHdr(),mixCoverVal],
     ['Stock Value KES',r=>r.tied],
+    ['Colors',r=>mixGroupColors(r)],
     ['Verdict',r=>r.verdict.label],
   ];
   mixDownloadCsv(cols,sorted,`fabric_mix_subcategory_${d.days}d.csv`);
@@ -1484,6 +1499,7 @@ function exportFabricMixProducts(){
   const cols=[
     ['Fabric name',r=>r.group],
     ['Barcode',r=>fabricCode(r.detail)],
+    ['Color',r=>(r.detail&&r.detail.color)||'None'],
     ['Fabric Color',r=>(r.detail&&r.detail.derived_fabric_color)||'None'],
     ['Primary Color',r=>(r.detail&&r.detail.derived_primary_color)||'None'],
     ['Category',r=>r._cat],
@@ -1519,6 +1535,7 @@ function exportFabricMixActions(){
     ['Shortage exposure KES',r=>shortKes(r)],
     [mixCoverHdr(),mixCoverVal],
     ['Stock Value KES',r=>r.tied],
+    ['Colors',r=>mixGroupColors(r)],
   ];
   mixDownloadCsv(cols,rows,`fabric_mix_actions_${d.days}d.csv`);
 }
