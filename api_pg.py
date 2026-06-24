@@ -6540,16 +6540,21 @@ def finance_pl(
     the /api edge middleware AND defensively here before being concatenated."""
     df = _validate_date_param(date_from) or str(date(date.today().year - 1, date.today().month, 1))
     dt = _validate_date_param(date_to) or str(date.today())
+    # Return the FULL P&L month history (constant query → cached by run_query,
+    # so it is computed once rather than re-scanning the expensive
+    # finance_pl_summary view on every period change). The frontend filters the
+    # rows down to the selected [date_from, date_to] window client-side and uses
+    # the full list to populate its month-range period selector. Only the
+    # cheaper opex_detail query below stays windowed (it must aggregate
+    # account-level sums over the selected months server-side).
     months = run_query("""
         SELECT month, gross_sales, discounts, returns, net_revenue, cogs,
                gross_profit, gross_margin_pct, salaries, production_opex,
                admin_opex, total_opex, other_income, operating_income,
                has_accounting_data, is_closed, has_full_cogs, has_salaries
         FROM finance_pl_summary
-        WHERE month >= date_trunc('month', DATE '""" + df + """')
-          AND month <= DATE '""" + dt + """'
         ORDER BY month
-    """, date_to=dt)
+    """)
     opex_detail = run_query("""
         SELECT l.account_name AS account, m.pl_group AS pl_group,
                ROUND(SUM(l.debit - l.credit), 0) AS amount

@@ -12,9 +12,13 @@ Rule: every aggregating fabric endpoint takes a `scope` query param (`fabric_rou
 - `main` (default) → EXCLUDES support fabrics (the original tabs).
 - `support` → keeps ONLY support fabrics (the new tab).
 
-Matching is a **normalized substring** (`_support_match`/`_scope_sql`): lower/trim
-the category, then `LIKE '%lining%' OR '%interfacing%'` — NOT a brittle exact-string
-list (catches 'Lining', 'Crepe Lining', 'Fusable Interfacing', spelling variants).
+Matching is **EXACT normalized category equality** (`_support_match`/`_scope_sql`):
+`LOWER(BTRIM(COALESCE(category,''))) IN ('lining','fusable interfacing')`. It was
+deliberately tightened FROM a substring `LIKE '%lining%' OR '%interfacing%'` because
+the substring form wrongly pulled in the near-named category "Crepe Lining". Support
+Fabrics is defined as EXACTLY the two Odoo categories **Lining** and **Fusable
+Interfacing** — nothing else. "Crepe Lining" stays in MAIN.
+Verified split: support=63 (Lining 59 + Fusable Interfacing 4), main=2001, total=2064.
 
 **Reconciliation invariant:** `main + support == the old all-fabric totals`.
 Rows with NULL/'' category (e.g. sheet-override moves whose product_id didn't resolve)

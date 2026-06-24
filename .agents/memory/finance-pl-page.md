@@ -1,31 +1,43 @@
 ---
-name: Finance / P&L page
-description: How the BI Finance page reads finance_pl_summary and why figures are split into confirmed vs provisional tiers.
+name: Finance / P&L page period model
+description: Why the Finance page drives its own month-range period (not the global daily filter) and how the /api/finance/pl query is shaped for it.
 ---
 
-# Finance / P&L page
+# Finance / P&L page — period selection & query shape
 
-The BI Finance page (`/finance`, `GET /api/finance/pl`) reads the Postgres
-`finance_pl_summary` VIEW (one row per calendar month; `month` is a real DATE =
-first of month, so no `::date` cast is needed unlike `all_sales.sale_date`).
+The Finance page (`artifacts/vivo-bi/src/pages/Finance.jsx`, `/finance`) shows a
+monthly P&L from the Postgres `finance_pl_summary` view via `GET /api/finance/pl`.
 
-**Why the two-tier split (confirmed vs provisional):** the view derives COGS and
-opex from `raw_account_move_lines` JOIN `finance_account_map` (on `account_code`,
-grouping by `pl_group`), but the underlying Odoo accounting is incomplete:
-- COGS recognition is partial, so implied **gross margins read ~97–100%** (gross
-  profit ≈ net revenue). The view exposes `has_full_cogs` (true only when implied
-  margin ≤ 0.80) to flag months whose COGS is not fully booked.
-- Payroll is **not journaled at all** — `salaries` is hard-coded `0` and
-  `has_salaries` is always `false` (~KES 40M/month missing). The UI shows
-  "Not in Odoo", never `0`.
+## It drives its OWN month-range period — NOT the global filter bar
 
-Therefore Gross Margin %, Gross Profit, and Operating Income are PROVISIONAL
-(muted/amber, behind a standing warning banner). Net Revenue and Production/Admin
-Opex are CONFIRMED. The exact banner copy is a constant in `Finance.jsx` — keep
-it verbatim.
+The page intentionally ignores the global daily filter bar (`useFilters().applied`
+date range) and owns local `fromMonth`/`toMonth` state (month presets: Last 3/6/12,
+This year YTD, Last year, All + explicit From/To month dropdowns + a "Showing
+<from> – <to> · N months (M closed)" label). It still hard-refreshes via the global
+Refresh button (`dataVersion`).
 
-**How to apply:** tier roll-ups and the trend chart use CLOSED months only
-(`is_closed = true`, i.e. `month < date_trunc('month', CURRENT_DATE)`); the
-current month is partial and must be excluded from any comparison/summary.
-`production_opex`/`admin_opex` can be **negative** for the open/current month
-(partial postings) — that is expected, not a bug.
+**Why:** the global filter's DEFAULT preset is `today` (date_from=date_to=today). A
+monthly P&L asked for a single still-open day → ZERO closed months → the CONFIRMED
+(closed-month-only) KPI tier rendered empty/blank, which read as "broken / which
+period is this?". Daily presets (7D/30D/90D) never map cleanly onto month-grain
+accounting anyway. A dedicated month selector with a default of "last 12 months"
+fixes the confusion and is the right granularity.
+
+## Query shape: full history (cached) + windowed opex only
+
+`/api/finance/pl` returns the **FULL** month history (`SELECT … FROM
+finance_pl_summary ORDER BY month`, no date window) — a constant query string so
+`run_query`'s md5 cache computes the expensive view ONCE, not per period change.
+The frontend filters those rows to the selected window CLIENT-SIDE. Only
+`opex_detail` (account-level sums from `raw_account_move_lines`, the cheaper query)
+stays windowed by `date_from`/`date_to` server-side, so switching periods re-runs
+only the cheap query while the heavy view stays warm.
+
+**Why:** `finance_pl_summary` is an expensive aggregate view (~9s cold). The old
+code re-scanned it windowed on every period change. Don't add a second full-view
+scan (e.g. a separate all-months query) — it doubles the cost; one constant
+cacheable scan + client-side filtering is strictly cheaper.
+
+**How to apply:** month math is done in LOCAL time (first-of-month strings) to
+avoid an EAT (UTC+3) off-by-one. CONFIRMED tier sums `is_closed` months only;
+open months are shown in the matrix tagged partial but excluded from tier totals.

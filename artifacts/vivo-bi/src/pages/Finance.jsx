@@ -61,6 +61,38 @@ const monthLabel = (m) => {
   return d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
 };
 
+// Longer label for the period summary ("January 2026").
+const monthLabelLong = (m) => {
+  if (!m) return "";
+  const [y, mo] = String(m).split("-");
+  const d = new Date(Number(y), Number(mo) - 1, 1);
+  return d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+};
+
+// First-of-month ISO string (YYYY-MM-01) N months before the current month.
+// Computed in local time so we never shift across the EAT (UTC+3) boundary.
+const monthsAgoFirst = (n) => {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() - n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+};
+const curMonthFirst = () => monthsAgoFirst(0);
+const firstOfYear = (y) => `${y}-01-01`;
+const lastMonthOfYear = (y) => `${y}-12-01`;
+
+// The Finance page drives its OWN month-range period (NOT the global daily
+// filter bar): a monthly P&L needs month granularity, and the global default
+// preset is "today" which would ask for a single still-open day. These presets
+// are tailored to a P&L statement. `key` is used to highlight the active chip.
+const PERIOD_PRESETS = [
+  { key: "last3", label: "Last 3 months", range: () => ({ from: monthsAgoFirst(2), to: curMonthFirst() }) },
+  { key: "last6", label: "Last 6 months", range: () => ({ from: monthsAgoFirst(5), to: curMonthFirst() }) },
+  { key: "last12", label: "Last 12 months", range: () => ({ from: monthsAgoFirst(11), to: curMonthFirst() }) },
+  { key: "ytd", label: "This year (YTD)", range: () => ({ from: firstOfYear(new Date().getFullYear()), to: curMonthFirst() }) },
+  { key: "lastYear", label: "Last year", range: () => ({ from: firstOfYear(new Date().getFullYear() - 1), to: lastMonthOfYear(new Date().getFullYear() - 1) }) },
+];
+
 const ProvisionalBanner = () => (
   <div
     className="card-white p-3.5 border-2 border-amber-400/70 bg-amber-50/70 flex items-start gap-3"
@@ -76,19 +108,31 @@ const ProvisionalBanner = () => (
 );
 
 const Finance = () => {
+  // The Finance page intentionally drives its OWN month-range period rather
+  // than the global daily filter bar (date presets like "today" / "last 90d"
+  // don't map onto a monthly P&L). The global Refresh button still refreshes
+  // this page via `dataVersion`.
   const { applied, touchLastUpdated } = useFilters();
-  const { dateFrom, dateTo, dataVersion } = applied;
+  const { dataVersion } = applied;
 
   const [data, setData] = useState({ months: [], opex_detail: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  // Selected month-range period. Default to the last 12 months — almost always
+  // populated and a sensible default view for a P&L. `presetKey` tracks which
+  // quick-chip is active ("custom" once the user picks months manually).
+  const last12 = PERIOD_PRESETS.find((p) => p.key === "last12").range();
+  const [fromMonth, setFromMonth] = useState(last12.from);
+  const [toMonth, setToMonth] = useState(last12.to);
+  const [presetKey, setPresetKey] = useState("last12");
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
     api
-      .get("/finance/pl", { params: buildParams({ dateFrom, dateTo }) })
+      .get("/finance/pl", { params: buildParams({ dateFrom: fromMonth, dateTo: toMonth }) })
       .then((r) => {
         if (cancelled) return;
         setData({
@@ -103,9 +147,51 @@ const Finance = () => {
       cancelled = true;
     };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, dataVersion]);
+  }, [fromMonth, toMonth, dataVersion]);
 
-  const months = data.months;
+  // Distinct months available in the P&L view (oldest → newest) for the
+  // From/To dropdowns. The backend returns the FULL month history; we filter
+  // to the selected window client-side below.
+  const availableMonths = useMemo(
+    () => (data.months || []).map((m) => String(m.month)).filter(Boolean),
+    [data.months]
+  );
+
+  const applyPreset = (key) => {
+    const p = PERIOD_PRESETS.find((x) => x.key === key);
+    if (!p) return;
+    const { from, to } = p.range();
+    setFromMonth(from);
+    setToMonth(to);
+    setPresetKey(key);
+  };
+  const applyAll = () => {
+    if (!availableMonths.length) return;
+    setFromMonth(availableMonths[0]);
+    setToMonth(availableMonths[availableMonths.length - 1]);
+    setPresetKey("all");
+  };
+  const onFromChange = (v) => {
+    setFromMonth(v);
+    // Keep from <= to.
+    if (toMonth && v > toMonth) setToMonth(v);
+    setPresetKey("custom");
+  };
+  const onToChange = (v) => {
+    setToMonth(v);
+    if (fromMonth && v < fromMonth) setFromMonth(v);
+    setPresetKey("custom");
+  };
+
+  // Rows shown in the summary / charts / matrix: the full history filtered to
+  // the selected [fromMonth, toMonth] window (inclusive on the first-of-month).
+  const months = useMemo(
+    () =>
+      (data.months || []).filter(
+        (m) => String(m.month) >= fromMonth && String(m.month) <= toMonth
+      ),
+    [data.months, fromMonth, toMonth]
+  );
   const closed = useMemo(() => months.filter((m) => m.is_closed), [months]);
 
   // CONFIRMED + PROVISIONAL tier roll-ups, computed over CLOSED months only.
@@ -177,6 +263,85 @@ const Finance = () => {
         subtitle="Monthly Profit & Loss in KES. Confirmed transactional figures are shown separately from provisional, accounting-dependent estimates."
         testId="finance-header"
       />
+
+      {/* Dedicated month-range PERIOD selector (this page ignores the global
+          daily filter bar — a P&L needs month granularity). Quick presets +
+          explicit From/To month dropdowns, with a clear "period covered" line. */}
+      <div className="card-white p-3.5 space-y-3" data-testid="finance-period">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-muted mr-1">Period</span>
+          {PERIOD_PRESETS.map((p) => (
+            <button
+              key={p.key}
+              type="button"
+              onClick={() => applyPreset(p.key)}
+              data-testid={`period-${p.key}`}
+              className={`text-[12px] px-2.5 py-1 rounded-full border transition-colors ${
+                presetKey === p.key
+                  ? "bg-brand text-white border-brand"
+                  : "bg-white text-muted border-border hover:border-brand hover:text-brand"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={applyAll}
+            disabled={!availableMonths.length}
+            data-testid="period-all"
+            className={`text-[12px] px-2.5 py-1 rounded-full border transition-colors disabled:opacity-40 ${
+              presetKey === "all"
+                ? "bg-brand text-white border-brand"
+                : "bg-white text-muted border-border hover:border-brand hover:text-brand"
+            }`}
+          >
+            All
+          </button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          <label className="flex items-center gap-1.5 text-[12px] text-muted">
+            From
+            <select
+              value={fromMonth}
+              onChange={(e) => onFromChange(e.target.value)}
+              data-testid="period-from"
+              className="text-[12.5px] px-2 py-1 rounded border border-border bg-white focus:border-brand outline-none"
+            >
+              {!availableMonths.includes(fromMonth) && <option value={fromMonth}>{monthLabel(fromMonth)}</option>}
+              {availableMonths.map((m) => (
+                <option key={m} value={m}>{monthLabel(m)}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-1.5 text-[12px] text-muted">
+            To
+            <select
+              value={toMonth}
+              onChange={(e) => onToChange(e.target.value)}
+              data-testid="period-to"
+              className="text-[12.5px] px-2 py-1 rounded border border-border bg-white focus:border-brand outline-none"
+            >
+              {!availableMonths.includes(toMonth) && <option value={toMonth}>{monthLabel(toMonth)}</option>}
+              {availableMonths.map((m) => (
+                <option key={m} value={m}>{monthLabel(m)}</option>
+              ))}
+            </select>
+          </label>
+          <span className="text-[12px] text-muted" data-testid="period-summary">
+            Showing <span className="font-semibold text-ink">{monthLabelLong(fromMonth)}</span>
+            {" – "}
+            <span className="font-semibold text-ink">{monthLabelLong(toMonth)}</span>
+            {months.length > 0 && (
+              <>
+                {" · "}{months.length} month{months.length === 1 ? "" : "s"}
+                {summary.n > 0 && <> ({summary.n} closed)</>}
+              </>
+            )}
+          </span>
+        </div>
+      </div>
 
       <ProvisionalBanner />
 
