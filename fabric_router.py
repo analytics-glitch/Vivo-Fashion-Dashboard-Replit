@@ -304,12 +304,12 @@ def _loc_filter(location, alias="i"):
     placeholders = ", ".join(["%s"] * len(_FABRIC_LOCATIONS))
     return (f" AND {alias}.location_name IN ({placeholders})", list(_FABRIC_LOCATIONS))
 
-# ── Support-fabric scope (Lining + Interfacing) ─────────────
-# "Support fabrics" = the Lining and Interfacing categories — verified live as
-# 'Lining', 'Crepe Lining', 'Fusable Interfacing'. Matched on a NORMALIZED
-# (lower/trim, NULL→'') substring so case / spelling / related variants are
-# caught without a brittle exact-string list. Every aggregating endpoint takes a
-# `scope` query param:
+# ── Support-fabric scope (Lining + Fusable Interfacing) ─────────────
+# "Support fabrics" = EXACTLY the two Odoo categories the user defined:
+# 'Lining' and 'Fusable Interfacing'. Matched on a NORMALIZED (lower/trim,
+# NULL→'') EXACT category equality — NOT a substring — so near-named variants
+# like 'Crepe Lining' deliberately stay in the MAIN dashboard. Every aggregating
+# endpoint takes a `scope` query param:
 #   'main'   (default) → EXCLUDES support fabrics  (the existing dashboard tabs)
 #   'support'          → keeps ONLY support fabrics (the new Support Fabrics tab)
 # Rows with no classifiable category (NULL/'' — e.g. sheet-override moves whose
@@ -317,10 +317,12 @@ def _loc_filter(location, alias="i"):
 # they stay in MAIN. That preserves the reconciliation main + support == the old
 # all-fabric totals (and honours the "sheet rows always count" rule).
 def _support_match(col):
+    # Support fabrics = EXACTLY the two Odoo categories the user defined:
+    # "Lining" and "Fusable Interfacing". Matched case-insensitively and trimmed.
+    # An exact IN (not a substring LIKE) so near-named categories like
+    # "Crepe Lining" stay in the MAIN dashboard, per the user's explicit scope.
     c = f"LOWER(BTRIM(COALESCE({col},'')))"
-    # Literal % escaped as %% — q() always runs these through cur.execute with a
-    # params tuple, so an unescaped % hits the psycopg2 literal-% trap.
-    return f"({c} LIKE '%%lining%%' OR {c} LIKE '%%interfacing%%')"
+    return f"({c} IN ('lining', 'fusable interfacing'))"
 
 def _scope_sql(scope, col="p.fabric_category"):
     """SQL boolean fragment restricting rows to the requested support-fabric scope."""
