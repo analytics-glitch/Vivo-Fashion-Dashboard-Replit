@@ -67,3 +67,4 @@
 - [Targets YoY same-date YTD base](targets-yoy-ytd-base.md) — annual-targets actual_ytd is a FULL-year span; Targets YoY must use prior-year YTD bounded to today (actual_ytd_ly), not year-1 full-year actual_ytd (made mid-year YoY read ~-55%).
 - [SOR report since-launch + units basis](sor-report-since-launch.md) — catalog SOR report uses NET units (not gross _UNITS) for both 6m & lifetime; "since launch" = no date filter; thread new measures through CTE+outer SELECT+output dict.
 - [Warehouse bins sheet row cap](warehouse-bins-row-cap.md) — barcode→bin Google Sheet has tens of thousands of rows; sync must read the whole grid (tab rowCount), not a fixed A1:Z<N> cap, or bins past the cap silently vanish.
+- [Fabric support-fabric scope](fabric-support-scope.md) — Lining+Interfacing split into a "Support Fabrics" tab via `scope` param + normalized-substring `_scope_sql`; NULL category stays MAIN; main+support must reconcile to old all-fabric totals.

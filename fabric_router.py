@@ -218,7 +218,7 @@ def _derive_fabric_colors(name, fabric_color):
         return None, None
     return fc, _FABRIC_COLOR_DIRECTORY.get(fc)
 
-def _months_of_cover(conn, fabric_stock_kg):
+def _months_of_cover(conn, fabric_stock_kg, scope="main"):
     """Months-of-cover from a 6-month average monthly run-rate with the in-progress
     month projected to its end-of-month figure, plus a prior-period value for a
     trend indicator.
@@ -238,7 +238,9 @@ def _months_of_cover(conn, fabric_stock_kg):
         SELECT to_char(date_trunc('month', m.date::date),'YYYY-MM') AS mon,
                SUM({_net_kg('m')})::numeric AS kg
         FROM {EFFECTIVE_MOVES} m
+        LEFT JOIN raw_fabric_products p ON p.id = m.product_id
         WHERE {_net_cons_where('m')}
+          AND {_scope_sql(scope)}
           AND m.date::date >= (date_trunc('month', CURRENT_DATE) - INTERVAL '6 months')::date
         GROUP BY 1
     """)
@@ -302,13 +304,41 @@ def _loc_filter(location, alias="i"):
     placeholders = ", ".join(["%s"] * len(_FABRIC_LOCATIONS))
     return (f" AND {alias}.location_name IN ({placeholders})", list(_FABRIC_LOCATIONS))
 
+# ── Support-fabric scope (Lining + Interfacing) ─────────────
+# "Support fabrics" = the Lining and Interfacing categories — verified live as
+# 'Lining', 'Crepe Lining', 'Fusable Interfacing'. Matched on a NORMALIZED
+# (lower/trim, NULL→'') substring so case / spelling / related variants are
+# caught without a brittle exact-string list. Every aggregating endpoint takes a
+# `scope` query param:
+#   'main'   (default) → EXCLUDES support fabrics  (the existing dashboard tabs)
+#   'support'          → keeps ONLY support fabrics (the new Support Fabrics tab)
+# Rows with no classifiable category (NULL/'' — e.g. sheet-override moves whose
+# product_id didn't resolve to a product master) normalize to '' → NOT support →
+# they stay in MAIN. That preserves the reconciliation main + support == the old
+# all-fabric totals (and honours the "sheet rows always count" rule).
+def _support_match(col):
+    c = f"LOWER(BTRIM(COALESCE({col},'')))"
+    # Literal % escaped as %% — q() always runs these through cur.execute with a
+    # params tuple, so an unescaped % hits the psycopg2 literal-% trap.
+    return f"({c} LIKE '%%lining%%' OR {c} LIKE '%%interfacing%%')"
+
+def _scope_sql(scope, col="p.fabric_category"):
+    """SQL boolean fragment restricting rows to the requested support-fabric scope."""
+    m = _support_match(col)
+    return m if str(scope or "").lower() == "support" else f"NOT {m}"
+
 # ── Summary cards ──────────────────────────────────────────
 @fabric_router.get("/api/fabric/summary")
-def summary(location: str = Query(default="RMAT/Stock")):
+def summary(location: str = Query(default="RMAT/Stock"),
+            scope: str = Query(default="main")):
     with _get_conn() as conn:
         _ensure_fabric_sheet(conn)
+        # Capture the requested support-scope BEFORE `scope` is reused below as the
+        # location-bucket row list (rmat/dead) — they share the name historically.
+        scope_param = str(scope or "main")
+        scope_sql = _scope_sql(scope_param)
         # Stock by location
-        stock = q(conn, """
+        stock = q(conn, f"""
             SELECT 
               i.location_name,
               p.category,
@@ -318,7 +348,7 @@ def summary(location: str = Query(default="RMAT/Stock")):
               ROUND(SUM(i.total_value)::numeric,0) as value_kes
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            WHERE i.quantity > 0
+            WHERE i.quantity > 0 AND {scope_sql}
             GROUP BY i.location_name, p.category
         """)
         
@@ -339,12 +369,14 @@ def summary(location: str = Query(default="RMAT/Stock")):
         else:  # RMAT/Stock
             scope = rmat
         
-        # POs outstanding
-        pos = q(conn, """
-            SELECT COUNT(DISTINCT po_name) as count,
-              ROUND(SUM((qty_ordered-qty_received)*price_unit)::numeric,0) as value
-            FROM raw_fabric_purchase_orders
-            WHERE qty_ordered > qty_received AND state != 'cancel'
+        # POs outstanding (product-matched so it can honour the support scope)
+        pos = q(conn, f"""
+            SELECT COUNT(DISTINCT po.po_name) as count,
+              ROUND(SUM((po.qty_ordered-po.qty_received)*po.price_unit)::numeric,0) as value
+            FROM raw_fabric_purchase_orders po
+            JOIN raw_fabric_products p ON p.id = po.product_id
+            WHERE po.qty_ordered > po.qty_received AND po.state != 'cancel'
+              AND {scope_sql}
         """)[0]
 
         # Average cost per metre — STOCK ON HAND. Blended cost of the LIVE
@@ -353,13 +385,14 @@ def summary(location: str = Query(default="RMAT/Stock")):
         # stock metres. If ANY in-scope fabric WITH stock is missing its kg→metre
         # conversion (kg_per_mtr null/0), the figure is "incomplete" → render "—"
         # (its value would be in the numerator but no metres in the denominator).
-        acpm_stock = q(conn, """
+        acpm_stock = q(conn, f"""
             SELECT ROUND(SUM(i.total_value)::numeric,0) as value_kes,
                    ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,2) as metres,
                    BOOL_OR(COALESCE(p.kg_per_mtr,0)<=0) as incomplete
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE i.quantity > 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
+              AND {scope_sql}
         """)[0]
         acpm_stock_incomplete = bool(acpm_stock['incomplete'])
         acpm_stock_metres = float(acpm_stock['metres'] or 0)
@@ -375,7 +408,7 @@ def summary(location: str = Query(default="RMAT/Stock")):
         # fabrics lack the conversion be pinpointed (its row + the headline → "—").
         # Scoped to category='Fabric' (Raw Materials-Fabric) only, identically to
         # the STOCK side above — Trim/unmatched PO lines are excluded entirely.
-        pur_rows = q(conn, """
+        pur_rows = q(conn, f"""
             SELECT po.supplier as supplier,
                    ROUND(SUM(po.qty_received*po.price_unit)::numeric,0) as value_kes,
                    ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN po.qty_received/p.kg_per_mtr ELSE 0 END)::numeric,2) as metres,
@@ -383,6 +416,7 @@ def summary(location: str = Query(default="RMAT/Stock")):
             FROM raw_fabric_purchase_orders po
             JOIN raw_fabric_products p ON p.id = po.product_id
             WHERE po.state != 'cancel' AND po.qty_received > 0 AND p.category='Fabric'
+              AND {scope_sql}
             GROUP BY po.supplier
         """)
         purchases_by_supplier = []
@@ -419,6 +453,7 @@ def summary(location: str = Query(default="RMAT/Stock")):
             FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {_net_cons_where('m')}
+              AND {scope_sql}
               AND m.date >= NOW() - INTERVAL '30 days'
         """)[0]
 
@@ -429,6 +464,7 @@ def summary(location: str = Query(default="RMAT/Stock")):
             FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {_net_cons_where('m')}
+              AND {scope_sql}
               AND m.date >= CURRENT_DATE
         """)[0]
 
@@ -443,7 +479,7 @@ def summary(location: str = Query(default="RMAT/Stock")):
         rmat_stock_kg = round(sum(r['qty_kg'] or 0 for r in rmat), 1)
         rmat_stock_value = round(sum(r['value_kes'] or 0 for r in rmat))
         dead_stock_value = sum(r['value_kes'] or 0 for r in dead)
-        cover = _months_of_cover(conn, rmat_stock_kg)
+        cover = _months_of_cover(conn, rmat_stock_kg, scope_param)
 
         # Headline KPIs reflect the selected scope; All = RMAT + Dead.
         return {
@@ -472,7 +508,8 @@ def summary(location: str = Query(default="RMAT/Stock")):
 
 # ── Stock by category ──────────────────────────────────────
 @fabric_router.get("/api/fabric/by-category")
-def by_category(location: str = Query(default="RMAT/Stock")):
+def by_category(location: str = Query(default="RMAT/Stock"),
+                scope: str = Query(default="main")):
     with _get_conn() as conn:
         loc_sql, loc_params = _loc_filter(location)
         return q(conn, f"""
@@ -488,6 +525,7 @@ def by_category(location: str = Query(default="RMAT/Stock")):
             WHERE i.quantity > 0
               {loc_sql}
               AND p.fabric_category IS NOT NULL
+              AND {_scope_sql(scope)}
             GROUP BY p.fabric_category, p.fabric_subcategory
             ORDER BY value_kes DESC
         """, loc_params)
@@ -508,6 +546,7 @@ def register(
     days: int = Query(default=90),
     limit: int = Query(default=200),
     offset: int = Query(default=0),
+    scope: str = Query(default="main"),
 ):
     # Consumption window for the cover columns — same preset set as the Fabric mix
     # page (30/90/180/365), clamped identically so both pages reconcile.
@@ -549,6 +588,8 @@ def register(
         if search:
             where.append("(p.name ILIKE %s OR p.default_code ILIKE %s OR p.barcode ILIKE %s)")
             params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+        # Support-fabric scope: main excludes Lining/Interfacing, support keeps only them.
+        where.append(_scope_sql(scope))
 
         # Cover columns aligned with the Fabric mix page, using IDENTICAL maths so the
         # two pages reconcile for the same scope/period:
@@ -618,7 +659,8 @@ def register(
 
 # ── Ageing ──────────────────────────────────────────────────
 @fabric_router.get("/api/fabric/ageing")
-def ageing(location: str = Query(default="RMAT/Stock")):
+def ageing(location: str = Query(default="RMAT/Stock"),
+           scope: str = Query(default="main")):
     with _get_conn() as conn:
         loc_sql, loc_params = _loc_filter(location)
         return q(conn, f"""
@@ -653,6 +695,7 @@ def ageing(location: str = Query(default="RMAT/Stock")):
               JOIN raw_fabric_products p ON p.id = i.product_id
               LEFT JOIN raw_fabric_moves m ON m.product_id = i.product_id
               WHERE i.quantity > 0 {loc_sql}
+                AND {_scope_sql(scope)}
               GROUP BY i.product_id, i.quantity, p.kg_per_mtr, i.total_value
             ) sub
             GROUP BY age_band, sort_order
@@ -665,12 +708,14 @@ def consumption(
     since: str = Query(default="2026-01-01"),
     until: str = Query(default="2099-12-31"),
     group_by: str = Query(default="month"),
+    scope: str = Query(default="main"),
 ):
     with _get_conn() as conn:
         _ensure_fabric_sheet(conn)
         kg_expr = _net_kg("m")  # net of returns: +OUT, −production returns
         mtr_expr = f"CASE WHEN p.kg_per_mtr>0 THEN ({kg_expr})/p.kg_per_mtr ELSE 0 END"
         base_where = (f"{_net_cons_where('m')} "
+                      f"AND {_scope_sql(scope)} "
                       "AND m.date BETWEEN %s AND %s")
         metrics = (f"COUNT(DISTINCT m.product_id) FILTER (WHERE m.move_type='OUT') as fabrics_used, "
                    f"ROUND(SUM({kg_expr})::numeric,1) as qty_kg, "
@@ -704,6 +749,7 @@ def consumption(
 def category_stock_consumption(
     location: str = Query(default="RMAT/Stock"),
     days: int = Query(default=30),
+    scope: str = Query(default="main"),
 ):
     """Nested category→subcategory stock (location-scoped) vs net consumption
     (warehouse-wide, trailing N days). Derived %s / cover / SOR / variance / risk
@@ -719,6 +765,7 @@ def category_stock_consumption(
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE i.quantity > 0 {loc_sql}
+              AND {_scope_sql(scope)}
             GROUP BY 1, 2
         """, loc_params)
         cons = q(conn, f"""
@@ -728,6 +775,7 @@ def category_stock_consumption(
             FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {_net_cons_where('m')}
+              AND {_scope_sql(scope)}
               AND m.date >= NOW() - (%s || ' days')::interval
             GROUP BY 1, 2
         """, (days,))
@@ -791,6 +839,7 @@ def fabric_mix(
     location: str = Query(default="RMAT/Stock"),
     date_from: str = Query(default=""),
     date_to: str = Query(default=""),
+    scope: str = Query(default="main"),
 ):
     """The fabric equivalent of the BI app's Stock Mix: compare each fabric
     category's (or sub-category's) share of CONSUMPTION against its share of
@@ -837,14 +886,15 @@ def fabric_mix(
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE i.quantity > 0 AND p.category = 'Fabric' {loc_sql}
+              AND {_scope_sql(scope)}
             GROUP BY 1, 2, 3, 4
         """, loc_params)
         net = _net_kg('m')
         if win_from and win_to:
-            cons_where = f"{_net_cons_where('m')} AND m.date >= %s AND m.date < (%s::date + 1)"
+            cons_where = f"{_net_cons_where('m')} AND {_scope_sql(scope)} AND m.date >= %s AND m.date < (%s::date + 1)"
             cons_params = (win_from, win_to)
         else:
-            cons_where = f"{_net_cons_where('m')} AND m.date >= NOW() - (%s || ' days')::interval"
+            cons_where = f"{_net_cons_where('m')} AND {_scope_sql(scope)} AND m.date >= NOW() - (%s || ' days')::interval"
             cons_params = (days,)
         cons = q(conn, f"""
             SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
@@ -1064,7 +1114,7 @@ def fabric_mix(
 
 # ── Data quality: fabrics missing kg-per-metre ──────────────
 @fabric_router.get("/api/fabric/data-quality/missing-kg-per-metre")
-def missing_kg_per_metre():
+def missing_kg_per_metre(scope: str = Query(default="main")):
     """Every fabric product with NO usable kg-per-metre on the Odoo product master
     (kg_per_mtr missing or <= 0) that still has stock on hand OR recorded usage —
     i.e. real quantities that can only be shown in kg, never metres. Stock is the
@@ -1102,6 +1152,7 @@ def missing_kg_per_metre():
             LEFT JOIN stock st ON st.product_id = p.id
             LEFT JOIN usage us ON us.product_id = p.id
             WHERE COALESCE(p.kg_per_mtr,0) <= 0
+              AND {_scope_sql(scope)}
               AND (COALESCE(st.stock_kg,0) > 0 OR COALESCE(us.usage_kg,0) > 0.05)
         """, list(loc_params))
 
@@ -1132,9 +1183,9 @@ def missing_kg_per_metre():
 
 # ── Dead stock ──────────────────────────────────────────────
 @fabric_router.get("/api/fabric/dead-stock")
-def dead_stock():
+def dead_stock(scope: str = Query(default="main")):
     with _get_conn() as conn:
-        rows = q(conn, """
+        rows = q(conn, f"""
             SELECT 
               i.product_name, p.fabric_category, p.fabric_subcategory,
               p.kg_per_mtr, p.width_m, p.gsm, p.plain_print,
@@ -1147,6 +1198,7 @@ def dead_stock():
             LEFT JOIN raw_fabric_products p ON p.id = i.product_id
             LEFT JOIN raw_fabric_moves m ON m.product_id = i.product_id
             WHERE i.location_name = 'Dead/Stock Fabric' AND i.quantity > 0
+              AND {_scope_sql(scope)}
             GROUP BY i.product_name, p.fabric_category, p.fabric_subcategory,
                      p.kg_per_mtr, p.width_m, p.gsm, p.plain_print,
                      i.quantity, i.total_value
@@ -1157,9 +1209,9 @@ def dead_stock():
 
 # ── Purchase orders ─────────────────────────────────────────
 @fabric_router.get("/api/fabric/purchase-orders")
-def purchase_orders(supplier: str = Query(default=None)):
+def purchase_orders(supplier: str = Query(default=None), scope: str = Query(default="main")):
     with _get_conn() as conn:
-        where = "p.category = 'Fabric'"
+        where = f"p.category = 'Fabric' AND {_scope_sql(scope)}"
         params = []
         if supplier:
             where += " AND po.supplier ILIKE %s"; params.append(f"%{supplier}%")
@@ -1179,7 +1231,8 @@ def purchase_orders(supplier: str = Query(default=None)):
 
 # ── BOM lookup ──────────────────────────────────────────────
 @fabric_router.get("/api/fabric/bom")
-def bom_lookup(sku: str = Query(default=None), style: str = Query(default=None)):
+def bom_lookup(sku: str = Query(default=None), style: str = Query(default=None),
+               scope: str = Query(default="main")):
     with _get_conn() as conn:
         where = "1=1"
         params = []
@@ -1198,12 +1251,13 @@ def bom_lookup(sku: str = Query(default=None), style: str = Query(default=None))
             LEFT JOIN raw_fabric_products p ON p.id = b.component_id
             LEFT JOIN raw_fabric_inventory i ON i.product_id = b.component_id AND i.quantity > 0
             WHERE {where}
+              AND {_scope_sql(scope)}
             ORDER BY b.finished_product_name, b.component_name
         """, params)
 
 # ── Attribute split (plain/print, weight, structure) ────────
 @fabric_router.get("/api/fabric/attribute-split")
-def attribute_split(location: str = Query(default="RMAT/Stock")):
+def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Query(default="main")):
     with _get_conn() as conn:
         loc_sql, loc_params = _loc_filter(location)
         def split(col):
@@ -1216,6 +1270,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock")):
                 FROM raw_fabric_inventory i
                 JOIN raw_fabric_products p ON p.id = i.product_id
                 WHERE i.quantity > 0 {loc_sql}
+                  AND {_scope_sql(scope)}
                 GROUP BY 1
                 ORDER BY value_kes DESC NULLS LAST
             """, loc_params)
@@ -1229,6 +1284,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock")):
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE i.quantity > 0 {loc_sql}
+              AND {_scope_sql(scope)}
               AND p.fiber_content IS NOT NULL AND p.fiber_content <> ''
             GROUP BY 1
             ORDER BY value_kes DESC NULLS LAST
@@ -1243,7 +1299,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock")):
 
 # ── Top consumed fabrics (what's actually moving out) ───────
 @fabric_router.get("/api/fabric/top-consumed")
-def top_consumed(days: int = Query(default=90), limit: int = Query(default=20)):
+def top_consumed(days: int = Query(default=90), limit: int = Query(default=20), scope: str = Query(default="main")):
     with _get_conn() as conn:
         _ensure_fabric_sheet(conn)
         # weeks_cover uses the average monthly run-rate: total net consumption over
@@ -1259,7 +1315,9 @@ def top_consumed(days: int = Query(default=90), limit: int = Query(default=20)):
                 COUNT(*) FILTER (WHERE m.move_type='OUT') as moves,
                 MAX(m.date) FILTER (WHERE m.move_type='OUT')::date as last_out
               FROM {EFFECTIVE_MOVES} m
+              LEFT JOIN raw_fabric_products p ON p.id = m.product_id
               WHERE {_net_cons_where('m')}
+                AND {_scope_sql(scope)}
                 AND m.product_id IS NOT NULL
                 AND m.date >= NOW() - (%s || ' days')::interval
               GROUP BY m.product_id
@@ -1282,29 +1340,33 @@ def top_consumed(days: int = Query(default=90), limit: int = Query(default=20)):
 
 # ── Movement flow (IN / OUT / INTERNAL by month) ────────────
 @fabric_router.get("/api/fabric/movement-flow")
-def movement_flow(months: int = Query(default=6)):
+def movement_flow(months: int = Query(default=6), scope: str = Query(default="main")):
     with _get_conn() as conn:
         _ensure_fabric_sheet(conn)
         return q(conn, f"""
-            SELECT DATE_TRUNC('month', date)::date as period,
-              ROUND(SUM(CASE WHEN move_type='IN'       THEN (CASE WHEN uom='g' THEN qty/1000 ELSE qty END) ELSE 0 END)::numeric,1) as in_kg,
-              ROUND(SUM(CASE WHEN move_type='OUT'      THEN (CASE WHEN uom='g' THEN qty/1000 ELSE qty END) ELSE 0 END)::numeric,1) as out_kg,
-              ROUND(SUM(CASE WHEN move_type='INTERNAL' THEN (CASE WHEN uom='g' THEN qty/1000 ELSE qty END) ELSE 0 END)::numeric,1) as internal_kg
-            FROM {EFFECTIVE_MOVES}
-            WHERE is_fabric AND uom IN ('g','kg')
-              AND date >= DATE_TRUNC('month', NOW() - (%s || ' months')::interval)
+            SELECT DATE_TRUNC('month', m.date)::date as period,
+              ROUND(SUM(CASE WHEN m.move_type='IN'       THEN (CASE WHEN m.uom='g' THEN m.qty/1000 ELSE m.qty END) ELSE 0 END)::numeric,1) as in_kg,
+              ROUND(SUM(CASE WHEN m.move_type='OUT'      THEN (CASE WHEN m.uom='g' THEN m.qty/1000 ELSE m.qty END) ELSE 0 END)::numeric,1) as out_kg,
+              ROUND(SUM(CASE WHEN m.move_type='INTERNAL' THEN (CASE WHEN m.uom='g' THEN m.qty/1000 ELSE m.qty END) ELSE 0 END)::numeric,1) as internal_kg
+            FROM {EFFECTIVE_MOVES} m
+            LEFT JOIN raw_fabric_products p ON p.id = m.product_id
+            WHERE m.is_fabric AND m.uom IN ('g','kg')
+              AND {_scope_sql(scope)}
+              AND m.date >= DATE_TRUNC('month', NOW() - (%s || ' months')::interval)
             GROUP BY 1 ORDER BY 1
         """, (months,))
 
 # ── BOM styles (default explorer view) ──────────────────────
 @fabric_router.get("/api/fabric/bom-styles")
-def bom_styles(search: str = Query(default=None), limit: int = Query(default=300)):
+def bom_styles(search: str = Query(default=None), limit: int = Query(default=300),
+               scope: str = Query(default="main")):
     with _get_conn() as conn:
         where = "b.finished_product_name IS NOT NULL AND b.finished_product_name <> ''"
         params = []
         if search:
             where += " AND (b.finished_product_name ILIKE %s OR b.finished_product_sku ILIKE %s)"
             params = [f"%{search}%", f"%{search}%"]
+        scope_clause = _scope_sql(scope)
         rows = q(conn, f"""
             SELECT b.finished_product_name as style, b.finished_product_sku as sku,
               COUNT(*) as components,
@@ -1313,12 +1375,20 @@ def bom_styles(search: str = Query(default=None), limit: int = Query(default=300
                              WHEN b.component_uom='kg' THEN b.component_qty ELSE 0 END)::numeric,3) as fabric_kg,
               COUNT(*) FILTER (WHERE b.component_uom='Pcs') as trim_pieces
             FROM raw_fabric_boms b
+            LEFT JOIN raw_fabric_products p ON p.id = b.component_id
             WHERE {where}
+              AND {scope_clause}
             GROUP BY 1,2
             ORDER BY fabric_kg DESC NULLS LAST
             LIMIT %s
         """, params + [limit])
-        total = q(conn, "SELECT COUNT(DISTINCT finished_product_name) as n FROM raw_fabric_boms")[0]['n']
+        total = q(conn, f"""
+            SELECT COUNT(DISTINCT b.finished_product_name) as n
+            FROM raw_fabric_boms b
+            LEFT JOIN raw_fabric_products p ON p.id = b.component_id
+            WHERE b.finished_product_name IS NOT NULL AND b.finished_product_name <> ''
+              AND {scope_clause}
+        """)[0]['n']
         return {"total_styles": total, "items": rows}
 
 # ── Where-used (reverse BOM: styles using a fabric) ─────────
@@ -1336,9 +1406,9 @@ def where_used(component: str = Query(...)):
 
 # ── Purchase-order delivery performance ─────────────────────
 @fabric_router.get("/api/fabric/po-performance")
-def po_performance():
+def po_performance(scope: str = Query(default="main")):
     with _get_conn() as conn:
-        kpis = q(conn, """
+        kpis = q(conn, f"""
             SELECT
               COUNT(DISTINCT po.po_name) as pos,
               COUNT(*) as lines,
@@ -1350,47 +1420,48 @@ def po_performance():
               COUNT(DISTINCT po.po_name) FILTER (WHERE po.date_planned < CURRENT_DATE AND po.qty_ordered>po.qty_received) as overdue_open
             FROM raw_fabric_purchase_orders po
             JOIN raw_fabric_products p ON p.id = po.product_id
-            WHERE po.state != 'cancel' AND p.category = 'Fabric'
+            WHERE po.state != 'cancel' AND p.category = 'Fabric' AND {_scope_sql(scope)}
         """)[0]
-        by_month = q(conn, """
+        by_month = q(conn, f"""
             SELECT DATE_TRUNC('month', po.order_date)::date as period,
               COUNT(DISTINCT po.po_name) as pos,
               ROUND(SUM(po.total_value)::numeric,0) as value_kes
             FROM raw_fabric_purchase_orders po
             JOIN raw_fabric_products p ON p.id = po.product_id
-            WHERE po.state != 'cancel' AND p.category = 'Fabric' AND po.order_date IS NOT NULL
+            WHERE po.state != 'cancel' AND p.category = 'Fabric' AND {_scope_sql(scope)} AND po.order_date IS NOT NULL
             GROUP BY 1 ORDER BY 1
         """)
         return {"kpis": kpis, "by_month": by_month}
 
 # ── Supplier rollup (outstanding exposure) ──────────────────
 @fabric_router.get("/api/fabric/suppliers")
-def suppliers():
+def suppliers(scope: str = Query(default="main")):
     with _get_conn() as conn:
-        return q(conn, """
+        return q(conn, f"""
             SELECT
-              COALESCE(NULLIF(supplier,''),'Unknown') as supplier,
-              COUNT(DISTINCT po_name) as pos,
-              ROUND(SUM(total_value)::numeric,0) as po_value,
-              ROUND(SUM((qty_ordered-qty_received)*price_unit)::numeric,0) as outstanding_value,
-              ROUND(SUM(qty_ordered-qty_received)::numeric,1) as outstanding_qty
-            FROM raw_fabric_purchase_orders
-            WHERE state != 'cancel'
+              COALESCE(NULLIF(po.supplier,''),'Unknown') as supplier,
+              COUNT(DISTINCT po.po_name) as pos,
+              ROUND(SUM(po.total_value)::numeric,0) as po_value,
+              ROUND(SUM((po.qty_ordered-po.qty_received)*po.price_unit)::numeric,0) as outstanding_value,
+              ROUND(SUM(po.qty_ordered-po.qty_received)::numeric,1) as outstanding_qty
+            FROM raw_fabric_purchase_orders po
+            JOIN raw_fabric_products p ON p.id = po.product_id
+            WHERE po.state != 'cancel' AND {_scope_sql(scope)}
             GROUP BY 1
             ORDER BY outstanding_value DESC NULLS LAST
         """)
 
 # ── Filter options ──────────────────────────────────────────
 @fabric_router.get("/api/fabric/filters")
-def filters():
+def filters(scope: str = Query(default="main")):
     with _get_conn() as conn:
-        cats = q(conn, """
+        cats = q(conn, f"""
             SELECT DISTINCT fabric_category as value FROM raw_fabric_products 
-            WHERE fabric_category IS NOT NULL ORDER BY 1
+            WHERE fabric_category IS NOT NULL AND {_scope_sql(scope, 'fabric_category')} ORDER BY 1
         """)
-        subcats = q(conn, """
+        subcats = q(conn, f"""
             SELECT DISTINCT fabric_category, fabric_subcategory FROM raw_fabric_products
-            WHERE fabric_subcategory IS NOT NULL ORDER BY 1, 2
+            WHERE fabric_subcategory IS NOT NULL AND {_scope_sql(scope, 'fabric_category')} ORDER BY 1, 2
         """)
         locs = q(conn, """
             SELECT DISTINCT location_name as value FROM raw_fabric_inventory
