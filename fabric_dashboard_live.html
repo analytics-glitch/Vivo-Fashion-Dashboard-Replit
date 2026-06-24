@@ -102,6 +102,9 @@ table.data tbody tr:hover td{background:rgba(26,92,56,.03);}
    Fabric dashboard table is affected. */
 .mix-scroll{max-height:calc(100vh - 230px);overflow:auto;border-radius:var(--radius);}
 .mix-scroll table.data thead th{position:sticky;top:0;z-index:3;background:var(--bg);box-shadow:inset 0 -1px 0 var(--border-strong);}
+/* Pin the Stock Mix "Total" row to the bottom of the scroll area. Scoped to
+   .mix-scroll so no other table is affected. */
+.mix-scroll table.data tr.mix-total td{position:sticky;bottom:0;z-index:2;background:var(--bg);box-shadow:inset 0 2px 0 var(--border);}
 .mix-scroll::-webkit-scrollbar{height:13px;width:13px;}
 .mix-scroll::-webkit-scrollbar-track{background:var(--panel);border-radius:8px;}
 .mix-scroll::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:8px;border:2px solid var(--panel);}
@@ -1304,7 +1307,7 @@ function renderFabricMix(){
     return;
   }
   // Totals row
-  html+=`<tr style="border-top:2px solid var(--border);font-weight:700;background:var(--bg);">
+  html+=`<tr class="mix-total" style="border-top:2px solid var(--border);font-weight:700;background:var(--bg);">
    ${showBarcode?'<td></td>':''}<td style="font-weight:800;">Total</td>
    <td class="r">${fmtUnit(totC)}</td>
    <td class="r">${fmtUnit(totA)}</td>
