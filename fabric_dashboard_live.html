@@ -234,11 +234,6 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div class="sub" id="page-desc">Fabric stock, value and health across the warehouse</div>
    </div>
    <div class="topctl">
-    <span class="muted">Units</span>
-    <div class="seg" id="unit-seg">
-     <button class="unit-btn active" data-unit="m" onclick="setUnit('m')">Metres</button>
-     <button class="unit-btn" data-unit="kg" onclick="setUnit('kg')">Kg</button>
-    </div>
     <span class="muted">Location</span>
     <select id="location-filter" onchange="onLocationChange()"></select>
     <span id="mix-period-topbar" style="display:none;align-items:center;gap:.5rem;">
@@ -831,21 +826,11 @@ const REG_FX={
   window.addEventListener('resize',hide);
 })();
 
-// ── Units (page-level metres / kg toggle) ──
-let UNIT=localStorage.getItem('fabricUnit')==='kg'?'kg':'m';
-const unitLabel=()=>UNIT==='kg'?'kg':'m';
-const fmtUnit=v=>v==null?'—':(UNIT==='kg'?fmt1(v)+' kg':fmt(v)+' m');
+// ── Units (locked to metres) ──
+const UNIT='m';
+const unitLabel=()=>'m';
+const fmtUnit=v=>v==null?'—':fmt(v)+' m';
 function currentPage(){const a=document.querySelector('.nav-item.active');return a?a.dataset.page:'overview';}
-function setUnit(u){
-  if(UNIT===u)return; UNIT=u; localStorage.setItem('fabricUnit',u);
-  document.querySelectorAll('.unit-btn').forEach(b=>b.classList.toggle('active',b.dataset.unit===u));
-  const p=currentPage();
-  if(p==='overview')renderOverviewCached();
-  else if(p==='register')renderRegisterTable();
-  else if(p==='ageing')loadAgeing();
-  else if(p==='movement')loadConsTrend();
-  else if(p==='dashboard')renderFabricMix();
-}
 
 // ── Donut renderer (SVG) ──
 function donut(slices){
@@ -2618,8 +2603,6 @@ async function deleteReservation(id){
 
 // ── Boot ──
 async function init(){
-  // Units segmented control reflects stored preference
-  document.querySelectorAll('.unit-btn').forEach(b=>b.classList.toggle('active',b.dataset.unit===UNIT));
   // Column picker + close-on-outside-click
   buildColPicker();
   document.addEventListener('click',e=>{
