@@ -6519,6 +6519,52 @@ def analytics_margin(
         LIMIT 2000
     """, date_to=date_to)
 
+@app.get("/api/finance/pl")
+def finance_pl(
+    date_from: str = Query(default=str(date(date.today().year - 1, date.today().month, 1))),
+    date_to:   str = Query(default=str(date.today())),
+):
+    """Monthly Profit & Loss from the finance_pl_summary view.
+
+    Returns two payloads:
+      • `months` — one row per calendar month in [date_from, date_to] (inclusive
+        on the `month` column, which is a real DATE = first of month). The start
+        month is the month CONTAINING date_from. Carries the full P&L shape plus
+        the data-integrity flags (is_closed, has_full_cogs, has_salaries,
+        has_accounting_data) the page uses to separate CONFIRMED vs PROVISIONAL.
+      • `opex_detail` — category-level operating-expense breakdown by account
+        (raw_account_move_lines JOIN finance_account_map), restricted to the
+        production_opex / admin_opex groups, summed over the SAME month window.
+
+    Read-only; reuses the shared pool via run_query. Date params are validated by
+    the /api edge middleware AND defensively here before being concatenated."""
+    df = _validate_date_param(date_from) or str(date(date.today().year - 1, date.today().month, 1))
+    dt = _validate_date_param(date_to) or str(date.today())
+    months = run_query("""
+        SELECT month, gross_sales, discounts, returns, net_revenue, cogs,
+               gross_profit, gross_margin_pct, salaries, production_opex,
+               admin_opex, total_opex, other_income, operating_income,
+               has_accounting_data, is_closed, has_full_cogs, has_salaries
+        FROM finance_pl_summary
+        WHERE month >= date_trunc('month', DATE '""" + df + """')
+          AND month <= DATE '""" + dt + """'
+        ORDER BY month
+    """, date_to=dt)
+    opex_detail = run_query("""
+        SELECT l.account_name AS account, m.pl_group AS pl_group,
+               ROUND(SUM(l.debit - l.credit), 0) AS amount
+        FROM raw_account_move_lines l
+        JOIN finance_account_map m ON m.account_code = l.account_code
+        WHERE m.pl_group IN ('production_opex', 'admin_opex')
+          AND l.date >= date_trunc('month', DATE '""" + df + """')
+          AND l.date <  date_trunc('month', DATE '""" + dt + """') + INTERVAL '1 month'
+        GROUP BY l.account_name, m.pl_group
+        HAVING ROUND(SUM(l.debit - l.credit), 0) <> 0
+        ORDER BY amount DESC
+    """, date_to=dt)
+    return {"months": months, "opex_detail": opex_detail}
+
+
 @app.get("/api/analytics/rfm")
 def analytics_rfm(
     date_from: str = Query(default=str(date.today().replace(day=1))),

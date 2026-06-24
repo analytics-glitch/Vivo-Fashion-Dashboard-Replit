@@ -44,6 +44,7 @@ const Velocity = React.lazy(() => import("@/pages/Velocity"));
 const SizeHealth = React.lazy(() => import("@/pages/SizeHealth"));
 const MarkdownClearance = React.lazy(() => import("@/pages/MarkdownClearance"));
 const Margin = React.lazy(() => import("@/pages/Margin"));
+const Finance = React.lazy(() => import("@/pages/Finance"));
 const RFM = React.lazy(() => import("@/pages/RFM"));
 const Catalogue = React.lazy(() => import("@/pages/Catalogue"));
 const Login = React.lazy(() => import("@/pages/Login"));
@@ -149,6 +150,7 @@ function App() {
                 <Route path="/velocity" element={<ProtectedShell pageId="velocity"><Velocity /></ProtectedShell>} />
                 <Route path="/size-health" element={<ProtectedShell pageId="size-health"><SizeHealth /></ProtectedShell>} />
                 <Route path="/margin" element={<ProtectedShell pageId="margin"><Margin /></ProtectedShell>} />
+                <Route path="/finance" element={<ProtectedShell pageId="finance"><Finance /></ProtectedShell>} />
                 <Route path="/rfm" element={<ProtectedShell pageId="rfm"><RFM /></ProtectedShell>} />
                 <Route path="/crm" element={<ExternalRedirect to="/crm/" />} />
                 <Route path="/social" element={<ExternalRedirect to="/crm/inbox" />} />

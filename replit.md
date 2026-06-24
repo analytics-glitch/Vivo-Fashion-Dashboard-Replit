@@ -92,6 +92,7 @@ A multi-page executive cockpit with a persistent sidebar and a global filter bar
 - Products — units sold, current stock, sell-through, top style, sales by subcategory, units-sold-vs-stock
 - Inventory — available vs on-hand units, SKUs, locations, available stock by location
 - Markdown & Clearance — markdown candidates (WoC, sell-through, recommended markdown %, est. revenue) and a clearance plan grouped by IMMEDIATE vs PLANNED urgency
+- Finance / P&L — monthly Profit & Loss from the Postgres `finance_pl_summary` view (`GET /api/finance/pl`). Web only, leadership+admin. Splits figures into a CONFIRMED tier (Net Revenue, Production/Admin/Total Opex — summed over `is_closed=true` months only) and a muted/bordered PROVISIONAL tier (Gross Margin %, Gross Profit, Operating Income) behind a standing warning that COGS recognition is incomplete and payroll is not yet journaled. Transposed monthly P&L matrix (line items as rows, months as columns; open months tagged partial, COGS cells flagged when `has_full_cogs=false`, Salaries shows "Not in Odoo" when `has_salaries=false`), an opex-by-account breakdown, and CSV export. See `.agents/memory/finance-pl-page.md`.
 
 Operational close-the-loop pages also exist (IBT transfer suggestions, Replenishments, Re-Order, Size Health, Store Clusters, Data Quality) with recommendation actions, bulk operations, and "Export to Operations" file downloads. The topbar carries a Data Quality status pill and a Replenishments pending-count badge.
 

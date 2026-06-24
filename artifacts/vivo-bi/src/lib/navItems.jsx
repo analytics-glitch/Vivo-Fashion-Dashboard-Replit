@@ -28,6 +28,7 @@ import {
   BookOpen,
   Eye,
   Factory,
+  Coins,
 } from "@phosphor-icons/react";
 
 /**
@@ -48,6 +49,7 @@ export const PRIMARY_NAV = [
   // Overview
   { to: "/overview", label: "Overview", icon: ChartPieSlice, id: "overview", group: "Performance", desc: "KPIs, sales trend and country, channel & brand mix" },
   { to: "/exec-summary", label: "Executive Summary", icon: Briefcase, id: "exec-summary", group: "Performance", desc: "One-screen executive snapshot of the business" },
+  { to: "/finance", label: "Finance / P&L", icon: Coins, id: "finance", group: "Performance", desc: "Monthly Profit & Loss — confirmed revenue & opex vs provisional margins" },
   { to: "/trend-analysis", label: "Trend Analysis", icon: TrendUp, id: "trend-analysis", group: "Performance", desc: "Trend any KPI over time with per-KPI granularity and AI insight" },
 
   // Product pages
