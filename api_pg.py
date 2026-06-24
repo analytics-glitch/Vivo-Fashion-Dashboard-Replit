@@ -1335,17 +1335,79 @@ def _replen_store_universe():
     return [r["store"] for r in (rows or []) if r.get("store")]
 
 
-def _compute_store_owner_map(owners, stores=None):
-    """Split the POS-sorted store list into len(owners) contiguous blocks so
-    each picker owns a contiguous run of stores. Returns {store: owner}."""
+def _replen_store_unit_weights():
+    """Per-store total replenishment UNITS (the same 'replenish' figure the pick
+    list shows), used to balance pickers by units. Returns {store: units}.
+    Best-effort: returns {} if the heavy report computation is unavailable."""
+    try:
+        rows = _compute_replenishment_report_rows(None, None, 400)
+    except Exception:
+        return {}
+    weights = {}
+    for r in (rows or []):
+        loc = r.get("pos_location")
+        if loc:
+            weights[loc] = weights.get(loc, 0) + int(r.get("replenish") or 0)
+    return weights
+
+
+def _compute_store_owner_map(owners, stores=None, weights=None):
+    """Assign each whole store to exactly ONE picker, balancing the TOTAL units
+    per picker as evenly as possible (so each person picks roughly the same
+    number of units). A store is never split across pickers. Returns {store: owner}.
+
+    Balancing uses a greedy longest-processing-time heuristic: stores are taken
+    heaviest-first and each is given to the picker who currently has the fewest
+    units (ties broken by fewest stores, then roster order). Stores with no
+    current need still get an owner (balanced by store count) so the next run
+    that does need them already has a picker — nobody ever shows as '—'."""
     owners = [str(o).strip() for o in (owners or []) if str(o).strip()] \
         or list(_DEFAULT_REPLEN_OWNERS)
+    if weights is None:
+        weights = _replen_store_unit_weights()
+    weights = weights or {}
     if stores is None:
-        stores = _replen_store_universe()
+        # Cover the full universe: every selling store PLUS any store that has
+        # current replenishment need, so the frozen map never misses a store.
+        universe = set(_replen_store_universe())
+        universe |= set(weights.keys())
+        stores = sorted(universe)
     n, k = len(stores), len(owners)
     if n == 0 or k == 0:
         return {}
-    return {store: owners[min(k - 1, (i * k) // n)] for i, store in enumerate(stores)}
+    unit_load = {o: 0 for o in owners}
+    count_load = {o: 0 for o in owners}
+    order_index = {o: i for i, o in enumerate(owners)}
+    # Heaviest stores first (LPT); deterministic tie-break by store name.
+    ordered = sorted(stores, key=lambda s: (-int(weights.get(s, 0) or 0), s))
+    mapping = {}
+    for store in ordered:
+        owner = min(
+            owners,
+            key=lambda o: (unit_load[o], count_load[o], order_index[o]))
+        mapping[store] = owner
+        unit_load[owner] += int(weights.get(store, 0) or 0)
+        count_load[owner] += 1
+    return mapping
+
+
+def _owner_for_store(store, store_map, owners):
+    """Resolve the picker for a store. Falls back to a STABLE deterministic
+    pick (hash of the store name over the roster) when the store is missing
+    from the frozen map — e.g. a store that started needing replenishment after
+    the last redistribute — so the pick list never shows an unassigned '—'
+    owner. The fallback is stable across refreshes (no reshuffle)."""
+    if not store:
+        return "—"
+    owner = store_map.get(store)
+    if owner:
+        return owner
+    owners = [str(o).strip() for o in (owners or []) if str(o).strip()] \
+        or list(_DEFAULT_REPLEN_OWNERS)
+    if not owners:
+        return "—"
+    h = int(hashlib.md5(str(store).encode("utf-8")).hexdigest(), 16)
+    return owners[h % len(owners)]
 
 
 def _set_replen_store_owner_map(mapping):
@@ -8675,8 +8737,9 @@ def analytics_replenish_by_item(
     # Drop rows the warehouse pool can no longer cover (suggested capped to 0) — a
     # zero-unit suggestion is not actionable and must not appear in the list.
     out = [r for r in out if int(r.get("suggested_units") or 0) > 0]
+    _owners = _replen_owners()
     for row in out:
-        row["owner"] = store_map.get(row.get("pos_location")) or "—"
+        row["owner"] = _owner_for_store(row.get("pos_location"), store_map, _owners)
     out.sort(key=lambda x: (x["units_sold"], -x["soh_store"]), reverse=True)
     return {"mode": "sku" if mode == "sku" else "style", "value": val,
             "warehouse_soh": wh_soh, "date_from": date_from, "date_to": date_to,
@@ -8796,6 +8859,7 @@ def analytics_replenish_gaps(
             ORDER BY sold.units_sold DESC
             LIMIT """ + str(int(limit)))
     store_map = _replen_store_owner_map()
+    _owners = _replen_owners()
     marks_all = _replen_marks()
     today = date.today()
     out = []
@@ -8814,7 +8878,7 @@ def analytics_replenish_gaps(
         mark = (marks_all.get((loc, "sku", sku))
                 or marks_all.get((loc, "barcode", barcode)) or {})
         out.append({
-            "pos_location": loc, "owner": store_map.get(loc) or "—",
+            "pos_location": loc, "owner": _owner_for_store(loc, store_map, _owners),
             "sku": sku, "barcode": barcode,
             "product_name": r.get("product_name") or "",
             "style_name": r.get("style_name") or "", "size": r.get("size") or "",
@@ -8925,12 +8989,12 @@ def analytics_replenish_gaps_export(
         wb, f"Replenish_Gaps_{safe}_{date.today().isoformat()}.xlsx")
 
 
-@app.get("/api/analytics/replenishment-report")
-def analytics_replenishment_report(
-    date_from: str = Query(default=None),
-    date_to:   str = Query(default=None),
-    limit: int = Query(default=400),
-):
+def _compute_replenishment_report_rows(date_from=None, date_to=None, limit=400):
+    """Core of the replenishment pick list: per-(store,SKU) rows with the
+    suggested 'replenish' units (warehouse-capped; zero-need rows dropped),
+    WITHOUT owner assignment or size-mix enrichment. Shared by the report
+    endpoint and the picker-balancing weight calc so both compute identical
+    per-store units."""
     if not date_from or not date_to:
         date_to = str(date.today())
         date_from = str(date.today() - timedelta(days=30))
@@ -8984,11 +9048,10 @@ def analytics_replenishment_report(
         WHERE COALESCE(ss.soh_store, 0) < sold.units_sold AND COALESCE(w.soh_wh, 0) > 0
         ORDER BY (sold.units_sold - COALESCE(ss.soh_store, 0)) DESC
         LIMIT """ + str(int(limit)))
-    store_map = _replen_store_owner_map()
     marks_all = _replen_marks()
     today = date.today()
     out_rows = []
-    for idx, r in enumerate(rows):
+    for r in rows:
         units_sold = int(r["units_sold"] or 0)
         soh_store = int(r["soh_store"] or 0)
         soh_wh = int(r["soh_wh"] or 0)
@@ -9006,7 +9069,7 @@ def analytics_replenishment_report(
                 or marks_all.get((r.get("pos_location"), "barcode", r.get("barcode")))
                 or {})
         out_rows.append({
-            "owner": store_map.get(r.get("pos_location")) or "—", "country": r.get("country"),
+            "country": r.get("country"),
             "pos_location": r.get("pos_location"), "product_name": r.get("product_name"),
             "size": r.get("size") or "", "barcode": r.get("barcode") or "",
             "sku": r.get("sku"), "bin": r.get("bin") or "",
@@ -9024,6 +9087,23 @@ def analytics_replenishment_report(
     # zero-unit suggestion is not actionable, so it must not appear in the list nor
     # inflate the per-owner line/unit counts or the size-mix below.
     out_rows = [r for r in out_rows if int(r.get("replenish") or 0) > 0]
+    return out_rows
+
+
+@app.get("/api/analytics/replenishment-report")
+def analytics_replenishment_report(
+    date_from: str = Query(default=None),
+    date_to:   str = Query(default=None),
+    limit: int = Query(default=400),
+):
+    out_rows = _compute_replenishment_report_rows(date_from, date_to, limit)
+    # Each whole store maps to ONE picker (balanced by units on the last
+    # redistribute); a store missing from the frozen map gets a stable owner so
+    # the list never shows an unassigned "—".
+    owners = _replen_owners()
+    store_map = _replen_store_owner_map()
+    for r in out_rows:
+        r["owner"] = _owner_for_store(r.get("pos_location"), store_map, owners)
     by_owner = {}
     for r in out_rows:
         o = by_owner.setdefault(r["owner"], {"owner": r["owner"], "lines": 0, "units": 0, "stores": set()})
