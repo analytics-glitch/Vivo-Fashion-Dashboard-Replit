@@ -4,6 +4,7 @@ Serves data for the Fabric BI dashboard
 Run: uvicorn fabric_api:app --port 8081
 """
 import datetime
+import re
 import psycopg2.extras
 from fastapi import APIRouter, Query, Request, Body, HTTPException
 
@@ -117,6 +118,105 @@ def _net_cons_where(alias="m"):
 # into a weekly run-rate for weeks-of-cover.
 WEEKS_PER_MONTH = 52.0 / 12.0
 DAYS_PER_MONTH = 30.4375
+
+# ── Vivo Colour Directory 2025 ──────────────────────────────
+# Canonical fabric-colour → primary-colour map (98 fabric colours → 14 primary
+# colours). Used to derive a clean colour breakdown of fabric stock from the
+# messy source columns (the DB `primary_color` is empty and `fabric_color` is
+# inconsistent), primarily by parsing each product's name. Casing here IS the
+# canonical output casing.
+_FABRIC_COLOR_DIRECTORY = {
+    "Black": "Black",
+    "Baby Blue": "Blue", "Blue": "Blue", "Dark Blue": "Blue", "Dark Teal": "Blue",
+    "Denim Blue": "Blue", "Light Blue": "Blue", "Light Teal": "Blue",
+    "Navy Blue": "Blue", "Royal Blue": "Blue", "Teal": "Blue", "Turquoise": "Blue",
+    "Beige": "Brown", "Brown": "Brown", "Caramel": "Brown", "Chocolate Brown": "Brown",
+    "Dark Beige": "Brown", "Dark Brown": "Brown", "Dark Tan": "Brown", "Dark Taupe": "Brown",
+    "Khaki Beige": "Brown", "Khaki Brown": "Brown", "Light Beige": "Brown",
+    "Light Brown": "Brown", "Light Tan": "Brown", "Light Taupe": "Brown",
+    "Sand": "Brown", "Tan": "Brown", "Taupe": "Brown",
+    "Army Green": "Green", "Dark Green": "Green", "Dark Olive Green": "Green",
+    "Emerald Green": "Green", "Forest Green": "Green", "Green": "Green",
+    "Hunters Green": "Green", "Jungle Green": "Green", "Khaki Green": "Green",
+    "Light Green": "Green", "Light Olive Green": "Green", "Lime Green": "Green",
+    "Neon Green": "Green", "Olive Green": "Green", "Sea Green": "Green",
+    "Dark Grey": "Grey", "Grey": "Grey", "Khaki Grey": "Grey", "Light Grey": "Grey",
+    "Brass": "Metallic", "Copper": "Metallic", "Gold": "Metallic", "Silver": "Metallic",
+    "Multicolor": "Multicolor",
+    "None": "None",
+    "Burnt Orange": "Orange", "Coral": "Orange", "Dark Orange": "Orange",
+    "Dark Rust": "Orange", "Light Orange": "Orange", "Light Rust": "Orange",
+    "Orange": "Orange", "Peach": "Orange", "Rust": "Orange",
+    "Dark Pink": "Pink", "Dusty Pink": "Pink", "Fuchsia": "Pink", "Light Pink": "Pink",
+    "Magenta": "Pink", "Neon Pink": "Pink", "Pink": "Pink", "Rose Pink": "Pink",
+    "Bright Purple": "Purple", "Dark Purple": "Purple", "Light Purple": "Purple",
+    "Lilac": "Purple", "Plum": "Purple", "Purple": "Purple", "Violet": "Purple",
+    "Burgundy": "Red", "Dark Burgundy": "Red", "Dark Maroon": "Red", "Dark Red": "Red",
+    "Light Burgundy": "Red", "Light Red": "Red", "Maroon": "Red", "Red": "Red",
+    "Cream": "White", "Ivory": "White", "Off White": "White", "White": "White",
+    "Bright Yellow": "Yellow", "Buttermilk": "Yellow", "Dark Mustard": "Yellow",
+    "Light Mustard": "Yellow", "Lime Yellow": "Yellow", "Marigold": "Yellow",
+    "Mustard": "Yellow", "Yellow": "Yellow",
+}
+
+# Common short forms found in product names → canonical directory fabric colour.
+_FABRIC_COLOR_ALIASES = {
+    "navy": "Navy Blue",
+    "olive": "Olive Green",
+    "chocolate": "Chocolate Brown",
+    "denim": "Denim Blue",
+    "royal": "Royal Blue",
+    "emerald": "Emerald Green",
+    "forest": "Forest Green",
+    "army": "Army Green",
+    "jungle": "Jungle Green",
+    "hunter": "Hunters Green",
+    "hunters": "Hunters Green",
+    "lime": "Lime Green",
+    "charcoal": "Dark Grey",
+    "wine": "Burgundy",
+    "dusty rose": "Dusty Pink",
+    "aqua": "Turquoise",
+}
+
+def _build_color_match_list():
+    """Match candidates = every directory fabric colour + every alias, lowercased,
+    sorted longest-first so the most-specific phrase wins (e.g. 'Olive Green'
+    before 'Green', 'Light Blue' before 'Blue')."""
+    cands = {}
+    for canon in _FABRIC_COLOR_DIRECTORY:
+        if canon == "None":
+            continue
+        cands[canon.lower()] = canon
+    for alias, canon in _FABRIC_COLOR_ALIASES.items():
+        cands.setdefault(alias.lower(), canon)
+    return sorted(cands.items(), key=lambda kv: len(kv[0]), reverse=True)
+
+_COLOR_MATCH_LIST = _build_color_match_list()
+
+def _match_fabric_color(text):
+    """Scan free text (case-insensitive) for any directory fabric colour or alias,
+    returning the canonical fabric colour (most-specific/longest match wins).
+    Matching is token-aware (non-alphanumerics become word breaks) so a colour
+    never matches inside another word. Returns None when nothing resolves."""
+    if not text:
+        return None
+    norm = " " + re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip() + " "
+    for phrase, canon in _COLOR_MATCH_LIST:
+        if " " + phrase + " " in norm:
+            return canon
+    return None
+
+def _derive_fabric_colors(name, fabric_color):
+    """Resolve (fabric_color, primary_color) for a fabric product: first parse the
+    product name, then fall back to the source `fabric_color` column run through
+    the same matcher. Returns (None, None) when neither resolves."""
+    fc = _match_fabric_color(name)
+    if not fc:
+        fc = _match_fabric_color(fabric_color)
+    if not fc:
+        return None, None
+    return fc, _FABRIC_COLOR_DIRECTORY.get(fc)
 
 def _months_of_cover(conn, fabric_stock_kg):
     """Months-of-cover from a 6-month average monthly run-rate with the in-progress
@@ -921,6 +1021,9 @@ def fabric_mix(
                 det = det_by_pid.get(pid)
                 if det:
                     prow["default_code"] = det.get("default_code")
+                    fc, pc = _derive_fabric_colors(det.get("name"), det.get("fabric_color"))
+                    det["derived_fabric_color"] = fc
+                    det["derived_primary_color"] = pc
                     prow["detail"] = det
                 prods.append(prow)
             prods.sort(key=lambda r: r["consumption_metres"], reverse=True)
