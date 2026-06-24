@@ -25,6 +25,8 @@ const ReplenishmentRosterCard = ({
   isAdmin,
   onSaved,
   subtitle,
+  dateFrom,
+  dateTo,
   testId = "replen-owner-panel",
 }) => {
   const [ownerCount, setOwnerCount] = useState(4);
@@ -61,7 +63,10 @@ const ReplenishmentRosterCard = ({
     setOwnerSaving(true);
     try {
       const cleaned = ownerNames.map((s) => s.trim()).filter(Boolean);
-      await api.post("/replenishment/roster", { owners: cleaned });
+      const payload = { owners: cleaned };
+      if (dateFrom) payload.date_from = dateFrom;
+      if (dateTo) payload.date_to = dateTo;
+      await api.post("/replenishment/roster", payload);
       toast.success(cleaned.length
         ? `Roster saved — ${cleaned.length} ${cleaned.length === 1 ? "person" : "people"}. Redistributing…`
         : "Roster reset to default. Redistributing…");
@@ -88,7 +93,7 @@ const ReplenishmentRosterCard = ({
         }
         subtitle={
           subtitle
-          || "How many people are picking today, and who? Lines are distributed so each person picks as close to the same number of units as possible — ordered by store, so a store is only shared between pickers when needed to keep units even."
+          || "How many people are picking today, and who? Clicking Save & redistribute splits the current pick list so each person gets as close to the same number of units as possible — ordered by store, sharing a store between pickers only when needed to keep units even. The split is then fixed: reloading the page won't reshuffle anyone, so someone who finishes early can refresh without being handed new work. Re-run Save & redistribute to rebalance."
         }
       />
       <div className="grid grid-cols-1 sm:grid-cols-[140px_1fr] gap-4 items-start">

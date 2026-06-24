@@ -1,6 +1,6 @@
 ---
 name: Replenishment picker distribution
-description: How the replenishment pick list splits work across pickers (the rule, and why it's live per-report instead of a frozen store map)
+description: How the replenishment pick list splits work across pickers — equal-units rule, and why it's FROZEN (rebalanced only on Save & redistribute) not live
 ---
 
 # Replenishment pick-list picker distribution
@@ -17,14 +17,26 @@ finally "equal units, stores splittable" — the user prioritised even units ove
 keeping a store with one person.
 
 **How to apply:**
-- Assignment is `_assign_replen_owners_by_units(rows, owners)`: sort by
+- Balancing is `_assign_replen_owners_by_units(rows, owners)`: sort by
   (pos_location, sku, barcode) → contiguous store lines → greedily advance the
   picker on cumulative `i*(total/k)` unit thresholds. Spread between pickers is
   bounded by the largest single line's units (small), so it's near-even.
-- It is computed **live on every report GET** from the current roster — there is
-  NO frozen owner map for the pick list, so a refresh always rebalances. "Save &
-  redistribute" only updates the **roster owners list** (names/count); it is not
-  needed to rebalance the pick list.
+- The result is **FROZEN**, NOT live. It must be recomputed ONLY by the explicit
+  "Save & redistribute" action. **Why:** if it rebalanced on every GET, a picker
+  who finished their lines and refreshed the page would be handed new work — the
+  user explicitly rejected that. The balance is persisted as a per-line
+  `{store|sku: owner}` map in app_config (`replenishment_line_owner_map`) and the
+  report reads it on every load, so a reload never reshuffles. Helpers:
+  `_compute_line_owner_map` (balance the current window), `_replen_line_owner_map`
+  (read; self-seeds once if unset), `_owner_for_line` (frozen lookup).
+- Drift (a line added since the last redistribute, not in the frozen map) →
+  that store's main picker (dominant owner in the map), else a stable md5 hash of
+  the line key over the roster. Both are reload-stable; no row is ever "—".
+- "Save & redistribute" (`POST /api/replenishment/roster`) must compute the line
+  map over the **window the operator is viewing** — the roster card sends
+  `date_from`/`date_to`; the POST re-validates them (`_pa_safe_date`, they reach
+  SQL) and passes them to `_redistribute_replen_owners`. It also still recomputes
+  the store→owner map for the sibling surfaces below.
 - The frozen store→owner map (`_compute_store_owner_map`, `_owner_for_store`,
   `replenishment_store_owner_map`) is still used by the sibling single-SKU /
   single-style surfaces (replenish-by-item, replenish-gaps) and IBT owner

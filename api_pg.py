@@ -1487,12 +1487,109 @@ def _replen_store_owner_map(bootstrap=True):
     return mapping
 
 
-def _redistribute_replen_owners(owners=None):
-    """The explicit redistribute action: recompute the store→owner map over the
-    current store universe and persist it. Called only from a gated trigger."""
+def _line_key(pos, sku):
+    """Stable identity for a pick-list line = (store, sku). Used to FREEZE the
+    per-line picker assignment so a page reload never reshuffles owners."""
+    pos = str(pos or "").strip()
+    sku = str(sku or "").strip()
+    if not pos or not sku:
+        return None
+    return pos + "\u0001" + sku
+
+
+def _set_replen_line_owner_map(mapping):
+    """Persist the frozen {line_key: owner} pick-list assignment."""
+    _users_exec(
+        "INSERT INTO app_config (key, value, updated_at) "
+        "VALUES ('replenishment_line_owner_map', %s::jsonb, now()) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+        (json.dumps(mapping),))
+
+
+def _compute_line_owner_map(owners=None, date_from=None, date_to=None, limit=400):
+    """Equal-units per-line assignment captured at redistribute time. Builds the
+    current pick list, balances it by units (POS-ordered, a store split only when
+    the equal-units boundary lands inside it), and returns {line_key: owner}.
+    Best-effort: returns {} if the report cannot be built."""
+    owners = owners if owners is not None else _replen_owners()
+    try:
+        rows = _compute_replenishment_report_rows(date_from, date_to, limit)
+    except Exception:
+        return {}
+    _assign_replen_owners_by_units(rows, owners)
+    mapping = {}
+    for r in rows:
+        k = _line_key(r.get("pos_location"), r.get("sku"))
+        if k:
+            mapping[k] = r.get("owner")
+    return mapping
+
+
+def _replen_line_owner_map(bootstrap=True):
+    """Persisted {line_key: owner} map for the pick list. Read on every report
+    GET so a refresh never reshuffles owners — the balance is recomputed ONLY by
+    the explicit "Save & redistribute" action. Seeded once if never set."""
+    try:
+        rows = _users_exec(
+            "SELECT value FROM app_config WHERE key='replenishment_line_owner_map'",
+            fetch=True)
+    except Exception:
+        rows = None
+    val = rows[0].get("value") if rows else None
+    if isinstance(val, str):
+        try:
+            val = json.loads(val)
+        except Exception:
+            val = None
+    if isinstance(val, dict) and val:
+        return {str(k): str(v) for k, v in val.items() if v}
+    if not bootstrap:
+        return {}
+    mapping = _compute_line_owner_map()
+    if mapping:
+        try:
+            _set_replen_line_owner_map(mapping)
+        except Exception:
+            pass
+    return {str(k): str(v) for k, v in mapping.items() if v}
+
+
+def _owner_for_line(pos, sku, line_map, owners, store_fallback=None):
+    """Resolve the FROZEN picker for a pick-list line. A line added since the
+    last redistribute (not in the frozen map) falls back to that store's main
+    picker, else a STABLE deterministic pick (hash of the line key over the
+    roster). The fallback is stable across reloads and never yields "—"."""
+    owners = [str(o).strip() for o in (owners or []) if str(o).strip()] \
+        or list(_DEFAULT_REPLEN_OWNERS)
+    k = _line_key(pos, sku)
+    if k:
+        o = line_map.get(k)
+        if o:
+            return o
+    if store_fallback:
+        o = store_fallback.get(str(pos or "").strip())
+        if o:
+            return o
+    if not owners:
+        return "—"
+    key = k or (str(pos or "") + "\u0001" + str(sku or ""))
+    h = int(hashlib.md5(key.encode("utf-8")).hexdigest(), 16)
+    return owners[h % len(owners)]
+
+
+def _redistribute_replen_owners(owners=None, date_from=None, date_to=None):
+    """The explicit redistribute action: recompute BOTH the store→owner map
+    (sibling single-SKU / single-style surfaces) AND the per-line owner map (the
+    pick list, balanced by EQUAL UNITS over the given window) and persist them.
+    Called only from a gated trigger — the pick list reads the frozen line map on
+    every load, so a reload never reshuffles a picker's lines."""
     owners = owners if owners is not None else _replen_owners()
     mapping = _compute_store_owner_map(owners)
     _set_replen_store_owner_map(mapping)
+    try:
+        _set_replen_line_owner_map(_compute_line_owner_map(owners, date_from, date_to))
+    except Exception:
+        pass
     return mapping
 
 
@@ -9141,7 +9238,28 @@ def analytics_replenishment_report(
     # possible. Rows are ordered by POS location, so each store's lines stay
     # contiguous and a store is split between two pickers only when the
     # equal-units boundary lands inside it (one POS may be shared by >1 picker).
-    _assign_replen_owners_by_units(out_rows, _replen_owners())
+    # FROZEN assignment: the equal-units balance is computed ONLY by the explicit
+    # "Save & redistribute" action (see _redistribute_replen_owners) and persisted
+    # as a {line_key: owner} map. We read it back here so a page reload never
+    # reshuffles a picker's lines — a picker who finished early can refresh without
+    # being handed new work. Lines added since the last redistribute fall back to
+    # that store's main picker, else a stable hash (also reload-stable).
+    owners = _replen_owners()
+    line_map = _replen_line_owner_map()
+    store_fallback = {}
+    _store_owner_counts = {}
+    for _k, _ow in line_map.items():
+        _store = _k.split("\u0001", 1)[0]
+        _d = _store_owner_counts.setdefault(_store, {})
+        _d[_ow] = _d.get(_ow, 0) + 1
+    for _store, _d in _store_owner_counts.items():
+        store_fallback[_store] = max(_d.items(), key=lambda kv: kv[1])[0]
+    out_rows.sort(key=lambda r: (str(r.get("pos_location") or ""),
+                                 str(r.get("sku") or ""),
+                                 str(r.get("barcode") or "")))
+    for r in out_rows:
+        r["owner"] = _owner_for_line(
+            r.get("pos_location"), r.get("sku"), line_map, owners, store_fallback)
     by_owner = {}
     for r in out_rows:
         o = by_owner.setdefault(r["owner"], {"owner": r["owner"], "lines": 0, "units": 0, "stores": set()})
@@ -11807,7 +11925,13 @@ async def replenishment_roster_post(request: Request):
     owners = [str(o).strip() for o in (body.get("owners") or []) if str(o).strip()]
     owners = owners or list(_DEFAULT_REPLEN_OWNERS)
     _set_replen_owners(owners)
-    _redistribute_replen_owners(owners)
+    # Freeze the pick-list balance over the window the operator is viewing so the
+    # equal-units split matches what's on screen. Dates are re-validated here
+    # (defense in depth) because they reach _compute_replenishment_report_rows.
+    raw_df, raw_dt = body.get("date_from"), body.get("date_to")
+    df = _pa_safe_date(raw_df, None) if raw_df else None
+    dt = _pa_safe_date(raw_dt, None) if raw_dt else None
+    _redistribute_replen_owners(owners, date_from=df, date_to=dt)
     return {"ok": True, "owners": owners, "can_manage": True}
 # ── Conversational BI assistant (text-to-SQL over live Postgres) ──────────────
 # The widget (ChatWidget.jsx) POSTs {message, session_id, context} and renders

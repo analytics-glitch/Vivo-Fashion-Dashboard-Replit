@@ -710,7 +710,7 @@ const Replenishments = () => {
           component so the IBT Warehouse→Store page can mount the same
           card (iter 78). Saves to /admin/replenishment-config; on
           success we refresh the live list. */}
-      <ReplenishmentRosterCard isAdmin={isAdmin} onSaved={handleRosterSaved} />
+      <ReplenishmentRosterCard isAdmin={isAdmin} onSaved={handleRosterSaved} dateFrom={dateFrom} dateTo={dateTo} />
 
       {/* Live list. */}
       <div className="card-white p-5" data-testid="replen-live-card">
