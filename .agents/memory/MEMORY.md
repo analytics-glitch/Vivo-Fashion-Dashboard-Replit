@@ -39,6 +39,7 @@
 - [Dev-only DB objects block publish](dev-only-db-objects-block-publish.md) — a hand-made dev index/constraint (not in code) auto-migrates to prod on publish & fails on dirty data; unblock by moving de-dup to app code + dropping the dev object, not the "copy data" overwrite.
 - [Product Analysis endpoint perf](product-analysis-perf.md) — don't scan all_sales twice; current_price = argmax inside the sales CTE (dim-grain when dims selected); 600s response cache keeps it warm.
 - [Notifications surface access requests](notifications-access-requests.md) — the notification bell is the discoverability path for pending app_users (status='pending'); endpoints derive live for admins, not stored.
+- [Per-group page access](group-page-access.md) — admin Group Access screen; effective pages injected as `allowed_pages` on /auth/me+login (no client gating change); backend DEFAULT_ROLE_PAGES must mirror permissions.js ROLE_PAGES.
 - [Manual style retirement](manual-style-retirement.md) — durable code-level list force-retires styles (not DB/overrides/Odoo active flag); ALL active/retired endpoints must honor _is_manually_retired or screens disagree.
 - [Fabric BI full-page routing](fabric-page-routing.md) — /fabric is a static page served by api_pg's catch-all; it must be in api-server artifact.toml paths or the proxy routes it to the vivo-bi SPA (dead handler).
 - [Fabric dashboard innerHTML/XSS](fabric-dashboard-xss.md) — fabric_dashboard_live.html string-templates ERP text into innerHTML; always esc() interpolated fields + badgeClass() class fragments, or stored XSS.

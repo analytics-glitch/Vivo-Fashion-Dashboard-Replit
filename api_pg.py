@@ -439,6 +439,50 @@ LEGACY_ROLE_MAP = {
     "exec": "leadership",
     "manager": "leadership",
 }
+
+# ── Per-group page access (admin-editable) ────────────────────────────────────
+# The group → allowed-page-ids map. This MUST mirror ROLE_PAGES in
+# artifacts/vivo-bi/src/lib/permissions.js (the built-in default). An admin can
+# override any group's list via /api/admin/group-pages; overrides are stored in
+# app_config key 'role_pages'. When a group has no override we fall back to this
+# default. The effective list is surfaced to the client as `allowed_pages` on
+# /auth/me + login + status so the existing canAccessPage override path drives
+# nav, Home tiles and route guarding with no client logic change.
+def _dedup(seq):
+    seen, out = set(), []
+    for x in seq:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+_VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "fabric"]
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report"])
+
+DEFAULT_ROLE_PAGES = {
+    "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report"],
+    "retail": ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "exports"],
+    "warehouse": ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "re-order", "allocations", "data-quality", "exports"],
+    "store_manager": ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "ibt"],
+    "leadership": _LEADERSHIP_PAGES,
+    "customer_service": ["customers", "customer-details", "crm", "footfall", "rfm"],
+    "marketing": ["marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm"],
+    "hr": ["hr"],
+}
+
+# Admin management page ids (admin- prefix). These are route-guarded as
+# adminOnly anyway and can NEVER be assigned to a non-admin group.
+ADMIN_PAGE_IDS = ["admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters", "admin-page-visibility", "admin-group-access"]
+
+# The full catalog of valid page ids — every non-admin page that can appear in
+# nav/Home plus the admin pages. Used to validate PUT payloads and to compute
+# the admin (full-access) group. Built from the default group maps + a few pages
+# that exist as routes/tiles but aren't in any default group.
+ALL_PAGE_IDS = set(ADMIN_PAGE_IDS)
+for _pages in DEFAULT_ROLE_PAGES.values():
+    ALL_PAGE_IDS.update(_pages)
+ALL_PAGE_IDS.update(["feedback"])  # available to admins / grantable to groups
 # Paths a signed-in but not-yet-active user may still reach (so the frontend can
 # read its own status and poll for approval / sign out).
 _AUTH_SELF_PATHS = {
@@ -1629,6 +1673,94 @@ def _set_hidden_pages(pages):
         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
         (json.dumps(clean),))
     return clean
+
+
+def _role_page_overrides():
+    """Admin-saved per-group page overrides, stored in app_config key
+    'role_pages' as a JSON object {role: [page_ids]}. Returns {} when unset.
+    Only known groups + sanitized page ids are returned."""
+    try:
+        rows = _users_exec(
+            "SELECT value FROM app_config WHERE key='role_pages'", fetch=True)
+    except Exception:
+        rows = None
+    if not rows:
+        return {}
+    val = rows[0].get("value")
+    if isinstance(val, str):
+        try:
+            val = json.loads(val)
+        except Exception:
+            val = None
+    if not isinstance(val, dict):
+        return {}
+    out = {}
+    for role, pages in val.items():
+        if role in VALID_ROLES and role != "admin" and isinstance(pages, list):
+            out[role] = sorted({
+                str(p).strip() for p in pages
+                if str(p).strip() in ALL_PAGE_IDS and not str(p).strip().startswith("admin-")
+            })
+    return out
+
+
+def _save_role_page_overrides(mapping):
+    _users_exec(
+        "INSERT INTO app_config (key, value, updated_at) "
+        "VALUES ('role_pages', %s::jsonb, now()) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+        (json.dumps(mapping),))
+
+
+def _default_pages_for_role(role):
+    role = (role or DEFAULT_NEW_ROLE).lower()
+    if role == "admin":
+        # Admin always has full access — every page incl. admin management.
+        return sorted(ALL_PAGE_IDS)
+    return list(DEFAULT_ROLE_PAGES.get(role, DEFAULT_ROLE_PAGES[DEFAULT_NEW_ROLE]))
+
+
+def _effective_pages_for_role(role):
+    """The page ids a member of `role` may currently see — the admin override if
+    one is saved, otherwise the built-in default. Admin always resolves to the
+    full catalog regardless of any stored value (cannot be locked out)."""
+    role = (role or DEFAULT_NEW_ROLE).lower()
+    if role == "admin":
+        return sorted(ALL_PAGE_IDS)
+    ov = _role_page_overrides()
+    if role in ov:
+        return ov[role]
+    return _default_pages_for_role(role)
+
+
+def _set_role_pages(role, pages):
+    """Persist an override for `role`. Strips admin- pages + unknown ids. Admin
+    cannot be restricted. Returns the cleaned list that was saved."""
+    role = (role or "").lower()
+    if role not in VALID_ROLES:
+        raise ValueError("Unknown group")
+    if role == "admin":
+        raise ValueError("The Admin group always has full access and cannot be restricted")
+    clean = sorted({
+        str(p).strip() for p in pages
+        if str(p).strip() in ALL_PAGE_IDS and not str(p).strip().startswith("admin-")
+    })
+    ov = _role_page_overrides()
+    ov[role] = clean
+    _save_role_page_overrides(ov)
+    return clean
+
+
+def _reset_role_pages(role):
+    """Drop a group's override so it reverts to the built-in default."""
+    role = (role or "").lower()
+    if role not in VALID_ROLES:
+        raise ValueError("Unknown group")
+    ov = _role_page_overrides()
+    if role in ov:
+        del ov[role]
+        _save_role_page_overrides(ov)
+    return _default_pages_for_role(role)
 
 
 def _replen_marks():
@@ -4421,6 +4553,7 @@ def auth_me(request: Request):
     if u:
         u = dict(u)
         u["hidden_pages"] = _hidden_pages()
+        u["allowed_pages"] = _effective_pages_for_role(u.get("role"))
     return u
 
 
@@ -4442,9 +4575,59 @@ async def admin_page_visibility_put(request: Request):
     return {"ok": True, "hidden_pages": _set_hidden_pages(pages)}
 
 
+@app.get("/api/admin/group-pages")
+def admin_group_pages_get(request: Request):
+    """Per-group page access — effective list + built-in default for every
+    selectable group, so the admin Group Access screen can render the checklist
+    and offer a Reset to default."""
+    ov = _role_page_overrides()
+    groups, defaults, overridden = {}, {}, {}
+    for role in VALID_ROLES:
+        groups[role] = _effective_pages_for_role(role)
+        defaults[role] = _default_pages_for_role(role)
+        overridden[role] = (role != "admin") and (role in ov)
+    return {
+        "groups": groups,
+        "defaults": defaults,
+        "overridden": overridden,
+        "page_catalog": sorted(ALL_PAGE_IDS),
+    }
+
+
+@app.put("/api/admin/group-pages")
+async def admin_group_pages_put(request: Request):
+    """Save a single group's allowed pages, or reset it to default. Body:
+    {"role": "<group>", "pages": [...]} or {"role": "<group>", "reset": true}."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    role = (body.get("role") or "").strip().lower()
+    if role not in VALID_ROLES:
+        return JSONResponse({"detail": "Unknown group"}, status_code=400)
+    if role == "admin":
+        return JSONResponse(
+            {"detail": "The Admin group always has full access and cannot be restricted"},
+            status_code=400)
+    try:
+        if body.get("reset"):
+            pages = _reset_role_pages(role)
+        else:
+            raw = body.get("pages")
+            if not isinstance(raw, list):
+                return JSONResponse({"detail": "pages must be a list"}, status_code=400)
+            pages = _set_role_pages(role, raw)
+    except ValueError as e:
+        return JSONResponse({"detail": str(e)}, status_code=400)
+    return {"ok": True, "role": role, "pages": pages}
+
+
 @app.get("/api/auth/me/status")
 def auth_me_status(request: Request):
     u = getattr(request.state, "user", None) or {}
+    if u:
+        u = dict(u)
+        u["allowed_pages"] = _effective_pages_for_role(u.get("role"))
     return {"status": u.get("status", "active"), "role": u.get("role"), "user": u}
 
 
@@ -4476,6 +4659,7 @@ async def auth_login(request: Request):
         pass
     user = _user_dict(rec)
     user["hidden_pages"] = _hidden_pages()
+    user["allowed_pages"] = _effective_pages_for_role(user.get("role"))
     resp = JSONResponse({"token": token, "user": user})
     resp.set_cookie("session_token", token, **_login_cookie_kwargs())
     return resp
