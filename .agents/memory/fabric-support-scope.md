@@ -18,7 +18,6 @@ deliberately tightened FROM a substring `LIKE '%lining%' OR '%interfacing%'` bec
 the substring form wrongly pulled in the near-named category "Crepe Lining". Support
 Fabrics is defined as EXACTLY the two Odoo categories **Lining** and **Fusable
 Interfacing** — nothing else. "Crepe Lining" stays in MAIN.
-Verified split: support=63 (Lining 59 + Fusable Interfacing 4), main=2001, total=2064.
 
 **Reconciliation invariant:** `main + support == the old all-fabric totals`.
 Rows with NULL/'' category (e.g. sheet-override moves whose product_id didn't resolve)

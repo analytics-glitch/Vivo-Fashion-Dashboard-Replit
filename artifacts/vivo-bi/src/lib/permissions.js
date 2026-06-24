@@ -19,7 +19,10 @@ const PRODUCT_DEVELOPMENT = ["products", "product-analysis", "range-mgmt", "mark
 const RETAIL = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "exports"];
 const WAREHOUSE = ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "re-order", "allocations", "data-quality", "exports"];
 const STORE_MANAGER = ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "ibt"];
-const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "finance", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report"])];
+// NOTE: "finance" is intentionally NOT here. The Finance / P&L page is a
+// work-in-progress, admin-only surface — admins see every page via the
+// role==="admin" short-circuit in canAccessPage, so it needs no list entry.
+const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report"])];
 const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "footfall", "rfm"];
 const MARKETING = ["marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm"];
 const HR = ["hr"];
@@ -70,6 +73,11 @@ const DEFAULT_ROLE = "store_manager";
  * `user` arg is the object returned by /auth/me; if it carries an
  * `allowed_pages` array we honour that override.
  */
+// Pages restricted to admins regardless of any allowed_pages / role override
+// (e.g. work-in-progress surfaces). Admins pass via the role check below; every
+// other role is hard-blocked even if a stale group override happened to list it.
+const ADMIN_ONLY_PAGES = new Set(["finance"]);
+
 export const canAccessPage = (user, pageId) => {
   if (!user) return false;
   // Admin always sees every page — no per-page list to keep in sync (this is the
@@ -77,6 +85,9 @@ export const canAccessPage = (user, pageId) => {
   // admins the way the explicit ADMIN list could drift).
   const role = (user.role || DEFAULT_ROLE).toLowerCase();
   if (role === "admin") return true;
+  // Admin-only pages can never be reached by a non-admin, even via an
+  // allowed_pages override (the backend mirror also refuses to grant them).
+  if (ADMIN_ONLY_PAGES.has(pageId)) return false;
   // Globally hidden pages (admin-controlled, applies to everyone). Admin
   // management pages can never be hidden (enforced server-side too).
   const hidden = Array.isArray(user.hidden_pages) ? user.hidden_pages : [];

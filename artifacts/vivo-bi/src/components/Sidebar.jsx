@@ -426,6 +426,15 @@ const TopNav = () => {
               <>
                 <t.icon size={13} weight={isActive ? "fill" : "regular"} />
                 <span>{t.label}</span>
+                {t.wip && (
+                  <span
+                    className="ml-1 inline-flex items-center justify-center px-1.5 h-[16px] rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[9px] font-bold leading-none uppercase tracking-wide"
+                    title="Work in progress"
+                    data-testid={`wip-badge-${t.id}`}
+                  >
+                    WIP
+                  </span>
+                )}
                 {t.id === "ibt" && lateCount > 0 && (
                   <span
                     className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold leading-none animate-pulse"
@@ -529,6 +538,15 @@ const TopNav = () => {
                 <>
                   <t.icon size={17} weight={isActive ? "fill" : "regular"} />
                   <span>{t.label}</span>
+                  {t.wip && (
+                    <span
+                      className="ml-1 inline-flex items-center justify-center px-1.5 h-[18px] rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[10px] font-bold leading-none uppercase tracking-wide"
+                      title="Work in progress"
+                      data-testid={`wip-badge-mobile-${t.id}`}
+                    >
+                      WIP
+                    </span>
+                  )}
                   {t.id === "ibt" && lateCount > 0 && (
                     <span
                       className="ml-auto inline-flex items-center justify-center min-w-[20px] h-[20px] px-1.5 rounded-full bg-rose-600 text-white text-[11px] font-bold leading-none"

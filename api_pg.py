@@ -458,7 +458,11 @@ def _dedup(seq):
 
 
 _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "fabric"]
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "finance", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report"])
+# NOTE: "finance" is intentionally NOT in any default group below. The Finance /
+# P&L page is a work-in-progress, admin-only surface; admins see every page, and
+# it is deliberately kept out of ALL_PAGE_IDS so it can't be granted to any
+# non-admin group (see the ALL_PAGE_IDS note below).
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report"],
@@ -483,6 +487,11 @@ ALL_PAGE_IDS = set(ADMIN_PAGE_IDS)
 for _pages in DEFAULT_ROLE_PAGES.values():
     ALL_PAGE_IDS.update(_pages)
 ALL_PAGE_IDS.update(["feedback"])  # available to admins / grantable to groups
+# NOTE: "finance" is deliberately NOT added here. Keeping it out of ALL_PAGE_IDS
+# means _set_role_pages strips it from any group-access override, so it can never
+# be granted to a non-admin group. Admins still reach it (role==="admin" short-
+# circuit in canAccessPage + the /api/finance admin gate), so it stays a true
+# admin-only, work-in-progress surface with no client- or server-side bypass.
 # Paths a signed-in but not-yet-active user may still reach (so the frontend can
 # read its own status and poll for approval / sign out).
 _AUTH_SELF_PATHS = {
@@ -924,6 +933,12 @@ async def clerk_auth_gate(request: Request, call_next):
         "admin", "leadership", "store_manager", "retail", "hr"
     ):
         return JSONResponse({"detail": "HR dashboard access requires a staff role"}, status_code=403)
+
+    # Finance / P&L (/api/finance/*) is a work-in-progress surface restricted to
+    # admins only. Enforced server-side so hidden web nav / direct API can't be
+    # bypassed by a non-admin.
+    if path.startswith("/api/finance") and user.get("role") != "admin":
+        return JSONResponse({"detail": "Finance access requires an admin role"}, status_code=403)
 
     return await call_next(request)
 

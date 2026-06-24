@@ -1,0 +1,138 @@
+# Finance Reports Suite — Replit Build Brief
+
+## Context
+
+The BI dashboard (`artifacts/vivo-bi`) now has complete Odoo accounting data synced into Postgres. Build a **Finance** section with multiple reports for the finance team. The flagship is a **Profit & Loss statement that matches the official Odoo P&L export exactly** (structure shown below). Add as many additional useful finance reports as the data supports.
+
+All data is read-only from existing Postgres objects. **Do NOT create or modify** the `finance_pl_summary` view, the `finance_account_map` table, or `raw_account_move_lines` — they already exist.
+
+---
+
+## Data sources (already in Postgres)
+
+### 1. `finance_pl_summary` (view) — one row per month
+Columns: `month, gross_sales, returns, net_revenue_pipeline, revenue_odoo, cogs, production, purchases, total_costs_of_revenue, gross_profit, employment, admin, establishment, selling, marketing, finance_charges, other_opex, total_operating_expenses, other_income, net_profit, is_closed, has_cost_anomaly`
+
+- `revenue_odoo` = revenue per Odoo accounts (use this for the official P&L).
+- `net_revenue_pipeline` = revenue from the sales pipeline (for cross-check only).
+- `is_closed` = false for the current (in-progress) month → tag it "month not closed — partial data" and exclude from trend deltas.
+- `has_cost_anomaly` = true when costs of revenue are abnormally high (a known one-off under finance review, e.g. April 2026's 71000000 Production Account 167M entry). When true, render the month with an "⚠️ Anomaly — under finance review" tag so the gross/net figures aren't misread.
+
+### 2. `finance_account_map` (table) — account → P&L classification
+Columns: `account_code, pl_group, pl_section`
+- `pl_section`: `revenue`, `costs_of_revenue`, `operating_expenses`, `other_income`
+- `pl_group`: `revenue, cogs, production, purchases, employment, admin, establishment, selling, marketing, finance_charges, other_opex, other_income`
+
+### 3. `raw_account_move_lines` (table) — the journal lines (157K rows, Jan 2026+)
+Columns: `id, move_id, move_name, date, account_id, account_code, account_name, journal_id, journal_name, name, debit, credit, balance, partner_name, _loaded_at`
+- Join to `finance_account_map` on `account_code` for P&L grouping.
+- `partner_name` = vendor/customer (2,169 distinct) → enables supplier/vendor reports.
+- Sign convention: expense/asset accounts → `debit - credit` is the cost; revenue/income accounts → `credit - debit` is the income.
+
+---
+
+## Backend: API endpoints (add to `api_pg.py`, grouped with other `/api/*` routes)
+
+All endpoints take `date_from` / `date_to` (inclusive, on the `month` or `date` column) and are read-only via `run_query`. Validate dates like other routes. `month` is a real `date` column (no `::date` cast needed).
+
+1. **`GET /api/finance/pl`** — returns `finance_pl_summary` rows in range, ordered by month. (Drives the P&L statement + most charts.)
+
+2. **`GET /api/finance/pl-detail`** — account-level detail: join `raw_account_move_lines` to `finance_account_map`, grouped by `pl_section, pl_group, account_code, account_name`, summed (`debit-credit` for costs, `credit-debit` for revenue/income), in range. Flat array. (Drives the expandable P&L line detail and the expense-by-account reports.)
+
+3. **`GET /api/finance/expense-by-vendor`** — top partners by spend: from `raw_account_move_lines` joined to `finance_account_map` where `pl_section IN ('costs_of_revenue','operating_expenses')`, grouped by `partner_name`, summed `debit-credit`, ordered desc, in range. Exclude null/blank partner.
+
+4. **`GET /api/finance/monthly-trend`** — already covered by `/api/finance/pl`; reuse it.
+
+---
+
+## Reports to build (each a section/tab on the Finance page)
+
+### REPORT 1 — Profit & Loss Statement (FLAGSHIP — match the uploaded Odoo P&L exactly)
+
+Reproduce the official Odoo P&L layout. Structure, in order, with subtotals and indentation exactly like the source:
+
+```
+Revenue
+  Other Income (6104–6107)            [grouped near top per Odoo]
+  (No Group) sales accounts            6001, 60011, 6101, 6102, 6103
+  Total Revenue                        = revenue_odoo (+ other income top)
+
+Less Costs of Revenue
+  Cost of sales - Finished Goods       5002
+  Production accounts                  70000000, 71000000, 7112–7308
+  Purchases                            7401–7405
+  Total Less Costs of Revenue          = total_costs_of_revenue
+
+Gross Profit                           = gross_profit
+
+Less Operating Expenses
+  Employment Costs (8111–8210)         = employment
+  Administrative Expenses (8401–8499)  = admin
+  Establishment Expenses (8501–8599)   = establishment
+  Selling & Distribution (8601–8799)   = selling
+  Marketing Expenses (8801–8850)       = marketing
+  Finance Charges (8901–8949)          = finance_charges
+  Other (5146 Cash Register G/L)       = other_opex
+  Total Less Operating Expenses        = total_operating_expenses
+
+Operating Income (or Loss)             = gross_profit − total_operating_expenses
+Plus Other Income (6106, 6107)         = other_income (bottom)
+Net Profit                             = net_profit
+```
+
+- **Two presentation modes**, toggle:
+  - **Single period** (date range collapsed to one column of totals) — mirrors the uploaded file.
+  - **Monthly** (months as columns) — for trend reading.
+- Each group row is **expandable** to show its constituent accounts (from `/api/finance/pl-detail`).
+- All money in KES, thousands separators, parentheses or red for negatives.
+- Apply the **anomaly tag** on any month where `has_cost_anomaly = true`, and the **"not closed"** tag where `is_closed = false`.
+- CSV export of the full statement.
+
+### REPORT 2 — Revenue Analysis
+- Monthly revenue trend (bar/line) from `revenue_odoo`.
+- Revenue mix by account (6001 Stores vs 60011 vs 6101 Printing vs 6102 Studio vs 6103 0%-rated) — stacked bar or pie.
+- Side-by-side `revenue_odoo` vs `net_revenue_pipeline` with the variance, so finance can see the accounting-vs-pipeline gap (note: differences expected from VAT/channel treatment).
+
+### REPORT 3 — Cost of Revenue Breakdown
+- COGS vs Production vs Purchases over months (stacked).
+- Gross margin % trend (gross_profit / revenue_odoo), with anomaly months visually flagged.
+
+### REPORT 4 — Operating Expenses Analysis
+- Opex by category (employment, admin, establishment, selling, marketing, finance) — monthly stacked bar + category table.
+- Drill into each category's accounts via `/api/finance/pl-detail`.
+- Largest expense lines (top 15 accounts) across the range.
+
+### REPORT 5 — Payroll / Employment Cost Report
+- Total employment cost by month (employment + production salaries 7113/7215/7216 etc.).
+- Split: Admin payroll (8111–8118) vs Production payroll (7113–7218) vs Product Dev & Buying.
+- (Note: salary detail is block-journaled monthly via the Payroll journal — no per-employee breakdown available.)
+
+### REPORT 6 — Vendor / Supplier Spend
+- Top vendors by total spend (from `/api/finance/expense-by-vendor`).
+- Filterable by expense category. Table + bar chart.
+
+### REPORT 7 — P&L Trend & KPIs
+- KPI cards: Revenue, Gross Profit, Gross Margin %, Operating Income, Net Profit (latest closed month, with MoM delta vs prior closed month — never use the open month for deltas).
+- Net profit trend line across closed months.
+
+---
+
+## Cross-cutting requirements
+
+- Use the existing dashboard design system (KPICard, SortableTable, Recharts, formatters, cards).
+- Respect the global **date range** filter (this section is date-driven; country/channel filters don't apply to accounting data).
+- Every table/chart has **CSV export**, consistent with the rest of the dashboard.
+- Add **"Finance"** to `PRIMARY_NAV` (`src/lib/navItems.jsx`) with a sensible group + Home-tile description; lazy-route in `src/App.js`; add `"finance"` to the appropriate role arrays in `src/lib/permissions.js` (leadership/admin).
+- **Honesty rules (critical):** always show the `is_closed` and `has_cost_anomaly` tags; never present an open month's figures in trend deltas; never hide the anomaly — show the real number with the flag.
+
+## Out of scope
+- Creating/modifying `finance_pl_summary`, `finance_account_map`, `raw_account_move_lines`, or the sync.
+- Per-employee payroll detail (not in the data).
+- Resolving the April anomaly or any accounting corrections (finance owns these).
+- Mobile parity (web only).
+
+## Verify
+- P&L single-period totals reconcile to the uploaded Odoo P&L structure.
+- Monthly mode shows Mar–Jun 2026 with April flagged as anomaly and June flagged as not-closed.
+- Vendor and payroll reports return data.
+- Nav/route/permission wiring shows the page for an authorized role.

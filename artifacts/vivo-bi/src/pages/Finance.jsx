@@ -260,10 +260,32 @@ const Finance = () => {
   return (
     <div className="space-y-6" data-testid="finance-page">
       <SectionTitle
-        title="Finance / P&L"
+        title={
+          <span className="inline-flex items-center gap-2">
+            Finance / P&amp;L
+            <span
+              className="inline-flex items-center px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[10px] font-bold uppercase tracking-wide"
+              data-testid="finance-wip-badge"
+            >
+              Work in progress
+            </span>
+          </span>
+        }
         subtitle="Monthly Profit & Loss in KES. Confirmed transactional figures are shown separately from provisional, accounting-dependent estimates."
         testId="finance-header"
       />
+
+      <div
+        className="card-white p-3.5 border-2 border-amber-400/70 bg-amber-50/70 flex items-start gap-3"
+        data-testid="finance-wip-banner"
+      >
+        <Warning size={20} weight="fill" className="text-amber-500 shrink-0 mt-0.5" />
+        <p className="text-[12.5px] leading-relaxed text-amber-900">
+          <span className="font-bold">Work in progress.</span> This Finance / P&amp;L page is
+          still under development and visible to administrators only. Figures may be incomplete
+          or change as accounting data is finalised — do not treat them as final reporting yet.
+        </p>
+      </div>
 
       {/* Dedicated month-range PERIOD selector (this page ignores the global
           daily filter bar — a P&L needs month granularity). Quick presets +

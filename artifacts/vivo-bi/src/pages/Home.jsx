@@ -25,6 +25,15 @@ const Tile = ({ item }) => {
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1 font-bold text-[14px] text-foreground leading-tight">
           {item.label}
+          {item.wip && (
+            <span
+              className="inline-flex items-center justify-center px-1.5 h-[16px] rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[9px] font-bold leading-none uppercase tracking-wide"
+              title="Work in progress"
+              data-testid={`home-wip-badge-${item.id}`}
+            >
+              WIP
+            </span>
+          )}
           <CaretRight
             size={13}
             className="text-muted opacity-0 -translate-x-1 transition-all group-hover:opacity-100 group-hover:translate-x-0"
