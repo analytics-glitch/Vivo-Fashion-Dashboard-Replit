@@ -950,10 +950,10 @@ let mixSearch='';               // active product/barcode search (lowercased); '
 const MIX_COLS=[
   {k:'barcode',label:'Barcode',type:'barcode'},
   {k:'group',label:'Fabric category',type:'name'},
-  {k:'consumption',label:'Consumption',type:'unit'},
   {k:'available',label:'Available',type:'unit'},
-  {k:'pctC',label:'% Consumption',type:'pct'},
+  {k:'consumption',label:'Consumption',type:'unit'},
   {k:'pctA',label:'% Available',type:'pct'},
+  {k:'pctC',label:'% Consumption',type:'pct'},
   {k:'gap',label:'Gap (pp)',type:'gap'},
   {k:'covers',label:'Weeks of Cover',type:'cover'},
   {k:'tied',label:'Stock Value KES',type:'kes'},
@@ -1309,8 +1309,8 @@ function renderFabricMix(){
   // Totals row
   html+=`<tr class="mix-total" style="border-top:2px solid var(--border);font-weight:700;background:var(--bg);">
    ${showBarcode?'<td></td>':''}<td style="font-weight:800;">Total</td>
-   <td class="r">${fmtUnit(totC)}</td>
    <td class="r">${fmtUnit(totA)}</td>
+   <td class="r">${fmtUnit(totC)}</td>
    <td class="r">100.0%</td>
    <td class="r">100.0%</td>
    <td class="r">—</td>
@@ -1537,10 +1537,10 @@ function exportFabricMix(){
   const unit=UNIT==='kg'?'kg':'m';
   const cols=[
     ['Fabric category',r=>r.group],
-    ['Consumption ('+unit+')',r=>r.consumption],
     ['Available ('+unit+')',r=>r.available],
-    ['% Consumption',r=>r.pctC.toFixed(1)],
+    ['Consumption ('+unit+')',r=>r.consumption],
     ['% Available',r=>r.pctA.toFixed(1)],
+    ['% Consumption',r=>r.pctC.toFixed(1)],
     ['Gap (pp)',r=>r.gap.toFixed(1)],
     [mixCoverHdr(),mixCoverVal],
     ['Stock Value KES',r=>r.tied],
@@ -1562,10 +1562,10 @@ function exportFabricMixSub(){
   const cols=[
     ['Category',r=>r._cat],
     ['Fabric sub-category',r=>r.group],
-    ['Consumption ('+unit+')',r=>r.consumption],
     ['Available ('+unit+')',r=>r.available],
-    ['% Consumption',r=>r.pctC.toFixed(1)],
+    ['Consumption ('+unit+')',r=>r.consumption],
     ['% Available',r=>r.pctA.toFixed(1)],
+    ['% Consumption',r=>r.pctC.toFixed(1)],
     ['Gap (pp)',r=>r.gap.toFixed(1)],
     [mixCoverHdr(),mixCoverVal],
     ['Stock Value KES',r=>r.tied],
@@ -1610,8 +1610,8 @@ function exportFabricMixProducts(){
     ['Cost per Kg KES',mixCostKgVal],
     ['Cost per Metre KES',mixCostMetreVal],
     ['Consumption ('+unit+')',r=>r.consumption],
-    ['% Consumption',r=>r.pctC.toFixed(1)],
     ['% Available',r=>r.pctA.toFixed(1)],
+    ['% Consumption',r=>r.pctC.toFixed(1)],
     ['Gap (pp)',r=>r.gap.toFixed(1)],
     [mixCoverHdr(),mixCoverVal],
     ['Verdict',r=>r.verdict.label],
