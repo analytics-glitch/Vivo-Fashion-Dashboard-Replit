@@ -93,7 +93,7 @@ export const PRIMARY_NAV = [
   { to: "/feedback", label: "Feedback", icon: ChatCircleDots, id: "feedback", group: "Tools", desc: "Send feedback to the BI team" },
 
   // Work in progress — admin only, kept last
-  { to: "/finance", label: "Finance / P&L", icon: Coins, id: "finance", group: "Tools", wip: true, desc: "Monthly Profit & Loss — confirmed revenue & opex vs provisional margins (work in progress)" },
+  { to: "/finance", label: "WIP", icon: Coins, id: "finance", group: "Tools", wip: true, desc: "Work in progress" },
 ];
 
 export const ADMIN_NAV = [

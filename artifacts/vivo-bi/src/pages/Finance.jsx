@@ -262,7 +262,7 @@ const Finance = () => {
       <SectionTitle
         title={
           <span className="inline-flex items-center gap-2">
-            Finance / P&amp;L
+            WIP
             <span
               className="inline-flex items-center px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[10px] font-bold uppercase tracking-wide"
               data-testid="finance-wip-badge"
