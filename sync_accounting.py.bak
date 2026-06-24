@@ -106,7 +106,7 @@ def sync_moves(uid, models, cur, now):
     # Get last synced date for incremental
     cur.execute("SELECT MAX(date) FROM raw_account_moves")
     last = cur.fetchone()[0]
-    since = str(last) if last else '2026-01-01'
+    since = str(last) if last else '2019-01-01'
     log.info("Syncing moves since %s", since)
 
     batch_size = 500
@@ -148,27 +148,17 @@ def sync_moves(uid, models, cur, now):
 
 def sync_move_lines(uid, models, cur, now):
     log.info("Syncing journal lines...")
-    # Only P&L accounts matter for the finance dashboard (codes 5002*, 6*, 7*, 8*).
-    # The 280+ store cash/bank/Mpesa journals post ~1M balance-sheet reconciliation
-    # lines that are irrelevant here, so we filter to P&L accounts to keep the pull
-    # lean (~157K vs 1.1M) and avoid OOM.
-    pl_accs = models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, 'account.account', 'search_read',
-        [['|','|','|',['code','=like','6%'],['code','=like','7%'],
-          ['code','=like','8%'],['code','=like','5002%']]],
-        {'fields': ['id']})
-    pl_ids = [a['id'] for a in pl_accs]
-    log.info("P&L accounts in scope: %d", len(pl_ids))
     cur.execute("SELECT MAX(date) FROM raw_account_move_lines")
     last = cur.fetchone()[0]
-    since = str(last) if last else '2026-01-01'
-    log.info("Syncing P&L lines since %s", since)
+    since = str(last) if last else '2019-01-01'
+    log.info("Syncing lines since %s", since)
 
     batch_size = 1000
     offset = 0
     total = 0
     while True:
         records = models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, 'account.move.line', 'search_read',
-            [[['move_id.state', '=', 'posted'], ['date', '>=', since], ['account_id', 'in', pl_ids]]],
+            [[['move_id.state', '=', 'posted'], ['date', '>=', since]]],
             {'fields': ['move_id','date','account_id','journal_id','name',
                        'debit','credit','balance','partner_id'],
              'limit': batch_size, 'offset': offset, 'order': 'date asc'})
