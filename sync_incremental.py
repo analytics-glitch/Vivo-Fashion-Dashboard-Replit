@@ -174,6 +174,11 @@ _LAST_PRODUCTION_SYNC = None
 # runs every 60s. None on boot so the first cycle after a (re)start refreshes
 # immediately. Persists for the lifetime of the process.
 _LAST_ATTENDANCE_SYNC = None
+# Guards the BI sales-rollup refresh (build_sales_rollups.py) to once per hour even
+# though main() runs every 60s. The rollup windows are CURRENT_DATE-relative, so a
+# daily refresh is the floor; hourly keeps them comfortably inside the read-path
+# freshness gate. None on boot so the first cycle bootstraps immediately.
+_LAST_ROLLUP_REFRESH = None
 # ── Attendance Sync ───────────────────────────────────────────────────────────
 ATTENDANCE_API_URL = os.environ.get("ATTENDANCE_API_URL", "https://beverly-noncontending-bertram.ngrok-free.dev")
 
@@ -995,6 +1000,47 @@ def main():
             log.info("✅ Production tracker sync complete")
         except Exception as e:
             log.error("Production tracker sync error: %s", e)
+
+    # BI sales-rollup refresh — feeds the pre-aggregated rollup_* tables that make
+    # the Customers / Range Management / Product Analysis endpoints fast. The read
+    # paths in api_pg fall back to live SQL whenever a rollup is missing or stale,
+    # so this is purely a performance refresh. Production runs on a SEPARATE DB that
+    # never runs the full rebuild, so we bootstrap immediately when the rollup
+    # tables are empty/missing (fresh prod DB) so the endpoints get fast on first
+    # deploy, then refresh EVERY HOUR (the windows are CURRENT_DATE-relative, so a
+    # daily refresh is the floor; hourly keeps them inside the freshness gate).
+    # build_sales_rollups.py is a thin wrapper over api_pg.run_sales_rollup_refresh
+    # (build-then-swap per table, idempotent), run as a subprocess like the other
+    # extracts. rollup_meta is created by api_pg's startup hook and the watchdog
+    # brings the API up before this loop, so skip if missing and let a later cycle
+    # pick it up once it exists.
+    global _LAST_ROLLUP_REFRESH
+    rollup_table_missing = False
+    rollup_empty = False
+    try:
+        cur.execute("SELECT to_regclass('public.rollup_meta')")
+        if cur.fetchone()[0] is None:
+            rollup_table_missing = True
+        else:
+            cur.execute("SELECT COUNT(*) FROM rollup_meta")
+            rollup_empty = (cur.fetchone()[0] == 0)
+        conn.commit()
+    except Exception as e:
+        log.error("Rollup presence check error: %s", e)
+        conn.rollback()
+    rollup_due = (_LAST_ROLLUP_REFRESH is None
+                  or (now_utc - _LAST_ROLLUP_REFRESH).total_seconds() >= 3600)
+    if not rollup_table_missing and (rollup_empty or rollup_due):
+        # Stamp the attempt time up front so a transient failure waits an hour
+        # (when still empty, the rollup_empty branch retries on the next cycle).
+        _LAST_ROLLUP_REFRESH = now_utc
+        try:
+            import subprocess, sys
+            log.info("Refreshing BI sales rollups (bootstrap=%s)...", rollup_empty)
+            subprocess.run([sys.executable, '/home/runner/workspace/build_sales_rollups.py'], check=True)
+            log.info("✅ BI sales rollups refreshed")
+        except Exception as e:
+            log.error("BI sales rollup refresh error: %s", e)
 
     # Chronic-stockout snapshot — once a day around midnight EAT (21:00 UTC).
     # The API endpoint dedupes to a weekly cadence, so running it on every cycle

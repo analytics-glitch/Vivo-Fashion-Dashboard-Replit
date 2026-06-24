@@ -2685,6 +2685,254 @@ def _country_channel_filter(country=None, channel=None):
         parts.append("s.pos_location_name IN (" + csv_to_sql(channel) + ")")
     return " AND ".join(parts)
 
+
+# ── Pre-aggregated sales rollups ──────────────────────────────────────────────
+# Several BI pages (Customers, Range Management, Product Analysis) computed their
+# headline figures by full-scanning all_sales (~1.6M rows) on every COLD request,
+# costing 11–28s. The lifetime / trailing-window primitives behind those pages
+# change slowly, are identical for every user, and do NOT depend on the date
+# filter, so we MATERIALISE them into small rollup tables and read those instead,
+# falling back to the live full-scan SQL whenever the rollup is missing or stale.
+#
+# Design notes / invariants:
+#   * Schema is defined IN CODE (ensure-on-startup) so it auto-migrates with a
+#     publish and never relies on a hand-made dev-only object (see memory
+#     dev-only-db-objects-block-publish).
+#   * Refresh is a server-side build-then-swap (compute into a stage table with NO
+#     lock on the live rollup, then a fast TRUNCATE+copy swap) so the heavy
+#     aggregate never blocks concurrent reads of the rollup.
+#   * The refresh SQL reuses BASE_FILTERS / _unified_first_purchase_ctes directly
+#     (same module) so it can never drift from the live read path.
+#   * Production runs on a SEPARATE DB that never rebuilds, so the rollups
+#     self-bootstrap from the incremental sync loop (build_sales_rollups.py) and
+#     refresh hourly thereafter (windows are CURRENT_DATE-relative, so a daily
+#     refresh is the floor; the freshness gate below rejects anything older).
+#   * Per-customer rollups store ABSOLUTE first/last sale dates, so the churn
+#     CURRENT_DATE arithmetic stays correct at read time regardless of rollup age;
+#     the per-style window columns (30d/180d/…) are baked at refresh time, so the
+#     freshness gate bounds their drift to one refresh interval.
+ROLLUP_MAX_AGE_SEC = 25 * 3600   # rollups older than this → fall back to live
+# Fixed key for the session advisory lock that serialises rollup refreshes (so a
+# manual run and the hourly sync subprocess never collide on the <table>_stage
+# tables). Arbitrary but stable; isolated from other advisory-lock keys.
+_ROLLUP_REFRESH_LOCK_KEY = 778201
+
+# A row of all_sales contributes to PA-style sales the same CASE expression for
+# its signed KES value (sale/order add total_sales, returns subtract returns).
+_PA_KES_CASE = ("CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes "
+                "WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END")
+_PA_GROSS_CASE = ("CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity "
+                  "ELSE 0 END")
+
+
+def _rollup_defs():
+    """Return [(meta_name, table_name, select_sql)] for every rollup. The SELECT
+    column order MUST match the CREATE TABLE column order in _ensure_rollup_tables
+    (the swap does INSERT INTO <table> SELECT * FROM <stage>)."""
+    cust_lifetime = """
+        SELECT customer_id, MIN(sale_date::date), MAX(sale_date::date)
+        FROM all_sales
+        WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
+          AND customer_id NOT IN ('None','null','')
+        GROUP BY customer_id
+    """
+    cust_first_purchase = ("WITH " + _unified_first_purchase_ctes() +
+        " SELECT customer_id, first_purchase_date FROM first_purchase")
+    rm_style = """
+        SELECT p.style_name, COALESCE(s.country,'') AS country,
+            SUM(s.net_quantity) AS units_life,
+            SUM(s.net_sales_kes::numeric) AS sales_life,
+            SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days') AS units_6m,
+            SUM(s.net_sales_kes::numeric) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days') AS sales_6m,
+            SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '30 days') AS units_30d,
+            SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '14 days') AS units_14d,
+            SUM(s.net_quantity) FILTER (
+                WHERE s.sale_date::date <  CURRENT_DATE - INTERVAL '14 days'
+                  AND s.sale_date::date >= CURRENT_DATE - INTERVAL '44 days') AS units_prior_30d,
+            SUM(s.net_quantity) FILTER (WHERE s.pos_location_name ILIKE '%online%') AS units_online,
+            SUM(s.net_quantity) FILTER (WHERE s.pos_location_name NOT ILIKE '%online%') AS units_stores,
+            MAX(s.sale_date::date) AS last_sale,
+            MIN(s.sale_date::date) AS first_sale
+        FROM all_products_clean p
+        JOIN all_sales s ON s.variant_sku = p.sku
+        WHERE p.style_name IS NOT NULL AND s.sale_kind IN ('sale','order')
+          AND """ + BASE_FILTERS + """
+        GROUP BY p.style_name, COALESCE(s.country,'')
+    """
+    pa_style = """
+        SELECT p.style_name, COALESCE(s.country,'') AS country,
+            COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '30 days'),0) AS units_vel,
+            SUM(s.net_quantity) AS units_life,
+            COALESCE(SUM(""" + _PA_KES_CASE + """),0) AS sales_life,
+            COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days'),0) AS units_6m,
+            COALESCE(SUM(""" + _PA_KES_CASE + """) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days'),0) AS revenue_6m,
+            COALESCE(SUM(""" + _PA_GROSS_CASE + """) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days'),0) AS gross_units_6m,
+            COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '730 days'),0) AS units_24m,
+            COALESCE(SUM(""" + _PA_KES_CASE + """) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '730 days'),0) AS revenue_24m,
+            COALESCE(SUM(""" + _PA_GROSS_CASE + """) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '730 days'),0) AS gross_units_24m,
+            MAX(s.sale_date::date) AS last_sale,
+            MIN(s.sale_date::date) FILTER (WHERE s.sale_kind IN ('sale','order')) AS first_sale,
+            (array_agg(s.product_price_kes ORDER BY s.sale_date DESC) FILTER (
+                WHERE s.sale_kind IN ('sale','order') AND s.product_price_kes IS NOT NULL
+                  AND s.product_price_kes > 0))[1] AS current_price,
+            MAX(s.sale_date::date) FILTER (
+                WHERE s.sale_kind IN ('sale','order') AND s.product_price_kes IS NOT NULL
+                  AND s.product_price_kes > 0) AS current_price_date
+        FROM all_products_clean p JOIN all_sales s ON s.variant_sku = p.sku
+        WHERE p.style_name IS NOT NULL AND p.style_name <> ''
+          AND COALESCE(p.brand,'') NOT ILIKE '%third party%' AND """ + BASE_FILTERS + """
+        GROUP BY p.style_name, COALESCE(s.country,'')
+    """
+    return [
+        ("customer_lifetime",       "rollup_customer_lifetime",       cust_lifetime),
+        ("customer_first_purchase", "rollup_customer_first_purchase", cust_first_purchase),
+        ("rm_style",                "rollup_rm_style",                rm_style),
+        ("pa_style",                "rollup_pa_style",                pa_style),
+    ]
+
+
+def _ensure_rollup_tables(conn):
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS rollup_meta (
+            name text PRIMARY KEY,
+            refreshed_at timestamptz,
+            row_count bigint
+        );
+        CREATE TABLE IF NOT EXISTS rollup_customer_lifetime (
+            customer_id text PRIMARY KEY,
+            first_sale date,
+            last_sale date
+        );
+        CREATE TABLE IF NOT EXISTS rollup_customer_first_purchase (
+            customer_id text PRIMARY KEY,
+            first_purchase_date date
+        );
+        CREATE TABLE IF NOT EXISTS rollup_rm_style (
+            style_name text,
+            country text,
+            units_life numeric, sales_life numeric,
+            units_6m numeric, sales_6m numeric,
+            units_30d numeric, units_14d numeric, units_prior_30d numeric,
+            units_online numeric, units_stores numeric,
+            last_sale date, first_sale date,
+            PRIMARY KEY (style_name, country)
+        );
+        CREATE TABLE IF NOT EXISTS rollup_pa_style (
+            style_name text,
+            country text,
+            units_vel numeric,
+            units_life numeric, sales_life numeric,
+            units_6m numeric, revenue_6m numeric, gross_units_6m numeric,
+            units_24m numeric, revenue_24m numeric, gross_units_24m numeric,
+            last_sale date, first_sale date,
+            current_price numeric, current_price_date date,
+            PRIMARY KEY (style_name, country)
+        );
+    """)
+    conn.commit()
+    cur.close()
+
+
+def run_sales_rollup_refresh(only=None):
+    """Rebuild the pre-aggregated rollup tables (build-then-swap per table). Safe
+    to run repeatedly (idempotent full rebuild). Returns {name: row_count|error}.
+    Used by the startup bootstrap and the incremental sync loop
+    (build_sales_rollups.py)."""
+    conn = get_conn()
+    results = {}
+    locked = False
+    try:
+        _ensure_rollup_tables(conn)
+        # Serialise refreshes with a session advisory lock so a manual run and the
+        # hourly sync-loop subprocess can never overlap and collide on the shared
+        # <table>_stage tables (build-then-swap). try_lock so an overlapping caller
+        # skips cleanly instead of blocking.
+        lcur = conn.cursor()
+        lcur.execute("SELECT pg_try_advisory_lock(%s)", (_ROLLUP_REFRESH_LOCK_KEY,))
+        locked = bool(lcur.fetchone()[0])
+        lcur.close()
+        conn.commit()
+        if not locked:
+            log.info("Rollup refresh skipped — another refresh holds the lock")
+            return {"skipped": "refresh already in progress"}
+        for name, table, select_sql in _rollup_defs():
+            if only and name not in only:
+                continue
+            stage = table + "_stage"
+            try:
+                cur = conn.cursor()
+                cur.execute("DROP TABLE IF EXISTS " + stage)
+                cur.execute("CREATE TABLE " + stage + " (LIKE " + table + " INCLUDING DEFAULTS)")
+                cur.execute("INSERT INTO " + stage + " " + select_sql)
+                cur.execute("TRUNCATE " + table)
+                cur.execute("INSERT INTO " + table + " SELECT * FROM " + stage)
+                cur.execute("DROP TABLE " + stage)
+                cur.execute("SELECT COUNT(*) FROM " + table)
+                n = cur.fetchone()[0]
+                cur.execute(
+                    "INSERT INTO rollup_meta (name, refreshed_at, row_count) "
+                    "VALUES (%s, now(), %s) "
+                    "ON CONFLICT (name) DO UPDATE SET refreshed_at = now(), "
+                    "row_count = EXCLUDED.row_count", (name, n))
+                conn.commit()
+                cur.close()
+                results[name] = n
+            except Exception as e:
+                conn.rollback()
+                results[name] = "ERROR: " + str(e)
+                log.error("Rollup refresh failed for %s: %s", name, e)
+    finally:
+        if locked:
+            try:
+                ucur = conn.cursor()
+                ucur.execute("SELECT pg_advisory_unlock(%s)", (_ROLLUP_REFRESH_LOCK_KEY,))
+                ucur.close()
+                conn.commit()
+            except Exception:
+                pass
+        conn.close()
+    return results
+
+
+@app.on_event("startup")
+def _init_rollup_tables():
+    # Ensure the schema exists on boot (fresh prod DB gets empty tables; reads
+    # fall back to live until the sync loop's first refresh populates them).
+    try:
+        conn = get_conn()
+        try:
+            _ensure_rollup_tables(conn)
+        finally:
+            conn.close()
+    except Exception as e:
+        log.error("Rollup table init failed: %s", e)
+
+
+def _rollup_fresh(name):
+    """True iff the named rollup exists, is non-empty, and was refreshed within
+    ROLLUP_MAX_AGE_SEC. Uncached (a tiny PK lookup) so a fresh refresh is adopted
+    immediately and a stale one is rejected without a cache lag."""
+    pool, conn = _acquire_conn()
+    try:
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT row_count, EXTRACT(EPOCH FROM (now() - refreshed_at)) "
+            "FROM rollup_meta WHERE name = %s", (name,))
+        r = cur.fetchone()
+        cur.close()
+    except Exception:
+        pool.putconn(conn, close=True)
+        return False
+    else:
+        pool.putconn(conn)
+    if not r:
+        return False
+    row_count, age = r
+    return bool(row_count and row_count > 0 and age is not None and age < ROLLUP_MAX_AGE_SEC)
+
+
 @app.get("/api/")
 def root():
     return {"status": "ok", "service": "Vivo BI API (PostgreSQL)"}
@@ -3529,6 +3777,39 @@ def get_customers(
 ):
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    # Churn + first-ever-purchase are GLOBAL (no country/channel scope), full-scan
+    # all_sales and dominate this endpoint's cold latency. Serve them from the
+    # pre-aggregated per-customer rollups when fresh; the freshness gate falls back
+    # to the live full-scan SQL when the rollup is missing/stale (so prod is safe
+    # before its first sync-loop refresh). The rollup churn read is byte-identical
+    # to the live CTE (parity-verified): eligible_base = customers whose first sale
+    # predates the 90d cutoff, churned = those whose last sale also predates it.
+    if _rollup_fresh("customer_lifetime") and _rollup_fresh("customer_first_purchase"):
+        churned_cte = """churned AS (
+            SELECT
+                COUNT(*) FILTER (WHERE last_sale < CURRENT_DATE - INTERVAL '90 days') AS churned_count,
+                COUNT(*) AS eligible_base
+            FROM rollup_customer_lifetime
+            WHERE first_sale < CURRENT_DATE - INTERVAL '90 days'
+        )"""
+        first_purchase_cte = ("first_purchase AS ("
+            "SELECT customer_id, first_purchase_date FROM rollup_customer_first_purchase)")
+    else:
+        churned_cte = """churned AS (
+            SELECT
+                COUNT(*) FILTER (WHERE last_sale < CURRENT_DATE - INTERVAL '90 days') AS churned_count,
+                COUNT(*) AS eligible_base
+            FROM (
+                SELECT customer_id,
+                    MAX(sale_date::date) AS last_sale
+                FROM all_sales
+                WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
+                  AND customer_id NOT IN ('None','null','')
+                GROUP BY customer_id
+                HAVING MIN(sale_date::date) < CURRENT_DATE - INTERVAL '90 days'
+            ) t
+        )"""
+        first_purchase_cte = _unified_first_purchase_ctes()
     rows = run_query("""
         WITH excluded AS (
             -- Walk-in / placeholder / brand pseudo-accounts are not real identified
@@ -3563,30 +3844,13 @@ def get_customers(
             AND """ + BASE_FILTERS + " " + country_filter + " " + channel_filter + """
             GROUP BY s.customer_id
         ),
-        churned AS (
-            -- Churn (doc 03.6.2): a customer is churned if they have not
-            -- transacted in the last 90 days. The rate denominator is the
-            -- "eligible base" = customers old enough to churn (first purchase
-            -- before the 90-day cutoff), NOT the period customers — basing it
-            -- on period customers produced an absurd ratio.
-            SELECT
-                COUNT(*) FILTER (WHERE last_sale < CURRENT_DATE - INTERVAL '90 days') AS churned_count,
-                COUNT(*) AS eligible_base
-            FROM (
-                SELECT customer_id,
-                    MAX(sale_date::date) AS last_sale
-                FROM all_sales
-                WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
-                  AND customer_id NOT IN ('None','null','')
-                GROUP BY customer_id
-                HAVING MIN(sale_date::date) < CURRENT_DATE - INTERVAL '90 days'
-            ) t
-        ),
-        -- First-ever purchase date per customer across ALL history, computed over
-        -- a UNIFIED identity that bridges the 2026-03-20 Kenya Odoo/Shopify id
-        -- switch (see _unified_first_purchase_ctes). Drives BOTH the New/Returning
-        -- split (seg) and the additive "first-time registered" metric below.
-        """ + _unified_first_purchase_ctes() + """,
+        """ + churned_cte + """,
+        -- First-ever purchase date per customer across ALL history over a UNIFIED
+        -- identity that bridges the 2026-03-20 Kenya Odoo/Shopify id switch (see
+        -- _unified_first_purchase_ctes). Drives BOTH the New/Returning split (seg)
+        -- and the additive "first-time registered" metric below. Read from the
+        -- pre-aggregated rollup when fresh, else recomputed live.
+        """ + first_purchase_cte + """,
         seg AS (
             -- New vs Returning by FIRST-EVER purchase date, NOT the stored
             -- customer_type. Kenya (and most POS) tags every counter sale
@@ -5063,6 +5327,104 @@ def analytics_product_analysis(
         activity_where = (" WHERE (COALESCE(st.soh_current,0) > 0"
                           " OR COALESCE(st.soh_warehouse,0) > 0 OR COALESCE(st.soh_stores,0) > 0)")
 
+    # The sales CTE is the heavy lifetime full-scan. When the table is NOT exploded
+    # by any product dim / POS, is not store-scoped, and uses the default 30-day
+    # velocity window, the lifetime / trailing-window measures (units_vel, life,
+    # 6m, 24m, current_price) are exactly what the pa_style rollup materialises, so
+    # we serve them from the rollup and keep only the cheap date-bounded period
+    # measures live. The split: period_sales = a date-bounded live scan (only the
+    # df..dt window), life = the rollup re-aggregated per country, FULL OUTER JOINed
+    # on style. KES sums are stored unrounded and ROUNDed after re-aggregation so
+    # the All total matches the live round-of-sum; current_price merges across
+    # countries by most-recent valid-price date (parity-verified except inherent
+    # same-date ties). Any explosion / store / non-default velocity → live path.
+    pa_use_rollup = (not sel_dims and not pos_exploded and not store
+                     and vel == 30 and _rollup_fresh("pa_style"))
+    if pa_use_rollup:
+        pa_sales_block = (
+            "period_sales AS ("
+            " SELECT p.style_name,"
+            " COALESCE(SUM(s.net_quantity),0) AS units_period,"
+            " COALESCE(ROUND(SUM(" + _PA_KES_CASE + ")),0) AS revenue_period,"
+            " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes"
+            " WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)),0) AS net_revenue_period,"
+            " COALESCE(SUM(" + _PA_GROSS_CASE + "),0) AS gross_units_period,"
+            " COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_kind IN ('sale','order')) AS orders_period"
+            " FROM all_products_clean p JOIN all_sales s ON s.variant_sku = p.sku"
+            " WHERE p.style_name IS NOT NULL AND p.style_name <> ''"
+            " AND COALESCE(p.brand,'') NOT ILIKE '%third party%'"
+            " AND s.sale_date BETWEEN '" + df + "' AND '" + dt + "' AND " + BASE_FILTERS + cf + chf +
+            " GROUP BY p.style_name"
+            "),"
+            "life AS ("
+            " SELECT style_name,"
+            " COALESCE(SUM(units_vel),0) AS units_vel,"
+            " SUM(units_life) AS units_life,"
+            " COALESCE(ROUND(SUM(sales_life)),0) AS sales_life,"
+            " COALESCE(SUM(units_6m),0) AS units_6m,"
+            " COALESCE(ROUND(SUM(revenue_6m)),0) AS revenue_6m,"
+            " COALESCE(SUM(gross_units_6m),0) AS gross_units_6m,"
+            " COALESCE(SUM(units_24m),0) AS units_24m,"
+            " COALESCE(ROUND(SUM(revenue_24m)),0) AS revenue_24m,"
+            " COALESCE(SUM(gross_units_24m),0) AS gross_units_24m,"
+            " MAX(last_sale) AS last_sale,"
+            " MIN(first_sale) AS first_sale,"
+            " (array_agg(current_price ORDER BY current_price_date DESC NULLS LAST)"
+            " FILTER (WHERE current_price IS NOT NULL))[1] AS current_price"
+            " FROM rollup_pa_style" + _rollup_country_where(country) +
+            " GROUP BY style_name"
+            "),"
+            "sales AS ("
+            " SELECT COALESCE(ps.style_name, life.style_name) AS style_name,"
+            " COALESCE(ps.units_period,0) AS units_period, COALESCE(ps.revenue_period,0) AS revenue_period,"
+            " COALESCE(ps.net_revenue_period,0) AS net_revenue_period,"
+            " COALESCE(ps.gross_units_period,0) AS gross_units_period,"
+            " COALESCE(ps.orders_period,0) AS orders_period,"
+            " COALESCE(life.units_vel,0) AS units_vel, life.units_life, COALESCE(life.sales_life,0) AS sales_life,"
+            " COALESCE(life.units_6m,0) AS units_6m, COALESCE(life.revenue_6m,0) AS revenue_6m,"
+            " COALESCE(life.gross_units_6m,0) AS gross_units_6m,"
+            " COALESCE(life.units_24m,0) AS units_24m, COALESCE(life.revenue_24m,0) AS revenue_24m,"
+            " COALESCE(life.gross_units_24m,0) AS gross_units_24m,"
+            " life.last_sale, life.first_sale, life.current_price"
+            " FROM period_sales ps FULL OUTER JOIN life ON life.style_name = ps.style_name"
+            "),"
+        )
+    else:
+        pa_sales_block = (
+            "sales AS ("
+            " SELECT p.style_name" + sales_dim_sel + sales_pos_sel + ","
+            " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "'),0) AS units_period,"
+            " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes"
+            " WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)"
+            " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "')),0) AS revenue_period,"
+            " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes"
+            " WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)"
+            " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "')),0) AS net_revenue_period,"
+            " COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END)"
+            " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "'),0) AS gross_units_period,"
+            " COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_kind IN ('sale','order')"
+            " AND s.sale_date BETWEEN '" + df + "' AND '" + dt + "') AS orders_period,"
+            " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '" + str(vel) + " days'),0) AS units_vel,"
+            " SUM(s.net_quantity) AS units_life,"
+            " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)),0) AS sales_life,"
+            " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days'),0) AS units_6m,"
+            " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days')),0) AS revenue_6m,"
+            " COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days'),0) AS gross_units_6m,"
+            " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '730 days'),0) AS units_24m,"
+            " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '730 days')),0) AS revenue_24m,"
+            " COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '730 days'),0) AS gross_units_24m,"
+            " MAX(s.sale_date::date) AS last_sale,"
+            " MIN(s.sale_date::date) FILTER (WHERE s.sale_kind IN ('sale','order')) AS first_sale,"
+            " (array_agg(s.product_price_kes ORDER BY s.sale_date DESC) FILTER ("
+            " WHERE s.sale_kind IN ('sale','order') AND s.product_price_kes IS NOT NULL"
+            " AND s.product_price_kes > 0))[1] AS current_price"
+            " FROM all_products_clean p JOIN all_sales s ON s.variant_sku = p.sku"
+            " WHERE p.style_name IS NOT NULL AND p.style_name <> ''"
+            " AND COALESCE(p.brand,'') NOT ILIKE '%third party%' AND " + BASE_FILTERS + cf + chf + sales_pos_where +
+            " GROUP BY p.style_name" + sales_dim_grp + sales_pos_grp +
+            "),"
+        )
+
     sql = (
         "WITH prod AS ("
         " SELECT style_name,"
@@ -5079,40 +5441,7 @@ def analytics_product_analysis(
         " AND COALESCE(brand,'') NOT ILIKE '%third party%'" + brand_pf + cat_pf + subcat_pf +
         " GROUP BY style_name" + prod_grp +
         "),"
-        "sales AS ("
-        " SELECT p.style_name" + sales_dim_sel + sales_pos_sel + ","
-        " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "'),0) AS units_period,"
-        " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes"
-        " WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)"
-        " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "')),0) AS revenue_period,"
-        " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes"
-        " WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)"
-        " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "')),0) AS net_revenue_period,"
-        " COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END)"
-        " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "'),0) AS gross_units_period,"
-        " COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_kind IN ('sale','order')"
-        " AND s.sale_date BETWEEN '" + df + "' AND '" + dt + "') AS orders_period,"
-        " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '" + str(vel) + " days'),0) AS units_vel,"
-        " SUM(s.net_quantity) AS units_life,"
-        " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)),0) AS sales_life,"
-        " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days'),0) AS units_6m,"
-        " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days')),0) AS revenue_6m,"
-        " COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '180 days'),0) AS gross_units_6m,"
-        " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '730 days'),0) AS units_24m,"
-        " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '730 days')),0) AS revenue_24m,"
-        " COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '730 days'),0) AS gross_units_24m,"
-        " MAX(s.sale_date::date) AS last_sale,"
-        " MIN(s.sale_date::date) FILTER (WHERE s.sale_kind IN ('sale','order')) AS first_sale,"
-        # current_price = price of the most recent qualifying sale, computed in
-        # this same scan (argmax) so we avoid a second full scan of all_sales.
-        " (array_agg(s.product_price_kes ORDER BY s.sale_date DESC) FILTER ("
-        " WHERE s.sale_kind IN ('sale','order') AND s.product_price_kes IS NOT NULL"
-        " AND s.product_price_kes > 0))[1] AS current_price"
-        " FROM all_products_clean p JOIN all_sales s ON s.variant_sku = p.sku"
-        " WHERE p.style_name IS NOT NULL AND p.style_name <> ''"
-        " AND COALESCE(p.brand,'') NOT ILIKE '%third party%' AND " + BASE_FILTERS + cf + chf + sales_pos_where +
-        " GROUP BY p.style_name" + sales_dim_grp + sales_pos_grp +
-        "),"
+        + pa_sales_block +
         "stock AS ("
         " SELECT COALESCE(m.style_name, i.style_name) AS style_name" + stock_dim_sel + stock_pos_sel + ","
         " COALESCE(SUM(i.available) FILTER (WHERE " + current_loc_clause + "),0) AS soh_current,"
@@ -9455,6 +9784,19 @@ def analytics_sales_projection(
         "daily_run_rate": round(daily_run_rate),
         "projected_sales": round(projected),
     }
+def _rollup_country_where(country):
+    """Standalone WHERE clause filtering a rollup table's `country` column by the
+    same csv/lowercase contract as _style_filters' country branch. Returns "" when
+    no country is selected (the All scope)."""
+    if not country:
+        return ""
+    cs = [c.strip().lower() for c in country.split(",") if c.strip()]
+    if not cs:
+        return ""
+    return " WHERE LOWER(country) IN (" + ",".join(
+        "'" + c.replace("'", "''") + "'" for c in cs) + ")"
+
+
 def _style_filters(country=None, channel=None, alias="s"):
     cf = chf = ""
     if country:
@@ -9767,21 +10109,31 @@ def _tier_summary_block(rows, total_count):
 def range_mgmt_classify(country: str = Query(default=None), channel: str = Query(default=None)):
     cf, chf = _style_filters(country, channel, "s")
     icf, ichf = _style_filters(country, channel, "i")
-    raw = run_query("""
-        WITH prod AS (
+    # Per-style lifetime/trailing-window sales is the heavy full-scan here. The
+    # rm_style rollup is keyed by (style, country) so it serves any country scope,
+    # but it has NO channel (pos_location) dimension, so use it only when channel
+    # is unset (the dashboard default). KES sums are stored unrounded and ROUNDed
+    # after the per-country re-aggregation so the All total matches the live
+    # round-of-sum byte-for-byte (parity-verified). Falls back to live otherwise.
+    if not channel and _rollup_fresh("rm_style"):
+        rm_sales_cte = """sales AS (
             SELECT style_name,
-                MAX(brand) AS brand,
-                MAX(product_type) AS subcategory,
-                MAX(style_number) AS style_number,
-                MAX(price) AS price,
-                MIN(substring(style_launch_date, 1, 10)) FILTER (
-                    WHERE substring(style_launch_date, 1, 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-                ) AS launch_date
-            FROM all_products_clean
-            WHERE style_name IS NOT NULL AND style_name <> ''
+                SUM(units_life) AS units_life,
+                ROUND(SUM(sales_life)) AS sales_life,
+                SUM(units_6m) AS units_6m,
+                ROUND(SUM(sales_6m)) AS sales_6m,
+                SUM(units_30d) AS units_30d,
+                SUM(units_14d) AS units_14d,
+                SUM(units_prior_30d) AS units_prior_30d,
+                SUM(units_online) AS units_online,
+                SUM(units_stores) AS units_stores,
+                MAX(last_sale) AS last_sale,
+                MIN(first_sale) AS first_sale
+            FROM rollup_rm_style""" + _rollup_country_where(country) + """
             GROUP BY style_name
-        ),
-        sales AS (
+        )"""
+    else:
+        rm_sales_cte = """sales AS (
             SELECT p.style_name,
                 SUM(s.net_quantity) AS units_life,
                 ROUND(SUM(s.net_sales_kes::numeric)) AS sales_life,
@@ -9801,7 +10153,22 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             WHERE p.style_name IS NOT NULL AND s.sale_kind IN ('sale','order')
               AND """ + BASE_FILTERS + cf + chf + """
             GROUP BY p.style_name
+        )"""
+    raw = run_query("""
+        WITH prod AS (
+            SELECT style_name,
+                MAX(brand) AS brand,
+                MAX(product_type) AS subcategory,
+                MAX(style_number) AS style_number,
+                MAX(price) AS price,
+                MIN(substring(style_launch_date, 1, 10)) FILTER (
+                    WHERE substring(style_launch_date, 1, 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                ) AS launch_date
+            FROM all_products_clean
+            WHERE style_name IS NOT NULL AND style_name <> ''
+            GROUP BY style_name
         ),
+        """ + rm_sales_cte + """,
         stock AS (
             SELECT COALESCE(m.style_name, i.style_name) AS style_name,
                 COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
