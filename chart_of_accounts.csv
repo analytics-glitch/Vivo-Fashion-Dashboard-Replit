@@ -1,0 +1,108 @@
+account_code,account_name,line_count,net_balance
+1001,Accounts receivable,607,21073228
+10011,Stock Interim (Received),467,59979635
+10012,Stock Interim (Delivered),8223,-13813660
+12501,Cash-HQ Outlet,2,2420
+2104,Fuel Card,6,2400
+3305,Jindiao - Prepayment,12,8608321
+3308,Prepaid Expenses,2,130349
+3309,Prepaid Insurance,4,1496250
+3310,Prepaid Licences,27,913127
+3311,Prepaid Promotional Levy,18,201819
+3312,Prepaid Rent,31,16086739
+3313,Prepaid Service Charge,25,1827783
+5001,Computer Equipment - Cost,24,2154297
+5002000000,Cost of sales - Finished Goods,8373,22168977
+5003,Furniture and Fixtures - Cost,16,1423329
+5011,Office Equipment - Cost,21,844629
+5060,Accounts Payable,1807,-198914461
+5108,Salary Control account,2,36356
+5109,Staff advance control,62,370906
+5202,Input VAT 16%,1060,23425421
+5203,Input Vat 8%,31,20803
+5205,Output VAT 16%,483,-700189
+5261,Witholding Tax-5%,63,-527048
+5263,Witholding Tax 7.5% - Rent,50,-2243449
+5264,Witholding VAT 2% - Payable,549,-1494409
+5266,Sales Gift Voucher,73,-338931
+5304,Lease Motor Vehicle-Simba Corp,2,291783
+60011,Sales,2457,-7024561
+6101,Sales 16% - Printing,23,-310320
+6102,Sales 16% - Studio,72,-495500
+6103,Sales 0%,6159,-12204058
+6106,Other Income,3,-4000
+70000000,Production Expenses,4,0
+7112,Airtime -Product Development & Buying,3,25500
+7201,Airtime - Production,3,15000
+7202,Casuals - Production,21,643880
+7221,Staff welfare - Production,36,833122
+7223,Team Building - Production,3,211152
+7251,Electricity - Production,23,467001
+7252,General Insurance - Production,4,449996
+7253,Generator - Production,5,26695
+7255,Rent - Production,33,2855750
+7256,Security - Production,3,499974
+7257,Water - Production,27,142063
+7301,Cleaning - Production,34,470019
+7302,Internet - Production,3,38549
+7304,Office Equipment Expense - Prod,10,486269
+7305,Office supplies - Production,35,226448
+7306,Repair - Production,6,432929
+7307,Stationary - Production,20,867244
+7308,Transport - Production,4,80960
+7401,Purchase of Goods,54,17563709
+7402,Freight and Clearing Charges,6,70925
+7404,Purchase of Accesories,60,1432043
+8111,Casuals - Admin,33,139050
+8118,Medical Insurance - Admin,9,348382
+8202,Staff Training - Admin,7,130000
+8204,Staff welfare - Admin,556,1104246
+8205,Team Building - Admin,5,232304
+8401,Audit Fees,7,2032377
+8403,Cleaning - Admin,108,968745
+8404,Consultancy - Admin,20,5580380
+8405,Dues and Subscriptions,14,30076
+8407,Internal Audit Expenses,26,333626
+8408,Internet - Admin,99,460402
+8409,IT services - Admin,213,2747653
+8410,Legal Fees,5,362468
+8414,Office Equipment Expense - Admn,138,1344435
+8415,Office supplies - Admin,115,265903
+8417,Stationery - Admin,97,965951
+8418,Telephone Charges - Admin,20,316372
+8419,Transport - Admin,179,674857
+8420,Repairs and Maintenance,8,410620
+8421,Secretarial Fees,1,38000
+8422,Repairs & Maitenance - Admin,131,1708756
+8423,Directors Liability Insurance,1,185832
+8424,Travelling and Accommodation - Admin,26,668760
+8452,DPO Merchant Charges  - Admin,48,192487
+8503,Office rent,23,1128956
+8504,Promotional Levy,45,256744
+8505,Service Charge - Branches,52,1631531
+8507,Shop Rent,45,12233812
+8551,Electricity - Admin,140,2876240
+8552,General Insurance - Admin,10,1444379
+8553,Generator - Admin,5,26695
+8554,Licences - Admin,31,227161
+8555,Water - Admin,108,296066
+8556,Security - Admin,11,747126
+8601,Postage and Delivery,21,295099
+8651,Branding Costs - Motor vehicle,1,56000
+8652,Fuel - Motor vehicle,42,472454
+8654,Lease Expense - Motor Vehicle,2,69459
+8655,Parking Fees - Motor vehicle,51,19890
+8656,Repairs - Motorvehicles,17,385219
+8701,Fuel - Motorbike,23,30379
+8703,Parking Fees - Motorbike,2,1143
+8704,Repairs - Motorbike,5,4564
+8801,Content Creation,98,1372500
+8806,In-Store Signage,2,47400
+8812,Influencer Marketing Cash,10,52500
+8814,SMS,3,241379
+8816,"Store Posters,Flyers,Holders, Banners and Collateral",30,296959
+8817,Public Relations (Events),26,1589488
+8820,Facebook & Instagram,53,2057899
+8901,Bank Service Charges - Admin,8,40893
+8902,Mpesa Charges - Admin,108,29168
+,,81,0

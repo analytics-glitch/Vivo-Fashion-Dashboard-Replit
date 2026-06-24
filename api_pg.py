@@ -4055,9 +4055,16 @@ def get_stock_to_sales(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
+    locations: str = Query(default=None),
 ):
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     inv_country_filter = ("AND i.country IN (" + csv_to_sql(country) + ")") if country else ""
+    # The filter-bar "store" param (sent by the Inventory page as `locations`)
+    # carries pos_location_name values. Apply it to BOTH the sales and the
+    # inventory CTE so the table scopes consistently — otherwise a store-scoped
+    # sales row was matched against catalog-wide stock (or vice versa).
+    loc_sales_filter = ("AND s.pos_location_name IN (" + csv_to_sql(locations) + ")") if locations else ""
+    loc_inv_filter = ("AND i.pos_location_name IN (" + csv_to_sql(locations) + ")") if locations else ""
     return run_query("""
         WITH sales AS (
             SELECT s.pos_location_name, s.country,
@@ -4066,14 +4073,14 @@ def get_stock_to_sales(
             FROM all_sales s
             WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
             AND s.sale_kind IN ('sale','order')
-            AND """ + BASE_FILTERS + " " + country_filter + """
+            AND """ + BASE_FILTERS + " " + country_filter + " " + loc_sales_filter + """
             GROUP BY s.pos_location_name, s.country
         ),
         inventory AS (
             SELECT i.pos_location_name, i.country, SUM(i.available) AS total_stock
             FROM all_inventory i
             WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
-            """ + inv_country_filter + """
+            """ + inv_country_filter + " " + loc_inv_filter + """
             GROUP BY i.pos_location_name, i.country
         )
         SELECT s.pos_location_name AS location, s.country,
@@ -4569,9 +4576,11 @@ def analytics_sor_all_styles(
         WITH prod AS (
             SELECT style_name,
                 MAX(brand) AS brand,
+                MAX(category) AS category,
                 MAX(collection) AS collection,
                 MAX(product_type) AS subcategory,
-                MAX(style_number) AS style_number
+                MAX(style_number) AS style_number,
+                MAX(price::numeric) AS original_price
             FROM all_products_clean
             WHERE style_name IS NOT NULL AND style_name <> ''""" + brand_pf + """
             GROUP BY style_name
@@ -4582,6 +4591,11 @@ def analytics_sor_all_styles(
                 ROUND(SUM(s.net_sales_kes::numeric) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '""" + str(win) + """ days')) AS sales_6m,
                 SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '21 days') AS units_3w,
                 SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '30 days') AS units_30d,
+                -- Lifetime ("since launch") totals: no date filter, so they
+                -- cover the style's full history (matches the report's "Units
+                -- Since Launch" / "SOR Since Launch" columns). Still scoped by
+                -- the country/channel filter via cf/chf below.
+                SUM(s.net_quantity) AS units_since_launch,
                 MAX(s.sale_date::date) AS last_sale,
                 MIN(s.sale_date::date) AS first_sale
             FROM all_products_clean p
@@ -4599,9 +4613,11 @@ def analytics_sor_all_styles(
             WHERE COALESCE(m.style_name, i.style_name) IS NOT NULL
             GROUP BY 1
         )
-        SELECT p.style_name, p.brand, p.collection, p.subcategory, p.style_number,
+        SELECT p.style_name, p.brand, p.category, p.collection, p.subcategory,
+            p.style_number, p.original_price,
             COALESCE(sa.units_6m, 0) AS units_6m, COALESCE(sa.sales_6m, 0) AS sales_6m,
             COALESCE(sa.units_3w, 0) AS units_3w, COALESCE(sa.units_30d, 0) AS units_30d,
+            COALESCE(sa.units_since_launch, 0) AS units_since_launch,
             sa.last_sale, sa.first_sale,
             COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse
         FROM prod p
@@ -4640,24 +4656,33 @@ def analytics_sor_all_styles(
         weekly_avg = round(units_30d / (30.0 / 7.0), 1)
         woc = round(soh_total / weekly_avg, 1) if weekly_avg > 0 else None
         denom = units_6m + soh_total
+        # Lifetime ("since launch") sell-through: lifetime net units over
+        # lifetime units + current stock-on-hand, mirroring the 6m SOR formula.
+        units_since_launch = int(r["units_since_launch"] or 0)
+        life_denom = units_since_launch + soh_total
         age_days = (today - first_sale).days if first_sale else None
+        original_price = r["original_price"]
         out.append({
             "style_name": r["style_name"],
             "brand": r["brand"],
+            "category": r["category"],
             "collection": r["collection"],
             "subcategory": r["subcategory"],
             "style_number": r["style_number"],
             "sales_6m": round(sales_6m),
             "units_6m": units_6m,
             "units_3w": int(r["units_3w"] or 0),
+            "units_since_launch": units_since_launch,
             "weekly_avg": weekly_avg,
             "soh_total": soh_total,
             "soh_wh": soh_warehouse,
             "woc": woc,
             "pct_in_wh": round(100.0 * soh_warehouse / soh_total, 1) if soh_total else 0.0,
             "asp_6m": round(sales_6m / units_6m) if units_6m > 0 else None,
+            "original_price": round(float(original_price)) if original_price is not None else None,
             "days_since_last_sale": (today - last_sale).days if last_sale else None,
             "sor_6m": round(100.0 * units_6m / denom, 1) if denom > 0 else None,
+            "sor_since_launch": round(100.0 * units_since_launch / life_denom, 1) if life_denom > 0 else None,
             "launch_date": str(first_sale) if first_sale else None,
             "style_age_weeks": round(age_days / 7.0) if age_days is not None else 0,
         })

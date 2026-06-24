@@ -1,0 +1,415 @@
+{
+  "directory": "Vivo Colour Directory 2025",
+  "primary_color_count": 14,
+  "fabric_color_count": 98,
+  "primary_colors": [
+    "Black",
+    "Blue",
+    "Brown",
+    "Green",
+    "Grey",
+    "Metallic",
+    "Multicolor",
+    "None",
+    "Orange",
+    "Pink",
+    "Purple",
+    "Red",
+    "White",
+    "Yellow"
+  ],
+  "colors": [
+    {
+      "primary_color": "Black",
+      "fabric_color_name": "Black"
+    },
+    {
+      "primary_color": "Blue",
+      "fabric_color_name": "Baby Blue"
+    },
+    {
+      "primary_color": "Blue",
+      "fabric_color_name": "Blue"
+    },
+    {
+      "primary_color": "Blue",
+      "fabric_color_name": "Dark Blue"
+    },
+    {
+      "primary_color": "Blue",
+      "fabric_color_name": "Dark Teal"
+    },
+    {
+      "primary_color": "Blue",
+      "fabric_color_name": "Denim Blue"
+    },
+    {
+      "primary_color": "Blue",
+      "fabric_color_name": "Light Blue"
+    },
+    {
+      "primary_color": "Blue",
+      "fabric_color_name": "Light Teal"
+    },
+    {
+      "primary_color": "Blue",
+      "fabric_color_name": "Navy Blue"
+    },
+    {
+      "primary_color": "Blue",
+      "fabric_color_name": "Royal Blue"
+    },
+    {
+      "primary_color": "Blue",
+      "fabric_color_name": "Teal"
+    },
+    {
+      "primary_color": "Blue",
+      "fabric_color_name": "Turquoise"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Beige"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Brown"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Caramel"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Chocolate Brown"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Dark Beige"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Dark Brown"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Dark Tan"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Dark Taupe"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Khaki Beige"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Khaki Brown"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Light Beige"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Light Brown"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Light Tan"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Light Taupe"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Sand"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Tan"
+    },
+    {
+      "primary_color": "Brown",
+      "fabric_color_name": "Taupe"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Army Green"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Dark Green"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Dark Olive Green"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Emerald Green"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Forest Green"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Green"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Hunters Green"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Jungle Green"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Khaki Green"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Light Green"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Light Olive Green"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Lime Green"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Neon Green"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Olive Green"
+    },
+    {
+      "primary_color": "Green",
+      "fabric_color_name": "Sea Green"
+    },
+    {
+      "primary_color": "Grey",
+      "fabric_color_name": "Dark Grey"
+    },
+    {
+      "primary_color": "Grey",
+      "fabric_color_name": "Grey"
+    },
+    {
+      "primary_color": "Grey",
+      "fabric_color_name": "Khaki Grey"
+    },
+    {
+      "primary_color": "Grey",
+      "fabric_color_name": "Light Grey"
+    },
+    {
+      "primary_color": "Metallic",
+      "fabric_color_name": "Brass"
+    },
+    {
+      "primary_color": "Metallic",
+      "fabric_color_name": "Copper"
+    },
+    {
+      "primary_color": "Metallic",
+      "fabric_color_name": "Gold"
+    },
+    {
+      "primary_color": "Metallic",
+      "fabric_color_name": "Silver"
+    },
+    {
+      "primary_color": "Multicolor",
+      "fabric_color_name": "Multicolor"
+    },
+    {
+      "primary_color": "None",
+      "fabric_color_name": "None"
+    },
+    {
+      "primary_color": "Orange",
+      "fabric_color_name": "Burnt Orange"
+    },
+    {
+      "primary_color": "Orange",
+      "fabric_color_name": "Coral"
+    },
+    {
+      "primary_color": "Orange",
+      "fabric_color_name": "Dark Orange"
+    },
+    {
+      "primary_color": "Orange",
+      "fabric_color_name": "Dark Rust"
+    },
+    {
+      "primary_color": "Orange",
+      "fabric_color_name": "Light Orange"
+    },
+    {
+      "primary_color": "Orange",
+      "fabric_color_name": "Light Rust"
+    },
+    {
+      "primary_color": "Orange",
+      "fabric_color_name": "Orange"
+    },
+    {
+      "primary_color": "Orange",
+      "fabric_color_name": "Peach"
+    },
+    {
+      "primary_color": "Orange",
+      "fabric_color_name": "Rust"
+    },
+    {
+      "primary_color": "Pink",
+      "fabric_color_name": "Dark Pink"
+    },
+    {
+      "primary_color": "Pink",
+      "fabric_color_name": "Dusty Pink"
+    },
+    {
+      "primary_color": "Pink",
+      "fabric_color_name": "Fuchsia"
+    },
+    {
+      "primary_color": "Pink",
+      "fabric_color_name": "Light Pink"
+    },
+    {
+      "primary_color": "Pink",
+      "fabric_color_name": "Magenta"
+    },
+    {
+      "primary_color": "Pink",
+      "fabric_color_name": "Neon Pink"
+    },
+    {
+      "primary_color": "Pink",
+      "fabric_color_name": "Pink"
+    },
+    {
+      "primary_color": "Pink",
+      "fabric_color_name": "Rose Pink"
+    },
+    {
+      "primary_color": "Purple",
+      "fabric_color_name": "Bright Purple"
+    },
+    {
+      "primary_color": "Purple",
+      "fabric_color_name": "Dark Purple"
+    },
+    {
+      "primary_color": "Purple",
+      "fabric_color_name": "Light Purple"
+    },
+    {
+      "primary_color": "Purple",
+      "fabric_color_name": "Lilac"
+    },
+    {
+      "primary_color": "Purple",
+      "fabric_color_name": "Plum"
+    },
+    {
+      "primary_color": "Purple",
+      "fabric_color_name": "Purple"
+    },
+    {
+      "primary_color": "Purple",
+      "fabric_color_name": "Violet"
+    },
+    {
+      "primary_color": "Red",
+      "fabric_color_name": "Burgundy"
+    },
+    {
+      "primary_color": "Red",
+      "fabric_color_name": "Dark Burgundy"
+    },
+    {
+      "primary_color": "Red",
+      "fabric_color_name": "Dark Maroon"
+    },
+    {
+      "primary_color": "Red",
+      "fabric_color_name": "Dark Red"
+    },
+    {
+      "primary_color": "Red",
+      "fabric_color_name": "Light Burgundy"
+    },
+    {
+      "primary_color": "Red",
+      "fabric_color_name": "Light Red"
+    },
+    {
+      "primary_color": "Red",
+      "fabric_color_name": "Maroon"
+    },
+    {
+      "primary_color": "Red",
+      "fabric_color_name": "Red"
+    },
+    {
+      "primary_color": "White",
+      "fabric_color_name": "Cream"
+    },
+    {
+      "primary_color": "White",
+      "fabric_color_name": "Ivory"
+    },
+    {
+      "primary_color": "White",
+      "fabric_color_name": "Off White"
+    },
+    {
+      "primary_color": "White",
+      "fabric_color_name": "White"
+    },
+    {
+      "primary_color": "Yellow",
+      "fabric_color_name": "Bright Yellow"
+    },
+    {
+      "primary_color": "Yellow",
+      "fabric_color_name": "Buttermilk"
+    },
+    {
+      "primary_color": "Yellow",
+      "fabric_color_name": "Dark Mustard"
+    },
+    {
+      "primary_color": "Yellow",
+      "fabric_color_name": "Light Mustard"
+    },
+    {
+      "primary_color": "Yellow",
+      "fabric_color_name": "Lime Yellow"
+    },
+    {
+      "primary_color": "Yellow",
+      "fabric_color_name": "Marigold"
+    },
+    {
+      "primary_color": "Yellow",
+      "fabric_color_name": "Mustard"
+    },
+    {
+      "primary_color": "Yellow",
+      "fabric_color_name": "Yellow"
+    }
+  ]
+}
