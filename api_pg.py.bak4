@@ -403,7 +403,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # stdlib (see clerk_auth.py) — no SDK, because this env's u-root-cmds shadows
 # coreutils and breaks the wheels' builds.
 import clerk_auth
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse
 
 # Exact /api paths reachable without a session (health probes + proxy prefix).
 _AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/sync-status"}
@@ -4142,44 +4142,6 @@ def get_customer_search(
         LIMIT 10
     """, date_to=date_to)
     return mask_pii_rows(rows, request)
-
-import base64 as _b64
-
-@app.get("/api/product-image/{sku}")
-def get_product_image(sku: str):
-    """Serve a product's 512px image as raw JPEG bytes, resolved SKU -> template.
-    Returns 404 if the SKU has no mapped image so the frontend can show a placeholder."""
-    sku = (sku or "").strip()
-    if not sku:
-        return Response(status_code=404)
-    rows = run_query(
-        "SELECT i.image_512 FROM product_image_map m "
-        "JOIN product_images i ON i.tmpl_id = m.tmpl_id "
-        "WHERE m.sku = %s LIMIT 1",
-        params=(sku,)
-    ) if False else None
-    # run_query in this codebase builds SQL by concatenation; use a direct pooled
-    # connection for a clean parameterised lookup instead.
-    conn = _get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT i.image_512 FROM product_image_map m "
-            "JOIN product_images i ON i.tmpl_id = m.tmpl_id "
-            "WHERE m.sku = %s LIMIT 1",
-            (sku,)
-        )
-        row = cur.fetchone()
-    finally:
-        _return_conn(conn)
-    if not row or not row[0]:
-        return Response(status_code=404)
-    try:
-        img = _b64.b64decode(row[0])
-    except Exception:
-        return Response(status_code=404)
-    return Response(content=img, media_type="image/jpeg",
-                    headers={"Cache-Control": "public, max-age=604800"})
 
 @app.get("/api/customer-products")
 def get_customer_products(customer_id: str = Query(default="")):

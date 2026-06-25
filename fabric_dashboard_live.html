@@ -964,7 +964,7 @@ const MIX_FX={
   pctC:'% Consumption = this category\u2019s consumption ÷ total consumption across all categories.',
   pctA:'% Available = this category\u2019s available stock ÷ total available stock across all categories.',
   gap:'Gap (pp) = % Available − % Consumption (percentage points). Positive = overstock (held more than used); negative = short (used faster than its stock share).',
-  covers:'Weeks of cover = Available ÷ weekly run-rate. The run-rate is the smoothed 6-month average monthly consumption (net of production returns, current month projected to month-end) converted to weeks — independent of the selected window so it reflects sustained usage. Monthly covers = Available ÷ monthly run-rate. "—" = no sustained usage, or the kg→metre conversion is missing. Below 1 week = under a week of cover left.',
+  covers:'Weeks of cover = Available ÷ weekly run-rate. The run-rate is the smoothed 6-month average monthly consumption (net of production returns, current month projected to month-end) converted to weeks — independent of the selected window so it reflects sustained usage. Monthly covers = Available ÷ monthly run-rate. "—" = no sustained usage, or the kg→metre conversion is missing. Below 1 week = under a week of cover left. Capped at 104 weeks (~2 years): anything beyond that is stock ÷ a negligible run-rate (noise, not signal) and shows as "104+" — these are effectively idle categories.',
   tied:'Tied-up KES = capital locked in this category\u2019s available stock (stock value).',
   verdict:'Verdict = Shortage (short: shortfall < 0, cover < ~4 weeks, or Gap ≤ −3pp), Overstock (Gap ≥ +3pp or > ~52 weeks cover), Idle (stock but ~no usage in the window), else Hold (balanced).',
   totAvailable:'Total Available = sum of every category\u2019s available stock, in the active unit.',
@@ -1067,6 +1067,11 @@ function deriveMixRow(r,totC,totA,weeks,useKg){
 // Days-per-month constant mirrors the backend (fabric_router.py DAYS_PER_MONTH).
 const MIX_DAYS_PER_MONTH=30.4375;
 const MIX_WEEKS_PER_MONTH=MIX_DAYS_PER_MONTH/7;  // ≈4.348 weeks per month
+// Cover ceiling: beyond ~2 years the figure is just stock ÷ a negligible run-rate
+// (e.g. 2,231 m ÷ 0.3 m/mo ≈ 628 yr) — noise, not signal. Cap the display so an
+// idle category reads "104+ wk" instead of an absurd 32,768.8.
+const MIX_COVER_CAP_WEEKS=104;
+const MIX_COVER_CAP_MONTHS=MIX_COVER_CAP_WEEKS/MIX_WEEKS_PER_MONTH;  // ≈24 months
 function deriveMixRows(d){
   const useKg=UNIT==='kg';
   const totC=useKg?d.total_consumption_kg:d.total_consumption_metres;
@@ -1179,7 +1184,12 @@ function mixCell(col,r,kind,opts){
     case 'gap':cell=`<td class="r">${gapChip(r.gap,true)}</td>`;break;
     case 'cover':{const wk=r.covers;const v=mixCoverBasis==='months'?r.coversMonthly:wk;
       const c=wk==null?'pill-neutral':wk<1?'pill-red':wk<3?'pill-amber':wk>12?'pill-blue':'pill-green';
-      cell=`<td class="r">${v==null?'—':`<span class="pill ${c}">${fmt1(v)}</span>`}</td>`;break;}
+      if(v==null){cell='<td class="r">—</td>';break;}
+      const capped=wk>MIX_COVER_CAP_WEEKS;
+      const capV=mixCoverBasis==='months'?MIX_COVER_CAP_MONTHS:MIX_COVER_CAP_WEEKS;
+      const disp=capped?(fmt1(capV)+'+'):fmt1(v);
+      const ttl=capped?` title="Capped at ${fmt1(capV)} ${mixCoverBasis==='months'?'months':'weeks'} — actual ≈ ${fmt1(v)}. Beyond ~2 years the figure reflects negligible usage and is not meaningful (effectively idle stock)."`:'';
+      cell=`<td class="r"><span class="pill ${c}"${ttl}>${disp}</span></td>`;break;}
     case 'kes':cell=`<td class="r" style="color:var(--muted);">${fmt(r[col.k])}</td>`;break;
     case 'verdict':{const v=r.verdict||mixVerdict(r);
       cell=`<td><span class="pill ${v.cls}">${esc(v.label)}</span></td>`;break;}
@@ -1514,7 +1524,7 @@ function mixDownloadCsv(cols,rows,filename){
 }
 // Covers column header + value follow the on-screen weeks/months toggle.
 function mixCoverHdr(){return mixCoverBasis==='months'?'Monthly covers':'Weeks of Cover';}
-function mixCoverVal(r){const v=mixCoverBasis==='months'?r.coversMonthly:r.covers;return v==null?'':v.toFixed(2);}
+function mixCoverVal(r){const v=mixCoverBasis==='months'?r.coversMonthly:r.covers;if(v==null)return '';const cap=mixCoverBasis==='months'?MIX_COVER_CAP_MONTHS:MIX_COVER_CAP_WEEKS;return (v>cap?cap:v).toFixed(2);}
 // Distinct, sorted, comma-joined Odoo Color values (detail.color = x_vivo_color)
 // across a derived tree node's descendant product rows. Used by the aggregate
 // exports where a single per-row color isn't meaningful.
