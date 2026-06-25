@@ -7898,9 +7898,100 @@ def _ensure_targets_table():
         print(f"[targets] ensure table failed: {e}", flush=True)
 
 
+# 2026 leadership budget (scope='region', source='budget'), one figure per
+# (bucket, month). This is hand-entered leadership data with no external source
+# to re-derive it from, so a fresh prod DB has no way to self-populate it — it
+# would otherwise fall back to prior-year actuals + 15%. We seed it from code so
+# a published deployment bootstraps the real budget on first boot. The seed is
+# GUARDED: it only runs when the 2026 region/budget set is empty, so it never
+# clobbers later edits made directly in production.
+# Columns per row: (bucket name, country, month 1-12, target_kes).
+_BUDGET_2026_SEED = [
+    ("Kenya - Online", "Online", [
+        8489250, 6755948, 8327702, 8005285, 7846801, 8825976,
+        7994360, 7559754, 8165494, 7415181, 13352515, 6784859]),
+    ("Kenya - Retail", "Kenya", [
+        73551760, 78561699, 83569811, 90859769, 90884418, 86816048,
+        106253533, 112010104, 93144307, 98271941, 119117293, 127195778]),
+    ("Rwanda", "Rwanda", [
+        3557665, 2630475, 3592741, 2489631, 5063588, 4221746,
+        3871062, 3839509, 2832688, 5690753, 7614199, 6394225]),
+    ("Uganda", "Uganda", [
+        8464809, 9170957, 9268631, 9175791, 9573757, 9503715,
+        9608765, 10105378, 9261594, 12420238, 13205085, 13205085]),
+]
+
+
+# Dedicated advisory-lock key so concurrent boots serialize the seed check+write
+# (distinct from the admin/rollup lock keys used elsewhere).
+_TARGETS_SEED_LOCK_KEY = 822026
+
+
+def _seed_targets_budget_2026():
+    """Idempotently bootstrap the 2026 region budget when it is incomplete.
+
+    Boot-safe and atomic: the emptiness check and the insert run in ONE
+    transaction guarded by an advisory lock, so concurrent workers can't both
+    decide to seed and a crash can't leave a permanently partial budget (the
+    next boot heals it). The guard is completeness-based (expects 48 rows) and
+    inserts with ON CONFLICT DO NOTHING, so it only ADDS missing (name, month)
+    rows and NEVER overwrites a value edited directly in production.
+    """
+    expected = sum(len(months) for _, _, months in _BUDGET_2026_SEED)
+    count_sql = (
+        "SELECT COUNT(*) FROM targets_monthly "
+        "WHERE scope='region' AND source='budget' "
+        "AND EXTRACT(YEAR FROM month)=2026"
+    )
+    conn = None
+    try:
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor()
+        # Serialize concurrent boots; auto-released at COMMIT/ROLLBACK.
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_TARGETS_SEED_LOCK_KEY,))
+        cur.execute(count_sql)
+        have = (cur.fetchone() or [0])[0]
+        if have >= expected:
+            conn.rollback()  # complete — nothing to do (releases the lock)
+            cur.close()
+            return
+        rows = []
+        for name, country, months in _BUDGET_2026_SEED:
+            for i, amount in enumerate(months, start=1):
+                rows.append((
+                    "region", name, country,
+                    f"2026-{i:02d}-01", amount, "budget",
+                ))
+        cur.executemany(
+            "INSERT INTO targets_monthly "
+            "(scope, name, country, month, target_kes, source) "
+            "VALUES (%s, %s, %s, %s::date, %s, %s) "
+            "ON CONFLICT (scope, name, month, source) DO NOTHING",
+            rows,
+        )
+        cur.execute(count_sql)
+        now_have = (cur.fetchone() or [0])[0]
+        conn.commit()
+        print(f"[targets] 2026 budget seed: had {have}, now {now_have} "
+              f"(added {now_have - have})", flush=True)
+        cur.close()
+    except Exception as e:  # pragma: no cover - best effort, never block boot
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        print(f"[targets] seed 2026 budget failed: {e}", flush=True)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 @app.on_event("startup")
 def _targets_startup():
     _ensure_targets_table()
+    _seed_targets_budget_2026()
     # Optional free-text transfer/PO reference attached when a replenishment is
     # marked done (IBT moves already carry po_number in ibt_completions).
     try:
