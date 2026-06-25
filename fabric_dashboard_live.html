@@ -946,8 +946,8 @@ let mixSearch='';               // active product/barcode search (lowercased); '
 const MIX_COLS=[
   {k:'barcode',label:'Barcode',type:'barcode'},
   {k:'group',label:'Fabric category',type:'name'},
-  {k:'available',label:'Available',type:'unit'},
-  {k:'consumption',label:'Consumption',type:'unit'},
+  {k:'available',label:'Available (m)',type:'unit'},
+  {k:'consumption',label:'Consumption (m)',type:'unit'},
   {k:'pctA',label:'% Available',type:'pct'},
   {k:'pctC',label:'% Consumption',type:'pct'},
   {k:'gap',label:'Gap (pp)',type:'gap'},
@@ -1153,13 +1153,13 @@ function mixCell(col,r,kind,opts){
       }
       cell=`<td>${link}</td>`;
       break;}
-    case 'unit':cell=`<td class="r">${fmtUnit(r[col.k])}</td>`;break;
-    case 'pct':cell=`<td class="r">${(r[col.k]||0).toFixed(1)}%</td>`;break;
+    case 'unit':cell=`<td class="r">${fmt(r[col.k])}</td>`;break;
+    case 'pct':cell=`<td class="r">${(r[col.k]||0).toFixed(1)}</td>`;break;
     case 'gap':cell=`<td class="r">${gapChip(r.gap,true)}</td>`;break;
     case 'cover':{const wk=r.covers;const v=mixCoverBasis==='months'?r.coversMonthly:wk;
       const c=wk==null?'pill-neutral':wk<1?'pill-red':wk<3?'pill-amber':wk>12?'pill-blue':'pill-green';
       cell=`<td class="r">${v==null?'—':`<span class="pill ${c}">${fmt1(v)}</span>`}</td>`;break;}
-    case 'kes':cell=`<td class="r" style="color:var(--muted);">${fmtKES(r[col.k])}</td>`;break;
+    case 'kes':cell=`<td class="r" style="color:var(--muted);">${fmt(r[col.k])}</td>`;break;
     case 'verdict':{const v=r.verdict||mixVerdict(r);
       cell=`<td><span class="pill ${v.cls}">${esc(v.label)}</span></td>`;break;}
     default:cell=`<td>${esc(r[col.k])}</td>`;
@@ -1305,13 +1305,13 @@ function renderFabricMix(){
   // Totals row
   html+=`<tr class="mix-total" style="border-top:2px solid var(--border);font-weight:700;background:var(--bg);">
    ${showBarcode?'<td></td>':''}<td style="font-weight:800;">Total</td>
-   <td class="r">${fmtUnit(totA)}</td>
-   <td class="r">${fmtUnit(totC)}</td>
-   <td class="r">100.0%</td>
-   <td class="r">100.0%</td>
+   <td class="r">${fmt(totA)}</td>
+   <td class="r">${fmt(totC)}</td>
+   <td class="r">100.0</td>
+   <td class="r">100.0</td>
    <td class="r">—</td>
    <td class="r">—</td>
-   <td class="r" style="color:var(--muted);">${fmtKES(d.total_tied_up_kes)}</td>
+   <td class="r" style="color:var(--muted);">${fmt(d.total_tied_up_kes)}</td>
   </tr>`;
   body.innerHTML=html;
   if(window.__fabricEnhanceTables)window.__fabricEnhanceTables();
