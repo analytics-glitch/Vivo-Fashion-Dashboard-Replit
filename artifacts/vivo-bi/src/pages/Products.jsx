@@ -12,6 +12,7 @@ import StyleStatusToggle from "@/components/StyleStatusToggle";
 import SortableTable from "@/components/SortableTable";
 import CategoryAccordionTable from "@/components/CategoryAccordionTable";
 import ProductThumbnail from "@/components/ProductThumbnail";
+import ProductFinder from "@/components/ProductFinder";
 import SorNewStylesL10 from "@/components/SorNewStylesL10";
 import SorAllStyles from "@/components/SorAllStyles";
 import NewStylesSalesCurve from "@/components/NewStylesSalesCurve";
@@ -500,6 +501,7 @@ const Products = () => {
               title="Stock-to-Sales · by Subcategory"
               subtitle="Granular view — one row per merchandise subcategory. Switch to Grouped to fold rows under collapsible category headers. Red = action needed (stockout or overstock risk). Green = healthy balance."
             />
+            <ProductFinder />
             <div className="flex justify-end mb-2 -mt-1">
               <div className="inline-flex rounded-md overflow-hidden border border-[#fcd9b6]" data-testid="sts-view-toggle">
                 <button

@@ -4173,6 +4173,126 @@ def get_product_image(sku: str):
     return Response(content=img, media_type="image/jpeg",
                     headers={"Cache-Control": "public, max-age=604800"})
 
+
+@app.get("/api/product-search")
+def product_search(q: str = Query(default="")):
+    """Typeahead for the Products-page finder. Matches a free-text query against
+    style_name / sku / barcode / product_name / colour and returns one row per
+    SKU variant so the UI can group the results style > SKU/barcode."""
+    term = (q or "").strip()
+    if len(term) < 2:
+        return {"options": []}
+    like = "%" + term.replace("%", "").replace("_", "") + "%"
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT p.sku, COALESCE(p.barcode,'') AS barcode, "
+            "       COALESCE(p.style_name,'') AS style_name, "
+            "       COALESCE(NULLIF(p.product_name,''), p.style_name) AS product_name, "
+            "       COALESCE(p.color_print,'') AS color, "
+            "       COALESCE(p.size,'') AS size "
+            "FROM all_products_clean p "
+            "WHERE p.sku IS NOT NULL AND p.sku <> '' AND ("
+            "      LOWER(p.sku) LIKE LOWER(%s) "
+            "   OR LOWER(COALESCE(p.barcode,'')) LIKE LOWER(%s) "
+            "   OR LOWER(COALESCE(p.style_name,'')) LIKE LOWER(%s) "
+            "   OR LOWER(COALESCE(p.product_name,'')) LIKE LOWER(%s) "
+            "   OR LOWER(COALESCE(p.color_print,'')) LIKE LOWER(%s)) "
+            "ORDER BY p.style_name NULLS LAST, p.size, p.sku "
+            "LIMIT 80",
+            (like, like, like, like, like),
+        )
+        cols = [c[0] for c in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+    # Collapse any duplicate SKU rows in all_products_clean (keep first, which
+    # preserves the style/size/sku display order) so the dropdown has no dupes.
+    seen = set()
+    deduped = []
+    for r in rows:
+        key = r.get("sku")
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(r)
+    return {"options": deduped}
+
+
+@app.get("/api/product-detail")
+def product_detail(sku: str = Query(default=""), barcode: str = Query(default="")):
+    """Full detail for one product variant for the Products-page popup: name,
+    colour, style, size, brand/subcategory, SOH (split stores vs warehouse) and
+    days since its last sale. Photo is resolved client-side via the shared
+    thumbnail lookup (style -> override / Odoo image)."""
+    from fastapi import HTTPException
+    s = (sku or "").strip()
+    bc = (barcode or "").strip()
+    if not s and not bc:
+        raise HTTPException(status_code=400, detail="sku or barcode required")
+    cols_sql = (
+        "SELECT p.sku, COALESCE(p.barcode,'') AS barcode, "
+        "COALESCE(p.style_name,'') AS style_name, "
+        "COALESCE(NULLIF(p.product_name,''), p.style_name) AS product_name, "
+        "COALESCE(p.color_print,'') AS color, COALESCE(p.size,'') AS size, "
+        "COALESCE(p.brand,'') AS brand, COALESCE(p.product_type,'') AS subcategory, "
+        "COALESCE(p.category,'') AS category "
+        "FROM all_products_clean p "
+    )
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        if s:
+            cur.execute(cols_sql + "WHERE p.sku = %s LIMIT 1", (s,))
+        else:
+            cur.execute(cols_sql + "WHERE p.barcode = %s LIMIT 1", (bc,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="product not found")
+        cols = [c[0] for c in cur.description]
+        d = dict(zip(cols, row))
+        sku_val = d["sku"]
+        cur.execute(
+            "SELECT "
+            "COALESCE(SUM(available) FILTER (WHERE pos_location_name NOT IN ("
+            + WAREHOUSE_LOCATIONS + ")),0) AS soh_stores, "
+            "COALESCE(SUM(available) FILTER (WHERE pos_location_name IN ("
+            + WAREHOUSE_LOCATIONS + ")),0) AS soh_warehouse "
+            "FROM all_inventory WHERE sku = %s",
+            (sku_val,),
+        )
+        srow = cur.fetchone()
+        soh_stores = int((srow[0] if srow else 0) or 0)
+        soh_warehouse = int((srow[1] if srow else 0) or 0)
+        cur.execute(
+            "SELECT MAX(sale_date::date) FROM all_sales "
+            "WHERE variant_sku = %s AND sale_kind IN ('sale','order')",
+            (sku_val,),
+        )
+        lrow = cur.fetchone()
+        last_sale = lrow[0] if lrow else None
+    finally:
+        conn.close()
+    today = date.today()
+    return {
+        "sku": d["sku"],
+        "barcode": d["barcode"],
+        "style_name": d["style_name"],
+        "product_name": d["product_name"],
+        "color": d["color"],
+        "size": d["size"],
+        "brand": d["brand"],
+        "subcategory": d["subcategory"],
+        "category": d["category"],
+        "soh_stores": soh_stores,
+        "soh_warehouse": soh_warehouse,
+        "soh_total": soh_stores + soh_warehouse,
+        "last_sale": str(last_sale) if last_sale else None,
+        "days_since_last_sale": (today - last_sale).days if last_sale else None,
+    }
+
+
 @app.get("/api/customer-products")
 def get_customer_products(customer_id: str = Query(default="")):
     if not customer_id:

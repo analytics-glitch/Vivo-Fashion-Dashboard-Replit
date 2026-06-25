@@ -269,27 +269,79 @@ const Editor = ({ style, currentUrl, onClose, onChanged }) => {
   );
 };
 
+// ─── lightbox ─────────────────────────────────────────────────────────
+// Click any product image (anywhere it appears) to expand it to a large
+// centred overlay. Esc / click-outside / the X button all close it.
+const Lightbox = ({ url, caption, onClose }) => {
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", h);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+      onClick={onClose}
+      data-testid="product-lightbox"
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        className="absolute top-4 right-4 p-2 rounded-full bg-white/10 text-white hover:bg-white/20 transition-colors"
+        title="Close"
+        data-testid="product-lightbox-close"
+      >
+        <X size={22} />
+      </button>
+      <figure
+        className="flex flex-col items-center gap-3"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <img
+          src={url}
+          alt={caption || "product"}
+          className="max-w-[92vw] max-h-[80vh] object-contain rounded-lg shadow-2xl bg-white"
+        />
+        {caption ? (
+          <figcaption className="text-white/90 text-sm text-center max-w-[92vw] break-words">
+            {caption}
+          </figcaption>
+        ) : null}
+      </figure>
+    </div>
+  );
+};
+
 // ─── main component ──────────────────────────────────────────────────
 /**
  * <ProductThumbnail style="Linen Wrap Dress" url={urlFor(style)} />
  *
  * Renders a square thumbnail for a style. If `url` is falsy, a
  * deterministic coloured placeholder with 2-letter monogram is shown.
- * Admins see a small edit affordance on hover to attach / change the
- * image URL.
+ * Clicking a real image expands it to a full-screen lightbox. Admins see
+ * a small corner edit affordance on hover to attach / change the image.
  */
 const ProductThumbnail = ({
   style,
   url,
   size = 40,
   allowEdit = true,
+  expandable = true,
   className = "",
 }) => {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin" && allowEdit;
   const [editing, setEditing] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [lightbox, setLightbox] = useState(false);
   const effectiveUrl = !failed ? (url || "") : "";
+  const canExpand = expandable && !!effectiveUrl;
 
   const onChanged = useCallback(() => {
     setFailed(false);
@@ -306,9 +358,10 @@ const ProductThumbnail = ({
           <img
             src={effectiveUrl}
             alt={style}
-            className="w-full h-full object-cover"
+            className={`w-full h-full object-cover ${canExpand ? "cursor-zoom-in" : ""}`}
             loading="lazy"
             onError={() => setFailed(true)}
+            onClick={canExpand ? (e) => { e.stopPropagation(); setLightbox(true); } : undefined}
           />
         ) : (
           <Placeholder style={style} size={size} />
@@ -317,11 +370,11 @@ const ProductThumbnail = ({
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); setEditing(true); }}
-            className="absolute inset-0 flex items-center justify-center bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+            className="absolute top-0 right-0 m-0.5 p-1 rounded bg-black/55 text-white opacity-0 group-hover:opacity-100 transition-opacity"
             title={effectiveUrl ? "Change thumbnail" : "Add thumbnail"}
             data-testid={`product-thumbnail-edit-${style}`}
           >
-            {effectiveUrl ? <Pencil size={Math.max(12, size * 0.35)} /> : <Camera size={Math.max(12, size * 0.35)} />}
+            {effectiveUrl ? <Pencil size={Math.max(10, Math.round(size * 0.3))} /> : <Camera size={Math.max(10, Math.round(size * 0.3))} />}
           </button>
         )}
       </div>
@@ -331,6 +384,13 @@ const ProductThumbnail = ({
           currentUrl={url}
           onClose={() => setEditing(false)}
           onChanged={onChanged}
+        />
+      )}
+      {lightbox && effectiveUrl && (
+        <Lightbox
+          url={effectiveUrl}
+          caption={style}
+          onClose={() => setLightbox(false)}
         />
       )}
     </>
