@@ -4293,6 +4293,94 @@ def product_detail(sku: str = Query(default=""), barcode: str = Query(default=""
     }
 
 
+@app.get("/api/product-tree")
+def product_tree(
+    category: str = Query(default=""),
+    subcategory: str = Query(default=""),
+    style: str = Query(default=""),
+):
+    """Lazy hierarchical drill-down for the Products-page finder:
+    Category -> Subcategory -> Style -> SKU/Barcode variant.
+
+    Returns the *children* of whatever level is fully specified:
+      - no params              -> list of categories
+      - category               -> subcategories within it
+      - category+subcategory   -> styles within it
+      - category+subcat+style  -> SKU/barcode variants of that style
+
+    All filters are parameterized. Empty category/subcategory/style are
+    treated as the literal "" bucket (so uncategorised products still drill)."""
+    cat = (category or "").strip()
+    sub = (subcategory or "").strip()
+    sty = (style or "").strip()
+
+    # COALESCE expressions so NULL and '' collapse to one stable bucket value.
+    CAT = "COALESCE(NULLIF(p.category,''),'')"
+    SUB = "COALESCE(NULLIF(p.product_type,''),'')"
+    STY = "COALESCE(NULLIF(p.style_name,''),'')"
+    BASE = "all_products_clean p WHERE p.sku IS NOT NULL AND p.sku <> '' "
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        if not cat:
+            level = "category"
+            cur.execute(
+                "SELECT " + CAT + " AS val, "
+                "COUNT(DISTINCT " + STY + ") AS styles, "
+                "COUNT(DISTINCT p.sku) AS skus "
+                "FROM " + BASE +
+                "GROUP BY 1 ORDER BY (" + CAT + " = '') ASC, " + CAT + " ASC"
+            )
+        elif not sub:
+            level = "subcategory"
+            cur.execute(
+                "SELECT " + SUB + " AS val, "
+                "COUNT(DISTINCT " + STY + ") AS styles, "
+                "COUNT(DISTINCT p.sku) AS skus "
+                "FROM " + BASE + "AND " + CAT + " = %s "
+                "GROUP BY 1 ORDER BY (" + SUB + " = '') ASC, " + SUB + " ASC",
+                (cat,),
+            )
+        elif not sty:
+            level = "style"
+            cur.execute(
+                "SELECT " + STY + " AS val, "
+                "COUNT(DISTINCT p.sku) AS skus "
+                "FROM " + BASE + "AND " + CAT + " = %s AND " + SUB + " = %s "
+                "GROUP BY 1 ORDER BY (" + STY + " = '') ASC, " + STY + " ASC",
+                (cat, sub),
+            )
+        else:
+            level = "variant"
+            cur.execute(
+                "SELECT p.sku, COALESCE(p.barcode,'') AS barcode, "
+                "COALESCE(p.style_name,'') AS style_name, "
+                "COALESCE(NULLIF(p.product_name,''), p.style_name) AS product_name, "
+                "COALESCE(p.color_print,'') AS color, COALESCE(p.size,'') AS size "
+                "FROM " + BASE + "AND " + CAT + " = %s AND " + SUB + " = %s "
+                "AND " + STY + " = %s "
+                "ORDER BY p.size NULLS LAST, p.sku",
+                (cat, sub, sty),
+            )
+        cols = [c[0] for c in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    if level == "variant":
+        # De-dupe by SKU (keep first), mirroring product-search.
+        seen, deduped = set(), []
+        for r in rows:
+            if r.get("sku") in seen:
+                continue
+            seen.add(r["sku"])
+            deduped.append(r)
+        return {"level": level, "items": deduped}
+
+    return {"level": level, "items": rows}
+
+
 @app.get("/api/customer-products")
 def get_customer_products(customer_id: str = Query(default="")):
     if not customer_id:
