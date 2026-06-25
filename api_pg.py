@@ -7988,10 +7988,131 @@ def _seed_targets_budget_2026():
             conn.close()
 
 
+# --------------------------------------------------------------------------- #
+# Finance P&L account map (account_code -> P&L group/section).                  #
+# Hand-curated mapping with NO external source to re-derive it from, and (like  #
+# targets_monthly) it was originally created by a manual dev import — there is  #
+# no CREATE TABLE for it in code either. A fresh prod DB therefore has an empty #
+# finance_account_map, which breaks the Finance / P&L page (its month matrix    #
+# JOINs raw_account_move_lines -> finance_account_map). We ship the DDL + a     #
+# guarded code seed so a published deployment self-creates and bootstraps it.   #
+# --------------------------------------------------------------------------- #
+_FINANCE_ACCOUNT_MAP_DDL = """
+CREATE TABLE IF NOT EXISTS finance_account_map (
+    account_code TEXT PRIMARY KEY,
+    pl_group     TEXT,
+    pl_section   TEXT
+);
+"""
+
+# (pl_group, pl_section) -> list of account_code. Grouped purely for legibility;
+# flattened to one row per account_code at seed time.
+_FINANCE_ACCOUNT_MAP_SEED = {
+    ("cogs", "costs_of_revenue"): ["5002000000"],
+    ("other_opex", "operating_expenses"): ["5146000000"],
+    ("revenue", "revenue"): ["6001", "60011", "6101", "6102", "6103"],
+    ("other_income", "other_income"): ["6104", "6105", "6106", "6107"],
+    ("production", "costs_of_revenue"): [
+        "70000000", "71000000", "7112", "7113", "7114", "7115", "7116", "7122",
+        "7201", "7202", "7210", "7215", "7216", "7217", "7218", "7220", "7221",
+        "7223", "7251", "7252", "7253", "7254", "7255", "7256", "7257", "7301",
+        "7302", "7303", "7304", "7305", "7306", "7307", "7308"],
+    ("purchases", "costs_of_revenue"): ["7401", "7402", "7403", "7404", "7405"],
+    ("employment", "operating_expenses"): [
+        "8111", "8112", "8113", "8114", "8115", "8116", "8117", "8118",
+        "8202", "8204", "8205"],
+    ("admin", "operating_expenses"): [
+        "8401", "8402", "8403", "8404", "8405", "8406", "8407", "8408", "8409",
+        "8410", "8413", "8414", "8415", "8417", "8418", "8419", "8420", "8421",
+        "8422", "8423", "8424", "8451", "8452", "8453", "8454", "8455", "8456"],
+    ("establishment", "operating_expenses"): [
+        "8503", "8504", "8505", "8506", "8507",
+        "8551", "8552", "8553", "8554", "8555", "8556"],
+    ("selling", "operating_expenses"): [
+        "8601", "8651", "8652", "8653", "8654", "8655", "8656",
+        "8701", "8702", "8703", "8704"],
+    ("marketing", "operating_expenses"): [
+        "8801", "8806", "8809", "8812", "8813", "8814", "8816", "8817", "8820"],
+    ("finance_charges", "operating_expenses"): [
+        "8901", "8902", "8903", "8905"],
+}
+
+# Distinct advisory-lock key (separate from the targets/admin/rollup keys).
+_FINANCE_MAP_SEED_LOCK_KEY = 920122
+
+
+def _ensure_finance_account_map():
+    try:
+        conn = get_conn()
+        try:
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute(_FINANCE_ACCOUNT_MAP_DDL)
+            cur.close()
+        finally:
+            conn.close()
+    except Exception as e:  # pragma: no cover - best effort, never block boot
+        print(f"[finance] ensure account_map table failed: {e}", flush=True)
+
+
+def _seed_finance_account_map():
+    """Idempotently bootstrap finance_account_map when it is incomplete.
+
+    Same boot-safe pattern as the targets budget seed: the emptiness check and
+    the insert run in ONE advisory-locked transaction (so concurrent boots
+    serialize and a crash can't leave a permanently partial map — the next boot
+    heals it). The guard is completeness-based (expects the full mapping count)
+    and inserts ON CONFLICT (account_code) DO NOTHING, so it only ADDS missing
+    account codes and NEVER overwrites a mapping edited directly in production.
+    """
+    rows = []
+    for (pl_group, pl_section), codes in _FINANCE_ACCOUNT_MAP_SEED.items():
+        for code in codes:
+            rows.append((code, pl_group, pl_section))
+    expected = len(rows)
+    conn = None
+    try:
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(%s)",
+                    (_FINANCE_MAP_SEED_LOCK_KEY,))
+        cur.execute("SELECT COUNT(*) FROM finance_account_map")
+        have = (cur.fetchone() or [0])[0]
+        if have >= expected:
+            conn.rollback()  # complete — nothing to do (releases the lock)
+            cur.close()
+            return
+        cur.executemany(
+            "INSERT INTO finance_account_map (account_code, pl_group, pl_section) "
+            "VALUES (%s, %s, %s) "
+            "ON CONFLICT (account_code) DO NOTHING",
+            rows,
+        )
+        cur.execute("SELECT COUNT(*) FROM finance_account_map")
+        now_have = (cur.fetchone() or [0])[0]
+        conn.commit()
+        print(f"[finance] account_map seed: had {have}, now {now_have} "
+              f"(added {now_have - have})", flush=True)
+        cur.close()
+    except Exception as e:  # pragma: no cover - best effort, never block boot
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        print(f"[finance] seed account_map failed: {e}", flush=True)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 @app.on_event("startup")
 def _targets_startup():
     _ensure_targets_table()
     _seed_targets_budget_2026()
+    _ensure_finance_account_map()
+    _seed_finance_account_map()
     # Optional free-text transfer/PO reference attached when a replenishment is
     # marked done (IBT moves already carry po_number in ibt_completions).
     try:

@@ -34,3 +34,22 @@ into prod given the agent can't write prod and there's no in-app entry path.
 constant or (better) a real Targets admin write path so leadership enters it in
 the app instead of re-coding it. A standalone `prod_load_targets_2026.sql` loader
 also exists as a manual one-time option.
+
+# Other tables in this same "hand-entered, empty in prod" class
+
+`finance_account_map` (account_code → pl_group/pl_section, feeds the Finance/P&L
+page) had the identical problem: no external source, AND no CREATE TABLE in code
+either — it was hand-created in dev, so a fresh prod DB had the table (from
+schema migration) but zero rows, silently breaking the P&L matrix. Fixed the
+SAME way: ship the DDL (`_ensure_finance_account_map`) + a guarded, advisory-
+locked, completeness-checked, ON CONFLICT DO NOTHING seed (`_seed_finance_account_map`)
+called from the `_targets_startup` hook. No PII, so a code seed is acceptable.
+
+**Contrast — when NOT to use a code seed:** `hr_employees` (the staff roster) is
+also empty in prod, but it (a) contains PII (names, staff numbers) and (b) HAS an
+external source (a Google Sheet, one tab per entity). For that class, build a
+sheet-backed bootstrap that re-reads the source on an empty prod table (like
+`_sync_training` / the fabric & production-tracker sync-loop bootstraps), then
+run `_hr_rematch` — do NOT hardcode the roster into source (PII + goes stale).
+The general rule: no external source → code seed; external source or PII →
+re-read the source via a bootstrap.
