@@ -7797,7 +7797,7 @@ _DATA_HEALTH_TABLES = [
     ("all_customers",           "Customers",                         "Core data",     True,  None),
     ("shopify_sales",           "Shopify retail (rebuild input)",    "Sales sources", True,  None),
     ("raw_shopify_vendor_sales","Online / ShopifyQL (rebuild input)","Sales sources", True,  None),
-    ("raw_odoo_orders",         "Odoo orders (rebuild input)",       "Sales sources", False, None),
+    ("raw_odoo_pos_orders",     "Odoo POS orders (rebuild input)",   "Sales sources", False, None),
     ("raw_odoo_products",       "Odoo products (rebuild input)",     "Sales sources", False, None),
     ("raw_account_move_lines",  "Finance journal lines",             "Finance",       False, None),
     ("finance_account_map",     "Finance account map (seeded)",      "Finance",       True,  None),
@@ -7815,6 +7815,7 @@ def admin_data_health():
     prod-vs-dev parity checks. Admin-only (enforced by clerk_auth_gate for the
     /api/admin/* prefix). Reads a fresh (uncached) connection so the numbers are
     live."""
+    from datetime import datetime, timezone
     conn = get_conn()
     out = []
     counts = {"ok": 0, "empty": 0, "missing": 0}
