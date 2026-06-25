@@ -1434,10 +1434,16 @@ def color_mix(
     date_from: str = Query(default=""),
     date_to: str = Query(default=""),
 ):
-    """Fabric base broken down by PRIMARY COLOUR, in two parallel panels for the
-    same colour list: ON-HAND stock (location-scoped, same basis as the
-    attribute-split / Stock-on-hand KPI — category='Fabric') and net CONSUMPTION
-    (warehouse-wide via the effective-moves view, over the selected window).
+    """Fabric base broken down by PRIMARY COLOUR for the merged Overview table:
+    per colour, ON-HAND stock (location-scoped, same basis as the
+    attribute-split / Stock-on-hand KPI — category='Fabric'), net CONSUMPTION
+    over a FIXED trailing 30-day window (warehouse-wide via the effective-moves
+    view), and MONTHLY COVERS (stock metres ÷ 30-day consumption metres).
+
+    The consumption window is fixed at the trailing 30 days and DOES NOT follow
+    the page's `days`/`date_from`/`date_to` consumption filter (those params are
+    accepted for backward compatibility but no longer scope this view), so the
+    merged covers figure always reflects a one-month run-rate.
 
     The primary colour is DERIVED in Python via the Vivo Colour Directory 2025
     (`_derive_fabric_colors`) — the DB `primary_color` column is empty — so we
@@ -1446,14 +1452,9 @@ def color_mix(
     carried per panel as `*_kg_nometre` + a `*_metres_incomplete` flag rather
     than silently showing 0 (same convention as the Stock Mix blocks). Colours
     are sorted by on-hand metres descending; unresolved colours bucket to
-    'Unknown'. The window is the trailing `days` preset OR an explicit
-    `date_from`/`date_to` range (which wins and resets `days` to its span),
-    matching the other Stock Mix endpoints."""
-    win_from, win_to = _parse_date_range(date_from, date_to)
-    if win_from and win_to:
-        days = max(1, min((win_to - win_from).days + 1, 1825))
-    else:
-        days = max(1, min(int(days or 90), 730))
+    'Unknown'. Colours with stock but ~no 30-day consumption return
+    `covers_months: null` (rendered as "no usage / ∞") rather than a misleading
+    huge number or 0."""
     with _get_conn() as conn:
         loc_sql, loc_params = _loc_filter(location)
         # On-hand stock per product (Fabric only, location-scoped) — same basis as
@@ -1472,12 +1473,10 @@ def color_mix(
             GROUP BY 1, 2, 3
         """, loc_params)
         net = _net_kg('m')
-        if win_from and win_to:
-            cons_where = f"{_net_cons_where('m')} AND {_scope_sql(scope)} AND m.date >= %s AND m.date < (%s::date + 1)"
-            cons_params = (win_from, win_to)
-        else:
-            cons_where = f"{_net_cons_where('m')} AND {_scope_sql(scope)} AND m.date >= NOW() - (%s || ' days')::interval"
-            cons_params = (days,)
+        # Consumption is FIXED at the trailing 30 days for the merged covers view —
+        # it deliberately ignores the page's days/date_from/date_to filter so the
+        # one-month run-rate (and therefore Monthly Covers) is stable.
+        cons_where = f"{_net_cons_where('m')} AND {_scope_sql(scope)} AND m.date >= NOW() - interval '30 days'"
         cons = q(conn, f"""
             SELECT m.product_id as product_id,
                    COALESCE(NULLIF(p.name,''),'') as name,
@@ -1489,7 +1488,7 @@ def color_mix(
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {cons_where}
             GROUP BY 1, 2, 3
-        """, cons_params)
+        """, None)
 
         buckets = {}
         def _b(color):
@@ -1513,14 +1512,22 @@ def color_mix(
 
         rows = []
         for b in buckets.values():
+            stock_m = round(b["stock_metres"], 1)
+            cons_m = round(b["cons_metres"], 1)
+            # Monthly Covers = on-hand stock metres ÷ 30-day consumption metres
+            # (30 days ≈ one month). Colours with stock but ~no consumption in the
+            # window get a null sentinel so the frontend can show "no usage / ∞"
+            # instead of a divide-by-zero or a misleading huge number.
+            covers_months = round(stock_m / cons_m, 1) if cons_m > 0.05 else None
             rows.append({
                 "color": b["color"],
                 "stock_kg": round(b["stock_kg"], 1),
-                "stock_metres": round(b["stock_metres"], 1),
+                "stock_metres": stock_m,
                 "stock_metres_incomplete": b["stock_kg_nometre"] > 0.05,
                 "cons_kg": round(b["cons_kg"], 1),
-                "cons_metres": round(b["cons_metres"], 1),
+                "cons_metres": cons_m,
                 "cons_metres_incomplete": b["cons_kg_nometre"] > 0.05,
+                "covers_months": covers_months,
             })
         # Sort by on-hand metres desc; colours with stock only in kg (no metres)
         # fall back to kg so they don't all pile at the bottom in metre order.
