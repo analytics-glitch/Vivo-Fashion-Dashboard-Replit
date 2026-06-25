@@ -19607,7 +19607,7 @@ def _ensure_production_tables():
           ('sewing',         'Sewing',              3, FALSE, ARRAY['finishing','washing']),
           ('washing',        'Washing',             4, FALSE, ARRAY['finishing','warehouse']),
           ('finishing',      'Finishing',           5, FALSE, ARRAY['warehouse','washing','repairs']),
-          ('repairs',        'Repairs',             6, FALSE, ARRAY['sewing','finishing','defects']),
+          ('repairs',        'Repairs',             6, FALSE, ARRAY['sewing','finishing','defects','warehouse']),
           ('defects',        'Defects',             7, FALSE, ARRAY['warehouse','repairs']),
           ('warehouse',      'Warehouse',           8, TRUE,  ARRAY[]::TEXT[])
         ON CONFLICT (stage_key) DO UPDATE
