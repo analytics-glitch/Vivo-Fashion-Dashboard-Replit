@@ -2097,7 +2097,18 @@ function regValueHtml(col,r){
     case 'pill':return v?`<span class="pill pill-neutral">${esc(v)}</span>`:'—';
     case 'wpill':return v?`<span class="pill ${({Light:'pill-green',Medium:'pill-blue',Heavy:'pill-amber'})[v]||'pill-neutral'}">${esc(v)}</span>`:'—';
     case 'num':return v!=null&&v!==''?fmt(v):'—';
-    case 'num1':return v!=null&&v!==''?fmt1(v):'—';
+    case 'num1':{
+      // Kg/m carries a source badge: stored values are authoritative; "derived"
+      // is computed Width(m)×GSM÷1000; "incomplete attributes" = Width/GSM also
+      // missing (no value, excluded from metre maths). Static strings = XSS-safe.
+      if(col.k==='kg_per_mtr'){
+        const base=v!=null&&v!==''?fmt1(v):'—';
+        if(r.kg_per_mtr_src==='derived')return base+' <span class="pill pill-amber" title="Derived: Width (m) × GSM ÷ 1000 — no stored Kg/Mtr in Odoo">derived</span>';
+        if(r.kg_per_mtr_src==='incomplete')return '<span class="pill pill-neutral" title="Missing Width and/or GSM — cannot derive Kg/Mtr; excluded from metre calculations">incomplete attributes</span>';
+        return base;
+      }
+      return v!=null&&v!==''?fmt1(v):'—';
+    }
     case 'numb':return v!=null&&v!==''?fmt(v):'—';
     case 'kes':return fmtKES(v);
     case 'kesc':return v!=null&&v!==''?'KES '+fmt1(v):'—';
@@ -2274,6 +2285,7 @@ const DQ_COLS=[
   {k:'width_m',label:'Width (m)'},
   {k:'gsm',label:'GSM'},
   {k:'fiber_content',label:'Fibre content'},
+  {k:'kg_per_mtr_src',label:'Kg/m status'},
   {k:'source',label:'Affected'},
   {k:'stock_kg',label:'Stock (kg)'},
   {k:'usage_kg',label:'Usage (kg)'},
@@ -2300,6 +2312,7 @@ function dqCell(c,r){
   if(c.k==='name')return `<td style="font-weight:600;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
   if(c.k==='default_code')return `<td class="num" style="font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
   if(c.k==='source'){const s=DQ_SRC[v]||{label:v||'—',cls:'pill-neutral'};return `<td><span class="pill ${s.cls}">${esc(s.label)}</span></td>`;}
+  if(c.k==='kg_per_mtr_src'){const m={derived:{l:'derived',cls:'pill-amber'},incomplete:{l:'incomplete attributes',cls:'pill-neutral'},stored:{l:'stored',cls:'pill-green'}};const s=m[v];return s?`<td><span class="pill ${s.cls}">${esc(s.l)}</span></td>`:`<td>—</td>`;}
   if(c.k==='stock_kg'||c.k==='usage_kg')return `<td class="r" style="font-weight:600;">${v!=null?fmt1(v):'—'}</td>`;
   if(c.k==='width_m')return `<td class="r">${v!=null&&v!==''?fmt1(v):'—'}</td>`;
   if(c.k==='gsm')return `<td class="r">${v!=null&&v!==''?fmt(v):'—'}</td>`;

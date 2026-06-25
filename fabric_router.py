@@ -346,7 +346,7 @@ def summary(location: str = Query(default="RMAT/Stock"),
               p.category,
               COUNT(DISTINCT i.product_id) as products,
               ROUND(SUM(i.quantity)::numeric,1) as qty_kg,
-              ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,0) as qty_metres,
+              ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE 0 END)::numeric,0) as qty_metres,
               ROUND(SUM(i.total_value)::numeric,0) as value_kes
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
@@ -389,8 +389,8 @@ def summary(location: str = Query(default="RMAT/Stock"),
         # (its value would be in the numerator but no metres in the denominator).
         acpm_stock = q(conn, f"""
             SELECT ROUND(SUM(i.total_value)::numeric,0) as value_kes,
-                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,2) as metres,
-                   BOOL_OR(COALESCE(p.kg_per_mtr,0)<=0) as incomplete
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE 0 END)::numeric,2) as metres,
+                   BOOL_OR(p.kg_per_mtr_eff IS NULL) as incomplete
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE i.quantity > 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
@@ -413,8 +413,8 @@ def summary(location: str = Query(default="RMAT/Stock"),
         pur_rows = q(conn, f"""
             SELECT po.supplier as supplier,
                    ROUND(SUM(po.qty_received*po.price_unit)::numeric,0) as value_kes,
-                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN po.qty_received/p.kg_per_mtr ELSE 0 END)::numeric,2) as metres,
-                   BOOL_OR(po.qty_received>0 AND COALESCE(p.kg_per_mtr,0)<=0) as incomplete
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN po.qty_received/p.kg_per_mtr_eff ELSE 0 END)::numeric,2) as metres,
+                   BOOL_OR(po.qty_received>0 AND p.kg_per_mtr_eff IS NULL) as incomplete
             FROM raw_fabric_purchase_orders po
             JOIN raw_fabric_products p ON p.id = po.product_id
             WHERE po.state != 'cancel' AND po.qty_received > 0 AND p.category='Fabric'
@@ -451,7 +451,7 @@ def summary(location: str = Query(default="RMAT/Stock"),
         # no/zero kg_per_mtr — negligible; RMAT/Stock has zero fabrics missing it).
         cons = q(conn, f"""
             SELECT ROUND(SUM({_net_kg('m')})::numeric,1) as kg,
-                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN ({_net_kg('m')})/p.kg_per_mtr ELSE 0 END)::numeric,0) as metres
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN ({_net_kg('m')})/p.kg_per_mtr_eff ELSE 0 END)::numeric,0) as metres
             FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {_net_cons_where('m')}
@@ -462,7 +462,7 @@ def summary(location: str = Query(default="RMAT/Stock"),
         # Consumption so far today — net of production returns (m.date is a date/ts)
         cons_today = q(conn, f"""
             SELECT ROUND(SUM({_net_kg('m')})::numeric,1) as kg,
-                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN ({_net_kg('m')})/p.kg_per_mtr ELSE 0 END)::numeric,0) as metres
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN ({_net_kg('m')})/p.kg_per_mtr_eff ELSE 0 END)::numeric,0) as metres
             FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {_net_cons_where('m')}
@@ -520,7 +520,7 @@ def by_category(location: str = Query(default="RMAT/Stock"),
               p.fabric_subcategory as subcategory,
               COUNT(DISTINCT i.product_id) as fabrics,
               ROUND(SUM(i.quantity)::numeric,1) as qty_kg,
-              ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,0) as qty_metres,
+              ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE 0 END)::numeric,0) as qty_metres,
               ROUND(SUM(i.total_value)::numeric,0) as value_kes,
               -- Weighted-average cost per Kg = Σ(standard_price × kg) ÷ Σ(kg),
               -- consistent with the register's per-product cost_per_kg (standard_price).
@@ -529,10 +529,10 @@ def by_category(location: str = Query(default="RMAT/Stock"),
                    ELSE NULL END::numeric,2) as cost_per_kg,
               -- Weighted-average cost per metre = Σ(standard_price × kg) ÷ Σ(metres)
               -- over products with a kg→metre conversion, consistent with the
-              -- register's per-product cost_metre (standard_price × kg_per_mtr).
-              ROUND(CASE WHEN SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END) > 0
-                   THEN SUM(CASE WHEN p.kg_per_mtr>0 THEN p.standard_price*i.quantity ELSE 0 END)
-                        /SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)
+              -- register's per-product cost_metre (standard_price × kg_per_mtr_eff).
+              ROUND(CASE WHEN SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE 0 END) > 0
+                   THEN SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN p.standard_price*i.quantity ELSE 0 END)
+                        /SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE 0 END)
                    ELSE NULL END::numeric,2) as cost_metre
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
@@ -630,19 +630,19 @@ def register(
             SELECT 
               p.id, p.name, p.default_code, p.barcode, p.fabric_category, p.fabric_subcategory,
               p.fabric_structure, p.plain_print, p.weight_range, p.gsm,
-              p.width_m, p.kg_per_mtr, p.fiber_content, p.fabric_type,
+              p.width_m, p.kg_per_mtr_eff as kg_per_mtr, p.kg_per_mtr_src, p.fiber_content, p.fabric_type,
               p.supplier, p.primary_color, INITCAP(BTRIM(p.fabric_color)) as fabric_color,
               NULLIF(INITCAP(BTRIM(p.color)),'') as color,
               p.standard_price, p.uom,
               ROUND(p.standard_price::numeric,2) as cost_kes,
               ROUND(p.standard_price::numeric,2) as cost_per_kg,
-              ROUND(CASE WHEN p.kg_per_mtr>0 THEN p.standard_price*p.kg_per_mtr ELSE NULL END::numeric,2) as cost_metre,
-              ROUND(CASE WHEN p.kg_per_mtr>0 THEN 1.0/p.kg_per_mtr ELSE NULL END::numeric,3) as m_per_kg,
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN p.standard_price*p.kg_per_mtr_eff ELSE NULL END::numeric,2) as cost_metre,
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN 1.0/p.kg_per_mtr_eff ELSE NULL END::numeric,3) as m_per_kg,
               ROUND(i.quantity::numeric,2) as qty_kg,
               ROUND(i.reserved_qty::numeric,2) as reserved_kg,
               ROUND(i.available::numeric,2) as available_kg,
-              ROUND(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE NULL END::numeric,1) as qty_metres,
-              ROUND(CASE WHEN p.kg_per_mtr>0 THEN i.available/p.kg_per_mtr ELSE NULL END::numeric,1) as available_metres,
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as qty_metres,
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN i.available/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as available_metres,
               ROUND(i.total_value::numeric,0) as value_kes,
               CASE WHEN COALESCE(c.consumed_kg,0) > 0
                    THEN ROUND((i.quantity * ({days}/7.0) / c.consumed_kg)::numeric,1)
@@ -651,7 +651,7 @@ def register(
                    THEN ROUND((i.quantity * ({days}/{DAYS_PER_MONTH}) / c.consumed_kg)::numeric,1)
                    ELSE NULL END as months_cover,
               ROUND(COALESCE(rv.reserved_kg,0)::numeric,2) as team_reserved_kg,
-              ROUND(CASE WHEN p.kg_per_mtr>0 THEN COALESCE(rv.reserved_kg,0)/p.kg_per_mtr ELSE NULL END::numeric,1) as team_reserved_metres,
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN COALESCE(rv.reserved_kg,0)/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as team_reserved_metres,
               (SELECT MAX(date)::date FROM raw_fabric_moves m WHERE m.product_id=i.product_id) as last_move,
               CURRENT_DATE - (SELECT MAX(date)::date FROM raw_fabric_moves m WHERE m.product_id=i.product_id) as days_since_move
             FROM raw_fabric_inventory i
@@ -699,7 +699,7 @@ def ageing(location: str = Query(default="RMAT/Stock"),
               SELECT 
                 i.product_id,
                 i.quantity as qty_kg,
-                CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END as qty_metres,
+                CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE 0 END as qty_metres,
                 i.total_value as value_kes,
                 COALESCE(
                   CURRENT_DATE - MAX(m.date::date),
@@ -710,7 +710,7 @@ def ageing(location: str = Query(default="RMAT/Stock"),
               LEFT JOIN raw_fabric_moves m ON m.product_id = i.product_id
               WHERE i.quantity > 0 {loc_sql}
                 AND {_scope_sql(scope)}
-              GROUP BY i.product_id, i.quantity, p.kg_per_mtr, i.total_value
+              GROUP BY i.product_id, i.quantity, p.kg_per_mtr_eff, i.total_value
             ) sub
             GROUP BY age_band, sort_order
             ORDER BY sort_order
@@ -727,7 +727,7 @@ def consumption(
     with _get_conn() as conn:
         _ensure_fabric_sheet(conn)
         kg_expr = _net_kg("m")  # net of returns: +OUT, −production returns
-        mtr_expr = f"CASE WHEN p.kg_per_mtr>0 THEN ({kg_expr})/p.kg_per_mtr ELSE 0 END"
+        mtr_expr = f"CASE WHEN p.kg_per_mtr_eff>0 THEN ({kg_expr})/p.kg_per_mtr_eff ELSE 0 END"
         base_where = (f"{_net_cons_where('m')} "
                       f"AND {_scope_sql(scope)} "
                       "AND m.date BETWEEN %s AND %s")
@@ -894,8 +894,8 @@ def fabric_mix(
                    i.product_id as product_id,
                    COALESCE(NULLIF(p.name,''), NULLIF(p.default_code,''), 'Unknown') as product_name,
                    ROUND(SUM(i.quantity)::numeric,1) as available_kg,
-                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,1) as available_metres,
-                   ROUND(SUM(CASE WHEN COALESCE(p.kg_per_mtr,0)<=0 THEN i.quantity ELSE 0 END)::numeric,1) as available_kg_nometre,
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE 0 END)::numeric,1) as available_metres,
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr_eff IS NULL THEN i.quantity ELSE 0 END)::numeric,1) as available_kg_nometre,
                    ROUND(SUM(i.total_value)::numeric,0) as tied_up_kes
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
@@ -921,12 +921,12 @@ def fabric_mix(
                    m.product_id as product_id,
                    COALESCE(NULLIF(p.name,''), NULLIF(p.default_code,''), 'Unknown') as product_name,
                    ROUND(SUM({net})::numeric,1) as consumption_kg,
-                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN ({net})/p.kg_per_mtr ELSE 0 END)::numeric,1) as consumption_metres,
-                   ROUND(SUM(CASE WHEN COALESCE(p.kg_per_mtr,0)<=0 THEN ({net}) ELSE 0 END)::numeric,1) as consumption_kg_nometre,
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN ({net})/p.kg_per_mtr_eff ELSE 0 END)::numeric,1) as consumption_metres,
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr_eff IS NULL THEN ({net}) ELSE 0 END)::numeric,1) as consumption_kg_nometre,
                    ROUND(SUM(CASE WHEN m.move_type='OUT' THEN {kg} ELSE 0 END)::numeric,1) as out_kg,
-                   ROUND(SUM(CASE WHEN m.move_type='OUT' AND p.kg_per_mtr>0 THEN {kg}/p.kg_per_mtr ELSE 0 END)::numeric,1) as out_metres,
+                   ROUND(SUM(CASE WHEN m.move_type='OUT' AND p.kg_per_mtr_eff>0 THEN {kg}/p.kg_per_mtr_eff ELSE 0 END)::numeric,1) as out_metres,
                    ROUND(SUM(CASE WHEN m.move_type='INTERNAL' AND m.location_from='{PROD_LOC}' THEN {kg} ELSE 0 END)::numeric,1) as return_kg,
-                   ROUND(SUM(CASE WHEN m.move_type='INTERNAL' AND m.location_from='{PROD_LOC}' AND p.kg_per_mtr>0 THEN {kg}/p.kg_per_mtr ELSE 0 END)::numeric,1) as return_metres
+                   ROUND(SUM(CASE WHEN m.move_type='INTERNAL' AND m.location_from='{PROD_LOC}' AND p.kg_per_mtr_eff>0 THEN {kg}/p.kg_per_mtr_eff ELSE 0 END)::numeric,1) as return_metres
             FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {cons_where}
@@ -946,7 +946,7 @@ def fabric_mix(
                    m.product_id as product_id,
                    to_char(date_trunc('month', m.date::date),'YYYY-MM') AS mon,
                    SUM({net})::numeric as kg,
-                   SUM(CASE WHEN p.kg_per_mtr>0 THEN ({net})/p.kg_per_mtr ELSE 0 END)::numeric as metres
+                   SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN ({net})/p.kg_per_mtr_eff ELSE 0 END)::numeric as metres
             FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {_net_cons_where('m')}
@@ -1153,17 +1153,17 @@ def fabric_mix(
                 SELECT
                   p.id, p.name, p.default_code, p.barcode, p.fabric_category, p.fabric_subcategory,
                   p.fabric_structure, p.plain_print, p.weight_range, p.gsm,
-                  p.width_m, p.kg_per_mtr, p.fiber_content, p.fabric_type,
+                  p.width_m, p.kg_per_mtr_eff as kg_per_mtr, p.kg_per_mtr_src, p.fiber_content, p.fabric_type,
                   p.supplier, p.primary_color, INITCAP(BTRIM(p.fabric_color)) as fabric_color,
                   NULLIF(INITCAP(BTRIM(p.color)),'') as color,
                   ROUND(p.standard_price::numeric,2) as cost_kes,
                   ROUND(p.standard_price::numeric,2) as cost_per_kg,
-                  ROUND(CASE WHEN p.kg_per_mtr>0 THEN p.standard_price*p.kg_per_mtr ELSE NULL END::numeric,2) as cost_metre,
-                  ROUND(CASE WHEN p.kg_per_mtr>0 THEN 1.0/p.kg_per_mtr ELSE NULL END::numeric,3) as m_per_kg,
+                  ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN p.standard_price*p.kg_per_mtr_eff ELSE NULL END::numeric,2) as cost_metre,
+                  ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN 1.0/p.kg_per_mtr_eff ELSE NULL END::numeric,3) as m_per_kg,
                   ROUND(inv.quantity::numeric,2) as qty_kg,
                   ROUND(inv.available::numeric,2) as available_kg,
-                  ROUND(CASE WHEN p.kg_per_mtr>0 THEN inv.quantity/p.kg_per_mtr ELSE NULL END::numeric,1) as qty_metres,
-                  ROUND(CASE WHEN p.kg_per_mtr>0 THEN inv.available/p.kg_per_mtr ELSE NULL END::numeric,1) as available_metres,
+                  ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN inv.quantity/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as qty_metres,
+                  ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN inv.available/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as available_metres,
                   ROUND(inv.total_value::numeric,0) as value_kes,
                   CASE WHEN COALESCE(c.consumed_kg,0) > 0 AND inv.quantity IS NOT NULL
                        THEN ROUND((inv.quantity * ({days}/7.0) / c.consumed_kg)::numeric,1)
@@ -1172,7 +1172,7 @@ def fabric_mix(
                        THEN ROUND((inv.quantity * ({days}/{DAYS_PER_MONTH}) / c.consumed_kg)::numeric,1)
                        ELSE NULL END as months_cover,
                   ROUND(COALESCE(rv.reserved_kg,0)::numeric,2) as team_reserved_kg,
-                  ROUND(CASE WHEN p.kg_per_mtr>0 THEN COALESCE(rv.reserved_kg,0)/p.kg_per_mtr ELSE NULL END::numeric,1) as team_reserved_metres,
+                  ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN COALESCE(rv.reserved_kg,0)/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as team_reserved_metres,
                   (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id) as last_move,
                   CURRENT_DATE - (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id) as days_since_move
                 FROM raw_fabric_products p
@@ -1272,14 +1272,14 @@ def missing_kg_per_metre(scope: str = Query(default="main")):
               p.id, p.default_code, p.name,
               COALESCE(NULLIF(p.fabric_category,''),'Unknown') AS fabric_category,
               COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') AS fabric_subcategory,
-              p.supplier, p.width_m, p.gsm, p.fiber_content,
+              p.supplier, p.width_m, p.gsm, p.fiber_content, p.kg_per_mtr_src,
               ROUND(COALESCE(st.stock_kg,0)::numeric,1) AS stock_kg,
               ROUND(GREATEST(COALESCE(us.usage_kg,0),0)::numeric,1) AS usage_kg,
               (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id) AS last_move
             FROM raw_fabric_products p
             LEFT JOIN stock st ON st.product_id = p.id
             LEFT JOIN usage us ON us.product_id = p.id
-            WHERE COALESCE(p.kg_per_mtr,0) <= 0
+            WHERE p.kg_per_mtr_eff IS NULL
               AND {_scope_sql(scope)}
               AND (COALESCE(st.stock_kg,0) > 0 OR COALESCE(us.usage_kg,0) > 0.05)
         """, list(loc_params))
@@ -1316,9 +1316,9 @@ def dead_stock(scope: str = Query(default="main")):
         rows = q(conn, f"""
             SELECT 
               i.product_name, p.fabric_category, p.fabric_subcategory,
-              p.kg_per_mtr, p.width_m, p.gsm, p.plain_print,
+              p.kg_per_mtr_eff as kg_per_mtr, p.kg_per_mtr_src, p.width_m, p.gsm, p.plain_print,
               ROUND(i.quantity::numeric,1) as qty_kg,
-              ROUND(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE NULL END::numeric,1) as qty_metres,
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as qty_metres,
               ROUND(i.total_value::numeric,0) as value_kes,
               MAX(m.date)::date as last_move,
               CURRENT_DATE - MAX(m.date)::date as days_since_move
@@ -1328,7 +1328,7 @@ def dead_stock(scope: str = Query(default="main")):
             WHERE i.location_name = 'Dead/Stock Fabric' AND i.quantity > 0
               AND {_scope_sql(scope)}
             GROUP BY i.product_name, p.fabric_category, p.fabric_subcategory,
-                     p.kg_per_mtr, p.width_m, p.gsm, p.plain_print,
+                     p.kg_per_mtr_eff, p.kg_per_mtr_src, p.width_m, p.gsm, p.plain_print,
                      i.quantity, i.total_value
             ORDER BY i.total_value DESC
         """)
@@ -1371,9 +1371,9 @@ def bom_lookup(sku: str = Query(default=None), style: str = Query(default=None),
         return q(conn, f"""
             SELECT b.finished_product_name, b.finished_product_sku,
               b.component_name, b.component_qty, b.component_uom,
-              p.fabric_category, p.fabric_subcategory, p.kg_per_mtr,
+              p.fabric_category, p.fabric_subcategory, p.kg_per_mtr_eff as kg_per_mtr, p.kg_per_mtr_src,
               i.quantity as stock_kg,
-              CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE NULL END as stock_metres,
+              CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE NULL END as stock_metres,
               i.location_name
             FROM raw_fabric_boms b
             LEFT JOIN raw_fabric_products p ON p.id = b.component_id
@@ -1393,7 +1393,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Qu
                 SELECT COALESCE(NULLIF(p.{col},''),'Unknown') as value,
                   COUNT(DISTINCT i.product_id) as fabrics,
                   ROUND(SUM(i.quantity)::numeric,0) as qty_kg,
-                  ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,0) as qty_metres,
+                  ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE 0 END)::numeric,0) as qty_metres,
                   ROUND(SUM(i.total_value)::numeric,0) as value_kes
                 FROM raw_fabric_inventory i
                 JOIN raw_fabric_products p ON p.id = i.product_id
@@ -1407,7 +1407,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Qu
         fiber = q(conn, f"""
             SELECT p.fiber_content as value,
               COUNT(DISTINCT i.product_id) as fabrics,
-              ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,0) as qty_metres,
+              ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE 0 END)::numeric,0) as qty_metres,
               ROUND(SUM(i.total_value)::numeric,0) as value_kes
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
@@ -1463,8 +1463,8 @@ def color_mix(
                    COALESCE(NULLIF(p.name,''),'') as name,
                    COALESCE(NULLIF(p.fabric_color,''),'') as fabric_color,
                    ROUND(SUM(i.quantity)::numeric,1) as kg,
-                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,1) as metres,
-                   ROUND(SUM(CASE WHEN COALESCE(p.kg_per_mtr,0)<=0 THEN i.quantity ELSE 0 END)::numeric,1) as kg_nometre
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE 0 END)::numeric,1) as metres,
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr_eff IS NULL THEN i.quantity ELSE 0 END)::numeric,1) as kg_nometre
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE i.quantity > 0 AND p.category = 'Fabric' {loc_sql}
@@ -1483,8 +1483,8 @@ def color_mix(
                    COALESCE(NULLIF(p.name,''),'') as name,
                    COALESCE(NULLIF(p.fabric_color,''),'') as fabric_color,
                    ROUND(SUM({net})::numeric,1) as kg,
-                   ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN ({net})/p.kg_per_mtr ELSE 0 END)::numeric,1) as metres,
-                   ROUND(SUM(CASE WHEN COALESCE(p.kg_per_mtr,0)<=0 THEN ({net}) ELSE 0 END)::numeric,1) as kg_nometre
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN ({net})/p.kg_per_mtr_eff ELSE 0 END)::numeric,1) as metres,
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr_eff IS NULL THEN ({net}) ELSE 0 END)::numeric,1) as kg_nometre
             FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {cons_where}
@@ -1735,13 +1735,13 @@ def product_search(q_: str = Query(default="", alias="q"), limit: int = Query(de
             params += [f"%{term}%", f"%{term}%", f"%{term}%"]
         return q(conn, f"""
             SELECT p.id, p.name, p.default_code, p.uom,
-              ROUND(p.kg_per_mtr::numeric,4) as kg_per_mtr,
+              ROUND(p.kg_per_mtr_eff::numeric,4) as kg_per_mtr, p.kg_per_mtr_src,
               ROUND(SUM(i.available)::numeric,2) as available_kg,
-              ROUND(CASE WHEN p.kg_per_mtr>0 THEN SUM(i.available)/p.kg_per_mtr ELSE NULL END::numeric,1) as available_metres
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN SUM(i.available)/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as available_metres
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE {where}
-            GROUP BY p.id, p.name, p.default_code, p.uom, p.kg_per_mtr
+            GROUP BY p.id, p.name, p.default_code, p.uom, p.kg_per_mtr_eff, p.kg_per_mtr_src
             ORDER BY p.name
             LIMIT %s
         """, params + [limit])
@@ -1767,10 +1767,10 @@ def list_reservations(status: str = Query(default="active"), search: str = Query
             SELECT r.id, r.product_id, r.qty, r.uom, r.qty_kg, r.style_name, r.note,
               r.status, r.reserved_by_name, r.reserved_at::date as reserved_on,
               r.used_at::date as used_on, r.used_by,
-              p.name as fabric_name, p.default_code, p.kg_per_mtr,
-              ROUND(CASE WHEN p.kg_per_mtr>0 THEN r.qty_kg/p.kg_per_mtr ELSE NULL END::numeric,1) as qty_metres,
+              p.name as fabric_name, p.default_code, p.kg_per_mtr_eff as kg_per_mtr,
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN r.qty_kg/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as qty_metres,
               ROUND(COALESCE(s.soh_kg,0)::numeric,2) as soh_kg,
-              ROUND(CASE WHEN p.kg_per_mtr>0 THEN COALESCE(s.soh_kg,0)/p.kg_per_mtr ELSE NULL END::numeric,1) as soh_metres,
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN COALESCE(s.soh_kg,0)/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as soh_metres,
               (CURRENT_DATE - r.reserved_at::date) as days_reserved,
               CASE WHEN r.used_at IS NOT NULL
                    THEN (r.used_at::date - r.reserved_at::date) END as days_to_use
@@ -1804,11 +1804,11 @@ def create_reservation(request: Request, body: dict = Body(...)):
     uid, name = _fabric_actor(request)
     with _get_conn() as conn:
         _ensure_fabric_tables(conn)
-        prod = q(conn, "SELECT id, name, kg_per_mtr FROM raw_fabric_products WHERE id=%s",
+        prod = q(conn, "SELECT id, name, kg_per_mtr_eff FROM raw_fabric_products WHERE id=%s",
                  (product_id,))
         if not prod:
             raise HTTPException(status_code=404, detail="fabric not found")
-        kg_per_mtr = prod[0].get("kg_per_mtr") or 0
+        kg_per_mtr = prod[0].get("kg_per_mtr_eff") or 0
         if uom == "kg":
             qty_kg = qty
         else:  # metres → kg

@@ -145,6 +145,33 @@ def extract_products(uid, models, cur, now):
         ADD COLUMN IF NOT EXISTS primary_color TEXT
     """)
 
+    # Effective Kg/Mtr + source flag — code-defined derived columns (generated,
+    # so they stay in lockstep with the stored attributes on every extract and
+    # auto-populate on dev AND prod). The stored kg_per_mtr is authoritative when
+    # present (> 0); otherwise fall back to the confirmed formula
+    # Kg/Mtr = Width (m) × GSM ÷ 1000 when BOTH width_m and gsm are present.
+    # kg_per_mtr_src marks each row: 'stored' / 'derived' / 'incomplete'.
+    cur.execute("""
+        ALTER TABLE raw_fabric_products
+        ADD COLUMN IF NOT EXISTS kg_per_mtr_eff NUMERIC
+          GENERATED ALWAYS AS (
+            CASE
+              WHEN COALESCE(kg_per_mtr,0) > 0 THEN kg_per_mtr
+              WHEN COALESCE(width_m,0) > 0 AND COALESCE(gsm,0) > 0
+                   THEN width_m * gsm / 1000.0
+              ELSE NULL
+            END
+          ) STORED,
+        ADD COLUMN IF NOT EXISTS kg_per_mtr_src TEXT
+          GENERATED ALWAYS AS (
+            CASE
+              WHEN COALESCE(kg_per_mtr,0) > 0 THEN 'stored'
+              WHEN COALESCE(width_m,0) > 0 AND COALESCE(gsm,0) > 0 THEN 'derived'
+              ELSE 'incomplete'
+            END
+          ) STORED
+    """)
+
     batch_size = 200
     offset = 0
     rows = []
