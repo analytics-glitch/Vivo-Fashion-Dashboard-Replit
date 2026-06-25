@@ -13,6 +13,8 @@ import {
   CaretDown,
   ShieldCheck,
   Gauge,
+  Eye,
+  UsersThree,
   ClockClockwise,
   ArrowsClockwise,
   Truck,
@@ -174,6 +176,20 @@ const UserMenu = () => {
                 data-testid="menu-store-clusters"
               >
                 <Stack size={13} /> Store Clusters
+              </button>
+              <button
+                className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-panel flex items-center gap-2"
+                onClick={() => { setOpen(false); navigate("/admin/group-access"); }}
+                data-testid="menu-group-access"
+              >
+                <UsersThree size={13} /> Group Access
+              </button>
+              <button
+                className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-panel flex items-center gap-2"
+                onClick={() => { setOpen(false); navigate("/admin/page-visibility"); }}
+                data-testid="menu-page-visibility"
+              >
+                <Eye size={13} /> Page Visibility
               </button>
               <button
                 className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-panel flex items-center gap-2"
