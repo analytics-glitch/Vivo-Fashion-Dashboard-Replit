@@ -907,6 +907,9 @@ let supportRows=[];
 let supportOpen={};
 let supportProds={};
 let supportBound=false;
+// Register-shaped support product rows indexed by id so a barcode-link click can
+// resolve back to the full row for the shared fabric detail card (mirrors mixDetailById).
+let supDetailById={};
 const supKey=r=>(r.category||'')+SUP_SEP+(r.subcategory||'');
 function renderSupportTable(rows){
   if(rows!==undefined)supportRows=rows||[];
@@ -915,6 +918,10 @@ function renderSupportTable(rows){
     // Delegated expand/collapse — read the group key from a data-* attribute
     // (never an inline handler), mirroring the Stock Mix drill-down.
     b.addEventListener('click',e=>{
+      // Product barcode → shared fabric detail card (Register field set). Checked
+      // first so the click never falls through to row expand/collapse.
+      const ab=e.target.closest('a.sup-barcode');
+      if(ab){e.preventDefault();openFabricDetailFromSupport(ab.dataset.fabId);return;}
       // Retry a failed product drill-down (checked first so it doesn't fall
       // through to a row toggle). The group key carries enough to refetch.
       const rl=e.target.closest('a.sup-retry');
@@ -957,11 +964,18 @@ function renderSupportProductRows(key){
   const items=Array.isArray(p)?p:[];
   if(!items.length)return cell('No individual products in this group.');
   return items.map(it=>{
-    const code=esc(it.default_code||it.barcode||'—');
+    // Index the register-shaped row so a barcode-link click can resolve back to it.
+    if(it.id!=null)supDetailById[String(it.id)]=it;
+    const rawCode=fabricCode(it);
+    // Clickable barcode → shared fabric detail card (Register field set), mirroring
+    // the Stock Mix barcode link styling. Falls back to plain text when no barcode.
+    const code=rawCode
+      ? `<a href="#" class="sup-barcode" data-fab-id="${esc(it.id)}" title="View all fabric details" style="color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px;font-size:.92em;">${esc(rawCode)}</a>`
+      : '—';
     const meta=[it.supplier,it.fabric_structure].map(x=>fabricClean(x)).filter(Boolean).map(esc).join(' · ');
     return `<tr class="sup-prod">
        <td></td>
-       <td style="padding-left:24px;color:var(--accent);font-size:.92em;">${code}</td>
+       <td style="padding-left:24px;font-size:.92em;">${code}</td>
        <td style="color:var(--text-sub);font-size:.92em;">${esc(it.name||'—')}${meta?`<div class="muted" style="font-size:.85em;">${meta}</div>`:''}</td>
        <td></td>
        <td style="text-align:right;color:var(--text-sub);">${fmt(it.qty_metres)}</td>
@@ -2170,6 +2184,13 @@ function openFabricDetailFromMix(id){
   const r=mixDetailById[String(id)];
   if(!r)return;
   renderFabricDetail(r,MIX_DETAIL_KEYS);
+}
+// Open the detail card for a Support Fabrics product row. The rows are already
+// register-shaped (from /api/fabric/register), so use the Register field set.
+function openFabricDetailFromSupport(id){
+  const r=supDetailById[String(id)];
+  if(!r)return;
+  renderFabricDetail(r,DETAIL_KEYS);
 }
 function closeFabricDetail(){document.getElementById('fab-detail-overlay').style.display='none';}
 function renderRegisterTable(){
