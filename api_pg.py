@@ -4175,10 +4175,20 @@ def get_product_image(sku: str):
 
 
 @app.get("/api/product-search")
-def product_search(q: str = Query(default="")):
+def product_search(
+    q: str = Query(default=""),
+    date_from: str = Query(default=None),
+    date_to:   str = Query(default=None),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
     """Typeahead for the Products-page finder. Matches a free-text query against
     style_name / sku / barcode / product_name / colour and returns one row per
-    SKU variant so the UI can group the results style > SKU/barcode."""
+    SKU variant so the UI can group the results style > SKU/barcode.
+
+    When a date window is supplied, each matched SKU is enriched with
+    units_sold (over the window) + current_stock (excl. warehouses) so the STS
+    table can render searched items as in-table rows with its own columns."""
     term = (q or "").strip()
     if len(term) < 2:
         return {"options": []}
@@ -4191,7 +4201,9 @@ def product_search(q: str = Query(default="")):
             "       COALESCE(p.style_name,'') AS style_name, "
             "       COALESCE(NULLIF(p.product_name,''), p.style_name) AS product_name, "
             "       COALESCE(p.color_print,'') AS color, "
-            "       COALESCE(p.size,'') AS size "
+            "       COALESCE(p.size,'') AS size, "
+            "       COALESCE(NULLIF(p.category,''),'') AS category, "
+            "       COALESCE(NULLIF(p.product_type,''),'') AS subcategory "
             "FROM all_products_clean p "
             "WHERE p.sku IS NOT NULL AND p.sku <> '' AND ("
             "      LOWER(p.sku) LIKE LOWER(%s) "
@@ -4205,18 +4217,44 @@ def product_search(q: str = Query(default="")):
         )
         cols = [c[0] for c in cur.description]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+        # Collapse any duplicate SKU rows (keep first, preserving display order).
+        seen = set()
+        deduped = []
+        for r in rows:
+            key = r.get("sku")
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(r)
+
+        # Optional STS-metric enrichment for the matched SKUs.
+        if deduped and date_from and date_to:
+            skus = [r["sku"] for r in deduped]
+            sales_where = build_filters(
+                date_from, date_to, country, channel,
+                extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0",
+            ).replace("%", "%%")
+            cur.execute(
+                "SELECT s.variant_sku AS sku, SUM(s.ordered_item_quantity) AS units_sold "
+                "FROM all_sales s WHERE " + sales_where +
+                "  AND s.variant_sku = ANY(%s) GROUP BY s.variant_sku",
+                (skus,),
+            )
+            sold = {r[0]: int(r[1] or 0) for r in cur.fetchall()}
+            cur.execute(
+                "SELECT i.sku, SUM(i.available) AS current_stock "
+                "FROM all_inventory i "
+                "WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ") "
+                "  AND i.sku = ANY(%s) GROUP BY i.sku",
+                (skus,),
+            )
+            stock = {r[0]: int(r[1] or 0) for r in cur.fetchall()}
+            for r in deduped:
+                r["units_sold"] = sold.get(r["sku"], 0)
+                r["current_stock"] = stock.get(r["sku"], 0)
     finally:
         conn.close()
-    # Collapse any duplicate SKU rows in all_products_clean (keep first, which
-    # preserves the style/size/sku display order) so the dropdown has no dupes.
-    seen = set()
-    deduped = []
-    for r in rows:
-        key = r.get("sku")
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(r)
     return {"options": deduped}
 
 
@@ -4379,6 +4417,181 @@ def product_tree(
         return {"level": level, "items": deduped}
 
     return {"level": level, "items": rows}
+
+
+# Bucket expressions shared by the STS in-table drill-down so NULL/'' collapse
+# to one stable bucket value (mirrors /api/product-tree).
+_STS_CAT = "COALESCE(NULLIF(p.category,''),'')"
+_STS_SUB = "COALESCE(NULLIF(p.product_type,''),'')"
+_STS_STY = "COALESCE(NULLIF(p.style_name,''),'')"
+
+
+@app.get("/api/analytics/stock-to-sales-drill")
+def analytics_sts_drill(
+    level: str = Query(default="style"),   # "style" | "variant"
+    category: str = Query(default=""),
+    subcategory: str = Query(default=""),
+    style: str = Query(default=""),
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    """Lazy drill children WITH stock-to-sales metrics for the in-table Products
+    drill-down: units_sold over the selected window + current_stock (excl.
+    warehouses). The % shares and variance are computed CLIENT-side against the
+    category-table grand totals so every level nests cleanly under its parent.
+
+      level=style   -> styles within category+subcategory
+      level=variant -> SKU/barcode variants within category+subcategory+style
+    """
+    cat = (category or "").strip()
+    sub = (subcategory or "").strip()
+    sty = (style or "").strip()
+    # build_filters injects BASE_FILTERS, which contains literal '%' (gift-card
+    # excludes). Double them so psycopg treats them as literals while we bind
+    # the cat/sub/sty values as %s params (see psycopg2-literal-percent memory).
+    sales_where = build_filters(
+        date_from, date_to, country, channel,
+        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0",
+    ).replace("%", "%%")
+
+    if level == "variant":
+        sql = (
+            "WITH sales AS ("
+            "  SELECT p.sku AS k, SUM(s.ordered_item_quantity) AS units_sold "
+            "  FROM all_sales s JOIN all_products_clean p ON s.variant_sku = p.sku "
+            "  WHERE " + sales_where +
+            "    AND " + _STS_CAT + " = %s AND " + _STS_SUB + " = %s AND " + _STS_STY + " = %s "
+            "  GROUP BY p.sku"
+            "), stock AS ("
+            "  SELECT i.sku AS k, SUM(i.available) AS current_stock "
+            "  FROM all_inventory i "
+            "  WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ") "
+            "  GROUP BY i.sku"
+            ") "
+            "SELECT p.sku, COALESCE(p.barcode,'') AS barcode, "
+            "  COALESCE(p.style_name,'') AS style_name, "
+            "  COALESCE(NULLIF(p.product_name,''), p.style_name) AS product_name, "
+            "  COALESCE(p.color_print,'') AS color, COALESCE(p.size,'') AS size, "
+            "  COALESCE(sa.units_sold,0) AS units_sold, "
+            "  COALESCE(st.current_stock,0) AS current_stock "
+            "FROM all_products_clean p "
+            "LEFT JOIN sales sa ON sa.k = p.sku "
+            "LEFT JOIN stock st ON st.k = p.sku "
+            "WHERE p.sku IS NOT NULL AND p.sku <> '' "
+            "  AND " + _STS_CAT + " = %s AND " + _STS_SUB + " = %s AND " + _STS_STY + " = %s "
+            "ORDER BY p.size NULLS LAST, p.sku"
+        )
+        params = (cat, sub, sty, cat, sub, sty)
+    else:  # style
+        sql = (
+            "WITH sales AS ("
+            "  SELECT " + _STS_STY + " AS k, SUM(s.ordered_item_quantity) AS units_sold "
+            "  FROM all_sales s JOIN all_products_clean p ON s.variant_sku = p.sku "
+            "  WHERE " + sales_where +
+            "    AND " + _STS_CAT + " = %s AND " + _STS_SUB + " = %s "
+            "  GROUP BY 1"
+            "), stock AS ("
+            "  SELECT " + _STS_STY + " AS k, SUM(i.available) AS current_stock "
+            "  FROM all_inventory i JOIN all_products_clean p ON i.sku = p.sku "
+            "  WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ") "
+            "    AND " + _STS_CAT + " = %s AND " + _STS_SUB + " = %s "
+            "  GROUP BY 1"
+            "), base AS ("
+            "  SELECT " + _STS_STY + " AS val, COUNT(DISTINCT p.sku) AS skus "
+            "  FROM all_products_clean p "
+            "  WHERE p.sku IS NOT NULL AND p.sku <> '' "
+            "    AND " + _STS_CAT + " = %s AND " + _STS_SUB + " = %s "
+            "  GROUP BY 1"
+            ") "
+            "SELECT b.val, b.skus, "
+            "  COALESCE(sa.units_sold,0) AS units_sold, "
+            "  COALESCE(st.current_stock,0) AS current_stock "
+            "FROM base b "
+            "LEFT JOIN sales sa ON sa.k = b.val "
+            "LEFT JOIN stock st ON st.k = b.val "
+            "ORDER BY (b.val = '') ASC, COALESCE(sa.units_sold,0) DESC, b.val ASC"
+        )
+        params = (cat, sub, cat, sub, cat, sub)
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        cols = [c[0] for c in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    if level == "variant":
+        seen, deduped = set(), []
+        for r in rows:
+            if r.get("sku") in seen:
+                continue
+            seen.add(r["sku"])
+            deduped.append(r)
+        rows = deduped
+    return {"level": level, "items": rows}
+
+
+@app.get("/api/analytics/stock-to-sales-export")
+def analytics_sts_export(
+    grain: str = Query(default="product"),   # currently only "product"
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    """Flat per-SKU stock-to-sales rows for the table's CSV-export dropdown
+    ("All products — full stock mix" and, filtered client-side by risk flag,
+    "Action items only"). One row per active SKU (current_stock>0 OR sold>0)
+    with its category/subcategory/style + units_sold (window) + current_stock."""
+    sales_where = build_filters(
+        date_from, date_to, country, channel,
+        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0",
+    ).replace("%", "%%")
+    sql = (
+        "WITH sales AS ("
+        "  SELECT p.sku AS k, SUM(s.ordered_item_quantity) AS units_sold "
+        "  FROM all_sales s JOIN all_products_clean p ON s.variant_sku = p.sku "
+        "  WHERE " + sales_where +
+        "  GROUP BY p.sku"
+        "), stock AS ("
+        "  SELECT i.sku AS k, SUM(i.available) AS current_stock "
+        "  FROM all_inventory i "
+        "  WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ") "
+        "  GROUP BY i.sku"
+        ") "
+        "SELECT " + _STS_CAT + " AS category, " + _STS_SUB + " AS subcategory, "
+        "  COALESCE(p.style_name,'') AS style_name, p.sku, "
+        "  COALESCE(p.barcode,'') AS barcode, "
+        "  COALESCE(p.color_print,'') AS color, COALESCE(p.size,'') AS size, "
+        "  COALESCE(sa.units_sold,0) AS units_sold, "
+        "  COALESCE(st.current_stock,0) AS current_stock "
+        "FROM all_products_clean p "
+        "LEFT JOIN sales sa ON sa.k = p.sku "
+        "LEFT JOIN stock st ON st.k = p.sku "
+        "WHERE p.sku IS NOT NULL AND p.sku <> '' "
+        "  AND (COALESCE(st.current_stock,0) > 0 OR COALESCE(sa.units_sold,0) > 0) "
+        "ORDER BY category, subcategory, style_name, p.sku "
+        "LIMIT 50000"
+    )
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql)
+        cols = [c[0] for c in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+    seen, deduped = set(), []
+    for r in rows:
+        if r.get("sku") in seen:
+            continue
+        seen.add(r["sku"])
+        deduped.append(r)
+    return {"items": deduped}
 
 
 @app.get("/api/customer-products")

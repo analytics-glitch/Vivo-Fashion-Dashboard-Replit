@@ -10,10 +10,8 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import MultiSelect from "@/components/MultiSelect";
 import StyleStatusToggle from "@/components/StyleStatusToggle";
 import SortableTable from "@/components/SortableTable";
-import CategoryAccordionTable from "@/components/CategoryAccordionTable";
 import ProductThumbnail from "@/components/ProductThumbnail";
-import ProductFinder from "@/components/ProductFinder";
-import ProductCategoryTree from "@/components/ProductCategoryTree";
+import StockToSalesDrillTable from "@/components/StockToSalesDrillTable";
 import SorNewStylesL10 from "@/components/SorNewStylesL10";
 import SorAllStyles from "@/components/SorAllStyles";
 import NewStylesSalesCurve from "@/components/NewStylesSalesCurve";
@@ -40,7 +38,6 @@ const Products = () => {
   const [brands, setBrands] = useState([]);
   const [merchCats, setMerchCats] = useState([]);
   const [merchSubs, setMerchSubs] = useState([]);
-  const [stsView, setStsView] = useState("flat"); // "flat" | "grouped"
   // Iter 89w — Active/Retired/All filter. Default "active" so the live
   // catalog reads on first load.
   const [styleStatus, setStyleStatus] = useState("all");
@@ -88,6 +85,21 @@ const Products = () => {
       date_to: to.toISOString().slice(0, 10),
     };
   }, [stsWindowDays, stsCustomFrom, stsCustomTo]);
+
+  // Params the in-table STS drill-down + search + product-grain export share,
+  // so every drill level / searched row / CSV reconciles to the SAME window
+  // and country/channel scope as the category & subcategory rows above them.
+  const drillParams = useMemo(() => {
+    if (!windowRange) return null;
+    const p = buildParams(filters);
+    return {
+      date_from: windowRange.date_from,
+      date_to: windowRange.date_to,
+      ...(p.country ? { country: p.country } : {}),
+      ...(p.channel ? { channel: p.channel } : {}),
+    };
+    // eslint-disable-next-line
+  }, [windowRange, JSON.stringify(countries), JSON.stringify(channels)]);
 
   // Switching to "Custom" seeds the empty pickers from the current
   // numeric window so the user starts from a sensible range.
@@ -500,70 +512,15 @@ const Products = () => {
           <div className="card-white p-5" data-testid="sts-subcat-table">
             <SectionTitle
               title="Stock-to-Sales · by Subcategory"
-              subtitle="Granular view — one row per merchandise subcategory. Switch to Grouped to fold rows under collapsible category headers. Red = action needed (stockout or overstock risk). Green = healthy balance."
+              subtitle="Expand any row to drill Category → Subcategory → Style → SKU/Barcode without leaving the table. Search to pin matching products in as rows. Red = action needed (stockout or overstock risk). Green = healthy balance."
             />
-            <ProductCategoryTree />
-            <ProductFinder />
-            <div className="flex justify-end mb-2 -mt-1">
-              <div className="inline-flex rounded-md overflow-hidden border border-[#fcd9b6]" data-testid="sts-view-toggle">
-                <button
-                  onClick={() => setStsView("flat")}
-                  data-testid="sts-view-flat"
-                  className={`text-[11px] font-bold px-2.5 py-1 transition-colors ${stsView === "flat" ? "bg-[#1a5c38] text-white" : "bg-white text-[#1a5c38] hover:bg-[#fef3e0]"}`}
-                >
-                  Flat table
-                </button>
-                <button
-                  onClick={() => setStsView("grouped")}
-                  data-testid="sts-view-grouped"
-                  className={`text-[11px] font-bold px-2.5 py-1 transition-colors ${stsView === "grouped" ? "bg-[#1a5c38] text-white" : "bg-white text-[#1a5c38] hover:bg-[#fef3e0]"}`}
-                >
-                  Grouped by category
-                </button>
-              </div>
-            </div>
-            {stsView === "grouped" ? (
-              <CategoryAccordionTable
-                rows={filteredStockSales}
-                categoryFor={categoryFor}
-                testId="sts-subcat-grouped"
-                exportName="stock-to-sales-by-subcategory-grouped.csv"
-              />
-            ) : (
-            <SortableTable
-              testId="sts-subcat"
-              exportName="stock-to-sales-by-subcategory.csv"
-              initialSort={{ key: "variance", dir: "desc" }}
-              secondarySort={{ key: "units_sold", dir: "desc" }}
-              columns={[
-                { key: "category", label: "Category", align: "left",
-                  sortValue: (r) => categoryFor(r.subcategory) || "",
-                  render: (r) => <span className="pill-neutral">{categoryFor(r.subcategory) || "—"}</span>,
-                  csv: (r) => categoryFor(r.subcategory) || "" },
-                { key: "subcategory", label: "Subcategory", align: "left" },
-                { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold), csv: (r) => r.units_sold },
-                { key: "current_stock", label: "Inventory", numeric: true, render: (r) => fmtNum(r.current_stock), csv: (r) => r.current_stock },
-                { key: "pct_of_total_sold", label: "% of Total Sales", numeric: true, render: (r) => fmtPct(r.pct_of_total_sold, 2), csv: (r) => r.pct_of_total_sold?.toFixed(2) },
-                { key: "pct_of_total_stock", label: "% of Total Inventory", numeric: true, render: (r) => fmtPct(r.pct_of_total_stock, 2), csv: (r) => r.pct_of_total_stock?.toFixed(2) },
-                {
-                  key: "variance",
-                  label: "Variance %",
-                  numeric: true,
-                  sortValue: (r) => Math.abs(r.variance || 0),
-                  render: (r) => <VarianceCell value={r.variance} />,
-                  csv: (r) => r.variance?.toFixed(2),
-                },
-                {
-                  key: "risk_flag",
-                  label: "Risk Flag",
-                  align: "left",
-                  render: (r) => <span className="text-[11px] text-muted">{varianceFlag(r.variance)}</span>,
-                  csv: (r) => varianceFlag(r.variance),
-                },
-              ]}
-              rows={filteredStockSales}
+            <StockToSalesDrillTable
+              catRows={filteredStsByCat}
+              subRows={filteredStockSales}
+              categoryFor={categoryFor}
+              drillParams={drillParams}
+              testId="sts-subcat-drill"
             />
-            )}
           </div>
 
           {/* ---- Product Performance by Category / Subcategory ---- */}
