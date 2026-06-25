@@ -13,7 +13,6 @@ import {
 const ALL_FROM = "2020-01-01";
 const RANGE_PRESETS = [
   { label: "All", from: ALL_FROM },
-  { label: "Yesterday", yesterday: true },
   { label: "30d", days: 30 },
   { label: "60d", days: 60 },
   { label: "90d", days: 90 },

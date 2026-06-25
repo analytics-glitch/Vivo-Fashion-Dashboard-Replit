@@ -37,13 +37,6 @@ import ReplenishmentTransferReport from "@/components/ReplenishmentTransferRepor
  *    fulfilment rate per row.
  */
 
-const fmtDateInput = (d) => {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-};
-
 // Colour only — show the colour name; the generic print/plain value is dropped.
 const fmtColourPrint = (r) => (r?.color_print || "").trim();
 
@@ -80,8 +73,10 @@ const Replenishments = () => {
     eat.setUTCDate(eat.getUTCDate() - 1);
     return eat.toISOString().slice(0, 10);
   }, []);
-  const [dateFrom, setDateFrom] = useState(yesterdayEat);
-  const [dateTo, setDateTo] = useState(todayEat);
+  // Pick list is locked to YESTERDAY only — operators reconcile the prior
+  // trading day's sell-through, so the window is fixed (no date picker).
+  const [dateFrom] = useState(yesterdayEat);
+  const [dateTo] = useState(yesterdayEat);
 
   // Owner config (persisted server-side). Roster state moved into
   // <ReplenishmentRosterCard> (iter 78); we still keep a "saved" tick
@@ -721,20 +716,10 @@ const Replenishments = () => {
               · window {windowLabel}
             </span>
           </h2>
-          <label className="inline-flex items-center gap-2 text-[12px] font-semibold">
-            <CalendarIcon size={14} weight="bold" className="text-brand" /> From
-            <input type="date" value={dateFrom} max={dateTo}
-              onChange={(e) => setDateFrom(e.target.value)}
-              data-testid="replen-date-from"
-              className="input-pill text-[12px] py-1.5 px-3" />
-          </label>
-          <label className="inline-flex items-center gap-2 text-[12px] font-semibold">
-            To
-            <input type="date" value={dateTo} min={dateFrom} max={fmtDateInput(new Date())}
-              onChange={(e) => setDateTo(e.target.value)}
-              data-testid="replen-date-to"
-              className="input-pill text-[12px] py-1.5 px-3" />
-          </label>
+          <span className="inline-flex items-center gap-2 text-[12px] font-semibold text-brand"
+            data-testid="replen-date-fixed">
+            <CalendarIcon size={14} weight="bold" /> Yesterday · {dateFrom}
+          </span>
 
           {/* B2 — list vs forward calendar + Operations export. */}
           <div className="ml-auto flex items-center gap-2">
