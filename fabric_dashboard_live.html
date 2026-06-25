@@ -700,7 +700,7 @@ const FX={
   // Overview charts
   catStock:'Category stock = sum of on-hand quantity for fabrics in this category. Share = this category\u2019s metres ÷ total metres across all categories.',
   printShare:'Share = this pattern type\u2019s metres ÷ total metres across all patterns. Always a share of total metres, so it does not change with the kg/metres toggle.',
-  colorCovers:'Monthly covers = on-hand stock metres \u00f7 the last-30-day consumption metres for this colour (30 days \u2248 one month), so it reads as how many months the current stock lasts at the recent run-rate. Uses a FIXED trailing 30-day window (unlike the rest of the page) and differs from the Stock Mix "Months of cover" KPI, which uses a 6-month average. Colours with stock but no usage in the window show "no usage \u00b7 \u221e".',
+  colorGap:'Gap (pp) = this colour\u2019s on-hand-stock share (%) \u2212 its 30-day-consumption share (%), in percentage points. Positive = held more than it is being used (overstocked); negative = used faster than its stock share (short); near zero = in balance.',
   structureValue:'Structure value = sum of stock value (KES) for fabrics of this structure (knit / woven).',
   // Ageing
   ageTotalValue:'Total stock value = sum of stock value (KES) at the selected location.',
@@ -1875,24 +1875,18 @@ function renderColorMerged(d){
      <th>Colour</th>
      <th style="text-align:right;">On-hand stock</th>
      <th style="text-align:right;">Consumption (30d)</th>
-     <th style="text-align:right;"${fx(FX.colorCovers)}>Monthly covers</th>
+     <th style="text-align:right;"${fx(FX.colorGap)}>Gap (pp)</th>
     </tr></thead><tbody>`+rows.map(r=>{
     const c=FABRIC_COLOR_SWATCH[r.color]||'#6b7280';
     const sM=r.stock_metres||0, cM=r.cons_metres||0;
     const sPct=totStockM>0?(sM/totStockM*100):0;
     const cPct=totConsM>0?(cM/totConsM*100):0;
-    let cover;
-    if(r.covers_months==null){
-      cover=(sM>0)?'<span class="muted" title="Stock on hand but ~no consumption in the last 30 days — covers is effectively infinite.">no usage &middot; &infin;</span>':'<span class="muted">&mdash;</span>';
-    }else{
-      const n=r.covers_months;
-      cover=`${n<10?n.toFixed(1):Math.round(n)} <span class="bar-sub">mo</span>`;
-    }
+    const gap=sPct-cPct;
     return `<tr>
      <td><span class="dot" style="background:${c};border:1px solid rgba(0,0,0,.15)"></span>${esc(r.color)}</td>
      <td style="text-align:right;">${fmt(sM)} m${star(!!r.stock_metres_incomplete)} <span class="bar-sub">${sPct.toFixed(1)}%</span></td>
      <td style="text-align:right;">${fmt(cM)} m${star(!!r.cons_metres_incomplete)} <span class="bar-sub">${cPct.toFixed(1)}%</span></td>
-     <td style="text-align:right;">${cover}</td>
+     <td style="text-align:right;">${gapChip(gap)}</td>
     </tr>`;
   }).join('')+'</tbody></table></div>';
 }
