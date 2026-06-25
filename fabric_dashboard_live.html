@@ -342,10 +342,13 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div class="tbl-wrap">
       <table class="data">
        <thead><tr>
+        <th style="width:28px;"></th>
         <th>Category</th><th>Sub-category</th>
         <th style="text-align:right;">Fabrics</th>
         <th style="text-align:right;">Metres</th>
         <th style="text-align:right;">Kg</th>
+        <th style="text-align:right;">Cost per Kg</th>
+        <th style="text-align:right;">Cost per metre</th>
         <th style="text-align:right;">Value</th>
        </tr></thead>
        <tbody id="support-body"><tr><td class="loading">Loading…</td></tr></tbody>
@@ -884,7 +887,7 @@ async function loadSupport(){
     renderSupportKpis(d);
     renderSupportTable(cat);
     document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString();
-  }catch(e){showErr('support-kpis',e);const b=document.getElementById('support-body');if(b)b.innerHTML='<tr><td colspan="6" class="muted">Failed to load.</td></tr>';}
+  }catch(e){showErr('support-kpis',e);const b=document.getElementById('support-body');if(b)b.innerHTML='<tr><td colspan="9" class="muted">Failed to load.</td></tr>';}
 }
 function renderSupportKpis(d){
   const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
@@ -895,18 +898,90 @@ function renderSupportKpis(d){
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value">${fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger">${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">support fabrics</p></div>`;
 }
+// Support Fabrics drill-down state. supportRows holds the last category summary
+// so the delegated click handler can re-render; supportOpen tracks expanded
+// groups; supportProds caches each group's product rows ('loading' | {error} |
+// array) so re-expanding never refetches. Key = category\u0001subcategory.
+const SUP_SEP='\u0001';
+let supportRows=[];
+let supportOpen={};
+let supportProds={};
+let supportBound=false;
+const supKey=r=>(r.category||'')+SUP_SEP+(r.subcategory||'');
 function renderSupportTable(rows){
-  rows=rows||[];
+  if(rows!==undefined)supportRows=rows||[];
   const b=document.getElementById('support-body'); if(!b)return;
-  if(!rows.length){b.innerHTML='<tr><td colspan="6" class="muted">No support fabrics in stock.</td></tr>';return;}
-  b.innerHTML=rows.map(r=>`<tr>
-     <td>${esc(r.category||'—')}</td>
-     <td>${esc(r.subcategory||'—')}</td>
-     <td style="text-align:right;">${fmt(r.fabrics)}</td>
-     <td style="text-align:right;">${fmt(r.qty_metres)}</td>
-     <td style="text-align:right;">${fmt1(r.qty_kg)}</td>
-     <td style="text-align:right;">${fmtKES(r.value_kes)}</td>
-    </tr>`).join('');
+  if(!supportBound){
+    // Delegated expand/collapse — read the group key from a data-* attribute
+    // (never an inline handler), mirroring the Stock Mix drill-down.
+    b.addEventListener('click',e=>{
+      // Retry a failed product drill-down (checked first so it doesn't fall
+      // through to a row toggle). The group key carries enough to refetch.
+      const rl=e.target.closest('a.sup-retry');
+      if(rl){e.preventDefault();const k=rl.dataset.key||'';const parts=k.split(SUP_SEP);supportProds[k]=undefined;loadSupportProducts(parts[0]||'',parts[1]||'',k);return;}
+      const tr=e.target.closest('tr.sup-cat');
+      if(!tr||tr.dataset.key==null)return;
+      const key=tr.dataset.key;
+      supportOpen[key]=!supportOpen[key];
+      if(supportOpen[key]&&supportProds[key]===undefined)loadSupportProducts(tr.dataset.category||'',tr.dataset.subcategory||'',key);
+      renderSupportTable();
+    });
+    supportBound=true;
+  }
+  if(!supportRows.length){b.innerHTML='<tr><td colspan="9" class="muted">No support fabrics in stock.</td></tr>';return;}
+  let html='';
+  supportRows.forEach(r=>{
+    const key=supKey(r);
+    const open=!!supportOpen[key];
+    const caret=`<span class="caret">${open?'▾':'▸'}</span>`;
+    html+=`<tr class="sup-cat" data-key="${esc(key)}" data-category="${esc(r.category||'')}" data-subcategory="${esc(r.subcategory||'')}" style="cursor:pointer;">
+       <td style="text-align:center;color:var(--muted);">${caret}</td>
+       <td style="font-weight:700;">${esc(r.category||'—')}</td>
+       <td>${esc(r.subcategory||'—')}</td>
+       <td style="text-align:right;">${fmt(r.fabrics)}</td>
+       <td style="text-align:right;">${fmt(r.qty_metres)}</td>
+       <td style="text-align:right;">${fmt1(r.qty_kg)}</td>
+       <td style="text-align:right;color:var(--muted);">${fmtKES(r.cost_per_kg)}</td>
+       <td style="text-align:right;color:var(--muted);">${fmtKES(r.cost_metre)}</td>
+       <td style="text-align:right;">${fmtKES(r.value_kes)}</td>
+      </tr>`;
+    if(open)html+=renderSupportProductRows(key);
+  });
+  b.innerHTML=html;
+}
+function renderSupportProductRows(key){
+  const p=supportProds[key];
+  const cell=msg=>`<tr class="sup-prod"><td></td><td colspan="8" class="muted" style="padding-left:24px;">${msg}</td></tr>`;
+  if(p===undefined||p==='loading')return cell('Loading products…');
+  if(p&&p.error)return cell('Could not load products. <a href="#" class="sup-retry" data-key="'+esc(key)+'">Retry</a>');
+  const items=Array.isArray(p)?p:[];
+  if(!items.length)return cell('No individual products in this group.');
+  return items.map(it=>{
+    const code=esc(it.default_code||it.barcode||'—');
+    const meta=[it.supplier,it.fabric_structure].map(x=>fabricClean(x)).filter(Boolean).map(esc).join(' · ');
+    return `<tr class="sup-prod">
+       <td></td>
+       <td style="padding-left:24px;color:var(--accent);font-size:.92em;">${code}</td>
+       <td style="color:var(--text-sub);font-size:.92em;">${esc(it.name||'—')}${meta?`<div class="muted" style="font-size:.85em;">${meta}</div>`:''}</td>
+       <td></td>
+       <td style="text-align:right;color:var(--text-sub);">${fmt(it.qty_metres)}</td>
+       <td style="text-align:right;color:var(--text-sub);">${fmt1(it.qty_kg)}</td>
+       <td style="text-align:right;color:var(--muted);">${fmtKES(it.cost_per_kg)}</td>
+       <td style="text-align:right;color:var(--muted);">${fmtKES(it.cost_metre)}</td>
+       <td style="text-align:right;color:var(--text-sub);">${fmtKES(it.value_kes)}</td>
+      </tr>`;
+  }).join('');
+}
+async function loadSupportProducts(category,subcategory,key){
+  supportProds[key]='loading';
+  try{
+    let url='/api/fabric/register?location=RMAT/Stock&scope=support&limit=500';
+    if(category)url+='&category='+encodeURIComponent(category);
+    if(subcategory)url+='&subcategory='+encodeURIComponent(subcategory);
+    const res=await apiFetch(url);
+    supportProds[key]=Array.isArray(res&&res.items)?res.items:[];
+  }catch(e){supportProds[key]={error:true};}
+  renderSupportTable();
 }
 
 // ── Navigation ──

@@ -521,7 +521,19 @@ def by_category(location: str = Query(default="RMAT/Stock"),
               COUNT(DISTINCT i.product_id) as fabrics,
               ROUND(SUM(i.quantity)::numeric,1) as qty_kg,
               ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)::numeric,0) as qty_metres,
-              ROUND(SUM(i.total_value)::numeric,0) as value_kes
+              ROUND(SUM(i.total_value)::numeric,0) as value_kes,
+              -- Weighted-average cost per Kg = Σ(standard_price × kg) ÷ Σ(kg),
+              -- consistent with the register's per-product cost_per_kg (standard_price).
+              ROUND(CASE WHEN SUM(i.quantity) > 0
+                   THEN SUM(p.standard_price*i.quantity)/SUM(i.quantity)
+                   ELSE NULL END::numeric,2) as cost_per_kg,
+              -- Weighted-average cost per metre = Σ(standard_price × kg) ÷ Σ(metres)
+              -- over products with a kg→metre conversion, consistent with the
+              -- register's per-product cost_metre (standard_price × kg_per_mtr).
+              ROUND(CASE WHEN SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END) > 0
+                   THEN SUM(CASE WHEN p.kg_per_mtr>0 THEN p.standard_price*i.quantity ELSE 0 END)
+                        /SUM(CASE WHEN p.kg_per_mtr>0 THEN i.quantity/p.kg_per_mtr ELSE 0 END)
+                   ELSE NULL END::numeric,2) as cost_metre
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE i.quantity > 0
