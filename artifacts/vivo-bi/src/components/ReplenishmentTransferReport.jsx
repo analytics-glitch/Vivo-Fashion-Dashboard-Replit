@@ -13,6 +13,7 @@ import {
 const ALL_FROM = "2020-01-01";
 const RANGE_PRESETS = [
   { label: "All", from: ALL_FROM },
+  { label: "Yesterday", yesterday: true },
   { label: "30d", days: 30 },
   { label: "60d", days: 60 },
   { label: "90d", days: 90 },
@@ -125,6 +126,12 @@ export default function ReplenishmentTransferReport({
   const toggle = (k) => setExpanded((p) => ({ ...p, [k]: !p[k] }));
 
   const applyPreset = (p) => {
+    if (p.yesterday) {
+      const y = daysAgoYmd(1);
+      setFrom(y);
+      setTo(y);
+      return;
+    }
     setFrom(p.from ? p.from : daysAgoYmd(p.days));
     setTo(todayYmd());
   };
@@ -235,7 +242,7 @@ export default function ReplenishmentTransferReport({
                 type="button"
                 onClick={() => applyPreset(p)}
                 className="px-2 py-1 text-xs font-semibold text-foreground hover:bg-accent"
-                data-testid={`button-transfer-preset-${p.days || "all"}`}
+                data-testid={`button-transfer-preset-${p.yesterday ? "yesterday" : p.days || "all"}`}
               >
                 {p.label}
               </button>
