@@ -681,6 +681,103 @@ def _hr_rematch(use_ai=True):
 
 
 # --------------------------------------------------------------------------- #
+# Roster import (company Google Sheet -> hr_employees)                          #
+# The authoritative staff roster lives in a Google Sheet with one tab per       #
+# entity; headers differ per tab (Vivo Kenya carries Department/Team,           #
+# Rwanda/Uganda carry Job Title, Shop Zetu name only). Production runs on a      #
+# SEPARATE DB that was never loaded with the roster, so the HR pages (which      #
+# enrich attendance via hr_employee_match -> hr_employees) show no roster until  #
+# this import runs. It is wired into the incremental sync loop as a bootstrap    #
+# (see sync_incremental.py) and exposed for on-demand admin refresh.            #
+# --------------------------------------------------------------------------- #
+ROSTER_SHEET_ID = "1XiY1gRSqW2f3W_UJIp4_EcmW2QDjZfFhRyIkXppxq30"
+
+# (tab title, country). Shop Zetu is Kenya-based.
+ROSTER_TABS = [
+    ("Vivo Kenya", "Kenya"),
+    ("Shop Zetu", "Kenya"),
+    ("Vivo Rwanda", "Rwanda"),
+    ("Vivo Uganda", "Uganda"),
+]
+
+# Dedicated transaction-scoped advisory-lock key (distinct from api_pg's admin /
+# targets / rollup keys) so the sync-loop bootstrap and an on-demand
+# /rematch?reimport=1 can never run _sync_roster concurrently.
+ROSTER_SYNC_LOCK_KEY = 0x52535452  # "RSTR"
+
+
+def _hdr_index(header):
+    """Map lower-cased header text -> column index (first occurrence wins)."""
+    idx = {}
+    for i, h in enumerate(header):
+        key = _t_clean(h).lower()
+        if key and key not in idx:
+            idx[key] = i
+    return idx
+
+
+def _hdr_pick(idx, row, *aliases):
+    """First non-empty cell for any of the given (lower-cased) header aliases."""
+    for a in aliases:
+        j = idx.get(a)
+        if j is not None and j < len(row):
+            v = _t_clean(row[j])
+            if v:
+                return v
+    return ""
+
+
+def _sync_roster():
+    """Full-refresh import of the staff roster from the company Google Sheet
+    into hr_employees. Header-mapped per tab so column re-ordering is tolerated.
+    Guard: if the sheet read yields zero rows (e.g. a transient connector/Sheets
+    failure) the existing roster is kept rather than wiped. Returns row count."""
+    parsed = []
+    for tab, country in ROSTER_TABS:
+        vals = _gsheet_values(ROSTER_SHEET_ID, tab, "A1:Z2000")
+        if not vals:
+            continue
+        idx = _hdr_index(vals[0])
+        for row in vals[1:]:
+            if not row:
+                continue
+            name = _hdr_pick(idx, row, "name of employees", "name",
+                             "employee name")
+            if not name:
+                continue
+            eid = _hdr_pick(idx, row, "pii", "staff no", "staff number",
+                            "employee id")
+            dept = _hdr_pick(idx, row, "department")
+            team = _hdr_pick(idx, row, "team")
+            jt = _hdr_pick(idx, row, "job title")
+            parsed.append((eid or None, tab, country, name, _emp_norm(name),
+                           dept or None, team or None, jt or None))
+    if not parsed:
+        A.log.warning("HR roster: sheet returned no rows; keeping existing roster")
+        return 0
+    # Parse happens above (outside the tx) so a slow/failed Sheets read never
+    # holds the lock or touches data. The DELETE + all INSERTs then run in ONE
+    # advisory-locked transaction: api_pg._users_exec is autocommit, so a
+    # statement-by-statement load could leave a half-written roster (>0 rows)
+    # that permanently disables the COUNT==0 bootstrap. Atomicity guarantees the
+    # table flips wholesale from old->new (or rolls back fully on any error).
+    with A._users_tx() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (ROSTER_SYNC_LOCK_KEY,))
+        cur.execute("DELETE FROM hr_employees")
+        for (eid, entity, country, name, nn, dept, team, jt) in parsed:
+            cur.execute(
+                """INSERT INTO hr_employees
+                     (employee_id, entity, country, name, name_norm,
+                      department, team, job_title, source, updated_at)
+                   VALUES (%(e)s,%(en)s,%(c)s,%(n)s,%(nn)s,%(d)s,%(t)s,%(j)s,
+                           'google_sheet', now())""",
+                {"e": eid, "en": entity, "c": country, "n": name, "nn": nn,
+                 "d": dept, "t": team, "j": jt})
+    A.log.info("HR roster: imported %d employees from sheet", len(parsed))
+    return len(parsed)
+
+
+# --------------------------------------------------------------------------- #
 # Route registration                                                           #
 # --------------------------------------------------------------------------- #
 def register_hr_routes(app):
@@ -1155,7 +1252,11 @@ def register_hr_routes(app):
         if role not in ("admin", "leadership"):
             return JSONResponse({"detail": "forbidden"}, status_code=403)
         use_ai = (request.query_params.get("ai") or "1") != "0"
+        reimport = (request.query_params.get("reimport") or "0") == "1"
+        imported = None
         try:
+            if reimport:
+                imported = _sync_roster()
             results = _hr_rematch(use_ai=use_ai)
         except Exception as e:
             A.log.error("HR rematch failed: %s", e)
@@ -1166,9 +1267,11 @@ def register_hr_routes(app):
         for r in results:
             methods[r[2]] = methods.get(r[2], 0) + 1
         A._crm_audit("hr_employee_match", 0, "rematch",
-                     f"ai={use_ai} matched={matched}/{len(results)}", request)
+                     f"reimport={reimport} ai={use_ai} matched={matched}/{len(results)}",
+                     request)
         return {"processed": len(results), "matched": matched,
-                "unmatched": len(results) - matched, "by_method": methods}
+                "unmatched": len(results) - matched, "by_method": methods,
+                "roster_imported": imported}
 
     @app.get("/api/hr/department-performance")
     def hr_department_performance(request: Request):

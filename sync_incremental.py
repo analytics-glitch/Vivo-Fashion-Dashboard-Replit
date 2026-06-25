@@ -1042,6 +1042,53 @@ def main():
         except Exception as e:
             log.error("BI sales rollup refresh error: %s", e)
 
+    # HR roster bootstrap — the staff roster (hr_employees) is hand-imported from
+    # a company Google Sheet and the HR attendance pages enrich raw biometric
+    # attendance via hr_employee_match -> hr_employees. Production runs on a
+    # SEPARATE DB that was never loaded with the roster, so a fresh prod DB shows
+    # no departments/teams/job-titles until this runs. Bootstrap immediately when
+    # hr_employees is empty (fresh prod DB) and re-read from the sheet (source of
+    # truth), then rebuild the name-match table. Once both the roster AND the
+    # name-match table are populated this stops firing (roster changes are picked
+    # up on demand via POST /api/hr/employees/rematch?reimport=1) so there is no
+    # recurring LLM cost. The guard is completeness-based (not just roster
+    # COUNT==0): it ALSO fires when hr_employees has rows but hr_employee_match is
+    # empty, so a partial/interrupted first load self-heals on a later cycle
+    # rather than leaving HR enrichment permanently broken. sync_hr_roster.py is
+    # an idempotent full-refresh, run as a subprocess like the other extracts; it
+    # imports api_pg so we skip if the tables are missing and let a later cycle
+    # pick it up once the API's startup hook has created them.
+    roster_table_missing = False
+    roster_incomplete = False
+    try:
+        cur.execute("SELECT to_regclass('public.hr_employees'),"
+                    "       to_regclass('public.hr_employee_match')")
+        emp_reg, match_reg = cur.fetchone()
+        if emp_reg is None or match_reg is None:
+            roster_table_missing = True
+        else:
+            cur.execute("SELECT COUNT(*) FROM hr_employees")
+            emp_n = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM hr_employee_match")
+            match_n = cur.fetchone()[0]
+            # Empty roster (fresh prod DB) OR a roster that loaded but never got
+            # its name-match table rebuilt (partial first load).
+            roster_incomplete = (emp_n == 0) or (emp_n > 0 and match_n == 0)
+        conn.commit()
+    except Exception as e:
+        log.error("HR roster presence check error: %s", e)
+        conn.rollback()
+    if not roster_table_missing and roster_incomplete:
+        try:
+            import subprocess, sys
+            log.info("Bootstrapping HR roster from Google Sheet...")
+            subprocess.run([sys.executable,
+                            '/home/runner/workspace/sync_hr_roster.py', '--ai'],
+                           check=True)
+            log.info("✅ HR roster bootstrap complete")
+        except Exception as e:
+            log.error("HR roster bootstrap error: %s", e)
+
     # Chronic-stockout snapshot — once a day around midnight EAT (21:00 UTC).
     # The API endpoint dedupes to a weekly cadence, so running it on every cycle
     # in this window is harmless; we only narrow to the hour to avoid pointless
