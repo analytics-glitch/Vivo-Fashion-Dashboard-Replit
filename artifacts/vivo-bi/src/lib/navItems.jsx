@@ -92,8 +92,8 @@ export const PRIMARY_NAV = [
   { to: "/data-quality", label: "Data Quality", icon: Warning, id: "data-quality", group: "Tools", desc: "Data completeness and quality checks" },
   { to: "/feedback", label: "Feedback", icon: ChatCircleDots, id: "feedback", group: "Tools", desc: "Send feedback to the BI team" },
 
-  // Work in progress — admin only, kept last
-  { to: "/finance", label: "WIP", icon: Coins, id: "finance", group: "Tools", wip: true, desc: "Work in progress" },
+  // Finance Reports Suite — leadership + admin (server-gated via /api/finance)
+  { to: "/finance", label: "Finance", icon: Coins, id: "finance", group: "Performance", desc: "Finance reports suite — P&L statement, revenue, cost of revenue, opex, payroll, vendor spend and P&L trend & KPIs (KES)" },
 ];
 
 export const ADMIN_NAV = [

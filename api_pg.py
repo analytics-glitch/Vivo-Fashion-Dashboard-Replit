@@ -458,11 +458,11 @@ def _dedup(seq):
 
 
 _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "fabric"]
-# NOTE: "finance" is intentionally NOT in any default group below. The Finance /
-# P&L page is a work-in-progress, admin-only surface; admins see every page, and
-# it is deliberately kept out of ALL_PAGE_IDS so it can't be granted to any
-# non-admin group (see the ALL_PAGE_IDS note below).
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report"])
+# NOTE: "finance" (the Finance Reports Suite) is a leadership + admin surface, so
+# it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
+# can also grant it to other groups via Group Access). The server-side
+# /api/finance gate independently restricts the API to leadership + admin.
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "finance"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report"],
@@ -487,11 +487,11 @@ ALL_PAGE_IDS = set(ADMIN_PAGE_IDS)
 for _pages in DEFAULT_ROLE_PAGES.values():
     ALL_PAGE_IDS.update(_pages)
 ALL_PAGE_IDS.update(["feedback"])  # available to admins / grantable to groups
-# NOTE: "finance" is deliberately NOT added here. Keeping it out of ALL_PAGE_IDS
-# means _set_role_pages strips it from any group-access override, so it can never
-# be granted to a non-admin group. Admins still reach it (role==="admin" short-
-# circuit in canAccessPage + the /api/finance admin gate), so it stays a true
-# admin-only, work-in-progress surface with no client- or server-side bypass.
+# NOTE: "finance" (the Finance Reports Suite) IS included here via
+# _LEADERSHIP_PAGES — it is a leadership + admin surface (default-granted to
+# leadership, grantable to other groups via Group Access). The server-side
+# /api/finance gate independently restricts the underlying API to leadership +
+# admin, so a UI grant alone never leaks finance data to other roles.
 # Paths a signed-in but not-yet-active user may still reach (so the frontend can
 # read its own status and poll for approval / sign out).
 _AUTH_SELF_PATHS = {
@@ -934,11 +934,11 @@ async def clerk_auth_gate(request: Request, call_next):
     ):
         return JSONResponse({"detail": "HR dashboard access requires a staff role"}, status_code=403)
 
-    # Finance / P&L (/api/finance/*) is a work-in-progress surface restricted to
-    # admins only. Enforced server-side so hidden web nav / direct API can't be
-    # bypassed by a non-admin.
-    if path.startswith("/api/finance") and user.get("role") != "admin":
-        return JSONResponse({"detail": "Finance access requires an admin role"}, status_code=403)
+    # Finance Reports Suite (/api/finance/*) is a leadership + admin surface.
+    # Enforced server-side so hidden web nav / direct API can't be bypassed by a
+    # non-leadership role.
+    if path.startswith("/api/finance") and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "Finance access requires a leadership or admin role"}, status_code=403)
 
     return await call_next(request)
 
@@ -6569,50 +6569,103 @@ def finance_pl(
     date_from: str = Query(default=str(date(date.today().year - 1, date.today().month, 1))),
     date_to:   str = Query(default=str(date.today())),
 ):
-    """Monthly Profit & Loss from the finance_pl_summary view.
+    """Monthly Profit & Loss from the finance_pl_summary view — the official Odoo
+    P&L structure: Revenue (revenue_odoo) → Less Costs of Revenue
+    (cogs / production / purchases → total_costs_of_revenue) → Gross Profit → Less
+    Operating Expenses (employment / admin / establishment / selling / marketing /
+    finance_charges / other_opex → total_operating_expenses) → Operating Income
+    (DERIVED = gross_profit - total_operating_expenses) → Plus Other Income → Net
+    Profit. Also carries net_revenue_pipeline (sales-pipeline revenue, for the
+    Odoo-vs-pipeline variance report) and the data-integrity flags is_closed /
+    has_cost_anomaly.
 
-    Returns two payloads:
-      • `months` — one row per calendar month in [date_from, date_to] (inclusive
-        on the `month` column, which is a real DATE = first of month). The start
-        month is the month CONTAINING date_from. Carries the full P&L shape plus
-        the data-integrity flags (is_closed, has_full_cogs, has_salaries,
-        has_accounting_data) the page uses to separate CONFIRMED vs PROVISIONAL.
-      • `opex_detail` — category-level operating-expense breakdown by account
-        (raw_account_move_lines JOIN finance_account_map), restricted to the
-        production_opex / admin_opex groups, summed over the SAME month window.
-
-    Read-only; reuses the shared pool via run_query. Date params are validated by
-    the /api edge middleware AND defensively here before being concatenated."""
-    df = _validate_date_param(date_from) or str(date(date.today().year - 1, date.today().month, 1))
-    dt = _validate_date_param(date_to) or str(date.today())
-    # Return the FULL P&L month history (constant query → cached by run_query,
-    # so it is computed once rather than re-scanning the expensive
-    # finance_pl_summary view on every period change). The frontend filters the
-    # rows down to the selected [date_from, date_to] window client-side and uses
-    # the full list to populate its month-range period selector. Only the
-    # cheaper opex_detail query below stays windowed (it must aggregate
-    # account-level sums over the selected months server-side).
+    Returns the FULL month history (`months`) as a constant query → cached by
+    run_query so the expensive finance_pl_summary view is computed ONCE rather than
+    re-scanned per period change. The frontend windows the rows to the selected
+    [date_from, date_to] client-side and uses the full list to populate its
+    month-range selector. date_from/date_to are accepted for API symmetry and
+    validated, but the query is intentionally un-windowed (do NOT add a second
+    full-view scan — it doubles the cost). Read-only; reuses the shared pool."""
+    _ = _validate_date_param(date_from), _validate_date_param(date_to)
     months = run_query("""
-        SELECT month, gross_sales, discounts, returns, net_revenue, cogs,
-               gross_profit, gross_margin_pct, salaries, production_opex,
-               admin_opex, total_opex, other_income, operating_income,
-               has_accounting_data, is_closed, has_full_cogs, has_salaries
+        SELECT month, gross_sales, returns, net_revenue_pipeline, revenue_odoo,
+               cogs, production, purchases, total_costs_of_revenue, gross_profit,
+               employment, admin, establishment, selling, marketing,
+               finance_charges, other_opex, total_operating_expenses,
+               (gross_profit - total_operating_expenses) AS operating_income,
+               other_income, net_profit, is_closed, has_cost_anomaly
         FROM finance_pl_summary
         ORDER BY month
     """)
-    opex_detail = run_query("""
-        SELECT l.account_name AS account, m.pl_group AS pl_group,
-               ROUND(SUM(l.debit - l.credit), 0) AS amount
+    return {"months": months}
+
+
+@app.get("/api/finance/pl-detail")
+def finance_pl_detail(
+    date_from: str = Query(default=str(date(date.today().year - 1, date.today().month, 1))),
+    date_to:   str = Query(default=str(date.today())),
+):
+    """Account-level P&L detail for the selected month window. Joins
+    raw_account_move_lines to finance_account_map and sums each account with the
+    correct sign convention (revenue / other_income = credit - debit; costs &
+    operating expenses = debit - credit) so figures reconcile to
+    finance_pl_summary. Grouped by pl_section, pl_group, account_code,
+    account_name; flat array ordered by section, group, amount desc. Powers the
+    group→account drill-downs on the P&L statement, the Operating-Expenses
+    analysis and the Cost-of-Revenue report. Windowed server-side (cheap vs the
+    full view). Date params validated by the /api edge middleware AND here."""
+    df = _validate_date_param(date_from) or str(date(date.today().year - 1, date.today().month, 1))
+    dt = _validate_date_param(date_to) or str(date.today())
+    sign = ("CASE WHEN m.pl_section IN ('revenue','other_income') "
+            "THEN l.credit - l.debit ELSE l.debit - l.credit END")
+    rows = run_query("""
+        SELECT m.pl_section, m.pl_group, l.account_code, l.account_name,
+               ROUND(SUM(""" + sign + """), 0) AS amount
         FROM raw_account_move_lines l
         JOIN finance_account_map m ON m.account_code = l.account_code
-        WHERE m.pl_group IN ('production_opex', 'admin_opex')
+        WHERE l.date >= date_trunc('month', DATE '""" + df + """')
+          AND l.date <  date_trunc('month', DATE '""" + dt + """') + INTERVAL '1 month'
+        GROUP BY m.pl_section, m.pl_group, l.account_code, l.account_name
+        HAVING ROUND(SUM(""" + sign + """), 0) <> 0
+        ORDER BY m.pl_section, m.pl_group, amount DESC
+    """, date_to=dt)
+    return {"detail": rows}
+
+
+@app.get("/api/finance/expense-by-vendor")
+def finance_expense_by_vendor(
+    date_from: str = Query(default=str(date(date.today().year - 1, date.today().month, 1))),
+    date_to:   str = Query(default=str(date.today())),
+    category:  str = Query(default=None),
+    limit:     int = Query(default=50),
+):
+    """Top vendors / suppliers by spend over the selected month window. Sums
+    debit - credit on raw_account_move_lines for cost-of-revenue + operating-
+    expense accounts, grouped by partner_name, excluding null/blank partners,
+    ordered desc. Optional `category` narrows to a single pl_group (whitelisted to
+    keep it un-injectable). Windowed server-side. Read-only."""
+    df = _validate_date_param(date_from) or str(date(date.today().year - 1, date.today().month, 1))
+    dt = _validate_date_param(date_to) or str(date.today())
+    lim = max(1, min(int(limit or 50), 500))
+    cat = (category or "").strip()
+    valid_groups = {"cogs", "production", "purchases", "employment", "admin",
+                    "establishment", "selling", "marketing", "finance_charges", "other_opex"}
+    cat_sql = (" AND m.pl_group = '" + cat + "'") if cat in valid_groups else ""
+    rows = run_query("""
+        SELECT l.partner_name AS vendor,
+               ROUND(SUM(l.debit - l.credit), 0) AS spend
+        FROM raw_account_move_lines l
+        JOIN finance_account_map m ON m.account_code = l.account_code
+        WHERE m.pl_section IN ('costs_of_revenue','operating_expenses')""" + cat_sql + """
+          AND l.partner_name IS NOT NULL AND btrim(l.partner_name) <> ''
           AND l.date >= date_trunc('month', DATE '""" + df + """')
           AND l.date <  date_trunc('month', DATE '""" + dt + """') + INTERVAL '1 month'
-        GROUP BY l.account_name, m.pl_group
+        GROUP BY l.partner_name
         HAVING ROUND(SUM(l.debit - l.credit), 0) <> 0
-        ORDER BY amount DESC
+        ORDER BY spend DESC
+        LIMIT """ + str(lim) + """
     """, date_to=dt)
-    return {"months": months, "opex_detail": opex_detail}
+    return {"vendors": rows}
 
 
 @app.get("/api/analytics/rfm")

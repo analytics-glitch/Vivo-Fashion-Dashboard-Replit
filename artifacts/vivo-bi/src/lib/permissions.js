@@ -19,10 +19,10 @@ const PRODUCT_DEVELOPMENT = ["products", "product-analysis", "range-mgmt", "mark
 const RETAIL = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "exports"];
 const WAREHOUSE = ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "re-order", "allocations", "data-quality", "exports"];
 const STORE_MANAGER = ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "ibt"];
-// NOTE: "finance" is intentionally NOT here. The Finance / P&L page is a
-// work-in-progress, admin-only surface — admins see every page via the
-// role==="admin" short-circuit in canAccessPage, so it needs no list entry.
-const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report"])];
+// "finance" (the Finance Reports Suite) is a leadership + admin surface, so it
+// lives in LEADERSHIP (ADMIN spreads LEADERSHIP). The server /api/finance gate
+// independently restricts the underlying API to leadership + admin.
+const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "finance"])];
 const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "footfall", "rfm"];
 const MARKETING = ["marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm"];
 const HR = ["hr"];
@@ -76,7 +76,8 @@ const DEFAULT_ROLE = "store_manager";
 // Pages restricted to admins regardless of any allowed_pages / role override
 // (e.g. work-in-progress surfaces). Admins pass via the role check below; every
 // other role is hard-blocked even if a stale group override happened to list it.
-const ADMIN_ONLY_PAGES = new Set(["finance"]);
+// (Currently empty — Finance is leadership + admin, gated via LEADERSHIP above.)
+const ADMIN_ONLY_PAGES = new Set([]);
 
 export const canAccessPage = (user, pageId) => {
   if (!user) return false;
