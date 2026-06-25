@@ -12218,6 +12218,57 @@ def notifications_unread_count(request: Request):
 def stub_leaderboard_store_of_the_week(): return {}
 @app.get("/api/thumbnails/lookup")
 def stub_thumbnails_lookup(): return {}
+@app.post("/api/thumbnails/lookup")
+async def thumbnails_lookup(request: Request):
+    """Batch-resolve a list of style names to a representative product photo.
+
+    The frontend posts ``{"styles": [...]}`` (chunked to <=300) and renders the
+    returned ``{style_name: "/api/product-image/<sku>"}`` map directly as an
+    <img> src. Styles with no stored image are simply omitted so the client
+    falls back to its deterministic coloured-initials placeholder.
+
+    One set-based query per request (no per-style N+1): join the product master
+    style -> sku -> image map -> stored image, then DISTINCT ON keeps one SKU
+    per style (the lexicographically smallest SKU that actually has an image)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    raw = body.get("styles") if isinstance(body, dict) else None
+    if not isinstance(raw, list):
+        return {}
+    names, seen = [], set()
+    for s in raw:
+        if isinstance(s, str):
+            t = s.strip()
+            if t and t not in seen:
+                seen.add(t)
+                names.append(t)
+    if not names:
+        return {}
+    names = names[:300]  # match the frontend chunk size; defensive cap
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT DISTINCT ON (p.style_name) p.style_name, p.sku "
+            "FROM all_products_clean p "
+            "JOIN product_image_map m ON m.sku = p.sku "
+            "JOIN product_images i ON i.tmpl_id = m.tmpl_id "
+            "WHERE p.style_name = ANY(%s) "
+            "AND i.image_512 IS NOT NULL AND i.image_512 <> '' "
+            "ORDER BY p.style_name, p.sku",
+            (names,)
+        )
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+    out = {}
+    for style_name, sku in rows:
+        if style_name and sku:
+            out[style_name] = f"/api/product-image/{quote(str(sku), safe='')}"
+    return out
 @app.get("/api/auth/activity-streak")
 def stub_auth_activity_streak(): return {"streak": 0}
 @app.get("/api/auth/allowed-domains")
