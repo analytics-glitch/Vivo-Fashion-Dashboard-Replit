@@ -29,6 +29,7 @@ const PageVisibility = React.lazy(() => import("@/pages/PageVisibility"));
 const GroupAccess = React.lazy(() => import("@/pages/GroupAccess"));
 const ActivityLogs = React.lazy(() => import("@/pages/ActivityLogs"));
 const DataHealth = React.lazy(() => import("@/pages/DataHealth"));
+const ThumbnailManager = React.lazy(() => import("@/pages/ThumbnailManager"));
 const Feedback = React.lazy(() => import("@/pages/Feedback"));
 const AdminFeedback = React.lazy(() => import("@/pages/AdminFeedback"));
 const Allocations = React.lazy(() => import("@/pages/Allocations"));
@@ -183,6 +184,7 @@ function App() {
                 <Route path="/admin/page-visibility" element={<ProtectedShell adminOnly pageId="admin-page-visibility"><PageVisibility /></ProtectedShell>} />
                 <Route path="/admin/group-access" element={<ProtectedShell adminOnly pageId="admin-group-access"><GroupAccess /></ProtectedShell>} />
                 <Route path="/admin/data-health" element={<ProtectedShell adminOnly pageId="admin-data-health"><DataHealth /></ProtectedShell>} />
+                <Route path="/admin/thumbnails" element={<ProtectedShell adminOnly pageId="admin-thumbnails"><ThumbnailManager /></ProtectedShell>} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </FiltersProvider>

@@ -26,7 +26,7 @@ const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "products"
 const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "footfall", "rfm"];
 const MARKETING = ["marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm"];
 const HR = ["hr"];
-const ADMIN = [...new Set([...LEADERSHIP, "feedback", "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters", "admin-data-health"])];
+const ADMIN = [...new Set([...LEADERSHIP, "feedback", "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters", "admin-data-health", "admin-thumbnails"])];
 
 export const ROLE_PAGES = {
   product_development: PRODUCT_DEVELOPMENT,
