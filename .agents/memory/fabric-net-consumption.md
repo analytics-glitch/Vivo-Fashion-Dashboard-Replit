@@ -7,8 +7,15 @@ description: How fabric consumption, returns, and weeks-of-cover are defined for
 
 In `raw_fabric_moves`, fabric consumption is an `OUT` move (stock → production).
 Some of that fabric comes back as a **return**, which is an `INTERNAL` move whose
-`location_from = 'Virtual Locations/Production'` (the only production source value;
-exact match, so no LIKE / no psycopg2 literal-% trap). 
+`location_from = 'Virtual Locations/Production'` AND whose `location_to` is a **real
+stock location** (NOT another virtual location). The destination guard matters:
+Production → `Virtual Locations/Inventory adjustment` is a stock write-off/correction,
+NOT physically returned fabric, and must not net off consumption (two such ~137,100kg
+adjustment moves on 2026-06-24 drove "Consumed 30D" to ~−253k m before the guard).
+The guard is `split_part(location_to,'/',1) <> 'Virtual Locations'` — `split_part`
+(not `LIKE 'Virtual Locations/%'`) so the no-param `q()` queries dodge the literal-%
+trap. It lives in the shared `_prod_return_pred()` helper used by BOTH `_net_kg`
+(signed-kg) and `_net_cons_where` (row selection) so they stay in lockstep.
 
 **Net consumption = SUM(OUT) − SUM(INTERNAL returns from production).**
 

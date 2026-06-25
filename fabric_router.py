@@ -99,18 +99,31 @@ PROD_LOC = "Virtual Locations/Production"
 def _kg(alias="m"):
     return f"(CASE WHEN {alias}.uom='g' THEN {alias}.qty/1000 ELSE {alias}.qty END)"
 
+def _prod_return_pred(alias="m"):
+    """A genuine production return: an INTERNAL move OUT of the production location
+    BACK to a real stock location. We exclude virtual destinations (anything under
+    'Virtual Locations/...', notably 'Virtual Locations/Inventory adjustment') —
+    those are stock write-offs/corrections, not fabric physically returned, and must
+    not net off consumption. `split_part(... , '/', 1)` avoids a LIKE '%' (which would
+    hit the psycopg2 literal-% trap on the no-param queries)."""
+    return (f"{alias}.move_type='INTERNAL' "
+            f"AND {alias}.location_from = '{PROD_LOC}' "
+            f"AND split_part({alias}.location_to, '/', 1) <> 'Virtual Locations'")
+
 def _net_kg(alias="m"):
     """Signed kg per move row: +kg for OUT (consumption), −kg for production returns.
-    A return is specifically an INTERNAL move out of the production location."""
+    A return is specifically an INTERNAL move out of the production location back to a
+    real stock location (virtual/adjustment destinations are excluded)."""
     kg = _kg(alias)
     return (f"CASE WHEN {alias}.move_type='OUT' THEN {kg} "
-            f"WHEN {alias}.move_type='INTERNAL' AND {alias}.location_from = '{PROD_LOC}' THEN -{kg} "
+            f"WHEN {_prod_return_pred(alias)} THEN -{kg} "
             f"ELSE 0 END")
 
 def _net_cons_where(alias="m"):
-    """Rows that make up net consumption: OUT moves plus INTERNAL production returns."""
+    """Rows that make up net consumption: OUT moves plus genuine INTERNAL production
+    returns (Production → a real stock location; virtual/adjustment dests excluded)."""
     return (f"({alias}.move_type='OUT' "
-            f"OR ({alias}.move_type='INTERNAL' AND {alias}.location_from = '{PROD_LOC}')) "
+            f"OR ({_prod_return_pred(alias)})) "
             f"AND {alias}.uom IN ('g','kg') "
             f"AND {alias}.is_fabric")
 
