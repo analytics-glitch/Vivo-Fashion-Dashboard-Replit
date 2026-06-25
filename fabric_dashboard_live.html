@@ -1853,7 +1853,6 @@ function renderColorInsights(d){
   stockout.sort((a,b)=>a.gap-b.gap);
   over.sort((a,b)=>b.gap-a.gap);
   idle.sort((a,b)=>b.stock-a.stock);
-  const flagged=new Set([...stockout,...over,...idle].map(x=>x.color));
   const coverTxt=x=>x.cover===Infinity?'no usage':(x.cover<10?x.cover.toFixed(1):Math.round(x.cover))+'mo cover';
   const namesGap=arr=>arr.slice(0,4).map(x=>`${swatch(x.color)}${esc(x.color)} (${x.gap>=0?'+':'−'}${Math.abs(x.gap).toFixed(1)}pp, ${coverTxt(x)})`).join(', ');
   const namesIdle=arr=>arr.slice(0,4).map(x=>`${swatch(x.color)}${esc(x.color)} (${fmt(useKg?0:x.stock)}${useKg?'':' m'} held)`).join(', ');
@@ -1861,11 +1860,6 @@ function renderColorInsights(d){
   if(stockout.length) bullets.push(['#dc2626',`<strong>Stockout risk</strong> — consuming faster than its stock share: ${namesGap(stockout)}.`]);
   if(over.length)     bullets.push(['#2563eb',`<strong>Over-stocked</strong> — holding more than it is using: ${namesGap(over)}.`]);
   if(idle.length)     bullets.push(['#9ca3af',`<strong>Idle stock</strong> — on-hand but ~no consumption this window: ${namesIdle(idle)}.`]);
-  const balanced=m.filter(x=>!flagged.has(x.color));
-  if(balanced.length){
-    const names=balanced.slice(0,5).map(x=>`${swatch(x.color)}${esc(x.color)}`).join(', ');
-    bullets.push(['#16a34a',`<strong>Balanced</strong> — broadly in line with usage: ${names}${balanced.length>5?', and others':''}.`]);
-  }
   if(!bullets.length){
     el.innerHTML=head+'<div class="ci-empty">Consumption and stock are broadly in balance — nothing flagged.</div>';
     return;
