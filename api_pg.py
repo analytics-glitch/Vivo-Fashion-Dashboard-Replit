@@ -4152,15 +4152,7 @@ def get_product_image(sku: str):
     sku = (sku or "").strip()
     if not sku:
         return Response(status_code=404)
-    rows = run_query(
-        "SELECT i.image_512 FROM product_image_map m "
-        "JOIN product_images i ON i.tmpl_id = m.tmpl_id "
-        "WHERE m.sku = %s LIMIT 1",
-        params=(sku,)
-    ) if False else None
-    # run_query in this codebase builds SQL by concatenation; use a direct pooled
-    # connection for a clean parameterised lookup instead.
-    conn = _get_conn()
+    conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
@@ -4171,7 +4163,7 @@ def get_product_image(sku: str):
         )
         row = cur.fetchone()
     finally:
-        _return_conn(conn)
+        conn.close()
     if not row or not row[0]:
         return Response(status_code=404)
     try:
