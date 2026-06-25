@@ -892,12 +892,17 @@ def fabric_mix(
             GROUP BY 1, 2, 3, 4
         """, loc_params)
         net = _net_kg('m')
+        kg = _kg('m')
         if win_from and win_to:
             cons_where = f"{_net_cons_where('m')} AND {_scope_sql(scope)} AND m.date >= %s AND m.date < (%s::date + 1)"
             cons_params = (win_from, win_to)
         else:
             cons_where = f"{_net_cons_where('m')} AND {_scope_sql(scope)} AND m.date >= NOW() - (%s || ' days')::interval"
             cons_params = (days,)
+        # Net consumption = OUT − production returns. We also pull the raw OUT
+        # ("sent to production") and the production-return credit separately so the
+        # UI can explain a net figure that has been floored to 0 (a window-aligned
+        # return can otherwise read as "negative usage").
         cons = q(conn, f"""
             SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
                    COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') as subcategory,
@@ -905,17 +910,70 @@ def fabric_mix(
                    COALESCE(NULLIF(p.name,''), NULLIF(p.default_code,''), 'Unknown') as product_name,
                    ROUND(SUM({net})::numeric,1) as consumption_kg,
                    ROUND(SUM(CASE WHEN p.kg_per_mtr>0 THEN ({net})/p.kg_per_mtr ELSE 0 END)::numeric,1) as consumption_metres,
-                   ROUND(SUM(CASE WHEN COALESCE(p.kg_per_mtr,0)<=0 THEN ({net}) ELSE 0 END)::numeric,1) as consumption_kg_nometre
+                   ROUND(SUM(CASE WHEN COALESCE(p.kg_per_mtr,0)<=0 THEN ({net}) ELSE 0 END)::numeric,1) as consumption_kg_nometre,
+                   ROUND(SUM(CASE WHEN m.move_type='OUT' THEN {kg} ELSE 0 END)::numeric,1) as out_kg,
+                   ROUND(SUM(CASE WHEN m.move_type='OUT' AND p.kg_per_mtr>0 THEN {kg}/p.kg_per_mtr ELSE 0 END)::numeric,1) as out_metres,
+                   ROUND(SUM(CASE WHEN m.move_type='INTERNAL' AND m.location_from='{PROD_LOC}' THEN {kg} ELSE 0 END)::numeric,1) as return_kg,
+                   ROUND(SUM(CASE WHEN m.move_type='INTERNAL' AND m.location_from='{PROD_LOC}' AND p.kg_per_mtr>0 THEN {kg}/p.kg_per_mtr ELSE 0 END)::numeric,1) as return_metres
             FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {cons_where}
             GROUP BY 1, 2, 3, 4
         """, cons_params)
 
+        # Smoothed 6-month run-rate per group (for Weeks/Months of Cover). This is
+        # deliberately INDEPENDENT of the selected consumption window so cover
+        # reflects sustained usage rather than a short window where a single
+        # return can zero out (or invert) net consumption. The projection mirrors
+        # _months_of_cover (warehouse-wide) exactly, and because every step is a
+        # linear combination of the group's monthly net kg, the category run-rates
+        # sum back to the warehouse-wide run-rate (so covers reconcile).
+        rr_rows = q(conn, f"""
+            SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
+                   COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') as subcategory,
+                   m.product_id as product_id,
+                   to_char(date_trunc('month', m.date::date),'YYYY-MM') AS mon,
+                   SUM({net})::numeric as kg,
+                   SUM(CASE WHEN p.kg_per_mtr>0 THEN ({net})/p.kg_per_mtr ELSE 0 END)::numeric as metres
+            FROM {EFFECTIVE_MOVES} m
+            LEFT JOIN raw_fabric_products p ON p.id = m.product_id
+            WHERE {_net_cons_where('m')}
+              AND {_scope_sql(scope)}
+              AND m.date::date >= (date_trunc('month', CURRENT_DATE) - INTERVAL '6 months')::date
+            GROUP BY 1, 2, 3, 4
+        """)
+        rr_cal = q(conn, """
+            SELECT EXTRACT(DAY FROM CURRENT_DATE)::int AS dom,
+                   EXTRACT(DAY FROM (date_trunc('month',CURRENT_DATE)+INTERVAL '1 month - 1 day'))::int AS dim,
+                   (CURRENT_DATE - (date_trunc('month',CURRENT_DATE) - INTERVAL '5 months')::date + 1)::int AS win_days,
+                   EXTRACT(YEAR FROM CURRENT_DATE)::int AS yr,
+                   EXTRACT(MONTH FROM CURRENT_DATE)::int AS mo
+        """)[0]
+        rr_dom, rr_dim, rr_win_days = rr_cal['dom'], rr_cal['dim'], rr_cal['win_days']
+        rr_remaining = max(rr_dim - rr_dom, 0)
+
+        def _rr_key(delta):
+            idx = rr_cal['yr'] * 12 + (rr_cal['mo'] - 1) + delta
+            return f"{idx // 12:04d}-{idx % 12 + 1:02d}"
+        rr_cur = _rr_key(0)
+        rr_complete = [_rr_key(d) for d in range(-5, 0)]  # M-5 .. M-1
+
+        def _runrate(mon_map):
+            """Projected 6-month average monthly run-rate from a {YYYY-MM: value}
+            map, matching _months_of_cover. Returns the average monthly figure."""
+            mtd = mon_map.get(rr_cur, 0.0)
+            sum_complete = sum(mon_map.get(k, 0.0) for k in rr_complete)
+            sum_window = sum_complete + mtd
+            trailing_daily = (sum_window / rr_win_days) if rr_win_days else 0.0
+            projected_month = mtd + rr_remaining * trailing_daily
+            return (sum_complete + projected_month) / 6.0
+
         def _node(name):
             return {"group": name, "consumption_kg": 0.0, "consumption_metres": 0.0,
                     "available_kg": 0.0, "available_metres": 0.0, "tied_up_kes": 0.0,
-                    "_cons_kg_nometre": 0.0, "_avail_kg_nometre": 0.0}
+                    "_cons_kg_nometre": 0.0, "_avail_kg_nometre": 0.0,
+                    "out_kg": 0.0, "out_metres": 0.0, "return_kg": 0.0, "return_metres": 0.0,
+                    "_mon_kg": {}, "_mon_m": {}}
         cats = {}
         def _cat(name):
             return cats.setdefault(name, {"_node": _node(name), "_subs": {}})
@@ -933,12 +991,20 @@ def fabric_mix(
             cv_kg = float(r["consumption_kg"] or 0)
             cv_m = float(r["consumption_metres"] or 0)
             cv_nm = float(r["consumption_kg_nometre"] or 0)
+            o_kg = float(r["out_kg"] or 0)
+            o_m = float(r["out_metres"] or 0)
+            rt_kg = float(r["return_kg"] or 0)
+            rt_m = float(r["return_metres"] or 0)
             for x in (_cat(r["category"])["_node"],
                       _sub(r["category"], r["subcategory"])["_node"],
                       _prod(r["category"], r["subcategory"], r["product_id"], r["product_name"])):
                 x["consumption_kg"] += cv_kg
                 x["consumption_metres"] += cv_m
                 x["_cons_kg_nometre"] += cv_nm
+                x["out_kg"] += o_kg
+                x["out_metres"] += o_m
+                x["return_kg"] += rt_kg
+                x["return_metres"] += rt_m
         for r in stock:
             av_kg = float(r["available_kg"] or 0)
             av_m = float(r["available_metres"] or 0)
@@ -951,30 +1017,74 @@ def fabric_mix(
                 x["available_metres"] += av_m
                 x["tied_up_kes"] += kes
                 x["_avail_kg_nometre"] += av_nm
+        # Fold the 6-month monthly run-rate into the EXISTING tree nodes only — a
+        # product that moved months ago but has no current stock and no usage in
+        # the selected window must not spawn a phantom row, so we look nodes up
+        # rather than creating them.
+        for r in rr_rows:
+            catw = cats.get(r["category"])
+            if not catw:
+                continue
+            targets = [catw["_node"]]
+            subw = catw["_subs"].get(r["subcategory"])
+            if subw:
+                targets.append(subw["_node"])
+                prodn = subw["_prods"].get(r["product_id"])
+                if prodn is not None:
+                    targets.append(prodn)
+            mon = r["mon"]
+            m_kg = float(r["kg"] or 0)
+            m_m = float(r["metres"] or 0)
+            for t in targets:
+                t["_mon_kg"][mon] = t["_mon_kg"].get(mon, 0.0) + m_kg
+                t["_mon_m"][mon] = t["_mon_m"].get(mon, 0.0) + m_m
 
         cat_nodes = [c["_node"] for c in cats.values()]
-        tot_cons_kg = sum(x["consumption_kg"] for x in cat_nodes)
-        tot_cons_m = sum(x["consumption_metres"] for x in cat_nodes)
+        sub_nodes = [s["_node"] for c in cats.values() for s in c["_subs"].values()]
+        # Consumption is floored at 0 per group (a window-aligned return can push
+        # net negative), so the page Total is the sum of the FLOORED rows at the
+        # level being displayed. Flooring is non-linear, so the floored-subcategory
+        # sum ≠ the floored-category sum; we base the total (and the % denominator)
+        # on the displayed level so the Total reconciles with the rows above it and
+        # each level's shares add to 100%. Available/tied aren't floored, so they
+        # sum identically at either level (computed from categories).
+        cons_nodes = sub_nodes if group_by == "subcategory" else cat_nodes
+        tot_cons_kg = sum(max(0.0, x["consumption_kg"]) for x in cons_nodes)
+        tot_cons_m = sum(max(0.0, x["consumption_metres"]) for x in cons_nodes)
         tot_avail_kg = sum(x["available_kg"] for x in cat_nodes)
         tot_avail_m = sum(x["available_metres"] for x in cat_nodes)
         tot_kes = sum(x["tied_up_kes"] for x in cat_nodes)
 
         def _finalize(x):
-            c = x["consumption_metres"]
+            # Floor net consumption at 0 (negative = window-aligned production
+            # return outran the OUT it cancels); keep the gross OUT + return credit
+            # for the UI to explain a floored row.
+            c = max(0.0, x["consumption_metres"])
+            c_kg = max(0.0, x["consumption_kg"])
             a = x["available_metres"]
             pct_c = (c / tot_cons_m * 100) if tot_cons_m > 0 else 0.0
             pct_a = (a / tot_avail_m * 100) if tot_avail_m > 0 else 0.0
             gap = pct_a - pct_c
             shortfall = a - c
-            covers = (a / (c / months)) if c > 0 else None
+            # Weeks/Months of Cover use the smoothed 6-month run-rate (not the raw
+            # selected window) so cover populates for rows with sustained usage.
+            rr_m = _runrate(x["_mon_m"])
+            rr_kg = _runrate(x["_mon_kg"])
+            covers = (a / rr_m) if rr_m > 0 else None
             idle = (x["available_kg"] > 0 and abs(x["consumption_kg"]) <= IDLE_KG_EPS)
             status = "Shortage" if (shortfall < 0 or (covers is not None and covers < 1)) else "OK"
             return {
                 "group": x["group"],
-                "consumption_kg": round(x["consumption_kg"], 1),
+                "consumption_kg": round(c_kg, 1),
                 "consumption_metres": round(c, 1),
                 "available_kg": round(x["available_kg"], 1),
                 "available_metres": round(a, 1),
+                "out_kg": round(x["out_kg"], 1),
+                "out_metres": round(x["out_metres"], 1),
+                "return_kg": round(x["return_kg"], 1),
+                "return_metres": round(x["return_metres"], 1),
+                "runrate_monthly_kg": round(rr_kg, 3),
+                "runrate_monthly_metres": round(rr_m, 3),
                 "tied_up_kes": round(x["tied_up_kes"]),
                 "pct_consumption": round(pct_c, 1),
                 "pct_available": round(pct_a, 1),
@@ -1110,6 +1220,10 @@ def fabric_mix(
             "total_consumption_metres": round(tot_cons_m, 1),
             "total_available_kg": round(tot_avail_kg, 1),
             "total_available_metres": round(tot_avail_m, 1),
+            "total_out_kg": round(sum(x["out_kg"] for x in cat_nodes), 1),
+            "total_out_metres": round(sum(x["out_metres"] for x in cat_nodes), 1),
+            "total_return_kg": round(sum(x["return_kg"] for x in cat_nodes), 1),
+            "total_return_metres": round(sum(x["return_metres"] for x in cat_nodes), 1),
             "total_tied_up_kes": round(tot_kes),
             "rows": out,
         }

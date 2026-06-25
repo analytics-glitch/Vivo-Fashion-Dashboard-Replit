@@ -62,6 +62,26 @@ trailing 30-day total: total net ÷ (span_days / 30.4375). Monthly net swings wi
 (returns are batch-booked — a single calendar month can even be negative), so a
 running 30-day window is misleading. "Months of cover" = stock ÷ this monthly use.
 
+# Stock Mix cover = smoothed 6-month run-rate; consumption floored, totals re-sum
+The `/api/fabric/mix` "Stock Mix" tab does NOT compute Weeks/Months of Cover from
+the selected consumption window (a short window where an in-window production return
+outran its earlier OUT made net negative → cover blanked or absurd). Instead it
+carries a per-group **6-month run-rate** (`runrate_monthly_kg/metres`) projected
+exactly like the warehouse-wide `_months_of_cover` (M-5..M-1 complete + current
+month projected to month-end). Because every step is a linear combination of the
+group's monthly net kg, category run-rates sum back to the warehouse run-rate, so
+covers reconcile. Cover = available ÷ run-rate; "—" when run-rate ≤ 0 (no sustained
+net usage — genuinely happens, e.g. Jersey, where 6-month returns exceed OUT) or the
+metre run-rate can't form (missing kg→metre).
+
+**Consumption is floored at 0 per group** (negative = window-aligned return). Flooring
+is non-linear, so `sum(floored subcategory rows) ≠ floored category total`. The Total
+row / % denominator must therefore be re-summed from the floored rows **at the level
+being displayed** (`group_by`): categories for the default view, subcategories for the
+subcategory view — otherwise the Total stops reconciling with the rows above it and
+shares don't add to 100%. OUT and the production-return credit are surfaced per row
+(server `out_*`/`return_*`) so a floored-to-0 cell is explainable (hover ↩ marker).
+
 # Weeks-of-cover uses a monthly-average run-rate
 `/api/fabric/top-consumed` weeks_cover = stock ÷ weekly_rate, where
 weekly_rate = (net_consumption ÷ months_in_window) ÷ (52/12), and

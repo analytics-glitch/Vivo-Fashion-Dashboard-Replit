@@ -959,14 +959,20 @@ const MIX_COLS=[
 // header, body rows, colspans and totals row all key off this list.
 let mixActiveCols=MIX_COLS;
 const MIX_FX={
-  consumption:'Consumption = net fabric used over the selected period (OUT moves − production returns), warehouse-wide, in the active unit.',
+  consumption:'Consumption = net fabric used over the selected period (OUT moves − production returns), warehouse-wide, in the active unit. Floored at 0: when production returns in this window exceed the matching OUT the net would go negative, so it is shown as 0 — hover the ↩ marker for the OUT vs returned split.',
   available:'Available = current on-hand stock for this category at the selected location, in the active unit.',
   pctC:'% Consumption = this category\u2019s consumption ÷ total consumption across all categories.',
   pctA:'% Available = this category\u2019s available stock ÷ total available stock across all categories.',
   gap:'Gap (pp) = % Available − % Consumption (percentage points). Positive = overstock (held more than used); negative = short (used faster than its stock share).',
-  covers:'Weekly covers = Available ÷ (Consumption ÷ weeks in the period). Below 1 = under a week of cover left.',
+  covers:'Weeks of cover = Available ÷ weekly run-rate. The run-rate is the smoothed 6-month average monthly consumption (net of production returns, current month projected to month-end) converted to weeks — independent of the selected window so it reflects sustained usage. Monthly covers = Available ÷ monthly run-rate. "—" = no sustained usage, or the kg→metre conversion is missing. Below 1 week = under a week of cover left.',
   tied:'Tied-up KES = capital locked in this category\u2019s available stock (stock value).',
   verdict:'Verdict = Buy (short: shortfall < 0, cover < ~4 weeks, or Gap ≤ −3pp), Clear (overstock: Gap ≥ +3pp or > ~52 weeks cover), Idle (stock but ~no usage in the window), else Hold (balanced).',
+  totAvailable:'Total Available = sum of every category\u2019s available stock, in the active unit.',
+  totConsumption:'Total Consumption = sum of every category\u2019s net consumption (each floored at 0 first, so the total matches the rows above), in the active unit.',
+  totPct:'Category shares sum to 100% by definition.',
+  totGap:'Gap nets to 0 across all categories (overstock in some offsets shortage in others), so no single Total gap is shown.',
+  totCover:'Cover is a ratio, not a sum — there is no meaningful warehouse-wide total of per-category covers, so it is omitted here.',
+  totTied:'Total Stock Value = sum of every category\u2019s tied-up capital (KES).',
 };
 const MIX_NUM={unit:1,pct:1,gap:1,cover:1,kes:1};
 // Shared "Gap (pp)" chip — % Available − % Consumption, positive = overstock.
@@ -1029,18 +1035,23 @@ function setMixCover(basis){
 // (present on category rows when grouping by category) are derived recursively so
 // the drill-down rows use the same Gap/verdict logic + grand-total denominators.
 function deriveMixRow(r,totC,totA,weeks,useKg){
-  const c=useKg?r.consumption_kg:r.consumption_metres;
+  const c=useKg?r.consumption_kg:r.consumption_metres;   // already floored ≥0 server-side
   const a=useKg?r.available_kg:r.available_metres;
+  const outProd=useKg?(r.out_kg||0):(r.out_metres||0);   // raw "sent to production" (OUT)
+  const ret=useKg?(r.return_kg||0):(r.return_metres||0); // production-return credit
   const pctC=totC>0?(c/totC*100):0;
   const pctA=totA>0?(a/totA*100):0;
   const gap=pctA-pctC;
   const shortfall=a-c;
-  const covers=c>0?(a/(c/weeks)):null;
-  // Monthly covers derived from the same weekly value via the days-per-month
-  // constant; verdict/colour logic keeps using the weekly `covers` so only the
-  // displayed Covers value/header switch with the toggle.
-  const coversMonthly=covers==null?null:covers*(7/MIX_DAYS_PER_MONTH);
-  const out={group:r.group,consumption:c,available:a,pctC,pctA,gap,shortfall,covers,coversMonthly,
+  // Cover comes from the smoothed 6-month run-rate (server `runrate_monthly_*`),
+  // NOT the raw selected window — so a short window with a single return can't
+  // blank out cover. Months of cover = available ÷ monthly run-rate; weeks =
+  // months × weeks-per-month. "—" when there's no sustained usage (run-rate ≤ 0)
+  // or the kg→metre conversion is missing (run-rate in metres can't be formed).
+  const rr=useKg?(r.runrate_monthly_kg||0):(r.runrate_monthly_metres||0);
+  const coversMonthly=rr>0?(a/rr):null;
+  const covers=coversMonthly==null?null:coversMonthly*MIX_WEEKS_PER_MONTH;
+  const out={group:r.group,consumption:c,available:a,outProd,ret,pctC,pctA,gap,shortfall,covers,coversMonthly,
     tied:r.tied_up_kes,idle:!!r.idle,incomplete:!!r.metres_incomplete&&!useKg};
   out.verdict=mixVerdict(out);
   // Carry the per-product register detail + id through so the product row can show
@@ -1055,6 +1066,7 @@ function deriveMixRow(r,totC,totA,weeks,useKg){
 }
 // Days-per-month constant mirrors the backend (fabric_router.py DAYS_PER_MONTH).
 const MIX_DAYS_PER_MONTH=30.4375;
+const MIX_WEEKS_PER_MONTH=MIX_DAYS_PER_MONTH/7;  // ≈4.348 weeks per month
 function deriveMixRows(d){
   const useKg=UNIT==='kg';
   const totC=useKg?d.total_consumption_kg:d.total_consumption_metres;
@@ -1153,7 +1165,16 @@ function mixCell(col,r,kind,opts){
       }
       cell=`<td>${link}</td>`;
       break;}
-    case 'unit':cell=`<td class="r">${fmt(r[col.k])}</td>`;break;
+    case 'unit':{
+      let inner=fmt(r[col.k]);
+      // On the Consumption column, surface the raw OUT vs production-return split
+      // so a net floored to 0 (returns ≥ OUT in window) is explainable on hover.
+      if(col.k==='consumption'&&(r.ret||0)>0){
+        const net=r.outProd-r.ret;
+        const t=`Sent to production (OUT): ${fmt1(r.outProd)} · Returned from production: ${fmt1(r.ret)} · Net used: ${fmt1(r.consumption)}`+(net<0?' (net was negative, floored to 0)':'');
+        inner+=` <sup class="ret-ind" title="${esc(t)}" style="color:var(--muted);font-size:.72em;cursor:help;">↩${fmt1(r.ret)}</sup>`;
+      }
+      cell=`<td class="r">${inner}</td>`;break;}
     case 'pct':cell=`<td class="r">${(r[col.k]||0).toFixed(1)}</td>`;break;
     case 'gap':cell=`<td class="r">${gapChip(r.gap,true)}</td>`;break;
     case 'cover':{const wk=r.covers;const v=mixCoverBasis==='months'?r.coversMonthly:wk;
@@ -1302,16 +1323,24 @@ function renderFabricMix(){
     body.innerHTML=`<tr><td colspan="${mixActiveCols.length}" class="loading">No product matches “${esc(mixSearch)}”.</td></tr>`;
     return;
   }
-  // Totals row
+  // Totals row — every numeric cell carries its own formula tooltip (data-fx).
+  const totOut=useKg?(d.total_out_kg||0):(d.total_out_metres||0);
+  const totRet=useKg?(d.total_return_kg||0):(d.total_return_metres||0);
+  let totConsCell=fmt(totC);
+  if(totRet>0){
+    const net=totOut-totRet;
+    const t=`Sent to production (OUT): ${fmt1(totOut)} · Returned from production: ${fmt1(totRet)} · Net used: ${fmt1(totC)}`+(net<0?' (per-category floors applied)':'');
+    totConsCell+=` <sup class="ret-ind" title="${esc(t)}" style="color:var(--muted);font-size:.72em;cursor:help;">↩${fmt1(totRet)}</sup>`;
+  }
   html+=`<tr class="mix-total" style="border-top:2px solid var(--border);font-weight:700;background:var(--bg);">
    ${showBarcode?'<td></td>':''}<td style="font-weight:800;">Total</td>
-   <td class="r">${fmt(totA)}</td>
-   <td class="r">${fmt(totC)}</td>
-   <td class="r">100.0</td>
-   <td class="r">100.0</td>
-   <td class="r">—</td>
-   <td class="r">—</td>
-   <td class="r" style="color:var(--muted);">${fmt(d.total_tied_up_kes)}</td>
+   <td class="r"${fx(MIX_FX.totAvailable)}>${fmt(totA)}</td>
+   <td class="r"${fx(MIX_FX.totConsumption)}>${totConsCell}</td>
+   <td class="r"${fx(MIX_FX.totPct)}>100.0</td>
+   <td class="r"${fx(MIX_FX.totPct)}>100.0</td>
+   <td class="r"${fx(MIX_FX.totGap)}>—</td>
+   <td class="r"${fx(MIX_FX.totCover)}>—</td>
+   <td class="r" style="color:var(--muted);"${fx(MIX_FX.totTied)}>${fmt(d.total_tied_up_kes)}</td>
   </tr>`;
   body.innerHTML=html;
   if(window.__fabricEnhanceTables)window.__fabricEnhanceTables();
