@@ -76,7 +76,7 @@ const Editor = ({ style, currentUrl, onClose, onChanged }) => {
     }
     setSaving(true);
     try {
-      await api.post("/thumbnails", { style_name: style, image_url: trimmed });
+      await api.post(`/thumbnails/${encodeURIComponent(style)}`, { style_name: style, image_url: trimmed });
       primeThumbnail(style, trimmed);
       toast.success("Thumbnail saved");
       onChanged?.();

@@ -12017,8 +12017,30 @@ def stub_feedback_mine(): return []
 def stub_search(): return []
 @app.get("/api/search/customers")
 def stub_search_customers(): return []
+def _ensure_thumbnail_overrides():
+    """Idempotently create the admin thumbnail-override table."""
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS thumbnail_overrides (
+            style_name TEXT PRIMARY KEY,
+            image_url  TEXT NOT NULL,
+            updated_by TEXT,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+
+
 @app.get("/api/thumbnails")
-def stub_thumbnails(): return []
+def list_thumbnail_overrides(request: Request):
+    """Admin management view: list all admin-set thumbnail overrides."""
+    _require_admin(request)
+    _ensure_thumbnail_overrides()
+    rows = _users_exec(
+        "SELECT style_name, image_url, updated_by, updated_at "
+        "FROM thumbnail_overrides ORDER BY updated_at DESC", fetch=True) or []
+    for r in rows:
+        ua = r.get("updated_at")
+        if ua is not None:
+            r["updated_at"] = ua.isoformat()
+    return rows
 
 # --- GET stubs returning objects ---
 @app.get("/api/analytics/cache-stats")
@@ -12247,27 +12269,42 @@ async def thumbnails_lookup(request: Request):
     if not names:
         return {}
     names = names[:300]  # match the frontend chunk size; defensive cap
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT DISTINCT ON (p.style_name) p.style_name, p.sku "
-            "FROM all_products_clean p "
-            "JOIN product_image_map m ON m.sku = p.sku "
-            "JOIN product_images i ON i.tmpl_id = m.tmpl_id "
-            "WHERE p.style_name = ANY(%s) "
-            "AND i.image_512 IS NOT NULL AND i.image_512 <> '' "
-            "ORDER BY p.style_name, p.sku",
-            (names,)
-        )
-        rows = cur.fetchall()
-        cur.close()
-    finally:
-        conn.close()
     out = {}
-    for style_name, sku in rows:
-        if style_name and sku:
-            out[style_name] = f"/api/product-image/{quote(str(sku), safe='')}"
+    # Admin-set overrides take precedence over the Odoo-derived photo.
+    try:
+        _ensure_thumbnail_overrides()
+        ov_rows = _users_exec(
+            "SELECT style_name, image_url FROM thumbnail_overrides "
+            "WHERE style_name = ANY(%s) AND image_url <> ''",
+            (names,), fetch=True) or []
+        for r in ov_rows:
+            if r.get("style_name") and r.get("image_url"):
+                out[r["style_name"]] = r["image_url"]
+    except Exception:
+        pass
+    # Resolve the remaining styles to their Odoo product photo.
+    remaining = [n for n in names if n not in out]
+    if remaining:
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT DISTINCT ON (p.style_name) p.style_name, p.sku "
+                "FROM all_products_clean p "
+                "JOIN product_image_map m ON m.sku = p.sku "
+                "JOIN product_images i ON i.tmpl_id = m.tmpl_id "
+                "WHERE p.style_name = ANY(%s) "
+                "AND i.image_512 IS NOT NULL AND i.image_512 <> '' "
+                "ORDER BY p.style_name, p.sku",
+                (remaining,)
+            )
+            rows = cur.fetchall()
+            cur.close()
+        finally:
+            conn.close()
+        for style_name, sku in rows:
+            if style_name and sku:
+                out[style_name] = f"/api/product-image/{quote(str(sku), safe='')}"
     return out
 @app.get("/api/auth/activity-streak")
 def stub_auth_activity_streak(): return {"streak": 0}
@@ -12963,7 +13000,42 @@ async def stub_feedback_post(request: Request): return {"ok": True, "id": 1}
 @app.delete("/api/feedback/{feedback_id}")
 async def stub_feedback_modify(feedback_id: str, request: Request): return {"ok": True}
 @app.post("/api/thumbnails/{style}")
-async def stub_thumbnails_post(style: str, request: Request): return {"ok": True}
+async def set_thumbnail_override(style: str, request: Request):
+    """Admin-only: upsert a custom thumbnail URL for a style name."""
+    _require_admin(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    style_name = (style or body.get("style_name") or "").strip()
+    image_url = (body.get("image_url") or "").strip()
+    if not style_name:
+        raise HTTPException(status_code=400, detail="Missing style name.")
+    if not re.match(r"^https?://", image_url, re.IGNORECASE):
+        raise HTTPException(status_code=400, detail="Paste a full https:// image URL.")
+    _ensure_thumbnail_overrides()
+    actor = getattr(request.state, "user", None) or {}
+    updated_by = actor.get("email") or actor.get("name") or actor.get("user_id") or "admin"
+    _users_exec(
+        "INSERT INTO thumbnail_overrides (style_name, image_url, updated_by, updated_at) "
+        "VALUES (%s, %s, %s, now()) "
+        "ON CONFLICT (style_name) DO UPDATE SET "
+        "image_url = EXCLUDED.image_url, updated_by = EXCLUDED.updated_by, updated_at = now()",
+        (style_name, image_url, updated_by))
+    return {"ok": True, "style_name": style_name, "image_url": image_url}
+@app.delete("/api/thumbnails/{style}")
+async def delete_thumbnail_override(style: str, request: Request):
+    """Admin-only: remove a custom thumbnail override for a style name."""
+    _require_admin(request)
+    style_name = (style or "").strip()
+    if not style_name:
+        raise HTTPException(status_code=400, detail="Missing style name.")
+    _ensure_thumbnail_overrides()
+    _users_exec(
+        "DELETE FROM thumbnail_overrides WHERE style_name = %s", (style_name,))
+    return {"ok": True, "style_name": style_name}
 @app.post("/api/auth/heartbeat")
 async def stub_auth_heartbeat_post(request: Request): return {"ok": True}
 @app.post("/api/recommendations")
@@ -15873,6 +15945,10 @@ def _init_crm_store():
         _ensure_crm_tables()
     except Exception as e:
         log.error("CRM table init failed: %s", e)
+    try:
+        _ensure_thumbnail_overrides()
+    except Exception as e:
+        log.error("thumbnail_overrides table init failed: %s", e)
 
 
 # --- CRM helpers ----------------------------------------------------------
