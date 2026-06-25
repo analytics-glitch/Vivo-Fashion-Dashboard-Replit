@@ -1777,7 +1777,7 @@ function renderColorPanel(id,rows,key,totalMetres){
     const star=inc?'<span title="Some stock has no kg→metre conversion — its kg are counted but its metres are not." style="cursor:help;">*</span>':'';
     return `<div class="bar-row"><span class="bar-label" title="${esc(r.color)}"><span class="dot" style="background:${c};border:1px solid rgba(0,0,0,.15)"></span>${esc(r.color)}</span>
      <div class="bar-track"><div class="bar-fill" style="width:${(q/max*100).toFixed(1)}%;background:${c}"></div></div>
-     <span class="bar-qty">${fmt(m)} m${star}</span><span class="bar-qty">${fmt1(kg)} kg</span><span class="bar-sub">${pct.toFixed(1)}%</span></div>`;
+     <span class="bar-qty">${fmt(m)} m${star}</span><span class="bar-sub">${pct.toFixed(1)}%</span></div>`;
   }).join(''):'<p class="muted">No data.</p>';
 }
 function renderKpis(d){
