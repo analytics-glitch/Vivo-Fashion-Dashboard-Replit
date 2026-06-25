@@ -1061,9 +1061,9 @@ const MIX_NUM={unit:1,pct:1,gap:1,cover:1,kes:1};
 // the sign convention reads identically in both places.
 function gapChip(v,short){
   v=Number(v)||0; const a=Math.abs(v).toFixed(1);
-  if(v>=3)  return `<span class="pill pill-amber" title="Held more than it is being used (overstock).">+${a}${short?'':'pp overstock'}</span>`;
-  if(v<=-3) return `<span class="pill pill-red" title="Used faster than its stock share (short).">\u2212${a}${short?'':'pp short'}</span>`;
-  return `<span class="pill pill-green" title="Consumption and stock shares are in balance.">\u00B1${a}${short?'':'pp balanced'}</span>`;
+  if(v>=3)  return `<span class="pill pill-amber" title="Held more than it is being used (overstock).">+${a}${short?'':'pp'}</span>`;
+  if(v<=-3) return `<span class="pill pill-red" title="Used faster than its stock share (short).">\u2212${a}${short?'':'pp'}</span>`;
+  return `<span class="pill pill-green" title="Consumption and stock shares are in balance.">\u00B1${a}${short?'':'pp'}</span>`;
 }
 // Plain-English Buy/Hold/Clear/Idle verdict from the flipped-sign metrics.
 // Same buckets as the old narrative, just re-sourced from Gap + an Idle override.
