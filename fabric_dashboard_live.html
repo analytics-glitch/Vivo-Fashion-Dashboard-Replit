@@ -966,7 +966,7 @@ const MIX_FX={
   gap:'Gap (pp) = % Available − % Consumption (percentage points). Positive = overstock (held more than used); negative = short (used faster than its stock share).',
   covers:'Weeks of cover = Available ÷ weekly run-rate. The run-rate is the smoothed 6-month average monthly consumption (net of production returns, current month projected to month-end) converted to weeks — independent of the selected window so it reflects sustained usage. Monthly covers = Available ÷ monthly run-rate. "—" = no sustained usage, or the kg→metre conversion is missing. Below 1 week = under a week of cover left.',
   tied:'Tied-up KES = capital locked in this category\u2019s available stock (stock value).',
-  verdict:'Verdict = Buy (short: shortfall < 0, cover < ~4 weeks, or Gap ≤ −3pp), Clear (overstock: Gap ≥ +3pp or > ~52 weeks cover), Idle (stock but ~no usage in the window), else Hold (balanced).',
+  verdict:'Verdict = Shortage (short: shortfall < 0, cover < ~4 weeks, or Gap ≤ −3pp), Overstock (Gap ≥ +3pp or > ~52 weeks cover), Dead stock (stock but ~no usage in the window), else Hold (balanced).',
   totAvailable:'Total Available = sum of every category\u2019s available stock, in the active unit.',
   totConsumption:'Total Consumption = sum of every category\u2019s net consumption (each floored at 0 first, so the total matches the rows above), in the active unit.',
   totPct:'Category shares sum to 100% by definition.',
@@ -987,11 +987,11 @@ function gapChip(v,short){
 // Plain-English Buy/Hold/Clear/Idle verdict from the flipped-sign metrics.
 // Same buckets as the old narrative, just re-sourced from Gap + an Idle override.
 function mixVerdict(r){
-  if(r.idle) return {key:'idle', label:'Idle — no usage', cls:'pill-blue'};
+  if(r.idle) return {key:'idle', label:'Dead stock — no usage', cls:'pill-blue'};
   const buy   = r.shortfall<0 || (r.covers!=null&&r.covers<4.35) || r.gap<=-3;
   const clear = r.gap>=3 || (r.covers!=null&&r.covers>52.2);
-  if(buy)   return {key:'buy',   label:'Buy — short',         cls:'pill-red'};
-  if(clear) return {key:'clear', label:'Clear — overstocked', cls:'pill-amber'};
+  if(buy)   return {key:'buy',   label:'Shortage — short',       cls:'pill-red'};
+  if(clear) return {key:'clear', label:'Overstock — overstocked', cls:'pill-amber'};
   return {key:'hold', label:'Hold — balanced', cls:'pill-green'};
 }
 function setMixGroup(g){
@@ -1102,12 +1102,12 @@ function mixActionBanner(rows){
     +'<div class="section-head" style="margin-bottom:.7rem;"><h3>Action — money &amp; units at risk</h3>'
     +'<button class="btn" onclick="exportFabricMixActions(this)">Export action rows</button></div>';
   if(!mixAction.has){
-    html+='<p class="muted" style="margin:0;">Consumption and stock are broadly in balance — nothing flagged to Buy, Clear or as Idle in this period.</p>';
+    html+='<p class="muted" style="margin:0;">Consumption and stock are broadly in balance — nothing flagged as Overstock, Shortage or Dead stock in this period.</p>';
   }else{
     html+='<div class="action-grid">'
-      +tile('pill-amber','CLEAR','overstocked categories — tied-up capital',clears.length,clearU,clearK,names(exClears))
-      +tile('pill-red','BUY','short categories — shortage exposure',buys.length,buyU,buyK,names(exBuys))
-      +tile('pill-blue','IDLE','categories with stock but no usage',idles.length,idleU,idleK,names(exIdles))
+      +tile('pill-amber','OVERSTOCK','overstocked categories — tied-up capital',clears.length,clearU,clearK,names(exClears))
+      +tile('pill-red','SHORTAGE','short categories — shortage exposure',buys.length,buyU,buyK,names(exBuys))
+      +tile('pill-blue','DEAD STOCK','categories with stock but no usage',idles.length,idleU,idleK,names(exIdles))
       +'</div>';
   }
   html+='</div>';
