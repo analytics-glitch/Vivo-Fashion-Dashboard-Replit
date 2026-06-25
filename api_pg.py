@@ -7777,6 +7777,88 @@ def admin_users_list():
             if r.get(k) is not None:
                 r[k] = r[k].isoformat()
     return rows
+
+# ---------------------------------------------------------------------------
+# Data Health / prod-vs-dev parity check (admin-only).
+#
+# Prod is a SEPARATE database from dev: publishing ships code + schema but NOT
+# data rows, so several hand-loaded / self-bootstrapping tables can be empty or
+# stale in production. This endpoint reports, for the CURRENT database, a
+# row-count + freshness manifest of the key tables so an admin can open it on
+# the live site AND in dev and confirm the two line up after every publish.
+# Table names are hardcoded constants (never user input), and every probe is
+# wrapped so a missing table degrades to a clean "missing" status instead of
+# 500-ing the whole report.
+# ---------------------------------------------------------------------------
+_DATA_HEALTH_TABLES = [
+    # (table, label, group, critical, date_expr)
+    ("all_sales",               "All Sales (fact table)",            "Core data",     True,  "sale_date::date"),
+    ("all_inventory",           "Inventory snapshot",                "Core data",     True,  None),
+    ("all_customers",           "Customers",                         "Core data",     True,  None),
+    ("shopify_sales",           "Shopify retail (rebuild input)",    "Sales sources", True,  None),
+    ("raw_shopify_vendor_sales","Online / ShopifyQL (rebuild input)","Sales sources", True,  None),
+    ("raw_odoo_orders",         "Odoo orders (rebuild input)",       "Sales sources", False, None),
+    ("raw_odoo_products",       "Odoo products (rebuild input)",     "Sales sources", False, None),
+    ("raw_account_move_lines",  "Finance journal lines",             "Finance",       False, None),
+    ("finance_account_map",     "Finance account map (seeded)",      "Finance",       True,  None),
+    ("targets_monthly",         "Sales targets (seeded)",            "Targets",       True,  None),
+    ("hr_employees",            "HR roster (sheet-sourced)",         "HR",            True,  None),
+    ("hr_employee_match",       "HR roster \u2194 attendance matches","HR",           True,  None),
+    ("production_orders",       "Production orders (DPS-sourced)",   "Production",    True,  None),
+    ("stage_movements",         "Production stage movements",        "Production",    False, None),
+    ("app_users",               "App users / access",                "Access",        True,  None),
+]
+
+@app.get("/api/admin/data-health")
+def admin_data_health():
+    """Row-count + freshness manifest of key tables for the CURRENT database, for
+    prod-vs-dev parity checks. Admin-only (enforced by clerk_auth_gate for the
+    /api/admin/* prefix). Reads a fresh (uncached) connection so the numbers are
+    live."""
+    conn = get_conn()
+    out = []
+    counts = {"ok": 0, "empty": 0, "missing": 0}
+    dbname = None
+    try:
+        conn.autocommit = True  # each probe is its own txn; a failed probe never
+                                # poisons the next one.
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT current_database()")
+            dbname = cur.fetchone()[0]
+        except Exception:
+            dbname = None
+        for table, label, group, critical, date_expr in _DATA_HEALTH_TABLES:
+            rec = {"key": table, "label": label, "group": group, "critical": critical,
+                   "rows": None, "earliest": None, "latest": None, "status": "missing"}
+            try:
+                if date_expr:
+                    cur.execute(f"SELECT COUNT(*), MIN({date_expr}), MAX({date_expr}) FROM {table}")
+                    r = cur.fetchone()
+                    rec["rows"] = int(r[0])
+                    rec["earliest"] = str(r[1]) if r[1] is not None else None
+                    rec["latest"] = str(r[2]) if r[2] is not None else None
+                else:
+                    cur.execute(f"SELECT COUNT(*) FROM {table}")
+                    rec["rows"] = int(cur.fetchone()[0])
+                rec["status"] = "empty" if (rec["rows"] == 0 and critical) else "ok"
+            except Exception as e:
+                rec["status"] = "missing"
+                rec["error"] = str(e).splitlines()[0][:140]
+            counts[rec["status"]] = counts.get(rec["status"], 0) + 1
+            out.append(rec)
+        cur.close()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return {
+        "database": dbname,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "summary": counts,
+        "tables": out,
+    }
 @app.get("/api/admin/replenishment-config")
 def admin_replenishment_config():
     return {"owners": _replen_owners()}
