@@ -19607,8 +19607,9 @@ def _ensure_production_tables():
           ('sewing',         'Sewing',              3, FALSE, ARRAY['finishing','washing']),
           ('washing',        'Washing',             4, FALSE, ARRAY['finishing','warehouse']),
           ('finishing',      'Finishing',           5, FALSE, ARRAY['warehouse','washing','repairs']),
-          ('repairs',        'Repairs',             6, FALSE, ARRAY['sewing','finishing','warehouse']),
-          ('warehouse',      'Warehouse',           7, TRUE,  ARRAY[]::TEXT[])
+          ('repairs',        'Repairs',             6, FALSE, ARRAY['sewing','finishing','defects']),
+          ('defects',        'Defects',             7, FALSE, ARRAY['warehouse','repairs']),
+          ('warehouse',      'Warehouse',           8, TRUE,  ARRAY[]::TEXT[])
         ON CONFLICT (stage_key) DO UPDATE
           SET stage_name   = EXCLUDED.stage_name,
               sort_order   = EXCLUDED.sort_order,

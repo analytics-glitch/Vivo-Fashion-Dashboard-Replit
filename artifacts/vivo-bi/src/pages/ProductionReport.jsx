@@ -10,6 +10,9 @@ import {
   ArrowRight,
   CalendarBlank,
   Funnel,
+  CaretUp,
+  CaretDown,
+  CaretUpDown,
 } from "@phosphor-icons/react";
 
 /**
@@ -42,6 +45,29 @@ function fmtDate(d) {
   } catch {
     return String(d);
   }
+}
+
+// Clickable, sort-aware table header cell. Cycles asc → desc → unsorted on each
+// click; shows a neutral caret until its column is the active sort key.
+function SortTh({ label, sortKey, sort, onSort, align = "left" }) {
+  const isActive = sort.key === sortKey;
+  const Icon = !isActive ? CaretUpDown : sort.dir === "asc" ? CaretUp : CaretDown;
+  return (
+    <th className={`font-semibold px-3 py-2 ${align === "right" ? "text-right px-2.5" : "text-left"}`}>
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={`inline-flex items-center gap-1 hover:text-brand transition-colors ${
+          align === "right" ? "justify-end w-full" : ""
+        } ${isActive ? "text-brand" : ""}`}
+        aria-label={`Sort by ${label}`}
+        data-testid={`production-sort-${sortKey}`}
+      >
+        <span>{label}</span>
+        <Icon size={12} weight={isActive ? "bold" : "regular"} className={isActive ? "" : "opacity-40"} />
+      </button>
+    </th>
+  );
 }
 
 function fmtDayShort(d) {
@@ -533,6 +559,9 @@ export default function ProductionReport() {
   const [selRefs, setSelRefs] = useState(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkMsg, setBulkMsg] = useState(null);
+  // Client-side column sorting for the two order tables (active + completed).
+  const [activeSort, setActiveSort] = useState({ key: null, dir: "asc" });
+  const [completedSort, setCompletedSort] = useState({ key: null, dir: "asc" });
 
   const load = useCallback(async (force = false) => {
     if (force) setRefreshing(true);
@@ -694,6 +723,103 @@ export default function ProductionReport() {
   const completedOrders = useMemo(
     () => orders.filter((o) => isComplete(o) && matchesText(o)),
     [orders, isComplete, matchesText]
+  );
+
+  // --- Client-side column sorting ---------------------------------------
+  // Each accessor returns a comparable scalar (number or string). The active
+  // table's "what is where" sorts by the most-advanced stage holding units;
+  // the completed table's "in warehouse" sums terminal-stage units.
+  const styleOf = useCallback(
+    (o) => o.style_name || o.product_name || o.style_number || "",
+    []
+  );
+  const inWarehouseOf = useCallback(
+    (o) =>
+      Object.entries(o.stage_qty || {}).reduce(
+        (s, [k, v]) => (terminalKeys.has(k) ? s + (Number(v) || 0) : s),
+        0
+      ),
+    [terminalKeys]
+  );
+  const activeAccessors = useMemo(
+    () => ({
+      order_ref: (o) => o.order_ref || "",
+      date_ordered: (o) => o.date_ordered || "",
+      style: styleOf,
+      buyer: (o) => o.buyer || "",
+      type: (o) => o.lifecycle_type || "",
+      colours: (o) => Number(o.colours) || 0,
+      sizes: (o) => Number(o.sizes) || 0,
+      order_qty: (o) => Number(o.order_qty) || 0,
+      sewing_line: (o) => (o.sewing_lines || []).slice().sort().join(","),
+      what_is_where: (o) => {
+        const sq = o.stage_qty || {};
+        let idx = -1;
+        stageCols.forEach((s, i) => {
+          if (Number(sq[s.key]) > 0) idx = i;
+        });
+        return idx;
+      },
+      expected: (o) => o.expected_delivery_date || "",
+    }),
+    [styleOf, stageCols]
+  );
+  const completedAccessors = useMemo(
+    () => ({
+      order_ref: (o) => o.order_ref || "",
+      date_ordered: (o) => o.date_ordered || "",
+      style: styleOf,
+      buyer: (o) => o.buyer || "",
+      type: (o) => o.lifecycle_type || "",
+      colours: (o) => Number(o.colours) || 0,
+      sizes: (o) => Number(o.sizes) || 0,
+      order_qty: (o) => Number(o.order_qty) || 0,
+      in_warehouse: inWarehouseOf,
+    }),
+    [styleOf, inWarehouseOf]
+  );
+  const sortRows = useCallback((rows, sort, accessors) => {
+    const acc = sort.key && accessors[sort.key];
+    if (!acc) return rows;
+    const dir = sort.dir === "desc" ? -1 : 1;
+    return rows
+      .map((row, i) => [row, i])
+      .sort(([a, ia], [b, ib]) => {
+        const va = acc(a);
+        const vb = acc(b);
+        let c;
+        if (typeof va === "number" && typeof vb === "number") c = va - vb;
+        else
+          c = String(va).localeCompare(String(vb), undefined, {
+            numeric: true,
+            sensitivity: "base",
+          });
+        return c !== 0 ? c * dir : ia - ib; // stable tie-break on original order
+      })
+      .map(([row]) => row);
+  }, []);
+  const toggleSort = useCallback((setSort, key) => {
+    setSort((prev) => {
+      if (prev.key !== key) return { key, dir: "asc" };
+      if (prev.dir === "asc") return { key, dir: "desc" };
+      return { key: null, dir: "asc" };
+    });
+  }, []);
+  const onActiveSort = useCallback(
+    (key) => toggleSort(setActiveSort, key),
+    [toggleSort]
+  );
+  const onCompletedSort = useCallback(
+    (key) => toggleSort(setCompletedSort, key),
+    [toggleSort]
+  );
+  const sortedFiltered = useMemo(
+    () => sortRows(filtered, activeSort, activeAccessors),
+    [filtered, activeSort, activeAccessors, sortRows]
+  );
+  const sortedCompleted = useMemo(
+    () => sortRows(completedOrders, completedSort, completedAccessors),
+    [completedOrders, completedSort, completedAccessors, sortRows]
   );
 
   // Selection is scoped to the currently-visible active rows.
@@ -1034,21 +1160,21 @@ export default function ProductionReport() {
                       data-testid="production-report-select-all"
                     />
                   </th>
-                  <th className="text-left font-semibold px-3 py-2">Order</th>
-                  <th className="text-left font-semibold px-3 py-2">BO created</th>
-                  <th className="text-left font-semibold px-3 py-2">Style</th>
-                  <th className="text-left font-semibold px-3 py-2">Buyer</th>
-                  <th className="text-left font-semibold px-3 py-2">Type</th>
-                  <th className="text-right font-semibold px-2.5 py-2">Colours</th>
-                  <th className="text-right font-semibold px-2.5 py-2">Sizes</th>
-                  <th className="text-right font-semibold px-2.5 py-2">Order qty</th>
-                  <th className="text-left font-semibold px-3 py-2">Sewing line</th>
-                  <th className="text-left font-semibold px-3 py-2">What is where</th>
-                  <th className="text-left font-semibold px-3 py-2">Expected</th>
+                  <SortTh label="Order" sortKey="order_ref" sort={activeSort} onSort={onActiveSort} />
+                  <SortTh label="BO created" sortKey="date_ordered" sort={activeSort} onSort={onActiveSort} />
+                  <SortTh label="Style" sortKey="style" sort={activeSort} onSort={onActiveSort} />
+                  <SortTh label="Buyer" sortKey="buyer" sort={activeSort} onSort={onActiveSort} />
+                  <SortTh label="Type" sortKey="type" sort={activeSort} onSort={onActiveSort} />
+                  <SortTh label="Colours" sortKey="colours" sort={activeSort} onSort={onActiveSort} align="right" />
+                  <SortTh label="Sizes" sortKey="sizes" sort={activeSort} onSort={onActiveSort} align="right" />
+                  <SortTh label="Order qty" sortKey="order_qty" sort={activeSort} onSort={onActiveSort} align="right" />
+                  <SortTh label="Sewing line" sortKey="sewing_line" sort={activeSort} onSort={onActiveSort} />
+                  <SortTh label="What is where" sortKey="what_is_where" sort={activeSort} onSort={onActiveSort} />
+                  <SortTh label="Expected" sortKey="expected" sort={activeSort} onSort={onActiveSort} />
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((o) => {
+                {sortedFiltered.map((o) => {
                   const sq = o.stage_qty || {};
                   const active = stageCols.filter((s) => Number(sq[s.key]) > 0);
                   return (
@@ -1193,20 +1319,20 @@ export default function ProductionReport() {
               <table className="w-full text-[12px] border-collapse">
                 <thead className="bg-panel/60 text-muted">
                   <tr>
-                    <th className="text-left font-semibold px-3 py-2">Order</th>
-                    <th className="text-left font-semibold px-3 py-2">BO created</th>
-                    <th className="text-left font-semibold px-3 py-2">Style</th>
-                    <th className="text-left font-semibold px-3 py-2">Buyer</th>
-                    <th className="text-left font-semibold px-3 py-2">Type</th>
-                    <th className="text-right font-semibold px-2.5 py-2">Colours</th>
-                    <th className="text-right font-semibold px-2.5 py-2">Sizes</th>
-                    <th className="text-right font-semibold px-2.5 py-2">Order qty</th>
-                    <th className="text-right font-semibold px-2.5 py-2">In warehouse</th>
+                    <SortTh label="Order" sortKey="order_ref" sort={completedSort} onSort={onCompletedSort} />
+                    <SortTh label="BO created" sortKey="date_ordered" sort={completedSort} onSort={onCompletedSort} />
+                    <SortTh label="Style" sortKey="style" sort={completedSort} onSort={onCompletedSort} />
+                    <SortTh label="Buyer" sortKey="buyer" sort={completedSort} onSort={onCompletedSort} />
+                    <SortTh label="Type" sortKey="type" sort={completedSort} onSort={onCompletedSort} />
+                    <SortTh label="Colours" sortKey="colours" sort={completedSort} onSort={onCompletedSort} align="right" />
+                    <SortTh label="Sizes" sortKey="sizes" sort={completedSort} onSort={onCompletedSort} align="right" />
+                    <SortTh label="Order qty" sortKey="order_qty" sort={completedSort} onSort={onCompletedSort} align="right" />
+                    <SortTh label="In warehouse" sortKey="in_warehouse" sort={completedSort} onSort={onCompletedSort} align="right" />
                     <th className="text-left font-semibold px-3 py-2">Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {completedOrders.map((o) => {
+                  {sortedCompleted.map((o) => {
                     const sq = o.stage_qty || {};
                     const inWh = Object.entries(sq).reduce(
                       (s, [k, v]) => (terminalKeys.has(k) ? s + (Number(v) || 0) : s),
