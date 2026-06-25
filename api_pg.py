@@ -12071,7 +12071,14 @@ def stub_search(): return []
 @app.get("/api/search/customers")
 def stub_search_customers(): return []
 def _ensure_thumbnail_overrides():
-    """Idempotently create the admin thumbnail-override table."""
+    """Idempotently create the admin thumbnail-override table.
+
+    Overrides come in two flavours: a pasted external ``image_url`` (https://…)
+    or a file uploaded straight from the admin's device. Uploaded files are
+    stored durably as bytes in ``image_data`` (+ ``content_type``) and served
+    back through ``GET /api/thumbnails/{style}/image``; for those rows
+    ``image_url`` holds that internal serving path so the lookup resolves them
+    identically to URL overrides."""
     _users_exec("""
         CREATE TABLE IF NOT EXISTS thumbnail_overrides (
             style_name TEXT PRIMARY KEY,
@@ -12079,6 +12086,8 @@ def _ensure_thumbnail_overrides():
             updated_by TEXT,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )""")
+    _users_exec("ALTER TABLE thumbnail_overrides ADD COLUMN IF NOT EXISTS image_data BYTEA")
+    _users_exec("ALTER TABLE thumbnail_overrides ADD COLUMN IF NOT EXISTS content_type TEXT")
 
 
 @app.get("/api/thumbnails")
@@ -13071,13 +13080,108 @@ async def set_thumbnail_override(style: str, request: Request):
     _ensure_thumbnail_overrides()
     actor = getattr(request.state, "user", None) or {}
     updated_by = actor.get("email") or actor.get("name") or actor.get("user_id") or "admin"
+    # A pasted URL supersedes any previously uploaded file for this style, so
+    # clear the stored bytes to avoid serving a stale upload.
     _users_exec(
-        "INSERT INTO thumbnail_overrides (style_name, image_url, updated_by, updated_at) "
-        "VALUES (%s, %s, %s, now()) "
+        "INSERT INTO thumbnail_overrides (style_name, image_url, image_data, content_type, updated_by, updated_at) "
+        "VALUES (%s, %s, NULL, NULL, %s, now()) "
         "ON CONFLICT (style_name) DO UPDATE SET "
-        "image_url = EXCLUDED.image_url, updated_by = EXCLUDED.updated_by, updated_at = now()",
+        "image_url = EXCLUDED.image_url, image_data = NULL, content_type = NULL, "
+        "updated_by = EXCLUDED.updated_by, updated_at = now()",
         (style_name, image_url, updated_by))
     return {"ok": True, "style_name": style_name, "image_url": image_url}
+
+
+# Accepted upload image types -> canonical content-type served back.
+_THUMB_UPLOAD_TYPES = {
+    "image/jpeg": "image/jpeg",
+    "image/jpg": "image/jpeg",
+    "image/png": "image/png",
+    "image/webp": "image/webp",
+}
+_THUMB_MAX_BYTES = 5 * 1024 * 1024  # 5 MB decoded ceiling
+
+
+@app.post("/api/thumbnails/{style}/upload")
+async def upload_thumbnail_override(style: str, request: Request):
+    """Admin-only: store an image uploaded straight from the admin's device.
+
+    The frontend reads the chosen file as a base64 data URL and POSTs JSON
+    ``{content_type, data_base64}``. The bytes are stored durably on the
+    override row and the row's ``image_url`` is set to the internal serving
+    path (``/api/thumbnails/{style}/image?v=<epoch>``) so the lookup endpoint
+    resolves it exactly like a pasted URL."""
+    _require_admin(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    style_name = (style or body.get("style_name") or "").strip()
+    if not style_name:
+        raise HTTPException(status_code=400, detail="Missing style name.")
+    content_type = (body.get("content_type") or "").strip().lower()
+    data_b64 = body.get("data_base64") or body.get("data") or ""
+    if isinstance(data_b64, str) and data_b64.startswith("data:"):
+        # Tolerate a full data URL: data:image/png;base64,XXXX
+        header, _, rest = data_b64.partition(",")
+        data_b64 = rest
+        if not content_type:
+            m = re.match(r"data:([^;]+)", header)
+            if m:
+                content_type = m.group(1).strip().lower()
+    if content_type not in _THUMB_UPLOAD_TYPES:
+        raise HTTPException(status_code=400, detail="Upload a JPG, PNG or WebP image.")
+    if not isinstance(data_b64, str) or not data_b64.strip():
+        raise HTTPException(status_code=400, detail="No image data received.")
+    try:
+        raw = base64.b64decode(data_b64, validate=False)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Couldn't read the image file.")
+    if not raw:
+        raise HTTPException(status_code=400, detail="No image data received.")
+    if len(raw) > _THUMB_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Image is too large (max 5 MB).")
+    served_type = _THUMB_UPLOAD_TYPES[content_type]
+    _ensure_thumbnail_overrides()
+    actor = getattr(request.state, "user", None) or {}
+    updated_by = actor.get("email") or actor.get("name") or actor.get("user_id") or "admin"
+    # Cache-bust the served path so a re-upload immediately shows the new image.
+    image_url = f"/api/thumbnails/{quote(style_name, safe='')}/image?v={int(time.time())}"
+    _users_exec(
+        "INSERT INTO thumbnail_overrides (style_name, image_url, image_data, content_type, updated_by, updated_at) "
+        "VALUES (%s, %s, %s, %s, %s, now()) "
+        "ON CONFLICT (style_name) DO UPDATE SET "
+        "image_url = EXCLUDED.image_url, image_data = EXCLUDED.image_data, "
+        "content_type = EXCLUDED.content_type, updated_by = EXCLUDED.updated_by, updated_at = now()",
+        (style_name, image_url, psycopg2.Binary(raw), served_type, updated_by))
+    return {"ok": True, "style_name": style_name, "image_url": image_url}
+
+
+@app.get("/api/thumbnails/{style}/image")
+def get_thumbnail_override_image(style: str):
+    """Serve the raw bytes of an uploaded thumbnail override for a style."""
+    style_name = (style or "").strip()
+    if not style_name:
+        return Response(status_code=404)
+    try:
+        _ensure_thumbnail_overrides()
+        rows = _users_exec(
+            "SELECT image_data, content_type FROM thumbnail_overrides "
+            "WHERE style_name = %s LIMIT 1",
+            (style_name,), fetch=True) or []
+    except Exception:
+        return Response(status_code=404)
+    if not rows:
+        return Response(status_code=404)
+    data = rows[0].get("image_data")
+    if not data:
+        return Response(status_code=404)
+    raw = bytes(data) if not isinstance(data, (bytes, bytearray)) else bytes(data)
+    ctype = rows[0].get("content_type") or "image/jpeg"
+    return Response(content=raw, media_type=ctype,
+                    headers={"Cache-Control": "public, max-age=604800"})
 @app.delete("/api/thumbnails/{style}")
 async def delete_thumbnail_override(style: str, request: Request):
     """Admin-only: remove a custom thumbnail override for a style name."""

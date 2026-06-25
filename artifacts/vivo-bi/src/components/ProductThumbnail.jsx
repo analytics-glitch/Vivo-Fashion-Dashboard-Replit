@@ -3,7 +3,7 @@ import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { invalidateThumbnail, primeThumbnail } from "@/lib/useThumbnails";
 import { toast } from "sonner";
-import { Camera, Pencil, Trash, X } from "@phosphor-icons/react";
+import { Camera, Pencil, Trash, UploadSimple, X } from "@phosphor-icons/react";
 
 // ─── deterministic placeholder ────────────────────────────────────────
 // Hash the style name once, pick a colour from the Vivo palette, and
@@ -63,10 +63,14 @@ const Placeholder = ({ style, size }) => {
 };
 
 // ─── admin editor ─────────────────────────────────────────────────────
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const ACCEPTED_UPLOAD_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+
 const Editor = ({ style, currentUrl, onClose, onChanged }) => {
   const [url, setUrl] = useState(currentUrl || "");
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState(currentUrl || "");
+  const fileInputRef = useRef(null);
 
   const save = async () => {
     const trimmed = url.trim();
@@ -83,6 +87,46 @@ const Editor = ({ style, currentUrl, onClose, onChanged }) => {
       onClose();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Couldn't save — check the URL");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const readFileAsDataUrl = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error("read failed"));
+      reader.readAsDataURL(file);
+    });
+
+  const onFilePicked = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file
+    if (!file) return;
+    if (!ACCEPTED_UPLOAD_TYPES.includes(file.type)) {
+      toast.error("Choose a JPG, PNG or WebP image");
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      toast.error("Image is too large (max 5 MB)");
+      return;
+    }
+    setSaving(true);
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const { data } = await api.post(`/thumbnails/${encodeURIComponent(style)}/upload`, {
+        style_name: style,
+        content_type: file.type,
+        data_base64: dataUrl,
+      });
+      const served = data?.image_url || "";
+      if (served) primeThumbnail(style, served);
+      toast.success("Thumbnail uploaded");
+      onChanged?.();
+      onClose();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't upload — try another image");
     } finally {
       setSaving(false);
     }
@@ -162,6 +206,31 @@ const Editor = ({ style, currentUrl, onClose, onChanged }) => {
             />
             <p className="text-[10.5px] text-muted">
               Must be a direct https:// link to a web-safe image (JPG/PNG/WebP).
+            </p>
+            <div className="flex items-center gap-2 pt-1">
+              <div className="h-px flex-1 bg-border" />
+              <span className="text-[10px] uppercase tracking-wider text-muted">or</span>
+              <div className="h-px flex-1 bg-border" />
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              className="hidden"
+              onChange={onFilePicked}
+              data-testid="thumbnail-editor-file"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={saving}
+              className="w-full text-[12px] px-3 py-1.5 rounded border border-border hover:bg-panel inline-flex items-center justify-center gap-1.5 disabled:opacity-40"
+              data-testid="thumbnail-editor-upload"
+            >
+              <UploadSimple size={14} /> Upload from device
+            </button>
+            <p className="text-[10.5px] text-muted">
+              JPG, PNG or WebP, up to 5 MB.
             </p>
           </div>
         </div>
