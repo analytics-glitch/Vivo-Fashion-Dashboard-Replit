@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
-import { useKpis } from "@/lib/useKpis";
+import { fetchKpis } from "@/lib/useKpis";
 import { isMerchandise, categoryFor, MERCH_CATEGORIES, subcategoriesFor } from "@/lib/productCategory";
 import { api, fmtKES, fmtNum, fmtPct, buildParams } from "@/lib/api";
 import { VarianceCell, varianceFlag } from "@/lib/variance";
@@ -54,8 +54,57 @@ const Products = () => {
   // SOR All Styles, New Styles Curve, Category × Country, Products
   // Plan — have their own date logic). KPI cards continue to read
   // the global filter bar via `useKpis` for cross-page consistency.
+  //
+  // Task #217 (Jun 2026) — the Window now also drives the four headline
+  // KPI cards (Styles Tracked, Total Units Sold, Total Sales, Avg
+  // Selling Price) so the whole Catalog sub-tab reconciles to ONE
+  // period instead of mixing the global "Today" filter (KPIs) with the
+  // Window (tables). The selector also gained an opt-in "Custom"
+  // From/To range (sentinel value "custom").
   const [stsWindowDays, setStsWindowDays] = useState(30);
+  const [stsCustomFrom, setStsCustomFrom] = useState("");
+  const [stsCustomTo, setStsCustomTo] = useState("");
   const filters = { dateFrom, dateTo, countries, channels };
+
+  // The effective date range the Catalog tab runs on — derived from the
+  // Window control (preset N-days ending yesterday, or the custom From/To
+  // range). Returns null when the custom range is incomplete/invalid
+  // (From > To) so we can skip fetching and keep the last good data.
+  const windowRange = useMemo(() => {
+    if (stsWindowDays === "custom") {
+      if (stsCustomFrom && stsCustomTo && stsCustomFrom <= stsCustomTo) {
+        return { date_from: stsCustomFrom, date_to: stsCustomTo };
+      }
+      return null;
+    }
+    const to = new Date();
+    to.setUTCDate(to.getUTCDate() - 1);
+    const from = new Date(to);
+    from.setUTCDate(from.getUTCDate() - stsWindowDays + 1);
+    return {
+      date_from: from.toISOString().slice(0, 10),
+      date_to: to.toISOString().slice(0, 10),
+    };
+  }, [stsWindowDays, stsCustomFrom, stsCustomTo]);
+
+  // Switching to "Custom" seeds the empty pickers from the current
+  // numeric window so the user starts from a sensible range.
+  const handleWindowChange = (v) => {
+    if (v === "custom") {
+      if (!stsCustomFrom || !stsCustomTo) {
+        const days = typeof stsWindowDays === "number" ? stsWindowDays : 30;
+        const to = new Date();
+        to.setUTCDate(to.getUTCDate() - 1);
+        const from = new Date(to);
+        from.setUTCDate(from.getUTCDate() - days + 1);
+        setStsCustomFrom(from.toISOString().slice(0, 10));
+        setStsCustomTo(to.toISOString().slice(0, 10));
+      }
+      setStsWindowDays("custom");
+    } else {
+      setStsWindowDays(v);
+    }
+  };
 
   const [sor, setSor] = useState([]);
   const [stockSales, setStockSales] = useState([]);
@@ -68,17 +117,45 @@ const Products = () => {
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
 
-  // Shared KPI state — identical to Overview / Locations / CEO Report.
-  const { kpis, loading: kpisLoading, error: kpisError } = useKpis();
+  // Headline KPI state. Task #217 — the Catalog tab's KPIs are now
+  // scoped to the Window range (preset or custom) + the page's
+  // country/channel filters, NOT the global filter bar, so the KPI row
+  // and the tables below reconcile to one period. We fetch via the
+  // shared `fetchKpis` (same cache, same /api/kpis endpoint) so numbers
+  // still agree with other pages when the windows happen to match.
+  const [kpis, setKpis] = useState(null);
+  const [kpisLoading, setKpisLoading] = useState(true);
+  const [kpisError, setKpisError] = useState(null);
+
+  useEffect(() => {
+    if (!windowRange) { setKpisLoading(false); return; }
+    let cancelled = false;
+    setKpisLoading(true);
+    setKpisError(null);
+    fetchKpis({
+      date_from: windowRange.date_from,
+      date_to: windowRange.date_to,
+      country: countries && countries.length ? countries.join(",") : undefined,
+      channel: channels && channels.length ? channels.join(",") : undefined,
+      _v: dataVersion,
+    })
+      .then((data) => { if (!cancelled) setKpis(data); })
+      .catch((e) => { if (!cancelled) setKpisError(e?.response?.data?.detail || e.message); })
+      .finally(() => { if (!cancelled) setKpisLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line
+  }, [windowRange, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
   const compareLbl = compareMode === "last_month" ? "vs Last Month"
     : compareMode === "last_year" ? "vs Last Year"
     : compareMode === "yesterday" ? "vs Yesterday" : null;
 
-  // Previous-period range — mirror of the logic on Customers page.
+  // Previous-period range — shifted off the Window range (not the global
+  // filter bar) so the STS compare deltas line up with the period the
+  // tables and KPIs actually show.
   const prevRange = useMemo(() => {
-    if (!compareMode || compareMode === "none") return null;
-    const f = new Date(dateFrom); const t = new Date(dateTo);
+    if (!compareMode || compareMode === "none" || !windowRange) return null;
+    const f = new Date(windowRange.date_from); const t = new Date(windowRange.date_to);
     let fromPrev, toPrev;
     if (compareMode === "last_month") {
       fromPrev = new Date(f); fromPrev.setMonth(f.getMonth() - 1);
@@ -93,26 +170,21 @@ const Products = () => {
     }
     const iso = (d) => d.toISOString().slice(0, 10);
     return { date_from: iso(fromPrev), date_to: iso(toPrev) };
-  }, [compareMode, dateFrom, dateTo]);
+  }, [compareMode, windowRange]);
 
   useEffect(() => {
+    if (!windowRange) { setLoading(false); return; }
     let cancelled = false;
     setLoading(true);
     setError(null);
     const p = buildParams(filters);
-    // Iter 89w-h — STS-window override.  We replace the date_from /
-    // date_to from the global filter bar with a window computed from
-    // `stsWindowDays` (last N days ending yesterday) ONLY for the
-    // stock-to-sales aggregates and the SOR table — the rest of the
-    // page still respects the global dates.
-    const stsTo = new Date();
-    stsTo.setUTCDate(stsTo.getUTCDate() - 1);
-    const stsFromDate = new Date(stsTo);
-    stsFromDate.setUTCDate(stsFromDate.getUTCDate() - stsWindowDays + 1);
+    // Task #217 — both the tables AND the KPI cards run on `windowRange`
+    // (the Window preset/custom range) so the whole Catalog sub-tab
+    // reconciles to one period. The global filter bar dates are no
+    // longer used here.
     const stsParams = {
       ...p,
-      date_from: stsFromDate.toISOString().slice(0, 10),
-      date_to: stsTo.toISOString().slice(0, 10),
+      ...windowRange,
     };
     const prevP = prevRange ? { ...stsParams, ...prevRange } : null;
     // Iter 89w — thread Active/Retired/All filter through to all
@@ -147,7 +219,7 @@ const Products = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), JSON.stringify(brands), compareMode, dataVersion, styleStatus, stsWindowDays]);
+  }, [windowRange, JSON.stringify(countries), JSON.stringify(channels), JSON.stringify(brands), compareMode, prevRange, dataVersion, styleStatus]);
 
   // Client-side filter on results when multiple brands picked (upstream `product`
   // is a single-value filter).
@@ -231,9 +303,13 @@ const Products = () => {
             <div className="eyebrow mb-1">Window</div>
             <DateWindowSelector
               value={stsWindowDays}
-              onChange={setStsWindowDays}
+              onChange={handleWindowChange}
               testId="products-window"
               label=""
+              allowCustom
+              customFrom={stsCustomFrom}
+              customTo={stsCustomTo}
+              onCustomChange={(f, t) => { setStsCustomFrom(f); setStsCustomTo(t); }}
             />
           </div>
           <div className="flex flex-col">
@@ -381,10 +457,12 @@ const Products = () => {
                 const catUnits = (filteredStsByCat || []).reduce((s, r) => s + (r.units_sold || 0), 0);
                 const kpiUnits = kpis?.total_units || 0;
                 const diff = kpiUnits - catUnits;
-                const note = diff !== 0
-                  ? ` · ${fmtNum(Math.abs(diff))} unit${Math.abs(diff) === 1 ? '' : 's'} in ${diff > 0 ? 'excluded categories (Accessories, Sale, Other)' : 'overlapping breakdown'}`
-                  : '';
-                return `Variance compares sales share vs stock share. Red = action needed; green = healthy. Σ here = ${fmtNum(catUnits)} units across categories${note}.`;
+                const note = diff > 0
+                  ? ` The ${fmtNum(diff)}-unit gap is the excluded categories (Accessories, Sale, Other).`
+                  : diff < 0
+                  ? ` (${fmtNum(Math.abs(diff))} units more than the KPI total — possible data anomaly.)`
+                  : ' These reconcile exactly.';
+                return `Same window as the KPI cards above. Variance compares sales share vs stock share — red = action needed, green = healthy. Σ here = ${fmtNum(catUnits)} units across merchandise categories vs the "Total Units Sold" KPI of ${fmtNum(kpiUnits)}.${note}`;
               })()}
             />
             <SortableTable
