@@ -13,11 +13,13 @@ import {
   SectionHeader,
   WEB_TOP_INSET,
 } from "@/components/ui";
+import { ProductThumbnail } from "@/components/ProductThumbnail";
 import { useColors } from "@/hooks/useColors";
 import { TopSku, apiGet } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { fmtKES, fmtNum } from "@/lib/format";
 import { useFilters } from "@/lib/filters";
+import { useThumbnails } from "@/lib/thumbnails";
 
 export default function ProductsScreen() {
   const c = useColors();
@@ -34,6 +36,7 @@ export default function ProductsScreen() {
 
   const rows = (q.data ?? []).filter((r) => r.style_name);
   const max = rows.reduce((m, r) => Math.max(m, r.units_sold), 0);
+  const { urlFor } = useThumbnails(rows.map((r) => r.style_name));
 
   return (
     <ScrollView
@@ -66,6 +69,7 @@ export default function ProductsScreen() {
                     <Text style={[styles.rankNum, { color: c.primary }]}>
                       {String(i + 1).padStart(2, "0")}
                     </Text>
+                    <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={44} />
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.style, { color: c.foreground }]} numberOfLines={1}>
                         {r.style_name}

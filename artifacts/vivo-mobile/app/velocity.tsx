@@ -14,10 +14,12 @@ import {
   SectionHeader,
 } from "@/components/ui";
 import { Badge, BadgeTone, KpiGrid, Screen } from "@/components/screen";
+import { ProductThumbnail } from "@/components/ProductThumbnail";
 import { useColors } from "@/hooks/useColors";
 import { apiGet } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useFilters } from "@/lib/filters";
+import { useThumbnails } from "@/lib/thumbnails";
 import { fmtNum, fmtPct } from "@/lib/format";
 
 // /analytics/velocity — sell-through velocity by style. rate_of_sale is the
@@ -68,6 +70,7 @@ export default function VelocityScreen() {
     .sort((a, b) => Number(b.rate_of_sale || 0) - Number(a.rate_of_sale || 0))
     .slice(0, 25);
   const maxRate = ranked.reduce((m, r) => Math.max(m, Number(r.rate_of_sale || 0)), 0);
+  const { urlFor } = useThumbnails(ranked.map((r) => r.style_name));
 
   return (
     <>
@@ -106,6 +109,7 @@ export default function VelocityScreen() {
                 return (
                   <Card key={`${r.style_name}-${i}`} style={styles.row}>
                     <View style={styles.rowTop}>
+                      <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={40} />
                       <Text
                         style={[styles.style, { color: c.foreground }]}
                         numberOfLines={1}

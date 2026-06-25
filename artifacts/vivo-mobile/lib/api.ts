@@ -30,6 +30,24 @@ export function setAuthToken(token: string | null): void {
   authToken = token;
 }
 
+/** Current Bearer token — needed to authorize <Image> requests on native. */
+export function getAuthToken(): string | null {
+  return authToken;
+}
+
+/**
+ * Build an absolute URL for an asset path the API returns (e.g. the
+ * `/api/product-image/<sku>` string from `/thumbnails/lookup`). Expo bundles
+ * run outside the web proxy, so native needs the EXPO_PUBLIC_DOMAIN host; on
+ * web the relative path resolves against the same origin.
+ */
+export function assetUrl(path: string): string {
+  if (!path) return path;
+  if (/^https?:\/\//i.test(path)) return path;
+  const p = path.startsWith("/") ? path : `/${path}`;
+  return DOMAIN ? `https://${DOMAIN}${p}` : p;
+}
+
 export function setUnauthorizedHandler(fn: (() => void) | null): void {
   onUnauthorized = fn;
 }

@@ -13,9 +13,11 @@ import {
   SectionHeader,
 } from "@/components/ui";
 import { Badge, KpiGrid, Screen } from "@/components/screen";
+import { ProductThumbnail } from "@/components/ProductThumbnail";
 import { useColors } from "@/hooks/useColors";
 import { apiGet } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useThumbnails } from "@/lib/thumbnails";
 import { fmtKES, fmtNum, fmtPct } from "@/lib/format";
 
 // GET /api/analytics/markdown-candidates — slow-moving, overstocked styles
@@ -94,6 +96,7 @@ export default function MarkdownScreen() {
     )
     .slice(0, 25);
   const maxUnits = ranked.reduce((m, r) => Math.max(m, r.total_units), 0);
+  const { urlFor } = useThumbnails(ranked.map((r) => r.style_name));
   const avgMd = candidates.length
     ? candidates.reduce((s, r) => s + Number(r.recommended_markdown_pct || 0), 0) /
       candidates.length
@@ -155,6 +158,7 @@ export default function MarkdownScreen() {
                 {ranked.map((r, i) => (
                   <Card key={`${r.style_name}-${i}`} style={styles.row}>
                     <View style={styles.rowTop}>
+                      <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={44} />
                       <Text
                         style={[styles.name, { color: c.foreground }]}
                         numberOfLines={2}

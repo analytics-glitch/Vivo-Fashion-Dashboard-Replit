@@ -14,10 +14,12 @@ import {
   SectionHeader,
 } from "@/components/ui";
 import { Badge, BadgeTone, KpiGrid, Screen } from "@/components/screen";
+import { ProductThumbnail } from "@/components/ProductThumbnail";
 import { useColors } from "@/hooks/useColors";
 import { apiGet } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useFilters } from "@/lib/filters";
+import { useThumbnails } from "@/lib/thumbnails";
 import { fmtNum, fmtPct } from "@/lib/format";
 
 // /analytics/size-curve — size-run health by style. A "broken" curve = catalogued
@@ -74,6 +76,7 @@ export default function SizeHealthScreen() {
     )
     .slice(0, 25);
   const maxUnits = ranked.reduce((m, r) => Math.max(m, Number(r.units_sold || 0)), 0);
+  const { urlFor } = useThumbnails(ranked.map((r) => r.style_name));
 
   return (
     <>
@@ -111,6 +114,7 @@ export default function SizeHealthScreen() {
                 {ranked.map((r, i) => (
                   <Card key={`${r.style_name}-${i}`} style={styles.row}>
                     <View style={styles.rowTop}>
+                      <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={40} />
                       <Text
                         style={[styles.style, { color: c.foreground }]}
                         numberOfLines={1}
