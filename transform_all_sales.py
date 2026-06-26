@@ -440,6 +440,17 @@ def transform_odoo(cur, conn, rates):
         subtotal = float(price_subtotal or 0)
         subtotal_i = float(price_subtotal_incl or 0)
 
+        # Amount-as-quantity guard: some Odoo POS lines use a nominal KES-1 (or 0)
+        # catch-all product and encode the charged AMOUNT in the quantity field
+        # (e.g. price_unit=1, qty=8600 to ring up KES 8,600). The revenue is real
+        # but the unit count is not — left unclamped one such line inflates Units
+        # Sold / MSI / ASP for the whole period. Collapse the unit count to a
+        # single line-unit while leaving the money (derived from price_subtotal*)
+        # untouched. Sign is preserved so returns stay returns.
+        units_qty = qty
+        if abs(qty) >= 20 and price <= 1.0:
+            units_qty = 1.0 if qty > 0 else -1.0
+
         sale_kind = "return" if qty < 0 else "order"
         gross = subtotal_i if qty >= 0 else 0.0
         disc = round(subtotal_i - subtotal, 2) if qty >= 0 else 0.0
@@ -479,9 +490,9 @@ def transform_odoo(cur, conn, rates):
                 round(disc / rate, 2),
                 round(ret / rate, 2),
                 round(net / rate, 2),
-                int(qty),
-                int(qty) if qty > 0 else 0,
-                int(abs(qty)) if qty < 0 else 0,
+                int(units_qty),
+                int(units_qty) if units_qty > 0 else 0,
+                int(abs(units_qty)) if units_qty < 0 else 0,
                 int(day_str[:4]) if day_str else None,
                 now,
                 now,

@@ -74,3 +74,4 @@
 - [Fabric support-fabric scope](fabric-support-scope.md) — Lining+Fusable Interfacing split into a "Support Fabrics" tab via `scope` param + EXACT category equality `_scope_sql` (NOT substring — excludes "Crepe Lining"); NULL category stays MAIN; main+support reconcile to old totals.
 - [Overlays must portal to body](overlay-portal-stacking.md) — full-screen fixed lightbox/modal trapped by a transform/filter ancestor lets a sticky table header paint over it; render via createPortal(document.body).
 - [SKU-with-slash breaks image route](sku-slash-path-param.md) — SKUs embed sizes like `1X/2X`/`M/L`; a `{sku}` str path param can't match the encoded slash (404 → photo placeholder); use `{sku:path}`.
+- [Odoo amount-as-quantity unit inflation](odoo-amount-as-quantity.md) — KES-1 catch-all POS line with amount in qty (e.g. 8600) inflates Units/MSI/ASP; clamp units (not money) in BOTH transform_odoo + sync_odoo.

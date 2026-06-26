@@ -739,6 +739,15 @@ def sync_odoo(cur, now, rates):
             is_return = qty < 0
             sale_kind = "return" if is_return else "order"
 
+            # Amount-as-quantity guard (mirrors transform_all_sales.transform_odoo):
+            # a nominal KES-1/0 catch-all product whose quantity encodes the
+            # charged amount (e.g. price_unit=1, qty=8600) must not count as real
+            # units — left unclamped one such line inflates Units Sold / MSI / ASP.
+            # Money fields are derived from price_subtotal_incl and stay correct.
+            units_qty = abs(qty)
+            if units_qty >= 20 and price_unit <= 1.0:
+                units_qty = 1
+
             # Match BigQuery: total_sales = price_subtotal_incl (VAT-inclusive)
             total_sales = total_incl  # keep sign — negative qty = return
             gross_sales = price_unit * qty  # before discount
@@ -772,14 +781,14 @@ def sync_odoo(cur, now, rates):
                     sale_kind,
                     title,
                     sku,
-                    int(abs(qty)),
+                    int(units_qty),
                     product_price_kes,
                     price_unit,
                     gross_sales_kes,
                     discounts_kes,
                     net_sales_kes,
                     total_sales_kes,
-                    int(abs(qty)) if not is_return else 0,
+                    int(units_qty) if not is_return else 0,
                     returns_kes,
                     now,
                 )
