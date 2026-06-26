@@ -457,7 +457,7 @@ def _dedup(seq):
     return out
 
 
-_VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "fabric"]
+_VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "gallery", "fabric"]
 # NOTE: "finance" (the Finance Reports Suite) is a leadership + admin surface, so
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
@@ -465,8 +465,8 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 _LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "finance"])
 
 DEFAULT_ROLE_PAGES = {
-    "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report"],
-    "retail": ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "exports"],
+    "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report"],
+    "retail": ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "exports"],
     "warehouse": ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "re-order", "allocations", "data-quality", "exports"],
     "store_manager": ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "ibt"],
     "leadership": _LEADERSHIP_PAGES,
@@ -4220,6 +4220,59 @@ def get_product_image(sku: str):
         return Response(status_code=404)
     return Response(content=img, media_type="image/jpeg",
                     headers={"Cache-Control": "public, max-age=604800"})
+
+
+@app.get("/api/gallery/search")
+def get_gallery_search(
+    request: Request,
+    q:       str = Query(default=""),
+    limit:   int = Query(default=48),
+    offset:  int = Query(default=0),
+):
+    """Searchable product photo gallery — one card per style.
+
+    Matches the (lower-cased) search term against style name / SKU / barcode
+    with a partial, case-insensitive LIKE. Returns one representative row per
+    style (DISTINCT ON), preferring a SKU that actually has a stored image so
+    the card renders a photo where one exists; cards for styles with no image
+    fall back to the client-side coloured-initials placeholder.
+
+    Pagination is offset-based; we fetch one extra row to compute ``has_more``
+    instead of paying for a COUNT(*) over the whole catalog. With no term it
+    returns a sensible default page (styles-with-photos first, then alpha)."""
+    limit = max(1, min(int(limit or 48), 96))
+    offset = max(0, int(offset or 0))
+    # Same edge sanitisation as /api/customer-search: lower-case + strip single
+    # quotes so the concatenated LIKE literal can't break out of its '...'.
+    term = (q or "").strip().lower().replace("'", "")
+    where = "p.style_name IS NOT NULL AND p.style_name <> ''"
+    if term:
+        like = "%" + term + "%"
+        where += (" AND (LOWER(p.style_name) LIKE '" + like + "'"
+                  " OR LOWER(p.sku) LIKE '" + like + "'"
+                  " OR LOWER(COALESCE(p.barcode,'')) LIKE '" + like + "')")
+    rows = run_query("""
+        SELECT * FROM (
+            SELECT DISTINCT ON (p.style_name)
+                p.style_name, p.sku, p.barcode,
+                (i.image_512 IS NOT NULL AND i.image_512 <> '') AS has_image
+            FROM all_products_clean p
+            LEFT JOIN product_image_map m ON m.sku = p.sku
+            LEFT JOIN product_images i ON i.tmpl_id = m.tmpl_id
+            WHERE """ + where + """
+            ORDER BY p.style_name,
+                     (i.image_512 IS NOT NULL AND i.image_512 <> '') DESC,
+                     p.sku
+        ) d
+        ORDER BY d.has_image DESC, d.style_name
+        LIMIT """ + str(limit + 1) + " OFFSET " + str(offset))
+    has_more = len(rows) > limit
+    items = rows[:limit]
+    for r in items:
+        r["image_url"] = (
+            "/api/product-image/" + quote(str(r["sku"]), safe="")
+        ) if r.get("has_image") else None
+    return {"items": items, "has_more": has_more, "limit": limit, "offset": offset}
 
 
 @app.get("/api/product-images/{sku}")
