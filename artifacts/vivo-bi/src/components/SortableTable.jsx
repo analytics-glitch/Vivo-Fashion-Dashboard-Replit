@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { CaretUp, CaretDown, CaretRight, Download, ArrowsHorizontal } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { api } from "@/lib/api";
 
 /**
  * Convert any React element / value into a flat string (used as a fallback
@@ -32,32 +33,22 @@ const _flattenToText = (node) => {
  * doing any string ops. Any non-string `label` now degrades cleanly
  * to its visible text (`"SOR %"`) instead of throwing.
  */
-export const exportCSV = (rows, columns, filename = "export.csv") => {
-  const header = columns
-    .map((c) => {
-      // Iter 86c — Label-source priority for CSV header cells:
-      //   1. Explicit `c.csvLabel` — opt-in plain-text override.
-      //   2. `c.label` flattened through `_flattenToText` if it's a
-      //      React element / array; raw if string/number.
-      //   3. Fallback to `c.key` so the export still works even when
-      //      a custom label component can't be flattened to text.
-      let text;
-      if (c.csvLabel != null) {
-        text = String(c.csvLabel);
-      } else if (typeof c.label === "string" || typeof c.label === "number") {
-        text = String(c.label);
-      } else if (c.label != null) {
-        text = _flattenToText(c.label) || String(c.key || "");
-      } else {
-        text = String(c.key || "");
-      }
-      return `"${text.replace(/"/g, '""')}"`;
-    })
-    .join(",");
-  // Auto-detect percentage columns by checking the rendered text of the first
-  // row. Any column whose render output ends with `%`, ` pp`, ` pts`, or ` pt`
-  // is treated as a percentage and gets a `%` suffix in CSV (variance
-  // "pp"/"pts" gets normalised to "%" too — keeps the export uniform).
+// ─── Shared header / cell text resolution (used by both CSV and XLSX) ──────
+// Label-source priority for an export header cell:
+//   1. Explicit `c.csvLabel` — opt-in plain-text override.
+//   2. `c.label` flattened through `_flattenToText` if it's a React element.
+//   3. Fallback to `c.key`.
+const _headerText = (c) => {
+  if (c.csvLabel != null) return String(c.csvLabel);
+  if (typeof c.label === "string" || typeof c.label === "number") return String(c.label);
+  if (c.label != null) return _flattenToText(c.label) || String(c.key || "");
+  return String(c.key || "");
+};
+
+// Auto-detect percentage columns by checking the rendered text of the first
+// row. Any column whose render output ends with `%`, ` pp`, ` pts`, or ` pt`
+// is treated as a percentage so the export normalises it to a `%` suffix.
+const _pctColSet = (rows, columns) => {
   const sample = rows[0];
   const pctCols = new Set();
   if (sample) {
@@ -71,39 +62,42 @@ export const exportCSV = (rows, columns, filename = "export.csv") => {
       } catch (_e) { /* ignore */ }
     });
   }
+  return pctCols;
+};
+
+// Resolve a single cell to its export text (CSV value / XLSX cell value),
+// honouring an explicit `csv:` callback, then auto-deriving from `render`.
+const _cellText = (c, r, idx, isPct) => {
+  let v;
+  if (typeof c.csv === "function") {
+    v = c.csv(r, idx);
+  } else if (typeof c.render === "function") {
+    try { v = _flattenToText(c.render(r, idx)).trim(); }
+    catch (_e) { v = r[c.key]; }
+  } else {
+    v = r[c.key];
+  }
+  if (v == null) return "";
+  let s = String(v);
+  if (isPct) {
+    s = s.replace(/\s*(pp|pts?)\s*$/i, "%").trim();
+    if (s && !/%\s*$/.test(s)) {
+      const n = Number(s);
+      if (!Number.isNaN(n)) s = `${n.toFixed(2)}%`;
+    }
+  }
+  return s;
+};
+
+/** Download rows as CSV and show a success toast. */
+export const exportCSV = (rows, columns, filename = "export.csv") => {
+  const header = columns
+    .map((c) => `"${_headerText(c).replace(/"/g, '""')}"`)
+    .join(",");
+  const pctCols = _pctColSet(rows, columns);
   const lines = rows.map((r, idx) =>
     columns
-      .map((c, ci) => {
-        let v;
-        if (typeof c.csv === "function") {
-          v = c.csv(r, idx);
-        } else if (typeof c.render === "function") {
-          // Auto-derive CSV from the rendered cell so percentages, KES-
-          // formatted values, and pills export with their unit suffix
-          // intact instead of as a bare number.
-          try {
-            v = _flattenToText(c.render(r, idx)).trim();
-          } catch (_e) {
-            v = r[c.key];
-          }
-        } else {
-          v = r[c.key];
-        }
-        if (v == null) return "";
-        let s = String(v);
-        if (pctCols.has(ci)) {
-          // Normalise variance "pp" / "pts" / "pt" → "%" and add "%" if a
-          // bare number snuck through (typical of legacy explicit csv
-          // callbacks like `r.x?.toFixed(2)`).
-          s = s.replace(/\s*(pp|pts?)\s*$/i, "%").trim();
-          if (s && !/%\s*$/.test(s)) {
-            const n = Number(s);
-            if (!Number.isNaN(n)) s = `${n.toFixed(2)}%`;
-          }
-        }
-        s = s.replace(/"/g, '""');
-        return `"${s}"`;
-      })
+      .map((c, ci) => `"${_cellText(c, r, idx, pctCols.has(ci)).replace(/"/g, '""')}"`)
       .join(",")
   );
   const csv = [header, ...lines].join("\n");
@@ -123,6 +117,181 @@ export const exportCSV = (rows, columns, filename = "export.csv") => {
       duration: 2800,
     });
   } catch (_err) { /* silent */ }
+};
+
+// ─── Excel (.xlsx) export with embedded product photos ────────────────────
+// A column opts in by declaring `image: (row, idx) => url`, returning a
+// fetchable image URL (data:, /api/…, or absolute http[s]) or null. The
+// exporter embeds exactly one image per row in that column's cell.
+const _XLSX_MIME =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const PHOTO_FETCH_CONCURRENCY = 8;   // parallel image fetches
+
+const _blobToB64 = (blob) =>
+  new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result).split(",")[1] || "");
+    fr.onerror = () => rej(fr.error || new Error("read failed"));
+    fr.readAsDataURL(blob);
+  });
+
+const _extFromType = (t) => {
+  const s = String(t || "").toLowerCase();
+  if (s.includes("png")) return "png";
+  if (s.includes("gif")) return "gif";
+  return "jpeg";
+};
+
+// Resolve any image URL to { base64, extension } for exceljs, or null when
+// it can't be fetched (404, CORS, decode error) — a null leaves the cell blank.
+const _imageData = async (rawUrl) => {
+  if (!rawUrl) return null;
+  const url = String(rawUrl);
+  try {
+    if (url.startsWith("data:")) {
+      const m = /^data:image\/([\w.+-]+);base64,(.*)$/i.exec(url);
+      if (!m) return null;
+      return { base64: m[2], extension: _extFromType(m[1]) };
+    }
+    let blob;
+    if (url.startsWith("/api/")) {
+      // Go through the axios instance so the session Bearer/cookie is sent.
+      const { data } = await api.get(url.replace(/^\/api/, ""), { responseType: "blob" });
+      blob = data;
+    } else {
+      const resp = await fetch(url, { credentials: "include" });
+      if (!resp.ok) return null;
+      blob = await resp.blob();
+    }
+    if (!blob || !blob.size) return null;
+    return { base64: await _blobToB64(blob), extension: _extFromType(blob.type) };
+  } catch (_e) {
+    return null;
+  }
+};
+
+const _runPool = async (items, limit, worker) => {
+  let i = 0;
+  const runners = Array.from(
+    { length: Math.min(limit, items.length) || 0 },
+    async () => {
+      while (i < items.length) {
+        const idx = i++;
+        await worker(items[idx], idx);
+      }
+    }
+  );
+  await Promise.all(runners);
+};
+
+/**
+ * Export rows to .xlsx with the real product photo embedded (one image per
+ * row) for every column that declares an `image` resolver. Non-photo columns
+ * export their text exactly like the CSV path. Throws on a hard failure so the
+ * dispatcher can fall back to CSV.
+ */
+export const exportXLSX = async (rows, columns, filename = "export.xlsx") => {
+  const _mod = await import("exceljs");
+  const ExcelJS = _mod.default || _mod;
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Export");
+  const imgColIdx = columns
+    .map((c, i) => (typeof c.image === "function" ? i : -1))
+    .filter((i) => i >= 0);
+  const pctCols = _pctColSet(rows, columns);
+
+  // Header
+  const headerRow = ws.addRow(columns.map((c) => _headerText(c)));
+  headerRow.font = { bold: true };
+  headerRow.alignment = { vertical: "middle" };
+
+  // Column widths — wider for photo columns so a thumbnail fits.
+  columns.forEach((c, i) => {
+    ws.getColumn(i + 1).width = imgColIdx.includes(i) ? 12 : 18;
+  });
+
+  // Text cells (photo cells left blank — the image floats over them).
+  rows.forEach((r, ri) => {
+    const row = ws.addRow(
+      columns.map((c, ci) =>
+        imgColIdx.includes(ci) ? "" : _cellText(c, r, ri, pctCols.has(ci))
+      )
+    );
+    if (imgColIdx.length) row.height = 50; // ~66px — room for the image
+    row.alignment = { vertical: "middle" };
+  });
+
+  // Embed images for every row (concurrency-limited).
+  const tasks = [];
+  for (let ri = 0; ri < rows.length; ri++) {
+    for (const ci of imgColIdx) {
+      let url = null;
+      try { url = columns[ci].image(rows[ri], ri); } catch (_e) { url = null; }
+      if (url) tasks.push({ ri, ci, url });
+    }
+  }
+  await _runPool(tasks, PHOTO_FETCH_CONCURRENCY, async (t) => {
+    const img = await _imageData(t.url);
+    if (!img) return;
+    let id;
+    try { id = wb.addImage({ base64: img.base64, extension: img.extension }); }
+    catch (_e) { return; }
+    // Header is anchor row 0; data row ri → excel row ri+2 → zero-based ri+1.
+    ws.addImage(id, {
+      tl: { col: t.ci + 0.12, row: t.ri + 1 + 0.12 },
+      ext: { width: 60, height: 60 },
+      editAs: "oneCell",
+    });
+  });
+
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type: _XLSX_MIME });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  try {
+    toast.success(`${rows.length} row${rows.length === 1 ? "" : "s"} exported`, {
+      description: filename,
+      duration: 3200,
+    });
+  } catch (_err) { /* silent */ }
+};
+
+/**
+ * Smart dispatcher: when any column declares an `image` resolver, export an
+ * .xlsx with one embedded photo per row; otherwise the plain CSV. Safe to call
+ * from a button onClick (fire-and-forget). A photo export NEVER silently
+ * downgrades to CSV — on failure it surfaces an error toast and rethrows, so a
+ * partial/photoless file is never passed off as the requested photo export.
+ */
+export const exportTable = async (rows, columns, filename = "export.csv") => {
+  const hasPhotos =
+    Array.isArray(columns) && columns.some((c) => typeof c.image === "function");
+  if (hasPhotos && rows && rows.length) {
+    const xlsxName = filename.replace(/\.csv$/i, "") + ".xlsx";
+    let tid;
+    try { tid = toast.loading("Preparing photo export…"); } catch (_e) { /* silent */ }
+    try {
+      await exportXLSX(rows, columns, xlsxName);
+    } catch (e) {
+      try {
+        toast.error("Photo export failed", {
+          description: "Could not build the Excel file with embedded photos. Please try again.",
+          duration: 4000,
+        });
+      } catch (_e2) { /* silent */ }
+      throw e;
+    } finally {
+      try { if (tid != null) toast.dismiss(tid); } catch (_e3) { /* silent */ }
+    }
+    return;
+  }
+  exportCSV(rows, columns, filename);
 };
 
 /**
@@ -267,11 +436,12 @@ export const SortableTable = ({
         {exportName && (
           <button
             type="button"
-            onClick={() => exportCSV(sorted, columns, exportName)}
+            onClick={() => exportTable(sorted, columns, exportName)}
             className="inline-flex items-center gap-1.5 text-[11.5px] text-muted hover:text-brand px-2 py-1 rounded border border-border hover:border-brand"
             data-testid={testId ? `${testId}-export` : undefined}
           >
-            <Download size={13} weight="bold" /> Export CSV
+            <Download size={13} weight="bold" />{" "}
+            {columns.some((c) => typeof c.image === "function") ? "Export Excel" : "Export CSV"}
           </button>
         )}
       </div>

@@ -248,7 +248,7 @@ const ReOrder = () => {
                 initialSort={{ key: "sor_percent", dir: "desc" }}
                 columns={[
                   { key: "urgency", label: "Urgency", align: "left", render: (r) => <span className={pillFor(r.urgency)}>{r.urgency}</span>, csv: (r) => r.urgency },
-                  { key: "thumb", label: "", align: "left", sortable: false, mobileHidden: true, render: (r) => <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={36} />, csv: () => "" },
+                  { key: "thumb", label: "", align: "left", sortable: false, mobileHidden: true, render: (r) => <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={36} />, image: (r) => urlFor(r.style_name), csv: () => "" },
                   { key: "style_name", label: "Style", align: "left", mobilePrimary: true, render: (r) => (
                     <button
                       type="button"

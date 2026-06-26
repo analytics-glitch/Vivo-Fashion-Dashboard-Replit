@@ -146,6 +146,7 @@ const NewStylesSalesCurve = () => {
     {
       key: "thumb", label: "", align: "left", sortable: false, mobileHidden: true,
       render: (r) => <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={36} />,
+      image: (r) => urlFor(r.style_name),
       csv: () => "",
     },
     {

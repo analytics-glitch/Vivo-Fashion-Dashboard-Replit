@@ -4,9 +4,10 @@ import {
   api, fmtKES, fmtKESLong, fmtNum, fmtDec, fmtPct, fmtDate,
 } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
-import SortableTable, { exportCSV } from "@/components/SortableTable";
+import SortableTable, { exportTable } from "@/components/SortableTable";
 import StyleStatusToggle from "@/components/StyleStatusToggle";
 import ProductImage from "@/components/ProductImage";
+import { odooImageUrl } from "@/lib/useProductImages";
 import MultiSelect from "@/components/MultiSelect";
 import { Loading, ErrorBox, Empty } from "@/components/common";
 import {
@@ -596,6 +597,7 @@ const ProductAnalysis = () => {
   // Master CSV export — uses the full filtered set + the full-precision KES.
   const exportMaster = useCallback(() => {
     const exportCols = [
+      { key: "image", label: "Photo", image: (r) => odooImageUrl(r.sku), csv: () => "" },
       { key: "style_name", label: "Style", csv: (r) => r.style_name },
       { key: "style_number", label: "Style Number", csv: (r) => r.style_number || "" },
       { key: "brand", label: "Brand", csv: (r) => r.brand || "" },
@@ -642,7 +644,7 @@ const ProductAnalysis = () => {
       ? (stores.length === 1 ? stores[0] : `${stores.length}-stores`)
       : "overall";
     const dimSlug = dims.length ? dims.join("-") : "style";
-    exportCSV(filteredRows, exportCols, `product_analysis_${dimSlug}_${scopeSlug.replace(/\s+/g, "-")}.csv`);
+    exportTable(filteredRows, exportCols, `product_analysis_${dimSlug}_${scopeSlug.replace(/\s+/g, "-")}.csv`);
   }, [filteredRows, dims, stores]);
 
   const generateAi = useCallback(() => {

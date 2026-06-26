@@ -182,6 +182,7 @@ const SorStylesTable = ({
             ? null
             : <ProductThumbnail style={r.style_name} url={urlFor(r.style_name)} size={36} />
         ),
+        image: (r) => (r._is_variant && !r._is_first_variant ? null : urlFor(r.style_name)),
         csv: () => "",
       },
       {
