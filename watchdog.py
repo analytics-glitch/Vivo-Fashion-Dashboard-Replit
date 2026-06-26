@@ -442,6 +442,20 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
 
     ensure_table()
+    # Apply any pending schema migrations BEFORE the API or sync start, so the
+    # database structure is current on every deploy. Runs against DATABASE_URL
+    # (= Neon in the deployment). Idempotent; logs and continues on failure so a
+    # migration issue stays observable without taking the whole service down.
+    try:
+        log.info("Applying schema migrations…")
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "migrate.py")],
+                           cwd=ROOT, timeout=600)
+        if r.returncode == 0:
+            log.info("Schema migrations up to date")
+        else:
+            log.error("migrate.py exited %s — continuing startup; check schema", r.returncode)
+    except Exception as e:
+        log.error("Migration run failed: %s — continuing startup", e)
     log.info("Watchdog starting (manage_api=%s, api_port=%s)", MANAGE_API, API_PORT)
 
     if MANAGE_API:
