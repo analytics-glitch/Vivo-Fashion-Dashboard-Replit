@@ -6124,7 +6124,7 @@ def analytics_product_analysis(
     # countries by most-recent valid-price date (parity-verified except inherent
     # same-date ties). Any explosion / store / non-default velocity → live path.
     pa_use_rollup = (not sel_dims and not pos_exploded and not store
-                     and not channel and vel == 30 and _rollup_fresh("pa_style"))
+                     and vel == 30 and _rollup_fresh("pa_style"))
     if pa_use_rollup:
         pa_sales_block = (
             "period_sales AS ("
