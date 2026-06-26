@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { invalidateThumbnail, primeThumbnail } from "@/lib/useThumbnails";
@@ -155,7 +156,7 @@ const Editor = ({ style, currentUrl, onClose, onChanged }) => {
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
       onClick={onClose}
@@ -265,7 +266,8 @@ const Editor = ({ style, currentUrl, onClose, onChanged }) => {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 };
 
@@ -313,7 +315,7 @@ export const Lightbox = ({ url, caption, onClose, onPrev, onNext }) => {
     else if (dx > 0 && onPrev) onPrev();
   };
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
       onClick={onClose}
