@@ -179,6 +179,12 @@ _LAST_ATTENDANCE_SYNC = None
 # daily refresh is the floor; hourly keeps them comfortably inside the read-path
 # freshness gate. None on boot so the first cycle bootstraps immediately.
 _LAST_ROLLUP_REFRESH = None
+# Guards the product image extract (extract_product_images.py — base64 512px
+# product photos from Odoo, feeding the /gallery thumbnails) to once per 24h
+# even though main() runs every 60s. Product photos change rarely and this is
+# the heaviest Odoo pull (full image fetch per template), so a daily cadence is
+# plenty. None on boot so a fresh prod DB bootstraps on the first cycle.
+_LAST_PRODUCT_IMAGES_EXTRACT = None
 # ── Attendance Sync ───────────────────────────────────────────────────────────
 ATTENDANCE_API_URL = os.environ.get("ATTENDANCE_API_URL", "https://beverly-noncontending-bertram.ngrok-free.dev")
 
@@ -1000,6 +1006,53 @@ def main():
             log.info("✅ Production tracker sync complete")
         except Exception as e:
             log.error("Production tracker sync error: %s", e)
+
+    # Product image extract — feeds the /gallery thumbnails (product_images +
+    # product_image_map: base64 512px photos keyed by Odoo template, plus a
+    # sku->template map). Production runs on a SEPARATE DB that never ran the
+    # manual extract_product_images.py, so /gallery shows only coloured-initials
+    # placeholders until this runs. We bootstrap immediately when product_images
+    # is missing/empty (fresh prod DB) so no manual step is needed, then refresh
+    # EVERY 24 HOURS (photos change rarely and this is the heaviest Odoo pull —
+    # a full base64 image fetch per template). The extract reads
+    # all_products_clean, so we skip until that transform has populated rows (it
+    # runs earlier in this same cycle) and let a later cycle pick it up — this
+    # avoids writing an empty map on a cold DB. extract_product_images.py upserts
+    # on tmpl_id/sku (ON CONFLICT), so re-running never duplicates. Run as a
+    # subprocess like the other Odoo extracts. A module-level guard rate-limits
+    # to once per 24h even though main() runs every 60s.
+    global _LAST_PRODUCT_IMAGES_EXTRACT
+    images_empty = False
+    products_ready = False
+    try:
+        cur.execute("SELECT to_regclass('public.product_images')")
+        if cur.fetchone()[0] is None:
+            images_empty = True
+        else:
+            cur.execute("SELECT COUNT(*) FROM product_images")
+            images_empty = (cur.fetchone()[0] == 0)
+        cur.execute("SELECT to_regclass('public.all_products_clean')")
+        if cur.fetchone()[0] is not None:
+            cur.execute("SELECT EXISTS(SELECT 1 FROM all_products_clean WHERE product_id IS NOT NULL)")
+            products_ready = bool(cur.fetchone()[0])
+        conn.commit()
+    except Exception as e:
+        log.error("Product images presence check error: %s", e)
+        conn.rollback()
+    images_due = (_LAST_PRODUCT_IMAGES_EXTRACT is None
+                  or (now_utc - _LAST_PRODUCT_IMAGES_EXTRACT).total_seconds() >= 86400)
+    if products_ready and (images_empty or images_due):
+        # Stamp the attempt time up front so a transient failure waits 24h before
+        # retrying — except while still empty, where the images_empty branch keeps
+        # retrying every cycle until the bootstrap succeeds.
+        _LAST_PRODUCT_IMAGES_EXTRACT = now_utc
+        try:
+            import subprocess, sys
+            log.info("Running product image extract (bootstrap=%s)...", images_empty)
+            subprocess.run([sys.executable, '/home/runner/workspace/extract_product_images.py'], check=True)
+            log.info("✅ Product image extract complete")
+        except Exception as e:
+            log.error("Product image extract error: %s", e)
 
     # BI sales-rollup refresh — feeds the pre-aggregated rollup_* tables that make
     # the Customers / Range Management / Product Analysis endpoints fast. The read
