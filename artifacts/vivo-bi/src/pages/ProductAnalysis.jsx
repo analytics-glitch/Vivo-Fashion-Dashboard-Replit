@@ -6,6 +6,7 @@ import {
 import { KPICard } from "@/components/KPICard";
 import SortableTable, { exportCSV } from "@/components/SortableTable";
 import StyleStatusToggle from "@/components/StyleStatusToggle";
+import ProductImage from "@/components/ProductImage";
 import MultiSelect from "@/components/MultiSelect";
 import { Loading, ErrorBox, Empty } from "@/components/common";
 import {
@@ -338,6 +339,14 @@ const ProductAnalysis = () => {
   const columns = useMemo(() => {
     const cols = [
       {
+        key: "image", label: "", sortable: false,
+        headerTitle: "Product photo of the style",
+        render: (r) => (
+          <ProductImage sku={r.sku} label={r.style_name} size={40} />
+        ),
+        csv: () => "",
+      },
+      {
         key: "style_name", label: "Style", mobilePrimary: true,
         render: (r) => (
           <div className="min-w-[180px]">
@@ -550,7 +559,7 @@ const ProductAnalysis = () => {
 
   // Column show/hide for the master table. The Style identity column is always
   // shown; the colour / print / size dimension columns drive row explosion.
-  const lockedCols = useMemo(() => new Set(["style_name"]), []);
+  const lockedCols = useMemo(() => new Set(["image", "style_name"]), []);
   const visibleColumns = useMemo(
     () => columns.filter((c) => lockedCols.has(c.key) || !hiddenCols.has(c.key)),
     [columns, hiddenCols, lockedCols]

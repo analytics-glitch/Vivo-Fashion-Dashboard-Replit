@@ -6219,9 +6219,23 @@ def analytics_product_analysis(
         " MIN(substring(style_launch_date,1,10)) FILTER ("
         " WHERE substring(style_launch_date,1,10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') AS launch_date,"
         " COUNT(DISTINCT NULLIF(TRIM(size),'')) AS sizes_count,"
-        " COUNT(DISTINCT NULLIF(TRIM(color_print),'')) AS colors_count"
+        " COUNT(DISTINCT NULLIF(TRIM(color_print),'')) AS colors_count,"
+        # Representative SKU for the row's product image. Prefer a SKU that
+        # actually has an image (Odoo image_512 OR a Shopify image URL, matched
+        # V-prefix-insensitively the same way the image endpoints expand), so a
+        # style/colour with photos never shows a placeholder just because the
+        # alphabetically-first SKU happens to lack one. Deterministic MIN(sku)
+        # tiebreak keeps the choice stable.
+        " (array_agg(sku ORDER BY (im.norm_sku IS NOT NULL) DESC, sku ASC))[1] AS rep_sku"
         + prod_disp +
         " FROM all_products_clean"
+        " LEFT JOIN (SELECT DISTINCT norm_sku FROM ("
+        "   SELECT regexp_replace(m.sku,'^[Vv]','') AS norm_sku"
+        "     FROM product_image_map m JOIN product_images i ON i.tmpl_id = m.tmpl_id"
+        "     WHERE i.image_512 IS NOT NULL AND i.image_512 <> ''"
+        "   UNION"
+        "   SELECT regexp_replace(sku,'^[Vv]','') AS norm_sku FROM product_image_urls"
+        " ) z) im ON im.norm_sku = regexp_replace(sku,'^[Vv]','')"
         " WHERE style_name IS NOT NULL AND style_name <> ''"
         " AND COALESCE(brand,'') NOT ILIKE '%third party%'" + brand_pf + cat_pf + subcat_pf +
         " GROUP BY style_name" + prod_grp +
@@ -6237,7 +6251,7 @@ def analytics_product_analysis(
         + stock_from + " WHERE COALESCE(m.style_name, i.style_name) IS NOT NULL AND COALESCE(m.style_name, i.style_name) <> ''" + icf + stock_pos_where +
         " GROUP BY 1" + stock_dim_grp + stock_pos_grp +
         ")"
-        " SELECT p.style_name,"
+        " SELECT p.style_name, p.rep_sku,"
         " p.brand, p.category, p.subcategory, p.collection, p.season, p.style_number,"
         " p.color, p.print_plain, p.size,"
         " p.full_price, p.price_min, p.price_max, p.launch_date, p.sizes_count, p.colors_count,"
@@ -6327,6 +6341,7 @@ def analytics_product_analysis(
                                  recent_sor=sor_6m, recent_units=units_6m)
         rows.append({
             "style_name": r["style_name"],
+            "sku": r["rep_sku"],
             "style_number": r["style_number"],
             "brand": r["brand"],
             "category": r["category"],
