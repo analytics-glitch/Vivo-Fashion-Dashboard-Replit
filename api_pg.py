@@ -4145,21 +4145,69 @@ def get_customer_search(
 
 import base64 as _b64
 
+
+def _style_color_skus(conn, sku: str):
+    """Return every catalog SKU that shares the given SKU's style_name + colour
+    (color_print), so product imagery resolves at STYLE+COLOUR level rather than
+    per-size SKU. The given SKU is always included and listed first. Falls back
+    to just the SKU itself when its style/colour is unknown or blank."""
+    sku = (sku or "").strip()
+    if not sku:
+        return []
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT NULLIF(TRIM(style_name),''), NULLIF(TRIM(color_print),'') "
+        "FROM all_products_clean WHERE sku = %s LIMIT 1",
+        (sku,)
+    )
+    row = cur.fetchone()
+    if not row or not row[0] or not row[1]:
+        return [sku]
+    style, color = row
+    cur.execute(
+        "SELECT DISTINCT sku FROM all_products_clean "
+        "WHERE LOWER(TRIM(style_name)) = LOWER(%s) "
+        "  AND LOWER(TRIM(color_print)) = LOWER(%s) "
+        "  AND sku IS NOT NULL AND sku <> '' AND sku <> %s "
+        "ORDER BY sku",
+        (style, color, sku)
+    )
+    return [sku] + [r[0] for r in cur.fetchall()]
+
+
+def _with_v_variants(skus):
+    """Expand each SKU with its leading-'V' counterpart (catalog and Shopify
+    disagree on the V-prefix in both directions), preserving order + de-duping."""
+    out = []
+    seen = set()
+    for s in skus:
+        forms = [s, s[1:] if s[:1] in ("V", "v") else "V" + s]
+        for c in forms:
+            if c and c not in seen:
+                seen.add(c)
+                out.append(c)
+    return out
+
+
 @app.get("/api/product-image/{sku}")
 def get_product_image(sku: str):
     """Serve a product's 512px image as raw JPEG bytes, resolved SKU -> template.
-    Returns 404 if the SKU has no mapped image so the frontend can show a placeholder."""
+    Matches at style+colour level: if the exact SKU has no mapped image, falls
+    back to any sibling SKU sharing the same style_name + colour. Returns 404
+    when nothing matches so the frontend can show a placeholder."""
     sku = (sku or "").strip()
     if not sku:
         return Response(status_code=404)
     conn = get_conn()
     try:
+        candidates = _style_color_skus(conn, sku)
         cur = conn.cursor()
         cur.execute(
             "SELECT i.image_512 FROM product_image_map m "
             "JOIN product_images i ON i.tmpl_id = m.tmpl_id "
-            "WHERE m.sku = %s LIMIT 1",
-            (sku,)
+            "WHERE m.sku = ANY(%s) AND i.image_512 IS NOT NULL "
+            "ORDER BY (m.sku = %s) DESC, m.sku ASC LIMIT 1",
+            (candidates, sku)
         )
         row = cur.fetchone()
     finally:
@@ -4176,21 +4224,20 @@ def get_product_image(sku: str):
 
 @app.get("/api/product-images/{sku}")
 def get_product_images(sku: str):
-    """Return a SKU's Shopify image gallery as ordered URLs.
-    Response: {"sku": <sku>, "images": [{"url":..., "position":N, "is_primary":bool}, ...]}
-    Tries the SKU as given, then with/without a leading 'V' (catalog and Shopify
-    disagree on the V-prefix in both directions). Empty list if none found."""
+    """Return a product's Shopify image gallery as ordered URLs, matched at
+    STYLE+COLOUR level: the gallery unions the images of every SKU sharing the
+    given SKU's style_name + colour (so all sizes show the same photos and a
+    size whose own SKU has no image still resolves). The exact SKU's images
+    are listed first. Each candidate SKU is also tried with/without a leading
+    'V' (catalog and Shopify disagree on the V-prefix in both directions).
+    Response: {"sku": <sku>, "images": [{"url":..., "position":N, "is_primary":bool}, ...]}.
+    Empty list if none found."""
     sku = (sku or "").strip()
     if not sku:
         return {"sku": sku, "images": []}
-    # candidate forms: exact, strip leading V, add leading V
-    candidates = [sku]
-    if sku[:1] in ("V", "v"):
-        candidates.append(sku[1:])
-    else:
-        candidates.append("V" + sku)
     conn = get_conn()
     try:
+        candidates = _with_v_variants(_style_color_skus(conn, sku))
         cur = conn.cursor()
         cur.execute(
             "SELECT image_url, position, is_primary FROM product_image_urls "
