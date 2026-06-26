@@ -369,7 +369,8 @@ export const Lightbox = ({ url, caption, onClose, onPrev, onNext }) => {
           </figcaption>
         ) : null}
       </figure>
-    </div>
+    </div>,
+    document.body,
   );
 };
 
