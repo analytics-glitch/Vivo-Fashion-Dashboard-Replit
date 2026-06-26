@@ -280,65 +280,64 @@ def sync_attendance(cur):
         log.info(
             "Attendance — %d records after dedup (from %d)", len(deduped), len(rows)
         )
-        # ... rest stays the same
 
-    values = [
-        (
-            r["user_id"],
-            r["employee_name"],
-            r["privilege_level"],
-            r["branch_name"],
-            r["branch_country"],
-            r["location"],
-            r["device_type"],
-            r["device_ip"],
-            r["device_port"],
-            r["device_status"],
-            r["device_fail_count"],
-            r["device_last_seen"],
-            r["attendance_date"],
-            r["check_in_time"],
-            r["check_out_time"],
-            r["hours_worked"],
-            r["is_complete"],
-            r["punch_count"],
-            r["attendance_status"],
-            r["synced_at"],
-            r["pushed_at"],
+        values = [
+            (
+                r["user_id"],
+                r["employee_name"],
+                r["privilege_level"],
+                r["branch_name"],
+                r["branch_country"],
+                r["location"],
+                r["device_type"],
+                r["device_ip"],
+                r["device_port"],
+                r["device_status"],
+                r["device_fail_count"],
+                r["device_last_seen"],
+                r["attendance_date"],
+                r["check_in_time"],
+                r["check_out_time"],
+                r["hours_worked"],
+                r["is_complete"],
+                r["punch_count"],
+                r["attendance_status"],
+                r["synced_at"],
+                r["pushed_at"],
+            )
+            for r in deduped
+        ]
+        execute_values(
+            cur,
+            """
+            INSERT INTO vivo_attendance (
+                user_id, employee_name, privilege_level,
+                branch_name, branch_country, location,
+                device_type, device_ip, device_port,
+                device_status, device_fail_count, device_last_seen,
+                attendance_date, check_in_time, check_out_time,
+                hours_worked, is_complete, punch_count,
+                attendance_status, synced_at, pushed_at
+            ) VALUES %s
+            ON CONFLICT (user_id, branch_name, attendance_date)
+            DO UPDATE SET
+                check_in_time     = EXCLUDED.check_in_time,
+                check_out_time    = EXCLUDED.check_out_time,
+                hours_worked      = EXCLUDED.hours_worked,
+                is_complete       = EXCLUDED.is_complete,
+                punch_count       = EXCLUDED.punch_count,
+                attendance_status = EXCLUDED.attendance_status,
+                device_status     = EXCLUDED.device_status,
+                device_fail_count = EXCLUDED.device_fail_count,
+                device_last_seen  = EXCLUDED.device_last_seen,
+                synced_at         = EXCLUDED.synced_at,
+                pushed_at         = EXCLUDED.pushed_at
+        """,
+            values,
+            page_size=500,
         )
-        for r in deduped
-    ]
-    execute_values(
-        cur,
-        """
-        INSERT INTO vivo_attendance (
-            user_id, employee_name, privilege_level,
-            branch_name, branch_country, location,
-            device_type, device_ip, device_port,
-            device_status, device_fail_count, device_last_seen,
-            attendance_date, check_in_time, check_out_time,
-            hours_worked, is_complete, punch_count,
-            attendance_status, synced_at, pushed_at
-        ) VALUES %s
-        ON CONFLICT (user_id, branch_name, attendance_date)
-        DO UPDATE SET
-            check_in_time     = EXCLUDED.check_in_time,
-            check_out_time    = EXCLUDED.check_out_time,
-            hours_worked      = EXCLUDED.hours_worked,
-            is_complete       = EXCLUDED.is_complete,
-            punch_count       = EXCLUDED.punch_count,
-            attendance_status = EXCLUDED.attendance_status,
-            device_status     = EXCLUDED.device_status,
-            device_fail_count = EXCLUDED.device_fail_count,
-            device_last_seen  = EXCLUDED.device_last_seen,
-            synced_at         = EXCLUDED.synced_at,
-            pushed_at         = EXCLUDED.pushed_at
-    """,
-        values,
-        page_size=500,
-    )
-    log.info("✅ Attendance — %d records upserted", len(rows))
-    return len(rows)
+        log.info("✅ Attendance — %d records upserted", len(rows))
+        return len(rows)
 
 
 def get_last_sync(cur, store_id):
