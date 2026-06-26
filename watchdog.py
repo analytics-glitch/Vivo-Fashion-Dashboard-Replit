@@ -442,6 +442,42 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
 
     ensure_table()
+
+    # Pre-flight code-health gate: byte-compile every backend Python file before
+    # anything else starts. A syntactically broken backend (e.g. a botched edit
+    # that leaves a file unparseable) must never be brought up: in a deployment
+    # this fails the boot so the broken version is NOT promoted (the previous
+    # healthy version keeps serving), and in dev it stops the watchdog loudly
+    # instead of crash-looping a child process forever. This is the guard that
+    # would have caught the sync_incremental.py IndentationError at publish time.
+    try:
+        chk = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "check_python_syntax.py")],
+            cwd=ROOT, timeout=120,
+        )
+        if chk.returncode != 0:
+            try:
+                notify("CRITICAL", None, 0.0, "python_compile_check_failed")
+            except Exception:
+                pass
+            log.error("Python compile check FAILED — backend has a syntax error; "
+                      "refusing to start. Fix the error and republish.")
+            sys.exit(1)
+        log.info("Python compile check passed")
+    except SystemExit:
+        raise
+    except Exception as e:
+        # Fail CLOSED: if the checker itself can't run, we cannot prove the
+        # backend is healthy, so refuse to start rather than risk bringing up a
+        # broken version.
+        try:
+            notify("CRITICAL", None, 0.0, "python_compile_check_unrunnable")
+        except Exception:
+            pass
+        log.error("Could not run python compile check: %s — refusing to start "
+                  "(failing closed). Fix the cause and republish.", e)
+        sys.exit(1)
+
     # Apply any pending schema migrations BEFORE the API or sync start, so the
     # database structure is current on every deploy. Runs against DATABASE_URL
     # (= Neon in the deployment). Idempotent; logs and continues on failure so a

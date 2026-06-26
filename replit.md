@@ -8,6 +8,7 @@ An executive Business Intelligence cockpit for Vivo Fashion Group — a multi-br
 - Frontend: `pnpm --filter @workspace/vivo-bi run dev` (previewPath `/`)
 - `pnpm --filter @workspace/vivo-bi run typecheck` — typecheck the dashboard
 - Required env: `DATABASE_URL` — Postgres connection string
+- Pre-deploy code-health gate: `check_python_syntax.py` byte-compiles every top-level backend `*.py`. It runs both as a registered `compile` validation check and as a boot gate at the top of `watchdog.py`'s `main()` (after `ensure_table()`, before migrations/API/sync) — fails **closed**, so a syntactically broken backend (or an unrunnable checker) aborts startup and a deploy never promotes the broken version. This is the guard for the kind of botched-edit IndentationError that once crash-looped the sync.
 
 ### Production data is a SEPARATE database (dev rebuilds do NOT reach prod)
 

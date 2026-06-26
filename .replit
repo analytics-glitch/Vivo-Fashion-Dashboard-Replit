@@ -32,6 +32,10 @@ args = "Rebuild all_sales"
 task = "workflow.run"
 args = "ShopZetu QL Backfill"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "compile"
+
 [[workflows.workflow]]
 name = "Sync Watchdog"
 author = "agent"
@@ -72,6 +76,17 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python3 extract_shopzetu_sales.py --since=2022-01-01 --until=2026-06-13"
+
+[[workflows.workflow]]
+name = "compile"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python3 check_python_syntax.py"
+
+[workflows.workflow.metadata]
+isValidation = true
 
 [agent]
 stack = "PNPM_WORKSPACE"
