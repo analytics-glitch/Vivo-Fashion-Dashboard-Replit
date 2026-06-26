@@ -6613,6 +6613,7 @@ def analytics_product_analysis_style(
         " GROUP BY i.pos_location_name"
         "), sales AS ("
         " SELECT s.pos_location_name AS location,"
+        " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "'),0) AS units,"
         " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes"
         " WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)"
         " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "')),0) AS revenue"
@@ -6622,6 +6623,7 @@ def analytics_product_analysis_style(
         ") SELECT COALESCE(st.location, sa.location) AS location,"
         " st.country AS country,"
         " COALESCE(st.stock,0) AS stock,"
+        " COALESCE(sa.units,0) AS units,"
         " COALESCE(sa.revenue,0) AS revenue,"
         " (COALESCE(st.location, sa.location) IN (" + WAREHOUSE_LOCATIONS + ")) AS is_warehouse"
         " FROM stock st FULL OUTER JOIN sales sa ON st.location = sa.location"
@@ -6629,7 +6631,8 @@ def analytics_product_analysis_style(
         " ORDER BY stock DESC, revenue DESC"
     )
     by_location = [{"location": x["location"], "country": x["country"],
-                    "stock": int(x["stock"] or 0), "revenue": int(float(x["revenue"] or 0)),
+                    "stock": int(x["stock"] or 0), "units": int(x["units"] or 0),
+                    "revenue": int(float(x["revenue"] or 0)),
                     "is_warehouse": bool(x["is_warehouse"])}
                    for x in loc]
 

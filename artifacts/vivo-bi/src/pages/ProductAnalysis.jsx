@@ -121,7 +121,7 @@ const StyleDrill = ({ styleName, params }) => {
           <SortableTable
             testId="drill-location"
             rows={data.by_location}
-            initialSort={{ key: "stock", dir: "desc" }}
+            initialSort={{ key: "units", dir: "desc" }}
             exportName={`${styleName}_by_location.csv`.replace(/\s+/g, "-")}
             maxHeight={260}
             columns={[
@@ -136,8 +136,8 @@ const StyleDrill = ({ styleName, params }) => {
                   </span>
                 ),
               },
-              { key: "stock", label: "Stock", numeric: true, render: (r) => fmtNum(r.stock) },
-              { key: "revenue", label: "Sales", numeric: true, render: (r) => fmtKES(r.revenue) },
+              { key: "units", label: "Sales (Units)", numeric: true, render: (r) => fmtNum(r.units) },
+              { key: "stock", label: "Stock (Units)", numeric: true, render: (r) => fmtNum(r.stock) },
             ]}
           />
         ) : <Empty label="No stock or sales anywhere." />}
