@@ -4174,6 +4174,41 @@ def get_product_image(sku: str):
                     headers={"Cache-Control": "public, max-age=604800"})
 
 
+@app.get("/api/product-images/{sku}")
+def get_product_images(sku: str):
+    """Return a SKU's Shopify image gallery as ordered URLs.
+    Response: {"sku": <sku>, "images": [{"url":..., "position":N, "is_primary":bool}, ...]}
+    Tries the SKU as given, then with/without a leading 'V' (catalog and Shopify
+    disagree on the V-prefix in both directions). Empty list if none found."""
+    sku = (sku or "").strip()
+    if not sku:
+        return {"sku": sku, "images": []}
+    # candidate forms: exact, strip leading V, add leading V
+    candidates = [sku]
+    if sku[:1] in ("V", "v"):
+        candidates.append(sku[1:])
+    else:
+        candidates.append("V" + sku)
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT image_url, position, is_primary FROM product_image_urls "
+            "WHERE sku = ANY(%s) ORDER BY (sku = %s) DESC, is_primary DESC, position ASC",
+            (candidates, sku)
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    seen = set(); images = []
+    for url, pos, prim in rows:
+        if url in seen:
+            continue
+        seen.add(url)
+        images.append({"url": url, "position": pos, "is_primary": prim})
+    return {"sku": sku, "images": images}
+
+
 @app.get("/api/product-search")
 def product_search(
     q: str = Query(default=""),
