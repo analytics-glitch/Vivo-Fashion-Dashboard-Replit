@@ -276,8 +276,30 @@ const Editor = ({ style, currentUrl, onClose, onChanged }) => {
 // centred overlay. Esc / click-outside / the X button all close it.
 // When `onPrev`/`onNext` are supplied, on-screen arrows + the left/right
 // arrow keys step between images without leaving the enlarged view.
+const LIGHTBOX_MAX_SCALE = 4;
+const LIGHTBOX_DOUBLE_TAP_SCALE = 2.5;
+const SWIPE_THRESHOLD = 50; // px
+const DOUBLE_TAP_MS = 300;
+const TAP_SLOP = 30; // px — how far the two taps can be apart / how far a tap can drift
+
 export const Lightbox = ({ url, caption, onClose, onPrev, onNext }) => {
-  const touchStart = useRef(null);
+  // ─── zoom / pan state ──────────────────────────────────────────────
+  // `scale` 1 = fit-to-screen (swipe navigates), > 1 = zoomed (drag pans
+  // and horizontal swipe-to-navigate is suppressed). Kept in a ref mirror
+  // so the native (non-passive) touch listeners always read the latest.
+  const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
+  const stateRef = useRef(transform);
+  stateRef.current = transform;
+  const gesturingRef = useRef(false);
+  const figureRef = useRef(null);
+  const imgRef = useRef(null);
+  const gesture = useRef(null);
+  const lastTap = useRef({ time: 0, x: 0, y: 0 });
+
+  const reset = useCallback(() => setTransform({ scale: 1, x: 0, y: 0 }), []);
+
+  // Reset zoom whenever the displayed image changes (arrow / swipe nav).
+  useEffect(() => { reset(); }, [url, reset]);
 
   useEffect(() => {
     const h = (e) => {
@@ -294,33 +316,158 @@ export const Lightbox = ({ url, caption, onClose, onPrev, onNext }) => {
     };
   }, [onClose, onPrev, onNext]);
 
-  // ─── swipe-to-navigate (touch devices) ─────────────────────────────
-  // Track the initial touch and, on release, treat a mostly-horizontal
-  // drag past a threshold as prev/next — the same wrap + skip-placeholder
-  // rules apply since they live in the onPrev/onNext handlers.
-  const SWIPE_THRESHOLD = 50; // px
-  const onTouchStart = (e) => {
-    const t = e.touches[0];
-    touchStart.current = { x: t.clientX, y: t.clientY };
-  };
-  const onTouchEnd = (e) => {
-    const start = touchStart.current;
-    touchStart.current = null;
-    if (!start) return;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - start.x;
-    const dy = t.clientY - start.y;
-    if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dx) <= Math.abs(dy)) return;
-    if (dx < 0 && onNext) onNext();
-    else if (dx > 0 && onPrev) onPrev();
-  };
+  // Clamp a pan offset so the (scaled) image edges never pull inside the
+  // visible bounds. Transform origin is the image centre.
+  const clampPan = useCallback((x, y, scale) => {
+    const img = imgRef.current;
+    if (!img) return { x, y };
+    const maxX = Math.max(0, (img.offsetWidth * (scale - 1)) / 2);
+    const maxY = Math.max(0, (img.offsetHeight * (scale - 1)) / 2);
+    return {
+      x: Math.min(maxX, Math.max(-maxX, x)),
+      y: Math.min(maxY, Math.max(-maxY, y)),
+    };
+  }, []);
+
+  // Zoom in centred on a tap point (used for double-tap). Only called from
+  // a fit state, so the img rect is the unscaled size.
+  const zoomToPoint = useCallback((clientX, clientY) => {
+    const img = imgRef.current;
+    const scale = LIGHTBOX_DOUBLE_TAP_SCALE;
+    if (!img) { setTransform({ scale, x: 0, y: 0 }); return; }
+    const rect = img.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const c = clampPan(-(scale - 1) * (clientX - cx), -(scale - 1) * (clientY - cy), scale);
+    setTransform({ scale, x: c.x, y: c.y });
+  }, [clampPan]);
+
+  // ─── touch gestures (pinch-zoom, pan, double-tap, swipe-nav) ────────
+  // Attached natively with { passive: false } so we can preventDefault and
+  // stop the browser's own pinch-to-zoom / scroll from hijacking the
+  // gesture. React's synthetic touch handlers are passive and can't.
+  useEffect(() => {
+    const el = figureRef.current;
+    if (!el) return;
+
+    const dist = (touches) => Math.hypot(
+      touches[0].clientX - touches[1].clientX,
+      touches[0].clientY - touches[1].clientY,
+    );
+
+    const onStart = (e) => {
+      const cur = stateRef.current;
+      if (e.touches.length === 2) {
+        gesturingRef.current = true;
+        gesture.current = {
+          mode: "pinch",
+          startDist: dist(e.touches) || 1,
+          startScale: cur.scale,
+          startX: cur.x,
+          startY: cur.y,
+        };
+      } else if (e.touches.length === 1) {
+        const t = e.touches[0];
+        gesturingRef.current = true;
+        gesture.current = {
+          mode: cur.scale > 1 ? "pan" : "swipe",
+          startClientX: t.clientX,
+          startClientY: t.clientY,
+          startX: cur.x,
+          startY: cur.y,
+          moved: false,
+        };
+      }
+    };
+
+    const onMove = (e) => {
+      const g = gesture.current;
+      if (!g) return;
+      if (g.mode === "pinch" && e.touches.length === 2) {
+        e.preventDefault();
+        const ratio = dist(e.touches) / g.startDist;
+        const scale = Math.min(LIGHTBOX_MAX_SCALE, Math.max(1, g.startScale * ratio));
+        if (scale <= 1.01) {
+          setTransform({ scale: 1, x: 0, y: 0 });
+        } else {
+          const c = clampPan(g.startX, g.startY, scale);
+          setTransform({ scale, x: c.x, y: c.y });
+        }
+      } else if (g.mode === "pan" && e.touches.length === 1) {
+        e.preventDefault();
+        const t = e.touches[0];
+        g.moved = true;
+        const c = clampPan(
+          g.startX + (t.clientX - g.startClientX),
+          g.startY + (t.clientY - g.startClientY),
+          stateRef.current.scale,
+        );
+        setTransform((p) => ({ ...p, x: c.x, y: c.y }));
+      } else if (g.mode === "swipe" && e.touches.length === 1) {
+        const t = e.touches[0];
+        if (Math.abs(t.clientX - g.startClientX) > 10 || Math.abs(t.clientY - g.startClientY) > 10) {
+          g.moved = true;
+        }
+      }
+    };
+
+    const detectDoubleTap = (t, onDouble) => {
+      const now = Date.now();
+      const lt = lastTap.current;
+      if (
+        now - lt.time < DOUBLE_TAP_MS &&
+        Math.abs(t.clientX - lt.x) < TAP_SLOP &&
+        Math.abs(t.clientY - lt.y) < TAP_SLOP
+      ) {
+        lastTap.current = { time: 0, x: 0, y: 0 };
+        onDouble();
+      } else {
+        lastTap.current = { time: now, x: t.clientX, y: t.clientY };
+      }
+    };
+
+    const onEnd = (e) => {
+      const g = gesture.current;
+      if (e.touches.length === 0) {
+        gesture.current = null;
+        gesturingRef.current = false;
+      }
+      if (!g) return;
+
+      const t = e.changedTouches[0];
+      if (g.mode === "swipe") {
+        const dx = t.clientX - g.startClientX;
+        const dy = t.clientY - g.startClientY;
+        if (Math.abs(dx) >= SWIPE_THRESHOLD && Math.abs(dx) > Math.abs(dy)) {
+          if (dx < 0 && onNext) onNext();
+          else if (dx > 0 && onPrev) onPrev();
+          return;
+        }
+        if (!g.moved) detectDoubleTap(t, () => zoomToPoint(t.clientX, t.clientY));
+      } else if (g.mode === "pan" && !g.moved) {
+        // A stationary tap while zoomed: double-tap to zoom back out.
+        detectDoubleTap(t, reset);
+      }
+    };
+
+    el.addEventListener("touchstart", onStart, { passive: false });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd, { passive: false });
+    el.addEventListener("touchcancel", onEnd, { passive: false });
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", onEnd);
+    };
+  }, [onPrev, onNext, reset, clampPan, zoomToPoint]);
+
+  const zoomed = transform.scale > 1;
 
   return createPortal(
     <div
       className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
       onClick={onClose}
-      onTouchStart={onTouchStart}
-      onTouchEnd={onTouchEnd}
       data-testid="product-lightbox"
     >
       <button
@@ -355,13 +502,24 @@ export const Lightbox = ({ url, caption, onClose, onPrev, onNext }) => {
         </button>
       )}
       <figure
+        ref={figureRef}
         className="flex flex-col items-center gap-3"
+        style={{ touchAction: "none" }}
         onClick={(e) => e.stopPropagation()}
+        data-testid="product-lightbox-figure"
       >
         <img
+          ref={imgRef}
           src={url}
           alt={caption || "product"}
-          className="max-w-[92vw] max-h-[80vh] object-contain rounded-lg shadow-2xl bg-white"
+          draggable={false}
+          className="max-w-[92vw] max-h-[80vh] object-contain rounded-lg shadow-2xl bg-white select-none"
+          style={{
+            transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
+            transition: gesturingRef.current ? "none" : "transform 0.2s ease",
+            cursor: zoomed ? "grab" : "zoom-in",
+            willChange: "transform",
+          }}
         />
         {caption ? (
           <figcaption className="text-white/90 text-sm text-center max-w-[92vw] break-words">
