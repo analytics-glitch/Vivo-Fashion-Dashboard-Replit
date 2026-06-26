@@ -30,5 +30,8 @@ args = ["python3", "/home/runner/workspace/watchdog.py"]
 PORT = "8080"
 WATCHDOG_MANAGE_API = "1"
 
+# Readiness gate for promotion: /api/readyz returns 200 only when the DB is
+# reachable (503 otherwise), so a new build is promoted only once it can actually
+# serve. /api/healthz (DB-free liveness) stays available for plain up/down checks.
 [services.production.health.startup]
-path = "/api/"
+path = "/api/readyz"
