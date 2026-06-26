@@ -512,7 +512,7 @@ const Products = () => {
           <div className="card-white p-5" data-testid="sts-subcat-table">
             <SectionTitle
               title="Stock-to-Sales · by Subcategory"
-              subtitle="Expand any row to drill Category → Subcategory → Style → SKU/Barcode without leaving the table. Search to pin matching products in as rows. Red = action needed (stockout or overstock risk). Green = healthy balance."
+              subtitle="Expand any category to see its subcategories. Red = action needed (stockout or overstock risk). Green = healthy balance."
             />
             <StockToSalesDrillTable
               catRows={filteredStsByCat}

@@ -2,30 +2,17 @@ import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { api, fmtNum, fmtPct } from "@/lib/api";
 import { exportCSV } from "@/components/SortableTable";
 import { VarianceCell, varianceFlag } from "@/lib/variance";
-import ProductDetailModal from "@/components/ProductDetailModal";
 import {
   Plus,
   Minus,
   Download,
   CaretDown,
-  MagnifyingGlass,
-  X,
-  Package,
 } from "@phosphor-icons/react";
 
-// Shared grid template — every header / row uses it so all columns line up
-// vertically across all four drill levels.
+// Shared grid template — header and every row use it so all columns line up
+// vertically across both drill levels (Category, Subcategory).
 const GRID =
   "grid grid-cols-[26px_minmax(0,2.3fr)_0.9fr_0.9fr_0.9fr_0.9fr_1fr_1.1fr] gap-2 items-center";
-
-const useDebounced = (value, delay = 250) => {
-  const [v, setV] = useState(value);
-  useEffect(() => {
-    const t = setTimeout(() => setV(value), delay);
-    return () => clearTimeout(t);
-  }, [value, delay]);
-  return v;
-};
 
 // Action-item rule at product grain: the two operationally actionable extremes.
 const actionReason = (units, stock) => {
@@ -48,102 +35,8 @@ const MetricCells = ({ m }) => (
   </>
 );
 
-// ── variant (leaf) row ──
-const VariantRow = ({ v, mk, onPick }) => {
-  const m = mk(v.units_sold, v.current_stock);
-  const label =
-    [v.color, v.size].filter(Boolean).join(" · ") || v.product_name || v.style_name || v.sku;
-  return (
-    <button
-      type="button"
-      onClick={() => onPick(v.sku)}
-      className={`${GRID} w-full text-left px-3 py-1.5 text-[12px] hover:bg-[#fff8ee] border-t border-[#fce6cc]`}
-      data-testid={`sts-variant-${v.sku}`}
-    >
-      <span />
-      <span className="min-w-0 truncate flex items-center gap-1.5" style={{ paddingLeft: 48 }}>
-        <Package size={12} className="shrink-0 text-muted" />
-        <span className="font-medium">{v.sku}</span>
-        {label ? <span className="text-muted truncate"> · {label}</span> : null}
-        {v.barcode ? <span className="text-muted font-mono shrink-0"> · {v.barcode}</span> : null}
-      </span>
-      <MetricCells m={m} />
-    </button>
-  );
-};
-
-// ── style row (lazy → variants) ──
-const StyleRow = ({ style, drillParams, mk, onPick }) => {
-  const [open, setOpen] = useState(false);
-  const [kids, setKids] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
-  const m = mk(style.units_sold, style.current_stock);
-
-  const load = useCallback(() => {
-    setLoading(true);
-    setErr("");
-    api
-      .get("/analytics/stock-to-sales-drill", {
-        params: {
-          level: "variant",
-          category: style.category,
-          subcategory: style.subcategory,
-          style: style.val,
-          ...drillParams,
-        },
-      })
-      .then(({ data }) => setKids(data?.items || []))
-      .catch(() => setErr("Couldn't load SKUs"))
-      .finally(() => setLoading(false));
-  }, [style.category, style.subcategory, style.val, drillParams]);
-
-  const toggle = () => {
-    const n = !open;
-    setOpen(n);
-    if (n && kids === null && !loading) load();
-  };
-
-  return (
-    <div className="border-t border-[#fce6cc]">
-      <button
-        type="button"
-        onClick={toggle}
-        className={`${GRID} w-full text-left px-3 py-1.5 text-[12px] hover:bg-[#fff8ee]`}
-        data-testid={`sts-style-${(style.val || "blank").toLowerCase().replace(/\s+/g, "-")}`}
-      >
-        <span className="text-[#1a5c38]">
-          {open ? <Minus size={12} weight="bold" /> : <Plus size={12} weight="bold" />}
-        </span>
-        <span className="min-w-0 truncate" style={{ paddingLeft: 32 }}>
-          {style.val || <span className="italic text-muted">Unnamed style</span>}
-          <span className="ml-2 text-[10px] text-[#9ca3af]">{fmtNum(style.skus)} SKU{style.skus === 1 ? "" : "s"}</span>
-        </span>
-        <MetricCells m={m} />
-      </button>
-      {open ? (
-        loading ? (
-          <div className="px-3 py-2 text-[12px] text-muted" style={{ paddingLeft: 60 }}>Loading SKUs…</div>
-        ) : err ? (
-          <div className="px-3 py-2 text-[12px] text-red-700" style={{ paddingLeft: 60 }}>
-            {err} · <button className="underline" onClick={load}>retry</button>
-          </div>
-        ) : kids && kids.length ? (
-          kids.map((v) => <VariantRow key={v.sku} v={v} mk={mk} onPick={onPick} />)
-        ) : (
-          <div className="px-3 py-2 text-[12px] text-muted" style={{ paddingLeft: 60 }}>No SKUs</div>
-        )
-      ) : null}
-    </div>
-  );
-};
-
-// ── subcategory row (lazy → styles) ──
-const SubcatRow = ({ sub, category, drillParams, mk, onPick }) => {
-  const [open, setOpen] = useState(false);
-  const [kids, setKids] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
+// ── subcategory row (leaf — no further drill) ──
+const SubcatRow = ({ sub }) => {
   const m = {
     units_sold: sub.units_sold || 0,
     current_stock: sub.current_stock || 0,
@@ -152,68 +45,22 @@ const SubcatRow = ({ sub, category, drillParams, mk, onPick }) => {
     variance: sub.variance || 0,
   };
 
-  const load = useCallback(() => {
-    setLoading(true);
-    setErr("");
-    api
-      .get("/analytics/stock-to-sales-drill", {
-        params: {
-          level: "style",
-          category,
-          subcategory: sub.subcategory,
-          ...drillParams,
-        },
-      })
-      .then(({ data }) =>
-        setKids((data?.items || []).map((s) => ({ ...s, category, subcategory: sub.subcategory })))
-      )
-      .catch(() => setErr("Couldn't load styles"))
-      .finally(() => setLoading(false));
-  }, [category, sub.subcategory, drillParams]);
-
-  const toggle = () => {
-    const n = !open;
-    setOpen(n);
-    if (n && kids === null && !loading) load();
-  };
-
   return (
-    <div className="border-t border-[#fce6cc]">
-      <button
-        type="button"
-        onClick={toggle}
-        className={`${GRID} w-full text-left px-3 py-2 text-[12.5px] bg-white hover:bg-[#fff8ee]`}
-        data-testid={`sts-subcat-${(sub.subcategory || "blank").toLowerCase().replace(/\s+/g, "-")}`}
-      >
-        <span className="text-[#1a5c38]">
-          {open ? <Minus size={13} weight="bold" /> : <Plus size={13} weight="bold" />}
-        </span>
-        <span className="min-w-0 truncate text-[#0f3d24] font-medium" style={{ paddingLeft: 16 }}>
-          {sub.subcategory || <span className="italic text-muted">Uncategorised</span>}
-        </span>
-        <MetricCells m={m} />
-      </button>
-      {open ? (
-        loading ? (
-          <div className="px-3 py-2 text-[12px] text-muted" style={{ paddingLeft: 44 }}>Loading styles…</div>
-        ) : err ? (
-          <div className="px-3 py-2 text-[12px] text-red-700" style={{ paddingLeft: 44 }}>
-            {err} · <button className="underline" onClick={load}>retry</button>
-          </div>
-        ) : kids && kids.length ? (
-          kids.map((s) => (
-            <StyleRow key={s.val || "__blank__"} style={s} drillParams={drillParams} mk={mk} onPick={onPick} />
-          ))
-        ) : (
-          <div className="px-3 py-2 text-[12px] text-muted" style={{ paddingLeft: 44 }}>No styles</div>
-        )
-      ) : null}
+    <div
+      className={`${GRID} px-3 py-2 text-[12.5px] bg-white border-t border-[#fce6cc]`}
+      data-testid={`sts-subcat-${(sub.subcategory || "blank").toLowerCase().replace(/\s+/g, "-")}`}
+    >
+      <span />
+      <span className="min-w-0 truncate text-[#0f3d24] font-medium" style={{ paddingLeft: 16 }}>
+        {sub.subcategory || <span className="italic text-muted">Uncategorised</span>}
+      </span>
+      <MetricCells m={m} />
     </div>
   );
 };
 
-// ── category row (subcategories are client-side; styles/variants lazy) ──
-const CategoryRow = ({ cat, subs, open, onToggle, drillParams, mk, onPick }) => {
+// ── category row (subcategories are client-side leaves) ──
+const CategoryRow = ({ cat, subs, open, onToggle }) => {
   const m = {
     units_sold: cat.units_sold || 0,
     current_stock: cat.current_stock || 0,
@@ -245,14 +92,7 @@ const CategoryRow = ({ cat, subs, open, onToggle, drillParams, mk, onPick }) => 
         subs.length ? (
           <div className="bg-white">
             {subs.map((s) => (
-              <SubcatRow
-                key={s.subcategory || "__blank__"}
-                sub={s}
-                category={cat.category}
-                drillParams={drillParams}
-                mk={mk}
-                onPick={onPick}
-              />
+              <SubcatRow key={s.subcategory || "__blank__"} sub={s} />
             ))}
           </div>
         ) : (
@@ -274,18 +114,12 @@ const StockToSalesDrillTable = ({
   testId = "sts-drill",
 }) => {
   const [openCats, setOpenCats] = useState(() => new Set());
-  const [picked, setPicked] = useState(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState("");
   const exportRef = useRef(null);
 
-  // search
-  const [q, setQ] = useState("");
-  const debounced = useDebounced(q, 250);
-  const [results, setResults] = useState([]);
-  const [searching, setSearching] = useState(false);
-
-  // Grand totals (denominator for the style/variant % shares). The server's
+  // Grand totals (denominator for the product-grain % shares used in exports).
+  // The server's
   // category rows carry pct_i = units_i / GRAND * 100, so summing both sides
   // gives GRAND = Σunits / Σpct * 100 — a sum-ratio that cancels the per-row
   // 2dp rounding error far better than back-solving from a single row, and is
@@ -347,25 +181,6 @@ const StockToSalesDrillTable = ({
     });
   const expandAll = () => setOpenCats(new Set(cats.map((c) => c.category)));
   const collapseAll = () => setOpenCats(new Set());
-
-  // search effect — uses the same date window so figures reconcile.
-  useEffect(() => {
-    const term = debounced.trim();
-    if (term.length < 2) {
-      setResults([]);
-      return;
-    }
-    let alive = true;
-    setSearching(true);
-    api
-      .get("/product-search", { params: { q: term, ...drillParams } })
-      .then(({ data }) => alive && setResults(data?.options || []))
-      .catch(() => alive && setResults([]))
-      .finally(() => alive && setSearching(false));
-    return () => {
-      alive = false;
-    };
-  }, [debounced, drillParams]);
 
   useEffect(() => {
     const h = (e) => {
@@ -483,36 +298,10 @@ const StockToSalesDrillTable = ({
     { label: "Action items only", run: () => doExportProducts(true) },
   ];
 
-  const searchActive = debounced.trim().length >= 2;
-
   return (
     <div data-testid={testId}>
-      {/* toolbar: search + expand/collapse + export dropdown */}
+      {/* toolbar: expand/collapse + export dropdown */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        <div className="relative flex-1 min-w-[14rem] max-w-[28rem]">
-          <MagnifyingGlass
-            size={15}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none"
-          />
-          <input
-            type="text"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Find a product by style, SKU or barcode…"
-            className="w-full border border-border rounded-md pl-9 pr-8 py-1.5 text-[12.5px] outline-none focus:border-brand"
-            data-testid="sts-drill-search"
-          />
-          {q ? (
-            <button
-              type="button"
-              onClick={() => { setQ(""); setResults([]); }}
-              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-panel text-muted"
-              title="Clear"
-            >
-              <X size={13} />
-            </button>
-          ) : null}
-        </div>
         <div className="flex items-center gap-3 text-[11px] ml-auto">
           <button onClick={expandAll} className="text-[#1a5c38] font-bold hover:underline" data-testid="sts-drill-expand-all">
             Expand all
@@ -561,7 +350,7 @@ const StockToSalesDrillTable = ({
         data-testid="sts-drill-header"
       >
         <span />
-        <span className="text-left">Category › Subcategory › Style › SKU</span>
+        <span className="text-left">Category › Subcategory</span>
         <span className="text-right">Units Sold</span>
         <span className="text-right">Inventory</span>
         <span className="text-right">% of Total Sales</span>
@@ -569,27 +358,6 @@ const StockToSalesDrillTable = ({
         <span className="text-right">Variance %</span>
         <span className="text-right">Risk Flag</span>
       </div>
-
-      {/* search results pinned in-table */}
-      {searchActive ? (
-        <div className="mt-2 rounded-lg border border-[#1a5c38]/30 overflow-hidden" data-testid="sts-drill-search-results">
-          <div className="px-3 py-2 bg-[#eaf3ee] text-[11px] font-semibold text-[#1a5c38] flex items-center justify-between">
-            <span>Search results for “{debounced.trim()}”</span>
-            <span className="text-[#6b7280] font-normal">
-              {searching ? "Searching…" : `${results.length} match${results.length === 1 ? "" : "es"}`}
-            </span>
-          </div>
-          {!searching && results.length === 0 ? (
-            <div className="px-3 py-3 text-[12px] text-muted bg-white">No matching products</div>
-          ) : (
-            <div className="bg-white">
-              {results.map((v) => (
-                <VariantRow key={`s-${v.sku}`} v={v} mk={mk} onPick={setPicked} />
-              ))}
-            </div>
-          )}
-        </div>
-      ) : null}
 
       {/* drill rows */}
       <div className="space-y-2 mt-2">
@@ -603,15 +371,10 @@ const StockToSalesDrillTable = ({
               subs={subsByCat.get(c.category) || []}
               open={openCats.has(c.category)}
               onToggle={() => toggleCat(c.category)}
-              drillParams={drillParams}
-              mk={mk}
-              onPick={setPicked}
             />
           ))
         )}
       </div>
-
-      {picked ? <ProductDetailModal sku={picked} onClose={() => setPicked(null)} /> : null}
     </div>
   );
 };
