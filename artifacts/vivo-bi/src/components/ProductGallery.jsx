@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { CaretLeft, CaretRight, X } from "@phosphor-icons/react";
 
 /**
@@ -39,7 +40,7 @@ const ProductGallery = ({ images = [], caption, startIndex = 0, onClose }) => {
   if (count === 0) return null;
   const current = images[idx];
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
       onClick={onClose}
@@ -125,7 +126,8 @@ const ProductGallery = ({ images = [], caption, startIndex = 0, onClose }) => {
           </div>
         ) : null}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 };
 

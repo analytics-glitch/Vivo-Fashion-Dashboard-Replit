@@ -6627,8 +6627,8 @@ def analytics_product_analysis_style(
         " COALESCE(sa.revenue,0) AS revenue,"
         " (COALESCE(st.location, sa.location) IN (" + WAREHOUSE_LOCATIONS + ")) AS is_warehouse"
         " FROM stock st FULL OUTER JOIN sales sa ON st.location = sa.location"
-        " WHERE COALESCE(st.stock,0) <> 0 OR COALESCE(sa.revenue,0) <> 0"
-        " ORDER BY stock DESC, revenue DESC"
+        " WHERE COALESCE(st.stock,0) <> 0 OR COALESCE(sa.units,0) <> 0 OR COALESCE(sa.revenue,0) <> 0"
+        " ORDER BY units DESC, stock DESC"
     )
     by_location = [{"location": x["location"], "country": x["country"],
                     "stock": int(x["stock"] or 0), "units": int(x["units"] or 0),
