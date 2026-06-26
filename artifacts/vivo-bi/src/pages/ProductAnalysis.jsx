@@ -163,6 +163,8 @@ const ProductAnalysis = () => {
   // false (default) = retail stores only; true = stores + warehouse.
   const [includeWarehouse, setIncludeWarehouse] = useState(false);
   const [search, setSearch] = useState("");
+  // Embed product photos in the export (slow .xlsx). Unchecked = fast plain CSV.
+  const [includePhotos, setIncludePhotos] = useState(true);
   const [drillStyle, setDrillStyle] = useState(null); // style_name shown in the location popup
   // Master column show/hide. The newly-added analytical columns start hidden so
   // the default table stays readable; the picker (above the table) reveals them.
@@ -644,8 +646,8 @@ const ProductAnalysis = () => {
       ? (stores.length === 1 ? stores[0] : `${stores.length}-stores`)
       : "overall";
     const dimSlug = dims.length ? dims.join("-") : "style";
-    exportTable(filteredRows, exportCols, `product_analysis_${dimSlug}_${scopeSlug.replace(/\s+/g, "-")}.csv`);
-  }, [filteredRows, dims, stores]);
+    exportTable(filteredRows, exportCols, `product_analysis_${dimSlug}_${scopeSlug.replace(/\s+/g, "-")}.csv`, includePhotos);
+  }, [filteredRows, dims, stores, includePhotos]);
 
   const generateAi = useCallback(() => {
     if (!summary) return;
@@ -1082,6 +1084,19 @@ const ProductAnalysis = () => {
                     })}
                   </div>
                 </details>
+                <label
+                  className="inline-flex items-center gap-1.5 text-[11.5px] text-muted cursor-pointer select-none px-1"
+                  title="Include product photos in the export (slower). Uncheck for a fast CSV without images."
+                  data-testid="pa-master-include-photos"
+                >
+                  <input
+                    type="checkbox"
+                    checked={includePhotos}
+                    onChange={(e) => setIncludePhotos(e.target.checked)}
+                    className="accent-[var(--brand,#1a5c38)] cursor-pointer"
+                  />
+                  Photos
+                </label>
                 <button
                   type="button"
                   onClick={exportMaster}
@@ -1089,7 +1104,7 @@ const ProductAnalysis = () => {
                   className="inline-flex items-center gap-1.5 text-[11.5px] text-muted hover:text-brand px-2 py-1 rounded border border-border hover:border-brand disabled:opacity-40"
                   data-testid="pa-master-export"
                 >
-                  Export CSV
+                  {includePhotos ? "Export Excel" : "Export CSV"}
                 </button>
               </div>
             </div>
