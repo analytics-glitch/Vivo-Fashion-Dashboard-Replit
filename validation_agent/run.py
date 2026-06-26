@@ -1,0 +1,322 @@
+"""Orchestrator + CLI for the data-validation agent.
+
+Usage:
+  python3 -m validation_agent.run                 # live hourly run (validate today)
+  python3 -m validation_agent.run --dry-run --days 90   # dry-run report over a window
+  python3 -m validation_agent.run --backfill-days 90    # only (re)build baseline history
+  python3 -m validation_agent.run --approve <exception_id>
+  python3 -m validation_agent.run --reject  <exception_id>
+
+A run executes the five steps in order. In dry-run mode it never sends alerts,
+never applies fixes, and prints a full report to stdout. Baseline history is
+always (re)folded from validated days so the dry-run also bootstraps the agent.
+"""
+import argparse
+import json
+import uuid
+from datetime import date, datetime, timedelta
+
+from . import alerting, baselines, config, consistency, db, diagnose, governance
+from .metrics import compute
+
+
+def _today() -> date:
+    return datetime.now().date()
+
+
+def _audit(conn, run_id, dry_run, **kw):
+    cols = ["run_id", "dry_run", "phase", "event"]
+    vals = [str(run_id), dry_run, kw.pop("phase"), kw.pop("event")]
+    detail = kw.pop("detail", None)
+    for k, v in kw.items():
+        cols.append(k)
+        vals.append(v)
+    if detail is not None:
+        cols.append("detail")
+        vals.append(json.dumps(detail, default=str))
+    ph = ",".join(["%s"] * len(vals))
+    with db.cursor(conn) as cur:
+        cur.execute(
+            f"INSERT INTO validation_audit ({','.join(cols)}) VALUES ({ph})", vals)
+
+
+def _fingerprint(exc) -> str:
+    return "|".join(str(x) for x in (
+        exc.get("entity_type"), exc.get("entity"), exc.get("subcategory"),
+        exc.get("metric") or "_", exc.get("check_code"), exc.get("period_date")))
+
+
+def _upsert_exception(conn, run_id, exc, dry_run) -> int:
+    fp = _fingerprint(exc)
+    with db.cursor(conn) as cur:
+        cur.execute(
+            """
+            INSERT INTO validation_exceptions
+                (fingerprint, run_id, status, tier, severity, entity_type, entity,
+                 subcategory, metric, period_date, check_code, broken_identity,
+                 observed, expected_low, expected_high, materiality_kes, diagnosis,
+                 proposed_fix_sql, auto_fixable, raw_rows, approval_token, dry_run)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (fingerprint) DO UPDATE SET
+                last_seen_at = now(), run_id = EXCLUDED.run_id,
+                severity = EXCLUDED.severity, diagnosis = EXCLUDED.diagnosis,
+                proposed_fix_sql = EXCLUDED.proposed_fix_sql,
+                auto_fixable = EXCLUDED.auto_fixable, observed = EXCLUDED.observed
+            RETURNING id
+            """,
+            [fp, str(run_id), exc.get("status", "open"), exc["tier"],
+             exc["severity"], exc.get("entity_type"), exc.get("entity"),
+             exc.get("subcategory"), exc.get("metric"), exc.get("period_date"),
+             exc.get("check_code"), exc.get("broken_identity"), exc.get("observed"),
+             exc.get("expected_low"), exc.get("expected_high"),
+             exc.get("materiality_kes"),
+             json.dumps(exc.get("diagnosis"), default=str) if exc.get("diagnosis") else None,
+             exc.get("proposed_fix_sql"), bool(exc.get("auto_fixable")),
+             json.dumps(exc.get("raw_rows"), default=str) if exc.get("raw_rows") else None,
+             exc.get("approval_token"), dry_run])
+        return cur.fetchone()["id"]
+
+
+def run(days: int, dry_run: bool, evaluate_days: int, backfill_only: bool = False):
+    run_id = uuid.uuid4()
+    conn = db.connect(autocommit=True)
+    db.ensure_tables(conn)
+
+    d1 = _today()
+    d0 = d1 - timedelta(days=days - 1)
+    env = "dev" if "localhost" in config.DATABASE_URL or "127.0.0.1" in config.DATABASE_URL else "remote"
+
+    rows = compute(conn, d0, d1)
+
+    blocked = set()
+    tier1 = []
+    for m in rows:
+        if m["entity_type"] not in ("store", "group"):
+            continue
+        fails = consistency.check_row(m)
+        for f in fails:
+            f.update({"entity_type": m["entity_type"], "entity": m["entity"],
+                      "subcategory": m["subcategory"], "period_date": m["period_date"]})
+            tier1.append(f)
+            blocked.add((m["entity_type"], m["entity"], m["subcategory"], m["period_date"]))
+
+    folded = baselines.fold(conn, rows, blocked)
+
+    eval_start = d1 - timedelta(days=evaluate_days - 1)
+    tier2 = []
+    if not backfill_only:
+        index = baselines.load_index(conn, d1)
+        for m in rows:
+            if m["period_date"] < eval_start:
+                continue
+            for f in baselines.check_row(m, index):
+                f.update({"entity_type": m["entity_type"], "entity": m["entity"],
+                          "subcategory": m["subcategory"], "period_date": m["period_date"]})
+                tier2.append(f)
+
+    all_exc = tier1 + tier2
+    diagnosed = 0
+    if config.llm_enabled() and not backfill_only:
+        ranked = sorted(all_exc, key=lambda e: -(e.get("materiality_kes") or 0))
+        for exc in ranked[: config.LLM_MAX_DIAGNOSES]:
+            rr = diagnose.sample_rows(conn, exc)
+            exc["raw_rows"] = rr
+            exc["diagnosis"] = diagnose.diagnose(exc, rr)
+            exc["proposed_fix_sql"] = (exc["diagnosis"] or {}).get("proposed_fix_sql")
+            diagnosed += 1
+
+    reds, ambers = 0, 0
+    red_items = []
+    for exc in all_exc:
+        decision = governance.decide(exc)
+        exc["severity"] = decision["severity"]
+        exc["auto_fixable"] = decision["auto_fixable"]
+        if not dry_run and decision["action"] == "auto_fix" and decision["matched_pattern"]:
+            res = governance.apply_fix(conn, exc, decision["matched_pattern"])
+            exc["status"] = "auto_fixed" if res.get("applied") else "open"
+            _audit(conn, run_id, dry_run, phase="governance",
+                   event="fix_applied" if res.get("applied") else "fix_failed",
+                   entity=exc.get("entity"), metric=exc.get("metric"),
+                   check_code=exc.get("check_code"), detail=res)
+        exc_id = _upsert_exception(conn, run_id, exc, dry_run)
+        exc["id"] = exc_id
+        if exc["severity"] == "red":
+            reds += 1
+            red_items.append({
+                "id": exc_id, "entity": f'{exc["entity_type"]}:{exc["entity"]}',
+                "metric": exc.get("metric"), "check_code": exc.get("check_code"),
+                "period_date": str(exc.get("period_date")),
+                "observed": round(float(exc.get("observed") or 0), 2),
+                "expected_low": exc.get("expected_low"),
+                "expected_high": exc.get("expected_high"),
+                "diagnosis": (exc.get("diagnosis") or {}).get("cause"),
+                "proposed_fix_sql": exc.get("proposed_fix_sql")})
+        elif exc["severity"] == "amber":
+            ambers += 1
+
+    n_entities = len({(m["entity_type"], m["entity"], m["period_date"]) for m in rows})
+    definitions = _definition_residuals(rows)
+    summary = {
+        "run_id": str(run_id), "env": env, "window": f"{d0} .. {d1}",
+        "color": alerting.overall_color(reds, ambers),
+        "checks": n_entities, "passed": n_entities - len({
+            (e["entity_type"], e["entity"], e["period_date"]) for e in tier1}),
+        "tier1": len(tier1), "tier2": len(tier2), "reds": reds, "ambers": ambers,
+        "folded": folded, "diagnosed": diagnosed, "definitions": definitions,
+        "red_items": red_items[:25],
+    }
+
+    alert_res = alerting.send(summary, dry_run)
+    _audit(conn, run_id, dry_run, phase="run", event="run_summary",
+           detail={**summary, "alert": {k: v for k, v in alert_res.items() if k != "text"}})
+
+    _print_report(summary, tier1, tier2, alert_res, dry_run)
+    conn.close()
+    return summary
+
+
+def _definition_residuals(rows) -> list[str]:
+    grp = [m for m in rows if m["entity_type"] == "group" and m["subcategory"] == "__ALL__"]
+    tot = sum(m["total_sales"] for m in grp)
+    net = sum(m["net_sales"] for m in grp)
+    gross = sum(m["gross_sales"] for m in grp)
+    disc = sum(m["discounts"] for m in grp)
+    ret = sum(m["return_amount"] for m in grp)
+    out = []
+    if net:
+        out.append(f"total/net ratio = {tot/net:.4f} (VAT assumption {config.VAT_RATE:+.2f}; "
+                   f"total is VAT-inclusive)")
+    comp = gross - disc - ret
+    if net:
+        out.append(f"net vs (gross-disc-returns): {net:,.0f} vs {comp:,.0f} "
+                   f"(residual {(net-comp)/net*100:+.2f}% — definitional gap across channels)")
+    out.append("units_sold = GROSS ordered qty on sale/order rows; "
+               "transactions = COUNT(DISTINCT order_id); "
+               "conversion = transactions/footfall (footfall conv column empty)")
+    return out
+
+
+def _print_report(summary, tier1, tier2, alert_res, dry_run):
+    bar = "=" * 72
+    print(bar)
+    print(f"  VIVO BI DATA-VALIDATION {'DRY-RUN' if dry_run else 'RUN'} REPORT")
+    print(bar)
+    print(f"Run            : {summary['run_id']}")
+    print(f"Environment    : {summary['env']}")
+    print(f"Window         : {summary['window']}")
+    print(f"Overall status : {summary['color']}")
+    print(f"Entity-days    : {summary['checks']}   "
+          f"Baseline points folded: {summary['folded']}")
+    print(f"Tier-1 (consistency) exceptions : {summary['tier1']}")
+    print(f"Tier-2 (learned-range) exceptions: {summary['tier2']}")
+    print(f"AMBER (auto-handled): {summary['ambers']}   "
+          f"RED (needs approval): {summary['reds']}   "
+          f"LLM diagnoses: {summary['diagnosed']}")
+    print()
+    print("Definitions used / residuals:")
+    for d in summary["definitions"]:
+        print(f"  - {d}")
+
+    def _by_code(items):
+        agg = {}
+        for it in items:
+            agg[it["check_code"]] = agg.get(it["check_code"], 0) + 1
+        return agg
+
+    if tier1:
+        print("\nTier-1 breakdown by check:")
+        for code, n in sorted(_by_code(tier1).items(), key=lambda x: -x[1]):
+            print(f"  {code:24s} {n}")
+        print("  examples:")
+        for it in tier1[:5]:
+            print(f"   - {it['entity_type']}:{it['entity']} @ {it['period_date']} "
+                  f"{it['broken_identity']} (obs {float(it['observed'] or 0):,.2f}, "
+                  f"KES delta {float(it.get('materiality_kes') or 0):,.0f})")
+    if tier2:
+        print("\nTier-2 breakdown by metric:")
+        agg = {}
+        for it in tier2:
+            agg[it["metric"]] = agg.get(it["metric"], 0) + 1
+        for metric, n in sorted(agg.items(), key=lambda x: -x[1]):
+            print(f"  {metric:24s} {n}")
+        print("  examples:")
+        for it in tier2[:5]:
+            print(f"   - {it['entity_type']}:{it['entity']} {it['metric']} "
+                  f"@ {it['period_date']}: {it['broken_identity']} "
+                  f"(obs {float(it['observed']):,.2f}, exp "
+                  f"[{float(it['expected_low']):,.2f}, {float(it['expected_high']):,.2f}])")
+
+    if summary["red_items"]:
+        print("\nRED items needing approval:")
+        for it in summary["red_items"]:
+            print(f"  * [{it['id']}] {it['entity']} / "
+                  f"{it['metric'] or it['check_code']} @ {it['period_date']}")
+            if it.get("diagnosis"):
+                print(f"      diagnosis: {it['diagnosis']}")
+
+    print("\nAlerting:")
+    if dry_run:
+        print("  (dry-run — no alerts sent)")
+    else:
+        print(f"  email   : {alert_res.get('email')}")
+        print(f"  whatsapp: {alert_res.get('whatsapp')}")
+    print(bar)
+
+
+def _resolve(exc_id: int, approve: bool):
+    conn = db.connect(autocommit=True)
+    with db.cursor(conn) as cur:
+        cur.execute("SELECT * FROM validation_exceptions WHERE id=%s", [exc_id])
+        exc = cur.fetchone()
+        if not exc:
+            print(f"Exception {exc_id} not found.")
+            return
+        if not approve:
+            cur.execute(
+                "UPDATE validation_exceptions SET status='rejected', resolved_at=now() "
+                "WHERE id=%s", [exc_id])
+            print(f"Exception {exc_id} marked rejected.")
+            return
+        cur.execute(
+            "UPDATE validation_exceptions SET status='approved', resolved_at=now() "
+            "WHERE id=%s", [exc_id])
+    print(f"Exception {exc_id} approved. Apply the proposed fix manually within the "
+          f"governance fence, or register a fix pattern to automate it.")
+    conn.close()
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Vivo BI data-validation agent")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--days", type=int, default=None,
+                    help="window size in days (default 2 live, 90 dry-run)")
+    ap.add_argument("--evaluate-days", type=int, default=None,
+                    help="how many recent days to range-check (default 1 live, window dry-run)")
+    ap.add_argument("--backfill-days", type=int, default=None,
+                    help="only (re)build baseline history over N days, no checks/alerts")
+    ap.add_argument("--approve", type=int)
+    ap.add_argument("--reject", type=int)
+    args = ap.parse_args()
+
+    if args.approve:
+        _resolve(args.approve, approve=True)
+        return
+    if args.reject:
+        _resolve(args.reject, approve=False)
+        return
+    if args.backfill_days:
+        run(days=args.backfill_days, dry_run=True,
+            evaluate_days=0, backfill_only=True)
+        return
+
+    if args.dry_run:
+        days = args.days or 90
+        evaluate = args.evaluate_days or days
+    else:
+        days = args.days or 2
+        evaluate = args.evaluate_days or 1
+    run(days=days, dry_run=args.dry_run, evaluate_days=evaluate)
+
+
+if __name__ == "__main__":
+    main()
