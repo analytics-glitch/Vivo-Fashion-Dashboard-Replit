@@ -73,3 +73,4 @@
 - [Product image style+colour matching](product-image-style-color-matching.md) — image endpoints expand a SKU to its style_name+color_print siblings (server-side) so all sizes share photos; keep lookups deterministic.
 - [Fabric support-fabric scope](fabric-support-scope.md) — Lining+Fusable Interfacing split into a "Support Fabrics" tab via `scope` param + EXACT category equality `_scope_sql` (NOT substring — excludes "Crepe Lining"); NULL category stays MAIN; main+support reconcile to old totals.
 - [Overlays must portal to body](overlay-portal-stacking.md) — full-screen fixed lightbox/modal trapped by a transform/filter ancestor lets a sticky table header paint over it; render via createPortal(document.body).
+- [SKU-with-slash breaks image route](sku-slash-path-param.md) — SKUs embed sizes like `1X/2X`/`M/L`; a `{sku}` str path param can't match the encoded slash (404 → photo placeholder); use `{sku:path}`.

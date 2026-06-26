@@ -4189,7 +4189,7 @@ def _with_v_variants(skus):
     return out
 
 
-@app.get("/api/product-image/{sku}")
+@app.get("/api/product-image/{sku:path}")
 def get_product_image(sku: str):
     """Serve a product's 512px image as raw JPEG bytes, resolved SKU -> template.
     Matches at style+colour level: if the exact SKU has no mapped image, falls
@@ -4275,7 +4275,7 @@ def get_gallery_search(
     return {"items": items, "has_more": has_more, "limit": limit, "offset": offset}
 
 
-@app.get("/api/product-images/{sku}")
+@app.get("/api/product-images/{sku:path}")
 def get_product_images(sku: str):
     """Return a product's Shopify image gallery as ordered URLs, matched at
     STYLE+COLOUR level: the gallery unions the images of every SKU sharing the
