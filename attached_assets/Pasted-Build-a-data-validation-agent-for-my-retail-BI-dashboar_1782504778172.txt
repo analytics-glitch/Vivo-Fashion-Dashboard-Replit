@@ -1,0 +1,63 @@
+Build a data-validation agent for my retail BI dashboard. It reads from my
+Replit-hosted PostgreSQL database — connect using the DATABASE_URL secret, and
+write all SQL in PostgreSQL dialect. The metrics tables hold, per store, subcategory
+and period: total sales, net sales, transactions, units sold, footfall, conversion
+rate, average basket value (ABV), average sell price (ASP), items per basket (MSI),
+return rate, return amount. (If you find the metrics are sourced from an external
+Postgres such as Supabase/Neon instead, the only change is which connection-string
+secret you read.)
+
+Build it as a Scheduled Deployment WITHIN this same app (so it inherits DATABASE_URL),
+starting hourly. Create three of its own tables — metric_baselines, validation_audit,
+validation_exceptions — and write only to those; never mutate the source metric tables
+except under the governance fence in step 4. Each run does five things:
+
+1. CONSISTENCY CHECKS (hard arithmetic, must always hold; ±1% tolerance). For every
+   store and the group total, recompute and assert:
+   - units_sold  ≈ transactions × items_per_basket
+   - total_sales ≈ ABV × transactions
+   - total_sales ≈ ASP × units_sold
+   - net_sales ≤ total_sales, and (total_sales − net_sales) ≈ returns + discounts + tax
+   - conversion_rate ≈ transactions ÷ footfall
+   - return_rate ≈ return_amount ÷ total_sales
+   Any break beyond tolerance = a Tier-1 (structural) exception. Where a definition is
+   ambiguous (e.g. how conversion or return_rate is scoped), infer it from the data and
+   tell me which definition you used.
+
+2. LEARNED-RANGE CHECKS ("muscle memory"). In metric_baselines, keep per metric per
+   store a rolling 90-day history and its statistics (mean, std dev, median, IQR,
+   1st/99th percentile). For each current value compute a z-score and an IQR (Tukey)
+   fence; flag anything beyond 3 std devs or outside the 1st–99th percentile, OR any
+   metric whose period-over-period change exceeds a configurable cap (default 75%).
+   Make the bands seasonality-aware: bucket history by day-of-week and by known
+   sale/promo periods so genuine peaks don't false-alarm. Refresh baselines nightly,
+   but fold a day's values into the baseline ONLY after they pass validation, so a bad
+   day never poisons "normal".
+
+3. DIAGNOSIS (the reasoning step). For each exception from steps 1–2, call the
+   Anthropic API (claude-sonnet-4-6) with: the metric, the offending value, the
+   expected band, the broken identity if any, and the relevant raw rows. System
+   instruction for that call:
+   "You are a financial data-quality auditor for a retail group. Given a flagged
+   metric, its expected range and the underlying rows, classify it as a DATA ERROR or
+   a REAL BUSINESS EVENT, explain the most likely cause in two sentences, and if it is
+   a data error propose an exact PostgreSQL fix. Never invent figures. If the rows are
+   insufficient to decide, say so and state what additional data you need."
+
+4. GOVERNANCE (financial numbers — do NOT silently overwrite them). Auto-apply a fix
+   ONLY when all hold: it is reversible, it matches a recognised pattern (e.g. a
+   unit-of-measure normalisation), and the affected value is below a materiality
+   threshold I set (default KES 50,000). Wrap any applied fix in a transaction and rely
+   on the database's rollback/time-travel as the backstop. Anything material or
+   ambiguous goes to validation_exceptions and is escalated, not changed. Log every
+   check, exception, decision and applied fix to validation_audit with a timestamp.
+
+5. ALERTING. After each run, send a summary to me and to William by WhatsApp and email:
+   GREEN if all passed, AMBER for non-material exceptions auto-handled, RED for
+   material exceptions needing my approval. Each RED item includes the metric, the
+   value, the expected band, the diagnosis, and the proposed fix with approve/reject
+   links.
+
+Store the Anthropic key and any messaging credentials in the secrets manager. Test the
+whole agent against the DEVELOPMENT database first and show me a dry-run report over my
+last 90 days before I point it at production.
