@@ -162,6 +162,7 @@ const ProductAnalysis = () => {
   // false (default) = retail stores only; true = stores + warehouse.
   const [includeWarehouse, setIncludeWarehouse] = useState(false);
   const [search, setSearch] = useState("");
+  const [drillStyle, setDrillStyle] = useState(null); // style_name shown in the location popup
   // Master column show/hide. The newly-added analytical columns start hidden so
   // the default table stays readable; the picker (above the table) reveals them.
   const [hiddenCols, setHiddenCols] = useState(
@@ -318,6 +319,14 @@ const ProductAnalysis = () => {
     [localFrom, localTo, countryParam, storeParam]
   );
 
+  // Close the per-style location popup on Escape.
+  useEffect(() => {
+    if (!drillStyle) return;
+    const h = (e) => { if (e.key === "Escape") setDrillStyle(null); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [drillStyle]);
+
   // Client-side search filter over the master rows.
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -350,7 +359,19 @@ const ProductAnalysis = () => {
         key: "style_name", label: "Style", mobilePrimary: true,
         render: (r) => (
           <div className="min-w-[180px]">
-            <div className="font-medium text-foreground break-words">{r.style_name}</div>
+            {dims.length === 0 ? (
+              <button
+                type="button"
+                onClick={() => setDrillStyle(r.style_name)}
+                className="font-medium text-foreground break-words text-left hover:text-brand hover:underline underline-offset-2"
+                title="View stock & sales by location"
+                data-testid={`pa-style-open-${r.style_name}`}
+              >
+                {r.style_name}
+              </button>
+            ) : (
+              <div className="font-medium text-foreground break-words">{r.style_name}</div>
+            )}
             {r.launch_date ? (
               <div className="text-[10.5px] text-muted">launched {fmtDate(r.launch_date)}</div>
             ) : null}
@@ -1079,7 +1100,6 @@ const ProductAnalysis = () => {
                 pageSize={100}
                 mobileCards
                 rowKey={(r) => (dims.length ? `${r.style_name}|${dims.map((d) => r[d] ?? "").join("|")}` : r.style_name)}
-                renderExpanded={dims.length === 0 ? (r) => <StyleDrill styleName={r.style_name} params={drillParams} /> : null}
                 emptyLabel="No styles match the filters."
               />
             ) : (
@@ -1088,6 +1108,37 @@ const ProductAnalysis = () => {
           </div>
         </>
       )}
+
+      {drillStyle ? (
+        <div
+          className="fixed inset-0 z-[150] flex items-center justify-center bg-black/45 backdrop-blur-sm p-4"
+          onClick={() => setDrillStyle(null)}
+          data-testid="pa-style-drill-backdrop"
+        >
+          <div
+            className="card-white p-5 w-full max-w-2xl space-y-4 max-h-[85vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+            data-testid="pa-style-drill-modal"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-[10.5px] uppercase tracking-wider text-muted">Style detail</div>
+                <div className="text-[15px] font-semibold break-words">{drillStyle}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDrillStyle(null)}
+                className="text-muted hover:text-foreground shrink-0"
+                aria-label="Close"
+                data-testid="pa-style-drill-close"
+              >
+                <XIcon size={18} />
+              </button>
+            </div>
+            <StyleDrill styleName={drillStyle} params={drillParams} />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };
