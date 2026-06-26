@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { api } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { Placeholder, Lightbox } from "@/components/ProductThumbnail";
@@ -9,33 +9,28 @@ const PAGE_SIZE = 48;
 /**
  * Card image — a full-width responsive product photo that falls back to the
  * shared coloured-initials Placeholder (the same fallback used elsewhere in
- * the app) when there's no image or the image fails to load.
+ * the app) when there's no image or the image fails to load. Clicking a real
+ * photo asks the parent to open it in the shared (navigable) lightbox.
  */
-const CardImage = ({ style, url }) => {
+const CardImage = ({ style, url, onOpen }) => {
   const [failed, setFailed] = useState(false);
-  const [open, setOpen] = useState(false);
   const show = url && !failed;
   return (
-    <>
-      <div className="w-full aspect-square overflow-hidden rounded-md bg-panel grid place-items-center">
-        {show ? (
-          <img
-            src={url}
-            alt={style}
-            loading="lazy"
-            className="w-full h-full object-cover cursor-zoom-in"
-            onClick={() => setOpen(true)}
-            onError={() => setFailed(true)}
-            data-testid="gallery-card-image"
-          />
-        ) : (
-          <Placeholder style={style} size={160} />
-        )}
-      </div>
-      {open && show && (
-        <Lightbox url={url} caption={style} onClose={() => setOpen(false)} />
+    <div className="w-full aspect-square overflow-hidden rounded-md bg-panel grid place-items-center">
+      {show ? (
+        <img
+          src={url}
+          alt={style}
+          loading="lazy"
+          className="w-full h-full object-cover cursor-zoom-in"
+          onClick={onOpen}
+          onError={() => setFailed(true)}
+          data-testid="gallery-card-image"
+        />
+      ) : (
+        <Placeholder style={style} size={160} />
       )}
-    </>
+    </div>
   );
 };
 
@@ -55,7 +50,35 @@ const Gallery = () => {
   const [loading, setLoading] = useState(true);    // first/replaced page
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
+  const [lightboxIdx, setLightboxIdx] = useState(null); // index into `items`
   const reqId = useRef(0);
+
+  // Indices of the currently-loaded cards that actually have a photo — the
+  // enlarged view only steps between these (placeholder cards are skipped).
+  const viewable = useMemo(
+    () => items.reduce((acc, p, i) => (p.image_url ? (acc.push(i), acc) : acc), []),
+    [items],
+  );
+
+  const step = useCallback(
+    (dir) => {
+      setLightboxIdx((cur) => {
+        if (cur == null || viewable.length === 0) return cur;
+        const pos = viewable.indexOf(cur);
+        if (pos === -1) return viewable[0];
+        const nextPos = (pos + dir + viewable.length) % viewable.length;
+        return viewable[nextPos];
+      });
+    },
+    [viewable],
+  );
+
+  // If the loaded results change out from under an open lightbox, keep it valid.
+  useEffect(() => {
+    if (lightboxIdx != null && !items[lightboxIdx]?.image_url) setLightboxIdx(null);
+  }, [items, lightboxIdx]);
+
+  const active = lightboxIdx != null ? items[lightboxIdx] : null;
 
   // Debounce the search box so we don't fire a request per keystroke.
   useEffect(() => {
@@ -154,13 +177,17 @@ const Gallery = () => {
             className="grid gap-4 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
             data-testid="gallery-grid"
           >
-            {items.map((p) => (
+            {items.map((p, i) => (
               <div
                 key={`${p.style_name}|${p.sku}`}
                 className="card-white p-2.5 flex flex-col gap-2"
                 data-testid="gallery-card"
               >
-                <CardImage style={p.style_name} url={p.image_url} />
+                <CardImage
+                  style={p.style_name}
+                  url={p.image_url}
+                  onOpen={() => setLightboxIdx(i)}
+                />
                 <div className="min-w-0">
                   <div
                     className="font-semibold text-[12.5px] leading-snug truncate"
@@ -198,6 +225,16 @@ const Gallery = () => {
             </div>
           )}
         </>
+      )}
+
+      {active && active.image_url && (
+        <Lightbox
+          url={active.image_url}
+          caption={active.style_name}
+          onClose={() => setLightboxIdx(null)}
+          onPrev={viewable.length > 1 ? () => step(-1) : undefined}
+          onNext={viewable.length > 1 ? () => step(1) : undefined}
+        />
       )}
     </div>
   );

@@ -3,7 +3,7 @@ import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { invalidateThumbnail, primeThumbnail } from "@/lib/useThumbnails";
 import { toast } from "sonner";
-import { Camera, Pencil, Trash, UploadSimple, X } from "@phosphor-icons/react";
+import { Camera, CaretLeft, CaretRight, Pencil, Trash, UploadSimple, X } from "@phosphor-icons/react";
 
 // ─── deterministic placeholder ────────────────────────────────────────
 // Hash the style name once, pick a colour from the Vivo palette, and
@@ -272,9 +272,15 @@ const Editor = ({ style, currentUrl, onClose, onChanged }) => {
 // ─── lightbox ─────────────────────────────────────────────────────────
 // Click any product image (anywhere it appears) to expand it to a large
 // centred overlay. Esc / click-outside / the X button all close it.
-export const Lightbox = ({ url, caption, onClose }) => {
+// When `onPrev`/`onNext` are supplied, on-screen arrows + the left/right
+// arrow keys step between images without leaving the enlarged view.
+export const Lightbox = ({ url, caption, onClose, onPrev, onNext }) => {
   useEffect(() => {
-    const h = (e) => { if (e.key === "Escape") onClose(); };
+    const h = (e) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft" && onPrev) { e.preventDefault(); onPrev(); }
+      else if (e.key === "ArrowRight" && onNext) { e.preventDefault(); onNext(); }
+    };
     window.addEventListener("keydown", h);
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -282,7 +288,7 @@ export const Lightbox = ({ url, caption, onClose }) => {
       window.removeEventListener("keydown", h);
       document.body.style.overflow = prev;
     };
-  }, [onClose]);
+  }, [onClose, onPrev, onNext]);
 
   return (
     <div
@@ -299,6 +305,28 @@ export const Lightbox = ({ url, caption, onClose }) => {
       >
         <X size={22} />
       </button>
+      {onPrev && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onPrev(); }}
+          className="absolute left-3 sm:left-5 top-1/2 -translate-y-1/2 p-2.5 rounded-full bg-white/10 text-white hover:bg-white/20 transition-colors"
+          title="Previous (←)"
+          data-testid="product-lightbox-prev"
+        >
+          <CaretLeft size={26} />
+        </button>
+      )}
+      {onNext && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onNext(); }}
+          className="absolute right-3 sm:right-5 top-1/2 -translate-y-1/2 p-2.5 rounded-full bg-white/10 text-white hover:bg-white/20 transition-colors"
+          title="Next (→)"
+          data-testid="product-lightbox-next"
+        >
+          <CaretRight size={26} />
+        </button>
+      )}
       <figure
         className="flex flex-col items-center gap-3"
         onClick={(e) => e.stopPropagation()}
