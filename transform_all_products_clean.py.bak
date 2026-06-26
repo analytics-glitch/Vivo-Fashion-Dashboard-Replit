@@ -417,6 +417,34 @@ def main():
     """)
     log.info("Categories synced to subcats")
 
+    # ── Canonicalise collection & brand to ONE value per style_name ──────────
+    # A style_name is set per-SKU upstream, so SKUs of the same style can carry
+    # different collection/brand values (376 styles split on collection). That
+    # makes a style appear as multiple rows in SOR / Products / any grouped view.
+    # Force each style to its DOMINANT (most common) collection and brand so one
+    # style = one collection = one brand everywhere. Idempotent; runs each build.
+    for col in ("collection", "brand"):
+        cur.execute("""
+            WITH ranked AS (
+                SELECT style_name, {c} AS val,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY style_name
+                           ORDER BY COUNT(*) DESC, {c} ASC
+                       ) AS rn
+                FROM all_products_clean
+                WHERE style_name IS NOT NULL AND {c} IS NOT NULL
+                GROUP BY style_name, {c}
+            ),
+            dominant AS (SELECT style_name, val FROM ranked WHERE rn = 1)
+            UPDATE all_products_clean a
+            SET {c} = d.val
+            FROM dominant d
+            WHERE a.style_name = d.style_name
+              AND a.{c} IS DISTINCT FROM d.val
+        """.format(c=col))
+        log.info("Canonicalised %s: %d rows updated", col, cur.rowcount)
+    conn.commit()
+
     # ── Update barcodes from Shopify (already loaded) ────────────────────────
     conn.commit()
 
