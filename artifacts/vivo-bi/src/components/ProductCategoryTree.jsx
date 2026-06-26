@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { api, fmtNum } from "@/lib/api";
 import ProductDetailModal from "@/components/ProductDetailModal";
-import { CaretRight, CaretDown, Package } from "@phosphor-icons/react";
+import ProductImage from "@/components/ProductImage";
+import { CaretRight, CaretDown } from "@phosphor-icons/react";
 
 // One lazily-expandable node. Fetches its children from /product-tree only
 // the first time it is opened, then caches them. Depth drives indentation and
@@ -78,7 +79,7 @@ const Node = ({ depth, label, path, onPick }) => {
                   data-testid={`tree-variant-${v.sku}`}
                 >
                   <span className="text-[12.5px] min-w-0 truncate flex items-center gap-1.5">
-                    <Package size={13} className="shrink-0 text-muted" />
+                    <ProductImage sku={v.sku} label={v.style_name || v.sku} size={28} expandable={false} />
                     <span className="font-medium">{v.sku}</span>
                     {v.size ? <span className="text-muted"> · {v.size}</span> : null}
                     {v.color ? <span className="text-muted"> · {v.color}</span> : null}

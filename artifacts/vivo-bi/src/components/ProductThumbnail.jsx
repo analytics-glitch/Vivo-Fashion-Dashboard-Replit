@@ -39,7 +39,7 @@ const initialsFor = (s) => {
   return (cleaned[0][0] + cleaned[1][0]).toUpperCase();
 };
 
-const Placeholder = ({ style, size }) => {
+export const Placeholder = ({ style, size }) => {
   const h = hash(style || "");
   const bg = PALETTE[h % PALETTE.length];
   const letters = initialsFor(style);

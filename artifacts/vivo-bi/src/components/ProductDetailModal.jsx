@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { api, fmtNum } from "@/lib/api";
-import { useThumbnails } from "@/lib/useThumbnails";
-import ProductThumbnail from "@/components/ProductThumbnail";
+import ProductImage from "@/components/ProductImage";
 import { X } from "@phosphor-icons/react";
 
 const Field = ({ label, children }) => (
@@ -36,9 +35,6 @@ const ProductDetailModal = ({ sku, barcode, onClose }) => {
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
-
-  const { urlFor } = useThumbnails(data?.style_name ? [data.style_name] : []);
-  const photoUrl = data?.style_name ? urlFor(data.style_name) : null;
 
   const lastSale = (() => {
     if (!data) return null;
@@ -85,7 +81,7 @@ const ProductDetailModal = ({ sku, barcode, onClose }) => {
           <div className="text-[13px] text-muted py-10 text-center">Loading product…</div>
         ) : data ? (
           <div className="flex gap-4">
-            <ProductThumbnail style={data.style_name || data.product_name || "?"} url={photoUrl} size={120} />
+            <ProductImage sku={data.sku} label={data.style_name || data.product_name || "?"} size={120} />
             <div className="flex-1 grid grid-cols-2 gap-x-4 gap-y-3">
               <Field label="Style">{data.style_name || "—"}</Field>
               <Field label="Colour">{data.color || "—"}</Field>

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { api } from "@/lib/api";
 import ProductDetailModal from "@/components/ProductDetailModal";
+import ProductImage from "@/components/ProductImage";
 import { MagnifyingGlass, X } from "@phosphor-icons/react";
 
 // Small debounce so we don't fire a request on every keystroke.
@@ -114,7 +115,8 @@ const ProductFinder = () => {
                     className="w-full text-left px-2 py-1.5 rounded hover:bg-panel flex items-center justify-between gap-2"
                     data-testid={`product-finder-option-${it.sku}`}
                   >
-                    <span className="text-[12.5px] min-w-0 truncate">
+                    <span className="text-[12.5px] min-w-0 truncate flex items-center gap-2">
+                      <ProductImage sku={it.sku} label={style} size={32} expandable={false} />
                       <span className="font-medium">{it.sku}</span>
                       {it.size ? <span className="text-muted"> · {it.size}</span> : null}
                       {it.color ? <span className="text-muted"> · {it.color}</span> : null}

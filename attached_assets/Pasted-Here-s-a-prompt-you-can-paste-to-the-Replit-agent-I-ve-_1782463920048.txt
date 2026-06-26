@@ -1,0 +1,35 @@
+Here's a prompt you can paste to the Replit agent. I've made it precise about the endpoint contract, the fallback chain, and the SKU-matching behavior so it doesn't reinvent anything.
+
+Wire product images into the dashboard (Shopify gallery, all images per SKU)
+There are two image endpoints already built in api_pg.py. Use the Shopify gallery as primary and the Odoo single image as fallback. Do not modify the endpoints — just consume them.
+Primary — Shopify gallery (all images per SKU):
+
+GET /api/product-images/{sku}
+
+Returns JSON:
+json{ "sku": "V0819120BLAS", "images": [
+  { "url": "https://cdn.shopify.com/...", "position": 1, "is_primary": true },
+  { "url": "https://cdn.shopify.com/...", "position": 2, "is_primary": false }
+]}
+
+images is ordered (position 1 first). Render is_primary (or position 1) as the thumbnail, and show the full list as a gallery/carousel/lightbox.
+The endpoint already handles the leading-V SKU mismatch in both directions, so pass the SKU exactly as it appears in all_sales / all_products_clean — do not strip or add V yourself.
+URLs point at Shopify's CDN; use them directly in <img src>. Do not download or proxy them.
+
+Fallback — Odoo single image:
+
+GET /api/product-image/{sku} returns raw JPEG bytes (one image), 404 if none.
+Fallback chain per SKU:
+
+Call /api/product-images/{sku}. If images is non-empty → render the gallery. Done.
+If images is empty → use /api/product-image/{sku} as a single image (it 404s if missing).
+If both have nothing → show the existing placeholder.
+
+Requirements:
+
+Both endpoints sit behind the existing global auth middleware, so call them with the normal authenticated session like every other API call.
+Lazy-load images (only fetch when a product row/card is visible) — there are up to ~6 images per SKU across thousands of SKUs.
+Cache results client-side per SKU within the session to avoid refetching.
+Wherever a product is shown by SKU (product master table, search results, drill-downs), add the thumbnail; on click, open the full gallery.
+
+Don't change the database, the extractor, or the endpoints — they're done. This is frontend wiring only.
