@@ -275,6 +275,8 @@ const Editor = ({ style, currentUrl, onClose, onChanged }) => {
 // When `onPrev`/`onNext` are supplied, on-screen arrows + the left/right
 // arrow keys step between images without leaving the enlarged view.
 export const Lightbox = ({ url, caption, onClose, onPrev, onNext }) => {
+  const touchStart = useRef(null);
+
   useEffect(() => {
     const h = (e) => {
       if (e.key === "Escape") onClose();
@@ -290,10 +292,33 @@ export const Lightbox = ({ url, caption, onClose, onPrev, onNext }) => {
     };
   }, [onClose, onPrev, onNext]);
 
+  // ─── swipe-to-navigate (touch devices) ─────────────────────────────
+  // Track the initial touch and, on release, treat a mostly-horizontal
+  // drag past a threshold as prev/next — the same wrap + skip-placeholder
+  // rules apply since they live in the onPrev/onNext handlers.
+  const SWIPE_THRESHOLD = 50; // px
+  const onTouchStart = (e) => {
+    const t = e.touches[0];
+    touchStart.current = { x: t.clientX, y: t.clientY };
+  };
+  const onTouchEnd = (e) => {
+    const start = touchStart.current;
+    touchStart.current = null;
+    if (!start) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dx) <= Math.abs(dy)) return;
+    if (dx < 0 && onNext) onNext();
+    else if (dx > 0 && onPrev) onPrev();
+  };
+
   return (
     <div
       className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
       onClick={onClose}
+      onTouchStart={onTouchStart}
+      onTouchEnd={onTouchEnd}
       data-testid="product-lightbox"
     >
       <button
