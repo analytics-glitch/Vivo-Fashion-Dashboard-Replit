@@ -88,6 +88,7 @@ DO $$
 BEGIN
   IF to_regclass('public.all_sales') IS NOT NULL
      AND to_regclass('public.raw_account_move_lines') IS NOT NULL THEN
+    EXECUTE 'DROP VIEW IF EXISTS finance_pl_summary';
     EXECUTE $view$
 CREATE OR REPLACE VIEW finance_pl_summary AS
 WITH revenue_sales AS (
