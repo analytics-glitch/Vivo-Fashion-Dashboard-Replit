@@ -200,7 +200,11 @@ def main():
         s = sales_data.get(sku)
 
         # Style name and color
-        sname = style_name or extract_style_name(name)
+        # The Odoo source style_name is corrupt for some styles (e.g. 32 unrelated
+        # styles all stamped "Vivo Knee Length Kaftan in Satin"). The product name
+        # is authoritative, so always derive style_name from it rather than trusting
+        # the source. (Post-processing then canonicalises one name per style_number.)
+        sname = extract_style_name(name)
         clr   = color or extract_color_from_name(name)
         if clr:
             clr = clr.title()
@@ -210,7 +214,11 @@ def main():
 
         # Brand
         br   = brand or guess_brand(name)
-        snum = style_number or extract_style_number(sku, name)
+        # The Odoo source style_number is reliable when present and well-formed,
+        # but ~187 rows carry a garbage single-letter "V" that, if trusted,
+        # collapses many unrelated styles into one bucket and corrupts style_name.
+        # Only trust a source value that looks like a real style number; else derive.
+        snum = style_number if (style_number and re.match(r'^[A-Za-z]?\d{6,8}$', str(style_number).strip())) else extract_style_number(sku, name)
         size = extract_size(sku)
 
         # Subcategory
@@ -355,22 +363,72 @@ def main():
         """, inv_insert, page_size=500)
         log.info("✅ Added %d inventory SKUs", len(inv_insert))
 
+    # ── Re-derive style_name from product_name (AUTHORITATIVE) ───────────────
+    # The upstream style_name source was corrupting whole styles (e.g. 32
+    # unrelated styles stamped "Vivo Knee Length Kaftan in Satin"). product_name
+    # is reliable, so derive style_name as the text before the colour separator.
+    log.info("Re-deriving style_name from product_name...")
+    cur.execute("""
+        UPDATE all_products_clean
+        SET style_name = TRIM(SPLIT_PART(regexp_replace(product_name, ' -([^ ])', ' - \1'), ' - ', 1))
+        WHERE product_name IS NOT NULL AND product_name <> ''
+          AND TRIM(SPLIT_PART(regexp_replace(product_name, ' -([^ ])', ' - \1'), ' - ', 1))
+              IS DISTINCT FROM style_name
+    """)
+    log.info("style_name re-derived: %d rows updated", cur.rowcount)
+
+    # ── Canonicalise style_name to ONE per style_number ──────────────────────
+    # Minor name variants within a style_number (casing, "Basic" prefix, colour
+    # suffixes) get unified to the dominant name. Tie-break: frequency, then the
+    # longer (more descriptive) name, then alphabetical.
+    log.info("Canonicalising style_name per style_number...")
+    cur.execute("""
+        WITH ranked AS (
+            SELECT style_number, style_name,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY style_number
+                       ORDER BY COUNT(*) DESC, LENGTH(style_name) DESC, style_name ASC
+                   ) AS rn
+            FROM all_products_clean
+            WHERE style_number IS NOT NULL AND style_name IS NOT NULL
+            GROUP BY style_number, style_name
+        ),
+        dominant AS (SELECT style_number, style_name FROM ranked WHERE rn = 1)
+        UPDATE all_products_clean a
+        SET style_name = d.style_name
+        FROM dominant d
+        WHERE a.style_number = d.style_number
+          AND a.style_name IS DISTINCT FROM d.style_name
+    """)
+    log.info("style_name canonicalised: %d rows updated", cur.rowcount)
+
     # ── Enforce dominant subcat per style number ─────────────────────────────
     log.info("Enforcing dominant subcat per style number...")
     cur.execute("""
-        WITH dominant AS (
-            SELECT style_number,
-                   product_type,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY style_number
-                       ORDER BY COUNT(*) DESC
-                   ) as rn
+        WITH global_freq AS (
+            -- how common each subcat is overall, used as a deterministic tie-break
+            SELECT product_type, COUNT(*) AS gfreq
             FROM all_products_clean
-            WHERE style_number IS NOT NULL
-            AND product_type IS NOT NULL
-            AND product_type != 'Sample & Sale Items'
-            AND product_type != 'Gift Vouchers'
-            GROUP BY style_number, product_type
+            WHERE product_type IS NOT NULL
+            GROUP BY product_type
+        ),
+        dominant AS (
+            SELECT d.style_number,
+                   d.product_type,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY d.style_number
+                       ORDER BY d.cnt DESC, COALESCE(g.gfreq,0) DESC, d.product_type ASC
+                   ) as rn
+            FROM (
+                SELECT style_number, product_type, COUNT(*) AS cnt
+                FROM all_products_clean
+                WHERE style_number IS NOT NULL
+                AND product_type IS NOT NULL
+                AND product_type != 'Sample & Sale Items'
+                AND product_type != 'Gift Vouchers'
+                GROUP BY style_number, product_type
+            ) d
+            LEFT JOIN global_freq g ON g.product_type = d.product_type
         )
         UPDATE all_products_clean p
         SET product_type = d.product_type
@@ -417,6 +475,23 @@ def main():
     """)
     log.info("Categories synced to subcats")
 
+    # ── Force sample/test products into Sample & Sale Items ───────────────────
+    # Products whose name carries a sample marker as a whole word (sample, fs,
+    # ms, msd) are fitting/style-development samples, not sellable stock. Stamp
+    # all identity fields so they group cleanly and never pollute real styles.
+    log.info("Classifying sample products...")
+    cur.execute("""
+        UPDATE all_products_clean
+        SET product_type = 'Sample & Sale Items',
+            category     = 'Sale',
+            style_name   = 'Sample & Sale Items',
+            style_number = 'Sample & Sale Items'
+        WHERE product_name ~* '\msample\M' OR product_name ~* '\mfs\M'
+           OR product_name ~* '\mms\M' OR product_name ~* '\mmsd\M'
+           OR sku ~* '^BF[0-9]' OR style_number ~* '^BF[0-9]'
+    """)
+    log.info("Sample products classified: %d rows updated", cur.rowcount)
+
     # ── Canonicalise collection & brand to ONE value per style_name ──────────
     # A style_name is set per-SKU upstream, so SKUs of the same style can carry
     # different collection/brand values (376 styles split on collection). That
@@ -457,6 +532,60 @@ def main():
     """)
     for row in cur.fetchall():
         log.info("  %s: %d", row[0], row[1])
+
+    # ── FINAL consolidation: one subcat + category per style_number ──────────
+    # Run last so no earlier pass can leave a style split. Deterministic winner:
+    # most common subcat in the style, ties broken by global subcat frequency
+    # then alphabetical. Samples/gift vouchers are left untouched (kept separate).
+    log.info("Final subcat consolidation...")
+    cur.execute("""
+        WITH global_freq AS (
+            SELECT product_type, COUNT(*) AS gfreq FROM all_products_clean
+            WHERE product_type IS NOT NULL GROUP BY product_type
+        ),
+        dominant AS (
+            SELECT d.style_number, d.product_type,
+                   ROW_NUMBER() OVER (PARTITION BY d.style_number
+                       ORDER BY d.cnt DESC, COALESCE(g.gfreq,0) DESC, d.product_type ASC) AS rn
+            FROM (SELECT style_number, product_type, COUNT(*) AS cnt
+                  FROM all_products_clean
+                  WHERE style_number IS NOT NULL AND product_type IS NOT NULL
+                    AND product_type NOT IN ('Sample & Sale Items','Gift Vouchers')
+                  GROUP BY style_number, product_type) d
+            LEFT JOIN global_freq g ON g.product_type=d.product_type
+        )
+        UPDATE all_products_clean p
+        SET product_type = d.product_type
+        FROM dominant d
+        WHERE p.style_number = d.style_number AND d.rn = 1
+          AND p.product_type NOT IN ('Sample & Sale Items','Gift Vouchers')
+          AND p.product_type IS DISTINCT FROM d.product_type
+    """)
+    log.info("Final subcat consolidation: %d rows updated", cur.rowcount)
+    cur.execute("""
+        UPDATE all_products_clean
+        SET category = CASE product_type
+            WHEN 'Fitted Tops' THEN 'Tops' WHEN 'Loose Tops' THEN 'Tops'
+            WHEN 'T-shirts & Tank Tops' THEN 'Tops' WHEN 'Bodysuits' THEN 'Tops'
+            WHEN 'Midriff & Crop Tops' THEN 'Tops'
+            WHEN 'Knee Length Dresses' THEN 'Dresses' WHEN 'Maxi Dresses' THEN 'Dresses'
+            WHEN 'Midi & Capri Dresses' THEN 'Dresses' WHEN 'Short & Mini Dresses' THEN 'Dresses'
+            WHEN 'Knee Length Skirts' THEN 'Skirts' WHEN 'Maxi Skirts' THEN 'Skirts'
+            WHEN 'Midi & Capri Skirts' THEN 'Skirts'
+            WHEN 'Full Length Pants' THEN 'Bottoms' WHEN 'Leggings' THEN 'Bottoms'
+            WHEN 'Shorts & Skorts' THEN 'Bottoms' WHEN 'Culottes & Capri Pants' THEN 'Bottoms'
+            WHEN 'Jumpsuits & Playsuits' THEN 'Bottoms'
+            WHEN 'Jackets & Coats' THEN 'Outerwear' WHEN 'Waterfalls & Kimonos' THEN 'Outerwear'
+            WHEN 'Hoodies & Sweatshirts' THEN 'Outerwear' WHEN 'Sweaters & Ponchos' THEN 'Outerwear'
+            WHEN 'Two-Piece Sets' THEN 'Two-Piece Sets' WHEN 'Pants & Top Set' THEN 'Two-Piece Sets'
+            WHEN 'Skirts & Top Set' THEN 'Two-Piece Sets'
+            WHEN 'Scarves' THEN 'Accessories' WHEN 'Accessories' THEN 'Accessories'
+            WHEN 'Sample & Sale Items' THEN 'Sale' WHEN 'Gift Vouchers' THEN 'Gift Vouchers'
+            ELSE category END
+        WHERE product_type IS NOT NULL
+    """)
+    log.info("Final category sync done")
+    conn.commit()
 
     # ── Verify no style number has multiple subcats ──────────────────────────
     cur.execute("""
