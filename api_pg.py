@@ -406,7 +406,7 @@ import clerk_auth
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 # Exact /api paths reachable without a session (health probes + proxy prefix).
-_AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/sync-status"}
+_AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/readyz", "/api/sync-status"}
 
 # Query params that are concatenated into SQL as date literals. We validate them
 # to strict ISO dates at the edge so they can never carry SQL-injection payloads
@@ -3090,6 +3090,88 @@ def healthz():
     # stays green even if Postgres is briefly saturated, and is whitelisted in
     # _AUTH_PUBLIC_EXACT so the platform probe never gets a 401.
     return {"status": "ok"}
+
+
+@app.get("/api/readyz")
+def readyz():
+    """Readiness probe for deploy promotion + external monitors.
+
+    Distinct from /api/healthz (liveness, deliberately DB-free): readiness asserts
+    the app can actually SERVE — i.e. the database is reachable. Returns HTTP 200
+    when ready, 503 when the DB is unreachable, so a deployment health check / the
+    watchdog can gate on a single endpoint.
+
+    The sync-loop heartbeat is reported too, but a MISSING heartbeat is treated as
+    "starting" (NOT a failure) because the sync loop only starts after the API is
+    up — failing readiness on it would deadlock a first-time deploy. A stale
+    heartbeat is reported as warning/critical for monitors but, by design, does not
+    flip the HTTP status (a transient sync hiccup must not block a promotion); the
+    watchdog's health loop is what recovers a stalled sync.
+    """
+    from datetime import datetime, timezone
+    WARN_MIN, CRIT_MIN = 10, 30
+
+    db_ok = False
+    db_detail = None
+    last_cycle = None
+    minutes = None
+
+    # Acquire via _acquire_conn (bounded retry) so a momentarily SATURATED pool is
+    # reported as "busy" (the DB is likely fine), NOT misclassified as the DB being
+    # down — otherwise a load burst could spuriously fail the promotion gate.
+    pool = conn = None
+    try:
+        pool, conn = _acquire_conn(timeout=2.0)
+    except HTTPException:
+        db_detail = "db_pool_exhausted"   # busy, not necessarily unreachable
+    except Exception:
+        db_detail = "db_unreachable"
+
+    if conn is not None:
+        try:
+            conn.autocommit = True
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("SELECT 1 AS ok")
+            db_ok = cur.fetchone()["ok"] == 1
+            cur.execute("SELECT to_regclass('public.sync_heartbeat') AS t")
+            if cur.fetchone()["t"]:
+                cur.execute("SELECT last_cycle_at FROM sync_heartbeat WHERE id = 1")
+                row = cur.fetchone()
+                last_cycle = row["last_cycle_at"] if row else None
+            cur.close()
+        except Exception:
+            db_ok = False
+            db_detail = "db_unreachable"
+            pool.putconn(conn, close=True)
+        else:
+            pool.putconn(conn)
+
+    if last_cycle is not None:
+        lc = last_cycle if last_cycle.tzinfo else last_cycle.replace(tzinfo=timezone.utc)
+        minutes = round((datetime.now(timezone.utc) - lc).total_seconds() / 60.0, 1)
+        sync_state = "critical" if minutes > CRIT_MIN else "warning" if minutes > WARN_MIN else "ok"
+    else:
+        sync_state = "starting"  # heartbeat not written yet (sync hasn't run)
+
+    ready = db_ok  # DB reachability is the hard gate for promotion
+    db_label = "ok" if db_ok else ("busy" if db_detail == "db_pool_exhausted" else "down")
+    body = {
+        "ready": ready,
+        "checks": {
+            "api": "ok",
+            "db": db_label,
+            "sync": {
+                "state": sync_state,
+                "minutes_since": minutes,
+                "last_cycle_at": last_cycle.isoformat() if last_cycle else None,
+                "warning_after_min": WARN_MIN,
+                "critical_after_min": CRIT_MIN,
+            },
+        },
+    }
+    if not ready:
+        body["detail"] = db_detail or "db_unreachable"
+    return JSONResponse(body, status_code=200 if ready else 503)
 
 
 @app.get("/api/sync-status")

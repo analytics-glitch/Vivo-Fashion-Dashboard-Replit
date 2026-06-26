@@ -52,6 +52,8 @@ import logging
 import threading
 import subprocess
 import urllib.request
+import urllib.error
+import json as _json
 from datetime import datetime, timezone
 
 import psycopg2
@@ -67,6 +69,7 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 API_PORT = int(os.environ.get("PORT", "8080"))
 MANAGE_API = os.environ.get("WATCHDOG_MANAGE_API", "1") != "0"
 HEALTHZ_URL = f"http://localhost:{API_PORT}/api/healthz"
+READYZ_URL = f"http://localhost:{API_PORT}/api/readyz"
 
 PROCESS_POLL_SEC = 3        # liveness poll -> crash detected & respawned <10s
 HEALTH_CHECK_SEC = 300      # 5 min health checks
@@ -193,6 +196,31 @@ def check_api():
     except Exception as e:
         log.warning("API health check failed: %s", e)
         return False
+
+
+def check_ready():
+    """Readiness (API + DB reachable) via /api/readyz — for OBSERVABILITY only.
+
+    Deliberately NOT used to trigger restarts: the restart decision stays on
+    check_api() (DB-free liveness) + check_sync() so a database blip never makes
+    the watchdog bounce the API (which can't fix a DB outage and would only flap).
+    /api/readyz returns 503 when the DB is unreachable, so read the body on both
+    2xx and HTTPError. Returns (ready_bool, db_state_str|None).
+    """
+    def _parse(raw):
+        body = _json.loads(raw.decode())
+        return bool(body.get("ready")), body.get("checks", {}).get("db")
+    try:
+        with urllib.request.urlopen(READYZ_URL, timeout=8) as r:
+            return _parse(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            return _parse(e.read())
+        except Exception:
+            return False, None
+    except Exception as e:
+        log.warning("Readiness check failed: %s", e)
+        return False, None
 
 
 def check_sync():
@@ -377,6 +405,12 @@ def health_loop():
         actions, notes = [], []
         if minutes is not None:
             notes.append(f"{minutes:.1f} min since last sync")
+
+        # Readiness (DB reachability) — recorded for observability; does NOT drive
+        # restart decisions (see check_ready docstring).
+        ready_ok, db_state = check_ready()
+        if not ready_ok:
+            notes.append(f"not ready (db={db_state})")
 
         if not api_ok:
             if MANAGE_API:
