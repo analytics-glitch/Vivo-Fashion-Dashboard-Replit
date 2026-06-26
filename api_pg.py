@@ -4229,11 +4229,11 @@ def get_gallery_search(
     limit:   int = Query(default=48),
     offset:  int = Query(default=0),
 ):
-    """Searchable product photo gallery — one card per style.
+    """Searchable product photo gallery — one card per style + colour.
 
     Matches the (lower-cased) search term against style name / SKU / barcode
     with a partial, case-insensitive LIKE. Returns one representative row per
-    style (DISTINCT ON), preferring a SKU that actually has a stored image so
+    (style, colour) (DISTINCT ON), preferring a SKU that actually has a stored image so
     the card renders a photo where one exists; cards for styles with no image
     fall back to the client-side coloured-initials placeholder.
 
@@ -4253,18 +4253,18 @@ def get_gallery_search(
                   " OR LOWER(COALESCE(p.barcode,'')) LIKE '" + like + "')")
     rows = run_query("""
         SELECT * FROM (
-            SELECT DISTINCT ON (p.style_name)
-                p.style_name, p.sku, p.barcode,
+            SELECT DISTINCT ON (p.style_name, COALESCE(p.color_print, ''))
+                p.style_name, COALESCE(p.color_print, '') AS color, p.sku, p.barcode,
                 (i.image_512 IS NOT NULL AND i.image_512 <> '') AS has_image
             FROM all_products_clean p
             LEFT JOIN product_image_map m ON m.sku = p.sku
             LEFT JOIN product_images i ON i.tmpl_id = m.tmpl_id
             WHERE """ + where + """
-            ORDER BY p.style_name,
+            ORDER BY p.style_name, COALESCE(p.color_print, ''),
                      (i.image_512 IS NOT NULL AND i.image_512 <> '') DESC,
                      p.sku
         ) d
-        ORDER BY d.has_image DESC, d.style_name
+        ORDER BY d.has_image DESC, d.style_name, d.color
         LIMIT """ + str(limit + 1) + " OFFSET " + str(offset))
     has_more = len(rows) > limit
     items = rows[:limit]

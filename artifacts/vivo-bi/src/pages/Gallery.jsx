@@ -206,6 +206,14 @@ const Gallery = () => {
                   >
                     {p.style_name}
                   </div>
+                  {p.color ? (
+                    <div
+                      className="text-[11px] text-brand truncate"
+                      title={p.color}
+                    >
+                      {p.color}
+                    </div>
+                  ) : null}
                   <div className="text-[11px] text-muted truncate" title={p.sku}>
                     {p.sku}
                   </div>
