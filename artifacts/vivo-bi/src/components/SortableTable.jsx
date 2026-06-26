@@ -263,14 +263,17 @@ export const exportXLSX = async (rows, columns, filename = "export.xlsx") => {
 };
 
 /**
- * Smart dispatcher: when any column declares an `image` resolver, export an
- * .xlsx with one embedded photo per row; otherwise the plain CSV. Safe to call
- * from a button onClick (fire-and-forget). A photo export NEVER silently
- * downgrades to CSV — on failure it surfaces an error toast and rethrows, so a
+ * Smart dispatcher: when any column declares an `image` resolver AND
+ * `includePhotos` is true (the default), export an .xlsx with one embedded
+ * photo per row; otherwise the plain (fast) CSV. Pass `includePhotos=false`
+ * to skip the photo embedding even on photo-capable tables. Safe to call from
+ * a button onClick (fire-and-forget). A photo export NEVER silently downgrades
+ * to CSV — on failure it surfaces an error toast and rethrows, so a
  * partial/photoless file is never passed off as the requested photo export.
  */
-export const exportTable = async (rows, columns, filename = "export.csv") => {
+export const exportTable = async (rows, columns, filename = "export.csv", includePhotos = true) => {
   const hasPhotos =
+    includePhotos &&
     Array.isArray(columns) && columns.some((c) => typeof c.image === "function");
   if (hasPhotos && rows && rows.length) {
     const xlsxName = filename.replace(/\.csv$/i, "") + ".xlsx";
@@ -350,6 +353,10 @@ export const SortableTable = ({
   // in index.css). Toggled from the small arrows icon in each column header.
   const [expandedCols, setExpandedCols] = useState(() => new Set());
   const [limit, setLimit] = useState(pageSize || null);
+  // When the table has product-photo columns, the export embeds one image per
+  // row (slow). This checkbox lets the user opt out for a fast photoless CSV.
+  const hasImageCol = columns.some((c) => typeof c.image === "function");
+  const [includePhotos, setIncludePhotos] = useState(true);
 
   const sorted = useMemo(() => {
     if (!sort) return rows;
@@ -433,15 +440,30 @@ export const SortableTable = ({
               : "Expand all"}
           </button>
         )}
+        {exportName && hasImageCol && (
+          <label
+            className="inline-flex items-center gap-1.5 text-[11.5px] text-muted cursor-pointer select-none px-1"
+            title="Include product photos in the export (slower). Uncheck for a fast CSV without images."
+            data-testid={testId ? `${testId}-include-photos` : undefined}
+          >
+            <input
+              type="checkbox"
+              checked={includePhotos}
+              onChange={(e) => setIncludePhotos(e.target.checked)}
+              className="accent-[var(--brand,#1a5c38)] cursor-pointer"
+            />
+            Photos
+          </label>
+        )}
         {exportName && (
           <button
             type="button"
-            onClick={() => exportTable(sorted, columns, exportName)}
+            onClick={() => exportTable(sorted, columns, exportName, includePhotos)}
             className="inline-flex items-center gap-1.5 text-[11.5px] text-muted hover:text-brand px-2 py-1 rounded border border-border hover:border-brand"
             data-testid={testId ? `${testId}-export` : undefined}
           >
             <Download size={13} weight="bold" />{" "}
-            {columns.some((c) => typeof c.image === "function") ? "Export Excel" : "Export CSV"}
+            {hasImageCol && includePhotos ? "Export Excel" : "Export CSV"}
           </button>
         )}
       </div>
