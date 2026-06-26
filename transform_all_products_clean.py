@@ -537,8 +537,8 @@ def main():
     # Run last so no earlier pass can leave a style split. Deterministic winner:
     # most common subcat in the style, ties broken by global subcat frequency
     # then alphabetical. Samples/gift vouchers are left untouched (kept separate).
-    log.info("Final subcat consolidation...")
-    cur.execute("""
+    log.info("Final subcat consolidation (looped to convergence)...")
+    consolidation_sql = """
         WITH global_freq AS (
             SELECT product_type, COUNT(*) AS gfreq FROM all_products_clean
             WHERE product_type IS NOT NULL GROUP BY product_type
@@ -560,8 +560,17 @@ def main():
         WHERE p.style_number = d.style_number AND d.rn = 1
           AND p.product_type NOT IN ('Sample & Sale Items','Gift Vouchers')
           AND p.product_type IS DISTINCT FROM d.product_type
-    """)
-    log.info("Final subcat consolidation: %d rows updated", cur.rowcount)
+    """
+    # Commit between iterations so each pass sees the previous pass's result
+    # (avoids a CTE-snapshot interaction that left some styles split when run
+    # as a single mid-transform statement). Converges fast; cap as a safety net.
+    for _i in range(10):
+        cur.execute(consolidation_sql)
+        n = cur.rowcount
+        conn.commit()
+        log.info("  consolidation pass %d: %d rows updated", _i + 1, n)
+        if n == 0:
+            break
     cur.execute("""
         UPDATE all_products_clean
         SET category = CASE product_type
