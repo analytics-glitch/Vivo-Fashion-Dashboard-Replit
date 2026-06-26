@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { api } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
-import { Placeholder } from "@/components/ProductThumbnail";
+import { Placeholder, Lightbox } from "@/components/ProductThumbnail";
 import { MagnifyingGlass, X } from "@phosphor-icons/react";
 
 const PAGE_SIZE = 48;
@@ -13,21 +13,29 @@ const PAGE_SIZE = 48;
  */
 const CardImage = ({ style, url }) => {
   const [failed, setFailed] = useState(false);
+  const [open, setOpen] = useState(false);
   const show = url && !failed;
   return (
-    <div className="w-full aspect-square overflow-hidden rounded-md bg-panel grid place-items-center">
-      {show ? (
-        <img
-          src={url}
-          alt={style}
-          loading="lazy"
-          className="w-full h-full object-cover"
-          onError={() => setFailed(true)}
-        />
-      ) : (
-        <Placeholder style={style} size={160} />
+    <>
+      <div className="w-full aspect-square overflow-hidden rounded-md bg-panel grid place-items-center">
+        {show ? (
+          <img
+            src={url}
+            alt={style}
+            loading="lazy"
+            className="w-full h-full object-cover cursor-zoom-in"
+            onClick={() => setOpen(true)}
+            onError={() => setFailed(true)}
+            data-testid="gallery-card-image"
+          />
+        ) : (
+          <Placeholder style={style} size={160} />
+        )}
+      </div>
+      {open && show && (
+        <Lightbox url={url} caption={style} onClose={() => setOpen(false)} />
       )}
-    </div>
+    </>
   );
 };
 

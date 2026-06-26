@@ -272,7 +272,7 @@ const Editor = ({ style, currentUrl, onClose, onChanged }) => {
 // ─── lightbox ─────────────────────────────────────────────────────────
 // Click any product image (anywhere it appears) to expand it to a large
 // centred overlay. Esc / click-outside / the X button all close it.
-const Lightbox = ({ url, caption, onClose }) => {
+export const Lightbox = ({ url, caption, onClose }) => {
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", h);
