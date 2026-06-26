@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { api } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { Placeholder, Lightbox } from "@/components/ProductThumbnail";
@@ -50,35 +50,46 @@ const Gallery = () => {
   const [loading, setLoading] = useState(true);    // first/replaced page
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
-  const [lightboxIdx, setLightboxIdx] = useState(null); // index into `items`
   const reqId = useRef(0);
 
-  // Indices of the currently-loaded cards that actually have a photo — the
-  // enlarged view only steps between these (placeholder cards are skipped).
-  const viewable = useMemo(
-    () => items.reduce((acc, p, i) => (p.image_url ? (acc.push(i), acc) : acc), []),
-    [items],
+  // ─── per-product image gallery (lightbox) ──────────────────────────────
+  // Clicking a card opens that ONE product's full set of photos. We seed the
+  // lightbox instantly with the card's thumbnail, then fetch the product's
+  // whole gallery (Shopify image URLs) and step/select between them.
+  const [active, setActive] = useState(null);   // the clicked product
+  const [images, setImages] = useState([]);     // [url, …] for `active`
+  const [imgIdx, setImgIdx] = useState(0);      // index into `images`
+  const imgReq = useRef(0);
+
+  const openProduct = useCallback(async (p) => {
+    setActive(p);
+    setImgIdx(0);
+    setImages(p.image_url ? [p.image_url] : []); // instant first frame
+    const myReq = ++imgReq.current;
+    try {
+      const { data } = await api.get(`/product-images/${encodeURIComponent(p.sku)}`);
+      if (myReq !== imgReq.current) return;
+      const urls = Array.isArray(data?.images)
+        ? data.images.map((im) => im?.url).filter(Boolean)
+        : [];
+      if (urls.length) { setImages(urls); setImgIdx(0); } // else keep card fallback
+    } catch (_e) {
+      // keep the card thumbnail as the sole image on failure
+    }
+  }, []);
+
+  const closeProduct = useCallback(() => {
+    imgReq.current++;          // invalidate any in-flight fetch
+    setActive(null);
+    setImages([]);
+    setImgIdx(0);
+  }, []);
+
+  const stepImg = useCallback(
+    (dir) =>
+      setImgIdx((cur) => (images.length ? (cur + dir + images.length) % images.length : cur)),
+    [images.length],
   );
-
-  const step = useCallback(
-    (dir) => {
-      setLightboxIdx((cur) => {
-        if (cur == null || viewable.length === 0) return cur;
-        const pos = viewable.indexOf(cur);
-        if (pos === -1) return viewable[0];
-        const nextPos = (pos + dir + viewable.length) % viewable.length;
-        return viewable[nextPos];
-      });
-    },
-    [viewable],
-  );
-
-  // If the loaded results change out from under an open lightbox, keep it valid.
-  useEffect(() => {
-    if (lightboxIdx != null && !items[lightboxIdx]?.image_url) setLightboxIdx(null);
-  }, [items, lightboxIdx]);
-
-  const active = lightboxIdx != null ? items[lightboxIdx] : null;
 
   // Debounce the search box so we don't fire a request per keystroke.
   useEffect(() => {
@@ -186,7 +197,7 @@ const Gallery = () => {
                 <CardImage
                   style={p.style_name}
                   url={p.image_url}
-                  onOpen={() => setLightboxIdx(i)}
+                  onOpen={() => openProduct(p)}
                 />
                 <div className="min-w-0">
                   <div
@@ -227,13 +238,20 @@ const Gallery = () => {
         </>
       )}
 
-      {active && active.image_url && (
+      {active && images.length > 0 && (
         <Lightbox
-          url={active.image_url}
-          caption={active.style_name}
-          onClose={() => setLightboxIdx(null)}
-          onPrev={viewable.length > 1 ? () => step(-1) : undefined}
-          onNext={viewable.length > 1 ? () => step(1) : undefined}
+          url={images[imgIdx]}
+          caption={
+            images.length > 1
+              ? `${active.style_name} · ${imgIdx + 1} / ${images.length}`
+              : active.style_name
+          }
+          onClose={closeProduct}
+          onPrev={images.length > 1 ? () => stepImg(-1) : undefined}
+          onNext={images.length > 1 ? () => stepImg(1) : undefined}
+          thumbnails={images.length > 1 ? images : undefined}
+          activeIndex={imgIdx}
+          onSelect={(i) => setImgIdx(i)}
         />
       )}
     </div>

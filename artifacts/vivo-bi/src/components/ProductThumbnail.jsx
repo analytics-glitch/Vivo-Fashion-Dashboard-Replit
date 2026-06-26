@@ -282,7 +282,10 @@ const SWIPE_THRESHOLD = 50; // px
 const DOUBLE_TAP_MS = 300;
 const TAP_SLOP = 30; // px — how far the two taps can be apart / how far a tap can drift
 
-export const Lightbox = ({ url, caption, onClose, onPrev, onNext }) => {
+export const Lightbox = ({
+  url, caption, onClose, onPrev, onNext,
+  thumbnails, activeIndex, onSelect,
+}) => {
   // ─── zoom / pan state ──────────────────────────────────────────────
   // `scale` 1 = fit-to-screen (swipe navigates), > 1 = zoomed (drag pans
   // and horizontal swipe-to-navigate is suppressed). Kept in a ref mirror
@@ -525,6 +528,34 @@ export const Lightbox = ({ url, caption, onClose, onPrev, onNext }) => {
           <figcaption className="text-white/90 text-sm text-center max-w-[92vw] break-words">
             {caption}
           </figcaption>
+        ) : null}
+        {Array.isArray(thumbnails) && thumbnails.length > 1 ? (
+          <div
+            className="flex gap-2 overflow-x-auto max-w-[92vw] pb-1"
+            data-testid="product-lightbox-thumbs"
+          >
+            {thumbnails.map((t, i) => (
+              <button
+                key={`${t}|${i}`}
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onSelect && onSelect(i); }}
+                className={`shrink-0 w-14 h-14 rounded-md overflow-hidden border-2 transition-all ${
+                  i === activeIndex
+                    ? "border-white"
+                    : "border-white/20 opacity-60 hover:opacity-100"
+                }`}
+                title={`Image ${i + 1}`}
+                data-testid="product-lightbox-thumb"
+              >
+                <img
+                  src={t}
+                  alt={`thumbnail ${i + 1}`}
+                  className="w-full h-full object-cover"
+                  draggable={false}
+                />
+              </button>
+            ))}
+          </div>
         ) : null}
       </figure>
     </div>,
