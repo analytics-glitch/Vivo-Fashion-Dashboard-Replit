@@ -1886,7 +1886,7 @@ function renderColorMerged(d){
      <td><span class="dot" style="background:${c};border:1px solid rgba(0,0,0,.15)"></span>${esc(r.color)}</td>
      <td style="text-align:right;">${fmt(sM)} m${star(!!r.stock_metres_incomplete)} <span class="bar-sub">${sPct.toFixed(1)}%</span></td>
      <td style="text-align:right;">${fmt(cM)} m${star(!!r.cons_metres_incomplete)} <span class="bar-sub">${cPct.toFixed(1)}%</span></td>
-     <td style="text-align:right;">${gapChip(gap)}</td>
+     <td style="text-align:right;">${gapChip(gap,true)}</td>
     </tr>`;
   }).join('')+'</tbody></table></div>';
 }
