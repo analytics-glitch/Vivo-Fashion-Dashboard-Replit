@@ -63,6 +63,26 @@ MIN_SALES_KES = _f("VALIDATION_MIN_SALES_KES", 1000.0)
 
 BY_SUBCATEGORY = _b("VALIDATION_BY_SUBCATEGORY", False)
 
+ACTIVE_HOUR_START = _i("VALIDATION_ACTIVE_HOUR_START", 6)
+ACTIVE_HOUR_END = _i("VALIDATION_ACTIVE_HOUR_END", 22)
+ACTIVE_TZ = os.environ.get("VALIDATION_ACTIVE_TZ", "Africa/Nairobi").strip() or "Africa/Nairobi"
+
+
+def within_active_hours(now=None) -> bool:
+    """True when the local hour is inside [ACTIVE_HOUR_START, ACTIVE_HOUR_END].
+
+    Bounds are inclusive, evaluated in ACTIVE_TZ (default East Africa), so an
+    hourly Scheduled Deployment running in UTC still only does work 6am-10pm local.
+    """
+    from datetime import datetime
+    if now is None:
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo(ACTIVE_TZ))
+        except Exception:
+            now = datetime.now()
+    return ACTIVE_HOUR_START <= now.hour <= ACTIVE_HOUR_END
+
 LLM_MODEL = os.environ.get("VALIDATION_LLM_MODEL", "claude-sonnet-4-6").strip()
 LLM_MAX_DIAGNOSES = _i("VALIDATION_MAX_DIAGNOSES", 20)
 LLM_TIMEOUT_SEC = _i("VALIDATION_LLM_TIMEOUT_SEC", 60)

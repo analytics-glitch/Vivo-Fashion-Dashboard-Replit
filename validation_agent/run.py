@@ -313,6 +313,11 @@ def main():
         days = args.days or 90
         evaluate = args.evaluate_days or days
     else:
+        if not config.within_active_hours():
+            print(f"Outside active hours "
+                  f"[{config.ACTIVE_HOUR_START:02d}:00-{config.ACTIVE_HOUR_END:02d}:00 "
+                  f"{config.ACTIVE_TZ}] — skipping run.")
+            return
         days = args.days or 2
         evaluate = args.evaluate_days or 1
     run(days=days, dry_run=args.dry_run, evaluate_days=evaluate)
