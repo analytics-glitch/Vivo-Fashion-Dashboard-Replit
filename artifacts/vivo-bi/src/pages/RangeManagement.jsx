@@ -486,7 +486,10 @@ const RangeManagement = () => {
                 </div>
               </div>
               <div className="flex gap-3 text-[12px] flex-wrap">
-                <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5">
+                <div
+                  className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5"
+                  title="Active styles that failed an SOP performance gate but stay in the live range for the markdown rail. The Retirement Pipeline below is the actionable subset of these that still holds stock to clear."
+                >
                   <div className="text-rose-700 font-bold num text-[18px] leading-none">{fmtNum(summary.flagged_for_retirement)}</div>
                   <div className="text-rose-700/80 text-[10.5px]">Flagged for retirement</div>
                 </div>
@@ -984,11 +987,11 @@ const RangeManagement = () => {
           {/* Section 4 — Retirement pipeline */}
           <div className="card-white p-5" data-testid="range-retirement-pipeline">
             <SectionTitle
-              title={`Retirement Pipeline · ${fmtNum(retirement.length)} styles`}
-              subtitle="Styles that missed their Week 8/12 gate or aged out without Tier 1 criteria. Outlet discount date follows the 4-week gap rule from the SOP."
+              title={`Retirement Pipeline · ${fmtNum(retirement.length)} of ${fmtNum(summary.flagged_for_retirement)} flagged`}
+              subtitle="The actionable subset of the flagged-for-retirement styles that still hold stock to clear (the markdown rail); flagged styles already sold out are omitted here. These missed their Week 8/12 gate or aged out without Tier 1 criteria. Outlet discount date follows the 4-week gap rule from the SOP."
             />
             {retirement.length === 0 ? (
-              <Empty label="Nothing flagged for retirement. The range is healthy." />
+              <Empty label="No flagged styles with remaining stock to clear." />
             ) : (
               <SortableTable
                 testId="retirement-pipeline-table"
