@@ -8721,6 +8721,8 @@ def _ibt_edge_sql(date_from, date_to, country, low, high, use_clustering=True):
       AND COALESCE(pp.brand, '') NOT ILIKE '%third party%'
       AND sc.from_store NOT ILIKE '%online%'
       AND sc.to_store NOT ILIKE '%online%'
+      AND sc.from_store NOT ILIKE '%zetu%'
+      AND sc.to_store NOT ILIKE '%zetu%'
     ORDER BY sc.score DESC, sc.style, fav.sku
     """
 
@@ -15388,14 +15390,22 @@ def ibt_late_count():
         bundles = res.get("bundles", [])
         if not bundles:
             return {"count": 0}
+        # SKU-level completion: a bundle is "done" only once EVERY SKU line in it
+        # has a completion stamped for its (style_name, to_store, sku). Counting
+        # at the corridor level undercounts open work when only some lines moved.
         done = set()
         rows = _users_exec(
-            "SELECT DISTINCT COALESCE(from_store,'') AS f, COALESCE(to_store,'') AS t "
-            "FROM ibt_completions", fetch=True) or []
+            "SELECT DISTINCT COALESCE(style_name,'') AS s, COALESCE(to_store,'') AS t, "
+            "COALESCE(sku,'') AS k FROM ibt_completions", fetch=True) or []
         for r in rows:
-            done.add((r.get("f") or "", r.get("t") or ""))
-        n = sum(1 for b in bundles
-                if (b.get("from_store") or "", b.get("to_store") or "") not in done)
+            done.add(((r.get("s") or ""), (r.get("t") or ""), (r.get("k") or "")))
+        n = 0
+        for b in bundles:
+            to_store = b.get("to_store") or ""
+            skus = b.get("skus") or []
+            if any((sk.get("style_name") or "", to_store, sk.get("sku") or "") not in done
+                   for sk in skus):
+                n += 1
         return {"count": int(n)}
     except Exception:
         return {"count": 0}
