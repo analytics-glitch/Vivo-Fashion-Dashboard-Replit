@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useFilters } from "@/lib/filters";
-import { api } from "@/lib/api";
+import { api, comparePeriod } from "@/lib/api";
 
 /**
  * Single source of truth for headline KPI numbers.
@@ -76,32 +76,18 @@ export function invalidateKpis() {
   kpiCache.clear();
 }
 
+// F29 — ONE comparison-period definition group-wide. This delegates to the
+// shared comparePeriod() in lib/api.js (string-based, local-time, month-end
+// clamped) so the headline KPI deltas use the EXACT same "previous period"
+// window as every page's breakdown / lever fetches (Overview, Locations,
+// Footfall, CEOReport all call comparePeriod for those). The previous inline
+// implementation used JS Date.setMonth (which overflows, e.g. May 31 -> May 1)
+// and toISOString (UTC -> off-by-one in EAT, UTC+3), producing a different
+// prior base and a divergent Δ% between Overview and Locations for the same
+// current value. Keep this a thin adapter so call sites stay unchanged.
 function computePrevRange(dateFrom, dateTo, mode, customFrom, customTo) {
-  if (!mode || mode === "none") return null;
-  if (mode === "custom") {
-    // User picked an explicit comparison window from the FilterBar.
-    // Honour it as-is; if either bound is missing we can't compare.
-    if (!customFrom || !customTo) return null;
-    return { date_from: customFrom, date_to: customTo };
-  }
-  const f = new Date(dateFrom);
-  const t = new Date(dateTo);
-  let df;
-  let dt;
-  if (mode === "yesterday") {
-    df = new Date(f); df.setDate(f.getDate() - 1);
-    dt = new Date(t); dt.setDate(t.getDate() - 1);
-  } else if (mode === "last_month") {
-    df = new Date(f); df.setMonth(f.getMonth() - 1);
-    dt = new Date(t); dt.setMonth(t.getMonth() - 1);
-  } else if (mode === "last_year") {
-    df = new Date(f); df.setFullYear(f.getFullYear() - 1);
-    dt = new Date(t); dt.setFullYear(t.getFullYear() - 1);
-  } else {
-    return null;
-  }
-  const iso = (d) => d.toISOString().slice(0, 10);
-  return { date_from: iso(df), date_to: iso(dt) };
+  const prev = comparePeriod(dateFrom, dateTo, mode, { date_from: customFrom, date_to: customTo });
+  return prev ? { date_from: prev.date_from, date_to: prev.date_to } : null;
 }
 
 /**
