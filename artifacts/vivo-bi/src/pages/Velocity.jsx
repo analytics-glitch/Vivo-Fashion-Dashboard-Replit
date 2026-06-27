@@ -82,7 +82,7 @@ const Velocity = () => {
     <div className="space-y-6">
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <KPICard label="Styles" value={fmtNum(k.styles)} icon={Stack} testId="kpi-vel-styles" showDelta={false} />
-        <KPICard label="Units Sold" value={fmtNum(k.units)} icon={ChartLineUp} testId="kpi-vel-units" showDelta={false} />
+        <KPICard label="Units Sold" value={fmtNum(k.units)} icon={ChartLineUp} testId="kpi-vel-units" showDelta={false} formula="Same gross units measure as Overview, over the selected period, but summed only across styles in the velocity universe (lines without a resolved style are excluded) — so this can read slightly below the Overview Units Sold." />
         <KPICard label="Weekly Rate" value={`${fmtDec(k.weeklyRate, 0)} / wk`} icon={Lightning} testId="kpi-vel-rate" showDelta={false} sub={`${k.fast} fast · ${k.slow} slow`} />
         <KPICard label="Current Stock" value={fmtNum(k.stock)} icon={Package} testId="kpi-vel-stock" showDelta={false} />
         <KPICard label="Sell-Through" value={fmtPct(k.sellThrough)} icon={Gauge} testId="kpi-vel-sor" showDelta={false} formula="Units sold ÷ (units sold + current stock)" />

@@ -149,7 +149,7 @@ const StockToSalesBySubcategory = ({
     <div className="card-white p-5" data-testid={`${testIdPrefix}-card`}>
       <SectionTitle
         title="Stock-to-Sales · by Subcategory"
-        subtitle={subtitleOverride || "Granular view — one row per merchandise subcategory. Switch to Grouped to fold rows under collapsible category headers. Red = action needed (stockout or overstock risk). Green = healthy balance."}
+        subtitle={(subtitleOverride || "Granular view — one row per merchandise subcategory. Switch to Grouped to fold rows under collapsible category headers. Red = action needed (stockout or overstock risk). Green = healthy balance.") + (useOwnDates ? " Units Sold below cover this card's own date window (set above — default last 30 days), independent of the page filter, so they may not match the page-level Units Sold." : "")}
       />
       {useOwnDates && (
         <DateFilterStrip
