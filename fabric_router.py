@@ -525,16 +525,30 @@ def summary(location: str = Query(default="RMAT/Stock"),
 # Derived from Done DPS manufacturing orders (mo_fabric_consumption, populated by
 # extract_mo_fabric_consumption.py). Metric = Σ(main-fabric metres consumed across
 # qualifying MOs) ÷ Σ(garments produced across those MOs), rolling last `days`
-# (default 90) by MO completion date. kg→metres via each fabric SKU's
+# (default 30) by MO completion date. kg→metres via each fabric SKU's
 # kg_per_mtr_eff (metres = kg / kg_per_mtr_eff; consumed qty in grams is /1000
-# first; a UoM already in metres is used as-is). To avoid silently distorting the
-# average, an MO is counted only when EVERY one of its main-fabric components is
-# convertible (and it produced > 0 garments); MOs with any unconvertible fabric
-# are excluded and reported separately.
+# first; a UoM already in metres is used as-is). A fabric with no kg_per_mtr_eff
+# (no stored value, no Width/GSM) is converted with the overall fabric-average
+# Kg/Mtr fallback so its MO is still counted rather than dropped. An MO is
+# excluded ONLY when it produced 0 garments or had no fabric; the count of MOs
+# that relied on the fallback (and the fallback value) is reported separately.
 @fabric_router.get("/api/fabric/metres-per-garment")
-def metres_per_garment(days: int = Query(default=90)):
-    days = max(1, min(int(days or 90), 730))
+def metres_per_garment(days: int = Query(default=30)):
+    days = max(1, min(int(days or 30), 730))
     with _get_conn() as conn:
+        # Fallback Kg/Mtr — the overall average kg_per_mtr_eff across every fabric
+        # that HAS a usable value (stored, or derived from Width × GSM ÷ 1000).
+        # ~1,017 fabrics have no Kg/Mtr at all (no stored value, no Width/GSM);
+        # a production order using one of those used to be dropped from the
+        # average, quietly shrinking the basis. We instead convert those kg with
+        # this fallback average so the order is still counted. Computed once.
+        fb = q(conn, """
+            SELECT AVG(kg_per_mtr_eff)::float AS avg_kpm
+            FROM raw_fabric_products
+            WHERE kg_per_mtr_eff > 0
+        """)[0]
+        fallback_kpm = float(fb["avg_kpm"]) if fb and fb["avg_kpm"] else None
+
         rows = q(conn, """
             SELECT c.odoo_mo_id,
                    c.produced_qty,
@@ -546,40 +560,48 @@ def metres_per_garment(days: int = Query(default=90)):
             WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
         """, [days])
 
-    KG_UOMS = {"kg", "g"}
     M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
     mos = {}
     for r in rows:
         d = mos.setdefault(
             r["odoo_mo_id"],
             {"produced": float(r["produced_qty"] or 0), "metres": 0.0,
-             "bad": False, "has_fabric": False},
+             "has_fabric": False, "used_fallback": False},
         )
         d["has_fabric"] = True
         qty = float(r["consumed_qty"] or 0)
         u = r["uom"]
         kpm = r["kpm"]
         if u in M_UOMS:
+            # Already in metres — keep exactly as-is.
             d["metres"] += qty
-        elif u in KG_UOMS and kpm and float(kpm) > 0:
-            kg = qty / 1000.0 if u == "g" else qty
-            d["metres"] += kg / float(kpm)
         else:
-            d["bad"] = True  # no usable kg→metre conversion (or unknown UoM)
+            # kg/g-unit fabric (or a component absent from the master with no
+            # metre uom): convert kg→metres. Use the fabric's own Kg/Mtr when it
+            # has one; otherwise fall back to the overall average so the order is
+            # still counted instead of being dropped.
+            kg = qty / 1000.0 if u == "g" else qty
+            if kpm and float(kpm) > 0:
+                d["metres"] += kg / float(kpm)
+            elif fallback_kpm:
+                d["metres"] += kg / fallback_kpm
+                d["used_fallback"] = True
+            # If there is no fallback at all (no fabric has a Kg/Mtr), this
+            # component contributes 0 metres but the order is still counted.
 
     total_metres = 0.0
     total_garments = 0.0
     n_mos = 0
-    excluded = 0
+    fallback_mos = 0
     for d in mos.values():
+        # An order is excluded ONLY when it produced 0 garments or had no fabric.
         if d["produced"] <= 0 or not d["has_fabric"]:
-            continue
-        if d["bad"]:
-            excluded += 1
             continue
         total_metres += d["metres"]
         total_garments += d["produced"]
         n_mos += 1
+        if d["used_fallback"]:
+            fallback_mos += 1
 
     value = round(total_metres / total_garments, 2) if total_garments > 0 else None
     return {
@@ -587,7 +609,8 @@ def metres_per_garment(days: int = Query(default=90)):
         "total_metres": round(total_metres, 1),
         "garments": round(total_garments),
         "mos": n_mos,
-        "mos_excluded_missing_conversion": excluded,
+        "mos_using_fallback": fallback_mos,
+        "fallback_kg_per_mtr": round(fallback_kpm, 4) if fallback_kpm else None,
         "window_days": days,
     }
 
