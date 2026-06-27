@@ -46,3 +46,11 @@ keeping a store with one person.
   Every row always gets a real picker (never "—").
 - Prod is a separate DB; the new logic ships with code on publish and is live
   immediately (no data migration / redistribute needed for balance).
+- Owner/`by_owner` decoration is a **post-sizing step each list engine applies
+  separately** — there are now TWO replenishment list builders (the SOR engine
+  `_compute_replenishment_sor` AND the older `_compute_replenishment_report_rows`
+  by-item report). A SOR-first rewrite once silently dropped owners from the SOR
+  engine while the by-item report kept them, so the Daily Replenishment page lost
+  its roster card. **Why:** ownership is decoration layered after the formula, not
+  part of sizing. **How to apply:** any new replenishment list endpoint must
+  re-apply `_owner_for_line` + emit `by_owner` itself; don't assume it's inherited.

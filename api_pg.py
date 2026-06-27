@@ -14100,6 +14100,39 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
         r["proj_uplift_units"] = round(inc, 2)
 
     held_back.sort(key=lambda r: -int(r.get("soh_store") or 0))
+
+    # Picker roster owner assignment — SHARED with the by-item Daily report.
+    # Resolve the FROZEN per-line owner (recomputed only by the explicit
+    # "Save & redistribute" roster action) so the SOR pick list can be split
+    # across the team and a reload never reshuffles a picker's lines. This is a
+    # pure post-step over the already-sized rows: it does NOT touch the canonical
+    # SOR formula or the suggested quantities.
+    ret_rows = actionable[:int(limit)]
+    _owners = _replen_owners()
+    _line_map = _replen_line_owner_map()
+    _store_fallback = {}
+    _store_owner_counts = {}
+    for _k, _ow in _line_map.items():
+        _store = _k.split("\u0001", 1)[0]
+        _d = _store_owner_counts.setdefault(_store, {})
+        _d[_ow] = _d.get(_ow, 0) + 1
+    for _store, _d in _store_owner_counts.items():
+        _store_fallback[_store] = max(_d.items(), key=lambda kv: kv[1])[0]
+    for r in ret_rows:
+        r["owner"] = _owner_for_line(
+            r.get("pos_location"), r.get("sku"), _line_map, _owners, _store_fallback)
+    _by_owner = {}
+    for r in ret_rows:
+        o = _by_owner.setdefault(
+            r["owner"], {"owner": r["owner"], "lines": 0, "units": 0, "stores": set()})
+        o["lines"] += 1
+        o["units"] += int(r.get("replenish") or 0)
+        o["stores"].add(r.get("pos_location"))
+    by_owner_list = sorted(
+        [{"owner": o["owner"], "lines": o["lines"], "units": o["units"],
+          "stores": len(o["stores"])} for o in _by_owner.values()],
+        key=lambda x: x["units"], reverse=True)
+
     return {
         "as_of": _replen_eat_today().isoformat() + " 06:00 EAT",
         "business_date": _replen_eat_today().isoformat(),
@@ -14107,7 +14140,8 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
         "ruleset_version": REPLEN_RULESET_VERSION,
         "config": cfg,
         "flow_config": flow_cfg,
-        "rows": actionable[:int(limit)],
+        "rows": ret_rows,
+        "by_owner": by_owner_list,
         "held_back": held_back[:200],
         "deploy_now_count": len(deploy_now_rows),
         "kpi": {

@@ -12,6 +12,7 @@ import {
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import ReplenishmentTransferReport from "@/components/ReplenishmentTransferReport";
+import ReplenishmentRosterCard from "@/components/ReplenishmentRosterCard";
 
 /**
  * SOR-first Daily Replenishment (Phase 1).
@@ -200,6 +201,7 @@ const Replenishments = () => {
 
   const sortedVisibleRows = useMemo(() => {
     return liveSort.sortRows(visibleRows, {
+      owner: (r) => r.owner || "",
       pos_location: (r) => r.pos_location || "",
       product_name: (r) => r.product_name || "",
       size: (r) => r.size || "",
@@ -408,6 +410,32 @@ const Replenishments = () => {
         </p>
       </div>
 
+      {/* Picker roster (admin / authorised operators) — shared with Replenish
+          by Style/SKU. Saving redistributes line owners across the SOR pick list
+          below by EQUAL UNITS; a reload never reshuffles a picker's lines. */}
+      {isAdmin && (
+        <ReplenishmentRosterCard
+          isAdmin={isAdmin}
+          onSaved={() => loadSor({ forceFresh: true })}
+          subtitle="Who is picking the Daily Replenishments today? Saving here redistributes the SOR pick list across the roster by EQUAL UNITS — POS sorted so each person owns a contiguous block of stores. The split is then fixed: reloading won't reshuffle anyone, so a picker who finishes early can refresh without being handed new work. Shared with Replenish by Style/SKU."
+        />
+      )}
+
+      {isAdmin && (sor?.by_owner?.length ?? 0) > 0 && (
+        <div className="card-white p-4" data-testid="replen-workload">
+          <SectionTitle title="Workload by picker" subtitle="How the current pick list splits across the roster (units · lines · stores)." />
+          <div className="flex flex-wrap gap-2">
+            {sor.by_owner.map((o) => (
+              <span key={o.owner} className="inline-flex items-center gap-2 rounded-full border border-border bg-panel/40 px-3 py-1.5 text-[12px]" data-testid={`replen-workload-${o.owner}`}>
+                <span className="font-bold text-[#0f3d24]">{o.owner}</span>
+                <span className="tabular-nums">{fmtNum(o.units)} units</span>
+                <span className="text-muted tabular-nums">· {fmtNum(o.lines)} lines · {fmtNum(o.stores)} stores</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* SOR pick list card. */}
       <div className="card-white p-5" data-testid="replen-live-card">
         <div className="flex flex-wrap items-center gap-3 mb-3">
@@ -549,6 +577,7 @@ const Replenishments = () => {
                       <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} aria-label="Select all lines" data-testid="replen-select-all" className="accent-emerald-700" />
                     </th>
                     <SortableTh sortKey="pos_location" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">POS Location</SortableTh>
+                    <SortableTh sortKey="owner" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Picker assigned by the roster. Set the team above, then Save & redistribute.">Owner</SortableTh>
                     <SortableTh sortKey="product_name" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold sticky left-0 bg-panel z-20 min-w-[200px] max-w-[280px]">Product</SortableTh>
                     <SortableTh sortKey="colour_print" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Colour</SortableTh>
                     <SortableTh sortKey="size" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} className="px-3 py-2.5 font-semibold whitespace-nowrap">Size</SortableTh>
@@ -570,7 +599,7 @@ const Replenishments = () => {
                   {corridorGroups.map((g) => (
                   <React.Fragment key={`corridor-${g.corridor}`}>
                     <tr className="bg-[#0f3d24]/[0.06] border-t-2 border-[#0f3d24]/20" data-testid={`replen-corridor-${g.corridor}`}>
-                      <td colSpan={17} className="px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide text-[#0f3d24]">
+                      <td colSpan={18} className="px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide text-[#0f3d24]">
                         Corridor · {g.corridor}
                         <span className="ml-2 font-semibold normal-case text-muted">
                           {g.rows.length} line{g.rows.length === 1 ? "" : "s"} · {fmtNum(g.units)} units · proj. uplift +{Number(g.uplift).toFixed(1)}
@@ -597,6 +626,9 @@ const Replenishments = () => {
                             )}
                             {r.pos_location}
                           </div>
+                        </td>
+                        <td className="px-3 py-3 whitespace-nowrap">
+                          {r.owner ? <span className="inline-flex items-center bg-slate-100 text-slate-700 border border-slate-300 text-[11px] font-semibold px-2 py-0.5 rounded-full">{r.owner}</span> : <span className="text-muted text-[11px]">—</span>}
                         </td>
                         <td className="px-3 py-3 sticky left-0 bg-inherit z-[5] min-w-[200px] max-w-[280px]">
                           <div className="flex items-start gap-1.5">
