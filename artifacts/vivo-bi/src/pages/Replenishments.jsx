@@ -98,6 +98,9 @@ const Replenishments = () => {
   // Picker accountability scorecard (Phase 2 — built on fact_pick_event facts).
   const [scorecard, setScorecard] = useState(null);
 
+  // Post-replenishment SOR reconciliation (Phase 3 step 4 — "did SOR rise?").
+  const [recon, setRecon] = useState(null);
+
   // Support panels.
   const [alerts, setAlerts] = useState(null);
   const [alertDismissed, setAlertDismissed] = useState(false);
@@ -125,6 +128,15 @@ const Replenishments = () => {
   }, [weeks]);
 
   useEffect(() => { loadSor(); }, [loadSor]);
+
+  // Reconciliation tile (also records the rolling projection-calibration sample).
+  useEffect(() => {
+    let cancel = false;
+    api.get("/analytics/replenishment-sor-reconciliation", { params: { weeks } })
+      .then(({ data }) => { if (!cancel) setRecon(data || null); })
+      .catch(() => { if (!cancel) setRecon(null); });
+    return () => { cancel = true; };
+  }, [weeks, completedRefresh]);
 
   // Completed report — admin/owner only (chain-wide audit).
   useEffect(() => {
@@ -454,6 +466,35 @@ const Replenishments = () => {
             <KpiTile label="Deploy now (WH units)" value={fmtNum(kpi.deployable_wh_units)} icon={<Lightning size={12} weight="fill" className="text-amber-500" />} hint="Warehouse units for proven-demand stores sitting at zero shelf stock." />
             <KpiTile label="SOR at-risk units" value={fmtNum(kpi.sor_at_risk_units)} hint="Units sold at stores now at zero shelf stock — demand we cannot currently capture." />
             <KpiTile label="SOR drag (overstock)" value={fmtNum(kpi.sor_drag_units)} hint="Slow store stock (WoC > 16) dragging the denominator down." />
+          </div>
+        )}
+
+        {/* Post-replenishment reconciliation — did SOR actually rise? */}
+        {recon?.available && (
+          <div className="card-white p-4 mb-4" data-testid="replen-recon-tile">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <div>
+                <h3 className="font-bold text-[14px] tracking-tight text-foreground">
+                  Did SOR rise? — last dispatched run
+                </h3>
+                <p className="text-[11.5px] text-muted">
+                  Run of {recon.business_date} · {fmtNum(recon.store_sku_count)} store-SKUs · realised after ~{recon.dispatch_days}d
+                </p>
+              </div>
+              <span
+                className="rounded-full border border-border px-2.5 py-1 text-[11.5px] font-semibold text-foreground"
+                title="Rolling-median realised/projected ratio (clamped 0.25–2.0) that scales the engine's projection. 1.0 = projections on target; <1 = over-projecting; >1 = under-projecting."
+              >
+                Projection calibration ×{Number(recon.calibration).toFixed(2)}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+              <KpiTile label="SOR at calc" value={`${Number(recon.sor_at_calc).toFixed(1)}%`} />
+              <KpiTile label="Realised SOR now" value={`${Number(recon.realised_sor).toFixed(1)}%`} delta={recon.realised_uplift_pts} accent />
+              <KpiTile label="Projected SOR" value={`${Number(recon.projected_sor).toFixed(1)}%`} delta={recon.projected_uplift_pts} hint="What the engine projected this run would reach." />
+              <KpiTile label="Realised units" value={fmtNum(recon.realised_incremental_units)} hint="Incremental units sold over the scope since the suggestion was calculated." />
+              <KpiTile label="Projected units" value={fmtNum(recon.projected_incremental_units)} hint="Σ min(suggested, velocity × dispatch/7) at calc time." />
+            </div>
           </div>
         )}
 

@@ -94,6 +94,38 @@ export default function ReplenishmentTransferReport({
   const [expanded, setExpanded] = useState({});
   const [drafts, setDrafts] = useState({});
   const [savingKey, setSavingKey] = useState(null);
+  // Store-receipt confirmation (Phase 3 step 3) — only for dispatched
+  // replenishments, never warehouse returns. Tracks which item rows have been
+  // confirmed received this session + which is mid-flight.
+  const allowReceipt = recType === "replenish";
+  const [receivedKeys, setReceivedKeys] = useState({});
+  const [receivingKey, setReceivingKey] = useState(null);
+
+  const itemKey = (g, it) => `${groupKey(g)}::${it.sku || it.barcode || ""}`;
+
+  const confirmReceipt = async (g, it) => {
+    const ref = (it.transfer_ref || "").trim();
+    if (!ref) {
+      toast.error("Stamp the Odoo transfer number first, then confirm receipt.");
+      return;
+    }
+    const ik = itemKey(g, it);
+    setReceivingKey(ik);
+    try {
+      await api.post("/analytics/replenishment-store-receipt", {
+        pos_location: g.pos_location,
+        sku: it.sku,
+        qty_received: it.actual_units ?? 0,
+        transfer_ref: ref,
+      });
+      setReceivedKeys((p) => ({ ...p, [ik]: true }));
+      toast.success(`Receipt confirmed for ${it.sku} at ${g.pos_location}.`);
+    } catch (e) {
+      toast.error("Couldn't confirm receipt — " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setReceivingKey(null);
+    }
+  };
 
   const load = useCallback(async (forceFresh = false) => {
     setLoading(true);
@@ -414,10 +446,16 @@ export default function ReplenishmentTransferReport({
                             <th className="py-2 pr-3 text-right">Units</th>
                             <th className="py-2 pr-3">Done by</th>
                             <th className="py-2 pr-3">Done at</th>
+                            {allowReceipt && <th className="py-2 pr-3">Receipt</th>}
                           </tr>
                         </thead>
                         <tbody>
-                          {(g.items || []).map((it, i) => (
+                          {(g.items || []).map((it, i) => {
+                            const ik = itemKey(g, it);
+                            const received = !!receivedKeys[ik];
+                            const receiving = receivingKey === ik;
+                            const hasRef = !!(it.transfer_ref || "").trim();
+                            return (
                             <tr key={`${k}-${it.sku || it.barcode}-${i}`} className="border-b border-border/50">
                               <td className="py-2 pr-3">{it.product_name || "—"}</td>
                               <td className="py-2 pr-3">{it.size || "—"}</td>
@@ -427,8 +465,31 @@ export default function ReplenishmentTransferReport({
                               <td className="py-2 pr-3 text-right tabular-nums">{fmtNum(it.actual_units)}</td>
                               <td className="py-2 pr-3">{it.completed_by || "—"}</td>
                               <td className="py-2 pr-3 whitespace-nowrap">{fmtDoneAt(it.completed_at)}</td>
+                              {allowReceipt && (
+                                <td className="py-2 pr-3 whitespace-nowrap">
+                                  {received ? (
+                                    <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
+                                      <CheckCircle size={13} weight="fill" /> Received
+                                    </span>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      disabled={receiving || !hasRef}
+                                      onClick={() => confirmReceipt(g, it)}
+                                      title={hasRef
+                                        ? "Confirm this item arrived at the store (nets it out of in-transit)"
+                                        : "Stamp the Odoo transfer number for this group first"}
+                                      className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-2 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
+                                      data-testid={`button-receive-${ik}`}
+                                    >
+                                      <Check size={13} /> {receiving ? "Saving…" : "Confirm receipt"}
+                                    </button>
+                                  )}
+                                </td>
+                              )}
                             </tr>
-                          ))}
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>

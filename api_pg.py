@@ -1312,10 +1312,17 @@ _REPLEN_SIZING_DEFAULTS = {
     "floor_b":            REPLEN_FLOOR_B,
     "floor_c":            REPLEN_FLOOR_C,
     "overstock_woc":      REPLEN_OVERSTOCK_WOC,
+    # Phase 3 fair-share Tier-2 weights (spec §12): a line's claim on the
+    # leftover warehouse pool = demand_share x margin x sub_factor. sub_factor is
+    # the channel substitutability knob — Online is more substitutable (a shopper
+    # can wait / pick another size) so it gets the lower weight, letting physical
+    # stores climb the Tier-2 queue ahead of it.
+    "sub_factor":         1.0,
+    "online_sub_factor":  0.5,
 }
 _REPLEN_SIZING_FLOAT_KEYS = {
     "cover_weeks", "online_cover_weeks", "class_a_vpw", "class_b_vpw",
-    "overstock_woc",
+    "overstock_woc", "sub_factor", "online_sub_factor",
 }
 _REPLEN_SIZING_INT_KEYS = {"floor_a", "floor_b", "floor_c"}
 
@@ -1368,19 +1375,196 @@ def _set_replen_sizing_config(patch):
             if v < 0:
                 raise ValueError(k + " must be >= 0")
             clean[k] = v
-    # Validate the class threshold against the RESULTING active config (current
-    # override + this patch), not only the keys present in this one payload — a
-    # partial update that raises class_b alone could otherwise invert the order.
-    effective = _replen_sizing_config()
-    effective.update(clean)
+    # Merge over the EXISTING stored override so a partial PUT never drops knobs a
+    # prior PUT set (storing only this patch would silently reset the others).
+    existing = {}
+    try:
+        rows = _users_exec(
+            "SELECT value FROM app_config WHERE key='replen_sizing'", fetch=True)
+        if rows:
+            val = rows[0].get("value")
+            if isinstance(val, str):
+                val = json.loads(val)
+            if isinstance(val, dict):
+                existing = val
+    except Exception:
+        existing = {}
+    merged = dict(existing)
+    merged.update(clean)
+    # Validate the class threshold against the RESULTING active config (defaults +
+    # merged override), not only the keys present in this one payload — a partial
+    # update that raises class_b alone could otherwise invert the order.
+    effective = dict(_REPLEN_SIZING_DEFAULTS)
+    for k in merged:
+        if k in effective:
+            effective[k] = merged[k]
     if effective["class_a_vpw"] < effective["class_b_vpw"]:
         raise ValueError("class_a_vpw must be >= class_b_vpw")
     _users_exec(
         "INSERT INTO app_config (key, value, updated_at) "
         "VALUES ('replen_sizing', %s::jsonb, now()) "
         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
-        (json.dumps(clean),))
-    return clean
+        (json.dumps(merged),))
+    return merged
+
+
+# ── Phase 3 step 2: corridor dispatch cadence + min-transfer gate (spec §12) ──
+# Transfers should batch onto a real dispatch calendar per corridor rather than
+# being generated on every page refresh. A corridor's "days" are weekday indices
+# (Mon=0 .. Sun=6, EAT). metro_pos is a lower-cased keyword list that splits
+# Kenya into a high-frequency metro corridor vs weekly upcountry. min_transfer_*
+# are the per-store batch-gate thresholds (a store dispatches when it clears the
+# units OR the KES floor); A-class stockouts always expedite regardless. All
+# tunable knobs — defaults here are sensible starting points for ops to refine.
+_REPLEN_FLOW_DEFAULTS = {
+    "corridor_days": {
+        "kenya_metro":     [0, 3],          # Mon + Thu (2x/wk)
+        "kenya_upcountry": [0],             # Mon (weekly)
+        "uganda":          [1],             # Tue (weekly)
+        "rwanda":          [2],             # Wed (weekly)
+        "online":          [0, 1, 2, 3, 4, 5, 6],  # daily
+        "other":           [0],             # Mon (weekly) — unknown country
+    },
+    "metro_pos": [
+        "nairobi", "westgate", "sarit", "village market", "two rivers",
+        "garden city", "yaya", "junction", "galleria", "the hub", "gateway",
+        "thika road", "trm", "capital", "lavington", "kilimani",
+    ],
+    "min_transfer_units": 12,
+    "min_transfer_kes":   0,   # 0 = KES gate disabled (price coverage varies)
+}
+_REPLEN_FLOW_CORRIDORS = ("kenya_metro", "kenya_upcountry", "uganda", "rwanda",
+                          "online", "other")
+
+
+def _replen_flow_config():
+    """Active corridor cadence + min-transfer knobs: spec defaults overlaid with
+    the app_config 'replen_flow' override. Never raises."""
+    cfg = {
+        "corridor_days": {k: list(v) for k, v in
+                          _REPLEN_FLOW_DEFAULTS["corridor_days"].items()},
+        "metro_pos": list(_REPLEN_FLOW_DEFAULTS["metro_pos"]),
+        "min_transfer_units": _REPLEN_FLOW_DEFAULTS["min_transfer_units"],
+        "min_transfer_kes": _REPLEN_FLOW_DEFAULTS["min_transfer_kes"],
+    }
+    try:
+        rows = _users_exec(
+            "SELECT value FROM app_config WHERE key='replen_flow'", fetch=True)
+    except Exception:
+        rows = None
+    if rows:
+        val = rows[0].get("value")
+        if isinstance(val, str):
+            try:
+                val = json.loads(val)
+            except Exception:
+                val = None
+        if isinstance(val, dict):
+            cd = val.get("corridor_days")
+            if isinstance(cd, dict):
+                for k, v in cd.items():
+                    if k in _REPLEN_FLOW_CORRIDORS and isinstance(v, list):
+                        days = sorted({int(d) for d in v if 0 <= int(d) <= 6})
+                        if days:
+                            cfg["corridor_days"][k] = days
+            if isinstance(val.get("metro_pos"), list):
+                cfg["metro_pos"] = [str(s).strip().lower()
+                                    for s in val["metro_pos"] if str(s).strip()]
+            for k in ("min_transfer_units", "min_transfer_kes"):
+                if k in val and val[k] is not None:
+                    try:
+                        cfg[k] = max(0, float(val[k]) if k.endswith("kes")
+                                     else int(val[k]))
+                    except (TypeError, ValueError):
+                        pass
+    return cfg
+
+
+def _set_replen_flow_config(patch):
+    """Persist a partial corridor/min-transfer override (validated) to app_config,
+    merged over the existing stored override so a partial PUT keeps prior knobs."""
+    if not isinstance(patch, dict):
+        raise ValueError("payload must be an object")
+    clean = {}
+    if "corridor_days" in patch and patch["corridor_days"] is not None:
+        cd = patch["corridor_days"]
+        if not isinstance(cd, dict):
+            raise ValueError("corridor_days must be an object")
+        out = {}
+        for k, v in cd.items():
+            if k not in _REPLEN_FLOW_CORRIDORS:
+                raise ValueError("unknown corridor: " + str(k))
+            if not isinstance(v, list) or not v:
+                raise ValueError(k + " must be a non-empty list of weekdays 0-6")
+            days = sorted({int(d) for d in v})
+            if any(d < 0 or d > 6 for d in days):
+                raise ValueError(k + " weekdays must be 0 (Mon) .. 6 (Sun)")
+            out[k] = days
+        clean["corridor_days"] = out
+    if "metro_pos" in patch and patch["metro_pos"] is not None:
+        mp = patch["metro_pos"]
+        if not isinstance(mp, list):
+            raise ValueError("metro_pos must be a list of strings")
+        clean["metro_pos"] = [str(s).strip().lower() for s in mp if str(s).strip()]
+    if "min_transfer_units" in patch and patch["min_transfer_units"] is not None:
+        v = int(patch["min_transfer_units"])
+        if v < 0:
+            raise ValueError("min_transfer_units must be >= 0")
+        clean["min_transfer_units"] = v
+    if "min_transfer_kes" in patch and patch["min_transfer_kes"] is not None:
+        v = float(patch["min_transfer_kes"])
+        if v < 0:
+            raise ValueError("min_transfer_kes must be >= 0")
+        clean["min_transfer_kes"] = v
+    existing = {}
+    try:
+        rows = _users_exec(
+            "SELECT value FROM app_config WHERE key='replen_flow'", fetch=True)
+        if rows:
+            val = rows[0].get("value")
+            if isinstance(val, str):
+                val = json.loads(val)
+            if isinstance(val, dict):
+                existing = val
+    except Exception:
+        existing = {}
+    merged = dict(existing)
+    merged.update(clean)
+    _users_exec(
+        "INSERT INTO app_config (key, value, updated_at) "
+        "VALUES ('replen_flow', %s::jsonb, now()) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+        (json.dumps(merged),))
+    return merged
+
+
+def _replen_corridor(pos_location, country, flow_cfg):
+    """Map a (store, country) to its dispatch corridor key."""
+    if pos_location == ONLINE_SHOP_ZETU:
+        return "online"
+    c = (country or "").strip().lower()
+    if c == "kenya":
+        low = (pos_location or "").lower()
+        if any(kw in low for kw in flow_cfg.get("metro_pos", [])):
+            return "kenya_metro"
+        return "kenya_upcountry"
+    if c == "uganda":
+        return "uganda"
+    if c == "rwanda":
+        return "rwanda"
+    return "other"
+
+
+def _replen_next_dispatch(corridor, flow_cfg, today):
+    """(next_dispatch_date, dispatch_today_bool) for a corridor given EAT today."""
+    days = flow_cfg.get("corridor_days", {}).get(corridor) \
+        or _REPLEN_FLOW_DEFAULTS["corridor_days"].get(corridor) or [0]
+    wd = today.weekday()
+    for off in range(0, 8):
+        if ((wd + off) % 7) in days:
+            return (today + timedelta(days=off), off == 0)
+    return (today, True)
+
 
 # Canonical sku -> style map. all_inventory.style_name is free-text and often
 # disagrees with all_products_clean.style_name (e.g. word-order differences like
@@ -11118,6 +11302,319 @@ async def analytics_replenishment_transfer_assign(request: Request):
     }
 
 
+def _replen_in_transit_rows():
+    """Phase 3 step 3 — per (pos_location, sku) in-transit quarantine: dispatched
+    units (done replenish lines stamped with a transfer_ref) MINUS confirmed
+    store receipts. Counts only the canonical 'sku' twin row so the sku+barcode
+    pair written per item isn't double-counted. Best-effort: returns [] on any
+    error so neither the SOR engine nor the endpoint ever breaks."""
+    try:
+        _ensure_replen_tables()
+        return _users_exec(
+            "WITH dispatched AS ("
+            "  SELECT split_part(rec_key,'|',1) AS pos_location,"
+            "         split_part(rec_key,'|',3) AS sku,"
+            "         SUM(COALESCE(actual_units,0)) AS dispatched"
+            "  FROM recommendation_actions"
+            "  WHERE rec_type='replenish' AND status='done'"
+            "    AND COALESCE(transfer_ref,'') <> ''"
+            "    AND split_part(rec_key,'|',2)='sku'"
+            "  GROUP BY 1,2"
+            "), received AS ("
+            "  SELECT pos_location, sku, SUM(COALESCE(qty_received,0)) AS received"
+            "  FROM fact_store_receipt GROUP BY 1,2"
+            ") "
+            "SELECT d.pos_location, d.sku, d.dispatched,"
+            "       COALESCE(r.received,0) AS received,"
+            "       (d.dispatched - COALESCE(r.received,0)) AS in_transit "
+            "FROM dispatched d LEFT JOIN received r"
+            "  ON r.pos_location=d.pos_location AND r.sku=d.sku "
+            "WHERE d.dispatched > COALESCE(r.received,0) "
+            "ORDER BY in_transit DESC", fetch=True) or []
+    except Exception:
+        return []
+
+
+def _replen_in_transit_total():
+    """Σ in-transit units across all store-SKUs, for the SOR-denominator clamp."""
+    try:
+        return sum(max(0, int(r.get("in_transit") or 0))
+                   for r in _replen_in_transit_rows())
+    except Exception:
+        return 0
+
+
+_REPLEN_CALIB_MIN = 0.25
+_REPLEN_CALIB_MAX = 2.0
+_REPLEN_CALIB_KEEP = 10  # rolling-median window of recent reconciliation samples
+
+
+def _replen_proj_calibration():
+    """Active projection calibration factor (rolling median of realised/projected,
+    clamped [0.25, 2.0]). Defaults to 1.0 until reconciliation has run. Never
+    raises — a config read hiccup falls back to neutral 1.0."""
+    try:
+        rows = _users_exec(
+            "SELECT value FROM app_config WHERE key='replen_proj_calibration'",
+            fetch=True)
+        if rows:
+            val = rows[0].get("value")
+            if isinstance(val, str):
+                val = json.loads(val)
+            if isinstance(val, dict) and val.get("value") is not None:
+                c = float(val["value"])
+                return min(_REPLEN_CALIB_MAX, max(_REPLEN_CALIB_MIN, c))
+    except Exception:
+        pass
+    return 1.0
+
+
+def _replen_record_calibration(sample):
+    """Append one realised/projected sample to the rolling window and persist the
+    new median as the active calibration. Best-effort: returns the resulting
+    median (or the prior/neutral value on failure)."""
+    try:
+        sample = min(_REPLEN_CALIB_MAX, max(_REPLEN_CALIB_MIN, float(sample)))
+    except (TypeError, ValueError):
+        return _replen_proj_calibration()
+    samples = []
+    try:
+        rows = _users_exec(
+            "SELECT value FROM app_config WHERE key='replen_proj_calibration'",
+            fetch=True)
+        if rows:
+            val = rows[0].get("value")
+            if isinstance(val, str):
+                val = json.loads(val)
+            if isinstance(val, dict) and isinstance(val.get("samples"), list):
+                samples = [float(x) for x in val["samples"]]
+    except Exception:
+        samples = []
+    samples.append(round(sample, 4))
+    samples = samples[-_REPLEN_CALIB_KEEP:]
+    ssorted = sorted(samples)
+    n = len(ssorted)
+    med = (ssorted[n // 2] if n % 2
+           else (ssorted[n // 2 - 1] + ssorted[n // 2]) / 2.0)
+    med = round(min(_REPLEN_CALIB_MAX, max(_REPLEN_CALIB_MIN, med)), 4)
+    try:
+        _users_exec(
+            "INSERT INTO app_config (key, value, updated_at) "
+            "VALUES ('replen_proj_calibration', %s::jsonb, now()) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
+            "updated_at = now()",
+            (json.dumps({"samples": samples, "value": med}),))
+    except Exception:
+        pass
+    return med
+
+
+@app.get("/api/analytics/replenishment-in-transit")
+def analytics_replenishment_in_transit():
+    """Dispatched-but-not-yet-received replenishment stock per store-SKU, enriched
+    with product name/size/colour. These units are quarantined from the SOR
+    denominator until a store confirms receipt (POST .../replenishment-store-
+    receipt)."""
+    rows = _replen_in_transit_rows()
+    skus = sorted({(r.get("sku") or "").strip() for r in rows if r.get("sku")})
+    meta = {}
+    if skus:
+        _in = ",".join("'" + _sql_str(s) + "'" for s in skus)
+        for m in (run_query(
+                "SELECT sku, MAX(product_name) AS product_name, MAX(size) AS size, "
+                "MAX(color_print) AS color_print, MAX(barcode) AS barcode "
+                "FROM all_products_clean WHERE sku IN (" + _in + ") "
+                "GROUP BY sku") or []):
+            meta[m["sku"]] = m
+    out = []
+    for r in rows:
+        m = meta.get((r.get("sku") or "").strip(), {})
+        out.append({
+            "pos_location": r.get("pos_location") or "",
+            "sku": r.get("sku") or "",
+            "barcode": (m.get("barcode") or ""),
+            "product_name": (m.get("product_name") or ""),
+            "size": (m.get("size") or ""),
+            "color_print": (m.get("color_print") or ""),
+            "dispatched": int(r.get("dispatched") or 0),
+            "received": int(r.get("received") or 0),
+            "in_transit": max(0, int(r.get("in_transit") or 0)),
+        })
+    return {
+        "rows": out,
+        "store_count": len({r["pos_location"] for r in out}),
+        "in_transit_units": sum(r["in_transit"] for r in out),
+    }
+
+
+@app.post("/api/analytics/replenishment-store-receipt")
+async def analytics_replenishment_store_receipt(request: Request):
+    """Confirm physical receipt of dispatched replenishment stock at a store
+    (Phase 3 step 3). Writes fact_store_receipt, which nets the units out of the
+    in-transit quarantine so the SOR denominator reflects only stock actually on
+    the floor. The transfer_ref must match a real dispatch stamped on that store's
+    done lines, so a receipt can never reference a phantom transfer."""
+    from fastapi import HTTPException
+    _ensure_replen_tables()
+    body = await request.json()
+    pos = (body.get("pos_location") or "").strip()
+    sku = (body.get("sku") or "").strip()
+    transfer_ref = (body.get("transfer_ref") or "").strip()
+    try:
+        qty = int(body.get("qty_received") if body.get("qty_received") is not None
+                  else body.get("qty") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="qty_received must be an integer")
+    if not pos or not sku:
+        raise HTTPException(status_code=400, detail="pos_location and sku are required")
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="qty_received must be > 0")
+    if not transfer_ref:
+        raise HTTPException(status_code=400, detail="transfer_ref is required")
+    matched = _users_exec(
+        "SELECT 1 FROM recommendation_actions "
+        "WHERE rec_type='replenish' AND status='done' "
+        "  AND COALESCE(transfer_ref,'')=%s "
+        "  AND split_part(rec_key,'|',1)=%s LIMIT 1",
+        (transfer_ref, pos), fetch=True) or []
+    if not matched:
+        raise HTTPException(
+            status_code=400,
+            detail="transfer_ref does not match any dispatched transfer for this store")
+    u = (request.state.user or {}) if request else {}
+    received_by = u.get("email") or u.get("name") or u.get("user_id") or "staff"
+    _users_exec(
+        "INSERT INTO fact_store_receipt "
+        "(odoo_transfer_id, pos_location, sku, qty_received, received_by) "
+        "VALUES (%s,%s,%s,%s,%s)",
+        (transfer_ref, pos, sku, qty, received_by))
+    return {"ok": True, "pos_location": pos, "sku": sku,
+            "qty_received": qty, "transfer_ref": transfer_ref}
+
+
+@app.get("/api/analytics/replenishment-sor-reconciliation")
+def analytics_replenishment_sor_reconciliation(
+        weeks: int = Query(default=REPLEN_DEMAND_WEEKS_DEFAULT)):
+    """Post-replenishment "did SOR rise?" reconciliation (Phase 3 step 4). Picks
+    the most-recent suggestion run that is at least dispatch_days old (so the
+    dispatched stock has had time to sell), then compares over that run's exact
+    store-SKU scope:
+      * SOR_at_calc   — snapshot: Σunits_sold / (Σunits_sold + Σshelf_qty_at_calc)
+      * realised SOR  — recomputed NOW (same net_quantity + available basis as the
+                        canonical summary, in-transit quarantined)
+      * projected SOR — snapshot + Σ min(suggested_qty, v_at_calc × dispatch/7)
+    The realised/projected incremental-units ratio (clamped [0.25, 2.0]) is
+    recorded as a rolling-median calibration sample that scales the engine's
+    projection. Read-only except for the calibration sample; never raises into the
+    page."""
+    _ensure_replen_tables()
+    dispatch_days = REPLEN_DISPATCH_DAYS
+    age_days = int(dispatch_days) + (1 if dispatch_days > int(dispatch_days) else 0)
+    days = int(weeks) * 7
+    run = _users_exec(
+        "SELECT run_id, business_date, store_scope, ruleset_version "
+        "FROM fact_replen_suggestion "
+        "WHERE business_date <= (CURRENT_DATE - %s) "
+        "ORDER BY business_date DESC, run_ts_eat DESC LIMIT 1",
+        (age_days,), fetch=True) or []
+    if not run:
+        return {"available": False,
+                "reason": "no suggestion run at least %d days old yet" % age_days,
+                "calibration": _replen_proj_calibration()}
+    run = run[0]
+    rows = _users_exec(
+        "SELECT pos_location, sku, COALESCE(units_sold,0) AS units_sold, "
+        "COALESCE(shelf_qty_at_calc,0) AS shelf_qty_at_calc, "
+        "COALESCE(v_at_calc,0) AS v_at_calc, "
+        "COALESCE(suggested_qty,0) AS suggested_qty "
+        "FROM fact_replen_suggestion WHERE run_id=%s",
+        (run["run_id"],), fetch=True) or []
+    if not rows:
+        return {"available": False, "reason": "run has no snapshot rows",
+                "calibration": _replen_proj_calibration()}
+
+    units_calc = sum(int(r["units_sold"]) for r in rows)
+    shelf_calc = sum(int(r["shelf_qty_at_calc"]) for r in rows)
+    proj_inc = sum(min(int(r["suggested_qty"]),
+                       float(r["v_at_calc"]) * dispatch_days / 7.0)
+                   for r in rows if float(r["v_at_calc"]) > 0)
+
+    pairs = sorted({((r.get("pos_location") or "").strip(),
+                     (r.get("sku") or "").strip())
+                    for r in rows if r.get("pos_location") and r.get("sku")})
+    units_now = stock_now_gross = 0.0
+    if pairs:
+        vals = ",".join("('" + _sql_str(p) + "','" + _sql_str(s) + "')"
+                        for p, s in pairs)
+        ur = run_query(
+            "SELECT COALESCE(SUM(s.net_quantity),0) AS u "
+            "FROM all_sales s "
+            "JOIN (VALUES " + vals + ") AS t(pos,sku) "
+            "  ON t.pos = s.pos_location_name AND t.sku = s.variant_sku "
+            "WHERE s.sale_kind IN ('sale','order') "
+            "  AND s.sale_date >= (CURRENT_DATE - INTERVAL '" + str(days) +
+            " days')::text "
+            "  AND " + BASE_FILTERS +
+            "  AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ") "
+            "  AND (s.pos_location_name NOT ILIKE '%online%' "
+            "       OR s.pos_location_name = 'Online - Shop Zetu')") or [{}]
+        units_now = float((ur[0] or {}).get("u") or 0)
+        sr = run_query(
+            "SELECT COALESCE(SUM(i.available),0) AS soh "
+            "FROM all_inventory i "
+            "JOIN (VALUES " + vals + ") AS t(pos,sku) "
+            "  ON t.pos = i.pos_location_name AND t.sku = i.sku "
+            "WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")") or [{}]
+        stock_now_gross = float((sr[0] or {}).get("soh") or 0)
+
+    # Quarantine in-transit for THIS scope from the realised denominator.
+    pairset = set(pairs)
+    set_in_transit = sum(
+        max(0, int(it.get("in_transit") or 0))
+        for it in _replen_in_transit_rows()
+        if ((it.get("pos_location") or "").strip(),
+            (it.get("sku") or "").strip()) in pairset)
+    stock_now = max(0.0, stock_now_gross - set_in_transit)
+
+    def _sor(num, denom_stock):
+        d = num + denom_stock
+        return round(100.0 * num / d, 1) if d > 0 else 0.0
+
+    sor_at_calc = _sor(units_calc, shelf_calc)
+    realised_sor = _sor(units_now, stock_now)
+    projected_sor = _sor(units_calc + proj_inc, shelf_calc)
+
+    realised_inc = max(0.0, units_now - units_calc)
+    sample = (realised_inc / proj_inc) if proj_inc > 0 else None
+    calibration = (_replen_record_calibration(sample) if sample is not None
+                   else _replen_proj_calibration())
+
+    return {
+        "available": True,
+        "run_id": run["run_id"],
+        "business_date": (run["business_date"].isoformat()
+                          if run.get("business_date") else None),
+        "store_scope": run.get("store_scope"),
+        "dispatch_days": dispatch_days,
+        "demand_weeks": int(weeks),
+        "store_sku_count": len(rows),
+        "units_at_calc": int(units_calc),
+        "units_now": int(units_now),
+        "shelf_at_calc": int(shelf_calc),
+        "store_stock_now": int(stock_now),
+        "in_transit_units": int(set_in_transit),
+        "projected_incremental_units": round(proj_inc, 1),
+        "realised_incremental_units": round(realised_inc, 1),
+        "sor_at_calc": sor_at_calc,
+        "realised_sor": realised_sor,
+        "projected_sor": projected_sor,
+        "realised_uplift_pts": round(realised_sor - sor_at_calc, 2),
+        "projected_uplift_pts": round(projected_sor - sor_at_calc, 2),
+        "calibration_sample": (round(sample, 4) if sample is not None else None),
+        "calibration": calibration,
+    }
+
+
 def _replen_clean_text(s, maxlen=80):
     # Free-text search/value sanitiser for inlined SQL literals: strip the
     # chars that could break out of a string literal. Values are matched with
@@ -11187,6 +11684,157 @@ def _cap_replenish_to_warehouse(rows, *, need_key, out_key,
             alloc = min(need, remaining) if remaining > 0 else 0
             r[out_key] = alloc
             remaining -= alloc
+    return rows
+
+
+def _largest_remainder(weights, total):
+    """Apportion ``total`` integer units across keys proportional to their weight
+    using the largest-remainder (Hamilton) method. Returns {key: units}. Caps are
+    NOT applied here — callers that need per-key headroom use _weighted_capped_alloc."""
+    total = int(total)
+    out = {k: 0 for k in weights}
+    if total <= 0:
+        return out
+    sw = sum(max(0.0, float(v)) for v in weights.values())
+    if sw <= 0:
+        return out
+    raw = {k: (max(0.0, float(v)) / sw) * total for k, v in weights.items()}
+    out = {k: int(v) for k, v in raw.items()}
+    leftover = total - sum(out.values())
+    for k in sorted(raw.keys(), key=lambda k: -(raw[k] - out[k]))[:max(0, leftover)]:
+        out[k] += 1
+    return out
+
+
+def _weighted_capped_alloc(rows, weights, remaining, out_key):
+    """Distribute ``remaining`` units across ``rows`` proportional to each row's
+    weight, capped at each row's residual headroom, iterating until the pool is
+    exhausted or every claimant is at its cap. weights[id(r)] = (weight, cap).
+    Mutates out_key on each row; returns the unspent remainder."""
+    remaining = int(remaining)
+    caps = {id(r): max(0, int(weights[id(r)][1])) for r in rows}
+    ws = {id(r): max(0.0, float(weights[id(r)][0])) for r in rows}
+    alloc = {id(r): 0 for r in rows}
+    active = [r for r in rows if caps[id(r)] > 0 and ws[id(r)] > 0]
+    while remaining > 0 and active:
+        tot_w = sum(ws[id(r)] for r in active)
+        if tot_w <= 0:
+            break
+        share = _largest_remainder({id(r): ws[id(r)] for r in active}, remaining)
+        progressed = 0
+        for r in active:
+            give = min(share.get(id(r), 0), caps[id(r)] - alloc[id(r)])
+            if give > 0:
+                alloc[id(r)] += give
+                remaining -= give
+                progressed += give
+        active = [r for r in active if caps[id(r)] - alloc[id(r)] > 0]
+        if progressed == 0:
+            # Rounding stalled (every proportional share floored to 0 below its
+            # cap): hand one unit to the highest-weight claimant with headroom so
+            # the loop always makes progress.
+            if active and remaining > 0:
+                top = max(active, key=lambda r: ws[id(r)])
+                alloc[id(top)] += 1
+                remaining -= 1
+            else:
+                break
+    for r in rows:
+        r[out_key] = alloc[id(r)]
+    return remaining
+
+
+def _allocate_replenishment_fair_share(rows, cfg, margin_map, *,
+                                       sku_key="sku", wh_key="soh_wh",
+                                       need_key="need", out_key="replenish"):
+    """Phase 3 step 1 — one fair-share allocation pass per SKU, replacing the
+    legacy greedy top-seller rationing for the SOR pick list.
+
+    Each SKU's finite warehouse pool (soh_wh, shared across every claimant) is
+    allocated in two tiers:
+
+      Tier 1 — physical STORES only (Online has no shelf facing): protect each
+        store's presentation minimum (class floor gap) and its need-to-next-
+        dispatch cover, capped by the line's total need. If the pool can't even
+        cover the summed Tier-1 demand, it is split fair-share by Tier-1 weight
+        (largest-remainder) and EVERY line is flagged a buying/IBT shortfall.
+      Tier 2 — whatever's left is distributed across ALL claimants (stores AND
+        Online) by weight = demand_share x margin x sub_factor, capped at each
+        line's residual need. Online competes ONLY here, so it can never pre-empt
+        a store's presentation minimum.
+
+    demand_share is the line's recency-weighted velocity (units_sold fallback);
+    margin = (price-cost)/price from the product master (neutral 1.0 when
+    unknown — note it is per-SKU so it is constant within a pool and only shifts
+    weights when a future cross-SKU budget is added; the live channel lever is
+    sub_factor). Mutates each row: out_key, wh_constrained, shortfall_units,
+    route_to_buying, tier1_shortfall, alloc_tier1, alloc_tier2."""
+    from collections import defaultdict
+    sub_factor = max(0.0, float(cfg.get("sub_factor", 1.0) or 0.0))
+    online_sub = max(0.0, float(cfg.get("online_sub_factor", sub_factor) or 0.0))
+    dispatch_wk = REPLEN_DISPATCH_DAYS / 7.0
+    groups = defaultdict(list)
+    for r in rows:
+        groups[r.get(sku_key)].append(r)
+    for sku, grp in groups.items():
+        remaining = max((int(r.get(wh_key) or 0) for r in grp), default=0)
+        for r in grp:
+            r[out_key] = 0
+            r["alloc_tier1"] = 0
+            r["alloc_tier2"] = 0
+        # ---- Tier 1: store presentation minimum + need-to-next-dispatch -------
+        store_lines = [r for r in grp if r.get("pos_location") != ONLINE_SHOP_ZETU]
+        t1 = {}
+        for r in store_lines:
+            need = max(0, int(r.get(need_key) or 0))
+            floor_gap = max(0, int(r.get("floor") or 0) - int(r.get("soh_store") or 0))
+            v = float(r.get("velocity") or 0.0)
+            disp_cover = -(-int(round(v * dispatch_wk * 100)) // 100) if v > 0 else 0
+            disp_gap = max(0, disp_cover - int(r.get("soh_store") or 0))
+            t1[id(r)] = min(need, max(floor_gap, disp_gap))
+        total_t1 = sum(t1.values())
+        tier1_short = False
+        if total_t1 > 0 and remaining >= total_t1:
+            for r in store_lines:
+                r["alloc_tier1"] = t1[id(r)]
+            remaining -= total_t1
+        elif total_t1 > 0:
+            # Even Tier 1 is under-funded → fair-share by Tier-1 weight; flag all.
+            tier1_short = True
+            share = _largest_remainder({id(r): t1[id(r)] for r in store_lines},
+                                       remaining)
+            for r in store_lines:
+                r["alloc_tier1"] = min(t1[id(r)], share.get(id(r), 0))
+            remaining = 0
+        # ---- Tier 2: remainder by demand_share x margin x sub_factor ----------
+        if remaining > 0:
+            margin = float(margin_map.get(sku, 1.0) or 1.0)
+            weights = {}
+            claim = []
+            for r in grp:
+                residual = max(0, int(r.get(need_key) or 0) - int(r["alloc_tier1"]))
+                if residual <= 0:
+                    continue
+                v = float(r.get("velocity") or 0.0)
+                ds = v if v > 0 else float(int(r.get("units_sold") or 0))
+                sf = online_sub if r.get("pos_location") == ONLINE_SHOP_ZETU else sub_factor
+                w = ds * margin * sf
+                if w <= 0:
+                    continue
+                claim.append(r)
+                weights[id(r)] = (w, residual)
+            if claim:
+                remaining = _weighted_capped_alloc(claim, weights, remaining,
+                                                   "alloc_tier2")
+        # ---- finalize per line -----------------------------------------------
+        for r in grp:
+            need = max(0, int(r.get(need_key) or 0))
+            a = min(need, int(r["alloc_tier1"]) + int(r["alloc_tier2"]))
+            r[out_key] = a
+            r["wh_constrained"] = a < need
+            r["shortfall_units"] = max(0, need - a)
+            r["tier1_shortfall"] = bool(tier1_short)
+            r["route_to_buying"] = bool(r["shortfall_units"] > 0)
     return rows
 
 
@@ -11685,9 +12333,17 @@ def _replen_sor_summary(weeks, overstock_woc=REPLEN_OVERSTOCK_WOC):
     """) or [{}]
     r = rows[0] if rows else {}
     u = float(r.get("units_sold") or 0)
-    st = float(r.get("store_stock") or 0)
+    st_gross = float(r.get("store_stock") or 0)
     orphan = float(r.get("orphan_stock") or 0)
     drag = float(r.get("drag_stock") or 0)
+    # Phase 3 step 3 quarantine: subtract dispatched-but-unconfirmed (in-transit)
+    # units from the denominator (clamped >= 0). Odoo validates an internal
+    # transfer to the destination store on paper, so all_inventory.available can
+    # already include stock physically still in a truck; that inflates store_stock
+    # and the line can't actually sell until received. The base SOR FORMULA is
+    # unchanged — only its store_stock input is refined to on-the-floor units.
+    in_transit = float(_replen_in_transit_total())
+    st = max(0.0, st_gross - in_transit)
 
     def _sor(num, denom_stock):
         d = num + denom_stock
@@ -11695,6 +12351,7 @@ def _replen_sor_summary(weeks, overstock_woc=REPLEN_OVERSTOCK_WOC):
 
     return {
         "units_sold": int(u), "store_stock": int(st),
+        "store_stock_gross": int(st_gross), "in_transit_units": int(in_transit),
         "orphan_stock": int(orphan), "drag_stock": int(drag),
         "current_sor": _sor(u, st),
         "saleable_sor": _sor(u, max(0.0, st - orphan)),
@@ -11956,13 +12613,85 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
         base["replenish"] = need  # capped to the warehouse pool below
         actionable.append(base)
 
-    # Allocate each SKU's finite warehouse pool across stores (top sellers first),
-    # so suggested never exceeds warehouse stock. Deploy-now lines (a proven-demand
-    # store at zero) are funded first inside their SKU group by the sold-desc order.
-    _cap_replenish_to_warehouse(actionable, need_key="need", out_key="replenish")
-    for r in actionable:
-        r["wh_constrained"] = int(r.get("replenish") or 0) < int(r.get("need") or 0)
+    # Per-SKU gross margin = (price - cost) / price from the product master, used
+    # as a Tier-2 fair-share weight term. Best-effort: neutral 1.0 when price/cost
+    # are unknown or non-positive. One batched lookup over the candidate SKUs.
+    margin_map = {}
+    price_map = {}
+    cand_skus = sorted({r.get("sku") for r in actionable if r.get("sku")})
+    if cand_skus:
+        _in = ",".join("'" + _sql_str(s) + "'" for s in cand_skus)
+        try:
+            for m in (run_query(
+                    "SELECT sku, MAX(price) AS price, MAX(cost) AS cost "
+                    "FROM all_products_clean WHERE sku IN (" + _in + ") "
+                    "GROUP BY sku") or []):
+                price = float(m.get("price") or 0)
+                cost = float(m.get("cost") or 0)
+                if price > 0:
+                    price_map[m["sku"]] = price
+                if price > 0 and 0 < cost < price:
+                    margin_map[m["sku"]] = max(0.05, min(1.0, (price - cost) / price))
+        except Exception:
+            margin_map = {}
+            price_map = {}
+
+    # Phase 3 step 1: ONE two-tier fair-share allocation pass per SKU (replaces the
+    # legacy greedy top-seller rationing). Tier 1 protects every store's
+    # presentation minimum + need-to-next-dispatch; Tier 2 splits the remainder by
+    # demand_share x margin x sub_factor with Online competing only after store
+    # floors are safe. Sets replenish / wh_constrained / shortfall_units /
+    # route_to_buying / tier1_shortfall in place.
+    _allocate_replenishment_fair_share(actionable, cfg, margin_map,
+                                       need_key="need", out_key="replenish")
     actionable = [r for r in actionable if int(r.get("replenish") or 0) > 0]
+
+    # Phase 3 step 2: corridor dispatch cadence + min-transfer gate. Each line is
+    # mapped to a dispatch corridor (calendar), its next dispatch date / dispatch-
+    # today flag computed, then a STORE-level batch gate: a store dispatches today
+    # only if it's a corridor dispatch day AND clears min_transfer_units OR
+    # min_transfer_kes. A-class stockouts (deploy_now) always expedite, overriding
+    # both the calendar and the min gate (and pull the rest of that store with
+    # them, since the truck is already going).
+    flow_cfg = _replen_flow_config()
+    eat_today = _replen_eat_today()
+    min_units = int(flow_cfg.get("min_transfer_units", 0) or 0)
+    min_kes = float(flow_cfg.get("min_transfer_kes", 0) or 0)
+    _disp_cache = {}
+    for r in actionable:
+        corridor = _replen_corridor(r.get("pos_location"), r.get("country"), flow_cfg)
+        if corridor not in _disp_cache:
+            _disp_cache[corridor] = _replen_next_dispatch(corridor, flow_cfg, eat_today)
+        nd, today_ok = _disp_cache[corridor]
+        r["corridor"] = corridor
+        r["next_dispatch"] = nd.isoformat()
+        r["dispatch_today"] = bool(today_ok)
+        r["expedite"] = bool(r.get("deploy_now") and r.get("sku_class") == "A")
+    # Store-level batch accumulation + gate.
+    store_units, store_kes, store_expedite = {}, {}, {}
+    for r in actionable:
+        pos = r.get("pos_location")
+        q = int(r.get("replenish") or 0)
+        store_units[pos] = store_units.get(pos, 0) + q
+        store_kes[pos] = store_kes.get(pos, 0.0) + q * float(price_map.get(r.get("sku"), 0) or 0)
+        store_expedite[pos] = store_expedite.get(pos, False) or r["expedite"]
+    for r in actionable:
+        pos = r.get("pos_location")
+        meets_min = (store_units.get(pos, 0) >= min_units) or \
+                    (min_kes > 0 and store_kes.get(pos, 0.0) >= min_kes)
+        below_min = not meets_min
+        r["store_dispatch_units"] = int(store_units.get(pos, 0))
+        r["store_dispatch_kes"] = round(store_kes.get(pos, 0.0), 2)
+        r["below_min_transfer"] = bool(below_min)
+        if r["expedite"]:
+            r["dispatch_status"] = "expedite"
+        elif store_expedite.get(pos):
+            # Truck already going for an A-class stockout in this store — piggyback.
+            r["dispatch_status"] = "dispatch"
+        elif r.get("dispatch_today") and not below_min:
+            r["dispatch_status"] = "dispatch"
+        else:
+            r["dispatch_status"] = "hold_accumulate"
 
     # Conservative projected SOR uplift, bounded by what's actually pickable and
     # identical to the metric measured later (spec §10): expected incremental
@@ -11975,6 +12704,13 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
                                r["velocity"] * REPLEN_DISPATCH_DAYS / 7.0)
         if r.get("deploy_now"):
             deploy_now_rows.append(r)
+
+    # Phase 3 step 4: scale the raw projection by the learned calibration factor
+    # (realised/projected, rolling median, clamped [0.25, 2.0]) so the projected-
+    # uplift number self-corrects toward what past replenishments actually
+    # delivered. Defaults to 1.0 until reconciliation has run.
+    proj_calibration = _replen_proj_calibration()
+    incremental *= proj_calibration
 
     summary = _replen_sor_summary(weeks, overstock_woc)
     u = float(summary["units_sold"])
@@ -12005,6 +12741,7 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
         "demand_weeks": weeks,
         "ruleset_version": REPLEN_RULESET_VERSION,
         "config": cfg,
+        "flow_config": flow_cfg,
         "rows": actionable[:int(limit)],
         "held_back": held_back[:200],
         "deploy_now_count": len(deploy_now_rows),
@@ -12338,6 +13075,36 @@ def analytics_replenishment_sizing_config_put(payload: dict = Body(...),
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "saved": saved, "config": _replen_sizing_config()}
+
+
+@app.get("/api/analytics/replenishment-flow-config")
+def analytics_replenishment_flow_config_get():
+    """Active Phase 3 corridor cadence + min-transfer gate knobs (dispatch
+    calendars per corridor, Kenya metro keyword split, min transfer units/KES)
+    with spec defaults, so ops can see the flow policy driving the pick list."""
+    return {"config": _replen_flow_config(),
+            "defaults": {
+                "corridor_days": {k: list(v) for k, v in
+                                  _REPLEN_FLOW_DEFAULTS["corridor_days"].items()},
+                "metro_pos": list(_REPLEN_FLOW_DEFAULTS["metro_pos"]),
+                "min_transfer_units": _REPLEN_FLOW_DEFAULTS["min_transfer_units"],
+                "min_transfer_kes": _REPLEN_FLOW_DEFAULTS["min_transfer_kes"],
+            },
+            "corridors": list(_REPLEN_FLOW_CORRIDORS)}
+
+
+@app.put("/api/analytics/replenishment-flow-config")
+def analytics_replenishment_flow_config_put(payload: dict = Body(...),
+                                            request: Request = None):
+    """Admin-only: retune the corridor dispatch calendars + min-transfer gate
+    without a code change. A partial JSON object is merged over the stored
+    override (validated: weekdays 0-6, non-negative thresholds)."""
+    _require_admin(request)
+    try:
+        saved = _set_replen_flow_config(payload or {})
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "saved": saved, "config": _replen_flow_config()}
 
 
 @app.get("/api/analytics/replenishment-picker-scorecard")
