@@ -891,10 +891,13 @@ const CategorySubcatTable = ({ subcategories, view }) => {
             Clear
           </button>
         )}
-        <span className="ml-auto text-muted">
+        <span
+          className="ml-auto text-muted"
+          title="Net of discounts & returns, merch-subcategory-mapped only — won't reconcile to the gross all-channel Total Revenue KPI above (which includes Online + uncategorised / non-merch items)."
+        >
           {filter === "all"
-            ? <>Total: <span className="font-bold text-foreground tabular-nums">{fmtKES(totalRev)}</span> · <span className="font-bold text-foreground tabular-nums">{fmtNum(totalUnits)}u</span></>
-            : <>Filtered: <span className="font-bold text-foreground tabular-nums">{fmtKES(visibleTotals.rev)}</span> · <span className="font-bold text-foreground tabular-nums">{fmtNum(visibleTotals.units)}u</span></>
+            ? <>Total (net, merch): <span className="font-bold text-foreground tabular-nums">{fmtKES(totalRev)}</span> · <span className="font-bold text-foreground tabular-nums">{fmtNum(totalUnits)}u</span></>
+            : <>Filtered (net, merch): <span className="font-bold text-foreground tabular-nums">{fmtKES(visibleTotals.rev)}</span> · <span className="font-bold text-foreground tabular-nums">{fmtNum(visibleTotals.units)}u</span></>
           }
         </span>
       </div>
@@ -2008,6 +2011,9 @@ const ExecutiveSummary = () => {
             subtitle={
               <span>
                 Categories rolled up vs same period last year, with each subcategory listed underneath. Sorted worst-decline first so the bleeding buckets surface at the top. Color-coded Δ% cells make growth (green) and decline (red) instantly readable.
+                <span className="block mt-1 text-[11px] text-muted">
+                  Revenue here is <span className="font-semibold">net of discounts &amp; returns</span> and covers <span className="font-semibold">only items mapped to a merchandise subcategory</span>, so this breakdown total is lower than the gross Total Revenue KPI above — which is all-channel and includes Online plus uncategorised / non-merch items.
+                </span>
                 {selectedCountry && (
                   <span className="ml-1.5 text-[11px] font-bold text-brand">
                     Filtered to {selectedCountry}{countryLoading ? " — loading…" : ""}
