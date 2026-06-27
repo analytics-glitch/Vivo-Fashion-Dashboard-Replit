@@ -1286,7 +1286,7 @@ REPLEN_DEMAND_WEEKS_DEFAULT = 4
 REPLEN_DEMAND_WEEKS_ALLOWED = (4, 8, 12)
 # Cover horizon (weeks) the suggested target is sized to per corridor cadence
 # (spec §4/§7). Short cycle so a top-up lands before the next dispatch slot.
-REPLEN_COVER_WEEKS = 2.0
+REPLEN_COVER_WEEKS = 6.0
 # Online (Shop Zetu) has no shelf/presentation facing, so it is demand-sized on a
 # SHORTER cover cycle than physical stores (spec §4 — Phase 2 step 3) and gets NO
 # presentation floor (target = ceil(velocity x cover) only).
