@@ -79,3 +79,41 @@ alerting (email + WhatsApp, degrades gracefully when creds/recipients missing).
   **Why:** prod is a separate, initially-empty DB and the agent can't run a manual
   prod backfill — without this, Tier-2 stays silent ~10 days. Seed detection is a
   global count (fold is one batched execute_values = all-or-nothing on a fresh DB).
+
+## Step 6 — cross-surface (cross-page) consistency (`cross_surface.py`)
+- Different dashboard pages render the SAME metric from DIFFERENT `/api` endpoints,
+  so a SQL drift in one endpoint silently makes two pages disagree even when the
+  data is fine. This step is the guard for that class of bug: it reconciles the
+  headline `/api/kpis` against every endpoint that decomposes the same measures —
+  `/api/analytics/total-sales-summary` (direct), Σ`/api/daily-trend`,
+  Σ`/api/sales-summary`, Σ`/api/country-summary` (date-only scenarios only) — plus
+  the inventory pair `/api/inventory-summary` vs `/api/analytics/inventory-summary`
+  and its internal `total_units == Σ by_location == Σ by_subcat`.
+- **It is the ONLY agent step that talks HTTP, and it is strictly read-only.** It
+  logs in once with the seed-admin creds (`SEED_ADMIN_EMAIL` default
+  `admin@vivofashiongroup.com` + `SEED_ADMIN_PASSWORD`), caches the Bearer, retries
+  once on 401, and only GETs. NO dashboard/endpoint code is touched. **Why:** the
+  task's hard constraint — verify cross-page agreement without modifying the
+  surfaces being verified, so the check can never paper over the bug it's hunting.
+- API base = `http://localhost:<PORT>/api` (PORT defaults 8080 in BOTH dev workflow
+  and the prod watchdog/Reserved VM), env-overridable via `VALIDATION_API_BASE`.
+  Same port in both because the agent runs as a subprocess on the SAME VM as uvicorn.
+- **Never raises into the sync loop** (defence-in-depth): `run_checks(period)` returns
+  `(exceptions, skip_reason)` and converts unreachable-API / bad-login / per-scenario
+  errors into a skip string; `run.py` also wraps the call in try/except. A flaky API
+  is a skip, never a crash. Runs in dry-run too (read-only); skipped only on backfill.
+- **Cross-surface decides its OWN severity and bypasses governance/auto-fix** (these
+  breaks are never auto-fixable — you can't UPDATE a row to fix two disagreeing
+  endpoints). RED if money gap ≥ `MATERIALITY_KES` (50k) OR relative gap ≥
+  `CROSS_SURFACE_RED_REL` (1%), else AMBER. A mismatch only counts when BOTH
+  rel > `CROSS_SURFACE_TOL` (0.05%) AND abs gap > a floor (money 100 KES / count 2) —
+  the floor absorbs per-bucket integer ROUNDing (Σ of N ROUNDed rows vs the ROUNDed
+  grand total differs by ~N/2). Exceptions still upsert + fold into reds/ambers →
+  overall colour → alert payload like any Tier-1 break (entity_type `cross_surface`,
+  entity = scenario e.g. `30d_all`/`30d_kenya`/`inventory`, period_date = run day).
+- Filter-contract gotcha that drives the scenario design: `country-summary` takes
+  date ONLY (no country/channel) → reconciled only in the no-filter scenarios;
+  `daily-trend` takes date+country (no channel); `sales-summary`/`total-sales-summary`
+  take date+country+channel (full kpis contract). `daily-trend`'s units column is
+  `units` (NOT `units_sold`); country/sales-summary use `units_sold`; kpis uses
+  `total_units`/`total_orders` vs the decomposition's `units`/`orders`.

@@ -16,7 +16,8 @@ import json
 import uuid
 from datetime import date, datetime, timedelta
 
-from . import alerting, baselines, config, consistency, db, diagnose, governance
+from . import (alerting, baselines, config, consistency, cross_surface, db,
+               diagnose, governance)
 from .metrics import compute
 
 
@@ -174,6 +175,39 @@ def run(days: int, dry_run: bool, evaluate_days: int, backfill_only: bool = Fals
         elif exc["severity"] == "amber":
             ambers += 1
 
+    # Step 6 — cross-surface (cross-endpoint) consistency. Read-only HTTP against
+    # the live /api: the SAME metric under the SAME filters must read the same
+    # number on every page. Runs in dry-run too (no writes to dashboards); skipped
+    # only on a backfill-only pass. Self-skips (never raises) if the API/login is
+    # unavailable, so a flaky API can never destabilise the run. These breaks fold
+    # into the same reds/ambers → overall colour → alert payload.
+    xsurf_exc, xsurf_skip = [], None
+    if not backfill_only:
+        try:
+            xsurf_exc, xsurf_skip = cross_surface.run_checks(d1)
+        except Exception as e:  # noqa: BLE001 — defence in depth; run_checks shouldn't raise
+            xsurf_skip = f"error: {e}"
+    for exc in xsurf_exc:
+        exc_id = _upsert_exception(conn, run_id, exc, dry_run)
+        exc["id"] = exc_id
+        if exc["severity"] == "red":
+            reds += 1
+            red_items.append({
+                "id": exc_id, "entity": f'{exc["entity_type"]}:{exc["entity"]}',
+                "metric": exc.get("metric"), "check_code": exc.get("check_code"),
+                "period_date": str(exc.get("period_date")),
+                "observed": round(float(exc.get("observed") or 0), 2),
+                "expected_low": exc.get("expected_low"),
+                "expected_high": exc.get("expected_high"),
+                "diagnosis": (exc.get("diagnosis") or {}).get("cause"),
+                "proposed_fix_sql": exc.get("proposed_fix_sql")})
+        elif exc["severity"] == "amber":
+            ambers += 1
+    _audit(conn, run_id, dry_run, phase="cross_surface", event="checks",
+           detail={"exceptions": len(xsurf_exc),
+                   "reds": sum(1 for e in xsurf_exc if e["severity"] == "red"),
+                   "skip": xsurf_skip})
+
     report_rows = [m for m in rows if m["period_date"] >= report_start]
     n_entities = len({(m["entity_type"], m["entity"], m["period_date"]) for m in report_rows})
     definitions = _definition_residuals(report_rows)
@@ -185,6 +219,7 @@ def run(days: int, dry_run: bool, evaluate_days: int, backfill_only: bool = Fals
         "tier1": len(tier1), "tier2": len(tier2), "reds": reds, "ambers": ambers,
         "folded": folded, "diagnosed": diagnosed, "definitions": definitions,
         "seeded": seeded, "red_items": red_items[:25],
+        "cross_surface": len(xsurf_exc), "cross_surface_skip": xsurf_skip,
     }
 
     alert_res = alerting.send(summary, dry_run)
@@ -234,6 +269,10 @@ def _print_report(summary, tier1, tier2, alert_res, dry_run):
     print(f"AMBER (auto-handled): {summary['ambers']}   "
           f"RED (needs approval): {summary['reds']}   "
           f"LLM diagnoses: {summary['diagnosed']}")
+    xs = summary.get("cross_surface", 0)
+    xs_skip = summary.get("cross_surface_skip")
+    print(f"Cross-surface (cross-page) mismatches: {xs}"
+          + (f"   [skipped: {xs_skip}]" if xs_skip else ""))
     print()
     print("Definitions used / residuals:")
     for d in summary["definitions"]:

@@ -107,6 +107,42 @@ TWILIO_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
 TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM", "").strip()
 
 
+# ── Cross-surface (cross-endpoint) reconciliation ─────────────────────────────
+# The same business metric, under the same filters, must read the SAME number on
+# every dashboard page. Each page is backed by a different /api endpoint, so this
+# step logs in read-only and reconciles the headline KPI endpoint against every
+# endpoint that decomposes the same measures. All thresholds are env-overridable.
+CROSS_SURFACE_ENABLED = _b("VALIDATION_CROSS_SURFACE", True)
+# Reach the API on its own port (same VM in dev and the prod Reserved VM, where
+# the watchdog runs uvicorn on PORT). An explicit base wins for unusual setups.
+CROSS_SURFACE_API_BASE = (
+    os.environ.get("VALIDATION_API_BASE", "").strip().rstrip("/")
+    or f"http://localhost:{os.environ.get('PORT', '8080').strip() or '8080'}/api"
+)
+CROSS_SURFACE_LOGIN_EMAIL = (
+    os.environ.get("VALIDATION_API_EMAIL", "").strip().lower()
+    or os.environ.get("SEED_ADMIN_EMAIL", "").strip().lower()
+    or "admin@vivofashiongroup.com"
+)
+CROSS_SURFACE_LOGIN_PASSWORD = (
+    os.environ.get("VALIDATION_API_PASSWORD", "").strip()
+    or os.environ.get("SEED_ADMIN_PASSWORD", "").strip()
+)
+# A mismatch only counts when BOTH the relative gap exceeds the tolerance AND the
+# absolute gap exceeds the floor (the floor absorbs per-bucket integer rounding —
+# summing N ROUNDed rows can differ from the ROUNDed grand total by ~N/2).
+CROSS_SURFACE_TOL = _f("VALIDATION_CROSS_SURFACE_TOL", 0.0005)        # 0.05%
+CROSS_SURFACE_MONEY_FLOOR = _f("VALIDATION_CROSS_SURFACE_MONEY_FLOOR", 100.0)  # KES
+CROSS_SURFACE_COUNT_FLOOR = _i("VALIDATION_CROSS_SURFACE_COUNT_FLOOR", 2)
+# A count/unit mismatch this large (relative) is RED even with no KES at stake;
+# money mismatches are RED at/above MATERIALITY_KES (shared with governance).
+CROSS_SURFACE_RED_REL = _f("VALIDATION_CROSS_SURFACE_RED_REL", 0.01)  # 1%
+CROSS_SURFACE_TIMEOUT_SEC = _i("VALIDATION_CROSS_SURFACE_TIMEOUT", 30)
+CROSS_SURFACE_COUNTRIES = _csv("VALIDATION_CROSS_SURFACE_COUNTRIES") or [
+    "Kenya", "Uganda", "Rwanda", "Online",
+]
+
+
 METRICS = [
     "total_sales",
     "net_sales",
