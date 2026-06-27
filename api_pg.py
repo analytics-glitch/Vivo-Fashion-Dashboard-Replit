@@ -1368,8 +1368,12 @@ def _set_replen_sizing_config(patch):
             if v < 0:
                 raise ValueError(k + " must be >= 0")
             clean[k] = v
-    if "class_a_vpw" in clean and "class_b_vpw" in clean and \
-            clean["class_a_vpw"] < clean["class_b_vpw"]:
+    # Validate the class threshold against the RESULTING active config (current
+    # override + this patch), not only the keys present in this one payload — a
+    # partial update that raises class_b alone could otherwise invert the order.
+    effective = _replen_sizing_config()
+    effective.update(clean)
+    if effective["class_a_vpw"] < effective["class_b_vpw"]:
         raise ValueError("class_a_vpw must be >= class_b_vpw")
     _users_exec(
         "INSERT INTO app_config (key, value, updated_at) "
@@ -11824,14 +11828,31 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
     deploy_now_rows = []
 
     # ── Censored-demand correction pre-pass (Phase 2 step 1) ──────────────────
-    # A store-SKU currently at zero shelf stock (soh_store == 0) almost certainly
-    # stocked out DURING the window, so its observed sales are right-censored and
-    # understate true demand. We benchmark each SKU's uncensored per-store demand
-    # rate against the stores STILL in stock for that SKU (soh_store > 0, online
-    # pool included) using the shared recency-weighted EWMA, then lift a censored
-    # line to that rate when it is higher. This only ever RAISES a stocked-out
-    # hero (Pareto-safe) and only for a store-SKU with proven prior local sale
+    # Demand is right-censored whenever a store-SKU was OUT OF STOCK at any point
+    # in the velocity window — its observed sales then understate true demand. Two
+    # signals mark that: (a) the store is at zero shelf stock right now
+    # (soh_store == 0), and (b) the Phase-1 stockout facts — the daily
+    # fact_replen_suggestion snapshots recorded shelf_qty_at_calc / censored_flag
+    # per (pos_location, sku) — show it hit zero / was flagged censored DURING the
+    # window even if it has since been refilled (soh_store > 0 now). Without (b) a
+    # fast mover that stocked out mid-window but is back in stock would stay
+    # understated. We benchmark each SKU's uncensored per-store demand rate against
+    # the stores STILL in stock for that SKU (soh_store > 0, online pool included)
+    # using the shared recency-weighted EWMA, then lift a censored line to that
+    # rate when it is higher. This only ever RAISES a stocked-out hero
+    # (Pareto-safe) and only for a store-SKU with proven prior local sale
     # (guaranteed by the universe gate) — never-sold SKUs never enter here.
+    hist_censored = set()   # {(pos_location, sku)} out-of-stock during the window per facts
+    try:
+        _ensure_replen_tables()
+        for fr in (run_query(
+                "SELECT DISTINCT pos_location, sku FROM fact_replen_suggestion "
+                "WHERE business_date >= CURRENT_DATE - INTERVAL '" + str(vel_days) + " days' "
+                "  AND (shelf_qty_at_calc = 0 OR censored_flag = TRUE)") or []):
+            hist_censored.add((fr.get("pos_location"), fr.get("sku")))
+    except Exception:
+        hist_censored = set()
+
     peer_acc = {}   # sku -> [sum_u28_instock, sum_u56_instock, instock_store_count]
     for r in rows:
         if int(r.get("soh_store") or 0) > 0:
@@ -11857,7 +11878,10 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
         # Recency-weighted weekly velocity (shared dashboard EWMA), not a flat
         # units/lookback average.
         own_vpw = _ewma_weekly(float(r.get("u28") or 0), float(r.get("u56") or 0))
-        censored = soh_store == 0
+        # Censored = currently out of stock OR flagged out-of-stock during the
+        # window by the Phase-1 stockout facts (so a since-refilled fast mover is
+        # still corrected).
+        censored = (soh_store == 0) or ((pos, sku) in hist_censored)
         peer_vpw = _peer_vpw(sku) if censored else 0.0
         vpw = max(own_vpw, peer_vpw) if censored else own_vpw
         censored_corrected = bool(censored and vpw > own_vpw + 1e-9)
