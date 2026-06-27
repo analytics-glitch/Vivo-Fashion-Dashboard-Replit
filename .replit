@@ -36,6 +36,10 @@ args = "ShopZetu QL Backfill"
 task = "workflow.run"
 args = "compile"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "test"
+
 [[workflows.workflow]]
 name = "Sync Watchdog"
 author = "agent"
@@ -84,6 +88,17 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python3 check_python_syntax.py"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "test"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python -m unittest validation_agent.test_cross_surface"
 
 [workflows.workflow.metadata]
 isValidation = true
