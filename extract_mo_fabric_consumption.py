@@ -77,11 +77,24 @@ def create_table(cur):
             fabric_name   TEXT,
             consumed_qty  NUMERIC,
             uom           TEXT,
+            finished_product_id  BIGINT,
+            finished_sku         TEXT,
+            finished_name        TEXT,
+            finished_tmpl_id     BIGINT,
+            style_name           TEXT,
             _loaded_at    TIMESTAMP,
             PRIMARY KEY (odoo_mo_id, component_id)
         );
         CREATE INDEX IF NOT EXISTS idx_mo_fab_cons_done ON mo_fabric_consumption(done_date);
         CREATE INDEX IF NOT EXISTS idx_mo_fab_cons_sku  ON mo_fabric_consumption(fabric_sku);
+        -- Finished-product / style columns (added later for the per-style
+        -- metres-per-garment breakdown); ADD IF NOT EXISTS migrates existing tables.
+        ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS finished_product_id BIGINT;
+        ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS finished_sku        TEXT;
+        ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS finished_name       TEXT;
+        ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS finished_tmpl_id    BIGINT;
+        ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS style_name          TEXT;
+        CREATE INDEX IF NOT EXISTS idx_mo_fab_cons_style ON mo_fabric_consumption(style_name);
         """
     )
 
@@ -101,24 +114,46 @@ def extract(uid, models, cur, since_str, now):
         "search_read",
         [[["state", "=", "done"], ["dps_id", "!=", False], ["date_finished", ">=", since_str]]],
         {
-            "fields": ["name", "dps_id", "date_finished", "qty_produced", "move_raw_ids"],
+            "fields": ["name", "dps_id", "date_finished", "qty_produced",
+                       "product_id", "move_raw_ids"],
             "order": "date_finished asc",
         },
     )
     log.info("Done DPS MOs in window: %d", len(mos))
 
-    # Map each raw-component move -> its MO, and stash MO metadata.
+    # Map each raw-component move -> its MO, and stash MO metadata (including the
+    # finished product produced by the MO so consumption can be grouped by style).
     move_to_mo = {}
     mo_meta = {}
+    finished_pids = set()
     for mo in mos:
+        fpid = mo["product_id"][0] if mo.get("product_id") else None
+        if fpid:
+            finished_pids.add(fpid)
         mo_meta[mo["id"]] = {
             "mo_ref": mo.get("name"),
             "dps_ref": mo["dps_id"][1] if mo.get("dps_id") else None,
             "done_date": (mo.get("date_finished") or "")[:10] or None,
             "produced_qty": mo.get("qty_produced") or 0,
+            "finished_product_id": fpid,
         }
         for mid in mo.get("move_raw_ids") or []:
             move_to_mo[mid] = mo["id"]
+
+    # Resolve finished products -> sku/name + template (the style: variants in
+    # different sizes/colours share one product.template).
+    finished = {}
+    for chunk in _chunks(sorted(finished_pids), 500):
+        for p in models.execute_kw(
+            ODOO_DB,
+            uid,
+            ODOO_PASSWORD,
+            "product.product",
+            "read",
+            [chunk],
+            {"fields": ["default_code", "name", "product_tmpl_id"]},
+        ):
+            finished[p["id"]] = p
 
     move_ids = list(move_to_mo.keys())
     if not move_ids:
@@ -180,6 +215,12 @@ def extract(uid, models, cur, since_str, now):
     rows = []
     for (mo_id, pid), rec in agg.items():
         meta = mo_meta[mo_id]
+        fp = finished.get(meta.get("finished_product_id")) or {}
+        tmpl = fp.get("product_tmpl_id")
+        tmpl_id = tmpl[0] if tmpl else None
+        # Style = finished-product template name (its variants in different sizes /
+        # colours share one template); fall back to the variant name if unset.
+        style = (tmpl[1] if tmpl else None) or fp.get("name")
         rows.append(
             (
                 mo_id,
@@ -192,6 +233,11 @@ def extract(uid, models, cur, since_str, now):
                 rec["name"],
                 rec["qty"],
                 rec["uom"],
+                meta.get("finished_product_id"),
+                fp.get("default_code"),
+                fp.get("name"),
+                tmpl_id,
+                style,
                 now,
             )
         )
@@ -205,7 +251,9 @@ def extract(uid, models, cur, since_str, now):
         """
         INSERT INTO mo_fabric_consumption
             (odoo_mo_id, mo_ref, dps_ref, done_date, produced_qty,
-             component_id, fabric_sku, fabric_name, consumed_qty, uom, _loaded_at)
+             component_id, fabric_sku, fabric_name, consumed_qty, uom,
+             finished_product_id, finished_sku, finished_name, finished_tmpl_id,
+             style_name, _loaded_at)
         VALUES %s
         ON CONFLICT (odoo_mo_id, component_id) DO UPDATE SET
             mo_ref=EXCLUDED.mo_ref,
@@ -216,6 +264,11 @@ def extract(uid, models, cur, since_str, now):
             fabric_name=EXCLUDED.fabric_name,
             consumed_qty=EXCLUDED.consumed_qty,
             uom=EXCLUDED.uom,
+            finished_product_id=EXCLUDED.finished_product_id,
+            finished_sku=EXCLUDED.finished_sku,
+            finished_name=EXCLUDED.finished_name,
+            finished_tmpl_id=EXCLUDED.finished_tmpl_id,
+            style_name=EXCLUDED.style_name,
             _loaded_at=EXCLUDED._loaded_at
         """,
         rows,

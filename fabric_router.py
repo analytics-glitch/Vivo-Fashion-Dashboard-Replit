@@ -697,6 +697,89 @@ def mo_missing_conversion(days: int = Query(default=90)):
     }
 
 
+# ── Metres per garment, broken down by finished style ──────
+# Same per-MO conversion + exclusion rule as the headline KPI above, but the
+# qualifying MOs are grouped by their finished-product style (mo_fabric_consumption
+# .style_name, captured from mrp.production.product_id's template in the extract).
+# Returns one row per style: total metres, garments produced, MO count, and the
+# style's metres-per-garment — so the team can spot the heaviest fabric consumers.
+@fabric_router.get("/api/fabric/metres-per-garment-by-style")
+def metres_per_garment_by_style(days: int = Query(default=90),
+                                limit: int = Query(default=100)):
+    days = max(1, min(int(days or 90), 730))
+    limit = max(1, min(int(limit or 100), 1000))
+    with _get_conn() as conn:
+        rows = q(conn, """
+            SELECT c.odoo_mo_id,
+                   c.produced_qty,
+                   c.consumed_qty,
+                   lower(coalesce(c.uom,'')) AS uom,
+                   c.style_name,
+                   c.finished_sku,
+                   p.kg_per_mtr_eff AS kpm
+            FROM mo_fabric_consumption c
+            LEFT JOIN raw_fabric_products p ON p.id = c.component_id
+            WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
+        """, [days])
+
+    KG_UOMS = {"kg", "g"}
+    M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
+    # First fold rows -> per-MO (metres + bad flag), carrying the MO's style.
+    mos = {}
+    for r in rows:
+        d = mos.setdefault(
+            r["odoo_mo_id"],
+            {"produced": float(r["produced_qty"] or 0), "metres": 0.0,
+             "bad": False, "has_fabric": False,
+             "style": (r["style_name"] or "").strip() or None,
+             "sku": r["finished_sku"]},
+        )
+        d["has_fabric"] = True
+        qty = float(r["consumed_qty"] or 0)
+        u = r["uom"]
+        kpm = r["kpm"]
+        if u in M_UOMS:
+            d["metres"] += qty
+        elif u in KG_UOMS and kpm and float(kpm) > 0:
+            kg = qty / 1000.0 if u == "g" else qty
+            d["metres"] += kg / float(kpm)
+        else:
+            d["bad"] = True
+
+    # Then roll qualifying MOs up by style (excluded MOs counted but not summed).
+    styles = {}
+    for d in mos.values():
+        key = d["style"] or "(unknown style)"
+        s = styles.setdefault(
+            key, {"style": key, "metres": 0.0, "garments": 0.0,
+                  "mos": 0, "mos_excluded": 0, "sku": d["sku"]},
+        )
+        if d["produced"] <= 0 or not d["has_fabric"]:
+            continue
+        if d["bad"]:
+            s["mos_excluded"] += 1
+            continue
+        s["metres"] += d["metres"]
+        s["garments"] += d["produced"]
+        s["mos"] += 1
+
+    out = []
+    for s in styles.values():
+        if s["garments"] <= 0:
+            continue
+        out.append({
+            "style": s["style"],
+            "finished_sku": s["sku"],
+            "metres_per_garment": round(s["metres"] / s["garments"], 2),
+            "total_metres": round(s["metres"], 1),
+            "garments": round(s["garments"]),
+            "mos": s["mos"],
+            "mos_excluded_missing_conversion": s["mos_excluded"],
+        })
+    out.sort(key=lambda r: r["metres_per_garment"], reverse=True)
+    return {"rows": out[:limit], "window_days": days, "styles": len(out)}
+
+
 # ── Stock by category ──────────────────────────────────────
 @fabric_router.get("/api/fabric/by-category")
 def by_category(location: str = Query(default="RMAT/Stock"),
