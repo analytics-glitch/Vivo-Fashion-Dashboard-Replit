@@ -89,6 +89,19 @@ alerting (email + WhatsApp, degrades gracefully when creds/recipients missing).
   Σ`/api/sales-summary`, Σ`/api/country-summary` (date-only scenarios only) — plus
   the inventory pair `/api/inventory-summary` vs `/api/analytics/inventory-summary`
   and its internal `total_units == Σ by_location == Σ by_subcat`.
+- **Product-page checks (`_check_products`)** reconcile only product totals that are
+  CONTRACTUALLY identical, universe-stable (no date filter / all-country), counts not
+  money: Product-Analysis `summary.{styles,units,stock_units}` == Σ`by_subcategory`
+  == Σ`by_brand`; Range-Mgmt `total_active_styles` == Σ`tier_counts` == `len(rows)`;
+  `inventory-style-counts` `active+retired == total`; and the cross-PAGE invariant
+  PA `summary.styles` == RM `len(rows)+len(retired_rows)` (the shared "styles with
+  current stock" universe). **The trap that shaped the skip list:** PA "active" and
+  RM `total_active_styles` use DIFFERENT active definitions (SOP-gated tiers vs
+  sold-recently) so they are NOT comparable — only the FULL universe (active+retired)
+  reconciles. Likewise the subcategory SALES breakdown is net-of-returns under a
+  `total_sales` label and drops ~3.5% unmapped units, and product "current stock" is
+  the sellable-range universe (~45% below raw inventory) — all DELIBERATELY skipped
+  (same net_sales lesson: only compare what's defined to be equal).
 - **It is the ONLY agent step that talks HTTP, and it is strictly read-only.** It
   logs in once with the seed-admin creds (`SEED_ADMIN_EMAIL` default
   `admin@vivofashiongroup.com` + `SEED_ADMIN_PASSWORD`), caches the Bearer, retries

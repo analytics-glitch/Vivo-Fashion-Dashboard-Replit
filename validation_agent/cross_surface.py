@@ -22,6 +22,17 @@ Reconciliation map (all under identical filters):
 * ``/api/kpis``  ==  Σ ``/api/country-summary`` rows       (date only)
 * ``/api/inventory-summary``  ==  ``/api/analytics/inventory-summary`` and
   ``total_units``  ==  Σ ``by_location``  ==  Σ ``by_subcat`` (internal)
+* Product pages (style-count / breakdown totals that MUST tally):
+  - ``/api/analytics/product-analysis`` summary ``styles``/``units``/``stock_units``
+    ==  Σ ``by_subcategory``  ==  Σ ``by_brand``  (a page's chart must add up to
+    the page's own KPI)
+  - ``/api/range-mgmt/classify`` ``summary.total_active_styles``  ==  Σ
+    ``tier_counts``  ==  ``len(rows)``
+  - ``/api/inventory-style-counts`` ``active_styles + retired_styles``  ==
+    ``total_styles``
+  - cross-PAGE: product-analysis ``summary.styles``  ==  range-mgmt
+    ``len(rows) + len(retired_rows)`` (both are the "styles with current stock"
+    universe, shown on the Products / Product Analysis and Range Management pages)
 
 Reconciled measures per endpoint: ``total_sales``, ``gross_sales``,
 ``orders``/``transactions`` and ``units`` are reconciled against EVERY endpoint
@@ -49,6 +60,19 @@ INTENTIONAL_SKIPS = [
     "endpoints do not expose net_sales and it is not derivable from their fields "
     "(gross-discounts-returns != stored net_sales_kes). net_sales is reconciled "
     "directly vs analytics/total-sales-summary.",
+    "product-analysis.active_styles vs range-mgmt.total_active_styles: skipped -- "
+    "DIFFERENT 'active' definitions (PA active = sold within the velocity window; "
+    "range-mgmt active = SOP-gated tier T1-T4), so they are not expected to match. "
+    "Only the TOTAL styles-with-stock universe is reconciled across the two pages.",
+    "inventory-style-counts.total_styles vs product-analysis/range-mgmt total: "
+    "skipped -- inventory-style-counts counts the sold(182d) UNION in-stock "
+    "universe (includes sold-but-no-stock styles), a wider set than the "
+    "stock-only universe of the Products/Range pages. Each is reconciled "
+    "internally (active+retired==total) instead.",
+    "product subcategory/sales breakdowns vs headline kpis units/sales: skipped -- "
+    "the per-subcategory product breakdowns only cover items mapped to a product "
+    "subcategory (dropping unmapped rows) and report NET sales under a 'total_sales' "
+    "label, so they intentionally do not sum to the all-items headline KPIs.",
 ]
 
 
@@ -78,14 +102,18 @@ def _login(session: requests.Session) -> str:
     return tok
 
 
-def _get(session: requests.Session, path: str, params: dict):
-    """GET a JSON endpoint, re-logging in once on a 401. Raises _Skip on failure."""
+def _get(session: requests.Session, path: str, params: dict, timeout: float = None):
+    """GET a JSON endpoint, re-logging in once on a 401. Raises _Skip on failure.
+
+    ``timeout`` overrides the default fast-endpoint budget (used for the heavy
+    product-analysis scan, which has its own longer timeout)."""
     global _TOKEN
+    tmo = timeout if timeout is not None else config.CROSS_SURFACE_TIMEOUT_SEC
     for attempt in (1, 2):
         headers = {"Authorization": f"Bearer {_TOKEN}"} if _TOKEN else {}
         try:
             r = session.get(config.CROSS_SURFACE_API_BASE + path, params=params,
-                            headers=headers, timeout=config.CROSS_SURFACE_TIMEOUT_SEC)
+                            headers=headers, timeout=tmo)
         except requests.RequestException as e:
             raise _Skip(f"GET {path}: {e}")
         if r.status_code == 401 and attempt == 1:
@@ -260,6 +288,83 @@ def _check_inventory(session, period, out):
             out.append(exc)
 
 
+def _check_products(session, period, out):
+    """Reconcile the product-page style/units/stock totals that MUST tally.
+
+    These are universe-stable (no date filter, all-country) so the comparison is
+    a structural one: a SQL drift that makes a breakdown chart stop summing to its
+    page KPI, or makes the Products / Range pages disagree on the styles-with-stock
+    count, surfaces here. Totals that differ BY DESIGN (different 'active'
+    definitions, the wider inventory-style-counts universe, the unmapped-row
+    subcategory sales breakdowns) are deliberately NOT compared -- see
+    ``INTENTIONAL_SKIPS`` -- exactly as net_sales is excluded above.
+    """
+    pa = _get(session, "/analytics/product-analysis", {"style_status": "all"},
+              timeout=config.CROSS_SURFACE_PRODUCT_TIMEOUT_SEC)
+    pasum = pa.get("summary") or {}
+    by_subcat = pa.get("by_subcategory")
+    by_brand = pa.get("by_brand")
+    checks = [
+        # Product Analysis page: each breakdown chart must add up to the page KPI.
+        ("style_count", "product-analysis.summary.styles == Σ by_subcategory.styles",
+         "xsurf_pa_subcat_styles", pasum.get("styles"), _sum(by_subcat, "styles"), False),
+        ("units", "product-analysis.summary.units == Σ by_subcategory.units",
+         "xsurf_pa_subcat_units", pasum.get("units"), _sum(by_subcat, "units"), False),
+        ("stock_units", "product-analysis.summary.stock_units == Σ by_subcategory.stock",
+         "xsurf_pa_subcat_stock", pasum.get("stock_units"), _sum(by_subcat, "stock"), False),
+        ("style_count", "product-analysis.summary.styles == Σ by_brand.styles",
+         "xsurf_pa_brand_styles", pasum.get("styles"), _sum(by_brand, "styles"), False),
+        ("units", "product-analysis.summary.units == Σ by_brand.units",
+         "xsurf_pa_brand_units", pasum.get("units"), _sum(by_brand, "units"), False),
+        ("stock_units", "product-analysis.summary.stock_units == Σ by_brand.stock",
+         "xsurf_pa_brand_stock", pasum.get("stock_units"), _sum(by_brand, "stock"), False),
+    ]
+    for metric, identity, code, a, b, money in checks:
+        exc = _cmp("products", metric, identity, code, a, b, money, period, {})
+        if exc:
+            out.append(exc)
+
+    # Range Management page: the tier breakdown and the row list must both add up
+    # to the active-styles total the page shows.
+    rm = _get(session, "/range-mgmt/classify", {})
+    rmsum = rm.get("summary") or {}
+    tier_counts = rmsum.get("tier_counts") or {}
+    active_total = rmsum.get("total_active_styles")
+    rows = rm.get("rows") or []
+    retired_rows = rm.get("retired_rows") or []
+    rm_checks = [
+        ("style_count", "range-mgmt.total_active_styles == Σ tier_counts",
+         "xsurf_rm_tier_counts", active_total,
+         sum(float(v or 0) for v in tier_counts.values()), False),
+        ("style_count", "range-mgmt.total_active_styles == len(rows)",
+         "xsurf_rm_active_rows", active_total, len(rows), False),
+    ]
+    for metric, identity, code, a, b, money in rm_checks:
+        exc = _cmp("products", metric, identity, code, a, b, money, period, {})
+        if exc:
+            out.append(exc)
+
+    # Cross-PAGE: the Products / Product Analysis pages and the Range Management
+    # page describe the SAME 'styles with current stock' universe -- they must
+    # agree on its size (PA total styles == range active + range retired).
+    exc = _cmp("products", "style_count",
+               "product-analysis.summary.styles == range-mgmt rows+retired_rows",
+               "xsurf_pa_vs_rm_total", pasum.get("styles"),
+               len(rows) + len(retired_rows), False, period, {})
+    if exc:
+        out.append(exc)
+
+    # inventory-style-counts internal invariant: active + retired == total.
+    isc = _get(session, "/inventory-style-counts", {})
+    exc = _cmp("products", "style_count",
+               "inventory-style-counts.active+retired == total",
+               "xsurf_isc_parts_sum",
+               float(isc.get("active_styles") or 0) + float(isc.get("retired_styles") or 0),
+               isc.get("total_styles"), False, period, {})
+    if exc:
+        out.append(exc)
+
+
 def _ago(period: date, win: int) -> str:
     return str(period - timedelta(days=max(1, win) - 1))
 
@@ -311,5 +416,12 @@ def run_checks(period: date):
         skips.append(f"inventory: {s}")
     except Exception as e:  # noqa: BLE001
         skips.append(f"inventory: {e}")
+
+    try:
+        _check_products(session, period, exceptions)
+    except _Skip as s:
+        skips.append(f"products: {s}")
+    except Exception as e:  # noqa: BLE001
+        skips.append(f"products: {e}")
 
     return exceptions, ("; ".join(skips) if skips else None)
