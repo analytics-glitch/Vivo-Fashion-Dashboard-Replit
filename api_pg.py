@@ -9077,8 +9077,12 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
         -(int(e.get("to_qty_sold_28d") or 0)),
         e.get("style_name") or "", e.get("sku") or ""))
 
+    # Pass 1 — assignment. Walk the ranked edges (curve-completers first, then
+    # net-CCC x value) and assign only the moves that PAY against the shared
+    # destination budget + donor ledger. Track which donor SKUs actually ship so the
+    # markdown pass below can tell stuck stock from redeployed stock.
     assigned = []
-    markdown = {}  # (from_store, style_name) -> markdown candidate (non-paying donor)
+    shipped_skus = set()  # (from_store, sku) that received >= 1 assigned unit
     for e in edges:
         dk = (e["to_store"], e["sku"])
         lk = (e["from_store"], e["sku"])
@@ -9086,38 +9090,18 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
         d = donor_ledger.get(lk, 0)
         q = b if b < d else d
         if q <= 0:
+            # No assignable qty on this edge (destination gap already filled by a
+            # higher-ranked donor / warehouse, or the donor is committed elsewhere).
+            # The markdown pass handles the no-qualified-demand case.
             continue
-        # Markdown fork (spec §7): the move qualifies on stock balance but does NOT
-        # pay — net cash-conversion benefit <= 0 (dest sells no faster than source
-        # once transit is paid) or value after transport+duty <= 0. Don't ship it;
-        # flag the slow donor (store, style) to clear locally via markdown instead.
         if not e["_pays"]:
-            mk = (e["from_store"], e.get("style_name"))
-            cur = markdown.get(mk)
-            if cur is None:
-                cur = {
-                    "from_store": e["from_store"],
-                    "from_country": e.get("from_country") or "",
-                    "style_name": e.get("style_name"), "brand": e.get("brand"),
-                    "subcategory": e.get("subcategory"),
-                    "donor_onhand": 0,
-                    "sku_count": 0,
-                    "reason": ("no_value" if e["_value_per_unit"] <= 0
-                               else "no_ccc_gain"),
-                    "src_days_to_sell": round(e["_src_days"], 1),
-                    "_skus": set(),
-                }
-                markdown[mk] = cur
-            # The same (from_store, sku) appears on multiple candidate edges (one
-            # per destination); count each donor SKU's on-hand exactly once so the
-            # stuck-stock total isn't inflated by the number of would-be receivers.
-            if e["sku"] not in cur["_skus"]:
-                cur["_skus"].add(e["sku"])
-                cur["donor_onhand"] += int(e.get("from_sku_avail") or 0)
-                cur["sku_count"] += 1
+            # Qualifies on stock balance but does NOT pay — net cash-conversion
+            # benefit <= 0 or value after transport+duty <= 0. Skip; the markdown
+            # pass surfaces it.
             continue
         dest_budget[dk] = b - q
         donor_ledger[lk] = d - q
+        shipped_skus.add(lk)
         rec = dict(e)
         rec["suggested_qty"] = int(q)
         rec["source_onhand_at_calc"] = int(e.get("from_sku_avail") or 0)
@@ -9125,6 +9109,58 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
         rec["net_ccc_days"] = round(e["_net_ccc_per_unit"] * q, 1)
         rec["value_kes"] = round(e["_value_per_unit"] * q, 0)
         assigned.append(rec)
+
+    # Pass 2 — markdown fork (spec §7). A donor SKU that qualifies on stock balance
+    # (it is a slow-seller-with-stock by construction of the edge query) but NEVER
+    # ships is stuck and should be cleared locally rather than relocated. Two causes,
+    # both required by the spec:
+    #   * the move doesn't pay (net CCC <= 0 / value after freight+duty <= 0), OR
+    #   * there is NO qualified destination demand left for it (every receiver gap was
+    #     filled by higher-ranked donors or warehouse stock -> the edge never assigned).
+    # A donor SKU that DID ship (even partially to one destination) is excluded — its
+    # on-hand is being redeployed, not stuck.
+    markdown = {}  # (from_store, style_name) -> markdown candidate
+    for e in edges:
+        lk = (e["from_store"], e["sku"])
+        if lk in shipped_skus:
+            continue
+        if e["_pays"]:
+            reason = "no_demand"      # could pay, but no destination gap remained
+        elif e["_value_per_unit"] <= 0:
+            reason = "no_value"       # freight/duty wipes the value
+        else:
+            reason = "no_ccc_gain"    # dest sells no faster once transit is paid
+        mk = (e["from_store"], e.get("style_name"))
+        cur = markdown.get(mk)
+        if cur is None:
+            cur = {
+                "from_store": e["from_store"],
+                "from_country": e.get("from_country") or "",
+                "style_name": e.get("style_name"), "brand": e.get("brand"),
+                "subcategory": e.get("subcategory"),
+                "donor_onhand": 0,
+                "sku_count": 0,
+                "reason": reason,
+                "src_days_to_sell": round(e["_src_days"], 1),
+                "_skus": set(),
+                "_reasons": set(),
+            }
+            markdown[mk] = cur
+        # The same (from_store, sku) appears on multiple candidate edges (one per
+        # destination); count each donor SKU's on-hand exactly once so the stuck-stock
+        # total isn't inflated by the number of would-be receivers.
+        if e["sku"] not in cur["_skus"]:
+            cur["_skus"].add(e["sku"])
+            cur["donor_onhand"] += int(e.get("from_sku_avail") or 0)
+            cur["sku_count"] += 1
+        cur["_reasons"].add(reason)
+    # Collapse the per-style reason set to the single most actionable reason
+    # (value loss > no CCC gain > no demand) for the inline badge / panel copy.
+    for cur in markdown.values():
+        rs = cur.pop("_reasons", set())
+        cur["reason"] = ("no_value" if "no_value" in rs
+                         else "no_ccc_gain" if "no_ccc_gain" in rs
+                         else "no_demand")
 
     TIER = {1: "A", 2: "B", 3: "C"}
     bundles = {}
@@ -9188,10 +9224,12 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
                                        s.get("style_name") or "", s.get("sku") or ""))
         out.append(bd)
 
-    # Bundle ranking: most value-dense corridors first (value redeployed, then
-    # inventory-days removed), falling back to the composite score + units.
-    out.sort(key=lambda b: (-(b["value_kes"]), -(b["net_ccc_days"]),
-                            -(b["score"]), -(b["units"])))
+    # Bundle ranking (spec §6): size-curve completions FIRST — a move that fills an
+    # empty destination size is the highest-conviction redeploy — then the most
+    # value-dense corridors (value redeployed, then inventory-days removed), falling
+    # back to the composite score + units.
+    out.sort(key=lambda b: (-(b["curve_completions"]), -(b["value_kes"]),
+                            -(b["net_ccc_days"]), -(b["score"]), -(b["units"])))
     out = out[:bundle_limit]
 
     units_total = sum(b["units"] for b in out)

@@ -381,10 +381,14 @@ const IBT = () => {
                         <td className="py-1.5 px-2 text-right tabular-nums">{fmtNum(m.src_days_to_sell || 0)}</td>
                         <td className="py-1.5 px-2">
                           <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-                            m.reason === "no_value" ? "bg-rose-100 text-rose-700" : "bg-amber-100 text-amber-700"
+                            m.reason === "no_value" ? "bg-rose-100 text-rose-700"
+                              : m.reason === "no_demand" ? "bg-slate-100 text-slate-700"
+                              : "bg-amber-100 text-amber-700"
                           }`}>
                             <Tag size={11} weight="bold" />
-                            {m.reason === "no_value" ? "Freight wipes value" : "No time saved"}
+                            {m.reason === "no_value" ? "Freight wipes value"
+                              : m.reason === "no_demand" ? "No buyer in network"
+                              : "No time saved"}
                           </span>
                         </td>
                       </tr>
