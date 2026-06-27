@@ -8621,6 +8621,8 @@ def admin_data_health():
 def admin_validation_exceptions(
     status: str = Query(default="open"),
     severity: str = Query(default=""),
+    picked_from: str = Query(default=""),
+    picked_to: str = Query(default=""),
     limit: int = Query(default=500),
 ):
     """Audit findings raised by the validation agent (`validation_exceptions`).
@@ -8632,9 +8634,22 @@ def admin_validation_exceptions(
     limit = max(1, min(int(limit or 500), 2000))
     status = (status or "").strip().lower()
     severity = (severity or "").strip().lower()
+    def _valid_day(s):
+        # Strict calendar parse: rejects impossible-but-well-formed dates like
+        # "2026-13-40" that a regex would let through (and that would 500 the
+        # date comparison in Postgres). Returns canonical YYYY-MM-DD or "".
+        s = (s or "").strip()
+        try:
+            return datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            return ""
+    pf = _valid_day(picked_from)
+    pt = _valid_day(picked_to)
     conn = get_conn()
     rows_out = []
     summary = {"total": 0, "open": 0, "red": 0, "amber": 0,
+               "picked_today": 0, "picked_mtd": 0, "picked_range": None,
+               "picked_from": pf or None, "picked_to": pt or None,
                "by_status": {}, "by_severity": {}}
     available = True
     try:
@@ -8664,6 +8679,31 @@ def admin_validation_exceptions(
                         summary["red"] += n
                     elif sv == "amber":
                         summary["amber"] += n
+            # When a finding was first "picked" = created_at (set once; only
+            # last_seen_at refreshes on re-detection). Bucket by EAT calendar day.
+            cur.execute(
+                "SELECT "
+                "COUNT(*) FILTER (WHERE (created_at AT TIME ZONE 'Africa/Nairobi')::date "
+                "  = (now() AT TIME ZONE 'Africa/Nairobi')::date) AS picked_today, "
+                "COUNT(*) FILTER (WHERE (created_at AT TIME ZONE 'Africa/Nairobi')::date "
+                "  >= date_trunc('month', (now() AT TIME ZONE 'Africa/Nairobi')::date)) AS picked_mtd "
+                "FROM validation_exceptions")
+            pr = cur.fetchone()
+            summary["picked_today"] = int(pr["picked_today"] or 0)
+            summary["picked_mtd"] = int(pr["picked_mtd"] or 0)
+            # Custom date-range count over the same created_at (EAT) calendar day.
+            crange, cparams = [], []
+            if pf:
+                crange.append("(created_at AT TIME ZONE 'Africa/Nairobi')::date >= %s")
+                cparams.append(pf)
+            if pt:
+                crange.append("(created_at AT TIME ZONE 'Africa/Nairobi')::date <= %s")
+                cparams.append(pt)
+            if crange:
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM validation_exceptions WHERE "
+                    + " AND ".join(crange), cparams)
+                summary["picked_range"] = int(cur.fetchone()["n"] or 0)
             where, params = [], []
             if status and status != "all":
                 where.append("status = %s")
@@ -8671,6 +8711,10 @@ def admin_validation_exceptions(
             if severity:
                 where.append("severity = %s")
                 params.append(severity)
+            # The custom range also scopes the listed detail rows to findings
+            # first picked within [picked_from, picked_to] (EAT).
+            where.extend(crange)
+            params.extend(cparams)
             wsql = (" WHERE " + " AND ".join(where)) if where else ""
             cur.execute(
                 "SELECT id, fingerprint, status, tier, severity, entity_type, "

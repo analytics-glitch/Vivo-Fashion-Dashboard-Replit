@@ -43,10 +43,11 @@ const fmtNumOrDash = (n) =>
     ? "—"
     : Number(n).toLocaleString("en-US", { maximumFractionDigits: 2 });
 
-const SummaryCard = ({ label, value, tone }) => (
+const SummaryCard = ({ label, value, tone, hint }) => (
   <div className="card-white p-4 flex flex-col gap-1" data-testid={`summary-${label}`}>
     <div className="eyebrow text-[10.5px]">{label}</div>
     <div className={`font-extrabold text-[22px] leading-none ${tone || ""}`}>{value}</div>
+    {hint ? <div className="text-[10.5px] text-muted leading-tight">{hint}</div> : null}
   </div>
 );
 
@@ -150,6 +151,8 @@ const ValidationAudit = () => {
   const [error, setError] = useState(null);
   const [status, setStatus] = useState("open");
   const [severity, setSeverity] = useState("");
+  const [pickedFrom, setPickedFrom] = useState("");
+  const [pickedTo, setPickedTo] = useState("");
   const [acting, setActing] = useState(null);
   const [showAllBriefs, setShowAllBriefs] = useState(false);
 
@@ -157,13 +160,17 @@ const ValidationAudit = () => {
     setLoading(true);
     setError(null);
     api.get("/admin/validation-exceptions", {
-      params: { status, severity, limit: 1000 },
+      params: {
+        status, severity, limit: 1000,
+        ...(pickedFrom ? { picked_from: pickedFrom } : {}),
+        ...(pickedTo ? { picked_to: pickedTo } : {}),
+      },
       forceFresh: true,
     })
       .then((r) => setData(r.data || null))
       .catch((e) => setError(e?.response?.data?.detail || e.message))
       .finally(() => setLoading(false));
-  }, [status, severity]);
+  }, [status, severity, pickedFrom, pickedTo]);
 
   const applyFix = useCallback((r) => {
     if (!window.confirm(
@@ -436,6 +443,17 @@ const ValidationAudit = () => {
         <SummaryCard label="Amber (watch)" value={(summary.amber ?? 0).toLocaleString()} tone={summary.amber ? "text-amber-600" : ""} />
       </div>
 
+      {/* Issues picked (by detection date, Africa/Nairobi) */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3" data-testid="validation-picked">
+        <SummaryCard label="Picked today" value={(summary.picked_today ?? 0).toLocaleString()} hint="New findings first detected today" />
+        <SummaryCard label="Picked month-to-date" value={(summary.picked_mtd ?? 0).toLocaleString()} hint="Cumulative findings first detected since the 1st" />
+        <SummaryCard
+          label={pickedFrom || pickedTo ? "Picked in selected range" : "Picked in range"}
+          value={summary.picked_range != null ? Number(summary.picked_range).toLocaleString() : "—"}
+          hint={pickedFrom || pickedTo ? `${pickedFrom || "…"} → ${pickedTo || "…"}` : "Set a date range below"}
+        />
+      </div>
+
       {/* Filters */}
       <div className="card-white p-3 flex flex-wrap items-center gap-3" data-testid="validation-filter">
         <label className="text-[12px] font-semibold text-muted">Status</label>
@@ -456,6 +474,37 @@ const ValidationAudit = () => {
         >
           {SEVERITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
+        <label className="text-[12px] font-semibold text-muted ml-2">Picked between</label>
+        <input
+          type="date"
+          className="px-3 py-2 rounded-lg border border-border text-[13px]"
+          value={pickedFrom}
+          max={pickedTo || undefined}
+          onChange={(e) => setPickedFrom(e.target.value)}
+          data-testid="filter-picked-from"
+          aria-label="Picked from date"
+        />
+        <span className="text-[12px] text-muted">to</span>
+        <input
+          type="date"
+          className="px-3 py-2 rounded-lg border border-border text-[13px]"
+          value={pickedTo}
+          min={pickedFrom || undefined}
+          onChange={(e) => setPickedTo(e.target.value)}
+          data-testid="filter-picked-to"
+          aria-label="Picked to date"
+        />
+        {(pickedFrom || pickedTo) && (
+          <button
+            type="button"
+            onClick={() => { setPickedFrom(""); setPickedTo(""); }}
+            className="px-2.5 py-1.5 rounded-lg border border-border text-[11.5px] font-semibold hover:bg-panel text-muted"
+            data-testid="filter-picked-clear"
+            title="Clear the date range"
+          >
+            Clear
+          </button>
+        )}
         <div className="flex-1" />
         {available && openCount > 0 && (
           <button
