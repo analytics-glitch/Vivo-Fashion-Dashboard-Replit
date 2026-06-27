@@ -8657,10 +8657,13 @@ def admin_validation_exceptions(
                     summary["by_severity"][sv] = summary["by_severity"].get(sv, 0) + n
                 if st == "open":
                     summary["open"] += n
-                if sv == "red":
-                    summary["red"] += n
-                elif sv == "amber":
-                    summary["amber"] += n
+                    # Red/Amber cards count only OPEN (outstanding) findings, so
+                    # they fall to 0 once everything is resolved — resolved rows
+                    # stay counted in `total`/`by_severity`, not these headlines.
+                    if sv == "red":
+                        summary["red"] += n
+                    elif sv == "amber":
+                        summary["amber"] += n
             where, params = [], []
             if status and status != "all":
                 where.append("status = %s")
