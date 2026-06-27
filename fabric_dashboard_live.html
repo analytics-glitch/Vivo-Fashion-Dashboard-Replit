@@ -2072,7 +2072,7 @@ function renderKpis(d,mpg){
   }
   const projMo=esc(d.projected_month_label||'');
   const coverNote=(cover!=null)?`stock &divide; monthly use &middot; incl. projected ${projMo}`:'stock &divide; monthly use';
-  const coverTip=(cover!=null)?esc(`6-month avg run-rate; ${d.projected_month_label} projected to full month (${fmt(d.projected_month_mtd_kg)} kg so far → ${fmt(d.projected_month_kg)} kg est.)`):'';
+  const coverTip=(cover!=null)?esc(`Months of cover = current stock ÷ monthly run-rate. Monthly run-rate = 6-month AVERAGE consumption (not last-30-days), with ${d.projected_month_label} projected to a full month (${fmt(d.projected_month_mtd_kg)} kg so far → ${fmt(d.projected_month_kg)} kg est.). It therefore differs from stock ÷ the 'Consumed 30d' figure, which is a single recent month.`):'';
   const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
   // Avg cost per metre (per-metre regardless of the kg/metre unit toggle). Render
   // "—" when the backend flags the figure incomplete (any in-scope fabric missing

@@ -210,6 +210,8 @@ const RULES = [
       "Velocity: styles with recent sales activity in the velocity window.",
       "Size Health: counted at a finer SKU / size-run grain (or a broader tracked set), so its number is much larger than a with-stock style count.",
       "Inventory: styles / SKU-locations with inventory rows across stock locations.",
+      "Within Velocity, the subcategory breakdown can list one style under more than one subcategory (a style mapped to multiple merchandising sub-groups), so the subcategory rows can sum above the distinct-style total — read each subcategory row on its own, not as additive to a style count.",
+      "Units-per-style differs between Velocity and Size Health by design: Velocity reports net units (returns-netted, run-rate basis), while Size Health counts on a different grain/window — so the two pages give different per-style unit figures and should not be reconciled directly.",
       "Compare a style count only against another count on the same scope.",
     ],
     used: ["/range-mgmt", "/product-analysis", "/products", "/velocity", "/size-health", "/inventory"] },
@@ -231,6 +233,30 @@ const RULES = [
       "When comparing \"segments\" across pages, confirm you are looking at the same system first: one shopper can be an RFM \"Champion\", a Gold loyalty member and a \"Returning\" customer at the same time.",
     ],
     used: ["/rfm", "/crm", "/customers"] },
+  { id: "period-scope", title: "Active period per page (why the global date filter doesn't drive everything)", category: "Performance",
+    formula: "The global date filter bar drives the trading pages; several analytical pages intentionally use their OWN fixed window and ignore the bar.",
+    notes: [
+      "Driven by the global date filter: Overview, Locations, Footfall & Conversion, Customers, Margin, Velocity, Re-Order, Custom Report (its sales measures) and Targets (within the selected period).",
+      "Fixed / own window regardless of the bar: Product Analysis uses a trailing 30-day run-rate; Range Mgmt and the \"Since Launch\" measures use a style's whole lifetime; Inventory / Size Health / Warehouse Returns are a current stock snapshot; Markdown & Clearance use their own trailing windows.",
+      "So when two pages disagree on a number it is almost always a period difference — confirm each page's active window before treating it as an inconsistency.",
+    ],
+    used: ["/overview", "/product-analysis", "/velocity", "/range-mgmt", "/inventory", "/markdown-clearance", "/custom-report"] },
+  { id: "store-naming", title: "Store / location names (why labels vary slightly across pages)", category: "Quality",
+    formula: "Location names arrive from several source systems (POS, the footfall sensor feed, Odoo) and are canonicalised at the data-join layer, not relabelled per page.",
+    notes: [
+      "The same physical store can carry a slightly different label depending on the source feed (e.g. a sensor-feed rename vs the POS name).",
+      "Joins across sales / footfall / inventory canonicalise these names so the figures line up; the visible label on a given page is whatever that page's source uses.",
+      "Reconcile a store across pages by the physical location, not by an exact-string match on the label.",
+    ],
+    used: ["/locations", "/footfall", "/inventory"] },
+  { id: "data-known-limitations", title: "Known data-layer limitations (source-side, tracked separately)", category: "Quality",
+    formula: "A short register of known SOURCE-data issues that are not display bugs — figures are reported faithfully from the source and these are corrected upstream.",
+    notes: [
+      "Brand attribution: a small number of items can be mis-attributed to the wrong brand in the Odoo product master. This is a source-master correction, not a dashboard calculation — brand splits reflect whatever the master currently holds.",
+      "Currency basis: all figures are reported in KES. The retail and Online channels are already KES at source, so no live FX conversion is applied in the dashboard; any future multi-currency source would need its conversion basis disclosed here.",
+      "These items are flagged for upstream data correction and do not change how any metric is computed.",
+    ],
+    used: ["/data-quality"] },
 ];
 
 const CATEGORY_ORDER = ["Performance", "Products", "Inventory", "Footfall", "Loyalty", "Quality"];
