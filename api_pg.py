@@ -408,6 +408,11 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response, Streamin
 # Exact /api paths reachable without a session (health probes + proxy prefix).
 _AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/readyz", "/api/sync-status"}
 
+# Endpoints that internal sync jobs (no staff session) may write to, authenticated
+# by the shared SESSION_SECRET via the X-Internal-Token header (validated in the
+# auth gate with a constant-time compare). Keep this set minimal.
+_AUTH_INTERNAL_TOKEN_PATHS = {"/api/analytics/replenishment-sor/snapshot"}
+
 # Query params that are concatenated into SQL as date literals. We validate them
 # to strict ISO dates at the edge so they can never carry SQL-injection payloads
 # (a value that parses as a date contains only digits/'-'/':'/'T' — none can
@@ -865,6 +870,16 @@ async def clerk_auth_gate(request: Request, call_next):
     if path.startswith("/api/public/"):
         return await call_next(request)
 
+    # Internal sync jobs (no staff session) write a small set of snapshot
+    # endpoints, authenticated by the shared SESSION_SECRET via X-Internal-Token
+    # with a constant-time compare. Fails closed when the secret is unset/wrong.
+    if path in _AUTH_INTERNAL_TOKEN_PATHS:
+        _sec = os.environ.get("SESSION_SECRET") or ""
+        _tok = request.headers.get("x-internal-token") or ""
+        if _sec and hmac.compare_digest(_tok, _sec):
+            return await call_next(request)
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+
     # Resolve the session token (Bearer header or httpOnly cookie) to a user.
     # Fail closed: if the user store is unreachable we cannot prove identity, so
     # refuse with a deterministic 503 rather than leaking a generic 500.
@@ -1248,6 +1263,32 @@ PRODUCT_SUBCATS = [
 LEAD_TIME_WEEKS = 4.0
 SAFETY_WEEKS    = 1.0
 REORDER_COVER_WEEKS = LEAD_TIME_WEEKS + SAFETY_WEEKS
+
+# ── Replenishment SOR redesign (Phase 1) ──────────────────────────────────────
+# One canonical demand-measurement window for SOR / velocity / proven-demand on
+# the Replenishments page, so SOR is comparable across pages (spec §3). The page
+# exposes a clearly-labelled "demand lookback" control (4 / 8 / 12 weeks); this
+# is the DEFAULT, not a reporting date range (the global date bar stays locked on
+# this page — it is an as-of-today operational view).
+REPLEN_DEMAND_WEEKS_DEFAULT = 4
+REPLEN_DEMAND_WEEKS_ALLOWED = (4, 8, 12)
+# Cover horizon (weeks) the suggested target is sized to per corridor cadence
+# (spec §4/§7). Short cycle so a top-up lands before the next dispatch slot.
+REPLEN_COVER_WEEKS = 2.0
+# A/B/C class cut-offs on store-SKU weekly velocity (spec §4).
+REPLEN_CLASS_A_VPW = 1.0     # fast mover  (>=1.0 u/wk)
+REPLEN_CLASS_B_VPW = 0.25    # core        (0.25 - 1.0 u/wk)
+# Presentation minimum facings per class (spec §4 "min facing").
+REPLEN_FLOOR_A = 3
+REPLEN_FLOOR_B = 2
+REPLEN_FLOOR_C = 1
+# EOL / overstock suppression threshold — weeks-of-cover (Report Catalogue
+# default, spec §12.4). A store-SKU sitting on more than this many weeks of its
+# own stock is held back, not replenished.
+REPLEN_OVERSTOCK_WOC = 16.0
+# Ruleset version stamped into every suggestion snapshot's run_id so a later
+# logic change starts a new immutable run rather than mutating history (spec §10).
+REPLEN_RULESET_VERSION = "phase1-v1"
 
 # Canonical sku -> style map. all_inventory.style_name is free-text and often
 # disagrees with all_products_clean.style_name (e.g. word-order differences like
@@ -11438,6 +11479,395 @@ def analytics_replenish_gaps_export(
         wb, f"Replenish_Gaps_{safe}_{date.today().isoformat()}.xlsx")
 
 
+# ── Replenishment SOR engine (Phase 1) ───────────────────────────────────────
+# Days to the next dispatch slot used to bound the conservative projected-SOR
+# uplift (spec §7/§10). Kenya metro runs ~2×/week, so the next slot is ~3.5 days
+# out — the shorter the horizon, the smaller (more conservative) the uplift cap.
+REPLEN_DISPATCH_DAYS = 3.5
+
+
+def _replen_run_id(business_date, store_scope, ruleset_version):
+    """run_id = sha1(business_date_EAT | store_scope | ruleset_version) (spec §10),
+    so re-stamping the same day's suggestions upserts onto one immutable run
+    rather than duplicating, and a ruleset change starts a fresh run."""
+    import hashlib
+    raw = "|".join([str(business_date), str(store_scope), str(ruleset_version)])
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _replen_eat_today():
+    from datetime import datetime, timezone
+    return (datetime.now(timezone.utc) + timedelta(hours=3)).date()
+
+
+def _replen_class_floor(vpw):
+    """A/B/C velocity class + presentation-minimum facing (spec §4)."""
+    if vpw >= REPLEN_CLASS_A_VPW:
+        return "A", REPLEN_FLOOR_A
+    if vpw >= REPLEN_CLASS_B_VPW:
+        return "B", REPLEN_FLOOR_B
+    return "C", REPLEN_FLOOR_C
+
+
+def _replen_holdback_overrides():
+    """{(pos_location, sku): action} merch overrides for the Held-back panel."""
+    rows = _users_exec(
+        "SELECT pos_location, sku, action FROM replen_holdback_override",
+        fetch=True) or []
+    return {(r["pos_location"], r["sku"]): (r.get("action") or "release")
+            for r in rows}
+
+
+def _replen_sor_summary(weeks):
+    """Canonical headline SOR + the additive 'saleable SOR' over the named
+    trailing demand window (spec §3) — warehouse excluded, unit-weighted across
+    pools (a single SUM over every pool IS the unit-weighted roll-up). The base
+    formula units_sold*100/(units_sold+store_stock) is UNCHANGED; saleable SOR
+    only nets broken-curve orphan stock out of the denominator and is shown
+    ALONGSIDE the headline, never replacing it. Also returns the SOR-drag
+    (overstock) store units for the KPI strip."""
+    days = int(weeks) * 7
+    rows = run_query("""
+        WITH sold AS (
+            SELECT s.variant_sku AS sku, SUM(s.net_quantity) AS u
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date >= (CURRENT_DATE - INTERVAL '""" + str(days) + """ days')::text
+              AND """ + BASE_FILTERS + """
+              AND s.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+              AND (s.pos_location_name NOT ILIKE '%online%'
+                   OR s.pos_location_name = 'Online - Shop Zetu')
+              AND s.variant_sku IS NOT NULL AND s.variant_sku <> ''
+            GROUP BY 1
+            HAVING SUM(s.net_quantity) > 0
+        ),
+        soh AS (
+            SELECT i.pos_location_name, i.sku, p.style_name,
+                   SUM(i.available) AS soh
+            FROM all_inventory i
+            JOIN all_products_clean p ON p.sku = i.sku
+            WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+              AND COALESCE(p.style_name,'') <> ''
+            GROUP BY 1,2,3
+            HAVING SUM(i.available) > 0
+        ),
+        store_style AS (
+            SELECT pos_location_name, style_name,
+                   COUNT(*) AS in_stock_sizes, SUM(soh) AS soh_style
+            FROM soh GROUP BY 1,2
+        ),
+        catalog AS (
+            SELECT style_name, COUNT(DISTINCT NULLIF(size,'')) AS curve_sizes
+            FROM all_products_clean WHERE COALESCE(style_name,'') <> ''
+            GROUP BY 1
+        ),
+        store_sku_sold AS (
+            SELECT s.pos_location_name, s.variant_sku, SUM(s.net_quantity) AS u
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date >= (CURRENT_DATE - INTERVAL '""" + str(days) + """ days')::text
+              AND """ + BASE_FILTERS + """
+              AND s.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+              AND s.variant_sku IS NOT NULL AND s.variant_sku <> ''
+            GROUP BY 1,2 HAVING SUM(s.net_quantity) > 0
+        )
+        SELECT
+          COALESCE((SELECT SUM(u) FROM sold),0) AS units_sold,
+          COALESCE((SELECT SUM(soh) FROM soh),0) AS store_stock,
+          COALESCE((SELECT SUM(ss.soh_style)
+                    FROM store_style ss JOIN catalog c ON c.style_name = ss.style_name
+                    WHERE ss.in_stock_sizes <= 1 AND c.curve_sizes >= 3),0) AS orphan_stock,
+          COALESCE((SELECT SUM(sk.soh)
+                    FROM soh sk LEFT JOIN store_sku_sold sss
+                      ON sss.pos_location_name = sk.pos_location_name
+                     AND sss.variant_sku = sk.sku
+                    WHERE sk.soh::numeric * """ + str(int(weeks)) + """
+                          > 16 * COALESCE(sss.u,0)
+                      AND COALESCE(sss.u,0) >= 0
+                      AND sk.soh > 0),0) AS drag_stock
+    """) or [{}]
+    r = rows[0] if rows else {}
+    u = float(r.get("units_sold") or 0)
+    st = float(r.get("store_stock") or 0)
+    orphan = float(r.get("orphan_stock") or 0)
+    drag = float(r.get("drag_stock") or 0)
+
+    def _sor(num, denom_stock):
+        d = num + denom_stock
+        return round(100.0 * num / d, 1) if d > 0 else 0.0
+
+    return {
+        "units_sold": int(u), "store_stock": int(st),
+        "orphan_stock": int(orphan), "drag_stock": int(drag),
+        "current_sor": _sor(u, st),
+        "saleable_sor": _sor(u, max(0.0, st - orphan)),
+    }
+
+
+def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
+    """SOR-first replenishment engine (spec §4-§6, §10). Returns a dict with the
+    ranked pick list, the Held-back (deliberately-not-moving) panel, the
+    deploy-from-warehouse-first set, and the SOR KPI strip. Every decision is at
+    store-SKU(-size) grain on the canonical demand window; the proven-demand gate
+    means only store-SKUs that SOLD at that store in the window are eligible.
+
+    The base SOR formula is untouched — this only decides WHAT to move so the
+    numerator rises (heroes back on the floor) and the denominator is protected
+    (slow / EOL / broken-curve stock held back)."""
+    weeks = int(weeks) if int(weeks) in REPLEN_DEMAND_WEEKS_ALLOWED else REPLEN_DEMAND_WEEKS_DEFAULT
+    days = weeks * 7
+    _warehouse_bins_refresh()
+    overrides = _replen_holdback_overrides()
+    cover_target_weeks = REPLEN_COVER_WEEKS
+
+    # Proven-demand candidate universe: store-SKUs that sold here in the window,
+    # with snapshots of current shelf qty (this store) and the shared warehouse
+    # pool. We DON'T pre-filter to understocked here (unlike the legacy report) so
+    # overstock / broken-curve rows can be surfaced in the Held-back panel.
+    rows = run_query("""
+        WITH sold AS (
+            SELECT s.pos_location_name, s.variant_sku,
+                MAX(s.country) AS country,
+                MAX(s.product_title) AS product_name,
+                SUM(s.net_quantity) AS units_sold,
+                MAX(s.sale_date) AS last_sale
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date >= (CURRENT_DATE - INTERVAL '""" + str(days) + """ days')::text
+              AND """ + BASE_FILTERS + """
+              AND s.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+              AND (s.pos_location_name NOT ILIKE '%online%'
+                   OR s.pos_location_name = 'Online - Shop Zetu')
+              AND s.variant_sku IS NOT NULL AND s.variant_sku <> ''
+            GROUP BY s.pos_location_name, s.variant_sku
+            HAVING SUM(s.net_quantity) > 0
+        ),
+        store_soh AS (
+            SELECT i.pos_location_name, i.sku,
+                SUM(i.available) AS soh_store, MAX(i.location_name) AS bin
+            FROM all_inventory i
+            WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+            GROUP BY i.pos_location_name, i.sku
+        ),
+        wh_soh AS (
+            SELECT i.sku, SUM(i.available) AS soh_wh
+            FROM all_inventory i
+            WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+            GROUP BY i.sku
+        )
+        SELECT sold.pos_location_name AS pos_location, sold.country,
+            COALESCE(NULLIF(p.product_name, ''), sold.product_name) AS product_name,
+            sold.variant_sku AS sku, sold.units_sold, sold.last_sale,
+            p.size AS size, p.barcode, p.style_name AS style_name,
+            COALESCE(p.color_print, '') AS color_print,
+            COALESCE(ss.soh_store, 0) AS soh_store,
+            COALESCE(NULLIF(wb.bin, ''), '') AS bin,
+            COALESCE(w.soh_wh, 0) AS soh_wh
+        FROM sold
+        LEFT JOIN store_soh ss ON ss.pos_location_name = sold.pos_location_name AND ss.sku = sold.variant_sku
+        LEFT JOIN wh_soh w ON w.sku = sold.variant_sku
+        LEFT JOIN all_products_clean p ON p.sku = sold.variant_sku
+        LEFT JOIN warehouse_bins wb ON wb.barcode = p.barcode
+        ORDER BY sold.units_sold DESC
+        LIMIT """ + str(int(limit) * 6))
+
+    # Chain-wide size-curve breadth per style + per-(store,style) in-stock sizes,
+    # for the broken-curve test and the size-curve mini-indicator.
+    styles = sorted({(r.get("style_name") or "") for r in rows if r.get("style_name")})
+    curve_sizes = {}
+    instock_sizes = {}
+    if styles:
+        _in = ",".join("'" + _sql_str(s) + "'" for s in styles)
+        for c in (run_query(
+                "SELECT style_name, COUNT(DISTINCT NULLIF(size,'')) AS n "
+                "FROM all_products_clean WHERE style_name IN (" + _in + ") "
+                "GROUP BY style_name") or []):
+            curve_sizes[c["style_name"]] = int(c["n"] or 0)
+        for c in (run_query(
+                "SELECT i.pos_location_name, p.style_name, "
+                "COUNT(DISTINCT NULLIF(p.size,'')) AS n "
+                "FROM all_inventory i JOIN all_products_clean p ON p.sku = i.sku "
+                "WHERE p.style_name IN (" + _in + ") "
+                "AND i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ") "
+                "AND i.available > 0 GROUP BY 1,2") or []):
+            instock_sizes[(c["pos_location_name"], c["style_name"])] = int(c["n"] or 0)
+
+    marks_all = _replen_marks()
+    today = date.today()
+    actionable = []
+    held_back = []
+    deploy_now_rows = []
+    for r in rows:
+        units_sold = int(r["units_sold"] or 0)
+        soh_store = int(r["soh_store"] or 0)
+        soh_wh = int(r["soh_wh"] or 0)
+        style = r.get("style_name") or ""
+        pos = r.get("pos_location")
+        sku = r.get("sku")
+        vpw = (units_sold / weeks) if weeks else 0.0
+        sku_class, floor = _replen_class_floor(vpw)
+        cover_q = -(-int(round(vpw * cover_target_weeks * 100)) // 100) if vpw > 0 else 0
+        # Class C is pull-to-1 on a sale; A/B size to max(floor, cover).
+        target = floor if sku_class == "C" else max(floor, cover_q)
+        need = max(0, target - soh_store)
+        woc = (soh_store / vpw) if vpw > 0 else (999.0 if soh_store > 0 else 0.0)
+        censored = soh_store == 0
+        deploy_now = (soh_store == 0 and units_sold > 0 and soh_wh > 0)
+
+        days_lapsed = 0
+        if r.get("last_sale"):
+            try:
+                days_lapsed = (today - date.fromisoformat(str(r["last_sale"])[:10])).days
+            except ValueError:
+                days_lapsed = 0
+        mark = (marks_all.get((pos, "sku", sku))
+                or marks_all.get((pos, "barcode", r.get("barcode")))
+                or {})
+
+        # Suppression (spec §4): hold back EOL/retired, overstock (WOC>16) and
+        # broken-curve orphans — UNLESS a merchant has force-released the line.
+        released = overrides.get((pos, sku)) == "release"
+        reason = None
+        if not released:
+            if _is_manually_retired(style):
+                reason = "retired"
+            elif soh_store > 0 and woc > REPLEN_OVERSTOCK_WOC:
+                reason = "overstock"
+            elif (instock_sizes.get((pos, style), 9) <= 1
+                  and curve_sizes.get(style, 0) >= 3 and soh_store > 0):
+                reason = "broken_curve"
+
+        base = {
+            "country": r.get("country"), "pos_location": pos,
+            "product_name": r.get("product_name"), "style_name": style,
+            "size": r.get("size") or "", "barcode": r.get("barcode") or "",
+            "sku": sku, "bin": r.get("bin") or "",
+            "color_print": r.get("color_print") or "",
+            "units_sold": units_sold, "soh_store": soh_store, "soh_wh": soh_wh,
+            "velocity": round(vpw, 2), "sku_class": sku_class,
+            "floor": floor, "target": target, "woc": round(woc, 1),
+            "censored": censored, "deploy_now": deploy_now,
+            "days_lapsed": days_lapsed,
+            "in_stock_sizes": instock_sizes.get((pos, style), 0),
+            "curve_sizes": curve_sizes.get(style, 0),
+            "replenished": bool(mark.get("replenished", False)),
+            "actual_units_replenished": int(mark.get("actual_units_replenished", 0)),
+            "transfer_ref": mark.get("transfer_ref") or "",
+        }
+        if reason:
+            base["held_reason"] = reason
+            held_back.append(base)
+            continue
+        if need <= 0 or soh_wh <= 0:
+            # Nothing to move (fully stocked or no warehouse cover) — not in the
+            # pick list and not held back; simply not actionable today.
+            continue
+        base["need"] = need
+        base["replenish"] = need  # capped to the warehouse pool below
+        actionable.append(base)
+
+    # Allocate each SKU's finite warehouse pool across stores (top sellers first),
+    # so suggested never exceeds warehouse stock. Deploy-now lines (a proven-demand
+    # store at zero) are funded first inside their SKU group by the sold-desc order.
+    _cap_replenish_to_warehouse(actionable, need_key="need", out_key="replenish")
+    for r in actionable:
+        r["wh_constrained"] = int(r.get("replenish") or 0) < int(r.get("need") or 0)
+    actionable = [r for r in actionable if int(r.get("replenish") or 0) > 0]
+
+    # Conservative projected SOR uplift, bounded by what's actually pickable and
+    # identical to the metric measured later (spec §10): expected incremental
+    # sold = min(replenish, v × days_to_next_dispatch), only over v>0. velocity is
+    # per-week, so the horizon is REPLEN_DISPATCH_DAYS/7 of a week.
+    incremental = 0.0
+    for r in actionable:
+        if r["velocity"] > 0:
+            incremental += min(int(r["replenish"]),
+                               r["velocity"] * REPLEN_DISPATCH_DAYS / 7.0)
+        if r.get("deploy_now"):
+            deploy_now_rows.append(r)
+
+    summary = _replen_sor_summary(weeks)
+    u = float(summary["units_sold"])
+    st = float(summary["store_stock"])
+    cur_sor = summary["current_sor"]
+    proj_sor = (round(100.0 * (u + incremental) / (u + incremental + st), 1)
+                if (u + incremental + st) > 0 else cur_sor)
+    deployable_wh_units = sum(int(r["replenish"]) for r in deploy_now_rows)
+    sor_at_risk_units = sum(int(r["units_sold"]) for r in actionable
+                            if int(r["soh_store"]) == 0)
+
+    # Rank the pick list by honest projected SOR-uplift (deploy-now first — the
+    # highest-SOR action — then by expected incremental sold).
+    def _rank(r):
+        inc = min(int(r["replenish"]), r["velocity"] * REPLEN_DISPATCH_DAYS / 7.0) \
+            if r["velocity"] > 0 else 0
+        return (0 if r.get("deploy_now") else 1, -inc, -int(r["units_sold"]))
+    actionable.sort(key=_rank)
+    for r in actionable:
+        inc = (min(int(r["replenish"]), r["velocity"] * REPLEN_DISPATCH_DAYS / 7.0)
+               if r["velocity"] > 0 else 0.0)
+        r["proj_uplift_units"] = round(inc, 2)
+
+    held_back.sort(key=lambda r: -int(r.get("soh_store") or 0))
+    return {
+        "as_of": _replen_eat_today().isoformat() + " 06:00 EAT",
+        "business_date": _replen_eat_today().isoformat(),
+        "demand_weeks": weeks,
+        "ruleset_version": REPLEN_RULESET_VERSION,
+        "rows": actionable[:int(limit)],
+        "held_back": held_back[:200],
+        "deploy_now_count": len(deploy_now_rows),
+        "kpi": {
+            "current_sor": cur_sor,
+            "saleable_sor": summary["saleable_sor"],
+            "projected_sor": proj_sor,
+            "projected_uplift_pts": round(proj_sor - cur_sor, 2),
+            "sor_at_risk_units": int(sor_at_risk_units),
+            "deployable_wh_units": int(deployable_wh_units),
+            "sor_drag_units": int(summary["drag_stock"]),
+        },
+    }
+
+
+def _persist_replen_suggestions(run_id, business_date, store_scope, weeks, rows):
+    """Upsert today's pick list into the immutable fact_replen_suggestion (spec
+    §10). Keyed on (run_id, pos_location, sku) so a page reload re-stamps the same
+    run rather than duplicating. Snapshots shelf qty + velocity AT calc time so a
+    later 'did SOR rise' tile is attributable. Best-effort: never raises into the
+    request path."""
+    if not rows:
+        return
+    try:
+        for r in rows:
+            _users_exec(
+                "INSERT INTO fact_replen_suggestion "
+                "(run_id, business_date, store_scope, ruleset_version, pos_location, "
+                " country, sku, barcode, size, style_name, demand_weeks, units_sold, "
+                " shelf_qty_at_calc, wh_qty_at_calc, v_at_calc, sku_class, "
+                " floor_target, cover_target, suggested_qty, deploy_now, "
+                " censored_flag, wh_constrained) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (run_id, pos_location, sku) DO UPDATE SET "
+                " run_ts_eat=now(), shelf_qty_at_calc=EXCLUDED.shelf_qty_at_calc, "
+                " wh_qty_at_calc=EXCLUDED.wh_qty_at_calc, v_at_calc=EXCLUDED.v_at_calc, "
+                " sku_class=EXCLUDED.sku_class, floor_target=EXCLUDED.floor_target, "
+                " cover_target=EXCLUDED.cover_target, suggested_qty=EXCLUDED.suggested_qty, "
+                " deploy_now=EXCLUDED.deploy_now, censored_flag=EXCLUDED.censored_flag, "
+                " wh_constrained=EXCLUDED.wh_constrained, units_sold=EXCLUDED.units_sold",
+                (run_id, business_date, store_scope, REPLEN_RULESET_VERSION,
+                 r.get("pos_location"), r.get("country"), r.get("sku"),
+                 r.get("barcode") or None, r.get("size") or None,
+                 r.get("style_name") or None, int(weeks),
+                 int(r.get("units_sold") or 0), int(r.get("soh_store") or 0),
+                 int(r.get("soh_wh") or 0), float(r.get("velocity") or 0),
+                 r.get("sku_class"), int(r.get("floor") or 0),
+                 int(r.get("target") or 0), int(r.get("replenish") or 0),
+                 bool(r.get("deploy_now")), bool(r.get("censored")),
+                 bool(r.get("wh_constrained"))))
+    except Exception as e:
+        log.error("Replen suggestion snapshot failed: %s", e)
+
+
 def _compute_replenishment_report_rows(date_from=None, date_to=None, limit=400):
     """Core of the replenishment pick list: per-(store,SKU) rows with the
     suggested 'replenish' units (warehouse-capped; zero-need rows dropped),
@@ -11623,6 +12053,71 @@ def analytics_replenishment_report(
             "completed": sum(1 for r in out_rows if r["replenished"]),
         },
     }
+
+
+@app.get("/api/analytics/replenishment-sor")
+def analytics_replenishment_sor(
+    weeks: int = Query(default=REPLEN_DEMAND_WEEKS_DEFAULT),
+    limit: int = Query(default=400),
+):
+    """SOR-first replenishment (Phase 1): ranked pick list + Held-back panel +
+    SOR KPI strip over the named trailing demand window (4/8/12w). Persists the
+    suggestion snapshot to the immutable fact tables (idempotent on run_id) so a
+    later 'did SOR rise after we moved this' tile is attributable; persistence is
+    best-effort and never blocks the response."""
+    result = _compute_replenishment_sor(weeks, limit)
+    run_id = _replen_run_id(result["business_date"], "ALL", REPLEN_RULESET_VERSION)
+    result["run_id"] = run_id
+    _persist_replen_suggestions(
+        run_id, result["business_date"], "ALL", result["demand_weeks"],
+        result["rows"])
+    return result
+
+
+@app.post("/api/analytics/replenishment-sor/holdback-override")
+def analytics_replenishment_sor_holdback_override(payload: dict = Body(...),
+                                                  request: Request = None):
+    """Merch override for the Held-back panel: force-release a held SKU back into
+    the pick list, or re-suppress it. action ∈ {release, suppress}."""
+    pos = (payload.get("pos_location") or "").strip()
+    sku = (payload.get("sku") or "").strip()
+    action = (payload.get("action") or "release").strip()
+    if not pos or not sku or action not in ("release", "suppress"):
+        raise HTTPException(status_code=400, detail="pos_location, sku, action required")
+    actor = None
+    try:
+        actor = (request.state.user or {}).get("email") if request else None
+    except Exception:
+        actor = None
+    _users_exec(
+        "INSERT INTO replen_holdback_override (pos_location, sku, action, set_by, set_at) "
+        "VALUES (%s,%s,%s,%s, now()) "
+        "ON CONFLICT (pos_location, sku) DO UPDATE SET "
+        "action=EXCLUDED.action, set_by=EXCLUDED.set_by, set_at=now()",
+        (pos, sku, action, actor))
+    return {"ok": True, "pos_location": pos, "sku": sku, "action": action}
+
+
+@app.post("/api/analytics/replenishment-sor/snapshot")
+def analytics_replenishment_sor_snapshot(
+    weeks: int = Query(default=REPLEN_DEMAND_WEEKS_DEFAULT),
+):
+    """Internal-only (sync job, X-Internal-Token == SESSION_SECRET): compute and
+    persist today's SOR pick-list snapshot to the immutable fact tables so the
+    attributability history accrues even on days with no staff page visit. Ensures
+    its own schema (so the tables self-bootstrap from the sync loop too) and is
+    idempotent on run_id."""
+    _ensure_replen_tables()
+    result = _compute_replenishment_sor(weeks, 400)
+    run_id = _replen_run_id(result["business_date"], "ALL", REPLEN_RULESET_VERSION)
+    _persist_replen_suggestions(
+        run_id, result["business_date"], "ALL", result["demand_weeks"],
+        result["rows"])
+    return {"ok": True, "run_id": run_id,
+            "business_date": result["business_date"],
+            "suggested_rows": len(result["rows"])}
+
+
 @app.get("/api/analytics/sales-projection")
 def analytics_sales_projection(
     date_from: str = Query(default=str(date.today().replace(day=1))),
@@ -15917,6 +16412,7 @@ async def post_recommendations_bulk(request: Request):
             by = a.get("acted_by") or default_by
             note = a.get("reason") or a.get("note")
             au = a.get("actual_units")
+            tref = a.get("transfer_ref")
             if stt == "pending":
                 cur.execute(
                     "DELETE FROM recommendation_actions WHERE rec_type=%s AND rec_key=%s",
@@ -15925,12 +16421,13 @@ async def post_recommendations_bulk(request: Request):
                 continue
             cur.execute(
                 "INSERT INTO recommendation_actions "
-                "(rec_type, rec_key, status, reason, actual_units, acted_by, acted_at) "
-                "VALUES (%s,%s,%s,%s,%s,%s,now()) "
+                "(rec_type, rec_key, status, reason, actual_units, acted_by, acted_at, transfer_ref) "
+                "VALUES (%s,%s,%s,%s,%s,%s,now(),%s) "
                 "ON CONFLICT (rec_type, rec_key) DO UPDATE SET "
                 "status=EXCLUDED.status, reason=EXCLUDED.reason, "
-                "actual_units=EXCLUDED.actual_units, acted_by=EXCLUDED.acted_by, acted_at=now()",
-                (rt, rk, stt, note, au, by))
+                "actual_units=EXCLUDED.actual_units, acted_by=EXCLUDED.acted_by, acted_at=now(), "
+                "transfer_ref=COALESCE(EXCLUDED.transfer_ref, recommendation_actions.transfer_ref)",
+                (rt, rk, stt, note, au, by, (tref or None)))
             updated += cur.rowcount
     return {"ok": True, "updated": updated}
 
@@ -21342,6 +21839,114 @@ def _init_production_store():
         _ensure_production_tables()
     except Exception as e:
         log.error("Production tracker table init failed: %s", e)
+
+
+def _ensure_replen_tables():
+    """Idempotent DDL for the Replenishment SOR data foundation (spec §10) — the
+    append-only, immutable fact tables that make every SOR-uplift claim and the
+    picker metric attributable. Three tables:
+
+      * fact_replen_suggestion — one row per (run_id, pos_location, sku): the
+        suggested baseline with snapshots of shelf qty + velocity AT calc time,
+        the censored-demand flag, the class and target, so a later "did SOR rise"
+        tile can compare against exactly what was suggested. Upsert on the PK so a
+        page reload re-stamping the same run_id never duplicates a day's list.
+      * fact_pick_event — append-only pick actions (who picked, how many, when),
+        for fulfilment-rate and missed-SOR by picker.
+      * fact_store_receipt — store-receipt confirmations (dispatched != received)
+        to quarantine in-transit stock from the SOR denominator later.
+
+    run_id = sha1(business_date_EAT | store_scope | ruleset_version) — see
+    _replen_run_id(). Self-bootstraps on startup AND from the incremental sync
+    loop so the SEPARATE production DB populates on first publish."""
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS fact_replen_suggestion (
+            run_id             TEXT NOT NULL,
+            business_date      DATE NOT NULL,
+            store_scope        TEXT NOT NULL,
+            ruleset_version    TEXT NOT NULL,
+            run_ts_eat         TIMESTAMPTZ NOT NULL DEFAULT now(),
+            pos_location       TEXT NOT NULL,
+            country            TEXT,
+            sku                TEXT NOT NULL,
+            barcode            TEXT,
+            size               TEXT,
+            style_name         TEXT,
+            demand_weeks       INT,
+            units_sold         INT NOT NULL DEFAULT 0,
+            shelf_qty_at_calc  INT NOT NULL DEFAULT 0,
+            wh_qty_at_calc     INT NOT NULL DEFAULT 0,
+            v_at_calc          NUMERIC,
+            sku_class          TEXT,
+            floor_target       INT,
+            cover_target       INT,
+            suggested_qty      INT NOT NULL DEFAULT 0,
+            deploy_now         BOOLEAN NOT NULL DEFAULT FALSE,
+            censored_flag      BOOLEAN NOT NULL DEFAULT FALSE,
+            wh_constrained     BOOLEAN NOT NULL DEFAULT FALSE,
+            PRIMARY KEY (run_id, pos_location, sku)
+        )""")
+    _users_exec(
+        "CREATE INDEX IF NOT EXISTS idx_replen_sugg_date "
+        "ON fact_replen_suggestion (business_date)")
+    _users_exec(
+        "CREATE INDEX IF NOT EXISTS idx_replen_sugg_run "
+        "ON fact_replen_suggestion (run_id)")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS fact_pick_event (
+            event_id          BIGSERIAL PRIMARY KEY,
+            run_id            TEXT,
+            business_date     DATE,
+            pos_location      TEXT NOT NULL,
+            sku               TEXT NOT NULL,
+            barcode           TEXT,
+            size              TEXT,
+            user_id           TEXT,
+            user_name         TEXT,
+            qty_picked        INT NOT NULL DEFAULT 0,
+            picked_ts_eat     TIMESTAMPTZ NOT NULL DEFAULT now(),
+            odoo_transfer_id  TEXT
+        )""")
+    _users_exec(
+        "CREATE INDEX IF NOT EXISTS idx_pick_event_run "
+        "ON fact_pick_event (run_id)")
+    _users_exec(
+        "CREATE INDEX IF NOT EXISTS idx_pick_event_loc "
+        "ON fact_pick_event (pos_location, sku)")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS fact_store_receipt (
+            id                BIGSERIAL PRIMARY KEY,
+            odoo_transfer_id  TEXT,
+            pos_location      TEXT NOT NULL,
+            sku               TEXT NOT NULL,
+            qty_received      INT NOT NULL DEFAULT 0,
+            received_ts       TIMESTAMPTZ NOT NULL DEFAULT now(),
+            received_by       TEXT
+        )""")
+    _users_exec(
+        "CREATE INDEX IF NOT EXISTS idx_store_receipt_loc "
+        "ON fact_store_receipt (pos_location, sku)")
+    # Merch overrides for the Held-back panel: a (pos_location, sku) a merchant
+    # has force-released back into the pick list despite a suppression reason
+    # (overstock / EOL / broken-curve). Append-only-ish: upsert on the pair.
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS replen_holdback_override (
+            pos_location  TEXT NOT NULL,
+            sku           TEXT NOT NULL,
+            action        TEXT NOT NULL DEFAULT 'release',
+            reason        TEXT,
+            acted_by      TEXT,
+            acted_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (pos_location, sku)
+        )""")
+
+
+@app.on_event("startup")
+def _init_replen_store():
+    try:
+        _ensure_replen_tables()
+    except Exception as e:
+        log.error("Replenishment fact-table init failed: %s", e)
 
 
 def _production_order_detail(order_ref):

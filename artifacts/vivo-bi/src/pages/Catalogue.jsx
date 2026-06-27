@@ -113,6 +113,18 @@ const RULES = [
     formula: "sell-through % = units_sold ÷ (units_sold + stock_on_hand)  — identical to SOR % above",
     notes: ["Same metric as Sell-Out Rate (SOR) above: two names for one formula. SOR is the canonical name; \"Sell-through\" is the industry-standard alias surfaced on the Products and Velocity pages — there is no second calculation.", "Banding mirrored across pages: ≥60% Fast, 30–60% Steady, <30% Slow."],
     used: ["/products", "/velocity", "/product-analysis"] },
+  { id: "replen-sor", title: "Replenishment SOR engine (canonical SOR + saleable SOR)", category: "Products",
+    formula: "current SOR % = units_sold × 100 ÷ (units_sold + saleable store stock)  — warehouse EXCLUDED, identical to SOR above",
+    notes: [
+      "The Replenishments page reads SOR over a NAMED trailing demand window — default 4 weeks, switchable to 8 or 12 (the window is shown on the page). SOR is computed per pool (each store on its own stock, Online / Shop Zetu on its own pool) and rolled up unit-weighted across pools — a single SUM of units_sold over a single SUM of stock IS the unit-weighted roll-up. The base formula is unchanged.",
+      "Saleable SOR (shown ALONGSIDE the headline, never replacing it) nets broken-curve orphan stock out of the denominator: stock of a (store, style) holding only a single in-stock size while the style's chain-wide curve has 3+ sizes is treated as unsaleable remnant. Saleable SOR ≥ current SOR by construction — it is the ceiling once orphans are cleared, not a different metric.",
+      "Velocity classes drive the floor (presentation minimum): A = fast (≥1.0 units/wk, floor 3), B = core (0.25–1.0 u/wk, floor 2), C = slow (<0.25 u/wk, floor 1, pulled to 1 only on a sale). Target = max(class floor, ⌈velocity × cover weeks⌉) with cover = 2 weeks; suggested = max(0, target − shelf qty), then capped to the SKU's shared warehouse pool (top sellers first).",
+      "Held-back panel: candidates deliberately NOT moved, each with a reason — Retired/EOL, Overstock (weeks-of-cover > 16), or Broken-curve orphan. A merchant can force-release a held SKU back into the pick list (override persists).",
+      "Deploy-from-warehouse-first: a SKU with warehouse units AND a proven-demand store/Online sitting at ZERO shelf stock is ranked at the very top ('deploy now') — the single highest-SOR action. The KPI strip surfaces deployable-warehouse-units, SOR-at-risk units, SOR-drag (overstock) units, and a conservative projected SOR uplift bounded by what is actually pickable (min(suggested, velocity × days-to-next-dispatch)).",
+      "Every suggestion is snapshotted to an immutable, append-only fact table keyed by run_id = hash(business_date_EAT | store_scope | ruleset_version), so reloading the page never duplicates a run and a later 'did SOR actually rise after we moved this?' read is attributable.",
+    ],
+    thresholds: ["Demand window: 4w (default) / 8w / 12w", "Cover target = 2 weeks", "Class A ≥1.0 u/wk (floor 3) · B 0.25–1.0 (floor 2) · C <0.25 (floor 1)", "Overstock hold: WOC > 16 weeks", "Broken-curve orphan: 1 in-stock size while chain curve ≥ 3 sizes", "Ruleset: phase1-v1"],
+    used: ["/replenishments"] },
   { id: "range-tiers", title: "Range lifecycle tiers (T1–T4) — how a style is classified", category: "Products",
     formula: "2026 Range Strategy (SOP). Each active style is classified by running it through the steps below in order: (0) hard-retire overrides, then (1) catalogue age sets the lifecycle stage, then (2) performance gates inside that stage decide whether the style is promoted to its tier or sent to Retire.",
     notes: [

@@ -1571,6 +1571,28 @@ def main():
     except Exception as e:
         log.error("Data-quality log error: %s", e)
 
+    # Replenishment SOR snapshot — once a day in the same 21:00 UTC window. The
+    # endpoint ensures its own schema (so the fact tables self-bootstrap from the
+    # sync loop on a fresh prod DB too) and is idempotent on run_id, so a daily
+    # immutable pick-list snapshot accrues for SOR attributability even on days
+    # with no staff page visit. Authenticates with the shared SESSION_SECRET.
+    try:
+        if now.hour == 21:
+            _secret = os.environ.get("SESSION_SECRET")
+            if _secret:
+                resp = requests.post(
+                    "http://localhost:80/api/analytics/replenishment-sor/snapshot",
+                    headers={"X-Internal-Token": _secret},
+                    timeout=180,
+                )
+                log.info(
+                    "Replen SOR snapshot — HTTP %s %s", resp.status_code, resp.text[:200]
+                )
+            else:
+                log.warning("Replen SOR snapshot skipped — SESSION_SECRET unset")
+    except Exception as e:
+        log.error("Replen SOR snapshot error: %s", e)
+
     write_heartbeat(conn, "ok")
     conn.close()
     log.info("=== Sync complete ===")
