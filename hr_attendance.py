@@ -242,6 +242,26 @@ def _gsheet_values(sheet_id, tab, rng="A1:R5000"):
     return (r.json() or {}).get("values") or []
 
 
+def _gsheet_append(sheet_id, tab, rows, value_input_option="USER_ENTERED"):
+    """Append rows (a list of row lists) to the next empty row of a tab via the
+    Google Sheets v4 ``spreadsheets.values:append`` API. USER_ENTERED so values are
+    parsed like manual entry; INSERT_ROWS so existing cells are never overwritten.
+    Requires the connected google-sheet connection to have edit (write) scope."""
+    tok = _connector_access_token("google-sheet")
+    range_q = requests.utils.quote(f"{tab}!A1", safe="")
+    r = requests.post(
+        f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/{range_q}:append",
+        params={"valueInputOption": value_input_option,
+                "insertDataOption": "INSERT_ROWS"},
+        headers={"Authorization": f"Bearer {tok}",
+                 "Content-Type": "application/json"},
+        json={"values": rows},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json() or {}
+
+
 def _t_clean(v):
     return v.strip() if isinstance(v, str) else ("" if v is None else str(v).strip())
 

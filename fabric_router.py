@@ -75,6 +75,33 @@ def _fabric_actor(request):
     name = u.get("name") or u.get("email") or "system"
     return uid, name
 
+def _fabric_actor_email(request):
+    """The signed-in user's email (for the change-log audit trail), '' if unknown."""
+    u = getattr(request.state, "user", None) or {}
+    return u.get("email") or ""
+
+def _log_fabric_change(action, resv, request):
+    """Best-effort: file a reservation change into the Google-Sheet audit log.
+    NEVER raises (the helper swallows/logs errors in a daemon thread)."""
+    try:
+        import fabric_change_log
+        _uid, name = _fabric_actor(request)
+        fabric_change_log.log_change(action, resv, name,
+                                     _fabric_actor_email(request))
+    except Exception:
+        pass
+
+def _resv_for_log(conn, resv_id):
+    """Reservation row enriched with the fabric product name, for the audit log."""
+    rows = q(conn, """
+        SELECT r.id, r.qty, r.uom, r.style_name, r.note, r.status,
+               p.name AS product
+        FROM fabric_reservations r
+        LEFT JOIN raw_fabric_products p ON p.id = r.product_id
+        WHERE r.id=%s
+    """, (resv_id,))
+    return rows[0] if rows else None
+
 def _get_conn():
     """Use the main app's connection pool."""
     import sys, os
@@ -2140,6 +2167,11 @@ def create_reservation(request: Request, body: dict = Body(...)):
             """, (product_id, qty, uom, round(qty_kg, 3), style_name, note, uid, name))
             new_id = cur.fetchone()["id"]
         conn.commit()
+        _log_fabric_change("Created", {
+            "id": new_id, "product": prod[0].get("name"),
+            "style_name": style_name, "qty": qty, "uom": uom,
+            "note": note, "status": "active",
+        }, request)
         return {"id": new_id, "ok": True}
 
 @fabric_router.post("/api/fabric/reservations/{resv_id}/use")
@@ -2158,16 +2190,23 @@ def mark_reservation_used(resv_id: int, request: Request):
         if not updated:
             raise HTTPException(status_code=404,
                 detail="reservation not found or already closed")
+        _log_fabric_change("Marked used", _resv_for_log(conn, resv_id)
+                           or {"id": resv_id, "status": "used"}, request)
         return {"ok": True}
 
 @fabric_router.delete("/api/fabric/reservations/{resv_id}")
 def delete_reservation(resv_id: int, request: Request):
     with _get_conn() as conn:
         _ensure_fabric_tables(conn)
+        # Capture details BEFORE the row is gone so the audit log is human-readable.
+        snapshot = _resv_for_log(conn, resv_id)
         with conn.cursor() as cur:
             cur.execute("DELETE FROM fabric_reservations WHERE id=%s", (resv_id,))
             deleted = cur.rowcount
         conn.commit()
         if not deleted:
             raise HTTPException(status_code=404, detail="reservation not found")
+        log_row = snapshot or {"id": resv_id}
+        log_row["status"] = "deleted"
+        _log_fabric_change("Deleted", log_row, request)
         return {"ok": True}
