@@ -568,7 +568,7 @@ const Footfall = () => {
               testId="ff-kpi-conv"
               label="Stores Conversion Rate"
               sub={`${fmtNum(totals.scopedOrders)} orders ÷ ${fmtNum(totals.footfall)} footfall`}
-              formula="Formula: (orders ÷ footfall in) × 100, summed across the stores in scope. Per-store orders (from sales) and footfall are matched on store name — renamed sensor feeds (from 2026-06-07) are mapped back to their sales name before dividing. Only stores that have a footfall counter contribute; no conversion-rate outliers are excluded."
+              formula="Formula: (orders ÷ footfall in) × 100. This is the POOLED period rate — total in-store orders ÷ total footfall over the whole period (not an average of daily rates). Per-store orders (from sales) and footfall are matched on store name — renamed sensor feeds (from 2026-06-07) are mapped back to their sales name before dividing. Only stores that have a footfall counter contribute, so it counts in-store/counter orders only and intentionally EXCLUDES Online/App orders — that is why it does not reconcile with the all-channel Orders and Avg Basket Value cards. The Weekday pattern heatmap's Conversion mode instead averages each day's rate (day-averaged), which typically reads a little higher. No conversion-rate outliers are excluded."
               value={fmtPct(totals.conv, 2)}
               icon={Target}
               delta={delta(totals.conv, prevTotals.conv)}
@@ -580,7 +580,7 @@ const Footfall = () => {
               testId="ff-kpi-abv"
               label="Avg Basket Value"
               sub="Total Sales ÷ Orders"
-              formula="Formula: total sales ÷ number of orders — the average amount spent per transaction."
+              formula="Formula: total sales ÷ number of orders — the average amount spent per transaction. Uses all-channel orders (the same population as the Orders card), not the in-store-only count behind the Conversion Rate card."
               value={fmtKES(totals.abv)}
               icon={Coins}
               delta={delta(totals.abv, prevTotals.abv)}

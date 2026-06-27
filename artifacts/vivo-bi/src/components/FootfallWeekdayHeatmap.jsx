@@ -211,6 +211,11 @@ const FootfallWeekdayHeatmap = () => {
                 Best CR day: <strong>{WEEKDAY_SHORT[peakCrWkd.weekday]}</strong> ({fmtPct(peakCrWkd.avg_conversion_rate, 1)}).
               </span>
             ) : null}
+            {mode === "conversion" && (
+              <span className="ml-1">
+                Conversion cells are the <strong>average of daily conversion rates</strong> (day-averaged), so they can read a little higher than the pooled “Stores Conversion Rate” KPI above (total orders ÷ total footfall).
+              </span>
+            )}
           </div>
         </div>
         <div className="inline-flex rounded-lg border border-border p-0.5 bg-panel" data-testid="heatmap-mode-switch">
