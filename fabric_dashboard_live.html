@@ -329,7 +329,17 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    <section id="page-support" style="display:none;">
     <div id="support-kpis" class="kpi-grid"><div class="loading">Loading…</div></div>
     <div class="card" style="padding:0;margin-top:1.1rem;">
-     <div class="section-head" style="padding:.9rem 1.1rem 0;"><h3>Stock mix — support fabrics</h3><span class="muted">Lining &amp; interfacing &middot; RMAT/Stock</span></div>
+     <div class="section-head" style="padding:.9rem 1.1rem 0;"><h3>Stock mix — support fabrics</h3><span class="muted">Lining &amp; interfacing &middot; RMAT/Stock</span>
+      <div style="margin-left:auto;position:relative;">
+       <button class="btn" id="support-export-btn" aria-haspopup="true" aria-expanded="false" onclick="toggleSupportExportMenu(event)">Export CSV ▾</button>
+       <div class="export-menu" id="support-export-menu" style="display:none;">
+        <button onclick="supportMixExport('category')">Category summary</button>
+        <button onclick="supportMixExport('subcategory')">Sub-category summary</button>
+        <button onclick="supportMixExport('products')">All products — full support register</button>
+        <button onclick="supportMixExport('actions')">Action items only</button>
+       </div>
+      </div>
+     </div>
      <div class="tbl-wrap">
       <table class="data">
        <thead><tr>
@@ -1646,8 +1656,14 @@ function mixCostMetreVal(r){const v=r.detail&&r.detail.cost_metre;return v==null
 function mixGroupCostKgVal(r){const v=mixGroupCost(r).perKg;return v==null?'':v;}
 function mixGroupCostMetreVal(r){const v=mixGroupCost(r).perMetre;return v==null?'':v;}
 // 1) Category summary — one row per fabric category.
-function exportFabricMix(){
-  const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
+// Optional (d,prefix) let the Support Fabrics page reuse these against its own
+// support-scoped tree + filename prefix. `d` may arrive as a DOM node (the
+// action banner calls exportFabricMixActions(this)); guard that to fall back to
+// the Stock Mix cache.
+function exportFabricMix(d,prefix){
+  if(d&&d.nodeType){d=null;}
+  d=d||mixCache;prefix=prefix||'fabric_mix';
+  if(!d){alert('Nothing to export yet.');return;}
   const rows=mixSortRows(mixDerivedTree(d));
   if(!rows.length){alert('No data to export.');return;}
   const unit=UNIT==='kg'?'kg':'m';
@@ -1665,11 +1681,13 @@ function exportFabricMix(){
     ['Colors',r=>mixGroupColors(r)],
     ['Verdict',r=>r.verdict.label],
   ];
-  mixDownloadCsv(cols,rows,`fabric_mix_category_${d.days}d.csv`);
+  mixDownloadCsv(cols,rows,`${prefix}_category_${d.days}d.csv`);
 }
 // 2) Sub-category summary — one row per sub-category, with its parent category.
-function exportFabricMixSub(){
-  const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
+function exportFabricMixSub(d,prefix){
+  if(d&&d.nodeType){d=null;}
+  d=d||mixCache;prefix=prefix||'fabric_mix';
+  if(!d){alert('Nothing to export yet.');return;}
   const rows=[];
   mixDerivedTree(d).forEach(c=>(c.subcategories||[]).forEach(s=>{s._cat=c.group;rows.push(s);}));
   const sorted=mixSortRows(rows);
@@ -1690,14 +1708,16 @@ function exportFabricMixSub(){
     ['Colors',r=>mixGroupColors(r)],
     ['Verdict',r=>r.verdict.label],
   ];
-  mixDownloadCsv(cols,sorted,`fabric_mix_subcategory_${d.days}d.csv`);
+  mixDownloadCsv(cols,sorted,`${prefix}_subcategory_${d.days}d.csv`);
 }
 // 3) All products — one row per individual fabric across the whole warehouse.
 // Derived per-product so % / gap / cover / verdict match the table; SOH metres
 // and SOH kg are read from the raw node so BOTH units are emitted regardless of
 // the active unit toggle (Consumption + cover follow the active unit).
-function exportFabricMixProducts(){
-  const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
+function exportFabricMixProducts(d,prefix){
+  if(d&&d.nodeType){d=null;}
+  d=d||mixCache;prefix=prefix||'fabric_mix';
+  if(!d){alert('Nothing to export yet.');return;}
   const useKg=UNIT==='kg';
   const totC=useKg?d.total_consumption_kg:d.total_consumption_metres;
   const totA=useKg?d.total_available_kg:d.total_available_metres;
@@ -1732,12 +1752,14 @@ function exportFabricMixProducts(){
     [mixCoverHdr(),mixCoverVal],
     ['Verdict',r=>r.verdict.label],
   ];
-  mixDownloadCsv(cols,sorted,`fabric_mix_all_products_${d.days}d.csv`);
+  mixDownloadCsv(cols,sorted,`${prefix}_all_products_${d.days}d.csv`);
 }
 // 4) Action items only — Buy / Clear / Idle categories with the quantified
 // shortage/exposure figures the action banner is built from.
-function exportFabricMixActions(){
-  const d=mixCache;if(!d){alert('Nothing to export yet.');return;}
+function exportFabricMixActions(d,prefix){
+  if(d&&d.nodeType){d=null;}
+  d=d||mixCache;prefix=prefix||'fabric_mix';
+  if(!d){alert('Nothing to export yet.');return;}
   const rows=mixSortRows(mixDerivedTree(d)).filter(r=>r.verdict.key!=='hold');
   if(!rows.length){alert('No action rows in this period.');return;}
   const unit=UNIT==='kg'?'kg':'m';
@@ -1757,7 +1779,67 @@ function exportFabricMixActions(){
     ['Cost per Metre KES',mixGroupCostMetreVal],
     ['Colors',r=>mixGroupColors(r)],
   ];
-  mixDownloadCsv(cols,rows,`fabric_mix_actions_${d.days}d.csv`);
+  mixDownloadCsv(cols,rows,`${prefix}_actions_${d.days}d.csv`);
+}
+
+// ── Support Fabrics export ───────────────────────────────────────────────────
+// The Support Fabrics page reuses the four Stock Mix export builders against a
+// SEPARATE support-scoped mix tree (scope=support), fetched on demand the first
+// time Export is clicked so "All products" covers the FULL support register
+// rather than the lazy on-screen drill-down rows. The tree follows the same
+// consumption window (top Date range) + active unit/cover-basis as Stock Mix.
+// Cache is keyed by the effective window query-string so it can NEVER serve a
+// stale period: any change to the consumption window (from the top Date range OR
+// the Stock Mix in-page/topbar controls) changes the key, forcing a re-fetch.
+let supportMixCache=null;        // {key, data}
+function supportMixParams(){
+  const from=document.getElementById('g-since').value;
+  const to=document.getElementById('g-until').value;
+  const params=new URLSearchParams({group_by:'category',location:'RMAT/Stock',scope:'support'});
+  if(from&&to){params.set('date_from',from);params.set('date_to',to);}
+  else{params.set('days',(document.getElementById('mix-period')&&document.getElementById('mix-period').value)||90);}
+  return params.toString();
+}
+function toggleSupportExportMenu(e){
+  if(e)e.stopPropagation();
+  const m=document.getElementById('support-export-menu');
+  const btn=document.getElementById('support-export-btn');
+  const open=!m||m.style.display==='none';
+  if(m)m.style.display=open?'block':'none';
+  if(btn)btn.setAttribute('aria-expanded',open?'true':'false');
+}
+function closeSupportExportMenu(){
+  const m=document.getElementById('support-export-menu');
+  if(m)m.style.display='none';
+  const btn=document.getElementById('support-export-btn');
+  if(btn)btn.setAttribute('aria-expanded','false');
+}
+// Click-away: close the support menu on any click outside its button/menu.
+document.addEventListener('click',e=>{
+  if(!(e.target.closest&&e.target.closest('#support-export-menu,#support-export-btn')))closeSupportExportMenu();
+});
+async function loadSupportMixTree(qs){
+  const data=await apiFetch('/api/fabric/mix?'+qs);
+  supportMixCache={key:qs,data};
+  return data;
+}
+async function supportMixExport(kind){
+  closeSupportExportMenu();
+  const btn=document.getElementById('support-export-btn');
+  const orig=btn?btn.textContent:'';
+  const qs=supportMixParams();
+  let d=(supportMixCache&&supportMixCache.key===qs)?supportMixCache.data:null;
+  if(!d){
+    if(btn){btn.textContent='Loading…';btn.disabled=true;}
+    try{d=await loadSupportMixTree(qs);}
+    catch(e){alert('Could not load support fabric data to export.');return;}
+    finally{if(btn){btn.textContent=orig;btn.disabled=false;}}
+  }
+  const prefix='support_fabric_mix';
+  if(kind==='category')exportFabricMix(d,prefix);
+  else if(kind==='subcategory')exportFabricMixSub(d,prefix);
+  else if(kind==='products')exportFabricMixProducts(d,prefix);
+  else if(kind==='actions')exportFabricMixActions(d,prefix);
 }
 
 // ── Overview ──
