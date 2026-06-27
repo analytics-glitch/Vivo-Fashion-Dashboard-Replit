@@ -9,7 +9,7 @@ import IBTCompletedMoves from "@/components/IBTCompletedMoves";
 import IBTMarkAsDoneModal from "@/components/IBTMarkAsDoneModal";
 import { toast } from "sonner";
 import {
-  Truck, Package, MagnifyingGlass, DownloadSimple, Stack, TrendUp, Buildings,
+  Truck, Package, MagnifyingGlass, DownloadSimple, Stack, TrendUp, Buildings, Tag,
 } from "@phosphor-icons/react";
 
 // Demand-lookback presets (trailing window the engine measures sell-through
@@ -144,6 +144,7 @@ const IBT = () => {
   };
 
   const bundles = useMemo(() => data?.bundles || [], [data]);
+  const markdownCandidates = useMemo(() => data?.markdown_candidates || [], [data]);
   const summary = data?.summary || {};
 
   // Filter option lists are derived from the bundles + their embedded SKUs.
@@ -218,14 +219,16 @@ const IBT = () => {
         <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <KPICard testId="ibt-kpi-bundles" accent label="Transfer bundles"
-              sub="One per from → to pair"
+              sub={`${fmtNum(summary.units || 0)} units · ${fmtNum(summary.stores || 0)} stores`}
               value={fmtNum(summary.bundles || 0)} icon={Truck} showDelta={false} />
-            <KPICard testId="ibt-kpi-units" label="Units to move"
-              value={fmtNum(summary.units || 0)} icon={Package} showDelta={false} />
-            <KPICard testId="ibt-kpi-stores" label="Stores involved"
-              value={fmtNum(summary.stores || 0)} icon={Buildings} showDelta={false} />
+            <KPICard testId="ibt-kpi-value" label="Value redeployed"
+              sub={`${fmtNum(summary.warehouse_covered_units || 0)} units the warehouse already covers`}
+              value={`KES ${fmtNum(summary.value_kes || 0)}`} icon={Package} showDelta={false} />
+            <KPICard testId="ibt-kpi-ccc" label="Inventory-days removed"
+              sub={`avg ${fmtNum(summary.avg_net_ccc_days_per_unit || 0)} net days/unit`}
+              value={fmtNum(summary.inventory_days_removed || 0)} icon={Buildings} showDelta={false} />
             <KPICard testId="ibt-kpi-sor" label="Est. SOR uplift"
-              sub={`${fmtNum(summary.cross_border_bundles || 0)} cross-border`}
+              sub={`${fmtNum(summary.curve_completions || 0)} curve-completes · ${fmtNum(summary.cross_border_bundles || 0)} cross-border`}
               value={`+${(summary.sor_uplift_pp ?? 0).toFixed(2)} pp`}
               icon={TrendUp} showDelta={false} />
           </div>
@@ -339,6 +342,7 @@ const IBT = () => {
             />
             <IBTBundleTable
               bundles={filteredBundles}
+              markdownCandidates={markdownCandidates}
               onMarkDone={(payload) => setDoneModalRow(payload)}
               completedSkuKeys={completedSkuKeys}
               completedKeys={completedKeys}
@@ -347,17 +351,67 @@ const IBT = () => {
             />
           </div>
 
+          {markdownCandidates.length > 0 && (
+            <div className="card-white p-4 sm:p-5" data-testid="ibt-markdown-card">
+              <SectionTitle
+                title={`Markdown instead · ${markdownCandidates.length}`}
+                subtitle="Slow stock that qualifies for a move on stock balance but does NOT pay to ship — once transit time and freight/duty are paid, the destination sells it no faster (or the value is wiped out). Clear it locally with a markdown rather than redeploying it."
+              />
+              <div className="overflow-x-auto -mx-1">
+                <table className="w-full text-[12.5px]" data-testid="ibt-markdown-table">
+                  <thead>
+                    <tr className="text-left text-muted border-b border-border">
+                      <th className="py-2 px-2 font-semibold">Store</th>
+                      <th className="py-2 px-2 font-semibold">Style</th>
+                      <th className="py-2 px-2 font-semibold">Subcategory</th>
+                      <th className="py-2 px-2 font-semibold text-right">On hand</th>
+                      <th className="py-2 px-2 font-semibold text-right">SKUs</th>
+                      <th className="py-2 px-2 font-semibold text-right">Days to sell</th>
+                      <th className="py-2 px-2 font-semibold">Why</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {markdownCandidates.map((m, i) => (
+                      <tr key={`${m.from_store}|${m.style_name}|${i}`} className="border-b border-border/60">
+                        <td className="py-1.5 px-2">{m.from_store}{m.from_country ? ` · ${m.from_country}` : ""}</td>
+                        <td className="py-1.5 px-2 font-medium text-foreground">{m.style_name}</td>
+                        <td className="py-1.5 px-2 text-muted">{m.subcategory || "—"}</td>
+                        <td className="py-1.5 px-2 text-right tabular-nums">{fmtNum(m.donor_onhand || 0)}</td>
+                        <td className="py-1.5 px-2 text-right tabular-nums">{fmtNum(m.sku_count || 0)}</td>
+                        <td className="py-1.5 px-2 text-right tabular-nums">{fmtNum(m.src_days_to_sell || 0)}</td>
+                        <td className="py-1.5 px-2">
+                          <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                            m.reason === "no_value" ? "bg-rose-100 text-rose-700" : "bg-amber-100 text-amber-700"
+                          }`}>
+                            <Tag size={11} weight="bold" />
+                            {m.reason === "no_value" ? "Freight wipes value" : "No time saved"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           <div className="card-white p-4 bg-panel">
             <div className="text-[12.5px] text-muted">
               <span className="font-semibold text-foreground">How it works:</span>{" "}
-              One global solve scores every viable SKU edge (donor selling weakly
-              with stock → receiver selling strongly but low), then greedily
-              assigns units against a per-destination two-week demand budget and a
-              per-donor keep-one ledger so no store is over-drained or
-              over-filled. Surviving edges are consolidated into one bundle per
-              store pair; a bundle ships only if it clears the minimum-transfer
-              gate (domestic ≥ 4 units, cross-border ≥ 24). The canonical
-              Sell-Off-Rate formula is never altered.
+              First the central warehouse is deployed against each destination gap
+              (strongest demand first), so IBT only fires on the residual stores
+              can't be replenished from the warehouse. The global solve then scores
+              every viable SKU edge (donor selling weakly with stock → receiver
+              selling strongly but low) and assigns units against a per-destination
+              two-week demand budget and a per-donor keep-one ledger. Edges are
+              ranked size-curve-completion first (filling an empty destination
+              size), then by net cash-conversion days × value (donor days-to-sell −
+              destination days-to-sell − corridor transit, valued at ASP net of
+              freight and cross-border duty). A move that doesn't pay forks to the
+              markdown list above. Surviving edges consolidate into one bundle per
+              store pair that ships only if it clears the minimum-transfer gate
+              (domestic ≥ 4 units, cross-border ≥ 24). The canonical Sell-Off-Rate
+              formula is never altered.
             </div>
           </div>
 

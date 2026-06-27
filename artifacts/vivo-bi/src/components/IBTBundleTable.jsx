@@ -29,12 +29,22 @@ import {
  */
 export default function IBTBundleTable({
   bundles = [],
+  markdownCandidates = [],
   onMarkDone,
   completedSkuKeys = new Set(),
   completedKeys = new Set(),
   testId = "ibt-bundle-table",
   emptyLabel = "No transfer opportunities for the current window.",
 }) {
+  // Donor (store, style) pairs whose slow sizes were forked to the markdown list
+  // (some sizes of the same style at the same store don't pay to ship). Used to
+  // flag those bundle rows inline so the operator sees "also markdown" stock.
+  const markdownDonors = useMemo(() => {
+    const s = new Set();
+    (markdownCandidates || []).forEach((m) =>
+      m.from_store && m.style_name && s.add(`${m.from_store}||${m.style_name}`));
+    return s;
+  }, [markdownCandidates]);
   const [expanded, setExpanded] = useState(() => new Set());
   const [actuals, setActuals] = useState({}); // skuRowKey → number string
   const setActual = (k, v) => setActuals((prev) => ({ ...prev, [k]: v }));
@@ -96,6 +106,7 @@ export default function IBTBundleTable({
       "Color", "Size", "SKU", "Barcode", "Bin",
       "From: Qty Sold (28d)", "To: Qty Sold (28d)",
       "Inv. Qty FROM", "Inv. Qty TO", "Suggested Qty",
+      "Net CCC Days", "Value (KES)", "Curve Complete",
     ];
     const out = [header];
     for (const b of liveBundles) {
@@ -106,6 +117,7 @@ export default function IBTBundleTable({
           s.color || "", s.size || "", s.sku || "", s.barcode || "", s.bin || "",
           s.from_qty_sold_28d ?? "", s.to_qty_sold_28d ?? "",
           s.from_available ?? "", s.to_available ?? "", s.suggested_qty ?? "",
+          s.net_ccc_days ?? "", s.value_kes ?? "", s.curve_complete ? "Y" : "",
         ]);
       }
     }
@@ -173,6 +185,9 @@ export default function IBTBundleTable({
               <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Units</th>
               <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">SKUs</th>
               <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Styles</th>
+              <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="Net inventory-days removed: donor days-to-sell − destination days-to-sell − corridor transit, summed over the moved units">Net days</th>
+              <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="Value redeployed: units × ASP, net of freight and (cross-border) duty">Value (KES)</th>
+              <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap" title="SKUs that fill an empty destination size (size-curve completion)">Curve</th>
               <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Score</th>
             </tr>
           </thead>
@@ -211,12 +226,21 @@ export default function IBTBundleTable({
                     <td className="px-3 py-3 text-right tabular-nums font-semibold">{fmtNum(b.units)}</td>
                     <td className="px-3 py-3 text-right tabular-nums">{fmtNum(b.sku_count)}</td>
                     <td className="px-3 py-3 text-right tabular-nums">{fmtNum(b.style_count)}</td>
+                    <td className="px-3 py-3 text-right tabular-nums">{fmtNum(b.net_ccc_days ?? 0)}</td>
+                    <td className="px-3 py-3 text-right tabular-nums">{fmtNum(b.value_kes ?? 0)}</td>
+                    <td className="px-3 py-3 text-right tabular-nums">
+                      {b.curve_completions ? (
+                        <span className="inline-flex items-center text-[10px] font-bold px-2 py-0.5 rounded-full bg-violet-100 text-violet-700" title="Size-curve completions in this bundle">
+                          {fmtNum(b.curve_completions)}
+                        </span>
+                      ) : <span className="text-muted">—</span>}
+                    </td>
                     <td className="px-3 py-3 text-right tabular-nums">{fmtNum(b.score)}</td>
                   </tr>
 
                   {open && (
                     <tr className="bg-white">
-                      <td colSpan={9} className="px-0 py-0">
+                      <td colSpan={12} className="px-0 py-0">
                         <div className="overflow-x-auto border-t border-border/40">
                           <table className="w-full min-w-max text-[12px]">
                             <thead className="bg-panel/60">
@@ -232,6 +256,8 @@ export default function IBTBundleTable({
                                 <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Shop-floor inventory at the FROM store">Inv FROM</th>
                                 <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Shop-floor inventory at the TO store">Inv TO</th>
                                 <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Suggested</th>
+                                <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Net inventory-days removed for this SKU">Net days</th>
+                                <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Value redeployed (units × ASP, net of freight/duty)">Value (KES)</th>
                                 <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Actual transferred</th>
                                 <th className="px-3 py-2 font-semibold whitespace-nowrap">Action</th>
                               </tr>
@@ -242,7 +268,19 @@ export default function IBTBundleTable({
                                 return (
                                   <tr key={rowKey} className="border-t border-border/40 hover:bg-amber-50/30" data-testid={`${testId}-sku-${s.sku}`}>
                                     <td className="px-3 py-2.5 whitespace-nowrap">
-                                      <div className="font-semibold">{s.style_name}</div>
+                                      <div className="font-semibold inline-flex items-center gap-1.5">
+                                        {s.style_name}
+                                        {s.curve_complete && (
+                                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700" title="Fills an empty destination size (size-curve completion)">
+                                            curve
+                                          </span>
+                                        )}
+                                        {markdownDonors.has(`${b.from_store}||${s.style_name}`) && (
+                                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700" title="Other sizes of this style at this store don't pay to ship — see the Markdown instead list">
+                                            also markdown
+                                          </span>
+                                        )}
+                                      </div>
                                       <div className="text-[10px] text-muted">{s.brand} · {s.subcategory}</div>
                                     </td>
                                     <td className="px-3 py-2.5 whitespace-nowrap">{s.color || "—"}</td>
@@ -255,6 +293,8 @@ export default function IBTBundleTable({
                                     <td className="px-3 py-2.5 text-right tabular-nums">{fmtNum(s.from_available ?? 0)}</td>
                                     <td className="px-3 py-2.5 text-right tabular-nums">{fmtNum(s.to_available ?? 0)}</td>
                                     <td className="px-3 py-2.5 text-right tabular-nums font-semibold">{fmtNum(s.suggested_qty ?? 0)}</td>
+                                    <td className="px-3 py-2.5 text-right tabular-nums">{fmtNum(s.net_ccc_days ?? 0)}</td>
+                                    <td className="px-3 py-2.5 text-right tabular-nums">{fmtNum(s.value_kes ?? 0)}</td>
                                     <td className="px-3 py-2.5 text-right">
                                       <input
                                         type="number"

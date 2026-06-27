@@ -8691,6 +8691,7 @@ def _ibt_edge_sql(date_from, date_to, country, low, high, use_clustering=True):
     return _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering) + """
     SELECT sc.style AS style_name, pp.brand, pp.category AS subcategory,
            sc.from_store, sc.from_tier, sc.to_store, sc.to_tier, sc.score,
+           COALESCE(sc.asp, 0)::numeric AS asp,
            sc.from_sold::int AS from_qty_sold_28d,
            sc.to_sold::int   AS to_qty_sold_28d,
            fav.sku AS sku, skd.color_print AS color, skd.size AS size,
@@ -8725,6 +8726,214 @@ def _ibt_edge_sql(date_from, date_to, country, low, high, use_clustering=True):
       AND sc.to_store NOT ILIKE '%zetu%'
     ORDER BY sc.score DESC, sc.style, fav.sku
     """
+
+
+# ── Phase 2 (Value & Coordination): cost knobs + corridor lead-time + velocity ─
+# Per-unit move economics (spec §5/§8 — KES redeployed net of transport + duty).
+# Knobs only; sensible East-Africa starting points. value_kes(move) =
+#   qty * asp  -  qty * transport_per_unit  -  (cross-border ? value * duty_pct : 0)
+IBT_TRANSPORT_PER_UNIT_DOMESTIC = 40.0    # KES/unit intra-country pick+freight
+IBT_TRANSPORT_PER_UNIT_CROSS    = 180.0   # KES/unit cross-border freight+clearing
+IBT_DUTY_PCT_CROSS              = 0.25     # ad-valorem duty/VAT drag on cross-border
+# Cap on source-days-freed so a non-selling donor cell (velocity ~ 0) cannot
+# return an unbounded cash-conversion benefit — bounded at one selling season.
+IBT_SOURCE_DAYS_CAP            = 120.0
+
+# Persisted from_country -> to_country transit days. Seeded with defaults and
+# refreshed from observed dispatch->receipt where ibt_completions carries both
+# stamps. Feeds the in-transit-days term of net-CCC scoring. Created lazily
+# (fabric-reservations pattern) so a fresh prod DB self-bootstraps on first solve.
+_IBT_LEADTIME_DOMESTIC_DEFAULT = 2.0
+_IBT_LEADTIME_CROSS_DEFAULT    = 7.0
+_ibt_leadtime_ready = False
+
+
+def _ensure_ibt_phase2_tables():
+    """Idempotently create + seed corridor_leadtime. Never raises (best-effort —
+    scoring falls back to the domestic/cross defaults if the table is absent)."""
+    global _ibt_leadtime_ready
+    if _ibt_leadtime_ready:
+        return
+    try:
+        _users_exec(
+            "CREATE TABLE IF NOT EXISTS corridor_leadtime ("
+            " from_country TEXT NOT NULL,"
+            " to_country   TEXT NOT NULL,"
+            " lead_days    NUMERIC NOT NULL DEFAULT 2,"
+            " via_hub      TEXT,"
+            " source       TEXT NOT NULL DEFAULT 'default',"
+            " n_obs        INTEGER NOT NULL DEFAULT 0,"
+            " updated_at   TIMESTAMP NOT NULL DEFAULT now(),"
+            " PRIMARY KEY (from_country, to_country))")
+        # Seed sensible defaults for every store-network country pair (domestic 2d,
+        # cross-border 7d), ON CONFLICT DO NOTHING so observed rows + reruns win.
+        _users_exec(f"""
+            INSERT INTO corridor_leadtime (from_country, to_country, lead_days, source)
+            SELECT a.country, b.country,
+                   CASE WHEN a.country = b.country THEN {_IBT_LEADTIME_DOMESTIC_DEFAULT}
+                        ELSE {_IBT_LEADTIME_CROSS_DEFAULT} END,
+                   'default'
+            FROM (SELECT DISTINCT country FROM all_inventory
+                  WHERE COALESCE(country,'') <> ''
+                    AND pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})) a
+            CROSS JOIN (SELECT DISTINCT country FROM all_inventory
+                  WHERE COALESCE(country,'') <> ''
+                    AND pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})) b
+            ON CONFLICT (from_country, to_country) DO NOTHING
+        """)
+        # Refresh observed dispatch->receipt averages from completed moves that
+        # carry both a suggested_at (dispatch proxy) and a transfer_date (receipt
+        # proxy). Idempotent upsert; only overwrites with source='observed' when a
+        # real signal exists, so seeded defaults survive on a fresh DB.
+        _users_exec("""
+            INSERT INTO corridor_leadtime (from_country, to_country, lead_days, source, n_obs, updated_at)
+            SELECT fc.country, tc.country,
+                   GREATEST(1, ROUND(AVG(c.transfer_date - c.suggested_at))::numeric),
+                   'observed', COUNT(*), now()
+            FROM ibt_completions c
+            JOIN LATERAL (SELECT country FROM all_inventory
+                          WHERE pos_location_name = c.from_store
+                            AND COALESCE(country,'') <> '' LIMIT 1) fc ON TRUE
+            JOIN LATERAL (SELECT country FROM all_inventory
+                          WHERE pos_location_name = c.to_store
+                            AND COALESCE(country,'') <> '' LIMIT 1) tc ON TRUE
+            WHERE c.suggested_at IS NOT NULL AND c.transfer_date IS NOT NULL
+              AND c.transfer_date >= c.suggested_at
+            GROUP BY fc.country, tc.country
+            HAVING COUNT(*) >= 3
+            ON CONFLICT (from_country, to_country) DO UPDATE
+              SET lead_days = EXCLUDED.lead_days, source = 'observed',
+                  n_obs = EXCLUDED.n_obs, updated_at = now()
+        """)
+        _ibt_leadtime_ready = True
+    except Exception as e:
+        log.warning("corridor_leadtime ensure/refresh skipped: %s", e)
+
+
+def _ibt_leadtime_map():
+    """{(from_country, to_country): lead_days} from corridor_leadtime. Never
+    raises; missing pairs fall back to the domestic/cross default at lookup."""
+    _ensure_ibt_phase2_tables()
+    out = {}
+    try:
+        rows = _users_exec(
+            "SELECT from_country, to_country, lead_days FROM corridor_leadtime",
+            fetch=True) or []
+        for r in rows:
+            out[(r.get("from_country") or "", r.get("to_country") or "")] = \
+                float(r.get("lead_days") or 0)
+    except Exception:
+        pass
+    return out
+
+
+def _ibt_lead_days(lt_map, from_country, to_country):
+    fc, tc = (from_country or ""), (to_country or "")
+    if (fc, tc) in lt_map:
+        return lt_map[(fc, tc)]
+    if fc and tc and fc != tc:
+        return _IBT_LEADTIME_CROSS_DEFAULT
+    return _IBT_LEADTIME_DOMESTIC_DEFAULT
+
+
+def _ibt_store_sku_velocity(date_from, date_to, country):
+    """Per (store, sku) recency-weighted weekly velocity with category-level
+    shrinkage so sparse cells don't produce garbage. Returns
+      {(store, sku): {"vel": weekly_units, "has_stock": bool, "sold": units}}
+    using the shared formula ((u28*2)+max(u56-u28,0))/12 on a trailing 56-day
+    window (warehouse/online excluded). Shrinkage distinguishes:
+      - cell SOLD over the window -> trust the observed rate, lightly shrunk
+        toward the category rate to stabilise tiny counts;
+      - cell HAS STOCK but ZERO sales -> a genuine slow cell (tiny floor), so
+        source-days-freed stays large (we WANT to move it);
+      - cell has NO stock and NO sales -> no signal -> category prior rate.
+    The canonical SOR formula is not used or changed here."""
+    c_sales = ("AND s.country = '" + _sql_str(country) + "'") if country else ""
+    c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
+    q = f"""
+    WITH vel AS (
+      SELECT s.pos_location_name AS store, s.variant_sku AS sku,
+             MAX(p.category) AS category,
+             SUM(s.net_quantity) FILTER (
+               WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days') AS u28,
+             SUM(s.net_quantity) AS u56
+      FROM all_sales s
+      JOIN all_products_clean p ON p.sku = s.variant_sku
+      WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
+        AND s.sale_kind IN ('sale','order')
+        AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND s.pos_location_name NOT ILIKE '%online%'
+        AND COALESCE(s.variant_sku,'') <> '' {c_sales}
+      GROUP BY 1, 2
+    ),
+    stock AS (
+      SELECT i.pos_location_name AS store, i.sku AS sku,
+             MAX(p.category) AS category, SUM(i.available) AS soh
+      FROM all_inventory i
+      JOIN all_products_clean p ON p.sku = i.sku
+      WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND i.pos_location_name NOT ILIKE '%online%'
+        AND COALESCE(i.sku,'') <> '' {c_inv}
+      GROUP BY 1, 2
+    )
+    SELECT COALESCE(v.store, k.store) AS store,
+           COALESCE(v.sku, k.sku) AS sku,
+           COALESCE(v.category, k.category) AS category,
+           COALESCE(v.u28, 0)::numeric AS u28,
+           COALESCE(v.u56, 0)::numeric AS u56,
+           COALESCE(k.soh, 0)::numeric AS soh
+    FROM vel v
+    FULL OUTER JOIN stock k ON k.store = v.store AND k.sku = v.sku
+    """
+    rows = run_query(q) or []
+    # Category prior = mean weekly velocity over SELLING cells in the category
+    # (so the prior reflects real demand, not the many zero-stock-zero-sale cells).
+    cat_sum, cat_n = {}, {}
+    raw = []
+    for r in rows:
+        u28 = float(r.get("u28") or 0)
+        u56 = float(r.get("u56") or 0)
+        soh = float(r.get("soh") or 0)
+        cat = r.get("category") or ""
+        wk = ((u28 * 2.0) + max(u56 - u28, 0.0)) / 12.0
+        if u56 > 0:
+            cat_sum[cat] = cat_sum.get(cat, 0.0) + wk
+            cat_n[cat] = cat_n.get(cat, 0) + 1
+        raw.append((r.get("store"), r.get("sku"), cat, wk, soh, u56))
+    out = {}
+    for store, sku, cat, wk, soh, u56 in raw:
+        cat_rate = (cat_sum.get(cat, 0.0) / cat_n[cat]) if cat_n.get(cat) else 0.0
+        if u56 > 0:
+            # Light empirical-Bayes shrink toward the category rate (W=8 wk window,
+            # K=2 prior weight) so a single fluke sale doesn't dominate.
+            vel = (wk * 8.0 + cat_rate * 2.0) / 10.0
+        elif soh > 0:
+            # Genuine slow cell: had stock, didn't sell -> tiny floor (NOT the
+            # category prior) so source-days-freed stays large.
+            vel = 0.02
+        else:
+            # No signal at all -> fall back to the category prior.
+            vel = cat_rate if cat_rate > 0 else 0.02
+        out[(store, sku)] = {"vel": vel, "has_stock": soh > 0, "sold": u56}
+    return out
+
+
+def _ibt_warehouse_avail(country):
+    """{sku: available_units} in the central warehouse(s). Used by the
+    warehouse-deploy-first waterfall so IBT only fires on the residual demand
+    Replenishment won't already satisfy from the warehouse."""
+    c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
+    q = f"""
+      SELECT i.sku AS sku, SUM(i.available)::numeric AS av
+      FROM all_inventory i
+      WHERE i.pos_location_name IN ({WAREHOUSE_LOCATIONS})
+        AND COALESCE(i.sku,'') <> '' {c_inv}
+      GROUP BY 1 HAVING SUM(i.available) > 0
+    """
+    out = {}
+    for r in (run_query(q) or []):
+        out[r.get("sku")] = float(r.get("av") or 0)
+    return out
 
 
 def _ibt_network_sor_base(styles, date_from, date_to, country):
@@ -8784,6 +8993,20 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
     # manually-retired style must never be a receiver (nor donor) here.
     edges = [e for e in edges if not _is_manually_retired(e.get("style_name"))]
 
+    # ── Phase 2 inputs: per-cell velocity, corridor lead-time, warehouse pool ──
+    velmap = _ibt_store_sku_velocity(date_from, date_to, country)
+    lt_map = _ibt_leadtime_map()
+    wh_pool = _ibt_warehouse_avail(country)  # {sku: warehouse on-hand} (mutated)
+
+    def _vel(store, sku):
+        v = velmap.get((store, sku))
+        return float(v["vel"]) if v and v.get("vel") else 0.02
+
+    def _days_to_sell(store, sku, cap=None):
+        v = _vel(store, sku)
+        d = 7.0 / v if v > 0 else IBT_SOURCE_DAYS_CAP
+        return min(d, cap) if cap else d
+
     dest_budget = {}
     donor_ledger = {}
     for e in edges:
@@ -8794,12 +9017,68 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
         if lk not in donor_ledger:
             donor_ledger[lk] = max(int(e.get("from_sku_avail") or 0) - 1, 0)
 
-    # Best-first: highest composite score, then strongest demonstrated demand.
-    edges.sort(key=lambda e: (-(int(e.get("score") or 0)),
-                              -(int(e.get("to_qty_sold_28d") or 0)),
-                              e.get("style_name") or "", e.get("sku") or ""))
+    # ── Warehouse-deploy-first waterfall (spec §6) ────────────────────────────
+    # Replenishment can already satisfy a destination gap from the central
+    # warehouse without any store-to-store move. So BEFORE the IBT solve, net the
+    # warehouse on-hand per sku off each destination gap in demand-strength order
+    # (strongest demonstrated demand first). IBT then only fires on the RESIDUAL
+    # gap the warehouse cannot cover — this stops IBT double-shipping against the
+    # warehouse replenishment path.
+    wh_covered = {}  # (to_store, sku) -> units the warehouse will cover
+    dest_demand = {}
+    for e in edges:
+        dk = (e["to_store"], e["sku"])
+        dem = int(e.get("to_qty_sold_28d") or 0)
+        if dk not in dest_demand or dem > dest_demand[dk]:
+            dest_demand[dk] = dem
+    for dk in sorted(dest_budget, key=lambda k: (-dest_demand.get(k, 0), k[0], k[1])):
+        gap = dest_budget[dk]
+        if gap <= 0:
+            continue
+        sku = dk[1]
+        pool = wh_pool.get(sku, 0)
+        if pool <= 0:
+            continue
+        take = gap if gap < pool else pool
+        wh_pool[sku] = pool - take
+        dest_budget[dk] = gap - take
+        if take > 0:
+            wh_covered[dk] = take
+
+    def _value_per_unit(asp, cross):
+        tpu = IBT_TRANSPORT_PER_UNIT_CROSS if cross else IBT_TRANSPORT_PER_UNIT_DOMESTIC
+        v = float(asp or 0) - tpu
+        if cross:
+            v -= float(asp or 0) * IBT_DUTY_PCT_CROSS
+        return v
+
+    # Per-edge economics (qty-independent), used for ranking + the markdown fork.
+    for e in edges:
+        fc, tc = e.get("from_country") or "", e.get("to_country") or ""
+        cross = bool(fc and tc and fc != tc)
+        transit = _ibt_lead_days(lt_map, fc, tc)
+        src_days = _days_to_sell(e["from_store"], e["sku"], cap=IBT_SOURCE_DAYS_CAP)
+        dst_days = _days_to_sell(e["to_store"], e["sku"])
+        e["_cross"] = cross
+        e["_transit_days"] = transit
+        e["_src_days"] = src_days
+        e["_dst_days"] = dst_days
+        e["_net_ccc_per_unit"] = src_days - dst_days - transit
+        e["_value_per_unit"] = _value_per_unit(e.get("asp"), cross)
+        e["_curve_complete"] = int(e.get("to_sku_avail") or 0) == 0
+        e["_pays"] = (e["_net_ccc_per_unit"] > 0 and e["_value_per_unit"] > 0)
+
+    # Rank: size-curve completion first (filling an empty destination size keeps a
+    # buyable run on the floor), then by net-CCC × value, then composite score.
+    edges.sort(key=lambda e: (
+        0 if e["_curve_complete"] else 1,
+        -(e["_net_ccc_per_unit"] * max(e["_value_per_unit"], 0.0)),
+        -(int(e.get("score") or 0)),
+        -(int(e.get("to_qty_sold_28d") or 0)),
+        e.get("style_name") or "", e.get("sku") or ""))
 
     assigned = []
+    markdown = {}  # (from_store, style_name) -> markdown candidate (non-paying donor)
     for e in edges:
         dk = (e["to_store"], e["sku"])
         lk = (e["from_store"], e["sku"])
@@ -8808,12 +9087,43 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
         q = b if b < d else d
         if q <= 0:
             continue
+        # Markdown fork (spec §7): the move qualifies on stock balance but does NOT
+        # pay — net cash-conversion benefit <= 0 (dest sells no faster than source
+        # once transit is paid) or value after transport+duty <= 0. Don't ship it;
+        # flag the slow donor (store, style) to clear locally via markdown instead.
+        if not e["_pays"]:
+            mk = (e["from_store"], e.get("style_name"))
+            cur = markdown.get(mk)
+            if cur is None:
+                cur = {
+                    "from_store": e["from_store"],
+                    "from_country": e.get("from_country") or "",
+                    "style_name": e.get("style_name"), "brand": e.get("brand"),
+                    "subcategory": e.get("subcategory"),
+                    "donor_onhand": 0,
+                    "sku_count": 0,
+                    "reason": ("no_value" if e["_value_per_unit"] <= 0
+                               else "no_ccc_gain"),
+                    "src_days_to_sell": round(e["_src_days"], 1),
+                    "_skus": set(),
+                }
+                markdown[mk] = cur
+            # The same (from_store, sku) appears on multiple candidate edges (one
+            # per destination); count each donor SKU's on-hand exactly once so the
+            # stuck-stock total isn't inflated by the number of would-be receivers.
+            if e["sku"] not in cur["_skus"]:
+                cur["_skus"].add(e["sku"])
+                cur["donor_onhand"] += int(e.get("from_sku_avail") or 0)
+                cur["sku_count"] += 1
+            continue
         dest_budget[dk] = b - q
         donor_ledger[lk] = d - q
         rec = dict(e)
         rec["suggested_qty"] = int(q)
         rec["source_onhand_at_calc"] = int(e.get("from_sku_avail") or 0)
         rec["dest_gap_at_calc"] = max(2 - int(e.get("to_sku_avail") or 0), 0)
+        rec["net_ccc_days"] = round(e["_net_ccc_per_unit"] * q, 1)
+        rec["value_kes"] = round(e["_value_per_unit"] * q, 0)
         assigned.append(rec)
 
     TIER = {1: "A", 2: "B", 3: "C"}
@@ -8834,11 +9144,16 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
                 "cross_border": cross,
                 "corridor": "Cross-border" if cross else "Domestic",
                 "units": 0, "sku_count": 0, "score": 0,
+                "net_ccc_days": 0.0, "value_kes": 0.0, "curve_completions": 0,
                 "_styles": set(), "skus": [],
             }
             bundles[key] = bd
         bd["units"] += r["suggested_qty"]
         bd["sku_count"] += 1
+        bd["net_ccc_days"] += r["net_ccc_days"]
+        bd["value_kes"] += r["value_kes"]
+        if r["_curve_complete"]:
+            bd["curve_completions"] += 1
         sc = int(r.get("score") or 0)
         if sc > bd["score"]:
             bd["score"] = sc
@@ -8855,6 +9170,9 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
             "dest_gap_at_calc": r["dest_gap_at_calc"],
             "from_qty_sold_28d": int(r.get("from_qty_sold_28d") or 0),
             "to_qty_sold_28d": int(r.get("to_qty_sold_28d") or 0),
+            "net_ccc_days": r["net_ccc_days"],
+            "value_kes": r["value_kes"],
+            "curve_complete": bool(r["_curve_complete"]),
         })
 
     out = []
@@ -8864,11 +9182,16 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
             continue
         bd["style_count"] = len(bd["_styles"])
         del bd["_styles"]
+        bd["net_ccc_days"] = round(bd["net_ccc_days"], 1)
+        bd["value_kes"] = round(bd["value_kes"], 0)
         bd["skus"].sort(key=lambda s: (-(s["suggested_qty"]),
                                        s.get("style_name") or "", s.get("sku") or ""))
         out.append(bd)
 
-    out.sort(key=lambda b: (-(b["score"]), -(b["units"])))
+    # Bundle ranking: most value-dense corridors first (value redeployed, then
+    # inventory-days removed), falling back to the composite score + units.
+    out.sort(key=lambda b: (-(b["value_kes"]), -(b["net_ccc_days"]),
+                            -(b["score"]), -(b["units"])))
     out = out[:bundle_limit]
 
     units_total = sum(b["units"] for b in out)
@@ -8878,6 +9201,21 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
         stores.add(b["from_store"])
         stores.add(b["to_store"])
     cross_n = sum(1 for b in out if b["cross_border"])
+    value_total = sum(b["value_kes"] for b in out)
+    ccc_total = sum(b["net_ccc_days"] for b in out)
+    avg_ccc_per_unit = round(ccc_total / units_total, 1) if units_total > 0 else 0.0
+    curve_total = sum(b["curve_completions"] for b in out)
+    wh_units = sum(wh_covered.values())
+
+    # Markdown fork: only surface a candidate once it carries meaningful stuck
+    # stock (>= the domestic minimum), sorted by the most stock to clear.
+    markdown_out = [m for m in markdown.values()
+                    if m["donor_onhand"] >= IBT_MIN_TRANSFER_DOMESTIC]
+    for m in markdown_out:
+        m.pop("_skus", None)
+    markdown_out.sort(key=lambda m: (-(m["donor_onhand"]), m.get("from_store") or "",
+                                     m.get("style_name") or ""))
+    markdown_out = markdown_out[:bundle_limit]
 
     # Honest bounded forward SOR uplift (pp): if every redeployed unit sells at
     # its demonstrated-demand destination, the network SOR over the involved
@@ -8898,8 +9236,15 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
             "bundles": len(out), "units": units_total, "skus": sku_total,
             "stores": len(stores), "cross_border_bundles": cross_n,
             "sor_uplift_pp": sor_pp,
+            "value_kes": round(value_total, 0),
+            "inventory_days_removed": round(ccc_total, 0),
+            "avg_net_ccc_days_per_unit": avg_ccc_per_unit,
+            "curve_completions": curve_total,
+            "warehouse_covered_units": int(wh_units),
+            "markdown_candidates": len(markdown_out),
         },
         "bundles": out,
+        "markdown_candidates": markdown_out,
     }
 
 
