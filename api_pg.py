@@ -8939,6 +8939,47 @@ async def admin_validation_dismiss(exc_id: int, request: Request):
             conn.close()
         except Exception:
             pass
+@app.post("/api/admin/validation-exceptions/{exc_id}/done")
+async def admin_validation_done(exc_id: int, request: Request):
+    """Mark one open finding as resolved/actioned (status='approved').
+    Admin-only. Companion to /dismiss: use this once the underlying code fix
+    has been made (e.g. a developer aligned a cross-surface calculation) so the
+    finding leaves the open queue as resolved rather than rejected."""
+    from datetime import datetime, timezone
+    acting = getattr(request.state, "user", None) or {}
+    actor = acting.get("email") or acting.get("name") or "admin"
+    conn = get_conn()
+    try:
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT to_regclass('public.validation_exceptions') AS t")
+        if cur.fetchone()["t"] is None:
+            conn.rollback()
+            return JSONResponse({"detail": "no validation findings on this database"}, status_code=404)
+        cur.execute(
+            "SELECT id, status, check_code FROM validation_exceptions WHERE id=%s FOR UPDATE",
+            (exc_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return JSONResponse({"detail": "finding not found"}, status_code=404)
+        if row["status"] != "open":
+            conn.rollback()
+            return JSONResponse({"detail": f"finding is already '{row['status']}'"}, status_code=400)
+        cur.execute(
+            "UPDATE validation_exceptions SET status='approved', resolved_at=%s WHERE id=%s",
+            (datetime.now(timezone.utc), exc_id))
+        _validation_audit_event(
+            cur, phase="governance", event="manual_done",
+            check_code=row.get("check_code"), detail={"by": actor, "exc_id": exc_id})
+        conn.commit()
+        return {"done": True, "status": "approved"}
+    finally:
+        try:
+            conn.autocommit = True
+            conn.close()
+        except Exception:
+            pass
 @app.get("/api/admin/replenishment-config")
 def admin_replenishment_config():
     return {"owners": _replen_owners()}

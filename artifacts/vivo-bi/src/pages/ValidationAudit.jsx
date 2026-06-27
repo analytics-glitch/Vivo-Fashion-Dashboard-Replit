@@ -151,6 +151,7 @@ const ValidationAudit = () => {
   const [status, setStatus] = useState("open");
   const [severity, setSeverity] = useState("");
   const [acting, setActing] = useState(null);
+  const [showAllBriefs, setShowAllBriefs] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -183,6 +184,14 @@ const ValidationAudit = () => {
     setActing(r.id);
     api.post(`/admin/validation-exceptions/${r.id}/dismiss`)
       .then(() => { toast.success("Finding dismissed"); load(); })
+      .catch((e) => toast.error(e?.response?.data?.detail || e.message))
+      .finally(() => setActing(null));
+  }, [load]);
+
+  const markDone = useCallback((r) => {
+    setActing(r.id);
+    api.post(`/admin/validation-exceptions/${r.id}/done`)
+      .then(() => { toast.success("Marked as done"); load(); })
       .catch((e) => toast.error(e?.response?.data?.detail || e.message))
       .finally(() => setActing(null));
   }, [load]);
@@ -254,13 +263,21 @@ const ValidationAudit = () => {
     }
   };
 
-  const copyAllDev = () => {
-    if (!devRows.length) return;
+  // One consolidated text block with every developer brief, in table order, so
+  // the operator can copy them all at once (or select the text on-page) and
+  // paste the whole batch back for me to queue and action in sequence.
+  const allDevBriefText = () => {
     const all = devRows
       .map((r, i) => `--- Finding ${i + 1} of ${devRows.length} ---\n${briefFor(r)}`)
       .join("\n\n");
+    return `${devRows.length} Vivo BI findings that need a developer fix ` +
+      `(please action them in order, one issue at a time):\n\n${all}`;
+  };
+
+  const copyAllDev = () => {
+    if (!devRows.length) return;
     copyText(
-      `${devRows.length} Vivo BI findings that need a developer fix:\n\n${all}`,
+      allDevBriefText(),
       `Copied ${devRows.length} finding${devRows.length === 1 ? "" : "s"} to clipboard`);
   };
 
@@ -347,6 +364,19 @@ const ValidationAudit = () => {
           >
             <Copy size={14} weight="bold" />
             Copy brief for developer
+          </button>
+        )}
+        {r.status === "open" && (
+          <button
+            type="button"
+            onClick={() => markDone(r)}
+            disabled={acting === r.id}
+            data-testid={`done-${r.id}`}
+            title="Mark this finding as resolved once the fix has been actioned"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-600 text-emerald-700 text-[11.5px] font-semibold hover:bg-emerald-50 disabled:opacity-50"
+          >
+            <Check size={14} weight="bold" />
+            {acting === r.id ? "Saving…" : "Done"}
           </button>
         )}
         {r.status === "open" && (
@@ -473,17 +503,58 @@ const ValidationAudit = () => {
               />
             </div>
             {devRows.length > 0 && (
-              <button
-                type="button"
-                onClick={copyAllDev}
-                data-testid="copy-all-dev"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-[11.5px] font-semibold hover:bg-panel whitespace-nowrap"
-              >
-                <Copy size={14} weight="bold" />
-                Copy all ({devRows.length})
-              </button>
+              <div className="flex items-center gap-2 whitespace-nowrap">
+                <button
+                  type="button"
+                  onClick={() => setShowAllBriefs((v) => !v)}
+                  data-testid="toggle-all-briefs"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-[11.5px] font-semibold hover:bg-panel"
+                >
+                  {showAllBriefs ? <CaretDown size={13} weight="bold" /> : <CaretRight size={13} weight="bold" />}
+                  View all briefs
+                </button>
+                <button
+                  type="button"
+                  onClick={copyAllDev}
+                  data-testid="copy-all-dev"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand text-white text-[11.5px] font-semibold hover:opacity-90"
+                >
+                  <Copy size={14} weight="bold" />
+                  Copy all {devRows.length} briefs
+                </button>
+              </div>
             )}
           </div>
+
+          {/* Consolidated, on-page view of every brief — copy the whole batch at
+              once (button above) or select the text here, then paste it back. */}
+          {devRows.length > 0 && showAllBriefs && (
+            <div className="mt-3 mb-1" data-testid="all-briefs-panel">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <p className="text-[11.5px] text-muted">
+                  All {devRows.length} developer brief{devRows.length === 1 ? "" : "s"} on one page — copy the
+                  whole batch and paste it back, and I'll queue and action them one issue at a time.
+                </p>
+                <button
+                  type="button"
+                  onClick={copyAllDev}
+                  data-testid="copy-all-dev-panel"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-border text-[11px] font-semibold hover:bg-panel whitespace-nowrap"
+                >
+                  <Copy size={13} weight="bold" />
+                  Copy
+                </button>
+              </div>
+              <textarea
+                readOnly
+                value={allDevBriefText()}
+                onFocus={(e) => e.target.select()}
+                rows={14}
+                data-testid="all-briefs-textarea"
+                className="w-full font-mono text-[11px] leading-relaxed bg-panel border border-border rounded-lg p-3 resize-y"
+              />
+            </div>
+          )}
           {devRows.length === 0
             ? <Empty label="Nothing here needs a developer — every finding can be auto-fixed." />
             : (
