@@ -1600,7 +1600,7 @@ const Overview = () => {
           </div>
 
           <div className="card-white p-5" data-testid="top-styles-section">
-            <SectionTitle title="Top 20 Styles" subtitle="The 20 best-selling styles this period. Click any column to sort." />
+            <SectionTitle title="Top 20 Styles" subtitle="The 20 best-selling styles for the current filter period. Units Sold is GROSS (returns not subtracted); Total Sales is NET of returns. For current stock and a configurable window, see Products → Catalog. Click any column to sort." />
             <SortableTable
               testId="top-styles"
               exportName="top-20-styles.csv"
@@ -1611,14 +1611,6 @@ const Overview = () => {
                 { key: "product_type", label: "Subcategory", align: "left", render: (r) => r.product_type || "—" },
                 { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
                 { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
-                {
-                  key: "current_stock",
-                  label: "Inventory",
-                  numeric: true,
-                  render: (r) => fmtNum(r.current_stock),
-                  sortValue: (r) => r.current_stock ?? -1,
-                  csv: (r) => r.current_stock ?? "",
-                },
                 { key: "avg_price", label: "Avg Price", numeric: true, render: (r) => fmtKES(r.avg_price || (r.units_sold ? (r.total_sales || 0) / r.units_sold : 0)), csv: (r) => r.avg_price },
               ]}
               rows={topStyles}

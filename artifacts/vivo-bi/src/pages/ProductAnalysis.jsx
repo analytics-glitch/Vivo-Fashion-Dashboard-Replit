@@ -401,7 +401,7 @@ const ProductAnalysis = () => {
         headerTitle: "Range tier by cumulative revenue — T1 top 20%, T2 next, T3, T4 tail",
         render: (r) => r.tier || "—",
       },
-      { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
+      { key: "units_sold", label: "Units Sold", numeric: true, headerTitle: "NET units (returns subtracted) over this page's selected period (30-day default, independent of the global filter). Overview/Products/Velocity show GROSS units over their own windows, so the same style reads differently there.", render: (r) => fmtNum(r.units_sold) },
       { key: "revenue", label: "Revenue", numeric: true, render: (r) => fmtKES(r.revenue), csv: (r) => r.revenue },
       { key: "current_stock", label: "Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
       {
