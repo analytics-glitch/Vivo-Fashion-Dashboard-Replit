@@ -1475,8 +1475,11 @@ const Customers = () => {
                         unreliable per-order `customer_type` field. Removed.
                         Per-basket Overall ABV is derived as
                           avg_customer_spend ÷ avg_orders_per_customer
-                        which equals total_spend ÷ total_orders (identical
-                        to the Overview ABV tile). */}
+                        i.e. identified_spend ÷ identified_orders. This is
+                        over the IDENTIFIED-customer base only (excludes
+                        walk-in/anonymous orders, order-kind only), so it runs
+                        slightly higher than — and is NOT identical to — the
+                        Overview ABV tile, which spans all transactions. */}
                     {cust && (() => {
                       const spend = cust.avg_customer_spend || 0;
                       const ordersPerCust = cust.avg_orders_per_customer || 0;
@@ -1505,7 +1508,7 @@ const Customers = () => {
                         </div>
                         <div
                           className="rounded-xl border-2 border-amber-400 bg-amber-50/50 p-3"
-                          title={`Overall ABV (per basket) = Avg Spend / Avg Orders per Customer\n= ${fmtKES(spend)} ÷ ${ordersPerCust.toFixed(2)}\n= ${fmtKES(overallABV)}\nMatches the ABV tile on the Overview page.`}
+                          title={`Overall ABV (per basket) = Avg Spend / Avg Orders per Customer\n= ${fmtKES(spend)} ÷ ${ordersPerCust.toFixed(2)}\n= ${fmtKES(overallABV)}\nOver identified customers only (excludes walk-in/anonymous orders), so it runs slightly higher than the Overview ABV tile, which spans all transactions.`}
                         >
                           <div className="flex items-center justify-between">
                             <div className="eyebrow text-amber-900">Overall ABV (per basket)</div>
@@ -1517,7 +1520,7 @@ const Customers = () => {
                             {fmtKES(overallABV)}
                           </div>
                           <div className="text-[11px] text-muted mt-0.5">
-                            spend ÷ orders · matches Overview ABV
+                            spend ÷ orders · identified customers only
                           </div>
                         </div>
                       </div>
