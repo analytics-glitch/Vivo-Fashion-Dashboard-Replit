@@ -5,11 +5,14 @@ import { api, fmtNum } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import IBTBundleTable from "@/components/IBTBundleTable";
+import IBTInTransit from "@/components/IBTInTransit";
 import IBTCompletedMoves from "@/components/IBTCompletedMoves";
-import IBTMarkAsDoneModal from "@/components/IBTMarkAsDoneModal";
+import IBTScanOutModal from "@/components/IBTScanOutModal";
+import IBTScanInModal from "@/components/IBTScanInModal";
 import { toast } from "sonner";
 import {
   Truck, Package, MagnifyingGlass, DownloadSimple, Stack, TrendUp, Buildings, Tag,
+  Clock, Lock, Warning, Timer, SealCheck,
 } from "@phosphor-icons/react";
 
 // Demand-lookback presets (trailing window the engine measures sell-through
@@ -38,8 +41,18 @@ const IBT = () => {
   const [completedKeys, setCompletedKeys] = useState(new Set());
   const [completedSkuKeys, setCompletedSkuKeys] = useState(new Set());
   const [completedRefresh, setCompletedRefresh] = useState(0);
-  const [doneModalRow, setDoneModalRow] = useState(null);
+  const [scanOutRow, setScanOutRow] = useState(null);
+  const [scanInRow, setScanInRow] = useState(null);
   const [exporting, setExporting] = useState(false);
+
+  // Phase 3 (Flow & Proof) lifecycle state.
+  const [freshness, setFreshness] = useState(null);        // {as_of_eat, sync_lag_min, stale, sla_min}
+  const [reconciliation, setReconciliation] = useState(null); // realised vs projected proof strip
+  const [transfers, setTransfers] = useState([]);          // all consignments (KPI aggregation)
+  const [lifecycleRefresh, setLifecycleRefresh] = useState(0);
+  const [nowTick, setNowTick] = useState(() => Date.now()); // drives the live HH:MM:SS pill
+
+  const stale = !!freshness?.stale;
 
   // Trailing demand window (default 28d per spec). Persisted; local-only.
   const [demandDays, setDemandDays] = useState(() => {
@@ -110,6 +123,32 @@ const IBT = () => {
     // eslint-disable-next-line
   }, [JSON.stringify(countries), dataVersion, demandDays, useClustering]);
 
+  // Phase 3 — freshness, lifecycle ledger (KPI aggregation) and the realised-vs-
+  // projected reconciliation proof strip. Refetched whenever a scan completes
+  // (lifecycleRefresh bump) so the tiles, in-transit count and proof move at once.
+  useEffect(() => {
+    let cancelled = false;
+    const fresh = lifecycleRefresh > 0;
+    const cfg = fresh ? { forceFresh: true } : {};
+    Promise.allSettled([
+      api.get("/ibt/freshness", cfg),
+      api.get("/ibt/transfers", { ...cfg, params: { days: 120 } }),
+      api.get("/ibt/sor-reconciliation", cfg),
+    ]).then(([f, t, r]) => {
+      if (cancelled) return;
+      if (f.status === "fulfilled") setFreshness(f.value.data || null);
+      if (t.status === "fulfilled") setTransfers(t.value.data || []);
+      if (r.status === "fulfilled") setReconciliation(r.value.data || null);
+    });
+    return () => { cancelled = true; };
+  }, [lifecycleRefresh, dataVersion]);
+
+  // Live "as of HH:MM:SS EAT" pill — re-render the freshness clock each second.
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
   // B1 — Export to Operations: server-built multi-sheet Excel (one tab per
   // donor store). Streams a blob; bypasses the response cache.
   const handleExportOps = async () => {
@@ -146,6 +185,31 @@ const IBT = () => {
   const bundles = useMemo(() => data?.bundles || [], [data]);
   const markdownCandidates = useMemo(() => data?.markdown_candidates || [], [data]);
   const summary = data?.summary || {};
+
+  // Phase 3 lifecycle KPI aggregation from the consignment ledger.
+  const flowKpis = useMemo(() => {
+    let inTransit = 0, inTransitUnits = 0, discrepancies = 0, overdue = 0;
+    for (const t of transfers) {
+      if (t.status === "in_transit") {
+        inTransit += 1;
+        inTransitUnits += Number(t.qty || 0);
+        if (t.overdue) overdue += 1;
+      }
+      if (t.status === "discrepancy") discrepancies += 1;
+    }
+    return { inTransit, inTransitUnits, discrepancies, overdue };
+  }, [transfers]);
+
+  // Live "as of HH:MM:SS EAT" string. The freshness endpoint gives the sync's
+  // as_of_eat; the seconds advance client-side off nowTick so the pill reads live.
+  const eatClock = useMemo(() => {
+    try {
+      return new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Africa/Nairobi", hour: "2-digit", minute: "2-digit",
+        second: "2-digit", hour12: false,
+      }).format(new Date(nowTick));
+    } catch { return ""; }
+  }, [nowTick]);
 
   // Filter option lists are derived from the bundles + their embedded SKUs.
   const brands = useMemo(() => {
@@ -207,9 +271,38 @@ const IBT = () => {
           transfer bundle per <b>from → to</b> store pair. Warehouses, Online
           and third-party brands are excluded.
         </p>
-        <p className="text-[12px] text-foreground/70 mt-2 font-medium" data-testid="ibt-asof">
-          As of {data?.as_of || "today"} · demand window: trailing {data?.demand_days || demandDays} days
-        </p>
+        <div className="flex flex-wrap items-center gap-2 mt-2">
+          <p className="text-[12px] text-foreground/70 font-medium" data-testid="ibt-asof">
+            As of {data?.as_of || "today"} · demand window: trailing {data?.demand_days || demandDays} days
+          </p>
+          <span
+            data-testid="ibt-freshness-pill"
+            title={
+              freshness
+                ? `Sales sync last refreshed ${freshness.sync_lag_min ?? "?"} min ago (SLA ${freshness.sla_min ?? "?"} min).` +
+                  (stale ? " Sync is STALE — destructive scan actions are locked until figures refresh." : "")
+                : "Loading sync freshness…"
+            }
+            className={`inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-full border ${
+              stale
+                ? "bg-rose-50 text-rose-700 border-rose-300"
+                : "bg-emerald-50 text-emerald-700 border-emerald-300"
+            }`}
+          >
+            {stale ? <Lock size={12} weight="fill" /> : <Clock size={12} weight="fill" />}
+            As of {eatClock} EAT
+            {freshness?.sync_lag_min != null && (
+              <span className="font-semibold opacity-80">· synced {fmtNum(freshness.sync_lag_min)}m ago</span>
+            )}
+            {stale && <span className="uppercase tracking-wide">· stale</span>}
+          </span>
+        </div>
+        {stale && (
+          <p className="text-[11.5px] text-rose-700 mt-1.5 font-medium inline-flex items-center gap-1" data-testid="ibt-stale-warning">
+            <Warning size={13} weight="fill" />
+            The sales sync is behind SLA — scan-out / scan-in are locked so a transfer isn't committed against unrefreshed stock. Actions re-enable automatically once the sync catches up.
+          </p>
+        )}
       </div>
 
       {loading && <Loading label="Solving the transfer network across stores…" />}
@@ -228,16 +321,84 @@ const IBT = () => {
               sub={`avg ${fmtNum(summary.avg_net_ccc_days_per_unit || 0)} net days/unit`}
               value={fmtNum(summary.inventory_days_removed || 0)} icon={Buildings} showDelta={false} />
             <KPICard testId="ibt-kpi-sor" label="Est. SOR uplift"
-              sub={`${fmtNum(summary.curve_completions || 0)} curve-completes · ${fmtNum(summary.cross_border_bundles || 0)} cross-border`}
+              sub={`+${(summary.sor_uplift_pp_raw ?? summary.sor_uplift_pp ?? 0).toFixed(2)} pp raw · ×${(summary.calibration ?? 1).toFixed(2)} realisation`}
               value={`+${(summary.sor_uplift_pp ?? 0).toFixed(2)} pp`}
               icon={TrendUp} showDelta={false} />
           </div>
+
+          {/* Phase 3 — flow & proof tiles from the consignment lifecycle ledger. */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="ibt-flow-kpis">
+            <KPICard testId="ibt-kpi-avg-ccc" label="Avg net-CCC / unit"
+              sub={`calibrated ×${(summary.calibration ?? 1).toFixed(2)} · ${fmtNum(summary.avg_net_ccc_days_per_unit_raw ?? 0)} raw`}
+              value={`${fmtNum(summary.avg_net_ccc_days_per_unit || 0)} d`}
+              icon={Timer} showDelta={false} />
+            <KPICard testId="ibt-kpi-in-transit" label="Units in transit"
+              sub={`${fmtNum(flowKpis.inTransit)} consignments owned by the hub`}
+              value={fmtNum(flowKpis.inTransitUnits)} icon={Truck} showDelta={false} />
+            <KPICard testId="ibt-kpi-awaiting" label="Awaiting pick / receive"
+              sub={`${fmtNum(filteredBundles.length)} bundles to pick · ${fmtNum(flowKpis.inTransit)} to receive`}
+              value={fmtNum(flowKpis.inTransit)} icon={Package} showDelta={false} />
+            <KPICard testId="ibt-kpi-discrepancies"
+              accent={flowKpis.discrepancies > 0 || flowKpis.overdue > 0}
+              label="Discrepancies / overdue"
+              sub={`${fmtNum(flowKpis.overdue)} overdue in transit`}
+              value={fmtNum(flowKpis.discrepancies)} icon={Warning} showDelta={false} />
+          </div>
+
+          {/* Realised-vs-projected proof strip — only shows once a run has landed. */}
+          {reconciliation && reconciliation.landed_runs > 0 && (
+            <div className="card-white p-4 sm:p-5" data-testid="ibt-proof-strip">
+              <SectionTitle
+                title={
+                  <span className="inline-flex items-center gap-2">
+                    <SealCheck size={16} weight="duotone" className="text-[#1a5c38]" />
+                    Realisation proof · projected vs landed
+                  </span>
+                }
+                subtitle="Each landed consignment's received units vs what was dispatched, rolled into a realisation factor that tempers the forward projection above. The canonical SOR formula and per-edge ranking are never altered — only the headline projection is scaled."
+              />
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-[12.5px]">
+                <div className="rounded-lg border border-border bg-panel/40 p-3">
+                  <div className="text-muted text-[11px] font-semibold">Realisation</div>
+                  <div className="text-[18px] font-extrabold text-brand-deep tabular-nums">
+                    {fmtNum(reconciliation.realisation_pct ?? 0)}%
+                  </div>
+                  <div className="text-[10.5px] text-muted mt-0.5">received ÷ dispatched</div>
+                </div>
+                <div className="rounded-lg border border-border bg-panel/40 p-3">
+                  <div className="text-muted text-[11px] font-semibold">Calibration ×</div>
+                  <div className="text-[18px] font-extrabold tabular-nums">{(reconciliation.calibration ?? 1).toFixed(2)}</div>
+                  <div className="text-[10.5px] text-muted mt-0.5">applied to projection</div>
+                </div>
+                <div className="rounded-lg border border-border bg-panel/40 p-3">
+                  <div className="text-muted text-[11px] font-semibold">Landed runs</div>
+                  <div className="text-[18px] font-extrabold tabular-nums">{fmtNum(reconciliation.landed_runs)}</div>
+                  <div className="text-[10.5px] text-muted mt-0.5">samples in the median</div>
+                </div>
+                <div className="rounded-lg border border-border bg-panel/40 p-3">
+                  <div className="text-muted text-[11px] font-semibold">Units dispatched → received</div>
+                  <div className="text-[18px] font-extrabold tabular-nums">
+                    {fmtNum(reconciliation.dispatched_units ?? 0)} → {fmtNum(reconciliation.received_units ?? 0)}
+                  </div>
+                  <div className="text-[10.5px] text-muted mt-0.5">across landed runs</div>
+                </div>
+                <div className="rounded-lg border border-border bg-panel/40 p-3">
+                  <div className="text-muted text-[11px] font-semibold">CCC projected → realised</div>
+                  <div className="text-[18px] font-extrabold tabular-nums">
+                    {fmtNum(reconciliation.projected_ccc_days ?? 0)} → {fmtNum(reconciliation.realised_ccc_days ?? 0)} d
+                  </div>
+                  <div className="text-[10.5px] text-muted mt-0.5">inventory-days</div>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="card-white p-3 flex flex-wrap items-center gap-2" data-testid="ibt-jump-nav">
             <span className="text-[11.5px] font-semibold text-muted">Jump to:</span>
             {[
               { id: "ibt-sec-store", label: "Transfer bundles" },
-              ...(canSeeCompletedMoves ? [{ id: "ibt-sec-completed", label: "Completed moves" }] : []),
+              { id: "ibt-sec-in-transit", label: "In transit" },
+              ...(canSeeCompletedMoves ? [{ id: "ibt-sec-completed", label: "Received log" }] : []),
             ].map((s) => (
               <button
                 key={s.id}
@@ -338,12 +499,14 @@ const IBT = () => {
           <div id="ibt-sec-store" className="card-white p-4 sm:p-5 scroll-mt-24" data-testid="ibt-table-card">
             <SectionTitle
               title={`Transfer bundles · ${filteredBundles.length}${hasFilters ? ` of ${bundles.length}` : ""}`}
-              subtitle="Each row is one store → store transfer. Expand it to see the SKU pick list, type the units you actually moved, then Mark As Done to log the PO and clear it."
+              subtitle="Each row is one store → store transfer. Expand it to see the SKU pick list, type the units actually picked, then Scan out to dispatch it — the donor's live stock is re-validated at that moment (a sale wins) and the move enters the in-transit list below to be scanned in at the destination."
             />
             <IBTBundleTable
               bundles={filteredBundles}
               markdownCandidates={markdownCandidates}
-              onMarkDone={(payload) => setDoneModalRow(payload)}
+              onScanOut={(payload) => setScanOutRow(payload)}
+              runId={data?.run_id}
+              stale={stale}
               completedSkuKeys={completedSkuKeys}
               completedKeys={completedKeys}
               testId="ibt-table"
@@ -419,19 +582,38 @@ const IBT = () => {
             </div>
           </div>
 
+          <IBTInTransit
+            refreshKey={lifecycleRefresh}
+            stale={stale}
+            onScanIn={(row) => setScanInRow(row)}
+          />
+
           {canSeeCompletedMoves && (
             <div id="ibt-sec-completed" className="scroll-mt-24">
               <IBTCompletedMoves refreshKey={completedRefresh} />
             </div>
           )}
 
-          {doneModalRow && (
-            <IBTMarkAsDoneModal
-              row={doneModalRow}
-              onClose={() => setDoneModalRow(null)}
-              onSubmitted={() => {
-                setDoneModalRow(null);
+          {scanOutRow && (
+            <IBTScanOutModal
+              row={scanOutRow}
+              onClose={() => setScanOutRow(null)}
+              onScannedOut={() => {
+                setScanOutRow(null);
                 setCompletedRefresh((n) => n + 1);
+                setLifecycleRefresh((n) => n + 1);
+              }}
+            />
+          )}
+
+          {scanInRow && (
+            <IBTScanInModal
+              row={scanInRow}
+              onClose={() => setScanInRow(null)}
+              onScannedIn={() => {
+                setScanInRow(null);
+                setCompletedRefresh((n) => n + 1);
+                setLifecycleRefresh((n) => n + 1);
               }}
             />
           )}

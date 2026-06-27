@@ -1618,6 +1618,31 @@ def main():
     except Exception as e:
         log.error("Replen SOR snapshot error: %s", e)
 
+    # IBT Phase-3 nightly reconcile — once a day in the same 21:00 UTC window. The
+    # endpoint ensures its own lifecycle tables (so they self-bootstrap from the sync
+    # loop on a fresh prod DB), self-heals expired soft-reservations, refreshes
+    # observed corridor lead times, and records the projection calibration sample for
+    # the latest landed run (idempotent per run_id). It never touches the canonical
+    # SOR formula — calibration tempers the forward projection only. Authenticates
+    # with the shared SESSION_SECRET via X-Internal-Token.
+    try:
+        if now.hour == 21:
+            _secret = os.environ.get("SESSION_SECRET")
+            if _secret:
+                resp = requests.post(
+                    "http://localhost:80/api/ibt/nightly-reconcile",
+                    headers={"X-Internal-Token": _secret},
+                    timeout=120,
+                )
+                log.info(
+                    "IBT nightly reconcile — HTTP %s %s",
+                    resp.status_code, resp.text[:200]
+                )
+            else:
+                log.warning("IBT nightly reconcile skipped — SESSION_SECRET unset")
+    except Exception as e:
+        log.error("IBT nightly reconcile error: %s", e)
+
     write_heartbeat(conn, "ok")
     conn.close()
     log.info("=== Sync complete ===")

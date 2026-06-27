@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 import { fmtNum } from "@/lib/api";
 import { Empty } from "@/components/common";
 import {
-  ArrowRight, CaretRight, CaretDown, MagnifyingGlass, Truck,
+  ArrowRight, CaretRight, CaretDown, MagnifyingGlass, Truck, Lock,
 } from "@phosphor-icons/react";
 
 /**
@@ -30,7 +30,9 @@ import {
 export default function IBTBundleTable({
   bundles = [],
   markdownCandidates = [],
-  onMarkDone,
+  onScanOut,
+  runId,
+  stale = false,
   completedSkuKeys = new Set(),
   completedKeys = new Set(),
   testId = "ibt-bundle-table",
@@ -79,12 +81,14 @@ export default function IBTBundleTable({
     return out;
   }, [bundles, completedSkuKeys, completedKeys]);
 
-  const handleMarkDone = (b, s) => {
+  const handleScanOut = (b, s) => {
     const rowKey = `${b.from_store}||${b.to_store}||${s.sku}`;
     const actual = actuals[rowKey];
-    onMarkDone?.({
+    onScanOut?.({
       from_store: b.from_store,
+      from_country: b.from_country,
       to_store: b.to_store,
+      to_country: b.to_country,
       style_name: s.style_name,
       brand: s.brand,
       subcategory: s.subcategory,
@@ -96,6 +100,17 @@ export default function IBTBundleTable({
       color: s.color,
       size: s.size,
       barcode: s.barcode,
+      from_available: s.from_available,
+      // Phase-3 at-calc snapshot + hub routing — captured into the lifecycle
+      // ledger at scan-out (commit), not on every cached GET solve.
+      via_hub: b.via_hub,
+      route: b.route,
+      run_id: runId,
+      net_ccc_days: s.net_ccc_days,
+      value_kes: s.value_kes,
+      curve_complete: s.curve_complete,
+      source_onhand_at_calc: s.source_onhand_at_calc,
+      dest_gap_at_calc: s.dest_gap_at_calc,
       flow: "store_to_store",
     });
   };
@@ -213,15 +228,27 @@ export default function IBTBundleTable({
                       <StorePill name={b.to_store} cluster={b.to_cluster} />
                     </td>
                     <td className="px-3 py-3 whitespace-nowrap">
-                      <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                          b.cross_border
-                            ? "bg-amber-100 text-amber-900 border border-amber-300"
-                            : "bg-emerald-50 text-emerald-800 border border-emerald-200"
-                        }`}
-                      >
-                        {b.cross_border ? "Cross-border" : "Domestic"}
-                      </span>
+                      <div className="inline-flex items-center gap-1.5">
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            b.cross_border
+                              ? "bg-amber-100 text-amber-900 border border-amber-300"
+                              : "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                          }`}
+                        >
+                          {b.cross_border ? "Cross-border" : "Domestic"}
+                        </span>
+                        <span
+                          className={`text-[9.5px] font-bold px-1.5 py-0.5 rounded-full ${
+                            b.via_hub !== false
+                              ? "bg-sky-50 text-sky-800 border border-sky-200"
+                              : "bg-slate-100 text-slate-700 border border-slate-300"
+                          }`}
+                          title={b.route || (b.via_hub !== false ? "Routed donor → hub warehouse → destination (raises net-CCC honestly)" : "Same-mall direct transfer")}
+                        >
+                          {b.via_hub !== false ? "via hub" : "same-mall"}
+                        </span>
+                      </div>
                     </td>
                     <td className="px-3 py-3 text-right tabular-nums font-semibold">{fmtNum(b.units)}</td>
                     <td className="px-3 py-3 text-right tabular-nums">{fmtNum(b.sku_count)}</td>
@@ -311,12 +338,18 @@ export default function IBTBundleTable({
                                     <td className="px-3 py-2.5 whitespace-nowrap">
                                       <button
                                         type="button"
-                                        onClick={(e) => { e.stopPropagation(); handleMarkDone(b, s); }}
-                                        className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1.5 rounded-md"
-                                        data-testid={`${testId}-done-${s.sku}`}
+                                        onClick={(e) => { e.stopPropagation(); if (!stale) handleScanOut(b, s); }}
+                                        disabled={stale}
+                                        title={stale ? "Sales sync is stale — dispatch is locked until figures refresh" : "Scan this SKU out of the donor store"}
+                                        className={`inline-flex items-center gap-1 text-[11.5px] font-semibold px-2.5 py-1.5 rounded-md ${
+                                          stale
+                                            ? "bg-gray-100 text-muted cursor-not-allowed"
+                                            : "text-white bg-[#1a5c38] hover:bg-[#0f3d24]"
+                                        }`}
+                                        data-testid={`${testId}-scan-out-${s.sku}`}
                                       >
-                                        <Truck size={13} weight="bold" />
-                                        Mark Done
+                                        {stale ? <Lock size={13} weight="bold" /> : <Truck size={13} weight="bold" />}
+                                        Scan out
                                       </button>
                                     </td>
                                   </tr>

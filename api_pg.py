@@ -411,7 +411,8 @@ _AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/readyz", "/api/sync
 # Endpoints that internal sync jobs (no staff session) may write to, authenticated
 # by the shared SESSION_SECRET via the X-Internal-Token header (validated in the
 # auth gate with a constant-time compare). Keep this set minimal.
-_AUTH_INTERNAL_TOKEN_PATHS = {"/api/analytics/replenishment-sor/snapshot"}
+_AUTH_INTERNAL_TOKEN_PATHS = {"/api/analytics/replenishment-sor/snapshot",
+                              "/api/ibt/nightly-reconcile"}
 
 # Query params that are concatenated into SQL as date literals. We validate them
 # to strict ISO dates at the edge so they can never carry SQL-injection payloads
@@ -1026,7 +1027,8 @@ def _startup_health_check():
     # mode); just log a clear summary so deploys surface problems immediately.
     required = ["all_sales", "all_inventory", "all_products_clean", "pos_locations",
                 "footfall", "currency_rates", "recommendation_actions",
-                "ibt_completions", "allocation_runs"]
+                "ibt_completions", "allocation_runs", "ibt_transfer",
+                "transfer_reservations"]
     db_ok = False
     present = 0
     try:
@@ -1142,6 +1144,16 @@ def _ensure_perf_indexes():
     import threading
     threading.Thread(target=_build_perf_indexes, name="perf-index-build",
                      daemon=True).start()
+
+
+@app.on_event("startup")
+def _ensure_ibt_lifecycle_startup():
+    # Eagerly create the Phase-3 lifecycle + reservation ledger so the startup
+    # health check finds them on a fresh DB. Best-effort; never blocks boot.
+    try:
+        _ensure_ibt_lifecycle_tables()
+    except Exception as e:
+        log.warning("ibt lifecycle startup ensure skipped: %s", e)
 
 
 @app.on_event("startup")
@@ -8781,11 +8793,23 @@ def _ensure_ibt_phase2_tables():
                     AND pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})) b
             ON CONFLICT (from_country, to_country) DO NOTHING
         """)
-        # Refresh observed dispatch->receipt averages from completed moves that
-        # carry both a suggested_at (dispatch proxy) and a transfer_date (receipt
-        # proxy). Idempotent upsert; only overwrites with source='observed' when a
-        # real signal exists, so seeded defaults survive on a fresh DB.
-        _users_exec("""
+        # Refresh observed dispatch->receipt averages from completed moves (see
+        # _ibt_refresh_corridor_observed — shared with the nightly reconcile hook).
+        _ibt_refresh_corridor_observed()
+        _ibt_leadtime_ready = True
+    except Exception as e:
+        log.warning("corridor_leadtime ensure/refresh skipped: %s", e)
+
+
+def _ibt_refresh_corridor_observed():
+    """Recompute observed corridor lead times from completed moves that carry both a
+    suggested_at (dispatch proxy) and a transfer_date (receipt proxy). Idempotent
+    upsert; only overwrites a pair with source='observed' when a real signal exists
+    (>=3 obs), so seeded defaults survive on a fresh DB. Re-runnable on every nightly
+    cycle (unlike _ensure_ibt_phase2_tables which is process-guarded). Never raises;
+    returns the number of pairs refreshed (or None on error)."""
+    try:
+        rows = _users_exec("""
             INSERT INTO corridor_leadtime (from_country, to_country, lead_days, source, n_obs, updated_at)
             SELECT fc.country, tc.country,
                    GREATEST(1, ROUND(AVG(c.transfer_date - c.suggested_at))::numeric),
@@ -8804,10 +8828,252 @@ def _ensure_ibt_phase2_tables():
             ON CONFLICT (from_country, to_country) DO UPDATE
               SET lead_days = EXCLUDED.lead_days, source = 'observed',
                   n_obs = EXCLUDED.n_obs, updated_at = now()
-        """)
-        _ibt_leadtime_ready = True
+            RETURNING from_country
+        """, fetch=True)
+        return len(rows or [])
     except Exception as e:
-        log.warning("corridor_leadtime ensure/refresh skipped: %s", e)
+        log.warning("corridor observed refresh skipped: %s", e)
+        return None
+
+
+# ── Phase 3 (Flow & Proof): hub routing, lifecycle ledger, reservations ───────
+# Spec §6/§12.4: moves route hub-THROUGH-WAREHOUSE by DEFAULT — the warehouse is
+# the only node with packing/scanning/reconciliation. A NAMED same-mall exception
+# lets two stores in the same mall do a same-day walk-over that bypasses the hub.
+# These pairs are an operational knob (open decision §12.4): add real pairs as
+# frozenset({"Store A", "Store B"}). Empty = everything routes via the hub (the
+# spec default — the safe, fully-tracked path).
+IBT_SAME_MALL_PAIRS = set()      # e.g. {frozenset({"Vivo Sarit", "Shop Zetu Sarit"})}
+IBT_SAME_MALL_LEAD_DAYS = 0.5    # same-day walk-over transit when the hub is bypassed
+IBT_FRESHNESS_SLA_MIN   = 30.0   # soft-lock destructive actions past this sync lag (min)
+_IBT_OVERDUE_DAYS       = 7      # an in_transit consignment older than this is overdue
+
+# IBT projection calibration (realised/projected, rolling median, clamped). Mirrors
+# the replenishment calibration. The canonical SOR FORMULA is NEVER touched — only
+# the forward PROJECTION (sor_uplift_pp / inventory-days-removed) is scaled.
+_IBT_CALIB_MIN  = 0.25
+_IBT_CALIB_MAX  = 2.0
+_IBT_CALIB_KEEP = 10             # rolling-median window of recent landed-run samples
+
+_ibt_hub_country_cache = None
+_ibt_lifecycle_ready = False
+
+
+def _ibt_is_same_mall(from_store, to_store):
+    """True when (from_store, to_store) is on the named same-mall exception list and
+    may bypass the warehouse hub for a same-day walk-over."""
+    if not from_store or not to_store:
+        return False
+    return frozenset({from_store, to_store}) in IBT_SAME_MALL_PAIRS
+
+
+def _ibt_hub_country():
+    """Country of the central warehouse hub (defaults to Kenya). Cached; never raises."""
+    global _ibt_hub_country_cache
+    if _ibt_hub_country_cache is not None:
+        return _ibt_hub_country_cache
+    c = "Kenya"
+    try:
+        rows = run_query(
+            f"SELECT country, COUNT(*) AS n FROM all_inventory "
+            f"WHERE pos_location_name IN ({WAREHOUSE_LOCATIONS}) "
+            f"AND COALESCE(country,'') <> '' GROUP BY country "
+            f"ORDER BY n DESC LIMIT 1")
+        if rows and rows[0].get("country"):
+            c = rows[0]["country"]
+    except Exception:
+        pass
+    _ibt_hub_country_cache = c
+    return c
+
+
+def _ensure_ibt_lifecycle_tables():
+    """Idempotently create the Phase-3 two-sided transfer lifecycle ledger
+    (ibt_transfer) + the shared soft-reservation ledger (transfer_reservations).
+    Fabric-reservations pattern: created lazily so a fresh prod DB self-bootstraps
+    on first scan/solve. Never raises (callers fall back gracefully)."""
+    global _ibt_lifecycle_ready
+    if _ibt_lifecycle_ready:
+        return
+    try:
+        _users_exec(
+            "CREATE TABLE IF NOT EXISTS ibt_transfer ("
+            " consignment_id TEXT PRIMARY KEY,"
+            " run_id TEXT,"
+            " from_store TEXT, from_country TEXT,"
+            " to_store TEXT, to_country TEXT,"
+            " via_hub BOOLEAN NOT NULL DEFAULT TRUE,"
+            " route TEXT,"
+            " style_name TEXT, brand TEXT, subcategory TEXT,"
+            " sku TEXT, color TEXT, size TEXT, barcode TEXT,"
+            " qty INTEGER NOT NULL DEFAULT 0,"
+            " received_qty INTEGER,"
+            " source_onhand_at_calc INTEGER,"
+            " dest_gap_at_calc INTEGER,"
+            " net_ccc_days NUMERIC,"
+            " value_kes NUMERIC,"
+            " curve_complete BOOLEAN,"
+            " status TEXT NOT NULL DEFAULT 'in_transit',"
+            " odoo_transfer_id TEXT,"
+            " dispatch_ts TIMESTAMP NOT NULL DEFAULT now(),"
+            " received_ts TIMESTAMP,"
+            " scanned_out_by TEXT, received_by TEXT,"
+            " created_at TIMESTAMP NOT NULL DEFAULT now(),"
+            " updated_at TIMESTAMP NOT NULL DEFAULT now())")
+        _users_exec("CREATE INDEX IF NOT EXISTS idx_ibt_transfer_status "
+                    "ON ibt_transfer (status)")
+        _users_exec("CREATE INDEX IF NOT EXISTS idx_ibt_transfer_keys "
+                    "ON ibt_transfer (to_store, sku)")
+        _users_exec("CREATE INDEX IF NOT EXISTS idx_ibt_transfer_dispatch "
+                    "ON ibt_transfer (dispatch_ts)")
+        # Shared soft-reservation ledger — the coordination point between IBT and
+        # Replenishment (source column distinguishes them). Replenishment continues
+        # to coordinate via its own in-transit quarantine; this table lets a
+        # reserved donor unit be netted out of the next solve's available stock.
+        _users_exec(
+            "CREATE TABLE IF NOT EXISTS transfer_reservations ("
+            " id BIGSERIAL PRIMARY KEY,"
+            " source TEXT NOT NULL,"
+            " pos_location TEXT NOT NULL,"
+            " sku TEXT NOT NULL,"
+            " qty INTEGER NOT NULL DEFAULT 0,"
+            " run_id TEXT,"
+            " consignment_id TEXT,"
+            " status TEXT NOT NULL DEFAULT 'active',"
+            " reserved_at TIMESTAMP NOT NULL DEFAULT now(),"
+            " expires_at TIMESTAMP)")
+        _users_exec("CREATE INDEX IF NOT EXISTS idx_transfer_resv_active "
+                    "ON transfer_reservations (pos_location, sku) "
+                    "WHERE status = 'active'")
+        _ibt_lifecycle_ready = True
+    except Exception as e:
+        log.warning("ibt lifecycle tables ensure skipped: %s", e)
+
+
+def _ibt_reserved_units(pos_location, sku):
+    """Sum of ACTIVE soft-reservations on (pos_location, sku) across IBT +
+    Replenishment. Best-effort; 0 on any error or before the ledger exists."""
+    _ensure_ibt_lifecycle_tables()
+    try:
+        rows = _users_exec(
+            "SELECT COALESCE(SUM(qty),0) AS q FROM transfer_reservations "
+            "WHERE pos_location=%s AND sku=%s AND status='active' "
+            "AND (expires_at IS NULL OR expires_at > now())",
+            (pos_location, sku), fetch=True)
+        if rows:
+            return int(rows[0].get("q") or 0)
+    except Exception:
+        pass
+    return 0
+
+
+def _ibt_donor_available(store, sku):
+    """Live donor on-hand (available units) for (store, sku), warehouse rows
+    excluded. Used for action-time re-validation at scan-out. -1 sentinel when the
+    lookup itself fails (treat as 'unknown', not 'zero')."""
+    try:
+        rows = _users_exec(
+            "SELECT COALESCE(SUM(available),0) AS av FROM all_inventory "
+            f"WHERE pos_location_name=%s AND sku=%s "
+            f"AND pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})",
+            (store, sku), fetch=True)
+        if rows:
+            return int(rows[0].get("av") or 0)
+    except Exception:
+        return -1
+    return 0
+
+
+def _ibt_proj_calibration():
+    """Active IBT projection calibration factor (rolling median of realised/projected,
+    clamped [0.25, 2.0]). Defaults to 1.0 until reconciliation has run. Never raises."""
+    try:
+        rows = _users_exec(
+            "SELECT value FROM app_config WHERE key='ibt_proj_calibration'",
+            fetch=True)
+        if rows:
+            val = rows[0].get("value")
+            if isinstance(val, str):
+                val = json.loads(val)
+            if isinstance(val, dict) and val.get("value") is not None:
+                c = float(val["value"])
+                return min(_IBT_CALIB_MAX, max(_IBT_CALIB_MIN, c))
+    except Exception:
+        pass
+    return 1.0
+
+
+def _ibt_record_calibration(sample, run_id=None):
+    """Append one realised/projected sample to the rolling window and persist the new
+    median as the active IBT calibration. Best-effort; returns the resulting median
+    (or the prior/neutral value on failure). Idempotent per landed run: each `run_id`
+    contributes AT MOST one sample (the reconciliation endpoint is read on every page
+    refresh, so without this guard the median would track page traffic, not runs)."""
+    try:
+        sample = min(_IBT_CALIB_MAX, max(_IBT_CALIB_MIN, float(sample)))
+    except (TypeError, ValueError):
+        return _ibt_proj_calibration()
+    samples = []
+    try:
+        rows = _users_exec(
+            "SELECT value FROM app_config WHERE key='ibt_proj_calibration'",
+            fetch=True)
+        if rows:
+            val = rows[0].get("value")
+            if isinstance(val, str):
+                val = json.loads(val)
+            if isinstance(val, dict):
+                if (run_id is not None and val.get("last_run_id") == run_id
+                        and val.get("value") is not None):
+                    return min(_IBT_CALIB_MAX,
+                               max(_IBT_CALIB_MIN, float(val["value"])))
+                if isinstance(val.get("samples"), list):
+                    samples = [float(x) for x in val["samples"]]
+    except Exception:
+        samples = []
+    samples.append(round(sample, 4))
+    samples = samples[-_IBT_CALIB_KEEP:]
+    ssorted = sorted(samples)
+    n = len(ssorted)
+    med = (ssorted[n // 2] if n % 2
+           else (ssorted[n // 2 - 1] + ssorted[n // 2]) / 2.0)
+    med = round(min(_IBT_CALIB_MAX, max(_IBT_CALIB_MIN, med)), 4)
+    try:
+        _users_exec(
+            "INSERT INTO app_config (key, value, updated_at) "
+            "VALUES ('ibt_proj_calibration', %s::jsonb, now()) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
+            "updated_at = now()",
+            (json.dumps({"samples": samples, "value": med,
+                         "last_run_id": run_id}),))
+    except Exception:
+        pass
+    return med
+
+
+def _ibt_freshness():
+    """As-of EAT clock + sales-sync lag for the IBT worklist. Reads the sync-loop
+    heartbeat (sync_heartbeat.last_cycle_at); stale beyond the SLA soft-locks
+    destructive actions client-side. Never raises."""
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    as_of_eat = (now_utc + timedelta(hours=3)).strftime("%H:%M:%S")
+    last_sync, mins = None, None
+    try:
+        rows = _users_exec(
+            "SELECT last_cycle_at FROM sync_heartbeat WHERE id = 1", fetch=True)
+        if rows and rows[0].get("last_cycle_at"):
+            ts = rows[0]["last_cycle_at"]
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            last_sync = ts.isoformat()
+            mins = round((now_utc - ts).total_seconds() / 60.0, 1)
+    except Exception:
+        pass
+    stale = (mins is None) or (mins > IBT_FRESHNESS_SLA_MIN)
+    return {"as_of_eat": as_of_eat, "last_sync_at": last_sync,
+            "sync_lag_min": mins, "stale": bool(stale),
+            "sla_min": IBT_FRESHNESS_SLA_MIN}
 
 
 def _ibt_leadtime_map():
@@ -9053,13 +9319,28 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
         return v
 
     # Per-edge economics (qty-independent), used for ranking + the markdown fork.
+    hub_country = _ibt_hub_country()
     for e in edges:
         fc, tc = e.get("from_country") or "", e.get("to_country") or ""
         cross = bool(fc and tc and fc != tc)
-        transit = _ibt_lead_days(lt_map, fc, tc)
+        # Phase 3 §6: route hub-THROUGH-WAREHOUSE by default — transit is the sum of
+        # the donor->hub and hub->dest legs (which honestly RAISES net-CCC vs a
+        # direct hop). A named same-mall pair bypasses the hub for a same-day
+        # walk-over. The canonical SOR formula is untouched; only the CCC term moves.
+        same_mall = _ibt_is_same_mall(e["from_store"], e["to_store"])
+        via_hub = not same_mall
+        if via_hub:
+            transit = (_ibt_lead_days(lt_map, fc, hub_country)
+                       + _ibt_lead_days(lt_map, hub_country, tc))
+            route = f"{e['from_store']} → Warehouse hub → {e['to_store']}"
+        else:
+            transit = IBT_SAME_MALL_LEAD_DAYS
+            route = f"{e['from_store']} → {e['to_store']} (same-mall walk-over)"
         src_days = _days_to_sell(e["from_store"], e["sku"], cap=IBT_SOURCE_DAYS_CAP)
         dst_days = _days_to_sell(e["to_store"], e["sku"])
         e["_cross"] = cross
+        e["_via_hub"] = via_hub
+        e["_route"] = route
         e["_transit_days"] = transit
         e["_src_days"] = src_days
         e["_dst_days"] = dst_days
@@ -9108,6 +9389,8 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
         rec["dest_gap_at_calc"] = max(2 - int(e.get("to_sku_avail") or 0), 0)
         rec["net_ccc_days"] = round(e["_net_ccc_per_unit"] * q, 1)
         rec["value_kes"] = round(e["_value_per_unit"] * q, 0)
+        rec["via_hub"] = bool(e["_via_hub"])
+        rec["route"] = e["_route"]
         assigned.append(rec)
 
     # Pass 2 — markdown fork (spec §7). A donor SKU that qualifies on stock balance
@@ -9179,6 +9462,8 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
                 "to_cluster": TIER.get(int(r.get("to_tier") or 3), "C"),
                 "cross_border": cross,
                 "corridor": "Cross-border" if cross else "Domestic",
+                "via_hub": bool(r.get("via_hub", True)),
+                "route": r.get("route"),
                 "units": 0, "sku_count": 0, "score": 0,
                 "net_ccc_days": 0.0, "value_kes": 0.0, "curve_completions": 0,
                 "_styles": set(), "skus": [],
@@ -9268,15 +9553,35 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
         if denom and denom > 0:
             sor_pp = round(100.0 * units_total / denom, 2)
 
+    # Phase 3 realisation feedback: scale the forward PROJECTION (SOR uplift +
+    # inventory-days-removed) by the learned realised/projected calibration factor
+    # (1.0 until reconciliation has landed samples). The canonical SOR FORMULA and
+    # the per-edge ranking are untouched — calibration only tempers the headline
+    # projections so the proof strip reads against demonstrated realisation.
+    calib = _ibt_proj_calibration()
+    sor_pp_cal = round(sor_pp * calib, 2)
+    inv_days_cal = round(ccc_total * calib, 0)
+    avg_ccc_cal = (round((ccc_total * calib) / units_total, 1)
+                   if units_total > 0 else 0.0)
+    fresh = _ibt_freshness()
+
     return {
         "as_of": date.today().isoformat(),
+        "run_id": date.today().isoformat(),
+        "as_of_eat": fresh["as_of_eat"],
+        "freshness": fresh,
+        "calibration": calib,
         "summary": {
             "bundles": len(out), "units": units_total, "skus": sku_total,
             "stores": len(stores), "cross_border_bundles": cross_n,
-            "sor_uplift_pp": sor_pp,
+            "sor_uplift_pp": sor_pp_cal,
+            "sor_uplift_pp_raw": sor_pp,
             "value_kes": round(value_total, 0),
-            "inventory_days_removed": round(ccc_total, 0),
-            "avg_net_ccc_days_per_unit": avg_ccc_per_unit,
+            "inventory_days_removed": inv_days_cal,
+            "inventory_days_removed_raw": round(ccc_total, 0),
+            "avg_net_ccc_days_per_unit": avg_ccc_cal,
+            "avg_net_ccc_days_per_unit_raw": avg_ccc_per_unit,
+            "calibration": calib,
             "curve_completions": curve_total,
             "warehouse_covered_units": int(wh_units),
             "markdown_candidates": len(markdown_out),
@@ -14066,6 +14371,23 @@ def ibt_completed_keys():
         "WHERE sku IS NULL OR sku = ''", fetch=True) or []
     sku_keys = [f"{r['style_name']}||{r['to_store']}||{r['sku']}" for r in sku_rows]
     keys = [f"{r['style_name']}||{r['to_store']}||__all__" for r in all_rows]
+    # Phase 3: also drop SKUs already scanned OUT and awaiting receipt (in_transit)
+    # from the worklist so an operator can't double-dispatch a move that has left
+    # the donor but is not yet confirmed at the destination.
+    try:
+        _ensure_ibt_lifecycle_tables()
+        it_rows = _users_exec(
+            "SELECT DISTINCT style_name, to_store, sku FROM ibt_transfer "
+            "WHERE status='in_transit' AND sku IS NOT NULL AND sku <> ''",
+            fetch=True) or []
+        seen = set(sku_keys)
+        for r in it_rows:
+            k = f"{r['style_name']}||{r['to_store']}||{r['sku']}"
+            if k not in seen:
+                seen.add(k)
+                sku_keys.append(k)
+    except Exception:
+        pass
     return {"keys": keys, "sku_keys": sku_keys}
 @app.get("/api/leaderboard/streaks")
 def stub_leaderboard_streaks(): return []
@@ -16523,6 +16845,354 @@ async def ibt_complete(request: Request):
          body.get("completed_by_name") or acting.get("name") or acting.get("email"),
          _d(body.get("suggested_at")), _d(body.get("transfer_date"))))
     return {"ok": True}
+
+
+# ── Phase 3 (Flow & Proof): two-sided scan lifecycle + reconciliation ─────────
+# Replaces the blind Mark-As-Done. A move is scanned OUT of the donor (re-validated
+# against live stock + reservations so a sale that took the unit blocks the move
+# with a 409), travels in_transit (owned by the hub — neither store's SOR moves),
+# then scanned IN at the destination (a hard receiving gate that records the
+# realised received_qty and flags discrepancies). Scan-in ALSO mirrors into
+# ibt_completions so late-count / outcomes / roi keep working unchanged.
+
+def _ibt_new_consignment_id():
+    return "IBT-" + secrets.token_hex(5).upper()
+
+
+@app.post("/api/ibt/scan-out")
+async def ibt_scan_out(request: Request):
+    from fastapi import HTTPException
+    _ensure_ibt_lifecycle_tables()
+    body = await request.json()
+    acting = getattr(request.state, "user", None) or {}
+
+    def _i(v, d=0):
+        try:
+            return int(v)
+        except Exception:
+            return d
+
+    from_store = (body.get("from_store") or "").strip()
+    to_store = (body.get("to_store") or "").strip()
+    sku = (body.get("sku") or "").strip()
+    qty = _i(body.get("qty") or body.get("units_to_move") or body.get("suggested_qty"))
+    if not from_store or not to_store or not sku or qty <= 0:
+        raise HTTPException(status_code=400,
+                            detail="from_store, to_store, sku and qty>0 are required")
+
+    # Action-time donor re-validation (spec §6/§8): the suggestions read near-live
+    # tables, so between solve and scan a POS sale may have taken the unit. Re-check
+    # live on-hand minus active reservations; a sale that took it wins (409). A -1
+    # sentinel means the lookup itself failed (treat as UNKNOWN, allow with a flag —
+    # never silently block a real move on an infra blip).
+    avail = _ibt_donor_available(from_store, sku)
+    reserved = _ibt_reserved_units(from_store, sku)
+    revalidated = avail >= 0
+    if revalidated:
+        effective = avail - reserved
+        if effective < qty:
+            raise HTTPException(status_code=409, detail={
+                "error": "donor_stock_unavailable",
+                "message": (f"Only {max(effective,0)} unit(s) of {sku} remain "
+                            f"available at {from_store} (a sale or another transfer "
+                            f"took the stock). Re-run the suggestions."),
+                "available": max(avail, 0), "reserved": reserved,
+                "requested": qty})
+
+    cid = _ibt_new_consignment_id()
+    via_hub = body.get("via_hub")
+    via_hub = True if via_hub is None else bool(via_hub)
+    _users_exec(
+        "INSERT INTO ibt_transfer "
+        "(consignment_id, run_id, from_store, from_country, to_store, to_country, "
+        " via_hub, route, style_name, brand, subcategory, sku, color, size, barcode, "
+        " qty, source_onhand_at_calc, dest_gap_at_calc, net_ccc_days, value_kes, "
+        " curve_complete, status, odoo_transfer_id, scanned_out_by) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+        "'in_transit',%s,%s)",
+        (cid, body.get("run_id"), from_store, body.get("from_country"),
+         to_store, body.get("to_country"), via_hub, body.get("route"),
+         body.get("style_name"), body.get("brand"), body.get("subcategory"),
+         sku, body.get("color"), body.get("size"), body.get("barcode"),
+         qty, _i(body.get("source_onhand_at_calc"), None),
+         _i(body.get("dest_gap_at_calc"), None), body.get("net_ccc_days"),
+         body.get("value_kes"), body.get("curve_complete"),
+         body.get("odoo_transfer_id"),
+         acting.get("name") or acting.get("email")))
+
+    # Record the donor reservation as CONSUMED (the unit has physically left the
+    # store) and linked to the consignment for the audit trail. The in_transit
+    # ibt_transfer row already nets the donor out of the next solve.
+    try:
+        _users_exec(
+            "INSERT INTO transfer_reservations "
+            "(source, pos_location, sku, qty, run_id, consignment_id, status) "
+            "VALUES ('ibt',%s,%s,%s,%s,%s,'consumed')",
+            (from_store, sku, qty, body.get("run_id"), cid))
+    except Exception:
+        pass
+
+    return {"ok": True, "consignment_id": cid, "status": "in_transit",
+            "revalidated": revalidated,
+            "available": (avail if revalidated else None)}
+
+
+@app.post("/api/ibt/scan-in")
+async def ibt_scan_in(request: Request):
+    from fastapi import HTTPException
+    _ensure_ibt_lifecycle_tables()
+    body = await request.json()
+    acting = getattr(request.state, "user", None) or {}
+    cid = (body.get("consignment_id") or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="consignment_id is required")
+    rows = _users_exec(
+        "SELECT consignment_id, run_id, from_store, to_store, flow_na, style_name, "
+        "brand, subcategory, sku, color, size, barcode, qty, status, "
+        "odoo_transfer_id, dispatch_ts, "
+        "(SELECT 1) AS _ok FROM ("
+        " SELECT consignment_id, run_id, from_store, to_store, NULL AS flow_na, "
+        "  style_name, brand, subcategory, sku, color, size, barcode, qty, status, "
+        "  odoo_transfer_id, dispatch_ts FROM ibt_transfer WHERE consignment_id=%s"
+        ") t",
+        (cid,), fetch=True)
+    if not rows:
+        raise HTTPException(status_code=404,
+                            detail=f"Consignment {cid} not found")
+    t = rows[0]
+    if t.get("status") in ("received", "discrepancy"):
+        raise HTTPException(status_code=409, detail={
+            "error": "already_received",
+            "message": f"Consignment {cid} was already received."})
+
+    try:
+        received_qty = int(body.get("received_qty"))
+    except Exception:
+        received_qty = int(t.get("qty") or 0)
+    received_qty = max(0, received_qty)
+    qty = int(t.get("qty") or 0)
+    status = "received" if received_qty == qty else "discrepancy"
+    odoo_ref = (body.get("odoo_transfer_id") or t.get("odoo_transfer_id"))
+    received_by = acting.get("name") or acting.get("email")
+
+    _users_exec(
+        "UPDATE ibt_transfer SET received_qty=%s, received_ts=now(), status=%s, "
+        "odoo_transfer_id=COALESCE(%s, odoo_transfer_id), received_by=%s, "
+        "updated_at=now() WHERE consignment_id=%s",
+        (received_qty, status, odoo_ref, received_by, cid))
+
+    # Release any still-active reservation for this consignment (defensive — the
+    # scan-out wrote it 'consumed', but a re-scan or partial flow may leave one).
+    try:
+        _users_exec(
+            "UPDATE transfer_reservations SET status='released' "
+            "WHERE consignment_id=%s AND status='active'", (cid,))
+    except Exception:
+        pass
+
+    # Mirror into ibt_completions so the existing late-count / outcomes / roi /
+    # completed-worklist endpoints keep working with no change. Idempotent on the
+    # consignment via po_number = the consignment id.
+    try:
+        already = _users_exec(
+            "SELECT 1 FROM ibt_completions WHERE po_number=%s LIMIT 1",
+            (cid,), fetch=True)
+        if not already:
+            _users_exec(
+                "INSERT INTO ibt_completions "
+                "(style_name, brand, subcategory, from_store, to_store, flow, "
+                "units_to_move, actual_units_moved, sku, color, size, barcode, "
+                "po_number, completed_by_name, suggested_at, transfer_date) "
+                "VALUES (%s,%s,%s,%s,%s,'store_to_store',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (t.get("style_name"), t.get("brand"), t.get("subcategory"),
+                 t.get("from_store"), t.get("to_store"), qty, received_qty,
+                 t.get("sku"), t.get("color"), t.get("size"), t.get("barcode"),
+                 cid, received_by,
+                 (t["dispatch_ts"].date().isoformat()
+                  if t.get("dispatch_ts") else None),
+                 date.today().isoformat()))
+    except Exception as e:
+        log.warning("ibt scan-in completions mirror skipped: %s", e)
+
+    return {"ok": True, "consignment_id": cid, "status": status,
+            "received_qty": received_qty, "qty": qty,
+            "discrepancy": status == "discrepancy",
+            "shortfall": max(qty - received_qty, 0)}
+
+
+@app.get("/api/ibt/transfers")
+def ibt_transfers(status: str = "", days: int = 60):
+    _ensure_ibt_lifecycle_tables()
+    days = max(1, min(int(days or 60), 365))
+    where = ["dispatch_ts >= now() - INTERVAL '" + str(days) + " days'"]
+    params = []
+    st = (status or "").strip().lower()
+    if st in ("in_transit", "received", "discrepancy"):
+        where.append("status = %s")
+        params.append(st)
+    elif st == "overdue":
+        where.append("status = 'in_transit'")
+        where.append("dispatch_ts < now() - INTERVAL '%d days'" % _IBT_OVERDUE_DAYS)
+    sql = (
+        "SELECT consignment_id, run_id, from_store, from_country, to_store, "
+        "to_country, via_hub, route, style_name, brand, subcategory, sku, color, "
+        "size, barcode, qty, received_qty, source_onhand_at_calc, dest_gap_at_calc, "
+        "net_ccc_days, value_kes, curve_complete, status, odoo_transfer_id, "
+        "scanned_out_by, received_by, dispatch_ts, received_ts, "
+        "CASE WHEN received_ts IS NOT NULL "
+        "  THEN (received_ts::date - dispatch_ts::date) END AS days_lapsed, "
+        "(status='discrepancy') AS discrepancy, "
+        "(status='in_transit' AND dispatch_ts < now() - INTERVAL '" +
+        str(_IBT_OVERDUE_DAYS) + " days') AS overdue, "
+        "EXTRACT(DAY FROM now() - dispatch_ts)::int AS days_in_transit "
+        "FROM ibt_transfer WHERE " + " AND ".join(where) +
+        " ORDER BY dispatch_ts DESC LIMIT 2000")
+    rows = _users_exec(sql, tuple(params), fetch=True) or []
+    for r in rows:
+        for k in ("dispatch_ts", "received_ts"):
+            if r.get(k) is not None:
+                r[k] = r[k].isoformat()
+    return rows
+
+
+@app.get("/api/ibt/freshness")
+def ibt_freshness():
+    return _ibt_freshness()
+
+
+@app.get("/api/ibt/sor-reconciliation")
+def ibt_sor_reconciliation(days: int = 90):
+    """Realised-vs-projected proof strip for landed (received) consignments, and
+    the place that RECORDS the projection calibration sample. Realisation =
+    received_units / dispatched_units for the most recent landed run (units that
+    actually arrived and are now sellable vs the units the projection assumed would
+    sell at destination). This tempers the FORWARD PROJECTION only — the canonical
+    SOR FORMULA is never touched. Idempotent per run_id (one sample/run)."""
+    _ensure_ibt_lifecycle_tables()
+    days = max(1, min(int(days or 90), 365))
+    rows = _users_exec(
+        "SELECT run_id, "
+        " SUM(qty) AS dispatched, "
+        " SUM(COALESCE(received_qty,0)) AS received, "
+        " SUM(net_ccc_days) AS proj_ccc_days, "
+        " SUM(value_kes) AS proj_value_kes, "
+        " COUNT(*) AS lines, "
+        " SUM(CASE WHEN status='discrepancy' THEN 1 ELSE 0 END) AS discrepancies, "
+        " MAX(received_ts) AS last_received "
+        "FROM ibt_transfer "
+        "WHERE status IN ('received','discrepancy') AND received_ts IS NOT NULL "
+        "  AND received_ts >= now() - INTERVAL '" + str(days) + " days' "
+        "GROUP BY run_id ORDER BY MAX(received_ts) DESC",
+        fetch=True) or []
+
+    runs = []
+    dispatched_tot = received_tot = 0
+    proj_ccc_tot = real_ccc_tot = 0.0
+    proj_val_tot = real_val_tot = 0.0
+    for r in rows:
+        disp = int(r.get("dispatched") or 0)
+        recv = int(r.get("received") or 0)
+        ratio = (recv / disp) if disp > 0 else None
+        pccc = float(r.get("proj_ccc_days") or 0)
+        pval = float(r.get("proj_value_kes") or 0)
+        rccc = pccc * ratio if ratio is not None else 0.0
+        rval = pval * ratio if ratio is not None else 0.0
+        dispatched_tot += disp
+        received_tot += recv
+        proj_ccc_tot += pccc
+        real_ccc_tot += rccc
+        proj_val_tot += pval
+        real_val_tot += rval
+        runs.append({
+            "run_id": r.get("run_id"),
+            "dispatched_units": disp, "received_units": recv,
+            "realisation_pct": round(100.0 * ratio, 1) if ratio is not None else None,
+            "projected_ccc_days": round(pccc, 0),
+            "realised_ccc_days": round(rccc, 0),
+            "projected_value_kes": round(pval, 0),
+            "realised_value_kes": round(rval, 0),
+            "lines": int(r.get("lines") or 0),
+            "discrepancies": int(r.get("discrepancies") or 0),
+            "last_received": (r["last_received"].isoformat()
+                              if r.get("last_received") else None),
+        })
+
+    # Record a calibration sample for the most recent landed run (idempotent per
+    # run_id). The sample is realised/projected = received/dispatched for that run.
+    if runs:
+        latest = runs[0]
+        if latest["dispatched_units"] > 0 and latest.get("run_id"):
+            sample = latest["received_units"] / latest["dispatched_units"]
+            _ibt_record_calibration(sample, run_id=latest["run_id"])
+
+    overall = (received_tot / dispatched_tot) if dispatched_tot > 0 else None
+    return {
+        "calibration": _ibt_proj_calibration(),
+        "landed_runs": len(runs),
+        "dispatched_units": dispatched_tot,
+        "received_units": received_tot,
+        "realisation_pct": round(100.0 * overall, 1) if overall is not None else None,
+        "projected_ccc_days": round(proj_ccc_tot, 0),
+        "realised_ccc_days": round(real_ccc_tot, 0),
+        "projected_value_kes": round(proj_val_tot, 0),
+        "realised_value_kes": round(real_val_tot, 0),
+        "runs": runs,
+    }
+
+
+@app.post("/api/ibt/nightly-reconcile")
+def ibt_nightly_reconcile():
+    """Internal-only (sync job, X-Internal-Token == SESSION_SECRET): the nightly
+    self-heal for the Phase-3 transfer lifecycle. Idempotent + best-effort per step
+    (one broken step never aborts the others, and the whole thing never crashes the
+    sync loop). Steps: (1) ensure the lifecycle tables exist on a fresh prod DB;
+    (2) self-heal — release ACTIVE soft-reservations whose hold expired so they stop
+    netting donor stock out of the solve forever (a stale hold that never converted
+    to a scan-out); (3) refresh observed corridor lead times from completed moves;
+    (4) record the projection calibration sample for the latest landed run (via the
+    same read-only reconciliation path, idempotent per run_id). The canonical SOR
+    FORMULA is never touched — calibration tempers the FORWARD PROJECTION only."""
+    _ensure_ibt_lifecycle_tables()
+    out = {"ok": True}
+
+    # (2) Self-heal: release expired ACTIVE reservations. Scan-out writes the donor
+    # hold as 'consumed' immediately, so anything still 'active' past its expiry is a
+    # soft hold that never converted — release it so it stops suppressing donor stock.
+    try:
+        rows = _users_exec(
+            "UPDATE transfer_reservations SET status='released' "
+            "WHERE status='active' AND expires_at IS NOT NULL "
+            "  AND expires_at <= now() RETURNING id", fetch=True)
+        out["reservations_released"] = len(rows or [])
+    except Exception as e:
+        out["reservations_released_error"] = str(e)[:200]
+
+    # Surface (count) overdue in_transit consignments — we never auto-receive them
+    # (that would fabricate received_qty); the operator resolves them via scan-in.
+    try:
+        rows = _users_exec(
+            "SELECT COUNT(*) AS n FROM ibt_transfer WHERE status='in_transit' "
+            "AND dispatch_ts < now() - INTERVAL '" + str(_IBT_OVERDUE_DAYS)
+            + " days'", fetch=True)
+        out["overdue_in_transit"] = int(rows[0]["n"]) if rows else 0
+    except Exception as e:
+        out["overdue_in_transit_error"] = str(e)[:200]
+
+    # (3) Refresh observed corridor lead times.
+    out["corridor_pairs_refreshed"] = _ibt_refresh_corridor_observed()
+
+    # (4) Record the calibration sample for the latest landed run (idempotent per
+    # run_id — the reconciliation read does the recording).
+    try:
+        recon = ibt_sor_reconciliation(days=120)
+        out["calibration"] = recon.get("calibration")
+        out["landed_runs"] = recon.get("landed_runs")
+    except Exception as e:
+        out["calibration_error"] = str(e)[:200]
+
+    return out
+
+
 @app.post("/api/notifications/read-all")
 async def stub_notifications_read_all(request: Request): return {"ok": True}
 @app.post("/api/notifications/refresh")
