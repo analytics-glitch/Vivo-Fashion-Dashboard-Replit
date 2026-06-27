@@ -1275,6 +1275,12 @@ REPLEN_DEMAND_WEEKS_ALLOWED = (4, 8, 12)
 # Cover horizon (weeks) the suggested target is sized to per corridor cadence
 # (spec §4/§7). Short cycle so a top-up lands before the next dispatch slot.
 REPLEN_COVER_WEEKS = 2.0
+# Online (Shop Zetu) has no shelf/presentation facing, so it is demand-sized on a
+# SHORTER cover cycle than physical stores (spec §4 — Phase 2 step 3) and gets NO
+# presentation floor (target = ceil(velocity x cover) only).
+REPLEN_ONLINE_COVER_WEEKS = 1.0
+# The only online pool included in replenishment / SOR (others are excluded).
+ONLINE_SHOP_ZETU = "Online - Shop Zetu"
 # A/B/C class cut-offs on store-SKU weekly velocity (spec §4).
 REPLEN_CLASS_A_VPW = 1.0     # fast mover  (>=1.0 u/wk)
 REPLEN_CLASS_B_VPW = 0.25    # core        (0.25 - 1.0 u/wk)
@@ -1289,6 +1295,88 @@ REPLEN_OVERSTOCK_WOC = 16.0
 # Ruleset version stamped into every suggestion snapshot's run_id so a later
 # logic change starts a new immutable run rather than mutating history (spec §10).
 REPLEN_RULESET_VERSION = "phase1-v1"
+
+# ── Phase 2 demand-sizing knobs (spec §12 — open ops/merch knobs) ──────────────
+# The A/B/C velocity cut-offs, cover-weeks (store + online) and the EOL/overstock
+# threshold are deliberately CONFIGURABLE: merch can retune them without a code
+# change. The module constants above are the spec defaults; an admin override is
+# stored in app_config key 'replen_sizing' (a partial JSON object merged over the
+# defaults). _replen_sizing_config() is the single read path used by the engine,
+# the SOR summary and the sizing-config endpoints.
+_REPLEN_SIZING_DEFAULTS = {
+    "cover_weeks":        REPLEN_COVER_WEEKS,
+    "online_cover_weeks": REPLEN_ONLINE_COVER_WEEKS,
+    "class_a_vpw":        REPLEN_CLASS_A_VPW,
+    "class_b_vpw":        REPLEN_CLASS_B_VPW,
+    "floor_a":            REPLEN_FLOOR_A,
+    "floor_b":            REPLEN_FLOOR_B,
+    "floor_c":            REPLEN_FLOOR_C,
+    "overstock_woc":      REPLEN_OVERSTOCK_WOC,
+}
+_REPLEN_SIZING_FLOAT_KEYS = {
+    "cover_weeks", "online_cover_weeks", "class_a_vpw", "class_b_vpw",
+    "overstock_woc",
+}
+_REPLEN_SIZING_INT_KEYS = {"floor_a", "floor_b", "floor_c"}
+
+
+def _replen_sizing_config():
+    """Active Phase 2 sizing knobs: spec defaults overlaid with the app_config
+    'replen_sizing' override (if any). Never raises — a config read hiccup falls
+    back to the defaults so the engine always sizes."""
+    cfg = dict(_REPLEN_SIZING_DEFAULTS)
+    try:
+        rows = _users_exec(
+            "SELECT value FROM app_config WHERE key='replen_sizing'", fetch=True)
+    except Exception:
+        rows = None
+    if rows:
+        val = rows[0].get("value")
+        if isinstance(val, str):
+            try:
+                val = json.loads(val)
+            except Exception:
+                val = None
+        if isinstance(val, dict):
+            for k in _REPLEN_SIZING_FLOAT_KEYS:
+                if k in val:
+                    try:
+                        cfg[k] = float(val[k])
+                    except (TypeError, ValueError):
+                        pass
+            for k in _REPLEN_SIZING_INT_KEYS:
+                if k in val:
+                    try:
+                        cfg[k] = max(0, int(val[k]))
+                    except (TypeError, ValueError):
+                        pass
+    return cfg
+
+
+def _set_replen_sizing_config(patch):
+    """Persist a partial knob override (validated keys only) to app_config."""
+    clean = {}
+    for k in _REPLEN_SIZING_FLOAT_KEYS:
+        if k in patch and patch[k] is not None:
+            v = float(patch[k])
+            if v < 0:
+                raise ValueError(k + " must be >= 0")
+            clean[k] = v
+    for k in _REPLEN_SIZING_INT_KEYS:
+        if k in patch and patch[k] is not None:
+            v = int(patch[k])
+            if v < 0:
+                raise ValueError(k + " must be >= 0")
+            clean[k] = v
+    if "class_a_vpw" in clean and "class_b_vpw" in clean and \
+            clean["class_a_vpw"] < clean["class_b_vpw"]:
+        raise ValueError("class_a_vpw must be >= class_b_vpw")
+    _users_exec(
+        "INSERT INTO app_config (key, value, updated_at) "
+        "VALUES ('replen_sizing', %s::jsonb, now()) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+        (json.dumps(clean),))
+    return clean
 
 # Canonical sku -> style map. all_inventory.style_name is free-text and often
 # disagrees with all_products_clean.style_name (e.g. word-order differences like
@@ -11503,13 +11591,15 @@ def _replen_eat_today():
     return (datetime.now(timezone.utc) + timedelta(hours=3)).date()
 
 
-def _replen_class_floor(vpw):
-    """A/B/C velocity class + presentation-minimum facing (spec §4)."""
-    if vpw >= REPLEN_CLASS_A_VPW:
-        return "A", REPLEN_FLOOR_A
-    if vpw >= REPLEN_CLASS_B_VPW:
-        return "B", REPLEN_FLOOR_B
-    return "C", REPLEN_FLOOR_C
+def _replen_class_floor(vpw, cfg=None):
+    """A/B/C velocity class + presentation-minimum facing (spec §4), against the
+    configurable cut-offs/floors (defaults from the module constants)."""
+    cfg = cfg or _REPLEN_SIZING_DEFAULTS
+    if vpw >= cfg["class_a_vpw"]:
+        return "A", int(cfg["floor_a"])
+    if vpw >= cfg["class_b_vpw"]:
+        return "B", int(cfg["floor_b"])
+    return "C", int(cfg["floor_c"])
 
 
 def _replen_holdback_overrides():
@@ -11521,7 +11611,7 @@ def _replen_holdback_overrides():
             for r in rows}
 
 
-def _replen_sor_summary(weeks):
+def _replen_sor_summary(weeks, overstock_woc=REPLEN_OVERSTOCK_WOC):
     """Canonical headline SOR + the additive 'saleable SOR' over the named
     trailing demand window (spec §3) — warehouse excluded, unit-weighted across
     pools (a single SUM over every pool IS the unit-weighted roll-up). The base
@@ -11585,7 +11675,7 @@ def _replen_sor_summary(weeks):
                       ON sss.pos_location_name = sk.pos_location_name
                      AND sss.variant_sku = sk.sku
                     WHERE sk.soh::numeric * """ + str(int(weeks)) + """
-                          > 16 * COALESCE(sss.u,0)
+                          > """ + str(float(overstock_woc)) + """ * COALESCE(sss.u,0)
                       AND COALESCE(sss.u,0) >= 0
                       AND sk.soh > 0),0) AS drag_stock
     """) or [{}]
@@ -11621,29 +11711,48 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
     days = weeks * 7
     _warehouse_bins_refresh()
     overrides = _replen_holdback_overrides()
-    cover_target_weeks = REPLEN_COVER_WEEKS
+    cfg = _replen_sizing_config()
+    cover_target_weeks = float(cfg["cover_weeks"])
+    online_cover_weeks = float(cfg["online_cover_weeks"])
+    overstock_woc = float(cfg["overstock_woc"])
+    # Velocity uses the dashboard's shared recency-weighted 28d/56d EWMA proxy
+    # (_ewma_weekly) — NOT a flat units/lookback average — so we pull u28/u56 over
+    # a FIXED trailing window regardless of the proven-demand lookback (4/8/12w).
+    vel_days = max(days, 56)
 
     # Proven-demand candidate universe: store-SKUs that sold here in the window,
     # with snapshots of current shelf qty (this store) and the shared warehouse
     # pool. We DON'T pre-filter to understocked here (unlike the legacy report) so
-    # overstock / broken-curve rows can be surfaced in the Held-back panel.
+    # overstock / broken-curve rows can be surfaced in the Held-back panel. The
+    # universe gate (HAVING) is still the lookback window; u28/u56 ride along for
+    # the recency-weighted velocity + censored-demand correction.
     rows = run_query("""
         WITH sold AS (
             SELECT s.pos_location_name, s.variant_sku,
                 MAX(s.country) AS country,
                 MAX(s.product_title) AS product_name,
-                SUM(s.net_quantity) AS units_sold,
+                SUM(s.net_quantity) FILTER (
+                    WHERE s.sale_date >= (CURRENT_DATE - INTERVAL '""" + str(days) + """ days')::text
+                ) AS units_sold,
+                SUM(s.net_quantity) FILTER (
+                    WHERE s.sale_date >= (CURRENT_DATE - INTERVAL '28 days')::text
+                ) AS u28,
+                SUM(s.net_quantity) FILTER (
+                    WHERE s.sale_date >= (CURRENT_DATE - INTERVAL '56 days')::text
+                ) AS u56,
                 MAX(s.sale_date) AS last_sale
             FROM all_sales s
             WHERE s.sale_kind IN ('sale','order')
-              AND s.sale_date >= (CURRENT_DATE - INTERVAL '""" + str(days) + """ days')::text
+              AND s.sale_date >= (CURRENT_DATE - INTERVAL '""" + str(vel_days) + """ days')::text
               AND """ + BASE_FILTERS + """
               AND s.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
               AND (s.pos_location_name NOT ILIKE '%online%'
-                   OR s.pos_location_name = 'Online - Shop Zetu')
+                   OR s.pos_location_name = '""" + ONLINE_SHOP_ZETU + """')
               AND s.variant_sku IS NOT NULL AND s.variant_sku <> ''
             GROUP BY s.pos_location_name, s.variant_sku
-            HAVING SUM(s.net_quantity) > 0
+            HAVING SUM(s.net_quantity) FILTER (
+                WHERE s.sale_date >= (CURRENT_DATE - INTERVAL '""" + str(days) + """ days')::text
+            ) > 0
         ),
         store_soh AS (
             SELECT i.pos_location_name, i.sku,
@@ -11660,7 +11769,8 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
         )
         SELECT sold.pos_location_name AS pos_location, sold.country,
             COALESCE(NULLIF(p.product_name, ''), sold.product_name) AS product_name,
-            sold.variant_sku AS sku, sold.units_sold, sold.last_sale,
+            sold.variant_sku AS sku, sold.units_sold,
+            sold.u28, sold.u56, sold.last_sale,
             p.size AS size, p.barcode, p.style_name AS style_name,
             COALESCE(p.color_print, '') AS color_print,
             COALESCE(ss.soh_store, 0) AS soh_store,
@@ -11712,6 +11822,30 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
     actionable = []
     held_back = []
     deploy_now_rows = []
+
+    # ── Censored-demand correction pre-pass (Phase 2 step 1) ──────────────────
+    # A store-SKU currently at zero shelf stock (soh_store == 0) almost certainly
+    # stocked out DURING the window, so its observed sales are right-censored and
+    # understate true demand. We benchmark each SKU's uncensored per-store demand
+    # rate against the stores STILL in stock for that SKU (soh_store > 0, online
+    # pool included) using the shared recency-weighted EWMA, then lift a censored
+    # line to that rate when it is higher. This only ever RAISES a stocked-out
+    # hero (Pareto-safe) and only for a store-SKU with proven prior local sale
+    # (guaranteed by the universe gate) — never-sold SKUs never enter here.
+    peer_acc = {}   # sku -> [sum_u28_instock, sum_u56_instock, instock_store_count]
+    for r in rows:
+        if int(r.get("soh_store") or 0) > 0:
+            a = peer_acc.setdefault(r.get("sku"), [0.0, 0.0, 0])
+            a[0] += float(r.get("u28") or 0)
+            a[1] += float(r.get("u56") or 0)
+            a[2] += 1
+
+    def _peer_vpw(sku):
+        a = peer_acc.get(sku)
+        if not a or a[2] <= 0:
+            return 0.0
+        return _ewma_weekly(a[0], a[1]) / a[2]
+
     for r in rows:
         units_sold = int(r["units_sold"] or 0)
         soh_store = int(r["soh_store"] or 0)
@@ -11719,14 +11853,27 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
         style = r.get("style_name") or ""
         pos = r.get("pos_location")
         sku = r.get("sku")
-        vpw = (units_sold / weeks) if weeks else 0.0
-        sku_class, floor = _replen_class_floor(vpw)
-        cover_q = -(-int(round(vpw * cover_target_weeks * 100)) // 100) if vpw > 0 else 0
-        # Class C is pull-to-1 on a sale; A/B size to max(floor, cover).
-        target = floor if sku_class == "C" else max(floor, cover_q)
+        is_online = (pos == ONLINE_SHOP_ZETU)
+        # Recency-weighted weekly velocity (shared dashboard EWMA), not a flat
+        # units/lookback average.
+        own_vpw = _ewma_weekly(float(r.get("u28") or 0), float(r.get("u56") or 0))
+        censored = soh_store == 0
+        peer_vpw = _peer_vpw(sku) if censored else 0.0
+        vpw = max(own_vpw, peer_vpw) if censored else own_vpw
+        censored_corrected = bool(censored and vpw > own_vpw + 1e-9)
+        sku_class, floor = _replen_class_floor(vpw, cfg)
+        # Online (Shop Zetu) has no shelf facing: NO presentation floor and a
+        # shorter cover cycle (spec §4 step 3); stores keep their class floor.
+        cw = online_cover_weeks if is_online else cover_target_weeks
+        cover_q = -(-int(round(vpw * cw * 100)) // 100) if vpw > 0 else 0
+        if is_online:
+            floor = 0
+            target = cover_q
+        else:
+            # Class C is pull-to-1 on a sale; A/B size to max(floor, cover).
+            target = floor if sku_class == "C" else max(floor, cover_q)
         need = max(0, target - soh_store)
         woc = (soh_store / vpw) if vpw > 0 else (999.0 if soh_store > 0 else 0.0)
-        censored = soh_store == 0
         deploy_now = (soh_store == 0 and units_sold > 0 and soh_wh > 0)
 
         days_lapsed = 0
@@ -11748,7 +11895,7 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
                 reason = "retired"
             elif style in md_styles and soh_store > 0:
                 reason = "markdown"
-            elif soh_store > 0 and woc > REPLEN_OVERSTOCK_WOC:
+            elif soh_store > 0 and woc > overstock_woc:
                 reason = "overstock"
             elif (instock_sizes.get((pos, style), 9) <= 1
                   and curve_sizes.get(style, 0) >= 3 and soh_store > 0):
@@ -11761,9 +11908,11 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
             "sku": sku, "bin": r.get("bin") or "",
             "color_print": r.get("color_print") or "",
             "units_sold": units_sold, "soh_store": soh_store, "soh_wh": soh_wh,
-            "velocity": round(vpw, 2), "sku_class": sku_class,
+            "velocity": round(vpw, 2), "velocity_observed": round(own_vpw, 2),
+            "sku_class": sku_class,
             "floor": floor, "target": target, "woc": round(woc, 1),
-            "censored": censored, "deploy_now": deploy_now,
+            "censored": censored, "censored_corrected": censored_corrected,
+            "deploy_now": deploy_now,
             "days_lapsed": days_lapsed,
             "in_stock_sizes": instock_sizes.get((pos, style), 0),
             "curve_sizes": curve_sizes.get(style, 0),
@@ -11803,7 +11952,7 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
         if r.get("deploy_now"):
             deploy_now_rows.append(r)
 
-    summary = _replen_sor_summary(weeks)
+    summary = _replen_sor_summary(weeks, overstock_woc)
     u = float(summary["units_sold"])
     st = float(summary["store_stock"])
     cur_sor = summary["current_sor"]
@@ -11831,6 +11980,7 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
         "business_date": _replen_eat_today().isoformat(),
         "demand_weeks": weeks,
         "ruleset_version": REPLEN_RULESET_VERSION,
+        "config": cfg,
         "rows": actionable[:int(limit)],
         "held_back": held_back[:200],
         "deploy_now_count": len(deploy_now_rows),
@@ -12142,6 +12292,121 @@ def analytics_replenishment_sor_snapshot(
     return {"ok": True, "run_id": run_id,
             "business_date": result["business_date"],
             "suggested_rows": len(result["rows"])}
+
+
+@app.get("/api/analytics/replenishment-sizing-config")
+def analytics_replenishment_sizing_config_get():
+    """Active Phase 2 sizing knobs (A/B/C cut-offs, cover-weeks store + online,
+    presentation floors, EOL/overstock WOC) with the spec defaults, so merch can
+    see the policy currently driving the pick list."""
+    return {"config": _replen_sizing_config(),
+            "defaults": dict(_REPLEN_SIZING_DEFAULTS)}
+
+
+@app.put("/api/analytics/replenishment-sizing-config")
+def analytics_replenishment_sizing_config_put(payload: dict = Body(...),
+                                              request: Request = None):
+    """Admin-only: retune the sizing knobs without a code change. A partial JSON
+    object is merged over the defaults (validated, non-negative; class_a >= class_b)."""
+    _require_admin(request)
+    try:
+        saved = _set_replen_sizing_config(payload or {})
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "saved": saved, "config": _replen_sizing_config()}
+
+
+@app.get("/api/analytics/replenishment-picker-scorecard")
+def analytics_replenishment_picker_scorecard(days: int = Query(default=30)):
+    """Picker accountability (Phase 2 step 4) built on the immutable Phase 1
+    facts — NOT the completed-audit trail. Per real picker (fact_pick_event
+    user_id): lines assigned/done/missed, LINE-based fulfilment % (effort-
+    normalised so scattered single-unit lines aren't unfairly ranked), missed-SOR
+    units (weekly velocity of skipped suggested lines) and over-picks.
+
+    Attribution: a picker's scope = the stores they actually worked in the window;
+    the latest suggestion snapshot for those stores is their assigned set. The
+    panel stays GATED (published:false) until the facts are trustworthy — at least
+    one suggestion snapshot AND attributable pick events exist in the window."""
+    days = max(1, min(int(days or 30), 180))
+    _ensure_replen_tables()
+
+    # Latest daily suggestion snapshot within the window (deduped per store-SKU
+    # across any lookback runs on that date).
+    sugg = run_query(
+        "SELECT pos_location, sku, MAX(suggested_qty) AS suggested_qty, "
+        "       MAX(v_at_calc) AS v_at_calc "
+        "FROM fact_replen_suggestion "
+        "WHERE business_date = ("
+        "   SELECT MAX(business_date) FROM fact_replen_suggestion "
+        "   WHERE business_date >= CURRENT_DATE - INTERVAL '" + str(days) + " days') "
+        "GROUP BY pos_location, sku") or []
+    picks = run_query(
+        "SELECT user_id, MAX(user_name) AS user_name, pos_location, sku, "
+        "       SUM(qty_picked) AS qty_picked "
+        "FROM fact_pick_event "
+        "WHERE picked_ts_eat >= now() - INTERVAL '" + str(days) + " days' "
+        "  AND user_id IS NOT NULL AND user_id <> '' "
+        "GROUP BY user_id, pos_location, sku") or []
+
+    if not sugg or not picks:
+        reason = ("No suggestion snapshots have accrued yet — the daily snapshot "
+                  "job populates them after publish."
+                  if not sugg else
+                  "No attributable pick events yet — they accrue as pickers mark "
+                  "replenishment lines done.")
+        return {"published": False, "reason": reason, "days": days,
+                "snapshot_lines": len(sugg), "pick_lines": len(picks),
+                "pickers": []}
+
+    sugg_by_store = {}            # pos -> {sku: {"suggested": q, "v": v}}
+    for s in sugg:
+        sugg_by_store.setdefault(s["pos_location"], {})[s["sku"]] = {
+            "suggested": int(s["suggested_qty"] or 0),
+            "v": float(s["v_at_calc"] or 0)}
+
+    pickers = {}                  # user_id -> aggregate
+    for p in picks:
+        uid = p["user_id"]
+        u = pickers.setdefault(uid, {
+            "user_id": uid, "user_name": p.get("user_name") or uid,
+            "stores": set(), "picked": {}, "units_picked": 0})
+        u["stores"].add(p["pos_location"])
+        u["picked"][(p["pos_location"], p["sku"])] = int(p["qty_picked"] or 0)
+        u["units_picked"] += int(p["qty_picked"] or 0)
+
+    out = []
+    for u in pickers.values():
+        assigned = done = missed = 0
+        missed_sor_units = 0.0
+        over_pick_units = 0
+        for pos in u["stores"]:
+            for sku, meta in sugg_by_store.get(pos, {}).items():
+                assigned += 1
+                picked_qty = u["picked"].get((pos, sku))
+                if picked_qty is not None:
+                    done += 1
+                    if picked_qty > meta["suggested"]:
+                        over_pick_units += picked_qty - meta["suggested"]
+                else:
+                    missed += 1
+                    missed_sor_units += meta["v"]
+        # Effort-normalised headline = LINE fulfilment (done/assigned), so a
+        # picker clearing many scattered single-unit lines is not penalised vs one
+        # clearing a few deep lines.
+        fulfilment_pct = round(100.0 * done / assigned, 1) if assigned else 0.0
+        out.append({
+            "user_id": u["user_id"], "user_name": u["user_name"],
+            "stores": sorted(u["stores"]),
+            "assigned_lines": assigned, "done_lines": done,
+            "missed_lines": missed, "fulfilment_pct": fulfilment_pct,
+            "units_picked": u["units_picked"],
+            "missed_sor_units": round(missed_sor_units, 1),
+            "over_pick_units": int(over_pick_units),
+        })
+    out.sort(key=lambda r: (-r["fulfilment_pct"], -r["done_lines"]))
+    return {"published": True, "days": days, "snapshot_lines": len(sugg),
+            "pickers": out}
 
 
 @app.get("/api/analytics/sales-projection")

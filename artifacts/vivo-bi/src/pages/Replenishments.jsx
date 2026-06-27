@@ -95,6 +95,9 @@ const Replenishments = () => {
   const [completedLoading, setCompletedLoading] = useState(false);
   const [completedRefresh, setCompletedRefresh] = useState(0);
 
+  // Picker accountability scorecard (Phase 2 — built on fact_pick_event facts).
+  const [scorecard, setScorecard] = useState(null);
+
   // Support panels.
   const [alerts, setAlerts] = useState(null);
   const [alertDismissed, setAlertDismissed] = useState(false);
@@ -133,6 +136,9 @@ const Replenishments = () => {
       .then(({ data: c }) => { if (!cancel) setCompleted(c || { rows: [], total: 0 }); })
       .catch(() => { if (!cancel) setCompleted({ rows: [], total: 0 }); })
       .finally(() => { if (!cancel) setCompletedLoading(false); });
+    api.get("/analytics/replenishment-picker-scorecard", { params: { days: 30 }, forceFresh: completedRefresh > 0 })
+      .then(({ data: s }) => { if (!cancel) setScorecard(s || null); })
+      .catch(() => { if (!cancel) setScorecard(null); });
     return () => { cancel = true; };
   }, [isAdmin, completedRefresh]);
 
@@ -317,24 +323,6 @@ const Replenishments = () => {
       setReleasingKey(null);
     }
   }, [loadSor]);
-
-  // Per-user fulfilment summary (from the completed audit, independent of SOR).
-  const fulfilmentByUser = useMemo(() => {
-    const acc = new Map();
-    for (const r of completed.rows || []) {
-      const u = r.owner || r.completed_by_name || "—";
-      const cur = acc.get(u) || { user: u, target: 0, actual: 0, lines: 0 };
-      cur.target += Number(r.units_to_replenish || 0);
-      cur.actual += Number(r.actual_units_replenished || 0);
-      cur.lines += 1;
-      acc.set(u, cur);
-    }
-    const out = [...acc.values()].map((x) => ({
-      ...x, rate: x.target > 0 ? (x.actual / x.target * 100) : null,
-    }));
-    out.sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1));
-    return out;
-  }, [completed.rows]);
 
   return (
     <div className="space-y-5" data-testid="replenishments-page">
@@ -679,49 +667,60 @@ const Replenishments = () => {
         )}
       </div>
 
-      {/* Per-user fulfilment rate. */}
-      {isAdmin && fulfilmentByUser.length > 0 && (
-        <div className="card-white p-4 sm:p-5" data-testid="replen-fulfilment-summary">
+      {/* Picker accountability scorecard. */}
+      {isAdmin && (
+        <div className="card-white p-4 sm:p-5" data-testid="replen-scorecard">
           <SectionTitle
-            title={<span className="inline-flex items-center gap-2 text-[14px]"><CheckCircle size={16} weight="duotone" className="text-emerald-700" /> Fulfilment rate by picker · last 30 days</span>}
-            subtitle="Aggregate of every Mark As Done in the window — actual units replenished ÷ suggested. The completed history does not retain the suggested baseline, so Suggested and Fulfilment rate read “—”; Lines done and Replenished are always exact."
+            title={<span className="inline-flex items-center gap-2 text-[14px]"><CheckCircle size={16} weight="duotone" className="text-emerald-700" /> Picker accountability · last 30 days</span>}
+            subtitle="Built on immutable pick-event facts. Each picker is scored against the latest suggestion snapshot for the stores they actually worked: Fulfilment % is line-based (effort-normalised), Missed SOR is the weekly velocity of suggested lines they skipped, and Over-picks are units taken beyond the suggested quantity."
           />
-          <div className="overflow-x-auto rounded-lg border border-border bg-white max-w-2xl">
-            <table className="w-full text-[12.5px]">
-              <thead className="bg-panel">
-                <tr className="text-left">
-                  <SortableTh sortKey="user" sort={fulfilmentSort.sort} onSort={fulfilmentSort.toggleSort} className="px-3 py-2 font-semibold whitespace-nowrap">User</SortableTh>
-                  <SortableTh sortKey="lines" sort={fulfilmentSort.sort} onSort={fulfilmentSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">Lines done</SortableTh>
-                  <SortableTh sortKey="target" sort={fulfilmentSort.sort} onSort={fulfilmentSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">Suggested</SortableTh>
-                  <SortableTh sortKey="actual" sort={fulfilmentSort.sort} onSort={fulfilmentSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">Replenished</SortableTh>
-                  <SortableTh sortKey="rate" sort={fulfilmentSort.sort} onSort={fulfilmentSort.toggleSort} numeric className="px-3 py-2 font-semibold whitespace-nowrap">Fulfilment rate</SortableTh>
-                </tr>
-              </thead>
-              <tbody>
-                {fulfilmentSort.sortRows(fulfilmentByUser, {
-                  user: (u) => u.user,
-                  lines: (u) => Number(u.lines ?? 0),
-                  target: (u) => Number(u.target ?? 0),
-                  actual: (u) => Number(u.actual ?? 0),
-                  rate: (u) => u.rate == null ? null : Number(u.rate),
-                }).map((u, i) => (
-                  <tr key={u.user} className={`border-t border-border/50 ${i % 2 === 0 ? "bg-white" : "bg-panel/30"}`} data-testid={`replen-fulfilment-row-${i}`}>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      <span className="inline-flex items-center bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{u.user}</span>
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">{fmtNum(u.lines)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{u.target > 0 ? fmtNum(u.target) : <span className="text-muted">—</span>}</td>
-                    <td className="px-3 py-2 text-right tabular-nums font-bold text-emerald-700">{fmtNum(u.actual)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {u.rate == null ? <span className="text-muted">—</span> : (
-                        <span className={`inline-flex items-center font-bold px-2 py-0.5 rounded-full ${u.rate >= 100 ? "bg-emerald-100 text-emerald-900" : u.rate >= 50 ? "bg-amber-100 text-amber-900" : "bg-rose-100 text-rose-900"}`}>{u.rate.toFixed(1)}%</span>
-                      )}
-                    </td>
+          {!scorecard?.published ? (
+            <div className="flex items-start gap-2.5 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-900" data-testid="replen-scorecard-accruing">
+              <Warning size={16} weight="fill" className="text-amber-600 mt-0.5 shrink-0" />
+              <div>
+                <b>Accruing data — not yet published.</b>{" "}
+                {scorecard?.reason || "Picker accountability appears once suggestion snapshots and attributable pick events have built up in the window."}
+              </div>
+            </div>
+          ) : (scorecard.pickers || []).length === 0 ? (
+            <Empty label="No attributable pickers in the last 30 days." />
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-border bg-white">
+              <table className="w-full min-w-max text-[12.5px]">
+                <thead className="bg-panel">
+                  <tr className="text-left">
+                    <th className="px-3 py-2 font-semibold whitespace-nowrap">Picker</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Assigned</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Done</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Missed</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Fulfilment %</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Units picked</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Missed SOR/wk</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Over-picks</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {(scorecard.pickers || []).map((p, i) => (
+                    <tr key={p.user_id} className={`border-t border-border/50 ${i % 2 === 0 ? "bg-white" : "bg-panel/30"}`} data-testid={`replen-scorecard-row-${i}`}>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span className="inline-flex items-center bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{p.user_name}</span>
+                        <span className="ml-2 text-[11px] text-muted">{(p.stores || []).length} store{(p.stores || []).length === 1 ? "" : "s"}</span>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtNum(p.assigned_lines)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums font-bold text-emerald-700">{fmtNum(p.done_lines)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{p.missed_lines > 0 ? <span className="text-rose-700 font-semibold">{fmtNum(p.missed_lines)}</span> : fmtNum(0)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        <span className={`inline-flex items-center font-bold px-2 py-0.5 rounded-full ${p.fulfilment_pct >= 80 ? "bg-emerald-100 text-emerald-900" : p.fulfilment_pct >= 50 ? "bg-amber-100 text-amber-900" : "bg-rose-100 text-rose-900"}`}>{Number(p.fulfilment_pct).toFixed(1)}%</span>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtNum(p.units_picked)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{p.missed_sor_units > 0 ? <span className="text-rose-700">{Number(p.missed_sor_units).toFixed(1)}</span> : "0"}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{p.over_pick_units > 0 ? <span className="text-amber-700 font-semibold">{fmtNum(p.over_pick_units)}</span> : fmtNum(0)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
