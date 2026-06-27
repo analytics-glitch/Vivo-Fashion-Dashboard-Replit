@@ -176,6 +176,11 @@ _LAST_FABRIC_SHEET_EXTRACT = None
 # Guards the production tracker (Odoo DPS buying & manufacturing orders) sync to
 # once per 30 minutes even though main() runs every 60s.
 _LAST_PRODUCTION_SYNC = None
+# Guards the MO fabric-consumption extract (extract_mo_fabric_consumption.py —
+# Done DPS manufacturing-order fabric usage feeding the "Avg metres per garment"
+# KPI) to once per 30 minutes even though main() runs every 60s. None on boot so
+# a fresh prod DB bootstraps on the first cycle.
+_LAST_MO_FABRIC_CONSUMPTION = None
 # Module-level guard so attendance syncs at most once per hour even though main()
 # runs every 60s. None on boot so the first cycle after a (re)start refreshes
 # immediately. Persists for the lifetime of the process.
@@ -1278,6 +1283,52 @@ def main():
             log.info("✅ Production tracker sync complete")
         except Exception as e:
             log.error("Production tracker sync error: %s", e)
+
+    # MO fabric-consumption extract — feeds the "Avg metres per garment" KPI on the
+    # Fabric Overview (mo_fabric_consumption table). It reads Done DPS manufacturing
+    # orders from Odoo (main-fabric components only). Production runs on a SEPARATE
+    # DB that never ran extract_mo_fabric_consumption.py, so the table starts empty
+    # and the KPI shows "—" until this runs. We bootstrap immediately when the table
+    # is empty (fresh prod DB), then refresh EVERY 30 MINUTES on the same cadence as
+    # the production tracker (both derive from the same DPS/MO documents). The
+    # extract upserts on (odoo_mo_id, component_id) over a trailing window, so
+    # re-running never duplicates and recently-closed MOs self-correct. The table is
+    # created by the extract itself; we skip if it is missing and the extract creates
+    # it on its first run (a later cycle picks up the count).
+    global _LAST_MO_FABRIC_CONSUMPTION
+    mo_fab_empty = False
+    try:
+        cur.execute("SELECT to_regclass('public.mo_fabric_consumption')")
+        if cur.fetchone()[0] is None:
+            mo_fab_empty = True
+        else:
+            cur.execute("SELECT COUNT(*) FROM mo_fabric_consumption")
+            mo_fab_empty = cur.fetchone()[0] == 0
+        conn.commit()
+    except Exception as e:
+        log.error("MO fabric-consumption presence check error: %s", e)
+        conn.rollback()
+    mo_fab_due = (
+        _LAST_MO_FABRIC_CONSUMPTION is None
+        or (now_utc - _LAST_MO_FABRIC_CONSUMPTION).total_seconds() >= 1800
+    )
+    if mo_fab_empty or mo_fab_due:
+        # Stamp the attempt time up front so a transient failure waits a cycle
+        # (when still empty, the mo_fab_empty branch retries next cycle).
+        _LAST_MO_FABRIC_CONSUMPTION = now_utc
+        try:
+            import subprocess, sys
+
+            log.info(
+                "Running MO fabric-consumption extract (bootstrap=%s)...", mo_fab_empty
+            )
+            subprocess.run(
+                [sys.executable, "/home/runner/workspace/extract_mo_fabric_consumption.py"],
+                check=True,
+            )
+            log.info("✅ MO fabric-consumption extract complete")
+        except Exception as e:
+            log.error("MO fabric-consumption extract error: %s", e)
 
     # Product image extract — feeds the /gallery thumbnails (product_images +
     # product_image_map: base64 512px photos keyed by Odoo template, plus a

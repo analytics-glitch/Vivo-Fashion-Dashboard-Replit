@@ -704,6 +704,7 @@ const FX={
   avgCostMetrePurchases:'Avg cost / metre (purchases) = Σ(received qty × unit price) ÷ Σ(received metres) across all non-cancelled POs (full history), using received quantity. Shows "—" if any received fabric is missing its kg→metre conversion. Per supplier below.',
   consumedToday:'Consumed today = fabric used today (OUT moves) − fabric returned from production. Shown in the selected unit (metres or kg).',
   consumed30d:'Consumed (30 days) = OUT moves − production returns over the last 30 days. Shown in the selected unit (metres or kg).',
+  metresPerGarment:'Avg metres / garment = total main-fabric metres consumed ÷ total garments produced, across Done DPS manufacturing orders completed in the last 90 days. Fabric kg is converted to metres via each fabric\u2019s kg-per-metre. An MO is counted only if all its fabric is convertible and it produced at least one garment.',
   monthsCover:'Months of cover = stock on hand (kg) ÷ average monthly consumption (kg), using a 6-month average run-rate with the current month projected to a full month. Consumption is net of production returns (fabric only).',
   deadStock:'Dead stock = value of fabric parked in the Dead/Stock location (KES).',
   deadPct:'% of value = dead-stock value ÷ total fabric value.',
@@ -1849,19 +1850,21 @@ let ovCache=null;
 async function loadOverview(){
   loadColorMix();   // colour breakdown is fetched independently (own date window)
   try{
-    const [d,cat,split]=await Promise.all([
+    const [d,cat,split,mpg]=await Promise.all([
       apiFetch('/api/fabric/summary?location='+encodeURIComponent(loc())),
       apiFetch('/api/fabric/by-category?location='+encodeURIComponent(loc())),
       apiFetch('/api/fabric/attribute-split?location='+encodeURIComponent(loc())),
+      // Auxiliary KPI — never let a failure break the rest of the overview.
+      apiFetch('/api/fabric/metres-per-garment').catch(()=>null),
     ]);
-    ovCache={d,cat,split};
+    ovCache={d,cat,split,mpg};
     renderOverviewCached();
     document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString();
   }catch(e){showErr('kpi-cards',e);['category-bars','split-print','split-structure'].forEach(id=>{const el=document.getElementById(id);if(el&&el.querySelector('.loading'))el.innerHTML='';});}
 }
 function renderOverviewCached(){
   if(!ovCache)return;
-  renderKpis(ovCache.d);
+  renderKpis(ovCache.d,ovCache.mpg);
   renderCategories(ovCache.cat);
   renderPrintDonut(ovCache.split.plain_print);
   renderStructure('split-structure',ovCache.split.structure,FX.structureValue);
@@ -1974,7 +1977,7 @@ function renderColorMerged(d){
     </tr>`;
   }).join('')+'</tbody></table></div>';
 }
-function renderKpis(d){
+function renderKpis(d,mpg){
   // Total fabric value = stock value for the SELECTED scope (All = RMAT + Dead).
   const totalVal=d.fabric_stock_value||0;
   // Dead-stock % uses the stable RMAT + Dead grand total so it doesn't swing with scope.
@@ -2017,6 +2020,9 @@ function renderKpis(d){
    <div class="kpi"><span class="eyebrow">Avg cost / metre (purchases)</span><p class="kpi-value"${fx(FX.avgCostMetrePurchases)}>${acpmFmt(acpmP,acpmPInc)}</p><p class="kpi-sub">${acpmPInc?'incomplete &middot; missing kg/m':'received &middot; all POs'}</p></div>
    <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.consumed30d)}>${fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
+   ${(()=>{const v=(mpg&&mpg.metres_per_garment!=null)?mpg.metres_per_garment:null;
+     const sub=(mpg&&mpg.mos)?('rolling 90d &middot; '+fmt(mpg.mos)+' Done-DPS MOs'):'rolling 90d &middot; Done-DPS';
+     return `<div class="kpi"><span class="eyebrow">Avg metres / garment</span><p class="kpi-value"${fx(FX.metresPerGarment)}>${v!=null?v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+' m':'&mdash;'}</p><p class="kpi-sub">${sub}</p></div>`;})()}
    <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}"${fx(FX.monthsCover)}>${cover!=null?coverFmt(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>
    <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger"${fx(FX.deadStock)}>${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub"><span${fx(FX.deadPct)}>${deadPct.toFixed(0)}% of value</span></p></div>`;
 }

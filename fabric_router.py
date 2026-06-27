@@ -521,6 +521,77 @@ def summary(location: str = Query(default="RMAT/Stock"),
             **cover,
         }
 
+# ── Avg metres of fabric consumed per garment ──────────────
+# Derived from Done DPS manufacturing orders (mo_fabric_consumption, populated by
+# extract_mo_fabric_consumption.py). Metric = Σ(main-fabric metres consumed across
+# qualifying MOs) ÷ Σ(garments produced across those MOs), rolling last `days`
+# (default 90) by MO completion date. kg→metres via each fabric SKU's
+# kg_per_mtr_eff (metres = kg / kg_per_mtr_eff; consumed qty in grams is /1000
+# first; a UoM already in metres is used as-is). To avoid silently distorting the
+# average, an MO is counted only when EVERY one of its main-fabric components is
+# convertible (and it produced > 0 garments); MOs with any unconvertible fabric
+# are excluded and reported separately.
+@fabric_router.get("/api/fabric/metres-per-garment")
+def metres_per_garment(days: int = Query(default=90)):
+    days = max(1, min(int(days or 90), 730))
+    with _get_conn() as conn:
+        rows = q(conn, """
+            SELECT c.odoo_mo_id,
+                   c.produced_qty,
+                   c.consumed_qty,
+                   lower(coalesce(c.uom,'')) AS uom,
+                   p.kg_per_mtr_eff AS kpm
+            FROM mo_fabric_consumption c
+            LEFT JOIN raw_fabric_products p ON p.id = c.component_id
+            WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
+        """, [days])
+
+    KG_UOMS = {"kg", "g"}
+    M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
+    mos = {}
+    for r in rows:
+        d = mos.setdefault(
+            r["odoo_mo_id"],
+            {"produced": float(r["produced_qty"] or 0), "metres": 0.0,
+             "bad": False, "has_fabric": False},
+        )
+        d["has_fabric"] = True
+        qty = float(r["consumed_qty"] or 0)
+        u = r["uom"]
+        kpm = r["kpm"]
+        if u in M_UOMS:
+            d["metres"] += qty
+        elif u in KG_UOMS and kpm and float(kpm) > 0:
+            kg = qty / 1000.0 if u == "g" else qty
+            d["metres"] += kg / float(kpm)
+        else:
+            d["bad"] = True  # no usable kg→metre conversion (or unknown UoM)
+
+    total_metres = 0.0
+    total_garments = 0.0
+    n_mos = 0
+    excluded = 0
+    for d in mos.values():
+        if d["produced"] <= 0 or not d["has_fabric"]:
+            continue
+        if d["bad"]:
+            excluded += 1
+            continue
+        total_metres += d["metres"]
+        total_garments += d["produced"]
+        n_mos += 1
+
+    value = round(total_metres / total_garments, 2) if total_garments > 0 else None
+    return {
+        "metres_per_garment": value,
+        "total_metres": round(total_metres, 1),
+        "garments": round(total_garments),
+        "mos": n_mos,
+        "mos_excluded_missing_conversion": excluded,
+        "window_days": days,
+    }
+
+
 # ── Stock by category ──────────────────────────────────────
 @fabric_router.get("/api/fabric/by-category")
 def by_category(location: str = Query(default="RMAT/Stock"),
