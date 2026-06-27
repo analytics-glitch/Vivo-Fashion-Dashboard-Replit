@@ -7924,6 +7924,367 @@ def analytics_new_styles(
         ORDER BY ns.style_launch_date DESC, units_sold_launch DESC
         LIMIT """ + str(int(limit)))
 
+
+def _norm_ppf(p):
+    """Acklam's rational approximation of the inverse standard-normal CDF.
+    Pure-stdlib (no scipy in this env). Good to ~1e-9 over (0,1)."""
+    import math as _m
+    if p <= 0.0:
+        return -8.0
+    if p >= 1.0:
+        return 8.0
+    a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00]
+    b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01]
+    c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00]
+    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+         3.754408661907416e+00]
+    plow, phigh = 0.02425, 1 - 0.02425
+    if p < plow:
+        q = _m.sqrt(-2 * _m.log(p))
+        return (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / \
+               ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1)
+    if p <= phigh:
+        q = p - 0.5
+        r = q*q
+        return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q / \
+               (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1)
+    q = _m.sqrt(-2 * _m.log(1 - p))
+    return -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / \
+            ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1)
+
+
+def _gamma_quantile(shape, rate, p):
+    """Wilson-Hilferty quantile of a Gamma(shape, rate) variate (mean=shape/rate).
+    Used for the demand-rate posterior band (p10/p50/p90 + the critical fractile)
+    without a scipy dependency."""
+    import math as _m
+    if shape <= 0 or rate <= 0:
+        return 0.0
+    z = _norm_ppf(p)
+    v = 1.0 - 1.0/(9.0*shape) + z*_m.sqrt(1.0/(9.0*shape))
+    return max(0.0, (shape/rate) * (v**3))
+
+
+@app.get("/api/analytics/buy-candidates")
+def analytics_buy_candidates(
+    lead_weeks:       int = Query(default=6),
+    cover_weeks:      int = Query(default=8),
+    confidence_floor: int = Query(default=30),
+    aged_days:        int = Query(default=60),
+    limit:            int = Query(default=300),
+):
+    """Phase-1 buy-decision engine for the Re-Order / Buying page.
+
+    Universe = every MERCHANDISE style with demand in the last 56 days (NOT just
+    new launches): a 95-day-old style selling 679 units must be able to outrank
+    an 8-day-old style selling 2. Per style we estimate a *posterior* weekly
+    demand rate (Gamma-Poisson shrinkage toward the category-median rate, so
+    small-n noise collapses to the category and proven winners barely move),
+    report a p10/p50/p90 band, size the buy at the critical fractile
+    Q* = Cu/(Cu+Co) (high-margin winners buy deep, thin/noisy styles shallow or
+    skip), net it against on-hand + warehouse + WIP, gate on a confidence floor
+    and on aged stock held elsewhere, and rank by OPPORTUNITY VALUE
+    (margin x demand) — never by raw SOR%.
+
+    HARD CONSTRAINT: canonical SOR (units_sold / (units_sold + store_stock)) is
+    reported only, never redefined.
+
+    Censored-demand correction is APPROXIMATE: no per-day stock-on-hand history
+    is retained in this DB, so stock-out days are inferred from recent at-risk
+    snapshots + current sub-1-week cover. Labelled as such in the response.
+    """
+    import math as _m
+    from statistics import median as _median
+    from datetime import date as _date, datetime as _dt
+
+    merch_in = ",".join("'" + str(s).replace("'", "''") + "'" for s in MERCH_SUBCATEGORIES)
+    aged_n = max(1, int(aged_days))
+
+    rows = run_query("""
+        WITH base AS (
+            SELECT p.style_name,
+                MAX(p.brand) AS brand,
+                MAX(p.product_type) AS subcategory,
+                MIN(p.style_launch_date) AS style_launch_date,
+                AVG(NULLIF(p.price, 0)) AS price,
+                AVG(NULLIF(p.cost, 0))  AS cost
+            FROM all_products_clean p
+            WHERE p.style_name IS NOT NULL
+              AND p.product_type IN (""" + merch_in + """)
+            GROUP BY p.style_name
+        ),
+        sales AS (
+            SELECT p.style_name,
+                COALESCE(SUM(s.net_quantity), 0) AS lifetime_units,
+                COALESCE(ROUND(SUM(s.net_sales_kes::numeric)), 0) AS lifetime_sales,
+                MIN(s.sale_date) AS first_sale,
+                COALESCE(SUM(CASE WHEN s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days'
+                                  THEN s.net_quantity ELSE 0 END), 0) AS u28,
+                COALESCE(SUM(CASE WHEN s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
+                                  THEN s.net_quantity ELSE 0 END), 0) AS u56
+            FROM all_products_clean p
+            JOIN all_sales s ON s.variant_sku = p.sku AND s.sale_kind IN ('sale','order')
+            WHERE p.style_name IN (SELECT style_name FROM base)
+            GROUP BY p.style_name
+        ),
+        stock AS (
+            SELECT p.style_name,
+                SUM(CASE WHEN i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+                         THEN i.available ELSE 0 END) AS store_stock,
+                SUM(CASE WHEN i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+                         THEN i.available ELSE 0 END) AS warehouse_stock
+            FROM all_products_clean p
+            JOIN all_inventory i ON i.sku = p.sku
+            WHERE p.style_name IN (SELECT style_name FROM base)
+            GROUP BY p.style_name
+        ),
+        wip AS (
+            SELECT po.style_name, SUM(b.qty_here) AS wip_units
+            FROM production_orders po
+            JOIN v_stage_balances b ON b.order_ref = po.order_ref
+            WHERE b.stage <> 'warehouse' AND po.style_name IS NOT NULL
+            GROUP BY po.style_name
+        ),
+        store_last AS (
+            SELECT pos_location_name AS pos, variant_sku AS sku, MAX(sale_date) AS last_sold
+            FROM all_sales
+            WHERE sale_kind IN ('sale','order')
+            GROUP BY pos_location_name, variant_sku
+        ),
+        aged AS (
+            SELECT p.style_name, SUM(i.available) AS aged_units
+            FROM all_inventory i
+            JOIN all_products_clean p ON p.sku = i.sku
+            LEFT JOIN store_last sl ON sl.pos = i.pos_location_name AND sl.sku = i.sku
+            WHERE i.available > 0
+              AND i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+              AND (sl.last_sold IS NULL
+                   OR sl.last_sold::date < CURRENT_DATE - (""" + str(aged_n) + """ || ' days')::interval)
+            GROUP BY p.style_name
+        )
+        SELECT b.style_name, b.brand, b.subcategory, b.style_launch_date,
+            b.price, b.cost,
+            COALESCE(sa.lifetime_units, 0) AS lifetime_units,
+            COALESCE(sa.lifetime_sales, 0) AS lifetime_sales,
+            sa.first_sale,
+            COALESCE(sa.u28, 0) AS u28,
+            COALESCE(sa.u56, 0) AS u56,
+            COALESCE(st.store_stock, 0) AS store_stock,
+            COALESCE(st.warehouse_stock, 0) AS warehouse_stock,
+            COALESCE(w.wip_units, 0) AS wip_units,
+            COALESCE(ag.aged_units, 0) AS aged_units
+        FROM base b
+        LEFT JOIN sales sa USING (style_name)
+        LEFT JOIN stock st USING (style_name)
+        LEFT JOIN wip   w  USING (style_name)
+        LEFT JOIN aged  ag USING (style_name)
+        WHERE COALESCE(sa.u56, 0) > 0
+    """) or []
+
+    # Censoring signal (approx): styles recently flagged at-risk (low weeks-of-
+    # cover) in the weekly stockout snapshot. No daily SOH history exists, so this
+    # plus sub-1-week current cover is our right-censoring proxy.
+    try:
+        atr = _users_exec(
+            "SELECT DISTINCT style_name FROM stockout_snapshots "
+            "WHERE at_risk = true AND snapshot_date >= CURRENT_DATE - 21",
+            fetch=True) or []
+        at_risk = {r.get("style_name") for r in atr if r.get("style_name")}
+    except Exception:
+        at_risk = set()
+
+    today = _date.today()
+
+    def _weeks_live(r):
+        for k in ("first_sale", "style_launch_date"):
+            v = r.get(k)
+            if v:
+                try:
+                    d = _dt.fromisoformat(str(v)[:10]).date()
+                    return max(1.0, (today - d).days / 7.0)
+                except Exception:
+                    pass
+        return 8.0
+
+    # Category prior = median weekly rate (u56/8) across styles in the same
+    # subcategory; global median as the fallback.
+    cat_obs, all_obs = {}, []
+    for r in rows:
+        wk = float(r.get("u56") or 0) / 8.0
+        if wk > 0:
+            cat_obs.setdefault(r.get("subcategory") or "_", []).append(wk)
+            all_obs.append(wk)
+    cat_prior = {k: _median(v) for k, v in cat_obs.items() if v}
+    g_prior = _median(all_obs) if all_obs else 0.5
+
+    K = 3.0          # prior strength, in weeks of pseudo-observation
+    HOLD_FRAC = 0.25 # Co = unit_cost x (holding + markdown + cash) over the horizon
+    LEAD = max(0, int(lead_weeks))
+    COVER = max(1, int(cover_weeks))
+    H = LEAD + COVER
+    floor = max(0, int(confidence_floor))
+
+    out = []
+    for r in rows:
+        sub = r.get("subcategory") or "_"
+        prior = cat_prior.get(sub, g_prior) or g_prior
+        u28 = float(r.get("u28") or 0)
+        u56 = float(r.get("u56") or 0)
+        lifetime = float(r.get("lifetime_units") or 0)
+        wlive = _weeks_live(r)
+        exposure = min(4.0, max(1.0, wlive))
+        a_post = prior * K + u28
+        b_post = K + exposure
+        rate = (a_post / b_post) if b_post > 0 else 0.0  # posterior weekly mean
+
+        store = float(r.get("store_stock") or 0)
+        wh = float(r.get("warehouse_stock") or 0)
+        wip = float(r.get("wip_units") or 0)
+        aged = float(r.get("aged_units") or 0)
+        net_pos = store + wh + wip
+
+        cover_now = (store / rate) if rate > 0 else 999.0
+        censored = (r.get("style_name") in at_risk) or (rate > 0 and cover_now < 1.0)
+        cfac = 1.3 if censored else 1.0
+
+        price = float(r.get("price") or 0)
+        cost = float(r.get("cost") or 0)
+        if price > 0 and 0 < cost < price:
+            margin_kes, cost_eff = price - cost, cost
+        elif price > 0:
+            margin_kes, cost_eff = price * 0.5, price * 0.5
+        else:
+            margin_kes, cost_eff = 0.0, 0.0
+
+        Cu = margin_kes
+        Co = cost_eff * HOLD_FRAC
+        qstar = (Cu / (Cu + Co)) if (Cu + Co) > 0 else 0.7
+        qstar = min(0.95, max(0.5, qstar))
+
+        p10 = _gamma_quantile(a_post, b_post, 0.10) * H * cfac
+        p50 = _gamma_quantile(a_post, b_post, 0.50) * H * cfac
+        p90 = _gamma_quantile(a_post, b_post, 0.90) * H * cfac
+        target = _gamma_quantile(a_post, b_post, qstar) * H * cfac
+
+        rec = max(0, int(round(target - net_pos)))
+        eligible = lifetime >= floor
+        gate = None
+        if not eligible:
+            rec = 0
+            gate = "below_confidence_floor"
+        # Advisory only (store_stock already nets these dead units out of the
+        # buy): flag when there is an actual cut to make AND the aged stock is a
+        # material share of on-hand, i.e. redistribution could offset the re-cut.
+        aged_block = bool(rec > 0 and aged >= 10 and aged >= 0.25 * store)
+        if eligible and aged_block:
+            gate = "aged_stock_elsewhere"
+
+        opp = margin_kes * rate * cfac
+        opportunity_value = int(round(opp * COVER))
+        exp_margin = int(round(margin_kes * p50))
+        inv_val = cost_eff * max(net_pos, 1.0)
+        gmroi = round(min(99.0, (margin_kes * rate * 52.0) / inv_val), 1) if inv_val > 0 else 0.0
+        payback = None
+        if rec > 0 and margin_kes > 0 and rate > 0:
+            payback = int(round((rec * cost_eff) / (margin_kes * (rate / 7.0))))
+
+        r28, r56 = u28 / 4.0, u56 / 8.0
+        if r56 > 0 and r28 >= r56 * 1.15:
+            trend = "accelerating"
+        elif r56 > 0 and r28 <= r56 * 0.85:
+            trend = "decelerating"
+        else:
+            trend = "stable"
+
+        is_new = wlive <= (90.0 / 7.0)
+        sor = round(100.0 * lifetime / (lifetime + store), 1) if (lifetime + store) > 0 else 0.0
+        conf = "High" if lifetime >= 200 else ("Medium" if eligible else "Low")
+
+        d_lead = p50 * (LEAD / float(H)) if H > 0 else 0.0
+        lost_units = max(0.0, d_lead - net_pos)
+        at_risk_row = int(round(lost_units * (price if price > 0 else cost_eff * 2)))
+
+        out.append({
+            "style_name": r.get("style_name"),
+            "brand": r.get("brand"),
+            "subcategory": r.get("subcategory"),
+            "product_type": r.get("subcategory"),
+            "style_launch_date": r.get("style_launch_date"),
+            "bucket": "newness" if is_new else "core",
+            "is_new": is_new,
+            "eligible": eligible,
+            "gate": gate,
+            "confidence": conf,
+            "lifetime_units": int(lifetime),
+            "lifetime_sales": float(r.get("lifetime_sales") or 0),
+            "u28": int(u28),
+            "u56": int(u56),
+            "weekly_rate": round(rate, 2),
+            "censored": bool(censored),
+            "trend": trend,
+            "sor_percent": sor,
+            "store_stock": int(store),
+            "warehouse_stock": int(wh),
+            "wip_units": int(wip),
+            "open_po": int(wip),
+            "net_position": int(net_pos),
+            "aged_units": int(aged),
+            "aged_block": aged_block,
+            "demand_p10": int(round(p10)),
+            "demand_p50": int(round(p50)),
+            "demand_p90": int(round(p90)),
+            "qstar": round(qstar, 2),
+            "recommended_buy": rec,
+            "margin_per_unit": int(round(margin_kes)),
+            "expected_margin_kes": exp_margin,
+            "opportunity_value": opportunity_value,
+            "gmroi": gmroi,
+            "payback_days": payback,
+            "kes_committed": int(round(rec * cost_eff)),
+            "at_risk_kes": at_risk_row,
+            "price": int(round(price)),
+            "cost": int(round(cost_eff)),
+        })
+
+    out.sort(key=lambda x: (0 if x["eligible"] else 1, -(x["opportunity_value"] or 0)))
+    for i, x in enumerate(out):
+        x["rank"] = i + 1
+    out = out[:max(1, int(limit))]
+
+    elig = [x for x in out if x["eligible"]]
+    rec_value = sum(x["kes_committed"] for x in elig)
+    tot_w = sum(x["kes_committed"] for x in elig)
+    if tot_w > 0:
+        blended_gmroi = round(sum(x["gmroi"] * x["kes_committed"] for x in elig) / tot_w, 1)
+    elif elig:
+        blended_gmroi = round(sum(x["gmroi"] for x in elig) / len(elig), 1)
+    else:
+        blended_gmroi = 0.0
+
+    summary = {
+        "candidates": len(out),
+        "eligible": len(elig),
+        "watch": len(out) - len(elig),
+        "recommended_buy_value_kes": int(rec_value),
+        "at_risk_sor_kes": int(round(sum(x["at_risk_kes"] for x in elig))),
+        "blended_gmroi": blended_gmroi,
+        "buy_units_total": int(sum(x["recommended_buy"] for x in elig)),
+        "lead_weeks": LEAD,
+        "cover_weeks": COVER,
+        "horizon_weeks": H,
+        "confidence_floor": floor,
+        "aged_days": aged_n,
+        "censored_note": ("Censored-demand correction is approximate: no per-day "
+                          "stock-on-hand history is retained, so stock-out days are "
+                          "inferred from recent at-risk snapshots and current "
+                          "sub-1-week cover."),
+    }
+    return {"summary": summary, "candidates": out}
+
+
 @app.get("/api/analytics/aged-stock")
 def analytics_aged_stock(
     min_days_since_sale: int = Query(default=60),
