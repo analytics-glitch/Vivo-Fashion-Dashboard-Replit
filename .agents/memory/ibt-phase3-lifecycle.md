@@ -14,7 +14,7 @@ realisation feedback loop on top of the Phase-1 global solve.
   EXCLUDED from the denominator. Phase 3 must never touch this formula.
 - **In-transit ownership = the HUB.** A unit that has been scanned out but not yet
   scanned in belongs to neither store, so it sits in NEITHER store's SOR while on the
-  road. (Replenishment's own in-transit quarantine is separate — Task #306.)
+  road. (Replenishment keeps its own separate in-transit quarantine.)
 - **Calibration scales the PROJECTION only.** Realised÷dispatched for the latest
   landed run feeds a rolling-median factor (clamp 0.25–2.0, `app_config` key
   `ibt_proj_calibration`) that tempers the FORWARD-projected `sor_uplift_pp` /
@@ -30,10 +30,17 @@ realisation feedback loop on top of the Phase-1 global solve.
 - **Shared `transfer_reservations`** (source ibt|replenishment): scan-out writes the
   donor hold as `consumed` immediately. It's the coordination point so a reserved donor
   unit is netted out of the next solve.
-- **Action-time donor re-validation:** scan-out re-checks live on-hand − active
+- **Action-time donor re-validation:** scan-out re-checks live on-hand − in-flight
   reservations; if a POS sale took the stock it returns **409 donor_stock_unavailable**
   (the SALE WINS). A lookup failure (-1 sentinel) is treated as unknown and allowed with
   a flag — never block a real move on an infra blip.
+- **Reservation status counts BOTH `active` AND `consumed` (gotcha):** scan-out writes
+  the donor hold as `consumed` immediately, so `_ibt_reserved_units` MUST subtract
+  `active`+`consumed` (not just `active`) — otherwise the hold gives zero protection
+  during the Odoo stock-extract lag and a second scan-out double-dispatches the same
+  unit. Each `consumed` hold carries a bounded `expires_at` (`_IBT_INFLIGHT_HOLD_HOURS`,
+  ~36h) so it stops being subtracted once all_inventory has caught up (no double-penalty)
+  and the nightly sweep releases it; scan-in releases it explicitly on receipt.
 - **Hub routing:** cross-store moves route donor→warehouse hub→dest BY DEFAULT and are
   charged the HONEST two-leg transit in net-CCC. Exception: a named same-mall pair
   (`IBT_SAME_MALL_PAIRS`) ships direct. Bundle carries `via_hub` + a human `route`.

@@ -8847,6 +8847,10 @@ IBT_SAME_MALL_PAIRS = set()      # e.g. {frozenset({"Vivo Sarit", "Shop Zetu Sar
 IBT_SAME_MALL_LEAD_DAYS = 0.5    # same-day walk-over transit when the hub is bypassed
 IBT_FRESHNESS_SLA_MIN   = 30.0   # soft-lock destructive actions past this sync lag (min)
 _IBT_OVERDUE_DAYS       = 7      # an in_transit consignment older than this is overdue
+_IBT_INFLIGHT_HOLD_HOURS = 36   # how long a CONSUMED donor hold keeps netting the unit out
+                                # of availability (covers the Odoo stock-extract lag before
+                                # all_inventory drops the dispatched on-hand); then it stops
+                                # being subtracted and the nightly sweep releases it
 
 # IBT projection calibration (realised/projected, rolling median, clamped). Mirrors
 # the replenishment calibration. The canonical SOR FORMULA is NEVER touched — only
@@ -8951,13 +8955,24 @@ def _ensure_ibt_lifecycle_tables():
 
 
 def _ibt_reserved_units(pos_location, sku):
-    """Sum of ACTIVE soft-reservations on (pos_location, sku) across IBT +
-    Replenishment. Best-effort; 0 on any error or before the ledger exists."""
+    """Sum of IN-FLIGHT soft-reservations on (pos_location, sku) across IBT +
+    Replenishment — both 'active' pre-dispatch HOLDS and 'consumed' dispatched
+    units whose stock has NOT yet been reflected in all_inventory.
+
+    Why count 'consumed' too: scan-out writes a 'consumed' hold immediately, but
+    the donor's all_inventory on-hand only drops once the next Odoo stock extract
+    lands. During that lag the unit has left the shelf yet still shows as on-hand;
+    if we did not subtract it a second scan-out could promise the SAME unit twice
+    (double-dispatch). Each consumed hold carries a bounded expires_at (set at
+    scan-out to cover the extract lag); once it expires we stop subtracting so we
+    do not double-penalise the donor after inventory has caught up, and the
+    nightly sweep releases it. Best-effort; 0 on any error or before the ledger
+    exists."""
     _ensure_ibt_lifecycle_tables()
     try:
         rows = _users_exec(
             "SELECT COALESCE(SUM(qty),0) AS q FROM transfer_reservations "
-            "WHERE pos_location=%s AND sku=%s AND status='active' "
+            "WHERE pos_location=%s AND sku=%s AND status IN ('active','consumed') "
             "AND (expires_at IS NULL OR expires_at > now())",
             (pos_location, sku), fetch=True)
         if rows:
@@ -16921,13 +16936,20 @@ async def ibt_scan_out(request: Request):
          acting.get("name") or acting.get("email")))
 
     # Record the donor reservation as CONSUMED (the unit has physically left the
-    # store) and linked to the consignment for the audit trail. The in_transit
-    # ibt_transfer row already nets the donor out of the next solve.
+    # store) and linked to the consignment for the audit trail. It carries a
+    # bounded expires_at so it keeps netting the unit out of donor availability
+    # during the window before the next Odoo stock extract drops the donor's
+    # all_inventory on-hand (preventing a second scan-out from promising the same
+    # unit twice). After the window it stops being subtracted (so the donor is not
+    # double-penalised once inventory has caught up) and the nightly sweep releases
+    # it. scan-in releases it explicitly the moment the move is received.
     try:
         _users_exec(
             "INSERT INTO transfer_reservations "
-            "(source, pos_location, sku, qty, run_id, consignment_id, status) "
-            "VALUES ('ibt',%s,%s,%s,%s,%s,'consumed')",
+            "(source, pos_location, sku, qty, run_id, consignment_id, status, "
+            " expires_at) "
+            f"VALUES ('ibt',%s,%s,%s,%s,%s,'consumed',"
+            f"now() + interval '{_IBT_INFLIGHT_HOLD_HOURS} hours')",
             (from_store, sku, qty, body.get("run_id"), cid))
     except Exception:
         pass
@@ -16986,7 +17008,7 @@ async def ibt_scan_in(request: Request):
     try:
         _users_exec(
             "UPDATE transfer_reservations SET status='released' "
-            "WHERE consignment_id=%s AND status='active'", (cid,))
+            "WHERE consignment_id=%s AND status IN ('active','consumed')", (cid,))
     except Exception:
         pass
 
