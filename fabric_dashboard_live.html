@@ -2395,8 +2395,24 @@ function sortDq(k){
   else{dqSort.key=k;dqSort.dir=(k==='stock_kg'||k==='usage_kg'||k==='gsm'||k==='width_m')?'desc':'asc';}
   renderDataQuality();
 }
+// Resolve the Location display for a DQ row. Rows with current stock show their
+// real stock location. Usage-only rows (no current stock) fall back to the
+// last-known real stock location (marked historical) or an explicit consumed
+// label, so a bare dash never reads as broken data. Returns {text, historical}.
+function dqLocationParts(r){
+  if(r.location)return {text:r.location, historical:false};
+  if(r.last_known_location)return {text:r.last_known_location+' (last known)', historical:true};
+  return {text:'Consumed — no current stock', historical:true};
+}
 function dqCell(c,r){
   const v=r[c.k];
+  if(c.k==='location'){
+    const lp=dqLocationParts(r);
+    const style=lp.historical
+      ? 'color:var(--muted);font-style:italic;white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;'
+      : 'color:var(--text-sub);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;';
+    return `<td style="${style}" title="${esc(lp.text)}">${esc(lp.text)}</td>`;
+  }
   if(c.k==='name')return `<td style="font-weight:600;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
   if(c.k==='default_code')return `<td class="num" style="font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
   if(c.k==='source'){const s=DQ_SRC[v]||{label:v||'—',cls:'pill-neutral'};return `<td><span class="pill ${s.cls}">${esc(s.label)}</span></td>`;}
@@ -2436,7 +2452,10 @@ function exportDataQuality(btn){
   const rows=dqSortRows(d.items);
   const csv=[DQ_COLS.map(c=>c.label).join(',')]
     .concat(rows.map(r=>DQ_COLS.map(c=>{
-      const v=c.k==='source'?(DQ_SRC[r[c.k]]||{}).label||r[c.k]:r[c.k];
+      let v;
+      if(c.k==='location')v=dqLocationParts(r).text;
+      else if(c.k==='source')v=(DQ_SRC[r[c.k]]||{}).label||r[c.k];
+      else v=r[c.k];
       return JSON.stringify(v??'');
     }).join(',')))
     .join('\n');

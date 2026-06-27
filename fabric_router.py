@@ -1282,6 +1282,15 @@ def missing_kg_per_metre(scope: str = Query(default="main")):
               FROM {EFFECTIVE_MOVES} m
               WHERE {_net_cons_where('m')}
               GROUP BY m.product_id
+            ), last_loc AS (
+              -- Last-known REAL stock location: the destination of the most recent
+              -- move that landed in a recognised fabric-stock location. Used as a
+              -- historical fallback for usage-only rows that have no current stock.
+              SELECT DISTINCT ON (mm.product_id)
+                     mm.product_id, mm.location_to AS last_known_location
+              FROM raw_fabric_moves mm
+              WHERE mm.location_to IN ({", ".join(["%s"] * len(_FABRIC_LOCATIONS))})
+              ORDER BY mm.product_id, mm.date DESC NULLS LAST
             )
             SELECT
               p.id, p.default_code, p.name,
@@ -1289,16 +1298,18 @@ def missing_kg_per_metre(scope: str = Query(default="main")):
               COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') AS fabric_subcategory,
               p.supplier, p.width_m, p.gsm, p.fiber_content, p.kg_per_mtr_src,
               st.locations AS location,
+              ll.last_known_location AS last_known_location,
               ROUND(COALESCE(st.stock_kg,0)::numeric,1) AS stock_kg,
               ROUND(GREATEST(COALESCE(us.usage_kg,0),0)::numeric,1) AS usage_kg,
               (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id) AS last_move
             FROM raw_fabric_products p
             LEFT JOIN stock st ON st.product_id = p.id
             LEFT JOIN usage us ON us.product_id = p.id
+            LEFT JOIN last_loc ll ON ll.product_id = p.id
             WHERE p.kg_per_mtr_eff IS NULL
               AND {_scope_sql(scope)}
               AND (COALESCE(st.stock_kg,0) > 0 OR COALESCE(us.usage_kg,0) > 0.05)
-        """, list(loc_params))
+        """, list(_FABRIC_LOCATIONS) + list(loc_params))
 
         tot_stock = 0.0
         tot_usage = 0.0
