@@ -54,3 +54,14 @@ alerting (email + WhatsApp, degrades gracefully when creds/recipients missing).
   exceeds short timeouts. Diagnosis never blocks a run (failures → INSUFFICIENT_DATA).
 - The agent CANNOT create the Scheduled Deployment or write to prod; the user
   configures the hourly deployment and supplies alert recipients + messaging creds.
+- **First-run auto-seed (fresh prod DB):** a live run (not dry-run/backfill) where
+  `metric_baselines` is effectively empty (`count_points < MIN_HISTORY_POINTS`)
+  widens the FOLD window to ~90d (`fold_days`) so Tier-2 works from day one — but
+  the VALIDATION/report window stays at the normal recent `days`. Tier-1 runs over
+  all fold rows ONLY to build `blocked` (never fold a bad historical day); a Tier-1
+  fail becomes a reported exception / governance / alert ONLY when
+  `period_date >= report_start`. So seeding never emits historical alerts or
+  attempts historical auto-fixes. Summary/window/definitions scope to report_rows.
+  **Why:** prod is a separate, initially-empty DB and the agent can't run a manual
+  prod backfill — without this, Tier-2 stays silent ~10 days. Seed detection is a
+  global count (fold is one batched execute_values = all-or-nothing on a fresh DB).

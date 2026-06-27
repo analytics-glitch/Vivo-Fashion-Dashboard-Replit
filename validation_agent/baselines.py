@@ -44,6 +44,13 @@ def is_promo(d: date) -> bool:
     return d in PROMO
 
 
+def count_points(conn) -> int:
+    """Total rows in metric_baselines — used to detect an un-seeded (fresh) DB."""
+    with db.cursor(conn) as cur:
+        cur.execute("SELECT count(*) AS n FROM metric_baselines")
+        return int(cur.fetchone()["n"])
+
+
 def fold(conn, rows: list[dict], blocked: set) -> int:
     """Upsert validated metric values into metric_baselines (batched).
 

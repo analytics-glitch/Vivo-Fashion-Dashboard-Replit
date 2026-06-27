@@ -82,23 +82,43 @@ def run(days: int, dry_run: bool, evaluate_days: int, backfill_only: bool = Fals
     conn = db.connect(autocommit=True)
     db.ensure_tables(conn)
 
+    # Auto-seed: on a fresh DB the FOLD window widens to ~90d so baselines exist
+    # from day one, but the VALIDATION/report window (Tier-1 exceptions, governance,
+    # alerts) stays at the normal recent window — we never emit historical alerts or
+    # attempt historical auto-fixes just because we seeded.
+    seeded = False
+    fold_days = days
+    if not dry_run and not backfill_only and baselines.count_points(conn) < config.MIN_HISTORY_POINTS:
+        fold_days = max(days, config.BASELINE_WINDOW_DAYS + 1)
+        seeded = True
+        _audit(conn, run_id, dry_run, phase="baseline", event="auto_seed",
+               detail={"reason": "fresh metric_baselines", "fold_days": fold_days,
+                       "report_days": days})
+
     d1 = _today()
-    d0 = d1 - timedelta(days=days - 1)
+    d0 = d1 - timedelta(days=fold_days - 1)        # fold window (wide when seeding)
+    report_start = d1 - timedelta(days=days - 1)   # Tier-1/governance/alert window
     env = "dev" if "localhost" in config.DATABASE_URL or "127.0.0.1" in config.DATABASE_URL else "remote"
 
     rows = compute(conn, d0, d1)
 
+    # Tier-1 runs across the FULL fold window so a bad historical day is blocked from
+    # being folded into the baseline, but only recent-window fails become exceptions.
     blocked = set()
     tier1 = []
     for m in rows:
         if m["entity_type"] not in ("store", "group"):
             continue
         fails = consistency.check_row(m)
+        if not fails:
+            continue
+        blocked.add((m["entity_type"], m["entity"], m["subcategory"], m["period_date"]))
+        if m["period_date"] < report_start:
+            continue
         for f in fails:
             f.update({"entity_type": m["entity_type"], "entity": m["entity"],
                       "subcategory": m["subcategory"], "period_date": m["period_date"]})
             tier1.append(f)
-            blocked.add((m["entity_type"], m["entity"], m["subcategory"], m["period_date"]))
 
     folded = baselines.fold(conn, rows, blocked)
 
@@ -154,16 +174,17 @@ def run(days: int, dry_run: bool, evaluate_days: int, backfill_only: bool = Fals
         elif exc["severity"] == "amber":
             ambers += 1
 
-    n_entities = len({(m["entity_type"], m["entity"], m["period_date"]) for m in rows})
-    definitions = _definition_residuals(rows)
+    report_rows = [m for m in rows if m["period_date"] >= report_start]
+    n_entities = len({(m["entity_type"], m["entity"], m["period_date"]) for m in report_rows})
+    definitions = _definition_residuals(report_rows)
     summary = {
-        "run_id": str(run_id), "env": env, "window": f"{d0} .. {d1}",
+        "run_id": str(run_id), "env": env, "window": f"{report_start} .. {d1}",
         "color": alerting.overall_color(reds, ambers),
         "checks": n_entities, "passed": n_entities - len({
             (e["entity_type"], e["entity"], e["period_date"]) for e in tier1}),
         "tier1": len(tier1), "tier2": len(tier2), "reds": reds, "ambers": ambers,
         "folded": folded, "diagnosed": diagnosed, "definitions": definitions,
-        "red_items": red_items[:25],
+        "seeded": seeded, "red_items": red_items[:25],
     }
 
     alert_res = alerting.send(summary, dry_run)
@@ -203,7 +224,8 @@ def _print_report(summary, tier1, tier2, alert_res, dry_run):
     print(bar)
     print(f"Run            : {summary['run_id']}")
     print(f"Environment    : {summary['env']}")
-    print(f"Window         : {summary['window']}")
+    print(f"Window         : {summary['window']}"
+          + ("   [AUTO-SEED: fresh baselines]" if summary.get("seeded") else ""))
     print(f"Overall status : {summary['color']}")
     print(f"Entity-days    : {summary['checks']}   "
           f"Baseline points folded: {summary['folded']}")
