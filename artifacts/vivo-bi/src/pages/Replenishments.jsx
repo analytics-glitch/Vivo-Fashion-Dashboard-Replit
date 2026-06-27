@@ -54,6 +54,7 @@ const CLASS_LABEL = { A: "A · fast", B: "B · core", C: "C · slow" };
 
 const HELD_REASON = {
   retired: { label: "Retired / EOL", cls: "bg-slate-100 text-slate-700 border-slate-300" },
+  markdown: { label: "Markdown / clearance", cls: "bg-rose-100 text-rose-900 border-rose-300" },
   overstock: { label: "Overstock (WoC > 16)", cls: "bg-amber-100 text-amber-900 border-amber-300" },
   broken_curve: { label: "Broken-curve orphan", cls: "bg-violet-100 text-violet-900 border-violet-300" },
 };
@@ -197,6 +198,24 @@ const Replenishments = () => {
       proj_uplift_units: (r) => Number(r.proj_uplift_units ?? 0),
     });
   }, [liveSort, visibleRows]);
+
+  // Corridor grouping (spec §5): pickers dispatch one geographic corridor at a
+  // time. No corridor data model exists yet (corridor cadence is Phase 3), so we
+  // use country as the dispatch-corridor proxy. Corridors are ordered by total
+  // projected SOR-uplift; within each corridor the active sort/uplift rank is
+  // preserved (we iterate the already-sorted rows).
+  const corridorGroups = useMemo(() => {
+    const map = new Map();
+    for (const r of sortedVisibleRows) {
+      const c = r.country || "—";
+      if (!map.has(c)) map.set(c, { corridor: c, rows: [], uplift: 0, units: 0 });
+      const g = map.get(c);
+      g.rows.push(r);
+      g.uplift += Number(r.proj_uplift_units ?? 0);
+      g.units += Number(r.replenish ?? 0);
+    }
+    return Array.from(map.values()).sort((a, b) => b.uplift - a.uplift);
+  }, [sortedVisibleRows]);
 
   const setActual = (k, v) => setActuals((prev) => ({ ...prev, [k]: v }));
 
@@ -516,7 +535,18 @@ const Replenishments = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedVisibleRows.map((r, idx) => {
+                  {corridorGroups.map((g) => (
+                  <React.Fragment key={`corridor-${g.corridor}`}>
+                    <tr className="bg-[#0f3d24]/[0.06] border-t-2 border-[#0f3d24]/20" data-testid={`replen-corridor-${g.corridor}`}>
+                      <td colSpan={17} className="px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide text-[#0f3d24]">
+                        Corridor · {g.corridor}
+                        <span className="ml-2 font-semibold normal-case text-muted">
+                          {g.rows.length} line{g.rows.length === 1 ? "" : "s"} · {fmtNum(g.units)} units · proj. uplift +{Number(g.uplift).toFixed(1)}
+                        </span>
+                      </td>
+                    </tr>
+                    {g.rows.map((r) => {
+                    const idx = sortedVisibleRows.indexOf(r);
                     const k = rowKey(r);
                     const isSelected = selected.has(k);
                     const clsKey = r.sku_class || "C";

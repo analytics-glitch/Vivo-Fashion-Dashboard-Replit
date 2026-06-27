@@ -11692,6 +11692,18 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
                 "AND i.available > 0 GROUP BY 1,2") or []):
             instock_sizes[(c["pos_location_name"], c["style_name"])] = int(c["n"] or 0)
 
+    # Styles currently flagged for markdown/clearance (spec §3 suppression: do not
+    # replenish stock we are about to discount). Computed once per request and
+    # reused per row. Never raises — a markdown lookup hiccup must not block the
+    # pick list.
+    md_styles = set()
+    try:
+        md_styles = {c.get("style_name") for c in
+                     analytics_markdown_candidates(None).get("candidates", [])
+                     if c.get("style_name")}
+    except Exception:
+        md_styles = set()
+
     marks_all = _replen_marks()
     today = date.today()
     actionable = []
@@ -11731,6 +11743,8 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
         if not released:
             if _is_manually_retired(style):
                 reason = "retired"
+            elif style in md_styles and soh_store > 0:
+                reason = "markdown"
             elif soh_store > 0 and woc > REPLEN_OVERSTOCK_WOC:
                 reason = "overstock"
             elif (instock_sizes.get((pos, style), 9) <= 1
@@ -12084,11 +12098,20 @@ def analytics_replenishment_sor_holdback_override(payload: dict = Body(...),
     action = (payload.get("action") or "release").strip()
     if not pos or not sku or action not in ("release", "suppress"):
         raise HTTPException(status_code=400, detail="pos_location, sku, action required")
+    # Merch policy override — gate server-side to roles that can manage the
+    # replenishment surface (same access as the page itself), not any logged-in
+    # user. Hidden client nav is bypassable; this is the real fence.
     actor = None
+    role = None
     try:
-        actor = (request.state.user or {}).get("email") if request else None
+        u = (request.state.user or {}) if request else {}
+        actor = u.get("email")
+        role = (u.get("role") or "").strip().lower()
     except Exception:
-        actor = None
+        actor, role = None, None
+    if role != "admin" and "replenishments" not in set(_effective_pages_for_role(role)):
+        raise HTTPException(status_code=403,
+                            detail="replenishment management not permitted for this role")
     _users_exec(
         "INSERT INTO replen_holdback_override (pos_location, sku, action, acted_by, acted_at) "
         "VALUES (%s,%s,%s,%s, now()) "
@@ -16419,6 +16442,26 @@ async def post_recommendations_bulk(request: Request):
                     (rt, rk))
                 updated += cur.rowcount
                 continue
+            # Append-only pick-event fact (spec §2 — attributable fulfilment by
+            # picker): record ONLY on a fresh replenish 'done' at the sku grain so
+            # the twin barcode row + page reloads / re-marks never double-count.
+            if rt == "replenish" and stt == "done":
+                parts = (rk or "").split("|", 2)
+                if len(parts) == 3 and parts[1] == "sku" and parts[2]:
+                    cur.execute(
+                        "SELECT status FROM recommendation_actions "
+                        "WHERE rec_type=%s AND rec_key=%s", (rt, rk))
+                    prev = cur.fetchone()
+                    if not (prev and (prev.get("status") == "done")):
+                        cur.execute(
+                            "INSERT INTO fact_pick_event "
+                            "(business_date, pos_location, sku, user_id, user_name, "
+                            " qty_picked, odoo_transfer_id) "
+                            "VALUES ((now() AT TIME ZONE 'Africa/Nairobi')::date, "
+                            " %s,%s,%s,%s,%s,%s)",
+                            (parts[0], parts[2],
+                             (acting.get("user_id") or acting.get("sub")),
+                             by, int(au or 0), (tref or None)))
             cur.execute(
                 "INSERT INTO recommendation_actions "
                 "(rec_type, rec_key, status, reason, actual_units, acted_by, acted_at, transfer_ref) "
