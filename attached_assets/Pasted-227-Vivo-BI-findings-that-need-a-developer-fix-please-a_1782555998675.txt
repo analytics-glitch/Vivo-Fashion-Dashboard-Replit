@@ -1,0 +1,2693 @@
+227 Vivo BI findings that need a developer fix (please action them in order, one issue at a time):
+
+--- Finding 1 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: group:__GROUP__
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 999,523.84   Expected: 1,594,707.95–6,069,622.64
+• Diagnosis: The observed total_sales of KES 999,523.84 falls significantly below the expected lower bound of KES 1,594,707.95, suggesting either a large volume of transactions is missing from the aggregation or a genuine but extreme business downturn. However, the 25 sample rows provided each represent single low-value orders (KES 6,550–7,766), and without a full row count, a breakdown by location/channel, or a comparable prior-period dataset, it is impossible to distinguish between an incomplete data pipeline (e.g., missing source feeds) and a real severe sales drop.
+• Broken identity: outside p1-p99; PoP -84%
+
+Desired outcome: "total_sales" for group:__GROUP__ should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 2 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: group:__GROUP__
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 861,544.95   Expected: 1,374,218.03–5,234,509.87
+• Diagnosis: The observed net_sales of KES 861,544.95 is dramatically below the expected floor of KES 1,374,218.03 (~37% below the p1 threshold), yet the 25 sample rows provided are all individually valid, structurally consistent orders spread across multiple POS locations with no obvious row-level errors. Without the full daily order count, a row-count comparison against a typical trading day, and visibility into whether any locations or sale_kinds are missing from the aggregation, it is impossible to determine whether this is a genuine low-trading day, a partial data load (missing stores/channels), or a pipeline/filter bug that silently dropped rows.
+• Broken identity: outside p1-p99; PoP -84%
+
+Desired outcome: "net_sales" for group:__GROUP__ should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 3 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: group:__GROUP__
+• Period: 2026-06-26
+• Observed: 4,568,212.71   Expected: 5,081,251.52–5,288,649.54
+• Diagnosis: Multiple compounding anomalies are present simultaneously — a null metric name, unresolved entity/subcategory template placeholders ("__GROUP__", "__ALL__"), all product_type fields are null, the observed net_sales (KES 4,568,212.71) is ~13–14% below the expected floor (KES 5,081,251.52), and several sample rows carry negative gross_sales recorded as sale_kind="order" rather than "return" — making it impossible to isolate a single root cause with confidence. The broken identity (net_sales ≠ gross_sales − discounts − returns) is also violated row-by-row (e.g. order 38403: 19,400 − 0 − 0 = 19,400 ≠ 16,724.14), suggesting a systematic tax/VAT stripping issue layered on top of the other problems.
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for group:__GROUP__ should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 4 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Sarit
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 58,000   Expected: 96,760–580,542
+• Diagnosis: Several order IDs appear multiple times in the sample rows (e.g., order_id 38514 appears 3 times, 38501 appears 2 times, 38560 appears 3 times, 38585 appears 2 times, and 38542 appears 2 times), strongly indicating that order line items are being duplicated in the sales aggregation query, which artificially inflates or distorts the row count while the reported total of KES 58,000 falls far below the expected minimum of KES 96,760. Additionally, one row for order_id 38560 carries a negative total_sales_kes of -2,000.0 with returns_kes = 0.0, suggesting a mis-classified return or adjustment that is incorrectly suppressing the total rather than being recorded in the returns field.
+• Broken identity: outside p1-p99; PoP -77%
+
+Desired outcome: "total_sales" for store:Vivo Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 5 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Junction
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 48,350   Expected: 39,055–640,514
+• Diagnosis: Order ID 38545 appears across 7 of the 12 sample rows with different line-item amounts, yet the observed total of KES 48,350 is 79% below the prior-period baseline — strongly suggesting that a large number of order lines belonging to order 38545 (and possibly others) have been dropped or failed to load into the reporting table for 2026-06-27. The most likely root cause is an incomplete ETL/sync for that date, where only a partial set of line items was committed, causing the day's aggregated total to be severely understated.
+• Broken identity: PoP -80%
+
+Desired outcome: "total_sales" for store:Vivo Junction should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 6 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Sarit
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 49,999.99   Expected: 83,413.8–501,751.71
+• Diagnosis: Several order IDs appear multiple times with different line amounts (e.g., order_id 38514 appears three times, 38501 twice, 38560 three times, 38542 twice, and 38585 twice), strongly indicating duplicate order-line rows that are inflating — or in this case, distorting — the aggregated net_sales figure. Additionally, one row for order_id 38560 carries a negative total_sales_kes of -2,000 and a net_sales_kes of -1,724.14 with sale_kind "order" and returns_kes = 0, suggesting a misclassified return or a data-entry error rather than a legitimate reversal recorded through the returns field.
+• Broken identity: outside p1-p99; PoP -77%
+
+Desired outcome: "net_sales" for store:Vivo Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 7 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Moi Avenue
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 57,500   Expected: 30,972.4–421,482.6
+• Diagnosis: The observed total_sales of KES 57,500 for 2026-06-27 is within the expected range (KES 30,972–421,483), yet the period-over-period flag indicates an -81% drop vs. the prior comparable period, suggesting the prior period's sales were roughly KES ~300,000+. The 13 sample rows provided sum to only ~KES 57,500, which matches today's figure, but without the prior period's transaction rows it is impossible to determine whether the prior period total was inflated by a data error (e.g. duplicate rows, mis-posted bulk orders) or whether today's figure represents a genuine sharp drop in trading activity.
+• Broken identity: outside p1-p99; PoP -97%
+
+Desired outcome: "total_sales" for store:Vivo Moi Avenue should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 8 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Junction
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 41,681.04   Expected: 33,668.11–552,398.95
+• Diagnosis: Order 38545 appears across 7 of the 12 sample rows with different line-item amounts, yet these rows share the same order_id — this is a strong indicator that a single multi-line order is being split into individual rows but the order_id is not being de-duplicated correctly at aggregation time, or conversely that only a subset of line items for order 38545 (and possibly other orders) were ingested for this date, causing the day's net_sales total to be severely understated relative to the prior period (PoP -79%). The observed value of KES 41,681.04 falls just above the expected floor of KES 33,668.11 but is ~79% below the prior comparable period, suggesting a significant portion of transactions — likely full orders or entire order batches — are missing from the 2026-06-27 dataset.
+• Broken identity: PoP -80%
+
+Desired outcome: "net_sales" for store:Vivo Junction should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 9 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Mama Ngina St
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 55,600   Expected: 10,352–428,894
+• Diagnosis: Multiple order IDs (e.g., 38513, 38523, 38532, 38567, 38571) appear more than once with identical line amounts, strongly indicating that order rows are being double-counted (or more) due to a fan-out JOIN in the sales aggregation query — this inflates total_sales and likely causes the apparent -82% Period-over-Period drop when compared to an already-inflated prior period, or vice versa. Additionally, two return rows for order 38571 each show returns_kes = 3900.0, suggesting returns are also being duplicated, further distorting the net figure.
+• Broken identity: PoP -88%
+
+Desired outcome: "total_sales" for store:Vivo Mama Ngina St should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 10 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Moi Avenue
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 49,568.97   Expected: 26,700.34–363,347.12
+• Diagnosis: The 13 sample rows provided sum to only ~KES 49,568.97 in net sales, which matches the observed value, but the observed value is flagged as an -81% period-over-period drop — meaning the prior comparable period had roughly KES ~260,800 in net sales. Without access to the full transaction-level data for the prior period (and the complete current-period order list beyond these 13 rows), it is impossible to determine whether the drop stems from missing/unsynced POS orders today, a genuine trading slump (e.g., public holiday, store closure, infrastructure issue), or a data pipeline failure that only partially ingested today's sales.
+• Broken identity: outside p1-p99; PoP -97%
+
+Desired outcome: "net_sales" for store:Vivo Moi Avenue should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 11 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Yaya
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 30,450   Expected: 64,062–324,512.4
+• Diagnosis: Two order IDs (38536 and 38551) each appear twice in the sample rows with different line-item amounts, strongly indicating that individual order line items are being double-counted or that a fan-out join is inflating row counts — yet the aggregated total_sales of KES 30,450 is an implausibly sharp 83% drop below the prior period and sits well outside the p1–p99 range (KES 64,062–324,512), consistent with an incomplete or partially-loaded dataset for 2026-06-27 rather than genuine trading activity. The combination of duplicate order IDs and a near-floor observed value points to a pipeline ingestion fault (e.g. a partial ETL run or a missing data partition for that day).
+• Broken identity: outside p1-p99; PoP -91%
+
+Desired outcome: "total_sales" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 12 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Mama Ngina St
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 47,931.03   Expected: 8,924.14–370,230.61
+• Diagnosis: Multiple order IDs appear more than once in the sample rows with identical line-item values (e.g., order 38513 appears twice, 38523 twice, 38571 three times as orders plus two returns, 38532 four times, 38567 twice), indicating that the underlying query is producing duplicate rows — most likely from a fan-out join between orders and another table (e.g., a products, tags, or fulfilment table). This row-level duplication artificially inflates gross sales while simultaneously over-counting returns, producing an understated net_sales figure that is ~82% below the prior period and outside the expected floor of KES 8,924.
+• Broken identity: PoP -88%
+
+Desired outcome: "net_sales" for store:Vivo Mama Ngina St should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 13 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Yaya
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 26,250   Expected: 55,225.86–280,101.04
+• Diagnosis: Two order IDs appear more than once in the sample rows (order_id 38536 appears twice and order_id 38551 appears twice), strongly indicating that order-level records are being duplicated or split across multiple line items and then summed incorrectly, producing a drastically under-counted net_sales figure of KES 26,250 against an expected range of KES 55,226–280,101. The -83% period-over-period collapse is consistent with a broken ETL pipeline or a JOIN producing fewer rows than expected (e.g. missing product_type due to NULL joins filtering out the bulk of transactions), rather than a genuine trading event.
+• Broken identity: outside p1-p99; PoP -91%
+
+Desired outcome: "net_sales" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 14 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: group:__GROUP__
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 18,250   Expected: 18,535–448,332.65
+• Diagnosis: The observed return_amount of KES 18,250 is an -82% drop versus the prior period and falls below the expected floor of KES 18,535, yet every single sample row provided shows returns_kes = "0.0" — meaning the rows supplied are regular sales orders, not return transactions. Without the actual return-transaction rows (sale_kind = 'return' or equivalent) for 2026-06-27, it is impossible to determine whether the low figure reflects a genuine business slowdown in returns or a data-ingestion failure that dropped return records.
+• Broken identity: outside p1-p99; PoP -82%
+
+Desired outcome: "return_amount" for group:__GROUP__ should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 15 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Village Market
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 52,300   Expected: 68,242–294,627
+• Diagnosis: Several order IDs appear multiple times with different line-item amounts (e.g., order_id 38510 appears 4 times and 38527 appears 5 times), strongly indicating that individual order line items are being ingested as separate rows and summed, yet the total is still far below the expected floor — suggesting a large portion of transactions for 2026-06-27 were never loaded into the table (missing/incomplete ingestion). Additionally, the `product_type` field is NULL across all rows, which points to an upstream data pipeline fault where order data was only partially synced for this date.
+• Broken identity: outside p1-p99
+
+Desired outcome: "total_sales" for store:Vivo Village Market should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 16 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Galleria
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 24,200   Expected: 36,383.5–239,620
+• Diagnosis: Order 38522 appears twice in the sample rows with identical values across all fields (order_id, sale_kind, total_sales_kes, net_sales_kes, gross_sales_kes, quantity), strongly indicating a duplicate record that inflates the row count but — more critically — the observed total of KES 24,200 is still 77% below the prior-period value and falls outside the p1–p99 historical range, suggesting a large portion of transactions for 2026-06-27 are missing from the dataset rather than duplicated. The most likely root cause is an incomplete data ingestion or ETL pipeline failure for Vivo Galleria on that date, resulting in only a handful of orders being loaded instead of the full day's sales.
+• Broken identity: outside p1-p99; PoP -87%
+
+Desired outcome: "total_sales" for store:Vivo Galleria should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 17 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Capital Centre
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 16,250   Expected: 21,064–217,158
+• Diagnosis: The three sample rows sum to only KES 16,250, which matches the observed total, but they represent just 3 orders — far too few to determine whether the sharp -75% period-over-period drop is due to missing/unloaded transaction records or a genuine business disruption (e.g., store closure, system outage, or very low footfall on 2026-06-27). The `product_type` field is NULL across all rows, which may also indicate incomplete data ingestion for that day.
+• Broken identity: outside p1-p99; PoP -90%
+
+Desired outcome: "total_sales" for store:Vivo Capital Centre should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 18 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Village Market
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 45,086.19   Expected: 58,829.32–253,988.82
+• Diagnosis: Several order_ids appear multiple times with different line items (e.g. order 38510 appears 4 times, order 38527 appears 5 times), strongly indicating that the aggregation query is joining across a one-to-many relationship without proper deduplication or grouping, causing order-level rows to be fanned out and inflating the row count while simultaneously under-counting total net sales relative to expectations. Additionally, all rows have a NULL product_type, suggesting a broken or missing join to the product dimension that may be further corrupting the aggregation and causing the observed net_sales of KES 45,086.19 to fall well below the expected minimum of KES 58,829.32.
+• Broken identity: outside p1-p99
+
+Desired outcome: "net_sales" for store:Vivo Village Market should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 19 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Two Rivers
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 8,050   Expected: 27,325–217,860
+• Diagnosis: The observed total sales of KES 8,050 for Vivo Two Rivers on 2026-06-27 is dramatically below the expected range (KES 27,325–217,860), representing an 88% period-over-period drop — but only 2 sample rows are available, accounting for just KES 8,050 in sales. It is impossible to determine from these two rows alone whether the root cause is missing/unsynced transaction records (a data error) or a genuine collapse in store trading (e.g., early closure, system outage, or public holiday).
+• Broken identity: outside p1-p99; PoP -96%
+
+Desired outcome: "total_sales" for store:Vivo Two Rivers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 20 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Imaara
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 13,550   Expected: 25,795–205,131.05
+• Diagnosis: Order 38554 appears three times in the sample rows — once with a suspicious negative total of KES -5,000.0 and twice with positive values (KES 4,700 and KES 2,900), suggesting a corrupted or partially reversed order that was incorrectly re-entered rather than properly voided, artificially suppressing total_sales. Similarly, order 38572 appears twice with different amounts (KES 2,900 and KES 2,500), indicating possible duplicate or split-row data ingestion errors that are distorting the day's aggregate.
+• Broken identity: outside p1-p99; PoP -93%
+
+Desired outcome: "total_sales" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 21 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Nakuru
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 19,400   Expected: 16,611–249,848.5
+• Broken identity: PoP -80%
+
+Desired outcome: "total_sales" for store:Vivo Nakuru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 22 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo City Mall
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 11,000   Expected: 23,256–252,018
+• Diagnosis: Only two rows are present for 2026-06-27 at Vivo City Mall, and both share the exact same order_id ("38491") with identical field values, strongly indicating that a single order has been duplicated rather than representing two distinct transactions. More critically, the observed total_sales of KES 11,000 (2 × 5,500) is ~80% below the expected floor of KES 23,256, which is consistent with a severe data ingestion failure where the vast majority of the day's orders are simply missing from the dataset.
+• Broken identity: outside p1-p99; PoP -80%
+
+Desired outcome: "total_sales" for store:Vivo City Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 23 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Galleria
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 20,862.08   Expected: 31,365.08–206,844.16
+• Diagnosis: Order 38522 appears twice in the sample rows with identical values across all fields (order_id, sale_kind, pos_location_name, total_sales_kes, net_sales_kes, etc.), strongly indicating a duplicate row ingestion rather than two legitimate transactions. However, even after deduplication the observed net_sales of KES 20,862.08 sits well below the expected floor of KES 31,365.08 (a -77% period-over-period drop), suggesting that additional transactions for 2026-06-27 are missing from the dataset — likely due to an incomplete or partial data pipeline load for that date.
+• Broken identity: outside p1-p99; PoP -87%
+
+Desired outcome: "net_sales" for store:Vivo Galleria should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 24 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo TRM
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 29,300   Expected: 20,240–207,500
+• Broken identity: PoP -84%
+
+Desired outcome: "total_sales" for store:Vivo TRM should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 25 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Capital Centre
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 14,008.62   Expected: 18,158.62–187,205.2
+• Broken identity: outside p1-p99; PoP -90%
+
+Desired outcome: "net_sales" for store:Vivo Capital Centre should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 26 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Two Rivers
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 6,939.65   Expected: 23,556.04–188,533.1
+• Diagnosis: Only 2 sample rows are provided, yielding a combined net_sales_kes of ~KES 6,939.65, which matches the observed value — but with just 2 orders totalling 2 items, it is impossible to determine whether this is a genuine slow trading day or whether a large portion of the day's transactions are simply missing from the dataset. The -88% period-over-period drop and the value sitting below the p1 historical floor strongly suggest an incomplete data pull rather than a legitimately quiet day, but the sample is too thin to confirm a specific root cause.
+• Broken identity: outside p1-p99; PoP -96%
+
+Desired outcome: "net_sales" for store:Vivo Two Rivers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 27 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Imaara
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 11,681.03   Expected: 22,237.07–177,385.68
+• Broken identity: outside p1-p99; PoP -93%
+
+Desired outcome: "net_sales" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 28 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Nakuru
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 16,724.14   Expected: 14,319.83–215,386.63
+• Broken identity: PoP -80%
+
+Desired outcome: "net_sales" for store:Vivo Nakuru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 29 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo City Mall
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 9,482.76   Expected: 20,048.28–217,396.49
+• Broken identity: outside p1-p99; PoP -80%
+
+Desired outcome: "net_sales" for store:Vivo City Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 30 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Eldoret
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 22,000   Expected: 24,480–188,774
+• Broken identity: outside p1-p99
+
+Desired outcome: "total_sales" for store:Vivo Eldoret should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 31 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo TRM
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 25,258.62   Expected: 17,448.27–179,392.42
+• Broken identity: PoP -84%
+
+Desired outcome: "net_sales" for store:Vivo TRM should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 32 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Hub
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 25,500   Expected: 27,471–176,659.2
+• Broken identity: outside p1-p99
+
+Desired outcome: "total_sales" for store:Vivo Hub should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 33 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Mama Ngina St
+• Period: 2026-06-26
+• Observed: 396,637.93   Expected: 450,898–469,302
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Mama Ngina St should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 34 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Eldoret
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 18,965.51   Expected: 21,103.45–163,276.89
+• Broken identity: outside p1-p99
+
+Desired outcome: "net_sales" for store:Vivo Eldoret should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 35 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: group:__GROUP__
+• Period: 2026-06-27
+• Observed: 861,544.95   Expected: 573,107.75–596,499.91
+• Diagnosis: Two distinct data errors are visible in the sample rows. First, the metric name is null, indicating a missing or unresolved identifier in the reporting pipeline. Second, and more critically, the broken identity "net_sales = gross_sales - discounts - returns" is violated across multiple rows: for in-store (Vivo) orders, net_sales_kes is consistently ~13.8% lower than gross_sales_kes despite zero discounts and zero returns (e.g., order 38522: gross=6900, net=5948.28, gap=951.72), strongly suggesting that VAT (16% Kenya standard rate) is being stripped from net_sales but not from gross_sales, breaking the expected identity. Additionally, for Online – Shop Zetu orders (e.g., order 7260027486427), both gross_sales_kes and net_sales_kes are set to the VAT-exclusive price (5948.28) while total_sales_kes shows the VAT-inclusive price (6900.0), meaning gross_sales is being populated with the net/ex-VAT figure rather than the gross/VAT-inclusive figure — further distorting the aggregate and pulling the group total well below the expected range of KES 947,324–985,990.
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for group:__GROUP__ should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 36 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo MSA Digo Road
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 5,550   Expected: 6,910.07–181,729.5
+• Broken identity: outside p1-p99; PoP -83%
+
+Desired outcome: "total_sales" for store:Vivo MSA Digo Road should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 37 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Hub
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 21,982.76   Expected: 23,681.89–153,831.7
+• Broken identity: outside p1-p99
+
+Desired outcome: "net_sales" for store:Vivo Hub should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 38 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo MSA Digo Road
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 4,784.48   Expected: 5,957.03–157,056.5
+• Broken identity: outside p1-p99; PoP -83%
+
+Desired outcome: "net_sales" for store:Vivo MSA Digo Road should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 39 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Kigali Heights
+• Period: 2026-06-26
+• Observed: 285,476.81   Expected: 330,125.39–343,599.89
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Kigali Heights should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 40 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Sarit
+• Period: 2026-06-26
+• Observed: 313,793.11   Expected: 356,720–371,280
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 41 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: xsurf_pa_vs_rm_total
+• Entity: cross_surface:products
+• Metric: style_count
+• Period: 2026-06-27
+• Observed: 1,176   Expected: 1,163.42–1,164.58
+• Diagnosis: product-analysis.summary.styles == range-mgmt rows+retired_rows: observed 1,176.00 vs expected 1,164.00 (1.020% gap) under filters date_from= date_to= country=ALL channel=ALL
+• Broken identity: product-analysis.summary.styles == range-mgmt rows+retired_rows
+
+Desired outcome: "style_count" for cross_surface:products should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 42 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Signature Mall
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 18,100   Expected: 10,095.5–119,777
+• Broken identity: outside p1-p99; PoP -92%
+
+Desired outcome: "total_sales" for store:Vivo Signature Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 43 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Signature Mall
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 15,603.45   Expected: 8,703.01–103,256.05
+• Broken identity: outside p1-p99; PoP -92%
+
+Desired outcome: "net_sales" for store:Vivo Signature Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 44 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Junction
+• Period: 2026-06-26
+• Observed: 306,379.32   Expected: 345,156–359,244
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Junction should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 45 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Greenspan
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 16,900   Expected: 6,787.5–161,867.5
+• Broken identity: PoP -81%
+
+Desired outcome: "total_sales" for store:Vivo Greenspan should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 46 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Acacia
+• Period: 2026-06-26
+• Observed: 213,903.29   Expected: 247,357.71–257,453.95
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Acacia should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 47 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Greenspan
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 14,568.97   Expected: 5,851.29–139,920.24
+• Broken identity: PoP -81%
+
+Desired outcome: "net_sales" for store:Vivo Greenspan should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 48 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Yaya
+• Period: 2026-06-26
+• Observed: 322,800.88   Expected: 344,126.02–358,171.98
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 49 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Two Rivers
+• Period: 2026-06-26
+• Observed: 173,793.11   Expected: 197,568–205,632
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Two Rivers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 50 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Village Market
+• Period: 2026-06-26
+• Observed: 206,465.51   Expected: 228,781–238,119
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Village Market should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 51 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Moi Avenue
+• Period: 2026-06-26
+• Observed: 232,573.27   Expected: 253,511.3–263,858.7
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Moi Avenue should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 52 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Galleria
+• Period: 2026-06-26
+• Observed: 221,465.56   Expected: 241,178–251,022
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Galleria should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 53 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo T- Mall
+• Period: 2026-06-26
+• Observed: 142,698.32   Expected: 162,219.4–168,840.6
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo T- Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 54 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Hub
+• Period: 2026-06-26
+• Observed: 129,956.92   Expected: 147,735–153,765
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Hub should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 55 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Capital Centre
+• Period: 2026-06-26
+• Observed: 112,629.32   Expected: 128,037–133,263
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Capital Centre should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 56 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Garden City
+• Period: 2026-06-26
+• Observed: 150,120.54   Expected: 164,287–170,992.6
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Garden City should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 57 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Nakuru
+• Period: 2026-06-26
+• Observed: 109,224.14   Expected: 124,166–129,234
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Nakuru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 58 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Kisumu
+• Period: 2026-06-26
+• Observed: 121,163.82   Expected: 135,583–141,117
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Kisumu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 59 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:The Oasis Mall
+• Period: 2026-06-26
+• Observed: 86,238.71   Expected: 99,726.43–103,796.89
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:The Oasis Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 60 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo City Mall
+• Period: 2026-06-26
+• Observed: 90,517.25   Expected: 102,900–107,100
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo City Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 61 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo MSA Digo Road
+• Period: 2026-06-26
+• Observed: 84,810.37   Expected: 96,412.4–100,347.6
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo MSA Digo Road should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 62 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Kileleshwa
+• Period: 2026-06-26
+• Observed: 77,887.93   Expected: 88,543–92,157
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 63 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo TRM
+• Period: 2026-06-26
+• Observed: 68,616.39   Expected: 78,003.1–81,186.9
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo TRM should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 64 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Signature Mall
+• Period: 2026-06-26
+• Observed: 62,284.49   Expected: 70,805–73,695
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Signature Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 65 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Imaara
+• Period: 2026-06-26
+• Observed: 83,017.25   Expected: 90,326.6–94,013.4
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 66 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Runda
+• Period: 2026-06-26
+• Observed: 122,370.69   Expected: 128,233–133,467
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Runda should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 67 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Eldoret
+• Period: 2026-06-26
+• Observed: 69,137.93   Expected: 75,166–78,234
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Eldoret should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 68 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Village Market
+• Period: 2026-06-27
+• Observed: 82,155.16   Expected: 51,254–53,346
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Village Market should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 69 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Safari Sarit
+• Period: 2026-06-26
+• Observed: 42,758.61   Expected: 48,608–50,592
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Safari Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 70 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Junction
+• Period: 2026-06-27
+• Observed: 41,681.04   Expected: 44,933–46,767
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Junction should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 71 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo T- Mall
+• Period: 2026-06-27
+• Observed: 37,715.52   Expected: 42,875–44,625
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo T- Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 72 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Safari Sarit
+• Metric: total_sales
+• Period: 2026-06-27
+• Observed: 39,400   Expected: 8,821–105,721.5
+• Broken identity: PoP 86%
+
+Desired outcome: "total_sales" for store:Safari Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 73 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Sarit
+• Period: 2026-06-27
+• Observed: 49,999.99   Expected: 41,552–43,248
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 74 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Mama Ngina St
+• Period: 2026-06-27
+• Observed: 37,844.82   Expected: 37,044–38,556
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Mama Ngina St should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 75 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Safari Sarit
+• Metric: net_sales
+• Period: 2026-06-27
+• Observed: 33,965.5   Expected: 7,604.31–91,485.13
+• Broken identity: PoP 86%
+
+Desired outcome: "net_sales" for store:Safari Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 76 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Greenspan
+• Period: 2026-06-26
+• Observed: 32,025.86   Expected: 36,407–37,893
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Greenspan should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 77 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Garden City
+• Period: 2026-06-27
+• Observed: 36,034.49   Expected: 31,752–33,048
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Garden City should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 78 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Hub
+• Period: 2026-06-27
+• Observed: 21,982.76   Expected: 24,990–26,010
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Hub should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 79 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Safari Sarit
+• Period: 2026-06-27
+• Observed: 33,965.5   Expected: 24,304–25,296
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Safari Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 80 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Zoya Sarit
+• Period: 2026-06-26
+• Observed: 19,715.51   Expected: 22,412.6–23,327.4
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Zoya Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 81 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Moi Avenue
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–24,113.2
+• Broken identity: PoP -100%
+
+Desired outcome: "return_amount" for store:Vivo Moi Avenue should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 82 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Garden City
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–26,984
+• Broken identity: PoP -100%
+
+Desired outcome: "return_amount" for store:Vivo Garden City should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 83 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Village Market
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–14,914
+• Broken identity: PoP -100%
+
+Desired outcome: "return_amount" for store:Vivo Village Market should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 84 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo TRM
+• Period: 2026-06-27
+• Observed: 49,353.44   Expected: 20,874–21,726
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo TRM should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 85 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Mama Ngina St
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–17,632
+• Broken identity: PoP -100%
+
+Desired outcome: "return_amount" for store:Vivo Mama Ngina St should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 86 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Nakuru
+• Period: 2026-06-27
+• Observed: 48,448.28   Expected: 19,012–19,788
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Nakuru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 87 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Eldoret
+• Period: 2026-06-27
+• Observed: 28,448.28   Expected: 18,130–18,870
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Eldoret should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 88 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Kisumu
+• Period: 2026-06-27
+• Observed: 28,534.5   Expected: 25,676–26,724
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Kisumu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 89 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Greenspan
+• Period: 2026-06-27
+• Observed: 14,568.97   Expected: 16,562–17,238
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Greenspan should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 90 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Yaya
+• Period: 2026-06-27
+• Observed: 26,250   Expected: 16,170–16,830
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 91 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Meru
+• Period: 2026-06-26
+• Observed: 14,008.61   Expected: 15,925–16,575
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Meru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 92 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Meru
+• Period: 2026-06-27
+• Observed: 12,586.21   Expected: 14,308–14,892
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Meru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 93 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Imaara
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–11,779
+• Broken identity: PoP -100%
+
+Desired outcome: "return_amount" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 94 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Galleria
+• Period: 2026-06-27
+• Observed: 20,862.08   Expected: 13,524–14,076
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Galleria should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 95 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Kileleshwa
+• Period: 2026-06-27
+• Observed: 21,034.49   Expected: 12,152–12,648
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 96 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo TRM
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–15,180
+• Broken identity: PoP -100%
+
+Desired outcome: "return_amount" for store:Vivo TRM should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 97 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Yaya
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–10,586
+• Broken identity: PoP -100%
+
+Desired outcome: "return_amount" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 98 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo City Mall
+• Period: 2026-06-27
+• Observed: 47,068.97   Expected: 10,780–11,220
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo City Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 99 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Moi Avenue
+• Period: 2026-06-27
+• Observed: 49,568.97   Expected: 9,800–10,200
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Moi Avenue should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 100 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Nakuru
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–12,005
+• Broken identity: PoP -100%
+
+Desired outcome: "return_amount" for store:Vivo Nakuru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 101 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Capital Centre
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–14,160
+• Broken identity: PoP -100%
+
+Desired outcome: "return_amount" for store:Vivo Capital Centre should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 102 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Acacia
+• Period: 2026-06-27
+• Observed: 6,581.64   Expected: 7,611.01–7,921.67
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Acacia should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 103 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Eldoret
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–8,880
+• Broken identity: PoP -100%
+
+Desired outcome: "return_amount" for store:Vivo Eldoret should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 104 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Imaara
+• Period: 2026-06-27
+• Observed: 11,681.03   Expected: 7,987–8,313
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 105 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Staff purchases
+• Period: 2026-06-26
+• Observed: 6,637.93   Expected: 7,546–7,854
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Staff purchases should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 106 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Signature Mall
+• Period: 2026-06-27
+• Observed: 15,603.45   Expected: 6,762–7,038
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Signature Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 107 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Hub
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–11,220
+• Broken identity: PoP -100%
+
+Desired outcome: "return_amount" for store:Vivo Hub should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 108 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Capital Centre
+• Period: 2026-06-27
+• Observed: 14,008.62   Expected: 6,419–6,681
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Capital Centre should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 109 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo MSA Digo Road
+• Period: 2026-06-27
+• Observed: 4,784.48   Expected: 5,439–5,661
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo MSA Digo Road should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 110 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo T- Mall
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–10,555.95
+• Broken identity: PoP -100%
+
+Desired outcome: "return_amount" for store:Vivo T- Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 111 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo MSA Digo Road
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–7,919
+• Broken identity: PoP -100%
+
+Desired outcome: "return_amount" for store:Vivo MSA Digo Road should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 112 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: return_amount
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–8,754
+• Broken identity: PoP -100%
+
+Desired outcome: "return_amount" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 113 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_composition
+• Entity: store:Vivo Two Rivers
+• Period: 2026-06-27
+• Observed: 6,939.65   Expected: 2,450–2,550
+• Broken identity: net_sales = gross_sales - discounts - returns
+
+Desired outcome: "the metric" for store:Vivo Two Rivers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 114 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: group:__GROUP__
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.11   Expected: -0.03–0
+• Broken identity: z=-13.0; outside p1-p99; outside IQR fence; PoP -174%
+
+Desired outcome: "net_comp_residual" for group:__GROUP__ should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 115 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: group:__GROUP__
+• Metric: footfall
+• Period: 2026-06-27
+• Observed: 987   Expected: 1,478.66–3,581.67
+• Broken identity: z=-3.9; outside p1-p99; outside IQR fence; PoP -79%
+
+Desired outcome: "footfall" for group:__GROUP__ should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 116 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: group:__GROUP__
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 229   Expected: 386.31–1,681.4
+• Broken identity: outside p1-p99; outside IQR fence; PoP -86%
+
+Desired outcome: "units_sold" for group:__GROUP__ should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 117 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: group:__GROUP__
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 117   Expected: 191.9–657.76
+• Broken identity: z=-3.2; outside p1-p99; outside IQR fence; PoP -84%
+
+Desired outcome: "transactions" for group:__GROUP__ should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 118 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Yaya
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0–0.01
+• Broken identity: z=-47.1; outside p1-p99; outside IQR fence; PoP -2151%
+
+Desired outcome: "net_comp_residual" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 119 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Yaya
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–0.08
+• Broken identity: PoP -100%
+
+Desired outcome: "return_rate" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 120 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Yaya
+• Metric: msi
+• Period: 2026-06-27
+• Observed: 1.5   Expected: 1.51–3.51
+• Broken identity: outside p1-p99
+
+Desired outcome: "msi" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 121 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Yaya
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 6   Expected: 13–74.98
+• Broken identity: outside p1-p99; PoP -93%
+
+Desired outcome: "units_sold" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 122 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Yaya
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 4   Expected: 6.08–28
+• Broken identity: outside p1-p99; PoP -89%
+
+Desired outcome: "transactions" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 123 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Village Market
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.01–0.02
+• Broken identity: z=-24.4; outside p1-p99; outside IQR fence; PoP -411%
+
+Desired outcome: "net_comp_residual" for store:Vivo Village Market should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 124 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Village Market
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–0.12
+• Broken identity: PoP -100%
+
+Desired outcome: "return_rate" for store:Vivo Village Market should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 125 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Two Rivers
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.03–0.02
+• Broken identity: z=-14.8; outside p1-p99
+
+Desired outcome: "net_comp_residual" for store:Vivo Two Rivers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 126 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Two Rivers
+• Metric: msi
+• Period: 2026-06-27
+• Observed: 1   Expected: 1.2–4.12
+• Broken identity: outside p1-p99
+
+Desired outcome: "msi" for store:Vivo Two Rivers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 127 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Two Rivers
+• Metric: abv
+• Period: 2026-06-27
+• Observed: 4,025   Expected: 4,399.4–18,246.25
+• Broken identity: outside p1-p99; outside IQR fence
+
+Desired outcome: "abv" for store:Vivo Two Rivers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 128 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Two Rivers
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 2   Expected: 7.16–50.94
+• Broken identity: outside p1-p99; PoP -93%
+
+Desired outcome: "units_sold" for store:Vivo Two Rivers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 129 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Two Rivers
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 2   Expected: 4.58–23.42
+• Broken identity: outside p1-p99; outside IQR fence; PoP -88%
+
+Desired outcome: "transactions" for store:Vivo Two Rivers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 130 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo TRM
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.03–0.02
+• Broken identity: z=-19.1; outside p1-p99; PoP -392%
+
+Desired outcome: "net_comp_residual" for store:Vivo TRM should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 131 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo TRM
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–0.13
+• Broken identity: PoP -100%
+
+Desired outcome: "return_rate" for store:Vivo TRM should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 132 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo T- Mall
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.05–0.01
+• Broken identity: z=-14.2; outside p1-p99; PoP -186%
+
+Desired outcome: "net_comp_residual" for store:Vivo T- Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 133 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo T- Mall
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–0.09
+• Broken identity: PoP -100%
+
+Desired outcome: "return_rate" for store:Vivo T- Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 134 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Signature Mall
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0–0.01
+• Broken identity: z=-31.0; outside p1-p99
+
+Desired outcome: "net_comp_residual" for store:Vivo Signature Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 135 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Signature Mall
+• Metric: asp
+• Period: 2026-06-27
+• Observed: 6,033.33   Expected: 3,294.56–5,473.5
+• Broken identity: z=4.9; outside p1-p99; outside IQR fence
+
+Desired outcome: "asp" for store:Vivo Signature Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 136 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Signature Mall
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 3   Expected: 2–27
+• Broken identity: outside p1-p99; PoP -95%
+
+Desired outcome: "units_sold" for store:Vivo Signature Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 137 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Signature Mall
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 2   Expected: 1.51–13
+• Broken identity: outside p1-p99; PoP -89%
+
+Desired outcome: "transactions" for store:Vivo Signature Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 138 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Sarit
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0–0.02
+• Broken identity: z=-31.9; outside p1-p99; outside IQR fence
+
+Desired outcome: "net_comp_residual" for store:Vivo Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 139 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Sarit
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 13   Expected: 22.56–142.28
+• Broken identity: outside p1-p99; PoP -82%
+
+Desired outcome: "units_sold" for store:Vivo Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 140 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Sarit
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 6   Expected: 11.56–74.96
+• Broken identity: outside p1-p99; outside IQR fence; PoP -85%
+
+Desired outcome: "transactions" for store:Vivo Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 141 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Nakuru
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.05–0.01
+• Broken identity: z=-12.7; outside p1-p99; PoP -1209%
+
+Desired outcome: "net_comp_residual" for store:Vivo Nakuru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 142 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Nakuru
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–0.12
+• Broken identity: PoP -100%
+
+Desired outcome: "return_rate" for store:Vivo Nakuru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 143 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Moi Avenue
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.02–0.02
+• Broken identity: z=-16.0; outside p1-p99; outside IQR fence; PoP -171%
+
+Desired outcome: "net_comp_residual" for store:Vivo Moi Avenue should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 144 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Moi Avenue
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–0.16
+• Broken identity: PoP -100%
+
+Desired outcome: "return_rate" for store:Vivo Moi Avenue should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 145 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Moi Avenue
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 13   Expected: 7–104.76
+• Broken identity: outside p1-p99; PoP -98%
+
+Desired outcome: "units_sold" for store:Vivo Moi Avenue should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 146 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Moi Avenue
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 7   Expected: 5.56–44.88
+• Broken identity: outside p1-p99; PoP -94%
+
+Desired outcome: "transactions" for store:Vivo Moi Avenue should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 147 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Meru
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0–0.01
+• Broken identity: z=-50.7; outside p1-p99
+
+Desired outcome: "net_comp_residual" for store:Vivo Meru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 148 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Mama Ngina St
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: 0   Expected: -0–0.01
+• Broken identity: z=-44.2; outside p1-p99; outside IQR fence; PoP -9898%
+
+Desired outcome: "net_comp_residual" for store:Vivo Mama Ngina St should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 149 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Mama Ngina St
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0.14   Expected: 0–0.09
+• Broken identity: PoP -100%
+
+Desired outcome: "return_rate" for store:Vivo Mama Ngina St should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 150 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Mama Ngina St
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 14   Expected: 2–95.92
+• Broken identity: PoP -88%
+
+Desired outcome: "units_sold" for store:Vivo Mama Ngina St should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 151 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Mama Ngina St
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 7   Expected: 2–42.52
+• Broken identity: PoP -87%
+
+Desired outcome: "transactions" for store:Vivo Mama Ngina St should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 152 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo MSA Digo Road
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.03–0.01
+• Broken identity: z=-20.6; outside p1-p99; PoP -320%
+
+Desired outcome: "net_comp_residual" for store:Vivo MSA Digo Road should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 153 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo MSA Digo Road
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–0.1
+• Broken identity: PoP -100%
+
+Desired outcome: "return_rate" for store:Vivo MSA Digo Road should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 154 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo MSA Digo Road
+• Metric: asp
+• Period: 2026-06-27
+• Observed: 5,550   Expected: 2,535.08–5,714.33
+• Broken identity: PoP 117%
+
+Desired outcome: "asp" for store:Vivo MSA Digo Road should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 155 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo MSA Digo Road
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 1   Expected: 2–39.44
+• Broken identity: outside p1-p99; PoP -92%
+
+Desired outcome: "units_sold" for store:Vivo MSA Digo Road should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 156 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo MSA Digo Road
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 1   Expected: 1.57–18
+• Broken identity: outside p1-p99; PoP -90%
+
+Desired outcome: "transactions" for store:Vivo MSA Digo Road should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 157 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kisumu
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: 0.07   Expected: -0.04–0.02
+• Broken identity: z=7.3; outside p1-p99; outside IQR fence; PoP 302%
+
+Desired outcome: "net_comp_residual" for store:Vivo Kisumu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 158 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kisumu
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0.21   Expected: 0–0.14
+• Broken identity: z=4.4; outside p1-p99; outside IQR fence; PoP 102%
+
+Desired outcome: "return_rate" for store:Vivo Kisumu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 159 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kisumu
+• Metric: msi
+• Period: 2026-06-27
+• Observed: 1.17   Expected: 1.24–3.41
+• Broken identity: outside p1-p99
+
+Desired outcome: "msi" for store:Vivo Kisumu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 160 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.02–0.01
+• Broken identity: z=-19.2; outside p1-p99; PoP -2900%
+
+Desired outcome: "net_comp_residual" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 161 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–0.13
+• Broken identity: PoP -100%
+
+Desired outcome: "return_rate" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 162 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: asp
+• Period: 2026-06-27
+• Observed: 6,100   Expected: 2,294.44–5,640
+• Broken identity: z=3.2; outside p1-p99; outside IQR fence; PoP 128%
+
+Desired outcome: "asp" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 163 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: abv
+• Period: 2026-06-27
+• Observed: 12,200   Expected: 2,730–23,247.33
+• Broken identity: PoP 254%
+
+Desired outcome: "abv" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 164 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Junction
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0–0.02
+• Broken identity: z=-38.1; outside p1-p99; outside IQR fence
+
+Desired outcome: "net_comp_residual" for store:Vivo Junction should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 165 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Junction
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 12   Expected: 8–146.46
+• Broken identity: PoP -80%
+
+Desired outcome: "units_sold" for store:Vivo Junction should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 166 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Junction
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 5   Expected: 5.58–61.84
+• Broken identity: outside p1-p99; PoP -81%
+
+Desired outcome: "transactions" for store:Vivo Junction should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 167 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Imaara
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.04–0.02
+• Broken identity: z=-15.6; outside p1-p99; outside IQR fence; PoP -346%
+
+Desired outcome: "net_comp_residual" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 168 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Imaara
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–0.11
+• Broken identity: PoP -100%
+
+Desired outcome: "return_rate" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 169 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Imaara
+• Metric: asp
+• Period: 2026-06-27
+• Observed: 2,258.33   Expected: 3,051.15–4,877.97
+• Broken identity: z=-5.2; outside p1-p99; outside IQR fence
+
+Desired outcome: "asp" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 170 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Imaara
+• Metric: abv
+• Period: 2026-06-27
+• Observed: 4,516.67   Expected: 5,445.04–16,453.04
+• Broken identity: outside p1-p99
+
+Desired outcome: "abv" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 171 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Imaara
+• Metric: footfall
+• Period: 2026-06-27
+• Observed: 25   Expected: 36.08–108
+• Broken identity: outside p1-p99
+
+Desired outcome: "footfall" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 172 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Imaara
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 6   Expected: 6.18–49.05
+• Broken identity: outside p1-p99; PoP -87%
+
+Desired outcome: "units_sold" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 173 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Imaara
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 3   Expected: 3.59–21.64
+• Broken identity: outside p1-p99; PoP -87%
+
+Desired outcome: "transactions" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 174 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Hub
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.03–0.01
+• Broken identity: z=-16.8; outside p1-p99; PoP -2567%
+
+Desired outcome: "net_comp_residual" for store:Vivo Hub should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 175 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Hub
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–0.11
+• Broken identity: PoP -100%
+
+Desired outcome: "return_rate" for store:Vivo Hub should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 176 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Hub
+• Metric: msi
+• Period: 2026-06-27
+• Observed: 6   Expected: 1.3–3.46
+• Broken identity: z=7.0; outside p1-p99; outside IQR fence; PoP 129%
+
+Desired outcome: "msi" for store:Vivo Hub should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 177 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Hub
+• Metric: abv
+• Period: 2026-06-27
+• Observed: 25,500   Expected: 5,952.73–16,368.07
+• Broken identity: z=6.5; outside p1-p99; outside IQR fence; PoP 151%
+
+Desired outcome: "abv" for store:Vivo Hub should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 178 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Hub
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 1   Expected: 3.58–23.52
+• Broken identity: outside p1-p99; PoP -88%
+
+Desired outcome: "transactions" for store:Vivo Hub should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 179 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Greenspan
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0–0.01
+• Broken identity: z=-62.9; outside p1-p99; PoP -2223%
+
+Desired outcome: "net_comp_residual" for store:Vivo Greenspan should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 180 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Greenspan
+• Metric: asp
+• Period: 2026-06-27
+• Observed: 5,633.33   Expected: 1,119.35–5,440.18
+• Broken identity: outside p1-p99; outside IQR fence
+
+Desired outcome: "asp" for store:Vivo Greenspan should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 181 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Greenspan
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 3   Expected: 2–268
+• Broken identity: PoP -86%
+
+Desired outcome: "units_sold" for store:Vivo Greenspan should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 182 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Greenspan
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 2   Expected: 1.55–16.45
+• Broken identity: PoP -85%
+
+Desired outcome: "transactions" for store:Vivo Greenspan should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 183 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Garden City
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.03–0.05
+• Broken identity: z=-12.3; outside p1-p99; outside IQR fence; PoP -1740%
+
+Desired outcome: "net_comp_residual" for store:Vivo Garden City should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 184 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Garden City
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–0.18
+• Broken identity: PoP -100%
+
+Desired outcome: "return_rate" for store:Vivo Garden City should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 185 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Garden City
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 8   Expected: 8.53–52.17
+• Broken identity: outside p1-p99; PoP -82%
+
+Desired outcome: "units_sold" for store:Vivo Garden City should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 186 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Garden City
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 4   Expected: 5–30.29
+• Broken identity: outside p1-p99; PoP -83%
+
+Desired outcome: "transactions" for store:Vivo Garden City should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 187 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Galleria
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.04–0.01
+• Broken identity: z=-15.4; outside p1-p99; PoP -284%
+
+Desired outcome: "net_comp_residual" for store:Vivo Galleria should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 188 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Galleria
+• Metric: msi
+• Period: 2026-06-27
+• Observed: 1.33   Expected: 1.43–3.4
+• Broken identity: outside p1-p99
+
+Desired outcome: "msi" for store:Vivo Galleria should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 189 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Galleria
+• Metric: asp
+• Period: 2026-06-27
+• Observed: 6,050   Expected: 3,438.85–5,307.49
+• Broken identity: z=5.6; outside p1-p99; outside IQR fence
+
+Desired outcome: "asp" for store:Vivo Galleria should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 190 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Galleria
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 4   Expected: 9.57–51.72
+• Broken identity: outside p1-p99; PoP -92%
+
+Desired outcome: "units_sold" for store:Vivo Galleria should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 191 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Galleria
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 3   Expected: 6–24.43
+• Broken identity: outside p1-p99; PoP -92%
+
+Desired outcome: "transactions" for store:Vivo Galleria should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 192 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Eldoret
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.03–0.01
+• Broken identity: z=-21.3; outside p1-p99; PoP -482%
+
+Desired outcome: "net_comp_residual" for store:Vivo Eldoret should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 193 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Eldoret
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–0.12
+• Broken identity: PoP -100%
+
+Desired outcome: "return_rate" for store:Vivo Eldoret should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 194 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo City Mall
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.01–0.01
+• Broken identity: z=-40.0; outside p1-p99
+
+Desired outcome: "net_comp_residual" for store:Vivo City Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 195 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo City Mall
+• Metric: msi
+• Period: 2026-06-27
+• Observed: 5.5   Expected: 1.23–3.73
+• Broken identity: z=6.6; outside p1-p99; outside IQR fence; PoP 175%
+
+Desired outcome: "msi" for store:Vivo City Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 196 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo City Mall
+• Metric: abv
+• Period: 2026-06-27
+• Observed: 27,300   Expected: 5,106.6–15,656.3
+• Broken identity: z=8.1; outside p1-p99; outside IQR fence; PoP 289%
+
+Desired outcome: "abv" for store:Vivo City Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 197 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo City Mall
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 2   Expected: 4–23.3
+• Broken identity: outside p1-p99; PoP -88%
+
+Desired outcome: "transactions" for store:Vivo City Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 198 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Capital Centre
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.02–0.01
+• Broken identity: z=-20.9; outside p1-p99; PoP -1296%
+
+Desired outcome: "net_comp_residual" for store:Vivo Capital Centre should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 199 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Capital Centre
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0   Expected: 0–0.12
+• Broken identity: PoP -100%
+
+Desired outcome: "return_rate" for store:Vivo Capital Centre should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 200 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Capital Centre
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 3   Expected: 5.71–54.44
+• Broken identity: outside p1-p99; PoP -94%
+
+Desired outcome: "units_sold" for store:Vivo Capital Centre should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 201 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Capital Centre
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 3   Expected: 4–20.29
+• Broken identity: outside p1-p99; PoP -89%
+
+Desired outcome: "transactions" for store:Vivo Capital Centre should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 202 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Safari Sarit
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: -0.14   Expected: -0.02–0.03
+• Broken identity: z=-13.0; outside p1-p99
+
+Desired outcome: "net_comp_residual" for store:Safari Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 203 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Safari Sarit
+• Metric: msi
+• Period: 2026-06-27
+• Observed: 2.67   Expected: 1–2.92
+• Broken identity: PoP 100%
+
+Desired outcome: "msi" for store:Safari Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 204 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Safari Sarit
+• Metric: abv
+• Period: 2026-06-27
+• Observed: 13,133.33   Expected: 4,922.3–14,379.86
+• Broken identity: PoP 134%
+
+Desired outcome: "abv" for store:Safari Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 205 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Safari Sarit
+• Metric: conversion_rate
+• Period: 2026-06-27
+• Observed: 0.1   Expected: 0.01–0.12
+• Broken identity: PoP 100%
+
+Desired outcome: "conversion_rate" for store:Safari Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 206 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Safari Sarit
+• Metric: footfall
+• Period: 2026-06-27
+• Observed: 29   Expected: 51.42–135.87
+• Broken identity: z=-3.1; outside p1-p99; outside IQR fence
+
+Desired outcome: "footfall" for store:Safari Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 207 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Online - Shop Zetu
+• Metric: net_comp_residual
+• Period: 2026-06-27
+• Observed: 0.01   Expected: -0.08–13.51
+• Broken identity: PoP 400%
+
+Desired outcome: "net_comp_residual" for store:Online - Shop Zetu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 208 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Online - Shop Zetu
+• Metric: return_rate
+• Period: 2026-06-27
+• Observed: 0.09   Expected: -0.56–97.95
+• Broken identity: PoP 400%
+
+Desired outcome: "return_rate" for store:Online - Shop Zetu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 209 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Online - Shop Zetu
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 18   Expected: 20.12–88.92
+• Broken identity: outside p1-p99
+
+Desired outcome: "transactions" for store:Online - Shop Zetu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 210 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Two Rivers
+• Metric: asp
+• Period: 2026-06-27
+• Observed: 2,500   Expected: 3,130.75–5,917.51
+• Broken identity: z=-3.2; outside p1-p99; outside IQR fence
+
+Desired outcome: "asp" for store:Vivo Two Rivers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 211 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo TRM
+• Metric: footfall
+• Period: 2026-06-27
+• Observed: 35   Expected: 42.4–129.4
+• Broken identity: outside p1-p99; outside IQR fence
+
+Desired outcome: "footfall" for store:Vivo TRM should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 212 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo City Mall
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 2   Expected: 5.54–60.48
+• Broken identity: outside p1-p99; PoP -88%
+
+Desired outcome: "units_sold" for store:Vivo City Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 213 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Village Market
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 6   Expected: 7.58–29.84
+• Broken identity: outside p1-p99
+
+Desired outcome: "transactions" for store:Vivo Village Market should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 214 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Moi Avenue
+• Metric: msi
+• Period: 2026-06-27
+• Observed: 1   Expected: 1.19–2.75
+• Broken identity: outside p1-p99
+
+Desired outcome: "msi" for store:Vivo Moi Avenue should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 215 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 2   Expected: 1–26.88
+• Broken identity: PoP -78%
+
+Desired outcome: "units_sold" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 216 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 1   Expected: 1–11
+• Broken identity: PoP -86%
+
+Desired outcome: "transactions" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 217 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Greenspan
+• Metric: footfall
+• Period: 2026-06-27
+• Observed: 23   Expected: 0–143.25
+• Broken identity: PoP -81%
+
+Desired outcome: "footfall" for store:Vivo Greenspan should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 218 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Eldoret
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 5   Expected: 6–41.64
+• Broken identity: outside p1-p99
+
+Desired outcome: "units_sold" for store:Vivo Eldoret should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 219 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Village Market
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 12   Expected: 14.74–64
+• Broken identity: outside p1-p99
+
+Desired outcome: "units_sold" for store:Vivo Village Market should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 220 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo TRM
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 7   Expected: 5–49.2
+• Broken identity: PoP -84%
+
+Desired outcome: "units_sold" for store:Vivo TRM should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 221 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Nakuru
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 4   Expected: 3.59–57.1
+• Broken identity: PoP -81%
+
+Desired outcome: "units_sold" for store:Vivo Nakuru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 222 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Nakuru
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 2   Expected: 3–23.46
+• Broken identity: outside p1-p99; PoP -87%
+
+Desired outcome: "transactions" for store:Vivo Nakuru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 223 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Capital Centre
+• Metric: asp
+• Period: 2026-06-27
+• Observed: 6,550   Expected: 3,323.25–5,449
+• Broken identity: z=4.4; outside p1-p99; outside IQR fence
+
+Desired outcome: "asp" for store:Vivo Capital Centre should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 224 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Yaya
+• Metric: asp
+• Period: 2026-06-27
+• Observed: 5,500   Expected: 3,595.34–5,154
+• Broken identity: outside p1-p99; outside IQR fence
+
+Desired outcome: "asp" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 225 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Sarit
+• Metric: asp
+• Period: 2026-06-27
+• Observed: 5,300   Expected: 3,417.6–5,056.11
+• Broken identity: outside p1-p99; outside IQR fence
+
+Desired outcome: "asp" for store:Vivo Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 226 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Eldoret
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 3   Expected: 4–21.88
+• Broken identity: outside p1-p99
+
+Desired outcome: "transactions" for store:Vivo Eldoret should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 227 of 227 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Online - Shop Zetu
+• Metric: units_sold
+• Period: 2026-06-27
+• Observed: 26   Expected: 29.56–179.08
+• Broken identity: outside p1-p99
+
+Desired outcome: "units_sold" for store:Online - Shop Zetu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
