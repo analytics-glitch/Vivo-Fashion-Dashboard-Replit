@@ -173,6 +173,9 @@ LOOKBACK_DAYS = int(os.environ.get("SYNC_LOOKBACK_DAYS", "2"))
 _LAST_FABRIC_EXTRACT = None
 # Same once-per-minute guard for the fabric consumption/returns sheet override loader.
 _LAST_FABRIC_SHEET_EXTRACT = None
+# Guards the fabric category update tracker (Task #295) — detection + Google Sheet
+# mirror — to once every 5 minutes even though main() runs every 60s.
+_LAST_FABRIC_CAT_TRACKER = None
 # Guards the production tracker (Odoo DPS buying & manufacturing orders) sync to
 # once per 30 minutes even though main() runs every 60s.
 _LAST_PRODUCTION_SYNC = None
@@ -1232,6 +1235,50 @@ def main():
             log.info("✅ Fabric sheet override extract complete")
         except Exception as e:
             log.error("Fabric sheet override extract error: %s", e)
+
+    # Fabric category update tracker (Task #295) — detects fabric products whose
+    # Odoo Category/Sub-Category changed from go-live onward (frozen cut-off =
+    # start of today, Nairobi) and mirrors the running tracker to a Google Sheet
+    # inside a NEW folder in the user's Drive folder. Runs AFTER the Odoo fabric
+    # extract so write_date/category are fresh. Bootstrap immediately when the
+    # baseline snapshot is missing/empty (fresh prod DB — freezes the cut-off +
+    # captures baseline on first run post-publish), then refresh every 5 minutes.
+    # Idempotent (one row per barcode) and isolated so a failure (incl. the
+    # google-drive connector not yet authorized) only logs and never crashes the
+    # loop.
+    global _LAST_FABRIC_CAT_TRACKER
+    tracker_needs_bootstrap = False
+    try:
+        cur.execute("SELECT to_regclass('public.fabric_cat_baseline')")
+        if cur.fetchone()[0] is None:
+            tracker_needs_bootstrap = True
+        else:
+            cur.execute("SELECT COUNT(*) FROM fabric_cat_baseline")
+            tracker_needs_bootstrap = cur.fetchone()[0] == 0
+        conn.commit()
+    except Exception as e:
+        log.error("Fabric category tracker presence check error: %s", e)
+        conn.rollback()
+    tracker_due = (
+        _LAST_FABRIC_CAT_TRACKER is None
+        or (now_utc - _LAST_FABRIC_CAT_TRACKER).total_seconds() >= 300
+    )
+    if tracker_needs_bootstrap or tracker_due:
+        _LAST_FABRIC_CAT_TRACKER = now_utc
+        try:
+            import subprocess, sys
+
+            log.info(
+                "Running fabric category update tracker (bootstrap=%s)...",
+                tracker_needs_bootstrap,
+            )
+            subprocess.run(
+                [sys.executable, "/home/runner/workspace/fabric_category_tracker.py"],
+                check=True,
+            )
+            log.info("✅ Fabric category update tracker complete")
+        except Exception as e:
+            log.error("Fabric category update tracker error: %s", e)
 
     # Production tracker sync — feeds the /production board (production_orders +
     # stage_movements) with the buying & manufacturing orders. New Odoo buying

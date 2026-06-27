@@ -29,6 +29,7 @@ def create_tables(cur):
             uom             TEXT,
             standard_price  NUMERIC,
             active          BOOLEAN,
+            write_date      TIMESTAMP,
             _loaded_at      TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS raw_fabric_inventory (
@@ -142,7 +143,8 @@ def extract_products(uid, models, cur, now):
         ADD COLUMN IF NOT EXISTS fiber_content TEXT,
         ADD COLUMN IF NOT EXISTS fabric_type TEXT,
         ADD COLUMN IF NOT EXISTS supplier TEXT,
-        ADD COLUMN IF NOT EXISTS primary_color TEXT
+        ADD COLUMN IF NOT EXISTS primary_color TEXT,
+        ADD COLUMN IF NOT EXISTS write_date TIMESTAMP
     """)
 
     # Effective Kg/Mtr + source flag — code-defined derived columns (generated,
@@ -194,6 +196,7 @@ def extract_products(uid, models, cur, now):
         "x_vivo_attr_48",   # Primary Color
         "barcode",
         "x_vivo_color",
+        "write_date",       # Odoo last-modified time (UTC) — drives the category tracker
     ]
     
     def get_m2o(val):
@@ -241,6 +244,7 @@ def extract_products(uid, models, cur, now):
                 r["x_vivo_color"][1] if isinstance(r.get("x_vivo_color"), list) else None,
                 _derive_color(r.get("name","")),
                 (r["x_vivo_color"][1] if isinstance(r.get("x_vivo_color"), list) else None) or _derive_color(r.get("name","")),
+                r.get("write_date") or None,
                 now
             ))
         offset += batch_size
@@ -254,7 +258,7 @@ def extract_products(uid, models, cur, now):
             kg_per_mtr, width_m, gsm, plain_print, fabric_structure,
             fabric_category, fabric_subcategory, stretch_type, weight_range,
             fiber_content, fabric_type, supplier, primary_color, barcode, color,
-            derived_color, fabric_color, _loaded_at
+            derived_color, fabric_color, write_date, _loaded_at
         ) VALUES %s
         ON CONFLICT (id) DO UPDATE SET
             name=EXCLUDED.name, standard_price=EXCLUDED.standard_price,
@@ -267,6 +271,7 @@ def extract_products(uid, models, cur, now):
             fiber_content=EXCLUDED.fiber_content, fabric_type=EXCLUDED.fabric_type,
             supplier=EXCLUDED.supplier, primary_color=EXCLUDED.primary_color,
             derived_color=EXCLUDED.derived_color, fabric_color=EXCLUDED.fabric_color,
+            write_date=EXCLUDED.write_date,
             _loaded_at=EXCLUDED._loaded_at
     """, rows, page_size=200)
     log.info("✅ raw_fabric_products: %d rows", len(rows))
