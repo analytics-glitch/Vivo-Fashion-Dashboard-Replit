@@ -291,7 +291,7 @@ const DataQuality = () => {
       <div className="card-white p-5" data-testid="dq-report-card">
         <SectionTitle
           title="Data Quality Report"
-          subtitle="Each check scores 0–100. Overall is the mean across all checks."
+          subtitle="Each check scores 0–100. Overall is the mean across all checks. These measure data-pipeline completeness & freshness (ingest coverage, SKU mapping, sync recency) — not the business correctness of the reported figures."
         />
         {healthLoading ? (
           <Loading label="Scoring data quality…" />
@@ -315,7 +315,7 @@ const DataQuality = () => {
                 {overall == null
                   ? "No score"
                   : overall > 90
-                  ? "Healthy — data is trustworthy"
+                  ? "Healthy — pipeline checks passing"
                   : overall >= 75
                   ? "Watch — some checks degraded"
                   : "At risk — review failing checks"}
@@ -649,7 +649,7 @@ const DataQuality = () => {
             {visibleFlags.length === 0 ? (
               <Empty label={
                 allFlags.length === 0
-                  ? "No anomalies detected — the numbers look trustworthy right now."
+                  ? "No anomalies detected by the pipeline checks right now."
                   : "Every open flag has been investigated. Toggle 'Show resolved' to review."
               } />
             ) : (

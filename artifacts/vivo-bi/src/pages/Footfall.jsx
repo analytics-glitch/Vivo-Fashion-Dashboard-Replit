@@ -601,6 +601,10 @@ const Footfall = () => {
               dateFrom={dateFrom}
               dateTo={dateTo}
               country={countries.length === 1 ? countries[0] : undefined}
+              summaryFootfall={totals.footfall}
+              summaryOrders={totals.orders}
+              summarySales={totals.sales}
+              summaryConversion={totals.conv}
             />
           </div>
 

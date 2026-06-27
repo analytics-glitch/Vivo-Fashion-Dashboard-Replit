@@ -41,7 +41,7 @@ const buildWeeks = (days) => {
   return weeks;
 };
 
-const FootfallDailyCalendar = ({ dateFrom, dateTo, country }) => {
+const FootfallDailyCalendar = ({ dateFrom, dateTo, country, summaryFootfall, summaryOrders, summarySales, summaryConversion }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -83,7 +83,17 @@ const FootfallDailyCalendar = ({ dateFrom, dateTo, country }) => {
     },
     { ff: 0, or: 0, sa: 0 }
   );
-  const cr = totals.ff > 0 ? (totals.or / totals.ff) * 100 : 0;
+  const dayCr = totals.ff > 0 ? (totals.or / totals.ff) * 100 : 0;
+
+  // Window-summary figures shown in the header. Prefer the authoritative
+  // page-level totals (passed from the Footfall KPI cards) so this block can
+  // never disagree with the KPI cards above it; fall back to the day-sum of
+  // the calendar feed when they aren't supplied. The per-day heatmap cells
+  // still come from the daily feed (their shape is what matters there).
+  const headFf = summaryFootfall != null ? summaryFootfall : totals.ff;
+  const headOr = summaryOrders != null ? summaryOrders : totals.or;
+  const headSa = summarySales != null ? summarySales : totals.sa;
+  const headCr = summaryConversion != null ? summaryConversion : dayCr;
 
   // Pick hottest + coldest days for storytelling
   const sorted = [...data.days].sort((a, b) => (b.footfall || 0) - (a.footfall || 0));
@@ -98,10 +108,10 @@ const FootfallDailyCalendar = ({ dateFrom, dateTo, country }) => {
           Window: <b className="text-foreground">{data.window.start}</b> → <b className="text-foreground">{data.window.end}</b> · {data.window.days} days
         </div>
         <div className="flex items-center gap-4 text-[11.5px] text-muted">
-          <div>Total footfall: <b className="text-foreground num">{fmtNum(totals.ff)}</b></div>
-          <div>Orders: <b className="text-foreground num">{fmtNum(totals.or)}</b></div>
-          <div>Sales: <b className="text-foreground num">{fmtKES(totals.sa)}</b></div>
-          <div>Avg conversion: <b className="text-foreground num">{cr.toFixed(1)}%</b></div>
+          <div>Total footfall: <b className="text-foreground num">{fmtNum(headFf)}</b></div>
+          <div>Orders: <b className="text-foreground num">{fmtNum(headOr)}</b></div>
+          <div>Sales: <b className="text-foreground num">{fmtKES(headSa)}</b></div>
+          <div>Avg conversion: <b className="text-foreground num">{headCr.toFixed(1)}%</b></div>
         </div>
       </div>
 
@@ -155,7 +165,7 @@ const FootfallDailyCalendar = ({ dateFrom, dateTo, country }) => {
       )}
 
       <p className="text-[10.5px] text-muted italic mt-3">
-        ℹ Upstream exposes daily aggregates only — true time-of-day (hourly) heatmap requires hour-level POS timestamps, which aren't published yet. This calendar view surfaces the intra-window cadence instead.
+        ℹ Window totals above match the Footfall KPI cards (same authoritative source). Per-day cells use the daily footfall feed, so individual days may differ slightly. Upstream exposes daily aggregates only — a true time-of-day (hourly) heatmap requires hour-level POS timestamps, which aren't published yet. This calendar view surfaces the intra-window cadence instead.
       </p>
     </div>
   );

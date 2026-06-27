@@ -1367,11 +1367,14 @@ const Customers = () => {
             // disagree with the KPI when bucket boundaries differed
             // from the upstream's repeat definition.
             const upstreamTotal = cust?.total_customers || 0;
-            const upstreamRepeat = cust?.repeat_customers || 0;
+            // `repeat_customers` is hard-coded to 0 upstream (the customer
+            // universe is new/returning only); the real repeat-buyer count is
+            // `returning_customers` (customers with a prior purchase).
+            const upstreamRepeat = cust?.returning_customers || 0;
             const repeatRate = upstreamTotal ? (upstreamRepeat / upstreamTotal) * 100 : (100 - oneOrderShare);
             const prevOneOrderShare = data[0]?.prevPct || 0;
             const prevUpstreamTotal = custPrev?.total_customers || 0;
-            const prevUpstreamRepeat = custPrev?.repeat_customers || 0;
+            const prevUpstreamRepeat = custPrev?.returning_customers || 0;
             const prevRepeatRate = prevUpstreamTotal ? (prevUpstreamRepeat / prevUpstreamTotal) * 100 : (100 - prevOneOrderShare);
             const repeatRateDelta = repeatRate - prevRepeatRate; // pp
             const hasCompare = compareLbl && prevTotal > 0;
@@ -1438,12 +1441,12 @@ const Customers = () => {
                         <div className="eyebrow text-[#1a5c38]">Repeat Customer Rate</div>
                         <div className="font-extrabold text-[20px] num mt-0.5 text-[#0f3d24]" data-testid="kpi-retention-rate-value">
                           {cust?.total_customers
-                            ? `${((cust.repeat_customers || 0) / cust.total_customers * 100).toFixed(1)}%`
+                            ? `${((cust.returning_customers || 0) / cust.total_customers * 100).toFixed(1)}%`
                             : "—"}
                         </div>
                         <div className="text-[10.5px] text-muted mt-0.5">
                           {cust
-                            ? <>{fmtNum(cust.repeat_customers || 0)} of {fmtNum(cust.total_customers || 0)} customers · source: <span className="font-semibold">/customers</span></>
+                            ? <>{fmtNum(cust.returning_customers || 0)} of {fmtNum(cust.total_customers || 0)} active customers had a prior purchase (lifetime returning) · source: <span className="font-semibold">/customers</span></>
                             : "loading…"}
                         </div>
                       </div>
@@ -1749,7 +1752,7 @@ const Customers = () => {
                   <div>
                     <SectionTitle>Repeat Customers Detail</SectionTitle>
                     <div className="text-[12px] text-muted mt-0.5">
-                      Identified customers with <strong>≥ 2 distinct orders</strong> in the selected window — these are the {repeatCustomersLoading ? "…" : <strong>{fmtNum(total)}</strong>} customers behind the {retention ? `${retention.repeat_rate_pct.toFixed(1)}%` : "repeat"} repeat-rate above. Walk-ins excluded. Click any row to expand.
+                      Identified customers with <strong>≥ 2 distinct orders in the selected window</strong> (in-period repeat buyers) — {repeatCustomersLoading ? "…" : <strong>{fmtNum(total)}</strong>} customers. This is a <strong>different measure</strong> from the lifetime <strong>Repeat Customer Rate</strong> above, which counts customers with <em>any</em> prior purchase. Walk-ins excluded. Click any row to expand.
                     </div>
                   </div>
                   <button

@@ -4977,7 +4977,8 @@ def analytics_customer_details(
             SUM(s.ordered_item_quantity) AS total_units,
             ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
             MIN(s.sale_date) AS first_order_date,
-            MAX(s.sale_date) AS last_order_date
+            MAX(s.sale_date) AS last_order_date,
+            COUNT(*) OVER() AS total_customer_count
         FROM all_sales s
         LEFT JOIN all_customers c ON s.customer_id = c.customer_id
         """ + type_join + """
@@ -7849,7 +7850,11 @@ def analytics_customer_retention(
 ):
     cust = get_customers(date_from, date_to, country, channel)
     total = cust.get("total_customers") or 0
-    repeat = cust.get("repeat_customers") or 0
+    # "Repeat rate" = share of active customers who had a prior purchase before
+    # this window (returning buyers). The legacy `repeat_customers` field is
+    # hard-coded to 0 in get_customers (the universe was refactored to
+    # new/returning only), so the real repeat-buyer count is returning_customers.
+    repeat = cust.get("returning_customers") or 0
     new = cust.get("new_customers") or 0
     try:
         repeat_rate = round(float(repeat) * 100.0 / float(total), 2) if total else 0.0

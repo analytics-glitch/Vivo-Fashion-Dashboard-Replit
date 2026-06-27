@@ -71,6 +71,14 @@ const CustomerDetails = () => {
     return { customers: filtered.length, sales, orders };
   }, [filtered]);
 
+  // True identified-customer count for the window (window-count from the
+  // server, computed before the 2,000-row display cap). When the list is
+  // capped, the returned rows are only the top-N by spend — so the count of
+  // returned rows must NOT be presented as the total.
+  const serverTotal = rows[0]?.total_customer_count || 0;
+  const capped = rows.length >= 2000 && serverTotal > rows.length;
+  const searching = search.trim().length > 0;
+
   return (
     <div className="space-y-6" data-testid="customer-details-page">
       {modal}
@@ -164,8 +172,10 @@ const CustomerDetails = () => {
       {!loading && !error && (
         <div className="card-white p-5" data-testid="customer-details-table-card">
           <SectionTitle
-            title={`Customer list · ${fmtNum(totals.customers)} customers`}
-            subtitle={`Combined ${fmtNum(totals.orders)} orders · ${fmtKES(totals.sales)} total spend in window. Sorted by total spend descending. Click any column to re-sort.`}
+            title={searching
+              ? `Customer list · ${fmtNum(totals.customers)} matching`
+              : `Customer list · ${fmtNum(serverTotal || rows.length)} customers`}
+            subtitle={`${capped && !searching ? `Showing the top ${fmtNum(rows.length)} by spend (list capped) of ${fmtNum(serverTotal)} identified customers. ` : ""}Combined ${fmtNum(totals.orders)} orders · ${fmtKES(totals.sales)} total spend across the ${searching ? "matching" : "shown"} rows. Sorted by total spend descending. Click any column to re-sort.`}
           />
           <SortableTable
             testId="customer-details-table"

@@ -1078,7 +1078,7 @@ const Overview = () => {
               action={{ label: "See by location", to: "/locations" }}
               prefetch={pf("/locations")} />
             <KPICard testId="kpi-net-sales" label="Net Sales" value={kfmt(kpis.net_sales)} valueFull={fmtKESLong(kpis.net_sales)} icon={Coins}
-              formula="Total Sales minus refunds. The cash you actually kept."
+              formula="Item sales after discounts, minus returns — the same basis as the Margin page ‘Net Revenue’ KPI. The cash you actually kept."
               delta={delta("net_sales")} deltaLabel={compareLbl} prevValue={prev("net_sales", kfmt)} showDelta={compareMode !== "none"}
               action={{ label: "Drill into returns", to: "/exec-summary#returns" }} />
             <KPICard testId="kpi-orders" label="Transactions" value={fmtNum(kpis.total_orders)} valueFull={fmtNum(kpis.total_orders)} icon={ShoppingCart}
