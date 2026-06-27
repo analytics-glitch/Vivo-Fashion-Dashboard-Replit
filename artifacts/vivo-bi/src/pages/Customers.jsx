@@ -318,11 +318,20 @@ const Customers = () => {
       })
       .catch(() => {
         if (cancelled) return;
-        applyChurnToCust({
-          churn_source: "upstream_down",
-          churned_customers: 0,
-          churn_rate: 0,
-          churn_window_days: 90,
+        // The dedicated /customers/churn-rate fetch failed. /api/customers
+        // ALREADY returns a valid GLOBAL churn_rate + churned_customers, so do
+        // NOT zero them out here — overwriting with 0 reintroduces the
+        // misleading "0% / vs 0" churn symptom under transient upstream
+        // slowness. Just clear the computing state and keep whatever the
+        // primary /customers payload provided.
+        setCust((prev) => {
+          if (!prev) {
+            // /customers hasn't resolved yet — stash a status-only marker so
+            // its .then() merge preserves its own churn values.
+            pendingChurn = { churn_source: "ready" };
+            return prev;
+          }
+          return { ...prev, churn_source: "ready" };
         });
       });
 
@@ -854,46 +863,23 @@ const Customers = () => {
               }}}
             />
             {(() => {
-              // Hide churn tiles when the selected period is shorter than the
-              // churn cutoff. Mathematically a customer cannot both "purchase
-              // in this window" AND "have been silent for ≥ churnDays" when
-              // the window itself is < churnDays wide — the tile will always
-              // read 0 and mislead. Surface an honest reframe instead.
-              const windowDays = (dateFrom && dateTo)
-                ? Math.max(1, Math.round((new Date(dateTo) - new Date(dateFrom)) / 86400000) + 1)
-                : 0;
-              const churnMeaningful = windowDays >= churnDays;
-              if (!churnMeaningful) {
-                return (
-                  <div
-                    className="rounded-2xl border border-border bg-panel p-3 sm:p-4 min-h-[110px] flex flex-col justify-between"
-                    data-testid="churn-not-applicable"
-                    title={`Selected window is ${windowDays} days — shorter than the ${churnDays}-day churn cutoff. Churn becomes meaningful at 90+ day windows or historical periods.`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="eyebrow">Churn watchlist</div>
-                      <span className="text-muted text-[10px]">ⓘ</span>
-                    </div>
-                    <div className="mt-2">
-                      <div className="text-[13px] font-bold text-brand-deep leading-tight">
-                        N/A for {windowDays}-day window
-                      </div>
-                      <div className="text-[11px] text-muted mt-0.5 leading-snug">
-                        Churn needs ≥ {churnDays}-day window. Open{" "}
-                        <span className="font-semibold text-brand">Reactivation Opportunity</span>{" "}
-                        below to see at-risk customers.
-                      </div>
-                    </div>
-                  </div>
-                );
-              }
+              // Churn is a GLOBAL, lifetime retention metric computed from full
+              // purchase history — the server endpoints (/api/customers and
+              // /api/customers/churn-rate) take NO date params, so the figure
+              // does NOT depend on the selected window and is always shown.
+              // The denominator is the ASSESSABLE base — customers whose FIRST
+              // purchase predates the 90-day cutoff (old enough to be judged
+              // churned) — NOT total customers and NOT the selected period.
+              // (Earlier copy described a period-scoped churn the backend never
+              //  implemented, and a short-window guard hid the valid figure as
+              //  "N/A" on the default view — the audit's "undefined base".)
               return (
                 <>
                   <KPICard
                     testId="kpi-churned-count"
                     label="Churned Customers"
-                    sub={cust.churn_source === "computing" ? "computing…" : `no purchase in ${churnDays}+ days`}
-                    formula={`Count of customers whose LAST purchase was more than ${churnDays} days ago (as of today). Source: /churned-customers?days=${churnDays}.`}
+                    sub={cust.churn_source === "computing" ? "computing…" : "no purchase in 90+ days · lifetime"}
+                    formula={`Global, lifetime count (independent of the selected date filter): of the assessable base — customers whose FIRST purchase was more than 90 days ago — those whose LAST purchase was also more than 90 days ago (as of today). Source: /api/customers/churn-rate.`}
                     value={cust.churn_source === "computing" ? "…" : fmtNum(cust.churned_last_90d || cust.churned_customers || 0)}
                     icon={UserMinus}
                     higherIsBetter={false}
@@ -902,13 +888,14 @@ const Customers = () => {
                   <KPICard
                     testId="kpi-churn"
                     label="Churn Rate"
-                    sub={cust.churn_source === "computing" ? "computing…" : "in selected period · 90-day cutoff"}
+                    sub={cust.churn_source === "computing" ? "computing…" : "of assessable base · lifetime · 90-day cutoff"}
                     formula={
-                      `Churn Rate = churned_in_period ÷ total_customers × 100.\n\n` +
-                      `A customer is counted as CHURNED if their last purchase falls INSIDE the ` +
-                      `selected date range AND they have not bought anything in the ` +
-                      `${churnDays} days up to today. For an in-progress period (ends today) ` +
-                      `this number is naturally near-zero; for historical periods it rises.`
+                      `Churn Rate = churned ÷ assessable base × 100.\n\n` +
+                      `Global, lifetime figure — independent of the selected date filter.\n\n` +
+                      `Assessable base = customers whose FIRST purchase was more than ` +
+                      `90 days ago (old enough to be judged). A customer is CHURNED when ` +
+                      `their LAST purchase was also more than 90 days ago (as of today). ` +
+                      `It is NOT divided by total customers and NOT scoped to the selected period.`
                     }
                     value={cust.churn_source === "computing" ? "…" : fmtPct(cust.churn_rate, 2)}
                     icon={UserMinus}
@@ -943,7 +930,7 @@ const Customers = () => {
                           `"Unchurned" = identified customers whose latest visit falls in the selected ` +
                           `window AND who had been silent for ≥ ${unchurnedDays} days before that visit ` +
                           `(see Reactivation Opportunity slider below).\n\n` +
-                          `"Total Churned" = customers with no purchase in ${churnDays}+ days as of today.\n\n` +
+                          `"Total Churned" = customers with no purchase in 90+ days as of today.\n\n` +
                           `Higher is better — it tells you how effective your win-back signals are.`
                         }
                         value={
