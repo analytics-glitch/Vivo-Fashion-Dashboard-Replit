@@ -33,3 +33,19 @@ the page stays grantable (if it's in `ALL_PAGE_IDS`) and `canAccessPage` honours
 **How to apply:** this is exactly how the Finance / P&L page (`finance`, a
 work-in-progress surface) is restricted. A `wip: true` flag on the nav item drives
 an amber "WIP" badge in Sidebar (desktop + mobile) and Home tiles.
+
+## Admin pages render from a HAND-CODED user menu, not ADMIN_NAV
+
+The `/admin/*` pages do NOT appear in the top nav bar. They are reached from the
+**user/avatar dropdown menu**, which is hand-coded as a list of `<button>`s in
+`components/Sidebar.jsx` (gated by `user.role === "admin"`). `ADMIN_NAV` in
+`navItems.jsx` only drives the **Home** landing-page tiles, not this menu.
+
+**Why:** when adding a new admin page, wiring the route + `ADMIN_NAV` +
+`permissions.js` is NOT enough — an admin still can't navigate to it because the
+avatar menu is a separate hardcoded list. The page is reachable by URL but
+invisible in the UI ("I can't see that page").
+
+**How to apply:** to surface a new admin page, also add a `<button>` (with its
+icon import) to the `user.role === "admin"` block in `Sidebar.jsx` AND, if it
+should show on Home, add it to `ADMIN_NAV`.

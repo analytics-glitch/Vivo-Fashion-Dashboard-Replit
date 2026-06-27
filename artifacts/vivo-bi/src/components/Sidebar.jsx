@@ -13,6 +13,7 @@ import {
   CaretDown,
   ShieldCheck,
   Gauge,
+  ShieldWarning,
   Eye,
   UsersThree,
   ClockClockwise,
@@ -197,6 +198,13 @@ const UserMenu = () => {
                 data-testid="menu-data-health"
               >
                 <Gauge size={13} /> Data Health
+              </button>
+              <button
+                className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-panel flex items-center gap-2"
+                onClick={() => { setOpen(false); navigate("/admin/validation-audit"); }}
+                data-testid="menu-validation-audit"
+              >
+                <ShieldWarning size={13} /> Audit Findings
               </button>
               <div className="h-px bg-border my-1" />
             </>
