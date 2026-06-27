@@ -1121,7 +1121,7 @@ const Replenishments = () => {
                 Fulfilment rate by picker · last 30 days
               </span>
             }
-            subtitle="Aggregate of every Mark As Done in the window — actual units replenished ÷ suggested. Use this to spot pickers who consistently under- or over-replenish."
+            subtitle="Aggregate of every Mark As Done in the window — actual units replenished ÷ suggested. The completed-replenishment history does not retain the suggested baseline, so Suggested and Fulfilment rate read “—”; Lines done and Replenished are always exact."
           />
           <div className="overflow-x-auto rounded-lg border border-border bg-white max-w-2xl">
             <table className="w-full text-[12.5px]">
@@ -1149,7 +1149,7 @@ const Replenishments = () => {
                       </span>
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">{fmtNum(u.lines)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{fmtNum(u.target)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{u.target > 0 ? fmtNum(u.target) : <span className="text-muted">—</span>}</td>
                     <td className="px-3 py-2 text-right tabular-nums font-bold text-emerald-700">{fmtNum(u.actual)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">
                       {u.rate == null ? (
@@ -1186,7 +1186,7 @@ const Replenishments = () => {
                 Completed Replenishments · last 30 days
               </span>
             }
-            subtitle="Audit trail of every line marked done — fulfilment % = actual replenished ÷ suggested. Stock after replenishment is sampled from the live store SOH at the moment Mark As Done was clicked."
+            subtitle="Audit trail of every line marked done — fulfilment % = actual replenished ÷ suggested. The completed history does not retain the suggested baseline, so Qty to replenish and Fulfilment % read “—”. Stock after replenishment is sampled from the live store SOH at the moment Mark As Done was clicked."
             action={
               <button
                 type="button"
@@ -1228,11 +1228,11 @@ const Replenishments = () => {
                     product_name: (r) => r.product_name || "",
                     size: (r) => r.size || "",
                     barcode: (r) => r.barcode || "",
-                    replenish: (r) => Number(r.replenish ?? 0),
+                    replenish: (r) => Number(r.units_to_replenish ?? 0),
                     actual: (r) => Number(r.actual_units_replenished ?? 0),
                     transfer_ref: (r) => r.transfer_ref || "",
                     fulfilment_pct: (r) => {
-                      const t = Number(r.replenish ?? 0);
+                      const t = Number(r.units_to_replenish ?? 0);
                       const a = Number(r.actual_units_replenished ?? 0);
                       return t > 0 ? (a / t) * 100 : null;
                     },
@@ -1251,7 +1251,7 @@ const Replenishments = () => {
                       <td className="px-3 py-2 break-words" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>{r.product_name}</td>
                       <td className="px-3 py-2 whitespace-nowrap">{r.size || "—"}</td>
                       <td className="px-3 py-2 whitespace-nowrap font-mono text-[11px]">{r.barcode}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.units_to_replenish)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{r.units_to_replenish == null ? <span className="text-muted">—</span> : fmtNum(r.units_to_replenish)}</td>
                       <td className="px-3 py-2 text-right tabular-nums font-bold text-emerald-700">{fmtNum(r.actual_units_replenished)}</td>
                       <td className="px-3 py-2 whitespace-nowrap">
                         {r.transfer_ref
