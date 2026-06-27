@@ -155,6 +155,14 @@ def check_row(m: dict, index: dict) -> list[dict]:
         if val is None:
             continue
         val = float(val)
+        # net_comp_residual is already built on each row's own VAT basis (see
+        # metrics.expected_net_comp), so within the reconciliation tolerance it is
+        # definitional noise oscillating around zero. Range-checking a ~0 series
+        # turns every tiny wiggle into a huge z (and a PERFECT 0 reconciliation into
+        # a "-100% drop"), so only surface a residual that actually exceeds the same
+        # tolerance the Tier-1 net_composition identity uses.
+        if metric == "net_comp_residual" and abs(val) <= config.NET_COMP_TOL:
+            continue
         series = index.get((m["entity_type"], m["entity"], m["subcategory"], metric))
         if not series:
             continue
@@ -172,24 +180,57 @@ def check_row(m: dict, index: dict) -> list[dict]:
             continue
 
         reasons = []
+        # Independent signal FAMILIES (not raw signals) that agree on this point.
         z = (val - st["mean"]) / st["std"] if st["std"] > 0 else 0.0
-        if st["std"] > 0 and abs(z) > config.Z_THRESHOLD:
+        z_hit = st["std"] > 0 and abs(z) > config.Z_THRESHOLD
+        if z_hit:
             reasons.append(f"z={z:.1f}")
+
+        # Non-parametric band — percentile OR Tukey fence count as ONE family: both
+        # are read off the same distribution and almost always trip together, so a
+        # strong-but-real day that merely clips the band must not masquerade as two
+        # independent confirmations.
+        np_hit = False
         if val < st["p1"] or val > st["p99"]:
+            np_hit = True
             reasons.append("outside p1-p99")
         lo = st["q1"] - config.IQR_K * st["iqr"]
         hi = st["q3"] + config.IQR_K * st["iqr"]
         if st["iqr"] > 0 and (val < lo or val > hi):
+            np_hit = True
             reasons.append("outside IQR fence")
 
-        last_val = prior[-1][1]
+        # Seasonal period-over-period: compare to the most recent prior value in the
+        # SAME (day-of-week, promo) bucket — NOT literally yesterday. Retail swings
+        # hugely across the week (a Friday after a quiet Thursday is a routine +130%),
+        # so a calendar-adjacent PoP fired on nearly every store every day. PoP is
+        # corroboration only: it can confirm a distribution anomaly, never raise one
+        # alone. (`bucket` is the same-weekday history, ascending by date.)
         pop = None
-        if last_val and abs(last_val) > 0:
-            pop = (val - last_val) / abs(last_val)
+        pop_hit = False
+        # Require enough same-weekday history before PoP may corroborate — a 1-point
+        # seasonal slice (possible when stats fell back to the full window) is too
+        # noisy to confirm an anomaly.
+        base = bucket[-1] if len(bucket) >= config.MIN_BUCKET_POINTS else None
+        if base is not None and abs(base) > 0:
+            pop = (val - base) / abs(base)
             if abs(pop) > config.POP_CAP:
-                reasons.append(f"PoP {pop*100:.0f}%")
+                pop_hit = True
+                reasons.append(f"PoP {pop*100:.0f}% vs same weekday")
 
-        if reasons:
+        # Fire only on agreement: one EXTREME parametric outlier, or >= 2 independent
+        # families confirming each other. A clean row-doubling trips z + band + PoP
+        # together (and leaves the abv/asp/msi ratios intact, so Tier-1 can't see it),
+        # while a record-but-consistent trading day only nudges the band and stays
+        # quiet. Legacy "any single signal" behaviour is available via config.
+        families = int(z_hit) + int(np_hit) + int(pop_hit)
+        severe = st["std"] > 0 and abs(z) >= config.Z_SEVERE
+        if config.REQUIRE_CONSENSUS:
+            fire = severe or families >= 2
+        else:
+            fire = bool(reasons)
+
+        if fire and reasons:
             materiality = abs(val - st["mean"]) if metric in config.MONEY_METRICS else 0.0
             fails.append({
                 "tier": 2, "metric": metric, "check_code": "learned_range",

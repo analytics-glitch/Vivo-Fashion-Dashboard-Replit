@@ -44,10 +44,19 @@ MONEY_TOL = _f("VALIDATION_MONEY_TOL", 0.02)
 NET_COMP_TOL = _f("VALIDATION_NET_COMP_TOL", 0.06)
 
 Z_THRESHOLD = _f("VALIDATION_Z_THRESHOLD", 3.0)
+# A single parametric outlier this extreme may fire on its own (no corroboration
+# needed) — reserved for genuinely impossible spikes, not a strong trading day.
+Z_SEVERE = _f("VALIDATION_Z_SEVERE", 5.0)
 PCT_LOW = _f("VALIDATION_PCT_LOW", 1.0)
 PCT_HIGH = _f("VALIDATION_PCT_HIGH", 99.0)
 IQR_K = _f("VALIDATION_IQR_K", 1.5)
 POP_CAP = _f("VALIDATION_POP_CAP", 0.75)
+# Learned-range firing rule. When True, a Tier-2 anomaly needs corroboration —
+# either one EXTREME signal (z >= Z_SEVERE) or agreement across >= 2 independent
+# signal families (parametric z / non-parametric band / seasonal PoP) — so a
+# record-but-internally-consistent day no longer trips dozens of single-signal
+# alerts. Set False to restore the legacy "any single signal fires" behaviour.
+REQUIRE_CONSENSUS = _b("VALIDATION_REQUIRE_CONSENSUS", True)
 
 BASELINE_WINDOW_DAYS = _i("VALIDATION_BASELINE_WINDOW_DAYS", 90)
 MIN_BUCKET_POINTS = _i("VALIDATION_MIN_BUCKET", 4)
