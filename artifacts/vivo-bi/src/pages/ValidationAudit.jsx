@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { api, fmtKESLong } from "@/lib/api";
 import { SectionTitle, Loading, ErrorBox, Empty } from "@/components/common";
-import { ArrowClockwise, ShieldWarning, CaretDown, CaretRight, Check, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ShieldWarning, CaretDown, CaretRight, Check, X, Copy, Lightning, Wrench } from "@phosphor-icons/react";
 import SortableTable from "@/components/SortableTable";
 import { toast } from "sonner";
 
@@ -150,7 +150,6 @@ const ValidationAudit = () => {
   const [error, setError] = useState(null);
   const [status, setStatus] = useState("open");
   const [severity, setSeverity] = useState("");
-  const [expanded, setExpanded] = useState(null);
   const [acting, setActing] = useState(null);
 
   const load = useCallback(() => {
@@ -193,6 +192,178 @@ const ValidationAudit = () => {
   const summary = data?.summary || {};
   const rows = data?.rows || [];
   const available = data?.available !== false;
+
+  // Split into the two batches the operator asked for: ones the button can
+  // safely apply (auto_applicable, computed by the backend safety fence) vs the
+  // ones that need a developer to change code.
+  const autoRows = rows.filter((r) => r.auto_applicable);
+  const devRows = rows.filter((r) => !r.auto_applicable);
+
+  // Build a copy-paste brief describing the desired outcome for a dev finding.
+  const briefFor = (r) => {
+    const ent = `${r.entity_type ? r.entity_type + ":" : ""}${r.entity || "—"}` +
+      (r.subcategory && r.subcategory !== "__ALL__" ? ` · ${r.subcategory}` : "");
+    const exp = (r.expected_low === null || r.expected_low === undefined) &&
+      (r.expected_high === null || r.expected_high === undefined)
+      ? "—"
+      : `${fmtNumOrDash(r.expected_low)}–${fmtNumOrDash(r.expected_high)}`;
+    const lines = [
+      "Fix this Vivo BI data-validation finding so the check passes:",
+      "",
+      `• Check: ${r.check_code || "—"}`,
+      `• Entity: ${ent}`,
+    ];
+    if (r.metric) lines.push(`• Metric: ${r.metric}`);
+    if (r.period_date) lines.push(`• Period: ${r.period_date}`);
+    lines.push(`• Observed: ${fmtNumOrDash(r.observed)}   Expected: ${exp}`);
+    if (r.diagnosis_cause) lines.push(`• Diagnosis: ${r.diagnosis_cause}`);
+    if (r.broken_identity) lines.push(`• Broken identity: ${r.broken_identity}`);
+    lines.push("");
+    lines.push(
+      `Desired outcome: "${r.metric || "the metric"}" for ${ent} should fall ` +
+      "within the expected range under identical filters and reconcile across " +
+      "every page that reports it. Please align the underlying calculation/" +
+      "definition in code (do not just patch the data) so this check no longer " +
+      "fires, then confirm the figures match.");
+    return lines.join("\n");
+  };
+
+  const fallbackCopy = (text, done) => {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      done && done();
+    } catch {
+      toast.error("Could not copy — select the text manually.");
+    }
+  };
+
+  const copyText = (text, label) => {
+    const done = () => toast.success(label || "Copied to clipboard");
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+    } else {
+      fallbackCopy(text, done);
+    }
+  };
+
+  const copyAllDev = () => {
+    if (!devRows.length) return;
+    const all = devRows
+      .map((r, i) => `--- Finding ${i + 1} of ${devRows.length} ---\n${briefFor(r)}`)
+      .join("\n\n");
+    copyText(
+      `${devRows.length} Vivo BI findings that need a developer fix:\n\n${all}`,
+      `Copied ${devRows.length} finding${devRows.length === 1 ? "" : "s"} to clipboard`);
+  };
+
+  const columns = [
+    { key: "severity", label: "Severity", align: "left", render: (r) => (
+      <span className={`${sevPill(r.severity)} text-[10.5px] uppercase`}>{r.severity || "—"}</span>
+    ) },
+    { key: "status", label: "Status", align: "left", render: (r) => (
+      <span className={`${statusPill(r.status)} text-[10.5px]`}>{r.status || "open"}</span>
+    ) },
+    { key: "entity", label: "Entity", align: "left", render: (r) => (
+      <span className="text-[12px]">
+        <span className="text-muted">{r.entity_type ? `${r.entity_type}:` : ""}</span>
+        {r.entity || "—"}
+        {r.subcategory && r.subcategory !== "__ALL__" && (
+          <span className="text-muted"> · {r.subcategory}</span>
+        )}
+      </span>
+    ) },
+    { key: "metric", label: "Metric", align: "left", render: (r) => r.metric || "—" },
+    { key: "check_code", label: "Check", align: "left", render: (r) => (
+      <span className="font-mono text-[11px]">{r.check_code || "—"}</span>
+    ) },
+    { key: "period_date", label: "Period", align: "left", render: (r) => r.period_date || "—" },
+    { key: "observed", label: "Observed", numeric: true, render: (r) => fmtNumOrDash(r.observed) },
+    { key: "expected", label: "Expected", align: "left", render: (r) => (
+      r.expected_low === null && r.expected_high === null
+        ? <span className="text-muted">—</span>
+        : <span className="text-[12px]">{fmtNumOrDash(r.expected_low)} – {fmtNumOrDash(r.expected_high)}</span>
+    ) },
+    { key: "materiality_kes", label: "Impact (KES)", numeric: true, render: (r) => (
+      r.materiality_kes ? fmtKESLong(r.materiality_kes) : "—"
+    ) },
+    { key: "last_seen_at", label: "Last seen", align: "left", render: (r) => fmtTs(r.last_seen_at) },
+  ];
+
+  const renderExpanded = (r) => (
+    <div className="bg-panel/60 p-4 text-[12.5px] space-y-2" data-testid={`finding-detail-${r.id}`}>
+      <div>
+        <span className="font-semibold">Diagnosis: </span>
+        {r.diagnosis_cause || <span className="text-muted italic">No automated diagnosis recorded.</span>}
+      </div>
+      {r.broken_identity && (
+        <div><span className="font-semibold">Broken identity: </span><span className="font-mono">{r.broken_identity}</span></div>
+      )}
+      <div className="flex flex-wrap gap-4 text-[11.5px] text-muted">
+        <span>First seen {fmtTs(r.created_at)}</span>
+        {r.resolved_at && <span>Resolved {fmtTs(r.resolved_at)}</span>}
+        <span>Tier {r.tier ?? "—"}</span>
+        <span>{r.auto_applicable ? "One-click fixable" : "Needs a developer"}</span>
+        {r.dry_run && <span>dry-run</span>}
+      </div>
+      {r.proposed_fix_sql && (
+        <div>
+          <div className="font-semibold mb-1">Proposed fix (SQL)</div>
+          <pre className="bg-slate-900 text-slate-100 rounded-lg p-3 text-[11px] overflow-x-auto whitespace-pre-wrap">{r.proposed_fix_sql}</pre>
+        </div>
+      )}
+      {!r.auto_applicable && (
+        <div>
+          <div className="font-semibold mb-1">Brief for the developer</div>
+          <pre className="bg-panel border border-border rounded-lg p-3 text-[11px] overflow-x-auto whitespace-pre-wrap">{briefFor(r)}</pre>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2 pt-1.5">
+        {r.auto_applicable && r.status === "open" && (
+          <button
+            type="button"
+            onClick={() => applyFix(r)}
+            disabled={acting === r.id}
+            data-testid={`apply-fix-${r.id}`}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand text-white text-[11.5px] font-semibold hover:opacity-90 disabled:opacity-50"
+          >
+            <Check size={14} weight="bold" />
+            {acting === r.id ? "Applying…" : "Approve & apply fix"}
+          </button>
+        )}
+        {!r.auto_applicable && (
+          <button
+            type="button"
+            onClick={() => copyText(briefFor(r), "Copied — paste it here to action")}
+            data-testid={`copy-brief-${r.id}`}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand text-white text-[11.5px] font-semibold hover:opacity-90"
+          >
+            <Copy size={14} weight="bold" />
+            Copy brief for developer
+          </button>
+        )}
+        {r.status === "open" && (
+          <button
+            type="button"
+            onClick={() => dismissFinding(r)}
+            disabled={acting === r.id}
+            data-testid={`dismiss-${r.id}`}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-[11.5px] font-semibold hover:bg-panel disabled:opacity-50"
+          >
+            <X size={14} weight="bold" />
+            Dismiss
+          </button>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-6" data-testid="validation-audit-page">
@@ -258,107 +429,72 @@ const ValidationAudit = () => {
         </div>
       )}
 
-      {!loading && !error && available && (
-        <div className="card-white p-5" data-testid="validation-table-wrap">
-          <SectionTitle
-            title={`${rows.length.toLocaleString()} finding${rows.length === 1 ? "" : "s"} shown`}
-            subtitle="Click a row to see the diagnosis and any proposed fix"
-          />
-          {rows.length === 0
-            ? <Empty label="No findings match the current filters." />
+      {!loading && !error && available && rows.length === 0 && (
+        <div className="card-white p-5" data-testid="validation-empty">
+          <Empty label="No findings match the current filters." />
+        </div>
+      )}
+
+      {/* Batch 1 — one-click auto-fixes */}
+      {!loading && !error && available && rows.length > 0 && (
+        <div className="card-white p-5" data-testid="auto-batch">
+          <div className="flex items-center gap-2 mb-1">
+            <Lightning size={18} weight="duotone" className="text-brand" />
+            <SectionTitle
+              title={`${autoRows.length.toLocaleString()} one-click fix${autoRows.length === 1 ? "" : "es"}`}
+              subtitle="Each has a safe, reversible fix. Open a row and click Approve & apply — no developer or publish needed."
+            />
+          </div>
+          {autoRows.length === 0
+            ? <Empty label="No findings can be auto-fixed right now." />
             : (
               <SortableTable
-                testId="validation-table"
-                exportName="validation-findings.csv"
+                testId="auto-batch-table"
+                exportName="validation-auto-fixable.csv"
                 initialSort={{ key: "last_seen_at", dir: "desc" }}
-                onRowClick={(r) => setExpanded(expanded === r.id ? null : r.id)}
-                columns={[
-                  { key: "severity", label: "Severity", align: "left", render: (r) => (
-                    <span className={`${sevPill(r.severity)} text-[10.5px] uppercase`}>{r.severity || "—"}</span>
-                  ) },
-                  { key: "status", label: "Status", align: "left", render: (r) => (
-                    <span className={`${statusPill(r.status)} text-[10.5px]`}>{r.status || "open"}</span>
-                  ) },
-                  { key: "entity", label: "Entity", align: "left", render: (r) => (
-                    <span className="text-[12px]">
-                      <span className="text-muted">{r.entity_type ? `${r.entity_type}:` : ""}</span>
-                      {r.entity || "—"}
-                      {r.subcategory && r.subcategory !== "__ALL__" && (
-                        <span className="text-muted"> · {r.subcategory}</span>
-                      )}
-                    </span>
-                  ) },
-                  { key: "metric", label: "Metric", align: "left", render: (r) => r.metric || "—" },
-                  { key: "check_code", label: "Check", align: "left", render: (r) => (
-                    <span className="font-mono text-[11px]">{r.check_code || "—"}</span>
-                  ) },
-                  { key: "period_date", label: "Period", align: "left", render: (r) => r.period_date || "—" },
-                  { key: "observed", label: "Observed", numeric: true, render: (r) => fmtNumOrDash(r.observed) },
-                  { key: "expected", label: "Expected", align: "left", render: (r) => (
-                    r.expected_low === null && r.expected_high === null
-                      ? <span className="text-muted">—</span>
-                      : <span className="text-[12px]">{fmtNumOrDash(r.expected_low)} – {fmtNumOrDash(r.expected_high)}</span>
-                  ) },
-                  { key: "materiality_kes", label: "Impact (KES)", numeric: true, render: (r) => (
-                    r.materiality_kes ? fmtKESLong(r.materiality_kes) : "—"
-                  ) },
-                  { key: "last_seen_at", label: "Last seen", align: "left", render: (r) => fmtTs(r.last_seen_at) },
-                ]}
-                rows={rows}
-                renderExpanded={(r) => expanded === r.id ? (
-                  <div className="bg-panel/60 p-4 text-[12.5px] space-y-2" data-testid={`finding-detail-${r.id}`}>
-                    <div>
-                      <span className="font-semibold">Diagnosis: </span>
-                      {r.diagnosis_cause || <span className="text-muted italic">No automated diagnosis recorded.</span>}
-                    </div>
-                    {r.broken_identity && (
-                      <div><span className="font-semibold">Broken identity: </span><span className="font-mono">{r.broken_identity}</span></div>
-                    )}
-                    <div className="flex flex-wrap gap-4 text-[11.5px] text-muted">
-                      <span>First seen {fmtTs(r.created_at)}</span>
-                      {r.resolved_at && <span>Resolved {fmtTs(r.resolved_at)}</span>}
-                      <span>Tier {r.tier ?? "—"}</span>
-                      <span>{r.auto_fixable ? "Auto-fixable" : "Manual review"}</span>
-                      {r.dry_run && <span>dry-run</span>}
-                    </div>
-                    {r.proposed_fix_sql && (
-                      <div>
-                        <div className="font-semibold mb-1">Proposed fix (SQL)</div>
-                        <pre className="bg-slate-900 text-slate-100 rounded-lg p-3 text-[11px] overflow-x-auto whitespace-pre-wrap">{r.proposed_fix_sql}</pre>
-                      </div>
-                    )}
-                    {r.status === "open" && (
-                      <div className="flex flex-wrap items-center gap-2 pt-1.5">
-                        {r.proposed_fix_sql ? (
-                          <button
-                            type="button"
-                            onClick={() => applyFix(r)}
-                            disabled={acting === r.id}
-                            data-testid={`apply-fix-${r.id}`}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand text-white text-[11.5px] font-semibold hover:opacity-90 disabled:opacity-50"
-                          >
-                            <Check size={14} weight="bold" />
-                            {acting === r.id ? "Applying…" : "Approve & apply fix"}
-                          </button>
-                        ) : (
-                          <span className="text-[11.5px] text-muted italic">
-                            No automated fix — this needs a developer to align the logic in code.
-                          </span>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => dismissFinding(r)}
-                          disabled={acting === r.id}
-                          data-testid={`dismiss-${r.id}`}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-[11.5px] font-semibold hover:bg-panel disabled:opacity-50"
-                        >
-                          <X size={14} weight="bold" />
-                          Dismiss
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ) : null}
+                rowKey={(r) => r.id}
+                columns={columns}
+                rows={autoRows}
+                renderExpanded={renderExpanded}
+              />
+            )}
+        </div>
+      )}
+
+      {/* Batch 2 — needs a developer */}
+      {!loading && !error && available && rows.length > 0 && (
+        <div className="card-white p-5" data-testid="dev-batch">
+          <div className="flex items-start justify-between gap-3 mb-1">
+            <div className="flex items-center gap-2">
+              <Wrench size={18} weight="duotone" className="text-amber-600" />
+              <SectionTitle
+                title={`${devRows.length.toLocaleString()} finding${devRows.length === 1 ? "" : "s"} that need a developer`}
+                subtitle="No safe automated fix — these need a code change. Open a row to copy a ready-made brief, or copy them all and paste here for me to action."
+              />
+            </div>
+            {devRows.length > 0 && (
+              <button
+                type="button"
+                onClick={copyAllDev}
+                data-testid="copy-all-dev"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-[11.5px] font-semibold hover:bg-panel whitespace-nowrap"
+              >
+                <Copy size={14} weight="bold" />
+                Copy all ({devRows.length})
+              </button>
+            )}
+          </div>
+          {devRows.length === 0
+            ? <Empty label="Nothing here needs a developer — every finding can be auto-fixed." />
+            : (
+              <SortableTable
+                testId="dev-batch-table"
+                exportName="validation-needs-developer.csv"
+                initialSort={{ key: "last_seen_at", dir: "desc" }}
+                rowKey={(r) => r.id}
+                columns={columns}
+                rows={devRows}
+                renderExpanded={renderExpanded}
               />
             )}
         </div>
