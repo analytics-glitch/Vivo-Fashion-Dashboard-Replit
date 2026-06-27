@@ -205,6 +205,16 @@ _LAST_PRODUCT_IMAGES_EXTRACT = None
 # inside that window. None on boot so the first cycle runs immediately (the agent
 # itself decides whether it is within active hours).
 _LAST_VALIDATION_RUN = None
+# Guards the inventory extracts (Odoo + Shopify + Shop Zetu stock levels feeding
+# all_inventory). Was once-a-day at midnight EAT, which left shelf stock up to
+# ~24h stale — so the replenishment engine could recommend moving a unit that had
+# already sold earlier that day. Now polled on a fast interval (default 5 min,
+# override with INVENTORY_SYNC_INTERVAL_SEC) so all_inventory is near-live. None
+# on boot so the first cycle after a (re)start refreshes immediately.
+_LAST_INVENTORY_SYNC = None
+INVENTORY_SYNC_INTERVAL_SEC = int(
+    os.environ.get("INVENTORY_SYNC_INTERVAL_SEC", "300")
+)
 # ── Attendance Sync ───────────────────────────────────────────────────────────
 ATTENDANCE_API_URL = os.environ.get(
     "ATTENDANCE_API_URL", "https://beverly-noncontending-bertram.ngrok-free.dev"
@@ -1067,13 +1077,27 @@ def main():
         log.error("Footfall sync error: %s", e)
         conn.rollback()
 
-    # Inventory sync — once a day at midnight EAT (21:00 UTC)
+    # Inventory sync — FAST POLL (default every 5 min, INVENTORY_SYNC_INTERVAL_SEC).
+    # Was once-a-day at midnight EAT, which left shelf stock up to ~24h stale and
+    # let the replenishment engine recommend moving units that had already sold.
+    # Refreshing all_inventory on a short interval keeps stock near-live so the
+    # engine sees the real shelf position. Rate-limited via a module-level guard
+    # even though main() runs every 60s; runs immediately on the first cycle after
+    # a (re)start. Stamped up front so a transient failure waits the full interval
+    # before retrying instead of hammering Odoo/Shopify on every 60s cycle.
     now_utc = datetime.now(timezone.utc)
-    if 21 <= now_utc.hour < 22:
+    global _LAST_INVENTORY_SYNC
+    inventory_due = (
+        _LAST_INVENTORY_SYNC is None
+        or (now_utc - _LAST_INVENTORY_SYNC).total_seconds()
+        >= INVENTORY_SYNC_INTERVAL_SEC
+    )
+    if inventory_due:
+        _LAST_INVENTORY_SYNC = now_utc
         try:
             import subprocess, sys
 
-            log.info("Running nightly inventory sync...")
+            log.info("Running inventory sync (fast poll)...")
             subprocess.run(
                 [sys.executable, "/home/runner/workspace/extract_odoo_inventory.py"],
                 check=True,
@@ -1089,7 +1113,8 @@ def main():
                 ],
                 check=True,
             )
-            log.info("✅ Nightly inventory sync complete")
+            write_heartbeat(conn, "inventory")
+            log.info("✅ Inventory sync complete")
         except Exception as e:
             log.error("Inventory sync error: %s", e)
 
