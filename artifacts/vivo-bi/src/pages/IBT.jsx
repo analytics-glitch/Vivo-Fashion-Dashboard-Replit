@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useAuth } from "@/lib/auth";
-import { api, fmtKES, fmtNum } from "@/lib/api";
+import { api, fmtKES, fmtNum, datePresets } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import IBTFlatTable from "@/components/IBTFlatTable";
@@ -14,13 +14,21 @@ import {
 } from "@phosphor-icons/react";
 
 const IBT = () => {
-  const { applied, touchLastUpdated, setPreset } = useFilters();
+  const { applied, touchLastUpdated } = useFilters();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   // Senior Leadership also need access to the Completed Moves report so
   // they can audit IBT picker activity without admin-only navigation.
   const canSeeCompletedMoves = isAdmin || user?.role === "leadership";
-  const { dateFrom, dateTo, countries, dataVersion } = applied;
+  const { countries, dataVersion } = applied;
+  // F17: IBT runs on a LOCAL "Last 30 days" window and must NOT mutate the
+  // shared global date filter — doing so (the old setPreset on mount) silently
+  // rewrote the filter bar + URL and contaminated every page visited after IBT.
+  // Compute the range once on mount from the same preset helper the filter bar uses.
+  const { dateFrom, dateTo } = useMemo(() => {
+    const p = datePresets().last_30d;
+    return { dateFrom: p.date_from, dateTo: p.date_to };
+  }, []);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -66,16 +74,6 @@ const IBT = () => {
     setSensitivity(key);
     try { localStorage.setItem("vivo_ibt_sensitivity", key); } catch { /* private browsing */ }
   };
-  // ALWAYS force "Last 30 days" on this page — leadership directive so
-  // store managers don't see stale narrow date windows. Runs once on
-  // mount, then subsequent filter-bar changes are respected.
-  const forcedRangeRef = useRef(false);
-  useEffect(() => {
-    if (forcedRangeRef.current) return;
-    forcedRangeRef.current = true;
-    setPreset("last_30d");
-  }, [setPreset]);
-
   // Load the keys of already-completed suggestions
   // so we can hide them from the live table.
   useEffect(() => {

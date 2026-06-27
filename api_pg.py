@@ -5079,6 +5079,7 @@ def get_subcategory_stock_sales(
         WITH sales AS (
             SELECT p.product_type AS subcategory,
                 SUM(s.ordered_item_quantity) AS units_sold,
+                COUNT(DISTINCT s.order_id) AS orders,
                 ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales
             FROM all_sales s
             LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
@@ -5095,6 +5096,7 @@ def get_subcategory_stock_sales(
         )
         SELECT COALESCE(s.subcategory, st.subcategory) AS subcategory,
             COALESCE(s.units_sold, 0) AS units_sold,
+            COALESCE(s.orders, 0) AS orders,
             COALESCE(s.total_sales, 0) AS total_sales,
             COALESCE(st.current_stock, 0) AS current_stock,
             ROUND(COALESCE(s.units_sold,0)*100.0/NULLIF(SUM(COALESCE(s.units_sold,0)) OVER(),0),2) AS pct_of_total_sold,
@@ -5112,9 +5114,18 @@ def get_orders(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
+    brand:     str = Query(default=None),
+    sale_kind: str = Query(default=None),
     limit:     int = Query(default=1000),
 ):
     where = build_filters(date_from, date_to, country, channel)
+    if brand:
+        where += " AND p.brand IN (" + csv_to_sql(brand) + ")"
+    if sale_kind:
+        where += " AND s.sale_kind IN (" + csv_to_sql(sale_kind) + ")"
+    # Clamp the cap so the Sales Export can pull a whole month for the CSV /
+    # summary (well above the 5,000-line table preview) without an unbounded scan.
+    safe_limit = max(1, min(int(limit or 1000), 100000))
     return run_query("""
         SELECT s.order_id, s.order_name, s.sale_date AS order_date,
             s.pos_location_name, s.country,
@@ -5133,7 +5144,43 @@ def get_orders(
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
         WHERE """ + where + """
         ORDER BY s.sale_date DESC, s.order_id
-        LIMIT """ + str(limit), date_to=date_to)
+        LIMIT """ + str(safe_limit), date_to=date_to)
+
+@app.get("/api/orders-summary")
+def get_orders_summary(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+    brand:     str = Query(default=None),
+    sale_kind: str = Query(default=None),
+):
+    """Aggregate totals for the Sales Export over the FULL filtered period (not the
+    5,000-line table preview). Mirrors /api/orders' filter contract (incl. the
+    optional brand / sale_kind narrowing) so the summary cards reconcile to the
+    underlying data even when the row preview is capped. Read-only."""
+    where = build_filters(date_from, date_to, country, channel)
+    join = ""
+    if brand:
+        where += " AND p.brand IN (" + csv_to_sql(brand) + ")"
+        join = " LEFT JOIN all_products_clean p ON s.variant_sku = p.sku"
+    if sale_kind:
+        where += " AND s.sale_kind IN (" + csv_to_sql(sale_kind) + ")"
+    rows = run_query("""
+        SELECT COUNT(DISTINCT s.order_id) AS orders,
+            COUNT(*) AS lines,
+            COALESCE(SUM(s.ordered_item_quantity), 0) AS qty,
+            ROUND(COALESCE(SUM(s.total_sales_kes::numeric), 0), 0) AS total,
+            ROUND(COALESCE(SUM(s.gross_sales_kes::numeric), 0), 0) AS gross,
+            ROUND(COALESCE(SUM(s.discounts_kes::numeric), 0), 0) AS discount,
+            ROUND(COALESCE(SUM(s.returns_kes::numeric), 0), 0) AS returns,
+            ROUND(COALESCE(SUM(s.net_sales_kes::numeric), 0), 0) AS net
+        FROM all_sales s""" + join + """
+        WHERE """ + where, date_to=date_to)
+    return rows[0] if rows else {
+        "orders": 0, "lines": 0, "qty": 0, "total": 0,
+        "gross": 0, "discount": 0, "returns": 0, "net": 0,
+    }
 
 @app.get("/api/stock-to-sales")
 def get_stock_to_sales(
@@ -5666,7 +5713,8 @@ def analytics_sell_through_by_location(
     return run_query("""
         WITH sales AS (
             SELECT s.pos_location_name AS location, s.country,
-                SUM(s.ordered_item_quantity) AS units_sold
+                SUM(s.ordered_item_quantity) AS units_sold,
+                ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales
             FROM all_sales s
             WHERE """ + sales_where + """
             GROUP BY s.pos_location_name, s.country
@@ -5682,9 +5730,23 @@ def analytics_sell_through_by_location(
         SELECT COALESCE(s.location, i.location) AS location,
             COALESCE(s.country, i.country) AS country,
             COALESCE(s.units_sold, 0) AS units_sold,
+            COALESCE(s.total_sales, 0) AS total_sales,
             COALESCE(i.available, 0) AS available,
+            COALESCE(i.available, 0) AS current_stock,
             ROUND(COALESCE(s.units_sold, 0) * 100.0 /
-                NULLIF(COALESCE(s.units_sold, 0) + COALESCE(i.available, 0), 0), 1) AS sell_through
+                NULLIF(COALESCE(s.units_sold, 0) + COALESCE(i.available, 0), 0), 1) AS sell_through,
+            ROUND(COALESCE(s.units_sold, 0) * 100.0 /
+                NULLIF(COALESCE(s.units_sold, 0) + COALESCE(i.available, 0), 0), 1) AS sell_through_pct,
+            CASE
+                WHEN COALESCE(s.units_sold, 0) + COALESCE(i.available, 0) = 0 THEN 'no_stock_data'
+                WHEN COALESCE(s.units_sold, 0) * 100.0
+                    / (COALESCE(s.units_sold, 0) + COALESCE(i.available, 0)) >= 25 THEN 'strong'
+                WHEN COALESCE(s.units_sold, 0) * 100.0
+                    / (COALESCE(s.units_sold, 0) + COALESCE(i.available, 0)) >= 12 THEN 'healthy'
+                WHEN COALESCE(s.units_sold, 0) * 100.0
+                    / (COALESCE(s.units_sold, 0) + COALESCE(i.available, 0)) >= 5 THEN 'slow'
+                ELSE 'stuck'
+            END AS health
         FROM sales s
         FULL OUTER JOIN inv i ON s.location = i.location
         ORDER BY units_sold DESC
@@ -6942,6 +7004,7 @@ def analytics_sts_by_category(
         WITH sales AS (
             SELECT p.category AS category,
                 SUM(s.ordered_item_quantity) AS units_sold,
+                COUNT(DISTINCT s.order_id) AS orders,
                 ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales
             FROM all_sales s
             LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
@@ -6958,6 +7021,7 @@ def analytics_sts_by_category(
         )
         SELECT COALESCE(s.category, st.category) AS category,
             COALESCE(s.units_sold, 0) AS units_sold,
+            COALESCE(s.orders, 0) AS orders,
             COALESCE(s.total_sales, 0) AS total_sales,
             COALESCE(st.current_stock, 0) AS current_stock,
             ROUND(COALESCE(s.units_sold,0)*100.0/NULLIF(SUM(COALESCE(s.units_sold,0)) OVER(),0),2) AS pct_of_total_sold,
@@ -7226,6 +7290,20 @@ def analytics_margin(
         LIMIT 2000
     """, date_to=date_to)
 
+def _finance_missing_relation(exc):
+    """True only when a finance query failed because its Odoo-derived view/table is
+    absent on this DB (e.g. a freshly published prod that hasn't materialised the
+    finance objects yet). Lets the WIP /finance page degrade to an empty state with
+    a 200 instead of a hard 500. Deliberately NARROW — only a missing relation or
+    schema qualifies; a bad column or any other error still re-raises (→ 500) so a
+    real finance-SQL regression stays visible rather than silently returning empty."""
+    if isinstance(exc, (psycopg2.errors.UndefinedTable,
+                        psycopg2.errors.InvalidSchemaName)):
+        log.warning("finance endpoint degrading to empty — missing relation/schema: %s", exc)
+        return True
+    return False
+
+
 @app.get("/api/finance/pl")
 def finance_pl(
     date_from: str = Query(default=str(date(date.today().year - 1, date.today().month, 1))),
@@ -7249,16 +7327,22 @@ def finance_pl(
     validated, but the query is intentionally un-windowed (do NOT add a second
     full-view scan — it doubles the cost). Read-only; reuses the shared pool."""
     _ = _validate_date_param(date_from), _validate_date_param(date_to)
-    months = run_query("""
-        SELECT month, gross_sales, returns, net_revenue_pipeline, revenue_odoo,
-               cogs, production, purchases, total_costs_of_revenue, gross_profit,
-               employment, admin, establishment, selling, marketing,
-               finance_charges, other_opex, total_operating_expenses,
-               (gross_profit - total_operating_expenses) AS operating_income,
-               other_income, net_profit, is_closed, has_cost_anomaly
-        FROM finance_pl_summary
-        ORDER BY month
-    """)
+    try:
+        months = run_query("""
+            SELECT month, gross_sales, returns, net_revenue_pipeline, revenue_odoo,
+                   cogs, production, purchases, total_costs_of_revenue, gross_profit,
+                   employment, admin, establishment, selling, marketing,
+                   finance_charges, other_opex, total_operating_expenses,
+                   (gross_profit - total_operating_expenses) AS operating_income,
+                   other_income, net_profit, is_closed, has_cost_anomaly
+            FROM finance_pl_summary
+            ORDER BY month
+        """)
+    except Exception as e:
+        if _finance_missing_relation(e):
+            months = []
+        else:
+            raise
     return {"months": months}
 
 
@@ -7280,17 +7364,23 @@ def finance_pl_detail(
     dt = _validate_date_param(date_to) or str(date.today())
     sign = ("CASE WHEN m.pl_section IN ('revenue','other_income') "
             "THEN l.credit - l.debit ELSE l.debit - l.credit END")
-    rows = run_query("""
-        SELECT m.pl_section, m.pl_group, l.account_code, l.account_name,
-               ROUND(SUM(""" + sign + """), 0) AS amount
-        FROM raw_account_move_lines l
-        JOIN finance_account_map m ON m.account_code = l.account_code
-        WHERE l.date >= date_trunc('month', DATE '""" + df + """')
-          AND l.date <  date_trunc('month', DATE '""" + dt + """') + INTERVAL '1 month'
-        GROUP BY m.pl_section, m.pl_group, l.account_code, l.account_name
-        HAVING ROUND(SUM(""" + sign + """), 0) <> 0
-        ORDER BY m.pl_section, m.pl_group, amount DESC
-    """, date_to=dt)
+    try:
+        rows = run_query("""
+            SELECT m.pl_section, m.pl_group, l.account_code, l.account_name,
+                   ROUND(SUM(""" + sign + """), 0) AS amount
+            FROM raw_account_move_lines l
+            JOIN finance_account_map m ON m.account_code = l.account_code
+            WHERE l.date >= date_trunc('month', DATE '""" + df + """')
+              AND l.date <  date_trunc('month', DATE '""" + dt + """') + INTERVAL '1 month'
+            GROUP BY m.pl_section, m.pl_group, l.account_code, l.account_name
+            HAVING ROUND(SUM(""" + sign + """), 0) <> 0
+            ORDER BY m.pl_section, m.pl_group, amount DESC
+        """, date_to=dt)
+    except Exception as e:
+        if _finance_missing_relation(e):
+            rows = []
+        else:
+            raise
     return {"detail": rows}
 
 
@@ -7313,20 +7403,26 @@ def finance_expense_by_vendor(
     valid_groups = {"cogs", "production", "purchases", "employment", "admin",
                     "establishment", "selling", "marketing", "finance_charges", "other_opex"}
     cat_sql = (" AND m.pl_group = '" + cat + "'") if cat in valid_groups else ""
-    rows = run_query("""
-        SELECT l.partner_name AS vendor,
-               ROUND(SUM(l.debit - l.credit), 0) AS spend
-        FROM raw_account_move_lines l
-        JOIN finance_account_map m ON m.account_code = l.account_code
-        WHERE m.pl_section IN ('costs_of_revenue','operating_expenses')""" + cat_sql + """
-          AND l.partner_name IS NOT NULL AND btrim(l.partner_name) <> ''
-          AND l.date >= date_trunc('month', DATE '""" + df + """')
-          AND l.date <  date_trunc('month', DATE '""" + dt + """') + INTERVAL '1 month'
-        GROUP BY l.partner_name
-        HAVING ROUND(SUM(l.debit - l.credit), 0) <> 0
-        ORDER BY spend DESC
-        LIMIT """ + str(lim) + """
-    """, date_to=dt)
+    try:
+        rows = run_query("""
+            SELECT l.partner_name AS vendor,
+                   ROUND(SUM(l.debit - l.credit), 0) AS spend
+            FROM raw_account_move_lines l
+            JOIN finance_account_map m ON m.account_code = l.account_code
+            WHERE m.pl_section IN ('costs_of_revenue','operating_expenses')""" + cat_sql + """
+              AND l.partner_name IS NOT NULL AND btrim(l.partner_name) <> ''
+              AND l.date >= date_trunc('month', DATE '""" + df + """')
+              AND l.date <  date_trunc('month', DATE '""" + dt + """') + INTERVAL '1 month'
+            GROUP BY l.partner_name
+            HAVING ROUND(SUM(l.debit - l.credit), 0) <> 0
+            ORDER BY spend DESC
+            LIMIT """ + str(lim) + """
+        """, date_to=dt)
+    except Exception as e:
+        if _finance_missing_relation(e):
+            rows = []
+        else:
+            raise
     return {"vendors": rows}
 
 

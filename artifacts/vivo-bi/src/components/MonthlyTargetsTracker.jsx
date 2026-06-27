@@ -9,7 +9,7 @@ import { useTableSort, SortableTh } from "@/lib/useTableSort";
  *
  * One collapsible row per store with monthly summary; expand to reveal
  * the day-by-day Date / Day / Ratio / Daily Budget / Actual / Variance
- * % / Ksh Variance (Daily) / Ksh Variance (Cumulative) table. Future
+ * % / KES Variance (Daily) / KES Variance (Cumulative) table. Future
  * dates are grayed out (no actual yet).
  */
 
@@ -116,8 +116,8 @@ function StoreCard({ store }) {
                 >Suggested Basket Size</SortableTh>
                 <SortableTh sortKey="actual" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Actual</SortableTh>
                 <SortableTh sortKey="variance_pct" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Variance %</SortableTh>
-                <SortableTh sortKey="ksh_variance" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Ksh variance (Daily)</SortableTh>
-                <SortableTh sortKey="ksh_variance_cumulative" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">Ksh variance (Cumulative)</SortableTh>
+                <SortableTh sortKey="ksh_variance" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">KES variance (Daily)</SortableTh>
+                <SortableTh sortKey="ksh_variance_cumulative" sort={sort} onSort={toggleSort} numeric className="px-3 py-2">KES variance (Cumulative)</SortableTh>
               </tr>
             </thead>
             <tbody>

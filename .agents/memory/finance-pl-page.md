@@ -56,3 +56,20 @@ second full-view scan — one constant cacheable scan + client filtering is chea
 EAT (UTC+3) off-by-one. Auth: `/api/finance` gate widened admin→admin+leadership
 in `clerk_auth_gate`; `finance` lives in permissions.js LEADERSHIP (ADMIN_ONLY_PAGES
 is empty). Server gate is the real boundary — client nav hiding is bypassable.
+
+## Prod-missing-relation graceful degrade (not 500)
+
+`/api/finance/{pl,pl-detail,expense-by-vendor}` wrap `run_query` and, via
+`_finance_missing_relation(exc)`, return an empty 200 (`{months/detail/vendors:[]}`)
+when the Odoo-derived objects (`finance_pl_summary` view, `raw_account_move_lines`,
+`finance_account_map`) are absent — the fresh-prod bootstrap case (prod is a
+SEPARATE DB; objects materialise after publish).
+
+**Why:** an absent view crash-500'd the WIP /finance page on prod even though the
+frontend already renders an empty state. But the guard must be NARROW: it catches
+ONLY `psycopg2.errors.UndefinedTable` + `InvalidSchemaName` and logs a warning;
+`UndefinedColumn`/any other error still re-raises (→500) so a real finance-SQL
+regression isn't silently turned into blank data.
+
+**How to apply:** any new finance endpoint reading those objects should reuse the
+same narrow guard, never a broad `except`/`"does not exist"` text match.

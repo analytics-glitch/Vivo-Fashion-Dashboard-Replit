@@ -201,7 +201,11 @@ const Footfall = () => {
         scopedSales += s.total_sales || 0;
       }
       const ot = Number(r.outside_traffic || 0);
-      if (ot > 0) {
+      // Only fold a store into the GROUP turn-in when its sensors are coherent
+      // (inside footfall <= outside traffic). A store reporting more inside than
+      // outside (>100% turn-in, sensor fault) would otherwise inflate the rolled-up
+      // turn-in past 100% — the per-store ⚠ flag already surfaces those individually.
+      if (ot > 0 && Number(r.total_footfall || 0) <= ot) {
         outsideTraffic += ot;
         footfallWithOutside += Number(r.total_footfall || 0);
       }
@@ -232,7 +236,9 @@ const Footfall = () => {
       const s = prevSalesMap.get(r.location);
       if (s) scopedOrders += s.orders || s.total_orders || 0;
       const ot = Number(r.outside_traffic || 0);
-      if (ot > 0) {
+      // Same coherence gate as the current-period turn-in above: drop sensor-faulty
+      // stores (inside > outside) so the rolled-up turn-in can't exceed 100%.
+      if (ot > 0 && Number(r.total_footfall || 0) <= ot) {
         outsideTraffic += ot;
         footfallWithOutside += Number(r.total_footfall || 0);
       }

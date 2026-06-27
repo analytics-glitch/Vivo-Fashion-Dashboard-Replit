@@ -428,6 +428,12 @@ const SalesExport = () => {
   const [kindSel, setKindSel] = useState([]); // sale_kind: order / return
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
+  // Full-period aggregate (NOT capped at the 5,000-line table preview) — drives
+  // the summary cards so they reconcile to the underlying data even when the
+  // table only shows the first 5,000 lines. Respects brand + sale-kind, but not
+  // the free-text search (the backend can't replicate it).
+  const [summary, setSummary] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput.trim().toLowerCase()), 120);
@@ -470,6 +476,26 @@ const SalesExport = () => {
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
+  // Full-period aggregate for the summary cards (un-capped). Re-runs when the
+  // global filters OR the brand / sale-kind selections change so the cards always
+  // reflect the WHOLE filtered dataset, not just the 5,000-line preview.
+  useEffect(() => {
+    let cancelled = false;
+    const country = countries.length ? countries.join(",") : undefined;
+    const channel = channels.length ? channels.join(",") : undefined;
+    const brand = brandSel.length ? brandSel.join(",") : undefined;
+    const sale_kind = kindSel.length ? kindSel.join(",") : undefined;
+    api
+      .get("/orders-summary", {
+        params: { date_from: dateFrom, date_to: dateTo, country, channel, brand, sale_kind },
+      })
+      .then((r) => { if (!cancelled) setSummary(r.data || null); })
+      .catch(() => { if (!cancelled) setSummary(null); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels),
+      JSON.stringify(brandSel), JSON.stringify(kindSel), dataVersion]);
+
   const brandList = useMemo(() => [...new Set(rows.map((r) => r.brand).filter(Boolean))].sort(), [rows]);
   const kindList = useMemo(() => [...new Set(rows.map((r) => r.sale_kind).filter(Boolean))].sort(), [rows]);
 
@@ -499,7 +525,17 @@ const SalesExport = () => {
     return { qty, total, gross, discount, returns, net, orders: orderSet.size, lines: filtered.length };
   }, [filtered]);
 
-  const exportCsv = () => {
+  // Summary cards prefer the full-period aggregate; fall back to the (capped)
+  // preview totals while it loads or if the summary call fails.
+  const card = summary || totals;
+
+  // CSV export pulls the FULL filtered period (up to 100,000 lines) from the API
+  // rather than the 5,000-line table preview, so the download isn't silently
+  // truncated. The free-text search is re-applied client-side on the full set.
+  const EXPORT_CAP = 100000;
+  const exportCsv = async () => {
+    if (exporting) return;
+    setExporting(true);
     const cols = [
       ["order_id", "Order ID"],
       ["order_name", "Order Name"],
@@ -531,30 +567,59 @@ const SalesExport = () => {
       const s = String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const metaLines = [
-      `# Vivo BI · Sales Export (order + line level)`,
-      `# Date range: ${dateFrom} to ${dateTo}`,
-      `# Country: ${countries.length ? countries.join("; ") : "All"}`,
-      `# POS: ${channels.length ? channels.join("; ") : "All"}`,
-      `# Brand filter: ${brandSel.length ? brandSel.join("; ") : "All"}`,
-      `# Sale-kind filter: ${kindSel.length ? kindSel.join("; ") : "All"}`,
-      `# Generated: ${new Date().toISOString()}`,
-      `# Lines: ${filtered.length}`,
-      "",
-    ];
-    const lines = [...metaLines, cols.map(([, h]) => h).join(",")];
-    for (const r of filtered) {
-      lines.push(cols.map(([k]) => esc(r[k])).join(","));
+    try {
+      const country = countries.length ? countries.join(",") : undefined;
+      const channel = channels.length ? channels.join(",") : undefined;
+      const brand = brandSel.length ? brandSel.join(",") : undefined;
+      const sale_kind = kindSel.length ? kindSel.join(",") : undefined;
+      const resp = await api.get("/orders", {
+        params: { date_from: dateFrom, date_to: dateTo, country, channel, brand, sale_kind, limit: EXPORT_CAP },
+      });
+      const all = resp.data || [];
+      // Re-apply the free-text search (server can't replicate it) so the export
+      // matches what the user is looking at when a search is active.
+      const exportRows = search
+        ? all.filter((r) => {
+            const blob = [
+              r.order_id, r.order_name, r.pos_location_name, r.channel,
+              r.customer_id, r.customer_type, r.product_title, r.sku,
+              r.style_name, r.brand, r.collection, r.subcategory, r.color, r.size,
+            ].filter(Boolean).join("\t").toLowerCase();
+            return blob.includes(search);
+          })
+        : all;
+      const truncated = all.length >= EXPORT_CAP;
+      const metaLines = [
+        `# Vivo BI · Sales Export (order + line level)`,
+        `# Date range: ${dateFrom} to ${dateTo}`,
+        `# Country: ${countries.length ? countries.join("; ") : "All"}`,
+        `# POS: ${channels.length ? channels.join("; ") : "All"}`,
+        `# Brand filter: ${brandSel.length ? brandSel.join("; ") : "All"}`,
+        `# Sale-kind filter: ${kindSel.length ? kindSel.join("; ") : "All"}`,
+        `# Search filter: ${search || "None"}`,
+        `# Generated: ${new Date().toISOString()}`,
+        `# Lines: ${exportRows.length}${truncated ? ` (capped at ${EXPORT_CAP.toLocaleString()} — narrow the date range for the rest)` : ""}`,
+        "",
+      ];
+      const lines = [...metaLines, cols.map(([, h]) => h).join(",")];
+      for (const r of exportRows) {
+        lines.push(cols.map(([k]) => esc(r[k])).join(","));
+      }
+      const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `sales-export-${dateFrom}_${dateTo}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      const detail = e?.response?.data?.detail;
+      setError(typeof detail === "string" ? detail : (e.message || "Export failed"));
+    } finally {
+      setExporting(false);
     }
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `sales-export-${dateFrom}_${dateTo}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
   };
 
   return (
@@ -566,18 +631,19 @@ const SalesExport = () => {
           </h2>
           <p className="text-muted text-[13px] mt-0.5">
             Order- &amp; line-level detail for {fmtDate(dateFrom)} → {fmtDate(dateTo)} · filtered by
-            the global Country + POS filters. Each row is one product line on one order. Up to 5,000 lines per query.
+            the global Country + POS filters. Each row is one product line on one order. The table previews up
+            to 5,000 lines; the CSV download includes the full period.
           </p>
         </div>
         <button
           type="button"
           onClick={exportCsv}
-          disabled={!filtered.length}
+          disabled={exporting || !(summary?.lines ?? filtered.length)}
           data-testid="sales-export-csv-btn"
           className="btn-primary flex items-center gap-1.5 disabled:opacity-50"
         >
           <DownloadSimple size={14} weight="bold" />
-          Download CSV ({fmtNum(filtered.length)} lines)
+          {exporting ? "Preparing CSV…" : `Download CSV (${fmtNum(summary?.lines ?? filtered.length)} lines)`}
         </button>
       </div>
 
@@ -632,18 +698,23 @@ const SalesExport = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-            <div className="card-white p-4"><div className="eyebrow">Lines</div><div className="font-bold text-[18px] num mt-0.5">{fmtNum(totals.lines)}</div></div>
-            <div className="card-white p-4"><div className="eyebrow">Orders</div><div className="font-bold text-[18px] num mt-0.5">{fmtNum(totals.orders)}</div></div>
-            <div className="card-white p-4"><div className="eyebrow">Quantity</div><div className="font-bold text-[18px] num mt-0.5">{fmtNum(totals.qty)}</div></div>
-            <div className="card-white p-4"><div className="eyebrow">Gross Sales</div><div className="font-bold text-[18px] num mt-0.5">{fmtKES(totals.gross)}</div></div>
-            <div className="card-white p-4"><div className="eyebrow">Discount</div><div className="font-bold text-[18px] num mt-0.5 text-danger">{fmtKES(totals.discount)}</div></div>
-            <div className="card-white p-4"><div className="eyebrow">Net Sales</div><div className="font-bold text-[18px] num mt-0.5 text-brand">{fmtKES(totals.net)}</div></div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3" data-testid="sales-export-summary">
+            <div className="card-white p-4"><div className="eyebrow">Lines</div><div className="font-bold text-[18px] num mt-0.5">{fmtNum(card.lines)}</div></div>
+            <div className="card-white p-4"><div className="eyebrow">Orders</div><div className="font-bold text-[18px] num mt-0.5">{fmtNum(card.orders)}</div></div>
+            <div className="card-white p-4"><div className="eyebrow">Quantity</div><div className="font-bold text-[18px] num mt-0.5">{fmtNum(card.qty)}</div></div>
+            <div className="card-white p-4"><div className="eyebrow">Gross Sales</div><div className="font-bold text-[18px] num mt-0.5">{fmtKES(card.gross)}</div></div>
+            <div className="card-white p-4"><div className="eyebrow">Discount</div><div className="font-bold text-[18px] num mt-0.5 text-danger">{fmtKES(card.discount)}</div></div>
+            <div className="card-white p-4"><div className="eyebrow">Net Sales</div><div className="font-bold text-[18px] num mt-0.5 text-brand">{fmtKES(card.net)}</div></div>
           </div>
+          {summary && (
+            <p className="text-muted text-[11.5px] -mt-1">
+              Summary totals cover the full filtered period{search ? " (the text search narrows only the table preview below)" : ""}.
+            </p>
+          )}
 
           <div className="card-white p-5" data-testid="sales-export-table-card">
             <SectionTitle
-              title={`${fmtNum(filtered.length)} line items${rows.length >= 5000 ? " · capped at 5,000 — narrow date range for full detail" : ""}`}
+              title={`${fmtNum(filtered.length)} line items shown${rows.length >= 5000 ? " · preview capped at 5,000 — use Download CSV for the full period" : ""}`}
               subtitle="One row per product line on an order. Sort by clicking headers · paginate below."
             />
             {filtered.length === 0 ? (
