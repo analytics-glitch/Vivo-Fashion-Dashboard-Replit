@@ -206,7 +206,8 @@ def run(days: int, dry_run: bool, evaluate_days: int, backfill_only: bool = Fals
     _audit(conn, run_id, dry_run, phase="cross_surface", event="checks",
            detail={"exceptions": len(xsurf_exc),
                    "reds": sum(1 for e in xsurf_exc if e["severity"] == "red"),
-                   "skip": xsurf_skip})
+                   "skip": xsurf_skip,
+                   "intentional_skips": cross_surface.INTENTIONAL_SKIPS})
 
     report_rows = [m for m in rows if m["period_date"] >= report_start]
     n_entities = len({(m["entity_type"], m["entity"], m["period_date"]) for m in report_rows})

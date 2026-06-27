@@ -117,3 +117,13 @@ alerting (email + WhatsApp, degrades gracefully when creds/recipients missing).
   take date+country+channel (full kpis contract). `daily-trend`'s units column is
   `units` (NOT `units_sold`); country/sales-summary use `units_sold`; kpis uses
   `total_units`/`total_orders` vs the decomposition's `units`/`orders`.
+- **net_sales is NOT derivable from the breakdown endpoints** (the non-obvious trap):
+  `kpis.net_sales` sums the STORED per-row `net_sales_kes` column (VAT/structurally
+  adjusted), NOT `gross − discounts − returns`. The breakdown endpoints
+  (country-summary, sales-summary, daily-trend) never return net_sales and deriving
+  it from their fields is empirically ~9% off the stored net. So cross-surface
+  reconciles net_sales ONLY against `/analytics/total-sales-summary` (the one
+  breakdown that exposes it); reconciling net elsewhere fires false REDs.
+  **Why:** any future "add net_sales to page X" check must confirm the endpoint
+  exposes net_sales_kes, not re-derive it. Intentional skips are listed in
+  `cross_surface.INTENTIONAL_SKIPS` and surfaced in the audit row for visibility.
