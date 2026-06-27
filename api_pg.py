@@ -11784,6 +11784,16 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                 ) AS launch_date
             FROM all_products_clean
             WHERE style_name IS NOT NULL AND style_name <> ''
+            -- Exclude third-party brand at the SKU-ROW level (before GROUP BY),
+            -- exactly like /api/analytics/product-analysis's prod CTE. A style is
+            -- third-party only if ALL its SKUs are third-party; a style with any
+            -- owned SKU survives with a non-third-party MAX(brand). The previous
+            -- post-aggregation filter on MAX(brand) (kept below, now redundant)
+            -- dropped a mixed-brand style whenever its lexically-largest brand
+            -- string was "Third Party", so it diverged from Product Analysis on
+            -- such styles (the xsurf_pa_vs_rm_total style-count mismatch). Both
+            -- surfaces now define the identical inventory-holding style universe.
+              AND COALESCE(brand, '') NOT ILIKE '%third party%'
             GROUP BY style_name
         ),
         """ + rm_sales_cte + """,
