@@ -403,7 +403,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # stdlib (see clerk_auth.py) — no SDK, because this env's u-root-cmds shadows
 # coreutils and breaks the wheels' builds.
 import clerk_auth
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 # Exact /api paths reachable without a session (health probes + proxy prefix).
 _AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/readyz", "/api/sync-status"}
@@ -14556,87 +14556,507 @@ def _chat_context_line(ctx):
             + "; ".join(parts) + ". Apply them unless the user clearly asks otherwise.")
 
 
-def _chat_core(message, session_id, ctx, revealed):
+# ---------------------------------------------------------------------------
+# Sidekick-grade tool-calling assistant
+# ---------------------------------------------------------------------------
+# The assistant no longer hand-writes SQL from scratch for every question.
+# Instead the LLM is given a catalog of TOOLS that map 1:1 onto the dashboard's
+# own vetted analytical endpoint functions (called in-process, so the numbers
+# match the dashboard exactly and reuse its query cache). A free-form
+# read-only SQL tool remains as the fallback for the long tail. The model can
+# chain several tool calls in one turn, then composes a plain-text answer that
+# is streamed token-by-token to the widget.
+_CHAT_TOOL_STEPS = 6             # max tool round-trips before forcing an answer
+_CHAT_TOOL_RESULT_CHARS = 6000   # cap each tool result handed back to the model
+_CHAT_TOOL_MAX_ROWS = 40         # cap list rows handed back to the model
+_CHAT_SCHEMA_CACHE = {"ts": 0.0, "doc": ""}
+
+
+def _chat_valid_day(s):
+    """Strict YYYY-MM-DD calendar parse (rejects 2026-13-40). Returns canonical
+    string or None. Used to sanitise LLM-supplied dates before they are
+    interpolated into the vetted endpoints' SQL."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s).isoformat()
+    except (ValueError, TypeError):
+        return None
+
+
+def _chat_arg_str(v):
+    """Normalise an LLM tool arg to a clean comma-joined string or None.
+    Accepts a string or a list of strings (the model sometimes passes either)."""
+    if v is None:
+        return None
+    if isinstance(v, (list, tuple)):
+        v = ",".join(str(x) for x in v)
+    v = str(v).strip()
+    return v or None
+
+
+def _chat_resolve_dates(args, ctx):
+    """Pick the date window for a tool call: explicit args win, then the active
+    dashboard filter context, then a sane trailing-90-day default."""
+    ctx = ctx or {}
+    df = _chat_valid_day(args.get("date_from")) or _chat_valid_day(ctx.get("date_from"))
+    dt = _chat_valid_day(args.get("date_to")) or _chat_valid_day(ctx.get("date_to"))
+    today = date.today()
+    if not dt:
+        dt = today.isoformat()
+    if not df:
+        df = (today - timedelta(days=90)).isoformat()
+    if df > dt:
+        df, dt = dt, df
+    return df, dt
+
+
+# Each entry: name -> (callable(args, ctx, revealed) -> result, openai-spec).
+def _t_kpis(a, ctx, rev):
+    df, dt = _chat_resolve_dates(a, ctx)
+    return get_kpis(date_from=df, date_to=dt,
+                    country=_chat_arg_str(a.get("country")),
+                    channel=_chat_arg_str(a.get("channel")))
+
+
+def _t_country(a, ctx, rev):
+    df, dt = _chat_resolve_dates(a, ctx)
+    return get_country_summary(date_from=df, date_to=dt)
+
+
+def _t_store(a, ctx, rev):
+    df, dt = _chat_resolve_dates(a, ctx)
+    return get_sales_summary(date_from=df, date_to=dt,
+                             country=_chat_arg_str(a.get("country")),
+                             channel=_chat_arg_str(a.get("channel")))
+
+
+def _t_trend(a, ctx, rev):
+    df, dt = _chat_resolve_dates(a, ctx)
+    return get_daily_trend(date_from=df, date_to=dt,
+                           country=_chat_arg_str(a.get("country")))
+
+
+def _t_subcat(a, ctx, rev):
+    df, dt = _chat_resolve_dates(a, ctx)
+    return get_subcategory_sales(date_from=df, date_to=dt,
+                                 country=_chat_arg_str(a.get("country")),
+                                 channel=_chat_arg_str(a.get("channel")))
+
+
+def _t_top_skus(a, ctx, rev):
+    df, dt = _chat_resolve_dates(a, ctx)
+    try:
+        limit = max(1, min(50, int(a.get("limit") or 20)))
+    except (TypeError, ValueError):
+        limit = 20
+    return get_top_skus(date_from=df, date_to=dt,
+                        country=_chat_arg_str(a.get("country")),
+                        channel=_chat_arg_str(a.get("channel")), limit=limit)
+
+
+def _t_footfall(a, ctx, rev):
+    df, dt = _chat_resolve_dates(a, ctx)
+    return get_footfall(date_from=df, date_to=dt,
+                        channel=_chat_arg_str(a.get("channel")))
+
+
+def _t_inventory(a, ctx, rev):
+    return get_inventory_summary(country=_chat_arg_str(a.get("country")),
+                                 locations=_chat_arg_str(a.get("locations")))
+
+
+def _t_sellthrough(a, ctx, rev):
+    df, dt = _chat_resolve_dates(a, ctx)
+    return analytics_sell_through_by_location(date_from=df, date_to=dt,
+                                              country=_chat_arg_str(a.get("country")))
+
+
+def _t_velocity(a, ctx, rev):
+    df, dt = _chat_resolve_dates(a, ctx)
+    return analytics_velocity(date_from=df, date_to=dt,
+                              country=_chat_arg_str(a.get("country")),
+                              channel=_chat_arg_str(a.get("channel")))
+
+
+def _t_margin(a, ctx, rev):
+    df, dt = _chat_resolve_dates(a, ctx)
+    dim = (_chat_arg_str(a.get("dim")) or "category").lower()
+    if dim not in ("category", "subcategory", "country", "channel", "brand", "style"):
+        dim = "category"
+    return analytics_margin(dim=dim, date_from=df, date_to=dt,
+                            country=_chat_arg_str(a.get("country")),
+                            channel=_chat_arg_str(a.get("channel")))
+
+
+def _t_units(a, ctx, rev):
+    df, dt = _chat_resolve_dates(a, ctx)
+    return analytics_canonical_units_sold(date_from=df, date_to=dt,
+                                          country=_chat_arg_str(a.get("country")),
+                                          channel=_chat_arg_str(a.get("channel")))
+
+
+def _t_sql(a, ctx, rev):
+    sql = _chat_clean_sql(a.get("sql") or "")
+    ok, why = _chat_is_safe_select(sql)
+    if not ok:
+        return {"error": "Only a single read-only SELECT is allowed (%s)." % why}
+    if _CHAT_PII_SQL.search(sql) and not rev:
+        return {"error": "Blocked: this query references customer phone/email. "
+                         "Direct the user to the Customers page secure-reveal step."}
+    try:
+        rows = _chat_run_readonly_sql(sql)
+    except Exception as e:
+        return {"error": "Query failed: " + str(e)[:300]}
+    return {"row_count": len(rows), "rows": rows}
+
+
+_DATE_PROPS = {
+    "date_from": {"type": "string", "description": "Start date, YYYY-MM-DD. Omit to use the dashboard's active filter."},
+    "date_to": {"type": "string", "description": "End date, YYYY-MM-DD. Omit to use the dashboard's active filter."},
+}
+_COUNTRY_PROP = {"country": {"type": "string", "description": "Optional. One or more of Kenya, Uganda, Rwanda, Online (comma-separated)."}}
+_CHANNEL_PROP = {"channel": {"type": "string", "description": "Optional store / point-of-sale name (pos_location_name), comma-separated for several."}}
+
+
+def _chat_tool(name, desc, props, required=None):
+    return {"type": "function", "function": {
+        "name": name, "description": desc,
+        "parameters": {"type": "object", "properties": props,
+                       "required": required or []}}}
+
+
+_CHAT_TOOL_DISPATCH = {
+    "get_kpis": _t_kpis,
+    "get_sales_by_country": _t_country,
+    "get_sales_by_store": _t_store,
+    "get_daily_trend": _t_trend,
+    "get_sales_by_subcategory": _t_subcat,
+    "get_top_products": _t_top_skus,
+    "get_footfall_and_conversion": _t_footfall,
+    "get_inventory_summary": _t_inventory,
+    "get_sell_through_by_location": _t_sellthrough,
+    "get_velocity": _t_velocity,
+    "get_margin": _t_margin,
+    "get_units_sold": _t_units,
+    "run_readonly_sql": _t_sql,
+}
+
+_CHAT_TOOL_SPECS = [
+    _chat_tool("get_kpis",
+               "Headline sales KPIs that exactly match the dashboard: total_sales (net of returns), gross_sales, total_discounts, total_returns, net_sales, total_orders, total_units (gross units sold), avg_basket_size (ABV), avg_selling_price (ASP), return_rate. Money in KES. Use this for any sales / revenue / orders / units / ABV / ASP question.",
+               {**_DATE_PROPS, **_COUNTRY_PROP, **_CHANNEL_PROP}),
+    _chat_tool("get_sales_by_country",
+               "Orders, units sold and sales broken down per country (Kenya, Uganda, Rwanda, Online).",
+               {**_DATE_PROPS}),
+    _chat_tool("get_sales_by_store",
+               "Sales broken down per store / point of sale (and country). Use for 'which store/branch' questions.",
+               {**_DATE_PROPS, **_COUNTRY_PROP, **_CHANNEL_PROP}),
+    _chat_tool("get_daily_trend",
+               "Daily sales time series (net of returns) for trend / over-time questions.",
+               {**_DATE_PROPS, **_COUNTRY_PROP}),
+    _chat_tool("get_sales_by_subcategory",
+               "Net sales and units by product subcategory (product_type, e.g. Maxi Dresses).",
+               {**_DATE_PROPS, **_COUNTRY_PROP, **_CHANNEL_PROP}),
+    _chat_tool("get_top_products",
+               "Top-selling SKUs / styles by net sales, with units and gross. Use for best-sellers.",
+               {**_DATE_PROPS, **_COUNTRY_PROP, **_CHANNEL_PROP,
+                "limit": {"type": "integer", "description": "How many top products (default 20, max 50)."}}),
+    _chat_tool("get_footfall_and_conversion",
+               "Store footfall, outside traffic, turn-in rate, orders, average basket AND CONVERSION RATE. Use this for ANY conversion-rate or footfall question. Prefer the clean_conversion_rate field (it excludes 'sensor-gap' days where the footfall counter was down); a store with a high sensor_gap_days has unreliable conversion. Note: footfall has no country dimension — filter by store via channel.",
+               {**_DATE_PROPS, **_CHANNEL_PROP}),
+    _chat_tool("get_inventory_summary",
+               "Current merchandise inventory: available vs on-hand units, SKU and location counts, stock by location.",
+               {**_COUNTRY_PROP,
+                "locations": {"type": "string", "description": "Optional comma-separated store names to scope to."}}),
+    _chat_tool("get_sell_through_by_location",
+               "Sell-through % (sold vs sold+stock) by store location.",
+               {**_DATE_PROPS, **_COUNTRY_PROP}),
+    _chat_tool("get_velocity",
+               "Rate of sale, weeks-of-cover and sell-through by style — for slow/fast movers and dead stock.",
+               {**_DATE_PROPS, **_COUNTRY_PROP, **_CHANNEL_PROP}),
+    _chat_tool("get_margin",
+               "Gross margin / discount impact, optionally broken down by a dimension.",
+               {"dim": {"type": "string", "description": "Breakdown: category, subcategory, country, channel, brand or style."},
+                **_DATE_PROPS, **_COUNTRY_PROP, **_CHANNEL_PROP}),
+    _chat_tool("get_units_sold",
+               "Canonical total units sold (gross), the dashboard's single source of truth for unit counts.",
+               {**_DATE_PROPS, **_COUNTRY_PROP, **_CHANNEL_PROP}),
+    _chat_tool("run_readonly_sql",
+               "Fallback ONLY for questions no other tool covers. Run ONE read-only PostgreSQL SELECT (or WITH...SELECT). Always add a LIMIT. Follow the schema and rules in the system prompt.",
+               {"sql": {"type": "string", "description": "A single read-only SELECT statement."}},
+               ["sql"]),
+]
+
+
+def _chat_schema_doc_full():
+    """Schema text for the run_readonly_sql fallback — the base doc PLUS live
+    column introspection of the key tables (esp. footfall, whose real columns
+    the model could only guess before, causing failed queries). Cached for a
+    day; never raises (falls back to the static doc)."""
+    now = time.time()
+    if _CHAT_SCHEMA_CACHE["doc"] and (now - _CHAT_SCHEMA_CACHE["ts"] < 86400):
+        return _CHAT_SCHEMA_CACHE["doc"]
+    doc = _CHAT_SCHEMA_DOC
+    try:
+        cols = run_query(
+            "SELECT table_name, column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name IN "
+            "('all_sales','footfall','all_inventory','all_products_clean',"
+            "'all_customers','pos_locations','stores') "
+            "ORDER BY table_name, ordinal_position")
+        by_tbl = {}
+        for r in cols:
+            by_tbl.setdefault(r["table_name"], []).append(
+                "%s %s" % (r["column_name"], r["data_type"]))
+        if by_tbl:
+            lines = ["", "ACTUAL COLUMNS (introspected — use these exact names):"]
+            for t in sorted(by_tbl):
+                lines.append("  " + t + ": " + ", ".join(by_tbl[t]))
+            lines.append(
+                "FOOTFALL/CONVERSION via SQL is error-prone (store-name renames + "
+                "sensor-gap days). Prefer the get_footfall_and_conversion tool.")
+            doc = doc + "\n" + "\n".join(lines)
+    except Exception:
+        pass
+    _CHAT_SCHEMA_CACHE["doc"] = doc
+    _CHAT_SCHEMA_CACHE["ts"] = now
+    return doc
+
+
+def _chat_system_prompt(ctx, revealed):
+    ctx_line = _chat_context_line(ctx)
+    return (
+        "You are the Vivo Fashion Group BI assistant — a sharp, trustworthy "
+        "analyst embedded in an executive retail analytics dashboard for a "
+        "multi-brand fashion retailer in East Africa (Kenya, Uganda, Rwanda and "
+        "an Online channel). All money is Kenyan Shillings (KES).\n\n"
+        "HOW TO ANSWER:\n"
+        "- Strongly prefer the provided metric tools over writing SQL — they "
+        "return the SAME vetted numbers the dashboard shows, so your answers "
+        "never disagree with the screen. Use run_readonly_sql only when no "
+        "metric tool fits the question.\n"
+        "- For ANY conversion-rate or footfall question use "
+        "get_footfall_and_conversion and prefer clean_conversion_rate.\n"
+        "- You may call several tools in one turn and chain them (e.g. find the "
+        "top store, then look up its sell-through; or compare this year vs last "
+        "year by calling a tool twice with different dates).\n"
+        "- If the question is genuinely ambiguous, ask ONE short clarifying "
+        "question instead of guessing.\n"
+        "- Don't narrate your tool use ('let me check…'); just call the tools, "
+        "then give the answer.\n\n"
+        "WRITING THE ANSWER:\n"
+        "- Plain text only. NO markdown, NO tables, NO code fences, NO asterisks.\n"
+        "- Format money like 'KES 1,234,567' (no decimals). Format rates like "
+        "'12.4%'.\n"
+        "- Lead with the direct answer in the first sentence, then up to three "
+        "short supporting points. Be concise.\n"
+        "- If a tool returns no rows / nulls, say no data matched rather than "
+        "inventing a number.\n\n"
+        "SQL FALLBACK RULES (only when using run_readonly_sql):\n"
+        + _chat_schema_doc_full()
+        + (("\n\n" + ctx_line) if ctx_line else "")
+    )
+
+
+def _chat_llm_stream(messages, tools=None, tool_choice="auto", max_tokens=_CHAT_MAX_TOKENS):
+    """Stream a chat completion. Yields ('content', delta_text) as the model
+    writes, and finally ('toolcalls', [ {id,name,args(dict),raw} ]) if the model
+    requested any tool calls. Raises on transport/HTTP failure."""
+    base = os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
+    key = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")
+    if not base or not key:
+        raise RuntimeError("AI assistant not configured")
+    payload = {"model": _CHAT_MODEL, "messages": messages,
+               "max_completion_tokens": max_tokens, "stream": True}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = tool_choice
+    resp = _chat_requests.post(
+        base.rstrip("/") + "/chat/completions",
+        json=payload,
+        headers={"Authorization": "Bearer " + key},
+        timeout=120, stream=True,
+    )
+    acc = {}  # index -> {id, name, args}
+    try:
+        resp.raise_for_status()
+        for raw_line in resp.iter_lines():
+            if not raw_line:
+                continue
+            line = raw_line.decode("utf-8", "ignore") if isinstance(raw_line, bytes) else raw_line
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                obj = _chat_json.loads(data)
+            except Exception:
+                continue
+            choices = obj.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            if delta.get("content"):
+                yield ("content", delta["content"])
+            for tc in (delta.get("tool_calls") or []):
+                idx = tc.get("index", 0)
+                slot = acc.setdefault(idx, {"id": None, "name": None, "args": ""})
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    slot["name"] = fn["name"]
+                if fn.get("arguments"):
+                    slot["args"] += fn["arguments"]
+    finally:
+        # Always release the upstream socket — on normal completion, an early
+        # break, a mid-stream error, or generator cancellation (client
+        # disconnect) — so streamed connections can't pile up over time.
+        resp.close()
+    if acc:
+        out = []
+        for idx in sorted(acc):
+            slot = acc[idx]
+            if not slot.get("name"):
+                continue
+            try:
+                args = _chat_json.loads(slot["args"]) if slot["args"] else {}
+            except Exception:
+                args = {}
+            if not isinstance(args, dict):
+                args = {}
+            # One id per tool call, shared by the dispatch ref (tc["id"]) AND the
+            # assistant tool_calls message (raw.id), or the OpenAI tool-message
+            # contract breaks when the provider omits the id in stream deltas.
+            call_id = slot.get("id") or ("call_" + _chat_uuid.uuid4().hex[:8])
+            out.append({
+                "id": call_id,
+                "name": slot["name"], "args": args,
+                "raw": {"id": call_id,
+                        "type": "function",
+                        "function": {"name": slot["name"], "arguments": slot["args"] or "{}"}},
+            })
+        if out:
+            yield ("toolcalls", out)
+
+
+def _chat_trim_result(result):
+    """Shrink a tool result so it's cheap to feed back to the model."""
+    obj = result
+    if isinstance(obj, list) and len(obj) > _CHAT_TOOL_MAX_ROWS:
+        obj = {"rows": obj[:_CHAT_TOOL_MAX_ROWS],
+               "note": "truncated to first %d of %d rows" % (_CHAT_TOOL_MAX_ROWS, len(obj))}
+    elif isinstance(obj, dict) and isinstance(obj.get("rows"), list) and len(obj["rows"]) > _CHAT_TOOL_MAX_ROWS:
+        obj = dict(obj)
+        obj["note"] = "truncated to first %d of %d rows" % (_CHAT_TOOL_MAX_ROWS, len(obj["rows"]))
+        obj["rows"] = obj["rows"][:_CHAT_TOOL_MAX_ROWS]
+    s = _chat_json.dumps(obj, default=str)
+    if len(s) > _CHAT_TOOL_RESULT_CHARS:
+        s = s[:_CHAT_TOOL_RESULT_CHARS] + " …(truncated)"
+    return s
+
+
+_CHAT_FALLBACK = ("I'm not sure how to answer that. Try asking about sales, "
+                  "customers, products, footfall or inventory.")
+
+
+def _chat_followups(message, answer):
+    """Best-effort 3 short follow-up suggestions. Never raises."""
+    try:
+        raw = _chat_llm([
+            {"role": "system", "content":
+                "Given a Q&A from a retail BI assistant, suggest exactly 3 natural "
+                "follow-up questions an executive might ask next. Each <= 8 words. "
+                "Reply with ONLY a JSON array of 3 strings, no prose."},
+            {"role": "user", "content": "Q: " + message[:300]
+                + "\nA: " + (answer or "")[:600]},
+        ], max_tokens=200)
+        arr = _chat_extract_json(raw)
+        if isinstance(arr, dict):
+            for v in arr.values():
+                if isinstance(v, list):
+                    arr = v
+                    break
+        if isinstance(arr, list):
+            out = [str(x).strip() for x in arr if str(x).strip()]
+            return out[:3]
+    except Exception:
+        pass
+    return []
+
+
+def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False):
+    """The tool-calling agent loop as a generator of event dicts:
+      {"type":"token","text":...}   streamed answer tokens
+      {"type":"tool","name":..,"status":"running"|"done"}
+      {"type":"done","session_id":..,"followups":[...]}
+      {"type":"error","message":..}
+    The final assistant answer is persisted to session history before 'done'."""
     with _CHAT_SESSIONS_LOCK:
         history = list(_CHAT_SESSIONS.get(session_id, []))
 
-    ctx_line = _chat_context_line(ctx)
-    plan_sys = (
-        "You are the Vivo Fashion Group BI assistant, embedded in an executive "
-        "retail analytics dashboard. Money is in Kenyan Shillings (KES). Decide "
-        "whether the question needs data from the database.\n"
-        + _CHAT_SCHEMA_DOC
-        + "\nReply with ONLY a JSON object, no prose. Either "
-        '{"action":"sql","sql":"<one SELECT statement>"} to fetch data, or '
-        '{"action":"answer","answer":"<text>"} for greetings, metric definitions '
-        "(e.g. what ABV means), or anything that needs no data."
-        + (("\n" + ctx_line) if ctx_line else "")
-    )
-    plan_msgs = [{"role": "system", "content": plan_sys}]
-    plan_msgs += history[-6:]
-    plan_msgs.append({"role": "user", "content": message})
+    messages = [{"role": "system", "content": _chat_system_prompt(ctx, revealed)}]
+    messages += history[-_CHAT_MAX_TURNS:]
+    messages.append({"role": "user", "content": message})
 
+    final_parts = []
+    answered = False
     try:
-        plan = _chat_extract_json(_chat_llm(plan_msgs))
-    except Exception:
-        return "Sorry, I couldn't reach the assistant just now. Please try again in a moment."
-    if not isinstance(plan, dict):
-        return "I'm not sure how to answer that. Try asking about sales, customers, products, footfall or inventory."
-
-    answer = None
-    if plan.get("action") == "answer" and plan.get("answer"):
-        answer = str(plan["answer"]).strip()
-    elif plan.get("action") == "sql" and plan.get("sql"):
-        sql = _chat_clean_sql(plan["sql"])
-        ok, _why = _chat_is_safe_select(sql)
-        if not ok:
-            answer = "I can only run read-only data lookups and couldn't form a safe query for that. Could you rephrase?"
-        elif _CHAT_PII_SQL.search(sql) and not revealed:
-            answer = ("I can't return customer contact details (phone or email) here. "
-                      "Use the Customers page, which has a secure reveal step.")
-        else:
-            rows = None
+        for _step in range(_CHAT_TOOL_STEPS):
+            content_buf = ""
+            toolcalls = []
+            for kind, payload in _chat_llm_stream(messages, _CHAT_TOOL_SPECS, "auto"):
+                if kind == "content":
+                    content_buf += payload
+                    final_parts.append(payload)
+                    yield {"type": "token", "text": payload}
+                elif kind == "toolcalls":
+                    toolcalls = payload
+            if toolcalls:
+                # Tool steps shouldn't surface preamble as the answer.
+                final_parts = []
+                messages.append({"role": "assistant",
+                                 "content": content_buf or None,
+                                 "tool_calls": [tc["raw"] for tc in toolcalls]})
+                for tc in toolcalls:
+                    yield {"type": "tool", "name": tc["name"], "status": "running"}
+                    result = {"error": "unknown tool"}
+                    fn = _CHAT_TOOL_DISPATCH.get(tc["name"])
+                    if fn:
+                        try:
+                            result = fn(tc["args"], ctx, revealed)
+                        except Exception as e:
+                            result = {"error": str(e)[:300]}
+                    messages.append({"role": "tool", "tool_call_id": tc["id"],
+                                     "content": _chat_trim_result(result)})
+                    yield {"type": "tool", "name": tc["name"], "status": "done"}
+                continue
+            answered = True
+            break
+        if not answered:
+            # Exhausted tool steps — force a final prose answer with no tools.
             try:
-                rows = _chat_run_readonly_sql(sql)
-            except Exception as e:
-                # One self-correction attempt: hand the DB error back to the model.
-                try:
-                    fix_msgs = [
-                        {"role": "system", "content": plan_sys},
-                        {"role": "user", "content": message},
-                        {"role": "assistant", "content": _chat_json.dumps({"action": "sql", "sql": sql})},
-                        {"role": "user", "content": "That query failed with: "
-                            + str(e)[:300] + ". Return corrected JSON with one fixed SELECT."},
-                    ]
-                    fixed = _chat_extract_json(_chat_llm(fix_msgs))
-                    sql2 = _chat_clean_sql((fixed or {}).get("sql", ""))
-                    ok2, _ = _chat_is_safe_select(sql2)
-                    if ok2 and not (_CHAT_PII_SQL.search(sql2) and not revealed):
-                        rows = _chat_run_readonly_sql(sql2)
-                except Exception:
-                    rows = None
-            if rows is None:
-                answer = "I tried to look that up but the query failed. Could you rephrase or be more specific?"
-            else:
-                sample = _chat_json.dumps(rows[:_CHAT_SUMMARY_ROWS], default=str)
-                sum_sys = (
-                    "You are the Vivo Fashion Group BI assistant. Summarize the query "
-                    "result for a retail executive in clear, concise PLAIN TEXT (no "
-                    "markdown, no tables, no code fences). Money is KES — format like "
-                    "'KES 1,234,567'. Lead with the direct answer, then up to three "
-                    "supporting points. If there are no rows, say no data matched the request."
-                )
-                try:
-                    answer = _chat_llm([
-                        {"role": "system", "content": sum_sys},
-                        {"role": "user", "content": "Question: " + message
-                            + "\n\nRows returned (" + str(len(rows)) + "): " + sample},
-                    ]).strip()
-                except Exception:
-                    answer = "I fetched the data but couldn't summarize it. Please try again."
+                forced = _chat_llm(messages + [{"role": "user", "content":
+                    "Now give your best final answer in plain text using what you "
+                    "have. Do not call any more tools."}])
+                if forced:
+                    final_parts = [forced]
+                    yield {"type": "token", "text": forced}
+            except Exception:
+                pass
+    except Exception:
+        yield {"type": "error",
+               "message": "Sorry, I couldn't reach the assistant just now. Please try again in a moment."}
+        return
 
-    if not answer:
-        answer = "I'm not sure how to answer that. Try asking about sales, customers, products, footfall or inventory."
+    answer = "".join(final_parts).strip() or _CHAT_FALLBACK
+    if not final_parts:
+        # Nothing was streamed (e.g. only tool steps then empty) — surface fallback.
+        yield {"type": "token", "text": answer}
 
     with _CHAT_SESSIONS_LOCK:
         h = _CHAT_SESSIONS.get(session_id, [])
@@ -14644,7 +15064,20 @@ def _chat_core(message, session_id, ctx, revealed):
         h.append({"role": "assistant", "content": answer})
         _CHAT_SESSIONS[session_id] = h[-_CHAT_MAX_TURNS * 2:]
 
-    return answer
+    followups = _chat_followups(message, answer) if want_followups else []
+    yield {"type": "done", "session_id": session_id, "followups": followups}
+
+
+def _chat_core(message, session_id, ctx, revealed):
+    """Non-streaming entry point (used by /api/search/ask). Drains the agent
+    generator and returns the assembled plain-text answer."""
+    parts = []
+    for ev in _chat_agent_events(message, session_id, ctx, revealed, want_followups=False):
+        if ev["type"] == "token":
+            parts.append(ev["text"])
+        elif ev["type"] == "error":
+            return ev["message"]
+    return "".join(parts).strip() or _CHAT_FALLBACK
 
 
 @app.post("/api/chat")
@@ -14668,6 +15101,50 @@ async def chat_post(request: Request):
     revealed = pii_revealed(request)
     answer = await _chat_run_in_threadpool(_chat_core, message, session_id, ctx, revealed)
     return {"session_id": session_id, "answer": answer}
+
+
+@app.post("/api/chat/stream")
+async def chat_stream_post(request: Request):
+    """Streaming (SSE) tool-calling assistant. Emits text-token, tool-progress,
+    and a final done event (with suggested follow-ups). Same auth gate + PII +
+    read-only guarantees as /api/chat."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    message = (body.get("message") or "").strip()
+    session_id = body.get("session_id") or _chat_uuid.uuid4().hex
+    ctx = body.get("context") or {}
+    revealed = pii_revealed(request)
+
+    configured = bool(os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
+                      and os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY"))
+
+    def gen():
+        def sse(ev):
+            return "data: " + _chat_json.dumps(ev) + "\n\n"
+        if not message:
+            yield sse({"type": "token", "text":
+                       "Ask me about your sales, customers, products, footfall or inventory."})
+            yield sse({"type": "done", "session_id": session_id, "followups": []})
+            return
+        if not configured:
+            yield sse({"type": "token", "text":
+                       "The assistant isn't configured yet. Please try again later."})
+            yield sse({"type": "done", "session_id": session_id, "followups": []})
+            return
+        try:
+            for ev in _chat_agent_events(message, session_id, ctx, revealed, want_followups=True):
+                yield sse(ev)
+        except Exception:
+            yield sse({"type": "error",
+                       "message": "Sorry, something went wrong. Please try again."})
+            yield sse({"type": "done", "session_id": session_id, "followups": []})
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no",
+                                      "Connection": "keep-alive"})
 @app.post("/api/search/ask")
 async def search_ask_post(request: Request):
     """Natural-language search — routes to the same LLM-backed assistant as
