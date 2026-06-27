@@ -15095,17 +15095,26 @@ def _chat_followups(message, answer):
     return []
 
 
-def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False):
+def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False,
+                       system_prompt=None, tool_specs=None, dispatch=None):
     """The tool-calling agent loop as a generator of event dicts:
       {"type":"token","text":...}   streamed answer tokens
       {"type":"tool","name":..,"status":"running"|"done"}
       {"type":"done","session_id":..,"followups":[...]}
       {"type":"error","message":..}
-    The final assistant answer is persisted to session history before 'done'."""
+    The final assistant answer is persisted to session history before 'done'.
+
+    The system prompt, tool catalog and tool dispatch table default to the main
+    BI assistant's, but can be overridden (e.g. the Fabric BI assistant passes a
+    fabric-scoped prompt + a SQL-only tool set) — the read-only/PII guards and
+    session handling are shared unchanged."""
+    sys_prompt = system_prompt if system_prompt is not None else _chat_system_prompt(ctx, revealed)
+    specs = tool_specs if tool_specs is not None else _CHAT_TOOL_SPECS
+    disp = dispatch if dispatch is not None else _CHAT_TOOL_DISPATCH
     with _CHAT_SESSIONS_LOCK:
         history = list(_CHAT_SESSIONS.get(session_id, []))
 
-    messages = [{"role": "system", "content": _chat_system_prompt(ctx, revealed)}]
+    messages = [{"role": "system", "content": sys_prompt}]
     messages += history[-_CHAT_MAX_TURNS:]
     messages.append({"role": "user", "content": message})
 
@@ -15115,7 +15124,7 @@ def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False)
         for _step in range(_CHAT_TOOL_STEPS):
             content_buf = ""
             toolcalls = []
-            for kind, payload in _chat_llm_stream(messages, _CHAT_TOOL_SPECS, "auto"):
+            for kind, payload in _chat_llm_stream(messages, specs, "auto"):
                 if kind == "content":
                     content_buf += payload
                     final_parts.append(payload)
@@ -15131,7 +15140,7 @@ def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False)
                 for tc in toolcalls:
                     yield {"type": "tool", "name": tc["name"], "status": "running"}
                     result = {"error": "unknown tool"}
-                    fn = _CHAT_TOOL_DISPATCH.get(tc["name"])
+                    fn = disp.get(tc["name"])
                     if fn:
                         try:
                             result = fn(tc["args"], ctx, revealed)
@@ -15251,6 +15260,242 @@ async def chat_stream_post(request: Request):
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no",
                                       "Connection": "keep-alive"})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Fabric BI assistant — a fabric-scoped variant of the chat agent for the /fabric
+# dashboard. Reuses the same streaming loop, read-only SQL guard (dedicated
+# psycopg2 conn, NOT the pool) and PII guard; only the system prompt + tool set
+# differ. Fabric data has no metric-tool functions, so the agent works purely via
+# the read-only SELECT tool, grounded by a fabric schema doc.
+# ══════════════════════════════════════════════════════════════════════════════
+_FABRIC_CHAT_SCHEMA_DOC = """
+FABRIC SCHEMA (PostgreSQL, READ-ONLY). This is the raw-material (fabric) side of
+Vivo Fashion Group, sourced from Odoo. Money is Kenyan Shillings (KES). Stock and
+moves are measured in KILOGRAMS; convert to metres via kg_per_mtr_eff.
+
+raw_fabric_products p  — fabric / trim product master:
+  p.id, p.name, p.default_code (SKU), p.barcode
+  p.category            -- 'Fabric' for fabric, other values are trims/accessories
+  p.fabric_category     -- e.g. 'Jersey','Crepe','Lining','Fusable Interfacing'
+  p.fabric_subcategory, p.fabric_structure (knit/woven), p.plain_print ('Plain'/'Print')
+  p.gsm, p.width_m, p.weight_range, p.fiber_content, p.fabric_type, p.supplier
+  p.primary_color, p.color, p.derived_color
+  p.standard_price NUMERIC  -- unit cost per kg (KES)
+  p.kg_per_mtr_eff NUMERIC  -- effective kg per metre; metres = kg / kg_per_mtr_eff
+                            --   (NULL or <=0 means no conversion — skip in metre math)
+  p.uom
+
+raw_fabric_inventory i  — current ON-HAND stock, one row per product per location:
+  i.product_id -> p.id, i.location_name, i.quantity (kg on hand),
+  i.reserved_qty, i.available (kg), i.total_value (stock value KES), i.standard_price
+  REAL FABRIC STOCK is in TWO locations only: 'RMAT/Stock' (live working stock) and
+  'Dead/Stock Fabric' (dead / slow-moving). For stock questions filter
+  i.location_name to these (default 'RMAT/Stock'); 'all locations' = both.
+
+raw_fabric_purchase_orders po  — fabric PO lines:
+  po.po_name, po.supplier, po.order_date, po.date_planned, po.state ('cancel' = cancelled),
+  po.product_id -> p.id, po.qty_ordered, po.qty_received, po.qty_invoiced,
+  po.price_unit, po.total_value
+  Outstanding / open PO line = qty_received < qty_ordered AND state <> 'cancel'.
+
+raw_fabric_boms b  — bill of materials (fabric consumed per finished garment style):
+  b.finished_product_name, b.finished_product_sku, b.component_id -> p.id,
+  b.component_name, b.component_sku, b.component_qty, b.component_uom
+
+fabric_moves_effective m  — stock MOVES (USE THIS VIEW, not raw_fabric_moves, for
+consumption — it carries the verified-sheet overrides and an is_fabric flag):
+  m.product_id -> p.id, m.qty, m.uom ('g' grams or 'kg'),
+  m.move_type ('IN','OUT','INTERNAL'), m.location_from, m.location_to, m.date,
+  m.is_fabric (TRUE only for fabric moves)
+
+METRIC CONVENTIONS — match these so answers agree with the dashboard:
+- kg per move = CASE WHEN m.uom='g' THEN m.qty/1000 ELSE m.qty END.
+- Metres = kg / p.kg_per_mtr_eff; only when p.kg_per_mtr_eff > 0 (else exclude).
+- NET CONSUMPTION = OUT moves MINUS genuine production returns. A production return
+  is an INTERNAL move with location_from = 'Virtual Locations/Production' AND
+  split_part(location_to,'/',1) <> 'Virtual Locations'. Signed net kg per row:
+    CASE WHEN m.move_type='OUT' THEN (kg)
+         WHEN m.move_type='INTERNAL'
+              AND m.location_from='Virtual Locations/Production'
+              AND split_part(m.location_to,'/',1) <> 'Virtual Locations' THEN -(kg)
+         ELSE 0 END
+  Restrict consumption rows to: m.is_fabric AND m.uom IN ('g','kg').
+- DEAD STOCK = inventory in location 'Dead/Stock Fabric' (i.total_value = its value).
+- AGEING / idle = CURRENT_DATE - (last move date for that product).
+- SUPPORT FABRICS = the two categories Lining and Fusable Interfacing
+  (LOWER(BTRIM(p.fabric_category)) IN ('lining','fusable interfacing')). The main
+  fabric dashboard EXCLUDES these — only include them if the user asks about
+  lining / interfacing / support fabric.
+- MONTHS OF COVER ≈ on-hand stock kg / average monthly net consumption kg.
+
+RULES:
+- Output exactly ONE statement: a SELECT (or WITH ... SELECT). Never write.
+- Always add a LIMIT (<= 200). Round money to 0 decimals, metres/kg sensibly.
+- Use literal '%%' if you ever need a literal percent sign (queries run with no params).
+"""
+
+
+def _fabric_chat_schema_doc():
+    return _FABRIC_CHAT_SCHEMA_DOC
+
+
+_FABRIC_CHAT_TOOL_SPECS = [
+    _chat_tool("run_readonly_sql",
+               "Run ONE read-only PostgreSQL SELECT (or WITH...SELECT) against the "
+               "fabric database to answer the question. Always add a LIMIT. Follow "
+               "the fabric schema and metric conventions in the system prompt.",
+               {"sql": {"type": "string", "description": "A single read-only SELECT statement."}},
+               ["sql"]),
+]
+_FABRIC_CHAT_TOOL_DISPATCH = {"run_readonly_sql": _t_sql}
+
+
+def _fabric_context_line(ctx):
+    """Render the live fabric-page filters (location scope, consumption window,
+    main/support scope) so the assistant honours what the user is looking at."""
+    ctx = ctx or {}
+    parts = []
+    locn = (ctx.get("location") or "").strip()
+    if locn:
+        parts.append("location scope: " + locn)
+    scope = (ctx.get("scope") or "").strip().lower()
+    if scope in ("support", "support_fabrics", "support fabrics"):
+        parts.append("viewing SUPPORT fabrics (Lining + Fusable Interfacing)")
+    elif scope == "main":
+        parts.append("viewing MAIN fabrics (support fabrics excluded)")
+    df = _chat_valid_day(ctx.get("date_from"))
+    dt = _chat_valid_day(ctx.get("date_to"))
+    if df or dt:
+        parts.append("consumption window %s to %s" % (df or "?", dt or "?"))
+    days = ctx.get("days")
+    if days and not (df or dt):
+        try:
+            parts.append("consumption window: last %d days" % int(days))
+        except (TypeError, ValueError):
+            pass
+    if not parts:
+        return ""
+    return ("The user is viewing the fabric dashboard with these filters: "
+            + "; ".join(parts) + ". Apply them unless the user clearly asks otherwise.")
+
+
+def _fabric_chat_system_prompt(ctx):
+    ctx_line = _fabric_context_line(ctx)
+    return (
+        "You are the Vivo Fashion Group FABRIC BI assistant — a sharp, trustworthy "
+        "analyst embedded in the fabric (raw-material) dashboard for a multi-brand "
+        "fashion manufacturer in East Africa. You answer questions about fabric "
+        "stock, ageing, consumption, dead stock, purchase orders, bills of material "
+        "and months of cover. All money is Kenyan Shillings (KES).\n\n"
+        "HOW TO ANSWER:\n"
+        "- Use the run_readonly_sql tool to query the live fabric data; never invent "
+        "numbers. Follow the schema and metric conventions exactly so your answers "
+        "agree with the dashboard.\n"
+        "- You may call the tool several times in one turn (e.g. compute stock, then "
+        "consumption, then derive months of cover).\n"
+        "- Stay strictly within the fabric domain. If asked about garment/retail "
+        "sales, customers, footfall or anything non-fabric, say you only cover "
+        "fabric / raw-material data and point them to the main BI assistant.\n"
+        "- If a question is genuinely ambiguous, ask ONE short clarifying question.\n"
+        "- Don't narrate your tool use ('let me check…'); just call the tool, then "
+        "give the answer.\n\n"
+        "WRITING THE ANSWER:\n"
+        "- Plain text only. NO markdown, NO tables, NO code fences, NO asterisks.\n"
+        "- Format money like 'KES 1,234,567' (no decimals). Show fabric quantities "
+        "with their unit (e.g. '12,500 kg' or '8,200 m'). Format rates like '12.4%'.\n"
+        "- Lead with the direct answer in the first sentence, then up to three short "
+        "supporting points. Be concise.\n"
+        "- If a query returns no rows / nulls, say no data matched rather than "
+        "inventing a number.\n\n"
+        "FABRIC SCHEMA & RULES:\n"
+        + _fabric_chat_schema_doc()
+        + (("\n\n" + ctx_line) if ctx_line else "")
+    )
+
+
+def _fabric_chat_agent_events(message, session_id, ctx, revealed, want_followups=False):
+    return _chat_agent_events(
+        message, session_id, ctx, revealed, want_followups=want_followups,
+        system_prompt=_fabric_chat_system_prompt(ctx),
+        tool_specs=_FABRIC_CHAT_TOOL_SPECS,
+        dispatch=_FABRIC_CHAT_TOOL_DISPATCH)
+
+
+def _fabric_chat_core(message, session_id, ctx, revealed):
+    parts = []
+    for ev in _fabric_chat_agent_events(message, session_id, ctx, revealed, want_followups=False):
+        if ev["type"] == "token":
+            parts.append(ev["text"])
+        elif ev["type"] == "error":
+            return ev["message"]
+    return "".join(parts).strip() or _CHAT_FALLBACK
+
+
+@app.post("/api/fabric/chat")
+async def fabric_chat_post(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    message = (body.get("message") or "").strip()
+    session_id = body.get("session_id") or _chat_uuid.uuid4().hex
+    ctx = body.get("context") or {}
+    if not message:
+        return {"session_id": session_id,
+                "answer": "Ask me about fabric stock, consumption, ageing, dead stock, purchase orders or months of cover."}
+    if not (os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
+            and os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")):
+        return {"session_id": session_id,
+                "answer": "The assistant isn't configured yet. Please try again later."}
+    revealed = pii_revealed(request)
+    answer = await _chat_run_in_threadpool(_fabric_chat_core, message, session_id, ctx, revealed)
+    return {"session_id": session_id, "answer": answer}
+
+
+@app.post("/api/fabric/chat/stream")
+async def fabric_chat_stream_post(request: Request):
+    """Streaming (SSE) fabric assistant. Same auth gate + PII + read-only
+    guarantees as /api/chat, but scoped to the fabric domain."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    message = (body.get("message") or "").strip()
+    session_id = body.get("session_id") or _chat_uuid.uuid4().hex
+    ctx = body.get("context") or {}
+    revealed = pii_revealed(request)
+
+    configured = bool(os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
+                      and os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY"))
+
+    def gen():
+        def sse(ev):
+            return "data: " + _chat_json.dumps(ev) + "\n\n"
+        if not message:
+            yield sse({"type": "token", "text":
+                       "Ask me about fabric stock, consumption, ageing, dead stock, purchase orders or months of cover."})
+            yield sse({"type": "done", "session_id": session_id, "followups": []})
+            return
+        if not configured:
+            yield sse({"type": "token", "text":
+                       "The assistant isn't configured yet. Please try again later."})
+            yield sse({"type": "done", "session_id": session_id, "followups": []})
+            return
+        try:
+            for ev in _fabric_chat_agent_events(message, session_id, ctx, revealed, want_followups=True):
+                yield sse(ev)
+        except Exception:
+            yield sse({"type": "error",
+                       "message": "Sorry, something went wrong. Please try again."})
+            yield sse({"type": "done", "session_id": session_id, "followups": []})
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no",
+                                      "Connection": "keep-alive"})
+
+
 @app.post("/api/search/ask")
 async def search_ask_post(request: Request):
     """Natural-language search — routes to the same LLM-backed assistant as

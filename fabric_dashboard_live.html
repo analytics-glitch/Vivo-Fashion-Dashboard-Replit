@@ -3120,5 +3120,246 @@ async function init(){
 
 init();
 </script>
+
+<!-- ── Fabric BI Assistant — floating chat widget ─────────────────────────── -->
+<style>
+  #fab-chat-launch{position:fixed;bottom:20px;right:20px;z-index:9998;width:56px;height:56px;border-radius:50%;border:none;cursor:pointer;background:linear-gradient(135deg,#1a5c38,#0f3d24);color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 24px rgba(26,92,56,.35);transition:transform .15s ease, box-shadow .15s ease;}
+  #fab-chat-launch:hover{transform:scale(1.06);box-shadow:0 10px 28px rgba(26,92,56,.45);}
+  #fab-chat-launch svg{width:26px;height:26px;}
+  #fab-chat-launch .fab-chat-dot{position:absolute;top:11px;right:12px;width:9px;height:9px;border-radius:50%;background:#fb923c;border:2px solid #0f3d24;}
+  #fab-chat-panel{position:fixed;bottom:20px;right:20px;z-index:9999;width:min(384px,calc(100vw - 32px));height:min(580px,calc(100vh - 40px));background:#fff;border:1px solid #fdba74;border-radius:16px;box-shadow:0 24px 60px rgba(16,40,24,.28);display:none;flex-direction:column;overflow:hidden;}
+  #fab-chat-panel.open{display:flex;}
+  .fab-chat-head{display:flex;align-items:center;gap:10px;padding:13px 14px;background:linear-gradient(135deg,#1a5c38,#0f3d24);color:#fff;}
+  .fab-chat-head .fab-chat-ico{width:32px;height:32px;border-radius:50%;background:rgba(255,255,255,.16);display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .fab-chat-head .fab-chat-ico svg{width:17px;height:17px;}
+  .fab-chat-head .fab-chat-titles{flex:1;min-width:0;}
+  .fab-chat-head .fab-chat-title{font-size:14px;font-weight:800;line-height:1.2;}
+  .fab-chat-head .fab-chat-sub{font-size:11px;opacity:.82;}
+  .fab-chat-head button{background:none;border:none;color:#fff;cursor:pointer;opacity:.82;padding:3px 6px;font-size:12px;border-radius:6px;}
+  .fab-chat-head button:hover{opacity:1;background:rgba(255,255,255,.12);}
+  .fab-chat-head .fab-chat-x svg{width:16px;height:16px;display:block;}
+  .fab-chat-body{flex:1;overflow-y:auto;padding:13px 12px;display:flex;flex-direction:column;gap:10px;background:#fff;}
+  .fab-chat-intro{text-align:center;color:#6b7280;font-size:12.5px;margin:6px 0 4px;}
+  .fab-chat-sugg{display:flex;flex-direction:column;gap:7px;}
+  .fab-chat-sugg button,.fab-chat-followups button{text-align:left;font-size:12px;background:#fff7ed;border:1px solid #fdba74;border-radius:10px;padding:8px 11px;cursor:pointer;color:#1f2937;transition:background .12s ease;}
+  .fab-chat-sugg button:hover,.fab-chat-followups button:hover{background:#ffedd5;}
+  .fab-chat-row{display:flex;}
+  .fab-chat-row.me{justify-content:flex-end;}
+  .fab-chat-row.bot{justify-content:flex-start;}
+  .fab-chat-bubble{max-width:82%;border-radius:16px;padding:8px 13px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;}
+  .fab-chat-row.me .fab-chat-bubble{background:#1a5c38;color:#fff;border-bottom-right-radius:5px;}
+  .fab-chat-row.bot .fab-chat-bubble{background:#fff7ed;border:1px solid #fdba74;color:#1f2937;border-bottom-left-radius:5px;}
+  .fab-chat-status{display:flex;justify-content:flex-start;}
+  .fab-chat-status span{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:#6b7280;background:#fff7ed;border:1px solid #fdba74;border-radius:999px;padding:5px 12px;}
+  .fab-chat-status .fab-dot{width:7px;height:7px;border-radius:50%;background:#1a5c38;animation:fabpulse 1s infinite;}
+  @keyframes fabpulse{0%,100%{opacity:.35;}50%{opacity:1;}}
+  .fab-chat-followups{display:flex;flex-direction:column;gap:6px;padding-top:2px;}
+  .fab-chat-followups .fab-chat-fhead{font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:#9ca3af;padding:0 2px 1px;}
+  .fab-chat-followups button{background:#fff;}
+  .fab-chat-foot{border-top:1px solid #fdba74;padding:10px;display:flex;align-items:flex-end;gap:8px;background:#fff;}
+  .fab-chat-foot textarea{flex:1;resize:none;background:#fff7ed;border:1px solid #fdba74;border-radius:12px;padding:9px 12px;font-size:13px;outline:none;font-family:inherit;max-height:100px;line-height:1.4;}
+  .fab-chat-foot textarea:focus{border-color:#1a5c38;box-shadow:0 0 0 3px rgba(26,92,56,.1);}
+  .fab-chat-foot button{flex-shrink:0;width:40px;height:40px;border-radius:12px;border:none;cursor:pointer;background:#1a5c38;color:#fff;display:flex;align-items:center;justify-content:center;}
+  .fab-chat-foot button:hover{background:#0f3d24;}
+  .fab-chat-foot button:disabled{opacity:.5;cursor:not-allowed;}
+  .fab-chat-foot button svg{width:17px;height:17px;}
+</style>
+<button id="fab-chat-launch" type="button" aria-label="Open Fabric BI Assistant" onclick="fabChatOpen()">
+  <span class="fab-chat-dot"></span>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg>
+</button>
+<div id="fab-chat-panel" role="dialog" aria-label="Fabric BI Assistant">
+  <div class="fab-chat-head">
+    <div class="fab-chat-ico">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.6 4.6L18 8l-4.4 1.4L12 14l-1.6-4.6L6 8l4.4-1.4L12 2zM5 14l.9 2.6L8.5 17.5 5.9 18.4 5 21l-.9-2.6L1.5 17.5l2.6-.9L5 14zM18 13l.8 2.2L21 16l-2.2.8L18 19l-.8-2.2L15 16l2.2-.8L18 13z"></path></svg>
+    </div>
+    <div class="fab-chat-titles">
+      <div class="fab-chat-title">Fabric BI Assistant</div>
+      <div class="fab-chat-sub">Ask about fabric stock, consumption &amp; cover</div>
+    </div>
+    <button type="button" class="fab-chat-new" title="New conversation" onclick="fabChatReset()">new</button>
+    <button type="button" class="fab-chat-x" title="Close" aria-label="Close" onclick="fabChatClose()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+    </button>
+  </div>
+  <div class="fab-chat-body" id="fab-chat-body"></div>
+  <form class="fab-chat-foot" id="fab-chat-form" onsubmit="return fabChatSubmit(event)">
+    <textarea id="fab-chat-input" rows="1" placeholder="Ask about fabric stock, ageing, consumption…"></textarea>
+    <button type="submit" id="fab-chat-send" aria-label="Send">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.4 20.4l17.45-7.48a1 1 0 0 0 0-1.84L3.4 3.6a.993.993 0 0 0-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 4.61c0 .71.73 1.2 1.39.91z"></path></svg>
+    </button>
+  </form>
+</div>
+<script>
+(function(){
+  "use strict";
+  var SID_KEY="vivo_fabric_chat_session_id", LOG_KEY="vivo_fabric_chat_log_v1";
+  var SUGGESTIONS=[
+    "What is our total fabric stock value?",
+    "Which fabrics have the most dead stock?",
+    "Top 5 fabrics by consumption in the last 30 days",
+    "How many months of cover do we have?"
+  ];
+  var TOOL_LABELS={run_readonly_sql:"Querying fabric data"};
+  var messages=[], sessionId=null, sending=false, toolStatus=null, followups=[];
+  try{ sessionId=localStorage.getItem(SID_KEY)||null; }catch(e){}
+  try{ var raw=localStorage.getItem(LOG_KEY); if(raw) messages=JSON.parse(raw)||[]; }catch(e){ messages=[]; }
+
+  var bodyEl=function(){return document.getElementById("fab-chat-body");};
+  var inputEl=function(){return document.getElementById("fab-chat-input");};
+  var panelEl=function(){return document.getElementById("fab-chat-panel");};
+  var launchEl=function(){return document.getElementById("fab-chat-launch");};
+
+  function persist(){
+    try{
+      localStorage.setItem(LOG_KEY, JSON.stringify(messages.filter(function(m){return !m.streaming;}).slice(-40)));
+      if(sessionId) localStorage.setItem(SID_KEY, sessionId);
+    }catch(e){}
+  }
+  function scrollDown(){ var b=bodyEl(); if(b) b.scrollTop=b.scrollHeight; }
+
+  // Build the current fabric-page filter context for the assistant.
+  function ctx(){
+    var c={ page:"fabric" };
+    try{ var l=document.getElementById("location-filter"); if(l&&l.value) c.location=l.value; }catch(e){}
+    try{ var f=document.getElementById("g-since"); if(f&&f.value) c.date_from=f.value; }catch(e){}
+    try{ var t=document.getElementById("g-until"); if(t&&t.value) c.date_to=t.value; }catch(e){}
+    try{ var mp=document.getElementById("mix-period"); if(mp&&mp.value && !c.date_from) c.days=parseInt(mp.value,10)||90; }catch(e){}
+    try{ var act=document.querySelector(".nav-item.active"); var pg=act&&act.getAttribute("data-page");
+         c.scope=(pg==="support")?"support":"main"; }catch(e){}
+    return c;
+  }
+
+  function makeEl(tag, cls){ var e=document.createElement(tag); if(cls) e.className=cls; return e; }
+
+  // Render the whole message list (uses textContent for all model/user text — no innerHTML for untrusted data).
+  function render(){
+    var b=bodyEl(); if(!b) return;
+    b.innerHTML="";
+    if(messages.length===0){
+      var intro=makeEl("div","fab-chat-intro"); intro.textContent="Hi — ask me about your fabric data. Try one of these:";
+      b.appendChild(intro);
+      var sw=makeEl("div","fab-chat-sugg");
+      SUGGESTIONS.forEach(function(s){
+        var btn=makeEl("button"); btn.type="button"; btn.textContent=s;
+        btn.addEventListener("click",function(){ send(s); });
+        sw.appendChild(btn);
+      });
+      b.appendChild(sw);
+    }
+    messages.forEach(function(m){
+      var row=makeEl("div","fab-chat-row "+(m.role==="user"?"me":"bot"));
+      var bub=makeEl("div","fab-chat-bubble");
+      if(m.streaming && !m.content){ bub.textContent="…"; }
+      else { bub.textContent=m.content||""; }
+      row.appendChild(bub); b.appendChild(row);
+    });
+    if(toolStatus){
+      var st=makeEl("div","fab-chat-status");
+      var sp=makeEl("span");
+      var dot=makeEl("span","fab-dot"); sp.appendChild(dot);
+      var tx=document.createTextNode(toolStatus+"…"); sp.appendChild(tx);
+      st.appendChild(sp); b.appendChild(st);
+    }
+    if(!sending && followups.length){
+      var fw=makeEl("div","fab-chat-followups");
+      var fh=makeEl("div","fab-chat-fhead"); fh.textContent="Suggested follow-ups"; fw.appendChild(fh);
+      followups.forEach(function(f){
+        var btn=makeEl("button"); btn.type="button"; btn.textContent=f;
+        btn.addEventListener("click",function(){ send(f); });
+        fw.appendChild(btn);
+      });
+      b.appendChild(fw);
+    }
+    scrollDown();
+  }
+
+  function patchLast(fn){
+    if(!messages.length) return;
+    messages[messages.length-1]=fn(messages[messages.length-1]);
+  }
+
+  function authToken(){ try{ return localStorage.getItem("vivo_token"); }catch(e){ return null; } }
+
+  // Streaming (SSE) path.
+  function sendStream(msg){
+    var token=authToken();
+    var headers={ "Content-Type":"application/json" };
+    if(token) headers["Authorization"]="Bearer "+token;
+    return fetch("/api/fabric/chat/stream",{
+      method:"POST", credentials:"include", headers:headers,
+      body:JSON.stringify({ message:msg, session_id:sessionId, context:ctx() })
+    }).then(function(res){
+      if(!res.ok || !res.body) throw new Error("stream "+res.status);
+      var reader=res.body.getReader(), decoder=new TextDecoder(), buf="", gotAny=false;
+      function handle(ev){
+        if(ev.type==="token"){ gotAny=true; toolStatus=null; patchLast(function(m){ m.content=(m.content||"")+ev.text; return m; }); render(); }
+        else if(ev.type==="tool"){ if(ev.status==="running"){ toolStatus=TOOL_LABELS[ev.name]||"Looking that up"; render(); } }
+        else if(ev.type==="error"){ gotAny=true; toolStatus=null; patchLast(function(m){ m.content=(m.content||"")+(m.content?"\n\n":"")+ev.message; return m; }); render(); }
+        else if(ev.type==="done"){ if(ev.session_id) sessionId=ev.session_id; if(Array.isArray(ev.followups)) followups=ev.followups; toolStatus=null; }
+      }
+      function pump(){
+        return reader.read().then(function(r){
+          if(r.done){ if(!gotAny) throw new Error("empty stream"); return; }
+          buf+=decoder.decode(r.value,{stream:true});
+          var chunks=buf.split("\n\n"); buf=chunks.pop()||"";
+          chunks.forEach(function(chunk){
+            var line=chunk.split("\n").find(function(l){return l.indexOf("data:")===0;});
+            if(!line) return;
+            try{ handle(JSON.parse(line.slice(5).trim())); }catch(e){}
+          });
+          return pump();
+        });
+      }
+      return pump();
+    });
+  }
+
+  // Non-streaming fallback.
+  function sendBlocking(msg){
+    var token=authToken();
+    var headers={ "Content-Type":"application/json" };
+    if(token) headers["Authorization"]="Bearer "+token;
+    return fetch("/api/fabric/chat",{
+      method:"POST", credentials:"include", headers:headers,
+      body:JSON.stringify({ message:msg, session_id:sessionId, context:ctx() })
+    }).then(function(res){ return res.json(); }).then(function(data){
+      if(data.session_id) sessionId=data.session_id;
+      patchLast(function(){ return { role:"assistant", content:data.answer||"Sorry, I couldn't answer that." }; });
+      render();
+    });
+  }
+
+  function send(text){
+    var msg=(text!=null?text:inputEl().value).trim();
+    if(!msg || sending) return;
+    inputEl().value=""; followups=[];
+    messages.push({ role:"user", content:msg });
+    messages.push({ role:"assistant", content:"", streaming:true });
+    sending=true; toolStatus=null; render();
+    sendStream(msg).catch(function(){ return sendBlocking(msg); }).catch(function(){
+      patchLast(function(m){ m.content=m.content||"Sorry, I hit an error. Please try again."; return m; });
+    }).then(function(){
+      patchLast(function(m){ if(m.streaming) m.streaming=false; return m; });
+      sending=false; toolStatus=null; render(); persist();
+    });
+  }
+
+  window.fabChatOpen=function(){ panelEl().classList.add("open"); launchEl().style.display="none"; render(); setTimeout(function(){ try{ inputEl().focus(); }catch(e){} },40); };
+  window.fabChatClose=function(){ panelEl().classList.remove("open"); launchEl().style.display="flex"; };
+  window.fabChatReset=function(){ messages=[]; sessionId=null; followups=[]; toolStatus=null; try{ localStorage.removeItem(SID_KEY); localStorage.removeItem(LOG_KEY); }catch(e){} render(); };
+  window.fabChatSubmit=function(e){ e.preventDefault(); send(); return false; };
+
+  // Enter to send, Shift+Enter for newline.
+  document.addEventListener("DOMContentLoaded",function(){
+    var inp=inputEl();
+    if(inp){ inp.addEventListener("keydown",function(e){ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); } }); }
+  });
+  if(document.readyState!=="loading"){
+    var inp0=inputEl();
+    if(inp0){ inp0.addEventListener("keydown",function(e){ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); } }); }
+  }
+})();
+</script>
 </body>
 </html>
