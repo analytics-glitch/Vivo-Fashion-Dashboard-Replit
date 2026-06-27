@@ -7,8 +7,7 @@ description: The standalone validation_agent/ package — what it is, the data d
 
 A NEW module (`validation_agent/`), deliberately decoupled from the BI dashboard
 (hard constraint: it must never modify existing dashboard code). Entry point
-`python3 -m validation_agent.run`; intended to run as an hourly Scheduled
-Deployment. Reads Postgres source (`all_sales`, `footfall`) and writes ONLY to its
+`python3 -m validation_agent.run`. Reads Postgres source (`all_sales`, `footfall`) and writes ONLY to its
 own three tables: `metric_baselines`, `validation_audit`, `validation_exceptions`.
 It never mutates source tables except through `governance.apply_fix()`.
 
@@ -52,8 +51,23 @@ alerting (email + WhatsApp, degrades gracefully when creds/recipients missing).
 - LLM diagnosis is the slow step (~30s/call serial); bound it with
   `VALIDATION_MAX_DIAGNOSES` (default 20) — a full dry-run with many diagnoses
   exceeds short timeouts. Diagnosis never blocks a run (failures → INSUFFICIENT_DATA).
-- The agent CANNOT create the Scheduled Deployment or write to prod; the user
-  configures the hourly deployment and supplies alert recipients + messaging creds.
+- **Production scheduling = sync-loop hook, NOT a separate Scheduled Deployment.**
+  A single Replit project has one deployment type; the prod app is a Reserved VM,
+  which is mutually exclusive with a Scheduled deployment in the same project. So
+  (user chose this over a 2nd project) the agent is invoked from inside the existing
+  always-on incremental sync loop (`sync_incremental.py main()`): an hourly module
+  guard `_LAST_VALIDATION_RUN` (stamp-up-front, ≥3600s, matches the attendance/fabric
+  pattern) runs it as a `python3 -m validation_agent.run` subprocess (check=True,
+  timeout=900, isolated process so a failure/hung LLM can't crash or stall the loop).
+  This is the SOLE allowed edit to existing dashboard code for this feature. The agent
+  self-skips outside its 06:00–22:00 Africa/Nairobi window (`config.within_active_hours`
+  in `run.main`), so the hourly cadence yields one audit/hour only in-window — no extra
+  UTC gate needed in the loop. **Why:** one-deployment-per-project + always-on VM means
+  a piggyback hook is the only way to get hourly prod runs without a 2nd project.
+- The agent CANNOT write to prod itself; the user supplies alert recipients +
+  messaging creds (SendGrid/Twilio). Alerting degrades gracefully without them
+  (records audit, no notification) until creds are added — then alerts flow with no
+  code change. Recipients are shared env (present in prod).
 - **First-run auto-seed (fresh prod DB):** a live run (not dry-run/backfill) where
   `metric_baselines` is effectively empty (`count_points < MIN_HISTORY_POINTS`)
   widens the FOLD window to ~90d (`fold_days`) so Tier-2 works from day one — but

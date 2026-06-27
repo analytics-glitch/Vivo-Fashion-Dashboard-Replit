@@ -191,6 +191,12 @@ _LAST_ROLLUP_REFRESH = None
 # the heaviest Odoo pull (full image fetch per template), so a daily cadence is
 # plenty. None on boot so a fresh prod DB bootstraps on the first cycle.
 _LAST_PRODUCT_IMAGES_EXTRACT = None
+# Guards the data-validation agent (validation_agent.run) to once per hour even
+# though main() runs every 60s. The agent self-skips outside its active window
+# (06:00-22:00 Africa/Nairobi), so this hourly cadence yields one audit per hour
+# inside that window. None on boot so the first cycle runs immediately (the agent
+# itself decides whether it is within active hours).
+_LAST_VALIDATION_RUN = None
 # ── Attendance Sync ───────────────────────────────────────────────────────────
 ATTENDANCE_API_URL = os.environ.get(
     "ATTENDANCE_API_URL", "https://beverly-noncontending-bertram.ngrok-free.dev"
@@ -1099,6 +1105,35 @@ def main():
         except Exception as e:
             log.error("Attendance sync error: %s", e)
             conn.rollback()
+
+    # Data-validation agent — HOURLY during its active window (06:00-22:00 EAT).
+    # Self-contained module (validation_agent/) that reads the live DB and writes
+    # ONLY its own tables (metric_baselines, validation_audit, validation_exceptions).
+    # Run as a subprocess via the same entry point as the standalone command so a
+    # failure or a hung LLM call can never crash the sync loop. The agent self-skips
+    # outside active hours, so this hourly guard yields at most one audit per hour
+    # in-window. Rate-limited to once per hour even though main() runs every 60s.
+    global _LAST_VALIDATION_RUN
+    validation_due = (
+        _LAST_VALIDATION_RUN is None
+        or (now_utc - _LAST_VALIDATION_RUN).total_seconds() >= 3600
+    )
+    if validation_due:
+        # Stamp up front so a transient failure waits an hour before retrying.
+        _LAST_VALIDATION_RUN = now_utc
+        try:
+            import subprocess, sys
+
+            log.info("Running data-validation agent...")
+            subprocess.run(
+                [sys.executable, "-m", "validation_agent.run"],
+                cwd="/home/runner/workspace",
+                check=True,
+                timeout=900,
+            )
+            log.info("✅ Data-validation agent run complete")
+        except Exception as e:
+            log.error("Data-validation agent error: %s", e)
 
     # Accounting sync — nightly at 21:00 UTC
     if 21 <= now_utc.hour < 22:
