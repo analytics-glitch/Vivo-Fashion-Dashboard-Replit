@@ -11486,12 +11486,15 @@ def analytics_replenish_gaps_export(
 REPLEN_DISPATCH_DAYS = 3.5
 
 
-def _replen_run_id(business_date, store_scope, ruleset_version):
-    """run_id = sha1(business_date_EAT | store_scope | ruleset_version) (spec §10),
-    so re-stamping the same day's suggestions upserts onto one immutable run
-    rather than duplicating, and a ruleset change starts a fresh run."""
+def _replen_run_id(business_date, store_scope, ruleset_version, demand_weeks):
+    """run_id = sha1(business_date_EAT | store_scope | ruleset_version | demand_weeks)
+    (spec §10), so re-stamping the same day's suggestions upserts onto one immutable
+    run rather than duplicating, a ruleset change starts a fresh run, AND each demand
+    window (4/8/12w) gets its OWN run so toggling lookback can never overwrite the
+    canonical 4w snapshot's rows."""
     import hashlib
-    raw = "|".join([str(business_date), str(store_scope), str(ruleset_version)])
+    raw = "|".join([str(business_date), str(store_scope),
+                    str(ruleset_version), str(demand_weeks)])
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
@@ -12075,16 +12078,15 @@ def analytics_replenishment_sor(
     limit: int = Query(default=400),
 ):
     """SOR-first replenishment (Phase 1): ranked pick list + Held-back panel +
-    SOR KPI strip over the named trailing demand window (4/8/12w). Persists the
-    suggestion snapshot to the immutable fact tables (idempotent on run_id) so a
-    later 'did SOR rise after we moved this' tile is attributable; persistence is
-    best-effort and never blocks the response."""
+    SOR KPI strip over the named trailing demand window (4/8/12w). READ-ONLY —
+    this interactive endpoint never writes the immutable fact tables. The single
+    writer of the canonical daily snapshot is the internal /snapshot job (driven
+    by the sync loop), so toggling lookback / refreshing here cannot mutate the
+    attributable baseline. The run_id is returned for reference only."""
     result = _compute_replenishment_sor(weeks, limit)
-    run_id = _replen_run_id(result["business_date"], "ALL", REPLEN_RULESET_VERSION)
-    result["run_id"] = run_id
-    _persist_replen_suggestions(
-        run_id, result["business_date"], "ALL", result["demand_weeks"],
-        result["rows"])
+    result["run_id"] = _replen_run_id(
+        result["business_date"], "ALL", REPLEN_RULESET_VERSION,
+        result["demand_weeks"])
     return result
 
 
@@ -12132,7 +12134,8 @@ def analytics_replenishment_sor_snapshot(
     idempotent on run_id."""
     _ensure_replen_tables()
     result = _compute_replenishment_sor(weeks, 400)
-    run_id = _replen_run_id(result["business_date"], "ALL", REPLEN_RULESET_VERSION)
+    run_id = _replen_run_id(result["business_date"], "ALL", REPLEN_RULESET_VERSION,
+                            result["demand_weeks"])
     _persist_replen_suggestions(
         run_id, result["business_date"], "ALL", result["demand_weeks"],
         result["rows"])
