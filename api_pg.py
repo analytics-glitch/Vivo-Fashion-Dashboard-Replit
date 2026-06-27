@@ -8599,6 +8599,159 @@ def admin_data_health():
         "summary": counts,
         "tables": out,
     }
+
+# ---------------------------------------------------------------------------
+# Validation-agent audit findings (admin-only).
+#
+# The background data-validation agent writes every consistency/baseline/
+# cross-surface break it finds to `validation_exceptions`, and a run/event
+# trail to `validation_audit`. These two read-only endpoints surface those
+# tables to the admin "Audit Findings" page so an admin can see what the agent
+# caught without opening the database. Both are admin-gated by clerk_auth_gate
+# (the /api/admin/* prefix). On a database where the agent has never run the
+# tables are absent -> we degrade to available=false instead of 500-ing.
+# ---------------------------------------------------------------------------
+@app.get("/api/admin/validation-exceptions")
+def admin_validation_exceptions(
+    status: str = Query(default="open"),
+    severity: str = Query(default=""),
+    limit: int = Query(default=500),
+):
+    """Audit findings raised by the validation agent (`validation_exceptions`).
+    `status` filters the lifecycle (open/approved/rejected/auto_fixed/all);
+    `severity` optionally narrows to red/amber. Read-only, admin-only. Returns a
+    full-table summary (counts by status/severity) plus a filtered, capped slice
+    of detail rows ordered worst-first (reds, then by materiality, then recency)."""
+    from datetime import datetime, timezone
+    limit = max(1, min(int(limit or 500), 2000))
+    status = (status or "").strip().lower()
+    severity = (severity or "").strip().lower()
+    conn = get_conn()
+    rows_out = []
+    summary = {"total": 0, "open": 0, "red": 0, "amber": 0,
+               "by_status": {}, "by_severity": {}}
+    available = True
+    try:
+        conn.autocommit = True
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT to_regclass('public.validation_exceptions') AS t")
+        if cur.fetchone()["t"] is None:
+            available = False
+        else:
+            cur.execute(
+                "SELECT status, severity, COUNT(*) AS n "
+                "FROM validation_exceptions GROUP BY status, severity")
+            for r in cur.fetchall():
+                n = int(r["n"])
+                st = r["status"] or "open"
+                sv = r["severity"] or ""
+                summary["total"] += n
+                summary["by_status"][st] = summary["by_status"].get(st, 0) + n
+                if sv:
+                    summary["by_severity"][sv] = summary["by_severity"].get(sv, 0) + n
+                if st == "open":
+                    summary["open"] += n
+                if sv == "red":
+                    summary["red"] += n
+                elif sv == "amber":
+                    summary["amber"] += n
+            where, params = [], []
+            if status and status != "all":
+                where.append("status = %s")
+                params.append(status)
+            if severity:
+                where.append("severity = %s")
+                params.append(severity)
+            wsql = (" WHERE " + " AND ".join(where)) if where else ""
+            cur.execute(
+                "SELECT id, fingerprint, status, tier, severity, entity_type, "
+                "entity, subcategory, metric, period_date, check_code, "
+                "broken_identity, observed, expected_low, expected_high, "
+                "materiality_kes, diagnosis, proposed_fix_sql, auto_fixable, "
+                "created_at, last_seen_at, resolved_at, dry_run "
+                "FROM validation_exceptions" + wsql +
+                " ORDER BY (severity='red') DESC, materiality_kes DESC NULLS LAST, "
+                "last_seen_at DESC LIMIT %s", params + [limit])
+            for r in cur.fetchall():
+                d = dict(r)
+                for k in ("created_at", "last_seen_at", "resolved_at"):
+                    if d.get(k) is not None:
+                        d[k] = d[k].isoformat()
+                if d.get("period_date") is not None:
+                    d["period_date"] = str(d["period_date"])
+                diag = d.get("diagnosis")
+                d["diagnosis_cause"] = diag.get("cause") if isinstance(diag, dict) else None
+                rows_out.append(d)
+        cur.close()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return {
+        "available": available,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "summary": summary,
+        "count": len(rows_out),
+        "rows": rows_out,
+    }
+
+@app.get("/api/admin/validation-audit")
+def admin_validation_audit(
+    limit: int = Query(default=200),
+    phase: str = Query(default=""),
+):
+    """Recent run/event trail from the validation agent (`validation_audit`).
+    Read-only, admin-only. Absent table -> available=false."""
+    from datetime import datetime, timezone
+    limit = max(1, min(int(limit or 200), 1000))
+    phase = (phase or "").strip().lower()
+    conn = get_conn()
+    rows_out = []
+    last_run = None
+    available = True
+    try:
+        conn.autocommit = True
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT to_regclass('public.validation_audit') AS t")
+        if cur.fetchone()["t"] is None:
+            available = False
+        else:
+            cur.execute("SELECT MAX(ts) AS m FROM validation_audit")
+            m = cur.fetchone()["m"]
+            last_run = m.isoformat() if m is not None else None
+            where, params = [], []
+            if phase:
+                where.append("phase = %s")
+                params.append(phase)
+            wsql = (" WHERE " + " AND ".join(where)) if where else ""
+            cur.execute(
+                "SELECT id, run_id, ts, phase, event, tier, entity_type, entity, "
+                "subcategory, metric, period_date, check_code, value, "
+                "expected_low, expected_high, detail, dry_run "
+                "FROM validation_audit" + wsql +
+                " ORDER BY ts DESC LIMIT %s", params + [limit])
+            for r in cur.fetchall():
+                d = dict(r)
+                d["run_id"] = str(d["run_id"]) if d.get("run_id") is not None else None
+                if d.get("ts") is not None:
+                    d["ts"] = d["ts"].isoformat()
+                if d.get("period_date") is not None:
+                    d["period_date"] = str(d["period_date"])
+                rows_out.append(d)
+        cur.close()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return {
+        "available": available,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "last_run": last_run,
+        "count": len(rows_out),
+        "rows": rows_out,
+    }
 @app.get("/api/admin/replenishment-config")
 def admin_replenishment_config():
     return {"owners": _replen_owners()}

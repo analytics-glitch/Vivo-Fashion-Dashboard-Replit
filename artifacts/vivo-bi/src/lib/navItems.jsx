@@ -17,6 +17,7 @@ import {
   DownloadSimple,
   ChatCircleDots,
   ShieldCheck,
+  ShieldWarning,
   ClockClockwise,
   Table,
   Gauge,
@@ -106,6 +107,7 @@ export const ADMIN_NAV = [
   { to: "/admin/page-visibility", label: "Page Visibility", icon: Eye, id: "admin-page-visibility", group: "Administration", desc: "Show or hide BI pages for all users" },
   { to: "/admin/group-access", label: "Group Access", icon: UsersThree, id: "admin-group-access", group: "Administration", desc: "Choose which pages each group can see" },
   { to: "/admin/data-health", label: "Data Health", icon: Gauge, id: "admin-data-health", group: "Administration", desc: "Row counts & freshness per table — check prod matches dev after publishing" },
+  { to: "/admin/validation-audit", label: "Audit Findings", icon: ShieldWarning, id: "admin-validation-audit", group: "Administration", desc: "Findings raised by the data-validation agent — metric mismatches, anomalies and cross-page inconsistencies" },
   { to: "/admin/thumbnails", label: "Custom Style Photos", icon: ImageSquare, id: "admin-thumbnails", group: "Administration", desc: "Review, edit and remove manually-set product photos; spot broken links" },
 ];
 
