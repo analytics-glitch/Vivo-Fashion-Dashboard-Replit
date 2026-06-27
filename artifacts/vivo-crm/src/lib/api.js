@@ -99,9 +99,15 @@ export function prevMonthRange() {
 
 export function formatKES(n) {
   if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
+  // F50 — render the ISO code "KES" (not the en-KE locale's "Ksh" symbol) so
+  // this CRM matches the currency label used everywhere else in the suite
+  // (vivo-bi's fmtKES prefixes a literal "KES "). currencyDisplay:"code" keeps
+  // Intl's thousands grouping while forcing "KES 31,480,256" instead of
+  // "Ksh 31,480,256". Display-only; the underlying figure is unchanged.
   return new Intl.NumberFormat("en-KE", {
     style: "currency",
     currency: "KES",
+    currencyDisplay: "code",
     maximumFractionDigits: 0,
   }).format(Number(n));
 }

@@ -204,7 +204,7 @@ const ReOrder = () => {
               value={accuracy ? fmtPct(accuracy.pct) : "—"}
               sub={accuracy
                 ? (accuracy.evaluated > 0 ? `${fmtNum(accuracy.evaluated)} actions evaluated` : "No actions evaluated yet")
-                : "Data unavailable"}
+                : "Awaiting completed actions to score"}
               icon={Target}
               showDelta={false}
             />
