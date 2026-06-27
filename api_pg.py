@@ -9291,6 +9291,33 @@ def _ensure_ibt_lifecycle_tables():
                     "ON ibt_transfer (to_store, sku)")
         _users_exec("CREATE INDEX IF NOT EXISTS idx_ibt_transfer_dispatch "
                     "ON ibt_transfer (dispatch_ts)")
+        # Operator resolution of a stuck/overdue in_transit consignment (lost
+        # parcel, mis-scan): an operator can CANCEL it (ownership returns to the
+        # donor — its SOR never moved) or FORCE-RECEIVE it. Columns are added
+        # idempotently so an existing table picks them up. status grows two new
+        # terminal values: 'cancelled' (and force-receive reuses received/discrepancy).
+        for _ddl in (
+            "ALTER TABLE ibt_transfer ADD COLUMN IF NOT EXISTS resolution_reason TEXT",
+            "ALTER TABLE ibt_transfer ADD COLUMN IF NOT EXISTS resolution_action TEXT",
+            "ALTER TABLE ibt_transfer ADD COLUMN IF NOT EXISTS resolved_by TEXT",
+            "ALTER TABLE ibt_transfer ADD COLUMN IF NOT EXISTS resolved_ts TIMESTAMP",
+        ):
+            try:
+                _users_exec(_ddl)
+            except Exception:
+                pass
+        # Append-only audit of stuck-consignment resolutions (cancel / force-receive).
+        _users_exec(
+            "CREATE TABLE IF NOT EXISTS ibt_audit ("
+            " id BIGSERIAL PRIMARY KEY,"
+            " consignment_id TEXT,"
+            " action TEXT,"
+            " reason TEXT,"
+            " detail TEXT,"
+            " user_id TEXT, user_name TEXT,"
+            " created_at TIMESTAMP NOT NULL DEFAULT now())")
+        _users_exec("CREATE INDEX IF NOT EXISTS idx_ibt_audit_cid "
+                    "ON ibt_audit (consignment_id)")
         # Shared soft-reservation ledger — the coordination point between IBT and
         # Replenishment (source column distinguishes them). Replenishment continues
         # to coordinate via its own in-transit quarantine; this table lets a
@@ -9313,6 +9340,23 @@ def _ensure_ibt_lifecycle_tables():
         _ibt_lifecycle_ready = True
     except Exception as e:
         log.warning("ibt lifecycle tables ensure skipped: %s", e)
+
+
+def _ibt_audit(consignment_id, action, reason, detail, request):
+    """Append an audit row for a stuck-consignment resolution. Never raises."""
+    acting = getattr(request, "state", None)
+    acting = getattr(acting, "user", None) or {}
+    uid = acting.get("user_id") or acting.get("sub") or acting.get("email")
+    name = acting.get("name") or acting.get("email")
+    try:
+        _users_exec(
+            "INSERT INTO ibt_audit "
+            "(consignment_id, action, reason, detail, user_id, user_name) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (consignment_id, action, (reason or "")[:1000],
+             (detail or "")[:1000], uid, name))
+    except Exception:
+        pass
 
 
 def _ibt_reserved_units(pos_location, sku):
@@ -17399,6 +17443,132 @@ async def ibt_scan_in(request: Request):
 
     return {"ok": True, "consignment_id": cid, "status": status,
             "received_qty": received_qty, "qty": qty,
+            "discrepancy": status == "discrepancy",
+            "shortfall": max(qty - received_qty, 0)}
+
+
+@app.post("/api/ibt/resolve-stuck")
+async def ibt_resolve_stuck(request: Request):
+    """Operator escape hatch for an in_transit consignment that was scanned out but
+    never scanned in (lost parcel, mis-scan) so it would otherwise sit in_transit
+    forever, inflating the in-transit worklist and units-in-transit KPI.
+
+    Two actions, both requiring a reason and both writing an ibt_audit row:
+      • cancel        → status 'cancelled'; ownership returns to the donor (its SOR
+                        never moved while the hub held the units in flight), the
+                        donor reservation is released, and NOTHING is mirrored into
+                        ibt_completions (no goods were received).
+      • force_receive → behaves like a scan-in (status received/discrepancy, mirrors
+                        into ibt_completions, releases the reservation) but is
+                        explicitly flagged + reasoned as a forced close.
+
+    Either way the consignment leaves status='in_transit', so the in-transit list
+    and the overdue KPI reflect it immediately."""
+    from fastapi import HTTPException
+    _ensure_ibt_lifecycle_tables()
+    body = await request.json()
+    acting = getattr(request.state, "user", None) or {}
+    cid = (body.get("consignment_id") or "").strip()
+    action = (body.get("action") or "").strip().lower()
+    reason = (body.get("reason") or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="consignment_id is required")
+    if action not in ("cancel", "force_receive"):
+        raise HTTPException(status_code=400,
+                            detail="action must be 'cancel' or 'force_receive'")
+    if not reason:
+        raise HTTPException(status_code=400,
+                            detail="A reason is required to resolve a stuck consignment.")
+
+    rows = _users_exec(
+        "SELECT consignment_id, from_store, to_store, style_name, brand, "
+        "subcategory, sku, color, size, barcode, qty, status, odoo_transfer_id, "
+        "dispatch_ts FROM ibt_transfer WHERE consignment_id=%s",
+        (cid,), fetch=True)
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Consignment {cid} not found")
+    t = rows[0]
+    if t.get("status") != "in_transit":
+        raise HTTPException(status_code=409, detail={
+            "error": "not_in_transit",
+            "message": (f"Consignment {cid} is '{t.get('status')}', not in transit — "
+                        "only an in-transit consignment can be resolved this way.")})
+
+    qty = int(t.get("qty") or 0)
+    actor = acting.get("name") or acting.get("email")
+
+    if action == "cancel":
+        _users_exec(
+            "UPDATE ibt_transfer SET status='cancelled', resolution_action='cancel', "
+            "resolution_reason=%s, resolved_by=%s, resolved_ts=now(), "
+            "updated_at=now() WHERE consignment_id=%s",
+            (reason[:1000], actor, cid))
+        # Release the donor hold so the units stop being netted out of donor
+        # availability (ownership returns to the donor — its SOR never moved).
+        try:
+            _users_exec(
+                "UPDATE transfer_reservations SET status='released' "
+                "WHERE consignment_id=%s AND status IN ('active','consumed')", (cid,))
+        except Exception:
+            pass
+        _ibt_audit(cid, "cancel", reason,
+                   f"{t.get('from_store')}→{t.get('to_store')} {t.get('sku')} "
+                   f"qty={qty} ownership returned to donor", request)
+        return {"ok": True, "consignment_id": cid, "status": "cancelled",
+                "action": "cancel", "qty": qty}
+
+    # action == force_receive — close it as received against the dispatched qty
+    # (or a supplied received_qty), mirroring scan-in so KPIs/outcomes stay aligned.
+    try:
+        received_qty = int(body.get("received_qty"))
+    except Exception:
+        received_qty = qty
+    received_qty = max(0, received_qty)
+    status = "received" if received_qty == qty else "discrepancy"
+    odoo_ref = (body.get("odoo_transfer_id") or t.get("odoo_transfer_id"))
+
+    _users_exec(
+        "UPDATE ibt_transfer SET received_qty=%s, received_ts=now(), status=%s, "
+        "odoo_transfer_id=COALESCE(%s, odoo_transfer_id), received_by=%s, "
+        "resolution_action='force_receive', resolution_reason=%s, resolved_by=%s, "
+        "resolved_ts=now(), updated_at=now() WHERE consignment_id=%s",
+        (received_qty, status, odoo_ref, actor, reason[:1000], actor, cid))
+
+    try:
+        _users_exec(
+            "UPDATE transfer_reservations SET status='released' "
+            "WHERE consignment_id=%s AND status IN ('active','consumed')", (cid,))
+    except Exception:
+        pass
+
+    # Mirror into ibt_completions (idempotent on po_number=cid) so late-count /
+    # outcomes / roi keep working, exactly like a normal scan-in.
+    try:
+        already = _users_exec(
+            "SELECT 1 FROM ibt_completions WHERE po_number=%s LIMIT 1",
+            (cid,), fetch=True)
+        if not already:
+            _users_exec(
+                "INSERT INTO ibt_completions "
+                "(style_name, brand, subcategory, from_store, to_store, flow, "
+                "units_to_move, actual_units_moved, sku, color, size, barcode, "
+                "po_number, completed_by_name, suggested_at, transfer_date) "
+                "VALUES (%s,%s,%s,%s,%s,'store_to_store',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (t.get("style_name"), t.get("brand"), t.get("subcategory"),
+                 t.get("from_store"), t.get("to_store"), qty, received_qty,
+                 t.get("sku"), t.get("color"), t.get("size"), t.get("barcode"),
+                 cid, actor,
+                 (t["dispatch_ts"].date().isoformat()
+                  if t.get("dispatch_ts") else None),
+                 date.today().isoformat()))
+    except Exception as e:
+        log.warning("ibt force-receive completions mirror skipped: %s", e)
+
+    _ibt_audit(cid, "force_receive", reason,
+               f"{t.get('from_store')}→{t.get('to_store')} {t.get('sku')} "
+               f"received={received_qty}/{qty} status={status}", request)
+    return {"ok": True, "consignment_id": cid, "status": status,
+            "action": "force_receive", "received_qty": received_qty, "qty": qty,
             "discrepancy": status == "discrepancy",
             "shortfall": max(qty - received_qty, 0)}
 

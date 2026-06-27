@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api, fmtNum } from "@/lib/api";
 import { Loading, Empty, ErrorBox, SectionTitle } from "@/components/common";
-import { Package, ArrowRight, Warning, Lock } from "@phosphor-icons/react";
+import { Package, ArrowRight, Warning, Lock, Wrench } from "@phosphor-icons/react";
 
 /**
  * In-transit / awaiting-receive worklist — Phase 3 (Flow & Proof).
@@ -12,7 +12,7 @@ import { Package, ArrowRight, Warning, Lock } from "@phosphor-icons/react";
  * SLA) are flagged. Scan buttons soft-lock when the sales sync is stale so a
  * destructive receive isn't actioned against figures that haven't refreshed.
  */
-export default function IBTInTransit({ refreshKey, onScanIn, stale = false }) {
+export default function IBTInTransit({ refreshKey, onScanIn, onResolveStuck, stale = false }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -110,21 +110,35 @@ export default function IBTInTransit({ refreshKey, onScanIn, stale = false }) {
                     )}
                   </td>
                   <td className="px-3 py-2.5 whitespace-nowrap">
-                    <button
-                      type="button"
-                      onClick={() => !stale && onScanIn?.(r)}
-                      disabled={stale}
-                      title={stale ? "Sales sync is stale — receiving is locked until figures refresh" : "Scan this consignment in at the destination"}
-                      className={`inline-flex items-center gap-1 text-[11.5px] font-semibold px-2.5 py-1.5 rounded-md ${
-                        stale
-                          ? "bg-gray-100 text-muted cursor-not-allowed"
-                          : "text-white bg-emerald-600 hover:bg-emerald-700"
-                      }`}
-                      data-testid={`ibt-scan-in-btn-${idx}`}
-                    >
-                      {stale ? <Lock size={13} weight="bold" /> : <Package size={13} weight="bold" />}
-                      Scan in
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => !stale && onScanIn?.(r)}
+                        disabled={stale}
+                        title={stale ? "Sales sync is stale — receiving is locked until figures refresh" : "Scan this consignment in at the destination"}
+                        className={`inline-flex items-center gap-1 text-[11.5px] font-semibold px-2.5 py-1.5 rounded-md ${
+                          stale
+                            ? "bg-gray-100 text-muted cursor-not-allowed"
+                            : "text-white bg-emerald-600 hover:bg-emerald-700"
+                        }`}
+                        data-testid={`ibt-scan-in-btn-${idx}`}
+                      >
+                        {stale ? <Lock size={13} weight="bold" /> : <Package size={13} weight="bold" />}
+                        Scan in
+                      </button>
+                      {r.overdue && onResolveStuck && (
+                        <button
+                          type="button"
+                          onClick={() => onResolveStuck(r)}
+                          title="Stuck/overdue — cancel (return to donor) or force-receive this consignment"
+                          className="inline-flex items-center gap-1 text-[11.5px] font-semibold px-2.5 py-1.5 rounded-md text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100"
+                          data-testid={`ibt-resolve-btn-${idx}`}
+                        >
+                          <Wrench size={13} weight="bold" />
+                          Resolve
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

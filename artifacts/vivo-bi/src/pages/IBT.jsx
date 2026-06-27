@@ -9,6 +9,7 @@ import IBTInTransit from "@/components/IBTInTransit";
 import IBTCompletedMoves from "@/components/IBTCompletedMoves";
 import IBTScanOutModal from "@/components/IBTScanOutModal";
 import IBTScanInModal from "@/components/IBTScanInModal";
+import IBTResolveStuckModal from "@/components/IBTResolveStuckModal";
 import { toast } from "sonner";
 import {
   Truck, Package, MagnifyingGlass, DownloadSimple, Stack, TrendUp, Buildings, Tag,
@@ -43,6 +44,7 @@ const IBT = () => {
   const [completedRefresh, setCompletedRefresh] = useState(0);
   const [scanOutRow, setScanOutRow] = useState(null);
   const [scanInRow, setScanInRow] = useState(null);
+  const [resolveStuckRow, setResolveStuckRow] = useState(null);
   const [exporting, setExporting] = useState(false);
 
   // Phase 3 (Flow & Proof) lifecycle state.
@@ -586,6 +588,7 @@ const IBT = () => {
             refreshKey={lifecycleRefresh}
             stale={stale}
             onScanIn={(row) => setScanInRow(row)}
+            onResolveStuck={(row) => setResolveStuckRow(row)}
           />
 
           {canSeeCompletedMoves && (
@@ -612,6 +615,23 @@ const IBT = () => {
               onClose={() => setScanInRow(null)}
               onScannedIn={() => {
                 setScanInRow(null);
+                setCompletedRefresh((n) => n + 1);
+                setLifecycleRefresh((n) => n + 1);
+              }}
+            />
+          )}
+
+          {resolveStuckRow && (
+            <IBTResolveStuckModal
+              row={resolveStuckRow}
+              onClose={() => setResolveStuckRow(null)}
+              onResolved={(data) => {
+                setResolveStuckRow(null);
+                toast.success(
+                  data?.action === "cancel"
+                    ? `Consignment ${data?.consignment_id} cancelled — ownership returned to donor.`
+                    : `Consignment ${data?.consignment_id} force-received.`,
+                );
                 setCompletedRefresh((n) => n + 1);
                 setLifecycleRefresh((n) => n + 1);
               }}
