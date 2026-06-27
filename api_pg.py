@@ -12090,10 +12090,10 @@ def analytics_replenishment_sor_holdback_override(payload: dict = Body(...),
     except Exception:
         actor = None
     _users_exec(
-        "INSERT INTO replen_holdback_override (pos_location, sku, action, set_by, set_at) "
+        "INSERT INTO replen_holdback_override (pos_location, sku, action, acted_by, acted_at) "
         "VALUES (%s,%s,%s,%s, now()) "
         "ON CONFLICT (pos_location, sku) DO UPDATE SET "
-        "action=EXCLUDED.action, set_by=EXCLUDED.set_by, set_at=now()",
+        "action=EXCLUDED.action, acted_by=EXCLUDED.acted_by, acted_at=now()",
         (pos, sku, action, actor))
     return {"ok": True, "pos_location": pos, "sku": sku, "action": action}
 

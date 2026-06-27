@@ -114,7 +114,7 @@ const RULES = [
     notes: ["Same metric as Sell-Out Rate (SOR) above: two names for one formula. SOR is the canonical name; \"Sell-through\" is the industry-standard alias surfaced on the Products and Velocity pages — there is no second calculation.", "Banding mirrored across pages: ≥60% Fast, 30–60% Steady, <30% Slow."],
     used: ["/products", "/velocity", "/product-analysis"] },
   { id: "replen-sor", title: "Replenishment SOR engine (canonical SOR + saleable SOR)", category: "Products",
-    formula: "current SOR % = units_sold × 100 ÷ (units_sold + saleable store stock)  — warehouse EXCLUDED, identical to SOR above",
+    formula: "current SOR % = units_sold × 100 ÷ (units_sold + store stock)  — warehouse EXCLUDED, identical to SOR above. Saleable SOR is an ADDITIVE companion (below), never the headline.",
     notes: [
       "The Replenishments page reads SOR over a NAMED trailing demand window — default 4 weeks, switchable to 8 or 12 (the window is shown on the page). SOR is computed per pool (each store on its own stock, Online / Shop Zetu on its own pool) and rolled up unit-weighted across pools — a single SUM of units_sold over a single SUM of stock IS the unit-weighted roll-up. The base formula is unchanged.",
       "Saleable SOR (shown ALONGSIDE the headline, never replacing it) nets broken-curve orphan stock out of the denominator: stock of a (store, style) holding only a single in-stock size while the style's chain-wide curve has 3+ sizes is treated as unsaleable remnant. Saleable SOR ≥ current SOR by construction — it is the ceiling once orphans are cleared, not a different metric.",
