@@ -150,3 +150,6 @@ args = ["bash", "/home/runner/workspace/start_all.sh"]
 WAREHOUSE_BINS_SHEET_ID = "1XiY1gRSqW2f3W_UJIp4_EcmW2QDjZfFhRyIkXppxq30"
 WAREHOUSE_BINS_GID = "403172947"
 WAREHOUSE_BINS_REFRESH_SEC = "3600"
+VALIDATION_ALERT_EMAILS = "stephen@vivofashiongroup.com,william@vivofashiongroup.com"
+VALIDATION_ALERT_WHATSAPP = "+254713402009,+254716590505"
+SMTP_FROM = "alerts@vivofashiongroup.com"
