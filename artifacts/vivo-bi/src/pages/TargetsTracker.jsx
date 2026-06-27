@@ -98,6 +98,10 @@ function ProgressRing({ pct, size = 88, stroke = 8, color = "#00c853", trackColo
 function TargetTile({
   label, achieved, target, projected, daysLeft,
   isOverall, testId, daysLabel = "days left", closedLabel = "closed",
+  // Basis of the "% of target" line — varies by card period (full-year for
+  // the Annual card, the quarter for the Quarter cards) so the tooltip and
+  // suffix never mislabel a quarter as full-year. See F21.
+  basisSuffix = "target", basisTooltip = "",
   // Comparison values (optional). All passed through from the page.
   // `paceExpected` is the expected achieved KES at today's pace
   // (target × elapsed/total) — used for the "ahead/behind pace" pill.
@@ -170,8 +174,11 @@ function TargetTile({
           <div className={`text-[18px] font-extrabold leading-tight tabular-nums ${isOverall ? "text-white" : "text-[#0f3d24]"}`} data-testid={`${testId}-achieved`}>
             {fmtKESCompact(achieved)}
           </div>
-          <div className={`text-[10.5px] mt-1 ${isOverall ? "text-white/65" : "text-[#6b7280]"}`}>
-            {achievedPct.toFixed(1)}% of target
+          <div
+            className={`text-[10.5px] mt-1 ${isOverall ? "text-white/65" : "text-[#6b7280]"}`}
+            title={basisTooltip || undefined}
+          >
+            {achievedPct.toFixed(1)}% of {basisSuffix}
           </div>
           {priorDeltaPct != null && (
             <div
@@ -265,7 +272,7 @@ function TargetsCardShell({ title, badge, subtitle, daysLeft, daysLabel, childre
   );
 }
 
-function TileGrid({ rows, overall, daysLeft, daysLabel, closedLabel, slug, priorLabel }) {
+function TileGrid({ rows, overall, daysLeft, daysLabel, closedLabel, slug, priorLabel, basisSuffix = "target", basisTooltip = "", basisTooltipOverall = "" }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
       {rows.map((r) => (
@@ -281,6 +288,8 @@ function TileGrid({ rows, overall, daysLeft, daysLabel, closedLabel, slug, prior
           daysLeft={daysLeft}
           daysLabel={daysLabel}
           closedLabel={closedLabel}
+          basisSuffix={basisSuffix}
+          basisTooltip={basisTooltip}
           testId={`${slug}-tile-${r.label.toLowerCase()}`}
         />
       ))}
@@ -295,6 +304,8 @@ function TileGrid({ rows, overall, daysLeft, daysLabel, closedLabel, slug, prior
         daysLeft={daysLeft}
         daysLabel={daysLabel}
         closedLabel={closedLabel}
+        basisSuffix={basisSuffix}
+        basisTooltip={basisTooltipOverall || basisTooltip}
         isOverall
         testId={`${slug}-tile-overall`}
       />
@@ -492,6 +503,9 @@ export default function TargetsTracker() {
           closedLabel="Year closed"
           slug="annual"
           priorLabel="YoY"
+          basisSuffix="full-year target"
+          basisTooltip={"Cumulative share of the FULL-YEAR budget banked so far (achieved \u00f7 annual target). This is a vs-annual figure, not a pace-to-date measure \u2014 see the projected ring and 'vs Pace' for pacing. The Executive Summary instead shows a pro-rata target scaled to the elapsed period, so its on-pace % reads higher."}
+          basisTooltipOverall={"Cumulative share of the FULL-YEAR budget banked so far (achieved \u00f7 annual target, summed across the four budgeted markets). This is a vs-annual figure, not a pace-to-date measure \u2014 see the projected ring and 'vs Pace' for pacing. The Executive Summary instead shows a pro-rata target scaled to the elapsed period, so its on-pace % reads higher."}
         />
       </TargetsCardShell>
 
@@ -513,6 +527,8 @@ export default function TargetsTracker() {
             closedLabel={`${cards.cqLabel} closed`}
             slug="current-q"
             priorLabel={cards.current.priorLabel}
+            basisSuffix={`${cards.cqLabel} target`}
+            basisTooltip={`Share of the ${cards.cqLabel} quarter target banked so far (achieved \u00f7 ${cards.cqLabel} target). See the projected ring and 'vs Pace' for quarter pacing.`}
           />
         </TargetsCardShell>
       )}
@@ -534,6 +550,8 @@ export default function TargetsTracker() {
             closedLabel={`${cards.prevLabel} closed`}
             slug="previous-q"
             priorLabel={cards.previous.priorLabel}
+            basisSuffix={`${cards.prevLabel} target`}
+            basisTooltip={`Final share of the ${cards.prevLabel} quarter target achieved (achieved \u00f7 ${cards.prevLabel} target). The quarter has closed, so this is the settled outcome.`}
           />
         </TargetsCardShell>
       )}

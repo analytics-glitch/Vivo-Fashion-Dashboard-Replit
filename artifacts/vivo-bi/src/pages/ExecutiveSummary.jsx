@@ -148,11 +148,11 @@ const TargetDayPill = ({ actual, targetTotal, days, label = "Target" }) => {
     : "text-rose-700 bg-rose-50 border-rose-200";
   return (
     <div className="grid grid-cols-[58px_1fr_auto] items-center gap-2 mt-0.5">
-      <span className="text-[9.5px] uppercase font-bold text-muted tracking-wider">{label}</span>
+      <span className="text-[9.5px] uppercase font-bold text-muted tracking-wider" title="Pro-rata target to date (annual budget scaled to the elapsed period). This is a pace-vs-today measure, so it reads higher than the Targets Tracker's cumulative % of the FULL-YEAR budget.">{label}</span>
       <span className="text-[10.5px] tabular-nums text-muted">
         Need <span className="font-bold text-foreground">{fmtKES(targetDaily)}</span>/day
       </span>
-      <span className={`text-[10px] font-bold tabular-nums px-1.5 py-0.5 rounded-md border ${tone}`} title={`Daily run-rate vs target daily run-rate. Pro-rata target ${fmtKES(targetTotal)} ÷ ${days}d.`}>
+      <span className={`text-[10px] font-bold tabular-nums px-1.5 py-0.5 rounded-md border ${tone}`} title={`Actual daily run-rate vs target daily run-rate (pace to date, NOT % of the full-year budget). Pro-rata target ${fmtKES(targetTotal)} ÷ ${days}d.`}>
         {gapPct != null ? `${gapPct >= 0 ? "+" : ""}${gapPct.toFixed(1)}%` : "—"}
       </span>
     </div>
