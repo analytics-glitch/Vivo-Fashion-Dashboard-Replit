@@ -8752,6 +8752,182 @@ def admin_validation_audit(
         "count": len(rows_out),
         "rows": rows_out,
     }
+
+# ---------------------------------------------------------------------------
+# One-click review: an admin approves a finding's proposed fix and the engine
+# applies it — but ONLY if it clears the same safety fence the autonomous
+# governance layer uses (mirror of validation_agent.governance._fix_is_safe):
+# a SINGLE reversible UPDATE, no DDL/DELETE/multi-statement, and it must
+# reference at least one allowlisted data table. The human approve click is the
+# real gate (the admin sees the exact SQL in the expanded row); this fence is
+# the machine backstop so a click can never run something destructive.
+# ---------------------------------------------------------------------------
+_VALIDATION_FIX_TABLES = {
+    "all_sales", "all_inventory", "all_customers", "all_products_clean",
+    "raw_shopify_vendor_sales", "shopify_sales", "raw_odoo_pos_orders",
+    "raw_odoo_products", "targets_monthly",
+}
+
+def _validation_fix_is_safe(sql: str):
+    """Return (ok, reason). Accept ONLY a single reversible UPDATE whose actual
+    target table is on the allowlist.
+
+    Hardening (the human approve click is the gate; this is the machine backstop):
+      * SQL comments and string literals are stripped before analysis so a token
+        (table name, keyword, semicolon) can't be smuggled past the fence.
+      * It must be a SINGLE statement that *starts* with UPDATE (no leading CTE).
+      * No DDL / DELETE / INSERT / MERGE (matched on word boundaries, so a column
+        like `created_at` is not mistaken for CREATE).
+      * The table parsed immediately after UPDATE — not merely a name appearing
+        somewhere in the text — must be allowlisted (schema-qualifier tolerated).
+    """
+    import re
+    if not sql or not sql.strip():
+        return False, "no fix SQL"
+    raw = sql.strip()
+    # Strip block + line comments, then blank out string literals.
+    no_block = re.sub(r"/\*.*?\*/", " ", raw, flags=re.S)
+    no_comments = re.sub(r"--[^\n]*", " ", no_block)
+    scan = re.sub(r"'(?:[^']|'')*'", " '' ", no_comments)
+    upper = scan.upper().strip()
+    body = upper[:-1].strip() if upper.endswith(";") else upper
+    if ";" in body:
+        return False, "multiple statements are not allowed"
+    if not re.match(r"^\s*UPDATE\b", body):
+        return False, "only a reversible UPDATE can be auto-applied"
+    for kw in ("DROP", "TRUNCATE", "DELETE", "ALTER", "GRANT", "INSERT",
+               "CREATE", "MERGE", "WITH"):
+        if re.search(rf"\b{kw}\b", body):
+            return False, f"forbidden keyword in fix: {kw}"
+    m = re.match(r"^\s*UPDATE\s+(?:ONLY\s+)?([A-Z0-9_.\"]+)", body)
+    if not m:
+        return False, "could not identify the UPDATE target table"
+    target = m.group(1).replace('"', "")
+    if "." in target:
+        target = target.split(".")[-1]
+    if target.lower() not in _VALIDATION_FIX_TABLES:
+        return False, f"UPDATE target '{target.lower()}' is not an allowlisted data table"
+    return True, "ok"
+
+def _validation_audit_event(cur, *, phase, event, check_code=None, detail=None):
+    """Best-effort insert into validation_audit, wrapped in a SAVEPOINT so a
+    failure (e.g. partial schema) can't poison the outer transaction."""
+    import uuid
+    from datetime import datetime, timezone
+    try:
+        cur.execute("SAVEPOINT _vaud")
+        cur.execute(
+            "INSERT INTO validation_audit (run_id, ts, phase, event, check_code, "
+            "detail, dry_run) VALUES (%s, %s, %s, %s, %s, %s::jsonb, FALSE)",
+            (str(uuid.uuid4()), datetime.now(timezone.utc), phase, event,
+             check_code, json.dumps(detail or {})))
+        cur.execute("RELEASE SAVEPOINT _vaud")
+    except Exception:
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT _vaud")
+        except Exception:
+            pass
+
+@app.post("/api/admin/validation-exceptions/{exc_id}/apply-fix")
+async def admin_validation_apply_fix(exc_id: int, request: Request):
+    """Apply the proposed fix for one open finding after admin approval.
+    Read+lock the row, run the EXACT reviewed SQL through the safety fence, flip
+    status to 'approved', and audit it — all on one transaction. Admin-only
+    (clerk_auth_gate gates /api/admin/*)."""
+    from datetime import datetime, timezone
+    acting = getattr(request.state, "user", None) or {}
+    actor = acting.get("email") or acting.get("name") or "admin"
+    conn = get_conn()
+    try:
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT to_regclass('public.validation_exceptions') AS t")
+        if cur.fetchone()["t"] is None:
+            conn.rollback()
+            return JSONResponse({"detail": "no validation findings on this database"}, status_code=404)
+        cur.execute(
+            "SELECT id, status, proposed_fix_sql, check_code "
+            "FROM validation_exceptions WHERE id=%s FOR UPDATE", (exc_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return JSONResponse({"detail": "finding not found"}, status_code=404)
+        if row["status"] != "open":
+            conn.rollback()
+            return JSONResponse({"detail": f"finding is already '{row['status']}'"}, status_code=400)
+        fix_sql = (row.get("proposed_fix_sql") or "").strip()
+        if not fix_sql:
+            conn.rollback()
+            return JSONResponse(
+                {"detail": "This finding has no automated fix — it needs manual review by a developer."},
+                status_code=400)
+        ok, reason = _validation_fix_is_safe(fix_sql)
+        if not ok:
+            conn.rollback()
+            return JSONResponse({"detail": f"Fix blocked by the safety fence: {reason}"}, status_code=400)
+        try:
+            cur.execute(fix_sql)
+            affected = cur.rowcount
+        except Exception as e:
+            conn.rollback()
+            return JSONResponse(
+                {"detail": f"Fix failed to run: {str(e).splitlines()[0][:200]}"}, status_code=400)
+        cur.execute(
+            "UPDATE validation_exceptions SET status='approved', resolved_at=%s WHERE id=%s",
+            (datetime.now(timezone.utc), exc_id))
+        _validation_audit_event(
+            cur, phase="governance", event="manual_fix_applied",
+            check_code=row.get("check_code"),
+            detail={"rows": affected, "by": actor, "exc_id": exc_id, "sql": fix_sql})
+        conn.commit()
+        return {"applied": True, "rows": affected, "status": "approved"}
+    finally:
+        try:
+            conn.autocommit = True
+            conn.close()
+        except Exception:
+            pass
+
+@app.post("/api/admin/validation-exceptions/{exc_id}/dismiss")
+async def admin_validation_dismiss(exc_id: int, request: Request):
+    """Mark one open finding as reviewed-and-dismissed (status='rejected').
+    Admin-only. Used for findings with no automated fix (e.g. cross-surface
+    definition mismatches a developer must align in code)."""
+    from datetime import datetime, timezone
+    acting = getattr(request.state, "user", None) or {}
+    actor = acting.get("email") or acting.get("name") or "admin"
+    conn = get_conn()
+    try:
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT to_regclass('public.validation_exceptions') AS t")
+        if cur.fetchone()["t"] is None:
+            conn.rollback()
+            return JSONResponse({"detail": "no validation findings on this database"}, status_code=404)
+        cur.execute(
+            "SELECT id, status, check_code FROM validation_exceptions WHERE id=%s FOR UPDATE",
+            (exc_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return JSONResponse({"detail": "finding not found"}, status_code=404)
+        if row["status"] != "open":
+            conn.rollback()
+            return JSONResponse({"detail": f"finding is already '{row['status']}'"}, status_code=400)
+        cur.execute(
+            "UPDATE validation_exceptions SET status='rejected', resolved_at=%s WHERE id=%s",
+            (datetime.now(timezone.utc), exc_id))
+        _validation_audit_event(
+            cur, phase="governance", event="manual_dismiss",
+            check_code=row.get("check_code"), detail={"by": actor, "exc_id": exc_id})
+        conn.commit()
+        return {"dismissed": True, "status": "rejected"}
+    finally:
+        try:
+            conn.autocommit = True
+            conn.close()
+        except Exception:
+            pass
 @app.get("/api/admin/replenishment-config")
 def admin_replenishment_config():
     return {"owners": _replen_owners()}

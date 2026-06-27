@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { api, fmtKESLong } from "@/lib/api";
 import { SectionTitle, Loading, ErrorBox, Empty } from "@/components/common";
-import { ArrowClockwise, ShieldWarning, CaretDown, CaretRight } from "@phosphor-icons/react";
+import { ArrowClockwise, ShieldWarning, CaretDown, CaretRight, Check, X } from "@phosphor-icons/react";
 import SortableTable from "@/components/SortableTable";
+import { toast } from "sonner";
 
 const STATUS_OPTIONS = [
   { value: "open", label: "Open" },
@@ -150,6 +151,7 @@ const ValidationAudit = () => {
   const [status, setStatus] = useState("open");
   const [severity, setSeverity] = useState("");
   const [expanded, setExpanded] = useState(null);
+  const [acting, setActing] = useState(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -162,6 +164,29 @@ const ValidationAudit = () => {
       .catch((e) => setError(e?.response?.data?.detail || e.message))
       .finally(() => setLoading(false));
   }, [status, severity]);
+
+  const applyFix = useCallback((r) => {
+    if (!window.confirm(
+      "Apply this fix? It runs a single reversible UPDATE on the live database. " +
+      "The change is captured by the database checkpoint if it needs to be rolled back."
+    )) return;
+    setActing(r.id);
+    api.post(`/admin/validation-exceptions/${r.id}/apply-fix`)
+      .then((res) => {
+        toast.success(`Fix applied — ${res.data?.rows ?? 0} row(s) updated`);
+        load();
+      })
+      .catch((e) => toast.error(e?.response?.data?.detail || e.message))
+      .finally(() => setActing(null));
+  }, [load]);
+
+  const dismissFinding = useCallback((r) => {
+    setActing(r.id);
+    api.post(`/admin/validation-exceptions/${r.id}/dismiss`)
+      .then(() => { toast.success("Finding dismissed"); load(); })
+      .catch((e) => toast.error(e?.response?.data?.detail || e.message))
+      .finally(() => setActing(null));
+  }, [load]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -300,6 +325,36 @@ const ValidationAudit = () => {
                       <div>
                         <div className="font-semibold mb-1">Proposed fix (SQL)</div>
                         <pre className="bg-slate-900 text-slate-100 rounded-lg p-3 text-[11px] overflow-x-auto whitespace-pre-wrap">{r.proposed_fix_sql}</pre>
+                      </div>
+                    )}
+                    {r.status === "open" && (
+                      <div className="flex flex-wrap items-center gap-2 pt-1.5">
+                        {r.proposed_fix_sql ? (
+                          <button
+                            type="button"
+                            onClick={() => applyFix(r)}
+                            disabled={acting === r.id}
+                            data-testid={`apply-fix-${r.id}`}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand text-white text-[11.5px] font-semibold hover:opacity-90 disabled:opacity-50"
+                          >
+                            <Check size={14} weight="bold" />
+                            {acting === r.id ? "Applying…" : "Approve & apply fix"}
+                          </button>
+                        ) : (
+                          <span className="text-[11.5px] text-muted italic">
+                            No automated fix — this needs a developer to align the logic in code.
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => dismissFinding(r)}
+                          disabled={acting === r.id}
+                          data-testid={`dismiss-${r.id}`}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-[11.5px] font-semibold hover:bg-panel disabled:opacity-50"
+                        >
+                          <X size={14} weight="bold" />
+                          Dismiss
+                        </button>
                       </div>
                     )}
                   </div>
