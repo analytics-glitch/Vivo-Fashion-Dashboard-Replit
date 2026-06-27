@@ -120,15 +120,31 @@ async function apiWrite<T>(
   }
   if (res.status === 401) onUnauthorized?.();
   if (!res.ok) {
-    let detail = friendlyHttpError(res.status);
+    let message = friendlyHttpError(res.status);
+    let detail: unknown;
     try {
       const j = (await res.json()) as { detail?: unknown };
-      if (j && typeof j.detail === "string") detail = j.detail;
+      detail = j?.detail;
+      if (typeof detail === "string") {
+        message = detail;
+      } else if (
+        detail &&
+        typeof detail === "object" &&
+        typeof (detail as { message?: unknown }).message === "string"
+      ) {
+        // Structured error body (e.g. the scan-out 409 donor_stock_unavailable);
+        // surface its message and keep the object for richer rendering.
+        message = (detail as { message: string }).message;
+      }
     } catch {
       // non-JSON error body (e.g. a proxy 502 page); keep the friendly message
     }
-    const err = new Error(detail) as Error & { status?: number };
+    const err = new Error(message) as Error & {
+      status?: number;
+      detail?: unknown;
+    };
     err.status = res.status;
+    err.detail = detail;
     throw err;
   }
   return (await res.json()) as T;
@@ -309,4 +325,111 @@ export const compareRange = (r: DateRange, key: CompareKey): DateRange => ({
 export interface StockoutAlert {
   style: string | null;
   weeks_of_cover: number | null;
+}
+
+// --- IBT store-to-store transfer lifecycle (scan-out / scan-in) ---
+
+/** Sales-sync freshness: when `stale`, scan actions soft-lock (web parity). */
+export interface IbtFreshness {
+  as_of_eat: string;
+  last_sync_at: string | null;
+  sync_lag_min: number | null;
+  stale: boolean;
+  sla_min: number;
+}
+
+/** A consignment row from GET /api/ibt/transfers. */
+export interface IbtTransfer {
+  consignment_id: string;
+  run_id: string | null;
+  from_store: string;
+  from_country: string | null;
+  to_store: string;
+  to_country: string | null;
+  via_hub: boolean;
+  route: string | null;
+  style_name: string | null;
+  brand: string | null;
+  subcategory: string | null;
+  sku: string | null;
+  color: string | null;
+  size: string | null;
+  barcode: string | null;
+  qty: number;
+  received_qty: number | null;
+  status: "in_transit" | "received" | "discrepancy";
+  odoo_transfer_id: string | null;
+  scanned_out_by: string | null;
+  received_by: string | null;
+  dispatch_ts: string | null;
+  received_ts: string | null;
+  days_lapsed: number | null;
+  discrepancy: boolean;
+  overdue: boolean;
+  days_in_transit: number;
+}
+
+/** A suggested SKU move inside a bundle (GET /api/analytics/ibt-suggestions). */
+export interface IbtSuggestionSku {
+  style_name: string | null;
+  brand: string | null;
+  subcategory: string | null;
+  sku: string | null;
+  color: string | null;
+  size: string | null;
+  barcode: string | null;
+  bin: string | null;
+  from_available: number;
+  to_available: number;
+  suggested_qty: number;
+  source_onhand_at_calc: number | null;
+  dest_gap_at_calc: number | null;
+  net_ccc_days: number;
+  value_kes: number;
+  curve_complete: boolean;
+}
+
+/** A from→to store bundle of suggested moves. */
+export interface IbtSuggestionBundle {
+  from_store: string;
+  from_country: string | null;
+  to_store: string;
+  to_country: string | null;
+  cross_border: boolean;
+  via_hub: boolean;
+  route: string | null;
+  units: number;
+  sku_count: number;
+  value_kes: number;
+  net_ccc_days: number;
+  curve_completions: number;
+  style_count: number;
+  skus: IbtSuggestionSku[];
+}
+
+export interface IbtSuggestionsResponse {
+  as_of: string;
+  run_id: string;
+  freshness: IbtFreshness;
+  bundles: IbtSuggestionBundle[];
+}
+
+/** Response shape of POST /api/ibt/scan-out (success). */
+export interface IbtScanOutResult {
+  ok: boolean;
+  consignment_id: string;
+  status: string;
+  revalidated: boolean;
+  available: number | null;
+}
+
+/** Response shape of POST /api/ibt/scan-in. */
+export interface IbtScanInResult {
+  ok: boolean;
+  consignment_id: string;
+  status: "received" | "discrepancy";
+  received_qty: number;
+  qty: number;
+  discrepancy: boolean;
+  shortfall: number;
 }

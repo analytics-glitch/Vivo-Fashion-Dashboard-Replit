@@ -54,6 +54,7 @@ const GROUPS: Group[] = [
       { label: "Inventory", caption: "Stock on hand, cover & availability", icon: "box", route: "/inventory" },
       { label: "Velocity", caption: "Rate of sale & weeks of cover", icon: "zap", route: "/velocity" },
       { label: "Size Health", caption: "Broken size curve detection", icon: "grid", route: "/size-health" },
+      { label: "Stock Transfers", caption: "Scan stock out & receive in store", icon: "truck", route: "/transfers" },
     ],
   },
   {
