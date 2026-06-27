@@ -8980,6 +8980,48 @@ async def admin_validation_done(exc_id: int, request: Request):
             conn.close()
         except Exception:
             pass
+@app.post("/api/admin/validation-exceptions/done-all")
+async def admin_validation_done_all(request: Request):
+    """Bulk-mark every currently-open finding as resolved (status='approved').
+    Admin-only. Companion to the per-row /done: use this once the underlying
+    code fixes have shipped (e.g. the systematic root causes were corrected in
+    code) so the whole open queue clears in one click instead of row-by-row.
+    Honours the same optional `severity` ('red'|'amber') filter the page uses so
+    the operator can clear just the visible subset; omit it to clear all open."""
+    from datetime import datetime, timezone
+    acting = getattr(request.state, "user", None) or {}
+    actor = acting.get("email") or acting.get("name") or "admin"
+    severity = (request.query_params.get("severity") or "").strip().lower()
+    if severity not in ("", "red", "amber"):
+        return JSONResponse({"detail": "severity must be 'red', 'amber' or empty"}, status_code=400)
+    conn = get_conn()
+    try:
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT to_regclass('public.validation_exceptions') AS t")
+        if cur.fetchone()["t"] is None:
+            conn.rollback()
+            return JSONResponse({"detail": "no validation findings on this database"}, status_code=404)
+        params = []
+        sql = ("UPDATE validation_exceptions SET status='approved', resolved_at=%s "
+               "WHERE status='open'")
+        params.append(datetime.now(timezone.utc))
+        if severity in ("red", "amber"):
+            sql += " AND severity=%s"
+            params.append(severity)
+        cur.execute(sql, tuple(params))
+        n = cur.rowcount or 0
+        _validation_audit_event(
+            cur, phase="governance", event="manual_done_all",
+            detail={"by": actor, "count": n, "severity": severity or "all"})
+        conn.commit()
+        return {"done": True, "status": "approved", "count": n}
+    finally:
+        try:
+            conn.autocommit = True
+            conn.close()
+        except Exception:
+            pass
 @app.get("/api/admin/replenishment-config")
 def admin_replenishment_config():
     return {"owners": _replen_owners()}

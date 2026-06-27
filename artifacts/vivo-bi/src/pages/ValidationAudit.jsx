@@ -196,6 +196,21 @@ const ValidationAudit = () => {
       .finally(() => setActing(null));
   }, [load]);
 
+  const markAllDone = useCallback((openCount, sev) => {
+    const scope = sev === "red" ? "red" : sev === "amber" ? "amber" : "";
+    const label = scope ? `${scope} ` : "";
+    if (!window.confirm(
+      `Mark all ${openCount} open ${label}finding${openCount === 1 ? "" : "s"} as done? ` +
+      "Use this once the underlying fixes have shipped. They move out of the open " +
+      "queue as resolved (this does not run any SQL)."
+    )) return;
+    setActing("all");
+    api.post("/admin/validation-exceptions/done-all", null, { params: scope ? { severity: scope } : {} })
+      .then((res) => { toast.success(`Marked ${res.data?.count ?? 0} finding(s) as done`); load(); })
+      .catch((e) => toast.error(e?.response?.data?.detail || e.message))
+      .finally(() => setActing(null));
+  }, [load]);
+
   useEffect(() => { load(); }, [load]);
 
   const summary = data?.summary || {};
@@ -207,6 +222,10 @@ const ValidationAudit = () => {
   // ones that need a developer to change code.
   const autoRows = rows.filter((r) => r.auto_applicable);
   const devRows = rows.filter((r) => !r.auto_applicable);
+
+  // Open findings within the CURRENT filter scope — drives the "Mark all as
+  // done" button's visibility/label so it never promises more than is shown.
+  const openCount = rows.filter((r) => (r.status || "open") === "open").length;
 
   // Build a copy-paste brief describing the desired outcome for a dev finding.
   const briefFor = (r) => {
@@ -438,6 +457,21 @@ const ValidationAudit = () => {
           {SEVERITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
         <div className="flex-1" />
+        {available && openCount > 0 && (
+          <button
+            type="button"
+            onClick={() => markAllDone(openCount, severity)}
+            disabled={loading || acting === "all"}
+            data-testid="mark-all-done"
+            title="Mark every open finding as resolved once the fixes have shipped"
+            className="px-3 py-1.5 rounded-lg border border-emerald-600 text-emerald-700 text-[11.5px] font-semibold hover:bg-emerald-50 disabled:opacity-50 inline-flex items-center gap-1.5"
+          >
+            <Check size={13} weight="bold" />
+            {acting === "all"
+              ? "Marking…"
+              : `Mark all ${openCount.toLocaleString()}${severity ? ` ${severity}` : ""} as done`}
+          </button>
+        )}
         <button
           type="button"
           onClick={load}
