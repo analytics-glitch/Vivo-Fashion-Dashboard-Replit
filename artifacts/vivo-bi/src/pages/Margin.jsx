@@ -105,7 +105,7 @@ const Margin = () => {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <KPICard label="Net Revenue" value={fmtKES(k.net)} valueFull={fmtKESLong(k.net)} icon={ChartLineUp} testId="kpi-mg-net" showDelta={false} formula="Item sales after discounts, minus returns — the same basis as the Overview ‘Net Sales’ KPI." />
+        <KPICard label="Net Revenue" value={fmtKES(k.net)} valueFull={fmtKESLong(k.net)} icon={ChartLineUp} testId="kpi-mg-net" showDelta={false} formula="Item sales after discounts, minus returns — same formula as the Overview ‘Net Sales’ KPI, but this page joins to the product master to compute cost, so it covers only catalog-matched SKUs. Sales for SKUs missing from the catalog are excluded, so it reads slightly below Overview Net Sales." />
         <KPICard label="Gross Margin" value={fmtKES(k.gm)} valueFull={fmtKESLong(k.gm)} icon={Coins} testId="kpi-mg-gm" showDelta={false} suffix={`${fmtPct(k.coverage)} cost coverage`} />
         <KPICard label="Margin %" value={fmtPct(k.marginPct)} icon={Percent} testId="kpi-mg-pct" showDelta={false} formula="Gross margin ÷ costed net revenue (costed lines only)" />
         <KPICard label="Discounts" value={fmtKES(k.discounts)} valueFull={fmtKESLong(k.discounts)} icon={Receipt} testId="kpi-mg-disc" showDelta={false} />
