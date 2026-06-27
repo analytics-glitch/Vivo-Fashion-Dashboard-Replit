@@ -370,7 +370,7 @@ export default function Production() {
         <>
           <div className="flex flex-wrap gap-4 text-[12px] text-muted">
             <span><span className="font-extrabold text-[#0f3d24] text-[15px]">{fmtQty(totalUnits)}</span> units in progress</span>
-            <span><span className="font-extrabold text-[#0f3d24] text-[15px]">{fmtQty(totalOrders)}</span> active orders</span>
+            <span title="Distinct buying orders with units on the board now. An order spanning stages is counted once here but appears in each stage column, so the per-stage badges can total higher."><span className="font-extrabold text-[#0f3d24] text-[15px]">{fmtQty(totalOrders)}</span> active orders</span>
             <span><span className="font-extrabold text-[#0f3d24] text-[15px]">{stages.length}</span> stages</span>
           </div>
 
@@ -425,7 +425,10 @@ export default function Production() {
                     <div className="px-3 py-2.5 border-b border-line">
                       <div className="flex items-center justify-between gap-2">
                         <div className="font-bold text-[13px] text-[#0f3d24] truncate">{st.stage_name}</div>
-                        <span className="text-[11px] font-semibold text-muted bg-white border border-line rounded-full px-1.5 py-0.5">
+                        <span
+                          title="Orders with units in this stage. An order spanning stages appears in each column, so these per-stage counts can total more than the distinct active-orders figure above."
+                          className="text-[11px] font-semibold text-muted bg-white border border-line rounded-full px-1.5 py-0.5"
+                        >
                           {colCards.length}
                         </span>
                       </div>

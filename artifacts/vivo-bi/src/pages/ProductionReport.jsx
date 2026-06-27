@@ -966,7 +966,11 @@ export default function ProductionReport() {
 
       {/* KPI row */}
       <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
-        <Kpi label="Buying orders" value={fmtQty(totals.orders)} />
+        <Kpi
+          label="Buying orders"
+          value={fmtQty(totals.orders)}
+          sub="Whole book — incl. completed & not-yet-started"
+        />
         <Kpi label="Ordered units" value={fmtQty(totals.units)} />
         <Kpi label="Distinct styles" value={fmtQty(totals.styles)} />
         <Kpi
