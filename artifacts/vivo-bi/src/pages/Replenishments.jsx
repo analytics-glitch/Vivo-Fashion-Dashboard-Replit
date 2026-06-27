@@ -105,7 +105,6 @@ const Replenishments = () => {
   const [chronicOpen, setChronicOpen] = useState(false);
 
   const liveSort = useTableSort();
-  const fulfilmentSort = useTableSort();
   const completedSort = useTableSort();
 
   const loadSor = useCallback(async (opts = {}) => {
@@ -476,6 +475,10 @@ const Replenishments = () => {
             </span>
           )}
         </div>
+
+        <p className="text-[11.5px] text-muted mb-3" data-testid="replen-allocations-note">
+          This list demand-sizes only SKUs with <b>proven local sales</b> (velocity × cover, by A/B/C class). A SKU a store has <b>never sold</b> won't appear here — seed its first allocation from the <b>Allocations</b> tool, after which it earns a replenishment cadence.
+        </p>
 
         {selected.size > 0 && (
           <div className="flex flex-wrap items-center gap-3 mb-3 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2" data-testid="replen-bulk-bar">
