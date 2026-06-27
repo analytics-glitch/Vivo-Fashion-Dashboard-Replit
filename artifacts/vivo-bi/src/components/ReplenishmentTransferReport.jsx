@@ -191,11 +191,15 @@ export default function ReplenishmentTransferReport({
     [groups, posFilter],
   );
 
-  const summary = useMemo(() => ({
-    groupCount: visibleGroups.length,
-    totalUnits: visibleGroups.reduce((s, g) => s + (g.total_units || 0), 0),
-    assigned: visibleGroups.filter((g) => (g.transfer_ref || "").trim()).length,
-  }), [visibleGroups]);
+  const summary = useMemo(() => {
+    const assigned = visibleGroups.filter((g) => (g.transfer_ref || "").trim()).length;
+    return {
+      groupCount: visibleGroups.length,
+      totalUnits: visibleGroups.reduce((s, g) => s + (g.total_units || 0), 0),
+      assigned,
+      unassigned: visibleGroups.length - assigned,
+    };
+  }, [visibleGroups]);
 
   const exportCsv = useCallback(() => {
     const header = [
@@ -329,6 +333,14 @@ export default function ReplenishmentTransferReport({
             <span className="text-muted-foreground">
               <span className="font-semibold text-foreground">{fmtNum(summary.assigned)}</span> with a transfer number
             </span>
+            {summary.unassigned > 0 && (
+              <span
+                className="font-semibold text-amber-700"
+                title="Store-day groups marked done but still missing a transfer document number — these are not yet reconciled against an Odoo transfer."
+              >
+                ⚠ {fmtNum(summary.unassigned)} awaiting a transfer number
+              </span>
+            )}
           </div>
 
           <div className="divide-y divide-border">

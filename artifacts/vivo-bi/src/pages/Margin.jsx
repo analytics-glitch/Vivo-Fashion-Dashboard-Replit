@@ -98,8 +98,20 @@ const Margin = () => {
       render: (r) => <span className={marginCls(r.margin_pct)}>{fmtPct(r.margin_pct)}</span>,
       csv: (r) => `${Number(r.margin_pct || 0)}%` },
     { key: "cost_coverage", label: "Cost Coverage", numeric: true, mobileHidden: true,
-      headerTitle: "Share of units with a known cost — margin is computed on these only",
-      render: (r) => fmtPct(r.cost_coverage) },
+      headerTitle: "Share of units with a known cost — margin is computed on these only. Rows under 70% are flagged: their margin reflects only a small share of units and may be unreliable.",
+      render: (r) => {
+        const c = Number(r.cost_coverage || 0);
+        const low = c < 70;
+        return (
+          <span
+            className={low ? "text-amber-600 font-semibold" : ""}
+            title={low ? "Low cost coverage — margin for this row is based on a small share of units and may not be representative." : undefined}
+          >
+            {low ? "⚠ " : ""}{fmtPct(r.cost_coverage)}
+          </span>
+        );
+      },
+      csv: (r) => `${Number(r.cost_coverage || 0)}%` },
   ];
 
   return (

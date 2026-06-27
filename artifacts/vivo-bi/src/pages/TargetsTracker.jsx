@@ -176,9 +176,9 @@ function TargetTile({
           </div>
           <div
             className={`text-[10.5px] mt-1 ${isOverall ? "text-white/65" : "text-[#6b7280]"}`}
-            title={basisTooltip || undefined}
+            title={target > 0 ? (basisTooltip || undefined) : "No target has been set for this period (e.g. a newly opened store), so percent-of-target is not applicable."}
           >
-            {achievedPct.toFixed(1)}% of {basisSuffix}
+            {target > 0 ? `${achievedPct.toFixed(1)}% of ${basisSuffix}` : `N/A — no ${basisSuffix} set`}
           </div>
           {priorDeltaPct != null && (
             <div

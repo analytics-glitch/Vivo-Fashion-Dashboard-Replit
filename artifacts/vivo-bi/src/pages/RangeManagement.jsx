@@ -180,7 +180,7 @@ const fmt = {
 
 // Iter 91u — extended card.
 // Iter 91v — also surfaces SOR % per bucket.
-const TierKpiCard = ({ tier, count, pctStyles, revenueLifetime, unitsLifetime, availableUnits, sorPct, target, rag, testId, onClick, tone: customTone }) => {
+const TierKpiCard = ({ tier, count, pctStyles, revenueLifetime, unitsLifetime, availableUnits, sorPct, target, rag, testId, onClick, tone: customTone, title }) => {
   const tone = RAG[rag] || RAG.amber;
   const t = customTone || TIER_STYLES[tier] || TIER_STYLES["Tier 4"];
   const [lo, hi] = target || [0, 0];
@@ -190,6 +190,7 @@ const TierKpiCard = ({ tier, count, pctStyles, revenueLifetime, unitsLifetime, a
     <button
       type="button"
       onClick={onClick}
+      title={title || undefined}
       className="rounded-xl p-4 border text-left hover:shadow-md transition-shadow cursor-pointer"
       style={{ background: t.bg, borderColor: t.text + "22" }}
       data-testid={testId}
@@ -515,6 +516,7 @@ const RangeManagement = () => {
                 availableUnits={summary.tier_summary?.Total?.stock_available}
                 sorPct={summary.tier_summary?.Total?.sor_lifetime_pct}
                 tone={{ bg: "#e0e7ff", text: "#1e3a8a", label: "Total" }}
+                title="All styles with current stock (active + retired) — this is the 100% base for the tier-share percentages on this row. Note this differs from the 'Total active styles' headline above, which counts only the live-tier (Active) subset."
                 testId="tier-card-Total"
                 onClick={() => setDrillTier("Total")}
               />
@@ -528,6 +530,7 @@ const RangeManagement = () => {
                 availableUnits={summary.tier_summary?.Active?.stock_available}
                 sorPct={summary.tier_summary?.Active?.sor_lifetime_pct}
                 tone={{ bg: "#dcfce7", text: "#14532d", label: "Active" }}
+                title="Live-range styles in the SOP-gated tiers T1–T4. This matches the 'Total active styles' headline above; it is a subset of the Total card to its left."
                 testId="tier-card-Active"
                 onClick={() => setDrillTier("Active")}
               />
