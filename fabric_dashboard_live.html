@@ -465,6 +465,23 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </table>
      </div>
     </div>
+
+    <!-- Fabrics blocking the "Avg metres / garment" KPI -->
+    <h3 style="margin:1.6rem 0 .5rem;">Fabrics blocking "Avg metres / garment"</h3>
+    <div class="card" style="margin-bottom:1.1rem;">
+     <p class="muted" style="margin:0;">The <b>Avg metres / garment</b> KPI drops any Done-DPS manufacturing order whose fabric has no kg→metre conversion in Odoo, so the average is understated. <span id="dq-mo-summary"></span> These are the fabrics responsible — fix each one's kg-per-metre in Odoo to grow KPI coverage. A garment can be blocked by more than one fabric, so the counts may sum to more than the total excluded.</p>
+    </div>
+    <div class="flex" style="margin-bottom:1.1rem;justify-content:flex-end;">
+     <button class="btn" onclick="exportMoMissing(this)">Export CSV</button>
+    </div>
+    <div class="card" style="padding:0;">
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead id="dqmo-head"></thead>
+       <tbody id="dqmo-body"><tr><td class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
+    </div>
    </section>
 
    <!-- MOVEMENT & USE -->
@@ -2021,7 +2038,9 @@ function renderKpis(d,mpg){
    <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.consumed30d)}>${fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    ${(()=>{const v=(mpg&&mpg.metres_per_garment!=null)?mpg.metres_per_garment:null;
-     const sub=(mpg&&mpg.mos)?('rolling 90d &middot; '+fmt(mpg.mos)+' Done-DPS MOs'):'rolling 90d &middot; Done-DPS';
+     let sub=(mpg&&mpg.mos)?('rolling 90d &middot; '+fmt(mpg.mos)+' Done-DPS MOs'):'rolling 90d &middot; Done-DPS';
+     const exc=mpg&&mpg.mos_excluded_missing_conversion;
+     if(exc){sub+=` &middot; <span class="amber" title="These Done-DPS MOs are dropped from the average because at least one of their fabrics has no kg→metre conversion in Odoo. See Data Quality.">${fmt(exc)} MOs excluded &mdash; missing kg/m</span>`;}
      return `<div class="kpi"><span class="eyebrow">Avg metres / garment</span><p class="kpi-value"${fx(FX.metresPerGarment)}>${v!=null?v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+' m':'&mdash;'}</p><p class="kpi-sub">${sub}</p></div>`;})()}
    <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}"${fx(FX.monthsCover)}>${cover!=null?coverFmt(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>
    <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger"${fx(FX.deadStock)}>${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub"><span${fx(FX.deadPct)}>${deadPct.toFixed(0)}% of value</span></p></div>`;
@@ -2448,6 +2467,7 @@ function renderDataQuality(){
   if(window.__fabricEnhanceTables)window.__fabricEnhanceTables();
 }
 async function loadDataQuality(){
+  loadDqMo();
   try{
     dqCache=await apiFetch('/api/fabric/data-quality/missing-kg-per-metre');
     renderDataQuality();
@@ -2467,6 +2487,71 @@ function exportDataQuality(btn){
     .join('\n');
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
   a.download='fabric_missing_kg_per_metre.csv';a.click();
+}
+
+// ── Data quality: fabrics blocking the metres/garment KPI ──
+const DQMO_COLS=[
+  {k:'sku',label:'Fabric SKU'},
+  {k:'name',label:'Fabric name'},
+  {k:'fabric_category',label:'Category'},
+  {k:'fabric_subcategory',label:'Subcategory'},
+  {k:'supplier',label:'Supplier'},
+  {k:'mos_blocked',label:'MOs blocked',num:true},
+  {k:'garments_blocked',label:'Garments blocked',num:true},
+  {k:'consumed_kg',label:'Consumed (kg)',num:true},
+];
+let dqMoCache=null, dqMoSort={key:'mos_blocked',dir:'desc'};
+function dqMoSortRows(items){
+  const k=dqMoSort.key,dir=dqMoSort.dir==='asc'?1:-1;
+  return [...items].sort((a,b)=>{
+    let av=a[k],bv=b[k];
+    if(typeof av==='number'||typeof bv==='number'){return ((av||0)-(bv||0))*dir;}
+    return String(av||'').localeCompare(String(bv||''))*dir;
+  });
+}
+function sortDqMo(k){
+  if(dqMoSort.key===k)dqMoSort.dir=dqMoSort.dir==='asc'?'desc':'asc';
+  else{dqMoSort.key=k;dqMoSort.dir=DQMO_COLS.find(c=>c.k===k).num?'desc':'asc';}
+  renderDqMo();
+}
+function renderDqMo(){
+  const d=dqMoCache; if(!d)return;
+  const summ=document.getElementById('dq-mo-summary');
+  if(summ){
+    summ.innerHTML=d.mos_excluded_missing_conversion
+      ? `<b>${fmt(d.mos_excluded_missing_conversion)} MOs</b> are excluded over the last ${fmt(d.window_days)} days, across <b>${fmt(d.count)}</b> fabric SKUs.`
+      : '';
+  }
+  document.getElementById('dqmo-head').innerHTML='<tr>'+DQMO_COLS.map(c=>{
+    const arrow=dqMoSort.key===c.k?(dqMoSort.dir==='asc'?' \u25B2':' \u25BC'):'';
+    return `<th class="${c.num?'r ':''}sortable" onclick="sortDqMo('${c.k}')">${esc(c.label)}${arrow}</th>`;
+  }).join('')+'</tr>';
+  const rows=dqMoSortRows(d.items);
+  document.getElementById('dqmo-body').innerHTML=rows.length
+    ? rows.map(r=>'<tr>'+DQMO_COLS.map(c=>{
+        const v=r[c.k];
+        if(c.k==='sku')return `<td class="num" style="font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
+        if(c.k==='name')return `<td style="font-weight:600;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
+        if(c.num)return `<td class="r" style="font-weight:600;">${v!=null?fmt(v):'—'}</td>`;
+        return `<td style="color:var(--text-sub);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
+      }).join('')+'</tr>').join('')
+    : `<tr><td colspan="${DQMO_COLS.length}" class="loading">No MOs are excluded for a missing conversion. 🎉</td></tr>`;
+  if(window.__fabricEnhanceTables)window.__fabricEnhanceTables();
+}
+async function loadDqMo(){
+  try{
+    dqMoCache=await apiFetch('/api/fabric/data-quality/mo-missing-conversion');
+    renderDqMo();
+  }catch(e){rowErr('dqmo-body',DQMO_COLS.length,e);}
+}
+function exportMoMissing(btn){
+  const d=dqMoCache; if(!d||!d.items.length){alert('Nothing to export yet.');return;}
+  const rows=dqMoSortRows(d.items);
+  const csv=[DQMO_COLS.map(c=>c.label).join(',')]
+    .concat(rows.map(r=>DQMO_COLS.map(c=>JSON.stringify(r[c.k]??'')).join(',')))
+    .join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='fabric_mo_missing_conversion.csv';a.click();
 }
 
 // ── Movement & use ──

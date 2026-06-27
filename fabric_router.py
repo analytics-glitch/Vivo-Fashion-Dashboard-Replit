@@ -592,6 +592,111 @@ def metres_per_garment(days: int = Query(default=90)):
     }
 
 
+# ── Data quality: fabrics blocking the metres/garment KPI ──────────────
+# The "Avg metres / garment" KPI silently drops any Done-DPS MO that has even
+# one main-fabric component with no usable kg→metre conversion. This lists the
+# fabric SKUs responsible — how many MOs and garments each one blocks — so the
+# team can backfill the Odoo fabric master and steadily grow KPI coverage. The
+# bad-MO determination MUST mirror metres_per_garment exactly (same window, same
+# convertibility test, NULL kpm treated as missing) so the counts reconcile with
+# that endpoint's `mos_excluded_missing_conversion`. A garment/MO can be blocked
+# by more than one fabric, so per-fabric counts can sum to more than the total.
+@fabric_router.get("/api/fabric/data-quality/mo-missing-conversion")
+def mo_missing_conversion(days: int = Query(default=90)):
+    days = max(1, min(int(days or 90), 730))
+    with _get_conn() as conn:
+        rows = q(conn, """
+            SELECT c.odoo_mo_id,
+                   c.produced_qty,
+                   c.consumed_qty,
+                   c.component_id,
+                   c.fabric_sku,
+                   c.fabric_name,
+                   lower(coalesce(c.uom,'')) AS uom,
+                   p.kg_per_mtr_eff AS kpm,
+                   p.fabric_category,
+                   p.fabric_subcategory,
+                   p.supplier
+            FROM mo_fabric_consumption c
+            LEFT JOIN raw_fabric_products p ON p.id = c.component_id
+            WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
+        """, [days])
+
+    KG_UOMS = {"kg", "g"}
+    M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
+
+    # Pass 1: per-MO bad flag + produced qty (identical logic to metres_per_garment).
+    mos = {}
+    for r in rows:
+        d = mos.setdefault(
+            r["odoo_mo_id"],
+            {"produced": float(r["produced_qty"] or 0), "bad": False, "has_fabric": False},
+        )
+        d["has_fabric"] = True
+        u = r["uom"]
+        kpm = r["kpm"]
+        convertible = (u in M_UOMS) or (u in KG_UOMS and kpm and float(kpm) > 0)
+        if not convertible:
+            d["bad"] = True
+
+    excluded = sum(
+        1 for d in mos.values()
+        if d["produced"] > 0 and d["has_fabric"] and d["bad"]
+    )
+
+    # Pass 2: attribute each excluded MO to the unconvertible fabric(s) inside it.
+    fabrics = {}
+    for r in rows:
+        mo = mos.get(r["odoo_mo_id"])
+        if not mo or mo["produced"] <= 0 or not mo["bad"]:
+            continue
+        u = r["uom"]
+        kpm = r["kpm"]
+        convertible = (u in M_UOMS) or (u in KG_UOMS and kpm and float(kpm) > 0)
+        if convertible:
+            continue
+        cid = r["component_id"]
+        f = fabrics.setdefault(cid, {
+            "component_id": cid,
+            "sku": r["fabric_sku"],
+            "name": r["fabric_name"],
+            "fabric_category": r["fabric_category"],
+            "fabric_subcategory": r["fabric_subcategory"],
+            "supplier": r["supplier"],
+            "in_master": r["kpm"] is not None or r["fabric_category"] is not None,
+            "_mos": set(),
+            "garments": 0.0,
+            "consumed_kg": 0.0,
+        })
+        if r["odoo_mo_id"] not in f["_mos"]:
+            f["_mos"].add(r["odoo_mo_id"])
+            f["garments"] += mo["produced"]
+        qty = float(r["consumed_qty"] or 0)
+        f["consumed_kg"] += qty / 1000.0 if u == "g" else qty
+
+    items = []
+    for f in fabrics.values():
+        items.append({
+            "component_id": f["component_id"],
+            "sku": f["sku"],
+            "name": f["name"],
+            "fabric_category": f["fabric_category"],
+            "fabric_subcategory": f["fabric_subcategory"],
+            "supplier": f["supplier"],
+            "in_master": f["in_master"],
+            "mos_blocked": len(f["_mos"]),
+            "garments_blocked": round(f["garments"]),
+            "consumed_kg": round(f["consumed_kg"], 1),
+        })
+    items.sort(key=lambda x: (x["mos_blocked"], x["garments_blocked"]), reverse=True)
+    return {
+        "count": len(items),
+        "mos_excluded_missing_conversion": excluded,
+        "window_days": days,
+        "items": items,
+    }
+
+
 # ── Stock by category ──────────────────────────────────────
 @fabric_router.get("/api/fabric/by-category")
 def by_category(location: str = Query(default="RMAT/Stock"),
