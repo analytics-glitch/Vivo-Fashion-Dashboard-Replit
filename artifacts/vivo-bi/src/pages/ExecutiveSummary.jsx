@@ -1898,22 +1898,12 @@ const ExecutiveSummary = () => {
     };
   })();
 
-  // Reconciliation bucket: Total Customers includes walk-in / unidentified
-  // orders that are NOT split into New or Returning, so New + Returning alone
-  // never sums to Total. Surface the remainder so the three customer KPIs
-  // reconcile (New + Returning + Walk-in/Unidentified = Total Customers).
-  const otherCustKpi = (() => {
-    const diff = (span) => {
-      const t = k("total_customers")[span] || {};
-      const n = k("new_customers")[span] || {};
-      const r = k("returning_customers")[span] || {};
-      const cur = Math.max(0, (t.cur || 0) - (n.cur || 0) - (r.cur || 0));
-      const ly = Math.max(0, (t.ly || 0) - (n.ly || 0) - (r.ly || 0));
-      return { cur, ly, delta_pct: _pct(cur, ly) };
-    };
-    return { ytd: diff("ytd"), mtd: diff("mtd") };
-  })();
-
+  // Audit F08: "Total Customers" here is the identified-shopper universe and
+  // EVERY identified customer with an order in the window is either New
+  // (first-ever purchase in window) or Returning (bought before), so
+  // New + Returning = Total exactly — no remainder bucket. (Walk-in /
+  // anonymous orders aren't tied to a customer profile and are NOT counted in
+  // Total Customers; they live on the Customers page's dedicated walk-in tile.)
   if (snapshot) {
     return <ExecutiveSummarySnapshot data={data} onClose={() => setSnapshot(false)} />;
   }
@@ -1964,10 +1954,9 @@ const ExecutiveSummary = () => {
         <KpiCard testId="kpi-customers" label="Total Customers"      icon={UsersThree}                ytd={k("total_customers").ytd} mtd={k("total_customers").mtd} />
         <KpiCard testId="kpi-new"       label="New Customers"        icon={UserPlus}                  ytd={k("new_customers").ytd}   mtd={k("new_customers").mtd} />
         <KpiCard testId="kpi-returning" label="Returning Customers"  icon={ArrowsClockwise}           ytd={k("returning_customers").ytd} mtd={k("returning_customers").mtd} />
-        <KpiCard testId="kpi-unidentified" label="Walk-in / Unidentified"                              ytd={otherCustKpi.ytd} mtd={otherCustKpi.mtd} />
       </div>
       <div className="text-[10.5px] text-muted -mt-1.5">
-        Customer mix: <b>New</b> + <b>Returning</b> + <b>Walk-in / Unidentified</b> = <b>Total Customers</b>. Walk-in / unidentified are anonymous orders not tied to a customer profile, so New and Returning alone don't sum to Total.
+        Customer mix: <b>New</b> + <b>Returning</b> = <b>Total Customers</b> (identified shoppers). New = first-ever purchase in the period; Returning = bought before. Walk-in / anonymous orders aren't tied to a customer profile and are excluded from Total Customers.
       </div>
 
       {/* SECTION 1.5 — Country breakdown */}

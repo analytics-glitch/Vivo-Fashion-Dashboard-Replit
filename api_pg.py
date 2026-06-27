@@ -9879,17 +9879,22 @@ def _es_customer_windows(span_from, span_to, windows, country):
     # total / new / returning customer counts for several windows in ONE pass.
     # Mirrors get_customers exactly (validated): first_ever_purchase is GLOBAL
     # (no base/country filter), period membership applies BASE_FILTERS + country.
-    # new = single-order-in-window customer whose first ever purchase is in the
-    # window; returning = single-order customer whose first purchase predates it.
+    # new = customer whose first-EVER purchase falls in the window; returning =
+    # customer whose first purchase predates it. EVERY identified customer with
+    # an order in the window is exactly one of the two (first_ever is always
+    # <= the window end), so new + returning = total. Do NOT re-introduce an
+    # order-count (oc = 1) restriction on new/returning: that was an old bug
+    # that dropped multi-order customers from both buckets, leaving total
+    # un-reconciled (audit F08 — New + Returning silently fell short of Total).
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     pc_cols, sel = [], []
     for k, (a, b) in windows.items():
         pc_cols.append("COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_date BETWEEN '"
                        + a + "' AND '" + b + "') AS oc_" + k)
         sel.append("COUNT(*) FILTER (WHERE oc_" + k + " > 0) AS total_" + k)
-        sel.append("COUNT(*) FILTER (WHERE oc_" + k + " = 1 AND a.first_ever BETWEEN '"
+        sel.append("COUNT(*) FILTER (WHERE oc_" + k + " > 0 AND a.first_ever BETWEEN '"
                    + a + "' AND '" + b + "') AS new_" + k)
-        sel.append("COUNT(*) FILTER (WHERE oc_" + k + " = 1 AND a.first_ever < '"
+        sel.append("COUNT(*) FILTER (WHERE oc_" + k + " > 0 AND a.first_ever < '"
                    + a + "') AS ret_" + k)
     rows = run_query("""
         WITH at AS (
