@@ -175,7 +175,7 @@ const CustomerDetails = () => {
             title={searching
               ? `Customer list · ${fmtNum(totals.customers)} matching`
               : `Customer list · ${fmtNum(serverTotal || rows.length)} customers`}
-            subtitle={`${capped && !searching ? `Showing the top ${fmtNum(rows.length)} by spend (list capped) of ${fmtNum(serverTotal)} identified customers. ` : ""}Combined ${fmtNum(totals.orders)} orders · ${fmtKES(totals.sales)} total spend across the ${searching ? "matching" : "shown"} rows. Sorted by total spend descending. Click any column to re-sort.`}
+            subtitle={`${capped && !searching ? `Showing the top ${fmtNum(rows.length)} by spend (list capped) of ${fmtNum(serverTotal)} identified customers. ` : ""}Combined ${fmtNum(totals.orders)} orders · ${fmtKES(totals.sales)} gross spend (VAT-incl, before returns) across the ${searching ? "matching" : "shown"} rows. Sorted by total spend descending. Click any column to re-sort.`}
           />
           <SortableTable
             testId="customer-details-table"

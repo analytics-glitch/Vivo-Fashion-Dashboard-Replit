@@ -106,8 +106,8 @@ const RFM = () => {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <KPICard label="Customers" value={fmtNum(k.total)} icon={UsersThree} testId="kpi-rfm-total" showDelta={false} sub="Active in the selected period" />
-        <KPICard label="Net Spend" value={fmtKES(k.monetary)} valueFull={fmtKESLong(k.monetary)} icon={Pulse} testId="kpi-rfm-spend" showDelta={false} />
+        <KPICard label="Customers" value={fmtNum(k.total)} icon={UsersThree} testId="kpi-rfm-total" showDelta={false} sub="Scored base: ≥1 order & net spend > 0 in period" />
+        <KPICard label="Net Spend" value={fmtKES(k.monetary)} valueFull={fmtKESLong(k.monetary)} icon={Pulse} testId="kpi-rfm-spend" showDelta={false} sub="Net of returns" />
         <KPICard label="Champions" value={fmtNum(k.champ)} icon={Crown} testId="kpi-rfm-champ" showDelta={false} sub="Recent, frequent, high spend" />
         <KPICard label="At Risk / Can't Lose" value={fmtNum(k.risk)} icon={Warning} testId="kpi-rfm-risk" showDelta={false} sub="Win-back priority" />
       </div>
