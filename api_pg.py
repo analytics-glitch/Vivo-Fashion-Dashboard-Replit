@@ -898,6 +898,12 @@ async def clerk_auth_gate(request: Request, call_next):
     if path.startswith("/api/admin") and user.get("role") != "admin":
         return JSONResponse({"detail": "Admin access required"}, status_code=403)
 
+    # Fabric Data Quality (the missing-kg-per-metre hygiene tool) is admin-only.
+    # The rest of Fabric BI stays broadly accessible; gate only this one path so
+    # hiding the tab in the dashboard can't be bypassed via direct API.
+    if path.startswith("/api/fabric/data-quality") and user.get("role") != "admin":
+        return JSONResponse({"detail": "Admin access required"}, status_code=403)
+
     # CRM is a customer-facing surface (customer service / marketing / leadership
     # / admin). Enforce server-side so client-side nav/route hiding can never be
     # bypassed (e.g. direct API or mobile). Specific CRM mutations still apply

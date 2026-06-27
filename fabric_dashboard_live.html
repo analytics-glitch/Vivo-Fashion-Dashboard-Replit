@@ -2818,7 +2818,26 @@ async function deleteReservation(id){
 }
 
 // ── Boot ──
+// Data Quality is an admin-only hygiene tool. Hide its nav tab + section for
+// non-admins, and remove its loader so it can never run. Fails closed: a failed
+// or blank /api/auth/me leaves the tab hidden. The default landing tab is
+// Overview and other tabs' switching is unaffected.
+async function gateDataQuality(){
+  let isAdmin=false;
+  try{
+    const me=await apiFetch('/api/auth/me');
+    isAdmin=!!(me&&me.role==='admin');
+  }catch(e){isAdmin=false;}
+  if(isAdmin)return;
+  const tab=document.querySelector('.nav-item[data-page="dataquality"]');
+  if(tab)tab.style.display='none';
+  const sec=document.getElementById('page-dataquality');
+  if(sec)sec.style.display='none';
+  delete LOADERS.dataquality;
+}
 async function init(){
+  // Restrict the admin-only Data Quality tab before wiring anything else up.
+  await gateDataQuality();
   // Column picker + close-on-outside-click
   buildColPicker();
   document.addEventListener('click',e=>{
