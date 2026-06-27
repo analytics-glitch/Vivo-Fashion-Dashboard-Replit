@@ -8048,21 +8048,26 @@ def analytics_buy_candidates(
             WHERE b.stage <> 'warehouse' AND po.style_name IS NOT NULL
             GROUP BY po.style_name
         ),
-        store_last AS (
-            SELECT pos_location_name AS pos, variant_sku AS sku, MAX(sale_date) AS last_sold
+        recent_store AS (
+            -- (pos, sku) pairs that HAVE sold at that store within aged_n days.
+            -- "last sale older than aged_n OR never sold" is equivalent to
+            -- "no sale at that store within aged_n days", so a recent-window
+            -- semi-join replaces the full-history MAX(sale_date) per (pos,sku)
+            -- aggregate (which scanned all of all_sales and spilled ~190MB to
+            -- temp). Same result, ~half the time, no temp spill.
+            SELECT DISTINCT pos_location_name AS pos, variant_sku AS sku
             FROM all_sales
             WHERE sale_kind IN ('sale','order')
-            GROUP BY pos_location_name, variant_sku
+              AND sale_date::date >= CURRENT_DATE - (""" + str(aged_n) + """ || ' days')::interval
         ),
         aged AS (
             SELECT p.style_name, SUM(i.available) AS aged_units
             FROM all_inventory i
             JOIN all_products_clean p ON p.sku = i.sku
-            LEFT JOIN store_last sl ON sl.pos = i.pos_location_name AND sl.sku = i.sku
+            LEFT JOIN recent_store r ON r.pos = i.pos_location_name AND r.sku = i.sku
             WHERE i.available > 0
               AND i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
-              AND (sl.last_sold IS NULL
-                   OR sl.last_sold::date < CURRENT_DATE - (""" + str(aged_n) + """ || ' days')::interval)
+              AND r.pos IS NULL
             GROUP BY p.style_name
         )
         SELECT b.style_name, b.brand, b.subcategory, b.style_launch_date,
