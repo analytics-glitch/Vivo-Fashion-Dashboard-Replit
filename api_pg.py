@@ -8681,6 +8681,11 @@ def admin_validation_exceptions(
                     d["period_date"] = str(d["period_date"])
                 diag = d.get("diagnosis")
                 d["diagnosis_cause"] = diag.get("cause") if isinstance(diag, dict) else None
+                # Whether the one-click button can actually apply this finding's
+                # fix (passes the same safety fence). Drives the UI's split into
+                # an "auto-fix" batch vs a "needs a developer" batch.
+                fix_sql = (d.get("proposed_fix_sql") or "").strip()
+                d["auto_applicable"] = bool(fix_sql) and _validation_fix_is_safe(fix_sql)[0]
                 rows_out.append(d)
         cur.close()
     finally:
