@@ -612,7 +612,9 @@ const Replenishments = () => {
                         </td>
                       </tr>
                     );
-                  })}
+                    })}
+                  </React.Fragment>
+                  ))}
                 </tbody>
               </table>
             </div>
