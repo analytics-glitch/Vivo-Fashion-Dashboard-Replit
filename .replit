@@ -101,7 +101,7 @@ isValidation = true
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python -m unittest validation_agent.test_cross_surface test_ibt_nightly_reconcile"
+args = "python -m unittest validation_agent.test_cross_surface test_ibt_nightly_reconcile validation_agent.test_ibt_calibration"
 
 [agent]
 stack = "PNPM_WORKSPACE"
