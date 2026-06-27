@@ -1115,12 +1115,17 @@ const Overview = () => {
                 exact value to avoid rounding ambiguity when comparing
                 across days. */}
             <KPICard small testId="kpi-abv" label="ABV" sub="Average Basket Value"
-              formula="What a typical customer spends per visit. Higher means people are buying more in one go."
+              formula="What a typical customer spends per visit — Total Sales ÷ transactions, on gross (VAT-inclusive) sales, the same basis as the Total Sales headline (not net of discounts/returns). Higher means people are buying more in one go."
               value={fmtKESLong(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)}
               valueFull={fmtKESLong(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)}
               icon={Basket}
-              delta={delta("avg_basket_size")} deltaLabel={compareLbl}
-              prevValue={prev("avg_basket_size", fmtKESLong)}
+              delta={(() => {
+                const cur = kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0;
+                const pv = kpisPrev && kpisPrev.total_orders ? kpisPrev.total_sales / kpisPrev.total_orders : null;
+                return pctDelta(cur, pv);
+              })()}
+              deltaLabel={compareLbl}
+              prevValue={kpisPrev && compareMode !== "none" && kpisPrev.total_orders ? fmtKESLong(kpisPrev.total_sales / kpisPrev.total_orders) : null}
               showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-asp" label="ASP" sub="Average Selling Price"
               formula="The average price of every item sold. Tells you whether you're moving premium pieces or basics."
