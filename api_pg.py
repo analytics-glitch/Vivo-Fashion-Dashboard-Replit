@@ -11369,10 +11369,16 @@ def _replen_proj_calibration():
     return 1.0
 
 
-def _replen_record_calibration(sample):
+def _replen_record_calibration(sample, run_id=None):
     """Append one realised/projected sample to the rolling window and persist the
     new median as the active calibration. Best-effort: returns the resulting
-    median (or the prior/neutral value on failure)."""
+    median (or the prior/neutral value on failure).
+
+    Idempotent per replenishment run: each `run_id` contributes AT MOST one
+    sample. The reconciliation endpoint is read on every page load/refresh, so
+    without this guard the rolling median would be dominated by page traffic
+    rather than by distinct replenishment runs. When `run_id` matches the last
+    recorded run, the existing calibration is returned unchanged."""
     try:
         sample = min(_REPLEN_CALIB_MAX, max(_REPLEN_CALIB_MIN, float(sample)))
     except (TypeError, ValueError):
@@ -11386,8 +11392,14 @@ def _replen_record_calibration(sample):
             val = rows[0].get("value")
             if isinstance(val, str):
                 val = json.loads(val)
-            if isinstance(val, dict) and isinstance(val.get("samples"), list):
-                samples = [float(x) for x in val["samples"]]
+            if isinstance(val, dict):
+                # One sample per run: skip if this run is already recorded.
+                if (run_id is not None and val.get("last_run_id") == run_id
+                        and val.get("value") is not None):
+                    return min(_REPLEN_CALIB_MAX,
+                               max(_REPLEN_CALIB_MIN, float(val["value"])))
+                if isinstance(val.get("samples"), list):
+                    samples = [float(x) for x in val["samples"]]
     except Exception:
         samples = []
     samples.append(round(sample, 4))
@@ -11403,7 +11415,8 @@ def _replen_record_calibration(sample):
             "VALUES ('replen_proj_calibration', %s::jsonb, now()) "
             "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
             "updated_at = now()",
-            (json.dumps({"samples": samples, "value": med}),))
+            (json.dumps({"samples": samples, "value": med,
+                         "last_run_id": run_id}),))
     except Exception:
         pass
     return med
@@ -11586,8 +11599,8 @@ def analytics_replenishment_sor_reconciliation(
 
     realised_inc = max(0.0, units_now - units_calc)
     sample = (realised_inc / proj_inc) if proj_inc > 0 else None
-    calibration = (_replen_record_calibration(sample) if sample is not None
-                   else _replen_proj_calibration())
+    calibration = (_replen_record_calibration(sample, run_id=run["run_id"])
+                   if sample is not None else _replen_proj_calibration())
 
     return {
         "available": True,
@@ -13140,6 +13153,20 @@ def analytics_replenishment_picker_scorecard(days: int = Query(default=30)):
         "  AND user_id IS NOT NULL AND user_id <> '' "
         "GROUP BY user_id, pos_location, sku") or []
 
+    # Dispatched-but-not-yet-received (in-transit) store-SKUs. A picked line whose
+    # dispatched stock the store hasn't confirmed receipt for earns NO full picker
+    # credit yet (Phase 3 step 3) — it is held as in-transit, not counted done,
+    # and not counted missed. Full credit lands once the receipt is confirmed.
+    in_transit_pairs = set()
+    try:
+        for it in _replen_in_transit_rows():
+            ip = (it.get("pos_location") or "").strip()
+            isku = (it.get("sku") or "").strip()
+            if ip and isku and int(it.get("in_transit") or 0) > 0:
+                in_transit_pairs.add((ip, isku))
+    except Exception:
+        in_transit_pairs = set()
+
     if not sugg or not picks:
         reason = ("No suggestion snapshots have accrued yet — the daily snapshot "
                   "job populates them after publish."
@@ -13168,7 +13195,7 @@ def analytics_replenishment_picker_scorecard(days: int = Query(default=30)):
 
     out = []
     for u in pickers.values():
-        assigned = done = missed = 0
+        assigned = done = missed = in_transit = 0
         missed_sor_units = 0.0
         over_pick_units = 0
         for pos in u["stores"]:
@@ -13176,7 +13203,11 @@ def analytics_replenishment_picker_scorecard(days: int = Query(default=30)):
                 assigned += 1
                 picked_qty = u["picked"].get((pos, sku))
                 if picked_qty is not None:
-                    done += 1
+                    if (pos, sku) in in_transit_pairs:
+                        # Picked + dispatched but not yet received → credit held.
+                        in_transit += 1
+                    else:
+                        done += 1
                     if picked_qty > meta["suggested"]:
                         over_pick_units += picked_qty - meta["suggested"]
                 else:
@@ -13184,12 +13215,14 @@ def analytics_replenishment_picker_scorecard(days: int = Query(default=30)):
                     missed_sor_units += meta["v"]
         # Effort-normalised headline = LINE fulfilment (done/assigned), so a
         # picker clearing many scattered single-unit lines is not penalised vs one
-        # clearing a few deep lines.
+        # clearing a few deep lines. In-transit lines are excluded from full
+        # credit until the store confirms receipt.
         fulfilment_pct = round(100.0 * done / assigned, 1) if assigned else 0.0
         out.append({
             "user_id": u["user_id"], "user_name": u["user_name"],
             "stores": sorted(u["stores"]),
             "assigned_lines": assigned, "done_lines": done,
+            "in_transit_lines": in_transit,
             "missed_lines": missed, "fulfilment_pct": fulfilment_pct,
             "units_picked": u["units_picked"],
             "missed_sor_units": round(missed_sor_units, 1),
