@@ -1217,6 +1217,22 @@ def ff_canon_sql(col="f.pos_location_name"):
     )
     return "CASE " + col + " " + whens + " ELSE " + col + " END"
 
+def ff_store_master_predicate(canon_expr=None):
+    """SQL predicate keeping ONLY footfall sensors that map to a real store in
+    the canonical sales master (all_sales.pos_location_name). It drops phantom /
+    unmapped sensor spellings — e.g. the post-rename 'VIVO Westside' and
+    'Shop Zetu_MoiAv' sensors that have NO sales counterpart — so every footfall
+    surface (Locations, the footfall chart AND the weekday-pattern heatmap)
+    reconciles to ONE store master instead of leaking phantom keys into one view
+    only (audit F14). Self-maintaining: any future unmapped sensor is excluded
+    automatically. Phantom sensors carry zero sales, so this never changes any
+    sales/units figure — only which store rows appear on the footfall surfaces.
+    Intended consequence: a brand-new physical store that has footfall but no
+    sales rows yet is suppressed from the footfall surfaces until its first sale
+    lands in all_sales (the single store master), keeping every view in sync."""
+    expr = canon_expr if canon_expr is not None else ff_canon_sql()
+    return expr + " IN (SELECT pos_location_name FROM all_sales GROUP BY pos_location_name)"
+
 PRODUCT_SUBCATS = [
     "Knee Length Dresses","Full Length Pants","Fitted Tops","Loose Tops",
     "Maxi Dresses","Waterfalls & Kimonos","Sweaters & Ponchos","Midi & Capri Dresses",
@@ -3851,6 +3867,7 @@ def get_footfall(
                 SUM(f.a05_outside_traffic) AS outside
             FROM footfall f
             WHERE """ + ff_where + """
+              AND """ + ff_store_master_predicate() + """
             GROUP BY 1, 2
         ),
         sales_daily AS (
@@ -3911,6 +3928,7 @@ def get_footfall_weekday(
                 SUM(f.a05_outside_traffic) AS outside
             FROM footfall f
             WHERE f.time BETWEEN '""" + date_from + """' AND '""" + date_to + """'""" + ff_extra + """
+              AND """ + ff_store_master_predicate() + """
             GROUP BY """ + ff_canon_sql() + """, f.time::date
         ),
         sa AS (
