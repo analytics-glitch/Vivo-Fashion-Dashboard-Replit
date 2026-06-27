@@ -96,12 +96,12 @@ isValidation = true
 name = "test"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python -m unittest validation_agent.test_cross_surface"
-
 [workflows.workflow.metadata]
 isValidation = true
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python -m unittest validation_agent.test_cross_surface test_ibt_nightly_reconcile"
 
 [agent]
 stack = "PNPM_WORKSPACE"
