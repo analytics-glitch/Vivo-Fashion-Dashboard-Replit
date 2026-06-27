@@ -1,35 +1,33 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useAuth } from "@/lib/auth";
-import { api, fmtKES, fmtNum, datePresets } from "@/lib/api";
+import { api, fmtNum } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
-import IBTFlatTable from "@/components/IBTFlatTable";
+import IBTBundleTable from "@/components/IBTBundleTable";
 import IBTCompletedMoves from "@/components/IBTCompletedMoves";
 import IBTMarkAsDoneModal from "@/components/IBTMarkAsDoneModal";
 import { toast } from "sonner";
 import {
-  Truck, Coins, Package, MagnifyingGlass, DownloadSimple,
-  Stack,
+  Truck, Package, MagnifyingGlass, DownloadSimple, Stack, TrendUp, Buildings,
 } from "@phosphor-icons/react";
+
+// Demand-lookback presets (trailing window the engine measures sell-through
+// over). Local to this page — it does NOT touch the global filter bar.
+const DEMAND_OPTIONS = [
+  { days: 14, label: "14d" },
+  { days: 28, label: "28d" },
+  { days: 56, label: "56d" },
+];
 
 const IBT = () => {
   const { applied, touchLastUpdated } = useFilters();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  // Senior Leadership also need access to the Completed Moves report so
-  // they can audit IBT picker activity without admin-only navigation.
   const canSeeCompletedMoves = isAdmin || user?.role === "leadership";
   const { countries, dataVersion } = applied;
-  // F17: IBT runs on a LOCAL "Last 30 days" window and must NOT mutate the
-  // shared global date filter — doing so (the old setPreset on mount) silently
-  // rewrote the filter bar + URL and contaminated every page visited after IBT.
-  // Compute the range once on mount from the same preset helper the filter bar uses.
-  const { dateFrom, dateTo } = useMemo(() => {
-    const p = datePresets().last_30d;
-    return { dateFrom: p.date_from, dateTo: p.date_to };
-  }, []);
-  const [rows, setRows] = useState([]);
+
+  const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
@@ -37,52 +35,40 @@ const IBT = () => {
   const [fromStoreFilter, setFromStoreFilter] = useState("");
   const [toStoreFilter, setToStoreFilter] = useState("");
   const [subcatFilter, setSubcatFilter] = useState("");
-  const [showResolved, setShowResolved] = useState(false); // eslint-disable-line no-unused-vars
   const [completedKeys, setCompletedKeys] = useState(new Set());
   const [completedSkuKeys, setCompletedSkuKeys] = useState(new Set());
   const [completedRefresh, setCompletedRefresh] = useState(0);
   const [doneModalRow, setDoneModalRow] = useState(null);
-  // B1 — cluster-aware matching (A/B/C revenue tiers). Default ON per spec;
-  // persisted so a buyer's preference survives reloads.
+  const [exporting, setExporting] = useState(false);
+
+  // Trailing demand window (default 28d per spec). Persisted; local-only.
+  const [demandDays, setDemandDays] = useState(() => {
+    try { return Number(localStorage.getItem("vivo_ibt_demand_days")) || 28; }
+    catch { return 28; }
+  });
+  const setDemandDaysPersist = (d) => {
+    setDemandDays(d);
+    try { localStorage.setItem("vivo_ibt_demand_days", String(d)); } catch { /* private */ }
+  };
+
+  // B1 — cluster-aware matching (A/B/C revenue tiers). Default ON per spec.
   const [useClustering, setUseClustering] = useState(() => {
     try { return localStorage.getItem("vivo_ibt_clustering") !== "off"; }
     catch { return true; }
   });
   const setClusteringPersist = (on) => {
     setUseClustering(on);
-    try { localStorage.setItem("vivo_ibt_clustering", on ? "on" : "off"); } catch { /* private browsing */ }
+    try { localStorage.setItem("vivo_ibt_clustering", on ? "on" : "off"); } catch { /* private */ }
   };
+
   const scrollToSection = (id) => {
     const el = typeof document !== "undefined" && document.getElementById(id);
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
-  const [exporting, setExporting] = useState(false);
-  // Sensitivity preset for the FROM/TO velocity bands. Persists across
-  // sessions so a buyer who likes the looser view doesn't have to
-  // re-pick it every visit. Default = strict (matches pre-iter-64).
-  const [sensitivity, setSensitivity] = useState(() => {
-    try { return localStorage.getItem("vivo_ibt_sensitivity") || "strict"; }
-    catch { return "strict"; }
-  });
-  // (low_pct, high_pct) for each preset.
-  const SENSITIVITY = {
-    strict:   { low: 20, high: 150, label: "Strict",   help: "≤20% / ≥150% of group avg — fewer rows, strongest signals" },
-    balanced: { low: 30, high: 130, label: "Balanced", help: "≤30% / ≥130% — surfaces ~3× more stores" },
-    wide:     { low: 40, high: 120, label: "Wide",     help: "≤40% / ≥120% — most stores visible, weakest signal" },
-  };
-  const setSensitivityPersist = (key) => {
-    setSensitivity(key);
-    try { localStorage.setItem("vivo_ibt_sensitivity", key); } catch { /* private browsing */ }
-  };
-  // Load the keys of already-completed suggestions
-  // so we can hide them from the live table.
+
+  // Load already-completed keys so actioned SKUs drop out of the live list.
   useEffect(() => {
     let cancelled = false;
-    // Iter 89 — when this effect re-runs *because* of a Mark-As-Done
-    // (completedRefresh > 0), we MUST bypass the client response cache
-    // — otherwise the freshly-completed row keeps showing up in the
-    // live list for up to 5 minutes (the api.js default RESP_TTL_MS).
-    // Initial mount can use the cache normally.
     const config = completedRefresh > 0 ? { forceFresh: true } : {};
     api.get("/ibt/completed/keys", config)
       .then((r) => {
@@ -103,38 +89,36 @@ const IBT = () => {
     setLoading(true);
     setError(null);
     const country = countries.length === 1 ? countries[0] : undefined;
-    const { low, high } = SENSITIVITY[sensitivity] || SENSITIVITY.strict;
     api
       .get("/analytics/ibt-suggestions", {
         params: {
-          date_from: dateFrom, date_to: dateTo, country,
+          country,
+          demand_days: demandDays,
           limit: 300,
-          low_pct: low, high_pct: high,
           use_clustering: useClustering,
         },
         timeout: 180000,
       })
       .then(({ data }) => {
         if (cancelled) return;
-        setRows(data || []);
+        setData(data || null);
         touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), dataVersion, sensitivity, useClustering]);
+  }, [JSON.stringify(countries), dataVersion, demandDays, useClustering]);
 
   // B1 — Export to Operations: server-built multi-sheet Excel (one tab per
-  // donor store) for the picking team. Streams a blob; bypasses the response
-  // cache so each click reflects the latest filters/clustering choice.
+  // donor store). Streams a blob; bypasses the response cache.
   const handleExportOps = async () => {
     if (exporting) return;
     setExporting(true);
     try {
       const country = countries.length === 1 ? countries[0] : undefined;
       const resp = await api.get("/ibt/export/operations", {
-        params: { date_from: dateFrom, date_to: dateTo, country, use_clustering: useClustering },
+        params: { country, demand_days: demandDays, use_clustering: useClustering },
         responseType: "blob",
         forceFresh: true,
         timeout: 180000,
@@ -146,7 +130,7 @@ const IBT = () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `ibt-operations-${dateTo}.xlsx`;
+      a.download = `ibt-operations-${(data?.as_of) || new Date().toISOString().slice(0, 10)}.xlsx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -159,90 +143,97 @@ const IBT = () => {
     }
   };
 
-  const brands = useMemo(
-    () => Array.from(new Set(rows.map((r) => r.brand).filter(Boolean))).sort(),
-    [rows]
-  );
+  const bundles = useMemo(() => data?.bundles || [], [data]);
+  const summary = data?.summary || {};
+
+  // Filter option lists are derived from the bundles + their embedded SKUs.
+  const brands = useMemo(() => {
+    const s = new Set();
+    bundles.forEach((b) => (b.skus || []).forEach((k) => k.brand && s.add(k.brand)));
+    return Array.from(s).sort();
+  }, [bundles]);
+  const subcats = useMemo(() => {
+    const s = new Set();
+    bundles.forEach((b) => (b.skus || []).forEach((k) => k.subcategory && s.add(k.subcategory)));
+    return Array.from(s).sort();
+  }, [bundles]);
   const fromStores = useMemo(
-    () => Array.from(new Set(rows.map((r) => r.from_store).filter(Boolean))).sort(),
-    [rows]
+    () => Array.from(new Set(bundles.map((b) => b.from_store).filter(Boolean))).sort(),
+    [bundles]
   );
   const toStores = useMemo(
-    () => Array.from(new Set(rows.map((r) => r.to_store).filter(Boolean))).sort(),
-    [rows]
-  );
-  const subcats = useMemo(
-    () => Array.from(new Set(rows.map((r) => r.subcategory).filter(Boolean))).sort(),
-    [rows]
+    () => Array.from(new Set(bundles.map((b) => b.to_store).filter(Boolean))).sort(),
+    [bundles]
   );
 
-  const filtered = useMemo(() => {
+  // Apply the filter bar to bundles. Store filters are bundle-level; brand /
+  // subcategory / search filter the embedded SKUs, and a bundle is shown only
+  // if at least one SKU survives.
+  const filteredBundles = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return rows.filter((r) => {
-      // Hide entire (style,to) only when a LEGACY (no-SKU) completion
-      // exists for it — the new SKU-level keys are used per-row by
-      // IBTFlatTable.
-      if (completedKeys.has(`${r.style_name}||${r.to_store}||__all__`)) return false;
-      if (brandFilter && r.brand !== brandFilter) return false;
-      if (fromStoreFilter && r.from_store !== fromStoreFilter) return false;
-      if (toStoreFilter && r.to_store !== toStoreFilter) return false;
-      if (subcatFilter && r.subcategory !== subcatFilter) return false;
-      if (!q) return true;
-      return (
-        (r.style_name || "").toLowerCase().includes(q) ||
-        (r.from_store || "").toLowerCase().includes(q) ||
-        (r.to_store || "").toLowerCase().includes(q)
-      );
-    });
-  }, [rows, search, brandFilter, fromStoreFilter, toStoreFilter, subcatFilter, completedKeys]);
+    const out = [];
+    for (const b of bundles) {
+      if (fromStoreFilter && b.from_store !== fromStoreFilter) continue;
+      if (toStoreFilter && b.to_store !== toStoreFilter) continue;
+      const skus = (b.skus || []).filter((s) => {
+        if (brandFilter && s.brand !== brandFilter) return false;
+        if (subcatFilter && s.subcategory !== subcatFilter) return false;
+        if (!q) return true;
+        return (
+          (s.style_name || "").toLowerCase().includes(q) ||
+          (s.sku || "").toLowerCase().includes(q) ||
+          (s.color || "").toLowerCase().includes(q) ||
+          (s.barcode || "").toLowerCase().includes(q) ||
+          (b.from_store || "").toLowerCase().includes(q) ||
+          (b.to_store || "").toLowerCase().includes(q)
+        );
+      });
+      if (skus.length === 0) continue;
+      out.push({ ...b, skus });
+    }
+    return out;
+  }, [bundles, search, brandFilter, fromStoreFilter, toStoreFilter, subcatFilter]);
 
-  // RecommendationActionPill removed per leadership; we just show the
-  // pending list. Mark-as-Done filters via `completedKeys` further up.
-  const visible = filtered;
-
-  const kpis = useMemo(() => {
-    const totalUplift = filtered.reduce((s, r) => s + (r.estimated_uplift || 0), 0);
-    const totalUnits = filtered.reduce((s, r) => s + (r.units_to_move || 0), 0);
-    const storesInvolved = new Set();
-    filtered.forEach((r) => { storesInvolved.add(r.from_store); storesInvolved.add(r.to_store); });
-    return {
-      moves: filtered.length,
-      totalUnits,
-      totalUplift,
-      storesInvolved: storesInvolved.size,
-    };
-  }, [filtered]);
+  const hasFilters = brandFilter || fromStoreFilter || toStoreFilter || subcatFilter || search;
 
   return (
     <div className="space-y-6" data-testid="ibt-page">
       <div>
         <p className="text-muted text-[13px] mt-1 max-w-3xl">
-          Moves a SKU from a store where it isn't selling to one where it is.
-          Rule: the <b>from</b>-store sells at ≤ 20% of the group average for
-          that style while having available stock; the <b>to</b>-store sells
-          at ≥ 150% of average while running low. Warehouses are excluded —
-          only store-to-store moves.
+          A single network solve moves each SKU from a store where it isn't
+          selling to one where it is — capped by the destination's two-week
+          demand and the donor's keep-one buffer, then consolidated into one
+          transfer bundle per <b>from → to</b> store pair. Warehouses, Online
+          and third-party brands are excluded.
+        </p>
+        <p className="text-[12px] text-foreground/70 mt-2 font-medium" data-testid="ibt-asof">
+          As of {data?.as_of || "today"} · demand window: trailing {data?.demand_days || demandDays} days
         </p>
       </div>
 
-      {loading && <Loading label="Analyzing sell-through across stores…" />}
+      {loading && <Loading label="Solving the transfer network across stores…" />}
       {error && <ErrorBox message={error} />}
 
       {!loading && !error && (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <KPICard testId="ibt-kpi-moves" accent label="Open moves"
-              sub="All pending review"
-              value={fmtNum(kpis.moves)} icon={Truck} showDelta={false} />
-            <KPICard testId="ibt-kpi-units" label="Units To Move" value={fmtNum(kpis.totalUnits)} icon={Package} showDelta={false} />
-            <KPICard testId="ibt-kpi-uplift" label="Est. Revenue Uplift" value={fmtKES(kpis.totalUplift)} icon={Coins} showDelta={false} />
-            <KPICard testId="ibt-kpi-stores" label="Stores Involved" value={fmtNum(kpis.storesInvolved)} showDelta={false} />
+            <KPICard testId="ibt-kpi-bundles" accent label="Transfer bundles"
+              sub="One per from → to pair"
+              value={fmtNum(summary.bundles || 0)} icon={Truck} showDelta={false} />
+            <KPICard testId="ibt-kpi-units" label="Units to move"
+              value={fmtNum(summary.units || 0)} icon={Package} showDelta={false} />
+            <KPICard testId="ibt-kpi-stores" label="Stores involved"
+              value={fmtNum(summary.stores || 0)} icon={Buildings} showDelta={false} />
+            <KPICard testId="ibt-kpi-sor" label="Est. SOR uplift"
+              sub={`${fmtNum(summary.cross_border_bundles || 0)} cross-border`}
+              value={`+${(summary.sor_uplift_pp ?? 0).toFixed(2)} pp`}
+              icon={TrendUp} showDelta={false} />
           </div>
 
           <div className="card-white p-3 flex flex-wrap items-center gap-2" data-testid="ibt-jump-nav">
             <span className="text-[11.5px] font-semibold text-muted">Jump to:</span>
             {[
-              { id: "ibt-sec-store", label: "Store → Store list" },
+              { id: "ibt-sec-store", label: "Transfer bundles" },
               ...(canSeeCompletedMoves ? [{ id: "ibt-sec-completed", label: "Completed moves" }] : []),
             ].map((s) => (
               <button
@@ -261,62 +252,33 @@ const IBT = () => {
             <div className="flex items-center gap-2 input-pill flex-1 min-w-[200px]">
               <MagnifyingGlass size={14} className="text-muted" />
               <input
-                placeholder="Search style or store…"
+                placeholder="Search style, store, color, SKU…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 data-testid="ibt-search"
                 className="bg-transparent outline-none text-[13px] w-full"
               />
             </div>
-            <select
-              className="input-pill"
-              value={brandFilter}
-              onChange={(e) => setBrandFilter(e.target.value)}
-              data-testid="ibt-brand-filter"
-            >
+            <select className="input-pill" value={brandFilter} onChange={(e) => setBrandFilter(e.target.value)} data-testid="ibt-brand-filter">
               <option value="">All brands</option>
               {brands.map((b) => <option key={b}>{b}</option>)}
             </select>
-            <select
-              className="input-pill"
-              value={fromStoreFilter}
-              onChange={(e) => setFromStoreFilter(e.target.value)}
-              data-testid="ibt-from-store-filter"
-              title="Show only moves leaving this store"
-            >
+            <select className="input-pill" value={fromStoreFilter} onChange={(e) => setFromStoreFilter(e.target.value)} data-testid="ibt-from-store-filter" title="Show only bundles leaving this store">
               <option value="">All FROM stores</option>
               {fromStores.map((s) => <option key={s}>{s}</option>)}
             </select>
-            <select
-              className="input-pill"
-              value={toStoreFilter}
-              onChange={(e) => setToStoreFilter(e.target.value)}
-              data-testid="ibt-to-store-filter"
-              title="Show only moves arriving at this store"
-            >
+            <select className="input-pill" value={toStoreFilter} onChange={(e) => setToStoreFilter(e.target.value)} data-testid="ibt-to-store-filter" title="Show only bundles arriving at this store">
               <option value="">All TO stores</option>
               {toStores.map((s) => <option key={s}>{s}</option>)}
             </select>
-            <select
-              className="input-pill"
-              value={subcatFilter}
-              onChange={(e) => setSubcatFilter(e.target.value)}
-              data-testid="ibt-subcat-filter"
-              title="Show only moves for this subcategory"
-            >
+            <select className="input-pill" value={subcatFilter} onChange={(e) => setSubcatFilter(e.target.value)} data-testid="ibt-subcat-filter" title="Show only this subcategory">
               <option value="">All subcategories</option>
               {subcats.map((s) => <option key={s}>{s}</option>)}
             </select>
-            {(brandFilter || fromStoreFilter || toStoreFilter || subcatFilter || search) && (
+            {hasFilters && (
               <button
                 type="button"
-                onClick={() => {
-                  setBrandFilter("");
-                  setFromStoreFilter("");
-                  setToStoreFilter("");
-                  setSubcatFilter("");
-                  setSearch("");
-                }}
+                onClick={() => { setBrandFilter(""); setFromStoreFilter(""); setToStoreFilter(""); setSubcatFilter(""); setSearch(""); }}
                 data-testid="ibt-clear-filters"
                 className="text-[11px] text-muted underline hover:text-brand"
               >
@@ -324,6 +286,25 @@ const IBT = () => {
               </button>
             )}
             <div className="flex-1" />
+            <div className="inline-flex items-center gap-1.5 text-[11.5px]" data-testid="ibt-demand-control">
+              <span className="font-semibold text-foreground/80">Demand:</span>
+              <div className="inline-flex border border-border rounded-lg overflow-hidden">
+                {DEMAND_OPTIONS.map((o) => (
+                  <button
+                    key={o.days}
+                    type="button"
+                    onClick={() => setDemandDaysPersist(o.days)}
+                    title={`Measure sell-through over the trailing ${o.days} days`}
+                    data-testid={`ibt-demand-${o.days}`}
+                    className={`px-2.5 py-1 font-bold transition-colors ${
+                      demandDays === o.days ? "bg-brand text-white" : "bg-white text-foreground/70 hover:bg-panel"
+                    }`}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <button
               type="button"
               role="switch"
@@ -332,9 +313,7 @@ const IBT = () => {
               data-testid="ibt-clustering-toggle"
               title="Match stores within the same or adjacent revenue tier (A/B/C). Off = chain-wide matching."
               className={`inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-2.5 py-1.5 rounded-lg border transition-colors ${
-                useClustering
-                  ? "bg-brand/10 text-brand-deep border-brand/40"
-                  : "bg-white text-muted border-border hover:border-brand/40"
+                useClustering ? "bg-brand/10 text-brand-deep border-brand/40" : "bg-white text-muted border-border hover:border-brand/40"
               }`}
             >
               <Stack size={13} weight="bold" />
@@ -355,61 +334,30 @@ const IBT = () => {
 
           <div id="ibt-sec-store" className="card-white p-4 sm:p-5 scroll-mt-24" data-testid="ibt-table-card">
             <SectionTitle
-              title={`Store → Store transfer list · ${visible.length} suggestions`}
-              subtitle="Each row is one SKU (color × size). Type the units you actually transferred, then tap Mark As Done to log the PO and remove it from this list. Tablet-friendly — scroll horizontally to see all columns."
-              action={
-                <div className="inline-flex items-center gap-2 text-[11.5px]" data-testid="ibt-sensitivity">
-                  <span className="font-semibold text-foreground/80">Sensitivity:</span>
-                  <div className="inline-flex border border-border rounded-lg overflow-hidden">
-                    {Object.entries(SENSITIVITY).map(([key, cfg]) => (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => setSensitivityPersist(key)}
-                        title={cfg.help}
-                        data-testid={`ibt-sensitivity-${key}`}
-                        className={`px-2.5 py-1 font-bold transition-colors ${
-                          sensitivity === key
-                            ? "bg-brand text-white"
-                            : "bg-white text-foreground/70 hover:bg-panel"
-                        }`}
-                      >
-                        {cfg.label}
-                      </button>
-                    ))}
-                  </div>
-                  <span className="text-[10.5px] text-muted">
-                    ≤{SENSITIVITY[sensitivity].low}% / ≥{SENSITIVITY[sensitivity].high}%
-                  </span>
-                </div>
-              }
+              title={`Transfer bundles · ${filteredBundles.length}${hasFilters ? ` of ${bundles.length}` : ""}`}
+              subtitle="Each row is one store → store transfer. Expand it to see the SKU pick list, type the units you actually moved, then Mark As Done to log the PO and clear it."
             />
-            <IBTFlatTable
-              suggestions={visible}
-              flow="store_to_store"
+            <IBTBundleTable
+              bundles={filteredBundles}
               onMarkDone={(payload) => setDoneModalRow(payload)}
               completedSkuKeys={completedSkuKeys}
+              completedKeys={completedKeys}
               testId="ibt-table"
-              emptyLabel={
-                filtered.length === 0
-                  ? "No transfer opportunities found for the current window. Try widening the date range."
-                  : "All transfer moves have been actioned."
-              }
+              emptyLabel="No transfer opportunities found for the current window. Try a longer demand window or turn off cluster-aware matching."
             />
           </div>
 
           <div className="card-white p-4 bg-panel">
             <div className="text-[12.5px] text-muted">
               <span className="font-semibold text-foreground">How it works:</span>{" "}
-              For each style that lives in at least two stores, the algorithm
-              compares per-store sell-through to the group average. A move is
-              suggested when a store with inventory isn't selling and another
-              store is selling strongly but running low. Qty is bounded by the
-              smaller of: <i>from-store buffer (2 units)</i> and
-              <i> to-store 2-week cover target</i>. Warehouses are always
-              excluded. Tap <b className="text-emerald-700">Mark As Done</b> on
-              any row to log it to the Completed Moves table below and hide
-              it from the live list.
+              One global solve scores every viable SKU edge (donor selling weakly
+              with stock → receiver selling strongly but low), then greedily
+              assigns units against a per-destination two-week demand budget and a
+              per-donor keep-one ledger so no store is over-drained or
+              over-filled. Surviving edges are consolidated into one bundle per
+              store pair; a bundle ships only if it clears the minimum-transfer
+              gate (domestic ≥ 4 units, cross-border ≥ 24). The canonical
+              Sell-Off-Rate formula is never altered.
             </div>
           </div>
 

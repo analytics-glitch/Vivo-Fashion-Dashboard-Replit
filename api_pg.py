@@ -8432,25 +8432,24 @@ def customers_walk_ins(
 def _sql_str(s):
     return (s or "").replace("'", "''")
 
-def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim, use_clustering=True):
-    """Shared IBT suggestions SQL builder (Phase 1 audit B6 + Phase 2 A4/B4).
+# ── IBT global-solve knobs (Phase 1) ──────────────────────────────────────
+# Minimum bundle size below which a from->to transfer is not worth the pick +
+# logistics overhead. Domestic moves are cheap; cross-border moves clear
+# customs/duty so they must consolidate a much larger bundle to be worthwhile.
+# These are knobs (spec §5 "minimum transfer"); Phase 2 makes them per-corridor.
+IBT_MIN_TRANSFER_DOMESTIC = 4
+IBT_MIN_TRANSFER_CROSS = 24
 
-    Phase 1: excludes dead-stock styles (>16 weeks cover AND <5% sell-through
-    over 56 days) from both donor and recipient sides.
 
-    Phase 2:
-      - A4 0-100 composite score (donor excess 40%, need urgency 40%,
-        sell-through 20%); rows ORDER BY score DESC.
-      - Removes the DISTINCT ON (style) one-pair-per-style cap so every valid
-        donor->needer pair is returned (capped only by `lim`). `pair_count` is a
-        per-style window count of all pairs for that style.
-      - B4 store clustering: stores are tiered A/B/C by 90-day revenue
-        (NTILE(3)); when use_clustering=True only pairs in the same or an
-        adjacent tier are emitted (A<->B, B<->C; A<->C blocked) and the demand
-        baseline avg_u is computed within the *destination* store's cluster
-        (falling back to the chain-wide average when the cluster has no signal).
+def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
+    """Shared IBT candidate-qualification CTE chain (WITH ... scored).
 
-    Reused by both /analytics/ibt-suggestions and /ibt/late-count."""
+    Builds the donor/recipient qualification used by BOTH the legacy pair-level
+    SQL and the Phase-1 sku-grain edge SQL. Emits CTEs through `scored` (the set
+    of eligible (style, from_store, to_store) pairs that pass dead-stock, 21-day
+    newness, cluster-adjacency, demonstrated-demand and >=3-projected-SKU
+    minimum-range guards). The canonical SOR formula is never used or changed
+    here — this only chooses WHICH pairs are eligible to move stock."""
     c_sales = ("AND s.country = '" + _sql_str(country) + "'") if country else ""
     c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
     if use_clustering:
@@ -8648,6 +8647,17 @@ def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim, use_cluste
         ON rp.style = pr.style AND rp.from_store = pr.from_store AND rp.to_store = pr.to_store
       WHERE rp.projected_skus >= 3
     )
+    """
+
+
+def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim, use_clustering=True):
+    """Legacy pair-level IBT suggestions builder. Builds the shared
+    qualification chain then sizes each eligible pair INDEPENDENTLY (so it can
+    over-fill a hot destination / over-commit a donor across pairs). Superseded
+    for /analytics/ibt-suggestions, /ibt/export/operations and /ibt/late-count
+    by _ibt_global_solve, which shares decrementing budgets across all pairs.
+    Retained only for ad-hoc/diagnostic use."""
+    return _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering) + f"""
     SELECT sc.style AS style_name, pp.brand, pp.category AS subcategory,
            sc.from_store, sc.to_store,
            CASE sc.from_tier WHEN 1 THEN 'A' WHEN 2 THEN 'B' ELSE 'C' END AS from_cluster,
@@ -8668,25 +8678,252 @@ def _ibt_suggestions_sql(date_from, date_to, country, low, high, lim, use_cluste
     """
 
 
+def _ibt_edge_sql(date_from, date_to, country, low, high, use_clustering=True):
+    """Phase-1 sku-grain candidate edges for the global solve.
+
+    Reuses the shared qualification chain, then explodes each eligible
+    (style, from_store, to_store) pair to the individual SKU rows the donor can
+    actually ship: donor availability >= 2 (so the size-run keeps >= 1 on the
+    donor shelf) and receiver availability <= 1. Emits per-side availability,
+    colour/size/barcode/bin and the store countries. Online/Shop Zetu and
+    Zoya/third-party brand are excluded as BOTH donor and receiver. The Python
+    solver then debits a shared destination budget + donor ledger per sku."""
+    return _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering) + """
+    SELECT sc.style AS style_name, pp.brand, pp.category AS subcategory,
+           sc.from_store, sc.from_tier, sc.to_store, sc.to_tier, sc.score,
+           sc.from_sold::int AS from_qty_sold_28d,
+           sc.to_sold::int   AS to_qty_sold_28d,
+           fav.sku AS sku, skd.color_print AS color, skd.size AS size,
+           skd.barcode AS barcode, COALESCE(wb.bin, '') AS bin,
+           fav.av::int AS from_sku_avail,
+           COALESCE(tav.av, 0)::int AS to_sku_avail,
+           fc.country AS from_country, tc.country AS to_country
+    FROM scored sc
+    JOIN sku_av fav ON fav.style = sc.style AND fav.store = sc.from_store AND fav.av >= 2
+    LEFT JOIN sku_av tav ON tav.style = sc.style AND tav.store = sc.to_store AND tav.sku = fav.sku
+    JOIN LATERAL (
+      SELECT color_print, size, barcode FROM all_products_clean WHERE sku = fav.sku LIMIT 1
+    ) skd ON TRUE
+    LEFT JOIN warehouse_bins wb ON wb.barcode = skd.barcode
+    LEFT JOIN LATERAL (
+      SELECT brand, category FROM all_products_clean WHERE style_name = sc.style LIMIT 1
+    ) pp ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT country FROM all_inventory WHERE pos_location_name = sc.from_store
+        AND COALESCE(country, '') <> '' LIMIT 1
+    ) fc ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT country FROM all_inventory WHERE pos_location_name = sc.to_store
+        AND COALESCE(country, '') <> '' LIMIT 1
+    ) tc ON TRUE
+    WHERE COALESCE(tav.av, 0) <= 1
+      AND COALESCE(pp.brand, '') NOT ILIKE '%zoya%'
+      AND COALESCE(pp.brand, '') NOT ILIKE '%third party%'
+      AND sc.from_store NOT ILIKE '%online%'
+      AND sc.to_store NOT ILIKE '%online%'
+    ORDER BY sc.score DESC, sc.style, fav.sku
+    """
+
+
+def _ibt_network_sor_base(styles, date_from, date_to, country):
+    """Network SOR denominator base (units_sold over the demand window + current
+    store stock, warehouse + online excluded) across the involved styles. Used
+    only to bound the honest forward SOR-uplift estimate — the canonical SOR
+    formula itself is unchanged."""
+    if not styles:
+        return 0.0
+    style_in = ",".join("'" + _sql_str(s) + "'" for s in styles)
+    c_sales = ("AND s.country = '" + _sql_str(country) + "'") if country else ""
+    c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
+    q = f"""
+      SELECT
+        COALESCE((SELECT SUM(s.net_quantity) FROM all_sales s
+                  JOIN all_products_clean p ON p.sku = s.variant_sku
+                  WHERE p.style_name IN ({style_in})
+                    AND s.sale_kind IN ('sale','order')
+                    AND s.sale_date BETWEEN '{date_from}' AND '{date_to}'
+                    AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+                    AND s.pos_location_name NOT ILIKE '%online%' {c_sales}), 0)
+      + COALESCE((SELECT SUM(i.available) FROM all_inventory i
+                  JOIN all_products_clean p ON p.sku = i.sku
+                  WHERE p.style_name IN ({style_in})
+                    AND i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+                    AND i.pos_location_name NOT ILIKE '%online%' {c_inv}), 0)
+        AS base
+    """
+    rows = run_query(q)
+    try:
+        return float(rows[0]["base"] or 0)
+    except Exception:
+        return 0.0
+
+
+def _ibt_global_solve(date_from, date_to, country, low, high,
+                      use_clustering=True, bundle_limit=300):
+    """Phase-1 global IBT solve.
+
+    Replaces the legacy per-pair cross-join sizing with ONE pass over two
+    decrementing tables so the same stock is never promised twice and no
+    destination is filled past its gap:
+      - dest_budget[(to_store, sku)] = max(2 - to_sku_avail, 0)  (shared across
+        every donor competing for that destination sku)
+      - donor_ledger[(from_store, sku)] = from_sku_avail - 1     (shared across
+        every destination pulling from that donor sku; the -1 keeps >= 1 of the
+        size on the donor shelf -> size-run integrity)
+    Edges are taken best-first (composite score, then demonstrated destination
+    demand); each assignment debits BOTH sides atomically. Assigned sku moves
+    are then consolidated into one bundle per (from_store -> to_store) and the
+    minimum-transfer gate is applied per bundle. The canonical SOR formula is
+    never used or changed here."""
+    _warehouse_bins_refresh()
+    edges = run_query(_ibt_edge_sql(date_from, date_to, country, low, high,
+                                    use_clustering=use_clustering)) or []
+    # Code-level hard-retirement list (Zoya brand already excluded in SQL): a
+    # manually-retired style must never be a receiver (nor donor) here.
+    edges = [e for e in edges if not _is_manually_retired(e.get("style_name"))]
+
+    dest_budget = {}
+    donor_ledger = {}
+    for e in edges:
+        dk = (e["to_store"], e["sku"])
+        if dk not in dest_budget:
+            dest_budget[dk] = max(2 - int(e.get("to_sku_avail") or 0), 0)
+        lk = (e["from_store"], e["sku"])
+        if lk not in donor_ledger:
+            donor_ledger[lk] = max(int(e.get("from_sku_avail") or 0) - 1, 0)
+
+    # Best-first: highest composite score, then strongest demonstrated demand.
+    edges.sort(key=lambda e: (-(int(e.get("score") or 0)),
+                              -(int(e.get("to_qty_sold_28d") or 0)),
+                              e.get("style_name") or "", e.get("sku") or ""))
+
+    assigned = []
+    for e in edges:
+        dk = (e["to_store"], e["sku"])
+        lk = (e["from_store"], e["sku"])
+        b = dest_budget.get(dk, 0)
+        d = donor_ledger.get(lk, 0)
+        q = b if b < d else d
+        if q <= 0:
+            continue
+        dest_budget[dk] = b - q
+        donor_ledger[lk] = d - q
+        rec = dict(e)
+        rec["suggested_qty"] = int(q)
+        rec["source_onhand_at_calc"] = int(e.get("from_sku_avail") or 0)
+        rec["dest_gap_at_calc"] = max(2 - int(e.get("to_sku_avail") or 0), 0)
+        assigned.append(rec)
+
+    TIER = {1: "A", 2: "B", 3: "C"}
+    bundles = {}
+    for r in assigned:
+        key = (r["from_store"], r["to_store"])
+        bd = bundles.get(key)
+        if bd is None:
+            fc = r.get("from_country") or ""
+            tc = r.get("to_country") or ""
+            cross = bool(fc and tc and fc != tc)
+            bd = {
+                "bundle_id": (r["from_store"] or "") + " -> " + (r["to_store"] or ""),
+                "from_store": r["from_store"], "from_country": fc,
+                "from_cluster": TIER.get(int(r.get("from_tier") or 3), "C"),
+                "to_store": r["to_store"], "to_country": tc,
+                "to_cluster": TIER.get(int(r.get("to_tier") or 3), "C"),
+                "cross_border": cross,
+                "corridor": "Cross-border" if cross else "Domestic",
+                "units": 0, "sku_count": 0, "score": 0,
+                "_styles": set(), "skus": [],
+            }
+            bundles[key] = bd
+        bd["units"] += r["suggested_qty"]
+        bd["sku_count"] += 1
+        sc = int(r.get("score") or 0)
+        if sc > bd["score"]:
+            bd["score"] = sc
+        bd["_styles"].add(r.get("style_name"))
+        bd["skus"].append({
+            "style_name": r.get("style_name"), "brand": r.get("brand"),
+            "subcategory": r.get("subcategory"), "sku": r.get("sku"),
+            "color": r.get("color"), "size": r.get("size"),
+            "barcode": r.get("barcode"), "bin": r.get("bin"),
+            "from_available": int(r.get("from_sku_avail") or 0),
+            "to_available": int(r.get("to_sku_avail") or 0),
+            "suggested_qty": r["suggested_qty"],
+            "source_onhand_at_calc": r["source_onhand_at_calc"],
+            "dest_gap_at_calc": r["dest_gap_at_calc"],
+            "from_qty_sold_28d": int(r.get("from_qty_sold_28d") or 0),
+            "to_qty_sold_28d": int(r.get("to_qty_sold_28d") or 0),
+        })
+
+    out = []
+    for bd in bundles.values():
+        min_units = IBT_MIN_TRANSFER_CROSS if bd["cross_border"] else IBT_MIN_TRANSFER_DOMESTIC
+        if bd["units"] < min_units:
+            continue
+        bd["style_count"] = len(bd["_styles"])
+        del bd["_styles"]
+        bd["skus"].sort(key=lambda s: (-(s["suggested_qty"]),
+                                       s.get("style_name") or "", s.get("sku") or ""))
+        out.append(bd)
+
+    out.sort(key=lambda b: (-(b["score"]), -(b["units"])))
+    out = out[:bundle_limit]
+
+    units_total = sum(b["units"] for b in out)
+    sku_total = sum(b["sku_count"] for b in out)
+    stores = set()
+    for b in out:
+        stores.add(b["from_store"])
+        stores.add(b["to_store"])
+    cross_n = sum(1 for b in out if b["cross_border"])
+
+    # Honest bounded forward SOR uplift (pp): if every redeployed unit sells at
+    # its demonstrated-demand destination, the network SOR over the involved
+    # styles rises by units / (network_sold + network_stock). Bounded by the
+    # pickable assigned units; never overstates because the denominator is the
+    # full involved-style network base.
+    styles_involved = sorted({s["style_name"] for b in out
+                              for s in b["skus"] if s.get("style_name")})
+    sor_pp = 0.0
+    if styles_involved and units_total > 0:
+        denom = _ibt_network_sor_base(styles_involved, date_from, date_to, country)
+        if denom and denom > 0:
+            sor_pp = round(100.0 * units_total / denom, 2)
+
+    return {
+        "as_of": date.today().isoformat(),
+        "summary": {
+            "bundles": len(out), "units": units_total, "skus": sku_total,
+            "stores": len(stores), "cross_border_bundles": cross_n,
+            "sor_uplift_pp": sor_pp,
+        },
+        "bundles": out,
+    }
+
+
 @app.get("/api/analytics/ibt-suggestions")
 def ibt_suggestions(
-    date_from: str = Query(default=None),
-    date_to:   str = Query(default=None),
-    country:   str = Query(default=None),
-    limit:     int = Query(default=300),
-    low_pct:   float = Query(default=20),
-    high_pct:  float = Query(default=150),
+    country:     str = Query(default=None),
+    demand_days: int = Query(default=28),
+    limit:       int = Query(default=300),
+    low_pct:     float = Query(default=20),
+    high_pct:    float = Query(default=150),
     use_clustering: bool = Query(default=True),
 ):
+    # Phase 1: an as-of-TODAY worklist. The demand window is a labelled
+    # trailing-N-days lookback for the velocity/sell-rate signal (default 28d);
+    # it is NOT the global date filter. The engine returns from->to BUNDLES.
     today = date.today()
-    date_to = date_to or today.isoformat()
-    date_from = date_from or (today - timedelta(days=30)).isoformat()
+    dd = max(7, min(int(demand_days or 28), 120))
+    date_to = today.isoformat()
+    date_from = (today - timedelta(days=dd)).isoformat()
     low = float(low_pct) / 100.0
     high = float(high_pct) / 100.0
     lim = max(1, min(int(limit), 1000))
-    q = _ibt_suggestions_sql(date_from, date_to, country, low, high, lim,
-                             use_clustering=use_clustering)
-    return run_query(q, date_to=date_to)
+    res = _ibt_global_solve(date_from, date_to, country, low, high,
+                            use_clustering=use_clustering, bundle_limit=lim)
+    res["demand_days"] = dd
+    return res
 
 
 @app.get("/api/analytics/ibt-sku-breakdown")
@@ -15138,27 +15375,30 @@ def get_data_freshness():
         return {"fresh": False, "last_updated": None, "seconds_since_update": None, "last_sale_date": None}
 @app.get("/api/ibt/late-count")
 def ibt_late_count():
-    # Outstanding IBT suggestions (default 30-day window) that are neither
-    # completed nor recently acted on: treat anything not acknowledged within
-    # the last 7 days as late (Phase 1 audit B6).
-    today = date.today()
-    df = (today - timedelta(days=30)).isoformat()
-    dt = today.isoformat()
-    inner = _ibt_suggestions_sql(df, dt, None, 0.20, 1.50, 1000)
-    q = ("WITH suggestions AS (" + inner + ") "
-         "SELECT COUNT(*) AS count FROM suggestions sg "
-         "LEFT JOIN ibt_completions c "
-         "ON COALESCE(c.style_name,'') = COALESCE(sg.style_name,'') "
-         "AND COALESCE(c.from_store,'') = COALESCE(sg.from_store,'') "
-         "AND COALESCE(c.to_store,'') = COALESCE(sg.to_store,'') "
-         "LEFT JOIN recommendation_actions ra "
-         "ON ra.rec_type='ibt' "
-         "AND ra.rec_key = COALESCE(sg.style_name,'')||'||'||COALESCE(sg.from_store,'')"
-         "||'||'||COALESCE(sg.to_store,'') "
-         "WHERE c.id IS NULL "
-         "AND COALESCE(ra.acted_at, now() - INTERVAL '7 days') <= now() - INTERVAL '7 days'")
-    rows = _users_exec(q, fetch=True)
-    return {"count": int(rows[0]["count"]) if rows else 0}
+    # Topbar badge: count of open from->to BUNDLES from the Phase-1 global solve
+    # (trailing 28-day demand window) that have NOT been fully completed. A
+    # bundle is "done" once a completion exists for its (from_store, to_store)
+    # corridor (operators stamp completions per move). Cheap and best-effort —
+    # any solver/store error yields 0 so the badge never blocks the UI.
+    try:
+        today = date.today()
+        df = (today - timedelta(days=28)).isoformat()
+        dt = today.isoformat()
+        res = _ibt_global_solve(df, dt, None, 0.20, 1.50, bundle_limit=1000)
+        bundles = res.get("bundles", [])
+        if not bundles:
+            return {"count": 0}
+        done = set()
+        rows = _users_exec(
+            "SELECT DISTINCT COALESCE(from_store,'') AS f, COALESCE(to_store,'') AS t "
+            "FROM ibt_completions", fetch=True) or []
+        for r in rows:
+            done.add((r.get("f") or "", r.get("t") or ""))
+        n = sum(1 for b in bundles
+                if (b.get("from_store") or "", b.get("to_store") or "") not in done)
+        return {"count": int(n)}
+    except Exception:
+        return {"count": 0}
 @app.get("/api/notifications/unread-count")
 def notifications_unread_count(request: Request):
     # Badge count = number of pending access requests, admins only.
@@ -17644,56 +17884,48 @@ def _xlsx_header(ws, cols):
 
 @app.get("/api/ibt/export/operations")
 def ibt_export_operations(
-    date_from: str = Query(default=None),
-    date_to:   str = Query(default=None),
-    country:   str = Query(default=None),
+    country:     str = Query(default=None),
+    demand_days: int = Query(default=28),
     use_clustering: bool = Query(default=True),
 ):
+    # Phase-1 export: one tab per DONOR store, one row per SKU pick line of each
+    # from->to bundle the global solve produced (so the pick sheet matches the
+    # on-screen worklist exactly — same budgets, same gates, same consolidation).
     from openpyxl import Workbook
     today = date.today()
-    date_to = date_to or today.isoformat()
-    date_from = date_from or (today - timedelta(days=30)).isoformat()
-    rows = run_query(
-        _ibt_suggestions_sql(date_from, date_to, country, 0.2, 1.5, 1000,
-                             use_clustering=use_clustering),
-        date_to=date_to) or []
-    # One batch lookup of the available size run + SKUs per (style, donor store).
-    sku_map = {}
-    styles = sorted({r.get("style_name") for r in rows if r.get("style_name")})
-    if styles:
-        style_in = ",".join("'" + _sql_str(x) + "'" for x in styles)
-        for m in (run_query(
-                "SELECT p.style_name AS style, i.pos_location_name AS store, "
-                "string_agg(DISTINCT p.sku, ', ' ORDER BY p.sku) AS skus, "
-                "string_agg(DISTINCT p.size, ', ' ORDER BY p.size) AS sizes "
-                "FROM all_inventory i JOIN all_products_clean p ON p.sku = i.sku "
-                "WHERE i.available > 0 AND p.style_name IN (" + style_in + ") "
-                "GROUP BY 1, 2") or []):
-            sku_map[(m["style"], m["store"])] = (m.get("skus") or "", m.get("sizes") or "")
-    cols = ["Style Name", "Brand", "Subcategory", "From Store", "To Store",
-            "SKUs", "Sizes", "Units to Move", "Score",
-            "Estimated Uplift (KES)", "Suggested Date"]
+    dd = max(7, min(int(demand_days or 28), 120))
+    date_to = today.isoformat()
+    date_from = (today - timedelta(days=dd)).isoformat()
+    res = _ibt_global_solve(date_from, date_to, country, 0.2, 1.5,
+                            use_clustering=use_clustering, bundle_limit=1000)
+    bundles = res.get("bundles", [])
+    cols = ["From Store", "To Store", "Corridor", "Style Name", "Brand",
+            "Subcategory", "SKU", "Colour", "Size", "Barcode", "Bin",
+            "Units to Move", "Donor On-hand", "Dest On-hand", "Suggested Date"]
     wb = Workbook()
     wb.remove(wb.active)
-    groups = {}
-    for r in rows:
-        groups.setdefault(r.get("from_store") or "Unknown", []).append(r)
     used = set()
     suggested = today.isoformat()
+    groups = {}
+    for b in bundles:
+        groups.setdefault(b.get("from_store") or "Unknown", []).append(b)
     if not groups:
         ws = wb.create_sheet(_xlsx_sheet_title("No Suggestions", used))
         _xlsx_header(ws, cols)
     for store in sorted(groups):
         ws = wb.create_sheet(_xlsx_sheet_title(store, used))
         _xlsx_header(ws, cols)
-        for r in groups[store]:
-            skus, sizes = sku_map.get((r.get("style_name"), store), ("", ""))
-            ws.append([
-                r.get("style_name"), r.get("brand"), r.get("subcategory"),
-                store, r.get("to_store"), skus, sizes,
-                int(r.get("units_to_move") or 0), int(r.get("score") or 0),
-                float(r.get("estimated_uplift") or 0), suggested,
-            ])
+        for b in sorted(groups[store], key=lambda x: (x.get("to_store") or "")):
+            for s in b.get("skus", []):
+                ws.append([
+                    store, b.get("to_store"), b.get("corridor"),
+                    s.get("style_name"), s.get("brand"), s.get("subcategory"),
+                    s.get("sku"), s.get("color"), s.get("size"),
+                    s.get("barcode"), s.get("bin"),
+                    int(s.get("suggested_qty") or 0),
+                    int(s.get("from_available") or 0),
+                    int(s.get("to_available") or 0), suggested,
+                ])
     return _xlsx_response(wb, f"IBT_Operations_{today.isoformat()}.xlsx")
 
 
