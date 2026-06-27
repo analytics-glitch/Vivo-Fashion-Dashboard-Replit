@@ -88,10 +88,19 @@ def check_row(m: dict) -> list[dict]:
                               total, expected_total * (1 - mtol),
                               expected_total * (1 + mtol),
                               abs(total - expected_total)))
-        expected_net = gross - disc - ret
+        # net_sales must reconcile with the (gross - discounts - returns)
+        # composition. all_sales carries TWO VAT conventions that no column cleanly
+        # keys (some rows record gross VAT-EXCLUSIVE, others VAT-INCLUSIVE), so the
+        # naive "net = gross - disc - returns" is off by the VAT rate (~13.5%) for
+        # roughly half the stores EVERY day while over-correcting the other half if
+        # we blindly divide by (1+VAT). The expected composition is therefore built
+        # per-row on each row's own VAT basis and summed in SQL (see
+        # metrics.compute / expected_net_comp), which reconciles to ~2% group-wide
+        # and per-store while a genuine break still blows past NET_COMP_TOL (6%).
+        expected_net = float(m.get("expected_net_comp") or 0.0)
         if _rel(net, expected_net) > config.NET_COMP_TOL:
             fails.append(_exc("net_composition",
-                              "net_sales = gross_sales - discounts - returns",
+                              "net_sales = sum_rows((gross - discounts - returns) on row VAT basis)",
                               net, expected_net * (1 - mtol),
                               expected_net * (1 + mtol),
                               abs(net - expected_net)))

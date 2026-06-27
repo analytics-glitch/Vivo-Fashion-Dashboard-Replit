@@ -123,12 +123,20 @@ def run(days: int, dry_run: bool, evaluate_days: int, backfill_only: bool = Fals
 
     folded = baselines.fold(conn, rows, blocked)
 
-    eval_start = d1 - timedelta(days=evaluate_days - 1)
+    # Learned-range bands are full-day distributions, so only COMPLETED days can be
+    # range-checked. The current day (d1) is still in progress (the sync loop runs
+    # hourly during trading hours): its running partial-day total sits structurally
+    # far below a full-day band and would fire a range/PoP "anomaly" for nearly
+    # every store every hour until the day closes, drowning real signal. So anchor
+    # the evaluation window at the last completed day (yesterday) and never
+    # range-check d1 itself. Tier-1 identity checks + cross-surface still cover today.
+    eval_end = d1 - timedelta(days=1)
+    eval_start = eval_end - timedelta(days=evaluate_days - 1)
     tier2 = []
     if not backfill_only:
         index = baselines.load_index(conn, d1)
         for m in rows:
-            if m["period_date"] < eval_start:
+            if not (eval_start <= m["period_date"] <= eval_end):
                 continue
             for f in baselines.check_row(m, index):
                 f.update({"entity_type": m["entity_type"], "entity": m["entity"],
