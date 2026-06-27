@@ -1481,7 +1481,7 @@ const Overview = () => {
           </div>
 
           <div className="card-white p-5" data-testid="category-chart">
-            <SectionTitle title="Sales by Category" subtitle="Where the money came from this period — by clothing category." />
+            <SectionTitle title="Sales by Category" subtitle="Where the money came from this period — by clothing category. Net merchandise sales (net of returns; excludes Accessories, Sale & uncategorised items), so it does not sum to the Total Sales KPI." />
             {salesByCategory.length === 0 ? <Empty /> : (
               isMobile ? (
                 // ---- Mobile layout: horizontal bars (vertical reads better on
@@ -1561,7 +1561,7 @@ const Overview = () => {
           <div className="card-white p-5" data-testid="subcat-chart">
             <SectionTitle
               title={`Sales by Subcategory · ${subcatTop.length}`}
-              subtitle={`Sales for every subcategory, biggest first. Total: ${fmtKES(subcatTopTotal)}`}
+              subtitle={`Net merchandise sales by subcategory, biggest first. Total: ${fmtKES(subcatTopTotal)}. Net of returns and merchandise-only (excludes Accessories, Sale & uncategorised items), so it is intentionally lower than the Total Sales KPI of ${fmtKES(kpis.total_sales)}.`}
             />
             {subcatTop.length === 0 ? <Empty /> : (
               <div style={{ width: "100%", height: Math.max(360, 40 + subcatTop.length * 22) }}>

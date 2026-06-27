@@ -533,7 +533,7 @@ const Products = () => {
             prevRows={stsByCatPrev}
             compareLbl={compareLbl}
             csvName="performance-by-category.csv"
-            subtitle="Commercial performance per category — sales, orders, avg basket value (ABV), avg selling price (ASP), multiple selling index (MSI). Margin % and return rate deferred — pending upstream cost/returns data."
+            subtitle="Commercial performance per category — sales, orders, avg basket value (ABV), avg selling price (ASP), multiple selling index (MSI). Sales here are gross of returns (sale+order only) across merchandise categories, so they run higher than the Overview 'Sales by Subcategory' chart (net of returns) and below the all-category Total Sales KPI. Margin % and return rate deferred — pending upstream cost/returns data."
           />
 
           <ProductPerformance
@@ -545,7 +545,7 @@ const Products = () => {
             prevRows={stockSalesPrev}
             compareLbl={compareLbl}
             csvName="performance-by-subcategory.csv"
-            subtitle="Granular view — one row per merchandise subcategory. Period deltas shown beneath each metric when a comparison window is selected."
+            subtitle="Granular view — one row per merchandise subcategory. Sales are gross of returns (sale+order only) across merchandise subcategories — the same basis as the by-category table above, and higher than the Overview 'Sales by Subcategory' chart (net of returns). Period deltas shown beneath each metric when a comparison window is selected."
           />
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
