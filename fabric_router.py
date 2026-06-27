@@ -1271,7 +1271,9 @@ def missing_kg_per_metre(scope: str = Query(default="main")):
         loc_sql, loc_params = _loc_filter("All")
         rows = q(conn, f"""
             WITH stock AS (
-              SELECT i.product_id, SUM(i.quantity) AS stock_kg
+              SELECT i.product_id, SUM(i.quantity) AS stock_kg,
+                     STRING_AGG(DISTINCT i.location_name, ', '
+                                ORDER BY i.location_name) AS locations
               FROM raw_fabric_inventory i
               WHERE i.quantity > 0 {loc_sql}
               GROUP BY i.product_id
@@ -1286,6 +1288,7 @@ def missing_kg_per_metre(scope: str = Query(default="main")):
               COALESCE(NULLIF(p.fabric_category,''),'Unknown') AS fabric_category,
               COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') AS fabric_subcategory,
               p.supplier, p.width_m, p.gsm, p.fiber_content, p.kg_per_mtr_src,
+              st.locations AS location,
               ROUND(COALESCE(st.stock_kg,0)::numeric,1) AS stock_kg,
               ROUND(GREATEST(COALESCE(us.usage_kg,0),0)::numeric,1) AS usage_kg,
               (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id) AS last_move
