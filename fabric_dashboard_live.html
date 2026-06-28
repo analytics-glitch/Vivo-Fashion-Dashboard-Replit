@@ -70,6 +70,9 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .fig-card .fig-label{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;}
 .fig-card .fig-value{font-size:1.05rem;font-weight:800;letter-spacing:-.02em;margin:4px 0 2px;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .fig-card .fig-sub{font-size:.72rem;color:var(--muted);}
+.fig-card.clickable{cursor:pointer;transition:border-color .15s,box-shadow .15s,transform .15s;}
+.fig-card.clickable:hover{border-color:var(--accent);box-shadow:0 4px 14px rgba(26,92,56,.1);transform:translateY(-1px);}
+.fig-card.is-active{border-color:var(--accent);border-width:2px;background:rgba(26,92,56,.06);}
 .kpi{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1rem 1.1rem;box-shadow:0 1px 2px rgba(16,40,24,.04);transition:transform .18s,box-shadow .18s,border-color .18s;}
 .kpi:hover{transform:translateY(-2px);border-color:var(--accent);box-shadow:0 8px 24px rgba(26,92,56,.1);}
 .kpi.accent{background:linear-gradient(135deg,#1a5c38,#0f3d24);border-color:#1a5c38;color:#fff;box-shadow:0 4px 12px rgba(26,92,56,.2);}
@@ -589,18 +592,21 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <div id="supplier-cost" style="margin-top:.8rem;"><div class="loading">Loading…</div></div>
      </div>
     </div>
-    <div class="flex" style="margin-bottom:1.1rem;">
-     <input id="po-search" placeholder="Filter supplier…" oninput="debouncedPOs()" style="width:230px;">
-    </div>
-    <div class="card" style="padding:0;">
-     <div class="tbl-wrap">
-      <table class="data">
-       <thead><tr>
-        <th>PO</th><th>Supplier</th><th>Date</th><th>Status</th>
-        <th class="r">Lines</th><th class="r">Value</th><th class="r">Ordered</th><th class="r">Received</th><th class="r">Outstanding</th>
-       </tr></thead>
-       <tbody id="po-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
-      </table>
+    <div id="po-drill" style="display:none;">
+     <div class="section-head" style="margin-bottom:.6rem;"><h3 id="po-drill-title">Purchase orders</h3><span class="muted" style="cursor:pointer;" onclick="closePODrill()">✕ close</span></div>
+     <div class="flex" style="margin-bottom:1.1rem;">
+      <input id="po-search" placeholder="Filter supplier…" oninput="debouncedPOs()" style="width:230px;">
+     </div>
+     <div class="card" style="padding:0;">
+      <div class="tbl-wrap">
+       <table class="data">
+        <thead><tr>
+         <th>PO</th><th>Supplier</th><th>Date</th><th>Status</th>
+         <th class="r">Lines</th><th class="r">Value</th><th class="r">Ordered</th><th class="r">Received</th><th class="r">Outstanding</th>
+        </tr></thead>
+        <tbody id="po-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
+       </table>
+      </div>
      </div>
     </div>
    </section>
@@ -3023,7 +3029,7 @@ async function loadConsTrend(){
 }
 
 // ── Purchase orders ──
-function loadPOsPage(){loadPOPerf();loadPOs();loadSupplierCost();}
+function loadPOsPage(){closePODrill();loadPOPerf();loadSupplierCost();}
 // Source the avg cost/metre by supplier table from the overview summary endpoint.
 // Reuse the cached overview payload when it's already loaded; otherwise fetch it
 // so the PO tab renders without depending on Overview being visited first.
@@ -3037,8 +3043,26 @@ async function loadSupplierCost(){
 function renderPOMonthFigures(byMonth){
   const el=document.getElementById('po-month-bars');
   if(!el)return;
-  if(!byMonth.length){el.innerHTML='<p class="muted">No data.</p>';return;}
-  el.innerHTML='<div class="fig-grid">'+byMonth.map(r=>`<div class="fig-card"><span class="fig-label">${esc(monthLabel(r.period))}</span><span class="fig-value"${fx(FX.poMonth)}>${fmtKES(r.value_kes)}</span><span class="fig-sub">${fmt(r.pos)} PO</span></div>`).join('')+'</div>';
+  if(!byMonth.length){el.innerHTML='<p class="muted">No data.</p>';closePODrill();return;}
+  el.innerHTML='<div class="fig-grid">'+byMonth.map(r=>`<div class="fig-card clickable${r.period===poSelMonth?' is-active':''}" onclick="togglePOMonth('${r.period}')"><span class="fig-label">${esc(monthLabel(r.period))}</span><span class="fig-value"${fx(FX.poMonth)}>${fmtKES(r.value_kes)}</span><span class="fig-sub">${fmt(r.pos)} PO</span></div>`).join('')+'</div>';
+  if(poSelMonth && !byMonth.some(r=>r.period===poSelMonth)) closePODrill();
+}
+let poSelMonth=null;
+function togglePOMonth(period){
+  if(poSelMonth===period){closePODrill();return;}
+  poSelMonth=period;
+  document.querySelectorAll('#po-month-bars .fig-card').forEach(c=>c.classList.remove('is-active'));
+  const cards=document.querySelectorAll('#po-month-bars .fig-card');
+  cards.forEach(c=>{if(c.getAttribute('onclick')&&c.getAttribute('onclick').indexOf("'"+period+"'")>=0)c.classList.add('is-active');});
+  const drill=document.getElementById('po-drill');drill.style.display='';
+  document.getElementById('po-drill-title').textContent='Purchase orders — '+monthLabel(period);
+  document.getElementById('po-search').value='';
+  loadPOs();
+}
+function closePODrill(){
+  poSelMonth=null;
+  document.querySelectorAll('#po-month-bars .fig-card.is-active').forEach(c=>c.classList.remove('is-active'));
+  const drill=document.getElementById('po-drill');if(drill)drill.style.display='none';
 }
 async function loadPOPerf(){
   try{
@@ -3057,9 +3081,14 @@ async function loadPOPerf(){
 let poTimer;
 function debouncedPOs(){clearTimeout(poTimer);poTimer=setTimeout(loadPOs,300);}
 async function loadPOs(){
+  if(!poSelMonth)return;
+  document.getElementById('po-body').innerHTML='<tr><td colspan="9" class="loading">Loading…</td></tr>';
   try{
     const s=document.getElementById('po-search').value;
-    const data=await apiFetch('/api/fabric/purchase-orders'+(s?'?supplier='+encodeURIComponent(s):''));
+    const qp=[];
+    if(s)qp.push('supplier='+encodeURIComponent(s));
+    qp.push('month='+encodeURIComponent(poSelMonth));
+    const data=await apiFetch('/api/fabric/purchase-orders?'+qp.join('&'));
     poCache=data;
     document.getElementById('po-body').innerHTML=data.length?data.map(r=>`
      <tr>

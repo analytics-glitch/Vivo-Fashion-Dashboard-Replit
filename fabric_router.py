@@ -2052,12 +2052,14 @@ def dead_stock(scope: str = Query(default="main")):
 
 # ── Purchase orders ─────────────────────────────────────────
 @fabric_router.get("/api/fabric/purchase-orders")
-def purchase_orders(supplier: str = Query(default=None), scope: str = Query(default="main")):
+def purchase_orders(supplier: str = Query(default=None), month: str = Query(default=None), scope: str = Query(default="main")):
     with _get_conn() as conn:
         where = f"p.category = 'Fabric' AND {_scope_sql(scope)}"
         params = []
         if supplier:
             where += " AND po.supplier ILIKE %s"; params.append(f"%{supplier}%")
+        if month:
+            where += " AND DATE_TRUNC('month', po.order_date)::date = %s"; params.append(month)
         return q(conn, f"""
             SELECT po.po_name, po.supplier, po.order_date, po.state,
               COUNT(*) as lines,
