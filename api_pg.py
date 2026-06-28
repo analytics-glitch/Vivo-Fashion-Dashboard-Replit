@@ -18651,13 +18651,15 @@ def _chat_extract_pdf_text(raw):
         return ""
 
 
-def _chat_prepare_user_turn(message, attachments):
+def _chat_prepare_user_turn(message, attachments,
+                            default_text="Please analyse the attached file(s) in the context of our fabric data."):
     """Build the OpenAI multi-part user-turn content + a compact history
     placeholder from optional attachments.
 
     Returns (user_content_or_None, history_text_or_None, error_or_None). When
     there are no attachments returns (None, None, None) so the existing plain
-    string-content path is used unchanged."""
+    string-content path is used unchanged. `default_text` is used as the user
+    turn text when the message itself is empty (attachment-only)."""
     if not attachments:
         return None, None, None
     if not isinstance(attachments, list):
@@ -18706,7 +18708,7 @@ def _chat_prepare_user_turn(message, attachments):
                                 % name)
 
     msg = (message or "").strip()
-    text_msg = msg or "Please analyse the attached file(s) in the context of our fabric data."
+    text_msg = msg or default_text
     user_content = [{"type": "text", "text": text_msg}] + parts
     history_text = ((msg + " ") if msg else "") + "[attached: " + ", ".join(names) + "]"
     return user_content, history_text.strip(), None
@@ -18743,7 +18745,7 @@ def _chat_followups(message, answer):
 
 def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False,
                        system_prompt=None, tool_specs=None, dispatch=None,
-                       user_content=None, history_text=None):
+                       user_content=None, history_text=None, attachments=None):
     """The tool-calling agent loop as a generator of event dicts:
       {"type":"token","text":...}   streamed answer tokens
       {"type":"tool","name":..,"status":"running"|"done"}
@@ -18758,6 +18760,18 @@ def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False,
     sys_prompt = system_prompt if system_prompt is not None else _chat_system_prompt(ctx, revealed)
     specs = tool_specs if tool_specs is not None else _CHAT_TOOL_SPECS
     disp = dispatch if dispatch is not None else _CHAT_TOOL_DISPATCH
+    # Build the (optional) multi-part user turn from attachments when the caller
+    # didn't already supply one. On a validation error, surface it as a chat
+    # error and stop — keeping the read-only/PII guarantees unchanged.
+    if user_content is None and attachments:
+        user_content, history_text, err = _chat_prepare_user_turn(
+            message, attachments,
+            default_text="Please read the attached file(s) and answer using our retail BI data.")
+        if err:
+            yield {"type": "error", "message": err}
+            yield {"type": "done", "session_id": session_id, "followups": []}
+            return
+
     with _CHAT_SESSIONS_LOCK:
         history = list(_CHAT_SESSIONS.get(session_id, []))
 
@@ -18832,11 +18846,12 @@ def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False,
     yield {"type": "done", "session_id": session_id, "followups": followups}
 
 
-def _chat_core(message, session_id, ctx, revealed):
+def _chat_core(message, session_id, ctx, revealed, attachments=None):
     """Non-streaming entry point (used by /api/search/ask). Drains the agent
     generator and returns the assembled plain-text answer."""
     parts = []
-    for ev in _chat_agent_events(message, session_id, ctx, revealed, want_followups=False):
+    for ev in _chat_agent_events(message, session_id, ctx, revealed,
+                                 want_followups=False, attachments=attachments):
         if ev["type"] == "token":
             parts.append(ev["text"])
         elif ev["type"] == "error":
@@ -18853,8 +18868,9 @@ async def chat_post(request: Request):
     message = (body.get("message") or "").strip()
     session_id = body.get("session_id") or _chat_uuid.uuid4().hex
     ctx = body.get("context") or {}
+    attachments = body.get("attachments") or None
 
-    if not message:
+    if not message and not attachments:
         return {"session_id": session_id,
                 "answer": "Ask me about your sales, customers, products, footfall or inventory."}
     if not (os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
@@ -18863,7 +18879,7 @@ async def chat_post(request: Request):
                 "answer": "The assistant isn't configured yet. Please try again later."}
 
     revealed = pii_revealed(request)
-    answer = await _chat_run_in_threadpool(_chat_core, message, session_id, ctx, revealed)
+    answer = await _chat_run_in_threadpool(_chat_core, message, session_id, ctx, revealed, attachments)
     return {"session_id": session_id, "answer": answer}
 
 
@@ -18879,6 +18895,7 @@ async def chat_stream_post(request: Request):
     message = (body.get("message") or "").strip()
     session_id = body.get("session_id") or _chat_uuid.uuid4().hex
     ctx = body.get("context") or {}
+    attachments = body.get("attachments") or None
     revealed = pii_revealed(request)
 
     configured = bool(os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
@@ -18887,7 +18904,7 @@ async def chat_stream_post(request: Request):
     def gen():
         def sse(ev):
             return "data: " + _chat_json.dumps(ev) + "\n\n"
-        if not message:
+        if not message and not attachments:
             yield sse({"type": "token", "text":
                        "Ask me about your sales, customers, products, footfall or inventory."})
             yield sse({"type": "done", "session_id": session_id, "followups": []})
@@ -18898,7 +18915,8 @@ async def chat_stream_post(request: Request):
             yield sse({"type": "done", "session_id": session_id, "followups": []})
             return
         try:
-            for ev in _chat_agent_events(message, session_id, ctx, revealed, want_followups=True):
+            for ev in _chat_agent_events(message, session_id, ctx, revealed,
+                                         want_followups=True, attachments=attachments):
                 yield sse(ev)
         except Exception:
             yield sse({"type": "error",

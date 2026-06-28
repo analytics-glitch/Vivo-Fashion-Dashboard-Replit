@@ -1,11 +1,39 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ChatCircleDots, PaperPlaneTilt, X, Sparkle } from "@phosphor-icons/react";
+import { ChatCircleDots, PaperPlaneTilt, X, Sparkle, Paperclip } from "@phosphor-icons/react";
 import { useAuth } from "@/lib/auth";
 import { useFilters } from "@/lib/filters";
 import { api, API } from "@/lib/api";
 
 const STORAGE_KEY = "vivo_chat_session_id";
 const STORAGE_LOG = "vivo_chat_log_v1";
+
+// ---- Attachments (images only for the BI Assistant widget) ----------------
+const ATTACH_MAX = 4;
+const ATTACH_MAX_BYTES = 8 * 1024 * 1024; // per file
+const ATTACH_TOTAL_BYTES = 16 * 1024 * 1024; // all files combined
+const ATTACH_IMG = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
+const ATTACH_ACCEPT = "image/png,image/jpeg,image/gif,image/webp";
+
+const attIsImage = (mime) => ATTACH_IMG.includes((mime || "").toLowerCase());
+const attMimeFor = (mime, name) => {
+  const m = (mime || "").toLowerCase();
+  if (ATTACH_IMG.includes(m)) return m;
+  const n = (name || "").toLowerCase();
+  if (/\.png$/.test(n)) return "image/png";
+  if (/\.jpe?g$/.test(n)) return "image/jpeg";
+  if (/\.gif$/.test(n)) return "image/gif";
+  if (/\.webp$/.test(n)) return "image/webp";
+  return m || "image/png";
+};
+const attAllowed = (mime, name) =>
+  attIsImage(attMimeFor(mime, name)) || /\.(png|jpe?g|gif|webp)$/i.test(name || "");
+const readFileDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = () => reject(fr.error || new Error("read failed"));
+    fr.readAsDataURL(file);
+  });
 
 // Friendly labels for the tool-progress line ("Checking …").
 const TOOL_LABELS = {
@@ -36,6 +64,29 @@ const ChatBubble = ({ msg }) => {
             : "bg-[#fff7ed] border border-[#fdba74] text-foreground rounded-bl-sm"
         }`}
       >
+        {msg.attachments && msg.attachments.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-1.5" data-testid="chat-msg-attachments">
+            {msg.attachments.map((a, i) =>
+              a.thumb ? (
+                <img
+                  key={i}
+                  src={a.thumb}
+                  alt={a.name || "attachment"}
+                  className="w-12 h-12 rounded-md object-cover border border-white/30"
+                />
+              ) : (
+                <span
+                  key={i}
+                  className={`text-[11px] rounded-md px-1.5 py-1 border ${
+                    mine ? "border-white/40 bg-white/10" : "border-[#fdba74] bg-white"
+                  }`}
+                >
+                  {a.name || "file"}
+                </span>
+              ),
+            )}
+          </div>
+        )}
         {msg.content}
         {msg.streaming && !msg.content && (
           <span className="inline-flex gap-1 align-middle">
@@ -75,7 +126,10 @@ const ChatWidget = () => {
     }
   });
   const [sessionId, setSessionId] = useState(() => localStorage.getItem(STORAGE_KEY) || null);
+  const [staged, setStaged] = useState([]);
+  const [attachErr, setAttachErr] = useState("");
   const listRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     if (sessionId) localStorage.setItem(STORAGE_KEY, sessionId);
@@ -83,10 +137,24 @@ const ChatWidget = () => {
 
   useEffect(() => {
     try {
-      localStorage.setItem(
-        STORAGE_LOG,
-        JSON.stringify(messages.filter((m) => !m.streaming).slice(-40)),
-      );
+      // Persist only lightweight attachment metadata (name/mime/isImage) — never
+      // the base64 image data — so localStorage stays small.
+      const slim = messages
+        .filter((m) => !m.streaming)
+        .slice(-40)
+        .map((m) =>
+          m.attachments && m.attachments.length
+            ? {
+                ...m,
+                attachments: m.attachments.map((a) => ({
+                  name: a.name,
+                  mime: a.mime,
+                  isImage: a.isImage,
+                })),
+              }
+            : m,
+        );
+      localStorage.setItem(STORAGE_LOG, JSON.stringify(slim));
     } catch { /* noop */ }
   }, [messages]);
 
@@ -115,9 +183,14 @@ const ChatWidget = () => {
     });
 
   // Non-streaming fallback (older browsers / proxy that buffers SSE).
-  const sendBlocking = async (msg) => {
+  const sendBlocking = async (msg, atts) => {
     try {
-      const { data } = await api.post("/chat", { message: msg, session_id: sessionId, context: ctx() });
+      const { data } = await api.post("/chat", {
+        message: msg,
+        session_id: sessionId,
+        context: ctx(),
+        attachments: atts && atts.length ? atts : undefined,
+      });
       if (data.session_id) setSessionId(data.session_id);
       patchLast(() => ({ role: "assistant", content: data.answer }));
     } catch (err) {
@@ -126,7 +199,7 @@ const ChatWidget = () => {
     }
   };
 
-  const sendStream = async (msg) => {
+  const sendStream = async (msg, atts) => {
     let token = null;
     try { token = localStorage.getItem("vivo_token"); } catch { /* noop */ }
     const res = await fetch(`${API}/chat/stream`, {
@@ -135,7 +208,12 @@ const ChatWidget = () => {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ message: msg, session_id: sessionId, context: ctx() }),
+      body: JSON.stringify({
+        message: msg,
+        session_id: sessionId,
+        context: ctx(),
+        attachments: atts && atts.length ? atts : undefined,
+      }),
     });
     if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
 
@@ -180,16 +258,29 @@ const ChatWidget = () => {
 
   const send = async (text) => {
     const msg = (text ?? input).trim();
-    if (!msg || sending) return;
+    if ((!msg && !staged.length) || sending) return;
+    const atts = staged.map((a) => ({ name: a.name, mime: a.mime, data: a.data }));
+    const meta = staged.map((a) => ({
+      name: a.name,
+      mime: a.mime,
+      isImage: attIsImage(a.mime),
+      thumb: attIsImage(a.mime) ? a.data : null,
+    }));
     setInput("");
+    setStaged([]);
+    setAttachErr("");
     setFollowups([]);
-    setMessages((prev) => [...prev, { role: "user", content: msg }, { role: "assistant", content: "", streaming: true }]);
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: msg, attachments: meta },
+      { role: "assistant", content: "", streaming: true },
+    ]);
     setSending(true);
     setToolStatus(null);
     try {
-      await sendStream(msg);
+      await sendStream(msg, atts);
     } catch {
-      await sendBlocking(msg);
+      await sendBlocking(msg, atts);
     } finally {
       patchLast((m) => (m.streaming ? { ...m, streaming: false } : m));
       setSending(false);
@@ -197,11 +288,74 @@ const ChatWidget = () => {
     }
   };
 
+  const stageFiles = async (files) => {
+    setAttachErr("");
+    const list = Array.from(files || []);
+    let err = "";
+    const accepted = [];
+    for (const file of list) {
+      if (staged.length + accepted.length >= ATTACH_MAX) {
+        err = `You can attach at most ${ATTACH_MAX} files per message.`;
+        break;
+      }
+      if (!attAllowed(file.type, file.name)) {
+        err = `"${file.name}" is an unsupported file type. Attach an image (PNG, JPG, GIF, WEBP).`;
+        continue;
+      }
+      if (file.size > ATTACH_MAX_BYTES) {
+        err = `"${file.name}" is too large (max 8 MB per file).`;
+        continue;
+      }
+      accepted.push(file);
+    }
+    if (!accepted.length) {
+      setAttachErr(err);
+      return;
+    }
+    try {
+      const added = await Promise.all(
+        accepted.map(async (f) => ({
+          name: f.name || "file",
+          mime: attMimeFor(f.type, f.name),
+          size: f.size,
+          data: await readFileDataUrl(f),
+        })),
+      );
+      setStaged((prev) => {
+        const next = prev.slice();
+        let total = prev.reduce((s, a) => s + (a.size || 0), 0);
+        for (const a of added) {
+          if (next.length >= ATTACH_MAX) {
+            err = `You can attach at most ${ATTACH_MAX} files per message.`;
+            break;
+          }
+          if (total + a.size > ATTACH_TOTAL_BYTES) {
+            err = "Those attachments are too large together (max 16 MB).";
+            break;
+          }
+          total += a.size;
+          next.push(a);
+        }
+        return next;
+      });
+      setAttachErr(err);
+    } catch {
+      setAttachErr("Couldn't read that file. Please try again.");
+    }
+  };
+
+  const removeStaged = (idx) => {
+    setStaged((prev) => prev.filter((_, i) => i !== idx));
+    setAttachErr("");
+  };
+
   const reset = () => {
     setMessages([]);
     setSessionId(null);
     setFollowups([]);
     setToolStatus(null);
+    setStaged([]);
+    setAttachErr("");
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(STORAGE_LOG);
   };
@@ -304,9 +458,58 @@ const ChatWidget = () => {
 
           <form
             onSubmit={(e) => { e.preventDefault(); send(); }}
-            className="border-t border-border px-2.5 py-2.5 flex items-end gap-2 bg-white"
+            className="border-t border-border px-2.5 py-2.5 flex flex-col gap-2 bg-white"
             data-testid="chat-form"
           >
+            {(staged.length > 0 || attachErr) && (
+              <div className="flex flex-wrap gap-1.5" data-testid="chat-staged">
+                {staged.map((a, idx) => (
+                  <div
+                    key={idx}
+                    className="inline-flex items-center gap-1.5 bg-[#fff7ed] border border-[#fdba74] rounded-lg pl-2 pr-1 py-1 text-[11.5px] max-w-[170px]"
+                  >
+                    {attIsImage(a.mime) && (
+                      <img src={a.data} alt={a.name} className="w-7 h-7 rounded object-cover" />
+                    )}
+                    <span className="truncate">{a.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeStaged(idx)}
+                      aria-label={`Remove ${a.name}`}
+                      data-testid="chat-staged-remove"
+                      className="text-muted hover:text-red-600 px-0.5 text-[15px] leading-none"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                {attachErr && (
+                  <div className="w-full text-[11px] text-red-600" data-testid="chat-attach-err">
+                    {attachErr}
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="flex items-end gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={ATTACH_ACCEPT}
+              multiple
+              className="hidden"
+              data-testid="chat-file-input"
+              onChange={(e) => { stageFiles(e.target.files); e.target.value = ""; }}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              title="Attach image"
+              aria-label="Attach image"
+              data-testid="chat-attach-btn"
+              className="bg-[#fff7ed] border border-[#fdba74] text-brand rounded-xl w-10 h-10 grid place-items-center hover:bg-[#ffedd5] shrink-0"
+            >
+              <Paperclip size={18} weight="bold" />
+            </button>
             <textarea
               rows={1}
               value={input}
@@ -324,13 +527,14 @@ const ChatWidget = () => {
             />
             <button
               type="submit"
-              disabled={sending || !input.trim()}
+              disabled={sending || (!input.trim() && !staged.length)}
               data-testid="chat-send-btn"
               className="bg-brand text-white rounded-xl w-10 h-10 grid place-items-center hover:bg-brand-deep disabled:opacity-50 shrink-0"
               aria-label="Send"
             >
               <PaperPlaneTilt size={16} weight="fill" />
             </button>
+            </div>
           </form>
         </div>
       )}
