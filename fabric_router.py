@@ -2372,6 +2372,38 @@ def suppliers(scope: str = Query(default="main")):
             ORDER BY outstanding_value DESC NULLS LAST
         """)
 
+# ── Supplier → Source City breakdown (consolidator drill-down) ──
+@fabric_router.get("/api/fabric/suppliers/source-cities")
+def supplier_source_cities(supplier: str = Query(...),
+                           scope: str = Query(default="main")):
+    """Per-Source-City breakdown of one supplier's outstanding exposure.
+
+    Reuses the exact same filters/joins as /api/fabric/suppliers (exclude
+    cancelled POs, join raw_fabric_products on product_id, respect scope) so the
+    city rows reconcile back to the supplier's parent totals. Empty / 'false'
+    Odoo city values are bucketed into a single 'Unknown / unset' row.
+    """
+    with _get_conn() as conn:
+        return q(conn, f"""
+            SELECT
+              CASE
+                WHEN NULLIF(BTRIM(LOWER(COALESCE(p.source_city,''))),'') IS NULL
+                  OR LOWER(BTRIM(p.source_city)) = 'false'
+                THEN 'Unknown / unset'
+                ELSE BTRIM(p.source_city)
+              END as source_city,
+              COUNT(DISTINCT po.po_name) as pos,
+              ROUND(SUM(po.total_value)::numeric,0) as po_value,
+              ROUND(SUM((po.qty_ordered-po.qty_received)*po.price_unit)::numeric,0) as outstanding_value,
+              ROUND(SUM(po.qty_ordered-po.qty_received)::numeric,1) as outstanding_qty
+            FROM raw_fabric_purchase_orders po
+            JOIN raw_fabric_products p ON p.id = po.product_id
+            WHERE po.state != 'cancel' AND {_scope_sql(scope)}
+              AND COALESCE(NULLIF(po.supplier,''),'Unknown') = %s
+            GROUP BY 1
+            ORDER BY outstanding_value DESC NULLS LAST
+        """, (supplier,))
+
 # ── Filter options ──────────────────────────────────────────
 @fabric_router.get("/api/fabric/filters")
 def filters(scope: str = Query(default="main")):

@@ -2886,19 +2886,82 @@ async function loadPOs(){
 }
 
 // ── Suppliers ──
-async function loadSuppliers(){
-  try{
-    const data=await apiFetch('/api/fabric/suppliers');
-    const top=data.filter(r=>r.outstanding_value>0).slice(0,12);
-    const rows=top.map(r=>({label:r.supplier,v:r.outstanding_value,_qty:fmtKES(r.outstanding_value),pos:r.pos}));
-    bars('supplier-bars',rows.length?rows:[{label:'No outstanding exposure',v:0,_qty:'—'}],'label','v',r=>fmt(r.pos)+' PO',false,FX.supExposure);
-    document.getElementById('supplier-body').innerHTML=data.length?data.map(r=>`
-     <tr>
-      <td style="font-weight:600;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.supplier)}">${esc(r.supplier)}</td>
+// Consolidators bundle fabric from several individual suppliers across cities,
+// so their row is expandable into a per-Source-City breakdown. Only JINDIAO
+// today; matched by name so a renamed/duplicate Odoo spelling still drills in.
+function supIsConsolidator(name){ return /JINDIAO/i.test(name||''); }
+let supData=[];                 // last suppliers payload (for re-render on expand)
+let supOpen={};                 // supplier name → expanded?
+let supChildren={};             // supplier name → source-city rows (cache; undefined=not loaded)
+let supBound=false;             // delegated click handler bound once
+
+function supChildRowHtml(supplier,c){
+  return `
+     <tr class="sub-row" data-child-of="${esc(supplier)}">
+      <td style="padding-left:28px;color:var(--text-sub);" title="${esc(c.source_city)}">${esc(c.source_city)}</td>
+      <td class="r">${fmt(c.pos)}</td><td class="r">${fmtKES(c.po_value)}</td>
+      <td class="r">${fmt1(c.outstanding_qty)}</td>
+      <td class="r" style="font-weight:600;">${c.outstanding_value>0?`<span class="pill pill-amber">${fmtKES(c.outstanding_value)}</span>`:fmtKES(c.outstanding_value)}</td>
+     </tr>`;
+}
+
+function renderSupplierBody(){
+  const body=document.getElementById('supplier-body');
+  if(!supData.length){ body.innerHTML='<tr><td colspan="5" class="loading">No suppliers found.</td></tr>'; return; }
+  const caret=o=>`<span class="caret">${o?'▾':'▸'}</span> `;
+  let html='';
+  supData.forEach(r=>{
+    const con=supIsConsolidator(r.supplier);
+    const lbl=(con?caret(supOpen[r.supplier]):'')+esc(r.supplier);
+    html+=`
+     <tr${con?` class="sup-parent" data-supplier="${esc(r.supplier)}" style="cursor:pointer;"`:''}>
+      <td style="font-weight:600;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.supplier)}">${lbl}</td>
       <td class="r"${fx(FX.supPos)}>${fmt(r.pos)}</td><td class="r"${fx(FX.supValue)}>${fmtKES(r.po_value)}</td>
       <td class="r"${fx(FX.supOutQty)}>${fmt1(r.outstanding_qty)}</td>
       <td class="r" style="font-weight:600;"${fx(FX.supOutValue)}>${r.outstanding_value>0?`<span class="pill pill-amber">${fmtKES(r.outstanding_value)}</span>`:fmtKES(r.outstanding_value)}</td>
-     </tr>`).join(''):'<tr><td colspan="5" class="loading">No suppliers found.</td></tr>';
+     </tr>`;
+    if(con && supOpen[r.supplier]){
+      const kids=supChildren[r.supplier];
+      if(kids===undefined){
+        html+='<tr class="sub-row"><td colspan="5" class="loading" style="padding-left:28px;">Loading source cities…</td></tr>';
+      }else if(!kids.length){
+        html+='<tr class="sub-row"><td colspan="5" class="muted" style="padding-left:28px;">No source-city data.</td></tr>';
+      }else{
+        html+=kids.map(c=>supChildRowHtml(r.supplier,c)).join('');
+      }
+    }
+  });
+  body.innerHTML=html;
+}
+
+async function toggleSupplier(supplier){
+  supOpen[supplier]=!supOpen[supplier];
+  renderSupplierBody();
+  if(supOpen[supplier] && supChildren[supplier]===undefined){
+    try{
+      supChildren[supplier]=await apiFetch('/api/fabric/suppliers/source-cities?supplier='+encodeURIComponent(supplier));
+    }catch(e){
+      supChildren[supplier]=[];
+    }
+    if(supOpen[supplier]) renderSupplierBody();
+  }
+}
+
+async function loadSuppliers(){
+  try{
+    const data=await apiFetch('/api/fabric/suppliers');
+    supData=data;
+    const top=data.filter(r=>r.outstanding_value>0).slice(0,12);
+    const rows=top.map(r=>({label:r.supplier,v:r.outstanding_value,_qty:fmtKES(r.outstanding_value),pos:r.pos}));
+    bars('supplier-bars',rows.length?rows:[{label:'No outstanding exposure',v:0,_qty:'—'}],'label','v',r=>fmt(r.pos)+' PO',false,FX.supExposure);
+    if(!supBound){
+      document.getElementById('supplier-body').addEventListener('click',ev=>{
+        const tr=ev.target.closest('tr.sup-parent');
+        if(tr&&tr.dataset.supplier) toggleSupplier(tr.dataset.supplier);
+      });
+      supBound=true;
+    }
+    renderSupplierBody();
   }catch(e){rowErr('supplier-body',5,e);showErr('supplier-bars',e);}
 }
 
