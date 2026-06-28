@@ -2179,8 +2179,7 @@ function renderKpis(d,mpg){
        sub+=` &middot; <span class="amber" title="${esc(fmt(fbn)+' of these MOs use a fabric with no kg→metre conversion in Odoo, converted via the overall fabric-average Kg/Mtr'+(fk!=null?(' ('+fk+' kg/m)'):'')+' so they are still counted.')}">${fmt(fbn)} via fallback kg/m</span>`;}
      const dl=(v!=null)?`<button class="btn ghost" style="margin-top:.5rem;padding:0 10px;height:28px;font-size:11px;" onclick="downloadMpgXlsx()" title="Download the full calculation audit trail (every Done-DPS MO, its fabric components and the kg→metre conversion) as an Excel workbook">&#11015; Download calculations (Excel)</button>`:'';
      return `<div class="kpi"><span class="eyebrow">Avg metres / garment</span><p class="kpi-value"${fx(FX.metresPerGarment)}>${v!=null?v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+' m':'&mdash;'}</p><p class="kpi-sub">${sub}</p>${dl}</div>`;})()}
-   <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}"${fx(FX.monthsCover)}>${cover!=null?coverFmt(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>
-   <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger"${fx(FX.deadStock)}>${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub"><span${fx(FX.deadPct)}>${deadPct.toFixed(0)}% of value</span></p></div>`;
+   <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}"${fx(FX.monthsCover)}>${cover!=null?coverFmt(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>`;
 }
 // Per-supplier avg cost per metre (purchases) — compact, sortable table tucked
 // onto the Purchase orders tab. "—" rows are suppliers whose fabrics lack kg→metre.
