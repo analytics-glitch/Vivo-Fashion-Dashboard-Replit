@@ -494,6 +494,24 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </table>
      </div>
     </div>
+
+    <!-- Received purchase lines excluded from the fabric metrics -->
+    <h3 style="margin:1.6rem 0 .5rem;">Unmatched purchase lines</h3>
+    <div id="dqup-kpis" class="kpi-grid" style="margin-bottom:1.1rem;"><div class="loading">Loading…</div></div>
+    <div class="card" style="margin-bottom:1.1rem;">
+     <p class="muted" style="margin:0;">These are <b>received</b> purchase-order lines whose product is <b>not counted</b> in the supplier totals or cost-per-metre, because it has no row in the fabric master or is not categorized as <b>Fabric</b> in Odoo. Their received quantity and value are silently dropped and never trigger the missing kg-per-metre warning. Fix each one by correcting the product's <b>category / master record</b> in Odoo; its value then flows into the supplier figures automatically. <span class="pill pill-red">Not in fabric master</span> no master row · <span class="pill pill-amber">Not categorized as Fabric</span> e.g. tagged Trim.</p>
+    </div>
+    <div class="flex" style="margin-bottom:1.1rem;justify-content:flex-end;">
+     <button class="btn" onclick="exportUnmatched(this)">Export CSV</button>
+    </div>
+    <div class="card" style="padding:0;">
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead id="dqup-head"></thead>
+       <tbody id="dqup-body"><tr><td class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
+    </div>
    </section>
 
    <!-- MOVEMENT & USE -->
@@ -2620,6 +2638,7 @@ function renderDataQuality(){
 }
 async function loadDataQuality(){
   loadDqMo();
+  loadDqUnmatched();
   try{
     dqCache=await apiFetch('/api/fabric/data-quality/missing-kg-per-metre');
     renderDataQuality();
@@ -2713,6 +2732,79 @@ function exportMoMissing(btn){
     .join('\n');
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
   a.download='fabric_mo_missing_conversion.csv';a.click();
+}
+
+// ── Data quality: received purchase lines excluded from the fabric metrics ──
+const DQUP_REASON={
+  not_in_master:{label:'Not in fabric master',cls:'pill-red'},
+  not_fabric:{label:'Not categorized as Fabric',cls:'pill-amber'},
+};
+const DQUP_COLS=[
+  {k:'supplier',label:'Supplier'},
+  {k:'name',label:'Product name'},
+  {k:'sku',label:'SKU / code'},
+  {k:'reason',label:'Reason'},
+  {k:'qty_kg',label:'Received (kg)',num:true},
+  {k:'value_kes',label:'Value (KES)',num:true},
+];
+let dqUpCache=null, dqUpSort={key:'value_kes',dir:'desc'};
+function dqUpSortRows(items){
+  const k=dqUpSort.key,dir=dqUpSort.dir==='asc'?1:-1;
+  const NUM={qty_kg:1,value_kes:1};
+  return items.slice().sort((a,b)=>{
+    let x=a[k],y=b[k];
+    if(NUM[k]){x=Number(x)||0;y=Number(y)||0;return (x-y)*dir;}
+    if(k==='reason'){x=(DQUP_REASON[x]||{}).label||x||'';y=(DQUP_REASON[y]||{}).label||y||'';}
+    x=(x==null?'':String(x)).toLowerCase();y=(y==null?'':String(y)).toLowerCase();
+    return x<y?-1*dir:x>y?1*dir:0;
+  });
+}
+function sortDqUp(k){
+  if(dqUpSort.key===k)dqUpSort.dir=dqUpSort.dir==='asc'?'desc':'asc';
+  else{dqUpSort.key=k;dqUpSort.dir=(k==='qty_kg'||k==='value_kes')?'desc':'asc';}
+  renderDqUp();
+}
+function renderDqUp(){
+  const d=dqUpCache; if(!d)return;
+  document.getElementById('dqup-kpis').innerHTML=`
+   <div class="kpi accent"><span class="eyebrow">Lines excluded</span><p class="kpi-value">${fmt(d.count)}</p><p class="kpi-sub">supplier · product groups</p></div>
+   <div class="kpi"><span class="eyebrow">Value excluded</span><p class="kpi-value">${fmtKES(d.total_value_kes)}</p><p class="kpi-sub">KES not in supplier totals</p></div>`;
+  const NUM={qty_kg:1,value_kes:1};
+  document.getElementById('dqup-head').innerHTML='<tr>'+DQUP_COLS.map(c=>{
+    const arrow=dqUpSort.key===c.k?(dqUpSort.dir==='asc'?' \u25B2':' \u25BC'):'';
+    return `<th class="${NUM[c.k]?'r ':''}sortable" onclick="sortDqUp('${c.k}')">${esc(c.label)}${arrow}</th>`;
+  }).join('')+'</tr>';
+  const rows=dqUpSortRows(d.items);
+  document.getElementById('dqup-body').innerHTML=rows.length
+    ? rows.map(r=>'<tr>'+DQUP_COLS.map(c=>{
+        const v=r[c.k];
+        if(c.k==='name')return `<td style="font-weight:600;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
+        if(c.k==='sku')return `<td class="num" style="font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
+        if(c.k==='reason'){const s=DQUP_REASON[v]||{label:v||'—',cls:'pill-neutral'};return `<td><span class="pill ${s.cls}">${esc(s.label)}</span></td>`;}
+        if(c.k==='qty_kg')return `<td class="r" style="font-weight:600;">${v!=null?fmt1(v):'—'}</td>`;
+        if(c.k==='value_kes')return `<td class="r" style="font-weight:600;">${v!=null?fmtKES(v):'—'}</td>`;
+        return `<td style="color:var(--text-sub);white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
+      }).join('')+'</tr>').join('')
+    : `<tr><td colspan="${DQUP_COLS.length}" class="loading">All purchase lines matched a fabric in Odoo. 🎉</td></tr>`;
+  if(window.__fabricEnhanceTables)window.__fabricEnhanceTables();
+}
+async function loadDqUnmatched(){
+  try{
+    dqUpCache=await apiFetch('/api/fabric/data-quality/unmatched-purchase-lines');
+    renderDqUp();
+  }catch(e){rowErr('dqup-body',DQUP_COLS.length,e);}
+}
+function exportUnmatched(btn){
+  const d=dqUpCache; if(!d||!d.items.length){alert('Nothing to export yet.');return;}
+  const rows=dqUpSortRows(d.items);
+  const csv=[DQUP_COLS.map(c=>c.label).join(',')]
+    .concat(rows.map(r=>DQUP_COLS.map(c=>{
+      const v=c.k==='reason'?((DQUP_REASON[r[c.k]]||{}).label||r[c.k]):r[c.k];
+      return JSON.stringify(v??'');
+    }).join(',')))
+    .join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='fabric_unmatched_purchase_lines.csv';a.click();
 }
 
 // ── Movement & use ──

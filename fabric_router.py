@@ -1986,6 +1986,44 @@ def missing_kg_per_metre(scope: str = Query(default="main")):
             "items": rows,
         }
 
+@fabric_router.get("/api/fabric/data-quality/unmatched-purchase-lines")
+def unmatched_purchase_lines(scope: str = Query(default="main")):
+    """Received, non-cancelled purchase-order lines whose product is NOT counted in
+    the fabric metrics — either the product has no row in the fabric master, or the
+    matched master product is not categorized as 'Fabric' (e.g. it is a Trim). The
+    supplier totals and avg cost-per-metre only sum lines that JOIN the master with
+    category='Fabric', so these lines' received quantity and value are silently
+    dropped and never trigger the missing-kg/m warning. Grouped per (supplier,
+    product) so a line received over several POs shows once; a `reason` flag marks
+    each as 'not_in_master' vs 'not_fabric'. The fix is to correct the product's
+    category / master record in Odoo, after which the value flows into the supplier
+    figures automatically. Returns the rows plus an excluded line count and total
+    KES so the size of the gap is visible."""
+    with _get_conn() as conn:
+        rows = q(conn, f"""
+            SELECT po.supplier AS supplier,
+                   COALESCE(NULLIF(po.product_name,''), NULLIF(p.name,''), 'Unknown') AS name,
+                   COALESCE(NULLIF(po.product_sku,''), p.default_code) AS sku,
+                   ROUND(SUM(po.qty_received)::numeric,1) AS qty_kg,
+                   ROUND(SUM(po.qty_received*po.price_unit)::numeric,0) AS value_kes,
+                   CASE WHEN p.id IS NULL THEN 'not_in_master' ELSE 'not_fabric' END AS reason
+            FROM raw_fabric_purchase_orders po
+            LEFT JOIN raw_fabric_products p ON p.id = po.product_id
+            WHERE po.state != 'cancel' AND po.qty_received > 0
+              AND (p.id IS NULL OR p.category <> 'Fabric')
+              AND {_scope_sql(scope)}
+            GROUP BY po.supplier, po.product_id, po.product_name, p.name,
+                     po.product_sku, p.default_code,
+                     (CASE WHEN p.id IS NULL THEN 'not_in_master' ELSE 'not_fabric' END)
+            ORDER BY value_kes DESC NULLS LAST
+        """)
+        total_value = sum(float(r["value_kes"] or 0) for r in rows)
+        return {
+            "count": len(rows),
+            "total_value_kes": round(total_value, 0),
+            "items": rows,
+        }
+
 # ── Dead stock ──────────────────────────────────────────────
 @fabric_router.get("/api/fabric/dead-stock")
 def dead_stock(scope: str = Query(default="main")):
