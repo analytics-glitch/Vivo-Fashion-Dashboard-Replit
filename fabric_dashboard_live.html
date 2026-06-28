@@ -2183,12 +2183,27 @@ function renderSupplierCost(rows){
      <th onclick="sortSupplierCost('metres')" style="cursor:pointer;text-align:right;">Received (m)${arrow('metres')}</th>
      <th onclick="sortSupplierCost('value_kes')" style="cursor:pointer;text-align:right;">Received value${arrow('value_kes')}</th>
      <th onclick="sortSupplierCost('cost_per_metre')" style="cursor:pointer;text-align:right;"${fx(FX.avgCostMetrePurchases)}>Avg cost / metre${arrow('cost_per_metre')}</th>
-    </tr></thead><tbody>${rows2.map(r=>`<tr${r.incomplete?' title="Missing kg→metre conversion in Odoo — fix this supplier\u2019s fabrics to get a figure"':''}>
-     <td>${esc(r.supplier)}</td>
+    </tr></thead><tbody>${rows2.map((r,i)=>{
+      const mf=(r.missing_fabrics||[]);
+      const badge=(r.incomplete&&mf.length)?`<button type="button" class="pill pill-amber missing-kgm-badge" onclick="toggleSupMissing(${i})" aria-expanded="false" id="sup-mbtn-${i}" style="cursor:pointer;border:0;margin-left:.5rem;">${mf.length} fabric${mf.length>1?'s':''} missing kg/m <span class="caret">&#9656;</span></button>`:'';
+      const detail=(r.incomplete&&mf.length)?`<tr class="sup-missing-detail" id="sup-mrow-${i}" style="display:none;"><td colspan="4" style="background:var(--bg2,#f9fafb);padding:.6rem .8rem;">
+       <p class="muted" style="margin:0 0 .5rem;">These received fabrics have <b>no kg-per-metre</b> on the Odoo product master, so this supplier can&rsquo;t show an avg cost / metre. Fix each one in Odoo by entering its <b>kg-per-metre</b> (or <b>Width + GSM</b>) on the product; it then drops off this list.</p>
+       <table class="data" style="width:auto;"><thead><tr><th>Fabric</th><th>SKU</th><th style="text-align:right;">Received (kg)</th><th style="text-align:right;">Received value</th></tr></thead><tbody>${mf.map(f=>`<tr><td>${esc(f.name)}</td><td>${esc(f.sku)}</td><td style="text-align:right;">${fmt1(f.qty_kg)}</td><td style="text-align:right;">${fmtKES(f.value_kes)}</td></tr>`).join('')}</tbody></table>
+      </td></tr>`:'';
+      return `<tr${r.incomplete?' title="Missing kg→metre conversion in Odoo — fix this supplier\u2019s fabrics to get a figure"':''}>
+     <td>${esc(r.supplier)}${badge}</td>
      <td style="text-align:right;">${r.incomplete?'&mdash;':fmt(r.metres)}</td>
      <td style="text-align:right;">${fmtKES(r.value_kes)}</td>
      <td style="text-align:right;${r.incomplete?'color:var(--muted);':'font-weight:600;'}">${r.incomplete?'&mdash;':fmtKESm(r.cost_per_metre)}</td>
-    </tr>`).join('')}</tbody></table>`;
+    </tr>${detail}`;
+    }).join('')}</tbody></table>`;
+}
+function toggleSupMissing(i){
+  const row=document.getElementById('sup-mrow-'+i),btn=document.getElementById('sup-mbtn-'+i);
+  if(!row)return;
+  const open=row.style.display==='none';
+  row.style.display=open?'':'none';
+  if(btn){btn.setAttribute('aria-expanded',open?'true':'false');const c=btn.querySelector('.caret');if(c)c.innerHTML=open?'&#9662;':'&#9656;';}
 }
 function sortSupplierCost(key){
   if(_supCostSort.key===key){_supCostSort.dir*=-1;}else{_supCostSort.key=key;_supCostSort.dir=key==='supplier'?1:-1;}

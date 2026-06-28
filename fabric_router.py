@@ -474,6 +474,34 @@ def summary(location: str = Query(default="RMAT/Stock"),
               AND {scope_sql}
             GROUP BY po.supplier
         """)
+        # Culprit fabrics behind every "incomplete" supplier: received fabrics whose
+        # kg→metre conversion is missing (kg_per_mtr_eff IS NULL) so their value lands
+        # in the numerator but contributes no metres. Same base/filters as pur_rows
+        # above so the per-supplier counts line up with the `incomplete` flag. Grouped
+        # per (supplier, product) so a fabric received over multiple POs shows once.
+        missing_rows = q(conn, f"""
+            SELECT po.supplier as supplier,
+                   COALESCE(NULLIF(p.name,''), NULLIF(p.default_code,''), 'Unknown') as name,
+                   p.default_code as sku,
+                   ROUND(SUM(po.qty_received)::numeric,1) as qty_kg,
+                   ROUND(SUM(po.qty_received*po.price_unit)::numeric,0) as value_kes
+            FROM raw_fabric_purchase_orders po
+            JOIN raw_fabric_products p ON p.id = po.product_id
+            WHERE po.state != 'cancel' AND po.qty_received > 0 AND p.category='Fabric'
+              AND p.kg_per_mtr_eff IS NULL
+              AND {scope_sql}
+            GROUP BY po.supplier, p.name, p.default_code
+            ORDER BY value_kes DESC
+        """)
+        missing_by_supplier = {}
+        for m in missing_rows:
+            missing_by_supplier.setdefault(m['supplier'], []).append({
+                "name": m['name'],
+                "sku": m['sku'],
+                "qty_kg": float(m['qty_kg'] or 0),
+                "value_kes": round(float(m['value_kes'] or 0)),
+            })
+
         purchases_by_supplier = []
         pur_total_value = 0.0
         pur_total_metres = 0.0
@@ -491,6 +519,7 @@ def summary(location: str = Query(default="RMAT/Stock"),
                 "metres": round(met, 1),
                 "cost_per_metre": (round(val / met, 2) if (not inc and met > 0) else None),
                 "incomplete": inc,
+                "missing_fabrics": missing_by_supplier.get(r['supplier'], []),
             })
         # Sort by cost per metre desc; incomplete (no figure) rows sink to bottom.
         purchases_by_supplier.sort(
