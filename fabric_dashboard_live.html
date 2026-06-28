@@ -227,7 +227,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    <div class="nav-item" data-page="support">Support Fabrics</div>
    <div class="nav-item" data-page="dataquality">Data Quality</div>
    <div class="nav-group">Flow</div>
-   <div class="nav-item" data-page="movement">Movement &amp; Use</div>
+   <div class="nav-item" data-page="movement">Trend Analysis</div>
    <div class="nav-item" data-page="pos">Purchase Orders</div>
    <div class="nav-item" data-page="suppliers">Suppliers</div>
    <div class="nav-group">Production</div>
@@ -525,57 +525,24 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    <!-- MOVEMENT & USE -->
    <section id="page-movement" style="display:none;">
     <div class="card">
-     <div class="section-head"><h3>Stock flow by month</h3><span class="muted">received (IN) vs consumed (OUT), kg</span></div>
-     <div id="flow-bars"><div class="loading">Loading…</div></div>
-     <div id="flow-mtd-note" class="muted" style="margin-top:8px;font-size:.8rem;"></div>
-     <div class="muted" style="margin-top:8px;font-size:.8rem;">Jan–Apr 2026 consumption (OUT) and returns are sourced from the buying team's reconciled sheet; incoming (IN) is from Odoo. All other periods are Odoo.</div>
-    </div>
-    <div class="grid-2">
-     <div class="card">
-      <div class="section-head">
-       <h3>Top consumed fabrics</h3>
-       <select id="consumed-days" onchange="loadMovement()">
-        <option value="30">Last 30 days</option><option value="90" selected>Last 90 days</option><option value="180">Last 180 days</option>
-       </select>
+     <div class="section-head" style="align-items:flex-start;">
+      <div>
+       <h3>Trend builder</h3>
+       <span class="muted">All fabric metrics in metres. Date range below is local to this page.</span>
       </div>
-      <div class="tbl-wrap">
-       <table class="data">
-        <thead><tr><th>Fabric</th><th class="r">Consumed (kg)</th><th class="r">Stock (kg)</th><th class="r">Wks cover</th><th>Last out</th></tr></thead>
-        <tbody id="consumed-body"><tr><td colspan="5" class="loading">Loading…</td></tr></tbody>
-       </table>
-      </div>
+      <button class="btn" onclick="tpAddPanel()">+ Add panel</button>
      </div>
-     <div class="card">
-      <div class="section-head">
-       <h3>Consumption trend</h3>
-       <div class="flex">
-        <span class="muted">fabrics only (kg/g); trims &amp; pieces excluded · uses topbar date range</span>
-        <select id="cons-group" onchange="loadConsTrend()"><option value="month">Monthly</option><option value="week">Weekly</option><option value="day">Daily</option></select>
-       </div>
+     <div class="flex" id="trend-range" style="margin-top:.8rem;flex-wrap:wrap;gap:.5rem;align-items:center;">
+      <div class="seg" id="trend-preset">
+       <button class="unit-btn" data-m="3">3 mo</button><button class="unit-btn" data-m="6">6 mo</button>
+       <button class="unit-btn active" data-m="12">12 mo</button><button class="unit-btn" data-m="24">24 mo</button>
       </div>
-      <div id="cons-summary" class="muted" style="margin-bottom:10px;"></div>
-      <div id="consumption-bars"><div class="loading">Loading…</div></div>
-      <div id="cons-mtd-note" class="muted" style="margin-top:8px;font-size:.8rem;"></div>
+      <span class="muted">or</span>
+      <input type="date" id="trend-since" title="From" style="width:150px;">
+      <input type="date" id="trend-until" title="To" style="width:150px;">
      </div>
     </div>
-    <div class="card" style="padding:0;">
-     <div class="section-head" style="padding:1rem 1rem 0;">
-      <h3>Consumption &amp; stock by category</h3>
-      <span class="muted" id="cons-stock-note">net consumption over the selected range vs current stock</span>
-     </div>
-     <div class="tbl-wrap">
-      <table class="data">
-       <thead><tr>
-        <th>Category / subcategory</th>
-        <th class="r">Units consumed (kg)</th><th class="r">Stock (kg)</th>
-        <th class="r">% Consumed</th><th class="r">% Stock</th>
-        <th class="r">Cover (wks)</th><th class="r">SOR %</th>
-        <th class="r">Gap (pp)</th><th>Risk flag</th>
-       </tr></thead>
-       <tbody id="cons-stock-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
-      </table>
-     </div>
-    </div>
+    <div id="trend-panels"></div>
    </section>
 
    <!-- PURCHASE ORDERS -->
@@ -1126,8 +1093,8 @@ async function loadSupportProducts(category,subcategory,key){
 }
 
 // ── Navigation ──
-const LOADERS={dashboard:loadFabricMix,register:()=>loadRegister(0),ageing:loadAgeing,deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:loadMovementPage,pos:loadPOsPage,suppliers:loadSuppliers,bom:loadBomPage,reservations:loadReservations};
-const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'How long stock has sat since its last movement',deadstock:'Fabric that has been sitting without movement',defects:'Fabric defect tracking and reporting',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining & interfacing only — excluded from the main dashboard',movement:'What is coming in, going out and being consumed',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',bom:'Bills of material — which fabrics each style consumes',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used'};
+const LOADERS={dashboard:loadFabricMix,register:()=>loadRegister(0),ageing:loadAgeing,deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,bom:loadBomPage,reservations:loadReservations};
+const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'How long stock has sat since its last movement',deadstock:'Fabric that has been sitting without movement',defects:'Fabric defect tracking and reporting',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining & interfacing only — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',bom:'Bills of material — which fabrics each style consumes',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used'};
 const loadedOnce={};
 document.querySelectorAll('.nav-item').forEach(el=>{
   el.addEventListener('click',()=>{
@@ -2881,13 +2848,10 @@ function exportUnmatched(btn){
   a.download='fabric_unmatched_purchase_lines.csv';a.click();
 }
 
-// ── Movement & use ──
-function loadMovementPage(){loadFlow();loadMovement();loadConsTrend();loadConsStock();}
-// Reload date-range-driven content for whatever date-sensitive page is visible.
+// ── Reload date-range-driven content for whatever date-sensitive page is visible. ──
+// (The Trend Analysis page has its OWN page-local date range and is intentionally
+// NOT wired to the topbar Date range.)
 function onDateRangeChange(){
-  if(document.getElementById('page-movement').style.display!=='none'){
-    loadConsTrend();loadConsStock();
-  }
   // The Stock Mix KPIs follow the same top Date range when that page is shown.
   if(document.getElementById('page-dashboard').style.display!=='none'){
     loadFabricMix();
@@ -2897,135 +2861,304 @@ function onDateRangeChange(){
     loadColorMix();
   }
 }
-function riskFlag(gap){
-  // gap = %stock − %consumed (percentage points), same convention as the Fabric
-  // mix table: positive = overstock (held more than used), negative = stockout
-  // (used faster than its stock share).
-  const a=Math.abs(gap);
-  if(a<1)return {label:'Healthy',cls:'pill-green'};
-  if(a<3)return gap<0?{label:'Monitor (Stockout watch)',cls:'pill-amber'}
-                     :{label:'Monitor (Overstock watch)',cls:'pill-amber'};
-  return gap<0?{label:'Stockout Risk',cls:'pill-red'}
-              :{label:'Overstock Risk',cls:'pill-red'};
+
+// ── Trend Analysis (multi-panel KPI-over-time builder) ──────────────────────────
+// A flexible builder modelled on the main-BI Trend Analysis. Every fabric metric
+// is shown in METRES only (never kg). The page owns a LOCAL date range (presets +
+// custom) independent of the topbar. Each panel picks one KPI, a granularity
+// (Monthly/Weekly/Daily), a chart type (Line/Bar), a scope and exports its own CSV.
+const TKPI={
+  consumption:{label:'Consumption (gross OUT)',note:'Fabric issued to production (gross OUT moves), in metres.'},
+  net_consumption:{label:'Net consumption',note:'OUT minus internal returns from production, in metres.'},
+  received:{label:'Received / IN',note:'Fabric received into stock (IN moves), in metres.'},
+  stock_on_hand:{label:'Stock on hand',note:'Period-end stock, back-cast from the current snapshot, in metres.'},
+  returns:{label:'Returns to stock',note:'Fabric returned from production into stock, in metres.'},
+  metres_per_garment:{label:'Avg metres / garment',note:'Done-MO fabric metres ÷ garments produced.'}
+};
+const TKPI_ORDER=['consumption','net_consumption','received','stock_on_hand','returns','metres_per_garment'];
+const TBUCKETS=[['month','Monthly'],['week','Weekly'],['day','Daily']];
+let trendOptions=null;      // {categories, subcategories[{category,subcategory}], fabrics[{id,name}], locations}
+let trendPanels=[];         // [{id,kpi,bucket,chart,scope}]
+let trendInited=false;
+let _tpSeq=0;
+
+function trendRange(){
+  // Returns {since, until} (YYYY-MM-DD) from the page-local controls.
+  const since=document.getElementById('trend-since').value;
+  const until=document.getElementById('trend-until').value;
+  return {since,until};
 }
-let consStockOpen={};
-function consStockRow(r,totC,totS,days,isCat){
-  const pctC=totC>0?(r.consumed_kg/totC*100):0;
-  const pctS=totS>0?(r.stock_kg/totS*100):0;
-  const weekly=r.consumed_kg>0?(r.consumed_kg/(days/7)):0;
-  const cover=weekly>0?(r.stock_kg/weekly):null;
-  const denom=r.consumed_kg+r.stock_kg;
-  const sor=denom>0?(r.consumed_kg/denom*100):0;
-  const gap=pctS-pctC;
-  const rf=riskFlag(gap);
-  const name=isCat?esc(r.category):esc(r.subcategory);
-  const label=isCat
-    ? `<td style="font-weight:700;"><span class="caret">${consStockOpen[r.category]?'▾':'▸'}</span> ${name}</td>`
-    : `<td style="padding-left:28px;color:var(--text-sub);">${name}</td>`;
-  // Category value is carried in a data-* attribute (HTML-escaped) and read back
-  // via event delegation — never interpolated into a JS string handler (XSS-safe).
-  const click=isCat?` data-cat="${esc(r.category)}" style="cursor:pointer;"`:'';
-  const trcls=isCat?'cat-row':'sub-row';
-  return `<tr class="${trcls}"${click}>${label}
-    <td class="r"${isCat?' style="font-weight:600;"':''}${fx(FX.csConsumed)}>${fmt1(r.consumed_kg)}</td>
-    <td class="r"${isCat?' style="font-weight:600;"':''}${fx(FX.csStock)}>${fmt1(r.stock_kg)}</td>
-    <td class="r"${fx(FX.csPctConsumed)}>${pctC.toFixed(1)}%</td>
-    <td class="r"${fx(FX.csPctStock)}>${pctS.toFixed(1)}%</td>
-    <td class="r"${fx(FX.csCover)}>${cover!=null?fmt1(cover):'—'}</td>
-    <td class="r"${fx(FX.csSor)}>${sor.toFixed(1)}%</td>
-    <td class="r"${fx(FX.csVariance)}>${gapChip(gap)}</td>
-    <td${fx(FX.csRisk)}><span class="pill ${rf.cls}">${rf.label}</span></td>
-  </tr>`;
+function tpFmtVal(v,kpi){
+  if(v==null)return '—';
+  return (kpi==='metres_per_garment'?fmt2(v):fmt(v))+' m';
 }
-let consStockCache=null,consStockBound=false;
-function toggleConsCat(cat){consStockOpen[cat]=!consStockOpen[cat];renderConsStock();}
-function renderConsStock(){
-  const d=consStockCache;if(!d)return;
-  const body=document.getElementById('cons-stock-body');
-  if(!consStockBound){
-    // Event delegation: read the (untrusted) category from a data-* attribute,
-    // never from an inline JS handler. Bound once.
-    body.addEventListener('click',e=>{
-      const tr=e.target.closest('tr.cat-row');
-      if(tr&&tr.dataset.cat!=null)toggleConsCat(tr.dataset.cat);
-    });
-    consStockBound=true;
+function tpAxisVal(v,kpi){
+  // Compact y-axis tick label.
+  if(v==null)return '';
+  if(kpi==='metres_per_garment')return Number(v).toFixed(1);
+  const a=Math.abs(v);
+  if(a>=1e6)return (v/1e6).toFixed(1)+'M';
+  if(a>=1e3)return (v/1e3).toFixed(0)+'k';
+  return String(Math.round(v));
+}
+function tpBucketLabel(p,bucket){
+  if(bucket==='month')return monthLabel(p);
+  return new Date(p).toLocaleDateString(undefined,{month:'short',day:'numeric'});
+}
+
+// Parse a scope <select> value into trend-series params.
+function tpScopeParams(scope){
+  const p={};
+  if(!scope)return p;
+  const i=scope.indexOf(':');
+  const kind=scope.slice(0,i), val=scope.slice(i+1);
+  if(kind==='cat')p.category=val;
+  else if(kind==='sub'){const j=val.indexOf('||');p.category=val.slice(0,j);p.subcategory=val.slice(j+2);}
+  else if(kind==='fab')p.product_id=val;
+  else if(kind==='loc')p.location=val;
+  return p;
+}
+function tpScopeOptions(selected){
+  if(!trendOptions)return '<option value="">Overall (all fabric)</option>';
+  const o=trendOptions;
+  const sel=v=>v===selected?' selected':'';
+  let h='<option value=""'+sel('')+'>Overall (all fabric)</option>';
+  if(o.categories&&o.categories.length){
+    h+='<optgroup label="Category">';
+    o.categories.forEach(c=>{const v='cat:'+c;h+=`<option value="${esc(v)}"${sel(v)}>${esc(c)}</option>`;});
+    h+='</optgroup>';
   }
-  if(!d.categories.length){body.innerHTML='<tr><td colspan="9" class="loading">No consumption in this period.</td></tr>';return;}
-  const totC=d.total_consumed_kg,totS=d.total_stock_kg,days=d.days;
-  let html='';
-  d.categories.forEach(c=>{
-    html+=consStockRow(c,totC,totS,days,true);
-    if(consStockOpen[c.category]){
-      c.subcategories.forEach(s=>{html+=consStockRow(s,totC,totS,days,false);});
+  if(o.subcategories&&o.subcategories.length){
+    h+='<optgroup label="Sub-category">';
+    o.subcategories.forEach(s=>{const v='sub:'+s.category+'||'+s.subcategory;h+=`<option value="${esc(v)}"${sel(v)}>${esc(s.category)} › ${esc(s.subcategory)}</option>`;});
+    h+='</optgroup>';
+  }
+  if(o.locations&&o.locations.length){
+    h+='<optgroup label="Location">';
+    o.locations.forEach(l=>{const v='loc:'+l;h+=`<option value="${esc(v)}"${sel(v)}>${esc(l)}</option>`;});
+    h+='</optgroup>';
+  }
+  if(o.fabrics&&o.fabrics.length){
+    h+='<optgroup label="Specific fabric">';
+    o.fabrics.forEach(f=>{const v='fab:'+f.id;h+=`<option value="${esc(v)}"${sel(v)}>${esc(f.name)}</option>`;});
+    h+='</optgroup>';
+  }
+  return h;
+}
+
+// SVG time-series chart (line or bar). rows: [{period,value,incomplete}].
+function tpChart(rows,mode,kpi){
+  if(!rows||!rows.length)return '<p class="muted" style="padding:1rem 0;">No data in this range.</p>';
+  const W=720,H=260,padL=52,padR=14,padT=14,padB=40;
+  const pw=W-padL-padR, ph=H-padT-padB, x0=padL, y1=H-padB;
+  const vals=rows.map(r=>r.value||0);
+  let maxV=Math.max(...vals,0), minV=Math.min(...vals,0);
+  if(maxV===minV)maxV=minV+1;
+  const range=maxV-minV;
+  const yOf=v=>y1-((v-minV)/range)*ph;
+  const n=rows.length;
+  const band=pw/n;
+  const xCenter=i=>x0+(i+0.5)*band;
+  const xLine=i=>n===1?x0+pw/2:x0+(i/(n-1))*pw;
+  const accent='var(--accent)', amber='#d97706';
+  // Y gridlines (4 ticks).
+  let grid='';
+  for(let t=0;t<=4;t++){
+    const vv=minV+range*t/4, yy=yOf(vv);
+    grid+=`<line x1="${x0}" y1="${yy.toFixed(1)}" x2="${(W-padR).toFixed(1)}" y2="${yy.toFixed(1)}" stroke="var(--border)" stroke-width="1"/>`;
+    grid+=`<text x="${(x0-6).toFixed(1)}" y="${(yy+3).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)">${esc(tpAxisVal(vv,kpi))}</text>`;
+  }
+  // X labels (cap at ~12).
+  const step=Math.max(1,Math.ceil(n/12));
+  let xlabels='';
+  rows.forEach((r,i)=>{
+    if(i%step!==0&&i!==n-1)return;
+    const xc=mode==='bar'?xCenter(i):xLine(i);
+    xlabels+=`<text x="${xc.toFixed(1)}" y="${(H-padB+16).toFixed(1)}" text-anchor="middle" font-size="10" fill="var(--muted)">${esc(tpBucketLabel(r.period,_tpBucketOfRows))}</text>`;
+  });
+  let body='';
+  if(mode==='bar'){
+    const bw=band*0.6;
+    body=rows.map((r,i)=>{
+      const v=r.value||0, yv=yOf(v), y0v=yOf(0);
+      const top=Math.min(yv,y0v), hgt=Math.abs(yv-y0v);
+      const xx=xCenter(i)-bw/2;
+      const col=r.incomplete?amber:accent;
+      return `<rect x="${xx.toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(hgt,0.5).toFixed(1)}" fill="${col}" rx="2"><title>${esc(tpBucketLabel(r.period,_tpBucketOfRows))}: ${esc(tpFmtVal(v,kpi))}${r.incomplete?' (incomplete)':''}</title></rect>`;
+    }).join('');
+  }else{
+    const pts=rows.map((r,i)=>`${xLine(i).toFixed(1)},${yOf(r.value||0).toFixed(1)}`).join(' ');
+    body=`<polyline points="${pts}" fill="none" stroke="${accent}" stroke-width="2"/>`;
+    body+=rows.map((r,i)=>{
+      const col=r.incomplete?amber:accent;
+      return `<circle cx="${xLine(i).toFixed(1)}" cy="${yOf(r.value||0).toFixed(1)}" r="3.2" fill="${col}"><title>${esc(tpBucketLabel(r.period,_tpBucketOfRows))}: ${esc(tpFmtVal(r.value||0,kpi))}${r.incomplete?' (incomplete)':''}</title></circle>`;
+    }).join('');
+  }
+  const baseY=yOf(0);
+  const base=(minV<0)?`<line x1="${x0}" y1="${baseY.toFixed(1)}" x2="${(W-padR).toFixed(1)}" y2="${baseY.toFixed(1)}" stroke="var(--text-sub)" stroke-width="1"/>`:'';
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="xMidYMid meet" style="display:block;">${grid}${base}${body}${xlabels}</svg>`;
+}
+let _tpBucketOfRows='month'; // set per-render so x-label formatter knows the granularity
+
+function tpPanelById(id){return trendPanels.find(p=>p.id===id);}
+
+function tpSeg(panelId,kind,current,opts){
+  // opts: [[value,label],...]; kind: 'bucket' | 'chart'
+  return `<div class="seg">`+opts.map(o=>
+    `<button class="unit-btn${o[0]===current?' active':''}" data-pid="${panelId}" data-seg="${kind}" data-val="${esc(o[0])}">${esc(o[1])}</button>`
+  ).join('')+`</div>`;
+}
+
+function tpRenderPanelShell(p){
+  const kpiSel=`<select data-pid="${p.id}" data-role="kpi" class="btn" style="max-width:220px;">`+
+    TKPI_ORDER.map(k=>`<option value="${k}"${k===p.kpi?' selected':''}>${esc(TKPI[k].label)}</option>`).join('')+`</select>`;
+  const scopeSel=`<select data-pid="${p.id}" data-role="scope" class="btn" style="max-width:240px;">${tpScopeOptions(p.scope)}</select>`;
+  const canRemove=trendPanels.length>1;
+  return `<div class="card trend-panel" data-pid="${p.id}" style="margin-bottom:1.1rem;">
+    <div class="section-head" style="align-items:flex-start;flex-wrap:wrap;gap:.6rem;">
+     <div class="flex" style="flex-wrap:wrap;gap:.5rem;align-items:center;">
+      ${kpiSel}
+      ${scopeSel}
+     </div>
+     <div class="flex" style="flex-wrap:wrap;gap:.5rem;align-items:center;">
+      ${tpSeg(p.id,'bucket',p.bucket,TBUCKETS)}
+      ${tpSeg(p.id,'chart',p.chart,[['line','Line'],['bar','Bar']])}
+      <button class="btn" data-pid="${p.id}" data-role="csv">Export CSV</button>
+      <button class="btn ghost" data-pid="${p.id}" data-role="remove" title="Remove panel"${canRemove?'':' disabled style="opacity:.4;cursor:not-allowed;"'}>✕</button>
+     </div>
+    </div>
+    <div class="muted" data-role="meta" style="margin:.3rem 0 .6rem;font-size:.82rem;">${esc(TKPI[p.kpi].note)}</div>
+    <div data-role="chart"><div class="loading">Loading…</div></div>
+   </div>`;
+}
+
+function tpRenderAll(){
+  const host=document.getElementById('trend-panels');
+  if(!host)return;
+  host.innerHTML=trendPanels.map(tpRenderPanelShell).join('');
+  trendPanels.forEach(p=>tpLoadPanel(p.id));
+}
+
+async function tpLoadPanel(id){
+  const p=tpPanelById(id);if(!p)return;
+  const card=document.querySelector(`.trend-panel[data-pid="${id}"]`);if(!card)return;
+  const chartEl=card.querySelector('[data-role="chart"]');
+  const metaEl=card.querySelector('[data-role="meta"]');
+  chartEl.innerHTML='<div class="loading">Loading…</div>';
+  try{
+    const {since,until}=trendRange();
+    const params=new URLSearchParams({kpi:p.kpi,bucket:p.bucket});
+    if(since)params.set('since',since);
+    if(until)params.set('until',until);
+    Object.entries(tpScopeParams(p.scope)).forEach(([k,v])=>params.set(k,v));
+    const data=await apiFetch('/api/fabric/trend-series?'+params);
+    const rows=Array.isArray(data&&data.rows)?data.rows:[];
+    p._rows=rows;
+    _tpBucketOfRows=p.bucket;
+    chartEl.innerHTML=tpChart(rows,p.chart,p.kpi);
+    const total=rows.reduce((s,r)=>s+(r.value||0),0);
+    const anyInc=data&&data.incomplete;
+    let meta=esc(TKPI[p.kpi].note);
+    if(p.kpi!=='metres_per_garment'&&rows.length){
+      meta+=` · Total ${esc(tpFmtVal(total,p.kpi))} over ${rows.length} ${p.bucket==='month'?'months':p.bucket==='week'?'weeks':'days'}`;
+    }
+    if(anyInc){
+      meta+=' · ⚠ amber periods include fabrics with no kg-per-metre conversion; metres understated.';
+    }
+    metaEl.innerHTML=meta;
+  }catch(e){
+    chartEl.innerHTML='<div class="banner banner-err" style="margin:.4rem 0;">'+errHtml(e)+'</div>';
+  }
+}
+
+function tpExportCsv(id){
+  const p=tpPanelById(id);if(!p||!p._rows)return;
+  const cols=[['Period',r=>r.period],['Value (m)',r=>r.value],['Incomplete',r=>r.incomplete?'yes':'no']];
+  const label=TKPI[p.kpi].label.replace(/[^a-z0-9]+/gi,'_').toLowerCase();
+  mixDownloadCsv(cols,p._rows,`fabric_trend_${label}_${p.bucket}.csv`);
+}
+
+function tpAddPanel(){
+  if(!trendInited){initTrendBuilder();return;}
+  trendPanels.push({id:'tp'+(++_tpSeq),kpi:'consumption',bucket:'month',chart:'line',scope:''});
+  tpRenderAll();
+}
+function tpRemovePanel(id){
+  if(trendPanels.length<=1)return;
+  trendPanels=trendPanels.filter(p=>p.id!==id);
+  tpRenderAll();
+}
+
+// Delegated control handler for the panel host (selects, segment buttons, csv, remove).
+function tpBindHost(){
+  const host=document.getElementById('trend-panels');
+  if(!host||host._tpBound)return;
+  host._tpBound=true;
+  host.addEventListener('click',e=>{
+    const seg=e.target.closest('button[data-seg]');
+    if(seg){const p=tpPanelById(seg.dataset.pid);if(p){p[seg.dataset.seg]=seg.dataset.val;tpRenderAll();}return;}
+    const btn=e.target.closest('button[data-role]');
+    if(btn){
+      if(btn.dataset.role==='csv')tpExportCsv(btn.dataset.pid);
+      else if(btn.dataset.role==='remove')tpRemovePanel(btn.dataset.pid);
     }
   });
-  body.innerHTML=html;
+  host.addEventListener('change',e=>{
+    const sel=e.target.closest('select[data-role]');
+    if(!sel)return;
+    const p=tpPanelById(sel.dataset.pid);if(!p)return;
+    if(sel.dataset.role==='kpi'){p.kpi=sel.value;tpRenderAll();}
+    else if(sel.dataset.role==='scope'){p.scope=sel.value;tpLoadPanel(p.id);}
+  });
 }
-async function loadConsStock(){
-  try{
-    const since=document.getElementById('g-since').value;
-    const until=document.getElementById('g-until').value;
-    let days=30;
-    if(since&&until){const ms=new Date(until)-new Date(since);if(ms>0)days=Math.max(1,Math.round(ms/86400000)+1);}
-    const note=document.getElementById('cons-stock-note');
-    if(note)note.textContent=`net consumption over ${days} days vs current stock`;
-    const params=new URLSearchParams({location:loc(),days});
-    consStockCache=await apiFetch('/api/fabric/category-stock-consumption?'+params);
-    renderConsStock();
-  }catch(e){rowErr('cons-stock-body',9,e);}
+
+function tpApplyPreset(months){
+  const today=new Date();
+  const since=new Date(today);since.setMonth(since.getMonth()-months);
+  document.getElementById('trend-until').value=fabIso(today);
+  document.getElementById('trend-since').value=fabIso(since);
 }
-async function loadFlow(){
-  try{
-    const data=await apiFetch('/api/fabric/movement-flow?months=6');
-    const max=Math.max(...data.map(r=>Math.max(r.in_kg||0,r.out_kg||0)),1);
-    document.getElementById('flow-bars').innerHTML=data.length?data.map(r=>{
-      const m=monthLabel(r.period);
-      return `<div style="margin-bottom:14px;">
-       <div class="muted" style="margin-bottom:5px;font-weight:600;color:var(--text-sub);">${m}</div>
-       <div class="bar-row" style="margin-bottom:6px;"><span class="bar-label" style="width:60px;"><span class="dot" style="background:#1a5c38"></span>In</span>
-        <div class="bar-track"><div class="bar-fill" style="width:${((r.in_kg||0)/max*100).toFixed(1)}%;background:#1a5c38"></div></div><span class="bar-qty"${fx(FX.flowIn)}>${fmtKg(r.in_kg)}</span><span class="bar-sub"></span></div>
-       <div class="bar-row"><span class="bar-label" style="width:60px;"><span class="dot" style="background:#d97706"></span>Out</span>
-        <div class="bar-track"><div class="bar-fill" style="width:${((r.out_kg||0)/max*100).toFixed(1)}%;background:#d97706"></div></div><span class="bar-qty"${fx(FX.flowOut)}>${fmtKg(r.out_kg)}</span><span class="bar-sub"></span></div>
-      </div>`;
-    }).join(''):'<p class="muted">No movement data.</p>';
-    document.getElementById('flow-mtd-note').textContent=mtdNote(data);
-  }catch(e){showErr('flow-bars',e);document.getElementById('flow-mtd-note').textContent='';}
+function tpBindRange(){
+  const presetWrap=document.getElementById('trend-preset');
+  if(presetWrap&&!presetWrap._tpBound){
+    presetWrap._tpBound=true;
+    presetWrap.addEventListener('click',e=>{
+      const b=e.target.closest('button[data-m]');if(!b)return;
+      presetWrap.querySelectorAll('button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active');
+      tpApplyPreset(parseInt(b.dataset.m,10));
+      if(trendInited)tpRenderAll();
+    });
+  }
+  ['trend-since','trend-until'].forEach(idd=>{
+    const el=document.getElementById(idd);
+    if(el&&!el._tpBound){
+      el._tpBound=true;
+      el.addEventListener('change',()=>{
+        // Manual date edit clears the active preset highlight.
+        presetWrap&&presetWrap.querySelectorAll('button').forEach(x=>x.classList.remove('active'));
+        if(trendInited)tpRenderAll();
+      });
+    }
+  });
 }
-async function loadMovement(){
-  try{
-    const days=document.getElementById('consumed-days').value;
-    const data=await apiFetch('/api/fabric/top-consumed?days='+days+'&limit=20');
-    document.getElementById('consumed-body').innerHTML=data.length?data.map(r=>`
-     <tr>
-      <td style="font-weight:600;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.product_name)}">${esc(r.product_name)}</td>
-      <td class="r" style="font-weight:600;"${fx(FX.topConsumed)}>${fmt1(r.consumed_kg)}</td>
-      <td class="r"${fx(FX.topStock)}>${fmt1(r.stock_kg)}</td>
-      <td class="r"${fx(FX.topCover)}>${r.weeks_cover!=null?`<span class="pill ${r.weeks_cover<2?'pill-red':r.weeks_cover<6?'pill-amber':'pill-green'}">${fmt1(r.weeks_cover)}</span>`:'—'}</td>
-      <td style="color:var(--muted);">${esc(r.last_out||'—')}</td>
-     </tr>`).join(''):'<tr><td colspan="5" class="loading">No consumption in this period.</td></tr>';
-  }catch(e){rowErr('consumed-body',5,e);}
-}
-async function loadConsTrend(){
-  try{
-    const g=document.getElementById('cons-group').value;
-    const since=document.getElementById('g-since').value;
-    const until=document.getElementById('g-until').value;
-    const params=new URLSearchParams({group_by:g});
-    params.set('since',since||'2025-01-01');
-    if(until)params.set('until',until);
-    const data=await apiFetch('/api/fabric/consumption?'+params);
-    const dateFmt=g==='day'?{month:'short',day:'numeric'}:g==='week'?{month:'short',day:'numeric'}:{month:'short',year:'2-digit'};
-    const useKg=UNIT==='kg';
-    const rows=data.map(r=>({label:g==='month'?monthLabel(r.period):new Date(r.period).toLocaleDateString(undefined,dateFmt),v:useKg?r.qty_kg:(r.qty_metres||0),_qty:fmtUnit(useKg?r.qty_kg:r.qty_metres),f:r.fabrics_used}));
-    bars('consumption-bars',rows,'label','v',r=>fmt(r.f)+' types',false,FX.consBar);
-    document.getElementById('cons-mtd-note').textContent=g==='month'?mtdNote(data):'';
-    const totKg=data.reduce((s,r)=>s+(r.qty_kg||0),0);
-    const totM=data.reduce((s,r)=>s+(r.qty_metres||0),0);
-    document.getElementById('cons-summary').innerHTML=data.length
-      ?`Total consumed: <strong${fx(FX.consTotal)}>${fmt(totM)} m</strong> &middot; <strong${fx(FX.consTotal)}>${fmt1(totKg)} kg</strong> over ${data.length} ${g==='month'?'months':g==='week'?'weeks':'days'}`
-      :'No consumption in this range.';
-  }catch(e){showErr('consumption-bars',e);document.getElementById('cons-summary').textContent='';document.getElementById('cons-mtd-note').textContent='';}
+
+async function initTrendBuilder(){
+  if(trendInited)return;
+  tpBindRange();
+  tpBindHost();
+  tpApplyPreset(12); // default 12 months
+  // Seed default panels (a useful starter set; all metres).
+  trendPanels=[
+    {id:'tp'+(++_tpSeq),kpi:'consumption',bucket:'month',chart:'line',scope:''},
+    {id:'tp'+(++_tpSeq),kpi:'net_consumption',bucket:'month',chart:'line',scope:''},
+    {id:'tp'+(++_tpSeq),kpi:'received',bucket:'month',chart:'bar',scope:''},
+    {id:'tp'+(++_tpSeq),kpi:'stock_on_hand',bucket:'month',chart:'line',scope:''}
+  ];
+  trendInited=true;
+  try{trendOptions=await apiFetch('/api/fabric/trend-options');}
+  catch(e){trendOptions=null;}
+  tpRenderAll();
 }
 
 // ── Purchase orders ──

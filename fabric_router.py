@@ -2317,6 +2317,301 @@ def movement_flow(months: int = Query(default=6), scope: str = Query(default="ma
             GROUP BY 1 ORDER BY 1
         """, (months,))
 
+# ── Trend Analysis builder (multi-panel KPI-over-time, METRES only) ──────────
+# Backs the Fabric dashboard's "Trend Analysis" tab. ONE endpoint returns a time
+# series for a chosen KPI at a chosen granularity (day/week/month), date range and
+# scope (Overall / fabric category / sub-category / specific fabric / location).
+# EVERY KPI is reported in METRES (never kg) via the established kg_per_mtr_eff
+# conversion, and surfaces an `incomplete` flag where a fabric has no usable
+# Kg/Mtr (NULL/<=0) — the same "incomplete, never silently dropped" convention
+# used elsewhere in this module.
+_TREND_KPIS = {
+    "consumption", "net_consumption", "received",
+    "stock_on_hand", "returns", "metres_per_garment",
+}
+_TREND_TRUNC = {"day": "day", "week": "week", "month": "month"}
+
+def _trend_prod_scope(category, subcategory, product_id):
+    """Product-attribute WHERE fragment (for the `p` = raw_fabric_products alias)
+    + params, narrowing to a fabric category / sub-category / specific fabric.
+    Mutually exclusive in priority product_id > subcategory > category."""
+    sql, params = "", []
+    pid = None
+    if product_id not in (None, "", "0"):
+        try:
+            pid = int(product_id)
+        except (TypeError, ValueError):
+            pid = None
+    if pid is not None:
+        sql += " AND p.id = %s"; params.append(pid)
+    elif subcategory:
+        sql += " AND p.fabric_subcategory = %s"; params.append(subcategory)
+        if category:
+            sql += " AND p.fabric_category = %s"; params.append(category)
+    elif category:
+        sql += " AND p.fabric_category = %s"; params.append(category)
+    return sql, params
+
+def _trend_move_loc(location):
+    """Location scope for MOVE-based KPIs: a move "touches" a location when it is
+    either side of the transfer (location_from OR location_to)."""
+    loc = (location or "").strip()
+    if loc and loc.lower() not in _ALL_LOC:
+        return " AND (m.location_from = %s OR m.location_to = %s)", [loc, loc]
+    return "", []
+
+def _trend_inv_loc(location):
+    """Location scope for the INVENTORY snapshot (stock on hand). Honours ANY
+    selected location; "All"/empty falls back to the two real fabric-stock
+    locations (RMAT/Stock + Dead/Stock Fabric)."""
+    loc = (location or "").strip()
+    if loc and loc.lower() not in _ALL_LOC:
+        return " AND i.location_name = %s", [loc]
+    ph = ", ".join(["%s"] * len(_FABRIC_LOCATIONS))
+    return f" AND i.location_name IN ({ph})", list(_FABRIC_LOCATIONS)
+
+def _trend_move_series(conn, trunc, where_pred, value_expr,
+                       scope_sql, scope_params, loc_sql, loc_params, since, until):
+    """Bucketed metres series for a move-based KPI. `value_expr` is the per-row
+    metres expression; `where_pred` selects the KPI's rows. The support-fabric
+    'main' scope is always applied (this tab replaces the old main movement page)."""
+    sql = f"""
+        SELECT DATE_TRUNC('{trunc}', m.date)::date AS period,
+               ROUND(COALESCE(SUM({value_expr}), 0)::numeric, 1) AS value,
+               BOOL_OR(p.kg_per_mtr_eff IS NULL OR p.kg_per_mtr_eff <= 0) AS incomplete
+        FROM {EFFECTIVE_MOVES} m
+        LEFT JOIN raw_fabric_products p ON p.id = m.product_id
+        WHERE ({where_pred})
+          AND {_scope_sql('main')}
+          {scope_sql}{loc_sql}
+          AND m.date::date BETWEEN %s AND %s
+        GROUP BY 1 ORDER BY 1
+    """
+    return q(conn, sql, list(scope_params) + list(loc_params) + [since, until])
+
+def _trend_norm(rows):
+    """Normalize SQL rows → JSON-friendly {period,value,incomplete}."""
+    out = []
+    for r in rows:
+        p = r["period"]
+        out.append({
+            "period": p.isoformat() if hasattr(p, "isoformat") else str(p),
+            "value": float(r["value"] or 0),
+            "incomplete": bool(r["incomplete"]),
+        })
+    return out
+
+def _bucket_start(d, trunc):
+    if trunc == "month":
+        return d.replace(day=1)
+    if trunc == "week":  # DATE_TRUNC('week') = Monday
+        return d - datetime.timedelta(days=d.weekday())
+    return d
+
+def _next_bucket(d, trunc):
+    if trunc == "month":
+        return (d.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+    if trunc == "week":
+        return d + datetime.timedelta(days=7)
+    return d + datetime.timedelta(days=1)
+
+@fabric_router.get("/api/fabric/trend-series")
+def trend_series(
+    kpi: str = Query(default="consumption"),
+    bucket: str = Query(default="month"),
+    since: str = Query(default=None),
+    until: str = Query(default=None),
+    category: str = Query(default=None),
+    subcategory: str = Query(default=None),
+    product_id: str = Query(default=None),
+    location: str = Query(default=None),
+):
+    kpi = (kpi or "").strip()
+    if kpi not in _TREND_KPIS:
+        return {"kpi": kpi, "error": "unknown_kpi", "rows": [], "incomplete": False, "unit": "m"}
+    trunc = _TREND_TRUNC.get((bucket or "month").strip(), "month")
+    # Date range: default last 12 months.
+    today = datetime.date.today()
+    try:
+        until_d = datetime.date.fromisoformat(until) if until else today
+    except ValueError:
+        until_d = today
+    try:
+        since_d = datetime.date.fromisoformat(since) if since else (until_d.replace(day=1) - datetime.timedelta(days=365))
+    except ValueError:
+        since_d = until_d - datetime.timedelta(days=365)
+    if since_d > until_d:
+        since_d, until_d = until_d, since_d
+    since, until = since_d.isoformat(), until_d.isoformat()
+
+    scope_sql, scope_params = _trend_prod_scope(category, subcategory, product_id)
+    mloc_sql, mloc_params = _trend_move_loc(location)
+    kg = _kg("m")
+    metres = f"CASE WHEN p.kg_per_mtr_eff > 0 THEN {kg}/p.kg_per_mtr_eff ELSE 0 END"
+
+    with _get_conn() as conn:
+        _ensure_fabric_sheet(conn)
+
+        if kpi == "consumption":  # gross OUT, metres
+            rows = _trend_norm(_trend_move_series(
+                conn, trunc, "m.move_type='OUT' AND m.uom IN ('g','kg') AND m.is_fabric",
+                metres, scope_sql, scope_params, mloc_sql, mloc_params, since, until))
+
+        elif kpi == "net_consumption":  # OUT − genuine production returns, metres
+            net = f"CASE WHEN p.kg_per_mtr_eff > 0 THEN ({_net_kg('m')})/p.kg_per_mtr_eff ELSE 0 END"
+            rows = _trend_norm(_trend_move_series(
+                conn, trunc, _net_cons_where("m"),
+                net, scope_sql, scope_params, mloc_sql, mloc_params, since, until))
+
+        elif kpi == "received":  # IN moves, metres
+            rows = _trend_norm(_trend_move_series(
+                conn, trunc, "m.move_type='IN' AND m.uom IN ('g','kg') AND m.is_fabric",
+                metres, scope_sql, scope_params, mloc_sql, mloc_params, since, until))
+
+        elif kpi == "returns":  # production → real stock, metres
+            rows = _trend_norm(_trend_move_series(
+                conn, trunc, f"({_prod_return_pred('m')}) AND m.uom IN ('g','kg') AND m.is_fabric",
+                metres, scope_sql, scope_params, mloc_sql, mloc_params, since, until))
+
+        elif kpi == "stock_on_hand":
+            # No historical inventory snapshots exist, so back-cast from the CURRENT
+            # snapshot using the net physical flow (received − net consumption):
+            #   stock(end of bucket b) = stock_at_start + Σ flow up to b
+            #   stock_at_start         = current_total − Σ flow over ALL history
+            # The latest bucket therefore always equals the true current snapshot;
+            # earlier buckets are the current value minus the moves that came after.
+            iloc_sql, iloc_params = _trend_inv_loc(location)
+            inv = q(conn, f"""
+                SELECT COALESCE(SUM(CASE WHEN p.kg_per_mtr_eff > 0
+                                         THEN i.quantity/p.kg_per_mtr_eff ELSE 0 END), 0) AS metres,
+                       BOOL_OR(p.kg_per_mtr_eff IS NULL OR p.kg_per_mtr_eff <= 0) AS incomplete
+                FROM raw_fabric_inventory i
+                JOIN raw_fabric_products p ON p.id = i.product_id
+                WHERE i.quantity > 0 AND {_scope_sql('main')}
+                  {scope_sql}{iloc_sql}
+            """, list(scope_params) + list(iloc_params))[0]
+            current_m = float(inv["metres"] or 0)
+            # Net flow per bucket over ALL history (wide range), scoped the same way.
+            recv_rows = _trend_move_series(
+                conn, trunc, "m.move_type='IN' AND m.uom IN ('g','kg') AND m.is_fabric",
+                metres, scope_sql, scope_params, mloc_sql, mloc_params, "2000-01-01", "2100-01-01")
+            net = f"CASE WHEN p.kg_per_mtr_eff > 0 THEN ({_net_kg('m')})/p.kg_per_mtr_eff ELSE 0 END"
+            nc_rows = _trend_move_series(
+                conn, trunc, _net_cons_where("m"),
+                net, scope_sql, scope_params, mloc_sql, mloc_params, "2000-01-01", "2100-01-01")
+            recv = {r["period"]: float(r["value"] or 0) for r in recv_rows}
+            ncon = {r["period"]: float(r["value"] or 0) for r in nc_rows}
+            flow = {k: recv.get(k, 0) - ncon.get(k, 0) for k in set(recv) | set(ncon)}
+            total_flow = sum(flow.values())
+            stock_at_start = current_m - total_flow
+            inc = bool(inv["incomplete"]) or any(r["incomplete"] for r in recv_rows) \
+                or any(r["incomplete"] for r in nc_rows)
+            rows = []
+            b, end = _bucket_start(since_d, trunc), _bucket_start(until_d, trunc)
+            items = sorted(flow.items())
+            while b <= end:
+                cum = sum(v for k, v in items if k <= b)
+                rows.append({"period": b.isoformat(),
+                             "value": round(stock_at_start + cum, 1),
+                             "incomplete": inc})
+                b = _next_bucket(b, trunc)
+
+        else:  # metres_per_garment — done-MO fabric metres ÷ garments, in Python
+            fb = q(conn, """
+                SELECT AVG(kg_per_mtr_eff)::float AS avg_kpm
+                FROM raw_fabric_products WHERE kg_per_mtr_eff > 0
+            """)[0]
+            fallback_kpm = float(fb["avg_kpm"]) if fb and fb["avg_kpm"] else None
+            mrows = q(conn, f"""
+                SELECT DATE_TRUNC('{trunc}', c.done_date)::date AS bucket,
+                       c.odoo_mo_id, c.produced_qty, c.consumed_qty,
+                       lower(coalesce(c.uom,'')) AS uom, p.kg_per_mtr_eff AS kpm
+                FROM mo_fabric_consumption c
+                LEFT JOIN raw_fabric_products p ON p.id = c.component_id
+                WHERE c.done_date BETWEEN %s AND %s {scope_sql}
+            """, [since, until] + list(scope_params))
+            M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
+            by_bucket = {}
+            for r in mrows:
+                bk = r["bucket"]
+                mos = by_bucket.setdefault(bk, {})
+                d = mos.setdefault(r["odoo_mo_id"], {
+                    "produced": float(r["produced_qty"] or 0), "metres": 0.0,
+                    "has_fabric": False, "used_fallback": False})
+                d["has_fabric"] = True
+                qty = float(r["consumed_qty"] or 0)
+                u, kpm = r["uom"], r["kpm"]
+                if u in M_UOMS:
+                    d["metres"] += qty
+                else:
+                    kgv = qty / 1000.0 if u == "g" else qty
+                    if kpm and float(kpm) > 0:
+                        d["metres"] += kgv / float(kpm)
+                    elif fallback_kpm:
+                        d["metres"] += kgv / fallback_kpm
+                        d["used_fallback"] = True
+            rows = []
+            for bk in sorted(by_bucket):
+                tm = tg = 0.0
+                inc = False
+                for d in by_bucket[bk].values():
+                    if d["produced"] <= 0 or not d["has_fabric"]:
+                        continue
+                    tm += d["metres"]; tg += d["produced"]
+                    if d["used_fallback"]:
+                        inc = True
+                if tg > 0:
+                    rows.append({"period": bk.isoformat(),
+                                 "value": round(tm / tg, 2), "incomplete": inc})
+
+    return {
+        "kpi": kpi, "bucket": trunc, "unit": "m",
+        "since": since, "until": until,
+        "rows": rows, "incomplete": any(r["incomplete"] for r in rows),
+    }
+
+@fabric_router.get("/api/fabric/trend-options")
+def trend_options():
+    """Scope-selector option lists for the Trend Analysis panels: fabric
+    categories, sub-categories (with parent), the fabric list, and locations.
+    All restricted to the 'main' (non-support) scope to match the rest of the
+    dashboard tabs that this builder replaces."""
+    with _get_conn() as conn:
+        cats = q(conn, f"""
+            SELECT DISTINCT fabric_category AS value
+            FROM raw_fabric_products p
+            WHERE fabric_category IS NOT NULL AND btrim(fabric_category) <> ''
+              AND {_scope_sql('main')}
+            ORDER BY 1
+        """)
+        subs = q(conn, f"""
+            SELECT DISTINCT fabric_category AS category, fabric_subcategory AS subcategory
+            FROM raw_fabric_products p
+            WHERE fabric_subcategory IS NOT NULL AND btrim(fabric_subcategory) <> ''
+              AND {_scope_sql('main')}
+            ORDER BY 1, 2
+        """)
+        fabrics = q(conn, f"""
+            SELECT p.id, p.name
+            FROM raw_fabric_products p
+            WHERE p.id IN (SELECT DISTINCT product_id FROM raw_fabric_inventory WHERE quantity > 0)
+              AND {_scope_sql('main')}
+            ORDER BY p.name
+            LIMIT 2000
+        """)
+        locs = q(conn, """
+            SELECT DISTINCT location_name AS value
+            FROM raw_fabric_inventory
+            WHERE quantity > 0 AND location_name IS NOT NULL AND btrim(location_name) <> ''
+            ORDER BY 1
+        """)
+    return {
+        "categories": [r["value"] for r in cats],
+        "subcategories": subs,
+        "fabrics": [{"id": r["id"], "name": r["name"]} for r in fabrics],
+        "locations": [r["value"] for r in locs],
+    }
+
 # ── BOM styles (default explorer view) ──────────────────────
 @fabric_router.get("/api/fabric/bom-styles")
 def bom_styles(search: str = Query(default=None), limit: int = Query(default=300),
