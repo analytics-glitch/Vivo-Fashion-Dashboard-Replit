@@ -65,6 +65,11 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .muted{font-size:12px;color:var(--muted);}
 
 .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:.85rem;margin-bottom:1.2rem;}
+.fig-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:.6rem;margin-top:.8rem;}
+.fig-card{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:.65rem .75rem;}
+.fig-card .fig-label{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;}
+.fig-card .fig-value{font-size:1.05rem;font-weight:800;letter-spacing:-.02em;margin:4px 0 2px;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.fig-card .fig-sub{font-size:.72rem;color:var(--muted);}
 .kpi{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1rem 1.1rem;box-shadow:0 1px 2px rgba(16,40,24,.04);transition:transform .18s,box-shadow .18s,border-color .18s;}
 .kpi:hover{transform:translateY(-2px);border-color:var(--accent);box-shadow:0 8px 24px rgba(26,92,56,.1);}
 .kpi.accent{background:linear-gradient(135deg,#1a5c38,#0f3d24);border-color:#1a5c38;color:#fff;box-shadow:0 4px 12px rgba(26,92,56,.2);}
@@ -573,15 +578,17 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    <!-- PURCHASE ORDERS -->
    <section id="page-pos" style="display:none;">
     <div id="po-kpis" class="kpi-grid"></div>
-    <div class="card">
-     <div class="section-head"><h3>Purchase order value by month</h3><span class="muted">ordered value (KES)</span></div>
-     <div id="po-month-bars"><div class="loading">Loading…</div></div>
-     <div id="po-mtd-note" class="muted" style="margin-top:8px;font-size:.8rem;"></div>
+    <div class="grid-2" style="margin-bottom:1.1rem;align-items:start;">
+     <div class="card">
+      <div class="section-head"><h3>Purchase order value by month</h3><span class="muted">ordered value (KES)</span></div>
+      <div id="po-month-bars"><div class="loading">Loading…</div></div>
+      <div id="po-mtd-note" class="muted" style="margin-top:8px;font-size:.8rem;"></div>
+     </div>
+     <div class="card" id="supplier-cost-card">
+      <div class="section-head"><h3>Avg cost / metre by supplier</h3><span class="muted">received purchases, all POs</span></div>
+      <div id="supplier-cost" style="margin-top:.8rem;"><div class="loading">Loading…</div></div>
+     </div>
     </div>
-    <details class="card" id="supplier-cost-card" style="margin-bottom:1.1rem;">
-     <summary style="cursor:pointer;font-weight:600;">Avg cost / metre by supplier <span class="muted" style="font-weight:400;">&middot; received purchases, all POs</span></summary>
-     <div id="supplier-cost" style="margin-top:.8rem;"><div class="loading">Loading…</div></div>
-    </details>
     <div class="flex" style="margin-bottom:1.1rem;">
      <input id="po-search" placeholder="Filter supplier…" oninput="debouncedPOs()" style="width:230px;">
     </div>
@@ -2966,6 +2973,12 @@ async function loadSupplierCost(){
     renderSupplierCost(d.purchases_by_supplier||[]);
   }catch(e){showErr('supplier-cost',e);}
 }
+function renderPOMonthFigures(byMonth){
+  const el=document.getElementById('po-month-bars');
+  if(!el)return;
+  if(!byMonth.length){el.innerHTML='<p class="muted">No data.</p>';return;}
+  el.innerHTML='<div class="fig-grid">'+byMonth.map(r=>`<div class="fig-card"><span class="fig-label">${esc(monthLabel(r.period))}</span><span class="fig-value"${fx(FX.poMonth)}>${fmtKES(r.value_kes)}</span><span class="fig-sub">${fmt(r.pos)} PO</span></div>`).join('')+'</div>';
+}
 async function loadPOPerf(){
   try{
     const d=await apiFetch('/api/fabric/po-performance');
@@ -2976,8 +2989,7 @@ async function loadPOPerf(){
      <div class="kpi"><span class="eyebrow">Fill rate</span><p class="kpi-value"${fx(FX.poFill)}>${k.fill_rate!=null?k.fill_rate+'%':'—'}</p><p class="kpi-sub">received &divide; ordered</p></div>
      <div class="kpi"><span class="eyebrow">Avg lead time</span><p class="kpi-value"${fx(FX.poLead)}>${k.avg_lead_days!=null?fmt(k.avg_lead_days):'—'}</p><p class="kpi-sub">days order &rarr; planned</p></div>
      <div class="kpi"><span class="eyebrow">Overdue open</span><p class="kpi-value ${k.overdue_open>0?'danger':''}"${fx(FX.poOverdue)}>${fmt(k.overdue_open)}</p><p class="kpi-sub">past planned date</p></div>`;
-    const rows=(d.by_month||[]).map(r=>({label:monthLabel(r.period),v:r.value_kes,_qty:fmtKES(r.value_kes),pos:r.pos}));
-    bars('po-month-bars',rows,'label','v',r=>fmt(r.pos)+' PO',false,FX.poMonth);
+    renderPOMonthFigures(d.by_month||[]);
     document.getElementById('po-mtd-note').textContent=mtdNote(d.by_month||[]);
   }catch(e){showErr('po-kpis',e);document.getElementById('po-mtd-note').textContent='';}
 }
