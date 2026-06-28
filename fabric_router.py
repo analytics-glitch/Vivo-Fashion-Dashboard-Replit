@@ -271,7 +271,7 @@ def _derive_fabric_colors(name, fabric_color):
         return None, None
     return fc, _FABRIC_COLOR_DIRECTORY.get(fc)
 
-def _months_of_cover(conn, fabric_stock_kg, scope="main"):
+def _months_of_cover(conn, fabric_stock_kg, scope="main", product_ids=None):
     """Months-of-cover from a 6-month average monthly run-rate with the in-progress
     month projected to its end-of-month figure, plus a prior-period value for a
     trend indicator.
@@ -287,13 +287,25 @@ def _months_of_cover(conn, fabric_stock_kg, scope="main"):
     via the shared net-consumption model.
     """
     fabric_stock_kg = float(fabric_stock_kg or 0)
+    # When a curated product-id set is supplied (e.g. the Basic Fabrics KPI) the
+    # consumption universe is JUST those products — the support/main scope filter
+    # is bypassed entirely. Ids come straight from the DB (integers), so inlining
+    # them is injection-safe.
+    if product_ids is not None:
+        if not product_ids:
+            cons_scope = "FALSE"
+        else:
+            ids_csv = ",".join(str(int(i)) for i in product_ids)
+            cons_scope = f"m.product_id IN ({ids_csv})"
+    else:
+        cons_scope = _scope_sql(scope)
     months = q(conn, f"""
         SELECT to_char(date_trunc('month', m.date::date),'YYYY-MM') AS mon,
                SUM({_net_kg('m')})::numeric AS kg
         FROM {EFFECTIVE_MOVES} m
         LEFT JOIN raw_fabric_products p ON p.id = m.product_id
         WHERE {_net_cons_where('m')}
-          AND {_scope_sql(scope)}
+          AND {cons_scope}
           AND m.date::date >= (date_trunc('month', CURRENT_DATE) - INTERVAL '6 months')::date
         GROUP BY 1
     """)
@@ -381,6 +393,65 @@ def _scope_sql(scope, col="p.fabric_category"):
     """SQL boolean fragment restricting rows to the requested support-fabric scope."""
     m = _support_match(col)
     return m if str(scope or "").lower() == "support" else f"NOT {m}"
+
+# ── Basic (core staple) fabrics ─────────────────────────────
+# A curated set of staple fabrics the buying team always wants to keep in stock,
+# identified by a (vendor/supplier → fabric-code) pairing. SINGLE SOURCE OF TRUTH
+# for the "Basic Fabrics — Months of Cover" Overview KPI; edit here to change it.
+# A row qualifies only when its supplier matches the listed vendor AND its
+# name/default_code/barcode contains the listed code — code alone is not enough,
+# so an unrelated fabric sharing a number is never pulled in. Matching is
+# case-insensitive and tolerant of surrounding text (the code is embedded in a
+# longer fabric name) and supplier-name casing variants. '367#' carries a literal
+# '#' handled as plain text. A listed pairing that matches nothing simply
+# contributes zero (the KPI never errors); the matched-count is surfaced.
+BASIC_FABRICS = {
+    "Runfeng":            ["8003", "8004", "8224"],
+    "Yat Taj Hong":       ["CA10091", "CA12220"],
+    "Reeyon":             ["LY001", "LY004", "LY470"],
+    "Yitai Cloth Trade":  ["91005"],
+    "Dong Sheng (DS)":    ["82033"],
+    "Fashion Knitted":    ["1629"],
+    "Shunwang Textiles":  ["367#"],
+    "Yajun":              ["HS8912"],
+    "Worldview":          ["Interfacing"],
+    "Lexin":              ["Interlining"],
+    "Yun Xiang":          ["A1507"],
+}
+
+def _resolve_basic_fabrics(conn):
+    """Resolve the curated supplier→codes map to matching raw_fabric_products.
+
+    Returns (product_ids, matched_pairs, total_pairs):
+      product_ids  – distinct ids across every matched pairing (the KPI universe)
+      matched_pairs – count of (supplier, code) entries that matched ≥1 product
+      total_pairs   – total curated (supplier, code) entries
+    Matching is per-pair so the matched-count is meaningful (an unmatched code is
+    visible in the KPI sub-line). Supplier is matched case-insensitively/trimmed;
+    the code is matched as a substring of name/default_code/barcode (ILIKE), with
+    LIKE wildcards in the code escaped so '%'/'_' (and the literal '#') are inert.
+    """
+    ids = set()
+    matched = 0
+    total = 0
+    for supplier, codes in BASIC_FABRICS.items():
+        for code in codes:
+            total += 1
+            esc = (str(code).replace("\\", "\\\\")
+                            .replace("%", "\\%")
+                            .replace("_", "\\_"))
+            like = f"%{esc}%"
+            rows = q(conn, r"""
+                SELECT id FROM raw_fabric_products p
+                WHERE lower(btrim(COALESCE(p.supplier,''))) = lower(btrim(%s))
+                  AND (COALESCE(p.name,'')         ILIKE %s ESCAPE '\'
+                    OR COALESCE(p.default_code,'') ILIKE %s ESCAPE '\'
+                    OR COALESCE(p.barcode,'')      ILIKE %s ESCAPE '\')
+            """, [supplier, like, like, like])
+            if rows:
+                matched += 1
+                ids.update(r["id"] for r in rows)
+    return list(ids), matched, total
 
 # ── Summary cards ──────────────────────────────────────────
 @fabric_router.get("/api/fabric/summary")
@@ -565,6 +636,29 @@ def summary(location: str = Query(default="RMAT/Stock"),
         dead_stock_value = sum(r['value_kes'] or 0 for r in dead)
         cover = _months_of_cover(conn, rmat_stock_kg, scope_param)
 
+        # Basic Fabrics — Months of Cover. One combined cover figure across the
+        # curated staple-fabric set ONLY (supplier+code pairs in BASIC_FABRICS),
+        # computed with the SAME method as the headline cover: live RMAT/Stock kg
+        # base ÷ 6-month projected net run-rate, restricted to the curated product
+        # ids. Bypasses the support/main scope (the curated set is its own
+        # universe). Never errors — an unmatched pairing just contributes nothing;
+        # the matched/total counts are surfaced so a gap is noticeable.
+        basic_ids, basic_matched, basic_total = _resolve_basic_fabrics(conn)
+        if basic_ids:
+            basic_stock_kg = q(conn, f"""
+                SELECT ROUND(SUM(i.quantity)::numeric,1) AS kg
+                FROM raw_fabric_inventory i
+                WHERE i.quantity > 0
+                  AND i.location_name='RMAT/Stock'
+                  AND i.product_id IN ({",".join(str(int(x)) for x in basic_ids)})
+            """)[0]['kg'] or 0
+            basic_cover = _months_of_cover(
+                conn, basic_stock_kg, scope_param, product_ids=basic_ids
+            )['months_of_cover']
+        else:
+            basic_stock_kg = 0
+            basic_cover = None
+
         # Headline KPIs reflect the selected scope; All = RMAT + Dead.
         return {
             "fabric_stock_kg": round(sum(r['qty_kg'] or 0 for r in scope), 1),
@@ -587,6 +681,10 @@ def summary(location: str = Query(default="RMAT/Stock"),
             "consumption_today_kg": cons_today['kg'] or 0,
             "consumption_today_metres": cons_today['metres'] or 0,
             "styles_with_bom": bom['styles'] or 0,
+            "basic_months_of_cover": basic_cover,
+            "basic_fabrics_matched": basic_matched,
+            "basic_fabrics_total": basic_total,
+            "basic_fabrics_stock_kg": round(float(basic_stock_kg or 0), 1),
             **cover,
         }
 

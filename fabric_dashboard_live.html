@@ -694,6 +694,7 @@ const FX={
   metresPerGarment:'Avg metres / garment = total main-fabric metres consumed ÷ total garments produced, across Done DPS manufacturing orders completed in the last 30 days. Fabric kg is converted to metres via each fabric\u2019s kg-per-metre; a fabric that has no kg-per-metre (no stored value and no Width/GSM) is converted using the overall fabric-average as a fallback, so its order is still counted. An MO is counted as long as it produced at least one garment.',
   metresPerGarmentByStyle:'Metres / garment by style breaks the headline KPI down to each finished style. For every style: total main-fabric metres consumed ÷ garments produced across its Done DPS manufacturing orders in the last 90 days. Same conversion + exclusion rule as the KPI — an MO counts only if all its fabric is convertible and it produced at least one garment.',
   monthsCover:'Months of cover = stock on hand (kg) ÷ average monthly consumption (kg), using a 6-month average run-rate with the current month projected to a full month. Consumption is net of production returns (fabric only).',
+  basicMonthsCover:'Basic Fabrics — months of cover = combined cover across only the curated set of core staple fabrics the buying team always keeps in stock (a fixed vendor + fabric-code list). Same formula as Months of cover — RMAT/Stock on-hand kg ÷ 6-month average monthly net consumption (current month projected to a full month, net of production returns) — but restricted to the curated fabrics. The sub-line shows how many of the curated fabrics were found in the data.',
   deadStock:'Dead stock = value of fabric parked in the Dead/Stock location (KES).',
   deadPct:'% of value = dead-stock value ÷ total fabric value.',
   outstandingPOs:'Outstanding POs = purchase orders not yet fully received (excludes cancelled).',
@@ -2179,7 +2180,11 @@ function renderKpis(d,mpg){
        sub+=` &middot; <span class="amber" title="${esc(fmt(fbn)+' of these MOs use a fabric with no kg→metre conversion in Odoo, converted via the overall fabric-average Kg/Mtr'+(fk!=null?(' ('+fk+' kg/m)'):'')+' so they are still counted.')}">${fmt(fbn)} via fallback kg/m</span>`;}
      const dl=(v!=null)?`<button class="btn ghost" style="margin-top:.5rem;padding:0 10px;height:28px;font-size:11px;" onclick="downloadMpgXlsx()" title="Download the full calculation audit trail (every Done-DPS MO, its fabric components and the kg→metre conversion) as an Excel workbook">&#11015; Download calculations (Excel)</button>`:'';
      return `<div class="kpi"><span class="eyebrow">Avg metres / garment</span><p class="kpi-value"${fx(FX.metresPerGarment)}>${v!=null?v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+' m':'&mdash;'}</p><p class="kpi-sub">${sub}</p>${dl}</div>`;})()}
-   <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}"${fx(FX.monthsCover)}>${cover!=null?coverFmt(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>`;
+   <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}"${fx(FX.monthsCover)}>${cover!=null?coverFmt(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>
+   ${(()=>{const bc=(d.basic_months_of_cover!=null)?d.basic_months_of_cover:null;
+     const bm=(d.basic_fabrics_matched!=null)?d.basic_fabrics_matched:null,bt=(d.basic_fabrics_total!=null)?d.basic_fabrics_total:null;
+     const bsub=(bm!=null&&bt!=null)?`${fmt(bm)} of ${fmt(bt)} curated fabrics matched`:'curated staple fabrics';
+     return `<div class="kpi"${fx(FX.basicMonthsCover)}><span class="eyebrow">Basic Fabrics &mdash; months of cover</span><p class="kpi-value ${bc!=null&&bc<1?'amber':''}">${bc!=null?coverFmt(bc):'&mdash;'}</p><p class="kpi-sub">${bsub}</p></div>`;})()}`;
 }
 // Per-supplier avg cost per metre (purchases) — compact, sortable table tucked
 // onto the Purchase orders tab. "—" rows are suppliers whose fabrics lack kg→metre.
