@@ -2265,7 +2265,7 @@ function renderStructure(id,rows,fxText){
 }
 function renderPrintDonut(rows){
   rows=rows||[];
-  const colorFor=v=>/print/i.test(v)?'#d97706':/plain/i.test(v)?'#1a5c38':'#6b7280';
+  const colorFor=v=>/print/i.test(v)?'#d97706':/solid|plain/i.test(v)?'#1a5c38':'#6b7280';
   const slices=rows.map(r=>{return {label:r.value,value:r.value_kes||0,color:colorFor(r.value),qty_metres:r.qty_metres,qty_kg:r.qty_kg,fx:FX.printShare};});
   document.getElementById('split-print').innerHTML=donut(slices);
 }

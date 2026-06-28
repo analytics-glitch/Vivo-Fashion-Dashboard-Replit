@@ -2468,6 +2468,33 @@ def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Qu
                 GROUP BY 1
                 ORDER BY value_kes DESC NULLS LAST
             """, loc_params)
+        # Solid vs Print: the Odoo `plain_print` attribute is blank for the vast
+        # majority of fabrics, so trusting it alone collapses ~94% into "Unknown".
+        # Instead DERIVE the split: an explicit "Print" tag OR a name that clearly
+        # signals a print (PRINT/AOP/FLORAL/STRIPE/ANKARA/etc.) → Print; an explicit
+        # "Plain" tag OR otherwise genuine fabric (it carries a fabric_category) →
+        # Solid; only rows with no category and no print signal (indeterminate junk
+        # e.g. "ASSORTED FABRIC RETURNS/DEFECTS") remain a small "Unknown" residual.
+        def split_plain_print():
+            return q(conn, f"""
+                SELECT CASE
+                    WHEN LOWER(BTRIM(COALESCE(p.plain_print,''))) = 'print' THEN 'Print'
+                    WHEN p.name ~* 'print|aop|floral|camouflage|stripe|polka|paisley|leopard|ankara' THEN 'Print'
+                    WHEN NULLIF(BTRIM(COALESCE(p.fabric_category,'')),'') IS NOT NULL THEN 'Solid'
+                    WHEN LOWER(BTRIM(COALESCE(p.plain_print,''))) = 'plain' THEN 'Solid'
+                    ELSE 'Unknown'
+                  END as value,
+                  COUNT(DISTINCT i.product_id) as fabrics,
+                  ROUND(SUM(i.quantity)::numeric,0) as qty_kg,
+                  ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE 0 END)::numeric,0) as qty_metres,
+                  ROUND(SUM(i.total_value)::numeric,0) as value_kes
+                FROM raw_fabric_inventory i
+                JOIN raw_fabric_products p ON p.id = i.product_id
+                WHERE i.quantity > 0 {loc_sql}
+                  AND {_scope_sql(scope)}
+                GROUP BY 1
+                ORDER BY value_kes DESC NULLS LAST
+            """, loc_params)
         # Fiber content: many rows blank — keep only fabrics that declare a fiber,
         # rolled up to the top values by stock value.
         fiber = q(conn, f"""
@@ -2485,7 +2512,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Qu
             LIMIT 8
         """, loc_params)
         return {
-            "plain_print": split("plain_print"),
+            "plain_print": split_plain_print(),
             "weight_range": split("weight_range"),
             "structure": split("fabric_structure"),
             "fiber": fiber,
