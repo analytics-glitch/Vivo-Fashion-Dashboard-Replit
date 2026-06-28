@@ -642,6 +642,206 @@ def metres_per_garment(days: int = Query(default=30)):
     }
 
 
+# ── Avg metres / garment: downloadable .xlsx calculations report ─────────
+# A full audit trail behind the "Avg metres / garment" KPI card: every qualifying
+# Done-DPS MO, its fabric components, the kg→metre conversion applied, and how it
+# all rolls up to the headline value. The per-MO conversion + exclusion logic MUST
+# mirror metres_per_garment EXACTLY (same window, same UoM handling, same own-vs-
+# fallback kg/m, same NULL-kpm-as-missing treatment) so the workbook reconciles to
+# the card. The Summary sheet reuses metres_per_garment's own totals so it is
+# guaranteed identical to what the card shows.
+@fabric_router.get("/api/fabric/metres-per-garment.xlsx")
+def metres_per_garment_xlsx(days: int = Query(default=30)):
+    from fastapi.responses import Response
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, PatternFill
+
+    days = max(1, min(int(days or 30), 730))
+
+    # Reuse the headline endpoint's totals so the Summary sheet matches the card.
+    summary = metres_per_garment(days=days)
+    fallback_kpm = None  # recomputed below for the per-component "kg/m used" column
+
+    with _get_conn() as conn:
+        fb = q(conn, """
+            SELECT AVG(kg_per_mtr_eff)::float AS avg_kpm
+            FROM raw_fabric_products
+            WHERE kg_per_mtr_eff > 0
+        """)[0]
+        fallback_kpm = float(fb["avg_kpm"]) if fb and fb["avg_kpm"] else None
+
+        rows = q(conn, """
+            SELECT c.odoo_mo_id,
+                   c.mo_ref,
+                   c.dps_ref,
+                   c.done_date,
+                   c.produced_qty,
+                   c.style_name,
+                   c.finished_sku,
+                   c.fabric_sku,
+                   c.fabric_name,
+                   c.consumed_qty,
+                   lower(coalesce(c.uom,'')) AS uom,
+                   p.kg_per_mtr_eff AS kpm
+            FROM mo_fabric_consumption c
+            LEFT JOIN raw_fabric_products p ON p.id = c.component_id
+            WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
+            ORDER BY c.done_date DESC, c.odoo_mo_id, c.fabric_sku
+        """, [days])
+
+    M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
+
+    # Fold component rows -> per-MO (identical maths to metres_per_garment), while
+    # keeping every component's contribution for the detail sheet.
+    mos = {}
+    components = []
+    for r in rows:
+        d = mos.setdefault(
+            r["odoo_mo_id"],
+            {"mo_ref": r["mo_ref"], "dps_ref": r["dps_ref"],
+             "done_date": r["done_date"],
+             "style": (r["style_name"] or "").strip() or None,
+             "finished_sku": r["finished_sku"],
+             "produced": float(r["produced_qty"] or 0), "metres": 0.0,
+             "has_fabric": False, "used_fallback": False},
+        )
+        d["has_fabric"] = True
+        qty = float(r["consumed_qty"] or 0)
+        u = r["uom"]
+        kpm = r["kpm"]
+        comp = {
+            "odoo_mo_id": r["odoo_mo_id"], "mo_ref": r["mo_ref"],
+            "fabric_sku": r["fabric_sku"], "fabric_name": r["fabric_name"],
+            "uom": r["uom"], "consumed_qty": qty,
+            "kpm_used": None, "used_fallback": False, "metres": 0.0,
+        }
+        if u in M_UOMS:
+            d["metres"] += qty
+            comp["metres"] = qty  # already metres; no conversion applied
+        else:
+            kg = qty / 1000.0 if u == "g" else qty
+            if kpm and float(kpm) > 0:
+                m = kg / float(kpm)
+                d["metres"] += m
+                comp["kpm_used"] = float(kpm)
+                comp["metres"] = m
+            elif fallback_kpm:
+                m = kg / fallback_kpm
+                d["metres"] += m
+                d["used_fallback"] = True
+                comp["kpm_used"] = fallback_kpm
+                comp["used_fallback"] = True
+                comp["metres"] = m
+            # No fallback at all: contributes 0 metres (MO still counted).
+        components.append(comp)
+
+    # Per-MO rows (only qualifying MOs — excluded exactly as the KPI does).
+    per_mo = []
+    qualifying_mo_ids = set()
+    for mo_id, d in mos.items():
+        if d["produced"] <= 0 or not d["has_fabric"]:
+            continue
+        qualifying_mo_ids.add(mo_id)
+        per_mo.append({
+            "odoo_mo_id": mo_id, "mo_ref": d["mo_ref"], "dps_ref": d["dps_ref"],
+            "done_date": d["done_date"], "style": d["style"],
+            "finished_sku": d["finished_sku"], "garments": d["produced"],
+            "total_metres": d["metres"],
+            "metres_per_garment": (d["metres"] / d["produced"]) if d["produced"] > 0 else None,
+            "used_fallback": d["used_fallback"],
+        })
+    per_mo.sort(key=lambda x: (x["done_date"] is None, x["done_date"], x["odoo_mo_id"]), reverse=True)
+
+    # ── Build the workbook ───────────────────────────────────────────────
+    wb = openpyxl.Workbook()
+    HEAD = Font(bold=True, color="FFFFFF")
+    HEAD_FILL = PatternFill("solid", fgColor="1A5C38")
+    TITLE = Font(bold=True, size=13)
+    LBL = Font(bold=True)
+    R = Alignment(horizontal="right")
+
+    def _style_header(ws, ncols):
+        for c in range(1, ncols + 1):
+            cell = ws.cell(row=1, column=c)
+            cell.font = HEAD
+            cell.fill = HEAD_FILL
+
+    # Summary sheet
+    ws = wb.active
+    ws.title = "Summary"
+    ws["A1"] = "Avg metres / garment — calculations report"
+    ws["A1"].font = TITLE
+    kpi_val = summary.get("metres_per_garment")
+    srows = [
+        ("Rolling window (days)", summary.get("window_days")),
+        ("Avg metres / garment (KPI)", kpi_val),
+        ("Total main-fabric metres", summary.get("total_metres")),
+        ("Total garments", summary.get("garments")),
+        ("MOs counted", summary.get("mos")),
+        ("MOs using fallback conversion", summary.get("mos_using_fallback")),
+        ("Fallback kg per metre", summary.get("fallback_kg_per_mtr")),
+        ("Basis", "Done DPS manufacturing orders, main-fabric components only"),
+        ("Reconciliation", "Total metres ÷ Total garments = Avg metres / garment"),
+    ]
+    r0 = 3
+    for i, (label, val) in enumerate(srows):
+        ws.cell(row=r0 + i, column=1, value=label).font = LBL
+        ws.cell(row=r0 + i, column=2, value=val)
+    ws.column_dimensions["A"].width = 34
+    ws.column_dimensions["B"].width = 56
+
+    # Per-MO sheet
+    ws2 = wb.create_sheet("Per-MO")
+    mo_cols = ["MO ref", "DPS ref", "Done date", "Finished style",
+               "Finished SKU", "Garments produced", "Total metres",
+               "Metres / garment", "Used fallback conversion"]
+    ws2.append(mo_cols)
+    _style_header(ws2, len(mo_cols))
+    for m in per_mo:
+        ws2.append([
+            m["mo_ref"], m["dps_ref"],
+            (m["done_date"].isoformat() if hasattr(m["done_date"], "isoformat") else m["done_date"]),
+            m["style"], m["finished_sku"],
+            round(m["garments"], 2),
+            round(m["total_metres"], 3),
+            (round(m["metres_per_garment"], 3) if m["metres_per_garment"] is not None else None),
+            "Yes" if m["used_fallback"] else "No",
+        ])
+    for col, w in zip("ABCDEFGHI", [16, 22, 12, 34, 16, 16, 14, 16, 22]):
+        ws2.column_dimensions[col].width = w
+
+    # Per-component sheet (only components of qualifying MOs, to reconcile).
+    ws3 = wb.create_sheet("Per-component")
+    comp_cols = ["MO ref", "Fabric SKU", "Fabric name", "UoM",
+                 "Consumed qty", "Kg per metre used", "Used fallback",
+                 "Metres contributed"]
+    ws3.append(comp_cols)
+    _style_header(ws3, len(comp_cols))
+    for c in components:
+        if c["odoo_mo_id"] not in qualifying_mo_ids:
+            continue
+        ws3.append([
+            c["mo_ref"], c["fabric_sku"], c["fabric_name"], c["uom"],
+            round(c["consumed_qty"], 3),
+            (round(c["kpm_used"], 4) if c["kpm_used"] is not None else None),
+            "Yes" if c["used_fallback"] else "No",
+            round(c["metres"], 3),
+        ])
+    for col, w in zip("ABCDEFGH", [16, 18, 40, 8, 14, 18, 14, 18]):
+        ws3.column_dimensions[col].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    data = buf.getvalue()
+    fname = "avg-metres-per-garment-%dd.xlsx" % days
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="%s"' % fname},
+    )
+
+
 # ── Data quality: fabrics blocking the metres/garment KPI ──────────────
 # The "Avg metres / garment" KPI silently drops any Done-DPS MO that has even
 # one main-fabric component with no usable kg→metre conversion. This lists the
