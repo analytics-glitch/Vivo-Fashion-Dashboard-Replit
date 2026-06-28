@@ -268,6 +268,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div id="mix-narrative"></div>
     <div class="flex" style="margin-bottom:1.1rem;align-items:center;gap:.6rem;">
      <input id="mix-search" placeholder="Find product or barcode…" oninput="onMixSearch()" title="Find a product across all categories/sub-categories" style="width:210px;">
+     <select id="mix-supplier" onchange="onMixSupplier()" title="Filter products by source supplier/vendor"><option value="">All suppliers</option></select>
      <div class="seg" id="mix-group-seg">
       <button class="unit-btn active" data-grp="category" onclick="setMixGroup('category')">By Category</button>
       <button class="unit-btn" data-grp="subcategory" onclick="setMixGroup('subcategory')">By Sub-Category</button>
@@ -1061,6 +1062,7 @@ let mixSubOpen={};              // "category\u0001subcategory" → expanded? (pr
 let mixAction={has:false};      // last action-banner state (any Buy/Clear/Idle rows?)
 let mixBound=false;             // delegated click handler bound once
 let mixSearch='';               // active product/barcode search (lowercased); '' = off
+let mixSupplier='';             // active supplier filter (exact match); '' = all suppliers
 const MIX_COLS=[
   {k:'barcode',label:'Barcode',type:'barcode'},
   {k:'group',label:'Fabric category',type:'name'},
@@ -1071,11 +1073,17 @@ const MIX_COLS=[
   {k:'gap',label:'Gap (pp)',type:'gap'},
   {k:'covers',label:'Weeks of Cover',type:'cover'},
   {k:'tied',label:'Stock Value KES',type:'kes'},
+  {k:'source_city',label:'Source City',type:'text'},
+  {k:'source_country',label:'Source Country',type:'text'},
 ];
 // Effective columns for the current render. The Barcode column is conditionally
 // dropped when no product rows are on screen (see renderFabricMix), so the
 // header, body rows, colspans and totals row all key off this list.
 let mixActiveCols=MIX_COLS;
+// Product-only columns — they only ever carry a value on the deepest product
+// rows, so (like Barcode) they are hidden entirely until product rows are on
+// screen (a sub-category drilled to products, a search, or a supplier filter).
+const MIX_PROD_ONLY=new Set(['barcode','source_city','source_country']);
 const MIX_FX={
   consumption:'Consumption = net fabric used over the selected period (OUT moves − production returns), warehouse-wide, in the active unit. Floored at 0: when production returns in this window exceed the matching OUT the net would go negative, so it is shown as 0 — hover the ↩ marker for the OUT vs returned split.',
   available:'Available = current on-hand stock for this category at the selected location, in the active unit.',
@@ -1123,11 +1131,31 @@ function onMixSearch(){
   mixSearch=(el&&el.value||'').trim().toLowerCase();
   renderFabricMix();
 }
+// Supplier filter: re-render from the cached mix tree (no refetch). Surfaces
+// every product of the chosen supplier across all categories (like search).
+function onMixSupplier(){
+  const el=document.getElementById('mix-supplier');
+  mixSupplier=(el&&el.value)||'';
+  renderFabricMix();
+}
+// (Re)build the supplier dropdown from the product details in the current tree,
+// preserving the active selection. Suppliers sorted A→Z; blank/"false" skipped.
+function populateMixSupplierOptions(){
+  const el=document.getElementById('mix-supplier');if(!el)return;
+  const set=new Set();
+  Object.values(mixDetailById||{}).forEach(d=>{const s=fabricClean(d&&d.supplier);if(s)set.add(s);});
+  const cur=mixSupplier;
+  const opts=['<option value="">All suppliers</option>']
+    .concat(Array.from(set).sort((a,b)=>a.localeCompare(b)).map(s=>`<option value="${esc(s)}">${esc(s)}</option>`));
+  el.innerHTML=opts.join('');
+  if(cur&&set.has(cur)){el.value=cur;}else if(cur){mixSupplier='';el.value='';}
+}
 // Does a product row match the active search? Matches name, barcode (default_code)
 // and the detail's name/default_code so a barcode typed in still finds it.
 function mixProdMatches(p){
-  if(!mixSearch)return true;
   const dc=p.detail||{};
+  if(mixSupplier&&fabricClean(dc.supplier)!==mixSupplier)return false;
+  if(!mixSearch)return true;
   const hay=[p.group,dc.name,fabricClean(dc.default_code),fabricClean(dc.barcode)].filter(Boolean).join(' ').toLowerCase();
   return hay.indexOf(mixSearch)>=0;
 }
@@ -1238,9 +1266,13 @@ function mixActionBanner(rows){
 }
 function mixSortRows(rows){
   const k=mixSort.key,dir=mixSort.dir==='asc'?1:-1;
+  // source_city/source_country/supplier live on the product row's `detail`, not
+  // on the row itself, and sort as text (category/sub rows have none → blank).
+  const detailKey=(k==='source_city'||k==='source_country'||k==='supplier');
+  const getv=r=>detailKey?(r.detail?fabricClean(r.detail[k]):''):r[k];
   return rows.slice().sort((a,b)=>{
-    let x=a[k],y=b[k];
-    if(k==='group'||k==='status'){x=String(x||'');y=String(y||'');return x<y?-dir:x>y?dir:0;}
+    let x=getv(a),y=getv(b);
+    if(k==='group'||k==='status'||detailKey){x=String(x||'');y=String(y||'');return x<y?-dir:x>y?dir:0;}
     x=x==null?-Infinity:Number(x);y=y==null?-Infinity:Number(y);
     return (x-y)*dir;
   });
@@ -1311,6 +1343,11 @@ function mixCell(col,r,kind,opts){
     case 'kes':cell=`<td class="r" style="color:var(--muted);">${fmt(r[col.k])}</td>`;break;
     case 'verdict':{const v=r.verdict||mixVerdict(r);
       cell=`<td><span class="pill ${v.cls}">${esc(v.label)}</span></td>`;break;}
+    case 'text':{
+      // Sourcing columns (Source City / Source Country) carry a value on product
+      // rows only; category/sub rows show an em-dash placeholder.
+      const v=(kind==='prod'&&r.detail)?fabricClean(r.detail[col.k]):'';
+      cell=`<td>${v?esc(v):'<span style="color:var(--muted);">—</span>'}</td>`;break;}
     default:cell=`<td>${esc(r[col.k])}</td>`;
   }
   return f?cell.replace('<td','<td'+f):cell;
@@ -1364,14 +1401,15 @@ function renderFabricMix(){
    <div class="kpi"><span class="eyebrow">Tied-up capital</span><p class="kpi-value">${fmtKES(d.total_tied_up_kes)}</p><p class="kpi-sub">value of available stock</p></div>`;
   const rows=mixSortRows(deriveMixRows(d));
   indexMixDetails(rows);
+  populateMixSupplierOptions();
   mixActionBanner(rows);
   // The Barcode column only ever carries a value on product (deepest) rows, so
   // it is hidden entirely until product rows are actually on screen — i.e. a
   // sub-category is drilled down to its products, or a search surfaces matches.
-  const searching=!!mixSearch;
+  const searching=!!mixSearch||!!mixSupplier;
   const SEP='\u0001';
   const showBarcode=mixHasVisibleProducts(rows,searching,SEP);
-  mixActiveCols=showBarcode?MIX_COLS:MIX_COLS.filter(c=>c.k!=='barcode');
+  mixActiveCols=showBarcode?MIX_COLS:MIX_COLS.filter(c=>!MIX_PROD_ONLY.has(c.k));
   // Header
   document.getElementById('mix-head').innerHTML='<tr>'+mixActiveCols.map(c=>{
     const arrow=mixSort.key===c.k?(mixSort.dir==='asc'?' \u25B2':' \u25BC'):'';
@@ -1448,7 +1486,8 @@ function renderFabricMix(){
     }
   });
   if(searching&&!html){
-    body.innerHTML=`<tr><td colspan="${mixActiveCols.length}" class="loading">No product matches “${esc(mixSearch)}”.</td></tr>`;
+    const what=mixSearch?`“${esc(mixSearch)}”`:(mixSupplier?`supplier “${esc(mixSupplier)}”`:'the current filters');
+    body.innerHTML=`<tr><td colspan="${mixActiveCols.length}" class="loading">No product matches ${what}.</td></tr>`;
     return;
   }
   // Totals row — every numeric cell carries its own formula tooltip (data-fx).
@@ -1469,13 +1508,14 @@ function renderFabricMix(){
    <td class="r"${fx(MIX_FX.totGap)}>—</td>
    <td class="r"${fx(MIX_FX.totCover)}>—</td>
    <td class="r" style="color:var(--muted);"${fx(MIX_FX.totTied)}>${fmt(d.total_tied_up_kes)}</td>
+   ${showBarcode?'<td></td><td></td>':''}
   </tr>`;
   body.innerHTML=html;
   if(window.__fabricEnhanceTables)window.__fabricEnhanceTables();
 }
 function sortMix(k){
   if(mixSort.key===k)mixSort.dir=mixSort.dir==='asc'?'desc':'asc';
-  else{mixSort.key=k;mixSort.dir=(k==='group')?'asc':'desc';}
+  else{mixSort.key=k;mixSort.dir=(k==='group'||k==='source_city'||k==='source_country')?'asc':'desc';}
   renderFabricMix();
 }
 // ISO (local-time) date string — shared by the mix window sync helpers.
