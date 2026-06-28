@@ -486,7 +486,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <!-- Fabrics blocking the "Avg metres / garment" KPI -->
     <h3 style="margin:1.6rem 0 .5rem;">Fabrics blocking "Avg metres / garment"</h3>
     <div class="card" style="margin-bottom:1.1rem;">
-     <p class="muted" style="margin:0;">The <b>Avg metres / garment</b> KPI drops any Done-DPS manufacturing order whose fabric has no kg→metre conversion in Odoo, so the average is understated. <span id="dq-mo-summary"></span> These are the fabrics responsible — fix each one's kg-per-metre in Odoo to grow KPI coverage. A garment can be blocked by more than one fabric, so the counts may sum to more than the total excluded.</p>
+     <p class="muted" style="margin:0;">The <b>Avg metres / garment</b> KPI drops any Done-DPS manufacturing order whose fabric has no kg→metre conversion in Odoo, so the average is understated. <span id="dq-mo-summary" data-fx="Counts the Done DPS manufacturing orders (over the window shown) that fell back to the overall fabric-average kg→metre conversion, and how many fabric SKUs caused it. Fill in Width/GSM or a stored kg/m in Odoo to make the metres/garment KPI exact."></span> These are the fabrics responsible — fix each one's kg-per-metre in Odoo to grow KPI coverage. A garment can be blocked by more than one fabric, so the counts may sum to more than the total excluded.</p>
     </div>
     <div class="flex" style="margin-bottom:1.1rem;justify-content:flex-end;">
      <button class="btn" onclick="exportMoMissing(this)">Export CSV</button>
@@ -627,7 +627,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    <section id="page-bom" style="display:none;">
     <div class="flex" style="margin-bottom:1.1rem;">
      <input id="bom-search" placeholder="Search style name or SKU…" style="width:300px;" oninput="debouncedBomStyles()">
-     <span class="muted" id="bom-count"></span>
+     <span class="muted" id="bom-count" data-fx="Styles with BOM = number of finished styles that have a bill of materials linked to fabric (matching the current search)."></span>
     </div>
     <div class="grid-2">
      <div class="card" style="padding:0;">
@@ -827,6 +827,66 @@ const FX={
   resvReserved:'Reserved = quantity the buying team earmarked for this style.',
   resvSoh:'Current SOH = current stock on hand for this fabric (Odoo).',
   resvDaysHeld:'Days held = days since the reservation was created (open) or until it was used.',
+  // Stock Mix header band
+  mixPeriodDays:'Consumption period = number of days in the selected date-range window driving this page.',
+  mixTotalConsumption:'Total consumption = sum of every category\u2019s net fabric used (OUT moves − production returns, each floored at 0) over the selected window, in the active unit.',
+  mixTotalSOH:'Total SOH = sum of every category\u2019s available stock on hand at the selected location, in the active unit.',
+  mixTiedCapital:'Tied-up capital = total value (KES) of the available stock on hand across all categories.',
+  // Data quality — missing kg→metre
+  dqAffected:'Fabrics affected = number of fabric SKUs (at the selected location) with no kg→metre conversion in Odoo — no stored Kg/Mtr and no Width+GSM to derive it.',
+  dqUnconvertible:'Unconvertible total = stock unconvertible + usage unconvertible — the total kg (on hand plus consumed, net of returns) that cannot be converted to metres because the conversion is missing.',
+  dqStockUnconvertible:'Stock unconvertible = on-hand kg of the affected fabrics that cannot be converted to metres (conversion missing).',
+  dqUsageUnconvertible:'Usage unconvertible = consumed kg (net of production returns) of the affected fabrics that cannot be converted to metres.',
+  dqWidth:'Width (m) = fabric width in metres (from Odoo). Blank is one reason the kg→metre conversion can\u2019t be derived.',
+  dqGsm:'GSM = grams per square metre (from Odoo). Blank is one reason the kg→metre conversion can\u2019t be derived.',
+  dqStockKg:'Stock (kg) = on-hand quantity of this fabric (Odoo inventory) that is currently unconvertible to metres.',
+  dqUsageKg:'Usage (kg) = consumed quantity of this fabric (net of production returns) that is unconvertible to metres.',
+  // Data quality — MOs falling back to the average conversion
+  dqMos:'MOs affected = number of Done DPS manufacturing orders (in the window) whose metres/garment fell back to the fabric-average conversion because this fabric has no kg→metre.',
+  dqGarments:'Garments affected = total garments produced by the manufacturing orders affected by this fabric.',
+  dqConsumedKg:'Consumed (kg) = total quantity of this fabric consumed across the affected manufacturing orders.',
+  dqMoSummary:'Counts the Done DPS manufacturing orders (over the window shown) that fell back to the overall fabric-average kg→metre conversion, and how many fabric SKUs caused it. Fill in Width/GSM or a stored kg/m in Odoo to make the metres/garment KPI exact.',
+  // Data quality — unmatched purchase lines
+  dqLinesExcluded:'Lines excluded = number of supplier × product groups of received purchase lines left out of the fabric metrics (not in the fabric master, or not categorised as Fabric).',
+  dqValueExcluded:'Value excluded = received value (KES) of those excluded purchase lines — money not counted in supplier totals.',
+  dqUpQtyKg:'Received (kg) = quantity received against this excluded purchase line.',
+  dqUpValue:'Value (KES) = received quantity × unit price for this excluded purchase line.',
+  // Colour mix (Overview)
+  colorOnHand:'On-hand stock = current on-hand metres of this colour (on-hand kg ÷ kg-per-metre). % = this colour\u2019s metres ÷ total on-hand metres.',
+  colorCons30:'Consumption (30d) = net metres of this colour used over the last 30 days (OUT − production returns). % = this colour\u2019s metres ÷ total 30-day consumption metres.',
+  catStockKg:'Category stock (kg) = sum of on-hand quantity in kg for fabrics in this category.',
+  catShare:'Share = this category\u2019s metres ÷ total metres across all categories.',
+  // Metres / garment by style
+  mpgGarments:'Garments = total garments produced across this style\u2019s Done DPS manufacturing orders in the last 90 days.',
+  mpgTotalMetres:'Total metres = total main-fabric metres consumed across this style\u2019s Done DPS manufacturing orders in the last 90 days.',
+  mpgMos:'MOs = number of Done DPS manufacturing orders counted for this style in the last 90 days.',
+  // Avg cost / metre by supplier (purchases)
+  supCostMetres:'Received (m) = total metres received from this supplier across all POs (received kg ÷ kg-per-metre). Shows — if any received fabric is missing its kg→metre conversion.',
+  supCostValue:'Received value = sum of received quantity × unit price across this supplier\u2019s POs (KES).',
+  supMissKg:'Received (kg) = kilograms received for this fabric, which has no kg→metre conversion in Odoo (so it can\u2019t be costed per metre).',
+  supMissValue:'Received value = received quantity × unit price for this fabric (KES).',
+  // KPI subline numbers
+  kpiSubStockValue:'Stock value = value of available fabric stock (KES).',
+  kpiSubFabricCount:'Fabrics = number of distinct fabric SKUs in available stock.',
+  mixWindow:'Window = the period the consumption is measured over (date range, or number of months when no dates are set).',
+  mpgSubMos:'Done-DPS MOs = number of completed DPS manufacturing orders counted in the rolling 30-day window used for this average.',
+  slowItems:'Items = number of slow-moving fabric lines.',
+  poSubPos:'POs = number of purchase orders in scope.',
+  poSubLines:'Lines = number of purchase-order line items in scope.',
+  // BOM explorer
+  bomStylesCount:'Styles with BOM = number of finished styles that have a bill of materials linked to fabric (matching the current search).',
+  // Support Fabrics (lining + interfacing)
+  supfStock:'Stock on hand = total available support-fabric stock (lining + interfacing) in RMAT/Stock, shown in the selected unit (metres or kg).',
+  supfValue:'Total fabric value = value of available support-fabric stock (KES), RMAT/Stock only.',
+  supfConsToday:'Consumed today = support fabric used today, net of returns (OUT − returns), in the selected unit.',
+  supfCons30d:'Consumed 30d = support fabric used over the last 30 days, net of returns (OUT − returns), in the selected unit.',
+  supfDead:'Dead stock = value (KES) of support fabrics with no recent consumption.',
+  supfFabrics:'Fabrics = number of distinct support-fabric SKUs in this group.',
+  supfMetres:'Metres = available stock on hand in metres (kg ÷ kg-per-metre).',
+  supfKg:'Kg = available stock on hand in kilograms.',
+  supfCostKg:'Cost per Kg = standard cost per kilogram (Odoo standard price), KES.',
+  supfCostMetre:'Cost per metre = cost per kg × kg per metre (KES).',
+  supfRowValue:'Value = available stock × standard cost (KES).',
 };
 // Register column → formula / source note (numeric & derived columns only).
 const REG_FX={
@@ -834,6 +894,7 @@ const REG_FX={
   gsm:'GSM = grams per square metre (from Odoo).',
   width_m:'Fabric width in metres (from Odoo).',
   kg_per_mtr:'Kg/m = conversion factor: kilograms per metre (from Odoo).',
+  m_per_kg:'m/Kg = metres per kilogram = 1 ÷ Kg/m (the inverse conversion).',
   cost_kes:'Cost = standard cost per kg (Odoo standard price), KES.',
   cost_per_kg:'Cost/kg = standard cost per kg (Odoo standard price), KES.',
   cost_metre:'Cost/metre = cost per kg × kg per metre (KES).',
@@ -952,11 +1013,11 @@ async function loadSupport(){
 function renderSupportKpis(d){
   const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
   document.getElementById('support-kpis').innerHTML=`
-   <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value">${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub">${fmtKES(d.fabric_stock_value)} &middot; ${fmt(d.fabric_products)} fabrics</p></div>
-   <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value">${fmtKES(d.fabric_stock_value)}</p><p class="kpi-sub">RMAT/Stock only</p></div>
-   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value">${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
-   <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value">${fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
-   <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger">${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">support fabrics</p></div>`;
+   <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value"${fx(FX.supfStock)}>${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub"><span${fx(FX.kpiSubStockValue)}>${fmtKES(d.fabric_stock_value)}</span> &middot; <span${fx(FX.kpiSubFabricCount)}>${fmt(d.fabric_products)} fabrics</span></p></div>
+   <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value"${fx(FX.supfValue)}>${fmtKES(d.fabric_stock_value)}</p><p class="kpi-sub">RMAT/Stock only</p></div>
+   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.supfConsToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
+   <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.supfCons30d)}>${fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
+   <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger"${fx(FX.supfDead)}>${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">support fabrics</p></div>`;
 }
 // Support Fabrics drill-down state. supportRows holds the last category summary
 // so the delegated click handler can re-render; supportOpen tracks expanded
@@ -1005,12 +1066,12 @@ function renderSupportTable(rows){
        <td style="text-align:center;color:var(--muted);">${caret}</td>
        <td style="font-weight:700;">${esc(r.category||'—')}</td>
        <td>${esc(r.subcategory||'—')}</td>
-       <td style="text-align:right;">${fmt(r.fabrics)}</td>
-       <td style="text-align:right;">${fmt1(r.qty_metres)}</td>
-       <td style="text-align:right;">${fmt1(r.qty_kg)}</td>
-       <td style="text-align:right;color:var(--muted);">${fmt2(r.cost_per_kg)}</td>
-       <td style="text-align:right;color:var(--muted);">${fmt2(r.cost_metre)}</td>
-       <td style="text-align:right;">${fmt(r.value_kes)}</td>
+       <td style="text-align:right;"${fx(FX.supfFabrics)}>${fmt(r.fabrics)}</td>
+       <td style="text-align:right;"${fx(FX.supfMetres)}>${fmt1(r.qty_metres)}</td>
+       <td style="text-align:right;"${fx(FX.supfKg)}>${fmt1(r.qty_kg)}</td>
+       <td style="text-align:right;color:var(--muted);"${fx(FX.supfCostKg)}>${fmt2(r.cost_per_kg)}</td>
+       <td style="text-align:right;color:var(--muted);"${fx(FX.supfCostMetre)}>${fmt2(r.cost_metre)}</td>
+       <td style="text-align:right;"${fx(FX.supfRowValue)}>${fmt(r.value_kes)}</td>
       </tr>`;
     if(open)html+=renderSupportProductRows(key);
   });
@@ -1038,11 +1099,11 @@ function renderSupportProductRows(key){
        <td style="padding-left:24px;font-size:.92em;">${code}</td>
        <td style="color:var(--text-sub);font-size:.92em;">${esc(it.name||'—')}${meta?`<div class="muted" style="font-size:.85em;">${meta}</div>`:''}</td>
        <td></td>
-       <td style="text-align:right;color:var(--text-sub);">${fmt1(it.qty_metres)}</td>
-       <td style="text-align:right;color:var(--text-sub);">${fmt1(it.qty_kg)}</td>
-       <td style="text-align:right;color:var(--muted);">${fmt2(it.cost_per_kg)}</td>
-       <td style="text-align:right;color:var(--muted);">${fmt2(it.cost_metre)}</td>
-       <td style="text-align:right;color:var(--text-sub);">${fmt(it.value_kes)}</td>
+       <td style="text-align:right;color:var(--text-sub);"${fx(FX.supfMetres)}>${fmt1(it.qty_metres)}</td>
+       <td style="text-align:right;color:var(--text-sub);"${fx(FX.supfKg)}>${fmt1(it.qty_kg)}</td>
+       <td style="text-align:right;color:var(--muted);"${fx(FX.supfCostKg)}>${fmt2(it.cost_per_kg)}</td>
+       <td style="text-align:right;color:var(--muted);"${fx(FX.supfCostMetre)}>${fmt2(it.cost_metre)}</td>
+       <td style="text-align:right;color:var(--text-sub);"${fx(FX.supfRowValue)}>${fmt(it.value_kes)}</td>
       </tr>`;
   }).join('');
 }
@@ -1425,10 +1486,10 @@ function renderFabricMix(){
   const win=(d.date_from&&d.date_to)?`${d.date_from} → ${d.date_to}`:`${fmt1(d.months)} months`;
   // Header band
   document.getElementById('mix-kpis').innerHTML=`
-   <div class="kpi accent"><span class="eyebrow">Consumption period</span><p class="kpi-value">${fmt(d.days)} days</p><p class="kpi-sub">${esc(win)} &middot; ${mixGroup==='subcategory'?'by sub-category':'by category'}</p></div>
-   <div class="kpi"><span class="eyebrow">Total consumption</span><p class="kpi-value">${fmtUnit(totC)}</p><p class="kpi-sub">net used (OUT − returns)</p></div>
-   <div class="kpi"><span class="eyebrow">Total SOH</span><p class="kpi-value">${fmtUnit(totA)}</p><p class="kpi-sub">available stock on hand</p></div>
-   <div class="kpi"><span class="eyebrow">Tied-up capital</span><p class="kpi-value">${fmtKES(d.total_tied_up_kes)}</p><p class="kpi-sub">value of available stock</p></div>`;
+   <div class="kpi accent"><span class="eyebrow">Consumption period</span><p class="kpi-value"${fx(FX.mixPeriodDays)}>${fmt(d.days)} days</p><p class="kpi-sub"><span${fx(FX.mixWindow)}>${esc(win)}</span> &middot; ${mixGroup==='subcategory'?'by sub-category':'by category'}</p></div>
+   <div class="kpi"><span class="eyebrow">Total consumption</span><p class="kpi-value"${fx(FX.mixTotalConsumption)}>${fmtUnit(totC)}</p><p class="kpi-sub">net used (OUT − returns)</p></div>
+   <div class="kpi"><span class="eyebrow">Total SOH</span><p class="kpi-value"${fx(FX.mixTotalSOH)}>${fmtUnit(totA)}</p><p class="kpi-sub">available stock on hand</p></div>
+   <div class="kpi"><span class="eyebrow">Tied-up capital</span><p class="kpi-value"${fx(FX.mixTiedCapital)}>${fmtKES(d.total_tied_up_kes)}</p><p class="kpi-sub">value of available stock</p></div>`;
   const rows=mixSortRows(deriveMixRows(d));
   indexMixDetails(rows);
   populateMixSupplierOptions();
@@ -1994,10 +2055,10 @@ function renderMpgStyle(payload){
      <th onclick="sortMpgStyle('mos')" style="cursor:pointer;text-align:right;">MOs${arrow('mos')}</th>
     </tr></thead><tbody>${rows.map(r=>`<tr${r.mos_excluded_missing_conversion?` title="${r.mos_excluded_missing_conversion} MO(s) excluded — fabric missing a kg→metre conversion in Odoo"`:''}>
      <td>${esc(r.style)}${r.mos_excluded_missing_conversion?' <span class="muted">&#9888;</span>':''}</td>
-     <td style="text-align:right;font-weight:600;">${r.metres_per_garment.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} m</td>
-     <td style="text-align:right;">${fmt(r.garments)}</td>
-     <td style="text-align:right;">${fmt(r.total_metres)} m</td>
-     <td style="text-align:right;">${fmt(r.mos)}</td>
+     <td style="text-align:right;font-weight:600;"${fx(FX.metresPerGarmentByStyle)}>${r.metres_per_garment.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} m</td>
+     <td style="text-align:right;"${fx(FX.mpgGarments)}>${fmt(r.garments)}</td>
+     <td style="text-align:right;"${fx(FX.mpgTotalMetres)}>${fmt(r.total_metres)} m</td>
+     <td style="text-align:right;"${fx(FX.mpgMos)}>${fmt(r.mos)}</td>
     </tr>`).join('')}</tbody></table></div>`;
 }
 function sortMpgStyle(key){
@@ -2130,8 +2191,8 @@ function renderColorMerged(d){
     const gap=sPct-cPct;
     return `<tr>
      <td><span class="dot" style="background:${c};border:1px solid rgba(0,0,0,.15)"></span>${esc(r.color)}</td>
-     <td style="text-align:right;">${fmt(sM)} m${star(!!r.stock_metres_incomplete)} <span class="bar-sub">${sPct.toFixed(1)}%</span></td>
-     <td style="text-align:right;">${fmt(cM)} m${star(!!r.cons_metres_incomplete)} <span class="bar-sub">${cPct.toFixed(1)}%</span></td>
+     <td style="text-align:right;"${fx(FX.colorOnHand)}>${fmt(sM)} m${star(!!r.stock_metres_incomplete)} <span class="bar-sub">${sPct.toFixed(1)}%</span></td>
+     <td style="text-align:right;"${fx(FX.colorCons30)}>${fmt(cM)} m${star(!!r.cons_metres_incomplete)} <span class="bar-sub">${cPct.toFixed(1)}%</span></td>
      <td style="text-align:right;">${gapChip(gap,true)}</td>
     </tr>`;
   }).join('')+'</tbody></table></div>';
@@ -2173,14 +2234,14 @@ function renderKpis(d,mpg){
   const acpmP=d.avg_cost_per_metre_purchases,acpmPInc=!!d.avg_cost_per_metre_purchases_incomplete;
   const acpmFmt=(v,inc)=>inc||v==null?'&mdash;':fmtKESm(v);
   document.getElementById('kpi-cards').innerHTML=`
-   <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value"${fx(FX.stockOnHand)}>${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub">${fmtKES(d.fabric_stock_value)} &middot; ${fmt(d.fabric_products)} fabrics</p></div>
+   <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value"${fx(FX.stockOnHand)}>${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub"><span${fx(FX.kpiSubStockValue)}>${fmtKES(d.fabric_stock_value)}</span> &middot; <span${fx(FX.kpiSubFabricCount)}>${fmt(d.fabric_products)} fabrics</span></p></div>
    <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value"${fx(FX.totalFabricValue)}>${fmtKES(totalVal)}</p><p class="kpi-sub">${valSub}</p></div>
    <div class="kpi" title="${acpmSInc?'Incomplete: one or more in-scope fabrics on hand are missing their kg→metre conversion in Odoo, so a per-metre stock cost cannot be computed for the full set yet. Shown as — (not zero) until the conversions are filled in.':'Average cost per metre across fabric stock on hand (RMAT/Stock), per metre regardless of the kg/m unit toggle.'}"><span class="eyebrow">Avg cost / metre</span><p class="kpi-value permetre"${fx(FX.avgCostMetreStock)}>${acpmFmt(acpmS,acpmSInc)}</p><p class="kpi-sub">${acpmSInc?'incomplete &middot; missing kg/m':'stock on hand &middot; RMAT/Stock'}</p></div>
    <div class="kpi" title="${acpmPInc?'Incomplete: one or more received purchase-order fabrics are missing their kg→metre conversion in Odoo, so a per-metre purchase cost cannot be computed for the full set yet. Shown as — (not zero) until the conversions are filled in — this is missing-input, not a broken metric.':'Average purchase cost per metre across all received POs, per metre regardless of the kg/m unit toggle.'}"><span class="eyebrow">Avg cost / metre (purchases)</span><p class="kpi-value permetre"${fx(FX.avgCostMetrePurchases)}>${acpmFmt(acpmP,acpmPInc)}</p><p class="kpi-sub">${acpmPInc?'incomplete &middot; missing kg/m':'received &middot; all POs'}</p></div>
    <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.consumed30d)}>${fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    ${(()=>{const v=(mpg&&mpg.metres_per_garment!=null)?mpg.metres_per_garment:null;
-     let sub=(mpg&&mpg.mos)?('rolling 30d &middot; '+fmt(mpg.mos)+' Done-DPS MOs'):'rolling 30d &middot; Done-DPS';
+     let sub=(mpg&&mpg.mos)?('rolling 30d &middot; <span'+fx(FX.mpgSubMos)+'>'+fmt(mpg.mos)+' Done-DPS MOs</span>'):'rolling 30d &middot; Done-DPS';
      const fbn=mpg&&mpg.mos_using_fallback;
      if(fbn){const fk=(mpg.fallback_kg_per_mtr!=null)?mpg.fallback_kg_per_mtr:null;
        sub+=` &middot; <span class="amber" title="${esc(fmt(fbn)+' of these MOs use a fabric with no kg→metre conversion in Odoo, converted via the overall fabric-average Kg/Mtr'+(fk!=null?(' ('+fk+' kg/m)'):'')+' so they are still counted.')}">${fmt(fbn)} via fallback kg/m</span>`;}
@@ -2218,13 +2279,13 @@ function renderSupplierCost(rows){
       const badge=(r.incomplete&&mf.length)?`<button type="button" class="pill pill-amber missing-kgm-badge" onclick="toggleSupMissing(${i})" aria-expanded="false" id="sup-mbtn-${i}" style="cursor:pointer;border:0;margin-left:.5rem;">${mf.length} fabric${mf.length>1?'s':''} missing kg/m <span class="caret">&#9656;</span></button>`:'';
       const detail=(r.incomplete&&mf.length)?`<tr class="sup-missing-detail" id="sup-mrow-${i}" style="display:none;"><td colspan="4" style="background:var(--bg2,#f9fafb);padding:.6rem .8rem;">
        <p class="muted" style="margin:0 0 .5rem;">These received fabrics have <b>no kg-per-metre</b> on the Odoo product master, so this supplier can&rsquo;t show an avg cost / metre. Fix each one in Odoo by entering its <b>kg-per-metre</b> (or <b>Width + GSM</b>) on the product; it then drops off this list.</p>
-       <table class="data" style="width:auto;"><thead><tr><th>Fabric</th><th>SKU</th><th style="text-align:right;">Received (kg)</th><th style="text-align:right;">Received value</th></tr></thead><tbody>${mf.map(f=>`<tr><td>${esc(f.name)}</td><td>${esc(f.sku)}</td><td style="text-align:right;">${fmt1(f.qty_kg)}</td><td style="text-align:right;">${fmtKES(f.value_kes)}</td></tr>`).join('')}</tbody></table>
+       <table class="data" style="width:auto;"><thead><tr><th>Fabric</th><th>SKU</th><th style="text-align:right;">Received (kg)</th><th style="text-align:right;">Received value</th></tr></thead><tbody>${mf.map(f=>`<tr><td>${esc(f.name)}</td><td>${esc(f.sku)}</td><td style="text-align:right;"${fx(FX.supMissKg)}>${fmt1(f.qty_kg)}</td><td style="text-align:right;"${fx(FX.supMissValue)}>${fmtKES(f.value_kes)}</td></tr>`).join('')}</tbody></table>
       </td></tr>`:'';
       return `<tr${r.incomplete?' title="Missing kg→metre conversion in Odoo — fix this supplier\u2019s fabrics to get a figure"':''}>
      <td>${esc(r.supplier)}${badge}</td>
-     <td style="text-align:right;">${r.incomplete?'&mdash;':fmt(r.metres)}</td>
-     <td style="text-align:right;">${fmtKES(r.value_kes)}</td>
-     <td style="text-align:right;${r.incomplete?'color:var(--muted);':'font-weight:600;'}">${r.incomplete?'&mdash;':fmtKESm(r.cost_per_metre)}</td>
+     <td style="text-align:right;"${fx(FX.supCostMetres)}>${r.incomplete?'&mdash;':fmt(r.metres)}</td>
+     <td style="text-align:right;"${fx(FX.supCostValue)}>${fmtKES(r.value_kes)}</td>
+     <td style="text-align:right;${r.incomplete?'color:var(--muted);':'font-weight:600;'}"${fx(FX.avgCostMetrePurchases)}>${r.incomplete?'&mdash;':fmtKESm(r.cost_per_metre)}</td>
     </tr>${detail}`;
     }).join('')}</tbody></table>`;
 }
@@ -2249,7 +2310,7 @@ function renderCategories(data){
   const fa=fx(FX.catStock);
   el.innerHTML=rows.length?rows.map(r=>`<div class="bar-row"><span class="bar-label" title="${esc(r.label)}">${esc(r.label)}</span>
      <div class="bar-track"><div class="bar-fill" style="width:${(Math.abs(r.v||0)/max*100).toFixed(1)}%;background:var(--accent)"></div></div>
-     <span class="bar-qty"${fa}>${fmt(r.m)} m</span><span class="bar-qty">${fmt1(r.kg)} kg</span><span class="bar-sub">${(totalM>0?(r.m||0)/totalM*100:0).toFixed(1)}%</span></div>`).join(''):'<p class="muted">No data.</p>';
+     <span class="bar-qty"${fa}>${fmt(r.m)} m</span><span class="bar-qty"${fx(FX.catStockKg)}>${fmt1(r.kg)} kg</span><span class="bar-sub"${fx(FX.catShare)}>${(totalM>0?(r.m||0)/totalM*100:0).toFixed(1)}%</span></div>`).join(''):'<p class="muted">No data.</p>';
 }
 function renderSplit(id,rows,fxText){
   const data=(rows||[]).map(r=>({label:r.value,v:r.value_kes,_qty:fmtKES(r.value_kes),fabrics:r.fabrics}));
@@ -2531,7 +2592,7 @@ async function loadDeadStock(){
     const d=await apiFetch('/api/fabric/dead-stock');
     const kg=d.items.reduce((s,r)=>s+(r.qty_kg||0),0);
     document.getElementById('dead-kpis').innerHTML=`
-     <div class="kpi accent"><span class="eyebrow">Total slow moving</span><p class="kpi-value"${fx(FX.slowTotal)}>${fmtKES(d.total_value)}</p><p class="kpi-sub">${d.items.length} items</p></div>
+     <div class="kpi accent"><span class="eyebrow">Total slow moving</span><p class="kpi-value"${fx(FX.slowTotal)}>${fmtKES(d.total_value)}</p><p class="kpi-sub"><span${fx(FX.slowItems)}>${d.items.length} items</span></p></div>
      <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value"${fx(FX.slowWeight)}>${fmt(kg)}</p><p class="kpi-sub">kg parked</p></div>`;
     document.getElementById('dead-body').innerHTML=d.items.length?d.items.map(r=>`
      <tr>
@@ -2611,9 +2672,9 @@ function dqCell(c,r){
   if(c.k==='default_code')return `<td class="num" style="font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
   if(c.k==='source'){const s=DQ_SRC[v]||{label:v||'—',cls:'pill-neutral'};return `<td><span class="pill ${s.cls}">${esc(s.label)}</span></td>`;}
   if(c.k==='kg_per_mtr_src'){const m={derived:{l:'derived',cls:'pill-amber'},incomplete:{l:'incomplete attributes',cls:'pill-neutral'},stored:{l:'stored',cls:'pill-green'}};const s=m[v];return s?`<td><span class="pill ${s.cls}">${esc(s.l)}</span></td>`:`<td>—</td>`;}
-  if(c.k==='stock_kg'||c.k==='usage_kg')return `<td class="r" style="font-weight:600;">${v!=null?fmt1(v):'—'}</td>`;
-  if(c.k==='width_m')return `<td class="r">${v!=null&&v!==''?fmt1(v):'—'}</td>`;
-  if(c.k==='gsm')return `<td class="r">${v!=null&&v!==''?fmt(v):'—'}</td>`;
+  if(c.k==='stock_kg'||c.k==='usage_kg')return `<td class="r" style="font-weight:600;"${fx(c.k==='stock_kg'?FX.dqStockKg:FX.dqUsageKg)}>${v!=null?fmt1(v):'—'}</td>`;
+  if(c.k==='width_m')return `<td class="r"${fx(FX.dqWidth)}>${v!=null&&v!==''?fmt1(v):'—'}</td>`;
+  if(c.k==='gsm')return `<td class="r"${fx(FX.dqGsm)}>${v!=null&&v!==''?fmt(v):'—'}</td>`;
   if(c.k==='last_move')return `<td style="color:var(--muted);font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
   return `<td style="color:var(--text-sub);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
 }
@@ -2628,10 +2689,10 @@ function renderDataQuality(){
   const d=dqCache; if(!d)return;
   const k=dqKpis(dqFilterRows(d.items));
   document.getElementById('dq-kpis').innerHTML=`
-   <div class="kpi accent"><span class="eyebrow">Fabrics affected</span><p class="kpi-value">${fmt(k.count)}</p><p class="kpi-sub">missing kg-per-metre</p></div>
-   <div class="kpi"><span class="eyebrow">Unconvertible total</span><p class="kpi-value">${fmt1(k.total_unconvertible_kg)}</p><p class="kpi-sub">kg (stock + usage)</p></div>
-   <div class="kpi"><span class="eyebrow">Stock unconvertible</span><p class="kpi-value">${fmt1(k.total_stock_kg)}</p><p class="kpi-sub">kg on hand</p></div>
-   <div class="kpi"><span class="eyebrow">Usage unconvertible</span><p class="kpi-value">${fmt1(k.total_usage_kg)}</p><p class="kpi-sub">kg consumed, net of returns</p></div>`;
+   <div class="kpi accent"><span class="eyebrow">Fabrics affected</span><p class="kpi-value"${fx(FX.dqAffected)}>${fmt(k.count)}</p><p class="kpi-sub">missing kg-per-metre</p></div>
+   <div class="kpi"><span class="eyebrow">Unconvertible total</span><p class="kpi-value"${fx(FX.dqUnconvertible)}>${fmt1(k.total_unconvertible_kg)}</p><p class="kpi-sub">kg (stock + usage)</p></div>
+   <div class="kpi"><span class="eyebrow">Stock unconvertible</span><p class="kpi-value"${fx(FX.dqStockUnconvertible)}>${fmt1(k.total_stock_kg)}</p><p class="kpi-sub">kg on hand</p></div>
+   <div class="kpi"><span class="eyebrow">Usage unconvertible</span><p class="kpi-value"${fx(FX.dqUsageUnconvertible)}>${fmt1(k.total_usage_kg)}</p><p class="kpi-sub">kg consumed, net of returns</p></div>`;
   const NUM={width_m:1,gsm:1,stock_kg:1,usage_kg:1};
   document.getElementById('dq-head').innerHTML='<tr>'+DQ_COLS.map(c=>{
     const arrow=dqSort.key===c.k?(dqSort.dir==='asc'?' \u25B2':' \u25BC'):'';
@@ -2719,7 +2780,7 @@ function renderDqMo(){
         if(c.k==='odoo_url')return v
           ? `<td style="white-space:nowrap;"><a href="${esc(v)}" target="_blank" rel="noopener">Open in Odoo &#8599;</a></td>`
           : `<td class="muted">—</td>`;
-        if(c.num)return `<td class="r" style="font-weight:600;">${v!=null?fmt(v):'—'}</td>`;
+        if(c.num){const mf={mos_blocked:FX.dqMos,garments_blocked:FX.dqGarments,consumed_kg:FX.dqConsumedKg}[c.k];return `<td class="r" style="font-weight:600;"${fx(mf)}>${v!=null?fmt(v):'—'}</td>`;}
         return `<td style="color:var(--text-sub);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
       }).join('')+'</tr>').join('')
     : `<tr><td colspan="${DQMO_COLS.length}" class="loading">No fabrics are falling back to the average conversion. 🎉</td></tr>`;
@@ -2774,8 +2835,8 @@ function sortDqUp(k){
 function renderDqUp(){
   const d=dqUpCache; if(!d)return;
   document.getElementById('dqup-kpis').innerHTML=`
-   <div class="kpi accent"><span class="eyebrow">Lines excluded</span><p class="kpi-value">${fmt(d.count)}</p><p class="kpi-sub">supplier · product groups</p></div>
-   <div class="kpi"><span class="eyebrow">Value excluded</span><p class="kpi-value">${fmtKES(d.total_value_kes)}</p><p class="kpi-sub">KES not in supplier totals</p></div>`;
+   <div class="kpi accent"><span class="eyebrow">Lines excluded</span><p class="kpi-value"${fx(FX.dqLinesExcluded)}>${fmt(d.count)}</p><p class="kpi-sub">supplier · product groups</p></div>
+   <div class="kpi"><span class="eyebrow">Value excluded</span><p class="kpi-value"${fx(FX.dqValueExcluded)}>${fmtKES(d.total_value_kes)}</p><p class="kpi-sub">KES not in supplier totals</p></div>`;
   const NUM={qty_kg:1,value_kes:1};
   document.getElementById('dqup-head').innerHTML='<tr>'+DQUP_COLS.map(c=>{
     const arrow=dqUpSort.key===c.k?(dqUpSort.dir==='asc'?' \u25B2':' \u25BC'):'';
@@ -2788,8 +2849,8 @@ function renderDqUp(){
         if(c.k==='name')return `<td style="font-weight:600;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
         if(c.k==='sku')return `<td class="num" style="font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
         if(c.k==='reason'){const s=DQUP_REASON[v]||{label:v||'—',cls:'pill-neutral'};return `<td><span class="pill ${s.cls}">${esc(s.label)}</span></td>`;}
-        if(c.k==='qty_kg')return `<td class="r" style="font-weight:600;">${v!=null?fmt1(v):'—'}</td>`;
-        if(c.k==='value_kes')return `<td class="r" style="font-weight:600;">${v!=null?fmtKES(v):'—'}</td>`;
+        if(c.k==='qty_kg')return `<td class="r" style="font-weight:600;"${fx(FX.dqUpQtyKg)}>${v!=null?fmt1(v):'—'}</td>`;
+        if(c.k==='value_kes')return `<td class="r" style="font-weight:600;"${fx(FX.dqUpValue)}>${v!=null?fmtKES(v):'—'}</td>`;
         return `<td style="color:var(--text-sub);white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
       }).join('')+'</tr>').join('')
     : `<tr><td colspan="${DQUP_COLS.length}" class="loading">All purchase lines matched a fabric in Odoo. 🎉</td></tr>`;
@@ -2984,7 +3045,7 @@ async function loadPOPerf(){
     const d=await apiFetch('/api/fabric/po-performance');
     const k=d.kpis||{};
     document.getElementById('po-kpis').innerHTML=`
-     <div class="kpi accent"><span class="eyebrow">Ordered value</span><p class="kpi-value"${fx(FX.poOrdered)}>${fmtKES(k.ordered_value)}</p><p class="kpi-sub">${fmt(k.pos)} POs &middot; ${fmt(k.lines)} lines</p></div>
+     <div class="kpi accent"><span class="eyebrow">Ordered value</span><p class="kpi-value"${fx(FX.poOrdered)}>${fmtKES(k.ordered_value)}</p><p class="kpi-sub"><span${fx(FX.poSubPos)}>${fmt(k.pos)} POs</span> &middot; <span${fx(FX.poSubLines)}>${fmt(k.lines)} lines</span></p></div>
      <div class="kpi"><span class="eyebrow">Received value</span><p class="kpi-value"${fx(FX.poReceived)}>${fmtKES(k.received_value)}</p><p class="kpi-sub">delivered to date</p></div>
      <div class="kpi"><span class="eyebrow">Fill rate</span><p class="kpi-value"${fx(FX.poFill)}>${k.fill_rate!=null?k.fill_rate+'%':'—'}</p><p class="kpi-sub">received &divide; ordered</p></div>
      <div class="kpi"><span class="eyebrow">Avg lead time</span><p class="kpi-value"${fx(FX.poLead)}>${k.avg_lead_days!=null?fmt(k.avg_lead_days):'—'}</p><p class="kpi-sub">days order &rarr; planned</p></div>
@@ -3027,9 +3088,9 @@ function supChildRowHtml(supplier,c){
   return `
      <tr class="sub-row" data-child-of="${esc(supplier)}">
       <td style="padding-left:28px;color:var(--text-sub);" title="${esc(c.source_city)}">${esc(c.source_city)}</td>
-      <td class="r">${fmt(c.pos)}</td><td class="r">${fmtKES(c.po_value)}</td>
-      <td class="r">${fmt1(c.outstanding_qty)}</td>
-      <td class="r" style="font-weight:600;">${c.outstanding_value>0?`<span class="pill pill-amber">${fmtKES(c.outstanding_value)}</span>`:fmtKES(c.outstanding_value)}</td>
+      <td class="r"${fx(FX.supPos)}>${fmt(c.pos)}</td><td class="r"${fx(FX.supValue)}>${fmtKES(c.po_value)}</td>
+      <td class="r"${fx(FX.supOutQty)}>${fmt1(c.outstanding_qty)}</td>
+      <td class="r" style="font-weight:600;"${fx(FX.supOutValue)}>${c.outstanding_value>0?`<span class="pill pill-amber">${fmtKES(c.outstanding_value)}</span>`:fmtKES(c.outstanding_value)}</td>
      </tr>`;
 }
 
