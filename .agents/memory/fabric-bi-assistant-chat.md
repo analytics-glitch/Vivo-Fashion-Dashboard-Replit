@@ -14,6 +14,9 @@ A floating chat widget on the `/fabric` dashboard, scoped to fabric (raw-materia
 
 **Why:** keeping the loop shared means one place to maintain the read-only/PII guards; only the prompt + toolset diverge per domain.
 
+## Scope: covers the WHOLE fabric BI surface
+The schema doc (`_FABRIC_CHAT_SCHEMA_DOC`) + prompt (`_fabric_chat_system_prompt`) ground EVERY fabric tab, not just stock/ageing/consumption: suppliers & PO performance, production/BOM & where-used, buying-team reservations, attribute explorer, data quality, plus audit/reconcile questions. The doc carries the exact dashboard derivations (supplier outstanding = Σ(ordered−received)×price_unit; fill_rate, lead days, overdue from po-performance; fabric kg/style from BOM uom kg/g; open reservations = status='active'; MO-missing-conversion treats NULL kpm as missing). **Why:** the agent must reconcile with the on-screen tab, so its SQL must match each endpoint's SQL exactly. Two extra tables are documented for the agent: `fabric_reservations` (app-owned, lazily created) and `mo_fabric_consumption`. It still refuses non-fabric questions and stays read-only via `run_readonly_sql`.
+
 ## Frontend
 - The widget is **vanilla JS/CSS injected into `fabric_dashboard_live.html`** (the page is static, served by api_pg's catch-all — no React). It mirrors the React `ChatWidget.jsx` SSE parsing.
 - Uses **separate** localStorage keys `vivo_fabric_chat_session_id` / `vivo_fabric_chat_log_v1` so it never collides with the main BI assistant's history.

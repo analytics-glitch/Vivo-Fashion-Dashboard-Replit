@@ -18966,15 +18966,38 @@ raw_fabric_purchase_orders po  — fabric PO lines:
   po.price_unit, po.total_value
   Outstanding / open PO line = qty_received < qty_ordered AND state <> 'cancel'.
 
-raw_fabric_boms b  — bill of materials (fabric consumed per finished garment style):
-  b.finished_product_name, b.finished_product_sku, b.component_id -> p.id,
+raw_fabric_boms b  — bill of materials (fabric + trim components consumed per
+finished garment style); reverse this for "where-used":
+  b.finished_product_name (style), b.finished_product_sku, b.component_id -> p.id,
   b.component_name, b.component_sku, b.component_qty, b.component_uom
+                            -- fabric components have component_uom IN ('kg','g');
+                            -- trim/accessory components are 'Pcs' (and other uoms)
 
 fabric_moves_effective m  — stock MOVES (USE THIS VIEW, not raw_fabric_moves, for
 consumption — it carries the verified-sheet overrides and an is_fabric flag):
   m.product_id -> p.id, m.qty, m.uom ('g' grams or 'kg'),
   m.move_type ('IN','OUT','INTERNAL'), m.location_from, m.location_to, m.date,
   m.is_fabric (TRUE only for fabric moves)
+
+fabric_reservations r  — BUYING-TEAM manual reservations (an app-owned table,
+distinct from Odoo's i.reserved_qty ERP allocation). The buying team earmarks a
+fabric for a specific style, then later marks it used:
+  r.product_id -> p.id, r.qty, r.uom ('m' or 'kg'), r.qty_kg (always normalised to
+  kg), r.style_name (style it is reserved for), r.note, r.reserved_by_name,
+  r.reserved_at, r.used_at, r.used_by,
+  r.status ('active' = OPEN/still held, 'used' = consumed)
+  OPEN (active) reserved kg per fabric = SUM(r.qty_kg) WHERE r.status='active'.
+  Days held = CURRENT_DATE - r.reserved_at::date; time-to-use (used rows) =
+  r.used_at::date - r.reserved_at::date. Compare reserved kg to that fabric's stock
+  on hand = SUM(i.quantity) over its inventory rows.
+
+mo_fabric_consumption c  — per-manufacturing-order (Done DPS MO) fabric usage, the
+source for "avg metres per garment" and the MO data-quality check:
+  c.odoo_mo_id, c.done_date, c.produced_qty (garments produced in that MO),
+  c.consumed_qty, c.uom, c.component_id -> p.id, c.fabric_sku, c.fabric_name,
+  c.finished_name (the garment style), c.style_name (style/template name)
+  Metres consumed per row = consumed_qty converted via the component's
+  p.kg_per_mtr_eff (grams ÷1000 first; a uom already in metres is used as-is).
 
 METRIC CONVENTIONS — match these so answers agree with the dashboard:
 - kg per move = CASE WHEN m.uom='g' THEN m.qty/1000 ELSE m.qty END.
@@ -18995,6 +19018,44 @@ METRIC CONVENTIONS — match these so answers agree with the dashboard:
   fabric dashboard EXCLUDES these — only include them if the user asks about
   lining / interfacing / support fabric.
 - MONTHS OF COVER ≈ on-hand stock kg / average monthly net consumption kg.
+- SUPPLIER EXPOSURE (the Suppliers tab) — group raw_fabric_purchase_orders by
+  po.supplier, state <> 'cancel': outstanding_value = SUM((po.qty_ordered -
+  po.qty_received) * po.price_unit), outstanding_qty = SUM(po.qty_ordered -
+  po.qty_received), po count = COUNT(DISTINCT po.po_name). Bigger outstanding_value
+  = more fabric still owed by that supplier.
+- PO PERFORMANCE (the PO-performance tab) over state <> 'cancel' Fabric lines:
+  fill_rate % = SUM(po.qty_received) / NULLIF(SUM(po.qty_ordered),0) * 100;
+  ordered_value = SUM(po.total_value); received_value = SUM(po.qty_received *
+  po.price_unit); avg_lead_days = AVG(po.date_planned - po.order_date);
+  done_pos = COUNT(DISTINCT po.po_name) FILTER (WHERE po.state='done');
+  overdue_open = COUNT(DISTINCT po.po_name) FILTER (WHERE po.date_planned <
+  CURRENT_DATE AND po.qty_ordered > po.qty_received). Open PO = qty_received <
+  qty_ordered AND state <> 'cancel'.
+- BOM / WHERE-USED (the Production / BOM Explorer tab):
+  - Components of a style = raw_fabric_boms rows WHERE finished_product_name
+    (style) or finished_product_sku matches; fabric components are component_uom IN
+    ('kg','g'), trims are 'Pcs'.
+  - Total fabric kg per style = SUM(CASE WHEN component_uom='g' THEN
+    component_qty/1000 WHEN component_uom='kg' THEN component_qty ELSE 0 END).
+  - Component stock availability = join b.component_id to raw_fabric_inventory
+    (i.quantity kg, metres via kg_per_mtr_eff).
+  - WHERE-USED (reverse BOM) = styles whose b.component_name matches a given fabric.
+- ATTRIBUTE SPLIT (the Explorer tab) — on-hand stock (location-scoped, i.quantity>0)
+  grouped by a product attribute, reporting COUNT(DISTINCT i.product_id) fabrics,
+  SUM(i.quantity) kg, metres, SUM(i.total_value) KES. The attributes are:
+  p.plain_print (Plain vs Print), p.weight_range (Light/Medium/Heavy),
+  p.fabric_structure (Woven vs Knit), p.fiber_content (only non-blank fibres).
+- DATA QUALITY:
+  - Fabrics MISSING the kg-per-metre conversion = p.kg_per_mtr_eff IS NULL that
+    still have stock on hand OR recorded net usage (can only be shown in kg). The
+    `total unconvertible kg` = their stock kg + usage kg.
+  - MOs MISSING a conversion = Done MOs in mo_fabric_consumption that have ANY
+    fabric component whose p.kg_per_mtr_eff IS NULL or <= 0 (treat NULL kpm as
+    missing explicitly — a SQL bool_or over a NULL comparison silently misses them).
+- AUDIT / RECONCILE — when asked to verify a figure against a dashboard tab,
+  recompute it from the convention above and state whether it matches; if it
+  differs, explain the likely cause (scope, location, cancelled POs, missing
+  conversion, returns netting) rather than inventing a reconciling number.
 
 RULES:
 - Output exactly ONE statement: a SELECT (or WITH ... SELECT). Never write.
@@ -19052,18 +19113,29 @@ def _fabric_chat_system_prompt(ctx):
     return (
         "You are the Vivo Fashion Group FABRIC BI assistant — a sharp, trustworthy "
         "analyst embedded in the fabric (raw-material) dashboard for a multi-brand "
-        "fashion manufacturer in East Africa. You answer questions about fabric "
-        "stock, ageing, consumption, dead stock, purchase orders, bills of material "
-        "and months of cover. All money is Kenyan Shillings (KES).\n\n"
+        "fashion manufacturer in East Africa. You cover the WHOLE fabric BI surface: "
+        "stock, ageing, consumption, dead stock and months of cover; suppliers & "
+        "purchase-order performance (outstanding exposure, fill rate, lead days, "
+        "overdue POs); production / bills of material & where-used (components per "
+        "style, fabric kg per style, component stock, which styles use a fabric); "
+        "buying-team reservations (who reserved what, open vs used, reserved vs "
+        "available stock); the attribute explorer (plain/print, weight, structure, "
+        "fibre); and data quality (fabrics missing a kg-per-metre conversion, MOs "
+        "missing a conversion). All money is Kenyan Shillings (KES).\n\n"
         "HOW TO ANSWER:\n"
         "- Use the run_readonly_sql tool to query the live fabric data; never invent "
         "numbers. Follow the schema and metric conventions exactly so your answers "
-        "agree with the dashboard.\n"
+        "agree with the dashboard tab the user is comparing against.\n"
         "- You may call the tool several times in one turn (e.g. compute stock, then "
         "consumption, then derive months of cover).\n"
-        "- Stay strictly within the fabric domain. If asked about garment/retail "
-        "sales, customers, footfall or anything non-fabric, say you only cover "
-        "fabric / raw-material data and point them to the main BI assistant.\n"
+        "- AUDIT questions are in scope: when asked whether a figure matches a "
+        "dashboard tab, recompute it from the stated convention, say whether it "
+        "reconciles, and if not explain the likely cause (scope, location, cancelled "
+        "POs, missing conversions, returns netting) instead of forcing a match.\n"
+        "- Stay strictly within the fabric (raw-material) domain. If asked about "
+        "garment/retail sales, customers, footfall or anything non-fabric, say you "
+        "only cover fabric / raw-material data and point them to the main BI "
+        "assistant.\n"
         "- If a question is genuinely ambiguous, ask ONE short clarifying question.\n"
         "- Don't narrate your tool use ('let me check…'); just call the tool, then "
         "give the answer.\n\n"
