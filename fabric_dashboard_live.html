@@ -3156,13 +3156,30 @@ init();
   .fab-chat-followups{display:flex;flex-direction:column;gap:6px;padding-top:2px;}
   .fab-chat-followups .fab-chat-fhead{font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:#9ca3af;padding:0 2px 1px;}
   .fab-chat-followups button{background:#fff;}
-  .fab-chat-foot{border-top:1px solid #fdba74;padding:10px;display:flex;align-items:flex-end;gap:8px;background:#fff;}
+  .fab-chat-foot{border-top:1px solid #fdba74;padding:10px;display:flex;flex-direction:column;align-items:stretch;gap:8px;background:#fff;}
+  .fab-chat-inrow{display:flex;align-items:flex-end;gap:8px;}
   .fab-chat-foot textarea{flex:1;resize:none;background:#fff7ed;border:1px solid #fdba74;border-radius:12px;padding:9px 12px;font-size:13px;outline:none;font-family:inherit;max-height:100px;line-height:1.4;}
   .fab-chat-foot textarea:focus{border-color:#1a5c38;box-shadow:0 0 0 3px rgba(26,92,56,.1);}
   .fab-chat-foot button{flex-shrink:0;width:40px;height:40px;border-radius:12px;border:none;cursor:pointer;background:#1a5c38;color:#fff;display:flex;align-items:center;justify-content:center;}
   .fab-chat-foot button:hover{background:#0f3d24;}
   .fab-chat-foot button:disabled{opacity:.5;cursor:not-allowed;}
   .fab-chat-foot button svg{width:17px;height:17px;}
+  .fab-chat-foot .fab-chat-attach{background:#fff7ed;border:1px solid #fdba74;color:#1a5c38;}
+  .fab-chat-foot .fab-chat-attach:hover{background:#ffedd5;}
+  .fab-chat-foot .fab-chat-attach svg{width:18px;height:18px;}
+  /* Staged-attachment chips (above the input) */
+  .fab-chat-staged{display:flex;flex-wrap:wrap;gap:6px;}
+  .fab-chat-chip{display:inline-flex;align-items:center;gap:6px;background:#fff7ed;border:1px solid #fdba74;border-radius:10px;padding:4px 4px 4px 8px;font-size:11.5px;color:#1f2937;max-width:170px;}
+  .fab-chat-chip img{width:30px;height:30px;border-radius:6px;object-fit:cover;flex-shrink:0;}
+  .fab-chat-chip .fab-chat-chip-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .fab-chat-foot .fab-chat-chip button{background:none;border:none;color:#9ca3af;font-size:15px;line-height:1;width:auto;height:auto;padding:0 3px;flex-shrink:0;}
+  .fab-chat-foot .fab-chat-chip button:hover{background:none;color:#dc2626;}
+  .fab-chat-att-err{color:#dc2626;font-size:11px;width:100%;line-height:1.4;}
+  #fab-chat-panel.fab-drag{outline:2px dashed #1a5c38;outline-offset:-6px;}
+  /* Attachments rendered inside a sent user bubble */
+  .fab-chat-att-list{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;}
+  .fab-chat-att-thumb{max-width:150px;max-height:150px;border-radius:8px;display:block;}
+  .fab-chat-att-chip{display:inline-flex;align-items:center;background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.35);border-radius:8px;padding:3px 8px;font-size:11px;max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 </style>
 <button id="fab-chat-launch" type="button" aria-label="Open Fabric BI Assistant" onclick="fabChatOpen()">
   <span class="fab-chat-dot"></span>
@@ -3184,10 +3201,18 @@ init();
   </div>
   <div class="fab-chat-body" id="fab-chat-body"></div>
   <form class="fab-chat-foot" id="fab-chat-form" onsubmit="return fabChatSubmit(event)">
-    <textarea id="fab-chat-input" rows="1" placeholder="Ask about fabric stock, ageing, consumption…"></textarea>
-    <button type="submit" id="fab-chat-send" aria-label="Send">
-      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.4 20.4l17.45-7.48a1 1 0 0 0 0-1.84L3.4 3.6a.993.993 0 0 0-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 4.61c0 .71.73 1.2 1.39.91z"></path></svg>
-    </button>
+    <div class="fab-chat-staged" id="fab-chat-staged" style="display:none;"></div>
+    <div class="fab-chat-inrow">
+      <input type="file" id="fab-chat-file" multiple style="display:none;"
+             accept="image/png,image/jpeg,image/gif,image/webp,.csv,text/csv,text/plain,application/json,.md,.tsv,application/pdf">
+      <button type="button" id="fab-chat-attach" class="fab-chat-attach" title="Attach image or file" aria-label="Attach image or file">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+      </button>
+      <textarea id="fab-chat-input" rows="1" placeholder="Ask about fabric stock, ageing, consumption…"></textarea>
+      <button type="submit" id="fab-chat-send" aria-label="Send">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.4 20.4l17.45-7.48a1 1 0 0 0 0-1.84L3.4 3.6a.993.993 0 0 0-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 4.61c0 .71.73 1.2 1.39.91z"></path></svg>
+      </button>
+    </div>
   </form>
 </div>
 <script>
@@ -3202,6 +3227,11 @@ init();
   ];
   var TOOL_LABELS={run_readonly_sql:"Querying fabric data"};
   var messages=[], sessionId=null, sending=false, toolStatus=null, followups=[];
+  var staged=[], stagedErr="";
+  // Attachment limits — mirror the server-side caps in api_pg.py.
+  var ATTACH_MAX=4, ATTACH_MAX_BYTES=8*1024*1024, ATTACH_TOTAL_BYTES=16*1024*1024;
+  var ATTACH_IMG=["image/png","image/jpeg","image/jpg","image/gif","image/webp"];
+  var ATTACH_TXT=["text/plain","text/csv","application/json","text/markdown","text/tab-separated-values","application/pdf"];
   try{ sessionId=localStorage.getItem(SID_KEY)||null; }catch(e){}
   try{ var raw=localStorage.getItem(LOG_KEY); if(raw) messages=JSON.parse(raw)||[]; }catch(e){ messages=[]; }
 
@@ -3212,7 +3242,17 @@ init();
 
   function persist(){
     try{
-      localStorage.setItem(LOG_KEY, JSON.stringify(messages.filter(function(m){return !m.streaming;}).slice(-40)));
+      // Persist only lightweight attachment metadata (name/mime/isImage) — never
+      // the raw base64 data — so the localStorage log stays small.
+      var slim=messages.filter(function(m){return !m.streaming;}).slice(-40).map(function(m){
+        if(m.attachments && m.attachments.length){
+          var copy={}; for(var k in m){ if(k!=="attachments") copy[k]=m[k]; }
+          copy.attachments=m.attachments.map(function(a){ return { name:a.name, mime:a.mime, isImage:a.isImage }; });
+          return copy;
+        }
+        return m;
+      });
+      localStorage.setItem(LOG_KEY, JSON.stringify(slim));
       if(sessionId) localStorage.setItem(SID_KEY, sessionId);
     }catch(e){}
   }
@@ -3250,8 +3290,19 @@ init();
     messages.forEach(function(m){
       var row=makeEl("div","fab-chat-row "+(m.role==="user"?"me":"bot"));
       var bub=makeEl("div","fab-chat-bubble");
-      if(m.streaming && !m.content){ bub.textContent="…"; }
-      else { bub.textContent=m.content||""; }
+      if(m.role==="user" && m.attachments && m.attachments.length){
+        var aw=makeEl("div","fab-chat-att-list");
+        m.attachments.forEach(function(a){
+          if(a.isImage && a.thumb){
+            var im=makeEl("img","fab-chat-att-thumb"); im.src=a.thumb; im.alt=a.name||"image"; aw.appendChild(im);
+          } else {
+            var chip=makeEl("span","fab-chat-att-chip"); chip.textContent=a.name||"file"; aw.appendChild(chip);
+          }
+        });
+        bub.appendChild(aw);
+      }
+      var txt=(m.streaming && !m.content) ? "…" : (m.content||"");
+      if(txt){ var tn=makeEl("div"); tn.textContent=txt; bub.appendChild(tn); }
       row.appendChild(bub); b.appendChild(row);
     });
     if(toolStatus){
@@ -3281,14 +3332,96 @@ init();
 
   function authToken(){ try{ return localStorage.getItem("vivo_token"); }catch(e){ return null; } }
 
+  // ---- Attachments (images + lightweight text files) ----------------------
+  function attIsImage(mime){ return ATTACH_IMG.indexOf((mime||"").toLowerCase())>=0; }
+  function attAllowed(mime,name){
+    var m=(mime||"").toLowerCase();
+    if(ATTACH_IMG.indexOf(m)>=0 || ATTACH_TXT.indexOf(m)>=0) return true;
+    return /\.(png|jpe?g|gif|webp|csv|txt|json|md|tsv|pdf)$/i.test(name||"");
+  }
+  function attMimeFor(mime,name){
+    var m=(mime||"").toLowerCase();
+    if(m && (ATTACH_IMG.indexOf(m)>=0 || ATTACH_TXT.indexOf(m)>=0)) return m;
+    var n=(name||"").toLowerCase();
+    if(/\.png$/.test(n)) return "image/png";
+    if(/\.jpe?g$/.test(n)) return "image/jpeg";
+    if(/\.gif$/.test(n)) return "image/gif";
+    if(/\.webp$/.test(n)) return "image/webp";
+    if(/\.csv$/.test(n)) return "text/csv";
+    if(/\.json$/.test(n)) return "application/json";
+    if(/\.md$/.test(n)) return "text/markdown";
+    if(/\.tsv$/.test(n)) return "text/tab-separated-values";
+    if(/\.pdf$/.test(n)) return "application/pdf";
+    return m || "text/plain";
+  }
+  function readFileDataUrl(file){
+    return new Promise(function(resolve,reject){
+      var fr=new FileReader();
+      fr.onload=function(){ resolve(fr.result); };
+      fr.onerror=function(){ reject(fr.error||new Error("read failed")); };
+      fr.readAsDataURL(file);
+    });
+  }
+  function renderStaged(){
+    var wrap=document.getElementById("fab-chat-staged"); if(!wrap) return;
+    wrap.innerHTML="";
+    if(!staged.length && !stagedErr){ wrap.style.display="none"; return; }
+    wrap.style.display="flex";
+    staged.forEach(function(a,idx){
+      var chip=makeEl("div","fab-chat-chip");
+      if(attIsImage(a.mime)){ var im=makeEl("img"); im.src=a.data; im.alt=a.name||""; chip.appendChild(im); }
+      var nm=makeEl("span","fab-chat-chip-name"); nm.textContent=a.name||"file"; chip.appendChild(nm);
+      var rm=makeEl("button"); rm.type="button"; rm.setAttribute("aria-label","Remove "+(a.name||"file")); rm.textContent="×";
+      rm.addEventListener("click",function(){ staged.splice(idx,1); stagedErr=""; renderStaged(); });
+      chip.appendChild(rm);
+      wrap.appendChild(chip);
+    });
+    if(stagedErr){ var e=makeEl("div","fab-chat-att-err"); e.textContent=stagedErr; wrap.appendChild(e); }
+  }
+  function stageFiles(files){
+    stagedErr="";
+    var list=Array.prototype.slice.call(files||[]), accepted=[];
+    list.forEach(function(file){
+      if(staged.length+accepted.length>=ATTACH_MAX){ stagedErr="You can attach at most "+ATTACH_MAX+" files per message."; return; }
+      if(!attAllowed(file.type,file.name)){ stagedErr="\""+file.name+"\" is an unsupported file type."; return; }
+      if(file.size>ATTACH_MAX_BYTES){ stagedErr="\""+file.name+"\" is too large (max 8 MB per file)."; return; }
+      accepted.push(file);
+    });
+    if(!accepted.length){ renderStaged(); return; }
+    Promise.all(accepted.map(function(f){
+      return readFileDataUrl(f).then(function(url){
+        return { name:(f.name||"file"), mime:attMimeFor(f.type,f.name), size:f.size, data:url };
+      });
+    })).then(function(added){
+      var total=staged.reduce(function(s,a){ return s+(a.size||0); },0);
+      added.forEach(function(a){
+        if(staged.length>=ATTACH_MAX){ stagedErr="You can attach at most "+ATTACH_MAX+" files per message."; return; }
+        if(total+a.size>ATTACH_TOTAL_BYTES){ stagedErr="Those attachments are too large together (max 16 MB)."; return; }
+        total+=a.size; staged.push(a);
+      });
+      renderStaged();
+    }).catch(function(){ stagedErr="Couldn't read that file. Please try again."; renderStaged(); });
+  }
+  function handlePaste(e){
+    var items=(e.clipboardData&&e.clipboardData.items)||[], files=[];
+    for(var i=0;i<items.length;i++){ if(items[i].kind==="file"){ var f=items[i].getAsFile(); if(f) files.push(f); } }
+    if(files.length){ e.preventDefault(); stageFiles(files); }
+  }
+  function handleDragOver(e){ e.preventDefault(); var p=panelEl(); if(p) p.classList.add("fab-drag"); }
+  function handleDragLeave(e){ var p=panelEl(); if(p) p.classList.remove("fab-drag"); }
+  function handleDrop(e){
+    e.preventDefault(); var p=panelEl(); if(p) p.classList.remove("fab-drag");
+    var dt=e.dataTransfer; if(dt&&dt.files&&dt.files.length) stageFiles(dt.files);
+  }
+
   // Streaming (SSE) path.
-  function sendStream(msg){
+  function sendStream(msg,atts){
     var token=authToken();
     var headers={ "Content-Type":"application/json" };
     if(token) headers["Authorization"]="Bearer "+token;
     return fetch("/api/fabric/chat/stream",{
       method:"POST", credentials:"include", headers:headers,
-      body:JSON.stringify({ message:msg, session_id:sessionId, context:ctx() })
+      body:JSON.stringify({ message:msg, session_id:sessionId, context:ctx(), attachments:(atts&&atts.length?atts:undefined) })
     }).then(function(res){
       if(!res.ok || !res.body) throw new Error("stream "+res.status);
       var reader=res.body.getReader(), decoder=new TextDecoder(), buf="", gotAny=false;
@@ -3316,13 +3449,13 @@ init();
   }
 
   // Non-streaming fallback.
-  function sendBlocking(msg){
+  function sendBlocking(msg,atts){
     var token=authToken();
     var headers={ "Content-Type":"application/json" };
     if(token) headers["Authorization"]="Bearer "+token;
     return fetch("/api/fabric/chat",{
       method:"POST", credentials:"include", headers:headers,
-      body:JSON.stringify({ message:msg, session_id:sessionId, context:ctx() })
+      body:JSON.stringify({ message:msg, session_id:sessionId, context:ctx(), attachments:(atts&&atts.length?atts:undefined) })
     }).then(function(res){ return res.json(); }).then(function(data){
       if(data.session_id) sessionId=data.session_id;
       patchLast(function(){ return { role:"assistant", content:data.answer||"Sorry, I couldn't answer that." }; });
@@ -3332,12 +3465,14 @@ init();
 
   function send(text){
     var msg=(text!=null?text:inputEl().value).trim();
-    if(!msg || sending) return;
-    inputEl().value=""; followups=[];
-    messages.push({ role:"user", content:msg });
+    if((!msg && !staged.length) || sending) return;
+    var payload=staged.map(function(a){ return { name:a.name, mime:a.mime, data:a.data }; });
+    var meta=staged.map(function(a){ var img=attIsImage(a.mime); return { name:a.name, mime:a.mime, isImage:img, thumb:img?a.data:null }; });
+    inputEl().value=""; staged=[]; stagedErr=""; renderStaged(); followups=[];
+    messages.push({ role:"user", content:msg, attachments:meta });
     messages.push({ role:"assistant", content:"", streaming:true });
     sending=true; toolStatus=null; render();
-    sendStream(msg).catch(function(){ return sendBlocking(msg); }).catch(function(){
+    sendStream(msg,payload).catch(function(){ return sendBlocking(msg,payload); }).catch(function(){
       patchLast(function(m){ m.content=m.content||"Sorry, I hit an error. Please try again."; return m; });
     }).then(function(){
       patchLast(function(m){ if(m.streaming) m.streaming=false; return m; });
@@ -3350,15 +3485,31 @@ init();
   window.fabChatReset=function(){ messages=[]; sessionId=null; followups=[]; toolStatus=null; try{ localStorage.removeItem(SID_KEY); localStorage.removeItem(LOG_KEY); }catch(e){} render(); };
   window.fabChatSubmit=function(e){ e.preventDefault(); send(); return false; };
 
-  // Enter to send, Shift+Enter for newline.
-  document.addEventListener("DOMContentLoaded",function(){
+  // Wire up the composer: Enter to send (Shift+Enter = newline), attach button,
+  // file picker, clipboard paste, and drag-and-drop.
+  var composerReady=false;
+  function initComposer(){
+    if(composerReady) return; composerReady=true;
     var inp=inputEl();
-    if(inp){ inp.addEventListener("keydown",function(e){ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); } }); }
-  });
-  if(document.readyState!=="loading"){
-    var inp0=inputEl();
-    if(inp0){ inp0.addEventListener("keydown",function(e){ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); } }); }
+    if(inp){
+      inp.addEventListener("keydown",function(e){ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); } });
+      inp.addEventListener("paste",handlePaste);
+    }
+    var ab=document.getElementById("fab-chat-attach");
+    var fi=document.getElementById("fab-chat-file");
+    if(ab&&fi){
+      ab.addEventListener("click",function(){ fi.click(); });
+      fi.addEventListener("change",function(){ stageFiles(fi.files); fi.value=""; });
+    }
+    var p=panelEl();
+    if(p){
+      p.addEventListener("dragover",handleDragOver);
+      p.addEventListener("dragleave",handleDragLeave);
+      p.addEventListener("drop",handleDrop);
+    }
   }
+  document.addEventListener("DOMContentLoaded",initComposer);
+  if(document.readyState!=="loading"){ initComposer(); }
 })();
 </script>
 </body>

@@ -18036,7 +18036,13 @@ import json as _chat_json
 import re as _chat_re
 import uuid as _chat_uuid
 import requests as _chat_requests
+import io as _chat_io
 from starlette.concurrency import run_in_threadpool as _chat_run_in_threadpool
+
+try:
+    import pypdf as _chat_pypdf
+except Exception:
+    _chat_pypdf = None
 
 _CHAT_MODEL = "gpt-5.4"
 _CHAT_MAX_TOKENS = 8192
@@ -18589,6 +18595,123 @@ def _chat_trim_result(result):
     return s
 
 
+# --- Chat attachments (images + lightweight text files) ----------------------
+# Used in-request only — never persisted server-side. Images are passed to the
+# vision-capable model as base64 data-URL image parts; CSV/TXT/JSON/PDF files are
+# extracted to plain text and appended as clearly-delimited text blocks. The
+# multi-part user turn is sent to the LLM, but only a compact placeholder
+# ("[attached: a.png, b.csv]") is written to session history so it stays cheap
+# and the read-only/PII guards on later turns are unaffected.
+_CHAT_ATTACH_MAX_COUNT = 4
+_CHAT_ATTACH_MAX_BYTES = 8 * 1024 * 1024          # per file (decoded)
+_CHAT_ATTACH_TOTAL_MAX_BYTES = 16 * 1024 * 1024   # all files combined
+_CHAT_ATTACH_TEXT_MAX_CHARS = 20000               # extracted text cap per file
+_CHAT_ATTACH_IMAGE_MIMES = {"image/png", "image/jpeg", "image/jpg",
+                            "image/gif", "image/webp"}
+_CHAT_ATTACH_TEXT_MIMES = {"text/plain", "text/csv", "application/json",
+                           "text/markdown", "text/tab-separated-values"}
+_CHAT_ATTACH_PDF_MIMES = {"application/pdf"}
+
+
+def _chat_attach_decode(data):
+    """Accept a base64 data URL ('data:<mime>;base64,<b64>') or bare base64 and
+    return the decoded bytes (or None on failure)."""
+    if not isinstance(data, str) or not data:
+        return None
+    b64 = data
+    if data.startswith("data:"):
+        comma = data.find(",")
+        if comma == -1:
+            return None
+        b64 = data[comma + 1:]
+    try:
+        return base64.b64decode(b64, validate=False)
+    except Exception:
+        return None
+
+
+def _chat_extract_pdf_text(raw):
+    """Best-effort plain-text extraction from a small PDF. Never raises."""
+    if _chat_pypdf is None:
+        return ""
+    try:
+        reader = _chat_pypdf.PdfReader(_chat_io.BytesIO(raw))
+        out, total = [], 0
+        for page in reader.pages[:30]:
+            try:
+                txt = page.extract_text() or ""
+            except Exception:
+                continue
+            out.append(txt)
+            total += len(txt)
+            if total > _CHAT_ATTACH_TEXT_MAX_CHARS:
+                break
+        return "\n".join(out).strip()
+    except Exception:
+        return ""
+
+
+def _chat_prepare_user_turn(message, attachments):
+    """Build the OpenAI multi-part user-turn content + a compact history
+    placeholder from optional attachments.
+
+    Returns (user_content_or_None, history_text_or_None, error_or_None). When
+    there are no attachments returns (None, None, None) so the existing plain
+    string-content path is used unchanged."""
+    if not attachments:
+        return None, None, None
+    if not isinstance(attachments, list):
+        return None, None, "Sorry, those attachments couldn't be read. Please try again."
+    if len(attachments) > _CHAT_ATTACH_MAX_COUNT:
+        return None, None, ("You can attach at most %d files per message."
+                            % _CHAT_ATTACH_MAX_COUNT)
+
+    parts, names, total = [], [], 0
+    for att in attachments:
+        if not isinstance(att, dict):
+            return None, None, "Sorry, one of the attachments couldn't be read."
+        name = (str(att.get("name") or "file"))[:120]
+        mime = (str(att.get("mime") or att.get("type") or "")).strip().lower()
+        raw = _chat_attach_decode(att.get("data"))
+        if raw is None or not raw:
+            return None, None, ("Couldn't read the attachment '%s'." % name)
+        size = len(raw)
+        if size > _CHAT_ATTACH_MAX_BYTES:
+            return None, None, ("'%s' is too large (max %d MB per file)."
+                                % (name, _CHAT_ATTACH_MAX_BYTES // (1024 * 1024)))
+        total += size
+        if total > _CHAT_ATTACH_TOTAL_MAX_BYTES:
+            return None, None, ("Those attachments are too large together (max %d MB total)."
+                                % (_CHAT_ATTACH_TOTAL_MAX_BYTES // (1024 * 1024)))
+        names.append(name)
+        if mime in _CHAT_ATTACH_IMAGE_MIMES:
+            b64 = base64.b64encode(raw).decode("ascii")
+            parts.append({"type": "image_url",
+                          "image_url": {"url": "data:%s;base64,%s" % (mime, b64)}})
+        elif mime in _CHAT_ATTACH_TEXT_MIMES:
+            text = raw.decode("utf-8", "replace")[:_CHAT_ATTACH_TEXT_MAX_CHARS]
+            parts.append({"type": "text",
+                          "text": "[Attached file: %s]\n%s\n[End of %s]"
+                                  % (name, text, name)})
+        elif mime in _CHAT_ATTACH_PDF_MIMES:
+            text = _chat_extract_pdf_text(raw)[:_CHAT_ATTACH_TEXT_MAX_CHARS]
+            if not text:
+                text = "(No extractable text — the PDF may be scanned/image-only.)"
+            parts.append({"type": "text",
+                          "text": "[Attached PDF: %s]\n%s\n[End of %s]"
+                                  % (name, text, name)})
+        else:
+            return None, None, ("'%s' is an unsupported file type. Attach an image "
+                                "(PNG, JPG, GIF, WEBP) or a CSV, TXT, JSON or PDF file."
+                                % name)
+
+    msg = (message or "").strip()
+    text_msg = msg or "Please analyse the attached file(s) in the context of our fabric data."
+    user_content = [{"type": "text", "text": text_msg}] + parts
+    history_text = ((msg + " ") if msg else "") + "[attached: " + ", ".join(names) + "]"
+    return user_content, history_text.strip(), None
+
+
 _CHAT_FALLBACK = ("I'm not sure how to answer that. Try asking about sales, "
                   "customers, products, footfall or inventory.")
 
@@ -18619,7 +18742,8 @@ def _chat_followups(message, answer):
 
 
 def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False,
-                       system_prompt=None, tool_specs=None, dispatch=None):
+                       system_prompt=None, tool_specs=None, dispatch=None,
+                       user_content=None, history_text=None):
     """The tool-calling agent loop as a generator of event dicts:
       {"type":"token","text":...}   streamed answer tokens
       {"type":"tool","name":..,"status":"running"|"done"}
@@ -18639,7 +18763,8 @@ def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False,
 
     messages = [{"role": "system", "content": sys_prompt}]
     messages += history[-_CHAT_MAX_TURNS:]
-    messages.append({"role": "user", "content": message})
+    messages.append({"role": "user",
+                     "content": user_content if user_content is not None else message})
 
     final_parts = []
     answered = False
@@ -18698,7 +18823,8 @@ def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False,
 
     with _CHAT_SESSIONS_LOCK:
         h = _CHAT_SESSIONS.get(session_id, [])
-        h.append({"role": "user", "content": message})
+        h.append({"role": "user",
+                  "content": history_text if history_text is not None else message})
         h.append({"role": "assistant", "content": answer})
         _CHAT_SESSIONS[session_id] = h[-_CHAT_MAX_TURNS * 2:]
 
@@ -18937,17 +19063,29 @@ def _fabric_chat_system_prompt(ctx):
     )
 
 
-def _fabric_chat_agent_events(message, session_id, ctx, revealed, want_followups=False):
-    return _chat_agent_events(
-        message, session_id, ctx, revealed, want_followups=want_followups,
-        system_prompt=_fabric_chat_system_prompt(ctx),
-        tool_specs=_FABRIC_CHAT_TOOL_SPECS,
-        dispatch=_FABRIC_CHAT_TOOL_DISPATCH)
+def _fabric_chat_agent_events(message, session_id, ctx, revealed, want_followups=False,
+                              attachments=None):
+    # Build the (optional) multi-part user turn from attachments. On a validation
+    # error, surface it as a chat error and stop — keeping the read-only/PII
+    # guarantees of the shared loop unchanged.
+    user_content, history_text, err = _chat_prepare_user_turn(message, attachments)
+    if err:
+        yield {"type": "error", "message": err}
+        yield {"type": "done", "session_id": session_id, "followups": []}
+        return
+    for ev in _chat_agent_events(
+            message, session_id, ctx, revealed, want_followups=want_followups,
+            system_prompt=_fabric_chat_system_prompt(ctx),
+            tool_specs=_FABRIC_CHAT_TOOL_SPECS,
+            dispatch=_FABRIC_CHAT_TOOL_DISPATCH,
+            user_content=user_content, history_text=history_text):
+        yield ev
 
 
-def _fabric_chat_core(message, session_id, ctx, revealed):
+def _fabric_chat_core(message, session_id, ctx, revealed, attachments=None):
     parts = []
-    for ev in _fabric_chat_agent_events(message, session_id, ctx, revealed, want_followups=False):
+    for ev in _fabric_chat_agent_events(message, session_id, ctx, revealed,
+                                        want_followups=False, attachments=attachments):
         if ev["type"] == "token":
             parts.append(ev["text"])
         elif ev["type"] == "error":
@@ -18964,7 +19102,8 @@ async def fabric_chat_post(request: Request):
     message = (body.get("message") or "").strip()
     session_id = body.get("session_id") or _chat_uuid.uuid4().hex
     ctx = body.get("context") or {}
-    if not message:
+    attachments = body.get("attachments") or None
+    if not message and not attachments:
         return {"session_id": session_id,
                 "answer": "Ask me about fabric stock, consumption, ageing, dead stock, purchase orders or months of cover."}
     if not (os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
@@ -18972,7 +19111,7 @@ async def fabric_chat_post(request: Request):
         return {"session_id": session_id,
                 "answer": "The assistant isn't configured yet. Please try again later."}
     revealed = pii_revealed(request)
-    answer = await _chat_run_in_threadpool(_fabric_chat_core, message, session_id, ctx, revealed)
+    answer = await _chat_run_in_threadpool(_fabric_chat_core, message, session_id, ctx, revealed, attachments)
     return {"session_id": session_id, "answer": answer}
 
 
@@ -18987,6 +19126,7 @@ async def fabric_chat_stream_post(request: Request):
     message = (body.get("message") or "").strip()
     session_id = body.get("session_id") or _chat_uuid.uuid4().hex
     ctx = body.get("context") or {}
+    attachments = body.get("attachments") or None
     revealed = pii_revealed(request)
 
     configured = bool(os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
@@ -18995,7 +19135,7 @@ async def fabric_chat_stream_post(request: Request):
     def gen():
         def sse(ev):
             return "data: " + _chat_json.dumps(ev) + "\n\n"
-        if not message:
+        if not message and not attachments:
             yield sse({"type": "token", "text":
                        "Ask me about fabric stock, consumption, ageing, dead stock, purchase orders or months of cover."})
             yield sse({"type": "done", "session_id": session_id, "followups": []})
@@ -19006,7 +19146,8 @@ async def fabric_chat_stream_post(request: Request):
             yield sse({"type": "done", "session_id": session_id, "followups": []})
             return
         try:
-            for ev in _fabric_chat_agent_events(message, session_id, ctx, revealed, want_followups=True):
+            for ev in _fabric_chat_agent_events(message, session_id, ctx, revealed,
+                                                want_followups=True, attachments=attachments):
                 yield sse(ev)
         except Exception:
             yield sse({"type": "error",
