@@ -1084,6 +1084,233 @@ def metres_per_garment_xlsx(days: int = Query(default=30)):
     )
 
 
+# ── Basic Fabrics — Months of Cover: downloadable .xlsx calculations report ──
+# The full audit trail behind the "Basic Fabrics — Months of Cover" Overview KPI:
+# every curated (vendor, fabric-code) pairing and whether it matched a product,
+# each matched product with its RMAT/Stock on-hand kg, and the 6-month net
+# consumption that drives the run-rate denominator. The cover figure and the
+# stock/run-rate it divides MUST mirror the summary KPI exactly (same resolver,
+# same RMAT/Stock base, same _months_of_cover projection over the curated ids) so
+# the workbook reconciles to the card.
+@fabric_router.get("/api/fabric/basic-fabrics-cover.xlsx")
+def basic_fabrics_cover_xlsx():
+    from fastapi.responses import Response
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, PatternFill
+
+    with _get_conn() as conn:
+        # Per-pair resolution — same matching as _resolve_basic_fabrics, but the
+        # per-pairing product ids are kept so the "Curated fabrics" sheet can show
+        # exactly which pairings matched and what each one holds in stock.
+        pair_rows = []   # {supplier, code, ids:set}
+        all_ids = set()
+        for supplier, codes in BASIC_FABRICS.items():
+            for code in codes:
+                esc = (str(code).replace("\\", "\\\\")
+                                .replace("%", "\\%")
+                                .replace("_", "\\_"))
+                like = f"%{esc}%"
+                rows = q(conn, r"""
+                    SELECT id FROM raw_fabric_products p
+                    WHERE lower(btrim(COALESCE(p.supplier,''))) = lower(btrim(%s))
+                      AND (COALESCE(p.name,'')         ILIKE %s ESCAPE '\'
+                        OR COALESCE(p.default_code,'') ILIKE %s ESCAPE '\'
+                        OR COALESCE(p.barcode,'')      ILIKE %s ESCAPE '\')
+                """, [supplier, like, like, like])
+                ids = {r["id"] for r in rows}
+                all_ids.update(ids)
+                pair_rows.append({"supplier": supplier, "code": code, "ids": ids})
+
+        basic_ids = list(all_ids)
+        matched = sum(1 for p in pair_rows if p["ids"])
+        total = len(pair_rows)
+
+        # Per-product master info + RMAT/Stock on-hand kg (the cover stock base).
+        prod_info, stock_by_pid = {}, {}
+        if basic_ids:
+            ids_csv = ",".join(str(int(x)) for x in basic_ids)
+            for r in q(conn, f"""
+                SELECT id, default_code AS sku, name, supplier,
+                       fabric_category AS category
+                FROM raw_fabric_products WHERE id IN ({ids_csv})
+            """):
+                prod_info[r["id"]] = r
+            for r in q(conn, f"""
+                SELECT i.product_id AS pid, ROUND(SUM(i.quantity)::numeric, 1) AS kg
+                FROM raw_fabric_inventory i
+                WHERE i.quantity > 0
+                  AND i.location_name = 'RMAT/Stock'
+                  AND i.product_id IN ({ids_csv})
+                GROUP BY i.product_id
+            """):
+                stock_by_pid[r["pid"]] = float(r["kg"] or 0)
+            # Headline stock MUST use the SAME single-aggregate ROUND(SUM(...))
+            # the KPI uses (NOT SUM of per-product ROUNDs — that drifts by a few
+            # tenths and breaks reconciliation). Per-product values above stay for
+            # the detail sheet only.
+            basic_stock_kg = q(conn, f"""
+                SELECT ROUND(SUM(i.quantity)::numeric, 1) AS kg
+                FROM raw_fabric_inventory i
+                WHERE i.quantity > 0
+                  AND i.location_name = 'RMAT/Stock'
+                  AND i.product_id IN ({ids_csv})
+            """)[0]["kg"] or 0
+            basic_stock_kg = round(float(basic_stock_kg), 1)
+        else:
+            basic_stock_kg = 0.0
+
+        # Cover + run-rate (identical to the summary KPI: bypasses main/support
+        # scope, restricted to the curated ids, RMAT/Stock kg base).
+        if basic_ids:
+            cov = _months_of_cover(conn, basic_stock_kg, "main",
+                                   product_ids=basic_ids)
+            status = cov["months_of_cover_status"]
+        else:
+            cov = {"months_of_cover": None, "months_of_cover_status": "no_match",
+                   "avg_monthly_consumption_kg": 0.0, "projected_month_kg": 0.0,
+                   "projected_month_mtd_kg": 0.0, "projected_month_label": ""}
+            status = "no_match"
+
+        # 6-month net consumption by month for the curated set (same window/model
+        # as _months_of_cover so the run-rate denominator is auditable).
+        if basic_ids:
+            ids_csv = ",".join(str(int(x)) for x in basic_ids)
+            month_rows = q(conn, f"""
+                SELECT to_char(date_trunc('month', m.date::date),'YYYY-MM') AS mon,
+                       SUM({_net_kg('m')})::numeric AS kg
+                FROM {EFFECTIVE_MOVES} m
+                LEFT JOIN raw_fabric_products p ON p.id = m.product_id
+                WHERE {_net_cons_where('m')}
+                  AND m.product_id IN ({ids_csv})
+                  AND m.date::date >= (date_trunc('month', CURRENT_DATE)
+                                       - INTERVAL '6 months')::date
+                GROUP BY 1 ORDER BY 1
+            """)
+        else:
+            month_rows = []
+
+    # ── Build the workbook ───────────────────────────────────────────────
+    wb = openpyxl.Workbook()
+    HEAD = Font(bold=True, color="FFFFFF")
+    HEAD_FILL = PatternFill("solid", fgColor="1A5C38")
+    TITLE = Font(bold=True, size=13)
+    LBL = Font(bold=True)
+    LINK = Font(color="1A5C38", underline="single")
+
+    def _style_header(ws, ncols, row=1):
+        for c in range(1, ncols + 1):
+            cell = ws.cell(row=row, column=c)
+            cell.font = HEAD
+            cell.fill = HEAD_FILL
+
+    _status_text = {
+        "ok": "OK — computed from run-rate",
+        "overstocked": "Overstocked — stock on hand but no recent consumption",
+        "no_data": "No data — no curated stock or consumption",
+        "no_match": "No match — no curated fabric resolved to a product",
+    }
+    cover_disp = (cov["months_of_cover"] if status == "ok"
+                  and cov["months_of_cover"] is not None
+                  else ("12+ (overstocked)" if status == "overstocked" else "—"))
+
+    # Summary sheet
+    ws = wb.active
+    ws.title = "Summary"
+    ws["A1"] = "Basic Fabrics — Months of Cover — calculations report"
+    ws["A1"].font = TITLE
+    srows = [
+        ("Basic Fabrics — Months of Cover (KPI)", cover_disp),
+        ("Status", _status_text.get(status, status)),
+        ("Curated fabrics matched", "%d of %d" % (matched, total)),
+        ("RMAT/Stock on hand (kg)", basic_stock_kg),
+        ("Avg monthly net consumption (kg)", cov.get("avg_monthly_consumption_kg")),
+        ("Projected current month (kg)%s" % (
+            " — %s" % cov["projected_month_label"]
+            if cov.get("projected_month_label") else ""),
+         cov.get("projected_month_kg")),
+        ("Month-to-date consumption (kg)", cov.get("projected_month_mtd_kg")),
+        ("Cover window (months)", 6),
+        ("Basis", "RMAT/Stock on-hand kg ÷ 6-month projected net monthly "
+                  "consumption, restricted to the curated staple fabrics"),
+        ("Reconciliation", "Stock on hand ÷ Avg monthly net consumption "
+                           "= Months of cover"),
+    ]
+    for i, (label, val) in enumerate(srows):
+        ws.cell(row=3 + i, column=1, value=label).font = LBL
+        ws.cell(row=3 + i, column=2, value=val)
+    ws.column_dimensions["A"].width = 40
+    ws.column_dimensions["B"].width = 58
+
+    # Curated fabrics sheet (one row per vendor+code pairing)
+    ws2 = wb.create_sheet("Curated fabrics")
+    cur_cols = ["Vendor / supplier", "Fabric code", "Matched",
+                "Products matched", "Stock on hand (kg)"]
+    ws2.append(cur_cols)
+    _style_header(ws2, len(cur_cols))
+    for p in pair_rows:
+        pkg = round(sum(stock_by_pid.get(pid, 0.0) for pid in p["ids"]), 1)
+        ws2.append([
+            p["supplier"], str(p["code"]),
+            "Yes" if p["ids"] else "No",
+            len(p["ids"]),
+            pkg if p["ids"] else None,
+        ])
+    for col, w in zip("ABCDE", [24, 18, 10, 18, 18]):
+        ws2.column_dimensions[col].width = w
+
+    # Matched products sheet (one row per resolved product; reconciles to stock)
+    ws3 = wb.create_sheet("Matched products")
+    prod_cols = ["Fabric SKU", "Fabric name", "Supplier", "Category",
+                 "Stock on hand (kg)", "Open in Odoo"]
+    ws3.append(prod_cols)
+    _style_header(ws3, len(prod_cols))
+    prod_sorted = sorted(
+        basic_ids, key=lambda pid: stock_by_pid.get(pid, 0.0), reverse=True)
+    if not prod_sorted:
+        ws3.append(["No curated fabric currently resolves to a product."])
+    for pid in prod_sorted:
+        info = prod_info.get(pid, {})
+        ws3.append([
+            info.get("sku"), info.get("name"), info.get("supplier"),
+            info.get("category"), round(stock_by_pid.get(pid, 0.0), 1), None,
+        ])
+        url = _odoo_product_url(pid)
+        if url:
+            cell = ws3.cell(row=ws3.max_row, column=len(prod_cols))
+            cell.value = "Open in Odoo"
+            cell.hyperlink = url
+            cell.font = LINK
+    for col, w in zip("ABCDEF", [18, 40, 22, 18, 18, 14]):
+        ws3.column_dimensions[col].width = w
+
+    # Monthly consumption sheet (the 6-month net run-rate detail)
+    ws4 = wb.create_sheet("Monthly consumption")
+    mc_cols = ["Month", "Net consumption (kg)"]
+    ws4.append(mc_cols)
+    _style_header(ws4, len(mc_cols))
+    for r in month_rows:
+        ws4.append([r["mon"], round(float(r["kg"] or 0), 1)])
+    ws4.append([])
+    ws4.append(["Projected current month (kg)", cov.get("projected_month_kg")])
+    ws4.append(["Avg monthly net consumption (kg)",
+                cov.get("avg_monthly_consumption_kg")])
+    ws4.cell(row=ws4.max_row - 1, column=1).font = LBL
+    ws4.cell(row=ws4.max_row, column=1).font = LBL
+    for col, w in zip("AB", [34, 22]):
+        ws4.column_dimensions[col].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    data = buf.getvalue()
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition":
+                 'attachment; filename="basic-fabrics-months-of-cover.xlsx"'},
+    )
+
+
 # ── Data quality: fabrics driving the metres/garment fallback ──────────
 # The "Avg metres / garment" KPI converts any Done-DPS MO whose main fabric has
 # no usable kg→metre conversion using the overall fabric-average (fallback) so the

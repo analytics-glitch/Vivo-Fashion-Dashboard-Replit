@@ -1973,6 +1973,22 @@ async function downloadMpgXlsx(){
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
   }catch(e){alert('Could not generate the Excel report. Please try again.');}
 }
+// Basic Fabrics — Months of Cover calculations workbook (curated pairings,
+// matched products + stock, and the 6-month net consumption run-rate). Same
+// curated set the KPI card uses, so a fresh download always reconciles to it.
+async function downloadBasicCoverXlsx(){
+  try{
+    const r=await fetch('/api/fabric/basic-fabrics-cover.xlsx',{credentials:'include'});
+    if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
+    if(!r.ok)throw new Error('http '+r.status);
+    const blob=await r.blob();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='basic-fabrics-months-of-cover.xlsx';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  }catch(e){alert('Could not generate the Excel report. Please try again.');}
+}
 // ── By primary colour (merged: on-hand stock + 30d consumption + covers) ──
 // Representative swatch per derived primary colour (Vivo Colour Directory 2025).
 // White/light swatches get a faint border (the dot's border in renderColorMerged)
@@ -2166,7 +2182,8 @@ function renderKpis(d,mpg){
      else if(bst==='no_match'){bval='&mdash;';btip=esc('No curated staple fabric currently matches a product (this can happen transiently while fabric data is rebuilding). The matched count below shows the gap.');}
      else{bval='&mdash;';btip=esc('No curated staple-fabric stock and no recent consumption, so there is nothing to compute.');}
      const bsubLine=(bst==='overstocked')?`${bsub} &middot; no recent use`:bsub;
-     return `<div class="kpi" title="${btip}"${fx(FX.basicMonthsCover)}><span class="eyebrow">Basic Fabrics &mdash; months of cover</span><p class="kpi-value ${bcls}">${bval}</p><p class="kpi-sub">${bsubLine}</p></div>`;})()}`;
+     const bdl=(bm!=null)?`<button class="btn ghost" style="margin-top:.5rem;padding:0 10px;height:28px;font-size:11px;" onclick="downloadBasicCoverXlsx()" title="Download the full calculation audit trail (curated staple-fabric pairings, matched products with stock on hand, and the 6-month net consumption run-rate) as an Excel workbook">&#11015; Download calculations (Excel)</button>`:'';
+     return `<div class="kpi" title="${btip}"${fx(FX.basicMonthsCover)}><span class="eyebrow">Basic Fabrics &mdash; months of cover</span><p class="kpi-value ${bcls}">${bval}</p><p class="kpi-sub">${bsubLine}</p>${bdl}</div>`;})()}`;
 }
 // Per-supplier avg cost per metre (purchases) — compact, sortable table tucked
 // onto the Purchase orders tab. "—" rows are suppliers whose fabrics lack kg→metre.
