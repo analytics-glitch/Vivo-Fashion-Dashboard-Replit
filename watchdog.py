@@ -58,6 +58,8 @@ from datetime import datetime, timezone
 
 import psycopg2
 
+from port_guard import free_port
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [watchdog] %(message)s",
@@ -529,6 +531,10 @@ def main():
     log.info("Watchdog starting (manage_api=%s, api_port=%s)", MANAGE_API, API_PORT)
 
     if MANAGE_API:
+        # Clear any stale uvicorn left holding the port (an orphan from a
+        # crashed/replaced run) so the fresh API can bind instead of dying with
+        # 'address already in use' while the orphan keeps serving stale code.
+        free_port(API_PORT, log=log.info)
         spawn("api")
         time.sleep(3)  # let uvicorn bind before the sync hammers the DB
 

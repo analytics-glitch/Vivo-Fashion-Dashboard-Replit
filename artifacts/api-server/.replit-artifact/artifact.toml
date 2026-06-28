@@ -13,7 +13,7 @@ paths = ["/api", "/fabric", "/clienteling"]
 PORT = "8080"
 
 [services.development]
-run = "python3 -m uvicorn api_pg:app --app-dir /home/runner/workspace --host 0.0.0.0 --port 8080"
+run = "python3 /home/runner/workspace/run_api.py"
 
 [services.production]
 

@@ -37,3 +37,16 @@ parent env. Only restarting the *supervisor* picks up fresh secrets.
 shell command line (which contains that string) and SIGKILLs the shell (exit 137)
 before killing uvicorn — leaving the target alive. Kill by **PID**, or match with
 the `[u]vicorn`/`[w]atchdog` bracket trick so the pattern can't match itself.
+
+**Automatic guard (now in place):** `port_guard.free_port(port)` scans `/proc`
+for a stale `uvicorn`+`api_pg` process holding the port and SIGTERM→SIGKILLs it
+*before* binding. It runs from the two launch sites only — the dev launcher
+`run_api.py` (the api-server dev `run` command is now `python3 run_api.py`, NOT
+`uvicorn …` directly) and `watchdog.py` `main()` before `spawn("api")`. It is
+deliberately NOT an `api_pg` import side-effect (9 scripts/tests import api_pg and
+must never kill the server). `_port_free` sets `SO_REUSEADDR` to mirror uvicorn so
+a normal `TIME_WAIT` after a restart does not read as "busy" (only an active
+LISTEN does). This makes the dev orphan-squat self-heal on restart; the manual
+kill-by-PID procedure above is now only a fallback (e.g. a rogue *watchdog* that
+respawns its child, which the guard won't stop since it kills uvicorn not the
+supervisor).
