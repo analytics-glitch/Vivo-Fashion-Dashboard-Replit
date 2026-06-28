@@ -339,9 +339,26 @@ def _months_of_cover(conn, fabric_stock_kg, scope="main", product_ids=None):
     avg_prior = sum_prior / 6.0
     cover_prior = (fabric_stock_kg / avg_prior) if avg_prior > 0 else None
 
+    # Status lets the frontend degrade gracefully instead of collapsing a card
+    # with real stock to a bare "—". Three cases:
+    #   "ok"          – run-rate present, months_of_cover is a real number.
+    #   "overstocked" – stock on hand but ZERO trailing-window consumption, so
+    #                   the divide is undefined yet cover is effectively "very
+    #                   high" (a genuinely slow staple, or mid-rebuild). Render a
+    #                   capped "12+"/"no recent use" marker, not a dash.
+    #   "no_data"     – neither stock nor consumption (truly nothing to show).
+    if avg_monthly > 0:
+        cover_status = "ok"
+    elif fabric_stock_kg > 0:
+        cover_status = "overstocked"
+    else:
+        cover_status = "no_data"
+
     import calendar as _calmod
     return {
         "months_of_cover": round(cover_now, 2) if cover_now is not None else None,
+        "months_of_cover_status": cover_status,
+        "months_of_cover_stock_kg": round(fabric_stock_kg, 1),
         "months_of_cover_prior": round(cover_prior, 2) if cover_prior is not None else None,
         "avg_monthly_consumption_kg": round(avg_monthly, 1),
         "projected_month_kg": round(projected_month, 1),
@@ -652,12 +669,18 @@ def summary(location: str = Query(default="RMAT/Stock"),
                   AND i.location_name='RMAT/Stock'
                   AND i.product_id IN ({",".join(str(int(x)) for x in basic_ids)})
             """)[0]['kg'] or 0
-            basic_cover = _months_of_cover(
+            _basic = _months_of_cover(
                 conn, basic_stock_kg, scope_param, product_ids=basic_ids
-            )['months_of_cover']
+            )
+            basic_cover = _basic['months_of_cover']
+            basic_cover_status = _basic['months_of_cover_status']
         else:
+            # No curated pairing matched any product (e.g. mid-rebuild): there is
+            # genuinely nothing to compute. Surface this distinctly from a
+            # stock-but-no-usage "overstocked" state so the card stays legible.
             basic_stock_kg = 0
             basic_cover = None
+            basic_cover_status = "no_match"
 
         # Headline KPIs reflect the selected scope; All = RMAT + Dead.
         return {
@@ -682,6 +705,7 @@ def summary(location: str = Query(default="RMAT/Stock"),
             "consumption_today_metres": cons_today['metres'] or 0,
             "styles_with_bom": bom['styles'] or 0,
             "basic_months_of_cover": basic_cover,
+            "basic_months_of_cover_status": basic_cover_status,
             "basic_fabrics_matched": basic_matched,
             "basic_fabrics_total": basic_total,
             "basic_fabrics_stock_kg": round(float(basic_stock_kg or 0), 1),

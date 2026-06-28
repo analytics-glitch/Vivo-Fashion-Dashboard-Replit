@@ -2107,8 +2107,22 @@ function renderKpis(d,mpg){
     }
   }
   const projMo=esc(d.projected_month_label||'');
-  const coverNote=(cover!=null)?`stock &divide; monthly use &middot; incl. projected ${projMo}`:'stock &divide; monthly use';
-  const coverTip=(cover!=null)?esc(`Months of cover = current stock ÷ monthly run-rate. Monthly run-rate = 6-month AVERAGE consumption (not last-30-days), with ${d.projected_month_label} projected to a full month (${fmt(d.projected_month_mtd_kg)} kg so far → ${fmt(d.projected_month_kg)} kg est.). It therefore differs from stock ÷ the 'Consumed 30d' figure, which is a single recent month.`):'';
+  // Graceful degradation: when there is stock but no trailing-window consumption
+  // (a genuinely slow staple, or a transient mid-rebuild), the divide is undefined.
+  // Rather than collapse the card to a bare "—", show a capped "12+ / overstocked"
+  // marker. "no_data" = neither stock nor usage. (backend months_of_cover_status)
+  const coverStatus=d.months_of_cover_status||(cover!=null?'ok':'no_data');
+  const coverStockKg=(d.months_of_cover_stock_kg!=null)?d.months_of_cover_stock_kg:null;
+  const coverNote=(coverStatus==='overstocked')
+      ?`overstocked &middot; no recent use${coverStockKg!=null?` &middot; ${fmt(coverStockKg)} kg on hand`:''}`
+      :(coverStatus==='no_data')
+        ?'no stock or recent usage'
+        :(cover!=null)?`stock &divide; monthly use &middot; incl. projected ${projMo}`:'stock &divide; monthly use';
+  const coverTip=(coverStatus==='overstocked')
+      ?esc(`Stock is on hand but there was no consumption in the trailing 6-month window, so months-of-cover cannot be divided. Cover is effectively very high (shown as 12+). This is a genuinely slow-moving staple or a transient state while fabric data is rebuilding — not a broken metric.`)
+      :(coverStatus==='no_data')
+        ?esc('No fabric stock and no recent consumption, so there is nothing to compute.')
+        :(cover!=null)?esc(`Months of cover = current stock ÷ monthly run-rate. Monthly run-rate = 6-month AVERAGE consumption (not last-30-days), with ${d.projected_month_label} projected to a full month (${fmt(d.projected_month_mtd_kg)} kg so far → ${fmt(d.projected_month_kg)} kg est.). It therefore differs from stock ÷ the 'Consumed 30d' figure, which is a single recent month.`):'';
   const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
   // Avg cost per metre (per-metre regardless of the kg/metre unit toggle). Render
   // "—" when the backend flags the figure incomplete (any in-scope fabric missing
@@ -2130,11 +2144,29 @@ function renderKpis(d,mpg){
        sub+=` &middot; <span class="amber" title="${esc(fmt(fbn)+' of these MOs use a fabric with no kg→metre conversion in Odoo, converted via the overall fabric-average Kg/Mtr'+(fk!=null?(' ('+fk+' kg/m)'):'')+' so they are still counted.')}">${fmt(fbn)} via fallback kg/m</span>`;}
      const dl=(v!=null)?`<button class="btn ghost" style="margin-top:.5rem;padding:0 10px;height:28px;font-size:11px;" onclick="downloadMpgXlsx()" title="Download the full calculation audit trail (every Done-DPS MO, its fabric components and the kg→metre conversion) as an Excel workbook">&#11015; Download calculations (Excel)</button>`:'';
      return `<div class="kpi"><span class="eyebrow">Avg metres / garment</span><p class="kpi-value"${fx(FX.metresPerGarment)}>${v!=null?v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+' m':'&mdash;'}</p><p class="kpi-sub">${sub}</p>${dl}</div>`;})()}
-   <div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${cover!=null&&cover<1?'amber':''}"${fx(FX.monthsCover)}>${cover!=null?coverFmt(cover):'&mdash;'} ${coverTrend}</p><p class="kpi-sub">${coverNote}</p></div>
+   ${(()=>{
+     // Headline value: number when computable, capped "12+" when overstocked
+     // (stock but no recent use), "—" only when there is genuinely no data.
+     let cval,ccls='';
+     if(coverStatus==='overstocked'){cval='12+';}
+     else if(coverStatus==='ok'&&cover!=null){cval=`${coverFmt(cover)} ${coverTrend}`;ccls=cover<1?'amber':'';}
+     else{cval='&mdash;';}
+     return `<div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${ccls}"${fx(FX.monthsCover)}>${cval}</p><p class="kpi-sub">${coverNote}</p></div>`;})()}
    ${(()=>{const bc=(d.basic_months_of_cover!=null)?d.basic_months_of_cover:null;
+     const bst=d.basic_months_of_cover_status||(bc!=null?'ok':'no_data');
+     const bskg=(d.basic_fabrics_stock_kg!=null)?d.basic_fabrics_stock_kg:null;
      const bm=(d.basic_fabrics_matched!=null)?d.basic_fabrics_matched:null,bt=(d.basic_fabrics_total!=null)?d.basic_fabrics_total:null;
+     // The "N of M curated fabrics matched" count must ALWAYS render — even when
+     // the headline value is unavailable — so a zero-match (mid-rebuild) state is
+     // legible instead of silently blank.
      const bsub=(bm!=null&&bt!=null)?`${fmt(bm)} of ${fmt(bt)} curated fabrics matched`:'curated staple fabrics';
-     return `<div class="kpi"${fx(FX.basicMonthsCover)}><span class="eyebrow">Basic Fabrics &mdash; months of cover</span><p class="kpi-value ${bc!=null&&bc<1?'amber':''}">${bc!=null?coverFmt(bc):'&mdash;'}</p><p class="kpi-sub">${bsub}</p></div>`;})()}`;
+     let bval,bcls='',btip='';
+     if(bst==='overstocked'){bval='12+';btip=esc(`Curated staple fabrics have stock on hand${bskg!=null?` (${fmt(bskg)} kg)`:''} but no consumption in the trailing 6-month window, so cover cannot be divided. Shown as 12+ (overstocked / no recent use), not a dash.`);}
+     else if(bst==='ok'&&bc!=null){bval=coverFmt(bc);bcls=bc<1?'amber':'';btip=esc('Combined months of cover across the curated staple-fabric set: live RMAT/Stock kg ÷ the 6-month projected net run-rate.');}
+     else if(bst==='no_match'){bval='&mdash;';btip=esc('No curated staple fabric currently matches a product (this can happen transiently while fabric data is rebuilding). The matched count below shows the gap.');}
+     else{bval='&mdash;';btip=esc('No curated staple-fabric stock and no recent consumption, so there is nothing to compute.');}
+     const bsubLine=(bst==='overstocked')?`${bsub} &middot; no recent use`:bsub;
+     return `<div class="kpi" title="${btip}"${fx(FX.basicMonthsCover)}><span class="eyebrow">Basic Fabrics &mdash; months of cover</span><p class="kpi-value ${bcls}">${bval}</p><p class="kpi-sub">${bsubLine}</p></div>`;})()}`;
 }
 // Per-supplier avg cost per metre (purchases) — compact, sortable table tucked
 // onto the Purchase orders tab. "—" rows are suppliers whose fabrics lack kg→metre.
