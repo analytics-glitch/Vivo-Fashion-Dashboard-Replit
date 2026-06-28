@@ -332,10 +332,6 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <div id="color-insights" class="color-insights"></div>
      </div>
     </div>
-    <details class="card" id="mpg-style-card" style="margin-top:1.1rem;">
-     <summary style="cursor:pointer;font-weight:600;">Metres / garment by style <span class="muted" style="font-weight:400;">— heaviest fabric consumers (rolling 90d, Done-DPS)</span></summary>
-     <div id="mpg-style" style="margin-top:.8rem;"><div class="loading">Loading…</div></div>
-    </details>
    </section>
 
    <!-- SUPPORT FABRICS (Lining + Interfacing only) -->
@@ -692,7 +688,6 @@ const FX={
   consumedToday:'Consumed today = fabric used today (OUT moves) − fabric returned from production. Shown in the selected unit (metres or kg).',
   consumed30d:'Consumed (30 days) = OUT moves − production returns over the last 30 days. Shown in the selected unit (metres or kg).',
   metresPerGarment:'Avg metres / garment = total main-fabric metres consumed ÷ total garments produced, across Done DPS manufacturing orders completed in the last 30 days. Fabric kg is converted to metres via each fabric\u2019s kg-per-metre; a fabric that has no kg-per-metre (no stored value and no Width/GSM) is converted using the overall fabric-average as a fallback, so its order is still counted. An MO is counted as long as it produced at least one garment.',
-  metresPerGarmentByStyle:'Metres / garment by style breaks the headline KPI down to each finished style. For every style: total main-fabric metres consumed ÷ garments produced across its Done DPS manufacturing orders in the last 90 days. Same conversion + exclusion rule as the KPI — an MO counts only if all its fabric is convertible and it produced at least one garment.',
   monthsCover:'Months of cover = stock on hand (kg) ÷ average monthly consumption (kg), using a 6-month average run-rate with the current month projected to a full month. Consumption is net of production returns (fabric only).',
   basicMonthsCover:'Basic Fabrics — months of cover = combined cover across only the curated set of core staple fabrics the buying team always keeps in stock (a fixed vendor + fabric-code list). Same formula as Months of cover — RMAT/Stock on-hand kg ÷ 6-month average monthly net consumption (current month projected to a full month, net of production returns) — but restricted to the curated fabrics. The sub-line shows how many of the curated fabrics were found in the data.',
   deadStock:'Dead stock = value of fabric parked in the Dead/Stock location (KES).',
@@ -1941,15 +1936,14 @@ let ovCache=null;
 async function loadOverview(){
   loadColorMix();   // colour breakdown is fetched independently (own date window)
   try{
-    const [d,cat,split,mpg,mpgStyle]=await Promise.all([
+    const [d,cat,split,mpg]=await Promise.all([
       apiFetch('/api/fabric/summary?location='+encodeURIComponent(loc())),
       apiFetch('/api/fabric/by-category?location='+encodeURIComponent(loc())),
       apiFetch('/api/fabric/attribute-split?location='+encodeURIComponent(loc())),
       // Auxiliary KPI — never let a failure break the rest of the overview.
       apiFetch('/api/fabric/metres-per-garment?days=30').catch(()=>null),
-      apiFetch('/api/fabric/metres-per-garment-by-style').catch(()=>null),
     ]);
-    ovCache={d,cat,split,mpg,mpgStyle};
+    ovCache={d,cat,split,mpg};
     renderOverviewCached();
     document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString();
   }catch(e){showErr('kpi-cards',e);['category-bars','split-print','split-structure'].forEach(id=>{const el=document.getElementById(id);if(el&&el.querySelector('.loading'))el.innerHTML='';});}
@@ -1961,42 +1955,6 @@ function renderOverviewCached(){
   renderPrintDonut(ovCache.split.plain_print);
   renderStructure('split-structure',ovCache.split.structure,FX.structureValue);
   renderColorMixCached();
-  renderMpgStyle(ovCache.mpgStyle);
-}
-// ── Metres / garment by finished style (drill-down under the KPI) ──
-let _mpgStyleData=[],_mpgStyleSort={key:'metres_per_garment',dir:-1};
-function renderMpgStyle(payload){
-  const el=document.getElementById('mpg-style'); if(!el)return;
-  _mpgStyleData=(payload&&payload.rows)||[];
-  if(payload==null){el.innerHTML='<p class="muted" style="padding:.6rem 0;">Couldn\u2019t load the per-style breakdown.</p>';return;}
-  if(!_mpgStyleData.length){el.innerHTML='<p class="muted" style="padding:.6rem 0;">No Done-DPS manufacturing orders in the last 90 days.</p>';return;}
-  const k=_mpgStyleSort.key,dir=_mpgStyleSort.dir;
-  const rows=[..._mpgStyleData].sort((a,b)=>{
-    let av=a[k],bv=b[k];
-    if(k==='style'){return String(av||'').localeCompare(String(bv||''))*dir;}
-    if(av==null&&bv==null)return 0;if(av==null)return 1;if(bv==null)return -1;
-    return (av-bv)*dir;
-  });
-  const arrow=key=>_mpgStyleSort.key===key?(_mpgStyleSort.dir===-1?' &#9660;':' &#9650;'):'';
-  el.innerHTML=`<div style="display:flex;justify-content:flex-end;margin-bottom:.4rem;">
-     <button class="btn" onclick="exportMpgStyle()">Export CSV</button></div>
-    <div class="tbl-wrap"><table class="data"><thead><tr>
-     <th onclick="sortMpgStyle('style')" style="cursor:pointer;">Style${arrow('style')}</th>
-     <th onclick="sortMpgStyle('metres_per_garment')" style="cursor:pointer;text-align:right;"${fx(FX.metresPerGarmentByStyle)}>m / garment${arrow('metres_per_garment')}</th>
-     <th onclick="sortMpgStyle('garments')" style="cursor:pointer;text-align:right;">Garments${arrow('garments')}</th>
-     <th onclick="sortMpgStyle('total_metres')" style="cursor:pointer;text-align:right;">Total metres${arrow('total_metres')}</th>
-     <th onclick="sortMpgStyle('mos')" style="cursor:pointer;text-align:right;">MOs${arrow('mos')}</th>
-    </tr></thead><tbody>${rows.map(r=>`<tr${r.mos_excluded_missing_conversion?` title="${r.mos_excluded_missing_conversion} MO(s) excluded — fabric missing a kg→metre conversion in Odoo"`:''}>
-     <td>${esc(r.style)}${r.mos_excluded_missing_conversion?' <span class="muted">&#9888;</span>':''}</td>
-     <td style="text-align:right;font-weight:600;"${fx(FX.metresPerGarmentByStyle)}>${r.metres_per_garment.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} m</td>
-     <td style="text-align:right;"${fx(FX.mpgGarments)}>${fmt(r.garments)}</td>
-     <td style="text-align:right;"${fx(FX.mpgTotalMetres)}>${fmt(r.total_metres)} m</td>
-     <td style="text-align:right;"${fx(FX.mpgMos)}>${fmt(r.mos)}</td>
-    </tr>`).join('')}</tbody></table></div>`;
-}
-function sortMpgStyle(key){
-  if(_mpgStyleSort.key===key){_mpgStyleSort.dir*=-1;}else{_mpgStyleSort.key=key;_mpgStyleSort.dir=key==='style'?1:-1;}
-  renderMpgStyle({rows:_mpgStyleData});
 }
 // Download the "Avg metres / garment" calculations workbook (.xlsx). Uses the
 // SAME 30d window the KPI card fetches with, so a fresh download always matches
@@ -2014,14 +1972,6 @@ async function downloadMpgXlsx(){
     document.body.appendChild(a);a.click();a.remove();
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
   }catch(e){alert('Could not generate the Excel report. Please try again.');}
-}
-function exportMpgStyle(){
-  const rows=_mpgStyleData||[];if(!rows.length)return;
-  const cols=[['Style',r=>r.style],['Finished SKU',r=>r.finished_sku||''],
-    ['Metres per garment',r=>r.metres_per_garment],['Garments',r=>r.garments],
-    ['Total metres',r=>r.total_metres],['MOs',r=>r.mos],
-    ['MOs excluded (missing kg/m)',r=>r.mos_excluded_missing_conversion]];
-  mixDownloadCsv(cols,rows,'metres_per_garment_by_style.csv');
 }
 // ── By primary colour (merged: on-hand stock + 30d consumption + covers) ──
 // Representative swatch per derived primary colour (Vivo Colour Directory 2025).
