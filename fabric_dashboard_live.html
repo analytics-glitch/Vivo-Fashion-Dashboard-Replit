@@ -3138,6 +3138,13 @@ init();
   .fab-chat-head button{background:none;border:none;color:#fff;cursor:pointer;opacity:.82;padding:3px 6px;font-size:12px;border-radius:6px;}
   .fab-chat-head button:hover{opacity:1;background:rgba(255,255,255,.12);}
   .fab-chat-head .fab-chat-x svg{width:16px;height:16px;display:block;}
+  .fab-chat-head .fab-chat-min svg{width:18px;height:18px;display:block;transition:transform .15s ease;}
+  /* Minimized state: collapse the panel to just its header bar, docked bottom-right. */
+  #fab-chat-panel.minimized{height:auto;}
+  #fab-chat-panel.minimized .fab-chat-body,
+  #fab-chat-panel.minimized .fab-chat-foot{display:none;}
+  #fab-chat-panel.minimized .fab-chat-head{cursor:pointer;}
+  #fab-chat-panel.minimized .fab-chat-head .fab-chat-min svg{transform:rotate(180deg);}
   .fab-chat-body{flex:1;overflow-y:auto;padding:13px 12px;display:flex;flex-direction:column;gap:10px;background:#fff;}
   .fab-chat-intro{text-align:center;color:#6b7280;font-size:12.5px;margin:6px 0 4px;}
   .fab-chat-sugg{display:flex;flex-direction:column;gap:7px;}
@@ -3195,6 +3202,9 @@ init();
       <div class="fab-chat-sub">Ask about fabric stock, consumption &amp; cover</div>
     </div>
     <button type="button" class="fab-chat-new" title="New conversation" onclick="fabChatReset()">new</button>
+    <button type="button" id="fab-chat-min" class="fab-chat-min" title="Minimize" aria-label="Minimize" onclick="fabChatMinimize(event)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>
+    </button>
     <button type="button" class="fab-chat-x" title="Close" aria-label="Close" onclick="fabChatClose()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"></path></svg>
     </button>
@@ -3218,7 +3228,7 @@ init();
 <script>
 (function(){
   "use strict";
-  var SID_KEY="vivo_fabric_chat_session_id", LOG_KEY="vivo_fabric_chat_log_v1";
+  var SID_KEY="vivo_fabric_chat_session_id", LOG_KEY="vivo_fabric_chat_log_v1", MIN_KEY="vivo_fabric_chat_minimized_v1";
   var SUGGESTIONS=[
     "What is our total fabric stock value?",
     "Which fabrics have the most dead stock?",
@@ -3227,13 +3237,14 @@ init();
   ];
   var TOOL_LABELS={run_readonly_sql:"Querying fabric data"};
   var messages=[], sessionId=null, sending=false, toolStatus=null, followups=[];
-  var staged=[], stagedErr="";
+  var staged=[], stagedErr="", minimized=false;
   // Attachment limits — mirror the server-side caps in api_pg.py.
   var ATTACH_MAX=4, ATTACH_MAX_BYTES=8*1024*1024, ATTACH_TOTAL_BYTES=16*1024*1024;
   var ATTACH_IMG=["image/png","image/jpeg","image/jpg","image/gif","image/webp"];
   var ATTACH_TXT=["text/plain","text/csv","application/json","text/markdown","text/tab-separated-values","application/pdf"];
   try{ sessionId=localStorage.getItem(SID_KEY)||null; }catch(e){}
   try{ var raw=localStorage.getItem(LOG_KEY); if(raw) messages=JSON.parse(raw)||[]; }catch(e){ messages=[]; }
+  try{ minimized=localStorage.getItem(MIN_KEY)==="1"; }catch(e){ minimized=false; }
 
   var bodyEl=function(){return document.getElementById("fab-chat-body");};
   var inputEl=function(){return document.getElementById("fab-chat-input");};
@@ -3480,7 +3491,26 @@ init();
     });
   }
 
-  window.fabChatOpen=function(){ panelEl().classList.add("open"); launchEl().style.display="none"; render(); setTimeout(function(){ try{ inputEl().focus(); }catch(e){} },40); };
+  // ---- Minimize / restore ------------------------------------------------
+  function persistMin(){ try{ localStorage.setItem(MIN_KEY, minimized?"1":"0"); }catch(e){} }
+  function applyMinimized(){
+    var p=panelEl(); if(p) p.classList.toggle("minimized", minimized);
+    var btn=document.getElementById("fab-chat-min");
+    if(btn){ btn.title=minimized?"Restore":"Minimize"; btn.setAttribute("aria-label",minimized?"Restore":"Minimize"); }
+  }
+  var savedScroll=0;
+  window.fabChatMinimize=function(e){
+    if(e){ e.stopPropagation(); }
+    // Capture the transcript scroll position before collapsing so it survives restore.
+    if(!minimized){ var b=bodyEl(); savedScroll=b?b.scrollTop:0; }
+    minimized=!minimized; applyMinimized(); persistMin();
+    if(!minimized){
+      var bb=bodyEl(); if(bb) bb.scrollTop=savedScroll;
+      setTimeout(function(){ try{ inputEl().focus(); }catch(e){} },40);
+    }
+  };
+
+  window.fabChatOpen=function(){ panelEl().classList.add("open"); launchEl().style.display="none"; render(); applyMinimized(); setTimeout(function(){ try{ if(!minimized) inputEl().focus(); }catch(e){} },40); };
   window.fabChatClose=function(){ panelEl().classList.remove("open"); launchEl().style.display="flex"; };
   window.fabChatReset=function(){ messages=[]; sessionId=null; followups=[]; toolStatus=null; try{ localStorage.removeItem(SID_KEY); localStorage.removeItem(LOG_KEY); }catch(e){} render(); };
   window.fabChatSubmit=function(e){ e.preventDefault(); send(); return false; };
@@ -3507,6 +3537,9 @@ init();
       p.addEventListener("dragleave",handleDragLeave);
       p.addEventListener("drop",handleDrop);
     }
+    // When minimized, clicking the header bar (outside its buttons) restores the panel.
+    var head=document.querySelector(".fab-chat-head");
+    if(head){ head.addEventListener("click",function(e){ if(minimized && !e.target.closest("button")){ window.fabChatMinimize(); } }); }
   }
   document.addEventListener("DOMContentLoaded",initComposer);
   if(document.readyState!=="loading"){ initComposer(); }
