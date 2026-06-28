@@ -2610,9 +2610,11 @@ const DQMO_COLS=[
   {k:'fabric_category',label:'Category'},
   {k:'fabric_subcategory',label:'Subcategory'},
   {k:'supplier',label:'Supplier'},
-  {k:'mos_blocked',label:'MOs blocked',num:true},
-  {k:'garments_blocked',label:'Garments blocked',num:true},
+  {k:'missing_fields',label:'Missing'},
+  {k:'mos_blocked',label:'MOs affected',num:true},
+  {k:'garments_blocked',label:'Garments affected',num:true},
   {k:'consumed_kg',label:'Consumed (kg)',num:true},
+  {k:'odoo_url',label:'Fix in Odoo'},
 ];
 let dqMoCache=null, dqMoSort={key:'mos_blocked',dir:'desc'};
 function dqMoSortRows(items){
@@ -2633,11 +2635,12 @@ function renderDqMo(){
   const summ=document.getElementById('dq-mo-summary');
   if(summ){
     summ.innerHTML=d.mos_excluded_missing_conversion
-      ? `<b>${fmt(d.mos_excluded_missing_conversion)} MOs</b> are excluded over the last ${fmt(d.window_days)} days, across <b>${fmt(d.count)}</b> fabric SKUs.`
+      ? `<b>${fmt(d.mos_excluded_missing_conversion)} MOs</b> fell back to the overall fabric-average conversion over the last ${fmt(d.window_days)} days, across <b>${fmt(d.count)}</b> fabric SKUs. Open each in Odoo and fill in its Width/GSM or a stored kg/m to make the KPI exact.`
       : '';
   }
   document.getElementById('dqmo-head').innerHTML='<tr>'+DQMO_COLS.map(c=>{
     const arrow=dqMoSort.key===c.k?(dqMoSort.dir==='asc'?' \u25B2':' \u25BC'):'';
+    if(c.k==='odoo_url')return `<th>${esc(c.label)}</th>`;
     return `<th class="${c.num?'r ':''}sortable" onclick="sortDqMo('${c.k}')">${esc(c.label)}${arrow}</th>`;
   }).join('')+'</tr>';
   const rows=dqMoSortRows(d.items);
@@ -2646,10 +2649,15 @@ function renderDqMo(){
         const v=r[c.k];
         if(c.k==='sku')return `<td class="num" style="font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
         if(c.k==='name')return `<td style="font-weight:600;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
+        if(c.k==='missing_fields'){const t=(v&&v.length)?v.join(', '):'—';
+          return `<td style="white-space:nowrap;"><span class="amber" title="Fill these in on the Odoo product to convert this fabric's kg→metres exactly.">${esc(t)}</span></td>`;}
+        if(c.k==='odoo_url')return v
+          ? `<td style="white-space:nowrap;"><a href="${esc(v)}" target="_blank" rel="noopener">Open in Odoo &#8599;</a></td>`
+          : `<td class="muted">—</td>`;
         if(c.num)return `<td class="r" style="font-weight:600;">${v!=null?fmt(v):'—'}</td>`;
         return `<td style="color:var(--text-sub);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
       }).join('')+'</tr>').join('')
-    : `<tr><td colspan="${DQMO_COLS.length}" class="loading">No MOs are excluded for a missing conversion. 🎉</td></tr>`;
+    : `<tr><td colspan="${DQMO_COLS.length}" class="loading">No fabrics are falling back to the average conversion. 🎉</td></tr>`;
   if(window.__fabricEnhanceTables)window.__fabricEnhanceTables();
 }
 async function loadDqMo(){

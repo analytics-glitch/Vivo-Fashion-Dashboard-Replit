@@ -4,6 +4,7 @@ Serves data for the Fabric BI dashboard
 Run: uvicorn fabric_api:app --port 8081
 """
 import datetime
+import os
 import re
 import psycopg2.extras
 from fastapi import APIRouter, Query, Request, Body, HTTPException
@@ -11,6 +12,18 @@ from fastapi import APIRouter, Query, Request, Body, HTTPException
 import fabric_sheet_override as ov
 
 fabric_router = APIRouter(tags=["fabric"])
+
+
+def _odoo_product_url(product_id):
+    """Build a deep link to an Odoo product.product form so a buyer can open the
+    fabric and fill in its Width/GSM or a stored kg/m. `product_id` is the Odoo
+    product.product id (= raw_fabric_products.id / mo_fabric_consumption.component_id).
+    Returns None when there is no id or ODOO_URL is not configured (so the UI can
+    simply omit the link rather than render a broken one)."""
+    base = (os.environ.get("ODOO_URL") or "").rstrip("/")
+    if not base or not product_id:
+        return None
+    return f"{base}/web#id={int(product_id)}&model=product.product&view_type=form"
 
 # Manual buying-team reservations are stored in an app-owned table created lazily
 # (idempotent) the first time a reservation endpoint is hit. This is distinct from
@@ -679,11 +692,16 @@ def metres_per_garment_xlsx(days: int = Query(default=30)):
                    c.produced_qty,
                    c.style_name,
                    c.finished_sku,
+                   c.component_id,
                    c.fabric_sku,
                    c.fabric_name,
                    c.consumed_qty,
                    lower(coalesce(c.uom,'')) AS uom,
-                   p.kg_per_mtr_eff AS kpm
+                   p.kg_per_mtr_eff AS kpm,
+                   p.kg_per_mtr AS kpm_stored,
+                   p.width_m,
+                   p.gsm,
+                   p.supplier
             FROM mo_fabric_consumption c
             LEFT JOIN raw_fabric_products p ON p.id = c.component_id
             WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
@@ -712,7 +730,10 @@ def metres_per_garment_xlsx(days: int = Query(default=30)):
         kpm = r["kpm"]
         comp = {
             "odoo_mo_id": r["odoo_mo_id"], "mo_ref": r["mo_ref"],
+            "component_id": r["component_id"],
             "fabric_sku": r["fabric_sku"], "fabric_name": r["fabric_name"],
+            "supplier": r["supplier"],
+            "width_m": r["width_m"], "gsm": r["gsm"], "kpm_stored": r["kpm_stored"],
             "uom": r["uom"], "consumed_qty": qty,
             "kpm_used": None, "used_fallback": False, "metres": 0.0,
         }
@@ -812,12 +833,15 @@ def metres_per_garment_xlsx(days: int = Query(default=30)):
         ws2.column_dimensions[col].width = w
 
     # Per-component sheet (only components of qualifying MOs, to reconcile).
+    # The "Open in Odoo" column deep-links the fabric so a buyer can jump straight
+    # to the product and fill in its Width/GSM or a stored kg/m.
     ws3 = wb.create_sheet("Per-component")
     comp_cols = ["MO ref", "Fabric SKU", "Fabric name", "UoM",
                  "Consumed qty", "Kg per metre used", "Used fallback",
-                 "Metres contributed"]
+                 "Metres contributed", "Open in Odoo"]
     ws3.append(comp_cols)
     _style_header(ws3, len(comp_cols))
+    LINK = Font(color="1A5C38", underline="single")
     for c in components:
         if c["odoo_mo_id"] not in qualifying_mo_ids:
             continue
@@ -827,9 +851,76 @@ def metres_per_garment_xlsx(days: int = Query(default=30)):
             (round(c["kpm_used"], 4) if c["kpm_used"] is not None else None),
             "Yes" if c["used_fallback"] else "No",
             round(c["metres"], 3),
+            None,
         ])
-    for col, w in zip("ABCDEFGH", [16, 18, 40, 8, 14, 18, 14, 18]):
+        # Only fabrics on the fallback need fixing — link those.
+        if c["used_fallback"]:
+            url = _odoo_product_url(c["component_id"])
+            if url:
+                cell = ws3.cell(row=ws3.max_row, column=len(comp_cols))
+                cell.value = "Open in Odoo"
+                cell.hyperlink = url
+                cell.font = LINK
+    for col, w in zip("ABCDEFGHI", [16, 18, 40, 8, 14, 18, 14, 18, 14]):
         ws3.column_dimensions[col].width = w
+
+    # ── "Fabrics to fix" sheet — the companion view the buyers actually act on ──
+    # One row per fabric that forced the fallback (no own kg→metre conversion),
+    # ranked by impact, with what's missing and a direct Odoo link.
+    fix = {}
+    for c in components:
+        if c["odoo_mo_id"] not in qualifying_mo_ids or not c["used_fallback"]:
+            continue
+        cid = c["component_id"]
+        f = fix.setdefault(cid, {
+            "component_id": cid, "sku": c["fabric_sku"], "name": c["fabric_name"],
+            "supplier": c["supplier"], "width_m": c["width_m"], "gsm": c["gsm"],
+            "kpm_stored": c["kpm_stored"], "_mos": set(),
+            "metres": 0.0, "consumed_qty": 0.0,
+        })
+        f["_mos"].add(c["odoo_mo_id"])
+        f["metres"] += c["metres"]
+        f["consumed_qty"] += c["consumed_qty"]
+
+    def _missing_str(f):
+        m = []
+        if not (f["kpm_stored"] and float(f["kpm_stored"]) > 0):
+            if not (f["width_m"] and float(f["width_m"]) > 0):
+                m.append("Width")
+            if not (f["gsm"] and float(f["gsm"]) > 0):
+                m.append("GSM")
+            if not m:
+                m.append("Kg/Mtr")
+        return ", ".join(m)
+
+    fix_rows = sorted(fix.values(), key=lambda f: (len(f["_mos"]), f["metres"]), reverse=True)
+    ws4 = wb.create_sheet("Fabrics to fix")
+    ws4["A1"] = "Fabrics driving the fallback conversion — fill in Width/GSM or a kg/m in Odoo"
+    ws4["A1"].font = TITLE
+    fix_cols = ["Fabric SKU", "Fabric name", "Supplier", "Missing",
+                "MOs affected", "Fallback metres", "Consumed (kg)", "Open in Odoo"]
+    ws4.append([])  # spacer row 2
+    ws4.append(fix_cols)  # header on row 3
+    for col in range(1, len(fix_cols) + 1):
+        cell = ws4.cell(row=3, column=col)
+        cell.font = HEAD
+        cell.fill = HEAD_FILL
+    if not fix_rows:
+        ws4.append(["No fabrics relied on the fallback in this window. 🎉"])
+    for f in fix_rows:
+        ws4.append([
+            f["sku"], f["name"], f["supplier"], _missing_str(f),
+            len(f["_mos"]), round(f["metres"], 1), round(f["consumed_qty"], 1),
+            None,
+        ])
+        url = _odoo_product_url(f["component_id"])
+        if url:
+            cell = ws4.cell(row=ws4.max_row, column=len(fix_cols))
+            cell.value = "Open in Odoo"
+            cell.hyperlink = url
+            cell.font = LINK
+    for col, w in zip("ABCDEFGH", [18, 40, 22, 16, 14, 16, 14, 14]):
+        ws4.column_dimensions[col].width = w
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -842,15 +933,16 @@ def metres_per_garment_xlsx(days: int = Query(default=30)):
     )
 
 
-# ── Data quality: fabrics blocking the metres/garment KPI ──────────────
-# The "Avg metres / garment" KPI silently drops any Done-DPS MO that has even
-# one main-fabric component with no usable kg→metre conversion. This lists the
-# fabric SKUs responsible — how many MOs and garments each one blocks — so the
-# team can backfill the Odoo fabric master and steadily grow KPI coverage. The
-# bad-MO determination MUST mirror metres_per_garment exactly (same window, same
-# convertibility test, NULL kpm treated as missing) so the counts reconcile with
-# that endpoint's `mos_excluded_missing_conversion`. A garment/MO can be blocked
-# by more than one fabric, so per-fabric counts can sum to more than the total.
+# ── Data quality: fabrics driving the metres/garment fallback ──────────
+# The "Avg metres / garment" KPI converts any Done-DPS MO whose main fabric has
+# no usable kg→metre conversion using the overall fabric-average (fallback) so the
+# MO is still counted — but the figure is then approximate. This lists the fabric
+# SKUs responsible, how many MOs and garments each one affects, what's missing
+# (Width/GSM or a stored kg/m), and a deep link to its Odoo product so a buyer can
+# fill it in and make the KPI exact. The bad-MO determination MUST mirror
+# metres_per_garment exactly (same window, same convertibility test, NULL kpm
+# treated as missing). A garment/MO can be affected by more than one fabric, so
+# per-fabric counts can sum to more than the total.
 @fabric_router.get("/api/fabric/data-quality/mo-missing-conversion")
 def mo_missing_conversion(days: int = Query(default=90)):
     days = max(1, min(int(days or 90), 730))
@@ -864,6 +956,9 @@ def mo_missing_conversion(days: int = Query(default=90)):
                    c.fabric_name,
                    lower(coalesce(c.uom,'')) AS uom,
                    p.kg_per_mtr_eff AS kpm,
+                   p.kg_per_mtr AS kpm_stored,
+                   p.width_m,
+                   p.gsm,
                    p.fabric_category,
                    p.fabric_subcategory,
                    p.supplier
@@ -914,6 +1009,9 @@ def mo_missing_conversion(days: int = Query(default=90)):
             "fabric_subcategory": r["fabric_subcategory"],
             "supplier": r["supplier"],
             "in_master": r["kpm"] is not None or r["fabric_category"] is not None,
+            "width_m": r["width_m"],
+            "gsm": r["gsm"],
+            "kpm_stored": r["kpm_stored"],
             "_mos": set(),
             "garments": 0.0,
             "consumed_kg": 0.0,
@@ -926,6 +1024,17 @@ def mo_missing_conversion(days: int = Query(default=90)):
 
     items = []
     for f in fabrics.values():
+        # What a buyer needs to fill in on the Odoo product to clear this fabric:
+        # a stored Kg/Mtr, OR both Width and GSM (Kg/Mtr = Width × GSM ÷ 1000).
+        missing = []
+        if not (f["kpm_stored"] and float(f["kpm_stored"]) > 0):
+            if not (f["width_m"] and float(f["width_m"]) > 0):
+                missing.append("Width")
+            if not (f["gsm"] and float(f["gsm"]) > 0):
+                missing.append("GSM")
+            if not missing:
+                # Width+GSM both present yet eff is unusable — needs a stored kg/m.
+                missing.append("Kg/Mtr")
         items.append({
             "component_id": f["component_id"],
             "sku": f["sku"],
@@ -934,6 +1043,8 @@ def mo_missing_conversion(days: int = Query(default=90)):
             "fabric_subcategory": f["fabric_subcategory"],
             "supplier": f["supplier"],
             "in_master": f["in_master"],
+            "missing_fields": missing,
+            "odoo_url": _odoo_product_url(f["component_id"]),
             "mos_blocked": len(f["_mos"]),
             "garments_blocked": round(f["garments"]),
             "consumed_kg": round(f["consumed_kg"], 1),
