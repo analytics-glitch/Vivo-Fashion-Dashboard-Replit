@@ -461,7 +461,12 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div class="card" style="margin-bottom:1.1rem;">
      <p class="muted" style="margin:0;">These fabrics have stock on hand or recorded usage but <b>no kg-per-metre</b> on the Odoo product master, so their quantities can only be shown in kg — never metres. Fix each one by entering its kg-per-metre on the product in Odoo; it then drops off this list. <span class="pill pill-blue">Stock</span> only on hand · <span class="pill pill-amber">Usage</span> only consumed · <span class="pill pill-red">Both</span>.</p>
     </div>
-    <div class="flex" style="margin-bottom:1.1rem;justify-content:flex-end;">
+    <div class="flex" style="margin-bottom:1.1rem;justify-content:flex-end;gap:.6rem;align-items:center;">
+     <select id="dq-location" class="btn" onchange="dqSetLocation(this.value)" title="Filter by stock location">
+      <option value="">All Locations</option>
+      <option value="RMAT/Stock">RMAT/Stock</option>
+      <option value="Dead/Stock Fabric">Dead/Stock Fabric</option>
+     </select>
      <button class="btn" onclick="exportDataQuality(this)">Export CSV</button>
     </div>
     <div class="card" style="padding:0;">
@@ -2533,7 +2538,17 @@ const DQ_COLS=[
   {k:'usage_kg',label:'Usage (kg)'},
   {k:'last_move',label:'Last move'},
 ];
-let dqCache=null, dqSort={key:'stock_kg',dir:'desc'};
+let dqCache=null, dqSort={key:'stock_kg',dir:'desc'}, dqLocation='';
+// Filter DQ rows by the selected stock location. A row's `location` is a
+// comma-joined list of the real stock locations it currently has stock in.
+// "All Locations" (empty) shows everything; a specific location keeps only rows
+// that currently hold stock there. Usage-only / consumed rows (no current
+// location) appear under "All Locations" only.
+function dqFilterRows(items){
+  if(!dqLocation)return items;
+  return items.filter(r=>r.location&&r.location.split(', ').includes(dqLocation));
+}
+function dqSetLocation(v){dqLocation=v;renderDataQuality();}
 function dqSortRows(items){
   const k=dqSort.key, dir=dqSort.dir==='asc'?1:-1;
   const NUM={width_m:1,gsm:1,stock_kg:1,usage_kg:1};
@@ -2577,19 +2592,27 @@ function dqCell(c,r){
   if(c.k==='last_move')return `<td style="color:var(--muted);font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
   return `<td style="color:var(--text-sub);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
 }
+// KPI totals over a row set, so the cards track the current location filter.
+function dqKpis(items){
+  let stock=0, usage=0;
+  for(const r of items){stock+=Number(r.stock_kg)||0; usage+=Number(r.usage_kg)||0;}
+  return {count:items.length, total_stock_kg:stock, total_usage_kg:usage,
+          total_unconvertible_kg:stock+usage};
+}
 function renderDataQuality(){
   const d=dqCache; if(!d)return;
+  const k=dqKpis(dqFilterRows(d.items));
   document.getElementById('dq-kpis').innerHTML=`
-   <div class="kpi accent"><span class="eyebrow">Fabrics affected</span><p class="kpi-value">${fmt(d.count)}</p><p class="kpi-sub">missing kg-per-metre</p></div>
-   <div class="kpi"><span class="eyebrow">Unconvertible total</span><p class="kpi-value">${fmt1(d.total_unconvertible_kg)}</p><p class="kpi-sub">kg (stock + usage)</p></div>
-   <div class="kpi"><span class="eyebrow">Stock unconvertible</span><p class="kpi-value">${fmt1(d.total_stock_kg)}</p><p class="kpi-sub">kg on hand</p></div>
-   <div class="kpi"><span class="eyebrow">Usage unconvertible</span><p class="kpi-value">${fmt1(d.total_usage_kg)}</p><p class="kpi-sub">kg consumed, net of returns</p></div>`;
+   <div class="kpi accent"><span class="eyebrow">Fabrics affected</span><p class="kpi-value">${fmt(k.count)}</p><p class="kpi-sub">missing kg-per-metre</p></div>
+   <div class="kpi"><span class="eyebrow">Unconvertible total</span><p class="kpi-value">${fmt1(k.total_unconvertible_kg)}</p><p class="kpi-sub">kg (stock + usage)</p></div>
+   <div class="kpi"><span class="eyebrow">Stock unconvertible</span><p class="kpi-value">${fmt1(k.total_stock_kg)}</p><p class="kpi-sub">kg on hand</p></div>
+   <div class="kpi"><span class="eyebrow">Usage unconvertible</span><p class="kpi-value">${fmt1(k.total_usage_kg)}</p><p class="kpi-sub">kg consumed, net of returns</p></div>`;
   const NUM={width_m:1,gsm:1,stock_kg:1,usage_kg:1};
   document.getElementById('dq-head').innerHTML='<tr>'+DQ_COLS.map(c=>{
     const arrow=dqSort.key===c.k?(dqSort.dir==='asc'?' \u25B2':' \u25BC'):'';
     return `<th class="${NUM[c.k]?'r ':''}sortable" onclick="sortDq('${c.k}')">${esc(c.label)}${arrow}</th>`;
   }).join('')+'</tr>';
-  const rows=dqSortRows(d.items);
+  const rows=dqSortRows(dqFilterRows(d.items));
   document.getElementById('dq-body').innerHTML=rows.length
     ? rows.map(r=>'<tr>'+DQ_COLS.map(c=>dqCell(c,r)).join('')+'</tr>').join('')
     : `<tr><td colspan="${DQ_COLS.length}" class="loading">No fabrics are missing a kg-per-metre. 🎉</td></tr>`;
@@ -2604,7 +2627,8 @@ async function loadDataQuality(){
 }
 function exportDataQuality(btn){
   const d=dqCache; if(!d||!d.items.length){alert('Nothing to export yet.');return;}
-  const rows=dqSortRows(d.items);
+  const rows=dqSortRows(dqFilterRows(d.items));
+  if(!rows.length){alert('Nothing to export for the selected location.');return;}
   const csv=[DQ_COLS.map(c=>c.label).join(',')]
     .concat(rows.map(r=>DQ_COLS.map(c=>{
       let v;
