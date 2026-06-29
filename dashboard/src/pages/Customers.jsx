@@ -75,13 +75,7 @@ const Delta = ({ curr, prev, invert }) => {
 
 const Customers = () => {
   const { applied, touchLastUpdated } = useFilters();
-  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion, channelGroup } = applied;
-  // When the global filter bar's segmented control is set to "Online", the
-  // selected channels are online-only (e.g. Shop Zetu via ShopifyQL). That feed
-  // records each order's New/Returning status + value but NO individual customer
-  // identity, so per-customer KPIs are structurally 0. In that mode we show real
-  // ORDER-based figures (from /api/customers/online-summary) instead of zeros.
-  const isOnlineOnly = channelGroup === "online";
+  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
   // Iter 85f — 30s auto-refresh + manual button. The Customers page used
   // to be load-once-and-stick, so a stale 0-walk-in render from an
   // earlier cache miss could persist until the user navigated away and
@@ -170,7 +164,6 @@ const Customers = () => {
   const [topSkus, setTopSkus] = useState([]);
   const [retention, setRetention] = useState(null);
   const [typeSpend, setTypeSpend] = useState(null);
-  const [onlineSummary, setOnlineSummary] = useState(null);
   const [repeatCustomers, setRepeatCustomers] = useState([]);
   const [repeatCustomersLoading, setRepeatCustomersLoading] = useState(false);
   const [unchurned, setUnchurned] = useState(null);
@@ -270,10 +263,6 @@ const Customers = () => {
       // counts shown elsewhere on the page. Country is forwarded only
       // when exactly one country is selected (see backend note).
       ["typeSpend", api.get("/customer-type-spend", { params: { date_from: dateFrom, date_to: dateTo, country } }).catch(() => ({ data: null }))],
-      // Online (Shop Zetu / ShopifyQL) ORDER-based figures from the feed's
-      // New/Returning flag — used to show real numbers instead of zeros when
-      // the channel segment is "Online" (no customer identity in that feed).
-      ["onlineSummary", api.get("/customers/online-summary", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: null }))],
       // Identified customers with ≥2 distinct orders in the window — drives
       // the "Repeat Customers Detail" expandable table.
       ["repeatCustomers", api.get("/analytics/repeat-customers", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: [] }))],
@@ -284,7 +273,6 @@ const Customers = () => {
       topPrev: setTopPrev, byLocPrev: setByLocPrev, topSkus: setTopSkus,
       retention: setRetention,
       typeSpend: setTypeSpend,
-      onlineSummary: setOnlineSummary,
       repeatCustomers: setRepeatCustomers,
     };
     setRepeatCustomersLoading(true);
@@ -618,33 +606,6 @@ const Customers = () => {
               </div>
             </div>
           )}
-          {/* Iter 90 — Online channel note. Online (Shop Zetu via the
-              ShopifyQL feed) records each order's New/Returning status and
-              value but NOT individual customer identity, so per-customer
-              tiles (unique customers / spend per customer / churn) are
-              structurally 0 for online — it is not a bug. We surface the real
-              ORDER-based figures instead and explain the limitation here. */}
-          {isOnlineOnly && (
-            <div
-              className="rounded-lg border border-sky-300 bg-sky-50 px-4 py-3 text-[13px] text-sky-900 flex items-start gap-2"
-              data-testid="customers-online-note"
-            >
-              <span className="font-bold mt-0.5">ⓘ</span>
-              <div>
-                <div className="font-semibold">Online shows order-based figures</div>
-                <div className="text-[12px] text-sky-800 mt-0.5 leading-snug">
-                  The online sales feed (Shop Zetu) records each order's
-                  New/Returning status and value but not individual customer
-                  identities, so unique-customer counts, spend-per-customer and
-                  churn aren't available for online. The tiles below show real{" "}
-                  <span className="font-semibold">order</span> figures —{" "}
-                  {onlineSummary
-                    ? `${fmtNum(onlineSummary.total_orders || 0)} orders (${fmtNum(onlineSummary.new_orders || 0)} new · ${fmtNum(onlineSummary.returning_orders || 0)} returning), avg order value ${fmtKES(onlineSummary.avg_order_value || 0)}.`
-                    : "loading…"}
-                </div>
-              </div>
-            </div>
-          )}
           {/* ---- Search bar ---- */}
           <div className="card-white p-4" data-testid="customer-search-card">
             <SectionTitle
@@ -758,8 +719,8 @@ const Customers = () => {
             >
               <div className="flex items-center gap-2">
                 <Users size={16} />
-                <div className="eyebrow text-white/80">{isOnlineOnly ? "Total Orders (in period)" : "Total Customers (in period)"}</div>
-                <span title={isOnlineOnly ? "Online (Shop Zetu) has no individual customer identity — this counts ORDERS, split into New/Returning by the feed's own order flag." : "Identified customers only — New + Returning + Repeat. Walk-ins (anonymous orders) are shown on the dedicated Walk-in Customers tile."} className="text-white/60 text-[10px] cursor-help">ⓘ</span>
+                <div className="eyebrow text-white/80">Total Customers (in period)</div>
+                <span title="Identified customers only — New + Returning + Repeat. Walk-ins (anonymous orders) are shown on the dedicated Walk-in Customers tile." className="text-white/60 text-[10px] cursor-help">ⓘ</span>
               </div>
               {(() => {
                 // Iter 88h — Total Customers now reads DIRECTLY from
@@ -769,24 +730,6 @@ const Customers = () => {
                 // New + Returning + Repeat, AND walk-ins are anonymous
                 // orders not unique customers — so adding them on top
                 // inflates the headline by the walk-in count.
-                //
-                // Iter 90 — Online has no customer_id, so per-customer counts
-                // are 0. Show real ORDER-based figures from the feed flag.
-                if (isOnlineOnly) {
-                  const totalO = onlineSummary?.total_orders || 0;
-                  const newO = onlineSummary?.new_orders || 0;
-                  const retO = onlineSummary?.returning_orders || 0;
-                  return (
-                    <>
-                      <div className="mt-2 text-[22px] sm:text-[28px] font-extrabold num leading-tight">
-                        {fmtNum(totalO)}
-                      </div>
-                      <div className="mt-1 text-[10.5px] text-white/85 leading-snug">
-                        {fmtNum(newO)} new · {fmtNum(retO)} returning <span className="text-white/60">(orders)</span>
-                      </div>
-                    </>
-                  );
-                }
                 const newC = cust.new_customers || 0;
                 const retC = (cust.returning_customers || 0) + (cust.repeat_customers || 0);
                 const wiC = walkIns?.walk_in_customers ?? walkIns?.walk_in_orders ?? 0;
@@ -810,11 +753,9 @@ const Customers = () => {
             </div>
             {(() => {
               // Mix = New share of Active (NEW + RETURN sum to 100% of active).
-              // Iter 90 — Online has no customer_id; substitute real ORDER-based
-              // New/Returning counts from the feed flag so the share math holds.
-              const active = isOnlineOnly ? (onlineSummary?.total_orders || 0) : (cust.total_customers || 0);
-              const newCount = isOnlineOnly ? (onlineSummary?.new_orders || 0) : (cust.new_customers || 0);
-              const returningCount = isOnlineOnly ? (onlineSummary?.returning_orders || 0) : ((cust.returning_customers || 0) + (cust.repeat_customers || 0));
+              const active = cust.total_customers || 0;
+              const newCount = cust.new_customers || 0;
+              const returningCount = (cust.returning_customers || 0) + (cust.repeat_customers || 0);
               const newShare = active ? (newCount / active) * 100 : 0;
               const returningShare = active ? (returningCount / active) * 100 : 0;
               const prevActive = custPrev?.total_customers || 0;
@@ -910,11 +851,10 @@ const Customers = () => {
               );
             })()}
             <KPICard testId="kpi-avg-spend"
-              label={isOnlineOnly ? "Avg Order Value" : "Avg Spend"}
-              sub={isOnlineOnly ? "per online order" : undefined}
-              value={fmtKES(isOnlineOnly ? (onlineSummary?.avg_order_value || 0) : cust.avg_customer_spend)}
+              label="Avg Spend"
+              value={fmtKES(cust.avg_customer_spend)}
               icon={Coins} showDelta={false}
-              action={isOnlineOnly ? undefined : { label: "Top 20 customers", onClick: () => {
+              action={{ label: "Top 20 customers", onClick: () => {
                 const el = document.querySelector('[data-testid="top-customers-section"]');
                 if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
               }}}
@@ -925,33 +865,6 @@ const Customers = () => {
               // in this window" AND "have been silent for ≥ churnDays" when
               // the window itself is < churnDays wide — the tile will always
               // read 0 and mislead. Surface an honest reframe instead.
-              // Iter 90 — Churn/reactivation are customer-identity based and
-              // computed globally (channel-agnostic), so they're meaningless
-              // for the online segment (no customer_id). Show an honest N/A.
-              if (isOnlineOnly) {
-                return (
-                  <div
-                    className="rounded-2xl border border-border bg-panel p-3 sm:p-4 min-h-[110px] flex flex-col justify-between"
-                    data-testid="churn-online-na"
-                    title="Online (Shop Zetu) has no individual customer identity, so churn / reactivation (which track customers over time) can't be computed for the online segment."
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="eyebrow">Churn watchlist</div>
-                      <span className="text-muted text-[10px]">ⓘ</span>
-                    </div>
-                    <div className="mt-2">
-                      <div className="text-[13px] font-bold text-brand-deep leading-tight">
-                        N/A for online
-                      </div>
-                      <div className="text-[11px] text-muted mt-0.5 leading-snug">
-                        Online orders aren't tied to a customer identity, so
-                        churn can't be tracked. Switch to Retail or All to see
-                        churn.
-                      </div>
-                    </div>
-                  </div>
-                );
-              }
               const windowDays = (dateFrom && dateTo)
                 ? Math.max(1, Math.round((new Date(dateTo) - new Date(dateFrom)) / 86400000) + 1)
                 : 0;
