@@ -5620,6 +5620,44 @@ def get_customer_type_spend(
     """, date_to=date_to)
 
 
+@app.get("/api/customers/online-summary")
+def get_online_customer_summary(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    # Online channels (e.g. Shop Zetu via the ShopifyQL feed) carry an
+    # order-level New/Returning flag in `customer_type` but NO customer_id /
+    # email — the feed simply has no individual customer identity. So the
+    # per-customer metrics on /api/customers (unique customers, spend per
+    # customer, churn) are structurally 0 for online, NOT a query bug.
+    #
+    # This endpoint returns the figures that ARE real and derivable for online:
+    # ORDER-based counts straight from the stored flag (gross sale orders only).
+    # New/Returning here are ORDERS, not unique people — the Customers page
+    # relabels the tiles accordingly and shows a note when the Online channel
+    # segment is active. NOTE: New/Returning come from the RAW customer_type
+    # flag, NOT the first-purchase recompute used by /api/customer-type-spend
+    # (that join keys on customer_id and would dump every online order into
+    # Walk-in).
+    country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    rows = run_query("""
+        SELECT
+            COUNT(DISTINCT s.order_id) AS total_orders,
+            COUNT(DISTINCT s.order_id) FILTER (WHERE LOWER(s.customer_type) = 'new') AS new_orders,
+            COUNT(DISTINCT s.order_id) FILTER (WHERE LOWER(s.customer_type) = 'returning') AS returning_orders,
+            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
+            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_order_value
+        FROM all_sales s
+        WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+        AND s.sale_kind = 'order'
+        AND """ + BASE_FILTERS + " " + country_filter + " " + channel_filter + """
+    """, date_to=date_to)
+    return rows[0] if rows else {}
+
+
 # ── Auth endpoints (self-hosted Postgres sessions) ────────────────────────────
 # Login verifies a PBKDF2 password hash and issues an opaque session (returned as
 # a bearer token AND set as an httpOnly cookie). The gate resolves that session
