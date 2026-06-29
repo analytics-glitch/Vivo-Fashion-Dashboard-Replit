@@ -76,7 +76,7 @@ const Delta = ({ curr, prev, invert }) => {
 
 const Customers = () => {
   const { applied, touchLastUpdated } = useFilters();
-  const { dateFrom, dateTo, countries, channels, manualChannels, channelGroup, compareMode, dataVersion } = applied;
+  const { dateFrom, dateTo, countries, channels, compareMode, dataVersion } = applied;
   // Iter 85f — 30s auto-refresh + manual button. The Customers page used
   // to be load-once-and-stick, so a stale 0-walk-in render from an
   // earlier cache miss could persist until the user navigated away and
@@ -199,13 +199,8 @@ const Customers = () => {
     if (isFirstLoad) setLoading(true);
     setError(null);
     const country = countries.length === 1 ? countries[0] : undefined;
-    // Online vs Retail is resolved server-side off all_sales.country (via
-    // channel_group), NOT an exact pos_location_name match — the online channel
-    // labels never matched the data, so the channel literals only carry a user's
-    // MANUAL multi-select. The All/Retail/Online segment travels as channel_group.
-    const channel = manualChannels?.length ? manualChannels.join(",") : undefined;
-    const channel_group = channelGroup && channelGroup !== "all" ? channelGroup : undefined;
-    const dateP = { date_from: dateFrom, date_to: dateTo, country, channel, channel_group };
+    const channel = channels.length ? channels.join(",") : undefined;
+    const dateP = { date_from: dateFrom, date_to: dateTo, country, channel };
 
     // Iter 84f — Race-safe churn merge: if /customers/churn-rate
     // resolves BEFORE /customers (uncommon but possible when /customers
@@ -244,23 +239,23 @@ const Customers = () => {
         params: { ...dateP, limit: topN, ...(revealToken ? { reveal: true } : {}) },
         ...(revealToken ? { headers: { "X-PII-Reveal-Token": revealToken } } : {}),
       }).catch(() => ({ data: [] }))],
-      ["freq", api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo, country, channel, channel_group } }).catch(() => ({ data: [] }))],
-      ["byLoc", api.get("/customers-by-location", { params: { date_from: dateFrom, date_to: dateTo, country, channel_group } }).catch(() => ({ data: [] }))],
+      ["freq", api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: [] }))],
+      ["byLoc", api.get("/customers-by-location", { params: { date_from: dateFrom, date_to: dateTo, channel } }).catch(() => ({ data: [] }))],
       ["churned", api.get("/churned-customers", {
         params: { days: churnDays, limit: 500, ...(revealToken ? { reveal: true } : {}) },
         ...(revealToken ? { headers: { "X-PII-Reveal-Token": revealToken } } : {}),
       }).catch(() => ({ data: [] }))],
       ["np", api.get("/new-customer-products", { params: { date_from: dateFrom, date_to: dateTo, limit: 20 } }).catch(() => ({ data: [] }))],
       ["cw", api.get("/analytics/customer-crosswalk", { params: { date_from: dateFrom, date_to: dateTo, top: 15 } }).catch(() => ({ data: [] }))],
-      ["prev", prevRange ? api.get("/customers", { params: { ...prevRange, country, channel, channel_group } }).catch(() => ({ data: null })) : Promise.resolve({ data: null })],
-      ["freqPrev", prevRange ? api.get("/customer-frequency", { params: { date_from: prevRange.date_from, date_to: prevRange.date_to, country, channel, channel_group } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
-      ["topPrev", prevRange ? api.get("/top-customers", { params: { ...prevRange, country, channel, channel_group, limit: topN } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
-      ["byLocPrev", prevRange ? api.get("/customers-by-location", { params: { date_from: prevRange.date_from, date_to: prevRange.date_to, country, channel_group } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
+      ["prev", prevRange ? api.get("/customers", { params: { ...prevRange, country, channel } }).catch(() => ({ data: null })) : Promise.resolve({ data: null })],
+      ["freqPrev", prevRange ? api.get("/customer-frequency", { params: { date_from: prevRange.date_from, date_to: prevRange.date_to, country, channel } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
+      ["topPrev", prevRange ? api.get("/top-customers", { params: { ...prevRange, country, channel, limit: topN } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
+      ["byLocPrev", prevRange ? api.get("/customers-by-location", { params: { date_from: prevRange.date_from, date_to: prevRange.date_to, channel } }).catch(() => ({ data: [] })) : Promise.resolve({ data: [] })],
       ["topSkus", api.get("/top-skus", { params: { ...dateP, limit: 200 } }).catch(() => ({ data: [] }))],
       // Identified-customer retention metrics (excludes walk-ins). Replaces
       // the upstream /customer-frequency repeat-rate which over-counts
       // anonymous foot traffic. Slow first call (~30 s) then cached 10 min.
-      ["retention", api.get("/analytics/customer-retention", { params: { date_from: dateFrom, date_to: dateTo, country, channel, channel_group } }).catch(() => ({ data: null }))],
+      ["retention", api.get("/analytics/customer-retention", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: null }))],
       // Iter 88c — Per-segment spend / ABV from the upstream
       // /customer-type-spend endpoint. Upstream applies the canonical
       // "first-ever purchase in window = New" rule (the same one
@@ -268,10 +263,10 @@ const Customers = () => {
       // Returning ABV split agrees with the New / Returning customer
       // counts shown elsewhere on the page. Country is forwarded only
       // when exactly one country is selected (see backend note).
-      ["typeSpend", api.get("/customer-type-spend", { params: { date_from: dateFrom, date_to: dateTo, country, channel_group } }).catch(() => ({ data: null }))],
+      ["typeSpend", api.get("/customer-type-spend", { params: { date_from: dateFrom, date_to: dateTo, country } }).catch(() => ({ data: null }))],
       // Identified customers with ≥2 distinct orders in the window — drives
       // the "Repeat Customers Detail" expandable table.
-      ["repeatCustomers", api.get("/analytics/repeat-customers", { params: { date_from: dateFrom, date_to: dateTo, country, channel, channel_group } }).catch(() => ({ data: [] }))],
+      ["repeatCustomers", api.get("/analytics/repeat-customers", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: [] }))],
     ];
     const setters = {
       top: setTop, freq: setFreq, byLoc: setByLoc, churned: setChurned,
@@ -361,13 +356,13 @@ const Customers = () => {
       .catch(() => { if (!cancelled) setWalkIns({ _error: true }); })
       .finally(() => { if (!cancelled) setWalkInsLoading(false); });
     if (prevRange) {
-      api.get("/customers/walk-ins", { params: { ...prevRange, country, channel, channel_group } })
+      api.get("/customers/walk-ins", { params: { ...prevRange, country, channel } })
         .then((r) => { if (!cancelled) setWalkInsPrev(r.data || null); })
         .catch(() => {});
     }
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), JSON.stringify(manualChannels), channelGroup, compareMode, dataVersion, churnDays, topN, refreshTick]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays, topN, refreshTick]);
 
   // PII reveal cascade — when the user verifies the reveal password the
   // /churned-customers AND /top-customers endpoints must be re-fetched
@@ -383,8 +378,7 @@ const Customers = () => {
     const headers = { "X-PII-Reveal-Token": revealToken };
     const dateP = { date_from: dateFrom, date_to: dateTo,
       country: countries.length ? countries.join(",") : undefined,
-      channel: manualChannels?.length ? manualChannels.join(",") : undefined,
-      channel_group: channelGroup && channelGroup !== "all" ? channelGroup : undefined };
+      channel: channels.length ? channels.join(",") : undefined };
     Promise.all([
       api.get("/churned-customers", {
         params: { days: churnDays, limit: 500, reveal: true },
@@ -401,7 +395,7 @@ const Customers = () => {
     });
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [revealToken, churnDays, topN, JSON.stringify(countries), JSON.stringify(manualChannels), channelGroup]);
+  }, [revealToken, churnDays, topN]);
 
   // Recently-unchurned table — re-fetches whenever the slider days change,
   // independent of the main page fetch since it can be slow (10-min cache).
@@ -979,17 +973,6 @@ const Customers = () => {
                   <div className="text-[10.5px] text-muted mt-0.5 leading-snug">
                     {fmtKES(walkIns.walk_in_sales_kes)} · {(walkIns.walk_in_share_sales_pct || 0).toFixed(2)}% of sales
                   </div>
-                  <div className="text-[10px] text-muted mt-0.5 leading-snug">
-                    Retail walk-ins only.{" "}
-                    {(walkIns.guest_customers || 0) > 0 ? (
-                      <span title="Guest = online checkouts with no customer profile attached (country = Online). Counted separately from in-store walk-ins.">
-                        Online guests: <span className="font-semibold">{fmtNum(walkIns.guest_customers)}</span>
-                        {" · "}{fmtKES(walkIns.guest_sales)}
-                      </span>
-                    ) : (
-                      <span title="Guest = online checkouts with no customer profile attached (country = Online). Counted separately from in-store walk-ins.">No online guests in period</span>
-                    )}
-                  </div>
                   {compareLbl && walkInsPrev && (
                     <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
                       <Delta curr={walkIns.walk_in_customers ?? walkIns.walk_in_orders} prev={walkInsPrev.walk_in_customers ?? walkInsPrev.walk_in_orders} invert />
@@ -1382,17 +1365,6 @@ const Customers = () => {
             const prevRepeatRate = prevUpstreamTotal ? (prevUpstreamRepeat / prevUpstreamTotal) * 100 : (100 - prevOneOrderShare);
             const repeatRateDelta = repeatRate - prevRepeatRate; // pp
             const hasCompare = compareLbl && prevTotal > 0;
-            // In-period repeat PURCHASE rate — customers who bought MORE THAN
-            // ONCE within the selected window (≥2 distinct orders in period).
-            // This is distinct from the lifetime "Repeat Customer Rate" card
-            // (any prior purchase ever). Sourced from the period-scoped
-            // /customer-frequency buckets already loaded above: total active
-            // identified customers in the window minus the 1-order bucket.
-            const periodRepeatCustomers = Math.max(0, curTotal - (data[0]?.count || 0));
-            const periodRepeatRate = curTotal ? (periodRepeatCustomers / curTotal) * 100 : 0;
-            const prevPeriodRepeatCustomers = Math.max(0, prevTotal - (data[0]?.prev || 0));
-            const prevPeriodRepeatRate = prevTotal ? (prevPeriodRepeatCustomers / prevTotal) * 100 : 0;
-            const periodRepeatRateDelta = periodRepeatRate - prevPeriodRepeatRate; // pp
             const avgOrdersPerReturning = (() => {
               const retTotal = curTotal - (data[0]?.count || 0); // customers with ≥2 orders
               if (!retTotal) return 0;
@@ -1408,12 +1380,12 @@ const Customers = () => {
               if (curTotal === 0) return "No customer orders in the selected window.";
               const parts = [
                 `${oneOrderShare.toFixed(1)}% of active customers made only 1 purchase this period.`,
-                `Repeat purchase rate: ${periodRepeatRate.toFixed(1)}%.`,
+                `Repeat rate: ${repeatRate.toFixed(1)}%.`,
               ];
               if (hasCompare) {
-                const arrow = periodRepeatRateDelta >= 0 ? "▲" : "▼";
-                const verdict = Math.abs(periodRepeatRateDelta) < 0.1 ? "stable" : (periodRepeatRateDelta > 0 ? "retention strengthening" : "retention weakening");
-                parts.push(`${compareLbl}: ${arrow} ${Math.abs(periodRepeatRateDelta).toFixed(1)}pp — ${verdict}.`);
+                const arrow = repeatRateDelta >= 0 ? "▲" : "▼";
+                const verdict = Math.abs(repeatRateDelta) < 0.1 ? "stable" : (repeatRateDelta > 0 ? "retention strengthening" : "retention weakening");
+                parts.push(`${compareLbl}: ${arrow} ${Math.abs(repeatRateDelta).toFixed(1)}pp — ${verdict}.`);
               }
               return parts.join(" ");
             })();
@@ -1429,7 +1401,7 @@ const Customers = () => {
                 {curTotal > 0 && (
                   <div
                     className={`mb-4 rounded-xl p-3 text-[12.5px] border ${
-                      periodRepeatRate < 10
+                      repeatRate < 10
                         ? "bg-amber-50 border-amber-300 text-amber-900"
                         : "bg-brand-soft/40 border-brand/30 text-brand-deep"
                     }`}
@@ -1451,21 +1423,10 @@ const Customers = () => {
                         unreliable per-order `customer_type` field (Odoo POS
                         rows are untagged) and undercounted new customers by
                         ~95%. */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
-                      <div className="rounded-xl border-2 border-[#1a5c38] bg-[#fef9f0] p-3" data-testid="kpi-period-repeat-rate">
-                        <div className="eyebrow text-[#1a5c38]">Repeat Purchase Rate (this period)</div>
-                        <div className="font-extrabold text-[20px] num mt-0.5 text-[#0f3d24]" data-testid="kpi-period-repeat-rate-value">
-                          {curTotal ? `${periodRepeatRate.toFixed(1)}%` : "—"}
-                        </div>
-                        <div className="text-[10.5px] text-muted mt-0.5">
-                          {curTotal
-                            ? <>{fmtNum(periodRepeatCustomers)} of {fmtNum(curTotal)} active customers bought 2+ times in this period{hasCompare ? <> · {periodRepeatRateDelta >= 0 ? "▲" : "▼"} {Math.abs(periodRepeatRateDelta).toFixed(1)}pp vs {compareLbl}</> : null} · source: <span className="font-semibold">/customer-frequency</span></>
-                            : "loading…"}
-                        </div>
-                      </div>
-                      <div className="rounded-xl border border-border p-3" data-testid="kpi-retention-rate">
-                        <div className="eyebrow">Repeat Customer Rate (lifetime)</div>
-                        <div className="font-extrabold text-[18px] num mt-0.5" data-testid="kpi-retention-rate-value">
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mb-4">
+                      <div className="rounded-xl border-2 border-[#1a5c38] bg-[#fef9f0] p-3" data-testid="kpi-retention-rate">
+                        <div className="eyebrow text-[#1a5c38]">Repeat Customer Rate</div>
+                        <div className="font-extrabold text-[20px] num mt-0.5 text-[#0f3d24]" data-testid="kpi-retention-rate-value">
                           {cust?.total_customers
                             ? `${((cust.returning_customers || 0) / cust.total_customers * 100).toFixed(1)}%`
                             : "—"}
