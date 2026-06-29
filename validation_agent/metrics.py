@@ -27,6 +27,25 @@ from . import config, db
 
 _SUBCAT = "COALESCE(NULLIF(TRIM(product_type), ''), '(unspecified)')"
 
+# Mirror api_pg.BASE_FILTERS exactly. The canonical reporting metric on every BI
+# page excludes non-merchandise POS lines (gift cards / vouchers, shopping bags,
+# the "20% on specific products" discount line, the vb00 catch-all SKU) and the
+# non-retail pseudo-locations. The validation recompute MUST use the same
+# definition or it diverges from the very pages it reconciles against: gift-card
+# SALES inflate units_sold / msi / abv, gift-card REDEMPTIONS post as negative
+# 'order' lines that deflate asp and inflate return_rate, a bulk gift-card line
+# (e.g. qty 69) spikes units/msi, and gift-card-only orders inflate the
+# transaction count. Keep this byte-for-byte in step with BASE_FILTERS.
+_REPORTING_FILTERS = """
+    pos_location_name NOT IN ('Staff purchases','Manual Order','Online - vivo-uganda')
+    AND LOWER(COALESCE(product_title,'')) NOT LIKE '%%shopping bag%%'
+    AND LOWER(COALESCE(product_title,'')) NOT LIKE '%%gift card%%'
+    AND LOWER(COALESCE(product_title,'')) NOT LIKE '%%gift voucher%%'
+    AND LOWER(COALESCE(product_title,'')) NOT LIKE '%%voucher%%'
+    AND LOWER(COALESCE(product_title,'')) NOT LIKE '%%on specific products%%'
+    AND LOWER(COALESCE(variant_sku,'')) NOT LIKE '%%vb00%%'
+"""
+
 
 def _base_sql(by_subcat: bool) -> str:
     grp = "(store, sub, d), (store, d), (d)" if by_subcat else "(store, d), (d)"
@@ -46,6 +65,7 @@ def _base_sql(by_subcat: bool) -> str:
         FROM all_sales
         WHERE sale_date::date BETWEEN %(d0)s AND %(d1)s
           AND pos_location_name IS NOT NULL
+          AND ({_REPORTING_FILTERS})
     )
     SELECT
         CASE WHEN store IS NULL THEN 'group' ELSE 'store' END AS entity_type,
