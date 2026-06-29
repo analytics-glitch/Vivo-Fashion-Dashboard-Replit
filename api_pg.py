@@ -1300,6 +1300,12 @@ REPLEN_CLASS_B_VPW = 0.25    # core        (0.25 - 1.0 u/wk)
 REPLEN_FLOOR_A = 3
 REPLEN_FLOOR_B = 2
 REPLEN_FLOOR_C = 1
+# Hard ceiling: no store is ever recommended more than this many units of a
+# single line — one style+colour+size SKU — per replenishment, regardless of
+# what velocity x cover would otherwise size. Keeps transfers lean and
+# presentation-led rather than dumping deep stock into one store. Defined here
+# so the per-line cap lives next to the other REPLEN_* sizing knobs.
+REPLEN_MAX_UNITS_PER_LINE = 3
 # EOL / overstock suppression threshold — weeks-of-cover (Report Catalogue
 # default, spec §12.4). A store-SKU sitting on more than this many weeks of its
 # own stock is held back, not replenished.
@@ -12129,16 +12135,24 @@ def _size_mix_rows(style_filter_sql, sales_extra, inv_country):
     """)
 
 
-def _build_size_mix(rows, total_recommended):
+def _build_size_mix(rows, total_recommended, cap=None):
     """Turn raw (size, units_28, units_56, soh) rows for ONE style into an
     ordered size_mix list, splitting `total_recommended` proportionally to 28d
-    sales (falling back to 56d, then even) so the parts sum to the style total."""
+    sales (falling back to 56d, then even) so the parts sum to the style total.
+    When `cap` is set, each size's recommended_qty is clamped to it (per-store
+    per-line ceiling)."""
     rows = sorted(rows, key=lambda r: _size_sort_key(r.get("size")))
     weights = [int(r.get("units_28") or 0) for r in rows]
     if sum(weights) == 0:
         weights = [int(r.get("units_56") or 0) for r in rows]
     tot_w = sum(weights) or len(rows) or 1
     qtys = _split_recommended(weights, total_recommended)
+    # When `cap` is set, clamp each size's recommended_qty to the per-line
+    # ceiling so a per-store size curve never shows more than the cap for a
+    # single style+colour+size SKU (keeps the breakdown in step with the pick
+    # list). Chain-wide callers pass cap=None and keep the proportional split.
+    if cap is not None:
+        qtys = [min(q, int(cap)) for q in qtys]
     out = []
     for r, w, q in zip(rows, weights, qtys):
         out.append({
@@ -12468,7 +12482,8 @@ def analytics_replenish_by_color(
             by_style.setdefault(r["style"], []).append(r)
         for o in out:
             o["size_mix"] = _build_size_mix(
-                by_style.get(o["style_name"], []), o["total_recommended_qty"])
+                by_style.get(o["style_name"], []), o["total_recommended_qty"],
+                cap=REPLEN_MAX_UNITS_PER_LINE)
     return out
 @app.get("/api/analytics/replenishment-completed")
 def analytics_replenishment_completed(days: int = Query(default=30)):
@@ -13919,6 +13934,10 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
             # Class C is pull-to-1 on a sale; A/B size to max(floor, cover).
             target = floor if sku_class == "C" else max(floor, cover_q)
         need = max(0, target - soh_store)
+        # Hard per-line ceiling (one store, one SKU): cap need BEFORE fair-share
+        # so the two-tier allocation, deploy-from-warehouse and dispatch batching
+        # all stay bounded by the cap and a line can never claim more than it.
+        need = min(need, REPLEN_MAX_UNITS_PER_LINE)
         woc = (soh_store / vpw) if vpw > 0 else (999.0 if soh_store > 0 else 0.0)
         deploy_now = (soh_store == 0 and units_sold > 0 and soh_wh > 0)
 
@@ -14261,10 +14280,13 @@ def _compute_replenishment_report_rows(date_from=None, date_to=None, limit=400):
         units_sold = int(r["units_sold"] or 0)
         soh_store = int(r["soh_store"] or 0)
         soh_wh = int(r["soh_wh"] or 0)
-        # Uncapped per-store need; the finite warehouse pool is allocated across
-        # stores (top sellers first) by _cap_replenish_to_warehouse below so the
-        # SKU's total suggested never exceeds soh_wh.
-        replenish = max(0, units_sold - soh_store)
+        # Per-store need, with a hard per-line ceiling applied first; the finite
+        # warehouse pool is then allocated across stores (top sellers first) by
+        # _cap_replenish_to_warehouse below so the SKU's total suggested never
+        # exceeds soh_wh. Capping here (before the warehouse split and the per-
+        # (store, style) group totals / size_breakdown) keeps every rollup
+        # consistent with the capped per-line values.
+        replenish = min(max(0, units_sold - soh_store), REPLEN_MAX_UNITS_PER_LINE)
         days_lapsed = 0
         if r.get("last_sale"):
             try:
@@ -14364,7 +14386,8 @@ def analytics_replenishment_report(
     for (loc, st), tot in _grp_total.items():
         srows = _style_rows.get(st)
         if srows and tot > 0:
-            _grp_mix[(loc, st)] = _build_size_mix(srows, tot)
+            _grp_mix[(loc, st)] = _build_size_mix(
+                srows, tot, cap=REPLEN_MAX_UNITS_PER_LINE)
     for r in out_rows:
         st = _sku_style.get(r.get("sku"))
         mix = _grp_mix.get((r["pos_location"], st)) if st else None
