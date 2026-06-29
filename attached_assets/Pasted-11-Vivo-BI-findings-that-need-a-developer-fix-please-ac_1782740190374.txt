@@ -1,0 +1,144 @@
+11 Vivo BI findings that need a developer fix (please action them in order, one issue at a time):
+
+--- Finding 1 of 11 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Village Market
+• Metric: return_amount
+• Period: 2026-06-28
+• Observed: 22,600   Expected: 0–14,914
+• Diagnosis: Every single sample row has `returns_kes = 0.0` and `sale_kind = 'order'`, yet the flagged `return_amount` for the day is KES 22,600 — well above the p99 ceiling of ~KES 14,914 (z = 4.6). More critically, order_id 39024 appears three times and order_id 39103 appears four times with identical line-level figures, strongly indicating that duplicate order rows are being summed into the return_amount metric, inflating it artificially.
+• Broken identity: z=4.6; outside p1-p99; outside IQR fence
+
+Desired outcome: "return_amount" for store:Vivo Village Market should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 2 of 11 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Yaya
+• Metric: msi
+• Period: 2026-06-28
+• Observed: 7.17   Expected: 1.51–3.56
+• Diagnosis: Order 39271 (and to a lesser extent order 39266) appear massively duplicated in the dataset — order 39271 alone accounts for at least 19 of the 25 sample rows, each with `ordered_item_quantity = 1` but distinct line-level values that are clearly the same basket items repeated. This duplication inflates the MSI (Mean Sales per Item / transaction metric) well above the expected ceiling of ~3.56, producing the observed value of ~7.17 and the extreme z-score of 8.9.
+• Broken identity: z=8.9; outside p1-p99; outside IQR fence; PoP 162% vs same weekday
+
+Desired outcome: "msi" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 3 of 11 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Yaya
+• Metric: abv
+• Period: 2026-06-28
+• Observed: 26,491.67   Expected: 6,362.13–16,005.23
+• Diagnosis: Order 39271 appears 18 times in the sample rows (and order 39266 appears 5 times), each with ordered_item_quantity = 1 and every line carrying the full order-level total_sales_kes — strong evidence that order lines are being fanned out per product/item but the ABV calculation is summing total_sales_kes at the line level rather than deduplicating to the order level, causing revenue to be multi-counted. This inflates the apparent Average Basket Value from a realistic ~KES 4,000–5,000 per order to ~KES 26,492, a 6.5-sigma spike that mirrors the ~2× duplication ratio visible across the two dominant orders.
+• Broken identity: z=6.5; outside p1-p99; outside IQR fence; PoP 106% vs same weekday
+
+Desired outcome: "abv" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 4 of 11 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kisumu
+• Metric: asp
+• Period: 2026-06-28
+• Observed: 2,777.78   Expected: 3,245.8–5,473.04
+• Diagnosis: Order 39102 contains a line item with a negative total_sales_kes of -8,000 KES (and net_sales_kes of -6,896.55 KES) despite having sale_kind = "order", zero returns, and an ordered_item_quantity of 1 — this is almost certainly a misposted reversal or refund that was recorded against an order transaction instead of a dedicated return/refund record. This negative value artificially deflates the numerator used to compute the Average Selling Price (ASP), dragging it from the ~3,500–4,700 KES range seen on the other lines down to the anomalous 2,777.78 KES observed value, well outside the expected floor of 3,245.80 KES.
+• Broken identity: z=-3.6; outside p1-p99; outside IQR fence
+
+Desired outcome: "asp" for store:Vivo Kisumu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 5 of 11 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Garden City
+• Metric: msi
+• Period: 2026-06-28
+• Observed: 7.33   Expected: 1.36–3.56
+• Diagnosis: Order #39249 contains 69 items at KES 69,000 — almost certainly a data-entry or system error where the item quantity (69) was accidentally used as the unit price multiplier, inflating both revenue and the MSI (Mean Sales per Item = 7.33 vs. expected ~1.36–3.56); the true basket is likely a single item worth ~KES 1,000 (consistent with the ~KES 6,900 seen on order #39277 for 1 item). Additionally, order_id 39178 appears twice with identical values (total, net, gross, quantity), and order_id 39116 appears five times with different line amounts, both of which suggest duplicate row ingestion that further distorts the MSI denominator and numerator.
+• Broken identity: z=9.6; outside p1-p99; outside IQR fence; PoP 330% vs same weekday
+
+Desired outcome: "msi" for store:Vivo Garden City should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 6 of 11 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Garden City
+• Metric: asp
+• Period: 2026-06-28
+• Observed: 2,052.73   Expected: 3,112.63–5,490.27
+• Diagnosis: Order 39249 has an `ordered_item_quantity` of 69 — an extreme outlier compared to all other orders (which have qty = 1) — yet its `total_sales_kes` of KES 69,000 is consistent with a single item at ~KES 1,000, strongly suggesting each unit was entered as a separate line item and the quantity was over-counted 69×, or a bulk quantity was recorded against what should be a single-item sale. This inflated item count suppresses the computed Average Selling Price (ASP = total_sales / total_qty) far below the expected range of KES 3,113–5,490, producing the observed ASP of ~KES 2,053. Additionally, order 39119 appears twice — once with a negative sales value of KES −6,000 (a return-like row with `sale_kind = "order"` and no `returns_kes`) and once with a positive KES 5,200, and order 39178 is duplicated, both of which further distort the numerator and denominator of the ASP calculation.
+• Broken identity: z=-4.4; outside p1-p99; outside IQR fence
+
+Desired outcome: "asp" for store:Vivo Garden City should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 7 of 11 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Garden City
+• Metric: abv
+• Period: 2026-06-28
+• Observed: 15,053.33   Expected: 5,329.86–14,077.94
+• Diagnosis: Order #39249 contains 69 items at KES 69,000 total — exactly 69× the unit price of KES 1,000 — which is almost certainly a data-entry or POS duplication error where a single-item order had its quantity (or line-item) multiplied, massively inflating the Average Basket Value (ABV). Additionally, order #39178 appears twice in the sample with identical order_id, amounts, and quantities, indicating a duplicate row that further distorts the ABV calculation.
+• Broken identity: outside p1-p99; outside IQR fence; PoP 78% vs same weekday
+
+Desired outcome: "abv" for store:Vivo Garden City should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 8 of 11 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Garden City
+• Metric: units_sold
+• Period: 2026-06-28
+• Observed: 110   Expected: 8.53–53.23
+• Diagnosis: Order 39116 appears 5 times and order 39119 appears 3 times (and several other order IDs repeat) across distinct line-item rows, strongly suggesting that the source query fans out on an unguarded join — each order is being counted once per line-item rather than once per order, inflating units_sold from a realistic ~20–30 to the observed 110. The single most impactful outlier is order 39249, which alone contributes 69 units at a price-per-unit of KES 1,000, consistent with a bulk/catering order that may itself be a legitimate large order, but the duplicate order_id rows for the remaining orders confirm a fan-out duplication problem in the aggregation pipeline.
+• Broken identity: z=6.8; outside p1-p99; outside IQR fence; PoP 90% vs same weekday
+
+Desired outcome: "units_sold" for store:Vivo Garden City should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 9 of 11 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Eldoret
+• Metric: return_rate
+• Period: 2026-06-28
+• Observed: 0.15   Expected: 0–0.12
+• Diagnosis: Order 39087 appears twice in the sample with identical absolute values but opposite signs (total_sales_kes: +5550.0 and -3900.0), indicating a duplicate row where the negative-value entry is a mis-recorded reversal/return that should have been booked as sale_kind='return' (like order 39076) rather than as a negative-value 'order' row — this artificially inflates the computed return_rate. Additionally, the negative-sign order row for 39087 carries a different total_sales_kes magnitude (-3900 vs +5550), suggesting a data entry or ETL transformation error where a return was partially duplicated and assigned the wrong amount.
+• Broken identity: z=4.2; outside p1-p99; PoP 102% vs same weekday
+
+Desired outcome: "return_rate" for store:Vivo Eldoret should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 10 of 11 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Runda
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 21   Expected: 3–20.23
+• Diagnosis: Multiple order_IDs appear more than once in the sample rows with identical or differing amounts (e.g., order_id 38641 appears 4 times, 38759 appears 4 times, 38804 appears 3 times, 38938 appears 2 times), indicating that individual order line-items are being counted as separate transactions rather than being deduplicated to the order level. This duplicate row inflation is the most likely reason the transaction count (21) exceeds the expected ceiling (~20.23) and triggers the 162% period-over-period spike.
+• Broken identity: outside p1-p99; outside IQR fence; PoP 162% vs same weekday
+
+Desired outcome: "transactions" for store:Vivo Runda should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 11 of 11 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kisumu
+• Metric: transactions
+• Period: 2026-06-27
+• Observed: 24   Expected: 4–21.39
+• Diagnosis: Multiple order_ids appear more than once in the sample rows (e.g., 38780 appears 3 times, 39000 appears 2 times, 38993 appears 2 times, 38534 appears 2 times, and 38746 appears 2 times), indicating that duplicate rows are inflating the transaction count well beyond the expected range of 4–21. Additionally, order_id 38534 has a paired negative-value row (KES -6,500) and a positive row for the same order, suggesting a voided/reversed transaction was re-entered as a new record rather than being properly netted off, further corrupting the count.
+• Broken identity: outside p1-p99; outside IQR fence; PoP 380% vs same weekday
+
+Desired outcome: "transactions" for store:Vivo Kisumu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
