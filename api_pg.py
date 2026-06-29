@@ -1970,27 +1970,71 @@ def _replen_line_owner_map(bootstrap=True):
     return {str(k): str(v) for k, v in mapping.items() if v}
 
 
-def _owner_for_line(pos, sku, line_map, owners, store_fallback=None):
-    """Resolve the FROZEN picker for a pick-list line. A line added since the
-    last redistribute (not in the frozen map) falls back to that store's main
-    picker, else a STABLE deterministic pick (hash of the line key over the
-    roster). The fallback is stable across reloads and never yields "—"."""
+def _assign_replen_owners_frozen_then_balance(rows, line_map=None, owners=None,
+                                              presort=True):
+    """Assign every pick-list row a picker, in place, keeping the displayed
+    workload near-EQUAL by units without ever reshuffling a picker's already-saved
+    lines.
+
+    `presort` POS-sorts the rows first so each store's lines stay contiguous (the
+    Daily report wants this). The SOR endpoint passes presort=False to preserve
+    its own `_rank` priority order — only the owner labels + the by-owner summary
+    are derived; the row sequence the operator sees is left untouched.
+
+    Two passes over the rows:
+      1. Lines present in the FROZEN {line_key: owner} map keep that owner (the
+         equal-units balance captured by the last "Save & redistribute"). A reload
+         never moves these — a picker who finished early is never handed back their
+         own work.
+      2. Lines NOT in the map (added since the last redistribute — the Daily view
+         window includes today, whose lines grow through the day) are handed to the
+         currently LEAST-loaded picker (fewest units so far, roster order breaks
+         ties). Because each line is unit-capped this keeps the per-picker totals
+         near-equal instead of dumping a whole store on its "main" picker (the old
+         whole-store fallback, which made the split lopsided once the window
+         drifted off the saved map).
+
+    Nobody ever shows as "—": every row gets a real picker from the roster."""
     owners = [str(o).strip() for o in (owners or []) if str(o).strip()] \
         or list(_DEFAULT_REPLEN_OWNERS)
-    k = _line_key(pos, sku)
-    if k:
-        o = line_map.get(k)
-        if o:
-            return o
-    if store_fallback:
-        o = store_fallback.get(str(pos or "").strip())
-        if o:
-            return o
-    if not owners:
-        return "—"
-    key = k or (str(pos or "") + "\u0001" + str(sku or ""))
-    h = int(hashlib.md5(key.encode("utf-8")).hexdigest(), 16)
-    return owners[h % len(owners)]
+    line_map = line_map or {}
+    if presort:
+        rows.sort(key=lambda r: (str(r.get("pos_location") or ""),
+                                 str(r.get("sku") or ""),
+                                 str(r.get("barcode") or "")))
+    units = {o: 0 for o in owners}
+    order = {o: i for i, o in enumerate(owners)}
+    unmapped = []
+    for r in rows:
+        k = _line_key(r.get("pos_location"), r.get("sku"))
+        ow = line_map.get(k) if k else None
+        if ow in units:                       # frozen + still on the roster
+            r["owner"] = ow
+            units[ow] += int(r.get("replenish") or 0)
+        else:
+            r["owner"] = None
+            unmapped.append(r)
+    for r in unmapped:                        # balance the drift onto the lightest
+        ow = min(owners, key=lambda o: (units[o], order[o]))
+        r["owner"] = ow
+        units[ow] += int(r.get("replenish") or 0)
+    return rows
+
+
+def _replen_by_owner_summary(rows):
+    """Roll the assigned pick-list rows into the per-picker workload card
+    ({owner, lines, units, stores}), sorted by units desc."""
+    agg = {}
+    for r in rows:
+        o = agg.setdefault(r.get("owner"),
+                           {"owner": r.get("owner"), "lines": 0, "units": 0, "stores": set()})
+        o["lines"] += 1
+        o["units"] += int(r.get("replenish") or 0)
+        o["stores"].add(r.get("pos_location"))
+    return sorted(
+        [{"owner": o["owner"], "lines": o["lines"], "units": o["units"],
+          "stores": len(o["stores"])} for o in agg.values()],
+        key=lambda x: x["units"], reverse=True)
 
 
 def _redistribute_replen_owners(owners=None, date_from=None, date_to=None,
@@ -14139,28 +14183,10 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
     ret_rows = actionable[:int(limit)]
     _owners = _replen_owners()
     _line_map = _replen_line_owner_map()
-    _store_fallback = {}
-    _store_owner_counts = {}
-    for _k, _ow in _line_map.items():
-        _store = _k.split("\u0001", 1)[0]
-        _d = _store_owner_counts.setdefault(_store, {})
-        _d[_ow] = _d.get(_ow, 0) + 1
-    for _store, _d in _store_owner_counts.items():
-        _store_fallback[_store] = max(_d.items(), key=lambda kv: kv[1])[0]
-    for r in ret_rows:
-        r["owner"] = _owner_for_line(
-            r.get("pos_location"), r.get("sku"), _line_map, _owners, _store_fallback)
-    _by_owner = {}
-    for r in ret_rows:
-        o = _by_owner.setdefault(
-            r["owner"], {"owner": r["owner"], "lines": 0, "units": 0, "stores": set()})
-        o["lines"] += 1
-        o["units"] += int(r.get("replenish") or 0)
-        o["stores"].add(r.get("pos_location"))
-    by_owner_list = sorted(
-        [{"owner": o["owner"], "lines": o["lines"], "units": o["units"],
-          "stores": len(o["stores"])} for o in _by_owner.values()],
-        key=lambda x: x["units"], reverse=True)
+    # presort=False: keep the SOR `_rank` priority order the operator sees; only
+    # the owner labels + by-owner summary are derived from the balance.
+    _assign_replen_owners_frozen_then_balance(ret_rows, _line_map, _owners, presort=False)
+    by_owner_list = _replen_by_owner_summary(ret_rows)
 
     return {
         "as_of": _replen_eat_today().isoformat() + " 06:00 EAT",
@@ -14347,29 +14373,8 @@ def analytics_replenishment_report(
     # that store's main picker, else a stable hash (also reload-stable).
     owners = _replen_owners()
     line_map = _replen_line_owner_map()
-    store_fallback = {}
-    _store_owner_counts = {}
-    for _k, _ow in line_map.items():
-        _store = _k.split("\u0001", 1)[0]
-        _d = _store_owner_counts.setdefault(_store, {})
-        _d[_ow] = _d.get(_ow, 0) + 1
-    for _store, _d in _store_owner_counts.items():
-        store_fallback[_store] = max(_d.items(), key=lambda kv: kv[1])[0]
-    out_rows.sort(key=lambda r: (str(r.get("pos_location") or ""),
-                                 str(r.get("sku") or ""),
-                                 str(r.get("barcode") or "")))
-    for r in out_rows:
-        r["owner"] = _owner_for_line(
-            r.get("pos_location"), r.get("sku"), line_map, owners, store_fallback)
-    by_owner = {}
-    for r in out_rows:
-        o = by_owner.setdefault(r["owner"], {"owner": r["owner"], "lines": 0, "units": 0, "stores": set()})
-        o["lines"] += 1
-        o["units"] += r["replenish"]
-        o["stores"].add(r["pos_location"])
-    by_owner_list = sorted(
-        [{"owner": o["owner"], "lines": o["lines"], "units": o["units"], "stores": len(o["stores"])} for o in by_owner.values()],
-        key=lambda x: x["units"], reverse=True)
+    _assign_replen_owners_frozen_then_balance(out_rows, line_map, owners)
+    by_owner_list = _replen_by_owner_summary(out_rows)
     # Phase 3 A3-ext — attach a recommended-qty size curve per (store, style).
     # Two batch queries total: sku->style map, then one size-mix pull for every
     # style on the page (chain-wide curve), split per (store, style) group total.

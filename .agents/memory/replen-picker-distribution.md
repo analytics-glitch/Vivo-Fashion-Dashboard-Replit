@@ -28,10 +28,22 @@ keeping a store with one person.
   `{store|sku: owner}` map in app_config (`replenishment_line_owner_map`) and the
   report reads it on every load, so a reload never reshuffles. Helpers:
   `_compute_line_owner_map` (balance the current window), `_replen_line_owner_map`
-  (read; self-seeds once if unset), `_owner_for_line` (frozen lookup).
-- Drift (a line added since the last redistribute, not in the frozen map) →
-  that store's main picker (dominant owner in the map), else a stable md5 hash of
-  the line key over the roster. Both are reload-stable; no row is ever "—".
+  (read; self-seeds once if unset), `_assign_replen_owners_frozen_then_balance`
+  (per-GET assignment: frozen map first, balance the rest), `_replen_by_owner_summary`.
+- **Drift fallback = LEAST-LOADED, not whole-store.** A line NOT in the frozen map
+  (the view window includes today → lines grow intraday → most lines drift off a
+  morning save) is assigned to the currently lightest picker (by units, roster
+  order tie-break), NOT that store's dominant owner. **Why:** the old whole-store
+  fallback (`_owner_for_line` + `store_fallback`, now deleted) dumped each drifted
+  store on one picker → the card stayed lopsided (206/201/165/160) even though
+  `replenish` is capped at 3/line and a matched-window save balances near-perfectly.
+  With cap-3 lines, least-loaded keeps the totals within ~1 unit even when the
+  ENTIRE map is stale — so equality no longer depends on the operator re-saving.
+  **How to apply:** both the Daily report AND the SOR endpoint go through
+  `_assign_replen_owners_frozen_then_balance` (SOR passes `presort=False` to keep
+  its `_rank` order; Daily POS-sorts for store contiguity). Tradeoff: unmapped
+  lines can reflow owner across reloads as new lines appear — acceptable because
+  they were never "owned" (only FROZEN/saved lines must stay put, and they do).
 - **Redistribute MUST balance over the window the page actually displays**, or the
   per-picker units come out lopsided even though the balancer is equal-units.
   **Why:** the Daily page (`Replenishments.jsx`) defaults its window to
