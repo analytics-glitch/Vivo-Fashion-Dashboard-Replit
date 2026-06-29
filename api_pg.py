@@ -3117,7 +3117,24 @@ def csv_to_sql(val):
     # (backslashes are literal), so doubling quotes is sufficient.
     return "'" + "','".join(v.strip().replace("'", "''") for v in val.split(",")) + "'"
 
-def build_filters(date_from, date_to, country=None, channel=None, extra=None):
+def _channel_group_sql(channel_group, alias="s"):
+    # The filter-bar All/Retail/Online segment. "Online" is modelled as a COUNTRY
+    # value in all_sales (country='Online' across the Shop Zetu / vivowoman / small
+    # vivo-uganda online stores), NOT an exact pos_location_name string — the real
+    # pos_location_name values ("Online - Shop Zetu", "Online - vivowoman",
+    # "Online - vivo-uganda", "Online Orders Location") never matched the labels the
+    # frontend sent, so an exact-match channel filter dropped ALL online customers
+    # to zero. Resolve the segment off the reliable country flag instead.
+    if not channel_group:
+        return ""
+    cg = str(channel_group).strip().lower()
+    if cg == "online":
+        return alias + ".country = 'Online'"
+    if cg == "retail":
+        return alias + ".country <> 'Online'"
+    return ""
+
+def build_filters(date_from, date_to, country=None, channel=None, extra=None, channel_group=None):
     parts = [
         "s.sale_date BETWEEN '" + date_from + "' AND '" + date_to + "'",
         BASE_FILTERS,
@@ -3126,6 +3143,9 @@ def build_filters(date_from, date_to, country=None, channel=None, extra=None):
         parts.append("s.country IN (" + csv_to_sql(country) + ")")
     if channel:
         parts.append("s.pos_location_name IN (" + csv_to_sql(channel) + ")")
+    cg = _channel_group_sql(channel_group)
+    if cg:
+        parts.append(cg)
     if extra:
         parts.append(extra)
     return " AND ".join(parts)
@@ -4356,9 +4376,12 @@ def get_customers(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
+    channel_group: str = Query(default=None),
 ):
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    _cg = _channel_group_sql(channel_group)
+    channel_filter = (channel_filter + (" AND " + _cg if _cg else "")).strip()
     # Churn + first-ever-purchase are GLOBAL (no country/channel scope), full-scan
     # all_sales and dominate this endpoint's cold latency. Serve them from the
     # pre-aggregated per-customer rollups when fresh; the freshness gate falls back
@@ -4511,10 +4534,11 @@ def get_top_customers(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
+    channel_group: str = Query(default=None),
     limit:     int = Query(default=20),
     reveal:    bool = Query(default=False),
 ):
-    where = build_filters(date_from, date_to, country, channel,
+    where = build_filters(date_from, date_to, country, channel, channel_group=channel_group,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')")
     rows = run_query("""
         SELECT
@@ -5189,8 +5213,9 @@ def get_customer_frequency(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
+    channel_group: str = Query(default=None),
 ):
-    where = build_filters(date_from, date_to, country, channel,
+    where = build_filters(date_from, date_to, country, channel, channel_group=channel_group,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')"
         " AND s.customer_id NOT IN (SELECT customer_id FROM all_customers WHERE customer_id IS NOT NULL"
         " AND (COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) ~* '" + _WALKIN_NAME_REGEX + "')")
@@ -5239,8 +5264,9 @@ def get_customers_by_location(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
+    channel_group: str = Query(default=None),
 ):
-    where = build_filters(date_from, date_to, country,
+    where = build_filters(date_from, date_to, country, channel_group=channel_group,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')"
         " AND s.customer_id NOT IN (SELECT customer_id FROM all_customers WHERE customer_id IS NOT NULL"
         " AND (COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) ~* '" + _WALKIN_NAME_REGEX + "')")
@@ -5579,8 +5605,12 @@ def get_customer_type_spend(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
+    channel_group: str = Query(default=None),
 ):
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    _cg = _channel_group_sql(channel_group)
+    if _cg:
+        country_filter = (country_filter + " AND " + _cg).strip()
     # New vs Returning by FIRST-EVER purchase date, matching /api/customers seg.
     # The stored customer_type can't express new-vs-returning for POS (every
     # counter sale is tagged 'registered', never 'new'), so a customer_type='new'
@@ -8528,8 +8558,9 @@ def analytics_repeat_customers(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
+    channel_group: str = Query(default=None),
 ):
-    where = build_filters(date_from, date_to, country, channel,
+    where = build_filters(date_from, date_to, country, channel, channel_group=channel_group,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')")
     return run_query("""
         WITH cust AS (
@@ -8562,8 +8593,9 @@ def analytics_customer_retention(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
+    channel_group: str = Query(default=None),
 ):
-    cust = get_customers(date_from, date_to, country, channel)
+    cust = get_customers(date_from, date_to, country, channel, channel_group)
     total = cust.get("total_customers") or 0
     # "Repeat rate" = share of active customers who had a prior purchase before
     # this window (returning buyers). The legacy `repeat_customers` field is
@@ -8575,7 +8607,7 @@ def analytics_customer_retention(
         repeat_rate = round(float(repeat) * 100.0 / float(total), 2) if total else 0.0
     except (TypeError, ValueError, ZeroDivisionError):
         repeat_rate = 0.0
-    where = build_filters(date_from, date_to, country, channel,
+    where = build_filters(date_from, date_to, country, channel, channel_group=channel_group,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')")
     months = run_query("""
         SELECT substring(s.sale_date, 1, 7) AS month,
@@ -8664,6 +8696,7 @@ def customers_walk_ins(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
+    channel_group: str = Query(default=None),
 ):
     # ── Walk-in (anonymous transaction) definition ─────────────────────────────
     # An "anonymous transaction" = a sale with no real identified customer profile
@@ -8677,7 +8710,7 @@ def customers_walk_ins(
     #       excludes from the identified universe, so walk-ins + identified = total.
     # (Counting only customer_id IS NULL — the old logic — missed buckets (b)/(c)
     #  and surfaced as a near-zero walk-in count on the dashboard.)
-    where = build_filters(date_from, date_to, country, channel,
+    where = build_filters(date_from, date_to, country, channel, channel_group=channel_group,
         extra="s.sale_kind IN ('sale','order')")
     anon_expr = (
         "(s.customer_id IS NULL OR s.customer_id IN ('None','null','') "
@@ -8690,6 +8723,13 @@ def customers_walk_ins(
         "COALESCE(last_name,'')) ~* '" + _WALKIN_NAME_REGEX + "')"
     )
 
+    # Anonymous transactions split by channel: in-store "Walk-in" (Retail, i.e.
+    # country <> 'Online') vs "Guest" checkouts (Online, country = 'Online'). The
+    # two are kept distinct so an online guest order is never reported as an
+    # in-store walk-in (and vice-versa). walk_in_* now means RETAIL anonymous only.
+    retail_anon = "(" + anon_expr + " AND s.country <> 'Online')"
+    online_anon = "(" + anon_expr + " AND s.country = 'Online')"
+
     def _shares(r):
         wi, tot = r.get("walk_in_orders") or 0, r.get("total_orders") or 0
         ws, ts = float(r.get("walk_in_sales") or 0), float(r.get("total_sales") or 0)
@@ -8698,14 +8738,25 @@ def customers_walk_ins(
         r["walk_in_share_sales_pct"] = round(ws * 100.0 / ts, 4) if ts else 0
         r["walk_in_avg_basket_kes"] = round(ws / wi, 0) if wi else 0
         r["capture_rate_pct"] = round(100.0 - (wi * 100.0 / tot), 2) if tot else None
+        # Guest (online anonymous) — only populated by the summary query; defaults
+        # to 0 for the by_country / by_location breakdown rows.
+        gi = r.get("guest_orders") or 0
+        gs = float(r.get("guest_sales") or 0)
+        r["guest_orders"] = gi
+        r["guest_customers"] = gi
+        r["guest_sales"] = round(gs, 0)
+        r["guest_share_orders_pct"] = round(gi * 100.0 / tot, 4) if tot else 0
+        r["guest_avg_basket_kes"] = round(gs / gi, 0) if gi else 0
         return r
 
     agg_sql = "WITH " + pseudo_cte + """
         SELECT
             COUNT(DISTINCT s.order_id) AS total_orders,
-            COUNT(DISTINCT s.order_id) FILTER (WHERE """ + anon_expr + """) AS walk_in_orders,
+            COUNT(DISTINCT s.order_id) FILTER (WHERE """ + retail_anon + """) AS walk_in_orders,
+            COUNT(DISTINCT s.order_id) FILTER (WHERE """ + online_anon + """) AS guest_orders,
             COALESCE(ROUND(SUM(s.total_sales_kes::numeric), 0), 0) AS total_sales,
-            COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + anon_expr + """), 0), 0) AS walk_in_sales
+            COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + retail_anon + """), 0), 0) AS walk_in_sales,
+            COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + online_anon + """), 0), 0) AS guest_sales
         FROM all_sales s
         LEFT JOIN pseudo ps ON ps.customer_id = s.customer_id
         WHERE """ + where
@@ -8714,15 +8765,19 @@ def customers_walk_ins(
         "total_orders": 0, "walk_in_orders": 0, "total_sales": 0, "walk_in_sales": 0,
         "walk_in_customers": 0, "walk_in_share_orders_pct": 0,
         "walk_in_share_sales_pct": 0, "walk_in_avg_basket_kes": 0, "capture_rate_pct": None,
+        "guest_orders": 0, "guest_customers": 0, "guest_sales": 0,
+        "guest_share_orders_pct": 0, "guest_avg_basket_kes": 0,
     }
 
     by_country = [
         _shares(r) for r in run_query("WITH " + pseudo_cte + """
             SELECT s.country AS country,
                 COUNT(DISTINCT s.order_id) AS total_orders,
-                COUNT(DISTINCT s.order_id) FILTER (WHERE """ + anon_expr + """) AS walk_in_orders,
+                COUNT(DISTINCT s.order_id) FILTER (WHERE """ + retail_anon + """) AS walk_in_orders,
+                COUNT(DISTINCT s.order_id) FILTER (WHERE """ + online_anon + """) AS guest_orders,
                 COALESCE(ROUND(SUM(s.total_sales_kes::numeric), 0), 0) AS total_sales,
-                COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + anon_expr + """), 0), 0) AS walk_in_sales
+                COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + retail_anon + """), 0), 0) AS walk_in_sales,
+                COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + online_anon + """), 0), 0) AS guest_sales
             FROM all_sales s
             LEFT JOIN pseudo ps ON ps.customer_id = s.customer_id
             WHERE """ + where + """ AND COALESCE(s.country,'') <> ''
@@ -8735,9 +8790,11 @@ def customers_walk_ins(
         _shares(r) for r in run_query("WITH " + pseudo_cte + """
             SELECT s.pos_location_name AS channel, MAX(s.country) AS country,
                 COUNT(DISTINCT s.order_id) AS total_orders,
-                COUNT(DISTINCT s.order_id) FILTER (WHERE """ + anon_expr + """) AS walk_in_orders,
+                COUNT(DISTINCT s.order_id) FILTER (WHERE """ + retail_anon + """) AS walk_in_orders,
+                COUNT(DISTINCT s.order_id) FILTER (WHERE """ + online_anon + """) AS guest_orders,
                 COALESCE(ROUND(SUM(s.total_sales_kes::numeric), 0), 0) AS total_sales,
-                COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + anon_expr + """), 0), 0) AS walk_in_sales
+                COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + retail_anon + """), 0), 0) AS walk_in_sales,
+                COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + online_anon + """), 0), 0) AS guest_sales
             FROM all_sales s
             LEFT JOIN pseudo ps ON ps.customer_id = s.customer_id
             WHERE """ + where + """ AND COALESCE(s.pos_location_name,'') <> ''
@@ -8752,6 +8809,8 @@ def customers_walk_ins(
     # "of N identified" denominator matches the Total Identified Customers tile.
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    _cg = _channel_group_sql(channel_group)
+    channel_filter = (channel_filter + (" AND " + _cg if _cg else "")).strip()
     ip_rows = run_query("""
         WITH excluded AS (
             SELECT DISTINCT customer_id FROM all_customers
