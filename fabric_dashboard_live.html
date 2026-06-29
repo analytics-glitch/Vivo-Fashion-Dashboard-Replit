@@ -2274,7 +2274,7 @@ function renderSplit(id,rows,fxText){
   bars(id,data,'label','v',r=>fmt(r.fabrics)+' fab',true,fxText);
 }
 function renderStructure(id,rows,fxText){
-  rows=rows||[];
+  rows=(rows||[]).filter(r=>r&&r.qty_metres);
   const el=document.getElementById(id); if(!el)return;
   const totalMetres=rows.reduce((s,r)=>s+(r.qty_metres||0),0);
   const fa=fxText?fx(fxText):'';
