@@ -161,9 +161,57 @@ def fetch_range(since, until, depth=0):
     return left + right
 
 
-def aggregate(rows):
+# ── customer_id enrichment via GraphQL Orders API ────────────────────────────
+# ShopifyQL cannot expose customer_id, so we fetch it per order_id from the
+# GraphQL Orders API and join in aggregate(). Guests return None.
+_CUST_QUERY = ("query($ids:[ID!]!){ nodes(ids:$ids){ ... on Order "
+               "{ id customer { id } } } }")
+
+def _num_id(gid):
+    if not gid:
+        return None
+    return gid.rstrip("/").split("/")[-1] or None
+
+def fetch_customer_ids(order_ids):
+    """order_id (numeric str) -> customer_id (numeric str) or None for guests."""
+    url = f"https://{STORE_URL}/admin/api/{API_VERSION}/graphql.json"
+    headers = {"X-Shopify-Access-Token": TOKEN, "Content-Type": "application/json"}
+    uniq = sorted({str(o).strip() for o in order_ids if o})
+    out = {}
+    for i in range(0, len(uniq), 250):
+        batch = uniq[i:i+250]
+        gids = [f"gid://shopify/Order/{o}" for o in batch]
+        for attempt in range(MAX_RETRIES):
+            try:
+                r = requests.post(url, headers=headers,
+                                  json={"query": _CUST_QUERY, "variables": {"ids": gids}},
+                                  timeout=90)
+                r.raise_for_status()
+                d = r.json()
+                if "errors" in d:
+                    raise RuntimeError(str(d["errors"])[:200])
+                for node in d["data"]["nodes"]:
+                    if not node:
+                        continue
+                    oid = _num_id(node["id"])
+                    cust = node.get("customer")
+                    out[oid] = _num_id(cust["id"]) if cust else None
+                break
+            except Exception as e:
+                log.warning("customer_id batch %d attempt %d: %s", i, attempt+1, e)
+                time.sleep(THROTTLE_SLEEP)
+        else:
+            log.error("customer_id batch starting %d failed after retries", i)
+        time.sleep(REQUEST_PAUSE)
+    log.info("Fetched customer_ids for %d/%d orders", len(out), len(uniq))
+    return out
+
+
+def aggregate(rows, customer_id_map=None):
     """Collapse ShopifyQL line rows to the raw PK grain
     (order_id, day, sku, is_reversal_row), summing metrics."""
+    if customer_id_map is None:
+        customer_id_map = {}
     agg = {}
     for r in rows:
         order_id = (r.get("order_id") or "").strip()
@@ -188,6 +236,7 @@ def aggregate(rows):
                 "variant_title": r.get("product_variant_title_at_time_of_sale"),
                 "variant_price": _num(r.get("product_variant_price")),
                 "customer_type": r.get("new_or_returning_customer"),
+                "customer_id": customer_id_map.get(order_id),
                 "is_reversal": is_reversal,
                 "gross_sales": 0.0, "discounts": 0.0, "returns": 0.0,
                 "net_sales": 0.0, "total_sales": 0.0, "orders": 0,
@@ -218,7 +267,7 @@ def write_rows(records, since, until):
             rec["gross_sales"], rec["discounts"], rec["returns"],
             rec["net_sales"], rec["total_sales"], rec["orders"],
             rec["net_items_sold"], rec["quantity_ordered"], rec["reversed_quantity"],
-            rec["customer_type"], rec["is_reversal"], False, now,
+            rec["customer_type"], rec.get("customer_id"), rec["is_reversal"], False, now,
         ))
 
     conn = psycopg2.connect(DATABASE_URL)
@@ -237,7 +286,7 @@ def write_rows(records, since, until):
                 product_variant_title_at_time_of_sale, product_variant_price,
                 gross_sales, discounts, returns, net_sales, total_sales,
                 orders, net_items_sold, quantity_ordered, reversed_quantity,
-                new_or_returning_customer, is_reversal_row, is_totals_row, _loaded_at
+                new_or_returning_customer, customer_id, is_reversal_row, is_totals_row, _loaded_at
             ) VALUES %s
             ON CONFLICT (order_id, day, product_variant_sku, is_reversal_row)
             DO UPDATE SET
@@ -257,6 +306,7 @@ def write_rows(records, since, until):
                 quantity_ordered = EXCLUDED.quantity_ordered,
                 reversed_quantity = EXCLUDED.reversed_quantity,
                 new_or_returning_customer = EXCLUDED.new_or_returning_customer,
+                customer_id = EXCLUDED.customer_id,
                 _loaded_at = EXCLUDED._loaded_at
         """, tuples, page_size=1000)
         conn.commit()
@@ -307,8 +357,10 @@ def main():
         all_rows.extend(fetch_range(cursor, win_end))
         cursor = win_end + timedelta(days=1)
 
-    log.info("Fetched %d raw line rows; aggregating...", len(all_rows))
-    records = aggregate(all_rows)
+    log.info("Fetched %d raw line rows; enriching customer_ids...", len(all_rows))
+    order_ids = {(r.get("order_id") or "").strip() for r in all_rows if r.get("order_id")}
+    customer_id_map = fetch_customer_ids(order_ids)
+    records = aggregate(all_rows, customer_id_map=customer_id_map)
     log.info("Aggregated to %d rows at (order_id, day, sku, is_reversal) grain", len(records))
 
     write_rows(records, since, until)

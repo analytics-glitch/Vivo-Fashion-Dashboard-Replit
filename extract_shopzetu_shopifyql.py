@@ -20,7 +20,7 @@ from datetime import date, timedelta, datetime, timezone
 import psycopg2
 from psycopg2.extras import execute_values
 
-from extract_shopzetu_sales import fetch_range, aggregate
+from extract_shopzetu_sales import fetch_range, aggregate, fetch_customer_ids
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ def to_all_sales_rows(records):
         out.append((
             row_id, "shop-zetu", rec["order_id"], rec.get("order_name"),
             day, day, "Online - Shop Zetu", "Online", "Online",
-            None, rec.get("customer_type"), sale_kind, title, sku,
+            rec.get("customer_id"), rec.get("customer_type"), sale_kind, title, sku,
             int(rec["quantity_ordered"]),
             round(price, 2), round(price, 2),
             round(gross, 2), round(disc, 2), round(net, 2),
@@ -113,9 +113,11 @@ def main():
 
     log.info("ShopifyQL sync: %s -> %s", since, until)
     raw_rows = fetch_range(since, until)
+    _oids = {(r.get("order_id") or "").strip() for r in raw_rows if r.get("order_id")}
+    _cust_map = fetch_customer_ids(_oids)
     if not raw_rows:
         log.info("No rows returned; deleting stale rows in window only")
-    records = aggregate(raw_rows)
+    records = aggregate(raw_rows, customer_id_map=_cust_map)
     rows = to_all_sales_rows(records)
     net = sum(r[20] for r in rows)
     log.info("Transformed %d rows", len(rows))
