@@ -325,6 +325,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div class="card">
       <div class="section-head"><h3>Solid vs Print</h3></div>
       <div id="split-print"><div class="loading">Loading…</div></div>
+      <button class="btn ghost" style="margin-top:.5rem;padding:0 10px;height:28px;font-size:11px;" onclick="downloadPrintSplitXlsx()" title="Download the full classification audit trail (every contributing fabric, whether it was classed Solid/Print/Unknown and which rule matched, its on-hand kg, the kg&rarr;metre conversion, derived metres and KES value) as an Excel workbook">&#11015; Download calculations (Excel)</button>
       <div class="section-head" style="margin-top:1.2rem;"><h3>Fabric structure</h3></div>
       <div id="split-structure"><div class="loading">Loading…</div></div>
       <div class="section-head" style="margin-top:1.2rem;"><h3>By primary colour</h3><span class="muted">stock, last-30-day consumption &amp; covers</span></div>
@@ -1985,6 +1986,27 @@ async function downloadBasicCoverXlsx(){
     const a=document.createElement('a');
     a.href=URL.createObjectURL(blob);
     a.download='basic-fabrics-months-of-cover.xlsx';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  }catch(e){alert('Could not generate the Excel report. Please try again.');}
+}
+// Solid vs Print calculations workbook — the full classification audit trail
+// (per-fabric Solid/Print/Unknown, which rule matched, kg, kg→metre conversion,
+// derived metres and KES value). Passes the page's CURRENT location + scope so
+// the download reconciles to exactly what the donut on screen shows.
+async function downloadPrintSplitXlsx(){
+  try{
+    // Use the SAME location the overview donut is fetched with (loc() →
+    // #location-filter). The overview's attribute-split call passes no scope, so
+    // the donut is always main-scope — match that here so the workbook reconciles.
+    const qs='?location='+encodeURIComponent(loc())+'&scope=main';
+    const r=await fetch('/api/fabric/solid-vs-print.xlsx'+qs,{credentials:'include'});
+    if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
+    if(!r.ok)throw new Error('http '+r.status);
+    const blob=await r.blob();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='solid-vs-print-calculations.xlsx';
     document.body.appendChild(a);a.click();a.remove();
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
   }catch(e){alert('Could not generate the Excel report. Please try again.');}

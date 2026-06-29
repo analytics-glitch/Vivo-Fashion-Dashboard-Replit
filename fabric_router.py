@@ -2518,6 +2518,177 @@ def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Qu
             "fiber": fiber,
         }
 
+# ── Solid vs Print: downloadable .xlsx calculations report ──────────────
+# The full audit trail behind the "Solid vs Print" donut: every fabric product
+# that contributes, its derived classification (Solid/Print/Unknown), WHICH rule
+# matched it, its on-hand kg, the kg→metre conversion applied, its derived metres
+# and KES value. The classification CASE + filters (i.quantity > 0, location,
+# scope) MUST mirror attribute_split's split_plain_print EXACTLY so the workbook
+# reconciles to the donut. The Summary sheet reuses the SAME single-aggregate
+# GROUP BY query the donut is fed, so its totals are guaranteed identical.
+@fabric_router.get("/api/fabric/solid-vs-print.xlsx")
+def solid_vs_print_xlsx(location: str = Query(default="RMAT/Stock"),
+                        scope: str = Query(default="main")):
+    from fastapi.responses import Response
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, PatternFill
+
+    # The exact classification CASE from attribute_split.split_plain_print — kept
+    # verbatim so the workbook reconciles to the donut.
+    CLASS_CASE = """CASE
+        WHEN LOWER(BTRIM(COALESCE(p.plain_print,''))) = 'print' THEN 'Print'
+        WHEN p.name ~* 'print|aop|floral|camouflage|stripe|polka|paisley|leopard|ankara' THEN 'Print'
+        WHEN NULLIF(BTRIM(COALESCE(p.fabric_category,'')),'') IS NOT NULL THEN 'Solid'
+        WHEN LOWER(BTRIM(COALESCE(p.plain_print,''))) = 'plain' THEN 'Solid'
+        ELSE 'Unknown'
+      END"""
+    # The matching rule that fired, in the SAME priority order, for the audit trail.
+    RULE_CASE = """CASE
+        WHEN LOWER(BTRIM(COALESCE(p.plain_print,''))) = 'print' THEN 'plain_print=print'
+        WHEN p.name ~* 'print|aop|floral|camouflage|stripe|polka|paisley|leopard|ankara' THEN 'name matched print regex'
+        WHEN NULLIF(BTRIM(COALESCE(p.fabric_category,'')),'') IS NOT NULL THEN 'has fabric_category'
+        WHEN LOWER(BTRIM(COALESCE(p.plain_print,''))) = 'plain' THEN 'plain_print=plain'
+        ELSE 'fell through -> Unknown'
+      END"""
+
+    with _get_conn() as conn:
+        loc_sql, loc_params = _loc_filter(location)
+        # Summary — the SAME aggregated query the donut is fed (split_plain_print).
+        summary = q(conn, f"""
+            SELECT {CLASS_CASE} as value,
+              COUNT(DISTINCT i.product_id) as fabrics,
+              ROUND(SUM(i.quantity)::numeric,0) as qty_kg,
+              ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE 0 END)::numeric,0) as qty_metres,
+              ROUND(SUM(i.total_value)::numeric,0) as value_kes
+            FROM raw_fabric_inventory i
+            JOIN raw_fabric_products p ON p.id = i.product_id
+            WHERE i.quantity > 0 {loc_sql}
+              AND {_scope_sql(scope)}
+            GROUP BY 1
+            ORDER BY value_kes DESC NULLS LAST
+        """, loc_params)
+
+        # Detail — one row per contributing fabric product, with its rule.
+        detail = q(conn, f"""
+            SELECT i.product_id,
+              p.name, p.default_code AS sku, p.supplier,
+              p.plain_print, p.fabric_category, p.kg_per_mtr_eff,
+              {CLASS_CASE} as classification,
+              {RULE_CASE} as rule,
+              ROUND(SUM(i.quantity)::numeric,2) as qty_kg,
+              ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE 0 END)::numeric,2) as qty_metres,
+              ROUND(SUM(i.total_value)::numeric,0) as value_kes
+            FROM raw_fabric_inventory i
+            JOIN raw_fabric_products p ON p.id = i.product_id
+            WHERE i.quantity > 0 {loc_sql}
+              AND {_scope_sql(scope)}
+            GROUP BY i.product_id, p.name, p.default_code, p.supplier,
+                     p.plain_print, p.fabric_category, p.kg_per_mtr_eff,
+                     {CLASS_CASE}, {RULE_CASE}
+            ORDER BY value_kes DESC NULLS LAST
+        """, loc_params)
+
+    # Grand totals (reconcile to the donut centre / legend).
+    tot_kg = sum(float(r["qty_kg"] or 0) for r in summary)
+    tot_metres = sum(float(r["qty_metres"] or 0) for r in summary)
+    tot_value = sum(float(r["value_kes"] or 0) for r in summary)
+    tot_fabrics = sum(int(r["fabrics"] or 0) for r in summary)
+
+    # ── Build the workbook ───────────────────────────────────────────────
+    wb = openpyxl.Workbook()
+    HEAD = Font(bold=True, color="FFFFFF")
+    HEAD_FILL = PatternFill("solid", fgColor="1A5C38")
+    TITLE = Font(bold=True, size=13)
+    LBL = Font(bold=True)
+    LINK = Font(color="1A5C38", underline="single")
+
+    def _style_header(ws, ncols, row=1):
+        for c in range(1, ncols + 1):
+            cell = ws.cell(row=row, column=c)
+            cell.font = HEAD
+            cell.fill = HEAD_FILL
+
+    _loc_label = (location or "").strip() or "All fabric stock"
+    _scope_label = "Support fabrics" if str(scope or "").lower() == "support" else "Main fabrics"
+
+    # Summary sheet
+    ws = wb.active
+    ws.title = "Summary"
+    ws["A1"] = "Solid vs Print — calculations report"
+    ws["A1"].font = TITLE
+    ws["A2"] = "Location: %s    Scope: %s" % (_loc_label, _scope_label)
+    sum_cols = ["Classification", "Fabrics", "Total kg", "Total metres",
+                "Value (KES)", "% of value", "% of metres (chart)"]
+    ws.append([])  # spacer row 3
+    ws.append(sum_cols)  # header on row 4
+    _style_header(ws, len(sum_cols), row=4)
+    for r in summary:
+        val = float(r["value_kes"] or 0)
+        met = float(r["qty_metres"] or 0)
+        ws.append([
+            r["value"], int(r["fabrics"] or 0),
+            float(r["qty_kg"] or 0), met, val,
+            round(val / tot_value * 100, 1) if tot_value else 0.0,
+            round(met / tot_metres * 100, 1) if tot_metres else 0.0,
+        ])
+    grand = ws.max_row + 1
+    ws.append(["Grand total", tot_fabrics, round(tot_kg, 0),
+               round(tot_metres, 0), round(tot_value, 0),
+               100.0 if tot_value else 0.0,
+               100.0 if tot_metres else 0.0])
+    for c in range(1, len(sum_cols) + 1):
+        ws.cell(row=grand, column=c).font = LBL
+    ws.append([])
+    note = ws.max_row + 1
+    ws.cell(row=note, column=1,
+            value="Reconciliation: Value (KES) grand total matches the figure "
+                  "in the donut centre; '% of metres (chart)' matches the "
+                  "donut legend percentages.").font = LBL
+    for col, w in zip("ABCDEFG", [22, 10, 14, 16, 16, 12, 18]):
+        ws.column_dimensions[col].width = w
+
+    # Detail sheet — one row per contributing fabric product
+    ws2 = wb.create_sheet("Detail")
+    det_cols = ["Fabric name", "Fabric SKU", "Supplier", "Classification",
+                "Rule matched", "plain_print", "fabric_category",
+                "On-hand kg", "Kg per metre", "Derived metres", "Value (KES)",
+                "Open in Odoo"]
+    ws2.append(det_cols)
+    _style_header(ws2, len(det_cols))
+    if not detail:
+        ws2.append(["No contributing fabric for this location / scope."])
+    for r in detail:
+        kpm = r["kg_per_mtr_eff"]
+        ws2.append([
+            r["name"], r["sku"], r["supplier"], r["classification"], r["rule"],
+            r["plain_print"], r["fabric_category"],
+            float(r["qty_kg"] or 0),
+            (round(float(kpm), 4) if kpm and float(kpm) > 0 else None),
+            float(r["qty_metres"] or 0),
+            float(r["value_kes"] or 0),
+            None,
+        ])
+        url = _odoo_product_url(r["product_id"])
+        if url:
+            cell = ws2.cell(row=ws2.max_row, column=len(det_cols))
+            cell.value = "Open in Odoo"
+            cell.hyperlink = url
+            cell.font = LINK
+    for col, w in zip("ABCDEFGHIJKL",
+                      [40, 18, 22, 14, 26, 12, 18, 12, 14, 14, 14, 14]):
+        ws2.column_dimensions[col].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    data = buf.getvalue()
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition":
+                 'attachment; filename="solid-vs-print-calculations.xlsx"'},
+    )
+
 # ── Fabric base by primary colour ──────────────────────────
 @fabric_router.get("/api/fabric/color-mix")
 def color_mix(
