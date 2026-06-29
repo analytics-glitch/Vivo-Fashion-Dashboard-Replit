@@ -1993,19 +1993,29 @@ def _owner_for_line(pos, sku, line_map, owners, store_fallback=None):
     return owners[h % len(owners)]
 
 
-def _redistribute_replen_owners(owners=None, date_from=None, date_to=None):
-    """The explicit redistribute action: recompute BOTH the store→owner map
-    (sibling single-SKU / single-style surfaces) AND the per-line owner map (the
-    pick list, balanced by EQUAL UNITS over the given window) and persist them.
-    Called only from a gated trigger — the pick list reads the frozen line map on
-    every load, so a reload never reshuffles a picker's lines."""
+def _redistribute_replen_owners(owners=None, date_from=None, date_to=None,
+                                redistribute_line_map=True):
+    """The explicit redistribute action: recompute the store→owner map (sibling
+    single-SKU / single-style surfaces + IBT) and, when `redistribute_line_map`
+    is True, the per-line owner map (the Daily pick list, balanced by EQUAL UNITS
+    over the given window). Persists both. Called only from a gated trigger — the
+    pick list reads the frozen line map on every load, so a reload never
+    reshuffles a picker's lines.
+
+    `redistribute_line_map=False` lets a caller that does NOT own the Daily pick
+    list (the Warehouse→Store IBT roster card, which uses only the store→owner
+    map) save the roster WITHOUT recomputing the line map over a mismatched
+    window — recomputing it there would freeze the equal-units balance over the
+    backend-default window instead of the Daily page's displayed window and make
+    the Daily per-picker units lopsided again."""
     owners = owners if owners is not None else _replen_owners()
     mapping = _compute_store_owner_map(owners)
     _set_replen_store_owner_map(mapping)
-    try:
-        _set_replen_line_owner_map(_compute_line_owner_map(owners, date_from, date_to))
-    except Exception:
-        pass
+    if redistribute_line_map:
+        try:
+            _set_replen_line_owner_map(_compute_line_owner_map(owners, date_from, date_to))
+        except Exception:
+            pass
     return mapping
 
 
@@ -18015,7 +18025,22 @@ async def admin_replenishment_config_post(request: Request):
     owners = [str(o).strip() for o in (body.get("owners") or []) if str(o).strip()]
     owners = owners or list(_DEFAULT_REPLEN_OWNERS)
     _set_replen_owners(owners)
-    _redistribute_replen_owners(owners)
+    # Freeze the equal-units pick-list balance over the SAME window the operator
+    # is viewing (the Daily page defaults to yesterday→today, NOT the 30-day
+    # default). If we redistribute over a different window than the one displayed,
+    # most displayed lines miss the frozen map and fall back to whole-store
+    # ownership — which makes the per-picker units lopsided even though the
+    # balancer itself is equal-units. Dates are re-validated here (they reach
+    # _compute_replenishment_report_rows). Absent dates → backend default window.
+    raw_df, raw_dt = body.get("date_from"), body.get("date_to")
+    df = _pa_safe_date(raw_df, None) if raw_df else None
+    dt = _pa_safe_date(raw_dt, None) if raw_dt else None
+    # The IBT roster card shares this endpoint but only uses the store→owner map,
+    # so it sends redistribute_line_map=false to avoid recomputing the Daily pick
+    # list's line map over its (window-less) save and re-skewing the Daily split.
+    redo_line = body.get("redistribute_line_map", True)
+    _redistribute_replen_owners(owners, date_from=df, date_to=dt,
+                                redistribute_line_map=bool(redo_line))
     return {"ok": True, "owners": owners}
 
 

@@ -384,7 +384,13 @@ const Replenishments = () => {
           component so the IBT Warehouse→Store page can mount the same
           card (iter 78). Saves to /admin/replenishment-config; on
           success we refresh the live list. */}
-      <ReplenishmentRosterCard isAdmin={isAdmin} onSaved={handleRosterSaved} />
+      <ReplenishmentRosterCard
+        isAdmin={isAdmin}
+        onSaved={handleRosterSaved}
+        dateFrom={dateFrom}
+        dateTo={dateTo}
+        subtitle="How many people are picking today, and who? Save to redistribute the pick list across your roster by EQUAL UNITS — each person is filled up before the next starts, and a single store may be split across two pickers when the equal-units boundary lands inside it. The split is then fixed: reloading won't reshuffle anyone."
+      />
 
       {/* Live list. */}
       <div className="card-white p-5" data-testid="replen-live-card">

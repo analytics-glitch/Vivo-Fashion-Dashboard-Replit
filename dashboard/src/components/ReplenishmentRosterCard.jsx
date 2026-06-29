@@ -25,6 +25,13 @@ const ReplenishmentRosterCard = ({
   isAdmin,
   onSaved,
   subtitle,
+  dateFrom,
+  dateTo,
+  // Whether saving here should also redistribute the Daily pick list's per-line
+  // (equal-units) owner map. Only the Daily Replenishment page owns that list, so
+  // it leaves this true and passes its displayed window; the IBT card sets it
+  // false (it uses only the store→owner map) so an IBT save can't re-skew Daily.
+  redistributeLineMap = true,
   testId = "replen-owner-panel",
 }) => {
   const [ownerCount, setOwnerCount] = useState(4);
@@ -61,7 +68,14 @@ const ReplenishmentRosterCard = ({
     setOwnerSaving(true);
     try {
       const cleaned = ownerNames.map((s) => s.trim()).filter(Boolean);
-      await api.post("/admin/replenishment-config", { owners: cleaned });
+      // Redistribute over the SAME window the page is showing so the equal-units
+      // balance actually lands on the displayed pick list (otherwise the server
+      // balances a different window and the displayed rows fall back to whole-
+      // store ownership → lopsided per-picker units).
+      const body = { owners: cleaned };
+      if (dateFrom) body.date_from = dateFrom;
+      if (dateTo) body.date_to = dateTo;
+      await api.post("/admin/replenishment-config", body);
       toast.success(cleaned.length
         ? `Roster saved — ${cleaned.length} ${cleaned.length === 1 ? "person" : "people"}. Redistributing…`
         : "Roster reset to default. Redistributing…");

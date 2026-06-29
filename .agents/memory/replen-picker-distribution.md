@@ -32,11 +32,22 @@ keeping a store with one person.
 - Drift (a line added since the last redistribute, not in the frozen map) →
   that store's main picker (dominant owner in the map), else a stable md5 hash of
   the line key over the roster. Both are reload-stable; no row is ever "—".
-- "Save & redistribute" (`POST /api/replenishment/roster`) must compute the line
-  map over the **window the operator is viewing** — the roster card sends
-  `date_from`/`date_to`; the POST re-validates them (`_pa_safe_date`, they reach
-  SQL) and passes them to `_redistribute_replen_owners`. It also still recomputes
-  the store→owner map for the sibling surfaces below.
+- **Redistribute MUST balance over the window the page actually displays**, or the
+  per-picker units come out lopsided even though the balancer is equal-units.
+  **Why:** the Daily page (`Replenishments.jsx`) defaults its window to
+  yesterday→today and reads `/api/analytics/replenishment-report?date_from/to`. The
+  roster card saves via `POST /api/admin/replenishment-config`, which used to call
+  `_redistribute_replen_owners(owners)` with NO dates → it froze the balance over
+  the **default 30-day** window. The displayed 1–2-day subset then missed most
+  frozen line keys and fell back to whole-store ownership (`store_fallback`),
+  reproducing the old uneven split (e.g. 314 vs 142 units). **How to apply:** the
+  roster card now forwards the page's `dateFrom`/`dateTo`; BOTH roster POSTs
+  (`/api/admin/replenishment-config` AND `/api/replenishment/roster`) re-validate
+  via `_pa_safe_date` and thread them to `_redistribute_replen_owners` →
+  `_compute_line_owner_map`. Keep the redistribute window == the display window
+  (same default `limit=400` too) so every displayed line hits the frozen map.
+  The IBT card mounts the same component without dates (it uses the whole-store
+  map, not the line map) — that's fine, absent dates → backend default window.
 - The frozen store→owner map (`_compute_store_owner_map`, `_owner_for_store`,
   `replenishment_store_owner_map`) is still used by the sibling single-SKU /
   single-style surfaces (replenish-by-item, replenish-gaps) and IBT owner
