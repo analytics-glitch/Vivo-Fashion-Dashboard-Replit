@@ -1365,6 +1365,17 @@ const Customers = () => {
             const prevRepeatRate = prevUpstreamTotal ? (prevUpstreamRepeat / prevUpstreamTotal) * 100 : (100 - prevOneOrderShare);
             const repeatRateDelta = repeatRate - prevRepeatRate; // pp
             const hasCompare = compareLbl && prevTotal > 0;
+            // In-period repeat PURCHASE rate — customers who bought MORE THAN
+            // ONCE within the selected window (≥2 distinct orders in period).
+            // This is distinct from the lifetime "Repeat Customer Rate" card
+            // (any prior purchase ever). Sourced from the period-scoped
+            // /customer-frequency buckets already loaded above: total active
+            // identified customers in the window minus the 1-order bucket.
+            const periodRepeatCustomers = Math.max(0, curTotal - (data[0]?.count || 0));
+            const periodRepeatRate = curTotal ? (periodRepeatCustomers / curTotal) * 100 : 0;
+            const prevPeriodRepeatCustomers = Math.max(0, prevTotal - (data[0]?.prev || 0));
+            const prevPeriodRepeatRate = prevTotal ? (prevPeriodRepeatCustomers / prevTotal) * 100 : 0;
+            const periodRepeatRateDelta = periodRepeatRate - prevPeriodRepeatRate; // pp
             const avgOrdersPerReturning = (() => {
               const retTotal = curTotal - (data[0]?.count || 0); // customers with ≥2 orders
               if (!retTotal) return 0;
@@ -1380,12 +1391,12 @@ const Customers = () => {
               if (curTotal === 0) return "No customer orders in the selected window.";
               const parts = [
                 `${oneOrderShare.toFixed(1)}% of active customers made only 1 purchase this period.`,
-                `Repeat rate: ${repeatRate.toFixed(1)}%.`,
+                `Repeat purchase rate: ${periodRepeatRate.toFixed(1)}%.`,
               ];
               if (hasCompare) {
-                const arrow = repeatRateDelta >= 0 ? "▲" : "▼";
-                const verdict = Math.abs(repeatRateDelta) < 0.1 ? "stable" : (repeatRateDelta > 0 ? "retention strengthening" : "retention weakening");
-                parts.push(`${compareLbl}: ${arrow} ${Math.abs(repeatRateDelta).toFixed(1)}pp — ${verdict}.`);
+                const arrow = periodRepeatRateDelta >= 0 ? "▲" : "▼";
+                const verdict = Math.abs(periodRepeatRateDelta) < 0.1 ? "stable" : (periodRepeatRateDelta > 0 ? "retention strengthening" : "retention weakening");
+                parts.push(`${compareLbl}: ${arrow} ${Math.abs(periodRepeatRateDelta).toFixed(1)}pp — ${verdict}.`);
               }
               return parts.join(" ");
             })();
@@ -1401,7 +1412,7 @@ const Customers = () => {
                 {curTotal > 0 && (
                   <div
                     className={`mb-4 rounded-xl p-3 text-[12.5px] border ${
-                      repeatRate < 10
+                      periodRepeatRate < 10
                         ? "bg-amber-50 border-amber-300 text-amber-900"
                         : "bg-brand-soft/40 border-brand/30 text-brand-deep"
                     }`}
@@ -1423,10 +1434,21 @@ const Customers = () => {
                         unreliable per-order `customer_type` field (Odoo POS
                         rows are untagged) and undercounted new customers by
                         ~95%. */}
-                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mb-4">
-                      <div className="rounded-xl border-2 border-[#1a5c38] bg-[#fef9f0] p-3" data-testid="kpi-retention-rate">
-                        <div className="eyebrow text-[#1a5c38]">Repeat Customer Rate</div>
-                        <div className="font-extrabold text-[20px] num mt-0.5 text-[#0f3d24]" data-testid="kpi-retention-rate-value">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
+                      <div className="rounded-xl border-2 border-[#1a5c38] bg-[#fef9f0] p-3" data-testid="kpi-period-repeat-rate">
+                        <div className="eyebrow text-[#1a5c38]">Repeat Purchase Rate (this period)</div>
+                        <div className="font-extrabold text-[20px] num mt-0.5 text-[#0f3d24]" data-testid="kpi-period-repeat-rate-value">
+                          {curTotal ? `${periodRepeatRate.toFixed(1)}%` : "—"}
+                        </div>
+                        <div className="text-[10.5px] text-muted mt-0.5">
+                          {curTotal
+                            ? <>{fmtNum(periodRepeatCustomers)} of {fmtNum(curTotal)} active customers bought 2+ times in this period{hasCompare ? <> · {periodRepeatRateDelta >= 0 ? "▲" : "▼"} {Math.abs(periodRepeatRateDelta).toFixed(1)}pp vs {compareLbl}</> : null} · source: <span className="font-semibold">/customer-frequency</span></>
+                            : "loading…"}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-border p-3" data-testid="kpi-retention-rate">
+                        <div className="eyebrow">Repeat Customer Rate (lifetime)</div>
+                        <div className="font-extrabold text-[18px] num mt-0.5" data-testid="kpi-retention-rate-value">
                           {cust?.total_customers
                             ? `${((cust.returning_customers || 0) / cust.total_customers * 100).toFixed(1)}%`
                             : "—"}
