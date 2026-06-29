@@ -3452,6 +3452,7 @@ async function init(){
   }catch(e){/* overview will surface the auth error */}
   fabSyncMixTopbarVisibility();
   loadOverview();
+  startFabricAutoRefresh();   // begin the silent 60s Overview KPI re-poll
 }
 
 // ---------------------------------------------------------------------------
@@ -3529,6 +3530,55 @@ async function init(){
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 })();
+
+// ── Silent 60s auto-refresh of the Overview KPIs ────────────────────────────
+// Re-polls the existing overview fetch path (loadOverview → summary / by-category
+// / attribute-split / metres-per-garment + loadColorMix) every 60s so the cards
+// reflect the latest Odoo-sourced figures without a manual reload. It reuses the
+// existing render helpers, so numbers update in place — no spinner, flicker or
+// layout jump. It honours the live Location / Date-range filters (loadOverview
+// and loadColorMix read #location-filter / #g-since / #g-until at call time).
+// It fires ONLY when the Overview page is the visible one, skips a tick while a
+// fetch is already in flight or the fabric-detail modal is open, and pauses
+// entirely while the browser tab is backgrounded (resuming with an immediate
+// refresh on re-show). The interval + visibility listener are installed once.
+const FABRIC_REFRESH_MS=60000;
+let _fabRefreshTimer=null, _fabRefreshInFlight=false, _fabRefreshInstalled=false;
+function _overviewVisible(){
+  const s=document.getElementById('page-overview');
+  return !!s && s.style.display!=='none';
+}
+function _fabRefreshBlocked(){
+  // Don't disrupt the user: skip while a fetch is in flight, the tab is hidden,
+  // the Overview isn't the visible page, or the fabric-detail modal is open.
+  if(_fabRefreshInFlight||document.hidden||!_overviewVisible())return true;
+  const ov=document.getElementById('fab-detail-overlay');
+  if(ov&&ov.style.display!=='none')return true;
+  return false;
+}
+async function fabricAutoRefresh(){
+  if(_fabRefreshBlocked())return;
+  _fabRefreshInFlight=true;
+  try{await loadOverview();}   // loadOverview also kicks off loadColorMix()
+  catch(_e){/* loadOverview surfaces its own errors */}
+  finally{_fabRefreshInFlight=false;}
+}
+function _fabStartTimer(){
+  if(_fabRefreshTimer)return;
+  _fabRefreshTimer=setInterval(fabricAutoRefresh,FABRIC_REFRESH_MS);
+}
+function _fabStopTimer(){
+  if(_fabRefreshTimer){clearInterval(_fabRefreshTimer);_fabRefreshTimer=null;}
+}
+function startFabricAutoRefresh(){
+  if(_fabRefreshInstalled)return;   // create the timer + listener exactly once
+  _fabRefreshInstalled=true;
+  _fabStartTimer();
+  document.addEventListener('visibilitychange',()=>{
+    if(document.hidden){_fabStopTimer();}          // pause polling in background
+    else{_fabStartTimer();fabricAutoRefresh();}    // resume + refresh immediately
+  });
+}
 
 init();
 </script>
