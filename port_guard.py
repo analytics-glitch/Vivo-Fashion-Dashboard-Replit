@@ -126,19 +126,44 @@ def _cmdline(pid: int) -> str:
         return ""
 
 
-def _is_our_uvicorn(pid: int) -> bool:
-    cl = _cmdline(pid)
+def _is_our_api_launcher(pid: int) -> bool:
+    return _classify_cmdline(_cmdline(pid))
+
+
+def _classify_cmdline(cl: str) -> bool:
+    """True if ``cl`` is one of THIS repo's own API launchers holding the port.
+
+    Two shapes serve the API on :PORT and may be left orphaned:
+
+    * ``uvicorn ... api_pg`` — the worker process. Production's ``watchdog.py``
+      spawns uvicorn as a child whose cmdline contains both tokens; the old dev
+      workflow invoked ``uvicorn api_pg:app`` directly.
+    * ``run_api.py`` — the in-process dev launcher (``uvicorn.run(...)``). It runs
+      uvicorn inside its OWN process, so its cmdline is just
+      ``python3 .../run_api.py`` — it contains NEITHER ``uvicorn`` NOR ``api_pg``.
+      Without recognising it, a stale ``run_api.py`` is misread as an unrelated
+      process, never killed, and the dev workflow stays FAILED while the orphan
+      serves stale code.
+
+    Matching is anchored to these known launcher names, so an arbitrary unrelated
+    process that merely happens to hold the port is still left alone. This is only
+    one half of the kill decision: ``free_port`` ANDs it with "actually holds the
+    LISTEN socket", so the safety property is preserved.
+    """
+    if "run_api.py" in cl:
+        return True
     return "uvicorn" in cl and "api_pg" in cl
 
 
 def free_port(port: int = 8080, log=None) -> bool:
-    """Ensure ``port`` is bindable, killing a stale ``uvicorn api_pg`` if needed.
+    """Ensure ``port`` is bindable, killing a stale API launcher if needed.
 
     Kills ONLY the process(es) that actually hold the LISTEN socket on ``port``
-    AND whose cmdline is our uvicorn. If the holder can't be attributed to our
-    own uvicorn, it is left alone. Returns True if the port is free (or was
-    freed), False otherwise. Never raises — a guard must not take down the thing
-    it is guarding.
+    AND whose cmdline is one of this repo's own API launchers (the ``uvicorn
+    api_pg`` worker or the in-process dev launcher ``run_api.py``). If the holder
+    can't be attributed to one of our launchers, it is left alone. Returns True
+    if the port is free (or was freed), False otherwise. Never raises — a guard
+    must not take down the thing it is guarding.
     """
     def _say(msg: str) -> None:
         if log is None:
@@ -156,18 +181,19 @@ def free_port(port: int = 8080, log=None) -> bool:
                  f"attributed via /proc — leaving it alone")
             return _port_free(port)
 
-        targets = sorted(p for p in holders if _is_our_uvicorn(p))
+        targets = sorted(p for p in holders if _is_our_api_launcher(p))
         others = sorted(holders - set(targets))
         if not targets:
             _say(f"[port-guard] :{port} held by pid(s) {others} which are NOT "
-                 f"'uvicorn api_pg' — leaving it alone (refusing to kill an "
+                 f"one of this repo's API launchers ('uvicorn api_pg' or "
+                 f"'run_api.py') — leaving it alone (refusing to kill an "
                  f"unrelated process)")
             return _port_free(port)
         if others:
-            _say(f"[port-guard] :{port} also held by non-uvicorn pid(s) "
+            _say(f"[port-guard] :{port} also held by unrelated pid(s) "
                  f"{others} — leaving those alone")
 
-        _say(f"[port-guard] :{port} held by stale uvicorn api_pg pid(s) "
+        _say(f"[port-guard] :{port} held by stale API launcher pid(s) "
              f"{targets} — terminating before bind")
 
         for sig in (signal.SIGTERM, signal.SIGKILL):
