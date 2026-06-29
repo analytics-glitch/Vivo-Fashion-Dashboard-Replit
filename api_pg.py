@@ -5191,7 +5191,9 @@ def get_customer_frequency(
     channel:   str = Query(default=None),
 ):
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')")
+        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')"
+        " AND s.customer_id NOT IN (SELECT customer_id FROM all_customers WHERE customer_id IS NOT NULL"
+        " AND (COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) ~* '" + _WALKIN_NAME_REGEX + "')")
     return run_query("""
         WITH order_counts AS (
             SELECT customer_id, COUNT(DISTINCT order_id) AS order_count
