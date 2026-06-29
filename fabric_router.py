@@ -2492,6 +2492,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Qu
                 JOIN raw_fabric_products p ON p.id = i.product_id
                 WHERE i.quantity > 0 {loc_sql}
                   AND {_scope_sql(scope)}
+                  AND LOWER(BTRIM(COALESCE(p.category,''))) = 'fabric'
                 GROUP BY 1
                 ORDER BY value_kes DESC NULLS LAST
             """, loc_params)
@@ -2565,6 +2566,7 @@ def solid_vs_print_xlsx(location: str = Query(default="RMAT/Stock"),
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE i.quantity > 0 {loc_sql}
               AND {_scope_sql(scope)}
+              AND LOWER(BTRIM(COALESCE(p.category,''))) = 'fabric'
             GROUP BY 1
             ORDER BY value_kes DESC NULLS LAST
         """, loc_params)
@@ -2583,6 +2585,7 @@ def solid_vs_print_xlsx(location: str = Query(default="RMAT/Stock"),
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE i.quantity > 0 {loc_sql}
               AND {_scope_sql(scope)}
+              AND LOWER(BTRIM(COALESCE(p.category,''))) = 'fabric'
             GROUP BY i.product_id, p.name, p.default_code, p.supplier,
                      p.plain_print, p.fabric_category, p.kg_per_mtr_eff,
                      {CLASS_CASE}, {RULE_CASE}
