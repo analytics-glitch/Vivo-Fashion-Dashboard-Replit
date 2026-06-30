@@ -9,6 +9,7 @@ import {
   CheckCircle, Package, ArrowCounterClockwise, MagnifyingGlass,
   Warning, Info, CaretDown, CaretRight, Clock, Lightning,
   ArrowsClockwise, X as XIcon, Prohibit, ArrowUUpLeft,
+  Truck, CalendarBlank, Trash, PaperPlaneTilt,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import ReplenishmentTransferReport from "@/components/ReplenishmentTransferReport";
@@ -109,6 +110,14 @@ const Replenishments = () => {
   const [chronic, setChronic] = useState(null);
   const [chronicOpen, setChronicOpen] = useState(false);
 
+  // Distribution batches (Save & distribute → frozen dated pick list).
+  const [distributions, setDistributions] = useState({ batches: [], open_keys: [] });
+  const [distLoading, setDistLoading] = useState(false);
+  const [distSaving, setDistSaving] = useState(false);
+  const [batchSavingKey, setBatchSavingKey] = useState(null);
+  const [scorecardDay, setScorecardDay] = useState(
+    () => new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10));
+
   const liveSort = useTableSort();
   const completedSort = useTableSort();
 
@@ -155,6 +164,21 @@ const Replenishments = () => {
     return () => { cancel = true; };
   }, [isAdmin, completedRefresh]);
 
+  // Distribution batches (frozen pick lists with per-line Done/Outstanding).
+  const loadDistributions = useCallback(async () => {
+    if (!isAdmin) return;
+    setDistLoading(true);
+    try {
+      const { data } = await api.get("/replenishment/distributions", { params: { limit: 20 }, forceFresh: true });
+      setDistributions(data || { batches: [], open_keys: [] });
+    } catch {
+      setDistributions({ batches: [], open_keys: [] });
+    } finally {
+      setDistLoading(false);
+    }
+  }, [isAdmin]);
+  useEffect(() => { loadDistributions(); }, [loadDistributions]);
+
   // Predictive stockout alerts (styles dropping below 2 weeks of cover).
   useEffect(() => {
     let cancel = false;
@@ -179,14 +203,23 @@ const Replenishments = () => {
   const heldBack = sor?.held_back || [];
   const kpi = sor?.kpi || null;
 
+  // (pos|sku) frozen into an open batch — these drop out of the live pick list
+  // (they live in their batch until picked) so the list refills with new items.
+  const openKeys = useMemo(
+    () => new Set(distributions.open_keys || []), [distributions]);
+
+  // Active = every open, not-yet-distributed line (ignores owner/search filters).
+  // This is the exact snapshot that "Save & distribute" freezes into a batch.
+  const activeRows = useMemo(
+    () => rows.filter((r) => !r.replenished && !openKeys.has(`${r.pos_location}|${r.sku}`)),
+    [rows, openKeys]);
+
   // Distinct owners present in the open pick list, for the owner filter dropdown.
   const ownerOptions = useMemo(() => {
     const set = new Set();
-    rows
-      .filter((r) => !r.replenished)
-      .forEach((r) => { if (r.owner) set.add(r.owner); });
+    activeRows.forEach((r) => { if (r.owner) set.add(r.owner); });
     return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [rows]);
+  }, [activeRows]);
 
   // If the active owner filter is no longer present (e.g. after a redistribute),
   // clear it so the table doesn't silently show nothing.
@@ -201,6 +234,7 @@ const Replenishments = () => {
     const q = search.trim().toLowerCase();
     return rows
       .filter((r) => !r.replenished)
+      .filter((r) => !openKeys.has(`${r.pos_location}|${r.sku}`))
       .filter((r) => !ownerFilter || (r.owner || "") === ownerFilter)
       .filter((r) => {
         if (!q) return true;
@@ -214,7 +248,7 @@ const Replenishments = () => {
           || fmtColourPrint(r).toLowerCase().includes(q)
         );
       });
-  }, [rows, search, ownerFilter]);
+  }, [rows, search, ownerFilter, openKeys]);
 
   const sortedVisibleRows = useMemo(() => {
     return liveSort.sortRows(visibleRows, {
@@ -354,6 +388,85 @@ const Replenishments = () => {
       setReleasingKey(null);
     }
   }, [loadSor]);
+
+  // Freeze the current open pick list into a dated distribution batch.
+  const distributeNow = useCallback(async () => {
+    if (!activeRows.length) { toast.error("No open lines to distribute."); return; }
+    if (!window.confirm(
+      `Freeze ${activeRows.length} line${activeRows.length === 1 ? "" : "s"} into a new distribution batch?\n\n`
+      + `They move to "Distributed batches" below and the live list refills with new items as they arise.`)) return;
+    setDistSaving(true);
+    try {
+      const lines = activeRows.map((r) => ({
+        pos_location: r.pos_location, sku: r.sku, barcode: r.barcode,
+        style_name: r.style_name, product_name: r.product_name,
+        size: r.size, color_print: r.color_print, owner: r.owner,
+        suggested_units: Number(r.replenish || 0),
+      }));
+      const { data } = await api.post("/replenishment/distribute", { lines, weeks });
+      toast.success(`Distributed ${data?.line_count ?? lines.length} line${(data?.line_count ?? lines.length) === 1 ? "" : "s"}.`);
+      await Promise.all([loadDistributions(), loadSor({ forceFresh: true })]);
+    } catch (e) {
+      toast.error("Distribute failed — " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setDistSaving(false);
+    }
+  }, [activeRows, weeks, loadDistributions, loadSor]);
+
+  // Mark a single distributed line picked (twin sku + barcode ledger rows).
+  const markBatchLineDone = useCallback(async (line) => {
+    const k = `${line.pos_location}|${line.sku || ""}|${line.barcode || ""}`;
+    setBatchSavingKey(k);
+    try {
+      const au = Number(line.suggested_units || 0);
+      const actions = [];
+      if (line.sku) actions.push({ rec_type: "replenish", rec_key: `${line.pos_location}|sku|${line.sku}`, status: "done", actual_units: au });
+      if (line.barcode) actions.push({ rec_type: "replenish", rec_key: `${line.pos_location}|barcode|${line.barcode}`, status: "done", actual_units: au });
+      if (!actions.length) { toast.error("Line has no SKU or barcode."); return; }
+      await api.post("/recommendations/bulk", { actions });
+      toast.success("Marked done.");
+      await Promise.all([loadDistributions(), loadSor({ forceFresh: true })]);
+    } catch (e) {
+      toast.error("Couldn't save — " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setBatchSavingKey(null);
+    }
+  }, [loadDistributions, loadSor]);
+
+  const deleteBatch = useCallback(async (id) => {
+    if (!window.confirm("Remove this distribution batch? The done marks already recorded stay; only the batch record is cleared.")) return;
+    try {
+      await api.delete(`/replenishment/distributions/${id}`);
+      toast.success("Batch removed.");
+      await Promise.all([loadDistributions(), loadSor({ forceFresh: true })]);
+    } catch (e) {
+      toast.error("Couldn't remove — " + (e?.response?.data?.detail || e.message));
+    }
+  }, [loadDistributions, loadSor]);
+
+  // Per-picker day scorecard derived from the distribution batches: Done counts
+  // the selected EAT day; Outstanding is every not-yet-done line across all open
+  // batches (day-independent — it's what each picker still owes).
+  const dayScorecard = useMemo(() => {
+    const byOwner = new Map();
+    for (const b of distributions.batches || []) {
+      for (const ln of b.lines || []) {
+        const owner = ln.owner || "Unassigned";
+        const e = byOwner.get(owner) || { owner, doneDay: 0, doneUnitsDay: 0, outstanding: 0, outstandingUnits: 0 };
+        if (ln.done) {
+          if (ln.done_day_eat === scorecardDay) {
+            e.doneDay += 1;
+            e.doneUnitsDay += Number(ln.done_units || 0);
+          }
+        } else {
+          e.outstanding += 1;
+          e.outstandingUnits += Number(ln.suggested_units || 0);
+        }
+        byOwner.set(owner, e);
+      }
+    }
+    return Array.from(byOwner.values()).sort((a, b) => a.owner.localeCompare(b.owner));
+  }, [distributions, scorecardDay]);
 
   return (
     <div className="space-y-5" data-testid="replenishments-page">
@@ -495,6 +608,18 @@ const Replenishments = () => {
             >
               <ArrowsClockwise size={13} weight="bold" /> Refresh
             </button>
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={distributeNow}
+                disabled={distSaving || activeRows.length === 0}
+                className="inline-flex items-center gap-1.5 text-[11.5px] font-bold text-white bg-[#1a5c38] hover:bg-[#0f3d24] disabled:opacity-50 px-3 py-1.5 rounded-full"
+                data-testid="replen-distribute"
+                title="Freeze the current open pick list into a dated batch; the list then refills with new items"
+              >
+                <PaperPlaneTilt size={13} weight="bold" /> {distSaving ? "Distributing…" : `Save & distribute${activeRows.length ? ` (${fmtNum(activeRows.length)})` : ""}`}
+              </button>
+            )}
           </div>
         </div>
 
@@ -777,6 +902,71 @@ const Replenishments = () => {
         )}
       </div>
 
+      {/* Distributed batches — frozen dated pick lists with Done/Outstanding. */}
+      {isAdmin && (
+        <div className="card-white p-4 sm:p-5" data-testid="replen-distributions">
+          <SectionTitle
+            title={<span className="inline-flex items-center gap-2 text-[14px]"><Truck size={16} weight="duotone" className="text-brand-deep" /> Distributed batches</span>}
+            subtitle="Each “Save & distribute” freezes the live pick list into a dated batch handed to the pickers. Lines stay here until picked (Done vs Outstanding per line), while the live list above refills with newly-arising items."
+            action={
+              <button type="button" onClick={loadDistributions} className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-brand-deep border border-border hover:bg-panel px-2.5 py-1.5 rounded-md" data-testid="replen-distributions-refresh">
+                <ArrowCounterClockwise size={12} weight="bold" /> Refresh
+              </button>
+            }
+          />
+          {distLoading && <Loading label="Loading batches…" />}
+          {!distLoading && (distributions.batches || []).length === 0 && (
+            <Empty label="No distribution batches yet. Use “Save & distribute” on the pick list above to create one." />
+          )}
+          {!distLoading && (distributions.batches || []).map((b) => (
+            <BatchCard key={b.id} batch={b} onMarkDone={markBatchLineDone} onDelete={deleteBatch} savingKey={batchSavingKey} />
+          ))}
+        </div>
+      )}
+
+      {/* Picker scorecard by day — done (selected EAT day) vs outstanding (all open). */}
+      {isAdmin && (
+        <div className="card-white p-4 sm:p-5" data-testid="replen-day-scorecard">
+          <SectionTitle
+            title={<span className="inline-flex items-center gap-2 text-[14px]"><CalendarBlank size={16} weight="duotone" className="text-brand-deep" /> Picker scorecard by day</span>}
+            subtitle="Pick a day to see how many distributed items each picker marked done that day (EAT). Outstanding is every not-yet-done line across all open batches, regardless of day — what each picker still owes."
+            action={
+              <input type="date" value={scorecardDay} onChange={(e) => setScorecardDay(e.target.value)} className="text-[12px] border border-border rounded-md px-2 py-1.5 bg-white" data-testid="replen-scorecard-day" />
+            }
+          />
+          {dayScorecard.length === 0 ? (
+            <Empty label="No distributed lines yet — create a batch with “Save & distribute”." />
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-border bg-white">
+              <table className="w-full min-w-max text-[12.5px]">
+                <thead className="bg-panel">
+                  <tr className="text-left">
+                    <th className="px-3 py-2 font-semibold whitespace-nowrap">Picker</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Done · {scorecardDay}</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Units done</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Outstanding (all open)</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Outstanding units</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dayScorecard.map((o, i) => (
+                    <tr key={o.owner} className={`border-t border-border/50 ${i % 2 === 0 ? "bg-white" : "bg-panel/30"}`} data-testid={`replen-day-scorecard-row-${i}`}>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span className="inline-flex items-center bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{o.owner}</span>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums font-bold text-emerald-700">{fmtNum(o.doneDay)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtNum(o.doneUnitsDay)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{o.outstanding > 0 ? <span className="text-amber-700 font-semibold">{fmtNum(o.outstanding)}</span> : fmtNum(0)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtNum(o.outstandingUnits)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Picker accountability scorecard. */}
       {isAdmin && (
         <div className="card-white p-4 sm:p-5" data-testid="replen-scorecard">
@@ -920,6 +1110,91 @@ const Replenishments = () => {
               </table>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// A single distribution batch: collapsible header (counts + per-owner chips)
+// over a line table with Done/Outstanding status and a Mark-done action.
+const BatchCard = ({ batch, onMarkDone, onDelete, savingKey }) => {
+  const [open, setOpen] = useState(false);
+  const when = batch.created_at ? batch.created_at.replace("T", " ").slice(0, 16) : "—";
+  const pct = batch.line_count ? Math.round((batch.done_count / batch.line_count) * 100) : 0;
+  return (
+    <div className="mt-3 rounded-lg border border-border overflow-hidden" data-testid={`replen-batch-${batch.id}`}>
+      <div className="flex flex-wrap items-center gap-3 px-4 py-3 bg-panel/40">
+        <button type="button" onClick={() => setOpen((o) => !o)} className="inline-flex items-center gap-2 font-extrabold text-[13px] text-[#0f3d24]" data-testid={`replen-batch-toggle-${batch.id}`}>
+          {open ? <CaretDown size={15} weight="bold" /> : <CaretRight size={15} weight="bold" />}
+          {when}
+        </button>
+        <span className="text-[11.5px] text-muted">{batch.created_by || "—"}{batch.weeks ? ` · ${batch.weeks}w window` : ""}</span>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1 bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{fmtNum(batch.done_count)} done</span>
+          <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{fmtNum(batch.outstanding_count)} outstanding</span>
+          <span className="text-[11px] text-muted tabular-nums">{fmtNum(batch.line_count)} lines · {fmtNum(batch.total_units)} units · {pct}%</span>
+          <button type="button" onClick={() => onDelete(batch.id)} className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 border border-rose-200 hover:bg-rose-50 px-2 py-1 rounded-md" title="Remove this batch" data-testid={`replen-batch-delete-${batch.id}`}>
+            <Trash size={12} weight="bold" />
+          </button>
+        </div>
+      </div>
+      {(batch.by_owner || []).length > 0 && (
+        <div className="flex flex-wrap gap-1.5 px-4 py-2 border-t border-border bg-white">
+          {batch.by_owner.map((o) => (
+            <span key={o.owner} className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px]">
+              <span className="font-bold text-[#0f3d24]">{o.owner}</span>
+              <span className="text-emerald-700 font-semibold">{fmtNum(o.done)} done</span>
+              <span className="text-amber-700 font-semibold">{fmtNum(o.outstanding)} left</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {open && (
+        <div className="overflow-x-auto border-t border-border bg-white">
+          <table className="w-full min-w-max text-[12px]">
+            <thead className="bg-panel">
+              <tr className="text-left">
+                <th className="px-3 py-2 font-semibold whitespace-nowrap">Status</th>
+                <th className="px-3 py-2 font-semibold whitespace-nowrap">Owner</th>
+                <th className="px-3 py-2 font-semibold whitespace-nowrap">POS Location</th>
+                <th className="px-3 py-2 font-semibold">Product</th>
+                <th className="px-3 py-2 font-semibold whitespace-nowrap">Colour</th>
+                <th className="px-3 py-2 font-semibold whitespace-nowrap">Size</th>
+                <th className="px-3 py-2 font-semibold whitespace-nowrap">Barcode</th>
+                <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Units</th>
+                <th className="px-3 py-2 font-semibold whitespace-nowrap"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(batch.lines || []).map((ln, i) => {
+                const k = `${ln.pos_location}|${ln.sku || ""}|${ln.barcode || ""}`;
+                return (
+                  <tr key={k + i} className={`border-t border-border/50 ${i % 2 === 0 ? "bg-white" : "bg-panel/30"}`} data-testid={`replen-batch-${batch.id}-row-${i}`}>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {ln.done
+                        ? <span className="inline-flex items-center gap-1 bg-emerald-100 text-emerald-900 text-[10px] font-bold px-2 py-0.5 rounded-full"><CheckCircle size={11} weight="fill" /> Done</span>
+                        : <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-900 text-[10px] font-bold px-2 py-0.5 rounded-full">Outstanding</span>}
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">{ln.owner || <span className="text-muted">—</span>}</td>
+                    <td className="px-3 py-2 whitespace-nowrap font-semibold">{ln.pos_location}</td>
+                    <td className="px-3 py-2 break-words max-w-[260px]" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>{ln.product_name || ln.style_name || "—"}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">{(ln.color_print || "").trim() || <span className="text-muted">—</span>}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">{ln.size || <span className="text-muted">—</span>}</td>
+                    <td className="px-3 py-2 whitespace-nowrap font-mono text-[11px]">{ln.barcode || ln.sku || "—"}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{ln.done ? `${fmtNum(ln.done_units)} / ${fmtNum(ln.suggested_units)}` : fmtNum(ln.suggested_units)}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {!ln.done && (
+                        <button type="button" onClick={() => onMarkDone(ln)} disabled={savingKey === k} className="inline-flex items-center gap-1 text-[11px] font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 px-2.5 py-1 rounded-md" data-testid={`replen-batch-markdone-${batch.id}-${i}`}>
+                          <CheckCircle size={12} weight="fill" /> {savingKey === k ? "Saving…" : "Mark done"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
     </div>

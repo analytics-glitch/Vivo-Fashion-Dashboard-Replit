@@ -19796,6 +19796,268 @@ def replenishment_accuracy():
     }
 
 
+# ── Replenishment distribution batches ───────────────────────────────────────
+# When an operator clicks "Save & distribute" the current open pick list is
+# frozen into a dated batch (header + line snapshot). Those lines then drop out
+# of the live SOR pick list (they live in the batch until picked) while the live
+# list refills with newly-arising items. Done/Outstanding per line is derived
+# from the recommendation_actions ledger (the same twin sku/barcode rows the
+# Mark-done flow already writes) joined by (pos, sku|barcode) with the action's
+# acted_at at/after the batch's created_at — so a recurring item re-distributed
+# later starts Outstanding again until it is re-picked.
+def _ensure_replen_distribution_tables():
+    _users_exec(
+        "CREATE TABLE IF NOT EXISTS replen_distribution ("
+        " id BIGSERIAL PRIMARY KEY,"
+        " created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+        " created_by TEXT,"
+        " weeks INT,"
+        " line_count INT NOT NULL DEFAULT 0,"
+        " total_units INT NOT NULL DEFAULT 0,"
+        " note TEXT)")
+    _users_exec(
+        "CREATE TABLE IF NOT EXISTS replen_distribution_line ("
+        " id BIGSERIAL PRIMARY KEY,"
+        " distribution_id BIGINT NOT NULL REFERENCES replen_distribution(id) ON DELETE CASCADE,"
+        " pos_location TEXT,"
+        " sku TEXT,"
+        " barcode TEXT,"
+        " style_name TEXT,"
+        " product_name TEXT,"
+        " size TEXT,"
+        " color_print TEXT,"
+        " owner TEXT,"
+        " suggested_units INT NOT NULL DEFAULT 0)")
+    _users_exec(
+        "CREATE INDEX IF NOT EXISTS idx_replen_dist_line_dist "
+        "ON replen_distribution_line (distribution_id)")
+    _users_exec(
+        "CREATE INDEX IF NOT EXISTS idx_replen_dist_line_possku "
+        "ON replen_distribution_line (pos_location, sku)")
+
+
+@app.post("/api/replenishment/distribute")
+async def replenishment_distribute(request: Request):
+    """Freeze the current open pick list into a dated distribution batch.
+
+    Restricted to roster managers (same gate as Save & redistribute). The
+    frontend sends the live, owner-assigned lines exactly as displayed; we
+    snapshot them verbatim so the batch is an immutable record of what was
+    handed out. Items already outstanding in another batch should be filtered
+    out by the caller, but we also de-dupe defensively on (pos, sku)."""
+    from fastapi import HTTPException
+    user = getattr(request.state, "user", None)
+    if not _can_manage_roster(user):
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have permission to distribute the pick list.")
+    body = await request.json()
+    raw_lines = body.get("lines") if isinstance(body, dict) else None
+    if not isinstance(raw_lines, list) or not raw_lines:
+        raise HTTPException(status_code=400, detail="lines must be a non-empty array")
+    weeks = body.get("weeks")
+    try:
+        weeks = int(weeks) if weeks is not None else None
+    except (TypeError, ValueError):
+        weeks = None
+    note = (body.get("note") or "").strip()[:500] or None
+    _ensure_replen_distribution_tables()
+
+    seen = set()
+    clean = []
+    for ln in raw_lines:
+        if not isinstance(ln, dict):
+            continue
+        pos = (ln.get("pos_location") or "").strip()
+        sku = (ln.get("sku") or "").strip()
+        barcode = (ln.get("barcode") or "").strip()
+        if not pos or (not sku and not barcode):
+            continue
+        dedup_key = (pos, sku or barcode)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        try:
+            units = int(ln.get("suggested_units") or 0)
+        except (TypeError, ValueError):
+            units = 0
+        clean.append({
+            "pos_location": pos,
+            "sku": sku or None,
+            "barcode": barcode or None,
+            "style_name": (ln.get("style_name") or "").strip() or None,
+            "product_name": (ln.get("product_name") or "").strip() or None,
+            "size": (ln.get("size") or "").strip() or None,
+            "color_print": (ln.get("color_print") or "").strip() or None,
+            "owner": (ln.get("owner") or "").strip() or None,
+            "suggested_units": max(0, units),
+        })
+    if not clean:
+        raise HTTPException(status_code=400, detail="No valid lines to distribute.")
+
+    created_by = (user or {}).get("name") or (user or {}).get("email")
+    total_units = sum(c["suggested_units"] for c in clean)
+    hdr = _users_exec(
+        "INSERT INTO replen_distribution "
+        "(created_by, weeks, line_count, total_units, note) "
+        "VALUES (%s, %s, %s, %s, %s) RETURNING id, created_at",
+        (created_by, weeks, len(clean), total_units, note), fetch=True)
+    dist_id = hdr[0]["id"]
+    created_at = hdr[0]["created_at"]
+    for c in clean:
+        _users_exec(
+            "INSERT INTO replen_distribution_line "
+            "(distribution_id, pos_location, sku, barcode, style_name, "
+            " product_name, size, color_print, owner, suggested_units) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (dist_id, c["pos_location"], c["sku"], c["barcode"], c["style_name"],
+             c["product_name"], c["size"], c["color_print"], c["owner"],
+             c["suggested_units"]))
+    return {"id": dist_id,
+            "created_at": created_at.isoformat() if created_at else None,
+            "line_count": len(clean), "total_units": total_units}
+
+
+@app.get("/api/replenishment/distributions")
+def replenishment_distributions(request: Request, limit: int = Query(default=20)):
+    """List recent distribution batches with per-line Done/Outstanding status.
+
+    Roster-manager surface (same gate as distribute/delete) — batch contents
+    carry owner attribution and operational progress. Also returns `open_keys`
+    (the set of `pos|sku` still outstanding in ANY batch) so the live pick list
+    can drop them — a distributed item lives in its batch until it is picked,
+    not in the live list."""
+    from fastapi import HTTPException
+    if not _can_manage_roster(getattr(request.state, "user", None)):
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have permission to view distribution batches.")
+    limit = max(1, min(int(limit or 20), 100))
+    _ensure_replen_distribution_tables()
+    batches = _users_exec(
+        "SELECT id, created_at, created_by, weeks, line_count, total_units, note "
+        "FROM replen_distribution ORDER BY created_at DESC LIMIT %s",
+        (limit,), fetch=True) or []
+    if not batches:
+        return {"batches": [], "open_keys": []}
+    ids = [b["id"] for b in batches]
+    lines = _users_exec(
+        "SELECT distribution_id, pos_location, sku, barcode, style_name, "
+        "       product_name, size, color_print, owner, suggested_units "
+        "FROM replen_distribution_line WHERE distribution_id = ANY(%s) "
+        "ORDER BY owner NULLS LAST, pos_location, style_name",
+        (ids,), fetch=True) or []
+    # Done ledger: twin sku/barcode rows. Key by (pos, kind, value) → acted_at.
+    acts = _users_exec(
+        "SELECT rec_key, actual_units, acted_by, acted_at, "
+        "       (acted_at AT TIME ZONE 'Africa/Nairobi')::date AS acted_day_eat "
+        "FROM recommendation_actions "
+        "WHERE rec_type='replenish' AND status='done'", fetch=True) or []
+    done_map = {}
+    for a in acts:
+        parts = (a["rec_key"] or "").split("|", 2)
+        if len(parts) == 3:
+            done_map[(parts[0], parts[1], parts[2])] = a
+
+    def _done_for(ln, created_at):
+        cands = []
+        if ln.get("sku"):
+            cands.append((ln["pos_location"], "sku", ln["sku"]))
+        if ln.get("barcode"):
+            cands.append((ln["pos_location"], "barcode", ln["barcode"]))
+        best = None
+        for key in cands:
+            a = done_map.get(key)
+            if not a or not a.get("acted_at"):
+                continue
+            if created_at and a["acted_at"] < created_at:
+                continue  # a stale done from before this batch doesn't count
+            if best is None or a["acted_at"] > best["acted_at"]:
+                best = a
+        return best
+
+    lines_by_batch = {}
+    for ln in lines:
+        lines_by_batch.setdefault(ln["distribution_id"], []).append(ln)
+
+    open_keys = set()
+    out_batches = []
+    for b in batches:
+        created_at = b["created_at"]
+        blines = []
+        by_owner = {}
+        done_count = done_units = out_count = out_units = 0
+        for ln in lines_by_batch.get(b["id"], []):
+            a = _done_for(ln, created_at)
+            units = int(ln["suggested_units"] or 0)
+            owner = ln.get("owner") or "Unassigned"
+            ob = by_owner.setdefault(owner, {
+                "owner": owner, "total": 0, "done": 0, "outstanding": 0,
+                "units": 0, "done_units": 0})
+            ob["total"] += 1
+            ob["units"] += units
+            if a is not None:
+                done_count += 1
+                du = int(a.get("actual_units") or 0)
+                done_units += du
+                ob["done"] += 1
+                ob["done_units"] += du
+            else:
+                out_count += 1
+                out_units += units
+                ob["outstanding"] += 1
+                if ln.get("sku"):
+                    open_keys.add(ln["pos_location"] + "|" + ln["sku"])
+            blines.append({
+                "pos_location": ln["pos_location"],
+                "sku": ln.get("sku"),
+                "barcode": ln.get("barcode"),
+                "style_name": ln.get("style_name"),
+                "product_name": ln.get("product_name"),
+                "size": ln.get("size"),
+                "color_print": ln.get("color_print"),
+                "owner": ln.get("owner"),
+                "suggested_units": units,
+                "done": a is not None,
+                "done_units": int(a.get("actual_units") or 0) if a else None,
+                "done_by": a.get("acted_by") if a else None,
+                "done_at": a["acted_at"].isoformat() if a and a.get("acted_at") else None,
+                "done_day_eat": a["acted_day_eat"].isoformat() if a and a.get("acted_day_eat") else None,
+            })
+        out_batches.append({
+            "id": b["id"],
+            "created_at": created_at.isoformat() if created_at else None,
+            "created_by": b.get("created_by"),
+            "weeks": b.get("weeks"),
+            "note": b.get("note"),
+            "line_count": b.get("line_count") or len(blines),
+            "total_units": b.get("total_units") or 0,
+            "done_count": done_count,
+            "outstanding_count": out_count,
+            "done_units": done_units,
+            "outstanding_units": out_units,
+            "by_owner": sorted(by_owner.values(), key=lambda x: x["owner"].lower()),
+            "lines": blines,
+        })
+    return {"batches": out_batches, "open_keys": sorted(open_keys)}
+
+
+@app.delete("/api/replenishment/distributions/{dist_id}")
+def replenishment_distribution_delete(dist_id: int, request: Request):
+    """Remove a distribution batch (and its line snapshot). Roster managers only.
+    Use to clear a fully-picked or mistaken batch; the underlying done marks in
+    recommendation_actions are untouched."""
+    from fastapi import HTTPException
+    user = getattr(request.state, "user", None)
+    if not _can_manage_roster(user):
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have permission to remove a distribution batch.")
+    _ensure_replen_distribution_tables()
+    _users_exec("DELETE FROM replen_distribution WHERE id=%s", (int(dist_id),))
+    return {"ok": True, "deleted": int(dist_id)}
+
+
 # ── Step 4 — bulk approve/reject + summary (audit D3) ─────────────────────────
 @app.post("/api/recommendations/bulk")
 async def post_recommendations_bulk(request: Request):
