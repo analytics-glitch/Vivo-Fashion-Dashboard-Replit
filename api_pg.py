@@ -18798,10 +18798,12 @@ def _chat_followups(message, answer):
 
 def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False,
                        system_prompt=None, tool_specs=None, dispatch=None,
-                       user_content=None, history_text=None, attachments=None):
+                       user_content=None, history_text=None, attachments=None,
+                       emit_sql_rows=False):
     """The tool-calling agent loop as a generator of event dicts:
       {"type":"token","text":...}   streamed answer tokens
       {"type":"tool","name":..,"status":"running"|"done"}
+      {"type":"rows","columns":[...],"rows":[...]}   (only when emit_sql_rows)
       {"type":"done","session_id":..,"followups":[...]}
       {"type":"error","message":..}
     The final assistant answer is persisted to session history before 'done'.
@@ -18809,7 +18811,14 @@ def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False,
     The system prompt, tool catalog and tool dispatch table default to the main
     BI assistant's, but can be overridden (e.g. the Fabric BI assistant passes a
     fabric-scoped prompt + a SQL-only tool set) — the read-only/PII guards and
-    session handling are shared unchanged."""
+    session handling are shared unchanged.
+
+    When ``emit_sql_rows`` is set (the Fabric assistant), the rows behind each
+    successful ``run_readonly_sql`` tool call are also surfaced as a "rows"
+    event so the client can offer a CSV download. The rows are already row-capped
+    and PII-masked by the SQL tool itself — this passes them through unchanged
+    and never widens what the query can return. The main BI assistant leaves
+    this off, so its event stream is unchanged."""
     sys_prompt = system_prompt if system_prompt is not None else _chat_system_prompt(ctx, revealed)
     specs = tool_specs if tool_specs is not None else _CHAT_TOOL_SPECS
     disp = dispatch if dispatch is not None else _CHAT_TOOL_DISPATCH
@@ -18864,6 +18873,17 @@ def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False,
                     messages.append({"role": "tool", "tool_call_id": tc["id"],
                                      "content": _chat_trim_result(result)})
                     yield {"type": "tool", "name": tc["name"], "status": "done"}
+                    # Surface the queried rows (already row-capped + PII-masked by
+                    # the SQL tool) so the client can offer a CSV download. Only
+                    # when the caller opts in (the Fabric assistant); the most
+                    # recent successful query wins on the client.
+                    if (emit_sql_rows and tc["name"] == "run_readonly_sql"
+                            and isinstance(result, dict) and not result.get("error")):
+                        _sql_rows = result.get("rows") or []
+                        if _sql_rows:
+                            yield {"type": "rows",
+                                   "columns": list(_sql_rows[0].keys()),
+                                   "rows": _sql_rows}
                 continue
             answered = True
             break
@@ -19199,7 +19219,15 @@ def _fabric_chat_system_prompt(ctx):
         "- Lead with the direct answer in the first sentence, then up to three short "
         "supporting points. Be concise.\n"
         "- If a query returns no rows / nulls, say no data matched rather than "
-        "inventing a number.\n\n"
+        "inventing a number.\n"
+        "- CSV EXPORT: every answer you back with a data query automatically gets a "
+        "'Download CSV' button beneath it in the chat, holding the exact rows you "
+        "queried. If the user asks to export / download / save the result as CSV or "
+        "a spreadsheet, do NOT paste raw comma-separated text into your reply — tell "
+        "them to click the 'Download CSV' button under the answer. If there is no "
+        "recent data answer to export (e.g. they ask right after a plain chat reply), "
+        "re-run the relevant query first so the rows (and the button) are present, "
+        "then point them to the button.\n\n"
         "FABRIC SCHEMA & RULES:\n"
         + _fabric_chat_schema_doc()
         + (("\n\n" + ctx_line) if ctx_line else "")
@@ -19221,19 +19249,26 @@ def _fabric_chat_agent_events(message, session_id, ctx, revealed, want_followups
             system_prompt=_fabric_chat_system_prompt(ctx),
             tool_specs=_FABRIC_CHAT_TOOL_SPECS,
             dispatch=_FABRIC_CHAT_TOOL_DISPATCH,
-            user_content=user_content, history_text=history_text):
+            user_content=user_content, history_text=history_text,
+            emit_sql_rows=True):
         yield ev
 
 
 def _fabric_chat_core(message, session_id, ctx, revealed, attachments=None):
     parts = []
+    rows, columns = None, None
     for ev in _fabric_chat_agent_events(message, session_id, ctx, revealed,
                                         want_followups=False, attachments=attachments):
         if ev["type"] == "token":
             parts.append(ev["text"])
+        elif ev["type"] == "rows":
+            # Keep the most recent successful query's rows for CSV export.
+            rows = ev.get("rows")
+            columns = ev.get("columns")
         elif ev["type"] == "error":
-            return ev["message"]
-    return "".join(parts).strip() or _CHAT_FALLBACK
+            return {"answer": ev["message"], "rows": None, "columns": None}
+    return {"answer": "".join(parts).strip() or _CHAT_FALLBACK,
+            "rows": rows, "columns": columns}
 
 
 @app.post("/api/fabric/chat")
@@ -19254,8 +19289,9 @@ async def fabric_chat_post(request: Request):
         return {"session_id": session_id,
                 "answer": "The assistant isn't configured yet. Please try again later."}
     revealed = pii_revealed(request)
-    answer = await _chat_run_in_threadpool(_fabric_chat_core, message, session_id, ctx, revealed, attachments)
-    return {"session_id": session_id, "answer": answer}
+    result = await _chat_run_in_threadpool(_fabric_chat_core, message, session_id, ctx, revealed, attachments)
+    return {"session_id": session_id, "answer": result["answer"],
+            "rows": result.get("rows"), "columns": result.get("columns")}
 
 
 @app.post("/api/fabric/chat/stream")

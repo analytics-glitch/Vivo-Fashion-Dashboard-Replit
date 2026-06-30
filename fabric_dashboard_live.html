@@ -3628,6 +3628,8 @@ init();
   .fab-chat-followups{display:flex;flex-direction:column;gap:6px;padding-top:2px;}
   .fab-chat-followups .fab-chat-fhead{font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:#9ca3af;padding:0 2px 1px;}
   .fab-chat-followups button{background:#fff;}
+  .fab-chat-csv{margin-top:8px;display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;background:#1a5c38;color:#fff;border:none;border-radius:8px;padding:6px 11px;cursor:pointer;transition:background .12s ease;}
+  .fab-chat-csv:hover{background:#14492c;}
   .fab-chat-foot{border-top:1px solid #fdba74;padding:10px;display:flex;flex-direction:column;align-items:stretch;gap:8px;background:#fff;}
   .fab-chat-inrow{display:flex;align-items:flex-end;gap:8px;}
   .fab-chat-foot textarea{flex:1;resize:none;background:#fff7ed;border:1px solid #fdba74;border-radius:12px;padding:9px 12px;font-size:13px;outline:none;font-family:inherit;max-height:100px;line-height:1.4;}
@@ -3721,9 +3723,13 @@ init();
       // Persist only lightweight attachment metadata (name/mime/isImage) — never
       // the raw base64 data — so the localStorage log stays small.
       var slim=messages.filter(function(m){return !m.streaming;}).slice(-40).map(function(m){
-        if(m.attachments && m.attachments.length){
-          var copy={}; for(var k in m){ if(k!=="attachments") copy[k]=m[k]; }
-          copy.attachments=m.attachments.map(function(a){ return { name:a.name, mime:a.mime, isImage:a.isImage }; });
+        // Never persist the heavy CSV row payload; the Download button is lost on
+        // reload for older answers (acceptable) but localStorage stays small.
+        if((m.attachments && m.attachments.length) || m.exportRows || m.exportCols){
+          var copy={}; for(var k in m){ if(k!=="attachments" && k!=="exportRows" && k!=="exportCols") copy[k]=m[k]; }
+          if(m.attachments && m.attachments.length){
+            copy.attachments=m.attachments.map(function(a){ return { name:a.name, mime:a.mime, isImage:a.isImage }; });
+          }
           return copy;
         }
         return m;
@@ -3779,6 +3785,12 @@ init();
       }
       var txt=(m.streaming && !m.content) ? "…" : (m.content||"");
       if(txt){ var tn=makeEl("div"); tn.textContent=txt; bub.appendChild(tn); }
+      // Offer a CSV download for finished answers backed by a data query.
+      if(!m.streaming && m.role==="assistant" && m.exportRows && m.exportRows.length){
+        var dl=makeEl("button","fab-chat-csv"); dl.type="button"; dl.textContent="⬇ Download CSV";
+        dl.addEventListener("click",(function(mm){ return function(){ downloadAnswerCsv(mm); }; })(m));
+        bub.appendChild(dl);
+      }
       row.appendChild(bub); b.appendChild(row);
     });
     if(toolStatus){
@@ -3807,6 +3819,16 @@ init();
   }
 
   function authToken(){ try{ return localStorage.getItem("vivo_token"); }catch(e){ return null; } }
+
+  // Build + download the rows behind an assistant answer as CSV, reusing the
+  // dashboard's shared CSV/Blob writer (mixDownloadCsv).
+  function downloadAnswerCsv(m){
+    if(!m || !m.exportRows || !m.exportRows.length) return;
+    var keys=(m.exportCols && m.exportCols.length) ? m.exportCols : Object.keys(m.exportRows[0]||{});
+    var cols=keys.map(function(k){ return [k, function(r){ return r[k]; }]; });
+    var ts=new Date().toISOString().replace(/[:.]/g,"-").slice(0,19);
+    mixDownloadCsv(cols, m.exportRows, "fabric_assistant_"+ts+".csv");
+  }
 
   // ---- Attachments (images + lightweight text files) ----------------------
   function attIsImage(mime){ return ATTACH_IMG.indexOf((mime||"").toLowerCase())>=0; }
@@ -3904,6 +3926,7 @@ init();
       function handle(ev){
         if(ev.type==="token"){ gotAny=true; toolStatus=null; patchLast(function(m){ m.content=(m.content||"")+ev.text; return m; }); render(); }
         else if(ev.type==="tool"){ if(ev.status==="running"){ toolStatus=TOOL_LABELS[ev.name]||"Looking that up"; render(); } }
+        else if(ev.type==="rows"){ patchLast(function(m){ m.exportRows=ev.rows||[]; m.exportCols=ev.columns||[]; return m; }); }
         else if(ev.type==="error"){ gotAny=true; toolStatus=null; patchLast(function(m){ m.content=(m.content||"")+(m.content?"\n\n":"")+ev.message; return m; }); render(); }
         else if(ev.type==="done"){ if(ev.session_id) sessionId=ev.session_id; if(Array.isArray(ev.followups)) followups=ev.followups; toolStatus=null; }
       }
@@ -3934,7 +3957,9 @@ init();
       body:JSON.stringify({ message:msg, session_id:sessionId, context:ctx(), attachments:(atts&&atts.length?atts:undefined) })
     }).then(function(res){ return res.json(); }).then(function(data){
       if(data.session_id) sessionId=data.session_id;
-      patchLast(function(){ return { role:"assistant", content:data.answer||"Sorry, I couldn't answer that." }; });
+      patchLast(function(){ return { role:"assistant", content:data.answer||"Sorry, I couldn't answer that.",
+                                     exportRows:(data.rows&&data.rows.length?data.rows:null),
+                                     exportCols:(data.columns&&data.columns.length?data.columns:null) }; });
       render();
     });
   }
