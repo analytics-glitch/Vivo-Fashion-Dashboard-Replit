@@ -16,13 +16,10 @@ import {
   Clock, Lock, Warning, Timer, SealCheck,
 } from "@phosphor-icons/react";
 
-// Demand-lookback presets (trailing window the engine measures sell-through
-// over). Local to this page — it does NOT touch the global filter bar.
-const DEMAND_OPTIONS = [
-  { days: 14, label: "14d" },
-  { days: 28, label: "28d" },
-  { days: 56, label: "56d" },
-];
+// Demand-lookback window (trailing days the engine measures sell-through over).
+// A single fixed window — not user-switchable. Local to this page; it does NOT
+// touch the global filter bar.
+const IBT_DEMAND_DAYS = 28;
 
 const IBT = () => {
   const { applied, touchLastUpdated } = useFilters();
@@ -56,15 +53,8 @@ const IBT = () => {
 
   const stale = !!freshness?.stale;
 
-  // Trailing demand window (default 28d per spec). Persisted; local-only.
-  const [demandDays, setDemandDays] = useState(() => {
-    try { return Number(localStorage.getItem("vivo_ibt_demand_days")) || 28; }
-    catch { return 28; }
-  });
-  const setDemandDaysPersist = (d) => {
-    setDemandDays(d);
-    try { localStorage.setItem("vivo_ibt_demand_days", String(d)); } catch { /* private */ }
-  };
+  // Trailing demand window — a single fixed window (28d per spec), not switchable.
+  const demandDays = IBT_DEMAND_DAYS;
 
   // B1 — cluster-aware matching (A/B/C revenue tiers). Default ON per spec.
   const [useClustering, setUseClustering] = useState(() => {
@@ -453,23 +443,13 @@ const IBT = () => {
             )}
             <div className="flex-1" />
             <div className="inline-flex items-center gap-1.5 text-[11.5px]" data-testid="ibt-demand-control">
-              <span className="font-semibold text-foreground/80">Demand:</span>
-              <div className="inline-flex border border-border rounded-lg overflow-hidden">
-                {DEMAND_OPTIONS.map((o) => (
-                  <button
-                    key={o.days}
-                    type="button"
-                    onClick={() => setDemandDaysPersist(o.days)}
-                    title={`Measure sell-through over the trailing ${o.days} days`}
-                    data-testid={`ibt-demand-${o.days}`}
-                    className={`px-2.5 py-1 font-bold transition-colors ${
-                      demandDays === o.days ? "bg-brand text-white" : "bg-white text-foreground/70 hover:bg-panel"
-                    }`}
-                  >
-                    {o.label}
-                  </button>
-                ))}
-              </div>
+              <span className="font-semibold text-foreground/80">Demand window:</span>
+              <span
+                className="px-2.5 py-1 font-bold rounded-lg border border-border bg-panel text-foreground/70"
+                title={`Sell-through is measured over the trailing ${IBT_DEMAND_DAYS} days`}
+              >
+                {IBT_DEMAND_DAYS}d
+              </span>
             </div>
             <button
               type="button"
@@ -512,7 +492,7 @@ const IBT = () => {
               completedSkuKeys={completedSkuKeys}
               completedKeys={completedKeys}
               testId="ibt-table"
-              emptyLabel="No transfer opportunities found for the current window. Try a longer demand window or turn off cluster-aware matching."
+              emptyLabel="No transfer opportunities found. Try turning off cluster-aware matching, or check the country filter."
             />
           </div>
 
