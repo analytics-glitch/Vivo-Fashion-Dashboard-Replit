@@ -30,20 +30,26 @@ keeping a store with one person.
   `_compute_line_owner_map` (balance the current window), `_replen_line_owner_map`
   (read; self-seeds once if unset), `_assign_replen_owners_frozen_then_balance`
   (per-GET assignment: frozen map first, balance the rest), `_replen_by_owner_summary`.
-- **Drift fallback = LEAST-LOADED, not whole-store.** A line NOT in the frozen map
-  (the view window includes today → lines grow intraday → most lines drift off a
-  morning save) is assigned to the currently lightest picker (by units, roster
-  order tie-break), NOT that store's dominant owner. **Why:** the old whole-store
-  fallback (`_owner_for_line` + `store_fallback`, now deleted) dumped each drifted
-  store on one picker → the card stayed lopsided (206/201/165/160) even though
-  `replenish` is capped at 3/line and a matched-window save balances near-perfectly.
-  With cap-3 lines, least-loaded keeps the totals within ~1 unit even when the
-  ENTIRE map is stale — so equality no longer depends on the operator re-saving.
-  **How to apply:** both the Daily report AND the SOR endpoint go through
-  `_assign_replen_owners_frozen_then_balance` (SOR passes `presort=False` to keep
-  its `_rank` order; Daily POS-sorts for store contiguity). Tradeoff: unmapped
-  lines can reflow owner across reloads as new lines appear — acceptable because
-  they were never "owned" (only FROZEN/saved lines must stay put, and they do).
+- **Drift fallback = STORE-CONTIGUOUS, not per-line least-loaded.** A line NOT in
+  the frozen map (the view window includes today → lines grow intraday → most lines
+  drift off a morning save) is NOT balanced individually — that scatters one store
+  across every picker, which the user explicitly rejected ("one store should have
+  one owner unless we need the next store to balance; sort by stores first, fill an
+  owner until enough, then proceed"). Instead: a drifted line whose STORE already
+  has a frozen owner joins that store's DOMINANT frozen owner (keeps a partly-saved
+  store together); brand-new stores (no frozen line) go through SEQUENTIAL
+  quota-fill in store order — fill the current picker to the equal-units target,
+  then advance (never back), a store splitting across two pickers ONLY where the
+  target boundary lands inside it. **Why:** per-line least-loaded (earlier fix)
+  balanced units but SCATTERED a store across all pickers; keeping new stores
+  strictly WHOLE (no split) swings the other way — coarse balance (sim spread 44).
+  Row-level sequential quota-fill (split only at the boundary) is the same shape as
+  the save-time `_assign_replen_owners_by_units` and gives BOTH: sim spread 3–5
+  units across 4 pickers with only the ~3 boundary stores split, even when the
+  ENTIRE map is stale. **How to apply:** both the Daily report AND SOR go through
+  `_assign_replen_owners_frozen_then_balance` (SOR `presort=False` keeps `_rank`
+  order; Daily POS-sorts so store order is alphabetical/contiguous). Whole-store
+  no-split is WRONG here — boundary splits are required for a tight, even card.
 - **Redistribute MUST balance over the window the page actually displays**, or the
   per-picker units come out lopsided even though the balancer is equal-units.
   **Why:** the Daily page (`Replenishments.jsx`) defaults its window to
@@ -76,4 +82,5 @@ keeping a store with one person.
   engine while the by-item report kept them, so the Daily Replenishment page lost
   its roster card. **Why:** ownership is decoration layered after the formula, not
   part of sizing. **How to apply:** any new replenishment list endpoint must
-  re-apply `_owner_for_line` + emit `by_owner` itself; don't assume it's inherited.
+  re-apply `_assign_replen_owners_frozen_then_balance` + emit `by_owner` (via
+  `_replen_by_owner_summary`) itself; don't assume it's inherited.
