@@ -1856,12 +1856,22 @@ def _assign_replen_owners_by_units(rows, owners):
     target = total / k          # ideal units per picker
     acc = 0                     # units assigned so far (including current row)
     owner_idx = 0
+    prev_store = None
+    store_start_idx = 0         # owner_idx this store began on (cap it to 2 pickers)
     for r in rows:
+        store = str(r.get("pos_location") or "")
+        if store != prev_store:
+            prev_store = store
+            store_start_idx = owner_idx
         r["owner"] = owners[owner_idx]
         acc += int(r.get("replenish") or 0)
-        # Advance once this picker has met their cumulative share, always
-        # leaving at least one picker for the remaining rows.
+        # Advance once this picker has met their cumulative share, always leaving at
+        # least one picker for the remaining rows — but never split a SINGLE store
+        # across more than two pickers (stop advancing inside a store once it already
+        # spans two; the next store resets the cap).
         while owner_idx < k - 1 and acc >= target * (owner_idx + 1):
+            if (owner_idx + 1) - store_start_idx >= 2:
+                break
             owner_idx += 1
     return rows
 
@@ -2033,26 +2043,46 @@ def _assign_replen_owners_frozen_then_balance(rows, line_map=None, owners=None,
         for sr in nonfrozen_by_store.values() for r in sr)
     target = (total / len(owners)) if owners else 0
 
-    def _lightest():
-        return min(owners, key=lambda o: (units[o], order[o]))
+    def _lightest(exclude=None):
+        cands = [o for o in owners if o != exclude] or owners
+        return min(cands, key=lambda o: (units[o], order[o]))
 
     store_order = sorted(
         nonfrozen_by_store.items(),
         key=lambda kv: sum(int(r.get("replenish") or 0) for r in kv[1]),
         reverse=True)
+    # A single store is split across AT MOST TWO pickers (ideally one):
+    #  - a brand-new store starts on the lightest picker and may switch ONCE (when
+    #    that picker is full AND another is genuinely lighter) — never a third;
+    #  - a partly-frozen store that is already split across >=2 saved owners keeps
+    #    ALL its drift WITHIN that saved set (we can't reshuffle frozen lines, so we
+    #    must not open yet another picker); a store with exactly one saved owner
+    #    drifts onto it and may open at most ONE more (total <=2).
     for store, srows in store_order:
         fu = store_frozen_units.get(store)
-        # A partly-frozen store keeps drifting onto its existing (dominant) owner
-        # while that owner still has room; otherwise (or for a brand-new store)
-        # start on the lightest picker.
         if fu:
-            dom = max(fu, key=lambda o: (fu[o], -order[o]))
-            cur = dom if units[dom] < target else _lightest()
+            frozen_owners = list(fu.keys())
+            if len(frozen_owners) >= 2:
+                allowed = frozen_owners
+                cur = min(allowed, key=lambda o: (units[o], order[o]))
+            else:
+                allowed = None
+                cur = frozen_owners[0]
         else:
+            allowed = None
             cur = _lightest()
+        switched = False
         for r in srows:
-            if units[cur] >= target:          # current picker is full -> rebalance
-                cur = _lightest()
+            if units[cur] >= target:
+                if allowed is not None:           # restrict to existing saved owners
+                    cand = min(allowed, key=lambda o: (units[o], order[o]))
+                    if cand != cur and units[cand] < units[cur]:
+                        cur = cand
+                elif not switched:                # may open exactly ONE more picker
+                    cand = _lightest(exclude=cur)
+                    if units[cand] < units[cur]:
+                        cur = cand
+                        switched = True
             r["owner"] = cur
             units[cur] += int(r.get("replenish") or 0)
     return rows

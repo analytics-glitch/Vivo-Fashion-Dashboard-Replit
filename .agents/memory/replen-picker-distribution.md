@@ -55,6 +55,16 @@ keeping a store with one person.
   `_assign_replen_owners_frozen_then_balance` (SOR `presort=False` keeps `_rank`;
   Daily POS-sorts). Do NOT reintroduce "drift always follows the frozen owner" — it
   is what unbalanced the card; balance non-frozen by least-loaded instead.
+- **A single store splits across AT MOST TWO pickers (ideally one).** In the
+  non-frozen LPT fill a store switches owner only ONCE — when the current picker
+  hits the equal-units target AND another picker is genuinely lighter — then the
+  whole remainder of that store stays with the second picker (a `switched` flag
+  blocks any third). **Why:** the user rejected one store scattered across 3 pickers
+  ("I have a store with 3 pickers"); the earlier re-pick-lightest-on-every-overflow
+  loop let a big store touch 3+. **How to apply:** keep the per-store single-switch
+  cap; small stores stay whole (1 owner), only stores that overflow a full picker
+  split (to exactly 2). Sim: even a deliberately huge store maxes at 2 pickers,
+  spread still ~5 units.
 - **Redistribute MUST balance over the window the page actually displays**, or the
   per-picker units come out lopsided even though the balancer is equal-units.
   **Why:** the Daily page (`Replenishments.jsx`) defaults its window to
