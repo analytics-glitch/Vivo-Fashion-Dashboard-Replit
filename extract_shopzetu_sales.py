@@ -70,7 +70,7 @@ def build_query(since, until, limit):
         f"order_or_return, line_type, pos_location_name, product_variant_price, "
         f"product_title_at_time_of_sale, product_type, product_vendor, "
         f"product_variant_sku, product_variant_title_at_time_of_sale, "
-        f"new_or_returning_customer WITH TOTALS "
+        f"new_or_returning_customer, customer_id WITH TOTALS "
         f"SINCE {since.isoformat()} UNTIL {until.isoformat()} "
         f"ORDER BY total_sales ASC LIMIT {limit}"
     )
@@ -188,6 +188,7 @@ def aggregate(rows):
                 "variant_title": r.get("product_variant_title_at_time_of_sale"),
                 "variant_price": _num(r.get("product_variant_price")),
                 "customer_type": r.get("new_or_returning_customer"),
+                "customer_id": (str(r.get("customer_id")).strip() or None) if r.get("customer_id") not in (None, "") else None,
                 "is_reversal": is_reversal,
                 "gross_sales": 0.0, "discounts": 0.0, "returns": 0.0,
                 "net_sales": 0.0, "total_sales": 0.0, "orders": 0,
@@ -218,7 +219,7 @@ def write_rows(records, since, until):
             rec["gross_sales"], rec["discounts"], rec["returns"],
             rec["net_sales"], rec["total_sales"], rec["orders"],
             rec["net_items_sold"], rec["quantity_ordered"], rec["reversed_quantity"],
-            rec["customer_type"], rec["is_reversal"], False, now,
+            rec["customer_type"], rec.get("customer_id"), rec["is_reversal"], False, now,
         ))
 
     conn = psycopg2.connect(DATABASE_URL)
@@ -237,7 +238,7 @@ def write_rows(records, since, until):
                 product_variant_title_at_time_of_sale, product_variant_price,
                 gross_sales, discounts, returns, net_sales, total_sales,
                 orders, net_items_sold, quantity_ordered, reversed_quantity,
-                new_or_returning_customer, is_reversal_row, is_totals_row, _loaded_at
+                new_or_returning_customer, customer_id, is_reversal_row, is_totals_row, _loaded_at
             ) VALUES %s
             ON CONFLICT (order_id, day, product_variant_sku, is_reversal_row)
             DO UPDATE SET
@@ -257,6 +258,7 @@ def write_rows(records, since, until):
                 quantity_ordered = EXCLUDED.quantity_ordered,
                 reversed_quantity = EXCLUDED.reversed_quantity,
                 new_or_returning_customer = EXCLUDED.new_or_returning_customer,
+                customer_id = EXCLUDED.customer_id,
                 _loaded_at = EXCLUDED._loaded_at
         """, tuples, page_size=1000)
         conn.commit()

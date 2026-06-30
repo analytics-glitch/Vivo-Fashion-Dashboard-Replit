@@ -265,7 +265,7 @@ def transform_shopzetu(cur, conn, rates):
             sv.gross_sales, sv.discounts, sv.returns, sv.net_sales, sv.total_sales,
             sv.orders, sv.net_items_sold, sv.quantity_ordered, sv.reversed_quantity,
             sv.new_or_returning_customer, sv.is_reversal_row,
-            o.customer_id
+            COALESCE(sv.customer_id, o.customer_id) AS customer_id
         FROM raw_shopify_vendor_sales sv
         LEFT JOIN raw_shopify_orders o
             ON sv.order_id = o.id AND o.store_id = 'shop-zetu'

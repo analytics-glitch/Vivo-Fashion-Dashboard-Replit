@@ -50,7 +50,7 @@ def to_all_sales_rows(records):
         out.append((
             row_id, "shop-zetu", rec["order_id"], rec.get("order_name"),
             day, day, "Online - Shop Zetu", "Online", "Online",
-            None, rec.get("customer_type"), sale_kind, title, sku,
+            rec.get("customer_id"), rec.get("customer_type"), sale_kind, title, sku,
             int(rec["quantity_ordered"]),
             round(price, 2), round(price, 2),
             round(gross, 2), round(disc, 2), round(net, 2),
