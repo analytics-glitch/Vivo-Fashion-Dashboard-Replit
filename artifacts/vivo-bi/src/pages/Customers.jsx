@@ -856,6 +856,50 @@ const Customers = () => {
                 </>
               );
             })()}
+            {(() => {
+              // In-period Repeat Purchase Rate — share of active customers who
+              // placed 2+ distinct orders WITHIN the selected window (i.e. came
+              // back more than once in the period). Derived from the
+              // period-scoped /customer-frequency buckets: total active minus
+              // the "1 order" (one-time buyer) bucket. This is an IN-PERIOD
+              // measure and is intentionally distinct from the LIFETIME "Repeat
+              // Customer Rate" card in the Loyalty Distribution section below
+              // (which counts anyone with any prior purchase ever).
+              const oneOrder = (arr) => (arr || []).find((r) => r.frequency_bucket === "1 order")?.customer_count || 0;
+              const sumAll = (arr) => (arr || []).reduce((s, r) => s + (r.customer_count || 0), 0);
+              const curTotal = sumAll(freq);
+              const prevTotal = sumAll(freqPrev);
+              const repeatCur = Math.max(curTotal - oneOrder(freq), 0);
+              const repeatPrev = Math.max(prevTotal - oneOrder(freqPrev), 0);
+              const rate = curTotal ? (repeatCur / curTotal) * 100 : 0;
+              const prevRate = prevTotal ? (repeatPrev / prevTotal) * 100 : 0;
+              const ratePp = rate - prevRate;
+              const hasCompare = compareLbl && prevTotal > 0;
+              const tip = "Repeat Purchase Rate (this period) = % of active customers who placed 2 or more orders WITHIN the selected window (came back more than once in the period). In-period measure — distinct from the lifetime Repeat Customer Rate below. Source: /customer-frequency buckets (total active − the one-time-buyer bucket).";
+              return (
+                <div className="card-white p-3.5 sm:p-5" data-testid="kpi-period-repeat" title={tip}>
+                  <div className="flex items-center gap-2">
+                    <ArrowsCounterClockwise size={16} className="text-brand" />
+                    <div className="eyebrow text-[#1a5c38]">Repeat Purchase Rate (this period)</div>
+                    <span title={tip} className="text-muted text-[10px] cursor-help">ⓘ</span>
+                  </div>
+                  <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight">
+                    {curTotal ? `${rate.toFixed(1)}%` : "—"}
+                  </div>
+                  <div className="text-[10.5px] text-muted mt-0.5">
+                    {curTotal ? <>{fmtNum(repeatCur)} of {fmtNum(curTotal)} bought 2+ times</> : "No customer orders in window"}
+                  </div>
+                  {hasCompare && (
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span className={`text-[10.5px] font-semibold ${Math.abs(ratePp) < 0.1 ? "text-muted" : ratePp > 0 ? "text-brand" : "text-danger"}`}>
+                        {ratePp >= 0 ? "▲" : "▼"} {Math.abs(ratePp).toFixed(1)}pp
+                      </span>
+                      <span className="text-[10px] text-muted">{compareLbl}</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             <KPICard testId="kpi-avg-spend" label="Avg Spend" value={fmtKES(cust.avg_customer_spend)} icon={Coins} showDelta={false}
               action={{ label: "Top 20 customers", onClick: () => {
                 const el = document.querySelector('[data-testid="top-customers-section"]');
