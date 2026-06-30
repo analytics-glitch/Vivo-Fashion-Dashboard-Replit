@@ -65,7 +65,6 @@ LOCATION_COUNTRY_MAP = {
     "MSACB":  ("Vivo MSA Digo Road",   "Kenya"),
     "KILEL":  ("Vivo Kileleshwa",      "Kenya"),
     "MERU":   ("Vivo Meru",            "Kenya"),
-    "ACHO":   ("Safari Sarit",         "Kenya"),
     "SAFAR":  ("Safari Sarit",         "Kenya"),
     "STPUR":  ("Staff purchases",      "Kenya"),
     "WHFIN":  ("Warehouse Finished Goods", "Kenya"),
@@ -91,7 +90,7 @@ EXCLUDED_LOCATIONS = {
     'FGPRD', 'INTRA', 'HWHFN', 'WHREC', 'KIHOL', 'OAHOL', 'GALHO',
     'OASIS', 'KIGAL', 'Buyin', 'Retir', 'WND', 'Wash', 'CUTT',
     'RCALL', 'Studi', 'PDDEV', 'Repai', 'Samp', 'SALE', 'FABPR',
-    'Archv', 'Wholesale', 'Defects', 'HQ/Stock', 'ACCHO',
+    'Archv', 'Wholesale', 'Defects', 'HQ/Stock', 'ACCHO', 'ACHO',
 }
 
 def get_m2o_name(v):
