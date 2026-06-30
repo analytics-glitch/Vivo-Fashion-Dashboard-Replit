@@ -1,0 +1,55 @@
+~/workspace$ grep -nE "EXCLUDED_LOCATIONS|loc_key|skip|continue|in EXCLUDED|location\b" extract_odoo_inventory.py | head -20
+echo "=== show the loop where exclusion + mapping is applied (~180-215) ==="
+sed -n '178,215p' extract_odoo_inventory.py
+81:EXCLUDED_LOCATIONS = {
+178:            location   = get_m2o_name(r.get("location_id")) or ""
+183:            # Map location to store name and country
+184:            loc_key = None
+186:                if key.lower() in location.lower():
+187:                    loc_key = key
+189:            mapped_location, country = LOCATION_COUNTRY_MAP.get(loc_key, (location, "Kenya"))
+200:                continue
+203:                continue
+205:            if any(exc.lower() in location.lower() for exc in EXCLUDED_LOCATIONS):
+206:                continue
+210:                brand, sub_cat, location, mapped_location, country,
+=== show the loop where exclusion + mapping is applied (~180-215) ===
+            location   = get_m2o_name(r.get("location_id")) or ""
+            qty        = float(r.get("quantity", 0))
+            reserved   = float(r.get("reserved_quantity", 0))
+            available  = qty - reserved
+
+            # Map location to store name and country
+            loc_key = None
+            for key in LOCATION_COUNTRY_MAP:
+                if key.lower() in location.lower():
+                    loc_key = key
+                    break
+            mapped_location, country = LOCATION_COUNTRY_MAP.get(loc_key, (location, "Kenya"))
+
+            p = products.get(product_id, {})
+            sku        = p.get("default_code")
+            name       = p.get("name", "")
+            sub_cat    = get_m2o_name(p.get("x_vivo_attr_14"))
+            style_name = get_m2o_name(p.get("x_vivo_attr_16"))
+            brand      = get_m2o_name(p.get("x_vivo_attr_22"))
+            color      = get_m2o_name(p.get("x_vivo_color"))
+
+            if not sku:
+                continue
+            # Skip carrier/shopping bags — not sellable inventory (mirrors sales BASE_FILTERS)
+            if "shopping bag" in (name or "").lower():
+                continue
+            # Skip excluded internal locations
+            if any(exc.lower() in location.lower() for exc in EXCLUDED_LOCATIONS):
+                continue
+
+            rows.append((
+                sku, style_name, name, None, color,
+                brand, sub_cat, location, mapped_location, country,
+                available, qty, now
+            ))
+
+        if rows:
+            execute_values(cur, """
+~/workspace$
