@@ -1,0 +1,759 @@
+store,country,sku,style_name,subcategory,brand,style_number,current_price,cost,current_margin_pct,last_sale_date,days_since_last_sale,clearance_tier,discounted_price,discounted_margin_pct,units_available,projected_revenue_kes
+WHFIN/Stock,Kenya,V0126037LILM,Vivo Basic Knee Length Dress In Chiffon,Knee Length Dresses,Vivo,V0126037,5500.0,1224.1600000000005,77.7,2026-03-21,101,Tier 1 (3M) — 10-15%,4813,74.6,30.0,144375
+WHFIN/Stock,Kenya,V0925053BLAS,Vivo Studio 2-piece in Mixed Media,Skirts & Top Set,Vivo,V0925053,6900.0,2264.14,67.2,2026-03-20,102,Tier 1 (3M) — 10-15%,6038,62.5,13.0,78488
+WHFIN/Stock,Kenya,V0925053ORAS,Vivo Studio 2-piece in Mixed Media,Skirts & Top Set,Vivo,V0925053,6900.0,2264.14,67.2,2026-02-27,123,Tier 1 (3M) — 10-15%,6038,62.5,12.0,72450
+WHFIN/Stock,Kenya,V0925053ORAL,Vivo Studio 2-piece in Mixed Media,Skirts & Top Set,Vivo,V0925053,6900.0,2264.1400000000003,67.2,2026-02-12,138,Tier 1 (3M) — 10-15%,6038,62.5,12.0,72450
+WHFIN/Stock,Kenya,V0725025SEGM/L,Vivo Cap Sleeve Salma Maxi Dress,Maxi Dresses,Vivo,V0725025,5900.0,1388.7,76.5,2026-02-02,148,Tier 1 (3M) — 10-15%,5163,73.1,13.0,67113
+WHFIN/Stock,Kenya,V0625047NAFUXS/S,Vivo Iyana Maxi Cover Up,Maxi Dresses,Vivo,V0625047,6500.0,2684.19,58.7,2026-02-05,145,Tier 1 (3M) — 10-15%,5688,52.8,9.0,51188
+WHFIN/Stock,Kenya,V0825025RUS2X,Vivo Anavi Maxi Dress In Jersey,Maxi Dresses,Vivo,V0825025,6500.0,1930.7,70.3,2026-03-03,119,Tier 1 (3M) — 10-15%,5688,66.1,8.0,45500
+WHFIN/Stock,Kenya,V0625047BLREXS/S,Vivo Iyana Maxi Cover Up,Maxi Dresses,Vivo,V0625047,6500.0,2684.189999999999,58.7,2026-03-24,98,Tier 1 (3M) — 10-15%,5688,52.8,8.0,45500
+WHFIN/Stock,Kenya,V0524192MUS1X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,595.07,76.2,2026-02-06,144,Tier 1 (3M) — 10-15%,2188,72.8,20.0,43750
+WHFIN/Stock,Kenya,V0719290DTNXS/S,Vivo Basic Extra Long Lily Waterfall,Waterfalls & Kimonos,Vivo,V0719290,5500.0,1613.11,70.7,2026-03-25,97,Tier 1 (3M) — 10-15%,4813,66.5,9.0,43313
+WHFIN/Stock,Kenya,V1025012ORAM/L,Vivo Anavi Cascade Waterfall,Waterfalls & Kimonos,Vivo,V1025012,4500.0,1350.0899999999997,70.0,2026-03-25,97,Tier 1 (3M) — 10-15%,3938,65.7,11.0,43313
+WHFIN/Stock,Kenya,V0223139DTEAM,Vivo Basic Izzy Satin Bishop Sleeve Top,Fitted Tops,Vivo,V0223139,2450.0,994.14,59.4,2026-01-10,171,Tier 1 (3M) — 10-15%,2144,53.6,20.0,42875
+WHFIN/Stock,Kenya,V0423006FUSM/L,Vivo Bana Batwing Top,T-shirts & Tank Tops,Vivo,V0423006,3900.0,805.73,79.3,2026-03-11,111,Tier 1 (3M) — 10-15%,3413,76.4,12.0,40950
+WHFIN/Stock,Kenya,V0126024LILL,Vivo Boat Neck Top in Scuba,Fitted Tops,Vivo,V0126024,2900.0,638.8196875000001,78.0,2026-04-01,90,Tier 1 (3M) — 10-15%,2538,74.8,15.0,38063
+WHFIN/Stock,Kenya,V0320037MARS,Vivo Basic 3/4 Sleeve Leila Bodycon Dress,Knee Length Dresses,Vivo,V0320037,3900.0,1015.0,74.0,2026-02-27,123,Tier 1 (3M) — 10-15%,3413,70.3,11.0,37538
+WHFIN/Stock,Kenya,V0725042HUNS,Vivo Aleri Front Slit Sheath Dress,Midi & Capri Dresses,Vivo,V0725042,4500.0,761.3399999999998,83.1,2026-02-05,145,Tier 1 (3M) — 10-15%,3938,80.7,9.0,35438
+WHFIN/Stock,Kenya,V0925030SGRNM,Vivo Anavi Runched Tank Top,T-shirts & Tank Tops,Vivo,V0925030,2500.0,572.6499999999997,77.1,2026-03-23,99,Tier 1 (3M) — 10-15%,2188,73.8,16.0,35000
+WHFIN/Stock,Kenya,V1025015SGNM/L,Vivo Chela Sleeveless Waterfall in Jersey,Waterfalls & Kimonos,Vivo,V1025015,3900.0,1129.17,71.0,2026-02-08,142,Tier 1 (3M) — 10-15%,3413,66.9,10.0,34125
+WHFIN/Stock,Kenya,V0825025WHIL,Vivo Anavi Maxi Dress In Jersey,Maxi Dresses,Vivo,V0825025,6500.0,1930.7000000000003,70.3,2026-02-11,139,Tier 1 (3M) — 10-15%,5688,66.1,6.0,34125
+WHFIN/Stock,Kenya,V0824089DRDM/L,Vivo Chidii Drop Shoulder Kimono,Waterfalls & Kimonos,Vivo,V0824089,5500.0,1655.34,69.9,2026-03-25,97,Tier 1 (3M) — 10-15%,4813,65.6,7.0,33688
+WHFIN/Stock,Kenya,V1025055BEI2X,Vivo Iyana Shirred waist Maxi Dress,Maxi Dresses,Vivo,V1025055,6200.0,1878.6700000000012,69.7,2026-03-05,117,Tier 1 (3M) — 10-15%,5425,65.4,6.0,32550
+WHFIN/Stock,Kenya,V1025012SGRN1X/2X,Vivo Anavi Cascade Waterfall,Waterfalls & Kimonos,Vivo,V1025012,4500.0,1350.09,70.0,2026-03-19,103,Tier 1 (3M) — 10-15%,3938,65.7,8.0,31500
+WHFIN/Stock,Kenya,V0725042OLI2X,Vivo Aleri Front Slit Sheath Dress,Midi & Capri Dresses,Vivo,V0725042,4500.0,761.3399999999999,83.1,2026-02-20,130,Tier 1 (3M) — 10-15%,3938,80.7,8.0,31500
+WHFIN/Stock,Kenya,V0925053BLAL,Vivo Studio 2-piece in Mixed Media,Skirts & Top Set,Vivo,V0925053,6900.0,2264.14,67.2,2026-03-20,102,Tier 1 (3M) — 10-15%,6038,62.5,5.0,30188
+WHFIN/Stock,Kenya,V0825025BLA2X,Vivo Anavi Maxi Dress In Jersey,Maxi Dresses,Vivo,V0825025,6500.0,1930.7000000000003,70.3,2026-03-10,112,Tier 1 (3M) — 10-15%,5688,66.1,5.0,28438
+WHFIN/Stock,Kenya,V0725046GOLM,Vivo Alma Mini Skirt,Skirts & Top Set,Vivo,V0725046,2500.0,359.06999999999994,85.6,2026-01-02,179,Tier 1 (3M) — 10-15%,2188,83.6,13.0,28438
+WHFIN/Stock,Kenya,V0524178REDS,Vivo Basic Chiffon Cap Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524178,3500.0,1089.4400000000005,68.9,2026-03-30,92,Tier 1 (3M) — 10-15%,3063,64.4,9.0,27563
+WHFIN/Stock,Kenya,V0925030ORAS,Vivo Anavi Runched Tank Top,T-shirts & Tank Tops,Vivo,V0925030,2500.0,572.6499999999999,77.1,2026-03-21,101,Tier 1 (3M) — 10-15%,2188,73.8,12.0,26250
+WHFIN/Stock,Kenya,V0324069LGRYL,Vivo Basic Sleeveless Bodysuit,Bodysuits,Vivo,V0324069,1950.0,544.1,72.1,2026-03-15,107,Tier 1 (3M) — 10-15%,1706,68.1,15.0,25594
+WHFIN/Stock,Kenya,V0925030SGRNS,Vivo Anavi Runched Tank Top,T-shirts & Tank Tops,Vivo,V0925030,2500.0,572.65,77.1,2026-01-24,157,Tier 1 (3M) — 10-15%,2188,73.8,11.0,24063
+WHFIN/Stock,Kenya,V0824089DGRNM/L,Vivo Chidii Drop Shoulder Kimono,Waterfalls & Kimonos,Vivo,V0824089,5500.0,1655.3399999999997,69.9,2026-03-16,106,Tier 1 (3M) — 10-15%,4813,65.6,5.0,24063
+WHFIN/Stock,Kenya,V0925065LGNL,Vivo Cotton 3/4 Sleeve Wrap Top,Loose Tops,Vivo,V0925065,3900.0,959.0400000000001,75.4,2026-03-16,106,Tier 1 (3M) — 10-15%,3413,71.9,7.0,23888
+WHFIN/Stock,Kenya,V0925030ORAL,Vivo Anavi Runched Tank Top,T-shirts & Tank Tops,Vivo,V0925030,2500.0,572.6499999999997,77.1,2026-01-04,177,Tier 1 (3M) — 10-15%,2188,73.8,10.0,21875
+WHFIN/Stock,Kenya,V0725022DOLM,Vivo Essi Wide Leg Pants,Full Length Pants,Vivo,V0725022,4900.0,1277.6399999999996,73.9,2026-03-04,118,Tier 1 (3M) — 10-15%,4288,70.2,5.0,21438
+WHFIN/Stock,Kenya,V0126008ORA1X,Vivo Studio Mini Bubble Skirt in Satin,Short & Mini Skirts,Vivo,V0126008,4900.0,1461.7549999999994,70.2,2026-03-27,95,Tier 1 (3M) — 10-15%,4288,65.9,5.0,21438
+WHFIN/Stock,Kenya,V0224108BLAXXS,Vivo X This Is Essential Long Unitard,Jumpsuits & Playsuits,Vivo,V0224108,3950.0,1180.6600000000003,70.1,2026-03-18,104,Tier 1 (3M) — 10-15%,3456,65.8,6.0,20738
+WHFIN/Stock,Kenya,V0725043DGRXS/S,Vivo Tanda Loose Sweater,Sweaters & Ponchos,Vivo,V0725043,3900.0,995.3399999999999,74.5,2026-03-14,108,Tier 1 (3M) — 10-15%,3413,70.8,6.0,20475
+WHFIN/Stock,Kenya,V0322110PR232X,Vivo Dalia Sleeveless Gathered Tent Dress,Knee Length Dresses,Vivo,V0322110,5500.0,1645.2000000000005,70.1,2026-03-06,116,Tier 1 (3M) — 10-15%,4813,65.8,4.0,19250
+WHFIN/Stock,Kenya,V0223139DTEAL,Vivo Basic Izzy Satin Bishop Sleeve Top,Fitted Tops,Vivo,V0223139,2450.0,994.14,59.4,2026-01-22,159,Tier 1 (3M) — 10-15%,2144,53.6,8.0,17150
+WHFIN/Stock,Kenya,V0824086DRDL,Vivo Chidii Wide Leg Pants,Full Length Pants,Vivo,V0824086,4900.0,1676.6199999999997,65.8,2026-01-04,177,Tier 1 (3M) — 10-15%,4288,60.9,4.0,17150
+WHFIN/Stock,Kenya,V0625047BLREM/L,Vivo Iyana Maxi Cover Up,Maxi Dresses,Vivo,V0625047,6500.0,2684.189999999999,58.7,2026-02-18,132,Tier 1 (3M) — 10-15%,5688,52.8,3.0,17063
+WHFIN/Stock,Kenya,V0125039FUSF,Vivo Isabi Loose Top,Loose Tops,Vivo,V0125039,3900.0,1171.3600000000004,70.0,2026-02-14,136,Tier 1 (3M) — 10-15%,3413,65.7,5.0,17063
+NAKUR/Stock,Kenya,V1025055MARM,Vivo Iyana Shirred waist Maxi Dress,Maxi Dresses,Vivo,V1025055,6200.0,1878.67,69.7,2026-03-10,112,Tier 1 (3M) — 10-15%,5425,65.4,3.0,16275
+WHFIN/Stock,Kenya,V0126019PR72X,Vivo Liora Drawstring Pants In Satin,Full Length Pants,Vivo,V0126019,4500.0,1050.56,76.7,2026-03-03,119,Tier 1 (3M) — 10-15%,3938,73.3,4.0,15750
+WHFIN/Stock,Kenya,V1025012ORA1X/2X,Vivo Anavi Cascade Waterfall,Waterfalls & Kimonos,Vivo,V1025012,4500.0,1350.0899999999997,70.0,2026-02-18,132,Tier 1 (3M) — 10-15%,3938,65.7,4.0,15750
+TRM/Stock,Kenya,V0625059BLAM,Vivo Aleri Trench Coat Dress,Knee Length Dresses,Vivo,V0625059,5900.0,2176.57,63.1,2026-03-24,98,Tier 1 (3M) — 10-15%,5163,57.8,3.0,15488
+WHFIN/Stock,Kenya,V0725046GOL1X,Vivo Alma Mini Skirt,Skirts & Top Set,Vivo,V0725046,2500.0,359.07,85.6,2026-01-18,163,Tier 1 (3M) — 10-15%,2188,83.6,7.0,15313
+WHFIN/Stock,Kenya,V0220007RUSS,Vivo Basic Double Layered Long Sleeved Bodysuit,Bodysuits,Vivo,V0220007,2900.0,685.0100000000001,76.4,2026-03-17,105,Tier 1 (3M) — 10-15%,2538,73.0,6.0,15225
+WHFIN/Stock,Kenya,V0625032BLAM,Vivo Aleri A-Line Pleated Dress,Knee Length Dresses,Vivo,V0625032,5500.0,1588.53,71.1,2026-03-02,120,Tier 1 (3M) — 10-15%,4813,67.0,3.0,14438
+NAKUR/Stock,Kenya,V0126037LILM,Vivo Basic Knee Length Dress In Chiffon,Knee Length Dresses,Vivo,V0126037,5500.0,1224.1600000000005,77.7,2026-03-21,101,Tier 1 (3M) — 10-15%,4813,74.6,3.0,14438
+SIGNA/Stock,Kenya,V0126037LILM,Vivo Basic Knee Length Dress In Chiffon,Knee Length Dresses,Vivo,V0126037,5500.0,1224.1600000000005,77.7,2026-03-21,101,Tier 1 (3M) — 10-15%,4813,74.6,3.0,14438
+WHFIN/Stock,Kenya,V0824092PR16F,Vivo Ayla Maxi Kimono,Waterfalls & Kimonos,Vivo,V0824092,5500.0,2577.86,53.1,2026-03-26,96,Tier 1 (3M) — 10-15%,4813,46.4,3.0,14438
+WHFIN/Stock,Kenya,V0320037DGN1X,Vivo Basic 3/4 Sleeve Leila Bodycon Dress,Knee Length Dresses,Vivo,V0320037,3900.0,1102.09,71.7,2026-03-07,115,Tier 1 (3M) — 10-15%,3413,67.7,4.0,13650
+MNS/Stock,Kenya,V0725043DGRXS/S,Vivo Tanda Loose Sweater,Sweaters & Ponchos,Vivo,V0725043,3900.0,995.3399999999999,74.5,2026-03-14,108,Tier 1 (3M) — 10-15%,3413,70.8,4.0,13650
+WHFIN/Stock,Kenya,V0925016PWBM/L,Vivo Alma Drawstring Top,Loose Tops,Vivo,V0925016,3500.0,1064.66,69.6,2026-03-05,117,Tier 1 (3M) — 10-15%,3063,65.2,4.0,12250
+WHFIN/Stock,Kenya,V0524178GRYL,Vivo Basic Chiffon Cap Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524178,3500.0,1089.4400000000003,68.9,2026-01-30,151,Tier 1 (3M) — 10-15%,3063,64.4,4.0,12250
+ACHO/Stock,Kenya,V0824090PR7F,Vivo Chidii Maxi Kaftan,Maxi Dresses,Vivo,V0824090,6900.0,2029.5400000000002,70.6,2026-03-07,115,Tier 1 (3M) — 10-15%,6038,66.4,2.0,12075
+WHFIN/Stock,Kenya,V0819003DAT2X,Vivo Basic Panelled Leisure Pants,Full Length Pants,Vivo,V0819003,4500.0,1377.5199999999998,69.4,2026-01-13,168,Tier 1 (3M) — 10-15%,3938,65.0,3.0,11813
+WHFIN/Stock,Kenya,V0126019PR7S,Vivo Liora Drawstring Pants In Satin,Full Length Pants,Vivo,V0126019,4500.0,1050.56,76.7,2026-03-22,100,Tier 1 (3M) — 10-15%,3938,73.3,3.0,11813
+WHFIN/Stock,Kenya,V0126019PR12X,Vivo Liora Drawstring Pants In Satin,Full Length Pants,Vivo,V0126019,4500.0,1050.56,76.7,2026-02-27,123,Tier 1 (3M) — 10-15%,3938,73.3,3.0,11813
+WHFIN/Stock,Kenya,V0725042OLI1X,Vivo Aleri Front Slit Sheath Dress,Midi & Capri Dresses,Vivo,V0725042,4500.0,761.34,83.1,2026-02-23,127,Tier 1 (3M) — 10-15%,3938,80.7,3.0,11813
+WHFIN/Stock,Kenya,V0625047PR2M/L,Vivo Iyana Maxi Cover Up,Maxi Dresses,Vivo,V0625047,6500.0,2684.1899999999996,58.7,2026-03-29,93,Tier 1 (3M) — 10-15%,5688,52.8,2.0,11375
+JUNCT/Stock,Kenya,V0625047NAFU1X/2X,Vivo Iyana Maxi Cover Up,Maxi Dresses,Vivo,V0625047,6500.0,2684.1900000000005,58.7,2026-03-09,113,Tier 1 (3M) — 10-15%,5688,52.8,2.0,11375
+SARIT/Stock,Kenya,V0824085PRF,Vivo Chidii Tunic Dress With Frills,Short & Mini Dresses,Vivo,V0824085,6500.0,1716.9100000000005,73.6,2026-03-10,112,Tier 1 (3M) — 10-15%,5688,69.8,2.0,11375
+WHFIN/Stock,Kenya,V0723043SGR1X,Vivo Basic Val Long Sleeve Top,Midriff & Crop Tops,Vivo,V0723043,2550.0,688.79,73.0,2026-03-25,97,Tier 1 (3M) — 10-15%,2231,69.1,5.0,11156
+WHFIN/Stock,Kenya,V1025055BEIS,Vivo Iyana Shirred waist Maxi Dress,Maxi Dresses,Vivo,V1025055,6200.0,1878.6699999999996,69.7,2026-03-19,103,Tier 1 (3M) — 10-15%,5425,65.4,2.0,10850
+IMAAR/Stock,Kenya,V1025055BEIS,Vivo Iyana Shirred waist Maxi Dress,Maxi Dresses,Vivo,V1025055,6200.0,1878.6699999999996,69.7,2026-03-19,103,Tier 1 (3M) — 10-15%,5425,65.4,2.0,10850
+MSACB/Stock,Kenya,V0725025BLA1X/2X,Vivo Cap Sleeve Salma Maxi Dress,Maxi Dresses,Vivo,V0725025,5900.0,1278.8899999999999,78.3,2026-03-23,99,Tier 1 (3M) — 10-15%,5163,75.2,2.0,10325
+WHFIN/Stock,Kenya,V0725025DGRNM/L,Vivo Cap Sleeve Salma Maxi Dress,Loose Tops,Vivo,V0725025,5900.0,1388.7,76.5,2026-02-21,129,Tier 1 (3M) — 10-15%,5163,73.1,2.0,10325
+MERU/Stock,Kenya,V0725025DGRNM/L,Vivo Cap Sleeve Salma Maxi Dress,Loose Tops,Vivo,V0725025,5900.0,1388.7,76.5,2026-02-21,129,Tier 1 (3M) — 10-15%,5163,73.1,2.0,10325
+WHFIN/Stock,Kenya,V0724104PR5L,Vivo Hadiya Wrap Dress,Knee Length Dresses,Vivo,V0724104,5900.0,1861.3,68.5,2026-03-03,119,Tier 1 (3M) — 10-15%,5163,63.9,2.0,10325
+WHFIN/Stock,Kenya,V0925065SGN1X,Vivo Cotton 3/4 Sleeve Wrap Top,Loose Tops,Vivo,V0925065,3900.0,959.04,75.4,2026-02-15,135,Tier 1 (3M) — 10-15%,3413,71.9,3.0,10238
+TRM/Stock,Kenya,V0320037MARS,Vivo Basic 3/4 Sleeve Leila Bodycon Dress,Knee Length Dresses,Vivo,V0320037,3900.0,1015.0,74.0,2026-02-27,123,Tier 1 (3M) — 10-15%,3413,70.3,3.0,10238
+WHFIN/Stock,Kenya,V0925065PINM,Vivo Cotton 3/4 Sleeve Wrap Top,Loose Tops,Vivo,V0925065,3900.0,959.04,75.4,2026-02-26,124,Tier 1 (3M) — 10-15%,3413,71.9,3.0,10238
+WHFIN/Stock,Kenya,V1025015LOL1X/2X,Vivo Chela Sleeveless Waterfall in Jersey,Waterfalls & Kimonos,Vivo,V1025015,3900.0,1129.17,71.0,2026-01-20,161,Tier 1 (3M) — 10-15%,3413,66.9,3.0,10238
+WHFIN/Stock,Kenya,V0625042MARM,Vivo Iyana Bubble Sleeveless Top,Fitted Tops,Vivo,V0625042,3900.0,1218.71,68.8,2026-02-25,125,Tier 1 (3M) — 10-15%,3413,64.3,3.0,10238
+WHFIN/Stock,Kenya,V1123047HPINM,Vivo Hanabi Wrap Maxi Dress,Maxi Dresses,Vivo,V1123047,5750.0,809.0,85.9,2026-01-06,175,Tier 1 (3M) — 10-15%,5031,83.9,2.0,10063
+TRM/Stock,Kenya,V0824089DRDM/L,Vivo Chidii Drop Shoulder Kimono,Waterfalls & Kimonos,Vivo,V0824089,5500.0,1655.34,69.9,2026-03-25,97,Tier 1 (3M) — 10-15%,4813,65.6,2.0,9625
+WHFIN/Stock,Kenya,V0719290HGN1X/2X,Vivo Basic Extra Long Lily Waterfall,Waterfalls & Kimonos,Vivo,V0719290,5500.0,1613.11,70.7,2026-03-24,98,Tier 1 (3M) — 10-15%,4813,66.5,2.0,9625
+MNS/Stock,Kenya,V0719290DTNXS/S,Vivo Basic Extra Long Lily Waterfall,Waterfalls & Kimonos,Vivo,V0719290,5500.0,1613.11,70.7,2026-03-25,97,Tier 1 (3M) — 10-15%,4813,66.5,2.0,9625
+NAKUR/Stock,Kenya,V0322110PR232X,Vivo Dalia Sleeveless Gathered Tent Dress,Knee Length Dresses,Vivo,V0322110,5500.0,1645.2000000000005,70.1,2026-03-06,116,Tier 1 (3M) — 10-15%,4813,65.8,2.0,9625
+WHFIN/Stock,Kenya,V0121167BUTM/L,Vivo Dua 3/4 Sleeved V Neck Shirt,Loose Tops,Vivo,V0121167,3500.0,1166.1000000000001,66.7,2026-02-17,133,Tier 1 (3M) — 10-15%,3063,61.9,3.0,9188
+WHFIN/Stock,Kenya,V0524178GRYS,Vivo Basic Chiffon Cap Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524178,3500.0,1089.44,68.9,2026-01-20,161,Tier 1 (3M) — 10-15%,3063,64.4,3.0,9188
+WHFIN/Stock,Kenya,V0223139SGRNM,Vivo Izzy Satin Bishop Sleeve Top,Fitted Tops,Vivo,V0223139,3500.0,994.14,71.6,2026-01-06,175,Tier 1 (3M) — 10-15%,3063,67.5,3.0,9188
+WHFIN/Stock,Kenya,V0121167BUTXS/S,Vivo Dua 3/4 Sleeved V Neck Shirt,Loose Tops,Vivo,V0121167,3500.0,1224.0566666666666,65.0,2026-03-20,102,Tier 1 (3M) — 10-15%,3063,60.0,3.0,9188
+WHFIN/Stock,Kenya,V0719112TEA1X,Vivo Basic Long Sleeved Bodysuit,Bodysuits,Vivo,V0719112,2550.0,898.5899999999998,64.8,2026-02-19,131,Tier 1 (3M) — 10-15%,2231,59.7,4.0,8925
+WHFIN/Stock,Kenya,V0725046DGRY1X,Vivo Alma Mini Skirt,Skirts & Top Set,Vivo,V0725046,2500.0,359.0700000000001,85.6,2026-02-05,145,Tier 1 (3M) — 10-15%,2188,83.6,4.0,8750
+WHFIN/Stock,Kenya,V0226040LIL2X,Vivo Liora Tiered Maxi Skirt in Crepe,Maxi Skirts,Vivo,V0226040,4900.0,1552.95,68.3,2026-03-17,105,Tier 1 (3M) — 10-15%,4288,63.8,2.0,8575
+TWORV/Stock,Kenya,V0125045PR7XS/S,Vivo Isabi Sleeveless Kimono,Waterfalls & Kimonos,Vivo,V0125045,4900.0,1374.32,72.0,2026-02-22,128,Tier 1 (3M) — 10-15%,4288,67.9,2.0,8575
+TRM/Stock,Kenya,V0824086DRDS,Vivo Chidii Wide Leg Pants,Full Length Pants,Vivo,V0824086,4900.0,1676.6199999999997,65.8,2026-03-07,115,Tier 1 (3M) — 10-15%,4288,60.9,2.0,8575
+ACHO/Stock,Kenya,V0125045PR7XS/S,Vivo Isabi Sleeveless Kimono,Waterfalls & Kimonos,Vivo,V0125045,4900.0,1374.32,72.0,2026-02-22,128,Tier 1 (3M) — 10-15%,4288,67.9,2.0,8575
+WHFIN/Stock,Kenya,V0824086GLDS,Vivo Chidii Wide Leg Pants,Full Length Pants,Vivo,V0824086,4900.0,1676.62,65.8,2026-01-09,172,Tier 1 (3M) — 10-15%,4288,60.9,2.0,8575
+WHFIN/Stock,Kenya,V0125045PR6M/L,Vivo Isabi Sleeveless Kimono,Waterfalls & Kimonos,Vivo,V0125045,4900.0,1374.3200000000002,72.0,2026-03-28,94,Tier 1 (3M) — 10-15%,4288,67.9,2.0,8575
+WHFIN/Stock,Kenya,V0819031RUSM,Vivo Basic Double Layered Capri Skirt,Midi & Capri Skirts,Vivo,V0819031,3250.0,985.9199999999998,69.7,2026-03-18,104,Tier 1 (3M) — 10-15%,2844,65.3,3.0,8531
+SARIT/Stock,Kenya,V0819003BLAXS,Vivo Basic Panelled Leisure Pants,Full Length Pants,Vivo,V0819003,4500.0,1377.5199999999998,69.4,2026-03-05,117,Tier 1 (3M) — 10-15%,3938,65.0,2.0,7875
+MERU/Stock,Kenya,V1025012ORAM/L,Vivo Anavi Cascade Waterfall,Waterfalls & Kimonos,Vivo,V1025012,4500.0,1350.0899999999997,70.0,2026-03-25,97,Tier 1 (3M) — 10-15%,3938,65.7,2.0,7875
+WHFIN/Stock,Kenya,V0425056DAOM,Vivo Diella 3/4 Sleeve A-Line Dress,Knee Length Dresses,Vivo,V0425056,4500.0,1005.41,77.7,2026-02-24,126,Tier 1 (3M) — 10-15%,3938,74.5,2.0,7875
+WHFIN/Stock,Kenya,V0822019MAGL,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,4500.0,960.25,78.7,2026-01-17,164,Tier 1 (3M) — 10-15%,3938,75.6,2.0,7875
+WHFIN/Stock,Kenya,V0819003NADXS,Vivo Basic Panelled Leisure Pants,Full Length Pants,Vivo,V0819003,4500.0,1377.52,69.4,2026-03-20,102,Tier 1 (3M) — 10-15%,3938,65.0,2.0,7875
+MERU/Stock,Kenya,V0126024LILL,Vivo Boat Neck Top in Scuba,Fitted Tops,Vivo,V0126024,2900.0,638.8196875000001,78.0,2026-04-01,90,Tier 1 (3M) — 10-15%,2538,74.8,3.0,7613
+WHFIN/Stock,Kenya,V0722034HGN1X/2X,Vivo Basic Julia 3/4 Sleeve Back Pleat Knee Length Dress,Knee Length Dresses,Vivo,V0722034,4250.0,1086.28,74.4,2026-01-07,174,Tier 1 (3M) — 10-15%,3719,70.8,2.0,7438
+WHFIN/Stock,Kenya,V0120065PR291X/2X,Vivo Basic Nandi A-Line Kimono,Waterfalls & Kimonos,Vivo,V0120065,3950.0,1273.82,67.8,2026-02-18,132,Tier 1 (3M) — 10-15%,3456,63.1,2.0,6913
+WHFIN/Stock,Kenya,V1025044DRDS,Vivo Chela Pants in Jersey,Full Length Pants,Vivo,V1025044,3900.0,911.63,76.6,2026-02-21,129,Tier 1 (3M) — 10-15%,3413,73.3,2.0,6825
+MNS/Stock,Kenya,V1025044FUSS,Vivo Chela Pants in Jersey,Full Length Pants,Vivo,V1025044,3900.0,911.6299999999997,76.6,2026-03-13,109,Tier 1 (3M) — 10-15%,3413,73.3,2.0,6825
+WHFIN/Stock,Kenya,V1025044FUSS,Vivo Chela Pants in Jersey,Full Length Pants,Vivo,V1025044,3900.0,911.6299999999997,76.6,2026-03-13,109,Tier 1 (3M) — 10-15%,3413,73.3,2.0,6825
+MSACB/Stock,Kenya,V0320037BLAM,Vivo Basic 3/4 Sleeve Leila Bodycon Dress,Knee Length Dresses,Vivo,V0320037,3900.0,1102.0899999999997,71.7,2026-03-21,101,Tier 1 (3M) — 10-15%,3413,67.7,2.0,6825
+SIGNA/Stock,Kenya,V0320037BLAM,Vivo Basic 3/4 Sleeve Leila Bodycon Dress,Knee Length Dresses,Vivo,V0320037,3900.0,1102.0899999999997,71.7,2026-03-21,101,Tier 1 (3M) — 10-15%,3413,67.7,2.0,6825
+IMAAR/Stock,Kenya,V1025044DRDS,Vivo Chela Pants in Jersey,Full Length Pants,Vivo,V1025044,3900.0,911.63,76.6,2026-02-21,129,Tier 1 (3M) — 10-15%,3413,73.3,2.0,6825
+WHFIN/Stock,Kenya,V1019114PR31X/2X,Vivo Basic Nandi High Slit Kimono,Waterfalls & Kimonos,Vivo,V1019114,3900.0,1240.14,68.2,2026-01-27,154,Tier 1 (3M) — 10-15%,3413,63.7,2.0,6825
+NAKUR/Stock,Kenya,V0423006FUSM/L,Vivo Bana Batwing Top,T-shirts & Tank Tops,Vivo,V0423006,3900.0,805.73,79.3,2026-03-11,111,Tier 1 (3M) — 10-15%,3413,76.4,2.0,6825
+WHFIN/Stock,Kenya,V0324069LGRY1X,Vivo Basic Sleeveless Bodysuit,Bodysuits,Vivo,V0324069,1950.0,544.1,72.1,2026-03-23,99,Tier 1 (3M) — 10-15%,1706,68.1,4.0,6825
+WHFIN/Stock,Kenya,V0723033GRES/M,Vivo Basic Long Sleeve Cascade Waterfall,Waterfalls & Kimonos,Vivo,V0723033,1950.0,1807.76,7.3,2026-03-21,101,Tier 1 (3M) — 10-15%,1706,-5.9,4.0,6825
+ACHO/Stock,Kenya,V1025015MUS1X/2X,Vivo Chela Sleeveless Waterfall in Jersey,Waterfalls & Kimonos,Vivo,V1025015,3900.0,1129.17,71.0,2026-03-19,103,Tier 1 (3M) — 10-15%,3413,66.9,2.0,6825
+MSACB/Stock,Kenya,V0423006FUSM/L,Vivo Bana Batwing Top,T-shirts & Tank Tops,Vivo,V0423006,3900.0,805.73,79.3,2026-03-11,111,Tier 1 (3M) — 10-15%,3413,76.4,2.0,6825
+ACHO/Stock,Kenya,V0423006FUSM/L,Vivo Bana Batwing Top,T-shirts & Tank Tops,Vivo,V0423006,3900.0,805.73,79.3,2026-03-11,111,Tier 1 (3M) — 10-15%,3413,76.4,2.0,6825
+YAYA/Stock,Kenya,V0423006FUSM/L,Vivo Bana Batwing Top,T-shirts & Tank Tops,Vivo,V0423006,3900.0,805.73,79.3,2026-03-11,111,Tier 1 (3M) — 10-15%,3413,76.4,2.0,6825
+WHFIN/Stock,Kenya,V0719112TEAL,Vivo Basic Long Sleeved Bodysuit,Bodysuits,Vivo,V0719112,2550.0,898.5899999999998,64.8,2026-03-16,106,Tier 1 (3M) — 10-15%,2231,59.7,3.0,6694
+KISM/Stock,Kenya,V0719112TEAL,Vivo Basic Long Sleeved Bodysuit,Bodysuits,Vivo,V0719112,2550.0,898.5899999999998,64.8,2026-03-16,106,Tier 1 (3M) — 10-15%,2231,59.7,3.0,6694
+JUNCT/Stock,Kenya,V0524192ORAL,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,595.07,76.2,2026-03-28,94,Tier 1 (3M) — 10-15%,2188,72.8,3.0,6563
+TRM/Stock,Kenya,V0925030SGRNM,Vivo Anavi Runched Tank Top,T-shirts & Tank Tops,Vivo,V0925030,2500.0,572.6499999999997,77.1,2026-03-23,99,Tier 1 (3M) — 10-15%,2188,73.8,3.0,6563
+WHFIN/Stock,Kenya,V0725046POBL,Vivo Alma Mini Skirt,Short & Mini Skirts,Vivo,V0725046,2500.0,359.07,85.6,2026-02-24,126,Tier 1 (3M) — 10-15%,2188,83.6,3.0,6563
+ZOYA/Stock,Kenya,V1019114PR4M/L,Vivo Basic Nandi High Slit Kimono,Waterfalls & Kimonos,Vivo,V1019114,3550.0,1240.14,65.1,2026-01-26,155,Tier 1 (3M) — 10-15%,3106,60.1,2.0,6213
+WHFIN/Stock,Kenya,V0325072BLAM,Vivo Chiffon Shorts,Shorts & Skorts,Vivo,V0325072,3550.0,849.2700000000001,76.1,2026-03-24,98,Tier 1 (3M) — 10-15%,3106,72.7,2.0,6213
+ACHO/Stock,Kenya,V0719674TAU1X/2X,Vivo Basic Short Waterfall,Waterfalls & Kimonos,Vivo,V0719674,3500.0,1134.97,67.6,2026-03-24,98,Tier 1 (3M) — 10-15%,3063,62.9,2.0,6125
+WHFIN/Stock,Kenya,V0121167LBLUXS/S,Vivo Dua 3/4 Sleeved V Neck Shirt,Loose Tops,Vivo,V0121167,3500.0,1339.97,61.7,2026-02-15,135,Tier 1 (3M) — 10-15%,3063,56.2,2.0,6125
+CITYM/Stock,Kenya,V0925010PR5S,Vivo Basic Crepe Bishop Sleeve Top,Fitted Tops,Vivo,V0925010,3500.0,763.4,78.2,2026-01-31,150,Tier 1 (3M) — 10-15%,3063,75.1,2.0,6125
+TRM/Stock,Kenya,V0825060BLAS,Vivo Alma Short Sleeve Mini Bodycon,Short & Mini Dresses,Vivo,V0825060,3500.0,523.9000000000001,85.0,2026-03-02,120,Tier 1 (3M) — 10-15%,3063,82.9,2.0,6125
+WHFIN/Stock,Kenya,V0525075NAV2X,Vivo Basic Round Neck Maxi Dress,Maxi Dresses,Vivo,V0525075,6900.0,2006.0,70.9,2026-03-09,113,Tier 1 (3M) — 10-15%,6038,66.8,1.0,6038
+ACHO/Stock,Kenya,V0525075NAV2X,Vivo Basic Round Neck Maxi Dress,Maxi Dresses,Vivo,V0525075,6900.0,2006.0,70.9,2026-03-09,113,Tier 1 (3M) — 10-15%,6038,66.8,1.0,6038
+CITYM/Stock,Kenya,V0525075NAV2X,Vivo Basic Round Neck Maxi Dress,Maxi Dresses,Vivo,V0525075,6900.0,2006.0,70.9,2026-03-09,113,Tier 1 (3M) — 10-15%,6038,66.8,1.0,6038
+MERU/Stock,Kenya,V0923047NAVYS,Vivo Ava Tent Flounce Maxi Dress,Maxi Dresses,Vivo,V0923047,6900.0,2303.78,66.6,2026-01-29,152,Tier 1 (3M) — 10-15%,6038,61.8,1.0,6038
+MERU/Stock,Kenya,V0923047NAVYM,Vivo Ava Tent Flounce Maxi Dress,Maxi Dresses,Vivo,V0923047,6900.0,2303.78,66.6,2026-01-13,168,Tier 1 (3M) — 10-15%,6038,61.8,1.0,6038
+MERU/Stock,Kenya,V0923047NAVY1X,Vivo Ava Tent Flounce Maxi Dress,Maxi Dresses,Vivo,V0923047,6900.0,2303.78,66.6,2026-01-05,176,Tier 1 (3M) — 10-15%,6038,61.8,1.0,6038
+WHFIN/Stock,Kenya,V0625050NAVM,Vivo Iyana Shirred Waist Jumpsuit,Jumpsuits & Playsuits,Vivo,V0625050,6900.0,2561.71,62.9,2026-02-03,147,Tier 1 (3M) — 10-15%,6038,57.6,1.0,6038
+IMAAR/Stock,Kenya,V1123113PR12L,Vivo Hanabi Tent Maxi Dress,Maxi Dresses,Vivo,V1123113,6900.0,2476.43,64.1,2026-02-14,136,Tier 1 (3M) — 10-15%,6038,59.0,1.0,6038
+WHFIN/Stock,Kenya,V0624095NAVL,Vivo Hamle Side Twist Tie Bodycon,Knee Length Dresses,Vivo,V0624095,3400.0,1644.66,51.6,2026-02-18,132,Tier 1 (3M) — 10-15%,2975,44.7,2.0,5950
+JUNCT/Stock,Kenya,V0825025BLA2X,Vivo Anavi Maxi Dress In Jersey,Maxi Dresses,Vivo,V0825025,6500.0,1930.7000000000003,70.3,2026-03-10,112,Tier 1 (3M) — 10-15%,5688,66.1,1.0,5688
+JUNCT/Stock,Kenya,V0825025WHIL,Vivo Anavi Maxi Dress In Jersey,Maxi Dresses,Vivo,V0825025,6500.0,1930.7000000000003,70.3,2026-02-11,139,Tier 1 (3M) — 10-15%,5688,66.1,1.0,5688
+ACHO/Stock,Kenya,V0625047PR2M/L,Vivo Iyana Maxi Cover Up,Maxi Dresses,Vivo,V0625047,6500.0,2684.1899999999996,58.7,2026-03-29,93,Tier 1 (3M) — 10-15%,5688,52.8,1.0,5688
+IMAAR/Stock,Kenya,V0221005PR20S,Vivo Bissa Reversible Maxi Dress,Maxi Dresses,Vivo,V0221005,6500.0,1897.65,70.8,2026-02-15,135,Tier 1 (3M) — 10-15%,5688,66.6,1.0,5688
+JUNCT/Stock,Kenya,V0625047NAFUXS/S,Vivo Iyana Maxi Cover Up,Maxi Dresses,Vivo,V0625047,6500.0,2684.19,58.7,2026-02-05,145,Tier 1 (3M) — 10-15%,5688,52.8,1.0,5688
+KISM/Stock,Kenya,V0625047BLREXS/S,Vivo Iyana Maxi Cover Up,Maxi Dresses,Vivo,V0625047,6500.0,2684.189999999999,58.7,2026-03-24,98,Tier 1 (3M) — 10-15%,5688,52.8,1.0,5688
+WHFIN/Stock,Kenya,V0625047NAFU1X/2X,Vivo Iyana Maxi Cover Up,Maxi Dresses,Vivo,V0625047,6500.0,2684.1900000000005,58.7,2026-03-09,113,Tier 1 (3M) — 10-15%,5688,52.8,1.0,5688
+WHFIN/Stock,Kenya,V0824085PRF,Vivo Chidii Tunic Dress With Frills,Short & Mini Dresses,Vivo,V0824085,6500.0,1716.9100000000005,73.6,2026-03-10,112,Tier 1 (3M) — 10-15%,5688,69.8,1.0,5688
+MERU/Stock,Kenya,V0622019NAV2X,Vivo Basic Sleeveless Tent Maxi Dress,Maxi Dresses,Vivo,V0622019,6500.0,1871.37,71.2,2026-02-11,139,Tier 1 (3M) — 10-15%,5688,67.1,1.0,5688
+WHFIN/Stock,Kenya,V0825041PR5XS/S,Vivo Ari Sweater,Waterfalls & Kimonos,Vivo,V0725027,3150.0,1506.18,52.2,2026-01-14,167,Tier 1 (3M) — 10-15%,2756,45.4,2.0,5513
+MOIAV/Stock,Kenya,V1025055LOLI1X,Vivo Iyana Shirred waist Maxi Dress,Maxi Dresses,Vivo,V1025055,6200.0,1878.67,69.7,2026-03-27,95,Tier 1 (3M) — 10-15%,5425,65.4,1.0,5425
+IMAAR/Stock,Kenya,V1025055BEI2X,Vivo Iyana Shirred waist Maxi Dress,Maxi Dresses,Vivo,V1025055,6200.0,1878.6700000000012,69.7,2026-03-05,117,Tier 1 (3M) — 10-15%,5425,65.4,1.0,5425
+WHFIN/Stock,Kenya,V1025055MARM,Vivo Iyana Shirred waist Maxi Dress,Maxi Dresses,Vivo,V1025055,6200.0,1878.67,69.7,2026-03-10,112,Tier 1 (3M) — 10-15%,5425,65.4,1.0,5425
+TWORV/Stock,Kenya,V0524179SEGS,Vivo Basic Chiffon Bishop Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524179,2950.0,620.79,79.0,2026-02-21,129,Tier 1 (3M) — 10-15%,2581,76.0,2.0,5163
+WHFIN/Stock,Kenya,V0524179SEGS,Vivo Basic Chiffon Bishop Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524179,2950.0,620.79,79.0,2026-02-21,129,Tier 1 (3M) — 10-15%,2581,76.0,2.0,5163
+WHFIN/Stock,Kenya,V0625059WHIS,Vivo Aleri Trench Coat Dress,Knee Length Dresses,Vivo,V0625059,5900.0,2176.57,63.1,2026-03-04,118,Tier 1 (3M) — 10-15%,5163,57.8,1.0,5163
+TRM/Stock,Kenya,V0625059RUSM,Vivo Aleri Trench Coat Dress,Knee Length Dresses,Vivo,V0625059,5900.0,2176.5700000000006,63.1,2026-03-20,102,Tier 1 (3M) — 10-15%,5163,57.8,1.0,5163
+HUB/Stock,Kenya,V0625030BLAM,Vivo Aleri Coat,Jackets & Coats,Vivo,V0625030,5900.0,2946.78,50.1,2026-03-03,119,Tier 1 (3M) — 10-15%,5163,42.9,1.0,5163
+WHFIN/Stock,Kenya,V0625059BLAL,Vivo Aleri Trench Coat Dress,Knee Length Dresses,Vivo,V0625059,5900.0,2176.57,63.1,2026-01-10,171,Tier 1 (3M) — 10-15%,5163,57.8,1.0,5163
+JUNCT/Stock,Kenya,V0725025BLA1X/2X,Vivo Cap Sleeve Salma Maxi Dress,Maxi Dresses,Vivo,V0725025,5900.0,1278.8899999999999,78.3,2026-03-23,99,Tier 1 (3M) — 10-15%,5163,75.2,1.0,5163
+JUNCT/Stock,Kenya,V1025034YELL2X,Vivo Lulu Contrast Stitch Tent Dress in Cotton,Knee Length Dresses,Vivo,V1025034,5900.0,1973.1,66.6,2026-02-10,140,Tier 1 (3M) — 10-15%,5163,61.8,1.0,5163
+CITYM/Stock,Kenya,V0725025BLA1X/2X,Vivo Cap Sleeve Salma Maxi Dress,Maxi Dresses,Vivo,V0725025,5900.0,1278.8899999999999,78.3,2026-03-23,99,Tier 1 (3M) — 10-15%,5163,75.2,1.0,5163
+TRM/Stock,Kenya,V0625059MARL,Vivo Aleri Trench Coat Dress,Knee Length Dresses,Vivo,V0625059,5900.0,2176.57,63.1,2026-01-26,155,Tier 1 (3M) — 10-15%,5163,57.8,1.0,5163
+WHFIN/Stock,Kenya,V0724104DGNS,Vivo Hadiya Wrap Dress,Knee Length Dresses,Vivo,V0724104,5900.0,1861.3,68.5,2026-03-14,108,Tier 1 (3M) — 10-15%,5163,63.9,1.0,5163
+JUNCT/Stock,Kenya,V0625030BURS,Vivo Aleri Coat,Jackets & Coats,Vivo,V0625030,5900.0,2946.78,50.1,2026-03-26,96,Tier 1 (3M) — 10-15%,5163,42.9,1.0,5163
+MERU/Stock,Kenya,V1020048HUNXL,Vivo Basic 3/4 Sleeved Double Layered Bodysuit,Bodysuits,Vivo,V1020048,2900.0,871.7800000000001,69.9,2026-03-17,105,Tier 1 (3M) — 10-15%,2538,65.6,2.0,5075
+WHFIN/Stock,Kenya,V1123047HPINL,Vivo Hanabi Wrap Maxi Dress,Maxi Dresses,Vivo,V1123047,5750.0,809.0,85.9,2026-01-10,171,Tier 1 (3M) — 10-15%,5031,83.9,1.0,5031
+WHFIN/Stock,Kenya,V1123047HPIN1X,Vivo Hanabi Wrap Maxi Dress,Maxi Dresses,Vivo,V1123047,5750.0,809.0,85.9,2026-02-25,125,Tier 1 (3M) — 10-15%,5031,83.9,1.0,5031
+IMAAR/Stock,Kenya,V0719290HGN1X/2X,Vivo Basic Extra Long Lily Waterfall,Waterfalls & Kimonos,Vivo,V0719290,5500.0,1613.11,70.7,2026-03-24,98,Tier 1 (3M) — 10-15%,4813,66.5,1.0,4813
+MOIAV/Stock,Kenya,V0322110REDM,Vivo Dalia Sleeveless Gathered Tent Dress,Knee Length Dresses,Vivo,V0322110,5500.0,1410.49,74.4,2026-03-18,104,Tier 1 (3M) — 10-15%,4813,70.7,1.0,4813
+WHFIN/Stock,Kenya,V0625032BLAL,Vivo Aleri A-Line Pleated Dress,Knee Length Dresses,Vivo,V0625032,5500.0,1588.53,71.1,2026-03-08,114,Tier 1 (3M) — 10-15%,4813,67.0,1.0,4813
+MERU/Stock,Kenya,V0223225PR24F,Vivo Basic Open Kaftan,Waterfalls & Kimonos,Vivo,V0223225,5500.0,1357.76,75.3,2026-03-05,117,Tier 1 (3M) — 10-15%,4813,71.8,1.0,4813
+SARIT/Stock,Kenya,V0121168WHIM,Vivo Basic Cap Sleeve Tent Knee Length Dress,Knee Length Dresses,Vivo,V0121168,5500.0,1686.08,69.3,2026-03-07,115,Tier 1 (3M) — 10-15%,4813,65.0,1.0,4813
+MERU/Stock,Kenya,V0121168WHIM,Vivo Basic Cap Sleeve Tent Knee Length Dress,Knee Length Dresses,Vivo,V0121168,5500.0,1686.08,69.3,2026-03-07,115,Tier 1 (3M) — 10-15%,4813,65.0,1.0,4813
+VMKT/Stock,Kenya,V0126037LILM,Vivo Basic Knee Length Dress In Chiffon,Knee Length Dresses,Vivo,V0126037,5500.0,1224.1600000000005,77.7,2026-03-21,101,Tier 1 (3M) — 10-15%,4813,74.6,1.0,4813
+GCITY/Stock,Kenya,V0126037LILM,Vivo Basic Knee Length Dress In Chiffon,Knee Length Dresses,Vivo,V0126037,5500.0,1224.1600000000005,77.7,2026-03-21,101,Tier 1 (3M) — 10-15%,4813,74.6,1.0,4813
+MOIAV/Stock,Kenya,V1024065RPI1X,Vivo Dalia Cap Sleeve Gathered Tent Dress,Knee Length Dresses,Vivo,V1024065,5500.0,2005.07,63.5,2026-01-20,161,Tier 1 (3M) — 10-15%,4813,58.3,1.0,4813
+WHFIN/Stock,Kenya,V1024065RPIM,Vivo Dalia Cap Sleeve Gathered Tent Dress,Knee Length Dresses,Vivo,V1024065,5500.0,2005.07,63.5,2026-02-23,127,Tier 1 (3M) — 10-15%,4813,58.3,1.0,4813
+GALLE/Stock,Kenya,V1022057NABS,Vivo Basic Maternity Leggings,Full Length Pants,Vivo,V1022057,2750.0,873.5099999999999,68.2,2026-02-14,136,Tier 1 (3M) — 10-15%,2406,63.7,2.0,4813
+GCITY/Stock,Kenya,V0322110PR232X,Vivo Dalia Sleeveless Gathered Tent Dress,Knee Length Dresses,Vivo,V0322110,5500.0,1645.2000000000005,70.1,2026-03-06,116,Tier 1 (3M) — 10-15%,4813,65.8,1.0,4813
+WHFIN/Stock,Kenya,V1024065PR5L,Vivo Dalia Cap Sleeve Gathered Tent Dress,Knee Length Dresses,Vivo,V1024065,5500.0,1635.25,70.3,2026-01-26,155,Tier 1 (3M) — 10-15%,4813,66.0,1.0,4813
+WHFIN/Stock,Kenya,V1223034PR11S,Vivo Asha Sleeveless Knee Length Dress,Knee Length Dresses,Vivo,V1223034,5500.0,1434.48,73.9,2026-03-14,108,Tier 1 (3M) — 10-15%,4813,70.2,1.0,4813
+WHFIN/Stock,Kenya,V1119093NAB1X,Vivo Basic Kena Tent Maxi Dress,Maxi Dresses,Vivo,V1119093,5250.0,2030.4399999999998,61.3,2026-03-20,102,Tier 1 (3M) — 10-15%,4594,55.8,1.0,4594
+JUNCT/Stock,Kenya,V0723043FUSM,Vivo Basic Val Long Sleeve Top,Midriff & Crop Tops,Vivo,V0723043,2550.0,688.79,73.0,2026-03-19,103,Tier 1 (3M) — 10-15%,2231,69.1,2.0,4463
+WHFIN/Stock,Kenya,V0723043LIMS,Vivo Basic Val Long Sleeve Top,Midriff & Crop Tops,Vivo,V0723043,2550.0,688.79,73.0,2026-02-26,124,Tier 1 (3M) — 10-15%,2231,69.1,2.0,4463
+WHFIN/Stock,Kenya,V0925030WHIS,Vivo Anavi Runched Tank Top,T-shirts & Tank Tops,Vivo,V0925030,2500.0,572.65,77.1,2026-02-25,125,Tier 1 (3M) — 10-15%,2188,73.8,2.0,4375
+MOIAV/Stock,Kenya,V1121090NAB1X,Vivo Basic Capri Leggings,Leggings,Vivo,V1121090,2500.0,683.31,72.7,2026-01-25,156,Tier 1 (3M) — 10-15%,2188,68.8,2.0,4375
+WHFIN/Stock,Kenya,V0821064DOLL,Vivo Basic Cap Sleeve Top In Crepe,Fitted Tops,Vivo,V0821064,2500.0,879.46,64.8,2026-03-23,99,Tier 1 (3M) — 10-15%,2188,59.8,2.0,4375
+MERU/Stock,Kenya,V0925030ORAS,Vivo Anavi Runched Tank Top,T-shirts & Tank Tops,Vivo,V0925030,2500.0,572.6499999999999,77.1,2026-03-21,101,Tier 1 (3M) — 10-15%,2188,73.8,2.0,4375
+WHFIN/Stock,Kenya,V0925030WHI1X,Vivo Anavi Runched Tank Top,T-shirts & Tank Tops,Vivo,V0925030,2500.0,572.65,77.1,2026-02-02,148,Tier 1 (3M) — 10-15%,2188,73.8,2.0,4375
+ELDOR/Stock,Kenya,V0620079DAT1X,Vivo Basic Trench Coat,Jackets & Coats,Vivo,V0620079,4950.0,2724.5700000000006,45.0,2026-03-21,101,Tier 1 (3M) — 10-15%,4331,37.1,1.0,4331
+TRM/Stock,Kenya,V0620079DAT1X,Vivo Basic Trench Coat,Jackets & Coats,Vivo,V0620079,4950.0,2724.5700000000006,45.0,2026-03-21,101,Tier 1 (3M) — 10-15%,4331,37.1,1.0,4331
+ACHO/Stock,Kenya,V0620079BUR2X,Vivo Basic Trench Coat,Jackets & Coats,Vivo,V0620079,4950.0,2724.57,45.0,2026-03-29,93,Tier 1 (3M) — 10-15%,4331,37.1,1.0,4331
+ACHO/Stock,Kenya,V0822022RUS1X,Vivo Basic Sleeveless Tent Dress,Knee Length Dresses,Vivo,V0822022,4900.0,1476.52,69.9,2026-02-09,141,Tier 1 (3M) — 10-15%,4288,65.6,1.0,4288
+TWORV/Stock,Kenya,V0223139DTEAM,Vivo Basic Izzy Satin Bishop Sleeve Top,Fitted Tops,Vivo,V0223139,2450.0,994.14,59.4,2026-01-10,171,Tier 1 (3M) — 10-15%,2144,53.6,2.0,4288
+ACHO/Stock,Kenya,V0725022DMUL,Vivo Essi Wide Leg Pants,Full Length Pants,Vivo,V0725022,4900.0,1277.64,73.9,2026-03-02,120,Tier 1 (3M) — 10-15%,4288,70.2,1.0,4288
+WHFIN/Stock,Kenya,V0725022DOLS,Vivo Essi Wide Leg Pants,Full Length Pants,Vivo,V0725022,4900.0,1277.64,73.9,2026-02-20,130,Tier 1 (3M) — 10-15%,4288,70.2,1.0,4288
+TWORV/Stock,Kenya,V0125045PR6M/L,Vivo Isabi Sleeveless Kimono,Waterfalls & Kimonos,Vivo,V0125045,4900.0,1374.3200000000002,72.0,2026-03-28,94,Tier 1 (3M) — 10-15%,4288,67.9,1.0,4288
+WHFIN/Stock,Kenya,V0824086DRDM,Vivo Chidii Wide Leg Pants,Full Length Pants,Vivo,V0824086,4900.0,1676.6199999999997,65.8,2026-03-25,97,Tier 1 (3M) — 10-15%,4288,60.9,1.0,4288
+WHFIN/Stock,Kenya,V0822022PR281X,Vivo Basic Sleeveless Tent Dress,Knee Length Dresses,Vivo,V0822022,4900.0,1476.52,69.9,2026-01-22,159,Tier 1 (3M) — 10-15%,4288,65.6,1.0,4288
+TRM/Stock,Kenya,V0625041NAVM,Vivo Iyana Wide Leg Pants,Full Length Pants,Vivo,V0625041,4900.0,1249.35,74.5,2026-03-28,94,Tier 1 (3M) — 10-15%,4288,70.9,1.0,4288
+TMALL/Stock,Kenya,V0819098RED1X,Vivo Basic Kena Tent Knee Length Dress,Knee Length Dresses,Vivo,V0819098,4900.0,1424.81,70.9,2026-03-03,119,Tier 1 (3M) — 10-15%,4288,66.8,1.0,4288
+MERU/Stock,Kenya,V0525049MAR1X,Vivo Diella Pleated Dress,Knee Length Dresses,Vivo,V0525049,4900.0,1525.6500000000003,68.9,2026-03-05,117,Tier 1 (3M) — 10-15%,4288,64.4,1.0,4288
+WHFIN/Stock,Kenya,V0725022DMUS,Vivo Essi Wide Leg Pants,Full Length Pants,Vivo,V0725022,4900.0,1277.64,73.9,2026-02-27,123,Tier 1 (3M) — 10-15%,4288,70.2,1.0,4288
+MNS/Stock,Kenya,V0525075TEAS,Vivo Basic Round Neck Maxi Dress,Maxi Dresses,Vivo,V0525075,4850.0,2332.9,51.9,2026-03-28,94,Tier 1 (3M) — 10-15%,4244,45.0,1.0,4244
+MERU/Stock,Kenya,V1223032PR171X,Vivo Asha Sleeveless Maxi Dress,Maxi Dresses,Vivo,V1223032,4850.0,2004.13,58.7,2026-01-11,170,Tier 1 (3M) — 10-15%,4244,52.8,1.0,4244
+GCITY/Stock,Kenya,V0725003PR3S,Vivo Hadiya Maxi Dress,Maxi Dresses,Vivo,V0725003,4850.0,5200.69,-7.2,2026-02-06,144,Tier 1 (3M) — 10-15%,4244,-22.5,1.0,4244
+MSACB/Stock,Kenya,V0225005PR21X,Vivo Ayah Shirred Neck Tent Maxi Dress,Maxi Dresses,Vivo,V0225005,4850.0,2107.63,56.5,2026-02-06,144,Tier 1 (3M) — 10-15%,4244,50.3,1.0,4244
+NAKUR/Stock,Kenya,V0923047PR12S,Vivo Ava Tent Flounce Maxi Dress,Maxi Dresses,Vivo,V0923047,4850.0,2303.78,52.5,2026-02-13,137,Tier 1 (3M) — 10-15%,4244,45.7,1.0,4244
+WHFIN/Stock,Kenya,V0324069OWH3X,Vivo Basic Sleeveless Bodysuit,Bodysuits,Vivo,V0324069,950.0,815.56,14.2,2026-04-01,90,Tier 1 (3M) — 10-15%,831,1.9,5.0,4156
+WHFIN/Stock,Kenya,V0921140PR10XS/S,Vivo Alek 3/4 Sleeve A-Line Kimono,Waterfalls & Kimonos,Vivo,V0921140,4550.0,1443.48,68.3,2026-01-28,153,Tier 1 (3M) — 10-15%,3981,63.7,1.0,3981
+WHFIN/Stock,Kenya,V0824085BLAF,Vivo Chidii Tunic Dress With Frills,Short & Mini Dresses,Vivo,V0824085,4550.0,2947.5399999999995,35.2,2026-03-01,121,Tier 1 (3M) — 10-15%,3981,26.0,1.0,3981
+MERU/Stock,Kenya,V1025012ORA1X/2X,Vivo Anavi Cascade Waterfall,Waterfalls & Kimonos,Vivo,V1025012,4500.0,1350.0899999999997,70.0,2026-02-18,132,Tier 1 (3M) — 10-15%,3938,65.7,1.0,3938
+MOIAV/Stock,Kenya,V0121119PR70S,Vivo Basic Satin Bishop Sleeved Top,Fitted Tops,Vivo,V0121119,2250.0,1221.78,45.7,2026-01-26,155,Tier 1 (3M) — 10-15%,1969,37.9,2.0,3938
+WHFIN/Stock,Kenya,V0924052DAPS,Vivo Hari Wide Leg Pants,Full Length Pants,Vivo,V0924052,4500.0,1316.79,70.7,2026-03-03,119,Tier 1 (3M) — 10-15%,3938,66.6,1.0,3938
+WHFIN/Stock,Kenya,V0822019PR35M,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,4500.0,960.25,78.7,2026-01-25,156,Tier 1 (3M) — 10-15%,3938,75.6,1.0,3938
+IMAAR/Stock,Kenya,V0822019PR37L,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,2250.0,960.25,57.3,2026-01-14,167,Tier 1 (3M) — 10-15%,1969,51.2,2.0,3938
+KILEL/Stock,Kenya,V0321017NABL,Vivo Basic Sleeveless Sienna Waterfall,Waterfalls & Kimonos,Vivo,V0321017,2250.0,557.9700000000001,75.2,2026-03-23,99,Tier 1 (3M) — 10-15%,1969,71.7,2.0,3938
+ACHO/Stock,Kenya,V0126019PR22X,Vivo Liora Drawstring Pants In Satin,Full Length Pants,Vivo,V0126019,4500.0,1050.56,76.7,2026-03-11,111,Tier 1 (3M) — 10-15%,3938,73.3,1.0,3938
+WHFIN/Stock,Kenya,V0822019BLAM,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,4500.0,694.54,84.6,2026-03-03,119,Tier 1 (3M) — 10-15%,3938,82.4,1.0,3938
+TWORV/Stock,Kenya,V0126019PR32X,Vivo Liora Drawstring Pants In Satin,Full Length Pants,Vivo,V0126019,4500.0,1050.56,76.7,2026-03-25,97,Tier 1 (3M) — 10-15%,3938,73.3,1.0,3938
+WHFIN/Stock,Kenya,V0126019PR42X,Vivo Liora Drawstring Pants In Satin,Full Length Pants,Vivo,V0126019,4500.0,1050.56,76.7,2026-03-09,113,Tier 1 (3M) — 10-15%,3938,73.3,1.0,3938
+SARIT/Stock,Kenya,V0725042OLI2X,Vivo Aleri Front Slit Sheath Dress,Midi & Capri Dresses,Vivo,V0725042,4500.0,761.3399999999999,83.1,2026-02-20,130,Tier 1 (3M) — 10-15%,3938,80.7,1.0,3938
+SARIT/Stock,Kenya,V0819003BURXS,Vivo Basic Panelled Leisure Pants,Full Length Pants,Vivo,V0819003,4500.0,1230.28,72.7,2026-01-20,161,Tier 1 (3M) — 10-15%,3938,68.8,1.0,3938
+KISM/Stock,Kenya,V0819003DAT2X,Vivo Basic Panelled Leisure Pants,Full Length Pants,Vivo,V0819003,4500.0,1377.5199999999998,69.4,2026-01-13,168,Tier 1 (3M) — 10-15%,3938,65.0,1.0,3938
+TRM/Stock,Kenya,V0725042HUNS,Vivo Aleri Front Slit Sheath Dress,Midi & Capri Dresses,Vivo,V0725042,4500.0,761.3399999999998,83.1,2026-02-05,145,Tier 1 (3M) — 10-15%,3938,80.7,1.0,3938
+SIGNA/Stock,Kenya,V0819003DAT2X,Vivo Basic Panelled Leisure Pants,Full Length Pants,Vivo,V0819003,4500.0,1377.5199999999998,69.4,2026-01-13,168,Tier 1 (3M) — 10-15%,3938,65.0,1.0,3938
+TRM/Stock,Kenya,V1124074MULM,Vivo Ayla Crepe Pants,Full Length Pants,Vivo,V1124074,4500.0,1351.55,70.0,2026-01-19,162,Tier 1 (3M) — 10-15%,3938,65.7,1.0,3938
+SARIT/Stock,Kenya,V0725042OLI1X,Vivo Aleri Front Slit Sheath Dress,Midi & Capri Dresses,Vivo,V0725042,4500.0,761.34,83.1,2026-02-23,127,Tier 1 (3M) — 10-15%,3938,80.7,1.0,3938
+WHFIN/Stock,Kenya,V0822019RORA1X,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,4500.0,960.25,78.7,2026-02-14,136,Tier 1 (3M) — 10-15%,3938,75.6,1.0,3938
+TWORV/Stock,Kenya,V0225002PR4L,Vivo Ayah Bishop Sleeve Mock Neck Top,Fitted Tops,Vivo,V0225002,4500.0,1155.12,74.3,2026-03-28,94,Tier 1 (3M) — 10-15%,3938,70.7,1.0,3938
+TRM/Stock,Kenya,V0525064NAVXS,Vivo Denim Straight Pants,Full Length Pants,Vivo,V0525064,4500.0,1341.79,70.2,2026-02-03,147,Tier 1 (3M) — 10-15%,3938,65.9,1.0,3938
+CITYM/Stock,Kenya,V0525064NAVXS,Vivo Denim Straight Pants,Full Length Pants,Vivo,V0525064,4500.0,1341.79,70.2,2026-02-03,147,Tier 1 (3M) — 10-15%,3938,65.9,1.0,3938
+SIGNA/Stock,Kenya,V0525064NAVXS,Vivo Denim Straight Pants,Full Length Pants,Vivo,V0525064,4500.0,1341.79,70.2,2026-02-03,147,Tier 1 (3M) — 10-15%,3938,65.9,1.0,3938
+WHFIN/Stock,Kenya,V0425056BLAS,Vivo Diella 3/4 Sleeve A-Line Dress,Knee Length Dresses,Vivo,V0425056,4500.0,1005.4100000000001,77.7,2026-03-14,108,Tier 1 (3M) — 10-15%,3938,74.5,1.0,3938
+ACHO/Stock,Kenya,V0725042HUNL,Vivo Aleri Front Slit Sheath Dress,Midi & Capri Dresses,Vivo,V0725042,4500.0,761.34,83.1,2026-02-24,126,Tier 1 (3M) — 10-15%,3938,80.7,1.0,3938
+WHFIN/Stock,Kenya,V1124074MULS,Vivo Ayla Crepe Pants,Full Length Pants,Vivo,V1124074,4500.0,1351.55,70.0,2026-02-13,137,Tier 1 (3M) — 10-15%,3938,65.7,1.0,3938
+GALLE/Stock,Kenya,V1124074PR6M,Vivo Ayla Crepe Pants,Full Length Pants,Vivo,V1124074,4500.0,1308.69,70.9,2026-03-11,111,Tier 1 (3M) — 10-15%,3938,66.8,1.0,3938
+CITYM/Stock,Kenya,V0719105NABS,Vivo Basic A-line Maxi Skirt,Maxi Skirts,Vivo,V0719105,4250.0,801.98,81.1,2026-02-16,134,Tier 1 (3M) — 10-15%,3719,78.4,1.0,3719
+JUNCT/Stock,Kenya,V0719105NABL,Vivo Basic A-line Maxi Skirt,Maxi Skirts,Vivo,V0719105,4250.0,801.98,81.1,2026-03-02,120,Tier 1 (3M) — 10-15%,3719,78.4,1.0,3719
+CITYM/Stock,Kenya,V0719105NAB2XL,Vivo Basic A-line Maxi Skirt,Maxi Skirts,Vivo,V0719105,4250.0,801.98,81.1,2026-01-28,153,Tier 1 (3M) — 10-15%,3719,78.4,1.0,3719
+WHFIN/Stock,Kenya,V0621001BURS,Vivo J.O V-Neck Sheath Dress,Knee Length Dresses,Vivo,V0621001,4250.0,1465.5199999999998,65.5,2026-03-26,96,Tier 1 (3M) — 10-15%,3719,60.6,1.0,3719
+MSACB/Stock,Kenya,V0824081GRNXS/S,Vivo Chidii Off Shoulder Maxi Dress,Maxi Dresses,Vivo,V0824081,4150.0,3237.8799999999997,22.0,2026-03-10,112,Tier 1 (3M) — 10-15%,3631,10.8,1.0,3631
+MNS/Stock,Kenya,V0724104PR6L,Vivo Hadiya Wrap Dress,Knee Length Dresses,Vivo,V0724104,4150.0,1861.3,55.1,2026-02-27,123,Tier 1 (3M) — 10-15%,3631,48.7,1.0,3631
+TRM/Stock,Kenya,V0724104PR8L,Vivo Hadiya Wrap Dress,Knee Length Dresses,Vivo,V0724104,4150.0,1861.3,55.1,2026-02-04,146,Tier 1 (3M) — 10-15%,3631,48.7,1.0,3631
+MOIAV/Stock,Kenya,V0724104PR6S,Vivo Hadiya Wrap Dress,Knee Length Dresses,Vivo,V0724104,4150.0,1861.3,55.1,2026-01-15,166,Tier 1 (3M) — 10-15%,3631,48.7,1.0,3631
+ACHO/Stock,Kenya,V0625048PR6M,Vivo Iyana Knee Length Bubble Dress,Short & Mini Dresses,Vivo,V0625048,4150.0,2023.5700000000002,51.2,2026-02-22,128,Tier 1 (3M) — 10-15%,3631,44.3,1.0,3631
+MERU/Stock,Kenya,V1223033ODEL,Vivo Asha Drop Shoulder Knee Length Dress,Knee Length Dresses,Vivo,V1223033,4050.0,1963.6899999999998,51.5,2026-01-02,179,Tier 1 (3M) — 10-15%,3544,44.6,1.0,3544
+ZOYA/Stock,Kenya,V0625043BLAL,Vivo Iyana Bubble Midi Skirt,Midi & Capri Skirts,Vivo,V0625043,4050.0,1843.68,54.5,2026-01-29,152,Tier 1 (3M) — 10-15%,3544,48.0,1.0,3544
+TWORV/Stock,Kenya,V1025044NAVS,Vivo Chela Pants in Jersey,Full Length Pants,Vivo,V1025044,3900.0,911.6299999999998,76.6,2026-01-30,151,Tier 1 (3M) — 10-15%,3413,73.3,1.0,3413
+ZOYA/Stock,Kenya,V0325069WHITL,Vivo Analo Wide Leg Pants,Full Length Pants,Vivo,V0325069,3900.0,978.37,74.9,2026-02-25,125,Tier 1 (3M) — 10-15%,3413,71.3,1.0,3413
+WHFIN/Stock,Kenya,V0423006SGRXS/S,Vivo Bana Batwing Top,T-shirts & Tank Tops,Vivo,V0423006,3900.0,679.64,82.6,2026-02-26,124,Tier 1 (3M) — 10-15%,3413,80.1,1.0,3413
+TWORV/Stock,Kenya,V0320037MARS,Vivo Basic 3/4 Sleeve Leila Bodycon Dress,Knee Length Dresses,Vivo,V0320037,3900.0,1015.0,74.0,2026-02-27,123,Tier 1 (3M) — 10-15%,3413,70.3,1.0,3413
+MERU/Stock,Kenya,V0320037DGN1X,Vivo Basic 3/4 Sleeve Leila Bodycon Dress,Knee Length Dresses,Vivo,V0320037,3900.0,1102.09,71.7,2026-03-07,115,Tier 1 (3M) — 10-15%,3413,67.7,1.0,3413
+MERU/Stock,Kenya,V0320037BLAM,Vivo Basic 3/4 Sleeve Leila Bodycon Dress,Knee Length Dresses,Vivo,V0320037,3900.0,1102.0899999999997,71.7,2026-03-21,101,Tier 1 (3M) — 10-15%,3413,67.7,1.0,3413
+CITYM/Stock,Kenya,V0925065SGN1X,Vivo Cotton 3/4 Sleeve Wrap Top,Loose Tops,Vivo,V0925065,3900.0,959.04,75.4,2026-02-15,135,Tier 1 (3M) — 10-15%,3413,71.9,1.0,3413
+CITYM/Stock,Kenya,V0122078NAV1X,Vivo Basic Straight Leg Pants,Full Length Pants,Vivo,V0122078,3900.0,912.29,76.6,2026-03-05,117,Tier 1 (3M) — 10-15%,3413,73.3,1.0,3413
+WHFIN/Stock,Kenya,V0225018NAVXS/S,Vivo Chela Sleeveless Waterfall,Waterfalls & Kimonos,Vivo,V0225018,3900.0,767.6,80.3,2026-03-11,111,Tier 1 (3M) — 10-15%,3413,77.5,1.0,3413
+WHFIN/Stock,Kenya,V0225018MARXS/S,Vivo Chela Sleeveless Waterfall,Waterfalls & Kimonos,Vivo,V0225018,3900.0,767.6,80.3,2026-03-13,109,Tier 1 (3M) — 10-15%,3413,77.5,1.0,3413
+WHFIN/Stock,Kenya,V0225018MAR1X/2X,Vivo Chela Sleeveless Waterfall,Waterfalls & Kimonos,Vivo,V0225018,3900.0,767.6,80.3,2026-01-19,162,Tier 1 (3M) — 10-15%,3413,77.5,1.0,3413
+WHFIN/Stock,Kenya,V1025044NAVS,Vivo Chela Pants in Jersey,Full Length Pants,Vivo,V1025044,3900.0,911.6299999999998,76.6,2026-01-30,151,Tier 1 (3M) — 10-15%,3413,73.3,1.0,3413
+MERU/Stock,Kenya,V0925065PINM,Vivo Cotton 3/4 Sleeve Wrap Top,Loose Tops,Vivo,V0925065,3900.0,959.04,75.4,2026-02-26,124,Tier 1 (3M) — 10-15%,3413,71.9,1.0,3413
+CITYM/Stock,Kenya,V0925065PINM,Vivo Cotton 3/4 Sleeve Wrap Top,Loose Tops,Vivo,V0925065,3900.0,959.04,75.4,2026-02-26,124,Tier 1 (3M) — 10-15%,3413,71.9,1.0,3413
+JUNCT/Stock,Kenya,V1025044FUSS,Vivo Chela Pants in Jersey,Full Length Pants,Vivo,V1025044,3900.0,911.6299999999997,76.6,2026-03-13,109,Tier 1 (3M) — 10-15%,3413,73.3,1.0,3413
+SARIT/Stock,Kenya,V1025044FUSS,Vivo Chela Pants in Jersey,Full Length Pants,Vivo,V1025044,3900.0,911.6299999999997,76.6,2026-03-13,109,Tier 1 (3M) — 10-15%,3413,73.3,1.0,3413
+YAYA/Stock,Kenya,V1025044FUSS,Vivo Chela Pants in Jersey,Full Length Pants,Vivo,V1025044,3900.0,911.6299999999997,76.6,2026-03-13,109,Tier 1 (3M) — 10-15%,3413,73.3,1.0,3413
+WHFIN/Stock,Kenya,V0925065PINL,Vivo Cotton 3/4 Sleeve Wrap Top,Loose Tops,Vivo,V0925065,3900.0,959.04,75.4,2026-03-28,94,Tier 1 (3M) — 10-15%,3413,71.9,1.0,3413
+CITYM/Stock,Kenya,V0925065PINL,Vivo Cotton 3/4 Sleeve Wrap Top,Loose Tops,Vivo,V0925065,3900.0,959.04,75.4,2026-03-28,94,Tier 1 (3M) — 10-15%,3413,71.9,1.0,3413
+WHFIN/Stock,Kenya,V0925065MULL,Vivo Cotton 3/4 Sleeve Wrap Top,Loose Tops,Vivo,V0925065,3900.0,978.41,74.9,2026-03-15,107,Tier 1 (3M) — 10-15%,3413,71.3,1.0,3413
+WHFIN/Stock,Kenya,V0925065LGN1X,Vivo Cotton 3/4 Sleeve Wrap Top,Loose Tops,Vivo,V0925065,3900.0,959.04,75.4,2026-03-03,119,Tier 1 (3M) — 10-15%,3413,71.9,1.0,3413
+TRM/Stock,Kenya,V1025044DRDS,Vivo Chela Pants in Jersey,Full Length Pants,Vivo,V1025044,3900.0,911.63,76.6,2026-02-21,129,Tier 1 (3M) — 10-15%,3413,73.3,1.0,3413
+IMAAR/Stock,Kenya,V1025044DRDM,Vivo Chela Pants in Jersey,Full Length Pants,Vivo,V1025044,3900.0,911.6299999999999,76.6,2026-03-17,105,Tier 1 (3M) — 10-15%,3413,73.3,1.0,3413
+MSACB/Stock,Kenya,V0125039FUSF,Vivo Isabi Loose Top,Loose Tops,Vivo,V0125039,3900.0,1171.3600000000004,70.0,2026-02-14,136,Tier 1 (3M) — 10-15%,3413,65.7,1.0,3413
+GRENS/Stock,Kenya,V0725043DGRXS/S,Vivo Tanda Loose Sweater,Sweaters & Ponchos,Vivo,V0725043,3900.0,995.3399999999999,74.5,2026-03-14,108,Tier 1 (3M) — 10-15%,3413,70.8,1.0,3413
+YAYA/Stock,Kenya,V0725043DGRXS/S,Vivo Tanda Loose Sweater,Sweaters & Ponchos,Vivo,V0725043,3900.0,995.3399999999999,74.5,2026-03-14,108,Tier 1 (3M) — 10-15%,3413,70.8,1.0,3413
+KISM/Stock,Kenya,V0719413GRYL/1X,Vivo Basic Joy Sweater,Sweaters & Ponchos,Vivo,V0719413,3900.0,873.9,77.6,2026-04-01,90,Tier 1 (3M) — 10-15%,3413,74.4,1.0,3413
+ELDOR/Stock,Kenya,V0725043DGRXS/S,Vivo Tanda Loose Sweater,Sweaters & Ponchos,Vivo,V0725043,3900.0,995.3399999999999,74.5,2026-03-14,108,Tier 1 (3M) — 10-15%,3413,70.8,1.0,3413
+TRM/Stock,Kenya,V1025044DRDM,Vivo Chela Pants in Jersey,Full Length Pants,Vivo,V1025044,3900.0,911.6299999999999,76.6,2026-03-17,105,Tier 1 (3M) — 10-15%,3413,73.3,1.0,3413
+GALLE/Stock,Kenya,V1025044DRDM,Vivo Chela Pants in Jersey,Full Length Pants,Vivo,V1025044,3900.0,911.6299999999999,76.6,2026-03-17,105,Tier 1 (3M) — 10-15%,3413,73.3,1.0,3413
+HUB/Stock,Kenya,V0725043DGRXS/S,Vivo Tanda Loose Sweater,Sweaters & Ponchos,Vivo,V0725043,3900.0,995.3399999999999,74.5,2026-03-14,108,Tier 1 (3M) — 10-15%,3413,70.8,1.0,3413
+TRM/Stock,Kenya,V0725043DGRXS/S,Vivo Tanda Loose Sweater,Sweaters & Ponchos,Vivo,V0725043,3900.0,995.3399999999999,74.5,2026-03-14,108,Tier 1 (3M) — 10-15%,3413,70.8,1.0,3413
+CAPIT/Stock,Kenya,V0725043DGRXS/S,Vivo Tanda Loose Sweater,Sweaters & Ponchos,Vivo,V0725043,3900.0,995.3399999999999,74.5,2026-03-14,108,Tier 1 (3M) — 10-15%,3413,70.8,1.0,3413
+ELDOR/Stock,Kenya,V1025015MUS1X/2X,Vivo Chela Sleeveless Waterfall in Jersey,Waterfalls & Kimonos,Vivo,V1025015,3900.0,1129.17,71.0,2026-03-19,103,Tier 1 (3M) — 10-15%,3413,66.9,1.0,3413
+GCITY/Stock,Kenya,V0425047NAVXS/S,Vivo Analo Dress Coat,Knee Length Dresses,Vivo,V0425047,3850.0,1439.49,62.6,2026-02-02,148,Tier 1 (3M) — 10-15%,3369,57.3,1.0,3369
+MERU/Stock,Kenya,V0725018PR2F,Vivo Essi Scalloped Top,Loose Tops,Vivo,V0725018,3850.0,1886.7099999999998,51.0,2026-03-19,103,Tier 1 (3M) — 10-15%,3369,44.0,1.0,3369
+ACHO/Stock,Kenya,V1223034PR13S,Vivo Asha Sleeveless Knee Length Dress,Knee Length Dresses,Vivo,V1223034,3850.0,1434.48,62.7,2026-02-26,124,Tier 1 (3M) — 10-15%,3369,57.4,1.0,3369
+NAKUR/Stock,Kenya,V1024065PR8S,Vivo Dalia Cap Sleeve Gathered Tent Dress,Knee Length Dresses,Vivo,V1024065,3850.0,2005.0700000000002,47.9,2026-01-07,174,Tier 1 (3M) — 10-15%,3369,40.5,1.0,3369
+WHFIN/Stock,Kenya,V1120036NAVL,Vivo Everyday Cap Sleeve Top,T-shirts & Tank Tops,Vivo,V1120036,1900.0,694.21,63.5,2026-02-02,148,Tier 1 (3M) — 10-15%,1663,58.2,2.0,3325
+SIGNA/Stock,Kenya,V1120036MUSM,Vivo Everyday Cap Sleeve Top,Midriff & Crop Tops,Vivo,V1120036,1900.0,694.21,63.5,2026-03-29,93,Tier 1 (3M) — 10-15%,1663,58.2,2.0,3325
+MERU/Stock,Kenya,V1120036LOVM,Vivo Everyday Cap Sleeve Top,T-shirts & Tank Tops,Vivo,V1120036,1900.0,694.21,63.5,2026-01-14,167,Tier 1 (3M) — 10-15%,1663,58.2,2.0,3325
+ZOYA/Stock,Kenya,V1219185PR32L/1X,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,950.0,250.17000000000004,73.7,2026-02-03,147,Tier 1 (3M) — 10-15%,831,69.9,4.0,3325
+WHFIN/Stock,Kenya,V1221043PR47L,Vivo Basic Satin Cap Sleeve Top,Fitted Tops,Vivo,V1221043,1250.0,730.18,41.6,2026-01-27,154,Tier 1 (3M) — 10-15%,1094,33.2,3.0,3281
+MOIAV/Stock,Kenya,V0220004PR1L/1X,Vivo Basic Strappy Belt,Belts,Vivo,V0220004,1250.0,153.89,87.7,2026-02-17,133,Tier 1 (3M) — 10-15%,1094,85.9,3.0,3281
+MERU/Stock,Kenya,V0423078MARM/L,Vivo Basic Leila Short Waterfall,Waterfalls & Kimonos,Vivo,V0423078,3700.0,1205.34,67.4,2026-03-12,110,Tier 1 (3M) — 10-15%,3238,62.8,1.0,3238
+SIGNA/Stock,Kenya,V0423078HUNL/XL,Vivo Basic Leila Short Waterfall,Waterfalls & Kimonos,Vivo,V0423078,3700.0,993.81,73.1,2026-01-13,168,Tier 1 (3M) — 10-15%,3238,69.3,1.0,3238
+WHFIN/Stock,Kenya,V0423078TAU1X/2X,Vivo Basic Leila Short Waterfall,Waterfalls & Kimonos,Vivo,V0423078,3700.0,1205.34,67.4,2026-03-23,99,Tier 1 (3M) — 10-15%,3238,62.8,1.0,3238
+MERU/Stock,Kenya,V0423078HUNL/XL,Vivo Basic Leila Short Waterfall,Waterfalls & Kimonos,Vivo,V0423078,3700.0,993.81,73.1,2026-01-13,168,Tier 1 (3M) — 10-15%,3238,69.3,1.0,3238
+TWORV/Stock,Kenya,V0719419MUS1X/2X,Vivo Basic Julia Back Pleat Maxi Dress,Maxi Dresses,Vivo,V0719419,3650.0,2273.29,37.7,2026-03-15,107,Tier 1 (3M) — 10-15%,3194,28.8,1.0,3194
+TMALL/Stock,Kenya,V0325072BLAL,Vivo Chiffon Shorts,Shorts & Skorts,Vivo,V0325072,3550.0,849.27,76.1,2026-03-12,110,Tier 1 (3M) — 10-15%,3106,72.7,1.0,3106
+GRENS/Stock,Kenya,V0819126GRES,Vivo Basic Tulip Sweater,Sweaters & Ponchos,Vivo,V0819126,3550.0,974.63,72.5,2026-01-28,153,Tier 1 (3M) — 10-15%,3106,68.6,1.0,3106
+MOIAV/Stock,Kenya,V0220059NABXL,Vivo Basic Leisure Pants,Full Length Pants,Vivo,V0220059,3550.0,1339.59,62.3,2026-03-31,91,Tier 1 (3M) — 10-15%,3106,56.9,1.0,3106
+MERU/Stock,Kenya,V0220059BUR1X,Vivo Basic Leisure Pants,Full Length Pants,Vivo,V0220059,3550.0,1339.59,62.3,2026-02-13,137,Tier 1 (3M) — 10-15%,3106,56.9,1.0,3106
+MERU/Stock,Kenya,V0819106LAMM/L,Vivo Basic Waterfall,Waterfalls & Kimonos,Vivo,V0819106,3550.0,939.18,73.5,2026-03-15,107,Tier 1 (3M) — 10-15%,3106,69.8,1.0,3106
+MSACB/Stock,Kenya,V0819106REDXS/S,Vivo Basic Waterfall,Waterfalls & Kimonos,Vivo,V0819106,3550.0,939.18,73.5,2026-03-21,101,Tier 1 (3M) — 10-15%,3106,69.8,1.0,3106
+WHFIN/Stock,Kenya,V1123080CORM,Vivo Ajani V-Neck Top,Fitted Tops,Vivo,V1123080,3500.0,1282.0499999999997,63.4,2026-03-29,93,Tier 1 (3M) — 10-15%,3063,58.1,1.0,3063
+WHFIN/Stock,Kenya,V0925016GLD1X/2X,Vivo Alma Drawstring Top,Loose Tops,Vivo,V0925016,3500.0,1064.66,69.6,2026-03-01,121,Tier 1 (3M) — 10-15%,3063,65.2,1.0,3063
+WHFIN/Stock,Kenya,V0524178GRY1X,Vivo Basic Chiffon Cap Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524178,3500.0,1001.89,71.4,2026-01-04,177,Tier 1 (3M) — 10-15%,3063,67.3,1.0,3063
+WHFIN/Stock,Kenya,V0925010PR4S,Vivo Basic Crepe Bishop Sleeve Top,Fitted Tops,Vivo,V0925010,3500.0,763.4,78.2,2026-02-06,144,Tier 1 (3M) — 10-15%,3063,75.1,1.0,3063
+MSACB/Stock,Kenya,V0819120ORUSTM,Vivo Basic Sienna Waterfall,Waterfalls & Kimonos,Vivo,V0819120,3500.0,728.31,79.2,2026-02-18,132,Tier 1 (3M) — 10-15%,3063,76.2,1.0,3063
+KILEL/Stock,Kenya,V0819120MUS1X,Vivo Basic Sienna Waterfall,Waterfalls & Kimonos,Vivo,V0819120,3500.0,728.31,79.2,2026-04-01,90,Tier 1 (3M) — 10-15%,3063,76.2,1.0,3063
+WHFIN/Stock,Kenya,V0925010MARL,Vivo Basic Crepe Bishop Sleeve Top,Fitted Tops,Vivo,V0925010,3500.0,763.4,78.2,2026-03-18,104,Tier 1 (3M) — 10-15%,3063,75.1,1.0,3063
+ACHO/Stock,Kenya,V0719674BLAXS/S,Vivo Basic Short Waterfall,Waterfalls & Kimonos,Vivo,V0719674,3500.0,1134.97,67.6,2026-03-27,95,Tier 1 (3M) — 10-15%,3063,62.9,1.0,3063
+MOIAV/Stock,Kenya,V0925010DRES,Vivo Basic Crepe Bishop Sleeve Top,Fitted Tops,Vivo,V0925010,3500.0,763.4,78.2,2026-03-28,94,Tier 1 (3M) — 10-15%,3063,75.1,1.0,3063
+ACHO/Stock,Kenya,V0819120BUR1X,Vivo Basic Sienna Waterfall,Waterfalls & Kimonos,Vivo,V0819120,3500.0,728.31,79.2,2026-03-27,95,Tier 1 (3M) — 10-15%,3063,76.2,1.0,3063
+GRENS/Stock,Kenya,V0819120DATS,Vivo Basic Sienna Waterfall,Waterfalls & Kimonos,Vivo,V0819120,3500.0,739.56,78.9,2026-03-03,119,Tier 1 (3M) — 10-15%,3063,75.9,1.0,3063
+WHFIN/Stock,Kenya,V0225024LILM,Vivo Chela Wide Leg Pants,Full Length Pants,Vivo,V0225024,3500.0,687.9699999999999,80.3,2026-02-24,126,Tier 1 (3M) — 10-15%,3063,77.5,1.0,3063
+YAYA/Stock,Kenya,V0825060BLAS,Vivo Alma Short Sleeve Mini Bodycon,Short & Mini Dresses,Vivo,V0825060,3500.0,523.9000000000001,85.0,2026-03-02,120,Tier 1 (3M) — 10-15%,3063,82.9,1.0,3063
+ACHO/Stock,Kenya,V0524178REDL,Vivo Basic Chiffon Cap Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524178,3500.0,1089.44,68.9,2026-03-25,97,Tier 1 (3M) — 10-15%,3063,64.4,1.0,3063
+WHFIN/Stock,Kenya,V1123080COR1X,Vivo Ajani V-Neck Top,Fitted Tops,Vivo,V1123080,3500.0,1282.05,63.4,2026-03-09,113,Tier 1 (3M) — 10-15%,3063,58.1,1.0,3063
+MOIAV/Stock,Kenya,V0524178NAV1X,Vivo Basic Chiffon Cap Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524178,3500.0,1089.44,68.9,2026-02-11,139,Tier 1 (3M) — 10-15%,3063,64.4,1.0,3063
+WHFIN/Stock,Kenya,V0524178HUN1X,Vivo Basic Chiffon Cap Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524178,3500.0,1089.44,68.9,2026-03-27,95,Tier 1 (3M) — 10-15%,3063,64.4,1.0,3063
+RUNDA/Stock,Kenya,V0225024BUTS,Vivo Chela Wide Leg Pants,Full Length Pants,Vivo,V0225024,3500.0,687.9699999999999,80.3,2026-03-30,92,Tier 1 (3M) — 10-15%,3063,77.5,1.0,3063
+WHFIN/Stock,Kenya,V0225024BUTS,Vivo Chela Wide Leg Pants,Full Length Pants,Vivo,V0225024,3500.0,687.9699999999999,80.3,2026-03-30,92,Tier 1 (3M) — 10-15%,3063,77.5,1.0,3063
+RUNDA/Stock,Kenya,V1023042LIGHOM,Vivo Ava 3/4 Sleeve Kimono,Waterfalls & Kimonos,Vivo,V1023042,3450.0,2139.67,38.0,2026-03-15,107,Tier 1 (3M) — 10-15%,3019,29.1,1.0,3019
+GCITY/Stock,Kenya,V0822022PRT20M,Vivo Basic Sleeveless Tent Dress,Knee Length Dresses,Vivo,V0822022,3450.0,1476.52,57.2,2026-03-04,118,Tier 1 (3M) — 10-15%,3019,51.1,1.0,3019
+TRM/Stock,Kenya,V1023042BLAM,Vivo Ava 3/4 Sleeve Kimono,Waterfalls & Kimonos,Vivo,V1023042,3450.0,2139.67,38.0,2026-02-01,149,Tier 1 (3M) — 10-15%,3019,29.1,1.0,3019
+WHFIN/Stock,Kenya,V0725029BLAL,Vivo Ari Sleeveless Straight Maxi Slit Dress,Maxi Dresses,Vivo,V0725029,3450.0,879.19,74.5,2026-02-24,126,Tier 1 (3M) — 10-15%,3019,70.9,1.0,3019
+WHFIN/Stock,Kenya,V1023042LIGHOM,Vivo Ava 3/4 Sleeve Kimono,Waterfalls & Kimonos,Vivo,V1023042,3450.0,2139.67,38.0,2026-03-15,107,Tier 1 (3M) — 10-15%,3019,29.1,1.0,3019
+ACHO/Stock,Kenya,V0822022PRT19M,Vivo Basic Sleeveless Tent Dress,Knee Length Dresses,Vivo,V0822022,3450.0,1476.52,57.2,2026-01-30,151,Tier 1 (3M) — 10-15%,3019,51.1,1.0,3019
+ZOYA/Stock,Kenya,V1024064PINF,Vivo Basic Sleeveless Tent Kimono,Waterfalls & Kimonos,Vivo,V1024064,3250.0,1028.67,68.3,2026-03-19,103,Tier 1 (3M) — 10-15%,2844,63.8,1.0,2844
+TMALL/Stock,Kenya,V0819031RUSM,Vivo Basic Double Layered Capri Skirt,Midi & Capri Skirts,Vivo,V0819031,3250.0,985.9199999999998,69.7,2026-03-18,104,Tier 1 (3M) — 10-15%,2844,65.3,1.0,2844
+KISM/Stock,Kenya,V0819031RUSM,Vivo Basic Double Layered Capri Skirt,Midi & Capri Skirts,Vivo,V0819031,3250.0,985.9199999999998,69.7,2026-03-18,104,Tier 1 (3M) — 10-15%,2844,65.3,1.0,2844
+WHFIN/Stock,Kenya,V0819031TEGM,Vivo Basic Double Layered Capri Skirt,Midi & Capri Skirts,Vivo,V0819031,3250.0,920.73,71.7,2026-03-25,97,Tier 1 (3M) — 10-15%,2844,67.6,1.0,2844
+MOIAV/Stock,Kenya,V0819031TEGM,Vivo Basic Double Layered Capri Skirt,Midi & Capri Skirts,Vivo,V0819031,3250.0,920.73,71.7,2026-03-25,97,Tier 1 (3M) — 10-15%,2844,67.6,1.0,2844
+STPUR/Stock,Kenya,V082504PR11XS/S,Vivo Alek High Slit Kimono,Waterfalls & Kimonos,Vivo,V0825041,3150.0,1506.18,52.2,2026-03-10,112,Tier 1 (3M) — 10-15%,2756,45.4,1.0,2756
+IMAAR/Stock,Kenya,V0924052MARL,Vivo Hari Wide Leg Pants,Full Length Pants,Vivo,V0924052,3150.0,1316.79,58.2,2026-03-03,119,Tier 1 (3M) — 10-15%,2756,52.2,1.0,2756
+WHFIN/Stock,Kenya,V0822019NABXL,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,3150.0,960.25,69.5,2026-01-31,150,Tier 1 (3M) — 10-15%,2756,65.2,1.0,2756
+STPUR/Stock,Kenya,V0822019PR48S,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,3150.0,694.54,78.0,2026-03-13,109,Tier 1 (3M) — 10-15%,2756,74.8,1.0,2756
+GALLE/Stock,Kenya,V1124074PR7M,Vivo Ayla Crepe Pants,Full Length Pants,Vivo,V1124074,3150.0,1308.69,58.5,2026-02-25,125,Tier 1 (3M) — 10-15%,2756,52.5,1.0,2756
+IMAAR/Stock,Kenya,V0924052MAR1X,Vivo Hari Wide Leg Pants,Full Length Pants,Vivo,V0924052,3150.0,1316.79,58.2,2026-01-10,171,Tier 1 (3M) — 10-15%,2756,52.2,1.0,2756
+WHFIN/Stock,Kenya,V1125002ORAN1X,Vivo Jersey Halter Neck Tank Top,T-shirts & Tank Tops,Vivo,V1125002,1500.0,390.8500000000001,73.9,2026-03-09,113,Tier 1 (3M) — 10-15%,1313,70.2,2.0,2625
+MERU/Stock,Kenya,V0724080MUSL,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,356.59,76.2,2026-03-24,98,Tier 1 (3M) — 10-15%,1313,72.8,2.0,2625
+WHFIN/Stock,Kenya,V0625051SEGL,Vivo Basic Val Tank Top,T-shirts & Tank Tops,Vivo,V0625051,1500.0,373.71,75.1,2026-02-25,125,Tier 1 (3M) — 10-15%,1313,71.5,2.0,2625
+KISM/Stock,Kenya,V0625051SEGL,Vivo Basic Val Tank Top,T-shirts & Tank Tops,Vivo,V0625051,1500.0,373.71,75.1,2026-02-25,125,Tier 1 (3M) — 10-15%,1313,71.5,2.0,2625
+GALLE/Stock,Kenya,V1125002TEAL2X,Vivo Jersey Halter Neck Tank Top,T-shirts & Tank Tops,Vivo,V1125002,1500.0,390.8500000000001,73.9,2026-02-25,125,Tier 1 (3M) — 10-15%,1313,70.2,2.0,2625
+WHFIN/Stock,Kenya,V0724080RUS2X,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,356.59,76.2,2026-02-16,134,Tier 1 (3M) — 10-15%,1313,72.8,2.0,2625
+WHFIN/Stock,Kenya,V0524179YELS,Vivo Basic Chiffon Bishop Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524179,2950.0,620.79,79.0,2026-01-19,162,Tier 1 (3M) — 10-15%,2581,76.0,1.0,2581
+WHFIN/Stock,Kenya,V0524179NEG1X,Vivo Basic Chiffon Bishop Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524179,2950.0,1546.88,47.6,2026-01-15,166,Tier 1 (3M) — 10-15%,2581,40.1,1.0,2581
+IMAAR/Stock,Kenya,V0524179SEGS,Vivo Basic Chiffon Bishop Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524179,2950.0,620.79,79.0,2026-02-21,129,Tier 1 (3M) — 10-15%,2581,76.0,1.0,2581
+MSACB/Stock,Kenya,V1020057NAB2X,Vivo Basic Waridi Pencil Skirt,Knee Length Skirts,Vivo,V1020057,2900.0,777.77,73.2,2026-03-15,107,Tier 1 (3M) — 10-15%,2538,69.3,1.0,2538
+RUNDA/Stock,Kenya,V0525015PR102X,Vivo Samira Pants in Rayon,Full Length Pants,Vivo,V0525015,2900.0,778.68,73.1,2026-03-10,112,Tier 1 (3M) — 10-15%,2538,69.3,1.0,2538
+MSACB/Stock,Kenya,V1119113BLAXS/S,Vivo Basic Sleeveless Jersey Waterfall,Waterfalls & Kimonos,Vivo,V1119113,2900.0,1035.0899999999997,64.3,2026-04-01,90,Tier 1 (3M) — 10-15%,2538,59.2,1.0,2538
+MERU/Stock,Kenya,V1119113HGNS/M,Vivo Basic Sleeveless Jersey Waterfall,Waterfalls & Kimonos,Vivo,V1119113,2900.0,809.29,72.1,2026-03-29,93,Tier 1 (3M) — 10-15%,2538,68.1,1.0,2538
+MSACB/Stock,Kenya,V0220007RUSS,Vivo Basic Double Layered Long Sleeved Bodysuit,Bodysuits,Vivo,V0220007,2900.0,685.0100000000001,76.4,2026-03-17,105,Tier 1 (3M) — 10-15%,2538,73.0,1.0,2538
+KISM/Stock,Kenya,V1020048HUNXL,Vivo Basic 3/4 Sleeved Double Layered Bodysuit,Bodysuits,Vivo,V1020048,2900.0,871.7800000000001,69.9,2026-03-17,105,Tier 1 (3M) — 10-15%,2538,65.6,1.0,2538
+KILEL/Stock,Kenya,V1119113BLAXS/S,Vivo Basic Sleeveless Jersey Waterfall,Waterfalls & Kimonos,Vivo,V1119113,2900.0,1035.0899999999997,64.3,2026-04-01,90,Tier 1 (3M) — 10-15%,2538,59.2,1.0,2538
+WHFIN/Stock,Kenya,V1020048DARM,Vivo Basic 3/4 Sleeved Double Layered Bodysuit,Bodysuits,Vivo,V1020048,2900.0,871.7800000000001,69.9,2026-03-15,107,Tier 1 (3M) — 10-15%,2538,65.6,1.0,2538
+KILEL/Stock,Kenya,V0126024LILL,Vivo Boat Neck Top in Scuba,Fitted Tops,Vivo,V0126024,2900.0,638.8196875000001,78.0,2026-04-01,90,Tier 1 (3M) — 10-15%,2538,74.8,1.0,2538
+MERU/Stock,Kenya,V1020048DARM,Vivo Basic 3/4 Sleeved Double Layered Bodysuit,Bodysuits,Vivo,V1020048,2900.0,871.7800000000001,69.9,2026-03-15,107,Tier 1 (3M) — 10-15%,2538,65.6,1.0,2538
+CAPIT/Stock,Kenya,V1020057NAB2X,Vivo Basic Waridi Pencil Skirt,Knee Length Skirts,Vivo,V1020057,2900.0,777.77,73.2,2026-03-15,107,Tier 1 (3M) — 10-15%,2538,69.3,1.0,2538
+MERU/Stock,Kenya,V1020048DARL,Vivo Basic 3/4 Sleeved Double Layered Bodysuit,Bodysuits,Vivo,V1020048,2900.0,871.7800000000001,69.9,2026-03-01,121,Tier 1 (3M) — 10-15%,2538,65.6,1.0,2538
+MERU/Stock,Kenya,V1020048HUNL,Vivo Basic 3/4 Sleeved Double Layered Bodysuit,Bodysuits,Vivo,V1020048,2900.0,871.78,69.9,2026-03-03,119,Tier 1 (3M) — 10-15%,2538,65.6,1.0,2538
+WHFIN/Stock,Kenya,V0324069OWHS,Vivo Basic Sleeveless Bodysuit,Bodysuits,Vivo,V0324069,950.0,544.1,42.7,2026-02-12,138,Tier 1 (3M) — 10-15%,831,34.5,3.0,2494
+WHFIN/Stock,Kenya,V1020048PINK1X,Vivo Basic 3/4 Sleeved Double Layered Bodysuit,Bodysuits,Vivo,V1020048,2750.0,1005.94,63.4,2026-03-13,109,Tier 1 (3M) — 10-15%,2406,58.2,1.0,2406
+MSACB/Stock,Kenya,V1022057NABS,Vivo Basic Maternity Leggings,Full Length Pants,Vivo,V1022057,2750.0,873.5099999999999,68.2,2026-02-14,136,Tier 1 (3M) — 10-15%,2406,63.7,1.0,2406
+GRENS/Stock,Kenya,V1022057NABS,Vivo Basic Maternity Leggings,Full Length Pants,Vivo,V1022057,2750.0,873.5099999999999,68.2,2026-02-14,136,Tier 1 (3M) — 10-15%,2406,63.7,1.0,2406
+TRM/Stock,Kenya,V0819142BURF,Vivo Basic Cowl Hoodie,Sweaters & Ponchos,Vivo,V0819142,2750.0,1059.29,61.5,2026-03-26,96,Tier 1 (3M) — 10-15%,2406,56.0,1.0,2406
+WHFIN/Stock,Kenya,V0625049GREF,Vivo Iyana Cape Top,Loose Tops,Vivo,V0625049,2750.0,1114.94,59.5,2026-02-05,145,Tier 1 (3M) — 10-15%,2406,53.7,1.0,2406
+WHFIN/Stock,Kenya,V1020048PINKM,Vivo Basic 3/4 Sleeved Double Layered Bodysuit,Bodysuits,Vivo,V1020048,2750.0,1005.94,63.4,2026-03-04,118,Tier 1 (3M) — 10-15%,2406,58.2,1.0,2406
+WHFIN/Stock,Kenya,V0723043NAB1X,Vivo Basic Val Long Sleeve Top,Midriff & Crop Tops,Vivo,V0723043,2550.0,688.79,73.0,2026-01-04,177,Tier 1 (3M) — 10-15%,2231,69.1,1.0,2231
+MNS/Stock,Kenya,V0723043DGRNL,Vivo Basic Val Long Sleeve Top,Midriff & Crop Tops,Vivo,V0723043,2550.0,684.7,73.1,2026-01-28,153,Tier 1 (3M) — 10-15%,2231,69.3,1.0,2231
+WHFIN/Stock,Kenya,V0723043DGRNL,Vivo Basic Val Long Sleeve Top,Midriff & Crop Tops,Vivo,V0723043,2550.0,684.7,73.1,2026-01-28,153,Tier 1 (3M) — 10-15%,2231,69.3,1.0,2231
+CITYM/Stock,Kenya,V0719112TEAS,Vivo Basic Long Sleeved Bodysuit,Bodysuits,Vivo,V0719112,2550.0,1029.37,59.6,2026-03-27,95,Tier 1 (3M) — 10-15%,2231,53.9,1.0,2231
+KILEL/Stock,Kenya,V0719112TEAL,Vivo Basic Long Sleeved Bodysuit,Bodysuits,Vivo,V0719112,2550.0,898.5899999999998,64.8,2026-03-16,106,Tier 1 (3M) — 10-15%,2231,59.7,1.0,2231
+MSACB/Stock,Kenya,V0719112TEAL,Vivo Basic Long Sleeved Bodysuit,Bodysuits,Vivo,V0719112,2550.0,898.5899999999998,64.8,2026-03-16,106,Tier 1 (3M) — 10-15%,2231,59.7,1.0,2231
+WHFIN/Stock,Kenya,V0622002MUSL,Vivo Basic Drop Shoulder Top,Loose Tops,Vivo,V0622002,2550.0,635.4599999999999,75.1,2026-03-26,96,Tier 1 (3M) — 10-15%,2231,71.5,1.0,2231
+WHFIN/Stock,Kenya,V0725046POB1X,Vivo Alma Mini Skirt,Skirts & Top Set,Vivo,V0725046,2500.0,359.07,85.6,2026-01-29,152,Tier 1 (3M) — 10-15%,2188,83.6,1.0,2188
+YAYA/Stock,Kenya,VE0003TEA2X,Vivo Essentials Capri Leggings,Leggings,Vivo,VE0003T,2500.0,504.31,79.8,2026-03-15,107,Tier 1 (3M) — 10-15%,2188,76.9,1.0,2188
+WHFIN/Stock,Kenya,V1223014DUGRNS,Vivo Dua Satin Bishop Sleeve Top,Loose Tops,Vivo,V1223014,1250.0,857.5,31.4,2026-03-12,110,Tier 1 (3M) — 10-15%,1094,21.6,2.0,2188
+WHFIN/Stock,Kenya,V0220004PR1L/1X,Vivo Basic Strappy Belt,Belts,Vivo,V0220004,1250.0,153.89,87.7,2026-02-17,133,Tier 1 (3M) — 10-15%,1094,85.9,2.0,2188
+MNS/Stock,Kenya,V0220004PR1L/1X,Vivo Basic Strappy Belt,Belts,Vivo,V0220004,1250.0,153.89,87.7,2026-02-17,133,Tier 1 (3M) — 10-15%,1094,85.9,2.0,2188
+WHFIN/Stock,Kenya,V1221043NABL,Vivo Basic Satin Cap Sleeve Top,Fitted Tops,Vivo,V1221043,2500.0,730.18,70.8,2026-01-29,152,Tier 1 (3M) — 10-15%,2188,66.6,1.0,2188
+WHFIN/Stock,Kenya,V1125001OLI1X,Vivo Jersey Drop Shoulder Top,T-shirts & Tank Tops,Vivo,V1125001,2500.0,405.69,83.8,2026-03-20,102,Tier 1 (3M) — 10-15%,2188,81.5,1.0,2188
+GRENS/Stock,Kenya,V1125001BLAS,Vivo Jersey Drop Shoulder Tank Top,T-shirts & Tank Tops,Vivo,V1125001,2500.0,405.69,83.8,2026-03-27,95,Tier 1 (3M) — 10-15%,2188,81.5,1.0,2188
+WHFIN/Stock,Kenya,V1121090NAB1X,Vivo Basic Capri Leggings,Leggings,Vivo,V1121090,2500.0,683.31,72.7,2026-01-25,156,Tier 1 (3M) — 10-15%,2188,68.8,1.0,2188
+TMALL/Stock,Kenya,V0523154BLAM,Vivo Basic Cap Sleeved Bodysuit,Bodysuits,Vivo,V0523154,2500.0,682.68,72.7,2026-03-19,103,Tier 1 (3M) — 10-15%,2188,68.8,1.0,2188
+TWORV/Stock,Kenya,V0524192MUS1X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,595.07,76.2,2026-02-06,144,Tier 1 (3M) — 10-15%,2188,72.8,1.0,2188
+TMALL/Stock,Kenya,V0524192MUS1X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,595.07,76.2,2026-02-06,144,Tier 1 (3M) — 10-15%,2188,72.8,1.0,2188
+SIGNA/Stock,Kenya,V0524192MUS1X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,595.07,76.2,2026-02-06,144,Tier 1 (3M) — 10-15%,2188,72.8,1.0,2188
+WHFIN/Stock,Kenya,V0524192ORA1X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,595.07,76.2,2026-03-30,92,Tier 1 (3M) — 10-15%,2188,72.8,1.0,2188
+VMKT/Stock,Kenya,V0524192ORA1X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,595.07,76.2,2026-03-30,92,Tier 1 (3M) — 10-15%,2188,72.8,1.0,2188
+GALLE/Stock,Kenya,V0524192ORA1X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,595.07,76.2,2026-03-30,92,Tier 1 (3M) — 10-15%,2188,72.8,1.0,2188
+WHFIN/Stock,Kenya,V0524192ORAL,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,595.07,76.2,2026-03-28,94,Tier 1 (3M) — 10-15%,2188,72.8,1.0,2188
+MSACB/Stock,Kenya,V0524192SEG1X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,866.32,65.3,2026-03-09,113,Tier 1 (3M) — 10-15%,2188,60.4,1.0,2188
+TRM/Stock,Kenya,V0524192SEG1X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,866.32,65.3,2026-03-09,113,Tier 1 (3M) — 10-15%,2188,60.4,1.0,2188
+YAYA/Stock,Kenya,V0524192SEG1X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,866.32,65.3,2026-03-09,113,Tier 1 (3M) — 10-15%,2188,60.4,1.0,2188
+WHFIN/Stock,Kenya,V0524192SEG1X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,866.32,65.3,2026-03-09,113,Tier 1 (3M) — 10-15%,2188,60.4,1.0,2188
+ZOYA/Stock,Kenya,V0524192WHI4X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,595.07,76.2,2026-04-01,90,Tier 1 (3M) — 10-15%,2188,72.8,1.0,2188
+TRM/Stock,Kenya,V0925030SGRNS,Vivo Anavi Runched Tank Top,T-shirts & Tank Tops,Vivo,V0925030,2500.0,572.65,77.1,2026-01-24,157,Tier 1 (3M) — 10-15%,2188,73.8,1.0,2188
+CITYM/Stock,Kenya,V0819126MUSL,Vivo Basic Tulip Sweater,Sweaters & Ponchos,Vivo,V0819126,2500.0,905.17,63.8,2026-03-18,104,Tier 1 (3M) — 10-15%,2188,58.6,1.0,2188
+KISM/Stock,Kenya,V0819126MUSL,Vivo Basic Tulip Sweater,Sweaters & Ponchos,Vivo,V0819126,2500.0,905.17,63.8,2026-03-18,104,Tier 1 (3M) — 10-15%,2188,58.6,1.0,2188
+ELDOR/Stock,Kenya,V0819126MUSS,Vivo Basic Tulip Sweater,Sweaters & Ponchos,Vivo,V0819126,2500.0,974.63,61.0,2026-01-25,156,Tier 1 (3M) — 10-15%,2188,55.4,1.0,2188
+JUNCT/Stock,Kenya,V0819126MUSS,Vivo Basic Tulip Sweater,Sweaters & Ponchos,Vivo,V0819126,2500.0,974.63,61.0,2026-01-25,156,Tier 1 (3M) — 10-15%,2188,55.4,1.0,2188
+WHFIN/Stock,Kenya,V0821064DOL2X,Vivo Basic Cap Sleeve Top In Crepe,Fitted Tops,Vivo,V0821064,2500.0,879.46,64.8,2026-03-08,114,Tier 1 (3M) — 10-15%,2188,59.8,1.0,2188
+JUNCT/Stock,Kenya,V0821064NAB2X,Vivo Basic Cap Sleeve Top In Crepe,Fitted Tops,Vivo,V0821064,2500.0,638.41,74.5,2026-03-29,93,Tier 1 (3M) — 10-15%,2188,70.8,1.0,2188
+MSACB/Stock,Kenya,V0821064WHI2X,Vivo Basic Crepe Cap Sleeved Top,Fitted Tops,Vivo,V0821064,2500.0,879.46,64.8,2026-02-03,147,Tier 1 (3M) — 10-15%,2188,59.8,1.0,2188
+MSACB/Stock,Kenya,V0925030ORAL,Vivo Anavi Runched Tank Top,T-shirts & Tank Tops,Vivo,V0925030,2500.0,572.6499999999997,77.1,2026-01-04,177,Tier 1 (3M) — 10-15%,2188,73.8,1.0,2188
+MSACB/Stock,Kenya,V0925030ORAS,Vivo Anavi Runched Tank Top,T-shirts & Tank Tops,Vivo,V0925030,2500.0,572.6499999999999,77.1,2026-03-21,101,Tier 1 (3M) — 10-15%,2188,73.8,1.0,2188
+GALLE/Stock,Kenya,V0925030SGRNM,Vivo Anavi Runched Tank Top,T-shirts & Tank Tops,Vivo,V0925030,2500.0,572.6499999999997,77.1,2026-03-23,99,Tier 1 (3M) — 10-15%,2188,73.8,1.0,2188
+TWORV/Stock,Kenya,V0223139DTEAL,Vivo Basic Izzy Satin Bishop Sleeve Top,Fitted Tops,Vivo,V0223139,2450.0,994.14,59.4,2026-01-22,159,Tier 1 (3M) — 10-15%,2144,53.6,1.0,2144
+WHFIN/Stock,Kenya,V0223139DPURM,Vivo Izzy Satin Bishop Sleeve Top,Fitted Tops,Vivo,V0223139,2450.0,994.14,59.4,2026-01-10,171,Tier 1 (3M) — 10-15%,2144,53.6,1.0,2144
+TMALL/Stock,Kenya,V0220059HGNS,Vivo Basic Leisure Pants,Full Length Pants,Vivo,V0220059,2450.0,1339.59,45.3,2026-03-29,93,Tier 1 (3M) — 10-15%,2144,37.5,1.0,2144
+MOIAV/Stock,Kenya,V1123080PR21M,Vivo Ajani V-Neck Top,Fitted Tops,Vivo,V1123080,2450.0,1282.05,47.7,2026-03-14,108,Tier 1 (3M) — 10-15%,2144,40.2,1.0,2144
+WHFIN/Stock,Kenya,V0719677WHIM/L,Vivo Basic Short Lily Waterfall,Waterfalls & Kimonos,Vivo,V0719677,2450.0,1206.13,50.8,2026-01-13,168,Tier 1 (3M) — 10-15%,2144,43.7,1.0,2144
+WHFIN/Stock,Kenya,V0722033MUSXL,Vivo Basic Julia 3/4 Sleeve Back Pleat Maxi Dress,Maxi Dresses,Vivo,V0722033,2350.0,1999.92,14.9,2026-01-26,155,Tier 1 (3M) — 10-15%,2056,2.7,1.0,2056
+GCITY/Stock,Kenya,V0625018PR5S,Vivo Alani High Low Dress,Knee Length Dresses,Vivo,V0625018,2250.0,1491.6100000000004,33.7,2026-03-22,100,Tier 1 (3M) — 10-15%,1969,24.2,1.0,1969
+MERU/Stock,Kenya,V0121119PR73S,Vivo Basic Satin Bishop Sleeved Top,Fitted Tops,Vivo,V0121119,2250.0,1221.78,45.7,2026-01-31,150,Tier 1 (3M) — 10-15%,1969,37.9,1.0,1969
+WHFIN/Stock,Kenya,V0121119PR73L,Vivo Basic Satin Bishop Sleeved Top,Fitted Tops,Vivo,V0121119,2250.0,1221.78,45.7,2026-02-05,145,Tier 1 (3M) — 10-15%,1969,37.9,1.0,1969
+MOIAV/Stock,Kenya,V0725023REDS,Vivo Ari One Shoulder Maxi Dress,Maxi Dresses,Vivo,V0725023,2250.0,2140.07,4.9,2026-02-16,134,Tier 1 (3M) — 10-15%,1969,-8.7,1.0,1969
+WHFIN/Stock,Kenya,V0822019LILS,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,2250.0,960.25,57.3,2026-03-29,93,Tier 1 (3M) — 10-15%,1969,51.2,1.0,1969
+MSACB/Stock,Kenya,V0625018PR5S,Vivo Alani High Low Dress,Knee Length Dresses,Vivo,V0625018,2250.0,1491.6100000000004,33.7,2026-03-22,100,Tier 1 (3M) — 10-15%,1969,24.2,1.0,1969
+WHFIN/Stock,Kenya,V1119113RUS1X/2X,Vivo Basic Sleeveless Jersey Waterfall,Waterfalls & Kimonos,Vivo,V1119113,2050.0,809.29,60.5,2026-04-01,90,Tier 1 (3M) — 10-15%,1794,54.9,1.0,1794
+MSACB/Stock,Kenya,V0324069LGRYL,Vivo Basic Sleeveless Bodysuit,Bodysuits,Vivo,V0324069,1950.0,544.1,72.1,2026-03-15,107,Tier 1 (3M) — 10-15%,1706,68.1,1.0,1706
+KISM/Stock,Kenya,V0324069LGRYL,Vivo Basic Sleeveless Bodysuit,Bodysuits,Vivo,V0324069,1950.0,544.1,72.1,2026-03-15,107,Tier 1 (3M) — 10-15%,1706,68.1,1.0,1706
+NAKUR/Stock,Kenya,V0324069LGRY1X,Vivo Basic Sleeveless Bodysuit,Bodysuits,Vivo,V0324069,1950.0,544.1,72.1,2026-03-23,99,Tier 1 (3M) — 10-15%,1706,68.1,1.0,1706
+MERU/Stock,Kenya,V1124142PR41X,Vivo Ava Front Pleat Knee Length Dress,Knee Length Dresses,Vivo,V1124142,1950.0,1237.31,36.5,2026-03-20,102,Tier 1 (3M) — 10-15%,1706,27.5,1.0,1706
+MSACB/Stock,Kenya,V0324069LGRY1X,Vivo Basic Sleeveless Bodysuit,Bodysuits,Vivo,V0324069,1950.0,544.1,72.1,2026-03-23,99,Tier 1 (3M) — 10-15%,1706,68.1,1.0,1706
+KILEL/Stock,Kenya,V1120036DAOL,Vivo Everyday Cap Sleeve Top,T-shirts & Tank Tops,Vivo,V1120036,1900.0,694.2099999999997,63.5,2026-03-09,113,Tier 1 (3M) — 10-15%,1663,58.2,1.0,1663
+KILEL/Stock,Kenya,V1219185PR32S/M,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,950.0,250.17,73.7,2026-01-24,157,Tier 1 (3M) — 10-15%,831,69.9,2.0,1663
+GRENS/Stock,Kenya,V1120036DAOL,Vivo Everyday Cap Sleeve Top,T-shirts & Tank Tops,Vivo,V1120036,1900.0,694.2099999999997,63.5,2026-03-09,113,Tier 1 (3M) — 10-15%,1663,58.2,1.0,1663
+ZOYA/Stock,Kenya,V1219185PR32S/M,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,950.0,250.17,73.7,2026-01-24,157,Tier 1 (3M) — 10-15%,831,69.9,2.0,1663
+SIGNA/Stock,Kenya,V1120036DAOM,Vivo Everyday Cap Sleeve Top,T-shirts & Tank Tops,Vivo,V1120036,1900.0,694.2099999999999,63.5,2026-01-27,154,Tier 1 (3M) — 10-15%,1663,58.2,1.0,1663
+TRM/Stock,Kenya,V1120036NAV1X,Vivo Everyday Cap Sleeve Top,T-shirts & Tank Tops,Vivo,V1120036,1900.0,694.21,63.5,2026-02-03,147,Tier 1 (3M) — 10-15%,1663,58.2,1.0,1663
+WHFIN/Stock,Kenya,V1120036MUSS,Vivo Everyday Cap Sleeve Top,Midriff & Crop Tops,Vivo,V1120036,1900.0,694.21,63.5,2026-03-31,91,Tier 1 (3M) — 10-15%,1663,58.2,1.0,1663
+TMALL/Stock,Kenya,V1120036MUSM,Vivo Everyday Cap Sleeve Top,Midriff & Crop Tops,Vivo,V1120036,1900.0,694.21,63.5,2026-03-29,93,Tier 1 (3M) — 10-15%,1663,58.2,1.0,1663
+GRENS/Stock,Kenya,V1120036DAOM,Vivo Everyday Cap Sleeve Top,T-shirts & Tank Tops,Vivo,V1120036,1900.0,694.2099999999999,63.5,2026-01-27,154,Tier 1 (3M) — 10-15%,1663,58.2,1.0,1663
+TRM/Stock,Kenya,V1219185PR32L/1X,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,950.0,250.17000000000004,73.7,2026-02-03,147,Tier 1 (3M) — 10-15%,831,69.9,2.0,1663
+TRM/Stock,Kenya,V1120036LIMS,Vivo Everyday Cap Sleeve Top,T-shirts & Tank Tops,Vivo,V1120036,1900.0,694.2099999999997,63.5,2026-03-14,108,Tier 1 (3M) — 10-15%,1663,58.2,1.0,1663
+CITYM/Stock,Kenya,V0625008TEAS,Vivo Ari Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0625008,1900.0,824.59,56.6,2026-01-23,158,Tier 1 (3M) — 10-15%,1663,50.4,1.0,1663
+MOIAV/Stock,Kenya,V1024036PR2XS,Vivo Beali Wrap Shirt Dress,Knee Length Dresses,Vivo,V1024036,1850.0,1430.58,22.7,2026-01-17,164,Tier 1 (3M) — 10-15%,1619,11.6,1.0,1619
+MOIAV/Stock,Kenya,V0325019RBLUS,Vivo Chela Basic Cap Sleeve Top,Midriff & Crop Tops,Vivo,V0325019,1850.0,330.76,82.1,2026-01-30,151,Tier 1 (3M) — 10-15%,1619,79.6,1.0,1619
+GRENS/Stock,Kenya,V0325019RBLUS,Vivo Chela Basic Cap Sleeve Top,Midriff & Crop Tops,Vivo,V0325019,1850.0,330.76,82.1,2026-01-30,151,Tier 1 (3M) — 10-15%,1619,79.6,1.0,1619
+ZOYA/Stock,Kenya,V0325019RBLUS,Vivo Chela Basic Cap Sleeve Top,Midriff & Crop Tops,Vivo,V0325019,1850.0,330.76,82.1,2026-01-30,151,Tier 1 (3M) — 10-15%,1619,79.6,1.0,1619
+ZOYA/Stock,Kenya,V1221043PR461X,Vivo Basic Satin Cap Sleeve Top,Fitted Tops,Vivo,V1221043,1750.0,730.18,58.3,2026-03-03,119,Tier 1 (3M) — 10-15%,1531,52.3,1.0,1531
+IMAAR/Stock,Kenya,V1221043PR42L,Vivo Basic Satin Cap Sleeve Top,Fitted Tops,Vivo,V1221043,1750.0,730.18,58.3,2026-02-18,132,Tier 1 (3M) — 10-15%,1531,52.3,1.0,1531
+WHFIN/Stock,Kenya,V0421160GRYS,Vivo Basic Leggings,Leggings,Vivo,V0421160,1750.0,1036.21,40.8,2026-02-16,134,Tier 1 (3M) — 10-15%,1531,32.3,1.0,1531
+TRM/Stock,Kenya,V0625051SEGL,Vivo Basic Val Tank Top,T-shirts & Tank Tops,Vivo,V0625051,1500.0,373.71,75.1,2026-02-25,125,Tier 1 (3M) — 10-15%,1313,71.5,1.0,1313
+TMALL/Stock,Kenya,V0724080RUS2X,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,356.59,76.2,2026-02-16,134,Tier 1 (3M) — 10-15%,1313,72.8,1.0,1313
+RUNDA/Stock,Kenya,V0724080MUSL,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,356.59,76.2,2026-03-24,98,Tier 1 (3M) — 10-15%,1313,72.8,1.0,1313
+IMAAR/Stock,Kenya,V0724080RUSS,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,356.59,76.2,2026-03-03,119,Tier 1 (3M) — 10-15%,1313,72.8,1.0,1313
+SIGNA/Stock,Kenya,V0724080TAUM,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,385.54,74.3,2026-03-11,111,Tier 1 (3M) — 10-15%,1313,70.6,1.0,1313
+GRENS/Stock,Kenya,V0724080TAUM,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,385.54,74.3,2026-03-11,111,Tier 1 (3M) — 10-15%,1313,70.6,1.0,1313
+MOIAV/Stock,Kenya,VE0001TEA3X,Vivo Essentials Tank Top,T-shirts & Tank Tops,Vivo,VE0001T,750.0,323.28,56.9,2026-01-06,175,Tier 1 (3M) — 10-15%,656,50.7,2.0,1313
+MOIAV/Stock,Kenya,VE0001TEA2X,Vivo Essentials Tank Top,T-shirts & Tank Tops,Vivo,VE0001T,750.0,323.28000000000014,56.9,2026-01-13,168,Tier 1 (3M) — 10-15%,656,50.7,2.0,1313
+MERU/Stock,Kenya,V0625051SEGL,Vivo Basic Val Tank Top,T-shirts & Tank Tops,Vivo,V0625051,1500.0,373.71,75.1,2026-02-25,125,Tier 1 (3M) — 10-15%,1313,71.5,1.0,1313
+MOIAV/Stock,Kenya,V0625051SEGL,Vivo Basic Val Tank Top,T-shirts & Tank Tops,Vivo,V0625051,1500.0,373.71,75.1,2026-02-25,125,Tier 1 (3M) — 10-15%,1313,71.5,1.0,1313
+JUNCT/Stock,Kenya,V1125002GREE1X,Vivo Jersey Halter Neck Tank Top,T-shirts & Tank Tops,Vivo,V1125002,1500.0,390.8500000000001,73.9,2026-02-09,141,Tier 1 (3M) — 10-15%,1313,70.2,1.0,1313
+MOIAV/Stock,Kenya,V0625051SEG1X,Vivo Basic Val Tank Top,T-shirts & Tank Tops,Vivo,V0625051,1500.0,373.71,75.1,2026-03-04,118,Tier 1 (3M) — 10-15%,1313,71.5,1.0,1313
+RUNDA/Stock,Kenya,V0625051NAB1X,Vivo Basic Val Tank Top,T-shirts & Tank Tops,Vivo,V0625051,1500.0,373.71,75.1,2026-02-28,122,Tier 1 (3M) — 10-15%,1313,71.5,1.0,1313
+KILEL/Stock,Kenya,V0625051MARL,Vivo Basic Val Tank Top,T-shirts & Tank Tops,Vivo,V0625051,1500.0,373.70999999999987,75.1,2026-04-01,90,Tier 1 (3M) — 10-15%,1313,71.5,1.0,1313
+RUNDA/Stock,Kenya,V0625051MARL,Vivo Basic Val Tank Top,T-shirts & Tank Tops,Vivo,V0625051,1500.0,373.70999999999987,75.1,2026-04-01,90,Tier 1 (3M) — 10-15%,1313,71.5,1.0,1313
+MSACB/Stock,Kenya,V0225026BLAM,Vivo Chela Tank Top in Stretch Rib,T-shirts & Tank Tops,Vivo,V0225026,1500.0,290.35,80.6,2026-01-24,157,Tier 1 (3M) — 10-15%,1313,77.9,1.0,1313
+MERU/Stock,Kenya,V0225026BLAM,Vivo Chela Tank Top in Stretch Rib,T-shirts & Tank Tops,Vivo,V0225026,1500.0,290.35,80.6,2026-01-24,157,Tier 1 (3M) — 10-15%,1313,77.9,1.0,1313
+KISM/Stock,Kenya,V1125002TEAL2X,Vivo Jersey Halter Neck Tank Top,T-shirts & Tank Tops,Vivo,V1125002,1500.0,390.8500000000001,73.9,2026-02-25,125,Tier 1 (3M) — 10-15%,1313,70.2,1.0,1313
+RUNDA/Stock,Kenya,V1125002TEAL2X,Vivo Jersey Halter Neck Tank Top,T-shirts & Tank Tops,Vivo,V1125002,1500.0,390.8500000000001,73.9,2026-02-25,125,Tier 1 (3M) — 10-15%,1313,70.2,1.0,1313
+SIGNA/Stock,Kenya,V1125002ORAN1X,Vivo Jersey Halter Neck Tank Top,T-shirts & Tank Tops,Vivo,V1125002,1500.0,390.8500000000001,73.9,2026-03-09,113,Tier 1 (3M) — 10-15%,1313,70.2,1.0,1313
+YAYA/Stock,Kenya,V1125002GREE1X,Vivo Jersey Halter Neck Tank Top,T-shirts & Tank Tops,Vivo,V1125002,1500.0,390.8500000000001,73.9,2026-02-09,141,Tier 1 (3M) — 10-15%,1313,70.2,1.0,1313
+WHFIN/Stock,Kenya,V1125002CHOC1X,Vivo Jersey Halter Neck Tank Top,T-shirts & Tank Tops,Vivo,V1125002,1500.0,390.85,73.9,2026-02-13,137,Tier 1 (3M) — 10-15%,1313,70.2,1.0,1313
+MOIAV/Stock,Kenya,V1125002GREE1X,Vivo Jersey Halter Neck Tank Top,T-shirts & Tank Tops,Vivo,V1125002,1500.0,390.8500000000001,73.9,2026-02-09,141,Tier 1 (3M) — 10-15%,1313,70.2,1.0,1313
+WHFIN/Stock,Kenya,V1125002GREE1X,Vivo Jersey Halter Neck Tank Top,T-shirts & Tank Tops,Vivo,V1125002,1500.0,390.8500000000001,73.9,2026-02-09,141,Tier 1 (3M) — 10-15%,1313,70.2,1.0,1313
+MERU/Stock,Kenya,V0222098BURM,Vivo Faraji Long Sleeve Jacket,Jackets & Coats,Vivo,V0222098,1450.0,1133.09,21.9,2026-01-30,151,Tier 1 (3M) — 10-15%,1269,10.7,1.0,1269
+WHFIN/Stock,Kenya,V0225025LTAUM,Vivo Chela Drawstring Shorts,Shorts & Skorts,Vivo,V0225025,1350.0,541.61,59.9,2026-01-27,154,Tier 1 (3M) — 10-15%,1181,54.1,1.0,1181
+JUNCT/Stock,Kenya,V0625008BLAM,Vivo Ari Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0625008,1350.0,824.59,38.9,2026-01-30,151,Tier 1 (3M) — 10-15%,1181,30.2,1.0,1181
+MOIAV/Stock,Kenya,V1024043PR1XS,Vivo Beali Two Way Wrap Top,Midriff & Crop Tops,Vivo,V1024043,1350.0,950.84,29.6,2026-04-01,90,Tier 1 (3M) — 10-15%,1181,19.5,1.0,1181
+YAYA/Stock,Kenya,V0625008BLAM,Vivo Ari Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0625008,1350.0,824.59,38.9,2026-01-30,151,Tier 1 (3M) — 10-15%,1181,30.2,1.0,1181
+ZOYA/Stock,Kenya,V0424158BLA4X,Vivo Cowl Camisole,Loose Tops,Vivo,V0424158,1300.0,400.45,69.2,2026-03-06,116,Tier 1 (3M) — 10-15%,1138,64.8,1.0,1138
+GCITY/Stock,Kenya,V1221043PR47L,Vivo Basic Satin Cap Sleeve Top,Fitted Tops,Vivo,V1221043,1250.0,730.18,41.6,2026-01-27,154,Tier 1 (3M) — 10-15%,1094,33.2,1.0,1094
+WHFIN/Stock,Kenya,V0719007HUNM,Vivo Basic 3/4 Sleeve A-Line Wrap Maxi Dress,Maxi Dresses,Vivo,V0719007,1050.0,1226.0,-16.8,2026-01-27,154,Tier 1 (3M) — 10-15%,919,-33.4,1.0,919
+WHFIN/Stock,Kenya,V0424158KHAM,Vivo Cowl Camisole,Loose Tops,Vivo,V0424158,1050.0,400.45,61.9,2026-02-07,143,Tier 1 (3M) — 10-15%,919,56.4,1.0,919
+ZOYA/Stock,Kenya,V1219185PR34L/1X,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,950.0,250.17,73.7,2026-02-07,143,Tier 1 (3M) — 10-15%,831,69.9,1.0,831
+TRM/Stock,Kenya,V1219185PR17L/XL,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,950.0,250.17,73.7,2026-03-31,91,Tier 1 (3M) — 10-15%,831,69.9,1.0,831
+WHFIN/Stock,Kenya,V1219185PR17L/XL,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,950.0,250.17,73.7,2026-03-31,91,Tier 1 (3M) — 10-15%,831,69.9,1.0,831
+KILEL/Stock,Kenya,V1219185PR32L/1X,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,950.0,250.17000000000004,73.7,2026-02-03,147,Tier 1 (3M) — 10-15%,831,69.9,1.0,831
+WHFIN/Stock,Kenya,V0422077BUTL/1X,Vivo Basic Sienna Jersey Top,T-shirts & Tank Tops,Vivo,V0422077,950.0,609.98,35.8,2026-03-03,119,Tier 1 (3M) — 10-15%,831,26.6,1.0,831
+YAYA/Stock,Kenya,V1219185PR32S/M,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,950.0,250.17,73.7,2026-01-24,157,Tier 1 (3M) — 10-15%,831,69.9,1.0,831
+TRM/Stock,Kenya,V1219185PR32S/M,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,950.0,250.17,73.7,2026-01-24,157,Tier 1 (3M) — 10-15%,831,69.9,1.0,831
+MOIAV/Stock,Kenya,V1219185PR34L/1X,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,950.0,250.17,73.7,2026-02-07,143,Tier 1 (3M) — 10-15%,831,69.9,1.0,831
+MOIAV/Stock,Kenya,V0719112MUS3X,Vivo Basic Long Sleeved Bodysuit,Bodysuits,Vivo,V0719112,850.0,1029.37,-21.1,2026-03-29,93,Tier 1 (3M) — 10-15%,744,-38.4,1.0,744
+MOIAV/Stock,Kenya,VE0001TEA4X,Vivo Essentials Tank Top,T-shirts & Tank Tops,Vivo,VE0001T,750.0,323.28,56.9,2026-03-05,117,Tier 1 (3M) — 10-15%,656,50.7,1.0,656
+GRENS/Stock,Kenya,V0124045PR11X,Vivo Arafa Long Sleeve Tie Dress,Knee Length Dresses,Vivo,V0124045,450.0,1874.88,-316.6,2026-03-12,110,Tier 1 (3M) — 10-15%,394,-376.2,1.0,394
+WHFIN/Stock,Kenya,V1025012SGRNM/L,Vivo Anavi Cascade Waterfall,Waterfalls & Kimonos,Vivo,V1025012,4500.0,1350.09,70.0,2025-12-07,205,Tier 2 (6M) — 20-30%,3375,60.0,13.0,43875
+WHFIN/Stock,Kenya,V0725046GOLS,Vivo Alma Mini Skirt,Skirts & Top Set,Vivo,V0725046,2500.0,359.07000000000005,85.6,2025-12-22,190,Tier 2 (6M) — 20-30%,1875,80.8,13.0,24375
+WHFIN/Stock,Kenya,V0725046POBM,Vivo Alma Mini Skirt,Skirts & Top Set,Vivo,V0725046,2500.0,359.07,85.6,2025-12-20,192,Tier 2 (6M) — 20-30%,1875,80.8,10.0,18750
+WHFIN/Stock,Kenya,V0125045PR5XS/S,Vivo Isabi Sleeveless Kimono,Waterfalls & Kimonos,Vivo,V0125045,4900.0,1374.32,72.0,2025-11-29,213,Tier 2 (6M) — 20-30%,3675,62.6,4.0,14700
+WHFIN/Stock,Kenya,V0125045RUSM/L,Vivo Isabi Sleeveless Kimono,Waterfalls & Kimonos,Vivo,V0125045,4900.0,1374.32,72.0,2025-11-30,212,Tier 2 (6M) — 20-30%,3675,62.6,4.0,14700
+WHFIN/Stock,Kenya,V0722034HGNM/L,Vivo Basic Julia 3/4 Sleeve Back Pleat Knee Length Dress,Knee Length Dresses,Vivo,V0722034,4250.0,1086.28,74.4,2025-11-29,213,Tier 2 (6M) — 20-30%,3188,65.9,4.0,12750
+MSACB/Stock,Kenya,V0725003PR2S,Vivo Hadiya Maxi Dress,Maxi Dresses,Vivo,V0725003,6900.0,2653.9413,61.5,2025-12-21,191,Tier 2 (6M) — 20-30%,5175,48.7,2.0,10350
+TWORV/Stock,Kenya,V0225002PR5L,Vivo Ayah Bishop Sleeve Mock Neck Top,Fitted Tops,Vivo,V0225002,4500.0,1155.12,74.3,2025-11-25,217,Tier 2 (6M) — 20-30%,3375,65.8,3.0,10125
+WHFIN/Stock,Kenya,V0719693DAPS,Vivo Everyday Side Twist Bodycon in Jersey,Knee Length Dresses,Vivo,V0719693,4500.0,561.38,87.5,2025-11-28,214,Tier 2 (6M) — 20-30%,3375,83.4,3.0,10125
+WHFIN/Stock,Kenya,V0625047BLRE1X/2X,Vivo Iyana Maxi Cover Up,Maxi Dresses,Vivo,V0625047,6500.0,2684.19,58.7,2025-12-26,186,Tier 2 (6M) — 20-30%,4875,44.9,2.0,9750
+WHFIN/Stock,Kenya,V0725046POBS,Vivo Alma Mini Skirt,Skirts & Top Set,Vivo,V0725046,2500.0,359.07,85.6,2025-10-25,248,Tier 2 (6M) — 20-30%,1875,80.8,5.0,9375
+WHFIN/Stock,Kenya,V0120065PR321X/2X,Vivo Basic Nandi A-Line Kimono,Waterfalls & Kimonos,Vivo,V0120065,3950.0,1129.52,71.4,2025-11-22,220,Tier 2 (6M) — 20-30%,2963,61.9,3.0,8888
+WHFIN/Stock,Kenya,V0225018NAVM/L,Vivo Chela Sleeveless Waterfall,Waterfalls & Kimonos,Vivo,V0225018,3900.0,767.6,80.3,2025-12-10,202,Tier 2 (6M) — 20-30%,2925,73.8,3.0,8775
+WHFIN/Stock,Kenya,V1025015SGN1X/2X,Vivo Chela Sleeveless Waterfall in Jersey,Waterfalls & Kimonos,Vivo,V1025015,3900.0,1129.17,71.0,2025-11-15,227,Tier 2 (6M) — 20-30%,2925,61.4,3.0,8775
+WHFIN/Stock,Kenya,V0824089GLDM/L,Vivo Chidii Drop Shoulder Kimono,Waterfalls & Kimonos,Vivo,V0824089,5500.0,1655.34,69.9,2025-12-13,199,Tier 2 (6M) — 20-30%,4125,59.9,2.0,8250
+WHFIN/Stock,Kenya,V0625032BLAS,Vivo Aleri A-Line Pleated Dress,Knee Length Dresses,Vivo,V0625032,5500.0,1588.53,71.1,2025-12-29,183,Tier 2 (6M) — 20-30%,4125,61.5,2.0,8250
+HUB/Stock,Kenya,V0719290DGNM/L,Vivo Basic Extra Long Lily Waterfall,Waterfalls & Kimonos,Vivo,V0719290,5500.0,1668.2099999999998,69.7,2025-11-22,220,Tier 2 (6M) — 20-30%,4125,59.6,2.0,8250
+WHFIN/Stock,Kenya,V1221043NABM,Vivo Basic Satin Cap Sleeve Top,Fitted Tops,Vivo,V1221043,2500.0,730.1800000000002,70.8,2025-11-30,212,Tier 2 (6M) — 20-30%,1875,61.1,4.0,7500
+WHFIN/Stock,Kenya,V0125045PR5M/L,Vivo Isabi Sleeveless Kimono,Waterfalls & Kimonos,Vivo,V0125045,4900.0,1374.32,72.0,2025-11-05,237,Tier 2 (6M) — 20-30%,3675,62.6,2.0,7350
+WHFIN/Stock,Kenya,V0224109BLAXXS,Vivo X This Is Essential Short Unitard,Jumpsuits & Playsuits,Vivo,V0224109,3250.0,614.64,81.1,2025-12-11,201,Tier 2 (6M) — 20-30%,2438,74.8,3.0,7313
+WHFIN/Stock,Kenya,V0822019PR351X,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,4500.0,960.25,78.7,2025-11-29,213,Tier 2 (6M) — 20-30%,3375,71.5,2.0,6750
+MSACB/Stock,Kenya,V0524179NABM,Vivo Basic Chiffon Bishop Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524179,2950.0,1508.8,48.9,2025-11-04,238,Tier 2 (6M) — 20-30%,2213,31.8,3.0,6638
+YAYA/Stock,Kenya,V0325053GRYS,Vivo Safa Straight Leg Pants,Full Length Pants,Vivo,V0325053,3900.0,845.2,78.3,2025-11-03,239,Tier 2 (6M) — 20-30%,2925,71.1,2.0,5850
+WHFIN/Stock,Kenya,V0225018BLAM/L,Vivo Chela Sleeveless Waterfall,Waterfalls & Kimonos,Vivo,V0225018,3900.0,991.88,74.6,2025-12-19,193,Tier 2 (6M) — 20-30%,2925,66.1,2.0,5850
+WHFIN/Stock,Kenya,V0225018BUTM/L,Vivo Chela Sleeveless Waterfall,Waterfalls & Kimonos,Vivo,V0225018,3900.0,767.6,80.3,2025-11-14,228,Tier 2 (6M) — 20-30%,2925,73.8,2.0,5850
+WHFIN/Stock,Kenya,V0723043LIML,Vivo Basic Val Long Sleeve Top,Midriff & Crop Tops,Vivo,V0723043,2550.0,688.79,73.0,2025-10-18,255,Tier 2 (6M) — 20-30%,1913,64.0,3.0,5738
+WHFIN/Stock,Kenya,V0524192DGRN3X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,595.07,76.2,2025-12-20,192,Tier 2 (6M) — 20-30%,1875,68.3,3.0,5625
+ZOYA/Stock,Kenya,V1019114PR6M/L,Vivo Basic Nandi High Slit Kimono,Waterfalls & Kimonos,Vivo,V1019114,3550.0,1240.14,65.1,2025-10-15,258,Tier 2 (6M) — 20-30%,2663,53.4,2.0,5325
+WHFIN/Stock,Kenya,V0925016PWB1X/2X,Vivo Alma Drawstring Top,Loose Tops,Vivo,V0925016,3500.0,1064.66,69.6,2025-12-28,184,Tier 2 (6M) — 20-30%,2625,59.4,2.0,5250
+WHFIN/Stock,Kenya,V0223139LIMM,Vivo Izzy Satin Bishop Sleeve Top,Fitted Tops,Vivo,V0223139,3500.0,994.14,71.6,2025-11-28,214,Tier 2 (6M) — 20-30%,2625,62.1,2.0,5250
+MERU/Stock,Kenya,V0923047DGM,Vivo Ava Tent Flounce Maxi Dress,Maxi Dresses,Vivo,V0923047,6900.0,2303.78,66.6,2025-12-13,199,Tier 2 (6M) — 20-30%,5175,55.5,1.0,5175
+GRENS/Stock,Kenya,V0221005PR182X,Vivo Bissa Reversible Maxi Dress,Maxi Dresses,Vivo,V0221005,6500.0,1897.6500000000003,70.8,2025-12-12,200,Tier 2 (6M) — 20-30%,4875,61.1,1.0,4875
+ZOYA/Stock,Kenya,V0225002LILM,Vivo Ayah Bishop Sleeve Mock Neck Top,Fitted Tops,Vivo,V0225002,3050.0,1155.12,62.1,2025-11-28,214,Tier 2 (6M) — 20-30%,2288,49.5,2.0,4575
+WHFIN/Stock,Kenya,V0524179SEG2X,Vivo Basic Chiffon Bishop Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524179,2950.0,1546.88,47.6,2025-12-10,202,Tier 2 (6M) — 20-30%,2213,30.1,2.0,4425
+WHFIN/Stock,Kenya,V0625059MUSL,Vivo Aleri Trench Coat Dress,Knee Length Dresses,Vivo,V0625059,5900.0,2176.57,63.1,2025-12-31,181,Tier 2 (6M) — 20-30%,4425,50.8,1.0,4425
+WHFIN/Stock,Kenya,V0724104BLAS,Vivo Hadiya Wrap Dress,Knee Length Dresses,Vivo,V0724104,5900.0,1861.3,68.5,2025-11-04,238,Tier 2 (6M) — 20-30%,4425,57.9,1.0,4425
+WHFIN/Stock,Kenya,V1123047DREDM,Vivo Hanabi Wrap Maxi Dress,Maxi Dresses,Vivo,V1123047,5750.0,809.0,85.9,2025-12-10,202,Tier 2 (6M) — 20-30%,4313,81.2,1.0,4313
+WHFIN/Stock,Kenya,V0719290DGN1X/2X,Vivo Basic Extra Long Lily Waterfall,Waterfalls & Kimonos,Vivo,V0719290,5500.0,1668.21,69.7,2025-11-03,239,Tier 2 (6M) — 20-30%,4125,59.6,1.0,4125
+MERU/Stock,Kenya,V0719290DGNM/L,Vivo Basic Extra Long Lily Waterfall,Waterfalls & Kimonos,Vivo,V0719290,5500.0,1668.2099999999998,69.7,2025-11-22,220,Tier 2 (6M) — 20-30%,4125,59.6,1.0,4125
+WHFIN/Stock,Kenya,V0824089GLDXS/S,Vivo Chidii Drop Shoulder Kimono,Waterfalls & Kimonos,Vivo,V0824089,5500.0,1655.34,69.9,2025-12-19,193,Tier 2 (6M) — 20-30%,4125,59.9,1.0,4125
+KISM/Stock,Kenya,V0719290DGN1X/2X,Vivo Basic Extra Long Lily Waterfall,Waterfalls & Kimonos,Vivo,V0719290,5500.0,1668.21,69.7,2025-11-03,239,Tier 2 (6M) — 20-30%,4125,59.6,1.0,4125
+YAYA/Stock,Kenya,VE0003TEAL,Vivo Essentials Capri Leggings,Leggings,Vivo,VE0003T,2500.0,504.31,79.8,2025-12-03,209,Tier 2 (6M) — 20-30%,1875,73.1,2.0,3750
+YAYA/Stock,Kenya,VE0003TEA1X,Vivo Essentials Capri Leggings,Leggings,Vivo,VE0003T,2500.0,504.31,79.8,2025-12-20,192,Tier 2 (6M) — 20-30%,1875,73.1,2.0,3750
+CITYM/Stock,Kenya,VE0003WHI2X,Vivo Essentials Capri Leggings,Leggings,Vivo,VE0003W,2500.0,504.31,79.8,2025-11-28,214,Tier 2 (6M) — 20-30%,1875,73.1,2.0,3750
+ZOYA/Stock,Kenya,V1223058NABM,Vivo Alika High Waist Pants,Full Length Pants,Vivo,V1223058,4950.0,1648.89,66.7,2025-11-24,218,Tier 2 (6M) — 20-30%,3713,55.6,1.0,3713
+WHFIN/Stock,Kenya,V0121167PR22XS/S,Vivo Dua 3/4 Sleeved V Neck Shirt,Loose Tops,Vivo,V0121167,2450.0,1339.97,45.3,2025-10-29,244,Tier 2 (6M) — 20-30%,1838,27.1,2.0,3675
+MERU/Stock,Kenya,V0819098RED2X,Vivo Basic Kena Tent Knee Length Dress,Knee Length Dresses,Vivo,V0819098,4900.0,1424.81,70.9,2025-11-12,230,Tier 2 (6M) — 20-30%,3675,61.2,1.0,3675
+WHFIN/Stock,Kenya,V0625028BLA1X,Vivo Diella 3/4 Sleeve Pleated Dress,Knee Length Dresses,Vivo,V0625028,4900.0,1416.87,71.1,2025-11-30,212,Tier 2 (6M) — 20-30%,3675,61.4,1.0,3675
+WHFIN/Stock,Kenya,V0125045PR51X/2X,Vivo Isabi Sleeveless Kimono,Waterfalls & Kimonos,Vivo,V0125045,4900.0,1374.32,72.0,2025-11-23,219,Tier 2 (6M) — 20-30%,3675,62.6,1.0,3675
+MERU/Stock,Kenya,V0120002BLAL,Vivo Basic 3/4 Sleeve Kena Tent Knee Length Dress,Knee Length Dresses,Vivo,V0120002,4900.0,1386.0,71.7,2025-12-05,207,Tier 2 (6M) — 20-30%,3675,62.3,1.0,3675
+TRM/Stock,Kenya,V0824086PR41X,Vivo Chidii Wide Leg Pants,Full Length Pants,Vivo,V0824086,4900.0,1676.62,65.8,2025-10-12,261,Tier 2 (6M) — 20-30%,3675,54.4,1.0,3675
+WHFIN/Stock,Kenya,V0824086DRD1X,Vivo Chidii Wide Leg Pants,Full Length Pants,Vivo,V0824086,4900.0,1676.62,65.8,2025-11-29,213,Tier 2 (6M) — 20-30%,3675,54.4,1.0,3675
+WHFIN/Stock,Kenya,V0725029RED1X,Vivo Ari Sleeveless Straight Maxi Slit Dress,Maxi Dresses,Vivo,V0725029,4900.0,879.19,82.1,2025-12-22,190,Tier 2 (6M) — 20-30%,3675,76.1,1.0,3675
+WHFIN/Stock,Kenya,V0220055DRED2X,Vivo Basic Cap Sleeve Maxi Tent Dress,Maxi Dresses,Vivo,V0220055,4850.0,2894.79,40.3,2025-12-06,206,Tier 2 (6M) — 20-30%,3638,20.4,1.0,3638
+MERU/Stock,Kenya,V0525075PR42X,Vivo Basic Round Neck Maxi Dress,Maxi Dresses,Vivo,V0525075,4850.0,1620.71,66.6,2025-12-24,188,Tier 2 (6M) — 20-30%,3638,55.4,1.0,3638
+GRENS/Stock,Kenya,V1223032PR17S,Vivo Asha Sleeveless Maxi Dress,Maxi Dresses,Vivo,V1223032,4850.0,2004.13,58.7,2025-12-31,181,Tier 2 (6M) — 20-30%,3638,44.9,1.0,3638
+MOIAV/Stock,Kenya,V0524194PR5S/M,Vivo Cuffed Wide Sweater,Sweaters & Ponchos,Vivo,V0524194,4550.0,2758.62,39.4,2025-11-22,220,Tier 2 (6M) — 20-30%,3413,19.2,1.0,3413
+ZOYA/Stock,Kenya,V0424124PR1M,Vivo Chesi Wide Leg Pants,Full Length Pants,Vivo,V0424124,4550.0,1414.71,68.9,2025-12-02,210,Tier 2 (6M) — 20-30%,3413,58.5,1.0,3413
+GCITY/Stock,Kenya,V0622019PR234X,Vivo Basic Sleeveless Tent Maxi Dress,Maxi Dresses,Vivo,V0622019,4550.0,1871.37,58.9,2025-11-23,219,Tier 2 (6M) — 20-30%,3413,45.2,1.0,3413
+WHFIN/Stock,Kenya,V0819003TEA2X,Vivo Basic Panelled Leisure Pants,Full Length Pants,Vivo,V0819003,4500.0,1377.5199999999998,69.4,2025-11-26,216,Tier 2 (6M) — 20-30%,3375,59.2,1.0,3375
+WHFIN/Stock,Kenya,V0625005BLAS,Vivo Alani Pallazo Pants,Full Length Pants,Vivo,V0625005,4500.0,1706.29,62.1,2025-11-28,214,Tier 2 (6M) — 20-30%,3375,49.4,1.0,3375
+TRM/Stock,Kenya,V0924052DAP1X,Vivo Hari Wide Leg Pants,Full Length Pants,Vivo,V0924052,4500.0,1316.79,70.7,2025-12-23,189,Tier 2 (6M) — 20-30%,3375,61.0,1.0,3375
+CITYM/Stock,Kenya,V1025012SGRNM/L,Vivo Anavi Cascade Waterfall,Waterfalls & Kimonos,Vivo,V1025012,4500.0,1350.09,70.0,2025-12-07,205,Tier 2 (6M) — 20-30%,3375,60.0,1.0,3375
+KISM/Stock,Kenya,V0819003TEA2X,Vivo Basic Panelled Leisure Pants,Full Length Pants,Vivo,V0819003,4500.0,1377.5199999999998,69.4,2025-11-26,216,Tier 2 (6M) — 20-30%,3375,59.2,1.0,3375
+HUB/Stock,Kenya,V0822019PR35S,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,4500.0,960.25,78.7,2025-12-31,181,Tier 2 (6M) — 20-30%,3375,71.5,1.0,3375
+TRM/Stock,Kenya,V1124074MUL2X,Vivo Ayla Crepe Pants,Full Length Pants,Vivo,V1124074,4500.0,1351.55,70.0,2025-11-25,217,Tier 2 (6M) — 20-30%,3375,60.0,1.0,3375
+WHFIN/Stock,Kenya,V0725042CHOS,Vivo Aleri Front Slit Sheath Dress,Midi & Capri Dresses,Vivo,V0725042,4500.0,706.27,84.3,2025-11-19,223,Tier 2 (6M) — 20-30%,3375,79.1,1.0,3375
+WHFIN/Stock,Kenya,V0822019RORAM,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,4500.0,960.25,78.7,2025-12-23,189,Tier 2 (6M) — 20-30%,3375,71.5,1.0,3375
+HUB/Stock,Kenya,V0819003TEA2X,Vivo Basic Panelled Leisure Pants,Full Length Pants,Vivo,V0819003,4500.0,1377.5199999999998,69.4,2025-11-26,216,Tier 2 (6M) — 20-30%,3375,59.2,1.0,3375
+WHFIN/Stock,Kenya,V0822019MAGM,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,4500.0,960.25,78.7,2025-11-06,236,Tier 2 (6M) — 20-30%,3375,71.5,1.0,3375
+GCITY/Stock,Kenya,V0725023DGRNS,Vivo Ari One Shoulder Maxi Dress,Maxi Dresses,Vivo,V0725023,2250.0,2140.07,4.9,2025-12-06,206,Tier 2 (6M) — 20-30%,1688,-26.8,2.0,3375
+MSACB/Stock,Kenya,V0724094OLIL,Vivo Hadiya Flounce Sleeve Maxi Dress,Maxi Dresses,Vivo,V0724094,4350.0,1947.72,55.2,2025-12-01,211,Tier 2 (6M) — 20-30%,3263,40.3,1.0,3263
+JUNCT/Stock,Kenya,V0625048PR62X,Vivo Iyana Knee Length Bubble Dress,Short & Mini Dresses,Vivo,V0625048,4150.0,2023.57,51.2,2025-12-05,207,Tier 2 (6M) — 20-30%,3113,35.0,1.0,3113
+WHFIN/Stock,Kenya,V0323020BURL,Vivo Basic Long Sleeve A-Line Maxi Dress,Maxi Dresses,Vivo,V0323020,4150.0,1768.37,57.4,2025-11-29,213,Tier 2 (6M) — 20-30%,3113,43.2,1.0,3113
+MERU/Stock,Kenya,V0422075MAS1X,Vivo Basic Chiffon Dropped Shoulder Top,Fitted Tops,Vivo,V0422075,2050.0,1017.24,50.4,2025-11-30,212,Tier 2 (6M) — 20-30%,1538,33.8,2.0,3075
+ZOYA/Stock,Kenya,V0122102GRYS,Vivo Faraji Side Slit Leisure Pants,Full Length Pants,Vivo,V0122102,1350.0,1243.62,7.9,2025-11-30,212,Tier 2 (6M) — 20-30%,1013,-22.8,3.0,3038
+WHFIN/Stock,Kenya,VE0008WHI3X,Vivo Essentials Bodycon,Knee Length Dresses,Vivo,VE0008W,3950.0,593.93,85.0,2025-12-01,211,Tier 2 (6M) — 20-30%,2963,80.0,1.0,2963
+NAKUR/Stock,Kenya,VE0008WHI1X,Vivo Essentials Bodycon,Knee Length Dresses,Vivo,VE0008W,3950.0,593.93,85.0,2025-11-04,238,Tier 2 (6M) — 20-30%,2963,80.0,1.0,2963
+HUB/Stock,Kenya,V0825015PR1S,Vivo Lena Slim Fit Pants,Full Length Pants,Vivo,V0825015,3900.0,999.61,74.4,2025-12-15,197,Tier 2 (6M) — 20-30%,2925,65.8,1.0,2925
+JUNCT/Stock,Kenya,V0825015PR1M,Vivo Lena Slim Fit Pants,Full Length Pants,Vivo,V0825015,3900.0,620.22,84.1,2025-10-25,248,Tier 2 (6M) — 20-30%,2925,78.8,1.0,2925
+MOIAV/Stock,Kenya,V0825015PR1S,Vivo Lena Slim Fit Pants,Full Length Pants,Vivo,V0825015,3900.0,999.61,74.4,2025-12-15,197,Tier 2 (6M) — 20-30%,2925,65.8,1.0,2925
+WHFIN/Stock,Kenya,V0322110BLA1X,Vivo Dalia Sleeveless Gathered Tent Dress,Knee Length Dresses,Vivo,V0322110,3850.0,1410.49,63.4,2025-11-12,230,Tier 2 (6M) — 20-30%,2888,51.2,1.0,2888
+MOIAV/Stock,Kenya,V0325019RBLU1X,Vivo Chela Basic Cap Sleeve Top,Midriff & Crop Tops,Vivo,V0325019,1850.0,330.76,82.1,2025-12-20,192,Tier 2 (6M) — 20-30%,1388,76.2,2.0,2775
+ZOYA/Stock,Kenya,V0325019RBLU1X,Vivo Chela Basic Cap Sleeve Top,Midriff & Crop Tops,Vivo,V0325019,1850.0,330.76,82.1,2025-12-20,192,Tier 2 (6M) — 20-30%,1388,76.2,2.0,2775
+WHFIN/Stock,Kenya,V0819106LAMXS/S,Vivo Basic Waterfall,Waterfalls & Kimonos,Vivo,V0819106,3550.0,939.18,73.5,2025-11-29,213,Tier 2 (6M) — 20-30%,2663,64.7,1.0,2663
+RUNDA/Stock,Kenya,V0225024BUTM,Vivo Chela Wide Leg Pants,Full Length Pants,Vivo,V0225024,3500.0,687.9699999999999,80.3,2025-11-15,227,Tier 2 (6M) — 20-30%,2625,73.8,1.0,2625
+WHFIN/Stock,Kenya,V0925016GLDXS/S,Vivo Alma Drawstring Top,Loose Tops,Vivo,V0925016,3500.0,1064.66,69.6,2025-11-30,212,Tier 2 (6M) — 20-30%,2625,59.4,1.0,2625
+NAKUR/Stock,Kenya,V0524178NAV2X,Vivo Basic Chiffon Cap Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524178,3500.0,1089.44,68.9,2025-12-29,183,Tier 2 (6M) — 20-30%,2625,58.5,1.0,2625
+KILEL/Stock,Kenya,V0524178CORM,Vivo Basic Chiffon Cap Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524178,3500.0,1089.44,68.9,2025-12-31,181,Tier 2 (6M) — 20-30%,2625,58.5,1.0,2625
+WHFIN/Stock,Kenya,V0524178CORM,Vivo Basic Chiffon Cap Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524178,3500.0,1089.44,68.9,2025-12-31,181,Tier 2 (6M) — 20-30%,2625,58.5,1.0,2625
+WHFIN/Stock,Kenya,V0825060LIML,Vivo Alma Short Sleeve Mini Bodycon,Short & Mini Dresses,Vivo,V0825060,3500.0,523.9,85.0,2025-12-30,182,Tier 2 (6M) — 20-30%,2625,80.0,1.0,2625
+WHFIN/Stock,Kenya,V0223139LIMS,Vivo Izzy Satin Bishop Sleeve Top,Fitted Tops,Vivo,V0223139,3500.0,994.14,71.6,2025-11-22,220,Tier 2 (6M) — 20-30%,2625,62.1,1.0,2625
+WHFIN/Stock,Kenya,V0225024TAUM,Vivo Chela Wide Leg Pants,Full Length Pants,Vivo,V0225024,3500.0,687.97,80.3,2025-10-30,243,Tier 2 (6M) — 20-30%,2625,73.8,1.0,2625
+WHFIN/Stock,Kenya,V0225024BUTM,Vivo Chela Wide Leg Pants,Full Length Pants,Vivo,V0225024,3500.0,687.9699999999999,80.3,2025-11-15,227,Tier 2 (6M) — 20-30%,2625,73.8,1.0,2625
+WHFIN/Stock,Kenya,V0925010PR6S,Vivo Basic Crepe Bishop Sleeve Top,Fitted Tops,Vivo,V0925010,3500.0,763.4,78.2,2025-11-22,220,Tier 2 (6M) — 20-30%,2625,70.9,1.0,2625
+WHFIN/Stock,Kenya,V0225024TAUS,Vivo Chela Wide Leg Pants,Full Length Pants,Vivo,V0225024,3500.0,687.9699999999999,80.3,2025-11-28,214,Tier 2 (6M) — 20-30%,2625,73.8,1.0,2625
+MOIAV/Stock,Kenya,V0919035BORA1X,Vivo Basic 3/4 Sleeve Double Layered Bodycon Dress,Knee Length Dresses,Vivo,V0919035,3450.0,1624.01,52.9,2025-11-26,216,Tier 2 (6M) — 20-30%,2588,37.2,1.0,2588
+WHFIN/Stock,Kenya,V0824086PR11X,Vivo Chidii Wide Leg Pants,Full Length Pants,Vivo,V0824086,3450.0,1676.62,51.4,2025-10-09,264,Tier 2 (6M) — 20-30%,2588,35.2,1.0,2588
+WHFIN/Stock,Kenya,V0624095NAVM,Vivo Hamle Side Twist Tie Bodycon,Knee Length Dresses,Vivo,V0624095,3400.0,1644.66,51.6,2025-12-22,190,Tier 2 (6M) — 20-30%,2550,35.5,1.0,2550
+TRM/Stock,Kenya,V0225005PR1M,Vivo Ayah Shirred Neck Tent Maxi Dress,Maxi Dresses,Vivo,V0225005,3350.0,2107.63,37.1,2025-12-04,208,Tier 2 (6M) — 20-30%,2513,16.1,1.0,2513
+IMAAR/Stock,Kenya,V0524194TANCOFFL/1X,Vivo Cuffed Wide Sweater,Sweaters & Ponchos,Vivo,V0524194,3250.0,2758.62,15.1,2025-12-09,203,Tier 2 (6M) — 20-30%,2438,-13.2,1.0,2438
+WHFIN/Stock,Kenya,V0819031RUSL,Vivo Basic Double Layered Capri Skirt,Midi & Capri Skirts,Vivo,V0819031,3250.0,985.92,69.7,2025-11-27,215,Tier 2 (6M) — 20-30%,2438,59.6,1.0,2438
+ELDOR/Stock,Kenya,V0822019PR40M,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,3150.0,960.25,69.5,2025-11-28,214,Tier 2 (6M) — 20-30%,2363,59.4,1.0,2363
+TMALL/Stock,Kenya,V1124074PR132X,Vivo Ayla Crepe Pants,Full Length Pants,Vivo,V1124074,3150.0,1351.55,57.1,2026-01-01,180,Tier 2 (6M) — 20-30%,2363,42.8,1.0,2363
+CITYM/Stock,Kenya,V0822019PR41S,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,3150.0,960.25,69.5,2025-12-06,206,Tier 2 (6M) — 20-30%,2363,59.4,1.0,2363
+HUB/Stock,Kenya,V0822019PR41S,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,3150.0,960.25,69.5,2025-12-06,206,Tier 2 (6M) — 20-30%,2363,59.4,1.0,2363
+KILEL/Stock,Kenya,V0724080RUSM,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,356.59,76.2,2025-11-25,217,Tier 2 (6M) — 20-30%,1125,68.3,2.0,2250
+GALLE/Stock,Kenya,V0719261WHIL,Vivo Basic Long Sleeved Double Layered Bodycon,Knee Length Dresses,Vivo,V0719261,2950.0,1403.92,52.4,2025-12-05,207,Tier 2 (6M) — 20-30%,2213,36.5,1.0,2213
+CITYM/Stock,Kenya,V1119113WHI1X/2X,Vivo Basic Sleeveless Jersey Waterfall,Waterfalls & Kimonos,Vivo,V1119113,2900.0,1035.09,64.3,2025-11-09,233,Tier 2 (6M) — 20-30%,2175,52.4,1.0,2175
+MERU/Stock,Kenya,V1119113WHI1X/2X,Vivo Basic Sleeveless Jersey Waterfall,Waterfalls & Kimonos,Vivo,V1119113,2900.0,1035.09,64.3,2025-11-09,233,Tier 2 (6M) — 20-30%,2175,52.4,1.0,2175
+WHFIN/Stock,Kenya,V1119113WHI1X/2X,Vivo Basic Sleeveless Jersey Waterfall,Waterfalls & Kimonos,Vivo,V1119113,2900.0,1035.09,64.3,2025-11-09,233,Tier 2 (6M) — 20-30%,2175,52.4,1.0,2175
+MSACB/Stock,Kenya,V1119113WHI1X/2X,Vivo Basic Sleeveless Jersey Waterfall,Waterfalls & Kimonos,Vivo,V1119113,2900.0,1035.09,64.3,2025-11-09,233,Tier 2 (6M) — 20-30%,2175,52.4,1.0,2175
+GALLE/Stock,Kenya,V1020057NABXL,Vivo Basic Waridi Pencil Skirt,Knee Length Skirts,Vivo,V1020057,2900.0,681.6,76.5,2025-12-31,181,Tier 2 (6M) — 20-30%,2175,68.7,1.0,2175
+RUNDA/Stock,Kenya,V1020057NABXL,Vivo Basic Waridi Pencil Skirt,Knee Length Skirts,Vivo,V1020057,2900.0,681.6,76.5,2025-12-31,181,Tier 2 (6M) — 20-30%,2175,68.7,1.0,2175
+WHFIN/Stock,Kenya,V1020057NABXL,Vivo Basic Waridi Pencil Skirt,Knee Length Skirts,Vivo,V1020057,2900.0,681.6,76.5,2025-12-31,181,Tier 2 (6M) — 20-30%,2175,68.7,1.0,2175
+MERU/Stock,Kenya,V0422058BLAS,Vivo Basic Tsavo Scalloped Chiffon Top,Fitted Tops,Vivo,V0422058,2750.0,736.68,73.2,2025-11-26,216,Tier 2 (6M) — 20-30%,2063,64.3,1.0,2063
+MERU/Stock,Kenya,V0422058BLAL,Vivo Basic Tsavo Scalloped Chiffon Top,Fitted Tops,Vivo,V0422058,2750.0,736.68,73.2,2025-12-03,209,Tier 2 (6M) — 20-30%,2063,64.3,1.0,2063
+WHFIN/Stock,Kenya,V0622002BUOL,Vivo Basic Drop Shoulder Top,Loose Tops,Vivo,V0622002,2550.0,635.46,75.1,2025-10-07,266,Tier 2 (6M) — 20-30%,1913,66.8,1.0,1913
+GCITY/Stock,Kenya,V1221043NABM,Vivo Basic Satin Cap Sleeve Top,Fitted Tops,Vivo,V1221043,2500.0,730.1800000000002,70.8,2025-11-30,212,Tier 2 (6M) — 20-30%,1875,61.1,1.0,1875
+WHFIN/Stock,Kenya,V0725046DGRYM,Vivo Alma Mini Skirt,Skirts & Top Set,Vivo,V0725046,2500.0,359.07,85.6,2025-12-12,200,Tier 2 (6M) — 20-30%,1875,80.8,1.0,1875
+CITYM/Stock,Kenya,VE0003WHI3X,Vivo Essentials Capri Leggings,Leggings,Vivo,VE0003W,2500.0,504.31,79.8,2025-11-11,231,Tier 2 (6M) — 20-30%,1875,73.1,1.0,1875
+MERU/Stock,Kenya,V1123080PR7M,Vivo Ajani V-Neck Top,Fitted Tops,Vivo,V1123080,2450.0,949.69,61.2,2025-11-14,228,Tier 2 (6M) — 20-30%,1838,48.3,1.0,1838
+WHFIN/Stock,Kenya,V0724026BLAL/1X,Vivo Amai Hi-Low Top,Loose Tops,Vivo,V0724026,2450.0,1001.52,59.1,2025-11-25,217,Tier 2 (6M) — 20-30%,1838,45.5,1.0,1838
+MOIAV/Stock,Kenya,V0121167PR25M/L,Vivo Dua 3/4 Sleeved V Neck Shirt,Loose Tops,Vivo,V0121167,2450.0,1339.97,45.3,2025-12-02,210,Tier 2 (6M) — 20-30%,1838,27.1,1.0,1838
+MOIAV/Stock,Kenya,V0822019LIL1X,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,2250.0,960.25,57.3,2025-10-30,243,Tier 2 (6M) — 20-30%,1688,43.1,1.0,1688
+MOIAV/Stock,Kenya,V0725023DGRNS,Vivo Ari One Shoulder Maxi Dress,Maxi Dresses,Vivo,V0725023,2250.0,2140.07,4.9,2025-12-06,206,Tier 2 (6M) — 20-30%,1688,-26.8,1.0,1688
+MOIAV/Stock,Kenya,V0725023RED1X,Vivo Ari One Shoulder Maxi Dress,Maxi Dresses,Vivo,V0725023,2250.0,2140.07,4.9,2025-11-18,224,Tier 2 (6M) — 20-30%,1688,-26.8,1.0,1688
+MOIAV/Stock,Kenya,V0324064LITF,Vivo Cuffed Wrap Poncho,Sweaters & Ponchos,Vivo,V0324064,2250.0,2413.79,-7.3,2025-12-05,207,Tier 2 (6M) — 20-30%,1688,-43.0,1.0,1688
+WHFIN/Stock,Kenya,V0524179ORA2X,Vivo Basic Chiffon Bishop Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524179,2050.0,1546.88,24.5,2025-10-07,266,Tier 2 (6M) — 20-30%,1538,-0.6,1.0,1538
+MERU/Stock,Kenya,V0722033DAGL,Vivo Basic Julia 3/4 Sleeve Back Pleat Maxi Dress,Maxi Dresses,Vivo,V0722033,2050.0,1999.92,2.4,2025-11-28,214,Tier 2 (6M) — 20-30%,1538,-30.1,1.0,1538
+KISM/Stock,Kenya,V1120036LOV1X,Vivo Everyday Cap Sleeve Top,T-shirts & Tank Tops,Vivo,V1120036,1900.0,694.21,63.5,2025-12-14,198,Tier 2 (6M) — 20-30%,1425,51.3,1.0,1425
+ZOYA/Stock,Kenya,V0225025RBLUL,Vivo Chela Drawstring Shorts,Shorts & Skorts,Vivo,V0225025,950.0,541.61,43.0,2025-12-30,182,Tier 2 (6M) — 20-30%,713,24.0,2.0,1425
+MERU/Stock,Kenya,V1120036LOVS,Vivo Everyday Cap Sleeve Top,T-shirts & Tank Tops,Vivo,V1120036,1900.0,694.21,63.5,2025-10-10,263,Tier 2 (6M) — 20-30%,1425,51.3,1.0,1425
+TRM/Stock,Kenya,V0625008TEAM,Vivo Ari Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0625008,1900.0,824.59,56.6,2025-11-30,212,Tier 2 (6M) — 20-30%,1425,42.1,1.0,1425
+KILEL/Stock,Kenya,V1120036DAO1X,Vivo Everyday Cap Sleeve Top,T-shirts & Tank Tops,Vivo,V1120036,1900.0,694.2099999999999,63.5,2025-12-06,206,Tier 2 (6M) — 20-30%,1425,51.3,1.0,1425
+GCITY/Stock,Kenya,V0919039HGNXS,Vivo Basic Puff Sleeved Bodycon,Knee Length Dresses,Vivo,V0919039,1850.0,1501.21,18.9,2025-11-21,221,Tier 2 (6M) — 20-30%,1388,-8.2,1.0,1388
+GRENS/Stock,Kenya,V0325019RBLU1X,Vivo Chela Basic Cap Sleeve Top,Midriff & Crop Tops,Vivo,V0325019,1850.0,330.76,82.1,2025-12-20,192,Tier 2 (6M) — 20-30%,1388,76.2,1.0,1388
+WHFIN/Stock,Kenya,V0719839TANL/1X,Vivo Basic Sleeveless Long Lily Waterfall,Waterfalls & Kimonos,Vivo,V0719839,1750.0,1385.96,20.8,2025-12-05,207,Tier 2 (6M) — 20-30%,1313,-5.6,1.0,1313
+MSACB/Stock,Kenya,V1019066HGN4X,Vivo Basic Sleeveless Leila Bodycon Dress,Knee Length Dresses,Vivo,V1019066,1650.0,842.96,48.9,2025-11-29,213,Tier 2 (6M) — 20-30%,1238,31.9,1.0,1238
+MOIAV/Stock,Kenya,V0924049GREEN2X,Vivo Hari Flared Sleeve Tunic,Fitted Tops,Vivo,V0924049,1550.0,1250.54,19.3,2025-10-28,245,Tier 2 (6M) — 20-30%,1163,-7.6,1.0,1163
+TRM/Stock,Kenya,V0924049PINS,Vivo Hari Flared Sleeve Tunic,Fitted Tops,Vivo,V0924049,1550.0,1250.54,19.3,2025-11-29,213,Tier 2 (6M) — 20-30%,1163,-7.6,1.0,1163
+MERU/Stock,Kenya,V0325019BUTM,Vivo Chela Basic Cap Sleeve Top,Midriff & Crop Tops,Vivo,V0325019,1550.0,330.76,78.7,2025-11-07,235,Tier 2 (6M) — 20-30%,1163,71.5,1.0,1163
+MERU/Stock,Kenya,V0724080MUSS,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,356.59,76.2,2025-10-11,262,Tier 2 (6M) — 20-30%,1125,68.3,1.0,1125
+WHFIN/Stock,Kenya,V0225026TAU1X,Vivo Chela Tank Top,T-shirts & Tank Tops,Vivo,V0225026,1500.0,342.7,77.2,2025-12-15,197,Tier 2 (6M) — 20-30%,1125,69.5,1.0,1125
+WHFIN/Stock,Kenya,V0624060BUR1X,Vivo Hamle Bias Twist Dress,Knee Length Dresses,Vivo,V0624060,1450.0,1644.66,-13.4,2025-11-26,216,Tier 2 (6M) — 20-30%,1088,-51.2,1.0,1088
+CITYM/Stock,Kenya,V0625008BLAS,Vivo Ari Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0625008,1350.0,824.59,38.9,2025-12-05,207,Tier 2 (6M) — 20-30%,1013,18.6,1.0,1013
+WHFIN/Stock,Kenya,V0125045PR1M/L,Vivo Isabi Sleeveless Kimono,Waterfalls & Kimonos,Vivo,V0125045,1350.0,1374.32,-1.8,2025-12-01,211,Tier 2 (6M) — 20-30%,1013,-35.7,1.0,1013
+WHFIN/Stock,Kenya,V0125045PR4M/L,Vivo Isabi Sleeveless Kimono,Waterfalls & Kimonos,Vivo,V0125045,1350.0,1374.32,-1.8,2025-12-27,185,Tier 2 (6M) — 20-30%,1013,-35.7,1.0,1013
+WHFIN/Stock,Kenya,V1122193DTEAL/1X,Vivo Basic Sleeveless Extra Long Lily Waterfall,Waterfalls & Kimonos,Vivo,V1122193,1350.0,1386.31,-2.7,2025-11-30,212,Tier 2 (6M) — 20-30%,1013,-36.9,1.0,1013
+ZOYA/Stock,Kenya,V0424158BLA2X,Vivo Cowl Camisole,Loose Tops,Vivo,V0424158,1300.0,400.45,69.2,2025-11-05,237,Tier 2 (6M) — 20-30%,975,58.9,1.0,975
+ZOYA/Stock,Kenya,V0424158BLA1X,Vivo Cowl Camisole,Loose Tops,Vivo,V0424158,1300.0,400.45,69.2,2025-11-22,220,Tier 2 (6M) — 20-30%,975,58.9,1.0,975
+JUNCT/Stock,Kenya,V0923053OLGXS,Vivo Ava Pleated Wide Leg Pants,Full Length Pants,Vivo,V0923053,1250.0,1395.16,-11.6,2025-11-20,222,Tier 2 (6M) — 20-30%,938,-48.8,1.0,938
+ZOYA/Stock,Kenya,V0622062WHI1X/2X,Vivo Basic Cowl Jersey Top,Loose Tops,Vivo,V0622062,1150.0,903.92,21.4,2025-11-18,224,Tier 2 (6M) — 20-30%,863,-4.8,1.0,863
+TRM/Stock,Kenya,V0622062WHI1X/2X,Vivo Basic Cowl Jersey Top,Loose Tops,Vivo,V0622062,1150.0,903.92,21.4,2025-11-18,224,Tier 2 (6M) — 20-30%,863,-4.8,1.0,863
+ZOYA/Stock,Kenya,V1219185PR35L/1X,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,500.0,250.17,50.0,2025-10-19,254,Tier 2 (6M) — 20-30%,375,33.3,2.0,750
+MNS/Stock,Kenya,V1219185PR34S/M,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,950.0,250.17,73.7,2025-11-18,224,Tier 2 (6M) — 20-30%,713,64.9,1.0,713
+ZOYA/Stock,Kenya,V0424158WHIL,Vivo Cowl Camisole,Loose Tops,Vivo,V0424158,950.0,400.45,57.8,2025-11-28,214,Tier 2 (6M) — 20-30%,713,43.8,1.0,713
+JUNCT/Stock,Kenya,V0323019BURS,Vivo Basic V-neck Cap Sleeve Top,T-shirts & Tank Tops,Vivo,V0323019,950.0,687.31,27.7,2025-11-20,222,Tier 2 (6M) — 20-30%,713,3.5,1.0,713
+WHFIN/Stock,Kenya,V1219185PR34S/M,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,950.0,250.17,73.7,2025-11-18,224,Tier 2 (6M) — 20-30%,713,64.9,1.0,713
+ZOYA/Stock,Kenya,V1120036NABM,Vivo Everyday Cap Sleeve Top,Midriff & Crop Tops,Vivo,V1120036,950.0,568.36,40.2,2025-11-15,227,Tier 2 (6M) — 20-30%,713,20.2,1.0,713
+KISM/Stock,Kenya,V0422058NABM,Vivo Basic Tsavo Scalloped Chiffon Top,Fitted Tops,Vivo,V0422058,750.0,920.84,-22.8,2025-12-26,186,Tier 2 (6M) — 20-30%,563,-63.7,1.0,563
+WHFIN/Stock,Kenya,V0821064LBLU4X,Vivo Basic Crepe Cap Sleeved Top,Fitted Tops,Vivo,V0821064,750.0,879.46,-17.3,2025-12-05,207,Tier 2 (6M) — 20-30%,563,-56.3,1.0,563
+YAYA/Stock,Kenya,V1219185PR35L/1X,Vivo Basic Aziza Belt,Belts,Vivo,V1219185,500.0,250.17,50.0,2025-10-19,254,Tier 2 (6M) — 20-30%,375,33.3,1.0,375
+ZOYA/Stock,Kenya,V0623033TAN4X,Vivo Basic Spaghetti Strap Tank Top,T-shirts & Tank Tops,Vivo,V0623033,450.0,421.8500000000001,6.3,2025-10-09,264,Tier 2 (6M) — 20-30%,338,-25.0,1.0,338
+JUNCT/Stock,Kenya,V0623033TANXS,Vivo Basic Spaghetti Strap Tank Top,T-shirts & Tank Tops,Vivo,V0623033,450.0,421.85,6.3,2025-11-26,216,Tier 2 (6M) — 20-30%,338,-25.0,1.0,338
+TMALL/Stock,Kenya,V0223222NABM,Vivo Fasi Strapless Top,Fitted Tops,Vivo,V0223222,250.0,819.72,-227.9,2025-11-29,213,Tier 2 (6M) — 20-30%,188,-337.2,1.0,188
+WHFIN/Stock,Kenya,V1022080YELL/XL,Vivo Arusha Dolman Top,Loose Tops,Vivo,V1022080,250.0,694.23,-177.7,2025-11-25,217,Tier 2 (6M) — 20-30%,188,-270.3,1.0,188
+WHFIN/Stock,Kenya,V0425034BLAL,Vivo Sierra Maxi Chiffon Dress,Maxi Dresses,Vivo,V0425034,6900.0,1329.396857142857,80.7,2025-09-11,292,Tier 3 (9M) — 30-40%,4485,70.4,32.0,143520
+WHFIN/Stock,Kenya,V0425034BLAS,Vivo Sierra Maxi Chiffon Dress,Maxi Dresses,Vivo,V0425034,6900.0,1329.3970833333333,80.7,2025-09-18,285,Tier 3 (9M) — 30-40%,4485,70.4,20.0,89700
+WHFIN/Stock,Kenya,V0823134NAB4X,Vivo Basic Long Sleeve Bodysuit (Seamless),Bodysuits,Vivo,V0823134,2000.0,1025.35,48.7,2025-07-15,350,Tier 3 (9M) — 30-40%,1300,21.1,6.0,7800
+WHFIN/Stock,Kenya,V0120065PR32XS/S,Vivo Basic Nandi A-Line Kimono,Waterfalls & Kimonos,Vivo,V0120065,3950.0,1129.52,71.4,2025-07-24,341,Tier 3 (9M) — 30-40%,2568,56.0,3.0,7703
+WHFIN/Stock,Kenya,V1019114NABM/L,Vivo Basic Nandi High Slit Kimono,Waterfalls & Kimonos,Vivo,V1019114,3900.0,1240.14,68.2,2025-07-29,336,Tier 3 (9M) — 30-40%,2535,51.1,3.0,7605
+MSACB/Stock,Kenya,V0824081GRNM/L,Vivo Chidii Off Shoulder Maxi Dress,Maxi Dresses,Vivo,V0824081,4150.0,3237.88,22.0,2025-09-12,291,Tier 3 (9M) — 30-40%,2698,-20.0,2.0,5395
+WHFIN/Stock,Kenya,V0524178GRYM,Vivo Basic Chiffon Cap Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524178,3500.0,1089.44,68.9,2025-08-31,303,Tier 3 (9M) — 30-40%,2275,52.1,2.0,4550
+WHFIN/Stock,Kenya,V0625059BLAS,Vivo Aleri Trench Coat Dress,Knee Length Dresses,Vivo,V0625059,5900.0,2176.57,63.1,2025-09-26,277,Tier 3 (9M) — 30-40%,3835,43.2,1.0,3835
+TRM/Stock,Kenya,V0625059BLAS,Vivo Aleri Trench Coat Dress,Knee Length Dresses,Vivo,V0625059,5900.0,2176.57,63.1,2025-09-26,277,Tier 3 (9M) — 30-40%,3835,43.2,1.0,3835
+WHFIN/Stock,Kenya,V0523154NAV4X,Vivo Basic Cap Sleeved Bodysuit,Bodysuits,Vivo,V0523154,2500.0,682.6800000000001,72.7,2025-09-19,284,Tier 3 (9M) — 30-40%,1625,58.0,2.0,3250
+WHFIN/Stock,Kenya,V0724026DBROS/M,Vivo Amai Hi-Low Top,Loose Tops,Vivo,V0724026,2450.0,1001.52,59.1,2025-09-01,302,Tier 3 (9M) — 30-40%,1593,37.1,2.0,3185
+WHFIN/Stock,Kenya,V0822019PR24M,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,4500.0,960.25,78.7,2025-07-31,334,Tier 3 (9M) — 30-40%,2925,67.2,1.0,2925
+SIGNA/Stock,Kenya,V0722034HGNXS/S,Vivo Basic Julia 3/4 Sleeve Back Pleat Knee Length Dress,Knee Length Dresses,Vivo,V0722034,4250.0,1086.28,74.4,2025-09-30,273,Tier 3 (9M) — 30-40%,2763,60.7,1.0,2763
+WHFIN/Stock,Kenya,V1123047DRUSL,Vivo Hanabi Wrap Maxi Dress,Maxi Dresses,Vivo,V1123047,4050.0,809.0,80.0,2025-08-22,312,Tier 3 (9M) — 30-40%,2633,69.3,1.0,2633
+WHFIN/Stock,Kenya,V1019114NAB1X/2X,Vivo Basic Nandi High Slit Kimono,Waterfalls & Kimonos,Vivo,V1019114,3900.0,1240.14,68.2,2025-07-19,346,Tier 3 (9M) — 30-40%,2535,51.1,1.0,2535
+WHFIN/Stock,Kenya,V1019114NABXS/S,Vivo Basic Nandi High Slit Kimono,Waterfalls & Kimonos,Vivo,V1019114,3900.0,1240.14,68.2,2025-08-18,316,Tier 3 (9M) — 30-40%,2535,51.1,1.0,2535
+WHFIN/Stock,Kenya,V0225018LTAU1X/2X,Vivo Chela Sleeveless Waterfall,Waterfalls & Kimonos,Vivo,V0225018,3900.0,991.88,74.6,2025-09-17,286,Tier 3 (9M) — 30-40%,2535,60.9,1.0,2535
+WHFIN/Stock,Kenya,V0225018TAU1X/2X,Vivo Chela Sleeveless Waterfall,Waterfalls & Kimonos,Vivo,V0225018,3900.0,767.6,80.3,2025-09-08,295,Tier 3 (9M) — 30-40%,2535,69.7,1.0,2535
+WHFIN/Stock,Kenya,V1019114PR6XS/S,Vivo Basic Nandi High Slit Kimono,Waterfalls & Kimonos,Vivo,V1019114,3550.0,1240.14,65.1,2025-07-31,334,Tier 3 (9M) — 30-40%,2308,46.3,1.0,2308
+WHFIN/Stock,Kenya,V0223139SGRNL,Vivo Izzy Satin Bishop Sleeve Top,Fitted Tops,Vivo,V0223139,3500.0,994.14,71.6,2025-09-14,289,Tier 3 (9M) — 30-40%,2275,56.3,1.0,2275
+WHFIN/Stock,Kenya,V0225024BUT1X,Vivo Chela Wide Leg Pants,Full Length Pants,Vivo,V0225024,3500.0,687.97,80.3,2025-09-23,280,Tier 3 (9M) — 30-40%,2275,69.8,1.0,2275
+MOIAV/Stock,Kenya,V0121167PR26XS/S,Vivo Dua 3/4 Sleeved V Neck Shirt,Loose Tops,Vivo,V0121167,3500.0,1339.97,61.7,2025-10-03,270,Tier 3 (9M) — 30-40%,2275,41.1,1.0,2275
+WHFIN/Stock,Kenya,V0121167PR26XS/S,Vivo Dua 3/4 Sleeved V Neck Shirt,Loose Tops,Vivo,V0121167,3500.0,1339.97,61.7,2025-10-03,270,Tier 3 (9M) — 30-40%,2275,41.1,1.0,2275
+WHFIN/Stock,Kenya,V0624095BURM,Vivo Hamle Side Twist Tie Bodycon,Knee Length Dresses,Vivo,V0624095,3450.0,1644.66,52.3,2025-09-04,299,Tier 3 (9M) — 30-40%,2243,26.7,1.0,2243
+SIGNA/Stock,Kenya,V0724080RUS1X,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,356.59,76.2,2025-08-07,327,Tier 3 (9M) — 30-40%,975,63.4,2.0,1950
+WHFIN/Stock,Kenya,V0120065OFWM/L,Vivo Basic Nandi A-Line Kimono,Waterfalls & Kimonos,Vivo,V0120065,2750.0,1129.52,58.9,2025-09-25,278,Tier 3 (9M) — 30-40%,1788,36.8,1.0,1788
+WHFIN/Stock,Kenya,V0423006DGN1X/2X,Vivo Bana Batwing Top,T-shirts & Tank Tops,Vivo,V0423006,2750.0,679.64,75.3,2025-08-29,305,Tier 3 (9M) — 30-40%,1788,62.0,1.0,1788
+JUNCT/Stock,Kenya,V0121119HPINM,Vivo Basic Satin Bishop Sleeved Top,Fitted Tops,Vivo,V0121119,2550.0,1221.78,52.1,2025-09-19,284,Tier 3 (9M) — 30-40%,1658,26.3,1.0,1658
+CITYM/Stock,Kenya,VE0003WHIXS,Vivo Essentials Capri Leggings,Leggings,Vivo,VE0003W,2500.0,504.31,79.8,2025-09-10,293,Tier 3 (9M) — 30-40%,1625,69.0,1.0,1625
+IMAAR/Stock,Kenya,V0523154NAV4X,Vivo Basic Cap Sleeved Bodysuit,Bodysuits,Vivo,V0523154,2500.0,682.6800000000001,72.7,2025-09-19,284,Tier 3 (9M) — 30-40%,1625,58.0,1.0,1625
+MSACB/Stock,Kenya,V0523154NAV4X,Vivo Basic Cap Sleeved Bodysuit,Bodysuits,Vivo,V0523154,2500.0,682.6800000000001,72.7,2025-09-19,284,Tier 3 (9M) — 30-40%,1625,58.0,1.0,1625
+ZOYA/Stock,Kenya,V0719261HGN2X,Vivo Basic Long Sleeved Double Layered Bodycon,Knee Length Dresses,Vivo,V0719261,2450.0,1403.92,42.7,2025-09-10,293,Tier 3 (9M) — 30-40%,1593,11.8,1.0,1593
+TWORV/Stock,Kenya,V0722036CARS/M,Vivo Basic Dolman Sweater Dress,Knee Length Dresses,Vivo,V0722036,1950.0,1425.0,26.9,2025-09-01,302,Tier 3 (9M) — 30-40%,1268,-12.4,1.0,1268
+MSACB/Stock,Kenya,VE0006WHI4X,Vivo Essentials Full Length Leggings,Leggings,Vivo,VE0006W,1950.0,504.31,74.1,2025-08-20,314,Tier 3 (9M) — 30-40%,1268,60.2,1.0,1268
+WHFIN/Stock,Kenya,V0625008TEAL,Vivo Ari Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0625008,1900.0,824.59,56.6,2025-10-01,272,Tier 3 (9M) — 30-40%,1235,33.2,1.0,1235
+TRM/Stock,Kenya,VE0003MULS,Vivo Essentials Capri Leggings,Leggings,Vivo,VE0003M,1750.0,504.31,71.2,2025-09-06,297,Tier 3 (9M) — 30-40%,1138,55.7,1.0,1138
+KISM/Stock,Kenya,V0225025BLAM,Vivo Chela Drawstring Shorts,Shorts & Skorts,Vivo,V0225025,1750.0,541.61,69.1,2025-08-03,331,Tier 3 (9M) — 30-40%,1138,52.4,1.0,1138
+MOIAV/Stock,Kenya,VE0002BLKM,Vivo Essentials Biker Shorts,Shorts & Skorts,Vivo,VE0002B,1750.0,452.59,74.1,2025-08-26,308,Tier 3 (9M) — 30-40%,1138,60.2,1.0,1138
+MERU/Stock,Kenya,V0325019BUTS,Vivo Chela Basic Cap Sleeve Top,Midriff & Crop Tops,Vivo,V0325019,1550.0,330.76,78.7,2025-07-03,362,Tier 3 (9M) — 30-40%,1008,67.2,1.0,1008
+IMAAR/Stock,Kenya,V0724080RUSL,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,356.59,76.2,2025-09-08,295,Tier 3 (9M) — 30-40%,975,63.4,1.0,975
+KILEL/Stock,Kenya,V0724080RUS1X,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,356.59,76.2,2025-08-07,327,Tier 3 (9M) — 30-40%,975,63.4,1.0,975
+WHFIN/Stock,Kenya,V0724080REDL,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,356.59,76.2,2025-08-17,317,Tier 3 (9M) — 30-40%,975,63.4,1.0,975
+KILEL/Stock,Kenya,V0724080RUSL,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,356.59,76.2,2025-09-08,295,Tier 3 (9M) — 30-40%,975,63.4,1.0,975
+GALLE/Stock,Kenya,VE0006BLAM,Vivo Essentials Full Length Leggings,Leggings,Vivo,VE0006B,1350.0,504.31,62.6,2025-08-29,305,Tier 3 (9M) — 30-40%,878,42.5,1.0,878
+WHFIN/Stock,Kenya,V1023097TANM,Vivo Amara Sleeveless High Low Top,Loose Tops,Vivo,V1023097,900.0,828.01,8.0,2025-08-23,311,Tier 3 (9M) — 30-40%,585,-41.5,1.0,585
+MOIAV/Stock,Kenya,VE0002WHIM,Vivo Essentials Biker Shorts,Shorts & Skorts,Vivo,VE0002W,850.0,452.59,46.8,2025-08-21,313,Tier 3 (9M) — 30-40%,553,18.1,1.0,553
+WHFIN/Stock,Kenya,V0425034BLA1X,Vivo Sierra Maxi Chiffon Dress,Maxi Dresses,Vivo,V0425034,6900.0,1329.398,80.7,2025-06-16,379,Tier 4 (12M+) — 40-60%,3450,61.5,18.0,62100
+WHFIN/Stock,Kenya,V0225018LTAUM/L,Vivo Chela Sleeveless Waterfall,Waterfalls & Kimonos,Vivo,V0225018,3900.0,991.88,74.6,2025-06-01,394,Tier 4 (12M+) — 40-60%,1950,49.1,3.0,5850
+WHFIN/Stock,Kenya,V0524192DGRN4X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,595.07,76.2,2025-05-29,397,Tier 4 (12M+) — 40-60%,1250,52.4,3.0,3750
+MERU/Stock,Kenya,V0423078HUNS/M,Vivo Basic Leila Short Waterfall,Waterfalls & Kimonos,Vivo,V0423078,3700.0,993.8099999999998,73.1,2025-05-12,414,Tier 4 (12M+) — 40-60%,1850,46.3,2.0,3700
+WHFIN/Stock,Kenya,V0724094NABS,Vivo Hadiya Flounce Sleeve Maxi Dress,Maxi Dresses,Vivo,V0724094,6250.0,1947.72,68.8,2025-04-05,451,Tier 4 (12M+) — 40-60%,3125,37.7,1.0,3125
+MSACB/Stock,Kenya,V0824073BLAL,Vivo Amai Knee Length Dresses,Knee Length Dresses,Vivo,V0824073,5950.0,2625.65,55.9,2025-03-17,470,Tier 4 (12M+) — 40-60%,2975,11.7,1.0,2975
+MSACB/Stock,Kenya,V0524179NABS,Vivo Basic Chiffon Bishop Sleeve Top (Double Layered),Fitted Tops,Vivo,V0524179,2950.0,1508.8,48.9,2025-02-15,500,Tier 4 (12M+) — 40-60%,1475,-2.3,2.0,2950
+WHFIN/Stock,Kenya,V1123047HPINS,Vivo Hanabi Wrap Maxi Dress,Maxi Dresses,Vivo,V1123047,5750.0,809.0,85.9,2025-04-23,433,Tier 4 (12M+) — 40-60%,2875,71.9,1.0,2875
+WHFIN/Stock,Kenya,V0125045RUSXS/S,Vivo Isabi Sleeveless Kimono,Waterfalls & Kimonos,Vivo,V0125045,4900.0,1374.32,72.0,2025-06-26,369,Tier 4 (12M+) — 40-60%,2450,43.9,1.0,2450
+WHFIN/Stock,Kenya,V0125045RUS1X/2X,Vivo Isabi Sleeveless Kimono,Waterfalls & Kimonos,Vivo,V0125045,4900.0,1374.3200000000002,72.0,2025-06-19,376,Tier 4 (12M+) — 40-60%,2450,43.9,1.0,2450
+MERU/Stock,Kenya,V0819098BLAS,Vivo Basic Kena Tent Knee Length Dress,Knee Length Dresses,Vivo,V0819098,4900.0,1424.8099999999997,70.9,2025-05-02,424,Tier 4 (12M+) — 40-60%,2450,41.8,1.0,2450
+WHFIN/Stock,Kenya,V0921140PR101X/2X,Vivo Alek 3/4 Sleeve A-Line Kimono,Waterfalls & Kimonos,Vivo,V0921140,4550.0,1443.48,68.3,2025-01-30,516,Tier 4 (12M+) — 40-60%,2275,36.6,1.0,2275
+WHFIN/Stock,Kenya,V0921140PR10M/L,Vivo Alek 3/4 Sleeve A-Line Kimono,Waterfalls & Kimonos,Vivo,V0921140,4550.0,1443.48,68.3,2025-03-19,468,Tier 4 (12M+) — 40-60%,2275,36.6,1.0,2275
+ZOYA/Stock,Kenya,V0424124PR11X,Vivo Chesi Wide Leg Pants,Full Length Pants,Vivo,V0424124,4550.0,1414.71,68.9,2024-12-01,576,Tier 4 (12M+) — 40-60%,2275,37.8,1.0,2275
+MOIAV/Stock,Kenya,V0822019PR291X,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,4500.0,960.25,78.7,2025-01-02,544,Tier 4 (12M+) — 40-60%,2250,57.3,1.0,2250
+MOIAV/Stock,Kenya,V0822019PR29L,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,4500.0,960.25,78.7,2025-05-07,419,Tier 4 (12M+) — 40-60%,2250,57.3,1.0,2250
+WHFIN/Stock,Kenya,V1123047DRUSM,Vivo Hanabi Wrap Maxi Dress,Maxi Dresses,Vivo,V1123047,4050.0,809.0,80.0,2025-06-10,385,Tier 4 (12M+) — 40-60%,2025,60.0,1.0,2025
+KILEL/Stock,Kenya,V0423006NBLS/M,Vivo Bana Batwing Top,T-shirts & Tank Tops,Vivo,V0423006,3900.0,679.64,82.6,2024-07-24,706,Tier 4 (12M+) — 40-60%,1950,65.1,1.0,1950
+MOIAV/Stock,Kenya,V0322110DANM,Vivo Dalia Sleeveless Gathered Tent Dress,Knee Length Dresses,Vivo,V0322110,3850.0,1410.49,63.4,2024-10-14,624,Tier 4 (12M+) — 40-60%,1925,26.7,1.0,1925
+MOIAV/Stock,Kenya,V0322110PR7S,Vivo Dalia Sleeveless Gathered Tent Dress,Knee Length Dresses,Vivo,V0322110,3850.0,1410.4899999999998,63.4,2025-03-08,479,Tier 4 (12M+) — 40-60%,1925,26.7,1.0,1925
+SIGNA/Stock,Kenya,V0423078HUNS/M,Vivo Basic Leila Short Waterfall,Waterfalls & Kimonos,Vivo,V0423078,3700.0,993.8099999999998,73.1,2025-05-12,414,Tier 4 (12M+) — 40-60%,1850,46.3,1.0,1850
+MERU/Stock,Kenya,V1122193BUOS/M,Vivo Basic Sleeveless Extra Long Lily Waterfall,Waterfalls & Kimonos,Vivo,V1122193,3450.0,1386.31,59.8,2024-10-19,619,Tier 4 (12M+) — 40-60%,1725,19.6,1.0,1725
+WHFIN/Stock,Kenya,V0620049TANS/M,Vivo Basic Leila Maxi Waterfall,Waterfalls & Kimonos,Vivo,V0620049,3450.0,1069.06,69.0,2024-11-27,580,Tier 4 (12M+) — 40-60%,1725,38.0,1.0,1725
+MNS/Stock,Kenya,V0620049TANS/M,Vivo Basic Leila Maxi Waterfall,Waterfalls & Kimonos,Vivo,V0620049,3450.0,1069.06,69.0,2024-11-27,580,Tier 4 (12M+) — 40-60%,1725,38.0,1.0,1725
+MSACB/Stock,Kenya,V0622008PR162X,Vivo Jema High Low Tent Dress,Midi & Capri Dresses,Vivo,V0622008,3450.0,1854.01,46.3,2024-04-30,791,Tier 4 (12M+) — 40-60%,1725,-7.5,1.0,1725
+MERU/Stock,Kenya,V0620049GRES/M,Vivo Basic Leila Maxi Waterfall,Waterfalls & Kimonos,Vivo,V0620049,3450.0,1273.54,63.1,2025-06-13,382,Tier 4 (12M+) — 40-60%,1725,26.2,1.0,1725
+TRM/Stock,Kenya,V0822022PRT19L,Vivo Basic Sleeveless Tent Dress,Knee Length Dresses,Vivo,V0822022,3450.0,1476.52,57.2,2024-09-18,650,Tier 4 (12M+) — 40-60%,1725,14.4,1.0,1725
+SIGNA/Stock,Kenya,V0824066PR5L,Vivo Asha Sleeveless Knee Length Dress,Knee Length Dresses,Vivo,V1223034,3450.0,1434.4800000000002,58.4,2025-05-06,420,Tier 4 (12M+) — 40-60%,1725,16.8,1.0,1725
+GCITY/Stock,Kenya,V0322088PR9S,Vivo Jamila Halter Neck Knee Length Dress,Knee Length Dresses,Vivo,V0322088,3150.0,1548.07,50.9,2025-01-25,521,Tier 4 (12M+) — 40-60%,1575,1.7,1.0,1575
+MSACB/Stock,Kenya,V0819003DNABS,Vivo Basic Panelled Leisure Pants,Full Length Pants,Vivo,V0819003,3150.0,1230.28,60.9,2025-05-17,409,Tier 4 (12M+) — 40-60%,1575,21.9,1.0,1575
+WHFIN/Stock,Kenya,V0120092PR502X,Vivo Basic Long Sleeved Bishop Top,Fitted Tops,Vivo,V0120092,2950.0,958.06,67.5,2025-06-18,377,Tier 4 (12M+) — 40-60%,1475,35.0,1.0,1475
+GCITY/Stock,Kenya,V0120033PR22F,Vivo Basic Wide Liv Chiffon Maxi Dress,Maxi Dresses,Vivo,V0120033,2950.0,913.57,69.0,2025-01-28,518,Tier 4 (12M+) — 40-60%,1475,38.1,1.0,1475
+STPUR/Stock,Kenya,V0921142PR18S,Vivo Alek Shirred Off,Jumpsuits & Playsuits,Vivo,V0921142,2650.0,2702.8,-2.0,2025-02-23,492,Tier 4 (12M+) — 40-60%,1325,-104.0,1.0,1325
+MERU/Stock,Kenya,V1023100PR41X,Vivo Amara Back Pleat Dress,Knee Length Dresses,Vivo,V1023100,2550.0,1798.8,29.5,2025-04-04,452,Tier 4 (12M+) — 40-60%,1275,-41.1,1.0,1275
+MERU/Stock,Kenya,V0423038BURL,Vivo Basic Long Sleeve Straight Maxi Dress,Maxi Dresses,Vivo,V0423038,2550.0,1616.84,36.6,2024-10-26,612,Tier 4 (12M+) — 40-60%,1275,-26.8,1.0,1275
+WHFIN/Stock,Kenya,V0524192WHI3X,Vivo Basic Short Sleeve Top,T-shirts & Tank Tops,Vivo,V0524192,2500.0,595.07,76.2,2025-01-05,541,Tier 4 (12M+) — 40-60%,1250,52.4,1.0,1250
+MERU/Stock,Kenya,V0524192BLA4X,Vivo Basic Short Sleeve Top in Jersey,T-shirts & Tank Tops,Vivo,V0524192,2500.0,595.07,76.2,2024-10-05,633,Tier 4 (12M+) — 40-60%,1250,52.4,1.0,1250
+MERU/Stock,Kenya,V0121167DOLIXS/S,Vivo Dua 3/4 Sleeved V Neck Shirt,Loose Tops,Vivo,V0121167,2450.0,1339.97,45.3,2025-05-06,420,Tier 4 (12M+) — 40-60%,1225,-9.4,1.0,1225
+WHFIN/Stock,Kenya,V0223139NABL,Vivo Izzy Satin Bishop Sleeve Top,Fitted Tops,Vivo,V0223139,2450.0,994.14,59.4,2023-11-30,943,Tier 4 (12M+) — 40-60%,1225,18.8,1.0,1225
+ELDOR/Stock,Kenya,V1020057TEAL,Vivo Basic Waridi Pencil Skirt,Knee Length Skirts,Vivo,V1020057,2050.0,681.6,66.8,2025-06-06,389,Tier 4 (12M+) — 40-60%,1025,33.5,1.0,1025
+MERU/Stock,Kenya,V0722033DAG1X,Vivo Basic Julia 3/4 Sleeve Back Pleat Maxi Dress,Maxi Dresses,Vivo,V0722033,2050.0,1999.92,2.4,2024-12-09,568,Tier 4 (12M+) — 40-60%,1025,-95.1,1.0,1025
+GCITY/Stock,Kenya,V1020057TEAM,Vivo Basic Waridi Pencil Skirt,Knee Length Skirts,Vivo,V1020057,2050.0,681.6,66.8,2025-06-19,376,Tier 4 (12M+) — 40-60%,1025,33.5,1.0,1025
+MOIAV/Stock,Kenya,V0225031PR4L,Vivo Ayah Satin Pants,Full Length Pants,Vivo,V0225031,1950.0,1111.15,43.0,2025-06-23,372,Tier 4 (12M+) — 40-60%,975,-14.0,1.0,975
+JUNCT/Stock,Kenya,V0819145MUSS/M,Vivo Basic Dolman Sweater,Sweaters & Ponchos,Vivo,V0819145,1950.0,1160.64,40.5,2024-09-21,647,Tier 4 (12M+) — 40-60%,975,-19.0,1.0,975
+ZOYA/Stock,Kenya,V0225031PR4L,Vivo Ayah Satin Pants,Full Length Pants,Vivo,V0225031,1950.0,1111.15,43.0,2025-06-23,372,Tier 4 (12M+) — 40-60%,975,-14.0,1.0,975
+TRM/Stock,Kenya,V0924049PIN2X,Vivo Hari Flared Sleeve Tunic,Fitted Tops,Vivo,V0924049,1550.0,1250.54,19.3,2025-06-16,379,Tier 4 (12M+) — 40-60%,775,-61.4,1.0,775
+MOIAV/Stock,Kenya,V1024043PR3XS,Vivo Beali Two Way Wrap Top,Midriff & Crop Tops,Vivo,V1024043,1550.0,950.8399999999998,38.7,2025-02-04,511,Tier 4 (12M+) — 40-60%,775,-22.7,1.0,775
+ZOYA/Stock,Kenya,V0822019PR27S,Vivo Basic Crepe Pants,Full Length Pants,Vivo,V0822019,1550.0,960.25,38.0,2024-12-09,568,Tier 4 (12M+) — 40-60%,775,-23.9,1.0,775
+TWORV/Stock,Kenya,V0724080TAU2X,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,385.54,74.3,2025-06-29,366,Tier 4 (12M+) — 40-60%,750,48.6,1.0,750
+WHFIN/Stock,Kenya,V0724080RED2X,Vivo Basic Tank Top,Fitted Tops,Vivo,V0724080,1500.0,356.59,76.2,2025-04-22,434,Tier 4 (12M+) — 40-60%,750,52.5,1.0,750
+WHFIN/Stock,Kenya,V0122102HGNS,Vivo Faraji Side Slit Leisure Pants,Full Length Pants,Vivo,V0122102,1250.0,1243.62,0.5,2025-05-06,420,Tier 4 (12M+) — 40-60%,625,-99.0,1.0,625
+GALLE/Stock,Kenya,V1022057BLAS,Vivo Basic Maternity Leggings,Full Length Pants,Vivo,V1022057,1050.0,873.5099999999999,16.8,2025-03-17,470,Tier 4 (12M+) — 40-60%,525,-66.4,1.0,525
+JUNCT/Stock,Kenya,V0324043NAVXS,Vivo Amai Side Slit Pants,Full Length Pants,Vivo,V0324043,1050.0,1980.52,-88.6,2025-03-21,466,Tier 4 (12M+) — 40-60%,525,-277.2,1.0,525
+ZOYA/Stock,Kenya,V0624053WHI4X,Vivo Hamle Front Twist Bodysuit,Bodysuits,Vivo,V0624053,1050.0,1110.47,-5.8,2024-11-15,592,Tier 4 (12M+) — 40-60%,525,-111.5,1.0,525
+ZOYA/Stock,Kenya,V1022057BLAL,Vivo Basic Maternity Leggings,Full Length Pants,Vivo,V1022057,1050.0,873.51,16.8,2025-03-14,473,Tier 4 (12M+) — 40-60%,525,-66.4,1.0,525
+TMALL/Stock,Kenya,V0923010NABS,Vivo Jira Capri Leggings,Leggings,Vivo,V0923010,900.0,979.43,-8.8,2025-06-13,382,Tier 4 (12M+) — 40-60%,450,-117.7,1.0,450
+IMAAR/Stock,Kenya,V0821064LBLU3X,Vivo Basic Crepe Cap Sleeved Top,Fitted Tops,Vivo,V0821064,750.0,638.41,14.9,2025-05-01,425,Tier 4 (12M+) — 40-60%,375,-70.2,1.0,375
+MERU/Stock,Kenya,V0124083ORA1X/2X,Vivo Amara Midi Waterfall,Waterfalls & Kimonos,Vivo,V0124083,750.0,891.56,-18.9,2024-12-11,566,Tier 4 (12M+) — 40-60%,375,-137.7,1.0,375
+RUNDA/Stock,Kenya,V0624047NAVS,Vivo Hamle Side Twist Tie Top,Fitted Tops,Vivo,V0624047,450.0,1644.66,-265.5,2025-02-13,502,Tier 4 (12M+) — 40-60%,225,-631.0,1.0,225
