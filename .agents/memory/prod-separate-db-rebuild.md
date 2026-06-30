@@ -62,6 +62,35 @@ the published app still shows wrong numbers — prod doesn't run the rebuild AND
 its source tables may be empty/dirty; use REBUILD_ON_BOOT with the source refresh
 ON, don't just re-publish or skip the refresh.
 
+## Rebuild timeout → watchdog DEGRADED MODE freezes prod (sync OFF until republish)
+On `REBUILD_ON_BOOT=1`, if a rebuild step exceeds `REBUILD_TIMEOUT_SEC` the watchdog
+**kills the step, ABORTS the whole rebuild, and refuses to start the sync loop** —
+it idles in "degraded mode, operator action required" (`rebuild_on_boot_failed`).
+So the dashboard freezes at the last pre-rebuild `loaded_at` and stays frozen on
+every VM restart (REBUILD_ON_BOOT re-triggers each boot) until someone republishes.
+The app keeps serving (heartbeats/sync-status 200) — only the data feed is dead.
+
+`REBUILD_TIMEOUT_SEC=7200` (2h) is **far too small** for the first run: the long
+pole is `shopify_full_extract.py` re-walking ALL history from 2021 in ~15-day
+batches, per store (vivowoman/uganda/rwanda). Observed: in 2h it only reached
+~late-2023 for one of three stores. It **is checkpointed** ("Checkpoint advanced
+to …") so it resumes, not restarts — but completing once needs many hours; set
+`REBUILD_TIMEOUT_SEC` ~28800 (8h) and publish off-peak.
+
+Recovery choices when found parked in degraded mode (all are USER actions — agent
+can't set prod secrets / republish):
+- **Restore live data fast:** set `REBUILD_ON_BOOT=0` (or delete) + republish →
+  normal boot, incremental sync resumes, dashboard catches up in minutes. The
+  in-progress raw extract only wrote `shopify_sales` (transform never ran), so
+  all_sales is untouched and nothing is lost; the historical correction is just
+  deferred.
+- **Actually finish the correction:** keep `REBUILD_ON_BOOT=1`, raise
+  `REBUILD_TIMEOUT_SEC` to 8h+, republish off-peak (resumes from checkpoint),
+  watch for the COMPLETED log, then `REBUILD_ON_BOOT=0` + republish.
+**Why:** the abort-and-don't-start-sync is intentional (a half-done rebuild must
+not overlap the sync), but the side effect is a fully frozen prod until a human
+republishes — so the timeout must be generous enough to finish in one boot.
+
 ## Same trap for any NEW raw source: it must be wired into the sync loop
 Adding a new Odoo/Shopify extract that writes its own `raw_*` tables (e.g.
 `extract_fabric.py` → `raw_fabric_*` feeding `/fabric`) and running it only by
