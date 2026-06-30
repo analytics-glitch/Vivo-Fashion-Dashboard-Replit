@@ -2981,7 +2981,7 @@ function tpRenderPanelShell(p){
     TKPI_ORDER.map(k=>`<option value="${k}"${k===p.kpi?' selected':''}>${esc(TKPI[k].label)}</option>`).join('')+`</select>`;
   const scopeSel=`<select data-pid="${p.id}" data-role="scope" class="btn" style="max-width:240px;">${tpScopeOptions(p.scope)}</select>`;
   const canRemove=trendPanels.length>1;
-  return `<div class="card trend-panel" data-pid="${p.id}" style="margin-bottom:1.1rem;">
+  return `<div class="card trend-panel" data-pid="${p.id}">
     <div class="section-head" style="align-items:flex-start;flex-wrap:wrap;gap:.6rem;">
      <div class="flex" style="flex-wrap:wrap;gap:.5rem;align-items:center;">
       ${kpiSel}
@@ -3002,7 +3002,7 @@ function tpRenderPanelShell(p){
 function tpRenderAll(){
   const host=document.getElementById('trend-panels');
   if(!host)return;
-  host.innerHTML=trendPanels.map(tpRenderPanelShell).join('');
+  host.innerHTML=`<div class="grid-2" style="align-items:start;">${trendPanels.map(tpRenderPanelShell).join('')}</div>`;
   trendPanels.forEach(p=>tpLoadPanel(p.id));
 }
 
