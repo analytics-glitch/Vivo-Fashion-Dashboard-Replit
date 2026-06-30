@@ -30,9 +30,11 @@ change one definition, change the other in lockstep or the two tiles disagree.
 before `LEFT JOIN`ing to `all_sales` — `all_customers` has multiple rows per
 customer, so a non-distinct join fans out sales rows and inflates counts/sums.
 
-**Note (data semantics):** Online (Shop Zetu ShopifyQL) rows carry no customer_id,
-so Online shows ~100% walk-in. That is expected for the aggregate Online feed, not
-a bug.
+**Note (data semantics):** Online (Shop Zetu ShopifyQL) rows now **DO** carry
+customer_id (~99.9% of history; only genuine guest checkouts are null), so Online
+splits into real New/Returning and only a tiny walk-in remainder. A near-100%
+walk-in Online reading is a **bug** (extractor not pulling customer_id), NOT
+expected — see `online-no-customer-identity.md`.
 
 **Incomplete-profile (different metric):** identified customers (real id, active in
 period) who are missing name/phone/email. Denominator must reuse the same identified

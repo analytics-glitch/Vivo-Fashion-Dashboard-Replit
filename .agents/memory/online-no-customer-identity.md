@@ -4,10 +4,20 @@ description: Online customer KPIs are real (not structural zeros) once the Shopi
 ---
 
 **Current state (corrected):** Online sales (Shop Zetu via the ShopifyQL feed; `store_id='shop-zetu'`,
-`country='Online'`) **DO** carry `customer_id`. The ShopZetu QL extractor was updated to pull it and
-`raw_shopify_vendor_sales` now has a `customer_id` column; a full re-extract + `transform_all_sales`
-rebuild populated `all_sales.customer_id` for ~99% of historical Shop Zetu rows (coverage by month is
-near-complete; only the very newest rows can lag until the next backfill).
+`country='Online'`) **DO** carry `customer_id` (~99.9% of all-history rows; only genuine guest
+checkouts are null). **Invariant — three ingestion paths must ALL carry `customer_id` in lockstep** or
+Online silently reverts to ~100% walk-in: the raw ShopifyQL extractor (must request the `customer_id`
+*dimension*, not just have the column), the rebuild transform, and the live-sync wrapper. **Why:** the
+original bug was the extractor never requesting the dimension, so the raw column existed but was always
+NULL and the transform fell back to a retail-only orders table that never has shop-zetu rows.
+
+**DEV vs raw gotcha:** dev `all_sales` Online was repopulated **directly via the live-sync wrapper**
+(per-window delete+insert, shop-zetu-scoped), NOT via a raw backfill + transform — so dev
+`raw_shopify_vendor_sales.customer_id` is still NULL for history. A full `transform_all_sales` rebuild
+in dev would **re-NULL Online** unless you first run the raw extractor full-history backfill. Prod gets
+that raw backfill automatically via the `REBUILD_ON_BOOT=1` watchdog gate. Operational notes: ShopifyQL
+hard rate-limits this store (run wrappers in bounded month/year chunks; each invocation commits), and
+`nohup &` background jobs do NOT survive a bash tool call in this env — run long chunks in the foreground.
 
 **Therefore per-customer KPIs work for Online through the normal path.** `/api/customers` with
 `channel='Online - Shop Zetu'` returns real `total_customers` / `new_customers` /
