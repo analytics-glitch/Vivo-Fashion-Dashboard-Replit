@@ -640,6 +640,18 @@ def summary(location: str = Query(default="RMAT/Stock"),
               AND m.date >= CURRENT_DATE
         """)[0]
 
+        # Most recent day an actual OUT consumption move was posted within scope.
+        # Lets the UI distinguish a legitimate quiet-day 0 from a stalled feed.
+        # NULL when there is no consumption history at all for this scope.
+        last_cons = q(conn, f"""
+            SELECT MAX(m.date::date) as d
+            FROM {EFFECTIVE_MOVES} m
+            WHERE m.move_type='OUT'
+              AND m.uom IN ('g','kg')
+              AND m.is_fabric
+              AND {scope_sql}
+        """)[0]
+
         # BOM styles
         bom = q(conn, "SELECT COUNT(DISTINCT finished_product_name) as styles FROM raw_fabric_boms")[0]
 
@@ -703,6 +715,7 @@ def summary(location: str = Query(default="RMAT/Stock"),
             "consumption_30d_metres": cons['metres'] or 0,
             "consumption_today_kg": cons_today['kg'] or 0,
             "consumption_today_metres": cons_today['metres'] or 0,
+            "last_consumption_date": (last_cons['d'].isoformat() if last_cons['d'] else None),
             "styles_with_bom": bom['styles'] or 0,
             "basic_months_of_cover": basic_cover,
             "basic_months_of_cover_status": basic_cover_status,

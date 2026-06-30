@@ -671,6 +671,17 @@ const _hasMTD=data=>Array.isArray(data)&&data.some(r=>String(r&&r.period||'').sl
 const mtdNote=data=>_hasMTD(data)?`MTD month is partial — figures as of ${_mtdAsOf()}`:'';
 const loc=()=>document.getElementById('location-filter').value||'RMAT/Stock';
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// Format an ISO date (YYYY-MM-DD) as "26 Jun"; '' when missing/unparseable.
+const fmtDayMon=s=>{if(!s)return '';const dt=new Date(String(s)+'T00:00:00');return isNaN(dt)?'':dt.toLocaleDateString(undefined,{day:'numeric',month:'short'});};
+// Sub-line for a "Consumed today" card: when today's consumption is 0, show a
+// quiet freshness cue (last posted date + "no production activity yet today")
+// so a legitimate quiet-day zero is distinguishable from a stalled feed.
+function consumedTodaySub(d){
+  const isZero=!(Number(d&&d.consumption_today_kg)>0);
+  if(!isZero)return 'net of returns';
+  const day=fmtDayMon(d&&d.last_consumption_date);
+  return day?`no production activity yet today &middot; last consumption posted: ${esc(day)}`:'no production activity yet today';
+}
 const PAL=['#1a5c38','#d97706','#2563eb','#9333ea','#dc2626','#0891b2','#65a30d','#6b7280'];
 
 // ── Formula tooltips ──
@@ -945,7 +956,7 @@ function renderSupportKpis(d){
   document.getElementById('support-kpis').innerHTML=`
    <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value"${fx(FX.supfStock)}>${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub"><span${fx(FX.kpiSubStockValue)}>${fmtKES(d.fabric_stock_value)}</span> &middot; <span${fx(FX.kpiSubFabricCount)}>${fmt(d.fabric_products)} fabrics</span></p></div>
    <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value"${fx(FX.supfValue)}>${fmtKES(d.fabric_stock_value)}</p><p class="kpi-sub">RMAT/Stock only</p></div>
-   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.supfConsToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
+   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.supfConsToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">${consumedTodaySub(d)}</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.supfCons30d)}>${fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger"${fx(FX.supfDead)}>${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">support fabrics</p></div>`;
 }
@@ -2176,7 +2187,7 @@ function renderKpis(d,mpg){
    <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value"${fx(FX.totalFabricValue)}>${fmtKES(totalVal)}</p><p class="kpi-sub">${valSub}</p></div>
    <div class="kpi" title="${acpmSInc?'Incomplete: one or more in-scope fabrics on hand are missing their kg→metre conversion in Odoo, so a per-metre stock cost cannot be computed for the full set yet. Shown as — (not zero) until the conversions are filled in.':'Average cost per metre across fabric stock on hand (RMAT/Stock), per metre regardless of the kg/m unit toggle.'}"><span class="eyebrow">Avg cost / metre</span><p class="kpi-value permetre"${fx(FX.avgCostMetreStock)}>${acpmFmt(acpmS,acpmSInc)}</p><p class="kpi-sub">${acpmSInc?'incomplete &middot; missing kg/m':'stock on hand &middot; RMAT/Stock'}</p></div>
    <div class="kpi" title="${acpmPInc?'Incomplete: one or more received purchase-order fabrics are missing their kg→metre conversion in Odoo, so a per-metre purchase cost cannot be computed for the full set yet. Shown as — (not zero) until the conversions are filled in — this is missing-input, not a broken metric.':'Average purchase cost per metre across all received POs, per metre regardless of the kg/m unit toggle.'}"><span class="eyebrow">Avg cost / metre (purchases)</span><p class="kpi-value permetre"${fx(FX.avgCostMetrePurchases)}>${acpmFmt(acpmP,acpmPInc)}</p><p class="kpi-sub">${acpmPInc?'incomplete &middot; missing kg/m':'received &middot; all POs'}</p></div>
-   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
+   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">${consumedTodaySub(d)}</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.consumed30d)}>${fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    ${(()=>{const v=(mpg&&mpg.metres_per_garment!=null)?mpg.metres_per_garment:null;
      let sub=(mpg&&mpg.mos)?('rolling 30d &middot; <span'+fx(FX.mpgSubMos)+'>'+fmt(mpg.mos)+' Done-DPS MOs</span>'):'rolling 30d &middot; Done-DPS';
