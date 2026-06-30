@@ -83,6 +83,7 @@ const Replenishments = () => {
   const [transferRefs, setTransferRefs] = useState({});
   const [savingKey, setSavingKey] = useState(null);
   const [search, setSearch] = useState("");
+  const [ownerFilter, setOwnerFilter] = useState("");
 
   const [selected, setSelected] = useState(() => new Set());
   const [bulkSaving, setBulkSaving] = useState(false);
@@ -178,13 +179,29 @@ const Replenishments = () => {
   const heldBack = sor?.held_back || [];
   const kpi = sor?.kpi || null;
 
-  // Visible rows = drop already-completed + free-text search. The backend
-  // already ranks deploy-now first, so we preserve that order until a header
-  // click overrides it.
+  // Distinct owners present in the open pick list, for the owner filter dropdown.
+  const ownerOptions = useMemo(() => {
+    const set = new Set();
+    rows
+      .filter((r) => !r.replenished)
+      .forEach((r) => { if (r.owner) set.add(r.owner); });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
+  // If the active owner filter is no longer present (e.g. after a redistribute),
+  // clear it so the table doesn't silently show nothing.
+  useEffect(() => {
+    if (ownerFilter && !ownerOptions.includes(ownerFilter)) setOwnerFilter("");
+  }, [ownerOptions, ownerFilter]);
+
+  // Visible rows = drop already-completed + owner filter + free-text search. The
+  // backend already ranks deploy-now first, so we preserve that order until a
+  // header click overrides it.
   const visibleRows = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows
       .filter((r) => !r.replenished)
+      .filter((r) => !ownerFilter || (r.owner || "") === ownerFilter)
       .filter((r) => {
         if (!q) return true;
         return (
@@ -197,7 +214,7 @@ const Replenishments = () => {
           || fmtColourPrint(r).toLowerCase().includes(q)
         );
       });
-  }, [rows, search]);
+  }, [rows, search, ownerFilter]);
 
   const sortedVisibleRows = useMemo(() => {
     return liveSort.sortRows(visibleRows, {
@@ -538,6 +555,20 @@ const Replenishments = () => {
               className="bg-transparent outline-none text-[13px] w-full"
             />
           </div>
+          {ownerOptions.length > 0 && (
+            <select
+              value={ownerFilter}
+              onChange={(e) => setOwnerFilter(e.target.value)}
+              data-testid="replen-owner-filter"
+              title="Show only one picker's lines"
+              className="input-pill text-[13px] bg-transparent outline-none cursor-pointer"
+            >
+              <option value="">All owners</option>
+              {ownerOptions.map((o) => (
+                <option key={o} value={o}>{o}</option>
+              ))}
+            </select>
+          )}
           {(sor?.deploy_now_count ?? 0) > 0 && (
             <span className="inline-flex items-center gap-1.5 bg-amber-100 text-amber-900 border border-amber-300 text-[11.5px] font-bold px-2.5 py-1 rounded-full" data-testid="replen-deploy-now-count">
               <Lightning size={12} weight="fill" /> {fmtNum(sor.deploy_now_count)} deploy-now
