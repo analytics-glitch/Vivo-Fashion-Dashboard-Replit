@@ -18899,6 +18899,7 @@ def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False,
             except Exception:
                 pass
     except Exception:
+        log.exception("_chat_agent_events failed (session_id=%s)", session_id)
         yield {"type": "error",
                "message": "Sorry, I couldn't reach the assistant just now. Please try again in a moment."}
         return
@@ -18992,6 +18993,7 @@ async def chat_stream_post(request: Request):
                                          want_followups=True, attachments=attachments):
                 yield sse(ev)
         except Exception:
+            log.exception("/api/chat/stream failed (session_id=%s)", session_id)
             yield sse({"type": "error",
                        "message": "Sorry, something went wrong. Please try again."})
             yield sse({"type": "done", "session_id": session_id, "followups": []})
@@ -19329,6 +19331,7 @@ async def fabric_chat_stream_post(request: Request):
                                                 want_followups=True, attachments=attachments):
                 yield sse(ev)
         except Exception:
+            log.exception("/api/fabric/chat/stream failed (session_id=%s)", session_id)
             yield sse({"type": "error",
                        "message": "Sorry, something went wrong. Please try again."})
             yield sse({"type": "done", "session_id": session_id, "followups": []})
