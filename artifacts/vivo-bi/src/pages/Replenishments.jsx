@@ -230,6 +230,7 @@ const Replenishments = () => {
       soh_store: (r) => Number(r.soh_store ?? 0),
       soh_wh: (r) => Number(r.soh_wh ?? 0),
       woc: (r) => Number(r.woc ?? 0),
+      days_lapsed: (r) => Number(r.days_lapsed ?? 0),
       replenish: (r) => Number(r.replenish ?? 0),
       proj_uplift_units: (r) => Number(r.proj_uplift_units ?? 0),
     });
@@ -619,6 +620,7 @@ const Replenishments = () => {
                     <SortableTh sortKey="soh_store" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">SOH Store</SortableTh>
                     <SortableTh sortKey="soh_wh" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">SOH WH</SortableTh>
                     <SortableTh sortKey="woc" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Weeks of cover at the current velocity">WoC</SortableTh>
+                    <SortableTh sortKey="days_lapsed" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Days since this line last sold at this store">Days lapsed</SortableTh>
                     <SortableTh sortKey="replenish" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap">Suggested</SortableTh>
                     <SortableTh sortKey="proj_uplift_units" sort={liveSort.sort} sorts={liveSort.sorts} onSort={liveSort.toggleSort} numeric className="px-3 py-2.5 font-semibold whitespace-nowrap" title="Conservative expected incremental units sold before the next dispatch">Proj. uplift</SortableTh>
                     <th className="px-3 py-2.5 font-semibold text-right whitespace-nowrap">Actual</th>
@@ -630,7 +632,7 @@ const Replenishments = () => {
                   {corridorGroups.map((g) => (
                   <React.Fragment key={`corridor-${g.corridor}`}>
                     <tr className="bg-[#0f3d24]/[0.06] border-t-2 border-[#0f3d24]/20" data-testid={`replen-corridor-${g.corridor}`}>
-                      <td colSpan={18} className="px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide text-[#0f3d24]">
+                      <td colSpan={19} className="px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide text-[#0f3d24]">
                         Corridor · {g.corridor}
                         <span className="ml-2 font-semibold normal-case text-muted">
                           {g.rows.length} line{g.rows.length === 1 ? "" : "s"} · {fmtNum(g.units)} units · proj. uplift +{Number(g.uplift).toFixed(1)}
@@ -682,6 +684,7 @@ const Replenishments = () => {
                         <td className={`px-3 py-3 text-right tabular-nums ${r.soh_store === 0 ? "text-rose-700 font-bold" : ""}`}>{fmtNum(r.soh_store)}</td>
                         <td className="px-3 py-3 text-right tabular-nums">{fmtNum(r.soh_wh)}</td>
                         <td className="px-3 py-3 text-right tabular-nums">{r.woc >= 999 ? <span className="text-muted">—</span> : Number(r.woc).toFixed(1)}</td>
+                        <td className="px-3 py-3 text-right tabular-nums">{r.days_lapsed > 0 ? fmtNum(r.days_lapsed) : <span className="text-muted">—</span>}</td>
                         <td className="px-3 py-3 text-right tabular-nums">
                           <div className="inline-flex flex-col items-end gap-1">
                             <span className="inline-flex items-center bg-emerald-100 text-emerald-900 font-bold px-2 py-0.5 rounded-full">{fmtNum(r.replenish)}</span>
