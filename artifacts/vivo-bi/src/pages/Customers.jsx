@@ -1116,18 +1116,18 @@ const Customers = () => {
             // richer "Customer Acquisition & Retention by Location" table lower
             // on the page — this one is a focused POS · Customers · Last Period
             // · % change view placed next to the KPI cards.
-            const prevByPos = new Map((byLocPrev || []).map((r) => [r.pos_location, r.total_customers || 0]));
+            const prevByPos = new Map((byLocPrev || []).map((r) => [r.pos_location_name, r.total_customers || 0]));
             const hasCompare = compareLbl && byLocPrev && byLocPrev.length > 0;
             const rows = (byLoc || []).map((r) => {
               const cur = r.total_customers || 0;
-              const prev = prevByPos.get(r.pos_location) ?? 0;
+              const prev = prevByPos.get(r.pos_location_name) ?? 0;
               const pctChange = prev > 0 ? ((cur - prev) / prev) * 100 : null;
-              return { pos_location: r.pos_location, country: r.country, total_customers: cur, prev_customers: prev, pctChange };
+              return { pos_location_name: r.pos_location_name, country: r.country, total_customers: cur, prev_customers: prev, pctChange };
             });
             const curSum = rows.reduce((s, r) => s + (r.total_customers || 0), 0);
             const prevSum = rows.reduce((s, r) => s + (r.prev_customers || 0), 0);
             const sumPct = hasCompare && prevSum > 0 ? ((curSum - prevSum) / prevSum) * 100 : null;
-            const isOnline = (r) => (r.country === "Online") || String(r.pos_location || "").toLowerCase().startsWith("online");
+            const isOnline = (r) => (r.country === "Online") || String(r.pos_location_name || "").toLowerCase().startsWith("online");
             const prevLbl = compareLbl ? compareLbl.replace(/^vs\s+/i, "") : "Last Period";
             return (
               <div className="card-white p-5" data-testid="customers-by-pos-period-section">
@@ -1142,14 +1142,14 @@ const Customers = () => {
                     initialSort={{ key: "total_customers", dir: "desc" }}
                     columns={[
                       {
-                        key: "pos_location", label: "POS", align: "left",
+                        key: "pos_location_name", label: "POS", align: "left",
                         render: (r) => (
                           <div className="flex items-center gap-1.5">
                             {isOnline(r) && <span title="Online channel" className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: "#4b7bec" }} aria-hidden />}
-                            <span className="font-medium">{r.pos_location}</span>
+                            <span className="font-medium">{r.pos_location_name}</span>
                           </div>
                         ),
-                        csv: (r) => r.pos_location,
+                        csv: (r) => r.pos_location_name,
                       },
                       {
                         key: "total_customers", label: "Customers", numeric: true,
@@ -2356,11 +2356,11 @@ const Customers = () => {
 
           {/* ---- Customer Acquisition & Retention by Location ---- */}
           {(() => {
-            // Index previous period by pos_location for delta lookups.
-            const prevMap = new Map((byLocPrev || []).map((r) => [r.pos_location, r]));
+            // Index previous period by pos_location_name for delta lookups.
+            const prevMap = new Map((byLocPrev || []).map((r) => [r.pos_location_name, r]));
             const hasCompare = compareLbl && byLocPrev && byLocPrev.length > 0;
             const rows = byLocWithPct.map((r) => {
-              const p = prevMap.get(r.pos_location);
+              const p = prevMap.get(r.pos_location_name);
               const prevTotal = p?.total_customers || 0;
               const prevNew = p?.new_customers || 0;
               const prevRet = p?.returning_customers || 0;
@@ -2396,12 +2396,12 @@ const Customers = () => {
             const declining = rows.filter((r) => (r.totalPctChange || 0) < 0).length;
             const weakening = rows.filter((r) => r.tag.label.startsWith("⚠️") || r.tag.label.startsWith("🔴")).length;
             const insight = rows.length > 0
-              ? `${leader?.pos_location || "—"} leads customer volume (${(leader?.pct_of_total || 0).toFixed(1)}% share).${
+              ? `${leader?.pos_location_name || "—"} leads customer volume (${(leader?.pct_of_total || 0).toFixed(1)}% share).${
                   hasCompare ? ` ${Math.round(declining / rows.length * 100)}% of locations saw customer count decline ${compareLbl}.` : ""
                 }${weakening > 0 ? ` ${weakening} location${weakening === 1 ? "" : "s"} flagged for retention risk.` : ""}`
               : null;
 
-            const isOnline = (r) => (r.country === "Online") || String(r.pos_location || "").toLowerCase().startsWith("online");
+            const isOnline = (r) => (r.country === "Online") || String(r.pos_location_name || "").toLowerCase().startsWith("online");
 
             // CSV filename reflects filter state
             const slug = (s) => (s || "all").replace(/[^\w]+/g, "-").toLowerCase();
@@ -2430,11 +2430,11 @@ const Customers = () => {
                     initialSort={{ key: "total_customers", dir: "desc" }}
                     columns={[
                       {
-                        key: "pos_location", label: "POS Location", align: "left",
+                        key: "pos_location_name", label: "POS Location", align: "left",
                         render: (r) => (
                           <div className="flex items-center gap-1.5">
                             {isOnline(r) && <span title="Online channel" className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: "#4b7bec" }} aria-hidden />}
-                            <span className="font-medium">{r.pos_location}</span>
+                            <span className="font-medium">{r.pos_location_name}</span>
                           </div>
                         ),
                       },
