@@ -18976,7 +18976,7 @@ async def chat_stream_post(request: Request):
 
     def gen():
         def sse(ev):
-            return "data: " + _chat_json.dumps(ev) + "\n\n"
+            return "data: " + _chat_json.dumps(ev, default=str) + "\n\n"
         if not message and not attachments:
             yield sse({"type": "token", "text":
                        "Ask me about your sales, customers, products, footfall or inventory."})
@@ -19313,7 +19313,7 @@ async def fabric_chat_stream_post(request: Request):
 
     def gen():
         def sse(ev):
-            return "data: " + _chat_json.dumps(ev) + "\n\n"
+            return "data: " + _chat_json.dumps(ev, default=str) + "\n\n"
         if not message and not attachments:
             yield sse({"type": "token", "text":
                        "Ask me about fabric stock, consumption, ageing, dead stock, purchase orders or months of cover."})
