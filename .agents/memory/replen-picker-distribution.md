@@ -35,21 +35,26 @@ keeping a store with one person.
   drift off a morning save) is NOT balanced individually — that scatters one store
   across every picker, which the user explicitly rejected ("one store should have
   one owner unless we need the next store to balance; sort by stores first, fill an
-  owner until enough, then proceed"). Instead: a drifted line whose STORE already
-  has a frozen owner joins that store's DOMINANT frozen owner (keeps a partly-saved
-  store together); brand-new stores (no frozen line) go through SEQUENTIAL
-  quota-fill in store order — fill the current picker to the equal-units target,
-  then advance (never back), a store splitting across two pickers ONLY where the
-  target boundary lands inside it. **Why:** per-line least-loaded (earlier fix)
-  balanced units but SCATTERED a store across all pickers; keeping new stores
-  strictly WHOLE (no split) swings the other way — coarse balance (sim spread 44).
-  Row-level sequential quota-fill (split only at the boundary) is the same shape as
-  the save-time `_assign_replen_owners_by_units` and gives BOTH: sim spread 3–5
-  units across 4 pickers with only the ~3 boundary stores split, even when the
-  ENTIRE map is stale. **How to apply:** both the Daily report AND SOR go through
-  `_assign_replen_owners_frozen_then_balance` (SOR `presort=False` keeps `_rank`
-  order; Daily POS-sorts so store order is alphabetical/contiguous). Whole-store
-  no-split is WRONG here — boundary splits are required for a tight, even card.
+  owner until enough, then proceed"). Final shape = **LPT least-loaded seeded with
+  the frozen loads**: frozen lines never move; ALL non-frozen lines (intraday drift
+  + brand-new stores) are balanced by units, largest store first onto the currently
+  LIGHTEST picker, a store kept WHOLE on that picker until it reaches the
+  equal-units target then the remainder spills to the next-lightest (split only
+  when needed). A partly-frozen store keeps drifting onto its existing (dominant)
+  owner only while that owner is still under target. **Why:** the prior "drift →
+  store's dominant frozen owner, ALWAYS" rule piled every intraday line onto
+  whoever already owned the store, so heavy pickers grew heavier and the real card
+  drifted to a ~39-unit spread (Emma 192 / Matthew 153) by midday — sequential
+  forward-only quota-fill couldn't claw it back because it never revisits an
+  earlier, lighter picker. Seeding LPT with the frozen loads fixes both: sim
+  all-new/all-frozen spread 1, frozen+drift spread ~5 with only boundary stores
+  split. The ONLY residual imbalance is when the frozen map ITSELF is lopsided
+  (can't reshuffle saved work) — but the save-time `_assign_replen_owners_by_units`
+  is equal-units, so a fresh "Save & redistribute" always resets it. **How to
+  apply:** both Daily report AND SOR go through
+  `_assign_replen_owners_frozen_then_balance` (SOR `presort=False` keeps `_rank`;
+  Daily POS-sorts). Do NOT reintroduce "drift always follows the frozen owner" — it
+  is what unbalanced the card; balance non-frozen by least-loaded instead.
 - **Redistribute MUST balance over the window the page actually displays**, or the
   per-picker units come out lopsided even though the balancer is equal-units.
   **Why:** the Daily page (`Replenishments.jsx`) defaults its window to

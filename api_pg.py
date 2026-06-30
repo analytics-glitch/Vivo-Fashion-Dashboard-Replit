@@ -1981,23 +1981,19 @@ def _assign_replen_owners_frozen_then_balance(rows, line_map=None, owners=None,
     its own `_rank` priority order — only the owner labels + the by-owner summary
     are derived; the row sequence the operator sees is left untouched.
 
-    Store-contiguous: a picker is filled with WHOLE stores before the next one,
-    a store splitting across two pickers only when the equal-units boundary lands
-    inside it. Three passes:
+    Store-contiguous + balanced by units:
       1. Lines present in the FROZEN {line_key: owner} map keep that owner (the
          equal-units balance captured by the last "Save & redistribute"). A reload
          never moves these — a picker who finished early is never handed back their
-         own work. We remember each store's frozen owner.
-      2. A drifted line (added since the last redistribute — the Daily view window
-         includes today, whose lines grow through the day) whose STORE already has a
-         frozen owner joins that same owner, so the store stays with one picker
-         instead of being scattered line-by-line.
-      3. Brand-new stores (no frozen line at all) go through sequential quota-fill
-         in store order: fill the current picker up to the equal-units target, then
-         advance to the next (the owner index never goes back), a store splitting
-         across two pickers ONLY where the target boundary lands inside it. This is
-         the same shape as the save-time `_assign_replen_owners_by_units`, so totals
-         stay near-equal while stores stay contiguous.
+         own work. We remember each store's frozen owner + units.
+      2. Every NON-frozen line (intraday drift + brand-new stores) is then balanced
+         by units, SEEDED with the frozen loads so an already-loaded picker is not
+         piled on. Non-frozen stores are placed largest-first (LPT) onto the
+         currently lightest picker; a partly-frozen store keeps drifting onto its
+         existing owner while that owner still has room. A store stays WHOLE on one
+         picker until that picker reaches the equal-units target — only then do the
+         store's remaining lines spill to the next-lightest picker, so a store
+         splits across pickers ONLY when needed to balance.
 
     Nobody ever shows as "—": every row gets a real picker from the roster."""
     owners = [str(o).strip() for o in (owners or []) if str(o).strip()] \
@@ -2007,10 +2003,10 @@ def _assign_replen_owners_frozen_then_balance(rows, line_map=None, owners=None,
         rows.sort(key=lambda r: (str(r.get("pos_location") or ""),
                                  str(r.get("sku") or ""),
                                  str(r.get("barcode") or "")))
-    units = {o: 0 for o in owners}
+    units = {o: 0 for o in owners}            # running per-picker units
     order = {o: i for i, o in enumerate(owners)}
     store_frozen_units = {}                   # store -> {owner: frozen units}
-    unmapped_by_store = {}                    # store -> [drifted rows], row order
+    nonfrozen_by_store = {}                   # store -> [drifted/new rows]
     for r in rows:
         store = str(r.get("pos_location") or "")
         u = int(r.get("replenish") or 0)
@@ -2023,39 +2019,42 @@ def _assign_replen_owners_frozen_then_balance(rows, line_map=None, owners=None,
             fu[ow] = fu.get(ow, 0) + u
         else:
             r["owner"] = None
-            unmapped_by_store.setdefault(store, []).append(r)
-    # A drifted line whose store is already (partly) frozen joins that store's
-    # DOMINANT frozen owner (most frozen units there, roster order breaks ties), so
-    # the store stays with one picker even when a boundary split froze two owners.
-    new_stores = []                           # (store, rows) — brand-new stores only
-    for store, srows in unmapped_by_store.items():
-        fu = store_frozen_units.get(store)
-        if fu:
-            ow = max(fu, key=lambda o: (fu[o], -order[o]))
-            for r in srows:
-                r["owner"] = ow
-                units[ow] += int(r.get("replenish") or 0)
-        else:
-            new_stores.append((store, srows))
-    # Brand-new stores (no frozen line at all): sequential quota-fill in store
-    # order — keep filling the current picker until it reaches the equal-units
-    # target, THEN advance to the next (never back to an earlier picker). A store's
-    # lines stay together except when the target boundary lands inside it, which is
-    # the only place a store splits across two pickers. This is the user's "sort by
-    # stores, fill an owner until enough, then proceed"; with no frozen units it
-    # reproduces the save-time greedy-contiguous balance exactly (tight spread).
+            nonfrozen_by_store.setdefault(store, []).append(r)
+    # Balance every NON-frozen line (intraday drift + brand-new stores) by units,
+    # seeded with the frozen loads so a picker who already carries saved work is
+    # not piled on further. Frozen lines are never moved (a finished picker keeps
+    # their own work). Largest non-frozen stores are placed first (LPT) onto the
+    # currently lightest picker, and a store stays whole on that picker until it
+    # reaches the equal-units target — only THEN does the store's remaining lines
+    # spill to the next-lightest picker. So a store splits across pickers ONLY when
+    # needed to balance (the user's "one store, one owner unless we must split").
     total = sum(units.values()) + sum(
-        int(r.get("replenish") or 0) for _s, sr in new_stores for r in sr)
+        int(r.get("replenish") or 0)
+        for sr in nonfrozen_by_store.values() for r in sr)
     target = (total / len(owners)) if owners else 0
-    last = len(owners) - 1
-    oi = 0
-    for store, srows in new_stores:
+
+    def _lightest():
+        return min(owners, key=lambda o: (units[o], order[o]))
+
+    store_order = sorted(
+        nonfrozen_by_store.items(),
+        key=lambda kv: sum(int(r.get("replenish") or 0) for r in kv[1]),
+        reverse=True)
+    for store, srows in store_order:
+        fu = store_frozen_units.get(store)
+        # A partly-frozen store keeps drifting onto its existing (dominant) owner
+        # while that owner still has room; otherwise (or for a brand-new store)
+        # start on the lightest picker.
+        if fu:
+            dom = max(fu, key=lambda o: (fu[o], -order[o]))
+            cur = dom if units[dom] < target else _lightest()
+        else:
+            cur = _lightest()
         for r in srows:
-            while oi < last and units[owners[oi]] >= target:
-                oi += 1
-            ow = owners[oi]
-            r["owner"] = ow
-            units[ow] += int(r.get("replenish") or 0)
+            if units[cur] >= target:          # current picker is full -> rebalance
+                cur = _lightest()
+            r["owner"] = cur
+            units[cur] += int(r.get("replenish") or 0)
     return rows
 
 
