@@ -1107,6 +1107,83 @@ const Customers = () => {
             </div>
           </div>
 
+          {/* ---- Customers by POS · this period vs last period ---- */}
+          {(() => {
+            // Per-selling-point identified-customer count for the selected
+            // window vs the same window shifted to the comparison period, with
+            // % change. Reuses the already-loaded /customers-by-location pulls
+            // (byLoc = current, byLocPrev = compare period). Distinct from the
+            // richer "Customer Acquisition & Retention by Location" table lower
+            // on the page — this one is a focused POS · Customers · Last Period
+            // · % change view placed next to the KPI cards.
+            const prevByPos = new Map((byLocPrev || []).map((r) => [r.pos_location, r.total_customers || 0]));
+            const hasCompare = compareLbl && byLocPrev && byLocPrev.length > 0;
+            const rows = (byLoc || []).map((r) => {
+              const cur = r.total_customers || 0;
+              const prev = prevByPos.get(r.pos_location) ?? 0;
+              const pctChange = prev > 0 ? ((cur - prev) / prev) * 100 : null;
+              return { pos_location: r.pos_location, country: r.country, total_customers: cur, prev_customers: prev, pctChange };
+            });
+            const curSum = rows.reduce((s, r) => s + (r.total_customers || 0), 0);
+            const prevSum = rows.reduce((s, r) => s + (r.prev_customers || 0), 0);
+            const sumPct = hasCompare && prevSum > 0 ? ((curSum - prevSum) / prevSum) * 100 : null;
+            const isOnline = (r) => (r.country === "Online") || String(r.pos_location || "").toLowerCase().startsWith("online");
+            const prevLbl = compareLbl ? compareLbl.replace(/^vs\s+/i, "") : "Last Period";
+            return (
+              <div className="card-white p-5" data-testid="customers-by-pos-period-section">
+                <SectionTitle
+                  title="Customers by POS · this period vs last period"
+                  subtitle="Identified customers per selling point in the selected window, alongside the same window shifted to the comparison period and the % change. Set a comparison period (vs Last Month / vs Last Year) to populate the Last Period and % Change columns."
+                />
+                {rows.length === 0 ? <UpstreamNotReady /> : (
+                  <SortableTable
+                    testId="customers-by-pos-period"
+                    exportName="customers-by-pos-period.csv"
+                    initialSort={{ key: "total_customers", dir: "desc" }}
+                    columns={[
+                      {
+                        key: "pos_location", label: "POS", align: "left",
+                        render: (r) => (
+                          <div className="flex items-center gap-1.5">
+                            {isOnline(r) && <span title="Online channel" className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: "#4b7bec" }} aria-hidden />}
+                            <span className="font-medium">{r.pos_location}</span>
+                          </div>
+                        ),
+                        csv: (r) => r.pos_location,
+                      },
+                      {
+                        key: "total_customers", label: "Customers", numeric: true,
+                        render: (r) => <span className="num font-semibold">{fmtNum(r.total_customers)}</span>,
+                        csv: (r) => r.total_customers,
+                      },
+                      {
+                        key: "prev_customers", label: `Last Period (${prevLbl})`, numeric: true,
+                        render: (r) => hasCompare ? <span className="num">{fmtNum(r.prev_customers)}</span> : <span className="text-muted">—</span>,
+                        csv: (r) => hasCompare ? r.prev_customers : "",
+                      },
+                      {
+                        key: "pctChange", label: "% Change", numeric: true,
+                        sortValue: (r) => (r.pctChange == null ? -Infinity : r.pctChange),
+                        render: (r) => hasCompare && r.pctChange != null
+                          ? <span className={`text-[11px] font-semibold ${r.pctChange >= 0 ? "text-brand" : "text-danger"}`}>
+                              {r.pctChange >= 0 ? "▲" : "▼"} {Math.abs(r.pctChange).toFixed(1)}%
+                            </span>
+                          : <span className="text-muted">—</span>,
+                        csv: (r) => (hasCompare && r.pctChange != null ? r.pctChange.toFixed(2) : ""),
+                      },
+                    ]}
+                    rows={rows}
+                  />
+                )}
+                <p className="text-[11px] text-muted italic mt-2">
+                  All-POS total: <strong className="not-italic">{fmtNum(curSum)}</strong> customers this period
+                  {hasCompare && <> · <strong className="not-italic">{fmtNum(prevSum)}</strong> last period{sumPct != null && <> · <span className={`not-italic font-semibold ${sumPct >= 0 ? "text-brand" : "text-danger"}`}>{sumPct >= 0 ? "▲" : "▼"} {Math.abs(sumPct).toFixed(1)}%</span></>}</>}.
+                  {" "}This per-POS sum can differ slightly from the headline <strong className="not-italic">Total Customers</strong> KPI: a customer who shopped at more than one selling point is counted once per location here, but only once overall in the KPI card.
+                </p>
+              </div>
+            );
+          })()}
+
           {/* ---- Walk-ins by country breakdown ---- */}
           {walkIns && !walkIns._error && (walkIns.by_country || []).length > 0 && (
             <div className="card-white p-5" data-testid="walk-ins-by-country-card">
