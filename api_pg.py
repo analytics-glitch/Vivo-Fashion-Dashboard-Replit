@@ -8502,9 +8502,16 @@ def analytics_warehouse_return_candidates(
     m = "retired" if str(mode).lower() == "retired" else "aged"
     n = max(0, int(min_days))
     if m == "aged":
+        # Aged = not sold AT ITS STORE in >= n days. Make Aged and Retired
+        # mutually exclusive (a SKU must land in exactly one bucket): exclude
+        # styles that qualify as Retired (no company-wide sales in 182d OR on
+        # the manual-retirement list) so a retired-and-also-stale SKU only shows
+        # under Retired, never both.
         where_extra = ("AND (ls.last_sold IS NULL "
                        "OR ls.last_sold::date < CURRENT_DATE - ("
-                       + str(n) + " || ' days')::interval)")
+                       + str(n) + " || ' days')::interval) "
+                       "AND COALESCE(ss.units_182, 0) > 0 "
+                       "AND p.style_name NOT IN (" + _MANUAL_RETIRED_IN_SQL + ")")
     else:
         where_extra = ("AND (COALESCE(ss.units_182, 0) = 0 "
                        "OR p.style_name IN (" + _MANUAL_RETIRED_IN_SQL + "))")
