@@ -1034,14 +1034,14 @@ def metres_per_garment_xlsx(days: int = Query(default=30)):
         f["consumed_qty"] += c["consumed_qty"]
 
     def _missing_str(f):
+        # Kg/Mtr is now derived PURELY from Width × GSM ÷ 1000 (the stored Odoo
+        # value is ignored), so the only thing a buyer can fill in to clear a
+        # fabric is its Width and/or GSM.
         m = []
-        if not (f["kpm_stored"] and float(f["kpm_stored"]) > 0):
-            if not (f["width_m"] and float(f["width_m"]) > 0):
-                m.append("Width")
-            if not (f["gsm"] and float(f["gsm"]) > 0):
-                m.append("GSM")
-            if not m:
-                m.append("Kg/Mtr")
+        if not (f["width_m"] and float(f["width_m"]) > 0):
+            m.append("Width")
+        if not (f["gsm"] and float(f["gsm"]) > 0):
+            m.append("GSM")
         return ", ".join(m)
 
     fix_rows = sorted(fix.values(), key=lambda f: (len(f["_mos"]), f["metres"]), reverse=True)
@@ -1403,16 +1403,13 @@ def mo_missing_conversion(days: int = Query(default=90)):
     items = []
     for f in fabrics.values():
         # What a buyer needs to fill in on the Odoo product to clear this fabric:
-        # a stored Kg/Mtr, OR both Width and GSM (Kg/Mtr = Width × GSM ÷ 1000).
+        # both Width and GSM (Kg/Mtr = Width × GSM ÷ 1000 — the stored Odoo
+        # Kg/Mtr value is ignored, so it can no longer rescue a fabric).
         missing = []
-        if not (f["kpm_stored"] and float(f["kpm_stored"]) > 0):
-            if not (f["width_m"] and float(f["width_m"]) > 0):
-                missing.append("Width")
-            if not (f["gsm"] and float(f["gsm"]) > 0):
-                missing.append("GSM")
-            if not missing:
-                # Width+GSM both present yet eff is unusable — needs a stored kg/m.
-                missing.append("Kg/Mtr")
+        if not (f["width_m"] and float(f["width_m"]) > 0):
+            missing.append("Width")
+        if not (f["gsm"] and float(f["gsm"]) > 0):
+            missing.append("GSM")
         items.append({
             "component_id": f["component_id"],
             "sku": f["sku"],

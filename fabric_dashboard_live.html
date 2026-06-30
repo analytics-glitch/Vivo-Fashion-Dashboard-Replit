@@ -482,7 +482,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <!-- Fabrics blocking the "Avg metres / garment" KPI -->
     <h3 style="margin:1.6rem 0 .5rem;">Fabrics blocking "Avg metres / garment"</h3>
     <div class="card" style="margin-bottom:1.1rem;">
-     <p class="muted" style="margin:0;">The <b>Avg metres / garment</b> KPI drops any Done-DPS manufacturing order whose fabric has no kg→metre conversion in Odoo, so the average is understated. <span id="dq-mo-summary" data-fx="Counts the Done DPS manufacturing orders (over the window shown) that fell back to the overall fabric-average kg→metre conversion, and how many fabric SKUs caused it. Fill in Width/GSM or a stored kg/m in Odoo to make the metres/garment KPI exact."></span> These are the fabrics responsible — fix each one's kg-per-metre in Odoo to grow KPI coverage. A garment can be blocked by more than one fabric, so the counts may sum to more than the total excluded.</p>
+     <p class="muted" style="margin:0;">The <b>Avg metres / garment</b> KPI drops any Done-DPS manufacturing order whose fabric has no kg→metre conversion in Odoo, so the average is understated. <span id="dq-mo-summary" data-fx="Counts the Done DPS manufacturing orders (over the window shown) that fell back to the overall fabric-average kg→metre conversion, and how many fabric SKUs caused it. Fill in Width and GSM in Odoo to make the metres/garment KPI exact."></span> These are the fabrics responsible — fix each one's kg-per-metre in Odoo to grow KPI coverage. A garment can be blocked by more than one fabric, so the counts may sum to more than the total excluded.</p>
     </div>
     <div class="flex" style="margin-bottom:1.1rem;justify-content:flex-end;">
      <button class="btn" onclick="exportMoMissing(this)">Export CSV</button>
@@ -688,7 +688,7 @@ const FX={
   avgCostMetrePurchases:'Avg cost / metre (purchases) = Σ(received qty × unit price) ÷ Σ(received metres) across all non-cancelled POs (full history), using received quantity. Shows "—" if any received fabric is missing its kg→metre conversion. Per supplier below.',
   consumedToday:'Consumed today = fabric used today (OUT moves) − fabric returned from production. Shown in the selected unit (metres or kg).',
   consumed30d:'Consumed (30 days) = OUT moves − production returns over the last 30 days. Shown in the selected unit (metres or kg).',
-  metresPerGarment:'Avg metres / garment = total main-fabric metres consumed ÷ total garments produced, across Done DPS manufacturing orders completed in the last 30 days. Fabric kg is converted to metres via each fabric\u2019s kg-per-metre; a fabric that has no kg-per-metre (no stored value and no Width/GSM) is converted using the overall fabric-average as a fallback, so its order is still counted. An MO is counted as long as it produced at least one garment.',
+  metresPerGarment:'Avg metres / garment = total main-fabric metres consumed ÷ total garments produced, across Done DPS manufacturing orders completed in the last 30 days. Fabric kg is converted to metres via each fabric\u2019s kg-per-metre; a fabric that has no kg-per-metre (no Width and/or GSM to derive it) is converted using the overall fabric-average as a fallback, so its order is still counted. An MO is counted as long as it produced at least one garment.',
   monthsCover:'Months of cover = stock on hand (kg) ÷ average monthly consumption (kg), using a 6-month average run-rate with the current month projected to a full month. Consumption is net of production returns (fabric only).',
   basicMonthsCover:'Basic Fabrics — months of cover = combined cover across only the curated set of core staple fabrics the buying team always keeps in stock (a fixed vendor + fabric-code list). Same formula as Months of cover — RMAT/Stock on-hand kg ÷ 6-month average monthly net consumption (current month projected to a full month, net of production returns) — but restricted to the curated fabrics. The sub-line shows how many of the curated fabrics were found in the data.',
   deadStock:'Dead stock = value of fabric parked in the Dead/Stock location (KES).',
@@ -763,7 +763,7 @@ const FX={
   mixTotalSOH:'Total SOH = sum of every category\u2019s available stock on hand at the selected location, in the active unit.',
   mixTiedCapital:'Tied-up capital = total value (KES) of the available stock on hand across all categories.',
   // Data quality — missing kg→metre
-  dqAffected:'Fabrics affected = number of fabric SKUs (at the selected location) with no kg→metre conversion in Odoo — no stored Kg/Mtr and no Width+GSM to derive it.',
+  dqAffected:'Fabrics affected = number of fabric SKUs (at the selected location) with no kg→metre conversion — missing Width and/or GSM, so Kg/Mtr (Width × GSM ÷ 1000) can\u2019t be derived.',
   dqUnconvertible:'Unconvertible total = stock unconvertible + usage unconvertible — the total kg (on hand plus consumed, net of returns) that cannot be converted to metres because the conversion is missing.',
   dqStockUnconvertible:'Stock unconvertible = on-hand kg of the affected fabrics that cannot be converted to metres (conversion missing).',
   dqUsageUnconvertible:'Usage unconvertible = consumed kg (net of production returns) of the affected fabrics that cannot be converted to metres.',
@@ -775,7 +775,7 @@ const FX={
   dqMos:'MOs affected = number of Done DPS manufacturing orders (in the window) whose metres/garment fell back to the fabric-average conversion because this fabric has no kg→metre.',
   dqGarments:'Garments affected = total garments produced by the manufacturing orders affected by this fabric.',
   dqConsumedKg:'Consumed (kg) = total quantity of this fabric consumed across the affected manufacturing orders.',
-  dqMoSummary:'Counts the Done DPS manufacturing orders (over the window shown) that fell back to the overall fabric-average kg→metre conversion, and how many fabric SKUs caused it. Fill in Width/GSM or a stored kg/m in Odoo to make the metres/garment KPI exact.',
+  dqMoSummary:'Counts the Done DPS manufacturing orders (over the window shown) that fell back to the overall fabric-average kg→metre conversion, and how many fabric SKUs caused it. Fill in Width and GSM in Odoo to make the metres/garment KPI exact.',
   // Data quality — unmatched purchase lines
   dqLinesExcluded:'Lines excluded = number of supplier × product groups of received purchase lines left out of the fabric metrics (not in the fabric master, or not categorised as Fabric).',
   dqValueExcluded:'Value excluded = received value (KES) of those excluded purchase lines — money not counted in supplier totals.',
@@ -823,7 +823,7 @@ const REG_FX={
   default_code:'Internal SKU / barcode from Odoo.',
   gsm:'GSM = grams per square metre (from Odoo).',
   width_m:'Fabric width in metres (from Odoo).',
-  kg_per_mtr:'Kg/m = conversion factor: kilograms per metre (from Odoo).',
+  kg_per_mtr:'Kg/m = conversion factor: kilograms per metre = Width (m) × GSM ÷ 1000.',
   m_per_kg:'m/Kg = metres per kilogram = 1 ÷ Kg/m (the inverse conversion).',
   cost_kes:'Cost = standard cost per kg (Odoo standard price), KES.',
   cost_per_kg:'Cost/kg = standard cost per kg (Odoo standard price), KES.',
@@ -1832,7 +1832,7 @@ function exportFabricMixProducts(d,prefix){
     ['Sub-category',r=>r._sub],
     ['Width (m)',r=>{const w=r.detail&&r.detail.width_m;return w==null?'':w;}],
     ['GSM',r=>{const g=r.detail&&r.detail.gsm;return g==null?'':g;}],
-    ['kg/Mtr',r=>{const dt=r.detail||{};if(dt.kg_per_mtr!=null)return dt.kg_per_mtr;if(dt.width_m!=null&&dt.gsm!=null)return (dt.width_m*dt.gsm)/1000;return '';}],
+    ['kg/Mtr',r=>{const dt=r.detail||{};if(dt.width_m!=null&&dt.gsm!=null)return (dt.width_m*dt.gsm)/1000;return '';}],
     ['SOH metres',r=>r._sohM==null?'':r._sohM],
     ['SOH kg',r=>r._sohKg==null?'':r._sohKg],
     ['Stock Value KES',r=>r.tied],
@@ -2383,12 +2383,12 @@ function regValueHtml(col,r){
     case 'wpill':return v?`<span class="pill ${({Light:'pill-green',Medium:'pill-blue',Heavy:'pill-amber'})[v]||'pill-neutral'}">${esc(v)}</span>`:'—';
     case 'num':return v!=null&&v!==''?fmt(v):'—';
     case 'num1':{
-      // Kg/m carries a source badge: stored values are authoritative; "derived"
-      // is computed Width(m)×GSM÷1000; "incomplete attributes" = Width/GSM also
-      // missing (no value, excluded from metre maths). Static strings = XSS-safe.
+      // Kg/m always comes from the standard formula: "derived" is computed
+      // Width(m)×GSM÷1000; "incomplete attributes" = Width and/or GSM missing
+      // (no value, excluded from metre maths). Static strings = XSS-safe.
       if(col.k==='kg_per_mtr'){
         const base=v!=null&&v!==''?fmt1(v):'—';
-        if(r.kg_per_mtr_src==='derived')return base+' <span class="pill pill-amber" title="Derived: Width (m) × GSM ÷ 1000 — no stored Kg/Mtr in Odoo">derived</span>';
+        if(r.kg_per_mtr_src==='derived')return base+' <span class="pill pill-amber" title="Derived: Width (m) × GSM ÷ 1000">derived</span>';
         if(r.kg_per_mtr_src==='incomplete')return '<span class="pill pill-neutral" title="Missing Width and/or GSM — cannot derive Kg/Mtr; excluded from metre calculations">incomplete attributes</span>';
         return base;
       }
@@ -2611,7 +2611,7 @@ function dqCell(c,r){
   if(c.k==='name')return `<td style="font-weight:600;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(v||'')}">${esc(v||'—')}</td>`;
   if(c.k==='default_code')return `<td class="num" style="font-size:12px;white-space:nowrap;">${esc(v||'—')}</td>`;
   if(c.k==='source'){const s=DQ_SRC[v]||{label:v||'—',cls:'pill-neutral'};return `<td><span class="pill ${s.cls}">${esc(s.label)}</span></td>`;}
-  if(c.k==='kg_per_mtr_src'){const m={derived:{l:'derived',cls:'pill-amber'},incomplete:{l:'incomplete attributes',cls:'pill-neutral'},stored:{l:'stored',cls:'pill-green'}};const s=m[v];return s?`<td><span class="pill ${s.cls}">${esc(s.l)}</span></td>`:`<td>—</td>`;}
+  if(c.k==='kg_per_mtr_src'){const m={derived:{l:'derived',cls:'pill-amber'},incomplete:{l:'incomplete attributes',cls:'pill-neutral'}};const s=m[v];return s?`<td><span class="pill ${s.cls}">${esc(s.l)}</span></td>`:`<td>—</td>`;}
   if(c.k==='stock_kg'||c.k==='usage_kg')return `<td class="r" style="font-weight:600;"${fx(c.k==='stock_kg'?FX.dqStockKg:FX.dqUsageKg)}>${v!=null?fmt1(v):'—'}</td>`;
   if(c.k==='width_m')return `<td class="r"${fx(FX.dqWidth)}>${v!=null&&v!==''?fmt1(v):'—'}</td>`;
   if(c.k==='gsm')return `<td class="r"${fx(FX.dqGsm)}>${v!=null&&v!==''?fmt(v):'—'}</td>`;
@@ -2701,7 +2701,7 @@ function renderDqMo(){
   const summ=document.getElementById('dq-mo-summary');
   if(summ){
     summ.innerHTML=d.mos_excluded_missing_conversion
-      ? `<b>${fmt(d.mos_excluded_missing_conversion)} MOs</b> fell back to the overall fabric-average conversion over the last ${fmt(d.window_days)} days, across <b>${fmt(d.count)}</b> fabric SKUs. Open each in Odoo and fill in its Width/GSM or a stored kg/m to make the KPI exact.`
+      ? `<b>${fmt(d.mos_excluded_missing_conversion)} MOs</b> fell back to the overall fabric-average conversion over the last ${fmt(d.window_days)} days, across <b>${fmt(d.count)}</b> fabric SKUs. Open each in Odoo and fill in its Width and GSM to make the KPI exact.`
       : '';
   }
   document.getElementById('dqmo-head').innerHTML='<tr>'+DQMO_COLS.map(c=>{

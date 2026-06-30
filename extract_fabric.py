@@ -151,16 +151,20 @@ def extract_products(uid, models, cur, now):
 
     # Effective Kg/Mtr + source flag — code-defined derived columns (generated,
     # so they stay in lockstep with the stored attributes on every extract and
-    # auto-populate on dev AND prod). The stored kg_per_mtr is authoritative when
-    # present (> 0); otherwise fall back to the confirmed formula
-    # Kg/Mtr = Width (m) × GSM ÷ 1000 when BOTH width_m and gsm are present.
-    # kg_per_mtr_src marks each row: 'stored' / 'derived' / 'incomplete'.
+    # auto-populate on dev AND prod). The conversion is PURELY the standard
+    # formula Kg/Mtr = Width (m) × GSM ÷ 1000 when BOTH width_m and gsm are
+    # present; the stored Odoo kg_per_mtr value is intentionally IGNORED so every
+    # metre/cost/cover figure derives from a single transparent calculation.
+    # kg_per_mtr_src marks each row: 'derived' (Width+GSM present) / 'incomplete'.
+    # NOTE: these are STORED GENERATED columns, so ADD COLUMN IF NOT EXISTS will
+    # NOT change an existing column's expression — on a DB where they already
+    # exist with the old formula, migration 003 drops + re-adds them. This block
+    # is what gives a FRESH DB the correct expression from the first extract.
     cur.execute("""
         ALTER TABLE raw_fabric_products
         ADD COLUMN IF NOT EXISTS kg_per_mtr_eff NUMERIC
           GENERATED ALWAYS AS (
             CASE
-              WHEN COALESCE(kg_per_mtr,0) > 0 THEN kg_per_mtr
               WHEN COALESCE(width_m,0) > 0 AND COALESCE(gsm,0) > 0
                    THEN width_m * gsm / 1000.0
               ELSE NULL
@@ -169,7 +173,6 @@ def extract_products(uid, models, cur, now):
         ADD COLUMN IF NOT EXISTS kg_per_mtr_src TEXT
           GENERATED ALWAYS AS (
             CASE
-              WHEN COALESCE(kg_per_mtr,0) > 0 THEN 'stored'
               WHEN COALESCE(width_m,0) > 0 AND COALESCE(gsm,0) > 0 THEN 'derived'
               ELSE 'incomplete'
             END
