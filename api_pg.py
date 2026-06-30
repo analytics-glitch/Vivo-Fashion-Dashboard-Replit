@@ -1188,7 +1188,7 @@ def _assert_standard_conforming_strings():
             f"to be sound, got {setting!r}")
 
 BASE_FILTERS = """
-    s.pos_location_name NOT IN ('Staff purchases','Manual Order','Online - vivo-uganda')
+    s.pos_location_name NOT IN ('Staff purchases','Manual Order','Online - vivo-uganda','Online - vivowoman','Online Orders Location')
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%shopping bag%'
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%gift card%'
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%gift voucher%'
