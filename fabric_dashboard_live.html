@@ -2176,17 +2176,22 @@ function renderKpis(d,mpg){
         ?esc('No fabric stock and no recent consumption, so there is nothing to compute.')
         :(cover!=null)?esc(`Months of cover = current stock ÷ monthly run-rate. Monthly run-rate = 6-month AVERAGE consumption (not last-30-days), with ${d.projected_month_label} projected to a full month (${fmt(d.projected_month_mtd_kg)} kg so far → ${fmt(d.projected_month_kg)} kg est.). It therefore differs from stock ÷ the 'Consumed 30d' figure, which is a single recent month.`):'';
   const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
-  // Avg cost per metre (per-metre regardless of the kg/metre unit toggle). Render
-  // "—" when the backend flags the figure incomplete (any in-scope fabric missing
-  // its kg→metre conversion), so a clean number only shows once Odoo data is full.
-  const acpmS=d.avg_cost_per_metre_stock,acpmSInc=!!d.avg_cost_per_metre_stock_incomplete;
-  const acpmP=d.avg_cost_per_metre_purchases,acpmPInc=!!d.avg_cost_per_metre_purchases_incomplete;
-  const acpmFmt=(v,inc)=>inc||v==null?'&mdash;':fmtKESm(v);
+  // Avg cost per metre (per-metre regardless of the kg/metre unit toggle). The
+  // figure is computed over the fabrics that HAVE a kg→metre conversion (Width+GSM
+  // present); fabrics missing Width/GSM are excluded from BOTH the value and the
+  // metres and disclosed as a coverage note rather than blanking the headline.
+  const acpmS=d.avg_cost_per_metre_stock,acpmSExc=+d.avg_cost_per_metre_stock_excluded_count||0;
+  const acpmP=d.avg_cost_per_metre_purchases,acpmPExc=+d.avg_cost_per_metre_purchases_excluded_count||0;
+  const acpmFmt=v=>v==null?'&mdash;':fmtKESm(v);
+  const acpmSub=(base,exc)=>exc>0?esc(exc+' missing Width/GSM excluded'):base;
+  const acpmTitle=(base,exc)=>exc>0
+    ?esc(exc+' in-scope fabric(s) are missing Width/GSM in Odoo, so they have no kg→metre conversion and are excluded from this figure (both their value and metres). The cost/metre is computed over the remaining convertible fabrics; fill in Width/GSM in Odoo and the next fabric sync will fold them in.')
+    :base;
   document.getElementById('kpi-cards').innerHTML=`
    <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value"${fx(FX.stockOnHand)}>${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub"><span${fx(FX.kpiSubStockValue)}>${fmtKES(d.fabric_stock_value)}</span> &middot; <span${fx(FX.kpiSubFabricCount)}>${fmt(d.fabric_products)} fabrics</span></p></div>
    <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value"${fx(FX.totalFabricValue)}>${fmtKES(totalVal)}</p><p class="kpi-sub">${valSub}</p></div>
-   <div class="kpi" title="${acpmSInc?'Incomplete: one or more in-scope fabrics on hand are missing their kg→metre conversion in Odoo, so a per-metre stock cost cannot be computed for the full set yet. Shown as — (not zero) until the conversions are filled in.':'Average cost per metre across fabric stock on hand (RMAT/Stock), per metre regardless of the kg/m unit toggle.'}"><span class="eyebrow">Avg cost / metre</span><p class="kpi-value permetre"${fx(FX.avgCostMetreStock)}>${acpmFmt(acpmS,acpmSInc)}</p><p class="kpi-sub">${acpmSInc?'incomplete &middot; missing kg/m':'stock on hand &middot; RMAT/Stock'}</p></div>
-   <div class="kpi" title="${acpmPInc?'Incomplete: one or more received purchase-order fabrics are missing their kg→metre conversion in Odoo, so a per-metre purchase cost cannot be computed for the full set yet. Shown as — (not zero) until the conversions are filled in — this is missing-input, not a broken metric.':'Average purchase cost per metre across all received POs, per metre regardless of the kg/m unit toggle.'}"><span class="eyebrow">Avg cost / metre (purchases)</span><p class="kpi-value permetre"${fx(FX.avgCostMetrePurchases)}>${acpmFmt(acpmP,acpmPInc)}</p><p class="kpi-sub">${acpmPInc?'incomplete &middot; missing kg/m':'received &middot; all POs'}</p></div>
+   <div class="kpi" title="${acpmTitle('Average cost per metre across fabric stock on hand (RMAT/Stock), per metre regardless of the kg/m unit toggle.',acpmSExc)}"><span class="eyebrow">Avg cost / metre</span><p class="kpi-value permetre"${fx(FX.avgCostMetreStock)}>${acpmFmt(acpmS)}</p><p class="kpi-sub">${acpmSub('stock on hand &middot; RMAT/Stock',acpmSExc)}</p></div>
+   <div class="kpi" title="${acpmTitle('Average purchase cost per metre across all received POs, per metre regardless of the kg/m unit toggle.',acpmPExc)}"><span class="eyebrow">Avg cost / metre (purchases)</span><p class="kpi-value permetre"${fx(FX.avgCostMetrePurchases)}>${acpmFmt(acpmP)}</p><p class="kpi-sub">${acpmSub('received &middot; all POs',acpmPExc)}</p></div>
    <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">${consumedTodaySub(d)}</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.consumed30d)}>${fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    ${(()=>{const v=(mpg&&mpg.metres_per_garment!=null)?mpg.metres_per_garment:null;
@@ -2252,11 +2257,12 @@ function renderSupplierCost(rows){
        <p class="muted" style="margin:0 0 .5rem;">These received fabrics have <b>no kg-per-metre</b> on the Odoo product master, so this supplier can&rsquo;t show an avg cost / metre. Fix each one in Odoo by entering its <b>kg-per-metre</b> (or <b>Width + GSM</b>) on the product; it then drops off this list.</p>
        <table class="data" style="width:auto;"><thead><tr><th>Fabric</th><th>SKU</th><th style="text-align:right;">Received (kg)</th><th style="text-align:right;">Received value</th></tr></thead><tbody>${mf.map(f=>`<tr><td>${esc(f.name)}</td><td>${esc(f.sku)}</td><td style="text-align:right;"${fx(FX.supMissKg)}>${fmt1(f.qty_kg)}</td><td style="text-align:right;"${fx(FX.supMissValue)}>${fmtKES(f.value_kes)}</td></tr>`).join('')}</tbody></table>
       </td></tr>`:'';
-      return `<tr${r.incomplete?' title="Missing kg→metre conversion in Odoo — fix this supplier\u2019s fabrics to get a figure"':''}>
+      const noFig=r.cost_per_metre==null;
+      return `<tr${r.incomplete?' title="Some of this supplier\u2019s fabrics are missing Width/GSM in Odoo and are excluded from the figure below — fix them to fold them in"':''}>
      <td>${esc(r.supplier)}${badge}</td>
-     <td style="text-align:right;"${fx(FX.supCostMetres)}>${r.incomplete?'&mdash;':fmt(r.metres)}</td>
+     <td style="text-align:right;"${fx(FX.supCostMetres)}>${noFig?'&mdash;':fmt(r.metres)}</td>
      <td style="text-align:right;"${fx(FX.supCostValue)}>${fmtKES(r.value_kes)}</td>
-     <td style="text-align:right;${r.incomplete?'color:var(--muted);':'font-weight:600;'}"${fx(FX.avgCostMetrePurchases)}>${r.incomplete?'&mdash;':fmtKESm(r.cost_per_metre)}</td>
+     <td style="text-align:right;${noFig?'color:var(--muted);':'font-weight:600;'}"${fx(FX.avgCostMetrePurchases)}>${noFig?'&mdash;':fmtKESm(r.cost_per_metre)}</td>
     </tr>${detail}`;
     }).join('')}</tbody></table>`;
 }
