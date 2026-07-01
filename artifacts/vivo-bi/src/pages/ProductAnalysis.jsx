@@ -127,6 +127,9 @@ const StyleDrill = ({ styleName, params }) => {
           {params.store
             ? "All locations (network-wide) — for transfer planning, not limited to the selected store"
             : "All locations in the selected market(s)"}
+          {params.date_from && params.date_to
+            ? ` · Sales for ${fmtDate(params.date_from)} – ${fmtDate(params.date_to)}`
+            : ""}
         </div>
         {data.by_location && data.by_location.length ? (
           <SortableTable
