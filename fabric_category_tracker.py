@@ -180,13 +180,14 @@ def run_detection(conn) -> int:
         # write_date is stored naive-UTC; interpret as UTC for all comparisons.
         cur.execute(f"""
             INSERT INTO fabric_cat_tracker (barcode_key, barcode, category, subcategory, updated_at)
-            SELECT key, key, category, subcategory, wd
+            SELECT DISTINCT ON (key) key, key, category, subcategory, wd
             FROM (
                 SELECT
                     {_KEY_SQL} AS key,
                     p.fabric_category AS category,
                     p.fabric_subcategory AS subcategory,
                     (p.write_date AT TIME ZONE 'UTC') AS wd,
+                    p.id AS pid,
                     b.category AS b_cat,
                     b.subcategory AS b_sub
                 FROM raw_fabric_products p
@@ -198,6 +199,7 @@ def run_detection(conn) -> int:
             WHERE s.wd < %(baseline_at)s
                OR s.category IS DISTINCT FROM s.b_cat
                OR s.subcategory IS DISTINCT FROM s.b_sub
+            ORDER BY key, wd DESC NULLS LAST, pid DESC
             ON CONFLICT (barcode_key) DO UPDATE SET
                 barcode     = EXCLUDED.barcode,
                 category    = EXCLUDED.category,
