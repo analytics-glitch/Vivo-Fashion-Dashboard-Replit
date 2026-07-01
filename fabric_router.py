@@ -661,6 +661,7 @@ def summary(location: str = Query(default="RMAT/Stock"),
         last_cons = q(conn, f"""
             SELECT MAX(m.date::date) as d
             FROM {EFFECTIVE_MOVES} m
+            LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE m.move_type='OUT'
               AND m.uom IN ('g','kg')
               AND m.is_fabric
