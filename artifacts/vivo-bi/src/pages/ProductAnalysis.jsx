@@ -71,6 +71,16 @@ const daysSinceSale = (d) => {
   return Math.max(0, Math.round((today.getTime() - dt.getTime()) / 86400000));
 };
 
+// Descriptive lifecycle-tier labels (shared wording with Range Management's
+// Active-range cards) so the filter, table and detail popup read consistently.
+const TIER_DESC = {
+  "Tier 1": "NOOS / never out of stock",
+  "Tier 2": "Core performers",
+  "Tier 3": "Developing / watch",
+  "Tier 4": "Trial / new entry",
+  "Retired": "Manually retired / Zoya",
+};
+
 // Colour the weeks-of-cover so overstock jumps out.
 const wocCls = (v) => {
   if (v === null || v === undefined) return "text-muted";
@@ -372,7 +382,7 @@ const ProductAnalysis = () => {
             {dims.length === 0 ? (
               <button
                 type="button"
-                onClick={() => setDrillStyle(r.style_name)}
+                onClick={() => setDrillStyle(r)}
                 className="font-medium text-foreground break-words text-left hover:text-brand hover:underline underline-offset-2"
                 title="View stock & sales by location"
                 data-testid={`pa-style-open-${r.style_name}`}
@@ -405,7 +415,7 @@ const ProductAnalysis = () => {
       { key: "size", label: "Size", render: (r) => r.size || "—", csv: (r) => r.size || "" },
       {
         key: "tier", label: "Tier",
-        headerTitle: "Lifecycle tier (shared with Range Management) — Tier 1 NOOS core, Tier 2 matured + reordered, Tier 3 reordered, Tier 4 new/unproven, Retired",
+        headerTitle: "Lifecycle tier (shared with Range Management) — Tier 1 NOOS / never out of stock, Tier 2 Core performers, Tier 3 Developing / watch, Tier 4 Trial / new entry, Retired",
         render: (r) => r.tier || "—",
       },
       { key: "units_sold", label: "Units Sold", numeric: true, headerTitle: "NET units (returns subtracted) over this page's selected period (30-day default, independent of the global filter). Overview/Products/Velocity show GROSS units over their own windows, so the same style reads differently there.", render: (r) => fmtNum(r.units_sold) },
@@ -881,10 +891,10 @@ const ProductAnalysis = () => {
           label="Tier"
           icon={ChartBar}
           options={[
-            { value: "Tier 1", label: "Tier 1 · NOOS core" },
-            { value: "Tier 2", label: "Tier 2 · matured + reordered" },
-            { value: "Tier 3", label: "Tier 3 · reordered" },
-            { value: "Tier 4", label: "Tier 4 · new / unproven" },
+            { value: "Tier 1", label: "Tier 1 · NOOS / never out of stock" },
+            { value: "Tier 2", label: "Tier 2 · Core performers" },
+            { value: "Tier 3", label: "Tier 3 · Developing / watch" },
+            { value: "Tier 4", label: "Tier 4 · Trial / new entry" },
             { value: "Retired", label: "Retired" },
           ]}
           value={tiers}
@@ -1170,7 +1180,7 @@ const ProductAnalysis = () => {
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-[10.5px] uppercase tracking-wider text-muted">Style detail</div>
-                <div className="text-[15px] font-semibold break-words">{drillStyle}</div>
+                <div className="text-[15px] font-semibold break-words">{drillStyle.style_name}</div>
               </div>
               <button
                 type="button"
@@ -1182,7 +1192,85 @@ const ProductAnalysis = () => {
                 <XIcon size={18} />
               </button>
             </div>
-            <StyleDrill styleName={drillStyle} params={drillParams} />
+
+            {/* Photo + identity + lifecycle badges */}
+            <div className="flex gap-4">
+              <div className="shrink-0">
+                <ProductImage sku={drillStyle.sku} label={drillStyle.style_name} size={112} />
+              </div>
+              <div className="min-w-0 flex-1 space-y-2">
+                <div className="flex flex-wrap gap-1.5">
+                  {drillStyle.tier ? (
+                    <span
+                      className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium bg-brand/10 text-brand"
+                      title={TIER_DESC[drillStyle.tier] || ""}
+                    >
+                      {drillStyle.tier}
+                      {TIER_DESC[drillStyle.tier] ? ` · ${TIER_DESC[drillStyle.tier]}` : ""}
+                    </span>
+                  ) : null}
+                  {drillStyle.style_status ? (
+                    <span
+                      className={
+                        "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium " +
+                        (drillStyle.style_status === "Active"
+                          ? "bg-emerald-500/15 text-emerald-600"
+                          : "bg-muted text-muted-foreground")
+                      }
+                    >
+                      {drillStyle.style_status}
+                    </span>
+                  ) : null}
+                  {drillStyle.life_cycle ? (
+                    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium border border-border text-muted">
+                      {drillStyle.life_cycle}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="text-[11.5px] text-muted space-y-0.5">
+                  <div>
+                    {[drillStyle.brand, drillStyle.category, drillStyle.subcategory]
+                      .filter(Boolean)
+                      .join(" · ") || "—"}
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                    {drillStyle.style_number ? <span>Style&nbsp;#{drillStyle.style_number}</span> : null}
+                    {drillStyle.color ? <span>{drillStyle.color}</span> : null}
+                    {drillStyle.launch_date ? <span>Launched {fmtDate(drillStyle.launch_date)}</span> : null}
+                    {(() => {
+                      const d = daysSinceSale(drillStyle.last_sale);
+                      return d == null ? null : <span>Last sold {fmtNum(d)}d ago</span>;
+                    })()}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Key metrics */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2" data-testid="pa-style-drill-stats">
+              {[
+                { label: "SOR (period)", value: fmtSor(drillStyle.sor) },
+                { label: "SOR since launch", value: fmtSor(drillStyle.sor_since_launch) },
+                { label: "Units sold (period)", value: fmtNum(drillStyle.units_sold) },
+                { label: "Units since launch", value: fmtNum(drillStyle.units_life) },
+                { label: "Revenue (period)", value: fmtKES(drillStyle.revenue) },
+                { label: "Current stock", value: fmtNum(drillStyle.current_stock) },
+                { label: "SOH stores", value: fmtNum(drillStyle.store_stock) },
+                { label: "SOH warehouse", value: fmtNum(drillStyle.warehouse_stock) },
+                { label: "Weeks of cover", value: fmtWoc(drillStyle.woc) },
+                { label: "Reorders", value: fmtNum(drillStyle.reorder_count) },
+                { label: "ASP", value: fmtAsp(drillStyle.asp) },
+                { label: "Full price", value: fmtPrice(drillStyle.full_price) },
+                { label: "Current price", value: fmtPrice(drillStyle.current_price) },
+              ].map((s) => (
+                <div key={s.label} className="rounded-md border border-border bg-muted/30 px-2.5 py-1.5">
+                  <div className="text-[9.5px] uppercase tracking-wider text-muted leading-tight">{s.label}</div>
+                  <div className="text-[13px] font-semibold tabular-nums">{s.value ?? "—"}</div>
+                </div>
+              ))}
+            </div>
+
+            <StyleDrill styleName={drillStyle.style_name} params={drillParams} />
           </div>
         </div>
       ) : null}
