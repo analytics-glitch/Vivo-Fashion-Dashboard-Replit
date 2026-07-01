@@ -3,8 +3,7 @@ import { api, fmtNum, fmtPct } from "@/lib/api";
 import { exportCSV } from "@/components/SortableTable";
 import { VarianceCell, varianceFlag } from "@/lib/variance";
 import {
-  Plus,
-  Minus,
+  CaretRight,
   Download,
   CaretDown,
 } from "@phosphor-icons/react";
@@ -74,11 +73,23 @@ const CategoryRow = ({ cat, subs, open, onToggle }) => {
       <button
         type="button"
         onClick={onToggle}
-        className={`${GRID} w-full text-left px-3 py-2.5 ${open ? "bg-[#fef3e0]" : "bg-[#fff8ee] hover:bg-[#fef3e0]"}`}
+        className={`group ${GRID} w-full text-left px-3 py-2.5 ${open ? "bg-[#fef3e0]" : "bg-[#fff8ee] hover:bg-[#fef3e0]"}`}
         data-testid={`sts-cat-${slug}`}
       >
-        <span className="text-[#1a5c38]">
-          {open ? <Minus size={14} weight="bold" /> : <Plus size={14} weight="bold" />}
+        <span className="flex items-center justify-center">
+          <span
+            className={`flex items-center justify-center w-[22px] h-[22px] rounded-full transition-all duration-200 ${
+              open
+                ? "bg-[#1a5c38] text-white shadow-sm"
+                : "bg-[#fce6cc] text-[#1a5c38] group-hover:bg-[#f7d3a6]"
+            }`}
+          >
+            <CaretRight
+              size={11}
+              weight="bold"
+              className={`transition-transform duration-200 ${open ? "rotate-90" : ""}`}
+            />
+          </span>
         </span>
         <span className="min-w-0 truncate font-extrabold text-[13px] text-[#0f3d24]">
           {cat.category || <span className="italic text-muted">Uncategorised</span>}
