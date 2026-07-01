@@ -44,6 +44,28 @@ const fmtSor = (v) => (v === null || v === undefined ? "—" : `${fmtDec(v, 1)}%
 const fmtAsp = (v) => (v === null || v === undefined || v === 0 ? "—" : fmtNum(v));
 const fmtPrice = (v) => (v === null || v === undefined || v === 0 ? "—" : fmtNum(v));
 
+// `color_print` is dirty for some styles: alongside clean names ("Black") it
+// carries variant strings like "Ivory - Ivory / V0722064 / S/M" that embed the
+// style number + size. Strip the "/ style / size" suffix, collapse a repeated
+// "X - X" to "X", and de-dupe so the colour list reads as just the colours.
+const cleanColours = (raw) => {
+  if (!raw) return "";
+  const seen = new Set();
+  const out = [];
+  for (const part of String(raw).split(",")) {
+    // Split only on the spaced " / " the dirty variant strings use, so legit
+    // colours with a bare slash ("Black/White") are left intact.
+    let c = part.split(" / ")[0].trim(); // drop " / style / size"
+    const segs = c.split(" - ").map((s) => s.trim()).filter(Boolean);
+    if (segs.length > 1 && segs.every((s) => s.toLowerCase() === segs[0].toLowerCase())) {
+      c = segs[0]; // "Ivory - Ivory" -> "Ivory"
+    }
+    const key = c.toLowerCase();
+    if (c && !seen.has(key)) { seen.add(key); out.push(c); }
+  }
+  return out.join(", ");
+};
+
 // Local-time ISO date (YYYY-MM-DD) — avoids the UTC off-by-one around midnight
 // in East Africa (UTC+3) when computing date presets.
 const isoLocal = (d) => {
@@ -1250,9 +1272,12 @@ const ProductAnalysis = () => {
                   </div>
                   <div className="flex flex-wrap gap-x-3 gap-y-0.5">
                     {drillStyle.style_number ? <span>Style&nbsp;#{drillStyle.style_number}</span> : null}
-                    {drillStyle.color ? (
-                      <span>Colours:&nbsp;<span className="text-foreground">{drillStyle.color}</span></span>
-                    ) : null}
+                    {(() => {
+                      const cols = cleanColours(drillStyle.color);
+                      return cols ? (
+                        <span>Colours:&nbsp;<span className="text-foreground">{cols}</span></span>
+                      ) : null;
+                    })()}
                     {drillStyle.launch_date ? <span>Launched {fmtDate(drillStyle.launch_date)}</span> : null}
                     {(() => {
                       const d = daysSinceSale(drillStyle.last_sale);
