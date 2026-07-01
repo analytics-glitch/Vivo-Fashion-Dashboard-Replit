@@ -1006,7 +1006,7 @@ const ProductAnalysis = () => {
                 label={status === "active" ? "Active Styles" : status === "retired" ? "Retired Styles" : "Styles"}
                 value={fmtNum(summary.styles)} icon={Tag}
                 sub={`${fmtNum(summary.actively_selling)} actively selling`}
-                formula="Styles counts only Vivo Fashion Group styles that currently hold stock (third-party consignment and zero-stock styles are excluded). Active vs Retired is a lifecycle status: a style is Retired when it is manually retired or gated to the underperforming/aged 'Retire' tier, and Active otherwise — independent of window sales. 'Actively selling' means the style sold at least one unit within the selected velocity window (an overlay across both Active and Retired)."
+                formula="Styles counts only Vivo Fashion Group styles that currently hold stock (third-party consignment and zero-stock styles are excluded). Active vs Retired is a lifecycle status: a style is Retired when it is manually retired or gated to the underperforming/aged 'Retire' tier, and Active otherwise — independent of window sales. 'Actively selling' means the style sold at least one unit within the selected date range (30D/90D/120D or a custom range) — so it grows as you widen the window; it is an overlay across both Active and Retired, distinct from the velocity window used for weeks-of-cover."
               />
               <KPICard
                 small showDelta={false} accent testId="pa-kpi-revenue"

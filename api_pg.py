@@ -7074,6 +7074,7 @@ def analytics_product_analysis(
             "collection": r["collection"],
             "season": r["season"],
             "units_sold": units,
+            "gross_units_period": gross_units,
             "revenue": round(revenue),
             "net_revenue": round(net_rev),
             "orders": int(r["orders_period"] or 0),
@@ -7123,12 +7124,13 @@ def analytics_product_analysis(
         k = row["style_name"]
         g = styles.get(k)
         if not g:
-            g = {"units": 0, "revenue": 0, "net_revenue": 0, "stock": 0, "units_vel": 0,
+            g = {"units": 0, "gross_units_period": 0, "revenue": 0, "net_revenue": 0, "stock": 0, "units_vel": 0,
                  "units_life": 0, "units_6m": 0, "sales_life": 0, "months_active_12": 0,
                  "age_weeks": None, "full_price": None, "last_sale": None,
                  "brand": row["brand"], "category": row["category"], "subcategory": row["subcategory"]}
             styles[k] = g
         g["units"] += row["units_sold"]
+        g["gross_units_period"] += row["gross_units_period"]
         g["revenue"] += row["revenue"]
         g["net_revenue"] += row["net_revenue"]
         g["stock"] += row["current_stock"]
@@ -7174,7 +7176,7 @@ def analytics_product_analysis(
         status_by_style[k] = "Retired" if retired else "Active"
         tier_by_style[k] = t
         g["tier"] = t
-        selling_by_style[k] = g["units_vel"] > 0
+        selling_by_style[k] = g["gross_units_period"] > 0
         if style_status == "active" and retired:
             continue
         if style_status == "retired" and not retired:
