@@ -214,6 +214,25 @@ const Replenishments = () => {
     () => rows.filter((r) => !r.replenished && !openKeys.has(`${r.pos_location}|${r.sku}`)),
     [rows, openKeys]);
 
+  // Workload by picker, computed over the SAME activeRows that "Save & distribute"
+  // freezes — so the per-picker totals (lines/units/stores) always reconcile with
+  // the "(N)" on the button. (The server's sor.by_owner counts the full engine
+  // list incl. rows already frozen into open batches or already picked, which
+  // diverges from what's actually about to be distributed.)
+  const workloadByOwner = useMemo(() => {
+    const agg = {};
+    for (const r of activeRows) {
+      const owner = r.owner || "—";
+      const o = agg[owner] || (agg[owner] = { owner, lines: 0, units: 0, stores: new Set() });
+      o.lines += 1;
+      o.units += Number(r.replenish || 0);
+      o.stores.add(r.pos_location);
+    }
+    return Object.values(agg)
+      .map((o) => ({ owner: o.owner, lines: o.lines, units: o.units, stores: o.stores.size }))
+      .sort((a, b) => b.units - a.units);
+  }, [activeRows]);
+
   // Distinct owners present in the open pick list, for the owner filter dropdown.
   const ownerOptions = useMemo(() => {
     const set = new Set();
@@ -552,11 +571,11 @@ const Replenishments = () => {
         />
       )}
 
-      {isAdmin && (sor?.by_owner?.length ?? 0) > 0 && (
+      {isAdmin && workloadByOwner.length > 0 && (
         <div className="card-white p-4" data-testid="replen-workload">
-          <SectionTitle title="Workload by picker" subtitle="How the current pick list splits across the roster (units · lines · stores)." />
+          <SectionTitle title="Workload by picker" subtitle="How the open pick list (what Save & distribute will freeze) splits across the roster (units · lines · stores)." />
           <div className="flex flex-wrap gap-2">
-            {sor.by_owner.map((o) => (
+            {workloadByOwner.map((o) => (
               <span key={o.owner} className="inline-flex items-center gap-2 rounded-full border border-border bg-panel/40 px-3 py-1.5 text-[12px]" data-testid={`replen-workload-${o.owner}`}>
                 <span className="font-bold text-[#0f3d24]">{o.owner}</span>
                 <span className="tabular-nums">{fmtNum(o.units)} units</span>

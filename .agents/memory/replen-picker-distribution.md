@@ -90,6 +90,16 @@ keeping a store with one person.
   Every row always gets a real picker (never "—").
 - Prod is a separate DB; the new logic ships with code on publish and is live
   immediately (no data migration / redistribute needed for balance).
+- **"Workload by picker" card must reconcile with the "Save & distribute (N)"
+  button.** The card is computed CLIENT-side over `activeRows` (open, not-yet-
+  distributed, not-picked = the exact set the button freezes), NOT from the server's
+  `sor.by_owner`. **Why:** `sor.by_owner` counts the FULL engine pick list (every
+  row incl. lines already frozen into open batches or already `replenished`), so it
+  diverged from both the button count and the visible pick-list table below it
+  (which both exclude `openKeys` + `replenished`) — the user saw ~400 lines/765u in
+  the card vs (102) on the button. **How to apply:** keep the workload card sourced
+  from `activeRows` (mirror `_replen_by_owner_summary`: lines=count, units=Σ
+  `replenish`, stores=distinct pos); the card hides when nothing is left to freeze.
 - Owner/`by_owner` decoration is a **post-sizing step each list engine applies
   separately** — there are now TWO replenishment list builders (the SOR engine
   `_compute_replenishment_sor` AND the older `_compute_replenishment_report_rows`
