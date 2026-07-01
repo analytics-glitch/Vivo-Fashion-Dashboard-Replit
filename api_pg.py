@@ -1828,11 +1828,18 @@ def _owner_for_store(store, store_map, owners):
 
 def _assign_replen_owners_by_units(rows, owners):
     """Distribute the pick-list rows across the roster so each picker gets as
-    close to EQUAL UNITS as possible. Rows are first ordered by POS location
-    (then a stable SKU/barcode key) so every store's lines stay contiguous; a
-    store is split between two pickers ONLY when the equal-units boundary lands
-    inside it — i.e. one POS may be shared by more than one individual. Mutates
-    each row in place (sets r['owner']) and returns the (now POS-sorted) rows.
+    close to EQUAL LINE COUNT as possible (each picker owns roughly the same
+    number of rows, NOT the same number of pieces). Rows are first ordered by POS
+    location (then a stable SKU/barcode key) so every store's lines stay
+    contiguous; a store is split between two pickers ONLY when the equal-lines
+    boundary lands inside it — i.e. one POS may be shared by more than one
+    individual. Mutates each row in place (sets r['owner']) and returns the (now
+    POS-sorted) rows.
+
+    Name kept for history; the balance metric is now LINES, not pieces. This is
+    the SAVE-time balancer that produces the frozen {line_key: owner} map, so it
+    must match the read-time _assign_replen_owners_frozen_then_balance (also
+    line-based) or a redistribute would re-freeze unit-balanced ownership.
 
     Nobody ever shows as '—': every row gets a real picker from the roster."""
     owners = [str(o).strip() for o in (owners or []) if str(o).strip()] \
@@ -1848,13 +1855,13 @@ def _assign_replen_owners_by_units(rows, owners):
         for r in rows:
             r["owner"] = owners[0]
         return rows
-    total = sum(int(r.get("replenish") or 0) for r in rows)
+    total = len(rows)           # balance metric is LINE COUNT, not pieces
     if total <= 0:
         for i, r in enumerate(rows):
             r["owner"] = owners[i % k]
         return rows
-    target = total / k          # ideal units per picker
-    acc = 0                     # units assigned so far (including current row)
+    target = total / k          # ideal lines per picker
+    acc = 0                     # lines assigned so far (including current row)
     owner_idx = 0
     prev_store = None
     store_start_idx = 0         # owner_idx this store began on (cap it to 2 pickers)
@@ -1864,7 +1871,7 @@ def _assign_replen_owners_by_units(rows, owners):
             prev_store = store
             store_start_idx = owner_idx
         r["owner"] = owners[owner_idx]
-        acc += int(r.get("replenish") or 0)
+        acc += 1
         # Advance once this picker has met their cumulative share, always leaving at
         # least one picker for the remaining rows — but never split a SINGLE store
         # across more than two pickers (stop advancing inside a store once it already
@@ -1933,9 +1940,9 @@ def _set_replen_line_owner_map(mapping):
 
 
 def _compute_line_owner_map(owners=None, date_from=None, date_to=None, limit=400):
-    """Equal-units per-line assignment captured at redistribute time. Builds the
-    current pick list, balances it by units (POS-ordered, a store split only when
-    the equal-units boundary lands inside it), and returns {line_key: owner}.
+    """Equal-lines per-line assignment captured at redistribute time. Builds the
+    current pick list, balances it by line count (POS-ordered, a store split only
+    when the equal-lines boundary lands inside it), and returns {line_key: owner}.
     Best-effort: returns {} if the report cannot be built."""
     owners = owners if owners is not None else _replen_owners()
     try:
@@ -1983,27 +1990,33 @@ def _replen_line_owner_map(bootstrap=True):
 def _assign_replen_owners_frozen_then_balance(rows, line_map=None, owners=None,
                                               presort=True):
     """Assign every pick-list row a picker, in place, keeping the displayed
-    workload near-EQUAL by units without ever reshuffling a picker's already-saved
-    lines.
+    workload near-EQUAL by LINE COUNT without ever reshuffling a picker's
+    already-saved lines.
+
+    Balance metric is LINES (each row weighs 1), NOT units/pieces — the team
+    wanted "118 lines ÷ 4 pickers" so each picker owns roughly the same number
+    of rows to work. Because a store is kept WHOLE on one picker (below), the
+    per-picker line counts land near-equal, not exactly equal, when store sizes
+    are lumpy.
 
     `presort` POS-sorts the rows first so each store's lines stay contiguous (the
     Daily report wants this). The SOR endpoint passes presort=False to preserve
     its own `_rank` priority order — only the owner labels + the by-owner summary
     are derived; the row sequence the operator sees is left untouched.
 
-    Store-contiguous + balanced by units:
+    Store-contiguous + balanced by line count:
       1. Lines present in the FROZEN {line_key: owner} map keep that owner (the
-         equal-units balance captured by the last "Save & redistribute"). A reload
-         never moves these — a picker who finished early is never handed back their
-         own work. We remember each store's frozen owner + units.
+         balance captured by the last "Save & redistribute"). A reload never moves
+         these — a picker who finished early is never handed back their own work.
+         We remember each store's frozen owner + line count.
       2. Every NON-frozen line (intraday drift + brand-new stores) is then balanced
-         by units, SEEDED with the frozen loads so an already-loaded picker is not
-         piled on. Non-frozen stores are placed largest-first (LPT) onto the
-         currently lightest picker; a partly-frozen store keeps drifting onto its
-         existing owner while that owner still has room. A store stays WHOLE on one
-         picker until that picker reaches the equal-units target — only then do the
-         store's remaining lines spill to the next-lightest picker, so a store
-         splits across pickers ONLY when needed to balance.
+         by line count, SEEDED with the frozen loads so an already-loaded picker is
+         not piled on. Non-frozen stores are placed largest-first (LPT, by line
+         count) onto the currently lightest picker; a partly-frozen store keeps
+         drifting onto its existing owner while that owner still has room. A store
+         stays WHOLE on one picker until that picker reaches the equal-lines target
+         — only then do the store's remaining lines spill to the next-lightest
+         picker, so a store splits across pickers ONLY when needed to balance.
 
     Nobody ever shows as "—": every row gets a real picker from the roster."""
     owners = [str(o).strip() for o in (owners or []) if str(o).strip()] \
@@ -2019,7 +2032,7 @@ def _assign_replen_owners_frozen_then_balance(rows, line_map=None, owners=None,
     nonfrozen_by_store = {}                   # store -> [drifted/new rows]
     for r in rows:
         store = str(r.get("pos_location") or "")
-        u = int(r.get("replenish") or 0)
+        u = 1                                 # balance metric is LINES, not pieces
         k = _line_key(r.get("pos_location"), r.get("sku"))
         ow = line_map.get(k) if k else None
         if ow in units:                       # frozen + still on the roster
@@ -2030,17 +2043,17 @@ def _assign_replen_owners_frozen_then_balance(rows, line_map=None, owners=None,
         else:
             r["owner"] = None
             nonfrozen_by_store.setdefault(store, []).append(r)
-    # Balance every NON-frozen line (intraday drift + brand-new stores) by units,
-    # seeded with the frozen loads so a picker who already carries saved work is
-    # not piled on further. Frozen lines are never moved (a finished picker keeps
-    # their own work). Largest non-frozen stores are placed first (LPT) onto the
-    # currently lightest picker, and a store stays whole on that picker until it
-    # reaches the equal-units target — only THEN does the store's remaining lines
-    # spill to the next-lightest picker. So a store splits across pickers ONLY when
-    # needed to balance (the user's "one store, one owner unless we must split").
+    # Balance every NON-frozen line (intraday drift + brand-new stores) by LINE
+    # COUNT, seeded with the frozen loads so a picker who already carries saved
+    # work is not piled on further. Frozen lines are never moved (a finished picker
+    # keeps their own work). Largest non-frozen stores are placed first (LPT, by
+    # line count) onto the currently lightest picker, and a store stays whole on
+    # that picker until it reaches the equal-lines target — only THEN does the
+    # store's remaining lines spill to the next-lightest picker. So a store splits
+    # across pickers ONLY when needed to balance (the user's "one store, one owner
+    # unless we must split").
     total = sum(units.values()) + sum(
-        int(r.get("replenish") or 0)
-        for sr in nonfrozen_by_store.values() for r in sr)
+        len(sr) for sr in nonfrozen_by_store.values())
     target = (total / len(owners)) if owners else 0
 
     def _lightest(exclude=None):
@@ -2049,7 +2062,7 @@ def _assign_replen_owners_frozen_then_balance(rows, line_map=None, owners=None,
 
     store_order = sorted(
         nonfrozen_by_store.items(),
-        key=lambda kv: sum(int(r.get("replenish") or 0) for r in kv[1]),
+        key=lambda kv: len(kv[1]),
         reverse=True)
     # A single store is split across AT MOST TWO pickers (ideally one):
     #  - a brand-new store starts on the lightest picker and may switch ONCE (when
@@ -2084,7 +2097,7 @@ def _assign_replen_owners_frozen_then_balance(rows, line_map=None, owners=None,
                         cur = cand
                         switched = True
             r["owner"] = cur
-            units[cur] += int(r.get("replenish") or 0)
+            units[cur] += 1
     return rows
 
 
@@ -14435,11 +14448,11 @@ def analytics_replenishment_report(
     limit: int = Query(default=400),
 ):
     out_rows = _compute_replenishment_report_rows(date_from, date_to, limit)
-    # Distribute the pick list so each picker gets as close to EQUAL UNITS as
+    # Distribute the pick list so each picker gets as close to EQUAL LINES as
     # possible. Rows are ordered by POS location, so each store's lines stay
     # contiguous and a store is split between two pickers only when the
-    # equal-units boundary lands inside it (one POS may be shared by >1 picker).
-    # FROZEN assignment: the equal-units balance is computed ONLY by the explicit
+    # equal-lines boundary lands inside it (one POS may be shared by >1 picker).
+    # FROZEN assignment: the equal-lines balance is computed ONLY by the explicit
     # "Save & redistribute" action (see _redistribute_replen_owners) and persisted
     # as a {line_key: owner} map. We read it back here so a page reload never
     # reshuffles a picker's lines — a picker who finished early can refresh without
@@ -19951,6 +19964,7 @@ def replenishment_distributions(request: Request, limit: int = Query(default=20)
             detail="You don't have permission to view distribution batches.")
     limit = max(1, min(int(limit or 20), 100))
     _ensure_replen_distribution_tables()
+    _warehouse_bins_refresh()
     batches = _users_exec(
         "SELECT id, created_at, created_by, weeks, line_count, total_units, note "
         "FROM replen_distribution ORDER BY created_at DESC LIMIT %s",
@@ -19958,11 +19972,17 @@ def replenishment_distributions(request: Request, limit: int = Query(default=20)
     if not batches:
         return {"batches": [], "open_keys": []}
     ids = [b["id"] for b in batches]
+    # Resolve the warehouse bin per line at READ time (LEFT JOIN on barcode) so
+    # existing batches — frozen before bins were stored — also show a bin. The
+    # pickers use the bin to physically locate stock, so it must be on the sheet.
     lines = _users_exec(
-        "SELECT distribution_id, pos_location, sku, barcode, style_name, "
-        "       product_name, size, color_print, owner, suggested_units "
-        "FROM replen_distribution_line WHERE distribution_id = ANY(%s) "
-        "ORDER BY owner NULLS LAST, pos_location, style_name",
+        "SELECT l.distribution_id, l.pos_location, l.sku, l.barcode, l.style_name, "
+        "       l.product_name, l.size, l.color_print, l.owner, l.suggested_units, "
+        "       COALESCE(NULLIF(wb.bin, ''), '') AS bin "
+        "FROM replen_distribution_line l "
+        "LEFT JOIN warehouse_bins wb ON wb.barcode = l.barcode "
+        "WHERE l.distribution_id = ANY(%s) "
+        "ORDER BY l.owner NULLS LAST, l.pos_location, l.style_name",
         (ids,), fetch=True) or []
     # Done ledger: twin sku/barcode rows. Key by (pos, kind, value) → acted_at.
     acts = _users_exec(
@@ -20033,6 +20053,7 @@ def replenishment_distributions(request: Request, limit: int = Query(default=20)
                 "product_name": ln.get("product_name"),
                 "size": ln.get("size"),
                 "color_print": ln.get("color_print"),
+                "bin": ln.get("bin") or "",
                 "owner": ln.get("owner"),
                 "suggested_units": units,
                 "done": a is not None,

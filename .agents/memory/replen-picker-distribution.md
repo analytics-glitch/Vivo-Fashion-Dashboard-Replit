@@ -1,20 +1,29 @@
 ---
 name: Replenishment picker distribution
-description: How the replenishment pick list splits work across pickers — equal-units rule, and why it's FROZEN (rebalanced only on Save & redistribute) not live
+description: How the replenishment pick list splits work across pickers — equal-LINES rule, and why it's FROZEN (rebalanced only on Save & redistribute) not live
 ---
 
 # Replenishment pick-list picker distribution
 
 The pick list (`/api/analytics/replenishment-report`) distributes lines across
-the picker roster to give each picker **as close to equal total UNITS as
-possible**. Rows are ordered by POS location, and a single store **may be split
-across more than one picker** when the equal-units boundary falls inside it.
+the picker roster to give each picker **as close to equal LINE COUNT as
+possible** (each picker gets roughly the same number of rows, e.g. 118 lines ÷ 4
+pickers ≈ 30 each). Rows are ordered by POS location, and a single store **may be
+split across more than one picker** when the equal-lines boundary falls inside it.
 
 **Why:** the requirement evolved. It started as "contiguous block of stores by
-count" (very uneven units), then "whole stores kept together, balanced by units"
-(still uneven because a store is indivisible and store sizes vary a lot), then
-finally "equal units, stores splittable" — the user prioritised even units over
-keeping a store with one person.
+count", then "whole stores kept together, balanced by units", then "equal units,
+stores splittable", and **finally "equal LINES, stores splittable"** — the user
+switched the balance metric from pieces (units) to line count because the team
+counts work as rows to pick, not total pieces. Because stores stay contiguous the
+result is **near-equal, not exact** (e.g. 30/30/29/29), not a hard even split.
+
+**Balance metric = LINES, not pieces.** In `_assign_replen_owners_frozen_then_balance`
+every line weighs `1` (not `int(r["replenish"])`): the frozen-load seed, the
+`total`/`target`, the LPT store sort key, and the running accumulator all count
+rows. To revert to units, restore `int(r.get("replenish") or 0)` at those four
+sites. `_replen_by_owner_summary` independently recomputes BOTH lines and units
+from the rows, so the workload card still shows real unit totals per picker.
 
 **How to apply:**
 - Balancing is `_assign_replen_owners_by_units(rows, owners)`: sort by

@@ -197,7 +197,7 @@ const RULES = [
     used: ["/re-order"] },
   { id: "replenish", title: "Replenishment report", category: "Inventory",
     formula: "suggested replenish = MAX(0, units_sold_30d − store_SOH), then capped to available warehouse stock (top sellers first)",
-    notes: ["Floor-gap model over a trailing 30-day window: a store's recent unit sales minus what it still has on hand, limited by the warehouse pool for that SKU; zero-need rows are dropped.", "The weeks-of-cover shown for triage is a simple trailing-window run-rate, not the recency-weighted Velocity formula.", "Surfaces last-sold dates and assigns each line to a picker by equal units (frozen until 'Save & redistribute')."],
+    notes: ["Floor-gap model over a trailing 30-day window: a store's recent unit sales minus what it still has on hand, limited by the warehouse pool for that SKU; zero-need rows are dropped.", "The weeks-of-cover shown for triage is a simple trailing-window run-rate, not the recency-weighted Velocity formula.", "Surfaces last-sold dates and assigns each line to a picker by equal lines (frozen until 'Save & redistribute')."],
     used: ["/replenishments"] },
   { id: "footfall", title: "Footfall, turn-in & conversion", category: "Footfall",
     formula: "turn-in % = footfall_in × 100 ÷ outside_traffic;  conversion % = orders × 100 ÷ footfall_in",

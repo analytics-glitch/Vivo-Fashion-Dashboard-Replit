@@ -433,11 +433,15 @@ const Replenishments = () => {
   }, [activeRows, weeks, loadDistributions, loadSor]);
 
   // Mark a single distributed line picked (twin sku + barcode ledger rows).
-  const markBatchLineDone = useCallback(async (line) => {
+  const markBatchLineDone = useCallback(async (line, actualUnits) => {
     const k = `${line.pos_location}|${line.sku || ""}|${line.barcode || ""}`;
     setBatchSavingKey(k);
     try {
-      const au = Number(line.suggested_units || 0);
+      let au = Number(line.suggested_units || 0);
+      if (actualUnits != null && actualUnits !== "") {
+        const n = Number(actualUnits);
+        au = Number.isFinite(n) ? Math.max(0, Math.round(n)) : au;
+      }
       const actions = [];
       if (line.sku) actions.push({ rec_type: "replenish", rec_key: `${line.pos_location}|sku|${line.sku}`, status: "done", actual_units: au });
       if (line.barcode) actions.push({ rec_type: "replenish", rec_key: `${line.pos_location}|barcode|${line.barcode}`, status: "done", actual_units: au });
@@ -562,12 +566,12 @@ const Replenishments = () => {
 
       {/* Picker roster (admin / authorised operators) — shared with Replenish
           by Style/SKU. Saving redistributes line owners across the SOR pick list
-          below by EQUAL UNITS; a reload never reshuffles a picker's lines. */}
+          below by EQUAL LINES; a reload never reshuffles a picker's lines. */}
       {isAdmin && (
         <ReplenishmentRosterCard
           isAdmin={isAdmin}
           onSaved={() => loadSor({ forceFresh: true })}
-          subtitle="Who is picking the Daily Replenishments today? Saving here redistributes the SOR pick list across the roster by EQUAL UNITS — POS sorted so each person owns a contiguous block of stores. The split is then fixed: reloading won't reshuffle anyone, so a picker who finishes early can refresh without being handed new work. Shared with Replenish by Style/SKU."
+          subtitle="Who is picking the Daily Replenishments today? Saving here redistributes the SOR pick list across the roster by EQUAL LINES (each picker gets roughly the same number of rows) — POS sorted so each person owns a contiguous block of stores, so line counts land near-equal, not exact. The split is then fixed: reloading won't reshuffle anyone, so a picker who finishes early can refresh without being handed new work. Shared with Replenish by Style/SKU."
         />
       )}
 
@@ -1139,6 +1143,9 @@ const Replenishments = () => {
 // over a line table with Done/Outstanding status and a Mark-done action.
 const BatchCard = ({ batch, onMarkDone, onDelete, savingKey }) => {
   const [open, setOpen] = useState(false);
+  // Per-line "actual units picked" the operator keys in before marking done
+  // (defaults to the suggested qty). This is what the team physically pulled.
+  const [picked, setPicked] = useState({});
   const when = batch.created_at ? batch.created_at.replace("T", " ").slice(0, 16) : "—";
   const pct = batch.line_count ? Math.round((batch.done_count / batch.line_count) * 100) : 0;
   return (
@@ -1180,8 +1187,10 @@ const BatchCard = ({ batch, onMarkDone, onDelete, savingKey }) => {
                 <th className="px-3 py-2 font-semibold">Product</th>
                 <th className="px-3 py-2 font-semibold whitespace-nowrap">Colour</th>
                 <th className="px-3 py-2 font-semibold whitespace-nowrap">Size</th>
+                <th className="px-3 py-2 font-semibold whitespace-nowrap">Bin</th>
                 <th className="px-3 py-2 font-semibold whitespace-nowrap">Barcode</th>
-                <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Units</th>
+                <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">To pick</th>
+                <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Picked</th>
                 <th className="px-3 py-2 font-semibold whitespace-nowrap"></th>
               </tr>
             </thead>
@@ -1200,11 +1209,32 @@ const BatchCard = ({ batch, onMarkDone, onDelete, savingKey }) => {
                     <td className="px-3 py-2 break-words max-w-[260px]" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>{ln.product_name || ln.style_name || "—"}</td>
                     <td className="px-3 py-2 whitespace-nowrap">{(ln.color_print || "").trim() || <span className="text-muted">—</span>}</td>
                     <td className="px-3 py-2 whitespace-nowrap">{ln.size || <span className="text-muted">—</span>}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {(ln.bin || "").trim()
+                        ? <span className="inline-flex items-center rounded bg-sky-100 text-sky-900 font-mono text-[11px] font-bold px-1.5 py-0.5">{ln.bin.trim()}</span>
+                        : <span className="text-muted">—</span>}
+                    </td>
                     <td className="px-3 py-2 whitespace-nowrap font-mono text-[11px]">{ln.barcode || ln.sku || "—"}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{ln.done ? `${fmtNum(ln.done_units)} / ${fmtNum(ln.suggested_units)}` : fmtNum(ln.suggested_units)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{fmtNum(ln.suggested_units)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {ln.done
+                        ? <span className="font-bold text-emerald-800">{fmtNum(ln.done_units)}</span>
+                        : (
+                          <input
+                            type="number"
+                            min={0}
+                            inputMode="numeric"
+                            value={picked[k] ?? ""}
+                            placeholder={String(ln.suggested_units ?? 0)}
+                            onChange={(e) => setPicked((p) => ({ ...p, [k]: e.target.value }))}
+                            className="w-16 text-right tabular-nums border border-border rounded px-1.5 py-0.5 text-[12px]"
+                            data-testid={`replen-batch-picked-${batch.id}-${i}`}
+                          />
+                        )}
+                    </td>
                     <td className="px-3 py-2 whitespace-nowrap">
                       {!ln.done && (
-                        <button type="button" onClick={() => onMarkDone(ln)} disabled={savingKey === k} className="inline-flex items-center gap-1 text-[11px] font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 px-2.5 py-1 rounded-md" data-testid={`replen-batch-markdone-${batch.id}-${i}`}>
+                        <button type="button" onClick={() => onMarkDone(ln, picked[k])} disabled={savingKey === k} className="inline-flex items-center gap-1 text-[11px] font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 px-2.5 py-1 rounded-md" data-testid={`replen-batch-markdone-${batch.id}-${i}`}>
                           <CheckCircle size={12} weight="fill" /> {savingKey === k ? "Saving…" : "Mark done"}
                         </button>
                       )}
