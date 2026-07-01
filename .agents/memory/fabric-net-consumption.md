@@ -17,7 +17,20 @@ The guard is `split_part(location_to,'/',1) <> 'Virtual Locations'` — `split_p
 trap. It lives in the shared `_prod_return_pred()` helper used by BOTH `_net_kg`
 (signed-kg) and `_net_cons_where` (row selection) so they stay in lockstep.
 
-**Net consumption = SUM(OUT) − SUM(INTERNAL returns from production).**
+**Net consumption also counts sampling.** Fabric moved `RMAT/Stock → Samp/Fabric`
+(an `INTERNAL` move) is real consumption (used to make samples) and is ADDED as
++kg via `_samp_consume_pred()`; leftover sampling fabric coming back
+`Samp/Fabric → <non-virtual stock loc>` is netted off (−kg) via `_samp_return_pred()`,
+using the SAME `split_part(location_to,'/',1) <> 'Virtual Locations'` write-off
+carve-out as production returns. ONLY `RMAT/Stock → Samp/Fabric` counts as
+consumption (arrivals into Samp from Dead/Defects/etc. do NOT); only `Samp/Fabric`,
+never `Samp/Stock` or other `Samp/*`. Both new predicates live in the same
+`_net_kg`/`_net_cons_where` helpers so every metric picks them up. Audit endpoint
+`/api/fabric/consumption-sources.csv?scope=main|support` dumps today's move-level
+rows (signed net kg/metres) that make up "Consumed today"; the "↓ sources" link on
+the Consumed-today KPI card downloads it.
+
+**Net consumption = SUM(OUT + RMAT→Samp) − SUM(production returns + Samp→stock returns).**
 
 **Why:** gross OUT massively overstates real usage — for 2026, gross OUT ≈ 2.46M kg
 but returns ≈ 2.23M kg, so true net consumption ≈ 231k kg. The user explicitly wants

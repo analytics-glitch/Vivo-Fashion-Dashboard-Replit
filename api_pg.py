@@ -19288,12 +19288,27 @@ source for "avg metres per garment" and the MO data-quality check:
 METRIC CONVENTIONS — match these so answers agree with the dashboard:
 - kg per move = CASE WHEN m.uom='g' THEN m.qty/1000 ELSE m.qty END.
 - Metres = kg / p.kg_per_mtr_eff; only when p.kg_per_mtr_eff > 0 (else exclude).
-- NET CONSUMPTION = OUT moves MINUS genuine production returns. A production return
-  is an INTERNAL move with location_from = 'Virtual Locations/Production' AND
-  split_part(location_to,'/',1) <> 'Virtual Locations'. Signed net kg per row:
+- NET CONSUMPTION = consumption moves MINUS genuine returns. There are TWO kinds of
+  consumption and TWO matching return legs:
+    * OUT moves to production (garment manufacturing) = +consumption; a PRODUCTION
+      RETURN nets it off — an INTERNAL move with location_from =
+      'Virtual Locations/Production' AND split_part(location_to,'/',1) <> 'Virtual Locations'.
+    * INTERNAL 'RMAT/Stock' -> 'Samp/Fabric' (fabric pulled to make samples) =
+      +consumption; a SAMPLING RETURN nets it off — an INTERNAL move with
+      location_from = 'Samp/Fabric' AND split_part(location_to,'/',1) <> 'Virtual Locations'.
+      ONLY 'RMAT/Stock' -> 'Samp/Fabric' counts (fabric arriving in Samp/Fabric from
+      any other location, e.g. Dead/Stock or Defects/Stock, does NOT). 'Samp/Stock' and
+      other 'Samp/*' locations are NOT included — only 'Samp/Fabric'.
+  Signed net kg per row:
     CASE WHEN m.move_type='OUT' THEN (kg)
          WHEN m.move_type='INTERNAL'
               AND m.location_from='Virtual Locations/Production'
+              AND split_part(m.location_to,'/',1) <> 'Virtual Locations' THEN -(kg)
+         WHEN m.move_type='INTERNAL'
+              AND m.location_from='RMAT/Stock'
+              AND m.location_to='Samp/Fabric' THEN (kg)
+         WHEN m.move_type='INTERNAL'
+              AND m.location_from='Samp/Fabric'
               AND split_part(m.location_to,'/',1) <> 'Virtual Locations' THEN -(kg)
          ELSE 0 END
   Restrict consumption rows to: m.is_fabric AND m.uom IN ('g','kg').

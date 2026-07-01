@@ -686,6 +686,29 @@ function consumedTodaySub(d){
   const day=fmtDayMon(d&&d.last_consumption_date);
   return day?`no production activity yet today &middot; last consumption posted: ${esc(day)}`:'no production activity yet today';
 }
+// A small "sources" CSV link for the "Consumed today" card: downloads the
+// move-level rows that make up today's net figure (same scope as the card) so a
+// user can audit exactly what the number is built from.
+function consumptionSourcesLink(scope){
+  const s=(scope==='support')?'support':'main';
+  return ` &middot; <a href="#" onclick="downloadConsumptionSources('${s}');return false;" `
+    +`style="color:inherit;text-decoration:underline;cursor:pointer;white-space:nowrap;" `
+    +`title="Download the move-level rows that make up today's figure (CSV) — for auditing">&#11015; sources</a>`;
+}
+async function downloadConsumptionSources(scope){
+  try{
+    const s=(scope==='support')?'support':'main';
+    const r=await fetch('/api/fabric/consumption-sources.csv?scope='+s,{credentials:'include'});
+    if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
+    if(!r.ok)throw new Error('http '+r.status);
+    const blob=await r.blob();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='consumption-sources-today-'+s+'.csv';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  }catch(e){alert('Could not generate the CSV. Please try again.');}
+}
 const PAL=['#1a5c38','#d97706','#2563eb','#9333ea','#dc2626','#0891b2','#65a30d','#6b7280'];
 
 // ── Formula tooltips ──
@@ -995,7 +1018,7 @@ function renderSupportKpis(d){
   document.getElementById('support-kpis').innerHTML=`
    <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value"${fx(FX.supfStock)}>${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub"><span${fx(FX.kpiSubStockValue)}>${fmtKES(d.fabric_stock_value)}</span> &middot; <span${fx(FX.kpiSubFabricCount)}>${fmt(d.fabric_products)} fabrics</span></p></div>
    <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value"${fx(FX.supfValue)}>${fmtKES(d.fabric_stock_value)}</p><p class="kpi-sub">RMAT/Stock only</p></div>
-   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.supfConsToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">${consumedTodaySub(d)}</p></div>
+   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.supfConsToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">${consumedTodaySub(d)}${consumptionSourcesLink('support')}</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.supfCons30d)}>${fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    <div class="kpi"><span class="eyebrow">Dead stock</span><p class="kpi-value danger"${fx(FX.supfDead)}>${fmtKES(d.dead_stock_value)}</p><p class="kpi-sub">support fabrics</p></div>`;
 }
@@ -2216,7 +2239,7 @@ function renderKpis(d,mpg){
    <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value"${fx(FX.totalFabricValue)}>${fmtKES(totalVal)}</p><p class="kpi-sub">${valSub}</p></div>
    <div class="kpi" title="${acpmTitle('Average cost per metre across fabric stock on hand (RMAT/Stock), per metre regardless of the kg/m unit toggle.',acpmSExc)}"><span class="eyebrow">Avg cost / metre</span><p class="kpi-value permetre"${fx(FX.avgCostMetreStock)}>${acpmFmt(acpmS)}</p><p class="kpi-sub">${acpmSub('stock on hand &middot; RMAT/Stock',acpmSExc)}</p></div>
    <div class="kpi" title="${acpmTitle('Average purchase cost per metre across all received POs, per metre regardless of the kg/m unit toggle.',acpmPExc)}"><span class="eyebrow">Avg cost / metre (purchases)</span><p class="kpi-value permetre"${fx(FX.avgCostMetrePurchases)}>${acpmFmt(acpmP)}</p><p class="kpi-sub">${acpmSub('received &middot; all POs',acpmPExc)}</p></div>
-   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">${consumedTodaySub(d)}</p></div>
+   <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">${consumedTodaySub(d)}${consumptionSourcesLink('main')}</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.consumed30d)}>${fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    ${(()=>{const v=(mpg&&mpg.metres_per_garment!=null)?mpg.metres_per_garment:null;
      let sub=(mpg&&mpg.mos)?('rolling 30d &middot; <span'+fx(FX.mpgSubMos)+'>'+fmt(mpg.mos)+' Done-DPS MOs</span>'):'rolling 30d &middot; Done-DPS';

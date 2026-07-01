@@ -130,11 +130,22 @@ def q(conn, sql, params=()):
         return [dict(r) for r in cur.fetchall()]
 
 # ── Consumption / returns model ─────────────────────────────
-# Fabric is "consumed" by an OUT move to production. Some of it comes back as a
-# return — an INTERNAL move whose location_from is the production virtual
-# location. Net consumption = OUT − returns. The production location is a single
-# fixed value (no LIKE needed), which also avoids the psycopg2 literal-% trap.
+# Fabric is "consumed" in two ways:
+#   1. an OUT move to production (garment manufacturing), and
+#   2. an INTERNAL move from RMAT/Stock into the sampling location Samp/Fabric
+#      (fabric pulled to make samples — real consumption, but Odoo records it as an
+#      INTERNAL transfer, so it is invisible unless explicitly counted).
+# Some of it comes back as a return:
+#   * production returns — an INTERNAL move whose location_from is the production
+#     virtual location, back to a real stock location, and
+#   * sampling returns — an INTERNAL move OUT of Samp/Fabric back to a real
+#     (non-virtual) stock location (leftover sampling fabric put back on the shelf).
+# Net consumption = (OUT + RMAT→Samp) − (production returns + sampling returns).
+# All the location literals are single fixed values (no LIKE needed), which also
+# avoids the psycopg2 literal-% trap.
 PROD_LOC = "Virtual Locations/Production"
+STOCK_LOC = "RMAT/Stock"          # the primary real fabric-stock location
+SAMP_LOC = "Samp/Fabric"          # the sampling location (samples made here)
 
 def _kg(alias="m"):
     return f"(CASE WHEN {alias}.uom='g' THEN {alias}.qty/1000 ELSE {alias}.qty END)"
@@ -150,20 +161,44 @@ def _prod_return_pred(alias="m"):
             f"AND {alias}.location_from = '{PROD_LOC}' "
             f"AND split_part({alias}.location_to, '/', 1) <> 'Virtual Locations'")
 
+def _samp_consume_pred(alias="m"):
+    """Sampling consumption: an INTERNAL move of fabric from RMAT/Stock INTO the
+    sampling location Samp/Fabric (fabric used to make samples). ONLY RMAT/Stock →
+    Samp/Fabric counts — fabric arriving in Samp/Fabric from any other location
+    (Dead/Stock, Defects/Stock, …) is a stock reshuffle, not fresh consumption."""
+    return (f"{alias}.move_type='INTERNAL' "
+            f"AND {alias}.location_from = '{STOCK_LOC}' "
+            f"AND {alias}.location_to = '{SAMP_LOC}'")
+
+def _samp_return_pred(alias="m"):
+    """A sampling return: an INTERNAL move OUT of Samp/Fabric back to a real
+    (non-virtual) stock location — leftover sampling fabric returned to the shelf,
+    netted off exactly like a production return. Destinations under
+    'Virtual Locations/...' are excluded (write-offs/adjustments), the same carve-out
+    as `_prod_return_pred`."""
+    return (f"{alias}.move_type='INTERNAL' "
+            f"AND {alias}.location_from = '{SAMP_LOC}' "
+            f"AND split_part({alias}.location_to, '/', 1) <> 'Virtual Locations'")
+
 def _net_kg(alias="m"):
-    """Signed kg per move row: +kg for OUT (consumption), −kg for production returns.
-    A return is specifically an INTERNAL move out of the production location back to a
-    real stock location (virtual/adjustment destinations are excluded)."""
+    """Signed kg per move row: +kg for consumption (OUT to production OR RMAT→Samp),
+    −kg for returns (production → real stock OR Samp → real stock). Virtual/adjustment
+    destinations are excluded from both return legs."""
     kg = _kg(alias)
     return (f"CASE WHEN {alias}.move_type='OUT' THEN {kg} "
             f"WHEN {_prod_return_pred(alias)} THEN -{kg} "
+            f"WHEN {_samp_consume_pred(alias)} THEN {kg} "
+            f"WHEN {_samp_return_pred(alias)} THEN -{kg} "
             f"ELSE 0 END")
 
 def _net_cons_where(alias="m"):
-    """Rows that make up net consumption: OUT moves plus genuine INTERNAL production
-    returns (Production → a real stock location; virtual/adjustment dests excluded)."""
+    """Rows that make up net consumption: OUT moves, RMAT→Samp sampling consumption,
+    plus genuine INTERNAL returns (Production → real stock and Samp → real stock;
+    virtual/adjustment dests excluded)."""
     return (f"({alias}.move_type='OUT' "
-            f"OR ({_prod_return_pred(alias)})) "
+            f"OR ({_prod_return_pred(alias)}) "
+            f"OR ({_samp_consume_pred(alias)}) "
+            f"OR ({_samp_return_pred(alias)})) "
             f"AND {alias}.uom IN ('g','kg') "
             f"AND {alias}.is_fabric")
 
@@ -1792,6 +1827,50 @@ def consumption(
             WHERE {base_where}
             GROUP BY 1 ORDER BY 1
         """, (since, until))
+
+# ── Consumption sources: today's move-level audit CSV ───────
+@fabric_router.get("/api/fabric/consumption-sources.csv")
+def consumption_sources_csv(scope: str = Query(default="main")):
+    """Flat, move-level list of TODAY's rows that make up the net "Consumed today"
+    KPI — one row per move — so a user can audit exactly what the figure is built
+    from. Uses the EXACT SAME predicates as the KPI (`_net_cons_where` + `_net_kg`)
+    and honours the same main/support `scope`, so the signed net kg column sums to
+    the value shown on the card. Positive = consumption (OUT to production or
+    RMAT→Samp sampling), negative = a netted return (Production→stock, Samp→stock)."""
+    import csv, io
+    from fastapi.responses import Response
+    with _get_conn() as conn:
+        _ensure_fabric_sheet(conn)
+        rows = q(conn, f"""
+            SELECT m.date::date as move_date,
+                   COALESCE(NULLIF(m.product_name,''), NULLIF(p.name,''), '(unknown)') as fabric,
+                   COALESCE(NULLIF(m.product_sku,''), NULLIF(p.default_code,''), '') as sku,
+                   m.location_from as from_loc,
+                   m.location_to as to_loc,
+                   m.move_type as move_type,
+                   ROUND(({_net_kg('m')})::numeric,3) as net_kg,
+                   ROUND((CASE WHEN p.kg_per_mtr_eff>0 THEN ({_net_kg('m')})/p.kg_per_mtr_eff ELSE 0 END)::numeric,2) as net_metres
+            FROM {EFFECTIVE_MOVES} m
+            LEFT JOIN raw_fabric_products p ON p.id = m.product_id
+            WHERE {_net_cons_where('m')}
+              AND {_scope_sql(scope)}
+              AND m.date >= CURRENT_DATE
+            ORDER BY fabric, m.location_from, m.location_to
+        """)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Date", "Fabric", "SKU", "From location", "To location",
+                "Move type", "Net kg", "Net metres"])
+    for r in rows:
+        w.writerow([r["move_date"], r["fabric"], r["sku"], r["from_loc"],
+                    r["to_loc"], r["move_type"], r["net_kg"], r["net_metres"]])
+    scope_tag = "support" if str(scope or "").lower() == "support" else "main"
+    fname = f"consumption-sources-today-{scope_tag}.csv"
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="%s"' % fname},
+    )
 
 # ── Stock vs consumption by category/subcategory ────────────
 @fabric_router.get("/api/fabric/category-stock-consumption")
