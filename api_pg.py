@@ -11193,21 +11193,16 @@ def admin_snapshot_freshness():
 @app.get("/api/allocations/runs")
 def allocations_runs(status: str = Query(default=None)):
     return _alloc_runs(status)
+# Company-standard size pack curve (a 12-unit pack). This is a fixed
+# buying/allocation standard set by the merchandising team — NOT derived
+# from the catalog size mix (that surfaced junk sizes like F/3X and
+# over-clamped every size to 4). Order matters for display.
+STANDARD_PACK = {"S": 2, "M": 3, "L": 3, "1X": 2, "2X": 1, "XS": 1}
+
+
 @app.get("/api/allocations/sizes")
 def allocations_sizes():
-    rows = run_query("""
-        SELECT size, COUNT(*) AS n
-        FROM all_products_clean
-        WHERE size IS NOT NULL AND size <> '' AND size NOT LIKE '%/%'
-        GROUP BY size ORDER BY n DESC LIMIT 8
-    """)
-    if not rows:
-        return {"pack_table": {"S": 2, "M": 3, "L": 3, "1X": 2}}
-    mn = min(float(r["n"]) for r in rows) or 1
-    pack = {}
-    for r in rows:
-        pack[r["size"]] = max(1, min(4, int(round(float(r["n"]) / mn))))
-    return {"pack_table": pack}
+    return {"pack_table": dict(STANDARD_PACK)}
 @app.get("/api/allocations/stores")
 def allocations_stores():
     rows = run_query("""
@@ -17179,17 +17174,9 @@ async def allocations_calculate(request: Request):
     dfrom = _iso(body.get("date_from"), str(date.today() - timedelta(days=90)))
     dto = _iso(body.get("date_to"), str(date.today()))
 
-    pack_rows = run_query("""
-        SELECT size, COUNT(*) AS n FROM all_products_clean
-        WHERE size IS NOT NULL AND size <> '' AND size NOT LIKE '%/%'
-        GROUP BY size ORDER BY n DESC LIMIT 12
-    """)
-    full_pack = {}
-    if pack_rows:
-        mn = min(float(r["n"]) for r in pack_rows) or 1
-        for r in pack_rows:
-            full_pack[r["size"]] = max(1, min(4, int(round(float(r["n"]) / mn))))
-    pack_breakdown = {sz: full_pack.get(sz, 1) for sz in sizes}
+    # Fixed company-standard pack curve (see STANDARD_PACK). Sizes the user
+    # selects that fall outside the standard default to 1 unit per pack.
+    pack_breakdown = {sz: STANDARD_PACK.get(sz, 1) for sz in sizes}
     pack_unit_size = sum(pack_breakdown.values()) or 1
     store_units = units_total * max(0.0, 1.0 - (wh_pct + on_pct) / 100.0)
     total_packs = int(store_units // pack_unit_size)

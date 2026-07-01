@@ -48,7 +48,7 @@ const Allocations = () => {
   const [subcategory, setSubcategory] = useState("");
   const [color, setColor] = useState("");
   const [units, setUnits] = useState(400);
-  const [selectedSizes, setSelectedSizes] = useState(["S", "M", "L"]);
+  const [selectedSizes, setSelectedSizes] = useState(["S", "M", "L", "1X", "2X", "XS"]);
   // Multi-criteria weights — Velocity / Stock / ASP. Default skews to
   // velocity which preserves pre-iter-61 behaviour. The form
   // renormalises them on submit so sliders don't have to sum to 1.
