@@ -126,7 +126,7 @@ const Replenishments = () => {
     setError(null);
     try {
       const { data: d } = await api.get("/analytics/replenishment-sor", {
-        params: { weeks },
+        params: { weeks, ...(opts.forceFresh ? { nocache: 1 } : {}) },
         timeout: 240000,
         forceFresh: !!opts.forceFresh,
       });

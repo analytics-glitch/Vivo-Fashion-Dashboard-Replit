@@ -100,6 +100,19 @@ keeping a store with one person.
   the card vs (102) on the button. **How to apply:** keep the workload card sourced
   from `activeRows` (mirror `_replen_by_owner_summary`: lines=count, units=Σ
   `replenish`, stores=distinct pos); the card hides when nothing is left to freeze.
+- **SOR pick-list endpoint has a whole-result cache** (`/api/analytics/replenishment-sor`).
+  The engine `_compute_replenishment_sor` runs several heavy velocity/sell-out CTEs;
+  every plain page load / lookback toggle re-ran them (cold ~seconds → "Computing the
+  SOR pick list…" spinner hangs). Result is memoised via `cache_get`/`cache_set` keyed
+  `replen_sor:{weeks}:{limit}:{EAT-date}` ttl=600, so repeat loads are instant. The
+  endpoint takes `nocache=1` to bypass AND refresh; the client (`loadSor`) sends it
+  only on `forceFresh` (mutations + explicit Refresh) so the list is never stale after
+  an action. **Why:** `run_query`'s per-query cache alone has short smart_ttl for
+  today's data, so it didn't cover the repeat-load case. **How to apply:** `datetime`
+  the class is NOT imported at module top (only `date, timedelta`) — the endpoint does
+  a local `from datetime import datetime as _dt` for the EAT-date key; keep it or it
+  NameErrors. Cold-start after a restart is still slow (all caches empty) — that's
+  expected, steady-state is cached.
 - Owner/`by_owner` decoration is a **post-sizing step each list engine applies
   separately** — there are now TWO replenishment list builders (the SOR engine
   `_compute_replenishment_sor` AND the older `_compute_replenishment_report_rows`

@@ -14498,17 +14498,34 @@ def analytics_replenishment_report(
 def analytics_replenishment_sor(
     weeks: int = Query(default=REPLEN_DEMAND_WEEKS_DEFAULT),
     limit: int = Query(default=400),
+    nocache: int = Query(default=0),
 ):
     """SOR-first replenishment (Phase 1): ranked pick list + Held-back panel +
     SOR KPI strip over the named trailing demand window (4/8/12w). READ-ONLY —
     this interactive endpoint never writes the immutable fact tables. The single
     writer of the canonical daily snapshot is the internal /snapshot job (driven
     by the sync loop), so toggling lookback / refreshing here cannot mutate the
-    attributable baseline. The run_id is returned for reference only."""
-    result = _compute_replenishment_sor(weeks, limit)
+    attributable baseline. The run_id is returned for reference only.
+
+    The full engine pull runs several heavy velocity/sell-out CTEs (multi-second
+    each), so the whole result is memoised per (weeks, limit, EAT business date)
+    for 10 min — repeat page loads and lookback toggles return instantly. Any
+    mutation (distribute / mark-done / holdback) and the explicit Refresh button
+    send `nocache=1`, which bypasses AND refreshes the entry so the list is never
+    shown stale after an action."""
+    from datetime import datetime as _dt
+    weeks_key = int(weeks) if int(weeks) in REPLEN_DEMAND_WEEKS_ALLOWED else REPLEN_DEMAND_WEEKS_DEFAULT
+    biz_date = (_dt.utcnow() + timedelta(hours=3)).date().isoformat()  # EAT (UTC+3)
+    ck = f"replen_sor:{weeks_key}:{int(limit)}:{biz_date}"
+    if not nocache:
+        cached = cache_get(ck)
+        if cached is not None:
+            return cached
+    result = _compute_replenishment_sor(weeks_key, limit)
     result["run_id"] = _replen_run_id(
         result["business_date"], "ALL", REPLEN_RULESET_VERSION,
         result["demand_weeks"])
+    cache_set(ck, result, ttl=600)
     return result
 
 
