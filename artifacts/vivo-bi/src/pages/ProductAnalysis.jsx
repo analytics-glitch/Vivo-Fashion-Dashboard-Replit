@@ -154,6 +154,7 @@ const ProductAnalysis = () => {
   // Layered scope (on top of the global date + country filter bar).
   const [stores, setStores] = useState([]);         // [] = all stores (multi)
   const [tiers, setTiers] = useState([]);           // [] = all range tiers
+  const [revPct, setRevPct] = useState("");         // "" = off; Pareto top-revenue % cutoff
   const [status, setStatus] = useState("active");   // active | retired | all
   const [brands, setBrands] = useState([]);         // [] = all
   const [cats, setCats] = useState([]);             // [] = all (category)
@@ -239,6 +240,11 @@ const ProductAnalysis = () => {
     [tiers]
   );
 
+  const revPctParam = useMemo(() => {
+    const n = Number(revPct);
+    return Number.isFinite(n) && n > 0 ? Math.min(100, n) : undefined;
+  }, [revPct]);
+
   // The Sales Period is fully independent of the global filter bar and always
   // opens on its 30-day default (the global date no longer re-seeds it).
 
@@ -255,7 +261,7 @@ const ProductAnalysis = () => {
   // previous range.
   useEffect(() => { setAi(null); setAiError(null); }, [
     localFrom, localTo, countryParam, storeParam, status, dimsParam, velDays,
-    brands.join(","), cats.join(","), subcats.join(","), tierParam,
+    brands.join(","), cats.join(","), subcats.join(","), tierParam, revPctParam,
   ]);
 
   useEffect(() => {
@@ -277,6 +283,7 @@ const ProductAnalysis = () => {
           category: cats.length ? cats.join(",") : undefined,
           subcategory: subcats.length ? subcats.join(",") : undefined,
           tier: tierParam,
+          rev_pct: revPctParam,
         },
       })
       .then((r) => {
@@ -305,7 +312,7 @@ const ProductAnalysis = () => {
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [localFrom, localTo, countryParam, storeParam, status, dimsParam, velDays, includeWarehouse, brands, cats, subcats, tierParam, dataVersion]);
+  }, [localFrom, localTo, countryParam, storeParam, status, dimsParam, velDays, includeWarehouse, brands, cats, subcats, tierParam, revPctParam, dataVersion]);
 
   const rows = data?.rows || [];
   const summary = data?.summary || null;
@@ -398,7 +405,7 @@ const ProductAnalysis = () => {
       { key: "size", label: "Size", render: (r) => r.size || "—", csv: (r) => r.size || "" },
       {
         key: "tier", label: "Tier",
-        headerTitle: "Range tier by cumulative revenue — T1 top 20%, T2 next, T3, T4 tail",
+        headerTitle: "Lifecycle tier (shared with Range Management) — Tier 1 NOOS core, Tier 2 matured + reordered, Tier 3 reordered, Tier 4 new/unproven, Retired",
         render: (r) => r.tier || "—",
       },
       { key: "units_sold", label: "Units Sold", numeric: true, headerTitle: "NET units (returns subtracted) over this page's selected period (30-day default, independent of the global filter). Overview/Products/Velocity show GROSS units over their own windows, so the same style reads differently there.", render: (r) => fmtNum(r.units_sold) },
@@ -424,7 +431,7 @@ const ProductAnalysis = () => {
       },
       {
         key: "style_status", label: "Style Status",
-        headerTitle: "Lifecycle status: Retired = manually retired or gated to the 'Retire' tier; Active = otherwise (independent of window sales)",
+        headerTitle: "Lifecycle status: Retired = manually retired or Zoya brand; Active = any Tier 1..4 style (independent of window sales)",
         render: (r) => {
           const s = r.style_status || "—";
           if (s === "—") return "—";
@@ -722,7 +729,10 @@ const ProductAnalysis = () => {
   }, [summary, rows, dims, velDays, scopeLabel, rangeLabel]);
 
   return (
-    <div className="space-y-5" data-testid="product-analysis-page">
+    <div
+      className="space-y-5 relative left-1/2 -translate-x-1/2 w-screen px-3 sm:px-5 lg:px-10"
+      data-testid="product-analysis-page"
+    >
       {/* Header */}
       <div>
         <h1 className="flex items-center gap-2 text-[18px] font-bold text-foreground">
@@ -871,17 +881,36 @@ const ProductAnalysis = () => {
           label="Tier"
           icon={ChartBar}
           options={[
-            { value: "T1", label: "T1 · top 20% revenue" },
-            { value: "T2", label: "T2 · next 40%" },
-            { value: "T3", label: "T3 · next 30%" },
-            { value: "T4", label: "T4 · tail 10%" },
+            { value: "Tier 1", label: "Tier 1 · NOOS core" },
+            { value: "Tier 2", label: "Tier 2 · matured + reordered" },
+            { value: "Tier 3", label: "Tier 3 · reordered" },
+            { value: "Tier 4", label: "Tier 4 · new / unproven" },
+            { value: "Retired", label: "Retired" },
           ]}
           value={tiers}
           onChange={setTiers}
           placeholder="All tiers"
-          width={180}
+          width={200}
           testId="pa-tier"
         />
+
+        <label
+          className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[12px] text-muted"
+          title="Top revenue contributors (Pareto): keep the fewest highest-revenue styles whose cumulative revenue reaches this % of the current selection. Blank = off."
+        >
+          Top rev %
+          <input
+            type="number"
+            min={1}
+            max={100}
+            step={1}
+            value={revPct}
+            onChange={(e) => setRevPct(e.target.value)}
+            placeholder="off"
+            className="w-[52px] bg-transparent text-[12px] text-foreground outline-none"
+            data-testid="pa-rev-pct"
+          />
+        </label>
 
         <label className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[12px] text-muted">
           Velocity

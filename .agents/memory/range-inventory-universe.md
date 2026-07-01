@@ -24,24 +24,28 @@ The user expects `Active = Total - Retired` and the tier classification to cover
 active set. Things that previously broke this and must stay fixed:
 
 - Product-analysis Active/Retired is a **LIFECYCLE status decoupled from window
-  sales**: Retired = manually retired OR gated to the "Retire" lifecycle tier
-  (recomputed at STYLE grain via `_style_gated_retire`, same gate as the Life
-  Cycle column); Active = everything else in the inventory universe. It is NOT
-  `units_vel > 0` — that measure is now the separate "actively selling" overlay
-  (`summary.actively_selling`, scoped to the kept set) and is NOT part of the
-  Active/Retired partition. So a Retired style can still show window sales.
+  sales**: both PA and RM now derive tier + Active/Retired from ONE shared helper
+  `_lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_12)`.
+  Retired = that helper returning "Retired"; Active = everything else in the
+  inventory universe (tier ∈ Tier 1..4). It is NOT `units_vel > 0` — that measure
+  is now the separate "actively selling" overlay (`summary.actively_selling`,
+  scoped to the kept set) and is NOT part of the Active/Retired partition. So a
+  Retired style can still show window sales. PA also exposes a **separate `rev_pct`
+  Pareto filter** (cumulative revenue-desc, keep until share ≥ rev_pct%, min 1)
+  applied AFTER tier filtering — it does not change the universe.
 - The "retired" status filter must drop only styles whose lifecycle status is
   Active (`if style_status=='retired' and not retired: continue`). Do NOT re-add a
   `g['stock'] <= 0` guard — `g['stock']` is store-only, so it drops warehouse-only
   styles that still hold inventory.
 - `summary.active_styles` / `retired_styles` derive from the SAME
   `status_by_style` map used for row labels, so summary counts == row-level counts.
-- PA's Retired (manual OR gated-Retire) intentionally DIFFERS from Range Mgmt's
-  Retired (hard/manual only). Do not force them to match — only the Total-styles
-  universe must reconcile between the two pages.
-- Range-mgmt: Tier1..4 counts + the "flagged for retirement" bucket == Active
-  (an active style can carry `tier='Retire'` when flagged), so Tier-sum alone is
-  intentionally < Active.
+- PA and RM Retired now share the SAME definition (both from `_lifecycle_tier`),
+  so they should align — the "flagged for retirement" / gated-Retire split was
+  removed. Only the Total-styles universe is contractually required to reconcile;
+  the cross_surface `INTENTIONAL_SKIPS` entry for PA-Retired vs RM-Retired is now
+  belt-and-suspenders (harmless — it just doesn't assert them equal).
+- Range-mgmt: Tier1..4 counts now SUM EXACTLY to Active (no separate flagged
+  bucket; `flagged_for_retirement` is always 0). Retired = tier "Retired" only.
 
 **How to apply:** any new style-count surface on these two pages must filter to the
 inventory universe and reconcile Active+Retired to Total before shipping.

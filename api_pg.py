@@ -3286,6 +3286,31 @@ _TRANSFER_REC_TYPES = {"replenish", "warehouse_return"}
 def _is_manually_retired(style_name):
     return _norm_style(style_name) in _RETIRED_STYLE_NORM
 
+def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_12):
+    """Unified, dashboard-wide style lifecycle tier — Product Analysis and Range
+    Management share this ONE definition so their tiers always agree.
+
+    Buckets (evaluated top-down; every in-scope style gets exactly one, so
+    Active [Tier 1..4] + Retired == the total style universe):
+      Retired — hard retirement ONLY: on the durable manual-retirement list OR a
+                Zoya style. (Aged-out / gated auto-retirement was removed.)
+      Tier 1  — consistent best performer ("NOOS"): sold in >= 11 of the trailing
+                12 calendar months.
+      Tier 2  — established repeat performer: >= 39 weeks old (~9 months) with
+                more than 3 reorder cycles.
+      Tier 3  — has completed at least one ~12-week reorder cycle.
+      Tier 4  — new / test (everything else).
+    """
+    if _is_manually_retired(style_name) or (brand or "").strip().lower() == "zoya":
+        return "Retired"
+    if (months_active_12 or 0) >= 11:
+        return "Tier 1"
+    if age_weeks is not None and age_weeks >= 39 and (reorder_count or 0) > 3:
+        return "Tier 2"
+    if (reorder_count or 0) >= 1:
+        return "Tier 3"
+    return "Tier 4"
+
 def csv_to_sql(val):
     # Escape embedded single quotes (double them) so comma-separated filter
     # values (country / channel / location) cannot break out of the SQL string
@@ -6633,6 +6658,7 @@ def analytics_product_analysis(
     category: str = Query(default=None),
     subcategory: str = Query(default=None),
     tier: str = Query(default=None),
+    rev_pct: float = Query(default=None),
     style_status: str = Query(default="all"),
     grain: str = Query(default="style"),
     dims: str = Query(default=None),
@@ -6680,7 +6706,7 @@ def analytics_product_analysis(
     # cache the fully-computed response for 10 min keyed on all filter params.
     # (run_query also caches the SQL, but only ~120s; this keeps the page warm.)
     _pa_ck = "pa:" + "|".join(str(x) for x in (
-        df, dt, country, store, brand, category, subcategory, tier,
+        df, dt, country, store, brand, category, subcategory, tier, rev_pct,
         style_status, grain, ",".join(all_sel), vel, int(include_warehouse)))
     _pa_cached = cache_get(_pa_ck)
     if _pa_cached is not None:
@@ -6785,6 +6811,25 @@ def analytics_product_analysis(
         # Only styles that currently hold inventory (stores or warehouse) are in scope.
         activity_where = (" WHERE (COALESCE(st.soh_current,0) > 0"
                           " OR COALESCE(st.soh_warehouse,0) > 0 OR COALESCE(st.soh_stores,0) > 0)")
+
+    # months_active_12 = the count of DISTINCT calendar months (trailing 365d) in
+    # which the style recorded a sale/order. Drives the unified Tier-1 ("NOOS",
+    # sold in >= 11 of the last 12 months) gate in _lifecycle_tier. Style-grain,
+    # respects the same country/store sales scope (cf/chf) as the sales CTE. It is
+    # its own CTE because the pa_style rollup does not materialise it.
+    nos_cte = (
+        "nos AS ("
+        " SELECT p.style_name,"
+        " COUNT(DISTINCT to_char(s.sale_date::date,'YYYY-MM')) AS months_active_12"
+        " FROM all_products_clean p JOIN all_sales s ON s.variant_sku = p.sku"
+        " WHERE p.style_name IS NOT NULL AND p.style_name <> ''"
+        " AND s.sale_kind IN ('sale','order')"
+        " AND s.sale_date::date >= CURRENT_DATE - INTERVAL '365 days'"
+        " AND " + BASE_FILTERS + cf + chf +
+        " GROUP BY p.style_name"
+        ")"
+    )
+    from_join += " LEFT JOIN nos ON nos.style_name = p.style_name"
 
     # The sales CTE is the heavy lifetime full-scan. When the table is NOT exploded
     # by any product dim / POS, is not store-scoped, and uses the default 30-day
@@ -6924,7 +6969,8 @@ def analytics_product_analysis(
         " FILTER (WHERE i.available > 0 AND (" + current_loc_clause + ")) AS store_locations"
         + stock_from + " WHERE COALESCE(m.style_name, i.style_name) IS NOT NULL AND COALESCE(m.style_name, i.style_name) <> ''" + icf + stock_pos_where +
         " GROUP BY 1" + stock_dim_grp + stock_pos_grp +
-        ")"
+        "),"
+        + nos_cte +
         " SELECT p.style_name, p.rep_sku,"
         " p.brand, p.category, p.subcategory, p.collection, p.season, p.style_number,"
         " p.color, p.print_plain, p.size,"
@@ -6937,7 +6983,8 @@ def analytics_product_analysis(
         " COALESCE(sa.units_24m,0) AS units_24m, COALESCE(sa.revenue_24m,0) AS revenue_24m, COALESCE(sa.gross_units_24m,0) AS gross_units_24m,"
         " sa.last_sale, sa.first_sale,"
         " COALESCE(st.soh_current,0) AS soh_current, COALESCE(st.soh_warehouse,0) AS soh_warehouse,"
-        " COALESCE(st.soh_stores,0) AS soh_stores," + pos_out + " sa.current_price"
+        " COALESCE(st.soh_stores,0) AS soh_stores," + pos_out + " sa.current_price,"
+        " COALESCE(nos.months_active_12,0) AS months_active_12"
         + from_join + activity_where
     )
 
@@ -6979,6 +7026,7 @@ def analytics_product_analysis(
         gross_units = int(r["gross_units_period"] or 0)
         units_vel = int(r["units_vel"] or 0)
         units_life = int(r["units_life"] or 0)
+        months_active_12 = int(r["months_active_12"] or 0)
         stock = int(r["soh_current"] or 0)
         first_sale = r["first_sale"]
         launch = _parse_iso_date(r["launch_date"]) or first_sale
@@ -7064,6 +7112,7 @@ def analytics_product_analysis(
             "last_sale": str(r["last_sale"]) if r["last_sale"] else None,
             "sizes_count": int(r["sizes_count"] or 0),
             "colors_count": int(r["colors_count"] or 0),
+            "months_active_12": months_active_12,
         })
 
     # Roll the (possibly dim-grain) rows up to STYLE grain so the status filter
@@ -7075,7 +7124,7 @@ def analytics_product_analysis(
         g = styles.get(k)
         if not g:
             g = {"units": 0, "revenue": 0, "net_revenue": 0, "stock": 0, "units_vel": 0,
-                 "units_life": 0, "units_6m": 0, "sales_life": 0,
+                 "units_life": 0, "units_6m": 0, "sales_life": 0, "months_active_12": 0,
                  "age_weeks": None, "full_price": None, "last_sale": None,
                  "brand": row["brand"], "category": row["category"], "subcategory": row["subcategory"]}
             styles[k] = g
@@ -7087,6 +7136,8 @@ def analytics_product_analysis(
         g["units_life"] += row["units_life"] or 0
         g["units_6m"] += row["units_6m"] or 0
         g["sales_life"] += row["sales_life"] or 0
+        # months_active_12 is a style-level constant (same across dim rows).
+        g["months_active_12"] = max(g["months_active_12"], row.get("months_active_12") or 0)
         # age_weeks / full_price are style-level constants (same across dim rows);
         # last_sale we carry as the most-recent across dim rows. These feed the
         # style-grain lifecycle gate below.
@@ -7097,41 +7148,32 @@ def analytics_product_analysis(
         if row["last_sale"] is not None:
             g["last_sale"] = row["last_sale"] if g["last_sale"] is None else max(g["last_sale"], row["last_sale"])
 
-    def _style_gated_retire(g):
-        # Recompute the GATED lifecycle tier at STYLE grain from the style's
-        # rolled-up measures (identical inputs to the row-level Life Cycle column
-        # for the non-exploded case; a true style-grain roll-up when dims are
-        # exploded). A style whose gated tier is "Retire" is treated as retired.
-        stock = g["stock"]
-        units_life = g["units_life"]
-        units_6m = g["units_6m"]
-        sales_life = g["sales_life"]
-        age_weeks = g["age_weeks"]
-        full_price = g["full_price"]
-        avg_price_life = round(sales_life / units_life) if units_life > 0 else None
-        full_price_pct = round(min(100.0, avg_price_life * 100.0 / full_price), 1) \
-            if (avg_price_life is not None and full_price not in (None, 0)) else None
-        reorder_count = int(age_weeks // 12) if age_weeks else 0
-        last_sale_days = None
-        if g["last_sale"]:
-            ls = _parse_iso_date(g["last_sale"])
-            last_sale_days = (today - ls).days if ls else None
-        return _life_cycle(
-            age_weeks, _sor(units_life, stock), full_price_pct, last_sale_days,
-            _woc(stock, g["units_vel"]), reorder_count,
-            recent_sor=_sor(units_6m, stock), recent_units=units_6m) == "Retire"
-
-    # Active vs Retired is now a LIFECYCLE status, decoupled from window sales:
-    #   Retired = manually retired OR gated to the "Retire" lifecycle tier.
-    #   Active  = everything else in the (inventory-only) universe.
-    # "Actively selling" (units_vel > 0) is a separate overlay tracked per style
-    # and NOT part of the Active/Retired partition, so Active + Retired == Total.
+    # Active vs Retired + the displayed Tier both come from the UNIFIED
+    # _lifecycle_tier model shared with Range Management (Retired = manual list /
+    # Zoya only; Tier 1..4 by NOOS-consistency / reorder cycles). Every style in
+    # the (inventory-only) universe gets exactly one bucket, so Active [Tier 1..4]
+    # + Retired == Total. A manual tier override (_RANGE_OVERRIDES, Tier 1..4 only)
+    # re-buckets within the active range, exactly like Range Management.
+    # "Actively selling" (units_vel > 0) is a separate overlay, NOT part of the
+    # Active/Retired partition.
     keep = set()
     status_by_style = {}
     selling_by_style = {}
+    tier_by_style = {}
     for k, g in styles.items():
-        retired = _is_manually_retired(k) or _style_gated_retire(g)
+        aw = g["age_weeks"]
+        rc = int(aw // 12) if aw else 0
+        t = _lifecycle_tier(k, g["brand"], aw, rc, g.get("months_active_12", 0))
+        if t != "Retired":
+            ov = _RANGE_OVERRIDES.get(k)
+            ov_tier = ov["tier"] if (ov and ov.get("tier") in
+                                     ("Tier 1", "Tier 2", "Tier 3", "Tier 4")) else None
+            if ov_tier:
+                t = ov_tier
+        retired = (t == "Retired")
         status_by_style[k] = "Retired" if retired else "Active"
+        tier_by_style[k] = t
+        g["tier"] = t
         selling_by_style[k] = g["units_vel"] > 0
         if style_status == "active" and retired:
             continue
@@ -7142,37 +7184,37 @@ def analytics_product_analysis(
     rows = [r for r in rows if r["style_name"] in keep]
     for r in rows:
         r["style_status"] = status_by_style.get(r["style_name"])
+        r["tier"] = tier_by_style.get(r["style_name"])
     kept = {k: g for k, g in styles.items() if k in keep}
 
-    # Range tier — Pareto on cumulative revenue share over the kept styles
-    # (T1 <= 20%, T2 <= 60%, T3 <= 90%, T4 the rest). Computed over the FULL
-    # kept population so the ranking is stable, THEN the optional tier filter
-    # narrows the table + the summary/by-brand/by-subcategory rollups (exactly
-    # like the brand/category filters do).
-    ranked = sorted(kept.items(), key=lambda kv: -(kv[1]["revenue"] or 0))
-    tot_rev_all = sum((g["revenue"] or 0) for _, g in ranked)
-    tier_by_style = {}
-    cum = 0.0
-    for k, g in ranked:
-        cum += (g["revenue"] or 0)
-        share = (cum / tot_rev_all) if tot_rev_all > 0 else 1.0
-        if share <= 0.20:
-            t = "T1"
-        elif share <= 0.60:
-            t = "T2"
-        elif share <= 0.90:
-            t = "T3"
-        else:
-            t = "T4"
-        tier_by_style[k] = t
-        g["tier"] = t
-    for r in rows:
-        r["tier"] = tier_by_style.get(r["style_name"])
-
-    tier_sel = {x.strip().upper() for x in str(tier).split(",")} - {""} if tier else set()
+    # Tier filter — the unified lifecycle Tier 1..4 / Retired. Legacy "T1".."T4"
+    # callers are aliased to the new labels so old bookmarks keep working.
+    _tier_alias = {"T1": "Tier 1", "T2": "Tier 2", "T3": "Tier 3", "T4": "Tier 4",
+                   "RETIRED": "Retired"}
+    tier_sel = {x.strip() for x in str(tier).split(",")} - {""} if tier else set()
+    tier_sel = {_tier_alias.get(x.upper(), x) for x in tier_sel}
     if tier_sel:
         rows = [r for r in rows if (r.get("tier") in tier_sel)]
         kept = {k: g for k, g in kept.items() if tier_by_style.get(k) in tier_sel}
+
+    # Separate "top revenue contributors" Pareto filter (rev_pct): keep the
+    # smallest set of highest-revenue styles whose cumulative revenue reaches
+    # rev_pct% of the current selection's total (always keeps at least the #1
+    # style). Applied AFTER the tier filter so the two compose.
+    if rev_pct is not None:
+        thr = max(0.0, min(100.0, float(rev_pct))) / 100.0
+        ranked = sorted(kept.items(), key=lambda kv: -(kv[1]["revenue"] or 0))
+        tot_rev_all = sum((g["revenue"] or 0) for _, g in ranked)
+        pareto_keep = set()
+        cum = 0.0
+        for k, g in ranked:
+            cum += (g["revenue"] or 0)
+            pareto_keep.add(k)
+            share = (cum / tot_rev_all) if tot_rev_all > 0 else 1.0
+            if share >= thr:
+                break
+        rows = [r for r in rows if r["style_name"] in pareto_keep]
+        kept = {k: g for k, g in kept.items() if k in pareto_keep}
 
     tot_units = sum(g["units"] for g in kept.values())
     tot_rev = sum(g["revenue"] for g in kept.values())
@@ -15264,6 +15306,19 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
               AND """ + BASE_FILTERS + cf + chf + """
             GROUP BY p.style_name
         )"""
+    # months_active_12 = DISTINCT calendar months (trailing 365d) with a sale —
+    # drives the unified Tier-1 ("NOOS") gate in _lifecycle_tier, shared with
+    # Product Analysis. Respects the same country/channel sales scope (cf/chf).
+    rm_nos_cte = """nos AS (
+            SELECT p.style_name,
+                COUNT(DISTINCT to_char(s.sale_date::date,'YYYY-MM')) AS months_active_12
+            FROM all_products_clean p
+            JOIN all_sales s ON s.variant_sku = p.sku
+            WHERE p.style_name IS NOT NULL AND s.sale_kind IN ('sale','order')
+              AND s.sale_date::date >= CURRENT_DATE - INTERVAL '365 days'
+              AND """ + BASE_FILTERS + cf + chf + """
+            GROUP BY p.style_name
+        )"""
     raw = run_query("""
         WITH prod AS (
             SELECT style_name,
@@ -15297,7 +15352,8 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             LEFT JOIN """ + SKU_STYLE_MAP + """ m ON m.sku = i.sku
             WHERE COALESCE(m.style_name, i.style_name) IS NOT NULL""" + icf + ichf + """
             GROUP BY 1
-        )
+        ),
+        """ + rm_nos_cte + """
         SELECT p.style_name, p.brand, p.subcategory, p.style_number, p.price, p.launch_date,
             COALESCE(sa.units_life, 0) AS units_life, COALESCE(sa.sales_life, 0) AS sales_life,
             COALESCE(sa.units_6m, 0) AS units_6m, COALESCE(sa.sales_6m, 0) AS sales_6m,
@@ -15305,10 +15361,12 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             COALESCE(sa.units_14d, 0) AS units_14d, COALESCE(sa.units_prior_30d, 0) AS units_prior_30d,
             COALESCE(sa.units_online, 0) AS units_online, COALESCE(sa.units_stores, 0) AS units_stores,
             sa.last_sale, sa.first_sale,
-            COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse
+            COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse,
+            COALESCE(nos.months_active_12, 0) AS months_active_12
         FROM prod p
         LEFT JOIN sales sa USING (style_name)
         LEFT JOIN stock st USING (style_name)
+        LEFT JOIN nos USING (style_name)
         WHERE (COALESCE(st.soh_stores, 0) > 0 OR COALESCE(st.soh_warehouse, 0) > 0)
           AND COALESCE(p.brand, '') NOT ILIKE '%third party%'
     """)
@@ -15325,6 +15383,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         soh_stores = int(r["soh_stores"] or 0)
         soh_warehouse = int(r["soh_warehouse"] or 0)
         current_stock = soh_stores + soh_warehouse
+        months_active_12 = int(r["months_active_12"] or 0)
         last_sale = r["last_sale"]
         first_sale = r["first_sale"]
         launch = _parse_iso_date(r["launch_date"]) or first_sale
@@ -15358,36 +15417,21 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         else:
             age_band = "Tier 4"
 
-        # Range tier = the 2026 Range Strategy (SOP) GATED lifecycle classification:
-        # age sets the stage, but performance gates decide promotion vs retirement
-        # (Week-8 read = SOR > 60% + sold within 7d + WOC <= 8; Week-12 backstop =
-        # SOR >= 80%; Tier 2 needs 3+ reorders & lifetime SOR > 60%; Tier 1 = tight
-        # "hero core" needing 5+ reorders & a sale within 30d & recent 6-month SOR
-        # > 75% & >= 300 recent-6m units (actively high-selling on rate AND volume,
-        # not historically); full-price realisation is no longer gated). A
-        # failed gate yields
-        # the "Retire" verdict — but for a still-trading style that is a FLAG, not a
-        # move: it stays in the live range (rows, but is NOT counted in the Active
-        # total) and is surfaced as "flagged for retirement". Only HARD retirement
-        # moves a style out.
-        gated_tier = _gated_range_tier(
-            age_weeks, lifetime_sor=sor_life, full_price_pct=full_price_pct,
-            last_sale_days=last_sale_days, woc=woc, reorder_count=reorder_count,
-            recent_sor=sor_6m, recent_units=units_6m)
+        # Range tier = the UNIFIED lifecycle model (_lifecycle_tier), shared verbatim
+        # with the Product Analysis page so the two surfaces never disagree:
+        #   Retired = manual-retirement list OR Zoya brand.
+        #   Tier 1  = NOOS-consistent (sold in >= 11 of the last 12 months).
+        #   Tier 2  = matured (age >= 39wk) with a healthy reorder history (> 3 cycles).
+        #   Tier 3  = reordered at least once.
+        #   Tier 4  = everything else (newest / unproven).
+        # Every live style carries a real Tier 1..4, so the per-tier counts add up to
+        # the Active total. Retirement is a hard bucket only (no "flagged" overlay in
+        # this model — flagged_for_retirement is always False now).
+        life_tier = _lifecycle_tier(
+            r["style_name"], r["brand"], age_weeks, reorder_count, months_active_12)
+        is_retired = (life_tier == "Retired")
 
-        # Hard (physical) retirement is the ONLY thing that moves a style into the
-        # Retired bucket: the durable manual-retirement list (the styles list), every
-        # Zoya style, and long-dead aged-out styles (>=39wk, no 6-month sales, no sale
-        # in 270 days). A gated "Retire" verdict on a still-trading best-seller never
-        # retires it — it stays Active, flagged.
-        is_retired = (age_weeks is not None and age_weeks >= 39 and units_6m == 0
-                      and (last_sale_days is None or last_sale_days > 270))
-        if (r["brand"] or "").strip().lower() == "zoya":
-            is_retired = True
-        if _is_manually_retired(r["style_name"]):
-            is_retired = True
-
-        if is_retired or gated_tier == "Retire":
+        if is_retired:
             status = "Retire"
             action = "Mark down to outlet and clear remaining stock per the SOP 4-week gap rule."
         elif (age_band in ("Tier 3", "Tier 4") and age_weeks is not None
@@ -15397,7 +15441,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         elif sor_life is not None and sor_life < 45:
             status = "At Risk"
             action = "Monitor weekly; consider a marketing push or price review to lift sell-through."
-        elif gated_tier == "Tier 3":
+        elif life_tier == "Tier 3":
             status = "On Track"
             action = "On review — track toward the 9-month gate for graduation to Tier 2."
         else:
@@ -15441,22 +15485,15 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         }
 
         # --- Range tier classification (2026 Range Strategy / SOP): every style in
-        # the live range carries a real displayed Tier 1..4 so the per-tier counts
-        # add up to the Active total. A still-trading style whose GATED verdict is
-        # "Retire" (_gated_range_tier above) is NOT dropped to a "Retire" tier — it
-        # is reclassified into its catalogue-age band (Tier 1..4) AND marked with a
-        # `flagged_for_retirement` flag that drives the markdown rail + the "flagged"
-        # pill. So flagged best-sellers stay PART of the Active range and its tier
-        # breakdown, while still being surfaced for the retirement decision.
-        # ONLY hard/physical retirement (manual styles list / Zoya / long-dead
-        # aged-out) moves a style into `retired`. A manual tier override
-        # (_RANGE_OVERRIDES, Tier 1..4 only) re-buckets within the live range, clears
-        # the flag, and beats a gated "Retire"; `auto_tier` records the un-overridden
-        # tier so the frontend's "override · auto-tier was X" hint stays useful.
-        flagged = (gated_tier == "Retire")
-        # The displayed tier for a flagged style is its catalogue-age band (Tier 1..4);
-        # otherwise it is the gated lifecycle tier (already Tier 1..4).
-        effective_tier = age_band if flagged else gated_tier
+        # the live range carries a real displayed Tier 1..4 (from _lifecycle_tier)
+        # so the per-tier counts add up to the Active total. ONLY hard/physical
+        # retirement (manual styles list / Zoya) moves a style into `retired`. A
+        # manual tier override (_RANGE_OVERRIDES, Tier 1..4 only) re-buckets within
+        # the live range; `auto_tier` records the un-overridden tier so the
+        # frontend's "override · auto-tier was X" hint stays useful. The unified
+        # model has no "flagged for retirement" overlay — flagged_for_retirement is
+        # always False (kept in the payload for frontend compatibility).
+        effective_tier = life_tier
 
         if is_retired:
             row["tier"] = row["auto_tier"] = "Retire"
@@ -15469,30 +15506,14 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                                   ("Tier 1", "Tier 2", "Tier 3", "Tier 4")) else None
         if ov_tier:
             row["tier"], row["auto_tier"], row["override_reason"] = ov_tier, effective_tier, ov.get("reason")
-            # A manual override keeps the style in the live range and removes the
-            # retirement flag, so a gated "Retire" status/action would be misleading
-            # — recompute against the effective tier.
-            flagged = False
-            if status == "Retire":
-                row["status"] = status = "On Track"
-                row["recommended_action"] = action = (
-                    "Manually held in the active range — maintain replenishment per the override.")
         else:
             row["tier"], row["auto_tier"], row["override_reason"] = effective_tier, effective_tier, None
-        row["flagged_for_retirement"] = flagged
+        row["flagged_for_retirement"] = False
         active.append(row)
 
-        # Actionable retirement pipeline: still-trading flagged styles that still
-        # hold stock to clear (the markdown rail). These remain in Active — the
-        # pipeline is an overlay, not a separate bucket.
-        if flagged and current_stock > 0:
-            rec = today + timedelta(days=14)
-            pipeline.append({**row,
-                "recommended_retirement_date": str(rec),
-                "outlet_discount_date": str(rec + timedelta(days=28)),
-                "reason": "Flagged for retirement — aged %sw at %s%% lifetime SOR with %s units remaining." % (
-                    row["style_age_weeks"], row["sor_since_launch"], row["current_stock"]),
-            })
+        # The unified lifecycle model has no "flagged for retirement" overlay, so
+        # the actionable retirement pipeline (markdown rail) stays empty here — hard
+        # retirement moves a style straight into `retired` instead.
 
         if (age_band == "Tier 3" and age_weeks is not None and 0 <= (39 - age_weeks) <= 6
                 and reorder_count >= 3 and sor_life is not None and sor_life > 60):
