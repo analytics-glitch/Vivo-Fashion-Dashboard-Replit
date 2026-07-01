@@ -211,6 +211,7 @@ const ReOrder = () => {
                 exportName="buy-recommendations.csv"
                 pageSize={50}
                 mobileCards
+                resizable
                 initialSort={{ key: "opportunity_value", dir: "desc" }}
                 columns={[
                   { key: "rank", label: "#", numeric: true, mobileHidden: true, render: (r) => <span className="text-muted text-[11.5px]">{r.rank}</span>, csv: (r) => r.rank },
@@ -313,6 +314,7 @@ const ReOrder = () => {
                   exportName="buy-watch-list.csv"
                   pageSize={25}
                   mobileCards
+                  resizable
                   initialSort={{ key: "opportunity_value", dir: "desc" }}
                   columns={[
                     { key: "style_name", label: "Style", align: "left", mobilePrimary: true, render: (r) => (

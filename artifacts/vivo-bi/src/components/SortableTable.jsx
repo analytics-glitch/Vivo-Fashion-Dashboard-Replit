@@ -668,6 +668,11 @@ export const SortableTable = ({
                         <td
                           key={c.key}
                           className={`${c.align === "right" || c.numeric ? "text-right num" : "text-left"} ${c.className || ""} ${expandedCols.has(c.key) ? "col-expanded" : ""} ${isFirst ? "sticky left-0 z-10 bg-white" : ""}`}
+                          style={
+                            resizable && colWidths[c.key]
+                              ? { width: colWidths[c.key], overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
+                              : undefined
+                          }
                         >
                           {c.render ? c.render(r, i) : r[c.key]}
                         </td>
