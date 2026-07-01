@@ -1466,6 +1466,57 @@ def main():
         except Exception as e:
             log.error("MO fabric-consumption extract error: %s", e)
 
+    # Fabric Months-of-Cover daily snapshot — logs the EXACT inputs behind the
+    # Fabric "Months of Cover" KPI (RMAT/Stock kg + the 6-completed-month average
+    # net-consumption run-rate + per-month breakdown, plus the Basic Fabrics
+    # equivalents) once per EAT calendar day so the KPI card can show a
+    # day-over-day "what changed since yesterday" decomposition (stock lever vs
+    # run-rate lever). Production runs on a SEPARATE DB that never runs the dev
+    # rebuild, so history must accrue from inside this loop. Idempotent: the
+    # writer upserts on the EAT capture date, so re-running the same day
+    # overwrites, never duplicates. We only run when today's EAT snapshot is
+    # missing (fresh prod DB, or a new EAT day just began) — a cheap indexed
+    # lookup, so no fixed timer is needed and each EAT day is captured on the
+    # first cycle after midnight EAT. The writer reuses fabric_router's SAME
+    # _months_of_cover helper behind the live card so the snapshot can never
+    # diverge, and ensures its own schema. Gated on the fabric feed being present
+    # (raw_fabric_products has rows) so a cold DB doesn't error before the fabric
+    # extract has run; a later cycle picks it up.
+    fabric_ready = False
+    need_cover_snapshot = True
+    try:
+        cur.execute("SELECT to_regclass('public.raw_fabric_products')")
+        if cur.fetchone()[0] is not None:
+            cur.execute("SELECT EXISTS(SELECT 1 FROM raw_fabric_products)")
+            fabric_ready = bool(cur.fetchone()[0])
+        cur.execute("SELECT to_regclass('public.fabric_cover_snapshot')")
+        if cur.fetchone()[0] is not None:
+            cur.execute(
+                "SELECT 1 FROM fabric_cover_snapshot "
+                "WHERE capture_date = (now() AT TIME ZONE 'Africa/Nairobi')::date"
+            )
+            need_cover_snapshot = cur.fetchone() is None
+        conn.commit()
+    except Exception as e:
+        log.error("Fabric cover snapshot presence check error: %s", e)
+        conn.rollback()
+    if fabric_ready and need_cover_snapshot:
+        try:
+            import fabric_router
+
+            log.info("Writing fabric Months-of-Cover daily snapshot...")
+            snap = fabric_router.write_cover_snapshot(conn)
+            log.info(
+                "✅ Fabric Months-of-Cover snapshot written (cover=%s, basic_cover=%s)",
+                snap.get("months_of_cover"), snap.get("basic_months_of_cover"),
+            )
+        except Exception as e:
+            log.error("Fabric cover snapshot error: %s", e)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
     # Product image extract — feeds the /gallery thumbnails (product_images +
     # product_image_map: base64 512px photos keyed by Odoo template, plus a
     # sku->template map). Production runs on a SEPARATE DB that never ran the

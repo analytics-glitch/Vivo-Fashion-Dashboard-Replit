@@ -2013,21 +2013,24 @@ let ovCache=null;
 async function loadOverview(){
   loadColorMix();   // colour breakdown is fetched independently (own date window)
   try{
-    const [d,cat,split,mpg]=await Promise.all([
+    const [d,cat,split,mpg,coverDelta]=await Promise.all([
       apiFetch('/api/fabric/summary?location='+encodeURIComponent(loc())),
       apiFetch('/api/fabric/by-category?location='+encodeURIComponent(loc())),
       apiFetch('/api/fabric/attribute-split?location='+encodeURIComponent(loc())),
       // Auxiliary KPI — never let a failure break the rest of the overview.
       apiFetch('/api/fabric/metres-per-garment?days=30').catch(()=>null),
+      // Day-over-day Months-of-Cover change — auxiliary; a failure just hides the
+      // "vs yesterday" sub-line, never breaks the overview.
+      apiFetch('/api/fabric/cover-snapshot-delta').catch(()=>null),
     ]);
-    ovCache={d,cat,split,mpg};
+    ovCache={d,cat,split,mpg,coverDelta};
     renderOverviewCached();
     applyFabricFreshness(d);
   }catch(e){showErr('kpi-cards',e);['category-bars','split-print','split-structure'].forEach(id=>{const el=document.getElementById(id);if(el&&el.querySelector('.loading'))el.innerHTML='';});}
 }
 function renderOverviewCached(){
   if(!ovCache)return;
-  renderKpis(ovCache.d,ovCache.mpg);
+  renderKpis(ovCache.d,ovCache.mpg,ovCache.coverDelta);
   renderCategories(ovCache.cat);
   renderPrintDonut(ovCache.split.plain_print);
   renderStructure('split-structure',ovCache.split.structure,FX.structureValue);
@@ -2194,7 +2197,36 @@ function renderColorMerged(d){
     </tr>`;
   }).join('')+'</tbody></table></div>';
 }
-function renderKpis(d,mpg){
+// "What changed since yesterday" sub-line for a Months-of-Cover card. Decomposes
+// the day-over-day cover change into its two levers — stock (kg) and run-rate
+// (kg/mo) — using the backend-computed snapshot delta (the frontend does no
+// maths). `cd` is the whole /cover-snapshot-delta payload; `which` selects the
+// series ('headline' or 'basic'). Degrades to a quiet "no prior snapshot yet"
+// note when history is insufficient. Returns an HTML string (values escaped —
+// this page string-templates into innerHTML).
+function coverDeltaLine(cd,which){
+  const noPrior='<p class="kpi-sub muted" style="margin-top:.15rem;font-size:11px;" title="'+esc('A daily snapshot of the months-of-cover inputs is logged once per day. A day-over-day change needs at least two days of history, so this lights up after the next daily snapshot.')+'">no prior snapshot yet</p>';
+  if(!cd||cd.status==='no_data')return noPrior;
+  if(cd.status==='no_prior')return noPrior;
+  const s=(which==='basic')?cd.basic:cd.headline;
+  if(!s)return noPrior;
+  const cDelta=s.cover_delta,stk=s.stock_delta_kg,rt=s.rate_delta_kg;
+  // Nothing meaningful to show if every lever is null.
+  if(cDelta==null&&stk==null&&rt==null)return noPrior;
+  const sign=v=>(v>0?'+':'')+v.toLocaleString(undefined,{maximumFractionDigits:1});
+  const signK=v=>(v>0?'+':'')+Math.round(v).toLocaleString();
+  const color=(cDelta==null||cDelta===0)?'':(cDelta>0?'var(--accent-strong)':'var(--danger)');
+  const style=color?(' style="font-weight:700;color:'+color+';"'):' style="font-weight:700;"';
+  const coverPart=(cDelta==null)?'&mdash;':sign(cDelta);
+  const parts=[];
+  if(stk!=null)parts.push('stock '+esc(signK(stk))+' kg');
+  if(rt!=null)parts.push('run-rate '+esc(signK(rt))+' kg/mo');
+  const decomp=parts.length?(' ('+parts.join(', ')+')'):'';
+  const when=cd.prior_date?(' ('+esc(cd.prior_date)+')'):'';
+  const tip=esc('Change in months of cover since the previous daily snapshot'+(cd.prior_date?(' ('+cd.prior_date+')'):'')+'. Months of cover = stock \u00f7 monthly run-rate, so it moves when EITHER lever moves: stock is the RMAT/Stock kg on hand; run-rate is the average net consumption over the last 6 completed months. The split shows how much each lever changed day-over-day'+((s.cover_from_stock!=null&&s.cover_from_rate!=null)?(' (\u2248 '+(s.cover_from_stock>0?'+':'')+s.cover_from_stock+' from stock, '+(s.cover_from_rate>0?'+':'')+s.cover_from_rate+' from run-rate).'):'.'));
+  return '<p class="kpi-sub" style="margin-top:.15rem;font-size:11px;" title="'+tip+'">vs yesterday'+when+': <span'+style+'>'+coverPart+'</span>'+decomp+'</p>';
+}
+function renderKpis(d,mpg,coverDelta){
   // Total fabric value = stock value for the SELECTED scope (All = RMAT + Dead).
   const totalVal=d.fabric_stock_value||0;
   // Dead-stock % uses the stable RMAT + Dead grand total so it doesn't swing with scope.
@@ -2255,7 +2287,7 @@ function renderKpis(d,mpg){
      if(coverStatus==='overstocked'){cval='12+';}
      else if(coverStatus==='ok'&&cover!=null){cval=coverFmt(cover);ccls=cover<1?'amber':'';}
      else{cval='&mdash;';}
-     return `<div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${ccls}"${fx(FX.monthsCover)}>${cval}</p><p class="kpi-sub">${coverNote}</p></div>`;})()}
+     return `<div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${ccls}"${fx(FX.monthsCover)}>${cval}</p><p class="kpi-sub">${coverNote}</p>${coverDeltaLine(coverDelta,'headline')}</div>`;})()}
    ${(()=>{const bc=(d.basic_months_of_cover!=null)?d.basic_months_of_cover:null;
      const bst=d.basic_months_of_cover_status||(bc!=null?'ok':'no_data');
      const bskg=(d.basic_fabrics_stock_kg!=null)?d.basic_fabrics_stock_kg:null;
@@ -2271,7 +2303,7 @@ function renderKpis(d,mpg){
      else{bval='&mdash;';btip=esc('No curated staple-fabric stock and no recent consumption, so there is nothing to compute.');}
      const bsubLine=(bst==='overstocked')?`${bsub} &middot; no recent use`:bsub;
      const bdl=(bm!=null)?`<button class="btn ghost" style="margin-top:.5rem;padding:0 10px;height:28px;font-size:11px;" onclick="downloadBasicCoverXlsx()" title="Download the full calculation audit trail (curated staple-fabric pairings, matched products with stock on hand, and the 6-month net consumption run-rate) as an Excel workbook">&#11015; Download calculations (Excel)</button>`:'';
-     return `<div class="kpi" title="${btip}"${fx(FX.basicMonthsCover)}><span class="eyebrow">Basic Fabrics &mdash; months of cover</span><p class="kpi-value ${bcls}">${bval}</p><p class="kpi-sub">${bsubLine}</p>${bdl}</div>`;})()}`;
+     return `<div class="kpi" title="${btip}"${fx(FX.basicMonthsCover)}><span class="eyebrow">Basic Fabrics &mdash; months of cover</span><p class="kpi-value ${bcls}">${bval}</p><p class="kpi-sub">${bsubLine}</p>${coverDeltaLine(coverDelta,'basic')}${bdl}</div>`;})()}`;
 }
 // Per-supplier avg cost per metre (purchases) — compact, sortable table tucked
 // onto the Purchase orders tab. "—" rows are suppliers whose fabrics lack kg→metre.

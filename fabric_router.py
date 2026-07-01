@@ -372,6 +372,12 @@ def _months_of_cover(conn, fabric_stock_kg, scope="main", product_ids=None):
         "months_of_cover_stock_kg": round(fabric_stock_kg, 1),
         "avg_monthly_consumption_kg": round(avg_monthly, 1),
         "cover_window_months": 6,
+        # The per-month net-consumption breakdown for the 6 completed months in
+        # the window (M-6 .. M-1), so a daily snapshot can record the exact inputs
+        # behind the denominator without re-deriving them.
+        "months_breakdown": [
+            {"month": k, "kg": round(mon_kg.get(k, 0.0), 1)} for k in complete
+        ],
     }
 
 # ── Location filter ─────────────────────────────────────────
@@ -476,6 +482,216 @@ def _resolve_basic_fabrics(conn):
                 matched += 1
                 ids.update(r["id"] for r in rows)
     return list(ids), matched, total
+
+# ── Months-of-Cover daily snapshot ─────────────────────────
+# The Fabric "Months of Cover" KPI is a ratio of two independently-moving parts:
+# RMAT/Stock on-hand kg (numerator) and the 6-completed-month average net
+# consumption run-rate (denominator). Either can move overnight (a stock count,
+# or the hourly Odoo re-extract / Jan–Apr sheet reload revising the run-rate), so
+# a swing like 5.1 → 5.8 has no visible cause. We log a once-per-EAT-day snapshot
+# of the EXACT inputs (reusing `_months_of_cover` so the snapshot can never
+# diverge from the live card) and expose a day-over-day "what changed since
+# yesterday" decomposition attributing the change to the stock lever vs the
+# run-rate lever. Production is a SEPARATE DB that never runs the dev rebuild, so
+# history is accrued from inside the incremental sync loop; the writer is
+# standalone + idempotent (upsert on the EAT capture date).
+_COVER_SNAPSHOT_READY = False
+
+def _ensure_cover_snapshot_table(conn):
+    """Create the months-of-cover snapshot table (idempotent, once per process)."""
+    global _COVER_SNAPSHOT_READY
+    if _COVER_SNAPSHOT_READY:
+        return
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_cover_snapshot (
+                capture_date                     DATE PRIMARY KEY,
+                rmat_stock_kg                    NUMERIC,
+                avg_monthly_consumption_kg       NUMERIC,
+                months_of_cover                  NUMERIC,
+                months_breakdown                 JSONB,
+                basic_stock_kg                   NUMERIC,
+                basic_avg_monthly_consumption_kg NUMERIC,
+                basic_months_of_cover            NUMERIC,
+                basic_months_breakdown           JSONB,
+                captured_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+    conn.commit()
+    _COVER_SNAPSHOT_READY = True
+
+def _compute_cover_snapshot(conn):
+    """Compute the current Months-of-Cover inputs (headline + Basic Fabrics) using
+    the SAME helpers behind the live summary card, so the snapshot always agrees
+    with what the KPI shows. Returns a dict ready to upsert."""
+    # Headline — live RMAT/Stock fabric base (main scope), same base the summary
+    # card feeds into `_months_of_cover`.
+    rmat_kg = q(conn, f"""
+        SELECT ROUND(SUM(i.quantity)::numeric,1) AS kg
+        FROM raw_fabric_inventory i
+        JOIN raw_fabric_products p ON p.id = i.product_id
+        WHERE i.quantity > 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
+          AND {_scope_sql('main')}
+    """)[0]['kg'] or 0
+    cover = _months_of_cover(conn, rmat_kg, "main")
+
+    # Basic Fabrics — curated staple set only (bypasses the support/main scope),
+    # mirroring the summary card's Basic Fabrics computation.
+    basic_ids, _matched, _total = _resolve_basic_fabrics(conn)
+    if basic_ids:
+        basic_kg = q(conn, f"""
+            SELECT ROUND(SUM(i.quantity)::numeric,1) AS kg
+            FROM raw_fabric_inventory i
+            WHERE i.quantity > 0 AND i.location_name='RMAT/Stock'
+              AND i.product_id IN ({",".join(str(int(x)) for x in basic_ids)})
+        """)[0]['kg'] or 0
+        basic = _months_of_cover(conn, basic_kg, "main", product_ids=basic_ids)
+    else:
+        basic_kg = 0
+        basic = {"avg_monthly_consumption_kg": 0.0,
+                 "months_of_cover": None, "months_breakdown": []}
+
+    return {
+        "rmat_stock_kg": round(float(rmat_kg or 0), 1),
+        "avg_monthly_consumption_kg": cover["avg_monthly_consumption_kg"],
+        "months_of_cover": cover["months_of_cover"],
+        "months_breakdown": cover["months_breakdown"],
+        "basic_stock_kg": round(float(basic_kg or 0), 1),
+        "basic_avg_monthly_consumption_kg": basic["avg_monthly_consumption_kg"],
+        "basic_months_of_cover": basic["months_of_cover"],
+        "basic_months_breakdown": basic["months_breakdown"],
+    }
+
+def write_cover_snapshot(conn=None):
+    """Capture ONE Months-of-Cover snapshot for today's EAT calendar day.
+
+    Idempotent: upserts on the EAT capture date, so re-running the same day
+    overwrites rather than duplicating. Ensures its own schema (and the fabric
+    override view) so it self-bootstraps on a fresh production DB and is safe to
+    run standalone as a one-time backfill. Reuses the shared connection when the
+    sync loop passes one; otherwise opens (and closes) its own. The EAT day
+    boundary matches how the rest of the fabric page reasons about dates even
+    when the DB session is UTC. Returns the computed snapshot dict."""
+    import json
+    own = conn is None
+    if own:
+        import psycopg2
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    try:
+        _ensure_cover_snapshot_table(conn)
+        _ensure_fabric_sheet(conn)
+        snap = _compute_cover_snapshot(conn)
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO fabric_cover_snapshot (
+                    capture_date, rmat_stock_kg, avg_monthly_consumption_kg,
+                    months_of_cover, months_breakdown, basic_stock_kg,
+                    basic_avg_monthly_consumption_kg, basic_months_of_cover,
+                    basic_months_breakdown, captured_at
+                ) VALUES (
+                    (now() AT TIME ZONE 'Africa/Nairobi')::date,
+                    %s, %s, %s, %s, %s, %s, %s, %s, now()
+                )
+                ON CONFLICT (capture_date) DO UPDATE SET
+                    rmat_stock_kg = EXCLUDED.rmat_stock_kg,
+                    avg_monthly_consumption_kg = EXCLUDED.avg_monthly_consumption_kg,
+                    months_of_cover = EXCLUDED.months_of_cover,
+                    months_breakdown = EXCLUDED.months_breakdown,
+                    basic_stock_kg = EXCLUDED.basic_stock_kg,
+                    basic_avg_monthly_consumption_kg = EXCLUDED.basic_avg_monthly_consumption_kg,
+                    basic_months_of_cover = EXCLUDED.basic_months_of_cover,
+                    basic_months_breakdown = EXCLUDED.basic_months_breakdown,
+                    captured_at = now()
+            """, (
+                snap["rmat_stock_kg"], snap["avg_monthly_consumption_kg"],
+                snap["months_of_cover"], json.dumps(snap["months_breakdown"]),
+                snap["basic_stock_kg"], snap["basic_avg_monthly_consumption_kg"],
+                snap["basic_months_of_cover"],
+                json.dumps(snap["basic_months_breakdown"]),
+            ))
+        conn.commit()
+        return snap
+    finally:
+        if own:
+            conn.close()
+
+def _cover_delta(now_row, prev_row):
+    """Decompose the day-over-day months-of-cover change for one series (headline
+    or Basic Fabrics) into a stock lever and a run-rate lever, so the frontend
+    does no maths. cover = stock ÷ rate; the change splits as:
+      stock component = (stock_now − stock_prev) ÷ rate_prev   (rate held at prior)
+      rate component  = stock_now ÷ rate_now − stock_now ÷ rate_prev (stock at now)
+    which sum exactly to Δcover. Also returns the raw input deltas (stock kg,
+    run-rate kg/mo) shown in the card sub-line. Cover contributions are None when
+    a run-rate is zero on either side (divide undefined / overstocked)."""
+    def _f(v):
+        return None if v is None else float(v)
+    stock_now, stock_prev = _f(now_row["stock_kg"]), _f(prev_row["stock_kg"])
+    rate_now, rate_prev = _f(now_row["rate_kg"]), _f(prev_row["rate_kg"])
+    cover_now, cover_prev = _f(now_row["cover"]), _f(prev_row["cover"])
+    stock_delta = (stock_now - stock_prev) if (stock_now is not None and stock_prev is not None) else None
+    rate_delta = (rate_now - rate_prev) if (rate_now is not None and rate_prev is not None) else None
+    cover_delta = (cover_now - cover_prev) if (cover_now is not None and cover_prev is not None) else None
+    if rate_prev and rate_now and rate_prev > 0 and rate_now > 0 and stock_now is not None and stock_prev is not None:
+        cover_from_stock = (stock_now - stock_prev) / rate_prev
+        cover_from_rate = stock_now / rate_now - stock_now / rate_prev
+    else:
+        cover_from_stock = None
+        cover_from_rate = None
+    return {
+        "cover_now": round(cover_now, 2) if cover_now is not None else None,
+        "cover_prev": round(cover_prev, 2) if cover_prev is not None else None,
+        "cover_delta": round(cover_delta, 2) if cover_delta is not None else None,
+        "stock_now_kg": round(stock_now, 1) if stock_now is not None else None,
+        "stock_prev_kg": round(stock_prev, 1) if stock_prev is not None else None,
+        "stock_delta_kg": round(stock_delta, 1) if stock_delta is not None else None,
+        "rate_now_kg": round(rate_now, 1) if rate_now is not None else None,
+        "rate_prev_kg": round(rate_prev, 1) if rate_prev is not None else None,
+        "rate_delta_kg": round(rate_delta, 1) if rate_delta is not None else None,
+        "cover_from_stock": round(cover_from_stock, 2) if cover_from_stock is not None else None,
+        "cover_from_rate": round(cover_from_rate, 2) if cover_from_rate is not None else None,
+    }
+
+@fabric_router.get("/api/fabric/cover-snapshot-delta")
+def cover_snapshot_delta():
+    """The two most-recent Months-of-Cover snapshots and the day-over-day change,
+    decomposed into a stock lever and a run-rate lever (headline + Basic Fabrics).
+    Returns status 'no_data' when no snapshots exist yet and 'no_prior' when only
+    one day of history exists, so the card can degrade gracefully."""
+    with _get_conn() as conn:
+        _ensure_cover_snapshot_table(conn)
+        rows = q(conn, """
+            SELECT capture_date, rmat_stock_kg, avg_monthly_consumption_kg,
+                   months_of_cover, basic_stock_kg,
+                   basic_avg_monthly_consumption_kg, basic_months_of_cover
+            FROM fabric_cover_snapshot
+            ORDER BY capture_date DESC
+            LIMIT 2
+        """)
+        if not rows:
+            return {"status": "no_data"}
+        cur = rows[0]
+        if len(rows) < 2:
+            return {
+                "status": "no_prior",
+                "capture_date": cur["capture_date"].isoformat(),
+            }
+        prev = rows[1]
+        headline = _cover_delta(
+            {"stock_kg": cur["rmat_stock_kg"], "rate_kg": cur["avg_monthly_consumption_kg"], "cover": cur["months_of_cover"]},
+            {"stock_kg": prev["rmat_stock_kg"], "rate_kg": prev["avg_monthly_consumption_kg"], "cover": prev["months_of_cover"]},
+        )
+        basic = _cover_delta(
+            {"stock_kg": cur["basic_stock_kg"], "rate_kg": cur["basic_avg_monthly_consumption_kg"], "cover": cur["basic_months_of_cover"]},
+            {"stock_kg": prev["basic_stock_kg"], "rate_kg": prev["basic_avg_monthly_consumption_kg"], "cover": prev["basic_months_of_cover"]},
+        )
+        return {
+            "status": "ok",
+            "capture_date": cur["capture_date"].isoformat(),
+            "prior_date": prev["capture_date"].isoformat(),
+            "headline": headline,
+            "basic": basic,
+        }
 
 # ── Summary cards ──────────────────────────────────────────
 @fabric_router.get("/api/fabric/summary")
@@ -3556,3 +3772,11 @@ def delete_reservation(resv_id: int, request: Request):
         log_row["status"] = "deleted"
         _log_fabric_change("Deleted", log_row, request)
         return {"ok": True}
+
+
+if __name__ == "__main__":
+    # Standalone one-time backfill of the Months-of-Cover daily snapshot. The
+    # writer is idempotent (upserts on today's EAT capture date), so this is safe
+    # to run manually against any DB (opens its own connection from DATABASE_URL).
+    snap = write_cover_snapshot()
+    print("Fabric cover snapshot written:", snap)
