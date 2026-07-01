@@ -54,6 +54,65 @@ def write_heartbeat(conn, status):
             pass
 
 
+def run_subprocess_with_heartbeat(cmd, status, interval=60):
+    """Run a blocking subprocess while keeping the sync heartbeat fresh.
+
+    The heavy image extracts (Odoo base64 + the Shopify gallery crawl) sit in a
+    stretch of the cycle that writes NO per-step heartbeat, and a first-time
+    bootstrap crawl of tens of thousands of SKUs can easily run longer than the
+    watchdog's staleness window (SYNC_FRESH_MIN). Without a keepalive the
+    watchdog would treat the loop as stuck, restart the sync mid-crawl, and —
+    because the gallery extract commits its TRUNCATE+repopulate in a SINGLE
+    transaction at the very end — the crawl would be killed before it commits
+    and prod's product_image_urls would never populate (an unbreakable loop).
+
+    A daemon thread pulses the heartbeat on its OWN short-lived connection
+    (never the caller's `conn`, which is not thread-safe to share) every
+    `interval` seconds until the subprocess returns. Raises on non-zero exit
+    (check=True) so the caller's existing try/except still handles failures.
+    """
+    import subprocess
+    import threading
+
+    stop = threading.Event()
+
+    def _pulse():
+        hb_conn = None
+        try:
+            hb_conn = psycopg2.connect(DATABASE_URL)
+            hb_conn.autocommit = True
+            while not stop.wait(interval):
+                try:
+                    with hb_conn.cursor() as c:
+                        c.execute(
+                            """
+                            INSERT INTO sync_heartbeat (id, last_cycle_at, last_status)
+                            VALUES (1, now(), %s)
+                            ON CONFLICT (id) DO UPDATE
+                                SET last_cycle_at = now(), last_status = EXCLUDED.last_status
+                        """,
+                            (status,),
+                        )
+                except Exception as e:
+                    log.warning("heartbeat keepalive write failed: %s", e)
+        except Exception as e:
+            log.warning("heartbeat keepalive connection failed: %s", e)
+        finally:
+            if hb_conn is not None:
+                try:
+                    hb_conn.close()
+                except Exception:
+                    pass
+
+    t = threading.Thread(target=_pulse, daemon=True)
+    t.start()
+    try:
+        subprocess.run(cmd, check=True)
+    finally:
+        stop.set()
+        t.join(timeout=5)
+
+
 STORES = [
     {
         "store_id": "vivo-uganda",
@@ -1451,12 +1510,12 @@ def main():
         # retrying every cycle until the bootstrap succeeds.
         _LAST_PRODUCT_IMAGES_EXTRACT = now_utc
         try:
-            import subprocess, sys
+            import sys
 
             log.info("Running product image extract (bootstrap=%s)...", images_empty)
-            subprocess.run(
+            run_subprocess_with_heartbeat(
                 [sys.executable, "/home/runner/workspace/extract_product_images.py"],
-                check=True,
+                "product_image_extract",
             )
             log.info("✅ Product image extract complete")
         except Exception as e:
@@ -1510,15 +1569,15 @@ def main():
         # retrying every cycle until the bootstrap succeeds.
         _LAST_SHOPIFY_IMAGES_EXTRACT = now_utc
         try:
-            import subprocess, sys
+            import sys
 
             log.info(
                 "Running Shopify product-image gallery extract (bootstrap=%s)...",
                 piu_empty,
             )
-            subprocess.run(
+            run_subprocess_with_heartbeat(
                 [sys.executable, "/home/runner/workspace/extract_shopify_images.py"],
-                check=True,
+                "shopify_gallery_extract",
             )
             log.info("✅ Shopify product-image gallery extract complete")
         except Exception as e:
