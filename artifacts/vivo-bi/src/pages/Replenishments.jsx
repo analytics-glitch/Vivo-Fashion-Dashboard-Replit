@@ -237,6 +237,13 @@ const Replenishments = () => {
       .sort((a, b) => b.units - a.units);
   }, [activeRows]);
 
+  // Total units in the open pick list (what "Save & distribute" freezes). The
+  // whole replenishment workflow is unit-based, so the button + confirm + totals
+  // speak in units, never row/line counts.
+  const activeUnits = useMemo(
+    () => activeRows.reduce((sum, r) => sum + Number(r.replenish || 0), 0),
+    [activeRows]);
+
   // Distinct owners present in the open pick list, for the owner filter dropdown.
   const ownerOptions = useMemo(() => {
     const set = new Set();
@@ -327,7 +334,7 @@ const Replenishments = () => {
       if (r.barcode) actions.push({ rec_type: "replenish", rec_key: `${r.pos_location}|barcode|${r.barcode}`, status: "done", actual_units: au, transfer_ref: ref });
     }
     if (!actions.length) {
-      toast.error("Selected lines have no SKU or barcode to action.");
+      toast.error("Selected items have no SKU or barcode to action.");
       return false;
     }
     await api.post("/recommendations/bulk", { actions });
@@ -386,7 +393,7 @@ const Replenishments = () => {
       const ok = await markRowsDone(toMark);
       if (ok) {
         setSelected(new Set());
-        toast.success(`Approved ${toMark.length} line${toMark.length === 1 ? "" : "s"}.`);
+        toast.success(`Approved ${toMark.length} item${toMark.length === 1 ? "" : "s"}.`);
       }
     } catch (e) {
       toast.error("Bulk approve failed — " + (e?.response?.data?.detail || e.message));
@@ -414,9 +421,9 @@ const Replenishments = () => {
 
   // Freeze the current open pick list into a dated distribution batch.
   const distributeNow = useCallback(async () => {
-    if (!activeRows.length) { toast.error("No open lines to distribute."); return; }
+    if (!activeRows.length) { toast.error("No open items to distribute."); return; }
     if (!window.confirm(
-      `Freeze ${activeRows.length} line${activeRows.length === 1 ? "" : "s"} into a new distribution batch?\n\n`
+      `Freeze ${fmtNum(activeUnits)} unit${activeUnits === 1 ? "" : "s"} into a new distribution batch?\n\n`
       + `They move to "Distributed batches" below and the live list refills with new items as they arise.`)) return;
     setDistSaving(true);
     try {
@@ -427,14 +434,15 @@ const Replenishments = () => {
         suggested_units: Number(r.replenish || 0),
       }));
       const { data } = await api.post("/replenishment/distribute", { lines, weeks });
-      toast.success(`Distributed ${data?.line_count ?? lines.length} line${(data?.line_count ?? lines.length) === 1 ? "" : "s"}.`);
+      const distUnits = data?.total_units ?? activeUnits;
+      toast.success(`Distributed ${fmtNum(distUnits)} unit${distUnits === 1 ? "" : "s"}.`);
       await Promise.all([loadDistributions(), loadSor({ forceFresh: true })]);
     } catch (e) {
       toast.error("Distribute failed — " + (e?.response?.data?.detail || e.message));
     } finally {
       setDistSaving(false);
     }
-  }, [activeRows, weeks, loadDistributions, loadSor]);
+  }, [activeRows, activeUnits, weeks, loadDistributions, loadSor]);
 
   // Mark a single distributed line picked (twin sku + barcode ledger rows).
   const markBatchLineDone = useCallback(async (line, actualUnits) => {
@@ -449,7 +457,7 @@ const Replenishments = () => {
       const actions = [];
       if (line.sku) actions.push({ rec_type: "replenish", rec_key: `${line.pos_location}|sku|${line.sku}`, status: "done", actual_units: au });
       if (line.barcode) actions.push({ rec_type: "replenish", rec_key: `${line.pos_location}|barcode|${line.barcode}`, status: "done", actual_units: au });
-      if (!actions.length) { toast.error("Line has no SKU or barcode."); return; }
+      if (!actions.length) { toast.error("Item has no SKU or barcode."); return; }
       await api.post("/recommendations/bulk", { actions });
       toast.success("Marked done.");
       // Pickers don't see the live list, so skip its heavy recompute for them.
@@ -600,25 +608,25 @@ const Replenishments = () => {
       </div>
 
       {/* Picker roster (admin / authorised operators) — shared with Replenish
-          by Style/SKU. Saving redistributes line owners across the SOR pick list
-          below by EQUAL LINES; a reload never reshuffles a picker's lines. */}
+          by Style/SKU. Saving redistributes owners across the SOR pick list
+          below by EQUAL UNITS; a reload never reshuffles a picker's items. */}
       {isAdmin && (
         <ReplenishmentRosterCard
           isAdmin={isAdmin}
           onSaved={() => loadSor({ forceFresh: true })}
-          subtitle="Who is picking the Daily Replenishments today? Saving here redistributes the SOR pick list across the roster by EQUAL LINES (each picker gets roughly the same number of rows) — POS sorted so each person owns a contiguous block of stores, so line counts land near-equal, not exact. The split is then fixed: reloading won't reshuffle anyone, so a picker who finishes early can refresh without being handed new work. Shared with Replenish by Style/SKU."
+          subtitle="Who is picking the Daily Replenishments today? Saving here redistributes the SOR pick list across the roster by EQUAL UNITS (each picker gets roughly the same number of units) — POS sorted so each person owns a contiguous block of stores, so unit counts land near-equal, not exact. The split is then fixed: reloading won't reshuffle anyone, so a picker who finishes early can refresh without being handed new work. Shared with Replenish by Style/SKU."
         />
       )}
 
       {isAdmin && workloadByOwner.length > 0 && (
         <div className="card-white p-4" data-testid="replen-workload">
-          <SectionTitle title="Workload by picker" subtitle="How the open pick list (what Save & distribute will freeze) splits across the roster (units · lines · stores)." />
+          <SectionTitle title="Workload by picker" subtitle="How the open pick list (what Save & distribute will freeze) splits across the roster (units · stores)." />
           <div className="flex flex-wrap gap-2">
             {workloadByOwner.map((o) => (
               <span key={o.owner} className="inline-flex items-center gap-2 rounded-full border border-border bg-panel/40 px-3 py-1.5 text-[12px]" data-testid={`replen-workload-${o.owner}`}>
                 <span className="font-bold text-[#0f3d24]">{o.owner}</span>
                 <span className="tabular-nums">{fmtNum(o.units)} units</span>
-                <span className="text-muted tabular-nums">· {fmtNum(o.lines)} lines · {fmtNum(o.stores)} stores</span>
+                <span className="text-muted tabular-nums">· {fmtNum(o.stores)} stores</span>
               </span>
             ))}
           </div>
@@ -679,7 +687,7 @@ const Replenishments = () => {
                 data-testid="replen-distribute"
                 title="Freeze the current open pick list into a dated batch; the list then refills with new items"
               >
-                <PaperPlaneTilt size={13} weight="bold" /> {distSaving ? "Distributing…" : `Save & distribute${activeRows.length ? ` (${fmtNum(activeRows.length)})` : ""}`}
+                <PaperPlaneTilt size={13} weight="bold" /> {distSaving ? "Distributing…" : `Save & distribute${activeUnits ? ` (${fmtNum(activeUnits)} units)` : ""}`}
               </button>
             )}
           </div>
@@ -757,9 +765,9 @@ const Replenishments = () => {
               ))}
             </select>
           )}
-          {(sor?.deploy_now_count ?? 0) > 0 && (
-            <span className="inline-flex items-center gap-1.5 bg-amber-100 text-amber-900 border border-amber-300 text-[11.5px] font-bold px-2.5 py-1 rounded-full" data-testid="replen-deploy-now-count">
-              <Lightning size={12} weight="fill" /> {fmtNum(sor.deploy_now_count)} deploy-now
+          {(kpi?.deployable_wh_units ?? 0) > 0 && (
+            <span className="inline-flex items-center gap-1.5 bg-amber-100 text-amber-900 border border-amber-300 text-[11.5px] font-bold px-2.5 py-1 rounded-full" data-testid="replen-deploy-now-count" title="Warehouse units ready to move to proven-demand stores now sitting at zero shelf stock — the highest-SOR move.">
+              <Lightning size={12} weight="fill" /> {fmtNum(kpi.deployable_wh_units)} deploy-now units
             </span>
           )}
         </div>
@@ -783,7 +791,7 @@ const Replenishments = () => {
 
         {!loading && !error && (
           visibleRows.length === 0 ? (
-            <Empty label={rows.length === 0 ? "Nothing to deploy — no proven-demand SKU has warehouse cover to move today." : "All open lines have been actioned."} />
+            <Empty label={rows.length === 0 ? "Nothing to deploy — no proven-demand SKU has warehouse cover to move today." : "All open items have been actioned."} />
           ) : (
             <div className="overflow-x-auto rounded-lg border border-border bg-white">
               <p className="px-3 py-2 text-[11px] text-muted border-b border-border">
@@ -822,7 +830,7 @@ const Replenishments = () => {
                       <td colSpan={19} className="px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide text-[#0f3d24]">
                         Corridor · {g.corridor}
                         <span className="ml-2 font-semibold normal-case text-muted">
-                          {g.rows.length} line{g.rows.length === 1 ? "" : "s"} · {fmtNum(g.units)} units · proj. uplift +{Number(g.uplift).toFixed(1)}
+                          {fmtNum(g.units)} units · proj. uplift +{Number(g.uplift).toFixed(1)}
                         </span>
                       </td>
                     </tr>
@@ -972,8 +980,8 @@ const Replenishments = () => {
           <SectionTitle
             title={<span className="inline-flex items-center gap-2 text-[14px]"><Truck size={16} weight="duotone" className="text-brand-deep" /> Distributed batches {!isAdmin && <span className="text-[11px] font-semibold text-emerald-800 bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-full">Your pick list</span>}</span>}
             subtitle={isAdmin
-              ? "The FROZEN work order. Each “Save & distribute” snapshots the live pick list above into a dated batch handed to the pickers — it does NOT change as new sales arrive (unlike the live list). Lines stay here until picked (Done vs Outstanding per line)."
-              : "This is your work order — physically pull each item and mark the line done. It stays fixed and won’t reshuffle as new sales come in, so you can refresh anytime without losing your place."}
+              ? "The FROZEN work order. Each “Save & distribute” snapshots the live pick list above into a dated batch handed to the pickers — it does NOT change as new sales arrive (unlike the live list). Items stay here until picked (units done vs outstanding)."
+              : "This is your work order — physically pull each item and mark it done. It stays fixed and won’t reshuffle as new sales come in, so you can refresh anytime without losing your place."}
             action={
               <button type="button" onClick={loadDistributions} className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-brand-deep border border-border hover:bg-panel px-2.5 py-1.5 rounded-md" data-testid="replen-distributions-refresh">
                 <ArrowCounterClockwise size={12} weight="bold" /> Refresh
@@ -996,25 +1004,23 @@ const Replenishments = () => {
         <div className="card-white p-4 sm:p-5" data-testid="replen-day-scorecard">
           <SectionTitle
             title={<span className="inline-flex items-center gap-2 text-[14px]"><CalendarBlank size={16} weight="duotone" className="text-brand-deep" /> Picker scorecard by day</span>}
-            subtitle="Pick a day to see how many distributed items each picker marked done that day (EAT). Outstanding is every not-yet-done line across all open batches, regardless of day — what each picker still owes."
+            subtitle="Pick a day to see how many units each picker marked done that day (EAT). Outstanding units is every not-yet-done unit across all open batches, regardless of day — what each picker still owes."
             action={
               <input type="date" value={scorecardDay} onChange={(e) => setScorecardDay(e.target.value)} className="text-[12px] border border-border rounded-md px-2 py-1.5 bg-white" data-testid="replen-scorecard-day" />
             }
           />
           {dayScorecard.length === 0 ? (
-            <Empty label="No distributed lines yet — create a batch with “Save & distribute”." />
+            <Empty label="No distributed items yet — create a batch with “Save & distribute”." />
           ) : (
             <div className="overflow-x-auto rounded-lg border border-border bg-white">
               <table className="w-full min-w-max text-[12.5px]">
                 <thead className="bg-panel">
                   <tr className="text-left">
                     <th className="px-3 py-2 font-semibold whitespace-nowrap">Picker</th>
-                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Done · {scorecardDay}</th>
-                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Units done</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Units done · {scorecardDay}</th>
                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Units in batches handed out (created) on the selected day">Allocated today</th>
                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Units of today's handout that are now finished">Finished</th>
                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Finished ÷ Allocated today (units)">% complete</th>
-                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Outstanding (all open)</th>
                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Outstanding units</th>
                   </tr>
                 </thead>
@@ -1024,8 +1030,7 @@ const Replenishments = () => {
                       <td className="px-3 py-2 whitespace-nowrap">
                         <span className="inline-flex items-center bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{o.owner}</span>
                       </td>
-                      <td className="px-3 py-2 text-right tabular-nums font-bold text-emerald-700">{fmtNum(o.doneDay)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmtNum(o.doneUnitsDay)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums font-bold text-emerald-700">{fmtNum(o.doneUnitsDay)}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{o.allocUnitsDay > 0 ? fmtNum(o.allocUnitsDay) : <span className="text-slate-400">—</span>}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{o.allocUnitsDay > 0 ? <span className="font-semibold text-emerald-700">{fmtNum(o.allocDoneUnitsDay)}</span> : <span className="text-slate-400">—</span>}</td>
                       <td className="px-3 py-2 text-right tabular-nums">
@@ -1040,8 +1045,7 @@ const Replenishments = () => {
                           </div>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-right tabular-nums">{o.outstanding > 0 ? <span className="text-amber-700 font-semibold">{fmtNum(o.outstanding)}</span> : fmtNum(0)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmtNum(o.outstandingUnits)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{o.outstandingUnits > 0 ? <span className="text-amber-700 font-semibold">{fmtNum(o.outstandingUnits)}</span> : fmtNum(0)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1056,7 +1060,7 @@ const Replenishments = () => {
         <div className="card-white p-4 sm:p-5" data-testid="replen-scorecard">
           <SectionTitle
             title={<span className="inline-flex items-center gap-2 text-[14px]"><CheckCircle size={16} weight="duotone" className="text-emerald-700" /> Picker accountability · last 30 days</span>}
-            subtitle="Built on immutable pick-event facts. Each picker is scored against the latest suggestion snapshot for the stores they actually worked: Fulfilment % is line-based (effort-normalised), Missed SOR is the weekly velocity of suggested lines they skipped, and Over-picks are units taken beyond the suggested quantity."
+            subtitle="Built on immutable pick-event facts. Each picker is scored against the latest suggestion snapshot for the stores they actually worked: Fulfilment % is unit-based (suggested units cleared ÷ suggested units assigned), Missed SOR is the weekly velocity of suggested units they skipped, and Over-picks are units taken beyond the suggested quantity."
           />
           {!scorecard?.published ? (
             <div className="flex items-start gap-2.5 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-900" data-testid="replen-scorecard-accruing">
@@ -1074,11 +1078,11 @@ const Replenishments = () => {
                 <thead className="bg-panel">
                   <tr className="text-left">
                     <th className="px-3 py-2 font-semibold whitespace-nowrap">Picker</th>
-                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Assigned</th>
-                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Done</th>
-                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Missed</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Suggested units for the stores this picker worked">Assigned units</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Suggested units of the lines they cleared">Done units</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Suggested units of the lines they skipped">Missed units</th>
                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Fulfilment %</th>
-                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Units picked</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Units physically picked (may differ from suggested)">Units picked</th>
                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Missed SOR/wk</th>
                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Over-picks</th>
                   </tr>
@@ -1090,9 +1094,9 @@ const Replenishments = () => {
                         <span className="inline-flex items-center bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{p.user_name}</span>
                         <span className="ml-2 text-[11px] text-muted">{(p.stores || []).length} store{(p.stores || []).length === 1 ? "" : "s"}</span>
                       </td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmtNum(p.assigned_lines)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums font-bold text-emerald-700">{fmtNum(p.done_lines)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{p.missed_lines > 0 ? <span className="text-rose-700 font-semibold">{fmtNum(p.missed_lines)}</span> : fmtNum(0)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtNum(p.assigned_units)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums font-bold text-emerald-700">{fmtNum(p.done_units)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{p.missed_units > 0 ? <span className="text-rose-700 font-semibold">{fmtNum(p.missed_units)}</span> : fmtNum(0)}</td>
                       <td className="px-3 py-2 text-right tabular-nums">
                         <span className={`inline-flex items-center font-bold px-2 py-0.5 rounded-full ${p.fulfilment_pct >= 80 ? "bg-emerald-100 text-emerald-900" : p.fulfilment_pct >= 50 ? "bg-amber-100 text-amber-900" : "bg-rose-100 text-rose-900"}`}>{Number(p.fulfilment_pct).toFixed(1)}%</span>
                       </td>
@@ -1208,7 +1212,7 @@ const BatchCard = ({ batch, onMarkDone, onDelete, savingKey, canDelete = true })
   // (defaults to the suggested qty). This is what the team physically pulled.
   const [picked, setPicked] = useState({});
   const when = batch.created_at ? batch.created_at.replace("T", " ").slice(0, 16) : "—";
-  const pct = batch.line_count ? Math.round((batch.done_count / batch.line_count) * 100) : 0;
+  const pct = batch.total_units ? Math.round(((batch.done_units || 0) / batch.total_units) * 100) : 0;
   return (
     <div className="mt-3 rounded-lg border border-border overflow-hidden" data-testid={`replen-batch-${batch.id}`}>
       <div className="flex flex-wrap items-center gap-3 px-4 py-3 bg-panel/40">
@@ -1218,9 +1222,9 @@ const BatchCard = ({ batch, onMarkDone, onDelete, savingKey, canDelete = true })
         </button>
         <span className="text-[11.5px] text-muted">{batch.created_by || "—"}{batch.weeks ? ` · ${batch.weeks}w window` : ""}</span>
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center gap-1 bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{fmtNum(batch.done_count)} done</span>
-          <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{fmtNum(batch.outstanding_count)} outstanding</span>
-          <span className="text-[11px] text-muted tabular-nums">{fmtNum(batch.line_count)} lines · {fmtNum(batch.total_units)} units · {pct}%</span>
+          <span className="inline-flex items-center gap-1 bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{fmtNum(batch.done_units)} units done</span>
+          <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{fmtNum(batch.outstanding_units)} units outstanding</span>
+          <span className="text-[11px] text-muted tabular-nums">{fmtNum(batch.total_units)} units · {pct}%</span>
           {canDelete && (
             <button type="button" onClick={() => onDelete(batch.id)} className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 border border-rose-200 hover:bg-rose-50 px-2 py-1 rounded-md" title="Remove this batch" data-testid={`replen-batch-delete-${batch.id}`}>
               <Trash size={12} weight="bold" />
@@ -1233,8 +1237,8 @@ const BatchCard = ({ batch, onMarkDone, onDelete, savingKey, canDelete = true })
           {batch.by_owner.map((o) => (
             <span key={o.owner} className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px]">
               <span className="font-bold text-[#0f3d24]">{o.owner}</span>
-              <span className="text-emerald-700 font-semibold">{fmtNum(o.done)} done</span>
-              <span className="text-amber-700 font-semibold">{fmtNum(o.outstanding)} left</span>
+              <span className="text-emerald-700 font-semibold">{fmtNum(o.done_units)} units done</span>
+              <span className="text-amber-700 font-semibold">{fmtNum(Math.max(0, (o.units || 0) - (o.done_units || 0)))} units left</span>
             </span>
           ))}
         </div>

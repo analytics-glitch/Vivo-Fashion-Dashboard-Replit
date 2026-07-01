@@ -396,7 +396,7 @@ export default function ReplenishmentTransferReport({
                       <div className="min-w-0">
                         <div className="truncate font-semibold">{g.pos_location || "—"}</div>
                         <div className="text-xs text-muted-foreground">
-                          {fmtDay(g.day)} · {fmtNum(g.item_count)} item{g.item_count === 1 ? "" : "s"} · {fmtNum(g.total_units)} units
+                          {fmtDay(g.day)} · {fmtNum(g.total_units)} units
                         </div>
                       </div>
                     </button>

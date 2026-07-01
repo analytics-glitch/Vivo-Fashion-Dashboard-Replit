@@ -14878,39 +14878,47 @@ def analytics_replenishment_picker_scorecard(days: int = Query(default=30)):
     out = []
     for u in pickers.values():
         assigned = done = missed = in_transit = 0
+        assigned_units = done_units = missed_units = in_transit_units = 0
         missed_sor_units = 0.0
         over_pick_units = 0
         for pos in u["stores"]:
             for sku, meta in sugg_by_store.get(pos, {}).items():
                 assigned += 1
+                su = int(meta["suggested"] or 0)
+                assigned_units += su
                 picked_qty = u["picked"].get((pos, sku))
                 if picked_qty is not None:
                     if (pos, sku) in in_transit_pairs:
                         # Picked + dispatched but not yet received → credit held.
                         in_transit += 1
+                        in_transit_units += su
                     else:
                         done += 1
+                        done_units += su
                     if picked_qty > meta["suggested"]:
                         over_pick_units += picked_qty - meta["suggested"]
                 else:
                     missed += 1
+                    missed_units += su
                     missed_sor_units += meta["v"]
-        # Effort-normalised headline = LINE fulfilment (done/assigned), so a
-        # picker clearing many scattered single-unit lines is not penalised vs one
-        # clearing a few deep lines. In-transit lines are excluded from full
-        # credit until the store confirms receipt.
-        fulfilment_pct = round(100.0 * done / assigned, 1) if assigned else 0.0
+        # Unit-based headline = suggested units cleared ÷ suggested units assigned.
+        # In-transit lines are excluded from full credit until the store confirms
+        # receipt. (Line-count aggregates are retained for backward compatibility.)
+        fulfilment_pct = round(100.0 * done_units / assigned_units, 1) if assigned_units else 0.0
         out.append({
             "user_id": u["user_id"], "user_name": u["user_name"],
             "stores": sorted(u["stores"]),
             "assigned_lines": assigned, "done_lines": done,
             "in_transit_lines": in_transit,
-            "missed_lines": missed, "fulfilment_pct": fulfilment_pct,
+            "missed_lines": missed,
+            "assigned_units": assigned_units, "done_units": done_units,
+            "missed_units": missed_units, "in_transit_units": in_transit_units,
+            "fulfilment_pct": fulfilment_pct,
             "units_picked": u["units_picked"],
             "missed_sor_units": round(missed_sor_units, 1),
             "over_pick_units": int(over_pick_units),
         })
-    out.sort(key=lambda r: (-r["fulfilment_pct"], -r["done_lines"]))
+    out.sort(key=lambda r: (-r["fulfilment_pct"], -r["done_units"]))
     return {"published": True, "days": days, "snapshot_lines": len(sugg),
             "pickers": out}
 
