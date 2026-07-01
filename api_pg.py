@@ -6351,7 +6351,7 @@ def analytics_sor_all_styles(
                 MAX(category) AS category,
                 MAX(collection) AS collection,
                 MAX(product_type) AS subcategory,
-                MAX(style_number) AS style_number,
+                mode() WITHIN GROUP (ORDER BY style_number) AS style_number,
                 -- modal (most common) positive ticket price, robust to a
                 -- foreign-currency leak on a few country SKUs (see PA prod CTE)
                 mode() WITHIN GROUP (ORDER BY price::numeric) FILTER (WHERE price::numeric > 0) AS original_price
@@ -6959,7 +6959,8 @@ def analytics_product_analysis(
         "WITH prod AS ("
         " SELECT style_name,"
         " MAX(brand) AS brand, MAX(category) AS category, MAX(product_type) AS subcategory,"
-        " MAX(collection) AS collection, MAX(season) AS season, MAX(style_number) AS style_number,"
+        " MAX(collection) AS collection, MAX(season) AS season,"
+        " mode() WITHIN GROUP (ORDER BY style_number) AS style_number,"
         # full_price = the MODAL (most common) positive ticket price across the
         # style's SKUs, NOT MAX(price). The product master occasionally carries a
         # foreign-currency leak on a few country SKUs (the KES price duplicated in
@@ -7642,6 +7643,13 @@ def analytics_sts_by_category(
 ):
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.category IS NOT NULL AND p.category <> ''")
+    # The filter-bar country / POS-location ("channel" param = pos_location_name)
+    # selection must scope the STOCK side too, not just sales — otherwise the
+    # store-scoped Units Sold was matched against catalog-wide Inventory and the
+    # category-total Inventory column ignored the POS filter (mirrors the
+    # subcategory helper get_subcategory_stock_sales).
+    inv_country_filter = ("AND i.country IN (" + csv_to_sql(country) + ")") if country else ""
+    inv_loc_filter = ("AND i.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
     return run_query("""
         WITH sales AS (
             SELECT p.category AS category,
@@ -7659,6 +7667,7 @@ def analytics_sts_by_category(
             LEFT JOIN all_products_clean p ON i.sku = p.sku
             WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
             AND p.category IS NOT NULL AND p.category <> ''
+            """ + inv_country_filter + " " + inv_loc_filter + """
             GROUP BY p.category
         )
         SELECT COALESCE(s.category, st.category) AS category,
@@ -15309,7 +15318,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             SELECT style_name,
                 MAX(brand) AS brand,
                 MAX(product_type) AS subcategory,
-                MAX(style_number) AS style_number,
+                mode() WITHIN GROUP (ORDER BY style_number) AS style_number,
                 -- modal (most common) positive ticket price, robust to a
                 -- foreign-currency leak on a few country SKUs (see PA prod CTE)
                 mode() WITHIN GROUP (ORDER BY price) FILTER (WHERE price > 0) AS price,
@@ -15647,7 +15656,7 @@ def analytics_sor_new_styles_l10(
                 MAX(brand) AS brand,
                 MAX(collection) AS collection,
                 MAX(product_type) AS subcategory,
-                MAX(style_number) AS style_number
+                mode() WITHIN GROUP (ORDER BY style_number) AS style_number
             FROM all_products_clean
             WHERE style_name IS NOT NULL AND style_name <> ''""" + brand_pf + """
             GROUP BY style_name
@@ -16435,7 +16444,7 @@ def range_mgmt_weekly_sor(country: str = Query(default=None), channel: str = Que
             SELECT style_name,
                 MAX(brand) AS brand,
                 MAX(product_type) AS subcategory,
-                MAX(style_number) AS style_number,
+                mode() WITHIN GROUP (ORDER BY style_number) AS style_number,
                 MIN(substring(style_launch_date, 1, 10)) FILTER (
                     WHERE substring(style_launch_date, 1, 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
                 ) AS launch_date
