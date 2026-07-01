@@ -199,6 +199,11 @@ _LAST_ROLLUP_REFRESH = None
 # the heaviest Odoo pull (full image fetch per template), so a daily cadence is
 # plenty. None on boot so a fresh prod DB bootstraps on the first cycle.
 _LAST_PRODUCT_IMAGES_EXTRACT = None
+# Guards the Shopify product-image GALLERY extract (extract_shopify_images.py —
+# the multi-image scrollable lightbox gallery in product_image_urls, distinct
+# from the single Odoo base64 photo above) to once per 24h. None on boot so a
+# fresh prod DB bootstraps on the first cycle.
+_LAST_SHOPIFY_IMAGES_EXTRACT = None
 # Guards the data-validation agent (validation_agent.run) to once per hour even
 # though main() runs every 60s. The agent self-skips outside its active window
 # (06:00-22:00 Africa/Nairobi), so this hourly cadence yields one audit per hour
@@ -1456,6 +1461,73 @@ def main():
             log.info("✅ Product image extract complete")
         except Exception as e:
             log.error("Product image extract error: %s", e)
+
+    # Shopify product-image GALLERY extract — feeds the MULTI-IMAGE scrollable
+    # lightbox carousel (product_image_urls: ordered gallery URLs per SKU, pulled
+    # straight from the Shopify Admin API). This is DISTINCT from the Odoo base64
+    # single-image extract above: that gives each style ONE photo, this gives the
+    # full scrollable gallery. Production runs on a SEPARATE DB that never ran the
+    # manual extract_shopify_images.py, so on a fresh prod DB product_image_urls
+    # is EMPTY and GET /api/product-images returns nothing — the lightbox then
+    # falls back to the single Odoo photo (only one image, no scroll, unlike dev).
+    # We bootstrap immediately when product_image_urls is missing/empty (fresh
+    # prod DB) so no manual step is needed, then refresh EVERY 24 HOURS (photos
+    # change rarely and this is a full multi-store Shopify crawl). The extract
+    # fetches all stores BEFORE it TRUNCATE+repopulates in one transaction, so a
+    # mid-crawl failure leaves the existing gallery intact (idempotent). It reads
+    # no DB source table, so the only prerequisite is the Shopify store/token
+    # secrets — skip QUIETLY if any are missing so a DB without Shopify creds does
+    # not crash-loop the subprocess every cycle. A module-level guard rate-limits
+    # to once per 24h even though main() runs every 60s.
+    global _LAST_SHOPIFY_IMAGES_EXTRACT
+    piu_empty = False
+    try:
+        cur.execute("SELECT to_regclass('public.product_image_urls')")
+        if cur.fetchone()[0] is None:
+            piu_empty = True
+        else:
+            cur.execute("SELECT COUNT(*) FROM product_image_urls")
+            piu_empty = cur.fetchone()[0] == 0
+        conn.commit()
+    except Exception as e:
+        log.error("Shopify image-URLs presence check error: %s", e)
+        conn.rollback()
+    piu_due = (
+        _LAST_SHOPIFY_IMAGES_EXTRACT is None
+        or (now_utc - _LAST_SHOPIFY_IMAGES_EXTRACT).total_seconds() >= 86400
+    )
+    shopify_creds_ok = all(
+        os.environ.get(k)
+        for k in (
+            "SHOPIFY_KENYA_STORE", "SHOPIFY_KENYA_TOKEN",
+            "SHOPIFY_UGANDA_STORE", "SHOPIFY_UGANDA_TOKEN",
+            "SHOPIFY_RWANDA_STORE", "SHOPIFY_RWANDA_TOKEN",
+        )
+    )
+    if shopify_creds_ok and (piu_empty or piu_due):
+        # Stamp the attempt time up front so a transient failure waits 24h before
+        # retrying — except while still empty, where the piu_empty branch keeps
+        # retrying every cycle until the bootstrap succeeds.
+        _LAST_SHOPIFY_IMAGES_EXTRACT = now_utc
+        try:
+            import subprocess, sys
+
+            log.info(
+                "Running Shopify product-image gallery extract (bootstrap=%s)...",
+                piu_empty,
+            )
+            subprocess.run(
+                [sys.executable, "/home/runner/workspace/extract_shopify_images.py"],
+                check=True,
+            )
+            log.info("✅ Shopify product-image gallery extract complete")
+        except Exception as e:
+            log.error("Shopify product-image gallery extract error: %s", e)
+    elif (piu_empty or piu_due) and not shopify_creds_ok:
+        log.info(
+            "Skipping Shopify product-image gallery extract — Shopify store/token "
+            "secrets not set (lightbox falls back to single Odoo photo)."
+        )
 
     # BI sales-rollup refresh — feeds the pre-aggregated rollup_* tables that make
     # the Customers / Range Management / Product Analysis endpoints fast. The read

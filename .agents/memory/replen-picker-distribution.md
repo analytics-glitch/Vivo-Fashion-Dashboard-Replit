@@ -53,7 +53,7 @@ from the rows, so the workload card still shows real unit totals per picker.
   owner only while that owner is still under target. **Why:** the prior "drift →
   store's dominant frozen owner, ALWAYS" rule piled every intraday line onto
   whoever already owned the store, so heavy pickers grew heavier and the real card
-  drifted to a ~39-unit spread (Emma 192 / Matthew 153) by midday — sequential
+  drifted to a ~39-unit spread (store A 192 / store B 153) by midday — sequential
   forward-only quota-fill couldn't claw it back because it never revisits an
   earlier, lighter picker. Seeding LPT with the frozen loads fixes both: sim
   all-new/all-frozen spread 1, frozen+drift spread ~5 with only boundary stores

@@ -206,7 +206,7 @@ const ProductAnalysis = () => {
   const [brands, setBrands] = useState([]);         // [] = all
   const [cats, setCats] = useState([]);             // [] = all (category)
   const [subcats, setSubcats] = useState([]);       // [] = all
-  const [velDays, setVelDays] = useState(30);       // velocity window (days)
+  const velDays = 30;       // velocity window (days) — fixed; the UI filter was removed (WOC still uses a 30-day window)
   // Whether warehouse / holding-location stock is counted in the figures.
   // false (default) = retail stores only; true = stores + warehouse.
   const [includeWarehouse, setIncludeWarehouse] = useState(false);
@@ -957,22 +957,6 @@ const ProductAnalysis = () => {
             className="w-[52px] bg-transparent text-[12px] text-foreground outline-none"
             data-testid="pa-rev-pct"
           />
-        </label>
-
-        <label className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[12px] text-muted">
-          Velocity
-          <select
-            value={velDays}
-            onChange={(e) => setVelDays(Number(e.target.value))}
-            className="bg-transparent text-[12px] text-foreground outline-none"
-            data-testid="pa-velocity"
-            title="Velocity window used for weeks-of-cover"
-          >
-            <option value={30}>30 days</option>
-            <option value={60}>60 days</option>
-            <option value={90}>90 days</option>
-            <option value={180}>180 days</option>
-          </select>
         </label>
 
         <div className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 ml-auto">
