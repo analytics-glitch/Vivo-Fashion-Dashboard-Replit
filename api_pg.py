@@ -1727,19 +1727,32 @@ def _can_manage_roster(user):
     return (user.get("email") or "").strip().lower() in _ROSTER_EDITOR_EMAILS
 
 
+# Explicit picker-owner → login-email overrides for pickers whose account email
+# doesn't contain their roster first name, so plain name/local-part matching
+# would fail closed and hide their own lines. Keys are normalised owner labels;
+# values are the exact login email(s) that own that roster name.
+# e.g. roster "Alvin" but the login is elvin@vivofashiongroup.com.
+_REPLEN_OWNER_EMAIL_ALIASES = {
+    "alvin": {"elvin@vivofashiongroup.com"},
+    "alvi": {"elvin@vivofashiongroup.com"},
+}
+
+
 def _replen_owner_matches_user(owner, user):
     """Match a free-text pick-list owner name to the signed-in user, so a picker
     sees ONLY their own distributed lines. Managers bypass this (they see all).
 
-    Owners are free-text first names (there is NO login→owner mapping table), so
-    we match the WHOLE owner label against a small set of concrete identity
-    candidates for the user — their full name, their first name, and their email
-    local-part (+ its first token). We deliberately do NOT match on any shared
-    token (a shared surname or a generic token would leak another picker's
-    lines); the owner label must equal one of these identities. Residual, and
-    unavoidable without an explicit mapping: two staff with the same first name
-    will match the same first-name owner. Fails closed (returns False) when the
-    owner label doesn't equal a concrete identity.
+    Owners are free-text first names (there is NO general login→owner mapping
+    table), so we match the WHOLE owner label against a small set of concrete
+    identity candidates for the user — their full name, their first name, and
+    their email local-part (+ its first token). We deliberately do NOT match on
+    any shared token (a shared surname or a generic token would leak another
+    picker's lines); the owner label must equal one of these identities. A small
+    explicit override map (_REPLEN_OWNER_EMAIL_ALIASES) handles pickers whose
+    login email doesn't contain their roster name (e.g. owner "Alvin" ↔
+    elvin@…). Residual, and unavoidable without a full mapping: two staff with
+    the same first name will match the same first-name owner. Fails closed
+    (returns False) when the owner label doesn't equal a concrete identity.
     """
     if not owner or not user:
         return False
@@ -1750,6 +1763,10 @@ def _replen_owner_matches_user(owner, user):
     ow = _norm(owner)
     if not ow:
         return False
+    email_full = str(user.get("email") or "").strip().lower()
+    alias_emails = _REPLEN_OWNER_EMAIL_ALIASES.get(ow)
+    if alias_emails and email_full in alias_emails:
+        return True
     name = _norm(user.get("name"))
     local = _norm(str(user.get("email") or "").split("@", 1)[0])
     cands = set()
