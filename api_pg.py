@@ -5624,6 +5624,12 @@ def get_subcategory_stock_sales(
     subcat_list = "'" + "','".join(PRODUCT_SUBCATS) + "'"
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.product_type IN (" + subcat_list + ")")
+    # The filter-bar country / POS-location ("channel" param = pos_location_name)
+    # selection must scope the STOCK side too, not just sales — otherwise a
+    # store-scoped Units Sold was matched against catalog-wide Inventory and the
+    # Inventory column ignored the POS filter (reported repeatedly by leadership).
+    inv_country_filter = ("AND i.country IN (" + csv_to_sql(country) + ")") if country else ""
+    inv_loc_filter = ("AND i.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
     return run_query("""
         WITH sales AS (
             SELECT p.product_type AS subcategory,
@@ -5641,6 +5647,7 @@ def get_subcategory_stock_sales(
             LEFT JOIN all_products_clean p ON i.sku = p.sku
             WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
             AND p.product_type IN (""" + subcat_list + """)
+            """ + inv_country_filter + " " + inv_loc_filter + """
             GROUP BY p.product_type
         )
         SELECT COALESCE(s.subcategory, st.subcategory) AS subcategory,

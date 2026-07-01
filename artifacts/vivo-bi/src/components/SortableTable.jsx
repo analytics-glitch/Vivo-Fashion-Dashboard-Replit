@@ -1,7 +1,26 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useRef, useLayoutEffect, useCallback } from "react";
 import { CaretUp, CaretDown, CaretRight, Download, ArrowsHorizontal } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+
+// --- Column-resize helpers (only used when the `resizable` prop is set) ---
+const MIN_COL_W = 56;   // px — keeps a column from collapsing to nothing
+const MAX_COL_W = 640;  // px — sane upper bound for double-click auto-fit
+
+// A single reused off-screen canvas for measuring header/cell text widths.
+let _measureCanvas = null;
+const measureTextWidth = (text, font) => {
+  if (!_measureCanvas) _measureCanvas = document.createElement("canvas");
+  const ctx = _measureCanvas.getContext("2d");
+  ctx.font = font;
+  return ctx.measureText(text || "").width;
+};
+const computedFont = (el) => {
+  const s = window.getComputedStyle(el);
+  return s.font && s.font.trim()
+    ? s.font
+    : `${s.fontStyle} ${s.fontWeight} ${s.fontSize}/${s.lineHeight} ${s.fontFamily}`;
+};
 
 /**
  * Convert any React element / value into a flat string (used as a fallback
@@ -345,6 +364,10 @@ export const SortableTable = ({
    * the Category click does the rest. Resolved against `columns` like the
    * primary sort, so `sortValue` callbacks are honoured. */
   secondarySort = null,
+  /** Opt-in: let the user resize each column by dragging its right edge, or
+   * double-click that edge to auto-fit the column to its content. Off by
+   * default so existing tables keep their content-based auto layout. */
+  resizable = false,
 }) => {
   const [sort, setSort] = useState(initialSort || null); // { key, dir }
   const [expanded, setExpanded] = useState(() => new Set());
@@ -357,6 +380,79 @@ export const SortableTable = ({
   // row (slow). This checkbox lets the user opt out for a fast photoless CSV.
   const hasImageCol = columns.some((c) => typeof c.image === "function");
   const [includePhotos, setIncludePhotos] = useState(true);
+
+  // --- Opt-in column resizing (drag right edge / double-click to auto-fit) ---
+  const tableRef = useRef(null);
+  const [colWidths, setColWidths] = useState({}); // { [colKey]: px }
+  const didInitWidths = useRef(false);
+  // DOM column index accounting for the leading expander column, if any.
+  const domColIndex = (ci) => ci + (renderExpanded ? 1 : 0);
+
+  // Seed each column's width once from the natural (auto-layout) widths so
+  // switching to a fixed layout doesn't visibly jump. Waits for rows.
+  useLayoutEffect(() => {
+    if (!resizable || didInitWidths.current) return;
+    const table = tableRef.current;
+    if (!table) return;
+    const ths = table.querySelectorAll("thead th");
+    if (!ths.length) return;
+    const seed = {};
+    columns.forEach((c, ci) => {
+      const th = ths[domColIndex(ci)];
+      if (th) seed[c.key] = Math.max(MIN_COL_W, Math.round(th.getBoundingClientRect().width));
+    });
+    if (Object.keys(seed).length) {
+      setColWidths(seed);
+      didInitWidths.current = true;
+    }
+  }, [resizable, columns, renderExpanded, rows.length]);
+
+  const startResize = useCallback((e, key) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const table = tableRef.current;
+    let startW = colWidths[key];
+    if (startW == null && table) {
+      const th = table.querySelector(`thead th[data-colkey="${key}"]`);
+      startW = th ? th.getBoundingClientRect().width : MIN_COL_W;
+    }
+    startW = Math.max(MIN_COL_W, startW || MIN_COL_W);
+    const startX = e.clientX;
+    const onMove = (ev) => {
+      const w = Math.min(MAX_COL_W, Math.max(MIN_COL_W, Math.round(startW + (ev.clientX - startX))));
+      setColWidths((prev) => ({ ...prev, [key]: w }));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [colWidths]);
+
+  // Double-click the drag handle → auto-fit the column to its widest content.
+  const autoFit = useCallback((e, key, ci) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const table = tableRef.current;
+    if (!table) return;
+    const nth = domColIndex(ci) + 1; // CSS nth-child is 1-based
+    const th = table.querySelectorAll("thead th")[domColIndex(ci)];
+    const sample = table.querySelector(`tbody tr td:nth-child(${nth})`) || th;
+    const font = sample ? computedFont(sample) : "13px sans-serif";
+    let max = th ? measureTextWidth((th.textContent || "").trim(), font) : 0;
+    table.querySelectorAll(`tbody tr td:nth-child(${nth})`).forEach((cell) => {
+      const w = measureTextWidth((cell.textContent || "").trim(), font);
+      if (w > max) max = w;
+    });
+    // + horizontal padding (0.75rem × 2) and room for the sort caret / handle.
+    const w = Math.min(MAX_COL_W, Math.max(MIN_COL_W, Math.ceil(max) + 40));
+    setColWidths((prev) => ({ ...prev, [key]: w }));
+  }, [renderExpanded]);
 
   const sorted = useMemo(() => {
     if (!sort) return rows;
@@ -471,7 +567,13 @@ export const SortableTable = ({
         className={`overflow-auto ${mobileCards ? "hidden md:block" : ""}`}
         style={maxHeight ? { maxHeight: typeof maxHeight === "number" ? `${maxHeight}px` : maxHeight } : undefined}
       >
-        <table className={`w-full data ${stickyFirstCol ? "sticky-first-col" : ""}`}>
+        <table
+          ref={tableRef}
+          className={`w-full data ${stickyFirstCol ? "sticky-first-col" : ""}`}
+          style={resizable && Object.keys(colWidths).length
+            ? { tableLayout: "fixed", width: Object.values(colWidths).reduce((a, b) => a + b, 0) + (renderExpanded ? 28 : 0) }
+            : undefined}
+        >
           <thead
             className="sticky top-0 z-20 bg-white shadow-[0_1px_0_rgba(0,0,0,0.06)]"
           >
@@ -482,24 +584,42 @@ export const SortableTable = ({
                 return (
                   <th
                     key={c.key}
-                    className={`group ${c.align === "right" || c.numeric ? "text-right" : "text-left"} ${c.sortable === false ? "" : "cursor-pointer hover:text-brand"} select-none ${isFirst ? "sticky left-0 z-30 bg-white" : ""}`}
+                    data-colkey={c.key}
+                    className={`group ${c.align === "right" || c.numeric ? "text-right" : "text-left"} ${c.sortable === false ? "" : "cursor-pointer hover:text-brand"} select-none ${isFirst ? "sticky left-0 z-30 bg-white" : ""} ${resizable ? "relative" : ""}`}
                     onClick={() => toggleSort(c.key)}
-                    style={c.width ? { width: c.width } : undefined}
+                    style={
+                      resizable && colWidths[c.key]
+                        ? { width: colWidths[c.key] }
+                        : c.width ? { width: c.width } : undefined
+                    }
                     title={c.headerTitle || undefined}
                   >
                     <span className="inline-flex items-center gap-1">
                       {c.label}
                       {sort && sort.key === c.key && (sort.dir === "asc" ? <CaretUp size={11} /> : <CaretDown size={11} />)}
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); toggleColExpand(c.key); }}
-                        className={`inline-flex items-center align-middle transition-opacity ${expandedCols.has(c.key) ? "opacity-100 text-brand" : "opacity-0 group-hover:opacity-50 hover:!opacity-100"}`}
-                        title={expandedCols.has(c.key) ? "Collapse column" : "Expand column to show full content"}
-                        aria-label="Toggle column width"
-                      >
-                        <ArrowsHorizontal size={11} weight="bold" />
-                      </button>
+                      {!resizable && (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); toggleColExpand(c.key); }}
+                          className={`inline-flex items-center align-middle transition-opacity ${expandedCols.has(c.key) ? "opacity-100 text-brand" : "opacity-0 group-hover:opacity-50 hover:!opacity-100"}`}
+                          title={expandedCols.has(c.key) ? "Collapse column" : "Expand column to show full content"}
+                          aria-label="Toggle column width"
+                        >
+                          <ArrowsHorizontal size={11} weight="bold" />
+                        </button>
+                      )}
                     </span>
+                    {resizable && (
+                      <span
+                        role="separator"
+                        aria-orientation="vertical"
+                        onMouseDown={(e) => startResize(e, c.key)}
+                        onDoubleClick={(e) => autoFit(e, c.key, ci)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize opacity-0 group-hover:opacity-100 hover:bg-brand/50 bg-border/60"
+                        title="Drag to resize · double-click to fit content"
+                      />
+                    )}
                   </th>
                 );
               })}

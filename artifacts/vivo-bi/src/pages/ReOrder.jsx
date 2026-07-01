@@ -358,6 +358,7 @@ const ReOrder = () => {
           </div>
 
           <ReplenishByColor />
+
           <AgedStockReport />
         </>
       )}
