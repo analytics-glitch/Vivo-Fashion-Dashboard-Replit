@@ -21,7 +21,7 @@
 - [vivowoman is primary Kenya POS](vivowoman-base-filter.md) — never exclude `vivowoman` in BASE_FILTERS; it's 84% of sales and all pre-2022 data, not a rollup.
 - [all_sales id is a per-row surrogate](all-sales-id-surrogate.md) — rebuild transform must give each row a unique id (md5 of grain), NOT line_item_id; reusing it collides sale+return under PK (id,store_id) and drops ~27k rows BQ keeps.
 - [Range Management endpoints](range-mgmt-endpoints.md) — /api/range-mgmt/* shape & filter contract: tier_summary keys need spaces, apply channel to inventory + BASE_FILTERS to sales.
-- [Range tier model](range-tier-model.md) — tier = SOP GATED outcome (age 8/12/36/96wk gates → T1-4 or Retire); Active count = T1+T2+T3+T4 ONLY; flagged "Retire" is a separate badge that stays in rows (never in Retired); only HARD-retire fills Retired.
+- [Range tier model](range-tier-model.md) — ONE no-SOR shared model (_lifecycle_tier): Retired=manual/Zoya only; T1=NOOS(≥11 of 12mo), T2=≥39wk & reorders>3, T3=reordered≥1, T4=new; used by Range Mgmt + Product Analysis tier AND life_cycle; SOR-gated chain deleted.
 - [Expo vector-icon font preload](expo-vector-icon-font-preload.md) — tab icons tofu on Android/Expo Go but fine on web → spread `Feather.font` into the gating `useFonts`.
 - [Expo first-build cold-cache port timeout](expo-cold-cache-port.md) — first Expo workflow start can fail DIDNT_OPEN_A_PORT on cold Metro cache; warm via background dev + /status poll, then restart.
 - [Mobile shares the API auth gate](mobile-shares-api-auth-gate.md) — Expo app hits the same gated /api as web; backend auth changes break mobile too. It sends a Bearer token from AsyncStorage (`vivo_token`).
