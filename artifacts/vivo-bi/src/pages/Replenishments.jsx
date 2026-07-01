@@ -472,15 +472,33 @@ const Replenishments = () => {
     }
   }, [loadDistributions, loadSor]);
 
-  // Per-picker day scorecard derived from the distribution batches: Done counts
-  // the selected EAT day; Outstanding is every not-yet-done line across all open
-  // batches (day-independent — it's what each picker still owes).
+  // Per-picker day scorecard derived from the distribution batches:
+  //  • Done · day / Units done  → throughput: lines/units the picker marked done ON the selected EAT day.
+  //  • Allocated today / Finished / % complete → today's-handout completion: units in batches
+  //    CREATED on the selected EAT day and how many of those units are now finished (any time).
+  //  • Outstanding (all open) / units → the running backlog across ALL open batches (day-independent).
   const dayScorecard = useMemo(() => {
+    // Batch created_at is a TIMESTAMPTZ; bucket it to its East-Africa (UTC+3) calendar
+    // day so "allocated today" lines up with the done_day_eat the backend already emits.
+    const eatDay = (iso) => {
+      if (!iso) return null;
+      try {
+        return new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Africa/Nairobi", year: "numeric", month: "2-digit", day: "2-digit",
+        }).format(new Date(iso));
+      } catch {
+        return null;
+      }
+    };
     const byOwner = new Map();
     for (const b of distributions.batches || []) {
+      const allocatedToday = eatDay(b.created_at) === scorecardDay;
       for (const ln of b.lines || []) {
         const owner = ln.owner || "Unassigned";
-        const e = byOwner.get(owner) || { owner, doneDay: 0, doneUnitsDay: 0, outstanding: 0, outstandingUnits: 0 };
+        const e = byOwner.get(owner) || {
+          owner, doneDay: 0, doneUnitsDay: 0, outstanding: 0, outstandingUnits: 0,
+          allocUnitsDay: 0, allocDoneUnitsDay: 0,
+        };
         if (ln.done) {
           if (ln.done_day_eat === scorecardDay) {
             e.doneDay += 1;
@@ -490,10 +508,22 @@ const Replenishments = () => {
           e.outstanding += 1;
           e.outstandingUnits += Number(ln.suggested_units || 0);
         }
+        if (allocatedToday) {
+          e.allocUnitsDay += Number(ln.suggested_units || 0);
+          // Actual picked units on a finished line (defaults to suggested at mark-done
+          // time). Same basis as the "Units done" column — a legitimate 0 stays 0.
+          if (ln.done) e.allocDoneUnitsDay += Number(ln.done_units || 0);
+        }
         byOwner.set(owner, e);
       }
     }
-    return Array.from(byOwner.values()).sort((a, b) => a.owner.localeCompare(b.owner));
+    const rows = Array.from(byOwner.values());
+    for (const r of rows) {
+      r.pctDay = r.allocUnitsDay > 0
+        ? Math.round((r.allocDoneUnitsDay / r.allocUnitsDay) * 100)
+        : null;
+    }
+    return rows.sort((a, b) => a.owner.localeCompare(b.owner));
   }, [distributions, scorecardDay]);
 
   return (
@@ -981,6 +1011,9 @@ const Replenishments = () => {
                     <th className="px-3 py-2 font-semibold whitespace-nowrap">Picker</th>
                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Done · {scorecardDay}</th>
                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Units done</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Units in batches handed out (created) on the selected day">Allocated today</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Units of today's handout that are now finished">Finished</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Finished ÷ Allocated today (units)">% complete</th>
                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Outstanding (all open)</th>
                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Outstanding units</th>
                   </tr>
@@ -993,6 +1026,20 @@ const Replenishments = () => {
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums font-bold text-emerald-700">{fmtNum(o.doneDay)}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{fmtNum(o.doneUnitsDay)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{o.allocUnitsDay > 0 ? fmtNum(o.allocUnitsDay) : <span className="text-slate-400">—</span>}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{o.allocUnitsDay > 0 ? <span className="font-semibold text-emerald-700">{fmtNum(o.allocDoneUnitsDay)}</span> : <span className="text-slate-400">—</span>}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {o.pctDay === null ? (
+                          <span className="text-slate-400">—</span>
+                        ) : (
+                          <div className="flex items-center justify-end gap-2">
+                            <div className="w-16 h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                              <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(100, o.pctDay)}%` }} />
+                            </div>
+                            <span className={`font-semibold tabular-nums ${o.pctDay >= 100 ? "text-emerald-700" : o.pctDay > 0 ? "text-amber-700" : "text-slate-500"}`}>{o.pctDay}%</span>
+                          </div>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-right tabular-nums">{o.outstanding > 0 ? <span className="text-amber-700 font-semibold">{fmtNum(o.outstanding)}</span> : fmtNum(0)}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{fmtNum(o.outstandingUnits)}</td>
                     </tr>
