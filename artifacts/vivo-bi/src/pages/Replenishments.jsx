@@ -954,7 +954,7 @@ const Replenishments = () => {
           {!distLoading && (distributions.batches || []).length === 0 && (
             <Empty label={isAdmin
               ? "No distribution batches yet. Use “Save & distribute” on the pick list above to create one."
-              : "No pick batches have been distributed yet. Your supervisor freezes the pick list into a batch — check back shortly."} />
+              : "Nothing assigned to you yet. Your supervisor freezes the pick list into a batch and assigns your items — check back shortly."} />
           )}
           {!distLoading && (distributions.batches || []).map((b) => (
             <BatchCard key={b.id} batch={b} canDelete={isAdmin} onMarkDone={markBatchLineDone} onDelete={deleteBatch} savingKey={batchSavingKey} />

@@ -1727,6 +1727,42 @@ def _can_manage_roster(user):
     return (user.get("email") or "").strip().lower() in _ROSTER_EDITOR_EMAILS
 
 
+def _replen_owner_matches_user(owner, user):
+    """Match a free-text pick-list owner name to the signed-in user, so a picker
+    sees ONLY their own distributed lines. Managers bypass this (they see all).
+
+    Owners are free-text first names (there is NO login→owner mapping table), so
+    we match the WHOLE owner label against a small set of concrete identity
+    candidates for the user — their full name, their first name, and their email
+    local-part (+ its first token). We deliberately do NOT match on any shared
+    token (a shared surname or a generic token would leak another picker's
+    lines); the owner label must equal one of these identities. Residual, and
+    unavoidable without an explicit mapping: two staff with the same first name
+    will match the same first-name owner. Fails closed (returns False) when the
+    owner label doesn't equal a concrete identity.
+    """
+    if not owner or not user:
+        return False
+
+    def _norm(s):
+        return " ".join(t for t in re.split(r"[^a-z0-9]+", str(s or "").lower()) if t)
+
+    ow = _norm(owner)
+    if not ow:
+        return False
+    name = _norm(user.get("name"))
+    local = _norm(str(user.get("email") or "").split("@", 1)[0])
+    cands = set()
+    if name:
+        cands.add(name)
+        cands.add(name.split(" ", 1)[0])   # first name
+    if local:
+        cands.add(local)
+        cands.add(local.split(" ", 1)[0])
+    cands.discard("")
+    return ow in cands
+
+
 # ── Store → owner assignment (the "redistribution") ──────────────────────────
 # Each picker owns a CONTIGUOUS block of stores (POS sorted ascending). The
 # assignment is persisted in app_config and is recomputed ONLY when an
@@ -19960,6 +19996,8 @@ def replenishment_distributions(request: Request, limit: int = Query(default=20)
     distributed item lives in its batch until it is picked, not in the live
     list."""
     limit = max(1, min(int(limit or 20), 100))
+    user = getattr(request.state, "user", None)
+    is_manager = _can_manage_roster(user)
     _ensure_replen_distribution_tables()
     _warehouse_bins_refresh()
     batches = _users_exec(
@@ -20024,6 +20062,15 @@ def replenishment_distributions(request: Request, limit: int = Query(default=20)
         for ln in lines_by_batch.get(b["id"], []):
             a = _done_for(ln, created_at)
             units = int(ln["suggested_units"] or 0)
+            # open_keys tracks EVERY outstanding distributed item (owner-agnostic)
+            # so the live list can drop it — compute it before the per-picker
+            # owner filter below.
+            if a is None and ln.get("sku"):
+                open_keys.add(ln["pos_location"] + "|" + ln["sku"])
+            # Pickers see ONLY their own lines; managers (admin + the two named
+            # operators) see every owner's lines.
+            if not is_manager and not _replen_owner_matches_user(ln.get("owner"), user):
+                continue
             owner = ln.get("owner") or "Unassigned"
             ob = by_owner.setdefault(owner, {
                 "owner": owner, "total": 0, "done": 0, "outstanding": 0,
@@ -20040,8 +20087,6 @@ def replenishment_distributions(request: Request, limit: int = Query(default=20)
                 out_count += 1
                 out_units += units
                 ob["outstanding"] += 1
-                if ln.get("sku"):
-                    open_keys.add(ln["pos_location"] + "|" + ln["sku"])
             blines.append({
                 "pos_location": ln["pos_location"],
                 "sku": ln.get("sku"),
@@ -20059,6 +20104,9 @@ def replenishment_distributions(request: Request, limit: int = Query(default=20)
                 "done_at": a["acted_at"].isoformat() if a and a.get("acted_at") else None,
                 "done_day_eat": a["acted_day_eat"].isoformat() if a and a.get("acted_day_eat") else None,
             })
+        # A picker with no lines in this batch shouldn't see the batch at all.
+        if not is_manager and not blines:
+            continue
         out_batches.append({
             "id": b["id"],
             "created_at": created_at.isoformat() if created_at else None,
