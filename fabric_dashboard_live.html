@@ -700,8 +700,8 @@ const FX={
   consumedToday:'Consumed today = fabric used today (OUT moves) − fabric returned from production. Shown in the selected unit (metres or kg).',
   consumed30d:'Consumed (30 days) = OUT moves − production returns over the last 30 days. Shown in the selected unit (metres or kg).',
   metresPerGarment:'Avg metres / garment = total main-fabric metres consumed ÷ total garments produced, across Done DPS manufacturing orders completed in the last 30 days. Fabric kg is converted to metres via each fabric\u2019s kg-per-metre; a fabric that has no kg-per-metre (no Width and/or GSM to derive it) is converted using the overall fabric-average as a fallback, so its order is still counted. An MO is counted as long as it produced at least one garment.',
-  monthsCover:'Months of cover = stock on hand (kg) ÷ average monthly consumption (kg), using a 6-month average run-rate with the current month projected to a full month. Consumption is net of production returns (fabric only).',
-  basicMonthsCover:'Basic Fabrics — months of cover = combined cover across only the curated set of core staple fabrics the buying team always keeps in stock (a fixed vendor + fabric-code list). Same formula as Months of cover — RMAT/Stock on-hand kg ÷ 6-month average monthly net consumption (current month projected to a full month, net of production returns) — but restricted to the curated fabrics. The sub-line shows how many of the curated fabrics were found in the data.',
+  monthsCover:'Months of cover = stock on hand (kg) ÷ average monthly consumption (kg), using the average net run-rate over the last 6 fully completed months (the in-progress month is excluded). Consumption is net of production returns (fabric only).',
+  basicMonthsCover:'Basic Fabrics — months of cover = combined cover across only the curated set of core staple fabrics the buying team always keeps in stock (a fixed vendor + fabric-code list). Same formula as Months of cover — RMAT/Stock on-hand kg ÷ average net monthly consumption over the last 6 fully completed months (net of production returns) — but restricted to the curated fabrics. The sub-line shows how many of the curated fabrics were found in the data.',
   deadStock:'Dead stock = value of fabric parked in the Dead/Stock location (KES).',
   deadPct:'% of value = dead-stock value ÷ total fabric value.',
   outstandingPOs:'Outstanding POs = purchase orders not yet fully received (excludes cancelled).',
@@ -1121,7 +1121,7 @@ const MIX_FX={
   pctC:'% Consumption = this category\u2019s consumption ÷ total consumption across all categories.',
   pctA:'% Available = this category\u2019s available stock ÷ total available stock across all categories.',
   gap:'Gap (pp) = % Available − % Consumption (percentage points). Positive = overstock (held more than used); negative = short (used faster than its stock share).',
-  covers:'Weeks of cover = Available ÷ weekly run-rate. The run-rate is the smoothed 6-month average monthly consumption (net of production returns, current month projected to month-end) converted to weeks — independent of the selected window so it reflects sustained usage. Monthly covers = Available ÷ monthly run-rate. "—" = no sustained usage, or the kg→metre conversion is missing. Below 1 week = under a week of cover left. Capped at 104 weeks (~2 years): anything beyond that is stock ÷ a negligible run-rate (noise, not signal) and shows as "104+" — these are effectively idle categories.',
+  covers:'Weeks of cover = Available ÷ weekly run-rate. The run-rate is the smoothed average monthly consumption over the last 6 fully completed months (net of production returns) converted to weeks — independent of the selected window so it reflects sustained usage. Monthly covers = Available ÷ monthly run-rate. "—" = no sustained usage, or the kg→metre conversion is missing. Below 1 week = under a week of cover left. Capped at 104 weeks (~2 years): anything beyond that is stock ÷ a negligible run-rate (noise, not signal) and shows as "104+" — these are effectively idle categories.',
   tied:'Tied-up KES = capital locked in this category\u2019s available stock (stock value).',
   verdict:'Verdict = Shortage (short: shortfall < 0, cover < ~4 weeks, or Gap ≤ −3pp), Overstock (Gap ≥ +3pp or > ~52 weeks cover), Idle (stock but ~no usage in the window), else Hold (balanced).',
   totAvailable:'Total Available = sum of every category\u2019s available stock, in the active unit.',
@@ -2140,25 +2140,10 @@ function renderKpis(d,mpg){
   const deadPct=grandVal>0?(d.dead_stock_value/grandVal*100):0;
   const _scope=loc();
   const valSub=_scope==='RMAT/Stock'?'RMAT/Stock only':(_scope==='Dead/Stock Fabric'?'dead stock only':'RMAT + dead stock');
-  // Months of cover = stock ÷ 6-month avg monthly run-rate, with the in-progress
-  // month projected to a full month (backend-computed). Trend vs the prior period.
+  // Months of cover = stock ÷ average net monthly run-rate over the last 6 fully
+  // completed months (backend-computed, no current-month projection).
   const cover=(d.months_of_cover!=null)?d.months_of_cover:null;
-  const coverPrior=(d.months_of_cover_prior!=null)?d.months_of_cover_prior:null;
   const coverFmt=n=>Number(n).toLocaleString(undefined,{minimumFractionDigits:1,maximumFractionDigits:1});
-  let coverTrend='';
-  if(cover!=null&&coverPrior!=null){
-    const delta=cover-coverPrior;
-    if(Math.abs(delta)>=0.05){
-      const up=delta>0;
-      // More cover = improving (green); less cover = worsening (amber).
-      const cls=up?'trend-up':'trend-down';
-      const arrow=up?'&#9650;':'&#9660;';
-      coverTrend=`<span class="trend ${cls}" title="${esc((up?'+':'')+fmt1(delta))} mo vs prior 6-mo period">${arrow} ${esc(fmt1(Math.abs(delta)))}</span>`;
-    }else{
-      coverTrend=`<span class="trend trend-flat" title="No material change vs prior 6-mo period">&#9644; flat</span>`;
-    }
-  }
-  const projMo=esc(d.projected_month_label||'');
   // Graceful degradation: when there is stock but no trailing-window consumption
   // (a genuinely slow staple, or a transient mid-rebuild), the divide is undefined.
   // Rather than collapse the card to a bare "—", show a capped "12+ / overstocked"
@@ -2169,12 +2154,12 @@ function renderKpis(d,mpg){
       ?`overstocked &middot; no recent use${coverStockKg!=null?` &middot; ${fmt(coverStockKg)} kg on hand`:''}`
       :(coverStatus==='no_data')
         ?'no stock or recent usage'
-        :(cover!=null)?`stock &divide; monthly use &middot; incl. projected ${projMo}`:'stock &divide; monthly use';
+        :(cover!=null)?'stock &divide; monthly use &middot; last 6 completed months':'stock &divide; monthly use';
   const coverTip=(coverStatus==='overstocked')
-      ?esc(`Stock is on hand but there was no consumption in the trailing 6-month window, so months-of-cover cannot be divided. Cover is effectively very high (shown as 12+). This is a genuinely slow-moving staple or a transient state while fabric data is rebuilding — not a broken metric.`)
+      ?esc(`Stock is on hand but there was no consumption over the last 6 completed months, so months-of-cover cannot be divided. Cover is effectively very high (shown as 12+). This is a genuinely slow-moving staple or a transient state while fabric data is rebuilding — not a broken metric.`)
       :(coverStatus==='no_data')
         ?esc('No fabric stock and no recent consumption, so there is nothing to compute.')
-        :(cover!=null)?esc(`Months of cover = current stock ÷ monthly run-rate. Monthly run-rate = 6-month AVERAGE consumption (not last-30-days), with ${d.projected_month_label} projected to a full month (${fmt(d.projected_month_mtd_kg)} kg so far → ${fmt(d.projected_month_kg)} kg est.). It therefore differs from stock ÷ the 'Consumed 30d' figure, which is a single recent month.`):'';
+        :(cover!=null)?esc(`Months of cover = current stock ÷ monthly run-rate. Monthly run-rate = the AVERAGE net consumption over the last 6 fully completed months (not last-30-days, and the in-progress month is excluded). It therefore differs from stock ÷ the 'Consumed 30d' figure, which is a single recent month.`):'';
   const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
   // Avg cost per metre (per-metre regardless of the kg/metre unit toggle). The
   // figure is computed over the fabrics that HAVE a kg→metre conversion (Width+GSM
@@ -2206,7 +2191,7 @@ function renderKpis(d,mpg){
      // (stock but no recent use), "—" only when there is genuinely no data.
      let cval,ccls='';
      if(coverStatus==='overstocked'){cval='12+';}
-     else if(coverStatus==='ok'&&cover!=null){cval=`${coverFmt(cover)} ${coverTrend}`;ccls=cover<1?'amber':'';}
+     else if(coverStatus==='ok'&&cover!=null){cval=coverFmt(cover);ccls=cover<1?'amber':'';}
      else{cval='&mdash;';}
      return `<div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${ccls}"${fx(FX.monthsCover)}>${cval}</p><p class="kpi-sub">${coverNote}</p></div>`;})()}
    ${(()=>{const bc=(d.basic_months_of_cover!=null)?d.basic_months_of_cover:null;
@@ -2219,7 +2204,7 @@ function renderKpis(d,mpg){
      const bsub=(bm!=null&&bt!=null)?`${fmt(bm)} of ${fmt(bt)} curated fabrics matched`:'curated staple fabrics';
      let bval,bcls='',btip='';
      if(bst==='overstocked'){bval='12+';btip=esc(`Curated staple fabrics have stock on hand${bskg!=null?` (${fmt(bskg)} kg)`:''} but no consumption in the trailing 6-month window, so cover cannot be divided. Shown as 12+ (overstocked / no recent use), not a dash.`);}
-     else if(bst==='ok'&&bc!=null){bval=coverFmt(bc);bcls=bc<1?'amber':'';btip=esc('Combined months of cover across the curated staple-fabric set: live RMAT/Stock kg ÷ the 6-month projected net run-rate.');}
+     else if(bst==='ok'&&bc!=null){bval=coverFmt(bc);bcls=bc<1?'amber':'';btip=esc('Combined months of cover across the curated staple-fabric set: live RMAT/Stock kg ÷ the average net run-rate over the last 6 fully completed months.');}
      else if(bst==='no_match'){bval='&mdash;';btip=esc('No curated staple fabric currently matches a product (this can happen transiently while fabric data is rebuilding). The matched count below shows the gap.');}
      else{bval='&mdash;';btip=esc('No curated staple-fabric stock and no recent consumption, so there is nothing to compute.');}
      const bsubLine=(bst==='overstocked')?`${bsub} &middot; no recent use`:bsub;

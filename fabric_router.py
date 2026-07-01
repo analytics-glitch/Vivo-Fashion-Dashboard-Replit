@@ -272,19 +272,15 @@ def _derive_fabric_colors(name, fabric_color):
     return fc, _FABRIC_COLOR_DIRECTORY.get(fc)
 
 def _months_of_cover(conn, fabric_stock_kg, scope="main", product_ids=None):
-    """Months-of-cover from a 6-month average monthly run-rate with the in-progress
-    month projected to its end-of-month figure, plus a prior-period value for a
-    trend indicator.
+    """Months-of-cover from a trailing 6-fully-completed-months average monthly
+    run-rate (no current-month projection).
 
-    The current 6-month window is the 6 calendar months ending this month: the 5
-    completed months are taken as-is, and the current (incomplete) month is
-    projected = month-to-date + (days remaining × trailing daily rate), where the
-    trailing daily rate = total net consumption over the whole window ÷ elapsed
-    days in the window. The prior value uses the same current stock against the
-    average of the prior 6 completed months (window shifted back one month) so the
-    trend isolates the change in run-rate. Both windows divide by 6 and self-heal
-    as months roll forward. Consumption stays net-of-production-returns + fabric-only
-    via the shared net-consumption model.
+    The window is the 6 most-recent COMPLETED calendar months (M-6 .. M-1); the
+    current, in-progress month is excluded entirely. The denominator is total net
+    consumption over those 6 months ÷ 6, so it rolls automatically and self-heals
+    as months advance (e.g. in August the window becomes Feb–Jul). Consumption
+    stays net-of-production-returns + fabric-only via the shared net-consumption
+    model.
     """
     fabric_stock_kg = float(fabric_stock_kg or 0)
     # When a curated product-id set is supplied (e.g. the Basic Fabrics KPI) the
@@ -307,45 +303,30 @@ def _months_of_cover(conn, fabric_stock_kg, scope="main", product_ids=None):
         WHERE {_net_cons_where('m')}
           AND {cons_scope}
           AND m.date::date >= (date_trunc('month', CURRENT_DATE) - INTERVAL '6 months')::date
+          AND m.date::date <  date_trunc('month', CURRENT_DATE)::date
         GROUP BY 1
     """)
     mon_kg = {r['mon']: float(r['kg'] or 0) for r in months}
-    cal = q(conn, """
-        SELECT CURRENT_DATE AS today,
-               EXTRACT(DAY FROM CURRENT_DATE)::int AS dom,
-               EXTRACT(DAY FROM (date_trunc('month',CURRENT_DATE)+INTERVAL '1 month - 1 day'))::int AS dim,
-               (CURRENT_DATE - (date_trunc('month',CURRENT_DATE) - INTERVAL '5 months')::date + 1)::int AS win_days
-    """)[0]
-    today, dom, dim, win_days = cal['today'], cal['dom'], cal['dim'], cal['win_days']
+    today = q(conn, "SELECT CURRENT_DATE AS today")[0]['today']
 
     def _key(delta):
         idx = today.year * 12 + (today.month - 1) + delta
         return f"{idx // 12:04d}-{idx % 12 + 1:02d}"
 
-    cur_key = _key(0)
-    complete = [_key(d) for d in range(-5, 0)]   # M-5 .. M-1 (completed months in window)
-    prior = [_key(d) for d in range(-6, 0)]      # M-6 .. M-1 (prior 6-month window)
+    complete = [_key(d) for d in range(-6, 0)]   # M-6 .. M-1 (last 6 completed months)
 
-    mtd = mon_kg.get(cur_key, 0.0)
     sum_complete = sum(mon_kg.get(k, 0.0) for k in complete)
-    sum_window = sum_complete + mtd              # total actual net consumption over last 6 months
-    trailing_daily = (sum_window / win_days) if win_days else 0.0
-    remaining = max(dim - dom, 0)
-    projected_month = mtd + remaining * trailing_daily
-    avg_monthly = (sum_complete + projected_month) / 6.0
+    avg_monthly = sum_complete / 6.0
     cover_now = (fabric_stock_kg / avg_monthly) if avg_monthly > 0 else None
-
-    sum_prior = sum(mon_kg.get(k, 0.0) for k in prior)
-    avg_prior = sum_prior / 6.0
-    cover_prior = (fabric_stock_kg / avg_prior) if avg_prior > 0 else None
 
     # Status lets the frontend degrade gracefully instead of collapsing a card
     # with real stock to a bare "—". Three cases:
     #   "ok"          – run-rate present, months_of_cover is a real number.
-    #   "overstocked" – stock on hand but ZERO trailing-window consumption, so
-    #                   the divide is undefined yet cover is effectively "very
-    #                   high" (a genuinely slow staple, or mid-rebuild). Render a
-    #                   capped "12+"/"no recent use" marker, not a dash.
+    #   "overstocked" – stock on hand but ZERO consumption over the trailing 6
+    #                   completed months, so the divide is undefined yet cover is
+    #                   effectively "very high" (a genuinely slow staple, or
+    #                   mid-rebuild). Render a capped "12+"/"no recent use"
+    #                   marker, not a dash.
     #   "no_data"     – neither stock nor consumption (truly nothing to show).
     if avg_monthly > 0:
         cover_status = "ok"
@@ -354,16 +335,11 @@ def _months_of_cover(conn, fabric_stock_kg, scope="main", product_ids=None):
     else:
         cover_status = "no_data"
 
-    import calendar as _calmod
     return {
         "months_of_cover": round(cover_now, 2) if cover_now is not None else None,
         "months_of_cover_status": cover_status,
         "months_of_cover_stock_kg": round(fabric_stock_kg, 1),
-        "months_of_cover_prior": round(cover_prior, 2) if cover_prior is not None else None,
         "avg_monthly_consumption_kg": round(avg_monthly, 1),
-        "projected_month_kg": round(projected_month, 1),
-        "projected_month_mtd_kg": round(mtd, 1),
-        "projected_month_label": _calmod.month_abbr[today.month],
         "cover_window_months": 6,
     }
 
@@ -684,7 +660,8 @@ def summary(location: str = Query(default="RMAT/Stock"),
         # Basic Fabrics — Months of Cover. One combined cover figure across the
         # curated staple-fabric set ONLY (supplier+code pairs in BASIC_FABRICS),
         # computed with the SAME method as the headline cover: live RMAT/Stock kg
-        # base ÷ 6-month projected net run-rate, restricted to the curated product
+        # base ÷ the average net run-rate over the last 6 fully completed months,
+        # restricted to the curated product
         # ids. Bypasses the support/main scope (the curated set is its own
         # universe). Never errors — an unmatched pairing just contributes nothing;
         # the matched/total counts are surfaced so a gap is noticeable.
@@ -1201,8 +1178,7 @@ def basic_fabrics_cover_xlsx():
             status = cov["months_of_cover_status"]
         else:
             cov = {"months_of_cover": None, "months_of_cover_status": "no_match",
-                   "avg_monthly_consumption_kg": 0.0, "projected_month_kg": 0.0,
-                   "projected_month_mtd_kg": 0.0, "projected_month_label": ""}
+                   "avg_monthly_consumption_kg": 0.0}
             status = "no_match"
 
         # 6-month net consumption by month for the curated set (same window/model
@@ -1218,6 +1194,7 @@ def basic_fabrics_cover_xlsx():
                   AND m.product_id IN ({ids_csv})
                   AND m.date::date >= (date_trunc('month', CURRENT_DATE)
                                        - INTERVAL '6 months')::date
+                  AND m.date::date <  date_trunc('month', CURRENT_DATE)::date
                 GROUP BY 1 ORDER BY 1
             """)
         else:
@@ -1258,14 +1235,10 @@ def basic_fabrics_cover_xlsx():
         ("Curated fabrics matched", "%d of %d" % (matched, total)),
         ("RMAT/Stock on hand (kg)", basic_stock_kg),
         ("Avg monthly net consumption (kg)", cov.get("avg_monthly_consumption_kg")),
-        ("Projected current month (kg)%s" % (
-            " — %s" % cov["projected_month_label"]
-            if cov.get("projected_month_label") else ""),
-         cov.get("projected_month_kg")),
-        ("Month-to-date consumption (kg)", cov.get("projected_month_mtd_kg")),
         ("Cover window (months)", 6),
-        ("Basis", "RMAT/Stock on-hand kg ÷ 6-month projected net monthly "
-                  "consumption, restricted to the curated staple fabrics"),
+        ("Basis", "RMAT/Stock on-hand kg ÷ average net monthly consumption over "
+                  "the last 6 fully completed months, restricted to the curated "
+                  "staple fabrics"),
         ("Reconciliation", "Stock on hand ÷ Avg monthly net consumption "
                            "= Months of cover"),
     ]
@@ -1325,10 +1298,8 @@ def basic_fabrics_cover_xlsx():
     for r in month_rows:
         ws4.append([r["mon"], round(float(r["kg"] or 0), 1)])
     ws4.append([])
-    ws4.append(["Projected current month (kg)", cov.get("projected_month_kg")])
     ws4.append(["Avg monthly net consumption (kg)",
                 cov.get("avg_monthly_consumption_kg")])
-    ws4.cell(row=ws4.max_row - 1, column=1).font = LBL
     ws4.cell(row=ws4.max_row, column=1).font = LBL
     for col, w in zip("AB", [34, 22]):
         ws4.column_dimensions[col].width = w
@@ -1977,10 +1948,11 @@ def fabric_mix(
         # Smoothed 6-month run-rate per group (for Weeks/Months of Cover). This is
         # deliberately INDEPENDENT of the selected consumption window so cover
         # reflects sustained usage rather than a short window where a single
-        # return can zero out (or invert) net consumption. The projection mirrors
-        # _months_of_cover (warehouse-wide) exactly, and because every step is a
-        # linear combination of the group's monthly net kg, the category run-rates
-        # sum back to the warehouse-wide run-rate (so covers reconcile).
+        # return can zero out (or invert) net consumption. The run-rate mirrors
+        # _months_of_cover (warehouse-wide) exactly — the trailing 6 fully
+        # completed months, no current-month projection — and because every step
+        # is a linear combination of the group's monthly net kg, the category
+        # run-rates sum back to the warehouse-wide run-rate (so covers reconcile).
         rr_rows = q(conn, f"""
             SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
                    COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') as subcategory,
@@ -1993,33 +1965,24 @@ def fabric_mix(
             WHERE {_net_cons_where('m')}
               AND {_scope_sql(scope)}
               AND m.date::date >= (date_trunc('month', CURRENT_DATE) - INTERVAL '6 months')::date
+              AND m.date::date <  date_trunc('month', CURRENT_DATE)::date
             GROUP BY 1, 2, 3, 4
         """)
         rr_cal = q(conn, """
-            SELECT EXTRACT(DAY FROM CURRENT_DATE)::int AS dom,
-                   EXTRACT(DAY FROM (date_trunc('month',CURRENT_DATE)+INTERVAL '1 month - 1 day'))::int AS dim,
-                   (CURRENT_DATE - (date_trunc('month',CURRENT_DATE) - INTERVAL '5 months')::date + 1)::int AS win_days,
-                   EXTRACT(YEAR FROM CURRENT_DATE)::int AS yr,
+            SELECT EXTRACT(YEAR FROM CURRENT_DATE)::int AS yr,
                    EXTRACT(MONTH FROM CURRENT_DATE)::int AS mo
         """)[0]
-        rr_dom, rr_dim, rr_win_days = rr_cal['dom'], rr_cal['dim'], rr_cal['win_days']
-        rr_remaining = max(rr_dim - rr_dom, 0)
 
         def _rr_key(delta):
             idx = rr_cal['yr'] * 12 + (rr_cal['mo'] - 1) + delta
             return f"{idx // 12:04d}-{idx % 12 + 1:02d}"
-        rr_cur = _rr_key(0)
-        rr_complete = [_rr_key(d) for d in range(-5, 0)]  # M-5 .. M-1
+        rr_complete = [_rr_key(d) for d in range(-6, 0)]  # M-6 .. M-1 (completed)
 
         def _runrate(mon_map):
-            """Projected 6-month average monthly run-rate from a {YYYY-MM: value}
-            map, matching _months_of_cover. Returns the average monthly figure."""
-            mtd = mon_map.get(rr_cur, 0.0)
-            sum_complete = sum(mon_map.get(k, 0.0) for k in rr_complete)
-            sum_window = sum_complete + mtd
-            trailing_daily = (sum_window / rr_win_days) if rr_win_days else 0.0
-            projected_month = mtd + rr_remaining * trailing_daily
-            return (sum_complete + projected_month) / 6.0
+            """Trailing 6-fully-completed-months average monthly run-rate from a
+            {YYYY-MM: value} map, matching _months_of_cover. No current-month
+            projection."""
+            return sum(mon_map.get(k, 0.0) for k in rr_complete) / 6.0
 
         def _node(name):
             return {"group": name, "consumption_kg": 0.0, "consumption_metres": 0.0,
