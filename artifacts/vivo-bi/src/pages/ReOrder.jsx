@@ -137,10 +137,11 @@ const ReOrder = () => {
     <div className="space-y-6" data-testid="reorder-page">
       <div>
         <p className="text-muted text-[13px] mt-1">
-          Buy recommendations ranked by <span className="font-semibold text-foreground">opportunity value</span>{" "}
-          (expected margin × demand over the cover horizon) — not by Sell-Out Rate. Each
-          line nets store, warehouse and in-production units against forecast demand to
-          a service-level target, so the biggest unmet money decisions surface first.
+          <span className="font-semibold text-foreground">New styles (launched in the last 90 days)
+          with Sell-Out Rate ≥ 50%</span> — strong launch performance, likely to stock-out without
+          replenishment. Each line nets store, warehouse and in-production units against forecast
+          demand to a service-level target, ranked by opportunity value so the biggest unmet
+          money decisions surface first.
         </p>
       </div>
 

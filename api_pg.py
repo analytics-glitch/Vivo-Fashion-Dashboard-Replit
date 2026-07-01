@@ -8557,6 +8557,13 @@ def analytics_buy_candidates(
             "cost": int(round(cost_eff)),
         })
 
+    # Re-Order population rule: NEW styles only (launched in the last 90 days)
+    # with a strong launch Sell-Out Rate (>= 50%) — "strong launch performance,
+    # likely to stock-out without replenishment". Established/core styles are
+    # handled by the replenishment flow, not this buy list.
+    out = [x for x in out
+           if x.get("bucket") == "newness" and (x.get("sor_percent") or 0) >= 50.0]
+
     out.sort(key=lambda x: (0 if x["eligible"] else 1, -(x["opportunity_value"] or 0)))
     for i, x in enumerate(out):
         x["rank"] = i + 1
