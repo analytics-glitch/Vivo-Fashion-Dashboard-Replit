@@ -7075,6 +7075,8 @@ def analytics_product_analysis(
         g = styles.get(k)
         if not g:
             g = {"units": 0, "revenue": 0, "net_revenue": 0, "stock": 0, "units_vel": 0,
+                 "units_life": 0, "units_6m": 0, "sales_life": 0,
+                 "age_weeks": None, "full_price": None, "last_sale": None,
                  "brand": row["brand"], "category": row["category"], "subcategory": row["subcategory"]}
             styles[k] = g
         g["units"] += row["units_sold"]
@@ -7082,23 +7084,58 @@ def analytics_product_analysis(
         g["net_revenue"] += row["net_revenue"]
         g["stock"] += row["current_stock"]
         g["units_vel"] += row["units_vel"]
+        g["units_life"] += row["units_life"] or 0
+        g["units_6m"] += row["units_6m"] or 0
+        g["sales_life"] += row["sales_life"] or 0
+        # age_weeks / full_price are style-level constants (same across dim rows);
+        # last_sale we carry as the most-recent across dim rows. These feed the
+        # style-grain lifecycle gate below.
+        if row["age_weeks"] is not None:
+            g["age_weeks"] = row["age_weeks"] if g["age_weeks"] is None else max(g["age_weeks"], row["age_weeks"])
+        if row["full_price"] is not None:
+            g["full_price"] = row["full_price"] if g["full_price"] is None else max(g["full_price"], row["full_price"])
+        if row["last_sale"] is not None:
+            g["last_sale"] = row["last_sale"] if g["last_sale"] is None else max(g["last_sale"], row["last_sale"])
 
-    def _is_active(g):
-        return g["units_vel"] > 0
+    def _style_gated_retire(g):
+        # Recompute the GATED lifecycle tier at STYLE grain from the style's
+        # rolled-up measures (identical inputs to the row-level Life Cycle column
+        # for the non-exploded case; a true style-grain roll-up when dims are
+        # exploded). A style whose gated tier is "Retire" is treated as retired.
+        stock = g["stock"]
+        units_life = g["units_life"]
+        units_6m = g["units_6m"]
+        sales_life = g["sales_life"]
+        age_weeks = g["age_weeks"]
+        full_price = g["full_price"]
+        avg_price_life = round(sales_life / units_life) if units_life > 0 else None
+        full_price_pct = round(min(100.0, avg_price_life * 100.0 / full_price), 1) \
+            if (avg_price_life is not None and full_price not in (None, 0)) else None
+        reorder_count = int(age_weeks // 12) if age_weeks else 0
+        last_sale_days = None
+        if g["last_sale"]:
+            ls = _parse_iso_date(g["last_sale"])
+            last_sale_days = (today - ls).days if ls else None
+        return _life_cycle(
+            age_weeks, _sor(units_life, stock), full_price_pct, last_sale_days,
+            _woc(stock, g["units_vel"]), reorder_count,
+            recent_sor=_sor(units_6m, stock), recent_units=units_6m) == "Retire"
 
+    # Active vs Retired is now a LIFECYCLE status, decoupled from window sales:
+    #   Retired = manually retired OR gated to the "Retire" lifecycle tier.
+    #   Active  = everything else in the (inventory-only) universe.
+    # "Actively selling" (units_vel > 0) is a separate overlay tracked per style
+    # and NOT part of the Active/Retired partition, so Active + Retired == Total.
     keep = set()
     status_by_style = {}
+    selling_by_style = {}
     for k, g in styles.items():
-        manual_retired = _is_manually_retired(k)
-        # A manually-retired style is force-treated as retired: never "active",
-        # and it always satisfies the "retired" filter regardless of stock.
-        active = _is_active(g) and not manual_retired
-        status_by_style[k] = "Active" if active else "Retired"
-        if style_status == "active" and not active:
+        retired = _is_manually_retired(k) or _style_gated_retire(g)
+        status_by_style[k] = "Retired" if retired else "Active"
+        selling_by_style[k] = g["units_vel"] > 0
+        if style_status == "active" and retired:
             continue
-        # Universe is already inventory-only, so "retired" = every non-active style
-        # (incl. warehouse-only stock); this keeps Active + Retired == Total.
-        if style_status == "retired" and active:
+        if style_status == "retired" and not retired:
             continue
         keep.add(k)
 
@@ -7144,9 +7181,13 @@ def analytics_product_analysis(
     tot_vel = sum(g["units_vel"] for g in kept.values())
     summary = {
         "styles": len(kept),
-        # Use the same effective status as the row-level style_status (velocity AND
-        # not manually retired) so active_styles == Total - Retired reconciles.
+        # Lifecycle status counts over the kept set (Active + Retired == styles).
         "active_styles": sum(1 for k in kept if status_by_style.get(k) == "Active"),
+        "retired_styles": sum(1 for k in kept if status_by_style.get(k) == "Retired"),
+        # Overlay (NOT part of the Active/Retired partition): styles that sold at
+        # least one unit within the velocity window, scoped to the kept set — so
+        # with Retired selected this is "retired styles that still sold".
+        "actively_selling": sum(1 for k in kept if selling_by_style.get(k)),
         "units": tot_units,
         "revenue": tot_rev,
         "net_revenue": tot_net,

@@ -424,7 +424,7 @@ const ProductAnalysis = () => {
       },
       {
         key: "style_status", label: "Style Status",
-        headerTitle: "Active = sold within the velocity window and not retired; otherwise Retired",
+        headerTitle: "Lifecycle status: Retired = manually retired or gated to the 'Retire' tier; Active = otherwise (independent of window sales)",
         render: (r) => {
           const s = r.style_status || "—";
           if (s === "—") return "—";
@@ -927,9 +927,10 @@ const ProductAnalysis = () => {
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
               <KPICard
                 small showDelta={false} testId="pa-kpi-styles"
-                label="Styles" value={fmtNum(summary.styles)} icon={Tag}
-                sub={`${fmtNum(summary.active_styles)} actively selling`}
-                formula="Total styles counts only Vivo Fashion Group styles that currently hold stock (third-party consignment and zero-stock styles are excluded)."
+                label={status === "active" ? "Active Styles" : status === "retired" ? "Retired Styles" : "Styles"}
+                value={fmtNum(summary.styles)} icon={Tag}
+                sub={`${fmtNum(summary.actively_selling)} actively selling`}
+                formula="Styles counts only Vivo Fashion Group styles that currently hold stock (third-party consignment and zero-stock styles are excluded). Active vs Retired is a lifecycle status: a style is Retired when it is manually retired or gated to the underperforming/aged 'Retire' tier, and Active otherwise — independent of window sales. 'Actively selling' means the style sold at least one unit within the selected velocity window (an overlay across both Active and Retired)."
               />
               <KPICard
                 small showDelta={false} accent testId="pa-kpi-revenue"

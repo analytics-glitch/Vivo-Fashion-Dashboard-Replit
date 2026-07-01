@@ -23,15 +23,22 @@ you can still sell/manage, not the full historical catalog.
 The user expects `Active = Total - Retired` and the tier classification to cover the
 active set. Things that previously broke this and must stay fixed:
 
-- Product-analysis "retired" status filter must drop only **active** styles
-  (`if style_status=='retired' and active: continue`). Do NOT re-add a
-  `g['stock'] <= 0` guard there — `g['stock']` is **store-only** (excludes
-  warehouse), so it silently dropped warehouse-only retired styles even though they
-  hold inventory, making the retired view undercount.
-- Product-analysis `summary.active_styles` must be derived from the SAME
-  `status_by_style` map used for row labels (velocity AND not manually-retired),
-  not raw `_is_active(g)` — otherwise the summary count (velocity-only) disagrees
-  with the row-level Active count.
+- Product-analysis Active/Retired is a **LIFECYCLE status decoupled from window
+  sales**: Retired = manually retired OR gated to the "Retire" lifecycle tier
+  (recomputed at STYLE grain via `_style_gated_retire`, same gate as the Life
+  Cycle column); Active = everything else in the inventory universe. It is NOT
+  `units_vel > 0` — that measure is now the separate "actively selling" overlay
+  (`summary.actively_selling`, scoped to the kept set) and is NOT part of the
+  Active/Retired partition. So a Retired style can still show window sales.
+- The "retired" status filter must drop only styles whose lifecycle status is
+  Active (`if style_status=='retired' and not retired: continue`). Do NOT re-add a
+  `g['stock'] <= 0` guard — `g['stock']` is store-only, so it drops warehouse-only
+  styles that still hold inventory.
+- `summary.active_styles` / `retired_styles` derive from the SAME
+  `status_by_style` map used for row labels, so summary counts == row-level counts.
+- PA's Retired (manual OR gated-Retire) intentionally DIFFERS from Range Mgmt's
+  Retired (hard/manual only). Do not force them to match — only the Total-styles
+  universe must reconcile between the two pages.
 - Range-mgmt: Tier1..4 counts + the "flagged for retirement" bucket == Active
   (an active style can carry `tier='Retire'` when flagged), so Tier-sum alone is
   intentionally < Active.
