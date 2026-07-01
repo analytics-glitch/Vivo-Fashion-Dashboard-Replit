@@ -227,9 +227,13 @@ class ProductCheckTests(unittest.TestCase):
     # A fully-consistent set of payloads: every breakdown sums to its KPI, the
     # tier counts + row list match the active total, the inventory parts sum to
     # the total, and PA styles == RM rows + retired_rows.
+    # ``product-analysis`` is fetched once per style_status filter. The 'all'
+    # universe (983) partitions into 581 active + 402 retired; the active/retired
+    # slices return exactly those counts with a zero on the other side.
     GREEN = {
-        "/analytics/product-analysis": {
-            "summary": {"styles": 983, "units": 66665, "stock_units": 46756},
+        ("/analytics/product-analysis", "all"): {
+            "summary": {"styles": 983, "active_styles": 581, "retired_styles": 402,
+                        "units": 66665, "stock_units": 46756},
             "by_subcategory": [
                 {"styles": 500, "units": 30000, "stock": 20000},
                 {"styles": 483, "units": 36665, "stock": 26756},
@@ -237,6 +241,16 @@ class ProductCheckTests(unittest.TestCase):
             "by_brand": [
                 {"styles": 983, "units": 66665, "stock": 46756},
             ],
+        },
+        ("/analytics/product-analysis", "active"): {
+            "summary": {"styles": 581, "active_styles": 581, "retired_styles": 0,
+                        "units": 55000, "stock_units": 30000},
+            "by_subcategory": [], "by_brand": [],
+        },
+        ("/analytics/product-analysis", "retired"): {
+            "summary": {"styles": 402, "active_styles": 0, "retired_styles": 402,
+                        "units": 11665, "stock_units": 16756},
+            "by_subcategory": [], "by_brand": [],
         },
         "/range-mgmt/classify": {
             "summary": {
@@ -252,11 +266,19 @@ class ProductCheckTests(unittest.TestCase):
         },
     }
 
+    def _resolve(self, payloads, path, params):
+        """Look up a payload by path, keyed by style_status for product-analysis."""
+        if path == "/analytics/product-analysis":
+            status = (params or {}).get("style_status", "all")
+            return payloads[(path, status)]
+        return payloads[path]
+
     def _run(self, payloads):
         out = []
         with mock.patch.object(
                 cross_surface, "_get",
-                side_effect=lambda s, path, params, timeout=None: payloads[path]):
+                side_effect=lambda s, path, params, timeout=None:
+                    self._resolve(payloads, path, params)):
             cross_surface._check_products(None, date(2026, 6, 27), out)
         return out
 
@@ -270,7 +292,7 @@ class ProductCheckTests(unittest.TestCase):
 
         def fake_get(s, path, params, timeout=None):
             captured[path] = timeout
-            return self.GREEN[path]
+            return self._resolve(self.GREEN, path, params)
 
         out = []
         with mock.patch.object(cross_surface, "_get", side_effect=fake_get):
@@ -278,16 +300,21 @@ class ProductCheckTests(unittest.TestCase):
         self.assertEqual(captured["/analytics/product-analysis"],
                          config.CROSS_SURFACE_PRODUCT_TIMEOUT_SEC)
 
-    def _broken(self, **patches):
+    def _broken(self, patches):
+        """Deep-copy GREEN, apply ``{key: mutate_fn}`` mutations, run the check.
+
+        ``key`` is a plain path string, or an ``(path, style_status)`` tuple for
+        the per-filter product-analysis payloads.
+        """
         import copy
         p = copy.deepcopy(self.GREEN)
-        for path, mutate in patches.items():
-            mutate(p[path])
+        for key, mutate in patches.items():
+            mutate(p[key])
         return self._run(p)
 
     def test_pa_subcategory_styles_mismatch_fires(self):
-        out = self._broken(**{
-            "/analytics/product-analysis":
+        out = self._broken({
+            ("/analytics/product-analysis", "all"):
                 lambda d: d["by_subcategory"].__setitem__(
                     0, {"styles": 400, "units": 30000, "stock": 20000}),
         })
@@ -296,8 +323,8 @@ class ProductCheckTests(unittest.TestCase):
         self.assertTrue(all(e["severity"] in ("red", "amber") for e in out))
 
     def test_pa_brand_units_mismatch_fires(self):
-        out = self._broken(**{
-            "/analytics/product-analysis":
+        out = self._broken({
+            ("/analytics/product-analysis", "all"):
                 lambda d: d["by_brand"].__setitem__(
                     0, {"styles": 983, "units": 60000, "stock": 46756}),
         })
@@ -305,7 +332,7 @@ class ProductCheckTests(unittest.TestCase):
                       {e["check_code"] for e in out})
 
     def test_rm_tier_counts_mismatch_fires(self):
-        out = self._broken(**{
+        out = self._broken({
             "/range-mgmt/classify":
                 lambda d: d["summary"]["tier_counts"].__setitem__("Tier 4", 50),
         })
@@ -313,7 +340,7 @@ class ProductCheckTests(unittest.TestCase):
                       {e["check_code"] for e in out})
 
     def test_rm_active_rows_mismatch_fires(self):
-        out = self._broken(**{
+        out = self._broken({
             "/range-mgmt/classify":
                 lambda d: d.__setitem__("rows", [0] * 500),
         })
@@ -323,7 +350,7 @@ class ProductCheckTests(unittest.TestCase):
     def test_cross_page_pa_vs_rm_total_mismatch_fires(self):
         # PA reports 983 styles but RM's universe (rows + retired) only sums to
         # 900 -> the two pages disagree on the styles-with-stock universe.
-        out = self._broken(**{
+        out = self._broken({
             "/range-mgmt/classify":
                 lambda d: d.__setitem__("retired_rows", [0] * 319),
         })
@@ -331,11 +358,60 @@ class ProductCheckTests(unittest.TestCase):
                       {e["check_code"] for e in out})
 
     def test_inventory_style_counts_parts_mismatch_fires(self):
-        out = self._broken(**{
+        out = self._broken({
             "/inventory-style-counts":
                 lambda d: d.__setitem__("retired_styles", 300),
         })
         self.assertIn("xsurf_isc_parts_sum",
+                      {e["check_code"] for e in out})
+
+    def test_pa_partition_all_mismatch_fires(self):
+        # task #420 invariant: under the 'all' filter, active + retired must
+        # equal styles. Drop styles out of the retired count (beyond the count
+        # floor) -> partition broken (581 + 395 != 983).
+        out = self._broken({
+            ("/analytics/product-analysis", "all"):
+                lambda d: d["summary"].__setitem__("retired_styles", 395),
+        })
+        self.assertIn("xsurf_pa_partition_all",
+                      {e["check_code"] for e in out})
+
+    def test_pa_partition_active_filter_mismatch_fires(self):
+        # Same invariant must hold under the 'active' status filter too.
+        out = self._broken({
+            ("/analytics/product-analysis", "active"):
+                lambda d: d["summary"].__setitem__("active_styles", 570),
+        })
+        self.assertIn("xsurf_pa_partition_active",
+                      {e["check_code"] for e in out})
+
+    def test_pa_partition_retired_filter_mismatch_fires(self):
+        # And under the 'retired' status filter (delta beyond the count floor).
+        out = self._broken({
+            ("/analytics/product-analysis", "retired"):
+                lambda d: d["summary"].__setitem__("retired_styles", 395),
+        })
+        self.assertIn("xsurf_pa_partition_retired",
+                      {e["check_code"] for e in out})
+
+    def test_pa_active_slice_does_not_partition_all_fires(self):
+        # The 'active' filter must return exactly the 'all' active_styles count.
+        out = self._broken({
+            ("/analytics/product-analysis", "active"):
+                lambda d: (d["summary"].__setitem__("styles", 570),
+                           d["summary"].__setitem__("active_styles", 570)),
+        })
+        self.assertIn("xsurf_pa_active_slice",
+                      {e["check_code"] for e in out})
+
+    def test_pa_retired_slice_does_not_partition_all_fires(self):
+        # The 'retired' filter must return exactly the 'all' retired_styles count.
+        out = self._broken({
+            ("/analytics/product-analysis", "retired"):
+                lambda d: (d["summary"].__setitem__("styles", 390),
+                           d["summary"].__setitem__("retired_styles", 390)),
+        })
+        self.assertIn("xsurf_pa_retired_slice",
                       {e["check_code"] for e in out})
 
 

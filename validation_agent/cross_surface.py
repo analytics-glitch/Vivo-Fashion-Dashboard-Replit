@@ -23,6 +23,11 @@ Reconciliation map (all under identical filters):
 * ``/api/inventory-summary``  ==  ``/api/analytics/inventory-summary`` and
   ``total_units``  ==  Σ ``by_location``  ==  Σ ``by_subcat`` (internal)
 * Product pages (style-count / breakdown totals that MUST tally):
+  - ``/api/analytics/product-analysis`` lifecycle partition (task #420): under
+    EVERY ``style_status`` filter (all/active/retired) ``active_styles +
+    retired_styles == styles``; and the filtered slices partition the ``all``
+    universe (``[active].styles == [all].active_styles``, ``[retired].styles ==
+    [all].retired_styles``)
   - ``/api/analytics/product-analysis`` summary ``styles``/``units``/``stock_units``
     ==  Σ ``by_subcategory``  ==  Σ ``by_brand``  (a page's chart must add up to
     the page's own KPI)
@@ -61,9 +66,15 @@ INTENTIONAL_SKIPS = [
     "(gross-discounts-returns != stored net_sales_kes). net_sales is reconciled "
     "directly vs analytics/total-sales-summary.",
     "product-analysis.active_styles vs range-mgmt.total_active_styles: skipped -- "
-    "DIFFERENT 'active' definitions (PA active = sold within the velocity window; "
-    "range-mgmt active = SOP-gated tier T1-T4), so they are not expected to match. "
-    "Only the TOTAL styles-with-stock universe is reconciled across the two pages.",
+    "DIFFERENT 'active' definitions (PA active = lifecycle status: not manually "
+    "retired and not gated to the 'Retire' tier; range-mgmt active = SOP-gated tier "
+    "T1-T4), so they are not expected to match. Only the TOTAL styles-with-stock "
+    "universe is reconciled across the two pages.",
+    "product-analysis.retired_styles vs range-mgmt retired_rows: skipped -- "
+    "DIFFERENT 'retired' definitions BY DESIGN (task #420). PA Retired = manually "
+    "retired OR gated to the 'Retire' lifecycle tier; range-mgmt Retired = "
+    "hard/manual retirement only. They are not expected to match -- only the TOTAL "
+    "styles-with-stock universe (active+retired) is reconciled across the two pages.",
     "inventory-style-counts.total_styles vs product-analysis/range-mgmt total: "
     "skipped -- inventory-style-counts counts the sold(182d) UNION in-stock "
     "universe (includes sold-but-no-stock styles), a wider set than the "
@@ -299,11 +310,50 @@ def _check_products(session, period, out):
     subcategory sales breakdowns) are deliberately NOT compared -- see
     ``INTENTIONAL_SKIPS`` -- exactly as net_sales is excluded above.
     """
-    pa = _get(session, "/analytics/product-analysis", {"style_status": "all"},
-              timeout=config.CROSS_SURFACE_PRODUCT_TIMEOUT_SEC)
+    # Fetch product-analysis under each lifecycle status filter. Task #420 made
+    # Active/Retired a lifecycle PARTITION (Retired = manually retired OR gated to
+    # the 'Retire' tier; Active = everything else in the stock-only universe), so
+    # active_styles + retired_styles == styles must hold under EVERY filter and the
+    # filtered universes must partition the 'all' universe exactly. See below.
+    pa_by_status = {}
+    for _status in ("all", "active", "retired"):
+        pa_by_status[_status] = _get(
+            session, "/analytics/product-analysis", {"style_status": _status},
+            timeout=config.CROSS_SURFACE_PRODUCT_TIMEOUT_SEC)
+
+    pa = pa_by_status["all"]
     pasum = pa.get("summary") or {}
     by_subcat = pa.get("by_subcategory")
     by_brand = pa.get("by_brand")
+
+    # Invariant (task #420): within EACH status filter the lifecycle counts
+    # partition the kept universe -> active_styles + retired_styles == styles.
+    for _status in ("all", "active", "retired"):
+        s = pa_by_status[_status].get("summary") or {}
+        exc = _cmp(
+            "products", "style_count",
+            f"product-analysis[{_status}].active_styles + retired_styles == styles",
+            f"xsurf_pa_partition_{_status}",
+            float(s.get("active_styles") or 0) + float(s.get("retired_styles") or 0),
+            s.get("styles"), False, period, {})
+        if exc:
+            out.append(exc)
+
+    # And the two filtered slices must partition the 'all' universe: the active
+    # filter must return exactly the 'all' active_styles (with zero retired), the
+    # retired filter exactly the 'all' retired_styles (with zero active).
+    _active_sum = pa_by_status["active"].get("summary") or {}
+    _retired_sum = pa_by_status["retired"].get("summary") or {}
+    partition_checks = [
+        ("product-analysis[active].styles == product-analysis[all].active_styles",
+         "xsurf_pa_active_slice", _active_sum.get("styles"), pasum.get("active_styles")),
+        ("product-analysis[retired].styles == product-analysis[all].retired_styles",
+         "xsurf_pa_retired_slice", _retired_sum.get("styles"), pasum.get("retired_styles")),
+    ]
+    for identity, code, a, b in partition_checks:
+        exc = _cmp("products", "style_count", identity, code, a, b, False, period, {})
+        if exc:
+            out.append(exc)
     checks = [
         # Product Analysis page: each breakdown chart must add up to the page KPI.
         ("style_count", "product-analysis.summary.styles == Σ by_subcategory.styles",

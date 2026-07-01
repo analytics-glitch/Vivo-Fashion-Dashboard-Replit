@@ -45,3 +45,12 @@ active set. Things that previously broke this and must stay fixed:
 
 **How to apply:** any new style-count surface on these two pages must filter to the
 inventory universe and reconcile Active+Retired to Total before shipping.
+
+The data-validation agent's Step-6 cross-surface (`validation_agent/cross_surface.py`
+`_check_products`) locks this in: it fetches product-analysis once per `style_status`
+filter (all/active/retired — 3 heavy scans, endpoint has a 10-min cache) and asserts
+`active_styles+retired_styles==styles` per filter, the filtered slices partition the
+`all` universe, and PA total == RM `rows+retired_rows`. PA-Retired vs RM-Retired is an
+explicit `INTENTIONAL_SKIPS` entry (different defs by design) — never reconcile them.
+**Why:** the lifecycle Active/Retired redefinition intentionally decoupled PA's
+Retired from RM's hard/manual-only Retired; only the total universe must agree.
