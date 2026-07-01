@@ -6335,7 +6335,9 @@ def analytics_sor_all_styles(
                 MAX(collection) AS collection,
                 MAX(product_type) AS subcategory,
                 MAX(style_number) AS style_number,
-                MAX(price::numeric) AS original_price
+                -- modal (most common) positive ticket price, robust to a
+                -- foreign-currency leak on a few country SKUs (see PA prod CTE)
+                mode() WITHIN GROUP (ORDER BY price::numeric) FILTER (WHERE price::numeric > 0) AS original_price
             FROM all_products_clean
             WHERE style_name IS NOT NULL AND style_name <> ''""" + brand_pf + """
             GROUP BY style_name
@@ -6941,7 +6943,13 @@ def analytics_product_analysis(
         " SELECT style_name,"
         " MAX(brand) AS brand, MAX(category) AS category, MAX(product_type) AS subcategory,"
         " MAX(collection) AS collection, MAX(season) AS season, MAX(style_number) AS style_number,"
-        " MAX(price) AS full_price, MIN(price) AS price_min, MAX(price) AS price_max,"
+        # full_price = the MODAL (most common) positive ticket price across the
+        # style's SKUs, NOT MAX(price). The product master occasionally carries a
+        # foreign-currency leak on a few country SKUs (the KES price duplicated in
+        # local currency, e.g. one SKU at 181,000), which MAX would surface as the
+        # "full price". The mode is immune to a handful of contaminated rows.
+        " mode() WITHIN GROUP (ORDER BY price) FILTER (WHERE price > 0) AS full_price,"
+        " MIN(price) FILTER (WHERE price > 0) AS price_min, MAX(price) AS price_max,"
         " MIN(substring(style_launch_date,1,10)) FILTER ("
         " WHERE substring(style_launch_date,1,10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') AS launch_date,"
         " COUNT(DISTINCT NULLIF(TRIM(size),'')) AS sizes_count,"
@@ -7057,6 +7065,12 @@ def analytics_product_analysis(
         reorder_count = int(age_weeks // 12) if age_weeks else 0
         price_min = round(float(r["price_min"])) if r["price_min"] is not None else None
         price_max = round(float(r["price_max"])) if r["price_max"] is not None else None
+        # The displayed "Price Range" top comes from MAX(price), which a
+        # foreign-currency-leaked SKU can inflate (e.g. 181,000). full_price
+        # already uses the modal price; clamp a grossly-outlying price_max to it
+        # so the range never surfaces a local-currency outlier either.
+        if full_price and price_max and price_max > full_price * 3:
+            price_max = full_price
         sor_6m = _sor(units_6m, stock)
         life_cycle = _life_cycle(_lifecycle_tier(
             r["style_name"], r["brand"], age_weeks, reorder_count, months_active_12))
@@ -15271,7 +15285,9 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                 MAX(brand) AS brand,
                 MAX(product_type) AS subcategory,
                 MAX(style_number) AS style_number,
-                MAX(price) AS price,
+                -- modal (most common) positive ticket price, robust to a
+                -- foreign-currency leak on a few country SKUs (see PA prod CTE)
+                mode() WITHIN GROUP (ORDER BY price) FILTER (WHERE price > 0) AS price,
                 MIN(substring(style_launch_date, 1, 10)) FILTER (
                     WHERE substring(style_launch_date, 1, 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
                 ) AS launch_date
