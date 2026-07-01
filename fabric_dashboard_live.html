@@ -153,6 +153,7 @@ tr.sub-row td{background:var(--bg);font-size:12.5px;}
 .loading{color:var(--muted);font-size:13px;padding:2rem;text-align:center;}
 .banner{padding:.85rem 1.1rem;border-radius:var(--radius);font-size:13px;margin-bottom:1.2rem;}
 .banner-err{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;}
+.banner-warn{background:#fef3c7;color:#92400e;border:1px solid #fcd34d;font-weight:600;}
 .flex{display:flex;gap:9px;flex-wrap:wrap;align-items:center;}
 @media(max-width:760px){.nav-head,.nav-body{padding-left:1rem;padding-right:1rem;}.nav-body{flex-wrap:nowrap;overflow-x:auto;}}
 
@@ -267,6 +268,9 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    </div>
   </div>
   <div class="content">
+
+   <!-- Odoo fabric-feed staleness banner (shown only when the feed is frozen) -->
+   <div id="fabric-stale-banner" style="display:none;"></div>
 
    <!-- DASHBOARD / FABRIC MIX -->
    <section id="page-dashboard" style="display:none;">
@@ -925,6 +929,41 @@ function errHtml(e){return e&&e.message==='auth'
 function showErr(id,e){const el=document.getElementById(id);if(el)el.innerHTML='<div class="banner banner-err">'+errHtml(e)+'</div>';}
 function rowErr(id,cols,e){const el=document.getElementById(id);if(el)el.innerHTML='<tr><td colspan="'+cols+'" style="padding:1rem;color:var(--danger);">'+errHtml(e)+'</td></tr>';}
 
+// ── Fabric-feed freshness ──
+// Shows the REAL last successful Odoo fabric pull age in the top bar (not the
+// browser's fetch clock) and raises a warning banner when the feed is frozen.
+// The freshness fields ride on /api/fabric/summary, so they are cached here and
+// re-applied by tabs (e.g. Fabric Mix) that don't fetch the summary themselves.
+let _fabFresh=null;
+function fmtAge(secs){
+  if(secs==null||!isFinite(secs))return null;
+  if(secs<60)return 'less than a minute ago';
+  const m=Math.round(secs/60);
+  if(m<60)return m+(m===1?' min ago':' min ago');
+  const h=secs/3600;
+  if(h<24){const hr=Math.round(h*10)/10;return hr+(hr===1?' hour ago':' hours ago');}
+  const days=Math.floor(h/24);
+  return days+(days===1?' day ago':' days ago');
+}
+function applyFabricFreshness(d){
+  if(d&&typeof d==='object'&&('fabric_last_loaded_secs' in d||'fabric_data_stale' in d))_fabFresh=d;
+  const f=_fabFresh;
+  const lu=document.getElementById('last-updated');
+  const bn=document.getElementById('fabric-stale-banner');
+  if(!f){ if(lu)lu.textContent='Updated '+new Date().toLocaleTimeString(); return; }
+  const age=fmtAge(f.fabric_last_loaded_secs);
+  if(lu)lu.textContent=age?('Fabric data updated '+age):'Fabric data: no successful pull yet';
+  if(bn){
+    if(f.fabric_data_stale){
+      bn.className='banner banner-warn';
+      bn.innerHTML='⚠ Odoo fabric sync is stale — last successful pull was '+esc(age||'unknown')+'. Categories may be out of date.';
+      bn.style.display='';
+    }else{
+      bn.style.display='none'; bn.innerHTML='';
+    }
+  }
+}
+
 // ── Bar renderer ──
 function bars(id,rows,labelKey,valKey,subFmt,colored,fxText){
   const el=document.getElementById(id); if(!el)return;
@@ -948,7 +987,7 @@ async function loadSupport(){
     ]);
     renderSupportKpis(d);
     renderSupportTable(cat);
-    document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString();
+    applyFabricFreshness(d);
   }catch(e){showErr('support-kpis',e);const b=document.getElementById('support-body');if(b)b.innerHTML='<tr><td colspan="9" class="muted">Failed to load.</td></tr>';}
 }
 function renderSupportKpis(d){
@@ -1592,7 +1631,7 @@ async function loadFabricMix(){
     else{params.set('days',document.getElementById('mix-period').value||90);}
     mixCache=await apiFetch('/api/fabric/mix?'+params);
     renderFabricMix();
-    document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString();
+    applyFabricFreshness();
   }catch(e){rowErr('mix-body',mixActiveCols.length,e);document.getElementById('mix-narrative').innerHTML='';}
 }
 // In-page preset → compute concrete from/to (window ends today), write them into
@@ -1960,7 +1999,7 @@ async function loadOverview(){
     ]);
     ovCache={d,cat,split,mpg};
     renderOverviewCached();
-    document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString();
+    applyFabricFreshness(d);
   }catch(e){showErr('kpi-cards',e);['category-bars','split-print','split-structure'].forEach(id=>{const el=document.getElementById(id);if(el&&el.querySelector('.loading'))el.innerHTML='';});}
 }
 function renderOverviewCached(){

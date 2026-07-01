@@ -647,6 +647,24 @@ def summary(location: str = Query(default="RMAT/Stock"),
         # BOM styles
         bom = q(conn, "SELECT COUNT(DISTINCT finished_product_name) as styles FROM raw_fabric_boms")[0]
 
+        # Fabric-feed freshness — the most recent SUCCESSFUL Odoo fabric pull, used
+        # by the page to show a real "last updated" age (not the browser clock) and
+        # to flag a frozen feed (e.g. Odoo "Access Denied"). `_loaded_at` is written
+        # by extract_fabric.py as a NAIVE UTC timestamp (datetime.utcnow()), so the
+        # age is measured against UTC `now()` to stay correct regardless of the DB
+        # session timezone. The extract normally runs many times a day, so >6h with
+        # no successful pull means the feed is genuinely frozen.
+        STALE_THRESHOLD_HOURS = 6
+        fresh = q(conn, """
+            SELECT MAX(_loaded_at) AS last_loaded,
+                   EXTRACT(EPOCH FROM (timezone('UTC', now()) - MAX(_loaded_at))) AS secs
+            FROM raw_fabric_products
+        """)[0]
+        fresh_secs = float(fresh['secs']) if fresh and fresh['secs'] is not None else None
+        fresh_hours = round(fresh_secs / 3600.0, 2) if fresh_secs is not None else None
+        # No successful pull at all (empty table / never loaded) is treated as stale.
+        fabric_stale = (fresh_hours is None) or (fresh_hours > STALE_THRESHOLD_HOURS)
+
         # Months of cover — 6-month average monthly run-rate with the in-progress
         # month projected to its end-of-month figure (fabric consumption is lumpy
         # — production-run driven — so a single 30-day denominator swings wildly).
@@ -719,6 +737,11 @@ def summary(location: str = Query(default="RMAT/Stock"),
             "basic_fabrics_matched": basic_matched,
             "basic_fabrics_total": basic_total,
             "basic_fabrics_stock_kg": round(float(basic_stock_kg or 0), 1),
+            # Fabric-feed freshness (display-only; same value regardless of scope).
+            "fabric_last_loaded_secs": round(fresh_secs) if fresh_secs is not None else None,
+            "fabric_last_loaded_hours": fresh_hours,
+            "fabric_data_stale": fabric_stale,
+            "fabric_stale_threshold_hours": STALE_THRESHOLD_HOURS,
             **cover,
         }
 
