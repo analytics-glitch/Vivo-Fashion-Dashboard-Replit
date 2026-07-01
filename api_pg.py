@@ -19952,16 +19952,13 @@ async def replenishment_distribute(request: Request):
 def replenishment_distributions(request: Request, limit: int = Query(default=20)):
     """List recent distribution batches with per-line Done/Outstanding status.
 
-    Roster-manager surface (same gate as distribute/delete) — batch contents
-    carry owner attribution and operational progress. Also returns `open_keys`
-    (the set of `pos|sku` still outstanding in ANY batch) so the live pick list
-    can drop them — a distributed item lives in its batch until it is picked,
-    not in the live list."""
-    from fastapi import HTTPException
-    if not _can_manage_roster(getattr(request.state, "user", None)):
-        raise HTTPException(
-            status_code=403,
-            detail="You don't have permission to view distribution batches.")
+    Viewable by ANY authenticated user: the frozen batch IS the pickers' work
+    order (each picker marks their own lines done), so pickers must see it — not
+    just roster managers. Creating a batch (POST distribute) and deleting one
+    stay manager-only. Also returns `open_keys` (the set of `pos|sku` still
+    outstanding in ANY batch) so the live pick list can drop them — a
+    distributed item lives in its batch until it is picked, not in the live
+    list."""
     limit = max(1, min(int(limit or 20), 100))
     _ensure_replen_distribution_tables()
     _warehouse_bins_refresh()

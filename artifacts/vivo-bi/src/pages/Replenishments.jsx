@@ -138,7 +138,12 @@ const Replenishments = () => {
     }
   }, [weeks]);
 
-  useEffect(() => { loadSor(); }, [loadSor]);
+  // The live SOR pick list is an admin/planning surface (and its compute is
+  // heavy) — pickers work from the frozen batches, so don't run it for them.
+  useEffect(() => {
+    if (!isAdmin) { setLoading(false); return; }
+    loadSor();
+  }, [loadSor, isAdmin]);
 
   // Reconciliation tile (also records the rolling projection-calibration sample).
   useEffect(() => {
@@ -166,7 +171,6 @@ const Replenishments = () => {
 
   // Distribution batches (frozen pick lists with per-line Done/Outstanding).
   const loadDistributions = useCallback(async () => {
-    if (!isAdmin) return;
     setDistLoading(true);
     try {
       const { data } = await api.get("/replenishment/distributions", { params: { limit: 20 }, forceFresh: true });
@@ -176,7 +180,7 @@ const Replenishments = () => {
     } finally {
       setDistLoading(false);
     }
-  }, [isAdmin]);
+  }, []);
   useEffect(() => { loadDistributions(); }, [loadDistributions]);
 
   // Predictive stockout alerts (styles dropping below 2 weeks of cover).
@@ -448,13 +452,14 @@ const Replenishments = () => {
       if (!actions.length) { toast.error("Line has no SKU or barcode."); return; }
       await api.post("/recommendations/bulk", { actions });
       toast.success("Marked done.");
-      await Promise.all([loadDistributions(), loadSor({ forceFresh: true })]);
+      // Pickers don't see the live list, so skip its heavy recompute for them.
+      await Promise.all([loadDistributions(), ...(isAdmin ? [loadSor({ forceFresh: true })] : [])]);
     } catch (e) {
       toast.error("Couldn't save — " + (e?.response?.data?.detail || e.message));
     } finally {
       setBatchSavingKey(null);
     }
-  }, [loadDistributions, loadSor]);
+  }, [loadDistributions, loadSor, isAdmin]);
 
   const deleteBatch = useCallback(async (id) => {
     if (!window.confirm("Remove this distribution batch? The done marks already recorded stay; only the batch record is cleared.")) return;
@@ -590,11 +595,15 @@ const Replenishments = () => {
         </div>
       )}
 
-      {/* SOR pick list card. */}
+      {/* Live SOR pick list — admin/planning only. This is the continuously
+          refilling planning list (capped at 400). Pickers do NOT work from this;
+          they work from the frozen "Distributed batches" below. */}
+      {isAdmin && (
       <div className="card-white p-5" data-testid="replen-live-card">
         <div className="flex flex-wrap items-center gap-3 mb-3">
           <h2 className="font-extrabold text-[14px] text-[#0f3d24] inline-flex items-center gap-2">
-            <Package size={16} weight="duotone" /> SOR pick list
+            <Package size={16} weight="duotone" /> Live SOR pick list
+            <span className="text-[10.5px] font-semibold text-amber-800 bg-amber-100 border border-amber-200 px-2 py-0.5 rounded-full">Planning · refills continuously</span>
           </h2>
           {sor && (
             <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-brand" data-testid="replen-as-of">
@@ -924,13 +933,17 @@ const Replenishments = () => {
           </div>
         )}
       </div>
+      )}
 
-      {/* Distributed batches — frozen dated pick lists with Done/Outstanding. */}
-      {isAdmin && (
+      {/* Distributed batches — the FROZEN pick list handed to pickers. Visible
+          to EVERYONE (pickers physically work from this and mark their own lines
+          done); creating a batch (Save & distribute) and deleting one stay admin. */}
         <div className="card-white p-4 sm:p-5" data-testid="replen-distributions">
           <SectionTitle
-            title={<span className="inline-flex items-center gap-2 text-[14px]"><Truck size={16} weight="duotone" className="text-brand-deep" /> Distributed batches</span>}
-            subtitle="Each “Save & distribute” freezes the live pick list into a dated batch handed to the pickers. Lines stay here until picked (Done vs Outstanding per line), while the live list above refills with newly-arising items."
+            title={<span className="inline-flex items-center gap-2 text-[14px]"><Truck size={16} weight="duotone" className="text-brand-deep" /> Distributed batches {!isAdmin && <span className="text-[11px] font-semibold text-emerald-800 bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-full">Your pick list</span>}</span>}
+            subtitle={isAdmin
+              ? "The FROZEN work order. Each “Save & distribute” snapshots the live pick list above into a dated batch handed to the pickers — it does NOT change as new sales arrive (unlike the live list). Lines stay here until picked (Done vs Outstanding per line)."
+              : "This is your work order — physically pull each item and mark the line done. It stays fixed and won’t reshuffle as new sales come in, so you can refresh anytime without losing your place."}
             action={
               <button type="button" onClick={loadDistributions} className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-brand-deep border border-border hover:bg-panel px-2.5 py-1.5 rounded-md" data-testid="replen-distributions-refresh">
                 <ArrowCounterClockwise size={12} weight="bold" /> Refresh
@@ -939,13 +952,14 @@ const Replenishments = () => {
           />
           {distLoading && <Loading label="Loading batches…" />}
           {!distLoading && (distributions.batches || []).length === 0 && (
-            <Empty label="No distribution batches yet. Use “Save & distribute” on the pick list above to create one." />
+            <Empty label={isAdmin
+              ? "No distribution batches yet. Use “Save & distribute” on the pick list above to create one."
+              : "No pick batches have been distributed yet. Your supervisor freezes the pick list into a batch — check back shortly."} />
           )}
           {!distLoading && (distributions.batches || []).map((b) => (
-            <BatchCard key={b.id} batch={b} onMarkDone={markBatchLineDone} onDelete={deleteBatch} savingKey={batchSavingKey} />
+            <BatchCard key={b.id} batch={b} canDelete={isAdmin} onMarkDone={markBatchLineDone} onDelete={deleteBatch} savingKey={batchSavingKey} />
           ))}
         </div>
-      )}
 
       {/* Picker scorecard by day — done (selected EAT day) vs outstanding (all open). */}
       {isAdmin && (
@@ -1141,7 +1155,7 @@ const Replenishments = () => {
 
 // A single distribution batch: collapsible header (counts + per-owner chips)
 // over a line table with Done/Outstanding status and a Mark-done action.
-const BatchCard = ({ batch, onMarkDone, onDelete, savingKey }) => {
+const BatchCard = ({ batch, onMarkDone, onDelete, savingKey, canDelete = true }) => {
   const [open, setOpen] = useState(false);
   // Per-line "actual units picked" the operator keys in before marking done
   // (defaults to the suggested qty). This is what the team physically pulled.
@@ -1160,9 +1174,11 @@ const BatchCard = ({ batch, onMarkDone, onDelete, savingKey }) => {
           <span className="inline-flex items-center gap-1 bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{fmtNum(batch.done_count)} done</span>
           <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{fmtNum(batch.outstanding_count)} outstanding</span>
           <span className="text-[11px] text-muted tabular-nums">{fmtNum(batch.line_count)} lines · {fmtNum(batch.total_units)} units · {pct}%</span>
-          <button type="button" onClick={() => onDelete(batch.id)} className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 border border-rose-200 hover:bg-rose-50 px-2 py-1 rounded-md" title="Remove this batch" data-testid={`replen-batch-delete-${batch.id}`}>
-            <Trash size={12} weight="bold" />
-          </button>
+          {canDelete && (
+            <button type="button" onClick={() => onDelete(batch.id)} className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 border border-rose-200 hover:bg-rose-50 px-2 py-1 rounded-md" title="Remove this batch" data-testid={`replen-batch-delete-${batch.id}`}>
+              <Trash size={12} weight="bold" />
+            </button>
+          )}
         </div>
       </div>
       {(batch.by_owner || []).length > 0 && (
