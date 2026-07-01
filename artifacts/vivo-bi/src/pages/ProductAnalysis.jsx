@@ -152,6 +152,18 @@ const StyleDrill = ({ styleName, params }) => {
               },
               { key: "units", label: "Sales (Units)", numeric: true, render: (r) => fmtNum(r.units) },
               { key: "stock", label: "Stock (Units)", numeric: true, render: (r) => fmtNum(r.stock) },
+              {
+                key: "sor", label: "SOR", numeric: true, pct: true,
+                headerTitle: "Sell-out rate = units sold ÷ (units sold + current stock) at this location",
+                render: (r) => {
+                  const denom = (r.units || 0) + (r.stock || 0);
+                  return fmtSor(denom > 0 ? (r.units * 100) / denom : null);
+                },
+                sortValue: (r) => {
+                  const denom = (r.units || 0) + (r.stock || 0);
+                  return denom > 0 ? (r.units * 100) / denom : -1;
+                },
+              },
             ]}
           />
         ) : <Empty label="No stock or sales anywhere." />}
@@ -1238,7 +1250,9 @@ const ProductAnalysis = () => {
                   </div>
                   <div className="flex flex-wrap gap-x-3 gap-y-0.5">
                     {drillStyle.style_number ? <span>Style&nbsp;#{drillStyle.style_number}</span> : null}
-                    {drillStyle.color ? <span>{drillStyle.color}</span> : null}
+                    {drillStyle.color ? (
+                      <span>Colours:&nbsp;<span className="text-foreground">{drillStyle.color}</span></span>
+                    ) : null}
                     {drillStyle.launch_date ? <span>Launched {fmtDate(drillStyle.launch_date)}</span> : null}
                     {(() => {
                       const d = daysSinceSale(drillStyle.last_sale);
@@ -1250,6 +1264,13 @@ const ProductAnalysis = () => {
             </div>
 
             {/* Key metrics */}
+            <div className="text-[10.5px] text-muted -mb-1">
+              Period metrics cover{" "}
+              <span className="text-foreground font-medium">
+                {fmtDate(drillParams.date_from)} – {fmtDate(drillParams.date_to)}
+              </span>
+              {" "}· "since launch" is lifetime
+            </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2" data-testid="pa-style-drill-stats">
               {[
                 { label: "SOR (period)", value: fmtSor(drillStyle.sor) },
