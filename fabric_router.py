@@ -130,75 +130,71 @@ def q(conn, sql, params=()):
         return [dict(r) for r in cur.fetchall()]
 
 # ── Consumption / returns model ─────────────────────────────
-# Fabric is "consumed" in two ways:
-#   1. an OUT move to production (garment manufacturing), and
-#   2. an INTERNAL move from RMAT/Stock into the sampling location Samp/Fabric
-#      (fabric pulled to make samples — real consumption, but Odoo records it as an
-#      INTERNAL transfer, so it is invisible unless explicitly counted).
+# Consumption is measured strictly at the raw-material EXIT point — the moment
+# fabric leaves the raw-material store RMAT/Stock:
+#   * consumption (adds) — an INTERNAL move RMAT/Stock → PROD/Stock (into production)
+#     or RMAT/Stock → Samp/Fabric (pulled to make samples). A plain OUT move (e.g. a
+#     downstream PROD/Stock → Virtual Locations/Production leg) does NOT count.
 # Some of it comes back as a return:
-#   * production returns — an INTERNAL move whose location_from is the production
-#     virtual location, back to a real stock location, and
-#   * sampling returns — an INTERNAL move OUT of Samp/Fabric back to a real
-#     (non-virtual) stock location (leftover sampling fabric put back on the shelf).
-# Net consumption = (OUT + RMAT→Samp) − (production returns + sampling returns).
-# All the location literals are single fixed values (no LIKE needed), which also
-# avoids the psycopg2 literal-% trap.
+#   * returns (nets off) — an INTERNAL move whose location_to is RMAT/Stock, coming
+#     from production (Virtual Locations/Production) OR any real (non-virtual) stock
+#     location. Inventory-adjustment write-ons
+#     (Virtual Locations/Inventory adjustment → RMAT/Stock) are stock-count
+#     corrections, not returned fabric, and are excluded.
+# Net consumption = (RMAT→PROD/Stock + RMAT→Samp) − (genuine returns into RMAT/Stock).
+# Location literals are single fixed values (returns use split_part, never LIKE '%'),
+# which also avoids the psycopg2 literal-% trap on the no-param queries.
 PROD_LOC = "Virtual Locations/Production"
-STOCK_LOC = "RMAT/Stock"          # the primary real fabric-stock location
-SAMP_LOC = "Samp/Fabric"          # the sampling location (samples made here)
+STOCK_LOC = "RMAT/Stock"          # the raw-material fabric store (consumption exits here)
+PROD_STOCK_LOC = "PROD/Stock"     # the production real-stock location (an RMAT exit target)
+SAMP_LOC = "Samp/Fabric"          # the sampling location (an RMAT exit target)
 
 def _kg(alias="m"):
     return f"(CASE WHEN {alias}.uom='g' THEN {alias}.qty/1000 ELSE {alias}.qty END)"
 
-def _prod_return_pred(alias="m"):
-    """A genuine production return: an INTERNAL move OUT of the production location
-    BACK to a real stock location. We exclude virtual destinations (anything under
-    'Virtual Locations/...', notably 'Virtual Locations/Inventory adjustment') —
-    those are stock write-offs/corrections, not fabric physically returned, and must
-    not net off consumption. `split_part(... , '/', 1)` avoids a LIKE '%' (which would
-    hit the psycopg2 literal-% trap on the no-param queries)."""
-    return (f"{alias}.move_type='INTERNAL' "
-            f"AND {alias}.location_from = '{PROD_LOC}' "
-            f"AND split_part({alias}.location_to, '/', 1) <> 'Virtual Locations'")
-
-def _samp_consume_pred(alias="m"):
-    """Sampling consumption: an INTERNAL move of fabric from RMAT/Stock INTO the
-    sampling location Samp/Fabric (fabric used to make samples). ONLY RMAT/Stock →
-    Samp/Fabric counts — fabric arriving in Samp/Fabric from any other location
-    (Dead/Stock, Defects/Stock, …) is a stock reshuffle, not fresh consumption."""
+def _consume_pred(alias="m"):
+    """Consumption is booked at the raw-material EXIT point: an INTERNAL move OUT of
+    RMAT/Stock into production real-stock (PROD/Stock) or the sampling location
+    (Samp/Fabric). Nothing else counts — a plain 'OUT' move (e.g.
+    PROD/Stock → Virtual Locations/Production) is a downstream leg, not the
+    raw-material exit, and is deliberately excluded. All location literals are single
+    fixed values (no LIKE), so the no-param q() queries dodge the literal-% trap."""
     return (f"{alias}.move_type='INTERNAL' "
             f"AND {alias}.location_from = '{STOCK_LOC}' "
-            f"AND {alias}.location_to = '{SAMP_LOC}'")
+            f"AND {alias}.location_to IN ('{PROD_STOCK_LOC}', '{SAMP_LOC}')")
 
-def _samp_return_pred(alias="m"):
-    """A sampling return: an INTERNAL move OUT of Samp/Fabric back to a real
-    (non-virtual) stock location — leftover sampling fabric returned to the shelf,
-    netted off exactly like a production return. Destinations under
-    'Virtual Locations/...' are excluded (write-offs/adjustments), the same carve-out
-    as `_prod_return_pred`."""
+def _rmat_return_pred(alias="m"):
+    """A genuine physical return INTO the raw-material store: an INTERNAL move whose
+    location_to = RMAT/Stock, coming from production ('Virtual Locations/Production')
+    OR from any real (non-virtual) stock location (PROD/Stock, FABPR/Stock,
+    Samp/Fabric, …). Inventory-adjustment write-ons
+    ('Virtual Locations/Inventory adjustment' → RMAT/Stock) are stock-count
+    corrections, NOT returned fabric, and are excluded — we keep the production
+    virtual location but drop every other 'Virtual Locations/...' source.
+    `split_part(..., '/', 1)` (not LIKE '%') dodges the psycopg2 literal-% trap on
+    the no-param queries."""
     return (f"{alias}.move_type='INTERNAL' "
-            f"AND {alias}.location_from = '{SAMP_LOC}' "
-            f"AND split_part({alias}.location_to, '/', 1) <> 'Virtual Locations'")
+            f"AND {alias}.location_to = '{STOCK_LOC}' "
+            f"AND (split_part({alias}.location_from, '/', 1) <> 'Virtual Locations' "
+            f"OR {alias}.location_from = '{PROD_LOC}')")
 
 def _net_kg(alias="m"):
-    """Signed kg per move row: +kg for consumption (OUT to production OR RMAT→Samp),
-    −kg for returns (production → real stock OR Samp → real stock). Virtual/adjustment
-    destinations are excluded from both return legs."""
+    """Signed kg per move row: +kg for consumption (RMAT/Stock → PROD/Stock or
+    Samp/Fabric), −kg for genuine returns back into RMAT/Stock. Inventory-adjustment
+    write-ons into RMAT/Stock are excluded from the return leg. Kept in lockstep with
+    `_net_cons_where`."""
     kg = _kg(alias)
-    return (f"CASE WHEN {alias}.move_type='OUT' THEN {kg} "
-            f"WHEN {_prod_return_pred(alias)} THEN -{kg} "
-            f"WHEN {_samp_consume_pred(alias)} THEN {kg} "
-            f"WHEN {_samp_return_pred(alias)} THEN -{kg} "
+    return (f"CASE WHEN {_consume_pred(alias)} THEN {kg} "
+            f"WHEN {_rmat_return_pred(alias)} THEN -{kg} "
             f"ELSE 0 END")
 
 def _net_cons_where(alias="m"):
-    """Rows that make up net consumption: OUT moves, RMAT→Samp sampling consumption,
-    plus genuine INTERNAL returns (Production → real stock and Samp → real stock;
-    virtual/adjustment dests excluded)."""
-    return (f"({alias}.move_type='OUT' "
-            f"OR ({_prod_return_pred(alias)}) "
-            f"OR ({_samp_consume_pred(alias)}) "
-            f"OR ({_samp_return_pred(alias)})) "
+    """Rows that make up net consumption: the RMAT-exit consumption legs plus the
+    genuine returns back into RMAT/Stock (inventory-adjustment write-ons excluded).
+    Identical leg definitions to `_net_kg` so every dependent metric stays
+    consistent."""
+    return (f"(({_consume_pred(alias)}) "
+            f"OR ({_rmat_return_pred(alias)})) "
             f"AND {alias}.uom IN ('g','kg') "
             f"AND {alias}.is_fabric")
 
@@ -666,14 +662,14 @@ def summary(location: str = Query(default="RMAT/Stock"),
               AND m.date >= CURRENT_DATE
         """)[0]
 
-        # Most recent day an actual OUT consumption move was posted within scope.
-        # Lets the UI distinguish a legitimate quiet-day 0 from a stalled feed.
-        # NULL when there is no consumption history at all for this scope.
+        # Most recent day an actual consumption move (RMAT/Stock exit) was posted
+        # within scope. Lets the UI distinguish a legitimate quiet-day 0 from a
+        # stalled feed. NULL when there is no consumption history for this scope.
         last_cons = q(conn, f"""
             SELECT MAX(m.date::date) as d
             FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
-            WHERE m.move_type='OUT'
+            WHERE ({_consume_pred('m')})
               AND m.uom IN ('g','kg')
               AND m.is_fabric
               AND {scope_sql}
@@ -1801,10 +1797,10 @@ def consumption(
         base_where = (f"{_net_cons_where('m')} "
                       f"AND {_scope_sql(scope)} "
                       "AND m.date BETWEEN %s AND %s")
-        metrics = (f"COUNT(DISTINCT m.product_id) FILTER (WHERE m.move_type='OUT') as fabrics_used, "
+        metrics = (f"COUNT(DISTINCT m.product_id) FILTER (WHERE {_consume_pred('m')}) as fabrics_used, "
                    f"ROUND(SUM({kg_expr})::numeric,1) as qty_kg, "
                    f"ROUND(SUM({mtr_expr})::numeric,0) as qty_metres, "
-                   f"COUNT(*) FILTER (WHERE m.move_type='OUT') as moves")
+                   f"COUNT(*) FILTER (WHERE {_consume_pred('m')}) as moves")
         # Dimension breakdowns (by fabric category or individual fabric) vs.
         # the default time-series (day/week/month).
         if group_by in ("category", "fabric"):
@@ -2037,10 +2033,10 @@ def fabric_mix(
                    ROUND(SUM({net})::numeric,1) as consumption_kg,
                    ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN ({net})/p.kg_per_mtr_eff ELSE 0 END)::numeric,1) as consumption_metres,
                    ROUND(SUM(CASE WHEN p.kg_per_mtr_eff IS NULL THEN ({net}) ELSE 0 END)::numeric,1) as consumption_kg_nometre,
-                   ROUND(SUM(CASE WHEN m.move_type='OUT' THEN {kg} ELSE 0 END)::numeric,1) as out_kg,
-                   ROUND(SUM(CASE WHEN m.move_type='OUT' AND p.kg_per_mtr_eff>0 THEN {kg}/p.kg_per_mtr_eff ELSE 0 END)::numeric,1) as out_metres,
-                   ROUND(SUM(CASE WHEN m.move_type='INTERNAL' AND m.location_from='{PROD_LOC}' THEN {kg} ELSE 0 END)::numeric,1) as return_kg,
-                   ROUND(SUM(CASE WHEN m.move_type='INTERNAL' AND m.location_from='{PROD_LOC}' AND p.kg_per_mtr_eff>0 THEN {kg}/p.kg_per_mtr_eff ELSE 0 END)::numeric,1) as return_metres
+                   ROUND(SUM(CASE WHEN {_consume_pred('m')} THEN {kg} ELSE 0 END)::numeric,1) as out_kg,
+                   ROUND(SUM(CASE WHEN ({_consume_pred('m')}) AND p.kg_per_mtr_eff>0 THEN {kg}/p.kg_per_mtr_eff ELSE 0 END)::numeric,1) as out_metres,
+                   ROUND(SUM(CASE WHEN {_rmat_return_pred('m')} THEN {kg} ELSE 0 END)::numeric,1) as return_kg,
+                   ROUND(SUM(CASE WHEN ({_rmat_return_pred('m')}) AND p.kg_per_mtr_eff>0 THEN {kg}/p.kg_per_mtr_eff ELSE 0 END)::numeric,1) as return_metres
             FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {cons_where}
@@ -2913,10 +2909,10 @@ def top_consumed(days: int = Query(default=90), limit: int = Query(default=20), 
         return q(conn, f"""
             WITH out_moves AS (
               SELECT m.product_id,
-                MAX(m.product_name) FILTER (WHERE m.move_type='OUT') as product_name,
+                MAX(m.product_name) FILTER (WHERE {_consume_pred('m')}) as product_name,
                 SUM({_net_kg('m')}) as consumed_kg,
-                COUNT(*) FILTER (WHERE m.move_type='OUT') as moves,
-                MAX(m.date) FILTER (WHERE m.move_type='OUT')::date as last_out
+                COUNT(*) FILTER (WHERE {_consume_pred('m')}) as moves,
+                MAX(m.date) FILTER (WHERE {_consume_pred('m')})::date as last_out
               FROM {EFFECTIVE_MOVES} m
               LEFT JOIN raw_fabric_products p ON p.id = m.product_id
               WHERE {_net_cons_where('m')}
@@ -3094,12 +3090,12 @@ def trend_series(
     with _get_conn() as conn:
         _ensure_fabric_sheet(conn)
 
-        if kpi == "consumption":  # gross OUT, metres
+        if kpi == "consumption":  # gross consumption (RMAT/Stock exit), metres
             rows = _trend_norm(_trend_move_series(
-                conn, trunc, "m.move_type='OUT' AND m.uom IN ('g','kg') AND m.is_fabric",
+                conn, trunc, f"({_consume_pred('m')}) AND m.uom IN ('g','kg') AND m.is_fabric",
                 metres, scope_sql, scope_params, mloc_sql, mloc_params, since, until))
 
-        elif kpi == "net_consumption":  # OUT − genuine production returns, metres
+        elif kpi == "net_consumption":  # consumption − genuine returns into RMAT, metres
             net = f"CASE WHEN p.kg_per_mtr_eff > 0 THEN ({_net_kg('m')})/p.kg_per_mtr_eff ELSE 0 END"
             rows = _trend_norm(_trend_move_series(
                 conn, trunc, _net_cons_where("m"),
@@ -3110,9 +3106,9 @@ def trend_series(
                 conn, trunc, "m.move_type='IN' AND m.uom IN ('g','kg') AND m.is_fabric",
                 metres, scope_sql, scope_params, mloc_sql, mloc_params, since, until))
 
-        elif kpi == "returns":  # production → real stock, metres
+        elif kpi == "returns":  # genuine returns back into RMAT/Stock, metres
             rows = _trend_norm(_trend_move_series(
-                conn, trunc, f"({_prod_return_pred('m')}) AND m.uom IN ('g','kg') AND m.is_fabric",
+                conn, trunc, f"({_rmat_return_pred('m')}) AND m.uom IN ('g','kg') AND m.is_fabric",
                 metres, scope_sql, scope_params, mloc_sql, mloc_params, since, until))
 
         elif kpi == "stock_on_hand":

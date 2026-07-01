@@ -12,10 +12,12 @@ Fabric consumption/returns read goes through:
     They live OUTSIDE `raw_fabric_*` so the hourly Odoo TRUNCATE/rebuild never wipes
     them.
   * `fabric_moves_effective` — a VIEW with the SAME columns as `raw_fabric_moves`.
-    It is `raw_fabric_moves` MINUS the OUT and production-return rows inside the
-    override window, UNION the sheet rows as pseudo moves (consumption → OUT,
-    returns → INTERNAL out of the production location). IN (incoming) is always kept
-    from Odoo; everything outside Jan–Apr 2026 is untouched Odoo data.
+    It is `raw_fabric_moves` MINUS the rows the net-consumption definition counts
+    inside the override window (RMAT/Stock-exit consumption + genuine returns into
+    RMAT/Stock), UNION the sheet rows as pseudo moves (consumption → INTERNAL
+    RMAT/Stock → PROD/Stock, returns → INTERNAL production → RMAT/Stock). IN
+    (incoming) and inventory-adjustment write-ons are always kept from Odoo;
+    everything outside Jan–Apr 2026 is untouched Odoo data.
 
 Barcode → product is resolved at QUERY time inside the view (join on
 `raw_fabric_products.barcode`, which is unique — no fan-out). Unmatched sheet rows
@@ -27,8 +29,13 @@ movement) but drop out of per-fabric views that key on product identity.
 OVERRIDE_SINCE = "2026-01-01"
 OVERRIDE_UNTIL_EXCL = "2026-05-01"
 
-# The single production virtual location (a return is an INTERNAL move out of it).
-PROD_LOC = "Virtual Locations/Production"
+# Location literals — must match fabric_router's net-consumption predicates exactly.
+# Consumption is the raw-material EXIT (RMAT/Stock → PROD/Stock or Samp/Fabric);
+# a genuine return is an INTERNAL move back INTO RMAT/Stock.
+PROD_LOC = "Virtual Locations/Production"   # production virtual location
+STOCK_LOC = "RMAT/Stock"                    # the raw-material store (exit / return point)
+PROD_STOCK_LOC = "PROD/Stock"               # production real-stock (an RMAT exit target)
+SAMP_LOC = "Samp/Fabric"                    # sampling location (an RMAT exit target)
 
 # Name of the unified view every consumption/returns read uses instead of the raw
 # moves table.
@@ -57,8 +64,12 @@ CREATE TABLE IF NOT EXISTS fabric_sheet_returns (
 # and keep referencing the same columns.
 DDL_VIEW = f"""
 CREATE OR REPLACE VIEW {EFFECTIVE_MOVES} AS
-  -- 1) Raw Odoo moves, minus the OUT + production-return rows inside the override
-  --    window. IN and non-production internal moves are always kept.
+  -- 1) Raw Odoo moves, minus the rows the NEW net-consumption definition would count
+  --    inside the override window: consumption (RMAT/Stock → PROD/Stock or Samp/Fabric,
+  --    INTERNAL) and genuine returns back INTO RMAT/Stock (from a real location or
+  --    from production, but NOT inventory-adjustment write-ons). These are replaced by
+  --    the reconciled sheet rows below. IN moves and inventory-adjustment rows are
+  --    always kept. split_part (not LIKE '%') dodges the psycopg2 literal-% trap.
   --    is_fabric: TRUE only when the move's product is classified Fabric (not Trim,
   --    and not an unmatched/unknown product) in raw_fabric_products. Consumption &
   --    movement reads filter on this so trims/accessories — even those measured in
@@ -70,11 +81,19 @@ CREATE OR REPLACE VIEW {EFFECTIVE_MOVES} AS
   LEFT JOIN raw_fabric_products fp ON fp.id = m.product_id
   WHERE NOT (
         m.date >= DATE '{OVERRIDE_SINCE}' AND m.date < DATE '{OVERRIDE_UNTIL_EXCL}'
-        AND ( m.move_type = 'OUT'
-              OR (m.move_type = 'INTERNAL' AND m.location_from = '{PROD_LOC}') )
+        AND (
+              -- consumption legs (RMAT/Stock exit)
+              ( m.move_type = 'INTERNAL' AND m.location_from = '{STOCK_LOC}'
+                AND m.location_to IN ('{PROD_STOCK_LOC}', '{SAMP_LOC}') )
+              -- genuine returns back into RMAT/Stock (excl. inventory-adjustment write-ons)
+              OR ( m.move_type = 'INTERNAL' AND m.location_to = '{STOCK_LOC}'
+                   AND ( split_part(m.location_from, '/', 1) <> 'Virtual Locations'
+                         OR m.location_from = '{PROD_LOC}' ) )
+            )
   )
   UNION ALL
-  -- 2) Sheet consumption → pseudo OUT moves (one per sheet line).
+  -- 2) Sheet consumption → pseudo INTERNAL RMAT/Stock → PROD/Stock moves (one per
+  --    sheet line), matching the new consumption predicate.
   SELECT
       NULL::bigint                                                       AS id,
       pr.id                                                              AS product_id,
@@ -83,9 +102,9 @@ CREATE OR REPLACE VIEW {EFFECTIVE_MOVES} AS
       NULL::text                                                        AS product_sku,
       sc.kg                                                             AS qty,
       'kg'                                                              AS uom,
-      'RMAT/Stock'                                                      AS location_from,
-      '{PROD_LOC}'                                                      AS location_to,
-      'OUT'                                                             AS move_type,
+      '{STOCK_LOC}'                                                     AS location_from,
+      '{PROD_STOCK_LOC}'                                                AS location_to,
+      'INTERNAL'                                                        AS move_type,
       sc.month_start::timestamp                                         AS date,
       'sheet:consumption'                                               AS reference,
       NULL::text                                                        AS category,

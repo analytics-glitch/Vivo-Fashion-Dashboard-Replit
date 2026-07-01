@@ -3,57 +3,58 @@ name: Fabric net consumption & returns
 description: How fabric consumption, returns, and weeks-of-cover are defined for the /fabric dashboard
 ---
 
-# Fabric consumption is OUT minus production returns
+# Fabric consumption is measured at the RMAT/Stock EXIT point (NOT the OUT move)
 
-In `raw_fabric_moves`, fabric consumption is an `OUT` move (stock → production).
-Some of that fabric comes back as a **return**, which is an `INTERNAL` move whose
-`location_from = 'Virtual Locations/Production'` AND whose `location_to` is a **real
-stock location** (NOT another virtual location). The destination guard matters:
-Production → `Virtual Locations/Inventory adjustment` is a stock write-off/correction,
-NOT physically returned fabric, and must not net off consumption (two such ~137,100kg
-adjustment moves on 2026-06-24 drove "Consumed 30D" to ~−253k m before the guard).
-The guard is `split_part(location_to,'/',1) <> 'Virtual Locations'` — `split_part`
-(not `LIKE 'Virtual Locations/%'`) so the no-param `q()` queries dodge the literal-%
-trap. It lives in the shared `_prod_return_pred()` helper used by BOTH `_net_kg`
-(signed-kg) and `_net_cons_where` (row selection) so they stay in lockstep.
+Consumption is fabric **leaving the raw-material store `RMAT/Stock`** — NOT the
+downstream `OUT` move to production. The old `move_type='OUT'` arm is GONE (do not
+reintroduce it):
+- **Consumption (adds, +kg)** = an `INTERNAL` move `location_from='RMAT/Stock'` AND
+  `location_to IN ('PROD/Stock','Samp/Fabric')` — i.e. fabric pulled into production
+  or into sampling. Shared helper `_consume_pred()`.
+- **Returns (nets off, −kg)** = an `INTERNAL` move `location_to='RMAT/Stock'` coming
+  from production (`Virtual Locations/Production`) OR any **real** (non-virtual) stock
+  location. Inventory-adjustment write-ons
+  (`Virtual Locations/Inventory adjustment → RMAT/Stock`) are stock-count corrections,
+  NOT returned fabric, and are EXCLUDED. Shared helper `_rmat_return_pred()`.
 
-**Net consumption also counts sampling.** Fabric moved `RMAT/Stock → Samp/Fabric`
-(an `INTERNAL` move) is real consumption (used to make samples) and is ADDED as
-+kg via `_samp_consume_pred()`; leftover sampling fabric coming back
-`Samp/Fabric → <non-virtual stock loc>` is netted off (−kg) via `_samp_return_pred()`,
-using the SAME `split_part(location_to,'/',1) <> 'Virtual Locations'` write-off
-carve-out as production returns. ONLY `RMAT/Stock → Samp/Fabric` counts as
-consumption (arrivals into Samp from Dead/Defects/etc. do NOT); only `Samp/Fabric`,
-never `Samp/Stock` or other `Samp/*`. Both new predicates live in the same
-`_net_kg`/`_net_cons_where` helpers so every metric picks them up. Audit endpoint
-`/api/fabric/consumption-sources.csv?scope=main|support` dumps today's move-level
-rows (signed net kg/metres) that make up "Consumed today"; the "↓ sources" link on
-the Consumed-today KPI card downloads it.
+The write-off carve-out is `split_part(location_from,'/',1) <> 'Virtual Locations'
+OR location_from = PROD_LOC` — `split_part` (not `LIKE 'Virtual Locations/%'`) so the
+no-param `q()` queries dodge the psycopg2 literal-% trap. Both helpers feed BOTH
+`_net_kg` (signed-kg) and `_net_cons_where` (row selection) so they stay in lockstep.
 
-**Net consumption = SUM(OUT + RMAT→Samp) − SUM(production returns + Samp→stock returns).**
+**Net consumption = SUM(RMAT→PROD/Stock + RMAT→Samp/Fabric) − SUM(genuine returns into RMAT/Stock).**
 
-**Why:** gross OUT massively overstates real usage — for 2026, gross OUT ≈ 2.46M kg
-but returns ≈ 2.23M kg, so true net consumption ≈ 231k kg. The user explicitly wants
-consumption reported net of returned fabric.
+**Why:** the business defines "consumed" as the moment fabric physically leaves the
+raw-material store; the older `OUT`-based number double-counted downstream production
+legs. After the redefinition today's Consumed ≈ 224 kg (was ~796 m under the old OUT
+model).
 
-**How to apply:** use the `_net_kg` / `_net_cons_where` helpers in `fabric_router.py`
-(they put OUT positive, INTERNAL-from-production negative). The return arm is
-restricted to `move_type='INTERNAL'` so a future non-INTERNAL row from the production
-location can't silently net out. Net consumption is wired into `/api/fabric/summary`,
-`/api/fabric/consumption`, and `/api/fabric/top-consumed`. `/api/fabric/movement-flow`
-shows IN/OUT/INTERNAL separately but ALSO reads the override view (its OUT + production-
-return INTERNAL bars reflect the sheet for the override window).
+**How to apply:** use the `_net_kg` / `_net_cons_where` helpers in `fabric_router.py`;
+every consumption/returns read (summary, `/api/fabric/consumption`, mix out_kg/return_kg,
+`top-consumed`, trend `consumption`/`returns` KPIs, summary `last_cons`) uses these
+predicates. The audit endpoint `/api/fabric/consumption-sources.csv?scope=main|support`
+dumps today's move-level signed net rows behind the "↓ sources" link on the
+Consumed-today card. **Out of scope / intentionally NOT changed:** the
+`/api/fabric/movement-flow` endpoint still reports raw IN/OUT/INTERNAL bars (its OUT
+bar keeps `move_type='OUT'` at fabric_router.py ~line 2948) — those bars shift as a
+side effect of the override-view reshape, which is accepted.
 
 # Sheet override replaces Odoo for Jan–Apr 2026 (do NOT read raw_fabric_moves directly)
 Odoo's `raw_fabric_moves` had badly inflated consumption/returns for early 2026 (e.g.
 ~2.2M kg of fake March production returns). The buying team's reconciled Google Sheet
-is the source of truth for **OUT (consumption) and production returns** for the window
+is the source of truth for **consumption and returns** for the window
 `2026-01-01 .. 2026-04-30` ONLY. IN is ALWAYS Odoo; May 2026+ and all pre-2026 stay
 Odoo untouched.
 
-**Mechanism:** a DB view `fabric_moves_effective` = `raw_fabric_moves` MINUS in-window
-`OUT` and in-window `INTERNAL`-from-`Virtual Locations/Production`, UNION the sheet
-consumption rows (pseudo `OUT`) and sheet returns (pseudo `INTERNAL` from production).
+**Mechanism:** a DB view `fabric_moves_effective` = `raw_fabric_moves` MINUS the
+in-window rows the net-consumption definition counts (RMAT/Stock-exit consumption
+legs + genuine returns back into RMAT/Stock; inventory-adjustment write-ons and IN
+are kept), UNION the sheet consumption rows (pseudo `INTERNAL` `RMAT/Stock →
+PROD/Stock`, so `_consume_pred` picks them up) and sheet returns (pseudo `INTERNAL`
+from production into RMAT/Stock). The strip clause and the pseudo-row shapes MUST
+mirror `_consume_pred`/`_rmat_return_pred` exactly — a mismatch silently drops the
+sheet consumption (e.g. Jan–Apr showed 30.8 kg instead of ~55,296 kg when the pseudo
+rows were still shaped as the old `OUT`→PROD_LOC while the predicate had moved on).
 Every Fabric endpoint reads `EFFECTIVE_MOVES` (the view), never `raw_fabric_moves`
 directly, EXCEPT the register's `last_move` subqueries (latest physical move, must stay
 raw). Defined in `fabric_sheet_override.py` (DDL for view + the `fabric_sheet_*`
