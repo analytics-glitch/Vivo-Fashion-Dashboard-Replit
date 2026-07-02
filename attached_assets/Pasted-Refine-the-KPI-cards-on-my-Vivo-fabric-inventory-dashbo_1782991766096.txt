@@ -1,0 +1,99 @@
+Refine the KPI cards on my Vivo fabric inventory dashboard. This is a TYPOGRAPHY 
+standardisation + CARD STYLING pass only. Do NOT change any data, values, units, 
+labels, or calculations, and do NOT change the layout grid, the ink hero card concept, 
+or the orange accent colour. Keep everything that already works; fix only type sizing, 
+alignment, and card surface treatment.
+
+BRAND PALETTE (use these exact hex values)
+- Brand Orange (accent):        #EE5A0E   (hover / small text: #C2410C)
+- Ink (primary text / hero):    #1A1A1A
+- Muted text:                    #6B7280
+- Page background:               #FBF7F4
+- Card surface:                  #FFFFFF
+- Card border (warm hairline):   #ECE6E1
+- Amber (data alerts):           #D97706
+
+================= PART A — TYPOGRAPHY STANDARDISATION =================
+
+PROBLEMS TO FIX
+1. Metric values render at visually different sizes (e.g. "KES 80.4M", "2,108", "1.67", 
+   "5.7"). They must all be IDENTICAL size and weight.
+2. Units (m, /m, KES) sit at inconsistent sizes and vertical positions. Standardise.
+3. Value baselines don't align across the row because some labels wrap to two lines 
+   and others to one, pushing numbers to different heights.
+
+1. ONE VALUE TYPE SCALE (every card, identical, no exceptions)
+- font-size: 32px; font-weight: 700; line-height: 1.1; color: #1A1A1A 
+  (white #FFFFFF on the ink hero card only).
+- No per-card shrinking: "KES 80.4M" and "5.7" must measure the same height. If the 
+  longest value ever risks overflow on a narrow card, reduce the GLOBAL scale to 28px — 
+  never shrink one card.
+- Apply font-variant-numeric: tabular-nums and font-feature-settings: "tnum" to ALL 
+  values so digit widths are uniform.
+
+2. UNIT / CURRENCY STANDARDISATION
+- Units (m, /m) and currency (KES) are inline with the value, baseline-aligned, using 
+  ONE treatment everywhere: font-size 0.55em (of the 32px value); font-weight 500; 
+  color #6B7280; vertical-align: baseline; 2px left margin.
+- "KES" prefix and "m" / "/m" suffix use this SAME unit style. Never render a unit at 
+  full value size; never superscript or float them.
+- Wrap number and unit in separate spans (.kpi-value-number / .kpi-value-unit) so 
+  sizing is controlled, not inherited.
+
+3. LABEL STANDARDISATION + FIXED VALUE BASELINE (this fixes cross-card alignment)
+- LABEL: font-size 12px; weight 600; uppercase; letter-spacing 0.06em; color #6B7280; 
+  line-height 1.3; aligned to the TOP of its zone.
+- Reserve a FIXED height for the label zone equal to TWO lines of label text 
+  (min-height = 2 line-heights) so one-line and two-line labels occupy the same space.
+- Result: every VALUE starts at the same vertical position and all value baselines 
+  align across the whole row.
+
+4. FOOTNOTE STANDARDISATION
+- FOOTNOTE: font-size 12px; weight 400; line-height 1.4; color #6B7280; pushed to the 
+  card bottom (margin-top: auto) so footnotes share a baseline.
+- Labels and footnotes are both 12px but labels are 600/uppercase, footnotes 
+  400/sentence case.
+
+5. GENERAL TYPE
+- Font: Inter (system-ui fallback), one family only.
+- Remove ALL underlines from labels and footnotes; underline is reserved exclusively 
+  for genuine clickable links.
+
+================= PART B — CARD STYLING (executive / financial look) =================
+
+The aesthetic is a precise financial exhibit / board pack — NOT a consumer app. 
+Restraint reads as authority.
+
+- Page background: #FBF7F4 (unchanged).
+- Card fill: #FFFFFF.
+- Card border: 1px solid #ECE6E1 (warm hairline, defines the edge against the page).
+- Card shadow — two-layer, very subtle, BOTH together (quiet depth, no visible float):
+  box-shadow: 0 1px 2px rgba(26,26,26,0.04), 0 1px 3px rgba(26,26,26,0.06);
+- Border radius: 10px (tighter = more financial; never exceed 12px).
+- Internal padding: 20px, consistent.
+- HERO CARD (Stock on Hand only): fill #1A1A1A with white text and a thin #EE5A0E 
+  accent (3px left border or short underline beneath the value). It stays the single 
+  dark emphasis card among white siblings.
+- Accent (links, active states, download buttons): #EE5A0E; use #C2410C for hover and 
+  any small orange text on white.
+- Data-issue footnotes (e.g. "missing Width/GSM excluded") render as a small amber pill 
+  (#D97706), not underlined text.
+- NO gradients, NO tinted/coloured card fills, NO heavy or floating shadows, NO 
+  glassmorphism.
+- OPTIONAL: group related KPIs (stock/value, cost, consumption, cover) with a thin 
+  #ECE6E1 divider or a small uppercase group label above each cluster, for a structured 
+  board-pack feel. [Delete this line if keeping a single clean grid.]
+
+================= CONSISTENCY CHECKS (all must be true) =================
+- All metric values render at 32px/700 — "KES 80.4M" and "5.7" measure the same height.
+- All units render at the same size and sit on the value baseline.
+- All value baselines align horizontally across every card in a row.
+- Every card is equal height; label zones are equal height regardless of wrapping.
+- Numbers use tabular figures so digit columns line up.
+- No underlines except real links; no tinted cards; hero is the only dark card.
+
+================= DELIVER =================
+One reusable KpiCard component taking props: label, value, unit, footnote, delta, 
+alert, action — with value rendering abstracted into a shared KpiValue piece 
+(.kpi-value-number / .kpi-value-unit) so no card can drift from the standard. Apply 
+across the existing metric row. Leave existing grid layout and data untouched.
