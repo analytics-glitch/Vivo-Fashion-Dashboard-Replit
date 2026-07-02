@@ -764,6 +764,7 @@ const FX={
   consumed30d:'Consumed (30 days) = OUT moves − production returns over the last 30 days. Shown in the selected unit (metres or kg).',
   metresPerGarment:'Avg metres / garment = total main-fabric metres consumed ÷ total garments produced, across Done DPS manufacturing orders completed in the last 30 days. Fabric kg is converted to metres via each fabric\u2019s kg-per-metre; a fabric that has no kg-per-metre (no Width and/or GSM to derive it) is converted using the overall fabric-average as a fallback, so its order is still counted. An MO is counted as long as it produced at least one garment.',
   monthsCover:'Months of cover = stock on hand (kg) ÷ average monthly consumption (kg), using the average net run-rate over the last 6 fully completed months (the in-progress month is excluded). Consumption is net of production returns (fabric only).',
+  monthsCoverPrevMonth:'Months of cover (prev month) = stock on hand (kg) ÷ the net consumption (kg) of the previous full calendar month (M-1) only. A more reactive signal than the 6-month average — it reflects the most recent month\u2019s usage. Consumption is net of production returns (fabric only).',
   basicMonthsCover:'Basic Fabrics — months of cover = combined cover across only the curated set of core staple fabrics the buying team always keeps in stock (a fixed vendor + fabric-code list). Same formula as Months of cover — RMAT/Stock on-hand kg ÷ average net monthly consumption over the last 6 fully completed months (net of production returns) — but restricted to the curated fabrics. The sub-line shows how many of the curated fabrics were found in the data.',
   deadStock:'Dead stock = value of fabric parked in the Dead/Stock location (KES).',
   deadPct:'% of value = dead-stock value ÷ total fabric value.',
@@ -2343,6 +2344,29 @@ function renderKpis(d,mpg,coverDelta){
      else if(coverStatus==='ok'&&cover!=null){cval=coverFmt(cover);ccls=cover<1?'amber':'';}
      else{cval='&mdash;';}
      return `<div class="kpi" title="${coverTip}"><span class="eyebrow">Months of cover</span><p class="kpi-value ${ccls}"${fx(FX.monthsCover)}>${cval}</p><p class="kpi-sub">${coverNote}</p></div>`;})()}
+   ${(()=>{
+     // Prev-month cover: stock ÷ the PREVIOUS full calendar month's net use — a
+     // more reactive signal than the 6-month average. Sits next to it and degrades
+     // with the SAME overstocked/no-data states.
+     const pcover=(d.months_of_cover_prev_month!=null)?d.months_of_cover_prev_month:null;
+     const pstatus=d.months_of_cover_prev_month_status||(pcover!=null?'ok':'no_data');
+     const pkg=(d.months_of_cover_stock_kg!=null)?d.months_of_cover_stock_kg:null;
+     const plabel=d.months_of_cover_prev_month_label||'';
+     const pnote=(pstatus==='overstocked')
+         ?`overstocked &middot; no use last month${pkg!=null?` &middot; ${fmt(pkg)} kg on hand`:''}`
+         :(pstatus==='no_data')
+           ?'no stock or last-month usage'
+           :`stock &divide; last month&rsquo;s use${plabel?` &middot; ${esc(plabel)}`:''}`;
+     const ptip=(pstatus==='overstocked')
+         ?esc(`Stock is on hand but there was NO consumption in the previous full calendar month, so months-of-cover cannot be divided. Cover is effectively very high (shown as 12+). A genuinely slow-moving staple or a transient state while fabric data is rebuilding — not a broken metric.`)
+         :(pstatus==='no_data')
+           ?esc('No fabric stock and no last-month consumption, so there is nothing to compute.')
+           :esc(`Months of cover (prev month) = current stock ÷ the net consumption of the previous full calendar month (M-1). More reactive than the 6-month average — it reflects the most recent month's usage.`);
+     let pval,pcls='';
+     if(pstatus==='overstocked'){pval='12+';}
+     else if(pstatus==='ok'&&pcover!=null){pval=coverFmt(pcover);pcls=pcover<1?'amber':'';}
+     else{pval='&mdash;';}
+     return `<div class="kpi" title="${ptip}"><span class="eyebrow">Months of cover (prev month)</span><p class="kpi-value ${pcls}"${fx(FX.monthsCoverPrevMonth)}>${pval}</p><p class="kpi-sub">${pnote}</p></div>`;})()}
    ${(()=>{const bc=(d.basic_months_of_cover!=null)?d.basic_months_of_cover:null;
      const bst=d.basic_months_of_cover_status||(bc!=null?'ok':'no_data');
      const bskg=(d.basic_fabrics_stock_kg!=null)?d.basic_fabrics_stock_kg:null;

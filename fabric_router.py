@@ -380,6 +380,56 @@ def _months_of_cover(conn, fabric_stock_kg, scope="main", product_ids=None):
         ],
     }
 
+def _months_of_cover_prev_month(conn, fabric_stock_kg, scope="main", product_ids=None):
+    """Months-of-cover derived from ONLY the previous FULL calendar month's (M-1)
+    net consumption run-rate, giving a more reactive cover signal than the trailing
+    6-month average.
+
+    The window is exactly the previous completed calendar month (the current,
+    in-progress month is excluded). Consumption stays net-of-production-returns +
+    fabric-only via the shared net-consumption model, and honours the support/main
+    scope (or a curated product-id set), identically to `_months_of_cover`.
+    """
+    fabric_stock_kg = float(fabric_stock_kg or 0)
+    # Curated product-id set bypasses the support/main scope filter entirely (same
+    # contract as `_months_of_cover`). Ids come from the DB, so inlining is safe.
+    if product_ids is not None:
+        if not product_ids:
+            cons_scope = "FALSE"
+        else:
+            ids_csv = ",".join(str(int(i)) for i in product_ids)
+            cons_scope = f"m.product_id IN ({ids_csv})"
+    else:
+        cons_scope = _scope_sql(scope)
+    row = q(conn, f"""
+        SELECT SUM({_net_kg('m')})::numeric AS kg
+        FROM {EFFECTIVE_MOVES} m
+        LEFT JOIN raw_fabric_products p ON p.id = m.product_id
+        WHERE {_net_cons_where('m')}
+          AND {cons_scope}
+          AND m.date::date >= (date_trunc('month', CURRENT_DATE) - INTERVAL '1 month')::date
+          AND m.date::date <  date_trunc('month', CURRENT_DATE)::date
+    """)[0]
+    prev_kg = float(row['kg'] or 0)
+    cover_now = (fabric_stock_kg / prev_kg) if prev_kg > 0 else None
+    # Same three-way edge-case marker as the 6-month card so the frontend can
+    # degrade identically ("ok" / "overstocked" / "no_data").
+    if prev_kg > 0:
+        cover_status = "ok"
+    elif fabric_stock_kg > 0:
+        cover_status = "overstocked"
+    else:
+        cover_status = "no_data"
+    mon_label = q(conn, """
+        SELECT to_char(date_trunc('month', CURRENT_DATE) - INTERVAL '1 month', 'YYYY-MM') AS mon
+    """)[0]['mon']
+    return {
+        "months_of_cover_prev_month": round(cover_now, 2) if cover_now is not None else None,
+        "months_of_cover_prev_month_status": cover_status,
+        "months_of_cover_prev_month_consumption_kg": round(prev_kg, 1),
+        "months_of_cover_prev_month_label": mon_label,
+    }
+
 # ── Location filter ─────────────────────────────────────────
 # The business only tracks real fabric stock in two locations. "All"/empty must
 # resolve to the SET of these two (never every warehouse location); a specific
@@ -944,6 +994,9 @@ def summary(location: str = Query(default="RMAT/Stock"),
         rmat_stock_value = round(sum(r['value_kes'] or 0 for r in rmat))
         dead_stock_value = sum(r['value_kes'] or 0 for r in dead)
         cover = _months_of_cover(conn, rmat_stock_kg, scope_param)
+        # Prev-month cover — same live RMAT/Stock base ÷ the previous FULL calendar
+        # month's net consumption (a more reactive signal than the 6-month average).
+        cover_prev = _months_of_cover_prev_month(conn, rmat_stock_kg, scope_param)
 
         # Basic Fabrics — Months of Cover. One combined cover figure across the
         # curated staple-fabric set ONLY (supplier+code pairs in BASIC_FABRICS),
@@ -1016,6 +1069,7 @@ def summary(location: str = Query(default="RMAT/Stock"),
             "fabric_critical_threshold_hours": CRITICAL_THRESHOLD_HOURS,
             "fabric_freshness_severity": fabric_freshness_severity,
             **cover,
+            **cover_prev,
         }
 
 # ── Fabrics excluded from the Avg cost/metre figure (missing Width/GSM) ──────
