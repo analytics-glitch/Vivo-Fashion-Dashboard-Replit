@@ -1003,7 +1003,54 @@ async def clerk_auth_gate(request: Request, call_next):
 
     return await call_next(request)
 
+# --- Deferred startup ------------------------------------------------------
+# DB-touching startup hooks (idempotent DDL / seeds / boot logging) used to run
+# synchronously inside FastAPI's startup event, which delays uvicorn from
+# binding the port until they ALL finish. In production a SIGKILLed previous
+# run (deploy restart) can leave orphaned Postgres sessions holding table locks
+# for minutes; the next boot's CREATE/ALTER TABLE then blocks silently past the
+# deployment's ~60s port timeout and the platform kills the VM in a crash loop.
+# Fix: uvicorn binds IMMEDIATELY and this work runs in ONE ordered background
+# daemon thread. Every step is individually guarded — a failed step logs and
+# the runner moves on; endpoints that need a table either lazily ensure it or
+# fail closed until the ensure lands (prod tables already exist, so in practice
+# this only matters on a brand-new DB for a few seconds).
+_DEFERRED_STARTUP = []
+
+
+def _deferred_startup(fn):
+    _DEFERRED_STARTUP.append(fn)
+    return fn
+
+
 @app.on_event("startup")
+def _launch_deferred_startup():
+    # NOTE: lifecycle lines log at WARNING because the api_pg logger has no
+    # handler configured (INFO is silently dropped by Python's last-resort
+    # stderr handler). These few lines are the only startup observability the
+    # deployment logs get — keep them visible.
+    def _runner():
+        t0 = time.time()
+        log.warning("Deferred startup: running %d steps in background…",
+                    len(_DEFERRED_STARTUP))
+        for fn in _DEFERRED_STARTUP:
+            name = getattr(fn, "__name__", str(fn))
+            step_t0 = time.time()
+            try:
+                fn()
+            except Exception as e:
+                log.error("deferred startup step %s failed: %s", name, e)
+            step_dt = time.time() - step_t0
+            if step_dt > 10:
+                log.warning("deferred startup step %s took %.1fs (possible "
+                            "lock contention)", name, step_dt)
+        log.warning("Deferred startup complete (%d steps, %.1fs)",
+                    len(_DEFERRED_STARTUP), time.time() - t0)
+    threading.Thread(target=_runner, name="deferred-startup",
+                     daemon=True).start()
+
+
+@_deferred_startup
 def _init_user_store():
     # Idempotently create the app_users table so role/approval state has a home.
     try:
@@ -1012,7 +1059,7 @@ def _init_user_store():
         pass
 
 
-@app.on_event("startup")
+@_deferred_startup
 def _migrate_legacy_roles():
     # One-time idempotent migration: map retired technical roles
     # (viewer/analyst/exec/manager/hr) onto the new department groups so existing
@@ -1024,7 +1071,7 @@ def _migrate_legacy_roles():
         log.error("Legacy role migration failed: %s", e)
 
 
-@app.on_event("startup")
+@_deferred_startup
 def _seed_admin():
     # Ensure there is always at least one admin who can sign in and approve
     # others. The seed credentials come from env; the email defaults to the
@@ -1059,7 +1106,7 @@ def _seed_admin():
         log.error("Seed admin failed: %s", e)
 
 
-@app.on_event("startup")
+@_deferred_startup
 def _startup_health_check():
     # Verify DB connectivity + that every table the BI endpoints rely on exists.
     # Never crash on a missing table (the API still serves what it can — degraded
@@ -1185,7 +1232,7 @@ def _ensure_perf_indexes():
                      daemon=True).start()
 
 
-@app.on_event("startup")
+@_deferred_startup
 def _ensure_ibt_lifecycle_startup():
     # Eagerly create the Phase-3 lifecycle + reservation ledger so the startup
     # health check finds them on a fresh DB. Best-effort; never blocks boot.
@@ -3650,7 +3697,7 @@ def run_sales_rollup_refresh(only=None):
     return results
 
 
-@app.on_event("startup")
+@_deferred_startup
 def _init_rollup_tables():
     # Ensure the schema exists on boot (fresh prod DB gets empty tables; reads
     # fall back to live until the sync loop's first refresh populates them).
@@ -11544,7 +11591,7 @@ def _seed_finance_account_map():
             conn.close()
 
 
-@app.on_event("startup")
+@_deferred_startup
 def _targets_startup():
     _ensure_targets_table()
     _seed_targets_budget_2026()
@@ -20557,7 +20604,7 @@ def _ensure_stockout_table():
         "ON stockout_snapshots (style_name, country, snapshot_date DESC)")
 
 
-@app.on_event("startup")
+@_deferred_startup
 def _init_stockout_table():
     try:
         _ensure_stockout_table()
@@ -22028,7 +22075,7 @@ def _ensure_data_quality_column():
         "ADD COLUMN IF NOT EXISTS data_quality_score numeric")
 
 
-@app.on_event("startup")
+@_deferred_startup
 def _init_data_quality_column():
     try:
         _ensure_data_quality_column()
@@ -22451,7 +22498,7 @@ def _ensure_crm_tables():
             "ON CONFLICT (key) DO NOTHING", (k, v))
 
 
-@app.on_event("startup")
+@_deferred_startup
 def _init_crm_store():
     try:
         _ensure_crm_tables()
@@ -25709,7 +25756,7 @@ def _ensure_production_tables():
         WHERE (i.qty_in - COALESCE(o.qty_out, 0)) > 0""")
 
 
-@app.on_event("startup")
+@_deferred_startup
 def _init_production_store():
     try:
         _ensure_production_tables()
@@ -25817,7 +25864,7 @@ def _ensure_replen_tables():
         )""")
 
 
-@app.on_event("startup")
+@_deferred_startup
 def _init_replen_store():
     try:
         _ensure_replen_tables()
@@ -26486,7 +26533,7 @@ hr_attendance.register_hr_routes(app)
 import warehouse_bins
 
 
-@app.on_event("startup")
+@_deferred_startup
 def _init_warehouse_bins():
     try:
         pool = _get_pool()

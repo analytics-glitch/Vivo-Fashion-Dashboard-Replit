@@ -536,7 +536,21 @@ def main():
         # 'address already in use' while the orphan keeps serving stale code.
         free_port(API_PORT, log=log.info)
         spawn("api")
-        time.sleep(3)  # let uvicorn bind before the sync hammers the DB
+        # Wait until uvicorn actually binds the port before anything else is
+        # allowed to hammer the DB. Bounded — after 60s we proceed anyway so a
+        # degraded API can still be supervised/restarted by the health loop.
+        import socket as _socket
+        _deadline = time.time() + 60
+        while time.time() < _deadline:
+            try:
+                with _socket.create_connection(("127.0.0.1", API_PORT), timeout=1):
+                    log.info("API port %s is open — proceeding", API_PORT)
+                    break
+            except OSError:
+                time.sleep(1)
+        else:
+            log.warning("API port %s still not open after 60s — proceeding "
+                        "anyway (supervision will keep restarting it)", API_PORT)
 
     if REBUILD_ON_BOOT:
         # The API is up (so the deployment startup health check can pass); run
