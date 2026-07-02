@@ -507,7 +507,7 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "finance"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "finance", "recon"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report"],
@@ -1000,6 +1000,11 @@ async def clerk_auth_gate(request: Request, call_next):
     # non-leadership role.
     if path.startswith("/api/finance") and user.get("role") not in ("admin", "leadership"):
         return JSONResponse({"detail": "Finance access requires a leadership or admin role"}, status_code=403)
+
+    # Odoo Reconciliation Agent (/api/recon/*) is the same finance-grade surface
+    # (approve/reject + staging write-back) — leadership + admin only.
+    if path.startswith("/api/recon") and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "Reconciliation access requires a leadership or admin role"}, status_code=403)
 
     return await call_next(request)
 
@@ -26525,6 +26530,12 @@ crm_clienteling.register_clienteling_routes(app)
 # Sources data from this project's live vivo_attendance Postgres table.
 import hr_attendance
 hr_attendance.register_hr_routes(app)
+
+# Odoo Reconciliation Agent endpoints (/api/recon/*). Same placement rationale.
+# Gated in clerk_auth_gate to leadership + admin; write-back is approval-gated
+# and targets the Odoo STAGING instance only (recon_engine.py).
+import recon_api
+recon_api.register_recon_routes(app)
 
 # Warehouse bins (barcode -> bin) mirrored from a daily-updated Google Sheet; the
 # Replenishment + IBT endpoints LEFT JOIN this by barcode. Idempotent table is

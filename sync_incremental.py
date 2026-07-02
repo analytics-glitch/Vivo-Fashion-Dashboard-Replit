@@ -236,6 +236,7 @@ _LAST_FABRIC_EXTRACT = None
 FABRIC_EXTRACT_TIMEOUT_SEC = int(os.environ.get("FABRIC_EXTRACT_TIMEOUT_SEC", "600"))
 # Same once-per-minute guard for the fabric consumption/returns sheet override loader.
 _LAST_FABRIC_SHEET_EXTRACT = None
+_LAST_RECON_RUN = None  # date of the last nightly reconciliation run
 # Guards the fabric category update tracker (Task #295) — detection + Google Sheet
 # mirror — to once every 5 minutes even though main() runs every 60s.
 _LAST_FABRIC_CAT_TRACKER = None
@@ -1299,6 +1300,26 @@ def main():
             log.info("✅ Accounting sync complete")
         except Exception as e:
             log.error("Accounting sync error: %s", e)
+
+    # Odoo Reconciliation Agent — nightly, after the accounting sync so it reads
+    # fresh ledgers. Hour-gated blocks fire on EVERY loop cycle within the hour,
+    # so a date guard keeps this to one run per day (the engine is also
+    # advisory-locked + idempotent, this just avoids wasted re-runs).
+    global _LAST_RECON_RUN
+    if 21 <= now_utc.hour < 22 and _LAST_RECON_RUN != now_utc.date():
+        try:
+            import subprocess, sys
+
+            log.info("Running nightly reconciliation...")
+            subprocess.run(
+                [sys.executable, "/home/runner/workspace/recon_engine.py", "nightly"],
+                check=True,
+                timeout=1800,
+            )
+            _LAST_RECON_RUN = now_utc.date()
+            log.info("✅ Nightly reconciliation complete")
+        except Exception as e:
+            log.error("Nightly reconciliation error: %s", e)
 
     # Fabric sheet override — the buying team's reconciled Jan–Apr 2026 consumption &
     # returns (Google Sheet), which replace Odoo's inflated moves for that window via
