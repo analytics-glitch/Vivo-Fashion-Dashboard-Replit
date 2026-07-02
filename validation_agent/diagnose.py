@@ -16,7 +16,29 @@ SYSTEM = (
     "metric, its expected range and the underlying rows, classify it as a DATA ERROR "
     "or a REAL BUSINESS EVENT, explain the most likely cause in two sentences, and if "
     "it is a data error propose an exact PostgreSQL fix. Never invent figures. If the "
-    "rows are insufficient to decide, say so and state what additional data you need."
+    "rows are insufficient to decide, say so and state what additional data you need.\n\n"
+    "Facts about this data model (all_sales) — do NOT diagnose these as errors:\n"
+    "- all_sales is LINE-ITEM grain: one row per product line, so the same order_id "
+    "appearing on many rows is one multi-item order, NOT duplication or fan-out. "
+    "Distinguish lines by variant_sku: rows sharing an order_id but with different "
+    "variant_sku values (or the same price on different SKUs) are distinct items. "
+    "A large order (15+ distinct SKUs) is a normal bulk purchase. Only identical "
+    "(order_id, variant_sku, amount) rows suggest duplication.\n"
+    "- Returns are SEPARATE rows (sale_kind='return') with the refunded amount in "
+    "returns_kes and total/net = 0. Order rows normally carry returns_kes = 0; a "
+    "day's return_amount comes from its return rows, not from the order rows shown.\n"
+    "- Rows with sale_kind='order' and NEGATIVE amounts are the POS refund "
+    "convention (a refund posted as a negative order line). They are systematic and "
+    "expected, not corruption.\n"
+    "- total_sales_kes is VAT-inclusive; net_sales_kes is VAT-exclusive. They are "
+    "not supposed to match.\n"
+    "- Metrics are computed under the dashboard's reporting filters (internal "
+    "locations, gift cards/vouchers, shopping bags excluded) and the sample rows "
+    "are filtered the same way.\n"
+    "Only propose a SQL fix for genuine corruption (e.g. the same order_id + SKU + "
+    "amount duplicated by a double-loaded batch, impossible values, orphaned rows). "
+    "When the rows are consistent with a busy trading day, a bulk order or a large "
+    "legitimate return, classify it as REAL_BUSINESS_EVENT."
 )
 
 _TOOL = {
@@ -109,7 +131,10 @@ def diagnose(exc: dict, raw_rows: list[dict]) -> dict:
 
 def sample_rows(conn, exc: dict, limit: int = 25) -> list[dict]:
     from . import db
-    where = ["sale_date::date = %(d)s"]
+    # Sample under the SAME reporting scope the metrics are computed with, so the
+    # LLM sees the rows that actually make up the flagged number (an excluded
+    # gift-card or staff-purchase line would otherwise mislead the diagnosis).
+    where = [config.REPORTING_FILTERS.strip(), "sale_date::date = %(d)s"]
     params = {"d": exc.get("period_date"), "lim": limit}
     if exc.get("entity_type") == "store":
         where.append("pos_location_name = %(ent)s")
@@ -118,7 +143,7 @@ def sample_rows(conn, exc: dict, limit: int = 25) -> list[dict]:
         where.append("COALESCE(NULLIF(TRIM(product_type),''),'(unspecified)') = %(sub)s")
         params["sub"] = exc.get("subcategory")
     sql = f"""
-        SELECT order_id, sale_kind, product_type, pos_location_name,
+        SELECT order_id, sale_kind, variant_sku, product_type, pos_location_name,
                total_sales_kes, net_sales_kes, gross_sales_kes,
                discounts_kes, returns_kes, ordered_item_quantity
         FROM all_sales

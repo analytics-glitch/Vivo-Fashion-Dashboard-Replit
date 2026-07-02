@@ -344,16 +344,57 @@ def _check_products(session, period, out):
     # retired filter exactly the 'all' retired_styles (with zero active).
     _active_sum = pa_by_status["active"].get("summary") or {}
     _retired_sum = pa_by_status["retired"].get("summary") or {}
-    partition_checks = [
-        ("product-analysis[active].styles == product-analysis[all].active_styles",
-         "xsurf_pa_active_slice", _active_sum.get("styles"), pasum.get("active_styles")),
-        ("product-analysis[retired].styles == product-analysis[all].retired_styles",
-         "xsurf_pa_retired_slice", _retired_sum.get("styles"), pasum.get("retired_styles")),
-    ]
-    for identity, code, a, b in partition_checks:
-        exc = _cmp("products", "style_count", identity, code, a, b, False, period, {})
-        if exc:
-            out.append(exc)
+
+    # Range Management response (used for its internal checks below AND the
+    # cross-page total in the cross-call block).
+    rm = _get(session, "/range-mgmt/classify", {})
+
+    # ---- Cross-CALL style-count identities (retry once on mismatch) --------
+    # Each side of these three identities comes from a DIFFERENT HTTP response.
+    # Every response is internally consistent, but the style universe is
+    # stock-driven and all_inventory refreshes every ~5 min — so a refresh
+    # landing between two calls (or between their cache fills) skews the pair
+    # with ZERO calculation drift. The API now keys the product-analysis cache
+    # on the inventory snapshot, so on a mismatch we refetch every involved
+    # response ONCE and re-evaluate: a real definitional break reproduces
+    # identically; transient snapshot skew heals and is not a finding.
+    def _cross_call_checks(all_sum, act_sum, ret_sum, rm_resp):
+        rm_rows = rm_resp.get("rows") or []
+        rm_retired = rm_resp.get("retired_rows") or []
+        return [
+            ("product-analysis[active].styles == product-analysis[all].active_styles",
+             "xsurf_pa_active_slice", act_sum.get("styles"), all_sum.get("active_styles")),
+            ("product-analysis[retired].styles == product-analysis[all].retired_styles",
+             "xsurf_pa_retired_slice", ret_sum.get("styles"), all_sum.get("retired_styles")),
+            # Cross-PAGE: the Products / Product Analysis pages and the Range
+            # Management page describe the SAME 'styles with current stock'
+            # universe -- they must agree on its size.
+            ("product-analysis.summary.styles == range-mgmt rows+retired_rows",
+             "xsurf_pa_vs_rm_total", all_sum.get("styles"),
+             len(rm_rows) + len(rm_retired)),
+        ]
+
+    def _eval_cross(checks):
+        found = []
+        for identity, code, a, b in checks:
+            exc = _cmp("products", "style_count", identity, code, a, b, False, period, {})
+            if exc:
+                found.append(exc)
+        return found
+
+    cross_excs = _eval_cross(_cross_call_checks(pasum, _active_sum, _retired_sum, rm))
+    if cross_excs:
+        pa2 = {}
+        for _status in ("all", "active", "retired"):
+            pa2[_status] = _get(
+                session, "/analytics/product-analysis", {"style_status": _status},
+                timeout=config.CROSS_SURFACE_PRODUCT_TIMEOUT_SEC)
+        rm2 = _get(session, "/range-mgmt/classify", {})
+        cross_excs = _eval_cross(_cross_call_checks(
+            pa2["all"].get("summary") or {},
+            pa2["active"].get("summary") or {},
+            pa2["retired"].get("summary") or {}, rm2))
+    out.extend(cross_excs)
     checks = [
         # Product Analysis page: each breakdown chart must add up to the page KPI.
         ("style_count", "product-analysis.summary.styles == Σ by_subcategory.styles",
@@ -375,8 +416,8 @@ def _check_products(session, period, out):
             out.append(exc)
 
     # Range Management page: the tier breakdown and the row list must both add up
-    # to the active-styles total the page shows.
-    rm = _get(session, "/range-mgmt/classify", {})
+    # to the active-styles total the page shows. (Internal to ONE response, so no
+    # cross-call retry is needed.)
     rmsum = rm.get("summary") or {}
     tier_counts = rmsum.get("tier_counts") or {}
     active_total = rmsum.get("total_active_styles")
@@ -394,15 +435,8 @@ def _check_products(session, period, out):
         if exc:
             out.append(exc)
 
-    # Cross-PAGE: the Products / Product Analysis pages and the Range Management
-    # page describe the SAME 'styles with current stock' universe -- they must
-    # agree on its size (PA total styles == range active + range retired).
-    exc = _cmp("products", "style_count",
-               "product-analysis.summary.styles == range-mgmt rows+retired_rows",
-               "xsurf_pa_vs_rm_total", pasum.get("styles"),
-               len(rows) + len(retired_rows), False, period, {})
-    if exc:
-        out.append(exc)
+    # (xsurf_pa_vs_rm_total is evaluated in the cross-call block above, with the
+    # same one-shot refetch as the slice-partition identities.)
 
     # inventory-style-counts internal invariant: active + retired == total.
     isc = _get(session, "/inventory-style-counts", {})

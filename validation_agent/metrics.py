@@ -46,6 +46,9 @@ def _base_sql(by_subcat: bool) -> str:
         FROM all_sales
         WHERE sale_date::date BETWEEN %(d0)s AND %(d1)s
           AND pos_location_name IS NOT NULL
+          -- Align with the dashboard's reporting scope (api_pg.BASE_FILTERS):
+          -- the agent validates the numbers the pages actually render.
+          AND {config.REPORTING_FILTERS}
     )
     SELECT
         CASE WHEN store IS NULL THEN 'group' ELSE 'store' END AS entity_type,

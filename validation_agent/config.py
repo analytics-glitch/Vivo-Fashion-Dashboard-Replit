@@ -39,6 +39,24 @@ DATABASE_URL = (
 )
 
 VAT_RATE = _f("VALIDATION_VAT_RATE", 0.16)
+
+# Reporting-scope filter for the recomputed store/group metrics.
+# MUST mirror api_pg.BASE_FILTERS (minus the `s.` alias): every dashboard page
+# reports all_sales under these exclusions (internal locations, gift
+# cards/vouchers, shopping bags, promo pseudo-lines). Recomputing metrics
+# WITHOUT them made the agent range-check numbers no page ever renders —
+# e.g. it flagged "Staff purchases" (a location the BI never shows) and a
+# 69-unit gift-card line inflated a store's units/asp/abv far outside its
+# learned band. Keep the two blocks in lockstep when either changes.
+REPORTING_FILTERS = """
+    pos_location_name NOT IN ('Staff purchases','Manual Order','Online - vivo-uganda','Online - vivowoman','Online Orders Location')
+    AND LOWER(COALESCE(product_title,'')) NOT LIKE '%%shopping bag%%'
+    AND LOWER(COALESCE(product_title,'')) NOT LIKE '%%gift card%%'
+    AND LOWER(COALESCE(product_title,'')) NOT LIKE '%%gift voucher%%'
+    AND LOWER(COALESCE(product_title,'')) NOT LIKE '%%voucher%%'
+    AND LOWER(COALESCE(product_title,'')) NOT LIKE '%%on specific products%%'
+    AND LOWER(COALESCE(variant_sku,'')) NOT LIKE '%%vb00%%'
+"""
 CONSISTENCY_TOL = _f("VALIDATION_CONSISTENCY_TOL", 0.01)
 MONEY_TOL = _f("VALIDATION_MONEY_TOL", 0.02)
 NET_COMP_TOL = _f("VALIDATION_NET_COMP_TOL", 0.06)

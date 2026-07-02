@@ -264,6 +264,45 @@ def run_query(query, date_to=None):
     return rows
 
 
+_inv_ver_memo = ("", 0.0)  # (version, fetched_at) — tiny memo, see below
+_INV_VER_MEMO_SEC = 5
+
+
+def _inventory_version():
+    """Current all_inventory snapshot stamp (MAX(_loaded_at)) for cache coherence.
+
+    Nearly uncached (direct pool query, not run_query's 120s cache) so a response
+    cache keyed on it rolls over almost as soon as the ~5-min inventory extract
+    lands. A 5s in-process memo keeps repeated cache-hit requests from paying a
+    MAX scan each time while staying far below the extract cadence. Best-effort —
+    on any failure it returns a constant so the caller's cache key still works
+    (just without snapshot coherence).
+    """
+    global _inv_ver_memo
+    ver, ts = _inv_ver_memo
+    if ver and time.time() - ts < _INV_VER_MEMO_SEC:
+        return ver
+    try:
+        pool, conn = _acquire_conn()
+        try:
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute("SELECT COALESCE(MAX(_loaded_at)::text, '') FROM all_inventory")
+            row = cur.fetchone()
+            cur.close()
+        except Exception:
+            pool.putconn(conn, close=True)
+            raise
+        else:
+            pool.putconn(conn)
+        ver = row[0] if row else ""
+        if ver:
+            _inv_ver_memo = (ver, time.time())
+        return ver
+    except Exception:
+        return "nover"
+
+
 _wb_last_attempt = 0.0
 _wb_attempt_lock = threading.Lock()
 _WB_ATTEMPT_THROTTLE_SEC = 300
@@ -6731,7 +6770,13 @@ def analytics_product_analysis(
     # (~1.6M rows). The result is identical for every user and changes slowly, so
     # cache the fully-computed response for 10 min keyed on all filter params.
     # (run_query also caches the SQL, but only ~120s; this keeps the page warm.)
-    _pa_ck = "pa:" + "|".join(str(x) for x in (
+    # The key ALSO carries the inventory snapshot version (_inventory_version):
+    # the style universe is stock-driven and all_inventory refreshes every ~5 min,
+    # so without it each style_status slice could stay frozen on a DIFFERENT
+    # snapshot for up to 10 min — the [active]/[retired] slices then disagree
+    # with the [all] summary (and with Range Management, which computes live).
+    # Keying on the snapshot keeps every slice coherent with the same data.
+    _pa_ck = "pa:" + _inventory_version() + ":" + "|".join(str(x) for x in (
         df, dt, country, store, brand, category, subcategory, tier, rev_pct,
         style_status, grain, ",".join(all_sel), vel, int(include_warehouse)))
     _pa_cached = cache_get(_pa_ck)
