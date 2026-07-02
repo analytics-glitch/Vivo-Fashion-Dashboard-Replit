@@ -789,14 +789,15 @@ function KpiCard(o){
   const unit=o.unit?`<span class="kpi-unit">${o.unit}</span>`:'';
   const val=(o.value==null||o.value==='')?'&mdash;':o.value;
   const delta=`<div class="kpi-delta">${o.delta||''}</div>`;
+  const footAttrs=o.footnoteAttrs||'';
   let foot;
   if(o.alert){
     const t=o.alert.title?` title="${o.alert.title}"`:'';
     const oc=o.alert.onclick?` onclick="${o.alert.onclick}"`:'';
     const role=o.alert.onclick?' role="button" tabindex="0"':'';
-    foot=`<div class="kpi-sub"><span class="kpi-pill"${t}${oc}${role}>${o.alert.text}</span></div>`;
+    foot=`<div class="kpi-sub"${footAttrs}><span class="kpi-pill"${t}${oc}${role}>${o.alert.text}</span></div>`;
   }else{
-    foot=`<div class="kpi-sub">${o.footnote||''}</div>`;
+    foot=`<div class="kpi-sub"${footAttrs}>${o.footnote||''}</div>`;
   }
   const actCls='kpi-action'+((!o.action&&o.reserveAction)?' kpi-action--reserved':'');
   const action=`<div class="${actCls}">${o.action||''}</div>`;
@@ -2395,7 +2396,7 @@ function renderKpis(d,mpg,coverDelta){
      if(coverStatus==='overstocked'){cval='12+';}
      else if(coverStatus==='ok'&&cover!=null){cval=coverFmt(cover);ccls=cover<1?'amber':'';}
      else{cval='&mdash;';}
-     return KpiCard({reserveAction:true,label:'Months of cover',value:cval,valueClass:ccls,valueAttrs:fx(FX.monthsCover),cardAttrs:` title="${coverTip}"`,footnote:coverNote});})(),
+     return KpiCard({reserveAction:true,label:'Months of cover',value:cval,valueClass:ccls,valueAttrs:fx(FX.monthsCover),cardAttrs:` title="${coverTip}"`,footnote:coverNote,footnoteAttrs:' style="margin-top:0;"'});})(),
     (()=>{
      // Prev-month cover: stock ÷ the PREVIOUS full calendar month's net use — a
      // more reactive signal than the 6-month average. Sits next to it and degrades
