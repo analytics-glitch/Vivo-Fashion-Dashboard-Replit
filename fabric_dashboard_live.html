@@ -13,7 +13,7 @@
   --accent:#1a5c38; --accent-deep:#0f3d24; --accent-strong:#00c853;
   --danger:#dc2626; --amber:#d97706; --ok:#15803d;
   /* KPI card design tokens — white cards, one ink hero, Vivo-orange accent */
-  --kpi-surface:#ffffff; --kpi-border:#EFE9E4; --kpi-ink:#1A1A1A; --kpi-orange:#EE5A0E; --kpi-orange-deep:#C2410C;
+  --kpi-surface:#ffffff; --kpi-border:#ECE6E1; --kpi-ink:#1A1A1A; --kpi-orange:#EE5A0E; --kpi-orange-deep:#C2410C;
   --radius:12px;
 }
 *{box-sizing:border-box;}
@@ -75,24 +75,25 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .fig-card.clickable{cursor:pointer;transition:border-color .15s,box-shadow .15s,transform .15s;}
 .fig-card.clickable:hover{border-color:var(--accent);box-shadow:0 4px 14px rgba(26,92,56,.1);transform:translateY(-1px);}
 .fig-card.is-active{border-color:var(--accent);border-width:2px;background:rgba(26,92,56,.06);}
-.kpi{display:flex;flex-direction:column;height:100%;background:var(--kpi-surface);border:1px solid var(--kpi-border);border-radius:12px;padding:20px;transition:box-shadow .18s,border-color .18s;}
-.kpi:hover{border-color:#e2dad3;box-shadow:0 4px 16px rgba(26,26,26,.06);}
+.kpi{display:flex;flex-direction:column;height:100%;background:var(--kpi-surface);border:1px solid var(--kpi-border);border-radius:10px;padding:20px;box-shadow:0 1px 2px rgba(26,26,26,.04),0 1px 3px rgba(26,26,26,.06);transition:box-shadow .18s,border-color .18s;}
+.kpi:hover{border-color:#e2dad3;box-shadow:0 2px 6px rgba(26,26,26,.08);}
 .kpi.hero{background:var(--kpi-ink);border-color:var(--kpi-ink);color:#fff;position:relative;overflow:hidden;}
 .kpi.hero::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--kpi-orange);}
-.kpi.hero:hover{border-color:var(--kpi-ink);box-shadow:0 6px 20px rgba(26,26,26,.18);}
-.kpi .eyebrow{display:block;min-height:2.1em;line-height:1.25;font-size:12px;font-weight:600;letter-spacing:.05em;color:var(--muted);}
+.kpi.hero:hover{border-color:var(--kpi-ink);box-shadow:0 2px 8px rgba(26,26,26,.14);}
+.kpi .eyebrow{display:block;min-height:2.5em;line-height:1.25;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);}
 .kpi.hero .eyebrow{color:rgba(255,255,255,.66);}
-.kpi-value{font-size:30px;font-weight:700;letter-spacing:-.02em;line-height:1.1;margin:8px 0 0;color:var(--kpi-ink);font-variant-numeric:tabular-nums;white-space:nowrap;max-width:100%;}
-.kpi-value.permetre{font-size:20px;}
+.kpi-value{font-size:32px;font-weight:700;letter-spacing:-.02em;line-height:1.1;margin:8px 0 0;color:var(--kpi-ink);font-variant-numeric:tabular-nums;font-feature-settings:"tnum";white-space:nowrap;max-width:100%;}
 .kpi-value.danger{color:var(--danger);}
 .kpi-value.amber{color:var(--amber);}
 .kpi-value.ok{color:var(--ok);}
 .kpi.hero .kpi-value{color:#fff;}
-.kpi-unit{font-size:.6em;font-weight:600;color:var(--muted);margin-left:.2em;}
-.kpi.hero .kpi-unit{color:rgba(255,255,255,.7);}
+.kpi-value-number{font-variant-numeric:tabular-nums;font-feature-settings:"tnum";}
+.kpi-value-unit{font-size:.55em;font-weight:500;color:#6B7280;margin-left:2px;vertical-align:baseline;}
+.kpi-value-unit--prefix{margin-left:0;margin-right:3px;}
+.kpi.hero .kpi-value-unit{color:rgba(255,255,255,.7);}
 .kpi-delta{font-size:12px;font-weight:700;line-height:1.3;margin-top:4px;}
 .kpi-delta:empty{display:none;}
-.kpi-sub{font-size:12px;color:var(--muted);margin-top:auto;padding-top:8px;line-height:1.4;}
+.kpi-sub{font-size:12px;font-weight:400;color:var(--muted);margin-top:auto;padding-top:8px;line-height:1.4;}
 .kpi.hero .kpi-sub{color:rgba(255,255,255,.72);}
 .kpi-action{margin-top:10px;}
 .kpi-action:empty:not(.kpi-action--reserved){display:none;}
@@ -101,7 +102,7 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .kpi-pill[role="button"]{cursor:pointer;}
 .kpi .btn.ghost{height:28px;padding:0 10px;font-size:11px;font-weight:600;border-radius:8px;background:transparent;border:1px solid var(--kpi-orange);color:var(--kpi-orange);}
 .kpi .btn.ghost:hover{border-color:var(--kpi-orange-deep);color:var(--kpi-orange-deep);background:rgba(238,90,14,.07);}
-@media(max-width:640px){.kpi-value{font-size:24px;}.kpi-value.permetre{font-size:18px;}}
+@media(max-width:640px){.kpi-value{font-size:28px;}}
 .trend{font-size:12px;font-weight:700;vertical-align:middle;margin-left:6px;white-space:nowrap;}
 .trend-up{color:var(--accent,#1a5c38);}
 .trend-down{color:var(--amber);}
@@ -786,8 +787,10 @@ function KpiCard(o){
   const cardAttrs=o.cardAttrs||'';
   const vcls='kpi-value'+(o.valueClass?(' '+o.valueClass):'');
   const vAttrs=o.valueAttrs||'';
-  const unit=o.unit?`<span class="kpi-unit">${o.unit}</span>`:'';
-  const val=(o.value==null||o.value==='')?'&mdash;':o.value;
+  const isEmpty=(o.value==null||o.value===''||o.value==='—'||o.value==='&mdash;');
+  const val=isEmpty?'&mdash;':o.value;
+  const unit=(o.unit&&!isEmpty)?`<span class="kpi-value-unit">${o.unit}</span>`:'';
+  const prefix=(o.prefix&&!isEmpty)?`<span class="kpi-value-unit kpi-value-unit--prefix">${o.prefix}</span>`:'';
   const delta=`<div class="kpi-delta">${o.delta||''}</div>`;
   const footAttrs=o.footnoteAttrs||'';
   let foot;
@@ -803,7 +806,7 @@ function KpiCard(o){
   const action=`<div class="${actCls}">${o.action||''}</div>`;
   return `<div class="${cls}"${cardAttrs}>`
     +`<span class="eyebrow">${o.label||''}</span>`
-    +`<p class="${vcls}"${vAttrs}>${val}${unit}</p>`
+    +`<p class="${vcls}"${vAttrs}>${prefix}<span class="kpi-value-number">${val}</span>${unit}</p>`
     +delta+foot+action+`</div>`;
 }
 // Plain-language formulas / source notes, keyed for reuse across sub-pages.
@@ -1134,10 +1137,10 @@ function renderSupportKpis(d){
   const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
   document.getElementById('support-kpis').innerHTML=`
    ${KpiCard({hero:true,label:'Stock on hand',value:fmt(stockQty),unit:unitLabel(),valueAttrs:fx(FX.supfStock),footnote:`<span${fx(FX.kpiSubStockValue)}>${fmtKES(d.fabric_stock_value)}</span> &middot; <span${fx(FX.kpiSubFabricCount)}>${fmt(d.fabric_products)} fabrics</span>`})}
-   ${KpiCard({label:'Total fabric value',value:fmtKES(d.fabric_stock_value),valueAttrs:fx(FX.supfValue),footnote:'RMAT/Stock only'})}
+   ${KpiCard({label:'Total fabric value',prefix:'KES',value:fmtKESval(d.fabric_stock_value),valueAttrs:fx(FX.supfValue),footnote:'RMAT/Stock only'})}
    ${KpiCard({label:'Consumed today',value:fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres),unit:unitLabel(),valueAttrs:fx(FX.supfConsToday),footnote:`${consumedTodaySub(d)}${consumptionSourcesLink('support')}`})}
    ${KpiCard({label:'Consumed 30d',value:fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres),unit:unitLabel(),valueAttrs:fx(FX.supfCons30d),footnote:'net of returns'})}
-   ${KpiCard({label:'Dead stock',value:fmtKES(d.dead_stock_value),valueClass:'danger',valueAttrs:fx(FX.supfDead),footnote:'support fabrics'})}`;
+   ${KpiCard({label:'Dead stock',prefix:'KES',value:fmtKESval(d.dead_stock_value),valueClass:'danger',valueAttrs:fx(FX.supfDead),footnote:'support fabrics'})}`;
 }
 // Support Fabrics drill-down state. supportRows holds the last category summary
 // so the delegated click handler can re-render; supportOpen tracks expanded
@@ -1612,7 +1615,7 @@ function renderFabricMix(){
    ${KpiCard({label:'Consumption period',value:fmt(d.days),unit:'days',valueAttrs:fx(FX.mixPeriodDays),footnote:`<span${fx(FX.mixWindow)}>${esc(win)}</span> &middot; ${mixGroup==='subcategory'?'by sub-category':'by category'}`})}
    ${KpiCard({label:'Total consumption',value:totC==null?'&mdash;':fmt(totC),unit:totC==null?'':'m',valueAttrs:fx(FX.mixTotalConsumption),footnote:'net used (OUT − returns)'})}
    ${KpiCard({label:'Total SOH',value:totA==null?'&mdash;':fmt(totA),unit:totA==null?'':'m',valueAttrs:fx(FX.mixTotalSOH),footnote:'available stock on hand'})}
-   ${KpiCard({label:'Tied-up capital',value:fmtKES(d.total_tied_up_kes),valueAttrs:fx(FX.mixTiedCapital),footnote:'value of available stock'})}`;
+   ${KpiCard({label:'Tied-up capital',prefix:'KES',value:fmtKESval(d.total_tied_up_kes),valueAttrs:fx(FX.mixTiedCapital),footnote:'value of available stock'})}`;
   const rows=mixSortRows(deriveMixRows(d));
   indexMixDetails(rows);
   populateMixSupplierOptions();
@@ -2363,6 +2366,7 @@ function renderKpis(d,mpg,coverDelta){
   const acpmS=d.avg_cost_per_metre_stock,acpmSExc=+d.avg_cost_per_metre_stock_excluded_count||0;
   const acpmP=d.avg_cost_per_metre_purchases,acpmPExc=+d.avg_cost_per_metre_purchases_excluded_count||0;
   const acpmFmt=v=>v==null?'&mdash;':fmtKESm(v);
+  const acpmNum=v=>v==null?null:Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
   // When fabrics are excluded, the footnote becomes a small clickable amber pill
   // that downloads exactly those fabrics (barcode/SKU, name, missing param) as a
   // CSV so a buyer can go fix their Width/GSM in Odoo; otherwise it stays the
@@ -2377,9 +2381,9 @@ function renderKpis(d,mpg,coverDelta){
     :base;
   const cards=[
     KpiCard({hero:true,reserveAction:true,label:'Stock on hand',value:fmt(stockQty),unit:unitLabel(),valueAttrs:fx(FX.stockOnHand),footnote:`<span${fx(FX.kpiSubStockValue)}>${fmtKES(d.fabric_stock_value)}</span> &middot; <span${fx(FX.kpiSubFabricCount)}>${fmt(d.fabric_products)} fabrics</span>`}),
-    KpiCard({reserveAction:true,label:'Total fabric value',value:fmtKES(totalVal),valueAttrs:fx(FX.totalFabricValue),footnote:valSub}),
-    KpiCard(Object.assign({reserveAction:true,label:'Avg cost / metre',value:acpmFmt(acpmS),valueClass:'permetre',valueAttrs:fx(FX.avgCostMetreStock),cardAttrs:` title="${acpmTitle('Average cost per metre across fabric stock on hand (RMAT/Stock), per metre regardless of the kg/m unit toggle.',acpmSExc)}"`},acpmOpts('stock on hand &middot; RMAT/Stock',acpmSExc,'stock'))),
-    KpiCard(Object.assign({reserveAction:true,label:'Avg cost / metre (purchases)',value:acpmFmt(acpmP),valueClass:'permetre',valueAttrs:fx(FX.avgCostMetrePurchases),cardAttrs:` title="${acpmTitle('Average purchase cost per metre across all received POs, per metre regardless of the kg/m unit toggle.',acpmPExc)}"`},acpmOpts('received &middot; all POs',acpmPExc,'purchases'))),
+    KpiCard({reserveAction:true,label:'Total fabric value',prefix:'KES',value:fmtKESval(totalVal),valueAttrs:fx(FX.totalFabricValue),footnote:valSub}),
+    KpiCard(Object.assign({reserveAction:true,label:'Avg cost / metre',prefix:'KES',value:acpmNum(acpmS),unit:'/m',valueAttrs:fx(FX.avgCostMetreStock),cardAttrs:` title="${acpmTitle('Average cost per metre across fabric stock on hand (RMAT/Stock), per metre regardless of the kg/m unit toggle.',acpmSExc)}"`},acpmOpts('stock on hand &middot; RMAT/Stock',acpmSExc,'stock'))),
+    KpiCard(Object.assign({reserveAction:true,label:'Avg cost / metre (purchases)',prefix:'KES',value:acpmNum(acpmP),unit:'/m',valueAttrs:fx(FX.avgCostMetrePurchases),cardAttrs:` title="${acpmTitle('Average purchase cost per metre across all received POs, per metre regardless of the kg/m unit toggle.',acpmPExc)}"`},acpmOpts('received &middot; all POs',acpmPExc,'purchases'))),
     KpiCard({reserveAction:true,label:'Consumed today',value:fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres),unit:unitLabel(),valueAttrs:fx(FX.consumedToday),footnote:`${consumedTodaySub(d)}${consumptionSourcesLink('main')}`}),
     KpiCard({reserveAction:true,label:'Consumed 30d',value:fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres),unit:unitLabel(),valueAttrs:fx(FX.consumed30d),footnote:'net of returns'}),
     (()=>{const v=(mpg&&mpg.metres_per_garment!=null)?mpg.metres_per_garment:null;
@@ -2761,9 +2765,9 @@ async function loadDeadStock(){
   try{
     const d=await apiFetch('/api/fabric/dead-stock');
     const kg=d.items.reduce((s,r)=>s+(r.qty_kg||0),0);
-    document.getElementById('dead-kpis').innerHTML=`
-     <div class="kpi accent"><span class="eyebrow">Total slow moving</span><p class="kpi-value"${fx(FX.slowTotal)}>${fmtKES(d.total_value)}</p><p class="kpi-sub"><span${fx(FX.slowItems)}>${d.items.length} items</span></p></div>
-     <div class="kpi"><span class="eyebrow">Total weight</span><p class="kpi-value"${fx(FX.slowWeight)}>${fmt(kg)}</p><p class="kpi-sub">kg parked</p></div>`;
+    document.getElementById('dead-kpis').innerHTML=
+     KpiCard({label:'Total slow moving',prefix:'KES',value:fmtKESval(d.total_value),valueAttrs:fx(FX.slowTotal),footnote:`<span${fx(FX.slowItems)}>${d.items.length} items</span>`})
+     +KpiCard({label:'Total weight',value:fmt(kg),unit:'kg',valueAttrs:fx(FX.slowWeight),footnote:'parked'});
     document.getElementById('dead-body').innerHTML=d.items.length?d.items.map(r=>`
      <tr>
       <td style="font-weight:600;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.product_name)}">${esc(r.product_name)}</td>
@@ -2858,11 +2862,11 @@ function dqKpis(items){
 function renderDataQuality(){
   const d=dqCache; if(!d)return;
   const k=dqKpis(dqFilterRows(d.items));
-  document.getElementById('dq-kpis').innerHTML=`
-   <div class="kpi accent"><span class="eyebrow">Fabrics affected</span><p class="kpi-value"${fx(FX.dqAffected)}>${fmt(k.count)}</p><p class="kpi-sub">missing kg-per-metre</p></div>
-   <div class="kpi"><span class="eyebrow">Unconvertible total</span><p class="kpi-value"${fx(FX.dqUnconvertible)}>${fmt1(k.total_unconvertible_kg)}</p><p class="kpi-sub">kg (stock + usage)</p></div>
-   <div class="kpi"><span class="eyebrow">Stock unconvertible</span><p class="kpi-value"${fx(FX.dqStockUnconvertible)}>${fmt1(k.total_stock_kg)}</p><p class="kpi-sub">kg on hand</p></div>
-   <div class="kpi"><span class="eyebrow">Usage unconvertible</span><p class="kpi-value"${fx(FX.dqUsageUnconvertible)}>${fmt1(k.total_usage_kg)}</p><p class="kpi-sub">kg consumed, net of returns</p></div>`;
+  document.getElementById('dq-kpis').innerHTML=
+   KpiCard({label:'Fabrics affected',value:fmt(k.count),valueAttrs:fx(FX.dqAffected),footnote:'missing kg-per-metre'})
+   +KpiCard({label:'Unconvertible total',value:fmt1(k.total_unconvertible_kg),unit:'kg',valueAttrs:fx(FX.dqUnconvertible),footnote:'stock + usage'})
+   +KpiCard({label:'Stock unconvertible',value:fmt1(k.total_stock_kg),unit:'kg',valueAttrs:fx(FX.dqStockUnconvertible),footnote:'on hand'})
+   +KpiCard({label:'Usage unconvertible',value:fmt1(k.total_usage_kg),unit:'kg',valueAttrs:fx(FX.dqUsageUnconvertible),footnote:'consumed, net of returns'});
   const NUM={width_m:1,gsm:1,stock_kg:1,usage_kg:1};
   document.getElementById('dq-head').innerHTML='<tr>'+DQ_COLS.map(c=>{
     const arrow=dqSort.key===c.k?(dqSort.dir==='asc'?' \u25B2':' \u25BC'):'';
@@ -3004,9 +3008,9 @@ function sortDqUp(k){
 }
 function renderDqUp(){
   const d=dqUpCache; if(!d)return;
-  document.getElementById('dqup-kpis').innerHTML=`
-   <div class="kpi accent"><span class="eyebrow">Lines excluded</span><p class="kpi-value"${fx(FX.dqLinesExcluded)}>${fmt(d.count)}</p><p class="kpi-sub">supplier · product groups</p></div>
-   <div class="kpi"><span class="eyebrow">Value excluded</span><p class="kpi-value"${fx(FX.dqValueExcluded)}>${fmtKES(d.total_value_kes)}</p><p class="kpi-sub">KES not in supplier totals</p></div>`;
+  document.getElementById('dqup-kpis').innerHTML=
+   KpiCard({label:'Lines excluded',value:fmt(d.count),valueAttrs:fx(FX.dqLinesExcluded),footnote:'supplier · product groups'})
+   +KpiCard({label:'Value excluded',prefix:'KES',value:fmtKESval(d.total_value_kes),valueAttrs:fx(FX.dqValueExcluded),footnote:'not in supplier totals'});
   const NUM={qty_kg:1,value_kes:1};
   document.getElementById('dqup-head').innerHTML='<tr>'+DQUP_COLS.map(c=>{
     const arrow=dqUpSort.key===c.k?(dqUpSort.dir==='asc'?' \u25B2':' \u25BC'):'';
@@ -3398,12 +3402,12 @@ async function loadPOPerf(){
   try{
     const d=await apiFetch('/api/fabric/po-performance');
     const k=d.kpis||{};
-    document.getElementById('po-kpis').innerHTML=`
-     <div class="kpi accent"><span class="eyebrow">Ordered value</span><p class="kpi-value"${fx(FX.poOrdered)}>${fmtKES(k.ordered_value)}</p><p class="kpi-sub"><span${fx(FX.poSubPos)}>${fmt(k.pos)} POs</span> &middot; <span${fx(FX.poSubLines)}>${fmt(k.lines)} lines</span></p></div>
-     <div class="kpi"><span class="eyebrow">Received value</span><p class="kpi-value"${fx(FX.poReceived)}>${fmtKES(k.received_value)}</p><p class="kpi-sub">delivered to date</p></div>
-     <div class="kpi"><span class="eyebrow">Fill rate</span><p class="kpi-value"${fx(FX.poFill)}>${k.fill_rate!=null?k.fill_rate+'%':'—'}</p><p class="kpi-sub">received &divide; ordered</p></div>
-     <div class="kpi"><span class="eyebrow">Avg lead time</span><p class="kpi-value"${fx(FX.poLead)}>${k.avg_lead_days!=null?fmt(k.avg_lead_days):'—'}</p><p class="kpi-sub">days order &rarr; planned</p></div>
-     <div class="kpi"><span class="eyebrow">Overdue open</span><p class="kpi-value ${k.overdue_open>0?'danger':''}"${fx(FX.poOverdue)}>${fmt(k.overdue_open)}</p><p class="kpi-sub">past planned date</p></div>`;
+    document.getElementById('po-kpis').innerHTML=
+     KpiCard({label:'Ordered value',prefix:'KES',value:fmtKESval(k.ordered_value),valueAttrs:fx(FX.poOrdered),footnote:`<span${fx(FX.poSubPos)}>${fmt(k.pos)} POs</span> &middot; <span${fx(FX.poSubLines)}>${fmt(k.lines)} lines</span>`})
+     +KpiCard({label:'Received value',prefix:'KES',value:fmtKESval(k.received_value),valueAttrs:fx(FX.poReceived),footnote:'delivered to date'})
+     +KpiCard({label:'Fill rate',value:k.fill_rate!=null?k.fill_rate:null,unit:k.fill_rate!=null?'%':'',valueAttrs:fx(FX.poFill),footnote:'received &divide; ordered'})
+     +KpiCard({label:'Avg lead time',value:k.avg_lead_days!=null?fmt(k.avg_lead_days):null,unit:k.avg_lead_days!=null?'days':'',valueAttrs:fx(FX.poLead),footnote:'order &rarr; planned'})
+     +KpiCard({label:'Overdue open',value:fmt(k.overdue_open),valueClass:k.overdue_open>0?'danger':'',valueAttrs:fx(FX.poOverdue),footnote:'past planned date'});
     renderPOMonthFigures(d.by_month||[]);
     document.getElementById('po-mtd-note').textContent=mtdNote(d.by_month||[]);
   }catch(e){showErr('po-kpis',e);document.getElementById('po-mtd-note').textContent='';}
