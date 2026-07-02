@@ -118,6 +118,16 @@
   .act.reopen { color: var(--muted); } .act.reopen:hover { background: rgba(100, 116, 139, 0.09); }
   .act.write { color: var(--violet); } .act.write:hover { background: rgba(124, 58, 237, 0.09); }
   td.actions { text-align: right; white-space: nowrap; }
+  .selcol { width: 30px; text-align: center; }
+  .selcol input { accent-color: var(--brand); cursor: pointer; width: 15px; height: 15px; }
+  .pill-gap { flex: 1; }
+  .bulkbar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin: 0 0 10px; padding: 8px 12px; border: 1px solid rgba(26, 92, 56, 0.35);
+    border-radius: 10px; background: var(--brand-soft);
+  }
+  .bulkcount { font-size: 13px; font-weight: 650; }
+  .spinner.small { width: 14px; height: 14px; border-width: 2px; margin: 0; }
   .footnote { padding: 9px 12px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); }
   .center { text-align: center; padding: 44px 16px; color: var(--muted); font-size: 13px; }
   .spinner {
@@ -182,6 +192,9 @@ var state = {
   total: 0,
   itemsError: null,
   busyKey: null,
+  selected: {},      // item_key -> true (cleared on tab/status change + reload)
+  bulkBusy: false,
+  exportBusy: false,
   runBusy: false,
   toast: null,
   loginError: null,
@@ -309,6 +322,7 @@ function loadSummary() {
 function loadItems() {
   state.items = null;
   state.itemsError = null;
+  state.selected = {};
   render();
   var q = "/recon/items?recon_type=" + encodeURIComponent(state.type) + "&limit=300";
   if (state.status) q += "&status=" + encodeURIComponent(state.status);
@@ -352,6 +366,67 @@ function decide(itemKey, action) {
   }).catch(function (e) {
     state.busyKey = null;
     flash(e.message || ("Failed to " + action));
+  });
+}
+
+function selectedKeys() {
+  return Object.keys(state.selected).filter(function (k) { return state.selected[k]; });
+}
+
+function bulkDecide(action) {
+  var keys = selectedKeys();
+  if (!keys.length) return;
+  var note = null;
+  if (action === "reject") {
+    note = window.prompt("Optional note for these " + keys.length + " dismissals:");
+    if (note === null) return; // cancelled
+    note = note.trim() || null;
+  } else if (action === "approve") {
+    if (!window.confirm("Approve " + keys.length + " selected item(s)?")) return;
+  }
+  state.bulkBusy = true;
+  render();
+  req("POST", "/recon/decide-bulk", { item_keys: keys, action: action, note: note }).then(function (d) {
+    state.bulkBusy = false;
+    var doneN = (d.done || []).length, skipN = (d.skipped || []).length;
+    var msg = doneN + " item(s) " + (action === "approve" ? "approved" : action === "reject" ? "dismissed" : "reopened");
+    if (skipN) msg += " · " + skipN + " skipped (" + esc(String((d.skipped[0] || {}).reason || "")) + (skipN > 1 ? ", …" : "") + ")";
+    flash(msg);
+    loadItems();
+    loadSummary();
+  }).catch(function (e) {
+    state.bulkBusy = false;
+    flash(e.message || ("Bulk " + action + " failed"));
+    render();
+  });
+}
+
+function exportCsv() {
+  if (state.exportBusy) return;
+  state.exportBusy = true;
+  render();
+  var q = API + "/recon/export.csv?recon_type=" + encodeURIComponent(state.type);
+  if (state.status) q += "&status=" + encodeURIComponent(state.status);
+  var headers = {};
+  var t = token();
+  if (t) headers["Authorization"] = "Bearer " + t;
+  fetch(q, { headers: headers, credentials: "same-origin" }).then(function (r) {
+    if (r.status === 401 || r.status === 403) throw new Error("Session expired — sign in again.");
+    if (!r.ok) throw new Error("Export failed (" + r.status + ")");
+    return r.blob();
+  }).then(function (blob) {
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "recon-" + state.type + (state.status ? "-" + state.status : "") + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+  }).catch(function (e) {
+    flash(e.message || "Export failed");
+  }).then(function () {
+    state.exportBusy = false;
+    render();
   });
 }
 
@@ -495,7 +570,22 @@ function renderApp() {
     html += '<button class="pill ' + (state.status === st ? "active" : "") + '" data-action="status" data-status="' + esc(st) + '">' +
       esc(STATUS_LABEL[st] || st) + ' (' + esc((typeSummary[st].count || 0).toLocaleString()) + ')</button>';
   });
+  html += '<span class="pill-gap"></span>' +
+    '<button class="pill" data-action="export" ' + (state.exportBusy ? "disabled" : "") + ' title="Download the current tab (with the active status filter) as CSV">' +
+    (state.exportBusy ? "Exporting…" : "⬇ Export CSV") + '</button>';
   html += '</div>';
+
+  var selCount = selectedKeys().length;
+  if (selCount > 0) {
+    html += '<div class="bulkbar">' +
+      '<span class="bulkcount">' + esc(selCount.toLocaleString()) + ' selected</span>' +
+      '<button class="act approve" data-action="bulk-approve" ' + (state.bulkBusy ? "disabled" : "") + '>✓ Approve selected</button>' +
+      '<button class="act reject" data-action="bulk-reject" ' + (state.bulkBusy ? "disabled" : "") + '>✕ Dismiss selected</button>' +
+      '<button class="act reopen" data-action="bulk-reopen" ' + (state.bulkBusy ? "disabled" : "") + '>↺ Reopen selected</button>' +
+      '<button class="act" data-action="bulk-clear" ' + (state.bulkBusy ? "disabled" : "") + '>Clear</button>' +
+      (state.bulkBusy ? '<span class="spinner small"></span>' : '') +
+      '</div>';
+  }
 
   if (state.itemsError) {
     html += '<div class="errbox">' + esc(state.itemsError) + '</div>';
@@ -504,13 +594,16 @@ function renderApp() {
   } else if (state.items.length === 0) {
     html += '<div class="card"><div class="center">No items for this filter.</div></div>';
   } else {
+    var allSelected = state.items.length > 0 && state.items.every(function (it) { return state.selected[it.item_key]; });
     html += '<div class="card"><table><thead><tr>' +
+      '<th class="selcol"><input type="checkbox" data-action="select-all" ' + (allSelected ? "checked" : "") + ' title="Select all on this page" /></th>' +
       '<th>Status</th><th>Store / Ref</th><th>Day</th><th class="r">Side A (KES)</th><th class="r">Side B (KES)</th><th class="r">Diff (KES)</th><th>Detail</th><th class="r">Actions</th>' +
       '</tr></thead><tbody>';
     state.items.forEach(function (it, idx) {
       var busy = state.busyKey === it.item_key;
       var diffBad = Math.abs(Number(it.diff) || 0) > 1;
       html += '<tr>' +
+        '<td class="selcol"><input type="checkbox" data-action="select" data-idx="' + idx + '" ' + (state.selected[it.item_key] ? "checked" : "") + ' /></td>' +
         '<td>' + statusPill(it.status) + '</td>' +
         '<td class="store">' + esc(it.store || (it.details && it.details.vendor) || "—") + '</td>' +
         '<td class="num">' + esc(it.day ? String(it.day).slice(0, 10) : "—") + '</td>' +
@@ -562,6 +655,29 @@ document.addEventListener("click", function (ev) {
   var action = el.getAttribute("data-action");
   if (action === "logout") { doLogout(); return; }
   if (action === "run") { runNow(); return; }
+  if (action === "export") { exportCsv(); return; }
+  if (action === "bulk-approve") { bulkDecide("approve"); return; }
+  if (action === "bulk-reject") { bulkDecide("reject"); return; }
+  if (action === "bulk-reopen") { bulkDecide("reopen"); return; }
+  if (action === "bulk-clear") { state.selected = {}; render(); return; }
+  if (action === "select") {
+    var sIdx = parseInt(el.getAttribute("data-idx"), 10);
+    var sit = state.items && state.items[sIdx];
+    if (!sit) return;
+    if (state.selected[sit.item_key]) delete state.selected[sit.item_key];
+    else state.selected[sit.item_key] = true;
+    render();
+    return;
+  }
+  if (action === "select-all") {
+    var all = state.items && state.items.length > 0 && state.items.every(function (it) { return state.selected[it.item_key]; });
+    state.selected = {};
+    if (!all && state.items) {
+      state.items.forEach(function (it) { state.selected[it.item_key] = true; });
+    }
+    render();
+    return;
+  }
   if (action === "tab") {
     state.type = el.getAttribute("data-type");
     state.status = "";

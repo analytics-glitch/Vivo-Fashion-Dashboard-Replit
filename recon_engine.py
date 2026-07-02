@@ -536,9 +536,13 @@ def _llm_rank_ambiguous(conn, cap=15):
 
 # ------------------------------------------------------------------- runs
 
-def run_reconciliation(trigger="manual", triggered_by=None, days=92, use_llm=True):
+def run_reconciliation(trigger="manual", triggered_by=None, days=92, use_llm=True,
+                       on_start=None):
     """Full run of all four matchers. Returns the run row dict.
-    Raises RuntimeError('run_in_progress') if another run holds the lock."""
+    Raises RuntimeError('run_in_progress') if another run holds the lock.
+    `on_start` (optional callable) fires once the advisory lock is held and the
+    run row exists — callers that spawn this in a thread use it to distinguish
+    "really started" from "lost the lock race" synchronously."""
     conn = psycopg2.connect(DATABASE_URL)
     try:
         ensure_recon_tables(conn)
@@ -553,6 +557,11 @@ def run_reconciliation(trigger="manual", triggered_by=None, days=92, use_llm=Tru
                     (trigger, triggered_by))
                 run_id = cur.fetchone()[0]
             conn.commit()
+            if on_start is not None:
+                try:
+                    on_start()
+                except Exception:
+                    pass
             stats = {}
             try:
                 stats["sales_ledger"] = match_sales_ledger(conn, run_id, days=days)
