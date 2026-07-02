@@ -109,10 +109,14 @@ table.data td.r{text-align:right;font-variant-numeric:tabular-nums;}
 table.data tr:last-child td{border-bottom:none;}
 table.data tbody tr:hover td{background:rgba(26,92,56,.03);}
 .tbl-wrap{overflow:auto;border-radius:var(--radius);}
-/* Stock Mix table only: constrain height so the header can stick, and give a
-   clearly visible horizontal scrollbar. Scoped to .mix-scroll so no other
-   Fabric dashboard table is affected. */
-.mix-scroll{max-height:calc(100vh - 230px);overflow:auto;border-radius:var(--radius);}
+/* Fabric drill-down tables: by default fit to content (grow to show every
+   collapsed row, no inner vertical scrollbar); the capped max-height + inner
+   vertical scroll only kick in once a row is drilled down and `.is-expanded`
+   is toggled on during render. Horizontal scroll stays available for wide
+   tables. Header + Total stay pinned in both states (rules below). Scoped to
+   .mix-scroll so no other Fabric dashboard table is affected. */
+.mix-scroll{overflow:auto;border-radius:var(--radius);}
+.mix-scroll.is-expanded{max-height:calc(100vh - 230px);}
 .mix-scroll table.data thead th{position:sticky;top:0;z-index:3;background:var(--bg);box-shadow:inset 0 -1px 0 var(--border-strong);}
 /* Pin the Stock Mix "Total" row to the bottom of the scroll area. Scoped to
    .mix-scroll so no other table is affected. */
@@ -355,7 +359,9 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        </div>
       </div>
      </div>
-     <div class="tbl-wrap">
+     <!-- .mix-scroll reused (not just .tbl-wrap) so this drill-down table shares
+          the fit-to-collapsed / scroll-on-expand + pinned-header behaviour. -->
+     <div class="tbl-wrap mix-scroll">
       <table class="data">
        <thead><tr>
         <th style="width:28px;"></th>
@@ -1107,6 +1113,10 @@ function renderSupportTable(rows){
     if(open)html+=renderSupportProductRows(key);
   });
   b.innerHTML=html;
+  // Fit-to-collapsed by default; cap height + inner scroll only when a group is
+  // expanded to its products (mirrors the Stock Mix table behaviour).
+  const scrollBox=b.closest('.mix-scroll');
+  if(scrollBox)scrollBox.classList.toggle('is-expanded',Object.values(supportOpen).some(Boolean));
 }
 function renderSupportProductRows(key){
   const p=supportProds[key];
@@ -1632,6 +1642,15 @@ function renderFabricMix(){
    ${showBarcode?'<td></td><td></td>':''}
   </tr>`;
   body.innerHTML=html;
+  // Fit-to-collapsed by default; only cap the height + turn on the inner scroll
+  // once a row is drilled down (searching surfaces product detail = expanded).
+  const scrollBox=body.closest('.mix-scroll');
+  if(scrollBox){
+    const anyExpanded=searching
+      ||Object.values(mixOpen).some(Boolean)
+      ||Object.values(mixSubOpen).some(Boolean);
+    scrollBox.classList.toggle('is-expanded',anyExpanded);
+  }
   if(window.__fabricEnhanceTables)window.__fabricEnhanceTables();
 }
 function sortMix(k){
