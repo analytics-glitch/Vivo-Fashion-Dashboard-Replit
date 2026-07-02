@@ -1980,6 +1980,7 @@ def by_category(location: str = Query(default="RMAT/Stock"),
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE i.quantity > 0
               {loc_sql}
+              AND p.category = 'Fabric'
               AND p.fabric_category IS NOT NULL
               AND {_scope_sql(scope)}
             GROUP BY p.fabric_category, p.fabric_subcategory
@@ -2044,6 +2045,9 @@ def register(
         if search:
             where.append("(p.name ILIKE %s OR p.default_code ILIKE %s OR p.barcode ILIKE %s)")
             params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+        # Fabric-only: exclude trims (zippers, thread, etc.) so the register reconciles
+        # to the "Fabric" bucket on the summary KPI (is_fabric = category='Fabric').
+        where.append("p.category = 'Fabric'")
         # Support-fabric scope: main excludes Lining/Interfacing, support keeps only them.
         where.append(_scope_sql(scope))
 
@@ -2151,6 +2155,7 @@ def ageing(location: str = Query(default="RMAT/Stock"),
               JOIN raw_fabric_products p ON p.id = i.product_id
               LEFT JOIN raw_fabric_moves m ON m.product_id = i.product_id
               WHERE i.quantity > 0 {loc_sql}
+                AND p.category = 'Fabric'
                 AND {_scope_sql(scope)}
               GROUP BY i.product_id, i.quantity, p.kg_per_mtr_eff, i.total_value
             ) sub
@@ -2265,6 +2270,7 @@ def category_stock_consumption(
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE i.quantity > 0 {loc_sql}
+              AND p.category = 'Fabric'
               AND {_scope_sql(scope)}
             GROUP BY 1, 2
         """, loc_params)
@@ -2773,6 +2779,7 @@ def missing_kg_per_metre(scope: str = Query(default="main")):
             LEFT JOIN usage us ON us.product_id = p.id
             LEFT JOIN last_loc ll ON ll.product_id = p.id
             WHERE p.kg_per_mtr_eff IS NULL
+              AND p.category = 'Fabric'
               AND {_scope_sql(scope)}
               AND (COALESCE(st.stock_kg,0) > 0 OR COALESCE(us.usage_kg,0) > 0.05)
         """, list(_FABRIC_LOCATIONS) + list(loc_params))
@@ -2857,6 +2864,7 @@ def dead_stock(scope: str = Query(default="main")):
             LEFT JOIN raw_fabric_products p ON p.id = i.product_id
             LEFT JOIN raw_fabric_moves m ON m.product_id = i.product_id
             WHERE i.location_name = 'Dead/Stock Fabric' AND i.quantity > 0
+              AND p.category = 'Fabric'
               AND {_scope_sql(scope)}
             GROUP BY i.product_name, p.fabric_category, p.fabric_subcategory,
                      p.kg_per_mtr_eff, p.kg_per_mtr_src, p.width_m, p.gsm, p.plain_print,
@@ -2912,6 +2920,7 @@ def bom_lookup(sku: str = Query(default=None), style: str = Query(default=None),
             LEFT JOIN raw_fabric_products p ON p.id = b.component_id
             LEFT JOIN raw_fabric_inventory i ON i.product_id = b.component_id AND i.quantity > 0
             WHERE {where}
+              AND p.category = 'Fabric'
               AND {_scope_sql(scope)}
             ORDER BY b.finished_product_name, b.component_name
         """, params)
@@ -2931,6 +2940,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Qu
                 FROM raw_fabric_inventory i
                 JOIN raw_fabric_products p ON p.id = i.product_id
                 WHERE i.quantity > 0 {loc_sql}
+                  AND p.category = 'Fabric'
                   AND {_scope_sql(scope)}
                 GROUP BY 1
                 ORDER BY value_kes DESC NULLS LAST
@@ -2958,6 +2968,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Qu
                 FROM raw_fabric_inventory i
                 JOIN raw_fabric_products p ON p.id = i.product_id
                 WHERE i.quantity > 0 {loc_sql}
+                  AND p.category = 'Fabric'
                   AND {_scope_sql(scope)}
                 GROUP BY 1
                 ORDER BY value_kes DESC NULLS LAST
@@ -2972,6 +2983,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Qu
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             WHERE i.quantity > 0 {loc_sql}
+              AND p.category = 'Fabric'
               AND {_scope_sql(scope)}
               AND p.fiber_content IS NOT NULL AND p.fiber_content <> ''
             GROUP BY 1
@@ -3647,6 +3659,7 @@ def bom_styles(search: str = Query(default=None), limit: int = Query(default=300
             FROM raw_fabric_boms b
             LEFT JOIN raw_fabric_products p ON p.id = b.component_id
             WHERE {where}
+              AND p.category = 'Fabric'
               AND {scope_clause}
             GROUP BY 1,2
             ORDER BY fabric_kg DESC NULLS LAST
@@ -3657,6 +3670,7 @@ def bom_styles(search: str = Query(default=None), limit: int = Query(default=300
             FROM raw_fabric_boms b
             LEFT JOIN raw_fabric_products p ON p.id = b.component_id
             WHERE b.finished_product_name IS NOT NULL AND b.finished_product_name <> ''
+              AND p.category = 'Fabric'
               AND {scope_clause}
         """)[0]['n']
         return {"total_styles": total, "items": rows}
@@ -3716,7 +3730,7 @@ def suppliers(scope: str = Query(default="main")):
               ROUND(SUM(po.qty_ordered-po.qty_received)::numeric,1) as outstanding_qty
             FROM raw_fabric_purchase_orders po
             JOIN raw_fabric_products p ON p.id = po.product_id
-            WHERE po.state != 'cancel' AND {_scope_sql(scope)}
+            WHERE po.state != 'cancel' AND p.category = 'Fabric' AND {_scope_sql(scope)}
             GROUP BY 1
             ORDER BY outstanding_value DESC NULLS LAST
         """)
@@ -3747,7 +3761,7 @@ def supplier_source_cities(supplier: str = Query(...),
               ROUND(SUM(po.qty_ordered-po.qty_received)::numeric,1) as outstanding_qty
             FROM raw_fabric_purchase_orders po
             JOIN raw_fabric_products p ON p.id = po.product_id
-            WHERE po.state != 'cancel' AND {_scope_sql(scope)}
+            WHERE po.state != 'cancel' AND p.category = 'Fabric' AND {_scope_sql(scope)}
               AND COALESCE(NULLIF(po.supplier,''),'Unknown') = %s
             GROUP BY 1
             ORDER BY outstanding_value DESC NULLS LAST
