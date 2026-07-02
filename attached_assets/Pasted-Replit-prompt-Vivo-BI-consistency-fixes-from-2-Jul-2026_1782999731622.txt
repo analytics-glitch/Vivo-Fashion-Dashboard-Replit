@@ -1,0 +1,119 @@
+Replit prompt — Vivo BI consistency fixes (from 2-Jul-2026 re-audit)
+
+Copy everything below the line into Replit.
+
+
+You are working on the Vivo Fashion Group BI dashboard (vivofashionbrands.com). A front-end consistency re-audit on 2 Jul 2026 confirmed earlier fixes but found outstanding and new issues. Fix them in the priority order below. Work through one workstream at a time, and after each one list the files changed and how you verified the acceptance check.
+
+GROUND RULES
+
+
+Never change what a metric means silently: if a definition changes, update the Report Catalogue dictionary entry in the same commit.
+Every KPI card and breakdown must state its basis (period window, VAT treatment, returns/discount netting, population scope) when it differs from the page default.
+Nulls render as "—" or "no data", never as 0, 0.0% or 100%.
+Reference period for verification: 1–30 Jun 2026, Channel=All, KES, All countries, All POS. Overview is the control page: Total Sales 97.41M · Transactions 11,077 · Units 23,413 · Footfall 72,912.
+
+
+WORKSTREAM 1 — One "Net Sales" definition (highest priority)
+Today three definitions coexist: Overview tile 83.39M (behaves like VAT-exclusive), Margin "Net Revenue" 81.86M, Sales Export "Net Sales" 84.77M (line ÷ 1.16 Kenya / 1.18 Uganda, after discounts). The Report Catalogue defines Net Sales = gross − discounts − returns, which computes to 92.07M and matches none of them.
+
+
+Trace the query behind each of the four values and document what each actually nets out (VAT, returns, discounts).
+Adopt ONE canonical Net Sales (recommend: gross − returns − discounts, VAT-inclusive, so it lives on the same basis as Total Sales) and repoint Overview, Margin, Product Analysis and the Export summary at it.
+If a VAT-exclusive figure is needed, add it as a separately named measure ("Net Sales ex-VAT") — never reuse the same label.
+Update the Catalogue entry and add the Total→Net bridge to the Overview tile tooltip (returns X + discounts Y [+ VAT Z]).
+ACCEPT: for June, Overview, Margin, PA and Export show the same Net Sales to the shilling, and the Catalogue formula reproduces it.
+
+
+WORKSTREAM 2 — One units-sold population
+June Units Sold currently: 23,413 (Overview/Locations/Footfall/Exec — already aligned, keep as canonical) vs 23,770 (Products), 22,941 (Velocity & Margin), 22,930 (Trend), 21,286 (Product Analysis).
+
+
+Diff each page's query against the canonical one (date field, channel scope, category exclusions, returns netting, store-vs-warehouse scope).
+Either point the page at the canonical measure, or keep its scope and print a reconciliation caption exactly like Products' stock-to-sales card does ("Σ 22,946 vs KPI 23,770; the 824-unit gap is excluded categories").
+Same treatment for the three trailing-30d unit totals (Inventory 22,846 / Exec Stock Mix 23,080 / Locations 23,267): stamp the exact date range and scope on each card.
+ACCEPT: any two pages showing June units either match 23,413 or display a caption quantifying their difference from it.
+
+
+WORKSTREAM 3 — Partial-period comparisons
+
+
+Overview Today tiles: base is Same-Day-Last-Month — rename the delta label "vs SDLM"; add an "as of HH:MM · N% of trading day" badge; either elapsed-adjust the bases or grey deltas until day close. Return Rate delta gets the same guard.
+Comparable-days chart: compute deltas as (today − base)/base so orientation matches the KPI tiles; colour by that signed result (currently shows green ▲22.1% where the tile shows red ▼-18.1%).
+Trend Analysis: exclude the current partial month from the headline "over period" delta (currently −94.5% from a 2-day July); mark the partial point on the chart (dashed/hollow).
+Targets Q3 cards: label "vs Q2" comparisons as pace-adjusted or suppress until ≥1 week of the quarter has elapsed (currently ▼-98.1% after 2/92 days).
+
+
+WORKSTREAM 4 — Regressions shipped with the new features
+
+
+Products → New styles performance: UNITS (PERIOD) = 0 on all 49 rows while SALES (PERIOD) > 0 — fix the units join; add a validation that rejects units=0 with sales>0.
+Exec Summary → Stock Mix: "Read" column says "Balanced" on every row; wire it to the stated bands (<4w restock · 4–17w healthy · >17w markdown candidate) so it agrees with the legend and the Quick Actions card.
+Exec Summary → Category breakdown: subcategory ASP renders "KES 0 —"; compute it (revenue ÷ units) or blank the cell.
+Production Report: every order's Expected date = 7 May 2026, so 24,941 units read "Overdue" and the forward drop schedule is empty — fix the expected-date mapping from Odoo; where the source has no date, show "—" and exclude from the Overdue bucket.
+Inventory → Phantom Stock: the card defines phantom as "≥30 units, zero sales in 4w" but lists 2–16-unit styles; align query and definition.
+Production units double-count: Units in Progress 127,367 > Ordered 126,202; some orders show stage qty = 2× order qty (BO00336: 429 ordered, 858 staged; also BO00337/39/41/43). De-duplicate stage rows so per-order stage sum ≤ order qty.
+Production Tracker header: "341 active orders / 127,367 units in progress" includes 270 completed orders (101,261 units) in the Warehouse END stage — exclude END from "active/in-progress" or rename the KPI "whole book".
+
+
+WORKSTREAM 5 — Consistent null handling for no-feed locations
+Uganda/Rwanda/Online stores have no stock/size feed and currently render three contradictory ways: Size Health 0.0% (all curves broken), Inventory sell-through 100% "Strong", cover 0.00×.
+
+
+Detect no-feed locations centrally (stock rows absent vs stock = 0).
+Render "no stock data" consistently on Size Health, Inventory sell-through/cover and IBT; exclude these stores from group averages (fixes the 13.8% avg-curve-health headline) and from Size-Gap/IBT suggestion lists.
+Align Footfall vs Locations treatment of broken counters: Footfall shows a conversion for Village Market/Nakuru/City Mall where Locations says "no counter" — pick one rule (suppress + flag) for both, and exclude flagged stores (Yaya 6042.6%, Zoya 586.7% turn-in) from the group turn-in denominator.
+
+
+WORKSTREAM 6 — Walk-in accounts out of customer analytics
+Walk-in POS accounts (Village MKT, Sarit Walkin, Vivo Walk-in, Safari walkin, Garden city walk-In, Vivo Acacia walk-in, Vivo junction walk in, Vivo Yaya, plus any *@vivofashiongroup.com store accounts) still top the VIP/Top-20/repeat/RFM Champions lists while the KPI claims "0 walk-in (separate)".
+
+
+Tag these accounts (email domain + name pattern + store-account register) as walk-in.
+Exclude them from Customers KPIs, Top-20, repeat tables, Customer Details and RFM; show them in a separate "store/walk-in accounts" panel.
+Reconcile the three customer counts (7,984 KPI / 7,861 details / 7,818 RFM) to one base or caption each difference; fix the same-page contradiction "985 bought 2+ times" vs "500 in-period repeat buyers", and stop the loyalty banner mixing lifetime (71.2%) with in-period (12.5%) rates in one sentence.
+
+
+WORKSTREAM 7 — Prior-period stability
+May 2026 figures shifted ~−2.2% between 24 Jun and 2 Jul (103.52M→101.20M sales, 24,779→24,249 units, 11,825→11,545 txns) with no notice, and Trend still shows May = 103.5M while Overview's base says 101.20M.
+
+
+Make Trend and Overview read the same May figure.
+Add a restatement mechanism: when historical figures change, show a "restated on DATE" marker on affected deltas.
+
+
+WORKSTREAM 8 — Labelling cleanup
+
+
+"Markdown candidates" names three populations: 10 (Exec, subcategories) / 19 (Markdown & Clearance, styles) / 206 (IBT markdown-instead, store×style). Rename to "Subcategory markdown flags", "Clearance candidates", "IBT markdown fork" (and update the Catalogue).
+Overview Conversion tile: add "store orders ÷ store footfall" to the tile (Footfall page already states it); make Trend's conversion use the same pooled formula or label it "day-averaged".
+ABV tile: state the numerator is gross Total Sales.
+Top Subcategory tile: state its denominator (net-merch total) or convert to share of Total Sales.
+Header chips: one authoritative "Data as of HH:MM:SS · Ns ago"; remove the second "Updated —" chip that never populates.
+Store-name keys: chart labels on Footfall render concatenated names ("Vivo MoiAvenue", "MSA DigoRoad") beside spaced tables — normalise display names through one lookup.
+Trend store selector: remove "The Oasis Mall Holding Location" (not a selling location).
+"Sales by Location · 30" → "Sales by Location (30 stores)".
+Consolidate Overview's redundant date controls (period picker + comparison picker; drop the free-range duplicate) and merge the All/Retail/Online toggle with the POS filter.
+Brand master corrections: S0125059 "Safari Tiwa Wide Leg Pants", "Safari Lounge Pants", "Safari by Vivo Godet Contrast Stitch Midi Skirt" show BRAND=Vivo; fix in the product master (also: Soko earrings and "Vivo Basic A-line Maxi Skirt" mapped to subcategory "Maxi Dresses"; RFS/sample dresses mapped to "Fitted Tops").
+Velocity: the Satin Kaftan still appears as two subcategory rows (53u + 433u) sharing one stock figure — either merge to one row with a subcategory split tooltip, or apportion stock so rows don't repeat it.
+Update the Catalogue's Re-Order entry — it still describes the old launch-date ranking, but the rebuilt page ranks by opportunity value with a forecast buy engine.
+
+
+WORKSTREAM 9 — Platform
+
+
+Fix Google SSO: /api/auth/google/login returns Internal Server Error; also review session expiry (session dropped mid-use).
+Replenish by Style/SKU and Warehouse Returns hang on "Loading…" >15 s — profile the queries, add timeout/error states.
+Async panel refresh: when the date filter changes, KPI tiles update up to a minute before the charts, which silently show the previous period (and sometimes "No data" with Footfall=0/Conversion=0.00%). Add loading/stale overlays and render "—" while fetching.
+Consider a nightly cross-page reconciliation job that asserts the WORKSTREAM 1–2 acceptance checks and surfaces failures on the Data Quality page.
+
+
+VERIFICATION (run after all workstreams)
+With filter = 1–30 Jun 2026 / All / KES:
+
+
+Net Sales identical on Overview, Margin, Product Analysis, Export summary; Catalogue formula reproduces it.
+Units Sold identical or captioned-reconciled on Overview, Products, Velocity, Trend, Product Analysis.
+No page shows 0 / 0.0% / 100% where data is absent.
+Today view: delta labels say "vs SDLM", tiles carry an as-of badge, chart and tile agree on direction and colour for the same comparison.
+New-styles table shows non-zero units wherever sales > 0; Stock Mix "Read" matches its legend; production Overdue only counts genuinely past-due orders.
