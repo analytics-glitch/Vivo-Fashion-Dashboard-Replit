@@ -54,7 +54,7 @@ def write_heartbeat(conn, status):
             pass
 
 
-def run_subprocess_with_heartbeat(cmd, status, interval=60):
+def run_subprocess_with_heartbeat(cmd, status, interval=60, timeout=None):
     """Run a blocking subprocess while keeping the sync heartbeat fresh.
 
     The heavy image extracts (Odoo base64 + the Shopify gallery crawl) sit in a
@@ -107,7 +107,7 @@ def run_subprocess_with_heartbeat(cmd, status, interval=60):
     t = threading.Thread(target=_pulse, daemon=True)
     t.start()
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, timeout=timeout)
     finally:
         stop.set()
         t.join(timeout=5)
@@ -230,6 +230,10 @@ LOOKBACK_DAYS = int(os.environ.get("SYNC_LOOKBACK_DAYS", "2"))
 # though main() is invoked every 60s by the supervising loop. Persists for the
 # lifetime of the process.
 _LAST_FABRIC_EXTRACT = None
+# Hard timeout for the fabric (Odoo) extract subprocess so a hung/slow Odoo pull
+# can't stall the whole sync loop indefinitely. On timeout the subprocess is
+# killed, the failure is logged, and the loop continues (the next cycle retries).
+FABRIC_EXTRACT_TIMEOUT_SEC = int(os.environ.get("FABRIC_EXTRACT_TIMEOUT_SEC", "600"))
 # Same once-per-minute guard for the fabric consumption/returns sheet override loader.
 _LAST_FABRIC_SHEET_EXTRACT = None
 # Guards the fabric category update tracker (Task #295) — detection + Google Sheet
@@ -1096,6 +1100,56 @@ def main():
 
     log.info("=== Starting incremental sync ===")
 
+    # Fabric (Odoo) sync — RUN EARLY, BEFORE the heavy Shopify order pulls and the
+    # ShopifyQL backfill, so a slow/hung sales step can never starve or block the
+    # fabric refresh and let the /fabric feed silently go stale (the failure mode
+    # this guards against). Feeds the /fabric dashboard (raw_fabric_* tables).
+    # Production runs on a SEPARATE DB that never ran extract_fabric.py, so the
+    # tables start empty and /fabric shows zeros. We bootstrap immediately when the
+    # tables are missing/empty (first deploy) so no manual step is needed, then
+    # refresh EVERY MINUTE thereafter (the dashboard wants near-real-time fabric
+    # figures). extract_fabric.py does a full TRUNCATE + upsert refresh, so it is
+    # safe to re-run. A module-level guard rate-limits to once per minute even
+    # though main() runs every 60s. The subprocess runs under a heartbeat keepalive
+    # + a hard timeout (FABRIC_EXTRACT_TIMEOUT_SEC) so a hung Odoo pull can't stall
+    # the loop indefinitely and the watchdog never mistakes a normal-length pull for
+    # a hang; on timeout/error we log and continue (next cycle retries).
+    import sys
+
+    now_utc = datetime.now(timezone.utc)
+    global _LAST_FABRIC_EXTRACT
+    fabric_empty = False
+    try:
+        cur.execute("SELECT to_regclass('public.raw_fabric_inventory')")
+        if cur.fetchone()[0] is None:
+            fabric_empty = True
+        else:
+            cur.execute("SELECT COUNT(*) FROM raw_fabric_inventory")
+            fabric_empty = cur.fetchone()[0] == 0
+        conn.commit()
+    except Exception as e:
+        log.error("Fabric presence check error: %s", e)
+        conn.rollback()
+    fabric_due = (
+        _LAST_FABRIC_EXTRACT is None
+        or (now_utc - _LAST_FABRIC_EXTRACT).total_seconds() >= 60
+    )
+    if fabric_empty or fabric_due:
+        # Stamp the attempt time up front so a transient failure waits a minute
+        # (when still empty, the fabric_empty branch retries on the next cycle).
+        _LAST_FABRIC_EXTRACT = now_utc
+        try:
+            log.info("Running fabric (Odoo) extract (bootstrap=%s)...", fabric_empty)
+            run_subprocess_with_heartbeat(
+                [sys.executable, "/home/runner/workspace/extract_fabric.py"],
+                "fabric",
+                timeout=FABRIC_EXTRACT_TIMEOUT_SEC,
+            )
+            write_heartbeat(conn, "fabric")
+            log.info("✅ Fabric extract complete")
+        except Exception as e:
+            log.error("Fabric extract error: %s", e)
+
     for store in STORES:
         try:
             process_shopify_store(store, cur, now, rates)
@@ -1245,46 +1299,6 @@ def main():
             log.info("✅ Accounting sync complete")
         except Exception as e:
             log.error("Accounting sync error: %s", e)
-
-    # Fabric (Odoo) sync — feeds the /fabric dashboard (raw_fabric_* tables).
-    # Production runs on a SEPARATE DB that never ran extract_fabric.py, so the
-    # tables start empty and /fabric shows zeros. We bootstrap immediately when
-    # the tables are missing/empty (first deploy) so no manual step is needed,
-    # then refresh EVERY MINUTE thereafter (the dashboard wants near-real-time fabric
-    # figures). extract_fabric.py does a full TRUNCATE + upsert refresh, so it is
-    # safe to re-run. A module-level guard rate-limits to once per minute even
-    # though main() runs every 60s.
-    global _LAST_FABRIC_EXTRACT
-    fabric_empty = False
-    try:
-        cur.execute("SELECT to_regclass('public.raw_fabric_inventory')")
-        if cur.fetchone()[0] is None:
-            fabric_empty = True
-        else:
-            cur.execute("SELECT COUNT(*) FROM raw_fabric_inventory")
-            fabric_empty = cur.fetchone()[0] == 0
-        conn.commit()
-    except Exception as e:
-        log.error("Fabric presence check error: %s", e)
-        conn.rollback()
-    fabric_due = (
-        _LAST_FABRIC_EXTRACT is None
-        or (now_utc - _LAST_FABRIC_EXTRACT).total_seconds() >= 60
-    )
-    if fabric_empty or fabric_due:
-        # Stamp the attempt time up front so a transient failure waits a minute
-        # (when still empty, the fabric_empty branch retries on the next cycle).
-        _LAST_FABRIC_EXTRACT = now_utc
-        try:
-            import subprocess, sys
-
-            log.info("Running fabric (Odoo) extract (bootstrap=%s)...", fabric_empty)
-            subprocess.run(
-                [sys.executable, "/home/runner/workspace/extract_fabric.py"], check=True
-            )
-            log.info("✅ Fabric extract complete")
-        except Exception as e:
-            log.error("Fabric extract error: %s", e)
 
     # Fabric sheet override — the buying team's reconciled Jan–Apr 2026 consumption &
     # returns (Google Sheet), which replace Odoo's inflated moves for that window via

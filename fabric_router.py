@@ -902,6 +902,11 @@ def summary(location: str = Query(default="RMAT/Stock"),
         # session timezone. The extract normally runs many times a day, so >6h with
         # no successful pull means the feed is genuinely frozen.
         STALE_THRESHOLD_HOURS = 6
+        # Well past threshold (or never loaded) = the pull is genuinely failing, not
+        # merely mid-catch-up. The banner escalates from calm/informational to an
+        # alarming warning only above this critical mark. On the always-on prod VM the
+        # fabric extract runs every minute, so this only trips on a real outage.
+        CRITICAL_THRESHOLD_HOURS = 24
         fresh = q(conn, """
             SELECT MAX(_loaded_at) AS last_loaded,
                    EXTRACT(EPOCH FROM (timezone('UTC', now()) - MAX(_loaded_at))) AS secs
@@ -909,8 +914,26 @@ def summary(location: str = Query(default="RMAT/Stock"),
         """)[0]
         fresh_secs = float(fresh['secs']) if fresh and fresh['secs'] is not None else None
         fresh_hours = round(fresh_secs / 3600.0, 2) if fresh_secs is not None else None
+        # `_loaded_at` is written by extract_fabric.py as a NAIVE UTC timestamp
+        # (datetime.utcnow()), so serialize it with an explicit 'Z' UTC marker; the
+        # frontend converts it to Africa/Nairobi for the exact "last successful pull"
+        # time shown alongside the relative age.
+        fresh_at_iso = (
+            fresh['last_loaded'].isoformat() + 'Z'
+            if fresh and fresh['last_loaded'] is not None
+            else None
+        )
         # No successful pull at all (empty table / never loaded) is treated as stale.
         fabric_stale = (fresh_hours is None) or (fresh_hours > STALE_THRESHOLD_HOURS)
+        # Severity tier drives the banner styling: ok (fresh, no banner) / info
+        # (mildly behind — calm, catching up) / warn (well past threshold or never
+        # loaded — genuinely failing).
+        if fresh_hours is None or fresh_hours > CRITICAL_THRESHOLD_HOURS:
+            fabric_freshness_severity = "warn"
+        elif fresh_hours > STALE_THRESHOLD_HOURS:
+            fabric_freshness_severity = "info"
+        else:
+            fabric_freshness_severity = "ok"
 
         # Months of cover — 6-month average monthly run-rate with the in-progress
         # month projected to its end-of-month figure (fabric consumption is lumpy
@@ -987,8 +1010,11 @@ def summary(location: str = Query(default="RMAT/Stock"),
             # Fabric-feed freshness (display-only; same value regardless of scope).
             "fabric_last_loaded_secs": round(fresh_secs) if fresh_secs is not None else None,
             "fabric_last_loaded_hours": fresh_hours,
+            "fabric_last_loaded_at": fresh_at_iso,
             "fabric_data_stale": fabric_stale,
             "fabric_stale_threshold_hours": STALE_THRESHOLD_HOURS,
+            "fabric_critical_threshold_hours": CRITICAL_THRESHOLD_HOURS,
+            "fabric_freshness_severity": fabric_freshness_severity,
             **cover,
         }
 

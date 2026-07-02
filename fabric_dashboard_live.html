@@ -154,6 +154,7 @@ tr.sub-row td{background:var(--bg);font-size:12.5px;}
 .banner{padding:.85rem 1.1rem;border-radius:var(--radius);font-size:13px;margin-bottom:1.2rem;}
 .banner-err{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;}
 .banner-warn{background:#fef3c7;color:#92400e;border:1px solid #fcd34d;font-weight:600;}
+.banner-info{background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;}
 .flex{display:flex;gap:9px;flex-wrap:wrap;align-items:center;}
 @media(max-width:760px){.nav-head,.nav-body{padding-left:1rem;padding-right:1rem;}.nav-body{flex-wrap:nowrap;overflow-x:auto;}}
 
@@ -968,6 +969,17 @@ function fmtAge(secs){
   const days=Math.floor(h/24);
   return days+(days===1?' day ago':' days ago');
 }
+// Exact last-successful-pull time, converted from the server's UTC ISO stamp to
+// Africa/Nairobi (EAT). Returns null when the stamp is missing/unparseable.
+function fmtNairobi(iso){
+  if(!iso)return null;
+  const dt=new Date(iso);
+  if(isNaN(dt.getTime()))return null;
+  try{
+    return dt.toLocaleString('en-GB',{timeZone:'Africa/Nairobi',day:'2-digit',month:'short',
+      year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})+' EAT';
+  }catch(e){ return dt.toISOString(); }
+}
 function applyFabricFreshness(d){
   if(d&&typeof d==='object'&&('fabric_last_loaded_secs' in d||'fabric_data_stale' in d))_fabFresh=d;
   const f=_fabFresh;
@@ -975,11 +987,27 @@ function applyFabricFreshness(d){
   const bn=document.getElementById('fabric-stale-banner');
   if(!f){ if(lu)lu.textContent='Updated '+new Date().toLocaleTimeString(); return; }
   const age=fmtAge(f.fabric_last_loaded_secs);
+  const exact=fmtNairobi(f.fabric_last_loaded_at);
   if(lu)lu.textContent=age?('Fabric data updated '+age):'Fabric data: no successful pull yet';
   if(bn){
-    if(f.fabric_data_stale){
-      bn.className='banner banner-warn';
-      bn.innerHTML='⚠ Odoo fabric sync is stale — last successful pull was '+esc(age||'unknown')+'. Categories may be out of date.';
+    // Severity: 'warn' (well past threshold / never loaded — genuinely failing) shows
+    // the alarming amber warning; 'info' (mildly behind / catching up) shows a calm
+    // blue informational note; anything else clears the banner. All interpolated
+    // values are esc()'d — the message is built as text fragments, no raw innerHTML
+    // of untrusted values.
+    const sev=f.fabric_freshness_severity||(f.fabric_data_stale?'warn':'ok');
+    if(sev==='warn'||sev==='info'){
+      // Prefer the exact Nairobi time; fall back to the relative age, then 'unknown'.
+      const when=exact?(esc(exact)+(age?' ('+esc(age)+')':'')):esc(age||'unknown');
+      if(sev==='warn'){
+        bn.className='banner banner-warn';
+        bn.innerHTML=age?
+          ('⚠ Odoo fabric sync is stale — last successful pull was '+when+'. Categories may be out of date.'):
+          ('⚠ Odoo fabric sync has not completed a successful pull yet. Figures may be unavailable or out of date.');
+      }else{
+        bn.className='banner banner-info';
+        bn.innerHTML='Fabric data is catching up — last successful Odoo pull was '+when+'. Figures may be slightly behind.';
+      }
       bn.style.display='';
     }else{
       bn.style.display='none'; bn.innerHTML='';
