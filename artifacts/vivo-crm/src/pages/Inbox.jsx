@@ -72,9 +72,9 @@ export default function Inbox() {
     try {
       const r = await api.post("/social/facebook/sync", {});
       const d = r.data || {};
-      toast.success(`Synced ${d.pages_synced || 0} page(s): ${d.posts || 0} posts, ${d.comments || 0} comments`);
+      toast.success(`Synced ${d.pages_synced || 0} page(s): ${d.posts || 0} posts, ${d.comments || 0} comments, ${d.dms || 0} DMs`);
       if ((d.scopes_missing || []).length) {
-        toast.warning(`Missing scope: ${d.scopes_missing.join(", ")} — comments cannot be pulled until added.`);
+        toast.warning(`Missing scope: ${d.scopes_missing.join(", ")} — that content cannot be pulled until added.`);
       }
       await loadFbStatus();
       await load();
@@ -143,12 +143,16 @@ export default function Inbox() {
 
   const sendReply = async () => {
     if (!replyBody.trim() || !selected) return;
-    const r = await api.post(`/social/feedback/${selected.feedback_id}/reply`, { body: replyBody });
-    toast.success("Reply logged");
-    setSelected(r.data);
-    setReplyOpen(false);
-    setReplyBody("");
-    load();
+    try {
+      const r = await api.post(`/social/feedback/${selected.feedback_id}/reply`, { body: replyBody });
+      toast.success(r.data?.delivered ? "Reply sent via Messenger" : "Reply logged");
+      setSelected(r.data);
+      setReplyOpen(false);
+      setReplyBody("");
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || e.message || "Reply failed");
+    }
   };
 
   const searchCustomer = async () => {
@@ -412,7 +416,9 @@ export default function Inbox() {
             >
               ✨ Suggest with AI
             </Button>
-            <p className="text-xs text-[var(--vivo-muted)]">Logged here · platform delivery later.</p>
+            <p className="text-xs text-[var(--vivo-muted)]">
+              {selected?.type === "dm" ? "Sends a real Messenger reply to the customer." : "Logged here · platform delivery later."}
+            </p>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setReplyOpen(false)}>Cancel</Button>
@@ -535,6 +541,7 @@ function FacebookStatusStrip({ status }) {
           <span>Manual sync — click "Sync from Facebook" to refresh</span>
           <span>
             {counts.real_posts ?? 0} live posts ·{" "}
+            {counts.real_dms ?? 0} DMs ·{" "}
             {counts.real_feedback ?? 0} live items
           </span>
         </div>
@@ -551,7 +558,7 @@ function FacebookStatusStrip({ status }) {
             >
               <div className="font-medium truncate" title={p.page_name}>{p.page_name}</div>
               <div className="text-[10px] text-[var(--vivo-muted)] mt-0.5">
-                {p.last_sync_posts ?? 0} posts · {p.last_sync_comments ?? 0} comments
+                {p.last_sync_posts ?? 0} posts · {p.last_sync_comments ?? 0} comments · {p.last_sync_dms ?? 0} DMs
               </div>
               {missing && (
                 <div className="text-[10px] text-amber-700 mt-0.5 truncate" title={(p.last_sync_scopes_missing || []).join(", ")}>
@@ -565,7 +572,7 @@ function FacebookStatusStrip({ status }) {
 
       {hasIssues && (
         <div className="mt-3 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 p-2 rounded-sm" data-testid="fb-scope-warn">
-          <strong>Comments locked.</strong> Missing scope:{" "}
+          <strong>Some content locked.</strong> Missing scope:{" "}
           <code className="text-[10px] bg-white px-1 py-0.5 rounded">{[...scopesMissing].join(", ")}</code>.{" "}
           Enable it in your Meta App → Use Cases → "Manage everything on your Page", then regenerate the user token via Graph Explorer and re-run discovery.
         </div>

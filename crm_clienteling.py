@@ -3165,10 +3165,41 @@ def _reg_social(app):
                               payload: dict = Body(default=None)):
         _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
         body = (payload or {}).get("body") or ""
+        row = _one("SELECT id, platform, type, author_handle "
+                   "FROM crm_social_feedback WHERE id=%s", (_int(fid),))
+        if not row:
+            raise HTTPException(404, "Feedback item not found.")
+        delivered = False
+        if row.get("type") == "dm" and row.get("platform") == "facebook":
+            # A Facebook DM reply is DELIVERED via Messenger (Send API), not
+            # just logged. author_handle holds the sender's page-scoped id.
+            psid = (row.get("author_handle") or "").strip()
+            if not psid:
+                raise HTTPException(
+                    400, "This DM has no sender reference to reply to "
+                         "(re-run the Facebook sync).")
+            if not A._fb_configured():
+                raise HTTPException(400, "Facebook is not configured on the server.")
+            if not body.strip():
+                raise HTTPException(400, "Reply text is empty.")
+            try:
+                A._fb_post(f"{A._fb_page_id()}/messages", {
+                    "recipient": json.dumps({"id": psid}),
+                    "messaging_type": "RESPONSE",
+                    "message": json.dumps({"text": body.strip()}),
+                })
+                delivered = True
+            except Exception as e:
+                # Surface the real Graph error — e.g. the 24-hour messaging
+                # window has closed — instead of a silent failure.
+                raise HTTPException(502, f"Facebook rejected the reply: {e}")
         _ex("UPDATE crm_social_feedback SET reply_body=%s, replied_at=now() WHERE id=%s",
             (body, _int(fid)))
-        A._crm_audit("social", fid, "reply", "feedback reply", request)
-        return {"feedback_id": fid, "reply_body": body, "replied_at": _today()}
+        A._crm_audit("social", fid, "reply",
+                     "dm reply delivered via Messenger" if delivered
+                     else "feedback reply", request)
+        return {"feedback_id": fid, "reply_body": body, "replied_at": _today(),
+                "delivered": delivered}
 
     @app.get("/api/social/auto-tasks")
     def cl_soc_auto_tasks(request: Request, include_completed: bool = Query(False)):
@@ -3234,10 +3265,12 @@ def _reg_social(app):
             page = A._fb_get(A._fb_page_id(), {"fields": "name"})
         except Exception:
             return empty  # token invalid/unreachable -> show connect banner
-        agg = _one("SELECT count(*) AS feedback FROM crm_social_feedback "
-                   "WHERE platform='facebook'") or {}
+        agg = _one("SELECT count(*) AS feedback, "
+                   " count(*) FILTER (WHERE type='dm') AS dms "
+                   "FROM crm_social_feedback WHERE platform='facebook'") or {}
         posts_n = _int(_cfg_get("social.fb.last_sync_posts"), 0)
         comments_n = _int(_cfg_get("social.fb.last_sync_comments"), 0)
+        dms_n = _int(_cfg_get("social.fb.last_sync_dms"), 0)
         scopes = [s for s in (_cfg_get("social.fb.last_scopes_missing") or "").split(",") if s]
         last_at = _cfg_get("social.fb.last_synced_at")
         return {
@@ -3246,12 +3279,14 @@ def _reg_social(app):
                 "page_name": page.get("name") or "Facebook Page",
                 "last_sync_posts": posts_n,
                 "last_sync_comments": comments_n,
+                "last_sync_dms": dms_n,
                 "last_sync_scopes_missing": scopes,
             }],
             "last_synced_at": last_at or None,
             "auto_sync_minutes": None,
             "counts": {"real_posts": posts_n,
-                       "real_feedback": _int(agg.get("feedback"), 0)},
+                       "real_feedback": _int(agg.get("feedback"), 0),
+                       "real_dms": _int(agg.get("dms"), 0)},
         }
 
     @app.post("/api/social/facebook/discover")
@@ -3285,7 +3320,7 @@ def _reg_social(app):
         # The Page comes from server secrets, not a stored connection, so there
         # is nothing to disconnect here; clear cached sync metadata only.
         for k in ("social.fb.last_sync_posts", "social.fb.last_sync_comments",
-                  "social.fb.last_scopes_missing"):
+                  "social.fb.last_sync_dms", "social.fb.last_scopes_missing"):
             _ex("DELETE FROM crm_config WHERE key=%s", (k,))
         return {"ok": True, "page_id": page_id}
 
@@ -3293,6 +3328,7 @@ def _reg_social(app):
     # and comments have been pulled (or the page runs out / time budget hits).
     _FB_SYNC_POST_TARGET = 2000
     _FB_SYNC_COMMENT_TARGET = 2000
+    _FB_SYNC_DM_TARGET = 2000
     _FB_SYNC_TIME_BUDGET_SEC = 240  # hard stop so the HTTP request can't hang forever
     # Only one sync may run at a time: concurrent runs would race the persisted
     # deep-backfill cursor (data stays safe via source_id dedup, but progress
@@ -3329,10 +3365,13 @@ def _reg_social(app):
         scopes_missing = set()
         new_comments = 0
         new_posts = 0
+        new_dms = 0
         total_comments = 0
         total_posts = 0
+        total_dms = 0
 
         _C_FIELDS = "message,from,created_time,like_count,permalink_url"
+        _M_FIELDS = "id,message,from,created_time"
 
         def _ingest_comments(craw, pid, p_link, p_excerpt):
             """Insert a batch of raw Graph comments; LLM-classify only the NEW
@@ -3384,22 +3423,84 @@ def _reg_social(app):
                 if rid:
                     new_comments += 1
 
+        def _ingest_dms(mraw, conv_id, conv_link):
+            """Insert a batch of raw Messenger messages (inbound only — the
+            page's own messages are not inbox items); LLM-classify only the
+            NEW ones (dedup by source_id), same as comments."""
+            nonlocal new_dms
+            cand = []
+            for m in mraw:
+                mid = m.get("id")
+                frm = m.get("from") or {}
+                if not mid:
+                    continue
+                if str(frm.get("id") or "") == str(page_id):
+                    continue  # outbound (the page's own reply)
+                body = (m.get("message") or "").strip()
+                if not body:
+                    continue  # attachment/sticker-only message
+                cand.append((mid, body, m))
+            if not cand:
+                return
+            sids = ["fbdm:" + str(mid) for mid, _, _ in cand]
+            try:
+                rows = _ex("SELECT source_id FROM crm_social_feedback "
+                           "WHERE source_id = ANY(%s)", (sids,), fetch=True) or []
+                existing = {r["source_id"] for r in rows}
+            except Exception:
+                existing = set()
+            fresh = [(mid, body, m) for (mid, body, m) in cand
+                     if ("fbdm:" + str(mid)) not in existing]
+            sent_map = {}
+            for i in range(0, len(fresh), 50):
+                chunk = fresh[i:i + 50]
+                sents = A._fb_sentiment([b for _, b, _ in chunk])
+                for j, (mid, _, _) in enumerate(chunk):
+                    sent_map[mid] = sents.get(j)
+            for mid, body, m in fresh:
+                frm = m.get("from") or {}
+                author = frm.get("name") or "Messenger user"
+                # author_handle carries the sender's page-scoped id (PSID) so
+                # the reply endpoint can send a Messenger reply back.
+                psid = str(frm.get("id") or "") or None
+                rid = _ex(
+                    "INSERT INTO crm_social_feedback "
+                    "(platform,type,author_name,author_handle,body,sentiment,"
+                    " source_id,permalink,parent_source_id,parent_excerpt,"
+                    " posted_at) VALUES "
+                    "('facebook','dm',%s,%s,%s,%s,%s,%s,%s,%s,"
+                    " COALESCE(%s::timestamptz, now())) "
+                    "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
+                    "DO NOTHING RETURNING id",
+                    (author, psid, body, sent_map.get(mid),
+                     "fbdm:" + str(mid), conv_link,
+                     "fbconv:" + str(conv_id),
+                     f"Messenger conversation with {author}",
+                     _fb_ts(m.get("created_time"))), fetch=True)
+                if rid:
+                    new_dms += 1
+
         # The 2000/2000 targets are CUMULATIVE (what the inbox can display), so
         # they count what is already stored — each sync only fetches what's
         # still missing, and the deep-history walk resumes across syncs via a
         # persisted cursor instead of restarting from the newest post.
         stored = _one(
             "SELECT COUNT(*) FILTER (WHERE type='post') AS p, "
-            " COUNT(*) FILTER (WHERE type='comment') AS c "
+            " COUNT(*) FILTER (WHERE type='comment') AS c, "
+            " COUNT(*) FILTER (WHERE type='dm') AS d "
             "FROM crm_social_feedback WHERE platform='facebook'") or {}
         stored_posts = _int(stored.get("p"), 0)
         stored_comments = _int(stored.get("c"), 0)
+        stored_dms = _int(stored.get("d"), 0)
 
         def _posts_short():
             return (stored_posts + new_posts) < _FB_SYNC_POST_TARGET
 
         def _comments_short():
             return (stored_comments + new_comments) < _FB_SYNC_COMMENT_TARGET
+
+        def _dms_short():
+            return (stored_dms + new_dms) < _FB_SYNC_DM_TARGET
 
         # Posts are fetched newest-first, 100 per Graph page, with the first 100
         # comments of each post expanded inline (one HTTP call covers up to 100
@@ -3567,6 +3668,130 @@ def _reg_social(app):
             if deep_done:
                 _cfg_set("social.fb.deep_done", "1")
                 _cfg_set("social.fb.deep_cursor", "")
+
+            # Phase C — Messenger DMs: walk the Page's conversations (newest
+            # activity first) storing each INBOUND message as a 'dm' feedback
+            # row. A missing pages_messaging scope (or any Graph failure here)
+            # never fails the whole sync — posts/comments above are kept and
+            # the missing scope is reported like the comment scope is.
+            def _dm_scope_err(e):
+                m = str(e).lower()
+                return ("permission" in m or "scope" in m or "#10" in m
+                        or "#200" in m or "#230" in m)
+
+            def _fetch_conv_page(after):
+                params = {"fields": "id,link,updated_time,"
+                          "messages.limit(100){" + _M_FIELDS + "}",
+                          "limit": 25}
+                if after:
+                    params["after"] = after
+                return A._fb_get(f"{page_id}/conversations", params)
+
+            def _process_conv_page(feed):
+                """Ingest one conversations page. Returns (n_convs, n_new_dms,
+                next_cursor, completed) — completed=False means the time budget
+                interrupted the page (caller must not advance past it)."""
+                nonlocal total_dms
+                convs = feed.get("data") or []
+                before = new_dms
+                completed = True
+                for conv in convs:
+                    if _over_budget():
+                        completed = False
+                        break
+                    conv_id = conv.get("id")
+                    if not conv_id:
+                        continue
+                    clink = conv.get("link")
+                    if clink and clink.startswith("/"):
+                        clink = "https://www.facebook.com" + clink
+                    mnode = conv.get("messages") or {}
+                    mraw = mnode.get("data") or []
+                    m_after = ((mnode.get("paging") or {}).get("cursors")
+                               or {}).get("after")
+                    m_more = bool((mnode.get("paging") or {}).get("next"))
+                    if mraw:
+                        total_dms += len(mraw)
+                        _ingest_dms(mraw, conv_id, clink)
+                    # Older messages of a long thread, while the target is unmet.
+                    while (m_more and m_after and _dms_short()
+                           and not _over_budget()):
+                        try:
+                            mres = A._fb_get(f"{conv_id}/messages", {
+                                "fields": _M_FIELDS, "limit": 100,
+                                "after": m_after})
+                        except Exception:
+                            break
+                        mraw = mres.get("data") or []
+                        if not mraw:
+                            break
+                        total_dms += len(mraw)
+                        _ingest_dms(mraw, conv_id, clink)
+                        m_after = ((mres.get("paging") or {}).get("cursors")
+                                   or {}).get("after")
+                        m_more = bool((mres.get("paging") or {}).get("next"))
+                paging = feed.get("paging") or {}
+                nxt = ((paging.get("cursors") or {}).get("after")
+                       if paging.get("next") else None)
+                return len(convs), new_dms - before, nxt, completed
+
+            dm_blocked = False
+            dm_after = None
+            dm_exhausted = False
+            dm_first = True
+            # Fresh DMs: from the most recent conversations until a page adds
+            # nothing new. Always attempt at least the first page, even if the
+            # post phases used the whole budget, so DMs are never starved.
+            while dm_first or not _over_budget():
+                page_cursor = dm_after
+                try:
+                    feed = _fetch_conv_page(dm_after)
+                except Exception as e:
+                    if _dm_scope_err(e):
+                        scopes_missing.add("pages_messaging")
+                    dm_blocked = True
+                    break  # keep posts/comments; DM phase reports via scopes
+                n, page_new, nxt, completed = _process_conv_page(feed)
+                dm_first = False
+                if not completed:
+                    dm_after = page_cursor  # re-do this page next sync
+                    break
+                if not nxt:
+                    dm_exhausted = True
+                    dm_after = None
+                    break
+                dm_after = nxt
+                if n == 0 or page_new == 0:
+                    break
+
+            # DM deep backfill toward the 2000 stored target, resuming where
+            # the previous sync stopped (persisted cursor).
+            if not dm_blocked:
+                dm_deep_done = ((_cfg_get("social.fb.dm_deep_done") or "") == "1"
+                                or dm_exhausted)
+                if not dm_deep_done and _dms_short():
+                    deep_after = (_cfg_get("social.fb.dm_deep_cursor") or "") or dm_after
+                    while (deep_after and not _over_budget() and _dms_short()):
+                        page_cursor = deep_after
+                        try:
+                            feed = _fetch_conv_page(deep_after)
+                        except Exception:
+                            # Cursor may have expired — restart next sync.
+                            deep_after = None
+                            break
+                        n, page_new, nxt, completed = _process_conv_page(feed)
+                        if not completed:
+                            deep_after = page_cursor
+                            break
+                        if not nxt or n == 0:
+                            dm_deep_done = True
+                            deep_after = None
+                            break
+                        deep_after = nxt
+                    _cfg_set("social.fb.dm_deep_cursor", deep_after or "")
+                if dm_deep_done:
+                    _cfg_set("social.fb.dm_deep_done", "1")
+                    _cfg_set("social.fb.dm_deep_cursor", "")
         except HTTPException:
             raise
         from datetime import datetime, timezone
@@ -3574,12 +3799,15 @@ def _reg_social(app):
                  datetime.now(timezone.utc).isoformat())
         _cfg_set("social.fb.last_sync_posts", total_posts)
         _cfg_set("social.fb.last_sync_comments", total_comments)
+        _cfg_set("social.fb.last_sync_dms", total_dms)
         _cfg_set("social.fb.last_scopes_missing", ",".join(sorted(scopes_missing)))
         A._crm_audit("social", page_id, "sync",
                      f"facebook sync: {total_posts} posts, "
-                     f"{new_comments} new comments", request)
+                     f"{new_comments} new comments, {new_dms} new DMs", request)
         return {"pages_synced": 1, "posts": total_posts,
-                "comments": new_comments, "scopes_missing": sorted(scopes_missing)}
+                "comments": new_comments, "dms": new_dms,
+                "dms_stored": stored_dms + new_dms,
+                "scopes_missing": sorted(scopes_missing)}
 
 
 def _quick_sentiment(text):
