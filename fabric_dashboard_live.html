@@ -928,7 +928,7 @@ const FX={
   supMissValue:'Received value = received quantity × unit price for this fabric (KES).',
   // KPI subline numbers
   kpiSubStockValue:'Stock value = value of available fabric stock (KES).',
-  kpiSubFabricCount:'Fabrics = number of distinct fabric SKUs in available stock.',
+  kpiSubFabricCount:'Fabric SKUs in stock = number of distinct fabric SKUs in available stock.',
   mixWindow:'Window = the period the consumption is measured over (date range, or number of months when no dates are set).',
   mpgSubMos:'Done-DPS MOs = number of completed DPS manufacturing orders counted in the rolling 30-day window used for this average.',
   slowItems:'Items = number of slow-moving fabric lines.',
@@ -1136,7 +1136,7 @@ async function loadSupport(){
 function renderSupportKpis(d){
   const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
   document.getElementById('support-kpis').innerHTML=`
-   ${KpiCard({hero:true,label:'Stock on hand',value:fmt(stockQty),unit:unitLabel(),valueAttrs:fx(FX.supfStock),footnote:`<span${fx(FX.kpiSubStockValue)}>${fmtKES(d.fabric_stock_value)}</span> &middot; <span${fx(FX.kpiSubFabricCount)}>${fmt(d.fabric_products)} fabrics</span>`})}
+   ${KpiCard({hero:true,label:'Stock on hand',value:fmt(stockQty),unit:unitLabel(),valueAttrs:fx(FX.supfStock),footnote:`<span${fx(FX.kpiSubStockValue)}>${fmtKES(d.fabric_stock_value)}</span> &middot; <span${fx(FX.kpiSubFabricCount)}>${fmt(d.fabric_products)} fabric SKUs in stock</span>`})}
    ${KpiCard({label:'Total fabric value',prefix:'KES',value:fmtKESval(d.fabric_stock_value),valueAttrs:fx(FX.supfValue),footnote:'RMAT/Stock only'})}
    ${KpiCard({label:'Consumed today',value:fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres),unit:unitLabel(),valueAttrs:fx(FX.supfConsToday),footnote:`${consumedTodaySub(d)}${consumptionSourcesLink('support')}`})}
    ${KpiCard({label:'Consumed 30d',value:fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres),unit:unitLabel(),valueAttrs:fx(FX.supfCons30d),footnote:'net of returns'})}
@@ -2380,7 +2380,7 @@ function renderKpis(d,mpg,coverDelta){
     ?esc(exc+' in-scope fabric(s) are missing Width/GSM in Odoo, so they have no kg→metre conversion and are excluded from this figure (both their value and metres). The cost/metre is computed over the remaining convertible fabrics; fill in Width/GSM in Odoo and the next fabric sync will fold them in.')
     :base;
   const cards=[
-    KpiCard({hero:true,reserveAction:true,label:'Stock on hand',value:fmt(stockQty),unit:unitLabel(),valueAttrs:fx(FX.stockOnHand),footnote:`<span${fx(FX.kpiSubStockValue)}>${fmtKES(d.fabric_stock_value)}</span> &middot; <span${fx(FX.kpiSubFabricCount)}>${fmt(d.fabric_products)} fabrics</span>`}),
+    KpiCard({hero:true,reserveAction:true,label:'Stock on hand',value:fmt(stockQty),unit:unitLabel(),valueAttrs:fx(FX.stockOnHand),footnote:`<span${fx(FX.kpiSubStockValue)}>${fmtKES(d.fabric_stock_value)}</span> &middot; <span${fx(FX.kpiSubFabricCount)}>${fmt(d.fabric_products)} fabric SKUs in stock</span>`}),
     KpiCard({reserveAction:true,label:'Total fabric value',prefix:'KES',value:fmtKESval(totalVal),valueAttrs:fx(FX.totalFabricValue),footnote:valSub}),
     KpiCard(Object.assign({reserveAction:true,label:'Avg cost / metre',prefix:'KES',value:acpmNum(acpmS),unit:'/m',valueAttrs:fx(FX.avgCostMetreStock),cardAttrs:` title="${acpmTitle('Average cost per metre across fabric stock on hand (RMAT/Stock), per metre regardless of the kg/m unit toggle.',acpmSExc)}"`},acpmOpts('stock on hand &middot; RMAT/Stock',acpmSExc,'stock'))),
     KpiCard(Object.assign({reserveAction:true,label:'Avg cost / metre (purchases)',prefix:'KES',value:acpmNum(acpmP),unit:'/m',valueAttrs:fx(FX.avgCostMetrePurchases),cardAttrs:` title="${acpmTitle('Average purchase cost per metre across all received POs, per metre regardless of the kg/m unit toggle.',acpmPExc)}"`},acpmOpts('received &middot; all POs',acpmPExc,'purchases'))),
