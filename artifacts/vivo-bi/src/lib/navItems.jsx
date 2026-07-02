@@ -31,7 +31,6 @@ import {
   Factory,
   Coins,
   ImageSquare,
-  Scales,
 } from "@phosphor-icons/react";
 
 /**
@@ -98,8 +97,6 @@ export const PRIMARY_NAV = [
 
   // Finance Reports Suite — leadership + admin (server-gated via /api/finance)
   { to: "/finance", label: "Finance", icon: Coins, id: "finance", group: "Performance", desc: "Finance reports suite — P&L statement, revenue, cost of revenue, opex, payroll, vendor spend and P&L trend & KPIs (KES)" },
-  // Odoo Reconciliation Agent — leadership + admin (server-gated via /api/recon)
-  { to: "/recon", label: "Reconciliation", icon: Scales, id: "recon", group: "Performance", desc: "Odoo reconciliation — sales vs ledgers, collections vs journals, bank lines and vendor bills vs payments, with approve-and-write-back to staging" },
 ];
 
 export const ADMIN_NAV = [

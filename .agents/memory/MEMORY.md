@@ -95,3 +95,4 @@
 - [PA cache snapshot coherence](pa-cache-inventory-snapshot.md) — stock-driven response caches must key on the all_inventory snapshot version; cross-call validator identities retry once (skew heals, real breaks reproduce).
 - [Startup DDL must never block port bind](startup-hooks-port-bind.md) — orphaned-lock DDL in sync startup hooks crash-looped prod (port never opened); DB startup work goes through _deferred_startup, watchdog port-polls before sync.
 - [Validator reporting-filter parity](validator-reporting-filter-parity.md) — validation_agent must measure under REPORTING_FILTERS (mirror of BASE_FILTERS, lockstep) and show variant_sku to the LLM, or line-item grain reads as "duplicates".
+- [Recon spin-off at artifact cap](recon-standalone-page.md) — at the artifact cap, "standalone app" = the /fabric static-page pattern (/reconcile); server role gate is the enforcement, drop the page id from _LEADERSHIP_PAGES/permissions.js.

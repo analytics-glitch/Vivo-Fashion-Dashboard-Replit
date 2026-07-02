@@ -507,7 +507,7 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "finance", "recon"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "finance"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report"],
@@ -26604,6 +26604,34 @@ async def serve_fabric_page():
 @app.get("/fabric/{sub_path:path}")
 async def serve_fabric_subpath(sub_path: str):
     return _serve_fabric_page()
+
+
+# Standalone Odoo Reconciliation cockpit, served full-page at /reconcile — the
+# same pattern as /fabric above (git-tracked HTML at the repo root, registered
+# OUTSIDE the build_dir guard so it exists in production, in-memory HTMLResponse
+# so GZipMiddleware never hits the pathsend extension). Auth: the page itself
+# signs in via /api/auth/* (Bearer vivo_token shared with the other apps +
+# cookie fallback); /api/recon/* is gated to admin/leadership in clerk_auth_gate.
+def _serve_recon_page():
+    from fastapi.responses import HTMLResponse
+    page = pathlib.Path(__file__).parent / "recon_dashboard.html"
+    if not page.exists():
+        return JSONResponse({"detail": "Reconciliation cockpit not available"}, status_code=404)
+    resp = HTMLResponse(content=page.read_text(encoding="utf-8"))
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
+@app.get("/reconcile")
+async def serve_recon_page():
+    return _serve_recon_page()
+
+
+@app.get("/reconcile/{sub_path:path}")
+async def serve_recon_subpath(sub_path: str):
+    return _serve_recon_page()
 
 
 # Serve React build as static files

@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vivo Reconciliation — Odoo Reconciliation Agent</title>
+<style>
+  :root {
+    --brand: #1a5c38;
+    --brand-soft: rgba(26, 92, 56, 0.08);
+    --bg: #f6f7f6;
+    --card: #ffffff;
+    --border: #e4e7e4;
+    --text: #17221b;
+    --muted: #6b7a70;
+    --rose: #e11d48;
+    --amber: #d97706;
+    --emerald: #059669;
+    --sky: #0284c7;
+    --violet: #7c3aed;
+    --slate: #64748b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px 18px 60px; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 0 18px;
+  }
+  .brandrow { display: flex; align-items: center; gap: 10px; }
+  .brandmark {
+    width: 34px; height: 34px; border-radius: 10px; background: var(--brand);
+    color: #fff; display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 15px; letter-spacing: 0.5px;
+  }
+  .brandname { font-weight: 700; font-size: 16px; }
+  .brandsub { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+  .userbox { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--muted); }
+  h1 { font-size: 21px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .sub { font-size: 13px; color: var(--muted); margin: 0; max-width: 720px; line-height: 1.45; }
+  .sub b { color: var(--text); }
+  .lastrun { font-size: 12px; color: var(--muted); margin-top: 5px; }
+  .lastrun .fail { color: var(--rose); font-weight: 600; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; border: none; cursor: pointer;
+    border-radius: 9px; font-weight: 600; font-size: 13px; padding: 8px 14px;
+    background: var(--brand); color: #fff; transition: opacity 0.15s;
+  }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+  .btn.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn.small { padding: 4px 9px; font-size: 12px; border-radius: 7px; }
+  .badge-warn {
+    padding: 5px 9px; border-radius: 7px; font-size: 11.5px; font-weight: 600;
+    background: rgba(217, 119, 6, 0.1); color: var(--amber);
+  }
+  .headrow { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 14px; }
+  .headactions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .toast {
+    margin: 14px 0 0; padding: 9px 13px; border-radius: 9px;
+    background: var(--brand-soft); color: var(--brand); font-weight: 500; font-size: 13px;
+  }
+  .errbox {
+    margin: 14px 0 0; padding: 10px 13px; border-radius: 9px;
+    background: rgba(225, 29, 72, 0.07); color: var(--rose); font-size: 13px;
+  }
+  .tabs { display: flex; flex-wrap: wrap; gap: 9px; margin: 20px 0 0; }
+  .tab {
+    text-align: left; cursor: pointer; border-radius: 12px; padding: 10px 14px;
+    border: 1px solid var(--border); background: var(--card); min-width: 168px; transition: border-color 0.15s;
+  }
+  .tab:hover { border-color: rgba(26, 92, 56, 0.4); }
+  .tab.active { border-color: var(--brand); background: var(--brand-soft); }
+  .tab .t { font-size: 13px; font-weight: 650; }
+  .tab .d { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .tab .d.attn { color: var(--amber); font-weight: 600; }
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 0; }
+  .pill {
+    cursor: pointer; border-radius: 999px; font-size: 12px; font-weight: 500;
+    padding: 4px 11px; border: 1px solid var(--border); background: transparent; color: var(--muted);
+  }
+  .pill.active { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
+  .card { margin-top: 16px; border: 1px solid var(--border); border-radius: 13px; background: var(--card); overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); padding: 9px 12px; border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  thead th.r, td.r { text-align: right; }
+  tbody td { padding: 8px 12px; border-bottom: 1px solid rgba(228, 231, 228, 0.6); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td .diffbad { color: var(--rose); font-weight: 650; }
+  td .detail { font-size: 12px; color: var(--muted); }
+  td.store { font-weight: 550; }
+  .status {
+    display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 650;
+  }
+  .st-matched { background: rgba(5, 150, 105, 0.1); color: var(--emerald); }
+  .st-variance { background: rgba(217, 119, 6, 0.1); color: var(--amber); }
+  .st-missing, .st-exception { background: rgba(225, 29, 72, 0.09); color: var(--rose); }
+  .st-suggested { background: rgba(2, 132, 199, 0.1); color: var(--sky); }
+  .st-approved { background: var(--brand-soft); color: var(--brand); }
+  .st-rejected { background: rgba(100, 116, 139, 0.1); color: var(--slate); }
+  .st-written { background: rgba(124, 58, 237, 0.1); color: var(--violet); }
+  .act {
+    display: inline-flex; align-items: center; gap: 4px; cursor: pointer; border: none;
+    background: transparent; border-radius: 7px; padding: 4px 8px; font-size: 12px; font-weight: 600;
+  }
+  .act:disabled { opacity: 0.45; cursor: default; }
+  .act.approve { color: var(--emerald); } .act.approve:hover { background: rgba(5, 150, 105, 0.09); }
+  .act.reject { color: var(--slate); } .act.reject:hover { background: rgba(100, 116, 139, 0.09); }
+  .act.reopen { color: var(--muted); } .act.reopen:hover { background: rgba(100, 116, 139, 0.09); }
+  .act.write { color: var(--violet); } .act.write:hover { background: rgba(124, 58, 237, 0.09); }
+  td.actions { text-align: right; white-space: nowrap; }
+  .footnote { padding: 9px 12px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); }
+  .center { text-align: center; padding: 44px 16px; color: var(--muted); font-size: 13px; }
+  .spinner {
+    width: 22px; height: 22px; margin: 0 auto 10px; border-radius: 50%;
+    border: 3px solid var(--border); border-top-color: var(--brand); animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spin-ico { display: inline-block; animation: spin 1s linear infinite; }
+
+  /* login */
+  .login-shell { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .login-card {
+    width: 100%; max-width: 400px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 16px; padding: 30px 28px;
+  }
+  .login-card h2 { margin: 14px 0 4px; font-size: 19px; }
+  .login-card .hint { font-size: 12.5px; color: var(--muted); margin: 0 0 18px; line-height: 1.5; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 5px; }
+  .field input {
+    width: 100%; padding: 9px 12px; border-radius: 9px; border: 1px solid var(--border);
+    font-size: 14px; background: #fff; color: var(--text);
+  }
+  .field input:focus { outline: 2px solid rgba(26, 92, 56, 0.35); border-color: var(--brand); }
+  .login-err { color: var(--rose); font-size: 12.5px; margin: 8px 0 0; }
+  .fullbtn { width: 100%; justify-content: center; margin-top: 6px; padding: 10px 14px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+"use strict";
+/* Vivo Reconciliation — standalone cockpit for the Odoo Reconciliation Agent.
+ * Served full-page at /reconcile by api_pg.py (same pattern as /fabric).
+ * Shares the platform session: Bearer token from localStorage "vivo_token"
+ * (same key as the BI / HR / CRM apps) with the httpOnly session cookie as a
+ * fallback. Server-side gate: /api/recon/* requires role admin or leadership.
+ * SECURITY: every interpolated value goes through esc() — never raw innerHTML. */
+
+var API = "/api";
+var TYPES = [
+  { key: "sales_ledger", label: "Sales vs Ledger", desc: "Dashboard net sales vs Odoo sales journals, per store per day" },
+  { key: "collections", label: "Collections", desc: "POS takings (M-Pesa / card / cash) vs bank & cash journals; cash compares by week" },
+  { key: "bank", label: "Bank Lines", desc: "Unreconciled statement lines with suggested ledger matches" },
+  { key: "payables", label: "Payables", desc: "Vendor bills vs payments — unpaid aging, mismatches, possible duplicates" }
+];
+var STATUS_LABEL = {
+  matched: "Matched", variance: "Variance", missing: "Missing", suggested: "Suggested",
+  exception: "Exception", approved: "Approved", rejected: "Rejected", written: "Written"
+};
+var STATUS_ORDER = ["exception", "suggested", "variance", "missing", "approved", "matched", "written", "rejected"];
+var ATTN = ["exception", "suggested", "variance", "missing"];
+
+var state = {
+  user: null,
+  summary: null,
+  sumError: null,
+  type: "collections",
+  status: "",
+  items: null,       // null = loading
+  total: 0,
+  itemsError: null,
+  busyKey: null,
+  runBusy: false,
+  toast: null,
+  loginError: null,
+  loginBusy: false,
+  bootPhase: "boot"  // boot | login | forbidden | app
+};
+var toastTimer = null;
+
+function esc(v) {
+  return String(v == null ? "" : v)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function fmtKes(v) {
+  if (v == null || v === "") return "—";
+  var n = Number(v);
+  if (!isFinite(n)) return "—";
+  return n.toLocaleString("en-KE", { maximumFractionDigits: 0 });
+}
+function token() { try { return localStorage.getItem("vivo_token"); } catch (e) { return null; } }
+
+function req(method, path, body) {
+  var headers = { "Accept": "application/json" };
+  var t = token();
+  if (t) headers["Authorization"] = "Bearer " + t;
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  return fetch(API + path, {
+    method: method,
+    headers: headers,
+    credentials: "same-origin",
+    body: body === undefined ? undefined : JSON.stringify(body)
+  }).then(function (r) {
+    return r.text().then(function (txt) {
+      var data = null;
+      try { data = txt ? JSON.parse(txt) : null; } catch (e) { /* non-JSON */ }
+      if (!r.ok) {
+        var err = new Error((data && (data.detail || data.message)) || ("Request failed (" + r.status + ")"));
+        err.status = r.status;
+        err.detail = data && data.detail;
+        throw err;
+      }
+      return data;
+    });
+  });
+}
+
+function flash(msg) {
+  state.toast = msg;
+  render();
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { state.toast = null; render(); }, 4000);
+}
+
+/* ---------- boot / auth ---------- */
+
+function boot() {
+  state.bootPhase = "boot";
+  render();
+  req("GET", "/auth/me").then(function (me) {
+    if (!me || !(me.user_id || me.id) || (me.status && me.status !== "active")) {
+      state.bootPhase = "login";
+      render();
+      return;
+    }
+    state.user = me;
+    if (me.role !== "admin" && me.role !== "leadership") {
+      state.bootPhase = "forbidden";
+      render();
+      return;
+    }
+    enterApp();
+  }).catch(function () {
+    state.bootPhase = "login";
+    render();
+  });
+}
+
+function doLogin(email, password) {
+  state.loginBusy = true;
+  state.loginError = null;
+  render();
+  req("POST", "/auth/login", { email: email, password: password }).then(function (data) {
+    if (data && data.token) { try { localStorage.setItem("vivo_token", data.token); } catch (e) {} }
+    state.loginBusy = false;
+    boot();
+  }).catch(function (e) {
+    state.loginBusy = false;
+    state.loginError = e.message || "Login failed";
+    render();
+  });
+}
+
+function doLogout() {
+  req("POST", "/auth/logout").catch(function () {});
+  try { localStorage.removeItem("vivo_token"); } catch (e) {}
+  state.user = null;
+  state.summary = null;
+  state.items = null;
+  state.bootPhase = "login";
+  render();
+}
+
+function enterApp() {
+  state.bootPhase = "app";
+  render();
+  loadSummary();
+  loadItems();
+}
+
+/* ---------- data ---------- */
+
+function loadSummary() {
+  req("GET", "/recon/summary").then(function (d) {
+    state.summary = d;
+    state.sumError = null;
+    render();
+  }).catch(function (e) {
+    if (e.status === 401) { state.bootPhase = "login"; render(); return; }
+    if (e.status === 403) { state.bootPhase = "forbidden"; render(); return; }
+    state.sumError = e.message;
+    render();
+  });
+}
+
+function loadItems() {
+  state.items = null;
+  state.itemsError = null;
+  render();
+  var q = "/recon/items?recon_type=" + encodeURIComponent(state.type) + "&limit=300";
+  if (state.status) q += "&status=" + encodeURIComponent(state.status);
+  req("GET", q).then(function (d) {
+    state.items = (d && d.items) || [];
+    state.total = (d && d.total) || 0;
+    render();
+  }).catch(function (e) {
+    if (e.status === 401) { state.bootPhase = "login"; render(); return; }
+    state.itemsError = e.message;
+    render();
+  });
+}
+
+function runNow() {
+  state.runBusy = true;
+  render();
+  req("POST", "/recon/run").then(function () {
+    flash("Reconciliation run started — refresh in a minute.");
+  }).catch(function (e) {
+    flash(e.message || "Failed to start run");
+  }).then(function () {
+    state.runBusy = false;
+    render();
+  });
+}
+
+function decide(itemKey, action) {
+  var note = null;
+  if (action === "reject") {
+    note = window.prompt("Optional note for this rejection:");
+    if (note === null) return; // cancelled
+    note = note.trim() || null;
+  }
+  state.busyKey = itemKey;
+  render();
+  req("POST", "/recon/decide", { item_key: itemKey, action: action, note: note }).then(function () {
+    state.busyKey = null;
+    loadItems();
+    loadSummary();
+  }).catch(function (e) {
+    state.busyKey = null;
+    flash(e.message || ("Failed to " + action));
+  });
+}
+
+function writeback(itemKey) {
+  if (!window.confirm("Write this reconciliation to the Odoo STAGING instance?")) return;
+  state.busyKey = itemKey;
+  render();
+  req("POST", "/recon/writeback", { item_key: itemKey }).then(function () {
+    state.busyKey = null;
+    flash("Written to Odoo staging.");
+    loadItems();
+    loadSummary();
+  }).catch(function (e) {
+    state.busyKey = null;
+    flash(e.message || "Write-back failed");
+  });
+}
+
+/* ---------- rendering ---------- */
+
+function detailBits(it) {
+  var d = it.details || {};
+  var bits = [];
+  if (d.review_note) bits.push("Note: " + d.review_note);
+  if (it.recon_type === "sales_ledger") {
+    bits.push("Dashboard " + fmtKes(it.amount_a) + " vs ledger " + fmtKes(it.amount_b));
+  } else if (it.recon_type === "collections") {
+    bits.push((d.method_class || "") + " takings " + fmtKes(it.amount_a) + " vs booked " + fmtKes(it.amount_b) + (d.grain === "week" ? " (week)" : ""));
+  } else if (it.recon_type === "bank") {
+    if (d.payment_ref) bits.push(d.payment_ref);
+    if (d.candidate_label) bits.push("→ " + d.candidate_label);
+    if (d.llm_note) bits.push("AI: " + d.llm_note);
+  } else if (it.recon_type === "payables") {
+    if (d.vendor) bits.push(d.vendor);
+    if (d.bill_ref) bits.push(d.bill_ref);
+    if (d.kind) bits.push(d.kind);
+    if (d.payment_ref) bits.push("→ " + d.payment_ref);
+  }
+  return bits.filter(Boolean).join(" · ") || "—";
+}
+
+function statusPill(s) {
+  var label = STATUS_LABEL[s] || s;
+  var cls = STATUS_LABEL[s] ? ("st-" + s) : "st-rejected";
+  return '<span class="status ' + cls + '">' + esc(label) + '</span>';
+}
+
+function canWriteback(it) {
+  return it.status === "approved" && (String(it.item_key).indexOf("bank|") === 0 || String(it.item_key).indexOf("bill|") === 0);
+}
+
+function renderLogin() {
+  return (
+    '<div class="login-shell"><div class="login-card">' +
+    '<div class="brandrow"><div class="brandmark">V</div><div><div class="brandname">Vivo Reconciliation</div>' +
+    '<div class="brandsub">Odoo Reconciliation Agent</div></div></div>' +
+    '<h2>Sign in</h2>' +
+    '<p class="hint">Use your Vivo Fashion Group account. If you signed in with Google on the main dashboard, just open this page from the same browser — your session carries over.</p>' +
+    '<form id="login-form">' +
+    '<div class="field"><label for="li-email">Email</label><input id="li-email" type="email" autocomplete="username" required /></div>' +
+    '<div class="field"><label for="li-pass">Password</label><input id="li-pass" type="password" autocomplete="current-password" required /></div>' +
+    '<button type="submit" class="btn fullbtn" ' + (state.loginBusy ? "disabled" : "") + '>' + (state.loginBusy ? "Signing in…" : "Sign in") + '</button>' +
+    (state.loginError ? '<p class="login-err">' + esc(state.loginError) + '</p>' : "") +
+    '</form>' +
+    '</div></div>'
+  );
+}
+
+function renderForbidden() {
+  return (
+    '<div class="login-shell"><div class="login-card">' +
+    '<div class="brandrow"><div class="brandmark">V</div><div><div class="brandname">Vivo Reconciliation</div>' +
+    '<div class="brandsub">Odoo Reconciliation Agent</div></div></div>' +
+    '<h2>No access</h2>' +
+    '<p class="hint">This finance surface is limited to leadership and admin accounts. You are signed in as <b>' +
+    esc((state.user && (state.user.email || state.user.name)) || "unknown") + '</b>' +
+    (state.user && state.user.role ? ' (role: ' + esc(state.user.role) + ')' : "") + '.</p>' +
+    '<button class="btn ghost fullbtn" data-action="logout">Sign out</button>' +
+    '</div></div>'
+  );
+}
+
+function renderBoot() {
+  return '<div class="login-shell"><div style="text-align:center"><div class="spinner"></div><div style="color:var(--muted);font-size:13px">Checking session…</div></div></div>';
+}
+
+function renderApp() {
+  var s = state.summary;
+  var lastRun = s && s.last_run;
+  var writebackReady = !!(s && s.writeback_configured);
+  var runInProgress = !!(s && s.run_in_progress);
+  var typeSummary = (s && s.summary && s.summary[state.type]) || {};
+
+  var html = '<div class="wrap">';
+
+  html +=
+    '<div class="topbar"><div class="brandrow"><div class="brandmark">V</div><div>' +
+    '<div class="brandname">Vivo Reconciliation</div><div class="brandsub">Odoo Reconciliation Agent · KES</div></div></div>' +
+    '<div class="userbox"><span>' + esc((state.user && (state.user.name || state.user.email)) || "") + '</span>' +
+    '<button class="btn ghost small" data-action="logout">Sign out</button></div></div>';
+
+  html += '<div class="headrow"><div>' +
+    '<h1>Odoo Reconciliation</h1>' +
+    '<p class="sub">Automatic matching of sales, collections, bank lines and payables against Odoo. Nothing is written back without your approval; write-back targets the Odoo <b>staging</b> instance only.</p>';
+  if (lastRun) {
+    html += '<div class="lastrun">Last run: ' +
+      esc(lastRun.finished_at ? new Date(lastRun.finished_at).toLocaleString() : "running…") +
+      ' · ' + esc(lastRun.trigger || "") +
+      (lastRun.status === "failed" ? ' · <span class="fail">failed</span>' : "") + '</div>';
+  }
+  html += '</div><div class="headactions">';
+  if (s && !writebackReady) {
+    html += '<span class="badge-warn" title="ODOO_WRITE_* secrets not set — approvals still work; write-back is disabled until the staging target is configured.">Write-back not configured</span>';
+  }
+  html += '<button class="btn" data-action="run" ' + ((state.runBusy || runInProgress) ? "disabled" : "") + '>' +
+    (runInProgress ? '<span class="spin-ico">⟳</span> Running…' : '⟳ Run now') + '</button>';
+  html += '</div></div>';
+
+  if (state.toast) html += '<div class="toast">' + esc(state.toast) + '</div>';
+  if (state.sumError) html += '<div class="errbox">' + esc(state.sumError) + '</div>';
+
+  html += '<div class="tabs">';
+  TYPES.forEach(function (t) {
+    var ts = (s && s.summary && s.summary[t.key]) || {};
+    var attention = 0;
+    ATTN.forEach(function (k) { attention += (ts[k] && ts[k].count) || 0; });
+    html += '<button class="tab ' + (state.type === t.key ? "active" : "") + '" data-action="tab" data-type="' + esc(t.key) + '" title="' + esc(t.desc) + '">' +
+      '<div class="t">' + esc(t.label) + '</div>' +
+      '<div class="d ' + (attention > 0 ? "attn" : "") + '">' +
+      (attention > 0 ? esc(attention.toLocaleString()) + " to review" : (s ? "all clear" : "…")) +
+      '</div></button>';
+  });
+  html += '</div>';
+
+  var allCount = 0;
+  Object.keys(typeSummary).forEach(function (k) { allCount += (typeSummary[k] && typeSummary[k].count) || 0; });
+  html += '<div class="pills">';
+  html += '<button class="pill ' + (state.status === "" ? "active" : "") + '" data-action="status" data-status="">All (' + esc(allCount.toLocaleString()) + ')</button>';
+  STATUS_ORDER.forEach(function (st) {
+    if (!typeSummary[st]) return;
+    html += '<button class="pill ' + (state.status === st ? "active" : "") + '" data-action="status" data-status="' + esc(st) + '">' +
+      esc(STATUS_LABEL[st] || st) + ' (' + esc((typeSummary[st].count || 0).toLocaleString()) + ')</button>';
+  });
+  html += '</div>';
+
+  if (state.itemsError) {
+    html += '<div class="errbox">' + esc(state.itemsError) + '</div>';
+  } else if (state.items === null) {
+    html += '<div class="card"><div class="center"><div class="spinner"></div>Loading reconciliation items…</div></div>';
+  } else if (state.items.length === 0) {
+    html += '<div class="card"><div class="center">No items for this filter.</div></div>';
+  } else {
+    html += '<div class="card"><table><thead><tr>' +
+      '<th>Status</th><th>Store / Ref</th><th>Day</th><th class="r">Side A (KES)</th><th class="r">Side B (KES)</th><th class="r">Diff (KES)</th><th>Detail</th><th class="r">Actions</th>' +
+      '</tr></thead><tbody>';
+    state.items.forEach(function (it, idx) {
+      var busy = state.busyKey === it.item_key;
+      var diffBad = Math.abs(Number(it.diff) || 0) > 1;
+      html += '<tr>' +
+        '<td>' + statusPill(it.status) + '</td>' +
+        '<td class="store">' + esc(it.store || (it.details && it.details.vendor) || "—") + '</td>' +
+        '<td class="num">' + esc(it.day ? String(it.day).slice(0, 10) : "—") + '</td>' +
+        '<td class="num r">' + esc(fmtKes(it.amount_a)) + '</td>' +
+        '<td class="num r">' + esc(fmtKes(it.amount_b)) + '</td>' +
+        '<td class="num r"><span class="' + (diffBad ? "diffbad" : "") + '">' + esc(fmtKes(it.diff)) + '</span></td>' +
+        '<td style="max-width:340px"><span class="detail">' + esc(detailBits(it)) + '</span></td>' +
+        '<td class="actions">';
+      if (it.status === "suggested") {
+        html += '<button class="act approve" data-action="approve" data-idx="' + idx + '" ' + (busy ? "disabled" : "") + '>✓ Approve</button>';
+      }
+      if (["suggested", "variance", "missing", "exception"].indexOf(it.status) >= 0) {
+        html += '<button class="act reject" data-action="reject" data-idx="' + idx + '" ' + (busy ? "disabled" : "") + '>✕ Dismiss</button>';
+      }
+      if (["approved", "rejected"].indexOf(it.status) >= 0) {
+        html += '<button class="act reopen" data-action="reopen" data-idx="' + idx + '" ' + (busy ? "disabled" : "") + '>↺ Reopen</button>';
+      }
+      if (canWriteback(it)) {
+        html += '<button class="act write" data-action="writeback" data-idx="' + idx + '" ' +
+          ((busy || !writebackReady) ? "disabled" : "") +
+          ' title="' + (writebackReady ? "Write to Odoo staging" : "Write-back not configured (ODOO_WRITE_* secrets)") + '">⬆ Write to staging</button>';
+      }
+      html += '</td></tr>';
+    });
+    html += '</tbody></table>';
+    if (state.total > state.items.length) {
+      html += '<div class="footnote">Showing ' + esc(state.items.length.toLocaleString()) + ' of ' + esc(state.total.toLocaleString()) + ' — narrow with a status filter.</div>';
+    }
+    html += '</div>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
+function render() {
+  var root = document.getElementById("app");
+  if (state.bootPhase === "boot") root.innerHTML = renderBoot();
+  else if (state.bootPhase === "login") root.innerHTML = renderLogin();
+  else if (state.bootPhase === "forbidden") root.innerHTML = renderForbidden();
+  else root.innerHTML = renderApp();
+}
+
+/* ---------- events (delegated) ---------- */
+
+document.addEventListener("click", function (ev) {
+  var el = ev.target.closest("[data-action]");
+  if (!el || el.disabled) return;
+  var action = el.getAttribute("data-action");
+  if (action === "logout") { doLogout(); return; }
+  if (action === "run") { runNow(); return; }
+  if (action === "tab") {
+    state.type = el.getAttribute("data-type");
+    state.status = "";
+    render();
+    loadItems();
+    return;
+  }
+  if (action === "status") {
+    state.status = el.getAttribute("data-status") || "";
+    render();
+    loadItems();
+    return;
+  }
+  if (action === "approve" || action === "reject" || action === "reopen" || action === "writeback") {
+    var idx = parseInt(el.getAttribute("data-idx"), 10);
+    var it = state.items && state.items[idx];
+    if (!it) return;
+    if (action === "writeback") writeback(it.item_key);
+    else decide(it.item_key, action === "approve" ? "approve" : action === "reject" ? "reject" : "reopen");
+  }
+});
+
+document.addEventListener("submit", function (ev) {
+  if (ev.target && ev.target.id === "login-form") {
+    ev.preventDefault();
+    var email = document.getElementById("li-email").value.trim();
+    var pass = document.getElementById("li-pass").value;
+    if (email && pass) doLogin(email, pass);
+  }
+});
+
+boot();
+</script>
+</body>
+</html>
