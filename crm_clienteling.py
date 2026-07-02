@@ -3736,6 +3736,7 @@ def _reg_social(app):
                 return len(convs), new_dms - before, nxt, completed
 
             dm_blocked = False
+            dm_error = None
             dm_after = None
             dm_exhausted = False
             dm_first = True
@@ -3750,7 +3751,8 @@ def _reg_social(app):
                     if _dm_scope_err(e):
                         scopes_missing.add("pages_messaging")
                     dm_blocked = True
-                    break  # keep posts/comments; DM phase reports via scopes
+                    dm_error = str(e)[:500]
+                    break  # keep posts/comments; DM phase reports the error
                 n, page_new, nxt, completed = _process_conv_page(feed)
                 dm_first = False
                 if not completed:
@@ -3775,8 +3777,10 @@ def _reg_social(app):
                         page_cursor = deep_after
                         try:
                             feed = _fetch_conv_page(deep_after)
-                        except Exception:
+                        except Exception as e:
                             # Cursor may have expired — restart next sync.
+                            if dm_error is None:
+                                dm_error = str(e)[:500]
                             deep_after = None
                             break
                         n, page_new, nxt, completed = _process_conv_page(feed)
@@ -3800,6 +3804,7 @@ def _reg_social(app):
         _cfg_set("social.fb.last_sync_posts", total_posts)
         _cfg_set("social.fb.last_sync_comments", total_comments)
         _cfg_set("social.fb.last_sync_dms", total_dms)
+        _cfg_set("social.fb.last_dm_error", dm_error or "")
         _cfg_set("social.fb.last_scopes_missing", ",".join(sorted(scopes_missing)))
         A._crm_audit("social", page_id, "sync",
                      f"facebook sync: {total_posts} posts, "
@@ -3807,6 +3812,8 @@ def _reg_social(app):
         return {"pages_synced": 1, "posts": total_posts,
                 "comments": new_comments, "dms": new_dms,
                 "dms_stored": stored_dms + new_dms,
+                "dm_blocked": dm_blocked,
+                "dm_error": dm_error,
                 "scopes_missing": sorted(scopes_missing)}
 
 
