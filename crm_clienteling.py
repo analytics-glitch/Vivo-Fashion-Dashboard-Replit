@@ -19,6 +19,7 @@ manager endpoints below re-assert a staff session manually via `_staff`.
 
 import json
 import re
+import threading
 import time
 import secrets
 from datetime import datetime, date, timedelta
@@ -3096,13 +3097,18 @@ def _reg_social(app):
     def cl_soc_feedback(request: Request, platform: str = Query(None),
                         sentiment: str = Query(None), customer_id: str = Query(None),
                         unmatched: bool = Query(False), q: str = Query(None),
-                        limit: int = Query(100)):
+                        type: str = Query(None), limit: int = Query(100)):
         _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
-        lim = _clamp(limit, 1, 500, 100)
+        # Cap high enough that a deep-synced page (2000 posts + 2000 comments)
+        # is fully visible in the inbox.
+        lim = _clamp(limit, 1, 5000, 100)
         conds, params = ["1=1"], []
         if platform:
             conds.append("platform=%s")
             params.append(platform)
+        if type in ("post", "comment", "mention", "dm", "review"):
+            conds.append("type=%s")
+            params.append(type)
         if sentiment in _SENT:
             conds.append("sentiment=%s")
             params.append(sentiment)
@@ -3283,12 +3289,35 @@ def _reg_social(app):
             _ex("DELETE FROM crm_config WHERE key=%s", (k,))
         return {"ok": True, "page_id": page_id}
 
+    # Deep-sync targets: walk the page's history until at least this many posts
+    # and comments have been pulled (or the page runs out / time budget hits).
+    _FB_SYNC_POST_TARGET = 2000
+    _FB_SYNC_COMMENT_TARGET = 2000
+    _FB_SYNC_TIME_BUDGET_SEC = 240  # hard stop so the HTTP request can't hang forever
+    # Only one sync may run at a time: concurrent runs would race the persisted
+    # deep-backfill cursor (data stays safe via source_id dedup, but progress
+    # gets noisy and Graph/LLM work is duplicated).
+    _fb_sync_lock = threading.Lock()
+
     @app.post("/api/social/facebook/sync")
     def cl_soc_fb_sync(request: Request, payload: dict = Body(default=None)):
         _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
         if not A._fb_configured():
             raise HTTPException(400, "Facebook is not configured on the server.")
+        if not _fb_sync_lock.acquire(blocking=False):
+            raise HTTPException(409, "A Facebook sync is already running.")
+        try:
+            return _fb_sync_run(request)
+        finally:
+            _fb_sync_lock.release()
+
+    def _fb_sync_run(request):
         page_id = A._fb_page_id()
+        started = time.monotonic()
+
+        def _over_budget():
+            return (time.monotonic() - started) > _FB_SYNC_TIME_BUDGET_SEC
+
         # Page name labels the brand's own posts/replies (commenters' real names
         # are withheld by the Graph API for privacy, so they show "Facebook user").
         try:
@@ -3296,58 +3325,45 @@ def _reg_social(app):
         except Exception:
             page_name = None
         page_name = page_name or "Our Page"
-        try:
-            feed = A._fb_get(f"{page_id}/posts",
-                             {"fields": "message,permalink_url,created_time,"
-                                        "full_picture", "limit": 25})
-        except Exception as e:
-            raise HTTPException(502, f"Facebook sync failed: {e}")
-        posts = feed.get("data") or []
+
         scopes_missing = set()
         new_comments = 0
         new_posts = 0
         total_comments = 0
-        for p in posts:
-            pid = p.get("id")
-            if not pid:
-                continue
-            p_msg = (p.get("message") or "").strip()
-            p_link = p.get("permalink_url")
-            # A short, human label for the post so comments can show "on: …".
-            p_excerpt = (p_msg[:90] + "…") if len(p_msg) > 90 else (
-                p_msg or ("[Photo post]" if p.get("full_picture") else "[Post]"))
-            # Store the brand's own post as a feed item (so the inbox reflects the
-            # real number of posts, not only the posts that happen to have comments).
-            rid = _ex(
-                "INSERT INTO crm_social_feedback "
-                "(platform,type,author_name,author_handle,body,sentiment,"
-                " source_id,permalink,posted_at) VALUES "
-                "('facebook','post',%s,NULL,%s,NULL,%s,%s,"
-                " COALESCE(%s::timestamptz, now())) "
-                "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
-                "DO NOTHING RETURNING id",
-                (page_name, p_msg or p_excerpt, "fbpost:" + str(pid),
-                 p_link, _fb_ts(p.get("created_time"))), fetch=True)
-            if rid:
-                new_posts += 1
-            try:
-                cres = A._fb_get(f"{pid}/comments", {
-                    "fields": "message,from,created_time,like_count,permalink_url",
-                    "order": "reverse_chronological", "limit": 50})
-            except Exception as e:
-                m = str(e).lower()
-                if ("permission" in m or "scope" in m
-                        or "#10" in m or "#200" in m):
-                    scopes_missing.add("pages_read_user_content")
-                continue
-            craw = cres.get("data") or []
-            total_comments += len(craw)
-            sents = A._fb_sentiment([(c.get("message") or "") for c in craw])
-            for i, c in enumerate(craw):
+        total_posts = 0
+
+        _C_FIELDS = "message,from,created_time,like_count,permalink_url"
+
+        def _ingest_comments(craw, pid, p_link, p_excerpt):
+            """Insert a batch of raw Graph comments; LLM-classify only the NEW
+            ones (dedup by source_id) so a deep re-sync doesn't re-bill the LLM
+            for thousands of already-stored comments."""
+            nonlocal new_comments
+            cand = []
+            for c in craw:
                 cid = c.get("id")
                 body = (c.get("message") or "").strip()
-                if not cid or not body:
-                    continue
+                if cid and body:
+                    cand.append((cid, body, c))
+            if not cand:
+                return
+            sids = ["fb:" + str(cid) for cid, _, _ in cand]
+            try:
+                rows = _ex("SELECT source_id FROM crm_social_feedback "
+                           "WHERE source_id = ANY(%s)", (sids,), fetch=True) or []
+                existing = {r["source_id"] for r in rows}
+            except Exception:
+                existing = set()
+            fresh = [(cid, body, c) for (cid, body, c) in cand
+                     if ("fb:" + str(cid)) not in existing]
+            # Sentiment in chunks of 50 to keep each LLM prompt bounded.
+            sent_map = {}
+            for i in range(0, len(fresh), 50):
+                chunk = fresh[i:i + 50]
+                sents = A._fb_sentiment([b for _, b, _ in chunk])
+                for j, (cid, _, _) in enumerate(chunk):
+                    sent_map[cid] = sents.get(j)
+            for cid, body, c in fresh:
                 frm = c.get("from") or {}
                 # Author of a comment is the page itself only when it replied to
                 # its own post; otherwise the Graph API withholds the identity.
@@ -3361,22 +3377,208 @@ def _reg_social(app):
                     " COALESCE(%s::timestamptz, now())) "
                     "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
                     "DO NOTHING RETURNING id",
-                    (author, body, sents.get(i), "fb:" + str(cid),
+                    (author, body, sent_map.get(cid), "fb:" + str(cid),
                      c.get("permalink_url") or p_link,
                      "fbpost:" + str(pid), p_excerpt,
                      _fb_ts(c.get("created_time"))), fetch=True)
                 if rid:
                     new_comments += 1
+
+        # The 2000/2000 targets are CUMULATIVE (what the inbox can display), so
+        # they count what is already stored — each sync only fetches what's
+        # still missing, and the deep-history walk resumes across syncs via a
+        # persisted cursor instead of restarting from the newest post.
+        stored = _one(
+            "SELECT COUNT(*) FILTER (WHERE type='post') AS p, "
+            " COUNT(*) FILTER (WHERE type='comment') AS c "
+            "FROM crm_social_feedback WHERE platform='facebook'") or {}
+        stored_posts = _int(stored.get("p"), 0)
+        stored_comments = _int(stored.get("c"), 0)
+
+        def _posts_short():
+            return (stored_posts + new_posts) < _FB_SYNC_POST_TARGET
+
+        def _comments_short():
+            return (stored_comments + new_comments) < _FB_SYNC_COMMENT_TARGET
+
+        # Posts are fetched newest-first, 100 per Graph page, with the first 100
+        # comments of each post expanded inline (one HTTP call covers up to 100
+        # posts AND their comments — vital for reaching the 2000/2000 targets).
+        base_fields = "message,permalink_url,created_time,full_picture"
+        inline_state = {"on": True}
+
+        def _fetch_page(after):
+            while True:
+                fields = base_fields
+                if inline_state["on"]:
+                    fields += (",comments.order(reverse_chronological)"
+                               ".limit(100){" + _C_FIELDS + "}")
+                params = {"fields": fields, "limit": 100}
+                if after:
+                    params["after"] = after
+                try:
+                    return A._fb_get(f"{page_id}/posts", params)
+                except Exception as e:
+                    m = str(e).lower()
+                    if inline_state["on"] and ("permission" in m or "scope" in m
+                                               or "#10" in m or "#200" in m):
+                        # Comment-read scope missing: retry this page without the
+                        # inline comment expansion so posts still sync.
+                        scopes_missing.add("pages_read_user_content")
+                        inline_state["on"] = False
+                        continue
+                    raise
+
+        def _process_page(feed):
+            """Ingest one feed page. Returns (n_posts, n_new_posts, next_cursor,
+            completed) — completed=False means the time budget interrupted the
+            page (so the caller must NOT advance the resume cursor past it)."""
+            nonlocal total_posts, total_comments, new_posts
+            posts = feed.get("data") or []
+            page_new = 0
+            completed = True
+            for p in posts:
+                if _over_budget():
+                    completed = False
+                    break
+                pid = p.get("id")
+                if not pid:
+                    continue
+                total_posts += 1
+                p_msg = (p.get("message") or "").strip()
+                p_link = p.get("permalink_url")
+                # A short, human label for the post so comments can show "on: …".
+                p_excerpt = (p_msg[:90] + "…") if len(p_msg) > 90 else (
+                    p_msg or ("[Photo post]" if p.get("full_picture") else "[Post]"))
+                # Store the brand's own post as a feed item (so the inbox reflects
+                # the real number of posts, not only posts that have comments).
+                rid = _ex(
+                    "INSERT INTO crm_social_feedback "
+                    "(platform,type,author_name,author_handle,body,sentiment,"
+                    " source_id,permalink,posted_at) VALUES "
+                    "('facebook','post',%s,NULL,%s,NULL,%s,%s,"
+                    " COALESCE(%s::timestamptz, now())) "
+                    "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
+                    "DO NOTHING RETURNING id",
+                    (page_name, p_msg or p_excerpt, "fbpost:" + str(pid),
+                     p_link, _fb_ts(p.get("created_time"))), fetch=True)
+                if rid:
+                    new_posts += 1
+                    page_new += 1
+                # Comments: inline batch first, then follow this post's own
+                # comment cursor while the overall comment target is unmet.
+                cnode = p.get("comments") or {}
+                craw = cnode.get("data") or []
+                c_after = ((cnode.get("paging") or {}).get("cursors")
+                           or {}).get("after")
+                c_more = bool((cnode.get("paging") or {}).get("next"))
+                if not inline_state["on"] and _comments_short():
+                    try:
+                        cres = A._fb_get(f"{pid}/comments", {
+                            "fields": _C_FIELDS,
+                            "order": "reverse_chronological", "limit": 100})
+                        craw = cres.get("data") or []
+                        c_after = ((cres.get("paging") or {}).get("cursors")
+                                   or {}).get("after")
+                        c_more = bool((cres.get("paging") or {}).get("next"))
+                    except Exception as e:
+                        m = str(e).lower()
+                        if ("permission" in m or "scope" in m
+                                or "#10" in m or "#200" in m):
+                            scopes_missing.add("pages_read_user_content")
+                        craw, c_more = [], False
+                if craw:
+                    total_comments += len(craw)
+                    _ingest_comments(craw, pid, p_link, p_excerpt)
+                while (c_more and c_after and _comments_short()
+                       and not _over_budget()):
+                    try:
+                        cres = A._fb_get(f"{pid}/comments", {
+                            "fields": _C_FIELDS,
+                            "order": "reverse_chronological",
+                            "limit": 100, "after": c_after})
+                    except Exception:
+                        break
+                    craw = cres.get("data") or []
+                    if not craw:
+                        break
+                    total_comments += len(craw)
+                    _ingest_comments(craw, pid, p_link, p_excerpt)
+                    c_after = ((cres.get("paging") or {}).get("cursors")
+                               or {}).get("after")
+                    c_more = bool((cres.get("paging") or {}).get("next"))
+            paging = feed.get("paging") or {}
+            nxt = ((paging.get("cursors") or {}).get("after")
+                   if paging.get("next") else None)
+            return len(posts), page_new, nxt, completed
+
+        try:
+            # Phase A — fresh content: walk from the newest post until a page
+            # adds nothing new (i.e. we've reached already-stored history).
+            after = None
+            exhausted = False
+            first = True
+            while not _over_budget():
+                page_cursor = after
+                try:
+                    feed = _fetch_page(after)
+                except Exception as e:
+                    if first:
+                        raise HTTPException(502, f"Facebook sync failed: {e}")
+                    break  # keep what we already ingested
+                n, page_new, nxt, completed = _process_page(feed)
+                first = False
+                if not completed:
+                    after = page_cursor  # re-do this page next sync
+                    break
+                if not nxt:
+                    exhausted = True
+                    after = None
+                    break
+                after = nxt
+                if n == 0 or page_new == 0:
+                    break
+
+            # Phase B — deep backfill toward the 2000/2000 stored targets,
+            # resuming where the previous sync stopped (persisted cursor).
+            deep_done = (_cfg_get("social.fb.deep_done") or "") == "1" or exhausted
+            if not deep_done and (_posts_short() or _comments_short()):
+                deep_after = (_cfg_get("social.fb.deep_cursor") or "") or after
+                while (deep_after and not _over_budget()
+                       and (_posts_short() or _comments_short())):
+                    page_cursor = deep_after
+                    try:
+                        feed = _fetch_page(deep_after)
+                    except Exception:
+                        # Cursor may have expired — restart the deep walk from
+                        # the top on the next sync.
+                        deep_after = None
+                        break
+                    n, page_new, nxt, completed = _process_page(feed)
+                    if not completed:
+                        deep_after = page_cursor  # re-do this page next sync
+                        break
+                    if not nxt or n == 0:
+                        deep_done = True
+                        deep_after = None
+                        break
+                    deep_after = nxt
+                _cfg_set("social.fb.deep_cursor", deep_after or "")
+            if deep_done:
+                _cfg_set("social.fb.deep_done", "1")
+                _cfg_set("social.fb.deep_cursor", "")
+        except HTTPException:
+            raise
         from datetime import datetime, timezone
         _cfg_set("social.fb.last_synced_at",
                  datetime.now(timezone.utc).isoformat())
-        _cfg_set("social.fb.last_sync_posts", len(posts))
+        _cfg_set("social.fb.last_sync_posts", total_posts)
         _cfg_set("social.fb.last_sync_comments", total_comments)
         _cfg_set("social.fb.last_scopes_missing", ",".join(sorted(scopes_missing)))
         A._crm_audit("social", page_id, "sync",
-                     f"facebook sync: {len(posts)} posts, "
+                     f"facebook sync: {total_posts} posts, "
                      f"{new_comments} new comments", request)
-        return {"pages_synced": 1, "posts": len(posts),
+        return {"pages_synced": 1, "posts": total_posts,
                 "comments": new_comments, "scopes_missing": sorted(scopes_missing)}
 
 

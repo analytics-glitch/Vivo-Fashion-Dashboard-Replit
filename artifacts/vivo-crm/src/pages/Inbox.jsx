@@ -44,7 +44,8 @@ export default function Inbox() {
 
   const load = async () => {
     setLoading(true);
-    const params = { limit: 200 };
+    // High enough to show a fully deep-synced page (2000 posts + 2000 comments).
+    const params = { limit: 4000 };
     if (filters.platform !== "all") params.platform = filters.platform;
     if (filters.type !== "all") params.type = filters.type;
     if (filters.sentiment !== "all") params.sentiment = filters.sentiment;
