@@ -1745,6 +1745,108 @@ def basic_fabrics_cover_xlsx():
     )
 
 
+# ── Months of Cover (general) — downloadable .xlsx calculations report ──
+# The full audit trail behind the general "Months of cover" Overview KPI (the
+# main-scope figure, NOT the curated Basic-Fabrics set): the current RMAT/Stock
+# fabric on-hand kg, the trailing 6-completed-month average net monthly run-rate,
+# and the resulting cover value — with the per-month net-consumption breakdown
+# that drives the denominator. Stock base + run-rate MUST mirror the summary KPI
+# exactly (same RMAT/Stock main-scope base + same `_months_of_cover` projection)
+# so the workbook reconciles to the card.
+@fabric_router.get("/api/fabric/months-of-cover.xlsx")
+def months_of_cover_xlsx():
+    from fastapi.responses import Response
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+
+    with _get_conn() as conn:
+        # Headline stock base — identical query to the live summary card /
+        # snapshot: main-scope Fabric RMAT/Stock on-hand kg (single-aggregate
+        # ROUND(SUM(...)) so it matches to the tenth).
+        rmat_kg = q(conn, f"""
+            SELECT ROUND(SUM(i.quantity)::numeric,1) AS kg
+            FROM raw_fabric_inventory i
+            JOIN raw_fabric_products p ON p.id = i.product_id
+            WHERE i.quantity > 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
+              AND {_scope_sql('main')}
+        """)[0]['kg'] or 0
+        rmat_kg = round(float(rmat_kg), 1)
+
+        cov = _months_of_cover(conn, rmat_kg, "main")
+        status = cov["months_of_cover_status"]
+        breakdown = cov.get("months_breakdown") or []
+
+    # ── Build the workbook ───────────────────────────────────────────────
+    wb = openpyxl.Workbook()
+    HEAD = Font(bold=True, color="FFFFFF")
+    HEAD_FILL = PatternFill("solid", fgColor="1A5C38")
+    TITLE = Font(bold=True, size=13)
+    LBL = Font(bold=True)
+
+    def _style_header(ws, ncols, row=1):
+        for c in range(1, ncols + 1):
+            cell = ws.cell(row=row, column=c)
+            cell.font = HEAD
+            cell.fill = HEAD_FILL
+
+    _status_text = {
+        "ok": "OK — computed from run-rate",
+        "overstocked": "Overstocked — stock on hand but no recent consumption",
+        "no_data": "No data — no stock or consumption",
+    }
+    cover_disp = (cov["months_of_cover"] if status == "ok"
+                  and cov["months_of_cover"] is not None
+                  else ("12+ (overstocked)" if status == "overstocked" else "—"))
+
+    # Summary sheet
+    ws = wb.active
+    ws.title = "Summary"
+    ws["A1"] = "Months of cover — calculations report"
+    ws["A1"].font = TITLE
+    srows = [
+        ("Months of cover (KPI)", cover_disp),
+        ("Status", _status_text.get(status, status)),
+        ("RMAT/Stock on hand (kg)", rmat_kg),
+        ("Avg monthly net consumption (kg)", cov.get("avg_monthly_consumption_kg")),
+        ("Cover window (months)", cov.get("cover_window_months", 6)),
+        ("Basis", "RMAT/Stock on-hand kg ÷ average net monthly consumption over "
+                  "the last 6 fully completed months (main-scope fabrics)"),
+        ("Reconciliation", "Stock on hand ÷ Avg monthly net consumption "
+                           "= Months of cover"),
+    ]
+    for i, (label, val) in enumerate(srows):
+        ws.cell(row=3 + i, column=1, value=label).font = LBL
+        ws.cell(row=3 + i, column=2, value=val)
+    ws.column_dimensions["A"].width = 40
+    ws.column_dimensions["B"].width = 58
+
+    # Monthly consumption sheet (the 6-month net run-rate detail that feeds the
+    # denominator — the average of these equals the run-rate above).
+    ws2 = wb.create_sheet("Monthly consumption")
+    mc_cols = ["Month", "Net consumption (kg)"]
+    ws2.append(mc_cols)
+    _style_header(ws2, len(mc_cols))
+    for r in breakdown:
+        ws2.append([r.get("month"), round(float(r.get("kg") or 0), 1)])
+    ws2.append([])
+    ws2.append(["Avg monthly net consumption (kg)",
+                cov.get("avg_monthly_consumption_kg")])
+    ws2.cell(row=ws2.max_row, column=1).font = LBL
+    for col, w in zip("AB", [34, 22]):
+        ws2.column_dimensions[col].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    data = buf.getvalue()
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition":
+                 'attachment; filename="months-of-cover.xlsx"'},
+    )
+
+
 # ── Data quality: fabrics driving the metres/garment fallback ──────────
 # The "Avg metres / garment" KPI converts any Done-DPS MO whose main fabric has
 # no usable kg→metre conversion using the overall fabric-average (fallback) so the

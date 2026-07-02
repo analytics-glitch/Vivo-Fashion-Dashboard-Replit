@@ -2202,6 +2202,23 @@ async function downloadBasicCoverXlsx(){
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
   }catch(e){alert('Could not generate the Excel report. Please try again.');}
 }
+// General "Months of cover" calculations workbook — the main-scope RMAT/Stock kg,
+// the 6-month net run-rate and its per-month breakdown, and the resulting cover.
+// Credentialed blob so the session is honoured and we can surface an error
+// instead of a blank tab, matching the other download helpers.
+async function downloadMonthsCoverXlsx(){
+  try{
+    const r=await fetch('/api/fabric/months-of-cover.xlsx',{credentials:'include'});
+    if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
+    if(!r.ok)throw new Error('http '+r.status);
+    const blob=await r.blob();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='months-of-cover.xlsx';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  }catch(e){alert('Could not generate the Excel report. Please try again.');}
+}
 // Solid vs Print calculations workbook — the full classification audit trail
 // (per-fabric Solid/Print/Unknown, which rule matched, kg, kg→metre conversion,
 // derived metres and KES value). Passes the page's CURRENT location + scope so
@@ -2400,7 +2417,8 @@ function renderKpis(d,mpg,coverDelta){
      if(coverStatus==='overstocked'){cval='12+';}
      else if(coverStatus==='ok'&&cover!=null){cval=coverFmt(cover);ccls=cover<1?'amber':'';}
      else{cval='&mdash;';}
-     return KpiCard({reserveAction:true,label:'Months of cover',value:cval,valueClass:ccls,valueAttrs:fx(FX.monthsCover),cardAttrs:` title="${coverTip}"`,footnote:coverNote,footnoteAttrs:' style="margin-top:0;"'});})(),
+     const dl=(cover!=null)?`<button class="btn ghost" onclick="downloadMonthsCoverXlsx()" title="Download the calculation audit trail (fabric stock, the 6-month net run-rate and the per-month consumption behind it) as an Excel workbook">&#11015; Download (Excel)</button>`:'';
+     return KpiCard({reserveAction:true,label:'Months of cover',value:cval,valueClass:ccls,valueAttrs:fx(FX.monthsCover),cardAttrs:` title="${coverTip}"`,footnote:coverNote,footnoteAttrs:' style="margin-top:0;"',action:dl});})(),
     (()=>{
      // Prev-month cover: stock ÷ the PREVIOUS full calendar month's net use — a
      // more reactive signal than the 6-month average. Sits next to it and degrades
