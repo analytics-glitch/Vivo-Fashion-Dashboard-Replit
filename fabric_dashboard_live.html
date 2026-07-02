@@ -354,7 +354,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div class="card">
       <div class="section-head"><h3>Solid vs Print</h3></div>
       <div id="split-print"><div class="loading">Loading…</div></div>
-      <button class="btn ghost" style="margin-top:.5rem;padding:0 10px;height:28px;font-size:11px;" onclick="downloadPrintSplitXlsx()" title="Download the full classification audit trail (every contributing fabric, whether it was classed Solid/Print/Unknown and which rule matched, its on-hand kg, the kg&rarr;metre conversion, derived metres and KES value) as an Excel workbook">&#11015; Download calculations (Excel)</button>
+      <button class="btn ghost" style="margin-top:.5rem;padding:0 10px;height:28px;font-size:11px;" onclick="downloadPrintSplitXlsx()" title="Download the full classification audit trail (every contributing fabric, whether it was classed Solid/Print/Unknown and which rule matched, its on-hand kg, the kg&rarr;metre conversion, derived metres and KES value) as an Excel workbook">&#11015; Download (Excel)</button>
       <div class="section-head" style="margin-top:1.2rem;"><h3>Fabric structure</h3></div>
       <div id="split-structure"><div class="loading">Loading…</div></div>
       <div class="section-head" style="margin-top:1.2rem;"><h3>By primary colour</h3><span class="muted">stock, last-30-day consumption &amp; covers</span></div>
@@ -2408,7 +2408,7 @@ function renderKpis(d,mpg,coverDelta){
      const fbn=mpg&&mpg.mos_using_fallback;
      if(fbn){const fk=(mpg.fallback_kg_per_mtr!=null)?mpg.fallback_kg_per_mtr:null;
        sub+=` &middot; <span class="amber" title="${esc(fmt(fbn)+' of these MOs use a fabric with no kg→metre conversion in Odoo, converted via the overall fabric-average Kg/Mtr'+(fk!=null?(' ('+fk+' kg/m)'):'')+' so they are still counted.')}">${fmt(fbn)} via fallback kg/m</span>`;}
-     const dl=(v!=null)?`<button class="btn ghost" onclick="downloadMpgXlsx()" title="Download the full calculation audit trail (every Done-DPS MO, its fabric components and the kg→metre conversion) as an Excel workbook">&#11015; Download calculations (Excel)</button>`:'';
+     const dl=(v!=null)?`<button class="btn ghost" onclick="downloadMpgXlsx()" title="Download the full calculation audit trail (every Done-DPS MO, its fabric components and the kg→metre conversion) as an Excel workbook">&#11015; Download (Excel)</button>`:'';
      return KpiCard({reserveAction:true,label:'Avg metres / garment',value:v!=null?v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):null,unit:v!=null?'m':'',valueAttrs:fx(FX.metresPerGarment),footnote:sub,action:dl});})(),
     (()=>{
      // Headline value: number when computable, capped "12+" when overstocked
@@ -2456,7 +2456,7 @@ function renderKpis(d,mpg,coverDelta){
      else if(bst==='no_match'){bval='&mdash;';btip=esc('No curated staple fabric currently matches a product (this can happen transiently while fabric data is rebuilding). The matched count below shows the gap.');}
      else{bval='&mdash;';btip=esc('No curated staple-fabric stock and no recent consumption, so there is nothing to compute.');}
      const bsubLine=(bst==='overstocked')?`${bsub} &middot; no recent use`:bsub;
-     const bdl=(bm!=null)?`<button class="btn ghost" onclick="downloadBasicCoverXlsx()" title="Download the full calculation audit trail (curated staple-fabric pairings, matched products with stock on hand, and the 6-month net consumption run-rate) as an Excel workbook">&#11015; Download calculations (Excel)</button>`:'';
+     const bdl=(bm!=null)?`<button class="btn ghost" onclick="downloadBasicCoverXlsx()" title="Download the full calculation audit trail (curated staple-fabric pairings, matched products with stock on hand, and the 6-month net consumption run-rate) as an Excel workbook">&#11015; Download (Excel)</button>`:'';
      return KpiCard({reserveAction:true,label:'Basic Fabrics &mdash; months of cover',value:bval,valueClass:bcls,cardAttrs:` title="${btip}"${fx(FX.basicMonthsCover)}`,footnote:bsubLine,action:bdl});})(),
   ];
   document.getElementById('kpi-cards').innerHTML=cards.join('');
