@@ -1018,6 +1018,86 @@ def summary(location: str = Query(default="RMAT/Stock"),
             **cover,
         }
 
+# ── Fabrics excluded from the Avg cost/metre figure (missing Width/GSM) ──────
+# Companion download for the "N missing Width/GSM excluded" note on the Avg
+# cost/metre KPI cards. Lists exactly the in-scope fabrics that were dropped from
+# a given figure because they have no kg→metre conversion (kg_per_mtr_eff IS
+# NULL), so a buyer can go fill in Width/GSM in Odoo. `figure` selects which
+# card's scope to report (whitelisted to purchases | stock); the `scope`
+# (main/support) + `location` params mirror the summary endpoint so the row set
+# reconciles with the excluded-count shown on the card. Each row carries the
+# barcode-or-SKU, product name, and a computed missing-parameters string, reusing
+# the SAME Width/GSM logic as the xlsx "Fabrics to fix" export (missing = null or
+# <= 0). Read-only.
+def _width_gsm_missing_str(width_m, gsm):
+    """Which of Width / GSM a fabric is missing (null or <= 0). Mirrors the
+    xlsx export's _missing_str — kg/m is derived purely from Width x GSM, so
+    those are the only two a buyer can fill in to clear the fabric."""
+    m = []
+    try:
+        if not (width_m is not None and float(width_m) > 0):
+            m.append("Width")
+    except (TypeError, ValueError):
+        m.append("Width")
+    try:
+        if not (gsm is not None and float(gsm) > 0):
+            m.append("GSM")
+    except (TypeError, ValueError):
+        m.append("GSM")
+    return ", ".join(m)
+
+@fabric_router.get("/api/fabric/acpm-excluded")
+def acpm_excluded(figure: str = Query(default="stock"),
+                  scope: str = Query(default="main"),
+                  location: str = Query(default="RMAT/Stock")):
+    fig = str(figure or "").strip().lower()
+    if fig not in ("stock", "purchases"):
+        raise HTTPException(status_code=400, detail="figure must be 'stock' or 'purchases'")
+    with _get_conn() as conn:
+        _ensure_fabric_sheet(conn)
+        scope_sql = _scope_sql(scope)
+        if fig == "stock":
+            # Same base/filters as the acpm_stock KPI query in summary(): live
+            # RMAT/Stock fabric, in the requested support scope, whose kg->metre
+            # conversion is missing. One row per product.
+            rows = q(conn, f"""
+                SELECT p.barcode AS barcode, p.default_code AS default_code,
+                       COALESCE(NULLIF(p.name,''), NULLIF(p.default_code,''), 'Unknown') AS name,
+                       p.width_m AS width_m, p.gsm AS gsm
+                FROM raw_fabric_inventory i
+                JOIN raw_fabric_products p ON p.id = i.product_id
+                WHERE i.quantity > 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
+                  AND p.kg_per_mtr_eff IS NULL
+                  AND {scope_sql}
+                GROUP BY p.id, p.barcode, p.default_code, p.name, p.width_m, p.gsm
+                ORDER BY name
+            """)
+        else:
+            # Same base/filters as the pur_rows / missing_rows KPI queries in
+            # summary(): received, non-cancelled fabric PO lines whose kg->metre
+            # conversion is missing. One row per product (received over 1+ POs).
+            rows = q(conn, f"""
+                SELECT p.barcode AS barcode, p.default_code AS default_code,
+                       COALESCE(NULLIF(p.name,''), NULLIF(p.default_code,''), 'Unknown') AS name,
+                       p.width_m AS width_m, p.gsm AS gsm
+                FROM raw_fabric_purchase_orders po
+                JOIN raw_fabric_products p ON p.id = po.product_id
+                WHERE po.state != 'cancel' AND po.qty_received > 0 AND p.category='Fabric'
+                  AND p.kg_per_mtr_eff IS NULL
+                  AND {scope_sql}
+                GROUP BY p.id, p.barcode, p.default_code, p.name, p.width_m, p.gsm
+                ORDER BY name
+            """)
+        items = []
+        for r in rows:
+            sku = (r.get("barcode") or "").strip() or (r.get("default_code") or "").strip()
+            items.append({
+                "sku": sku,
+                "name": r.get("name") or "Unknown",
+                "missing": _width_gsm_missing_str(r.get("width_m"), r.get("gsm")),
+            })
+        return {"figure": fig, "count": len(items), "items": items}
+
 # ── Avg metres of fabric consumed per garment ──────────────
 # Derived from Done DPS manufacturing orders (mo_fabric_consumption, populated by
 # extract_mo_fabric_consumption.py). Metric = Σ(main-fabric metres consumed across

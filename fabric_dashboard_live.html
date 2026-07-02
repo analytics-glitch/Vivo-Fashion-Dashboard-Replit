@@ -716,6 +716,35 @@ async function downloadConsumptionSources(scope){
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
   }catch(e){alert('Could not generate the CSV. Please try again.');}
 }
+// Download the fabrics excluded from an Avg cost/metre card (missing Width/GSM).
+// Fetches the excluded list for the given figure (stock|purchases) in the page's
+// current scope + location, builds a properly-quoted CSV and triggers a browser
+// download named "Excluded (Width_GSM).csv". Behaves gracefully if nothing is
+// excluded (no broken/empty download).
+async function downloadAcpmExcluded(figure){
+  try{
+    const fig=(figure==='purchases')?'purchases':'stock';
+    const params=new URLSearchParams({figure:fig,scope:'main',location:loc()});
+    const r=await fetch('/api/fabric/acpm-excluded?'+params.toString(),{credentials:'include'});
+    if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
+    if(!r.ok)throw new Error('http '+r.status);
+    const data=await r.json();
+    const items=(data&&data.items)||[];
+    if(!items.length){alert('No fabrics are currently excluded from this figure.');return;}
+    // RFC-4180 CSV quoting: wrap in quotes and double any inner quote whenever a
+    // field contains a comma, quote or newline.
+    const csvEsc=v=>{const s=(v==null?'':String(v));return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};
+    const rows=[['Barcode/SKU','Product Name','Missing Parameters']];
+    items.forEach(it=>rows.push([it.sku,it.name,it.missing]));
+    const csv=rows.map(row=>row.map(csvEsc).join(',')).join('\r\n');
+    const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='Excluded (Width_GSM).csv';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  }catch(e){alert('Could not generate the CSV. Please try again.');}
+}
 const PAL=['#1a5c38','#d97706','#2563eb','#9333ea','#dc2626','#0891b2','#65a30d','#6b7280'];
 
 // ── Formula tooltips ──
@@ -2280,15 +2309,23 @@ function renderKpis(d,mpg,coverDelta){
   const acpmS=d.avg_cost_per_metre_stock,acpmSExc=+d.avg_cost_per_metre_stock_excluded_count||0;
   const acpmP=d.avg_cost_per_metre_purchases,acpmPExc=+d.avg_cost_per_metre_purchases_excluded_count||0;
   const acpmFmt=v=>v==null?'&mdash;':fmtKESm(v);
-  const acpmSub=(base,exc)=>exc>0?esc(exc+' missing Width/GSM excluded'):base;
+  // When fabrics are excluded, the sub-note becomes a clickable link that
+  // downloads exactly those fabrics (barcode/SKU, name, missing param) as a CSV
+  // so a buyer can go fix their Width/GSM in Odoo. `figure` picks the card scope.
+  const acpmSub=(base,exc,figure)=>exc>0
+    ?`<a href="#" onclick="downloadAcpmExcluded('${figure}');return false;" `
+      +`style="color:inherit;text-decoration:underline;cursor:pointer;white-space:nowrap;" `
+      +`title="${esc('Download the '+exc+' fabric(s) excluded from this figure for missing Width/GSM (CSV) — fix them in Odoo')}">`
+      +`${esc(exc+' missing Width/GSM excluded')}</a>`
+    :base;
   const acpmTitle=(base,exc)=>exc>0
     ?esc(exc+' in-scope fabric(s) are missing Width/GSM in Odoo, so they have no kg→metre conversion and are excluded from this figure (both their value and metres). The cost/metre is computed over the remaining convertible fabrics; fill in Width/GSM in Odoo and the next fabric sync will fold them in.')
     :base;
   document.getElementById('kpi-cards').innerHTML=`
    <div class="kpi accent"><span class="eyebrow">Stock on hand</span><p class="kpi-value"${fx(FX.stockOnHand)}>${fmt(stockQty)} ${unitLabel()}</p><p class="kpi-sub"><span${fx(FX.kpiSubStockValue)}>${fmtKES(d.fabric_stock_value)}</span> &middot; <span${fx(FX.kpiSubFabricCount)}>${fmt(d.fabric_products)} fabrics</span></p></div>
    <div class="kpi"><span class="eyebrow">Total fabric value</span><p class="kpi-value"${fx(FX.totalFabricValue)}>${fmtKES(totalVal)}</p><p class="kpi-sub">${valSub}</p></div>
-   <div class="kpi" title="${acpmTitle('Average cost per metre across fabric stock on hand (RMAT/Stock), per metre regardless of the kg/m unit toggle.',acpmSExc)}"><span class="eyebrow">Avg cost / metre</span><p class="kpi-value permetre"${fx(FX.avgCostMetreStock)}>${acpmFmt(acpmS)}</p><p class="kpi-sub">${acpmSub('stock on hand &middot; RMAT/Stock',acpmSExc)}</p></div>
-   <div class="kpi" title="${acpmTitle('Average purchase cost per metre across all received POs, per metre regardless of the kg/m unit toggle.',acpmPExc)}"><span class="eyebrow">Avg cost / metre (purchases)</span><p class="kpi-value permetre"${fx(FX.avgCostMetrePurchases)}>${acpmFmt(acpmP)}</p><p class="kpi-sub">${acpmSub('received &middot; all POs',acpmPExc)}</p></div>
+   <div class="kpi" title="${acpmTitle('Average cost per metre across fabric stock on hand (RMAT/Stock), per metre regardless of the kg/m unit toggle.',acpmSExc)}"><span class="eyebrow">Avg cost / metre</span><p class="kpi-value permetre"${fx(FX.avgCostMetreStock)}>${acpmFmt(acpmS)}</p><p class="kpi-sub">${acpmSub('stock on hand &middot; RMAT/Stock',acpmSExc,'stock')}</p></div>
+   <div class="kpi" title="${acpmTitle('Average purchase cost per metre across all received POs, per metre regardless of the kg/m unit toggle.',acpmPExc)}"><span class="eyebrow">Avg cost / metre (purchases)</span><p class="kpi-value permetre"${fx(FX.avgCostMetrePurchases)}>${acpmFmt(acpmP)}</p><p class="kpi-sub">${acpmSub('received &middot; all POs',acpmPExc,'purchases')}</p></div>
    <div class="kpi"><span class="eyebrow">Consumed today</span><p class="kpi-value"${fx(FX.consumedToday)}>${fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres)} ${unitLabel()}</p><p class="kpi-sub">${consumedTodaySub(d)}${consumptionSourcesLink('main')}</p></div>
    <div class="kpi"><span class="eyebrow">Consumed 30d</span><p class="kpi-value"${fx(FX.consumed30d)}>${fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres)} ${unitLabel()}</p><p class="kpi-sub">net of returns</p></div>
    ${(()=>{const v=(mpg&&mpg.metres_per_garment!=null)?mpg.metres_per_garment:null;
