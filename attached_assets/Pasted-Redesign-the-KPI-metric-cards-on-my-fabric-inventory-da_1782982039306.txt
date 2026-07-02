@@ -1,0 +1,100 @@
+Redesign the KPI metric cards on my fabric inventory dashboard. Keep all existing 
+data, labels, values and calculations exactly as they are — this is a VISUAL and 
+LAYOUT restyle only. Do not change any numbers, queries, or metric logic.
+
+GOAL
+Produce a clean, consistent, finance-grade KPI card row for the Vivo fabric inventory 
+dashboard. Every card must align perfectly across the row regardless of how much 
+sub-text it contains.
+
+BRAND PALETTE (Vivo — use these exact hex values)
+- Brand Orange (primary accent):      #EE5A0E
+- Orange dark (hover / small text):   #C2410C
+- Ink (primary text / hero fill):     #1A1A1A
+- Muted text:                         #6B7280
+- Page background:                    #FBF7F4  (soft Vivo blush/off-white)
+- Card surface:                       #FFFFFF
+- Card border:                        #EFE9E4  (warm subtle)
+- Amber (data-issue alerts):          #D97706
+- Green (positive / healthy status):  #15803D
+- Red (negative / critical status):   #DC2626
+NOTE: replace #EE5A0E with the exact hex from the official Vivo logo asset if available.
+
+1. LAYOUT & GRID
+- Use CSS Grid, not flex-wrap: repeat(auto-fit, minmax(200px, 1fr)), gap 16px.
+- All cards MUST be equal height (align-items: stretch). No card taller than another 
+  because it has more footnote text.
+- Cards wrap cleanly to the next row; never leave one orphan card looking broken.
+- Consistent internal padding: 20px.
+
+2. CARD ANATOMY (fixed vertical zones — this is what fixes the alignment)
+Every card uses the SAME 5-zone vertical structure, top to bottom, each a fixed region 
+so content lines up across all cards:
+  (a) LABEL   — uppercase metric name, top-aligned
+  (b) VALUE   — big number + unit; all value baselines align across the row
+  (c) DELTA   — optional trend/change line (reserve the space even if empty)
+  (d) FOOTNOTE— small muted context text, bottom-aligned to a fixed baseline
+  (e) ACTION  — optional button, pinned to the card bottom
+Use flexbox column with footnote/action pushed down (margin-top: auto) so footnotes and 
+buttons align on a common baseline across every card, whatever their length.
+
+3. TYPOGRAPHY
+- Font: Inter (system-ui fallback). One family only.
+- LABEL: 12px, weight 600, uppercase, letter-spacing 0.06em, color #6B7280.
+- VALUE: 30px, weight 700, color #1A1A1A (white on the hero card).
+- UNIT (m, /m, KES): same line as value but 60% size, weight 500, muted — never the 
+  same size as the number.
+- FOOTNOTE: 12px, weight 400, line-height 1.4, color #6B7280.
+- font-variant-numeric: tabular-nums on ALL numeric values so digits align.
+- Remove ALL underlines from labels and footnotes. Underline is reserved exclusively 
+  for genuine clickable links.
+
+4. COLOUR APPLICATION
+- Page background: #FBF7F4 (replace the current saturated peach — it competes with the 
+  data). Calm, warm, on-brand.
+- Card background: #FFFFFF, border 1px solid #EFE9E4 OR soft shadow 
+  (0 1px 3px rgba(0,0,0,0.08)) — pick ONE, not both.
+- Border radius: 12px on all cards, consistent.
+- HERO CARD (Stock on Hand only): fill #1A1A1A (ink) with white text and a thin 
+  #EE5A0E accent bar (e.g. 3px left border or a short underline beneath the value). 
+  This is the single deliberate accent card; all others are white.
+  [ALTERNATIVE HERO: to make it fully on-brand instead of finance-restrained, fill the 
+  hero with #EE5A0E and use white text — but keep label/footnote large & bold for 
+  contrast. Choose ONE hero style, not both.]
+- Accent colour for links, active states and buttons: #EE5A0E (use #C2410C for hover 
+  and for any small orange text on white, for contrast).
+- Do NOT colour multiple cards; orange is an accent, never a full-card field (except 
+  the optional orange hero).
+
+5. STATUS & ALERTS
+- Footnotes signalling a data issue (e.g. "1 missing Width/GSM excluded") render as a 
+  small amber pill/badge (#D97706 text/border on a pale amber fill), not underlined text.
+- Optional: ratio KPIs (Months of Cover) get a small status dot — #15803D green / 
+  #D97706 amber / #DC2626 red against a threshold — only if trivial to wire.
+
+6. ACTIONS
+- Standardise "Download calculations (Excel)" as a small ghost button (text + download 
+  icon, #EE5A0E accent), pinned to the card bottom via the ACTION zone.
+- Appears only on cards that have it; on cards without it the ACTION zone stays empty 
+  but reserves the space so all cards stay aligned.
+
+7. RESPONSIVE
+- Desktop: 4 per row (or auto-fit). Tablet: 2 per row. Mobile: 1 per row, full width.
+- Value font scales down one step on mobile (30px → 24px).
+
+8. ACCESSIBILITY
+- All text meets WCAG AA contrast. Check white-on-ink hero (passes) and, if you choose 
+  the orange hero, verify white-on-#EE5A0E for small text — darken to #C2410C or enlarge 
+  text if it fails.
+- Minimum body text 12px; never smaller.
+
+DO NOT
+- Do not underline labels or footnotes.
+- Do not let cards be different heights.
+- Do not use the loud peach background or colour multiple cards.
+- Do not change any metric values, units, or calculations.
+
+DELIVER
+One reusable KpiCard component taking props: label, value, unit, footnote, delta, 
+alert, action — so all cards are visually identical in structure. Apply it across the 
+existing metric row.
