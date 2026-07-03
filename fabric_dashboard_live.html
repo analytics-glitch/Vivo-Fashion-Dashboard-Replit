@@ -14,6 +14,8 @@
   --danger:#dc2626; --amber:#d97706; --ok:#15803d;
   /* KPI card design tokens — white cards, one ink hero, Vivo-orange accent */
   --kpi-surface:#ffffff; --kpi-border:#ECE6E1; --kpi-ink:#1A1A1A; --kpi-orange:#EE5A0E; --kpi-orange-deep:#C2410C;
+  /* Header (Fabric BI top zone) tokens — near-white paper bands, Vivo-orange accent, ink + warm-grey text */
+  --fab-paper:#FAF8F4; --fab-line:#ECE6E1; --fab-ink:#1A1A1A; --fab-muted:#6B6B6B; --fab-orange:var(--kpi-orange); --fab-orange-deep:var(--kpi-orange-deep);
   --radius:12px;
 }
 *{box-sizing:border-box;}
@@ -26,27 +28,37 @@ select,input{font-family:inherit;height:38px;border:1px solid var(--border);bord
 select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26,92,56,.1);}
 
 .layout{display:flex;flex-direction:column;min-height:100vh;}
-.aside{display:flex;flex-direction:column;background:var(--panel);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:40;}
-.nav-head{display:flex;align-items:center;gap:10px;padding:.6rem 1.4rem;border-bottom:1px solid var(--border);}
-.nav-body{display:flex;align-items:center;flex-wrap:wrap;gap:5px 6px;padding:.5rem 1.4rem .6rem;}
+/* Header wrapper: Row A (utility bar) + Row B (context bar) pinned together so
+   both the tabs and the Location/Date filters stay reachable on long pages. */
+.fab-header{position:sticky;top:0;z-index:41;display:flex;flex-direction:column;}
+.fab-topnav{display:flex;align-items:center;gap:18px;background:var(--fab-paper);border-bottom:1px solid var(--fab-line);padding:9px 20px;}
+.fab-tabs-scroll{flex:1;min-width:0;display:flex;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-mask-image:linear-gradient(90deg,transparent 0,#000 22px,#000 calc(100% - 22px),transparent 100%);mask-image:linear-gradient(90deg,transparent 0,#000 22px,#000 calc(100% - 22px),transparent 100%);}
+.fab-tabs-scroll::-webkit-scrollbar{display:none;height:0;}
+.nav-body{display:flex;align-items:center;flex-wrap:nowrap;gap:2px;margin:0 auto;padding:0 2px;}
 .main{flex:1;min-width:0;display:flex;flex-direction:column;}
 
-.brand-row{display:flex;align-items:center;gap:10px;flex-shrink:0;}
-.brandmark{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#1a5c38,#0f3d24);color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:800;box-shadow:0 4px 12px rgba(26,92,56,.2);}
-.brand-name{font-size:16px;font-weight:800;color:var(--accent);letter-spacing:-.01em;}
-.brand-sub{font-size:10.5px;color:var(--muted);font-weight:500;}
-.nav-group{font-size:.62rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:700;padding:0 4px 0 10px;align-self:center;flex-shrink:0;}
+/* Brand lockup: orange badge + ink "Vivo" wordmark, warm-grey "Fabric BI" sub. */
+.fab-brand{display:flex;align-items:center;gap:11px;flex-shrink:0;}
+.fab-brandmark{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--fab-orange),var(--fab-orange-deep));color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;box-shadow:0 3px 10px rgba(238,90,14,.28);}
+.fab-brandname{font-size:15px;font-weight:800;color:#fff;letter-spacing:.01em;background:var(--fab-ink);padding:1px 8px;border-radius:6px;display:inline-block;line-height:1.4;}
+.fab-brandsub{font-size:10px;color:var(--fab-muted);font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-top:3px;}
+/* Utility actions (Reset tab order, Back) de-emphasised as icon-weight buttons. */
+.fab-utils{display:flex;align-items:center;gap:6px;flex-shrink:0;}
+.fab-util-btn{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:8px;border:1px solid var(--fab-line);background:#fff;color:var(--fab-muted);font-size:15px;line-height:1;cursor:pointer;text-decoration:none;transition:color .12s,border-color .12s,background .12s;}
+.fab-util-btn:hover{color:var(--fab-orange);border-color:var(--fab-orange);background:rgba(238,90,14,.06);}
+.fab-util-btn[hidden]{display:none;}
+.nav-group{font-size:.62rem;letter-spacing:.09em;text-transform:uppercase;color:var(--fab-muted);font-weight:700;padding:0 4px 0 10px;align-self:center;flex-shrink:0;}
 .nav-body .nav-group:first-child{padding-left:0;}
-.nav-item{display:flex;align-items:center;gap:9px;padding:9px 11px;font-size:13.5px;font-weight:500;color:var(--text-sub);border-radius:9px;cursor:pointer;margin-bottom:0;white-space:nowrap;flex-shrink:0;transition:background .12s,color .12s;}
-.nav-item:hover{background:rgba(26,92,56,.06);color:var(--text);}
-.nav-item.active{color:#fff;background:var(--accent);font-weight:600;}
+/* Tabs: text-weight items with a Vivo-orange underline indicator on the active one. */
+.nav-item{position:relative;display:flex;align-items:center;gap:9px;padding:10px 13px;font-size:13.5px;font-weight:600;color:var(--fab-muted);cursor:pointer;white-space:nowrap;flex-shrink:0;transition:color .12s;}
+.nav-item::after{content:"";position:absolute;left:12px;right:12px;bottom:0;height:2.5px;border-radius:2px;background:transparent;transition:background .12s;}
+.nav-item:hover{color:var(--fab-ink);}
+.nav-item.active{color:var(--fab-orange);font-weight:700;}
+.nav-item.active::after{background:var(--fab-orange);}
 .nav-item{touch-action:none;}
-.nav-item.nav-dragging{opacity:.55;box-shadow:0 6px 18px rgba(0,0,0,.18);cursor:grabbing;}
-.nav-item.nav-drop-before{box-shadow:-3px 0 0 0 var(--accent);}
-.nav-item.nav-drop-after{box-shadow:3px 0 0 0 var(--accent);}
-.nav-reset{margin-left:12px;padding:0 9px;font-size:11.5px;color:var(--muted);background:none;border:none;cursor:pointer;white-space:nowrap;flex-shrink:0;text-decoration:none;}
-.nav-reset:hover{color:var(--accent);text-decoration:underline;}
-.nav-reset[hidden]{display:none;}
+.nav-item.nav-dragging{opacity:.55;box-shadow:0 6px 18px rgba(0,0,0,.18);cursor:grabbing;background:#fff;border-radius:8px;}
+.nav-item.nav-drop-before{box-shadow:-3px 0 0 0 var(--fab-orange);}
+.nav-item.nav-drop-after{box-shadow:3px 0 0 0 var(--fab-orange);}
 .nav-acr{font-size:.84em;letter-spacing:.02em;}
 .rsv-lbl{display:block;font-size:11px;font-weight:600;color:var(--text-sub);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;}
 .resv-dropdown{position:absolute;top:100%;left:0;z-index:30;width:340px;max-height:280px;overflow:auto;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.12);margin-top:4px;}
@@ -57,12 +69,34 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .resv-opt:hover{background:rgba(26,92,56,.07);}
 .resv-opt .ro-code{color:var(--text-sub);font-size:11px;}
 .back-link{display:block;margin-left:auto;padding:0 9px;font-size:12px;color:var(--muted);text-decoration:none;white-space:nowrap;flex-shrink:0;}
-.back-link:hover{color:var(--accent);}
-
-.topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:1rem 1.4rem;border-bottom:1px solid var(--border);background:var(--panel);flex-wrap:wrap;}
-.topbar h1{margin:0;font-size:19px;font-weight:800;letter-spacing:-.02em;}
-.topbar .sub{font-size:12px;color:var(--muted);margin-top:1px;}
-.topctl{display:flex;align-items:center;gap:9px;flex-wrap:wrap;}
+/* Row B — context bar: page title/subtitle on the left, filter cluster on the right. */
+.fab-context{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--fab-line);background:var(--fab-paper);flex-wrap:wrap;}
+.fab-context-title{flex-shrink:0;}
+.fab-context-title h1{margin:0;font-size:20px;font-weight:800;letter-spacing:-.02em;color:var(--fab-ink);line-height:1.25;}
+.fab-context-title .sub{font-size:12px;color:var(--fab-muted);margin-top:2px;}
+.fab-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.fab-filter-item,.fab-daterange{display:inline-flex;align-items:center;gap:7px;}
+.fab-cluster{align-items:center;gap:9px;flex-wrap:wrap;}
+.fab-filters .muted{font-size:11px;font-weight:700;color:var(--fab-muted);text-transform:uppercase;letter-spacing:.04em;}
+/* Styled dropdowns + a single cohesive date-range control (native inputs kept
+   inside a bordered shell — same values, onchange wiring and keyboard access). */
+.fab-select{height:34px;padding:0 30px 0 11px;border:1px solid var(--fab-line);border-radius:8px;background:#fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%236B6B6B' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>") no-repeat right 11px center;font-family:inherit;font-size:12.5px;font-weight:600;color:var(--fab-ink);cursor:pointer;appearance:none;-webkit-appearance:none;-moz-appearance:none;outline:none;transition:border-color .12s,box-shadow .12s;}
+.fab-select:hover{border-color:var(--fab-orange);}
+.fab-select:focus-visible{border-color:var(--fab-orange);box-shadow:0 0 0 2px rgba(238,90,14,.15);}
+.fab-dr-fields{display:inline-flex;align-items:center;height:34px;padding:0 6px;border:1px solid var(--fab-line);border-radius:8px;background:#fff;transition:border-color .12s,box-shadow .12s;}
+.fab-dr-fields:focus-within{border-color:var(--fab-orange);box-shadow:0 0 0 2px rgba(238,90,14,.15);}
+.fab-dr-fields input[type=date]{border:none;background:transparent;height:30px;padding:0 4px;font-family:inherit;font-size:12.5px;font-weight:600;color:var(--fab-ink);outline:none;box-shadow:none;color-scheme:light;}
+.fab-dr-fields input[type=date]:focus{border:none;box-shadow:none;}
+.fab-dr-fields input[type=date]::-webkit-calendar-picker-indicator{opacity:.5;cursor:pointer;padding:0;margin:0;}
+.fab-dr-fields input[type=date]:hover::-webkit-calendar-picker-indicator{opacity:.85;}
+.fab-dr-sep{color:var(--fab-muted);font-size:12px;padding:0 1px;}
+.fab-clear-btn{height:34px;padding:0 11px;border:1px solid var(--fab-line);border-radius:8px;background:#fff;color:var(--fab-muted);font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;transition:color .12s,border-color .12s,background .12s;}
+.fab-clear-btn:hover{color:var(--fab-orange);border-color:var(--fab-orange);background:rgba(238,90,14,.06);}
+/* Freshness pill — the one flourish: a live/pulsing orange dot + legible label. */
+.fab-fresh{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:999px;background:#fff;border:1px solid var(--fab-line);font-size:11.5px;font-weight:700;color:var(--fab-ink);white-space:nowrap;}
+.fab-fresh:empty{display:none;}
+.fab-fresh::before{content:"";flex-shrink:0;width:8px;height:8px;border-radius:50%;background:var(--fab-orange);box-shadow:0 0 0 0 rgba(238,90,14,.55);animation:fabfreshpulse 2.2s ease-out infinite;}
+@keyframes fabfreshpulse{0%{box-shadow:0 0 0 0 rgba(238,90,14,.5);}70%{box-shadow:0 0 0 7px rgba(238,90,14,0);}100%{box-shadow:0 0 0 0 rgba(238,90,14,0);}}
 .content{padding:1.4rem;overflow:auto;flex:1;}
 
 .eyebrow{text-transform:uppercase;letter-spacing:.09em;font-size:.62rem;font-weight:700;color:var(--muted);}
@@ -190,7 +224,7 @@ tr.sub-row td{background:var(--bg);font-size:12.5px;}
 .banner-warn{background:#fef3c7;color:#92400e;border:1px solid #fcd34d;font-weight:600;}
 .banner-info{background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;}
 .flex{display:flex;gap:9px;flex-wrap:wrap;align-items:center;}
-@media(max-width:760px){.nav-head,.nav-body{padding-left:1rem;padding-right:1rem;}.nav-body{flex-wrap:nowrap;overflow-x:auto;}}
+@media(max-width:760px){.fab-topnav,.fab-context{padding-left:1rem;padding-right:1rem;}}
 
 .seg{display:inline-flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;}
 .seg .unit-btn{height:36px;padding:0 14px;border:none;background:var(--card);color:var(--text-sub);font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;}
@@ -243,64 +277,74 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
 </head>
 <body>
 <div class="layout">
- <aside class="aside">
-  <div class="nav-head">
-   <div class="brand-row">
-    <div class="brandmark">V</div>
+ <div class="fab-header">
+  <header class="fab-topnav">
+   <div class="fab-brand">
+    <div class="fab-brandmark">V</div>
     <div>
-     <div class="brand-name">Vivo Fabric</div>
-     <div class="brand-sub">FABRIC BI</div>
+     <div class="fab-brandname">Vivo</div>
+     <div class="fab-brandsub">Fabric BI</div>
     </div>
    </div>
-   <button type="button" id="nav-reset" class="nav-reset" hidden title="Restore the default tab order">&#8635; Reset tab order</button>
-   <a href="/" class="back-link">&larr; Back to Vivo BI</a>
-  </div>
-  <nav class="nav-body" id="nav-body">
-   <div class="nav-item active" data-page="overview">Overview</div>
-   <div class="nav-item" data-page="dashboard">Stock Mix</div>
-   <div class="nav-item" data-page="ageing">Stock &amp; Ageing</div>
-   <div class="nav-item" data-page="deadstock">Slow Moving</div>
-   <div class="nav-item" data-page="defects">Fabric QC</div>
-   <div class="nav-item" data-page="support">Support Fabrics</div>
-   <div class="nav-item" data-page="dataquality">Data Quality</div>
-   <div class="nav-item" data-page="movement">Trend Analysis</div>
-   <div class="nav-item" data-page="pos">Purchase Orders</div>
-   <div class="nav-item" data-page="suppliers">Vendors/Suppliers</div>
-   <div class="nav-item" data-page="reservations">Fabric Reservations</div>
-  </nav>
- </aside>
-
- <main class="main">
-  <div class="topbar">
-   <div>
+   <div class="fab-tabs-scroll">
+    <nav class="nav-body" id="nav-body">
+     <div class="nav-item active" data-page="overview">Overview</div>
+     <div class="nav-item" data-page="dashboard">Stock Mix</div>
+     <div class="nav-item" data-page="ageing">Stock &amp; Ageing</div>
+     <div class="nav-item" data-page="deadstock">Slow Moving</div>
+     <div class="nav-item" data-page="defects">Fabric QC</div>
+     <div class="nav-item" data-page="support">Support Fabrics</div>
+     <div class="nav-item" data-page="dataquality">Data Quality</div>
+     <div class="nav-item" data-page="movement">Trend Analysis</div>
+     <div class="nav-item" data-page="pos">Purchase Orders</div>
+     <div class="nav-item" data-page="suppliers">Vendors/Suppliers</div>
+     <div class="nav-item" data-page="reservations">Fabric Reservations</div>
+    </nav>
+   </div>
+   <div class="fab-utils">
+    <button type="button" id="nav-reset" class="fab-util-btn" hidden title="Restore the default tab order">&#8635;</button>
+    <a href="/" class="fab-util-btn" title="Back to Vivo BI">&larr;</a>
+   </div>
+  </header>
+  <div class="fab-context">
+   <div class="fab-context-title">
     <h1 id="page-title">Overview</h1>
     <div class="sub" id="page-desc">Fabric stock, value and health across the warehouse</div>
    </div>
-   <div class="topctl">
-    <span class="muted">Location</span>
-    <select id="location-filter" onchange="onLocationChange()"></select>
-    <span id="mix-period-topbar" style="display:none;align-items:center;gap:.5rem;">
+   <div class="fab-filters">
+    <span class="fab-filter-item">
+     <span class="muted">Location</span>
+     <select id="location-filter" class="fab-select" onchange="onLocationChange()"></select>
+    </span>
+    <span id="mix-period-topbar" class="fab-cluster" style="display:none;">
      <span class="muted">Consumption period</span>
-     <select id="mix-period-top" onchange="onMixPresetTop()">
+     <select id="mix-period-top" class="fab-select" onchange="onMixPresetTop()">
       <option value="30">30 days (1 mo)</option>
       <option value="90" selected>90 days (3 mo)</option>
       <option value="180">180 days (6 mo)</option>
       <option value="365">365 days (12 mo)</option>
      </select>
      <span class="muted">or</span>
-     <input type="date" id="mix-from-top" onchange="onMixRangeTop()" title="Custom range from (overrides the preset)" style="width:140px;">
-     <span class="muted">→</span>
-     <input type="date" id="mix-to-top" onchange="onMixRangeTop()" title="Custom range to (overrides the preset)" style="width:140px;">
-     <button class="btn ghost" onclick="clearMixRangeTop()" title="Clear the custom range and use the preset">Clear</button>
+     <span class="fab-dr-fields">
+      <input type="date" id="mix-from-top" onchange="onMixRangeTop()" title="Custom range from (overrides the preset)">
+      <span class="fab-dr-sep">→</span>
+      <input type="date" id="mix-to-top" onchange="onMixRangeTop()" title="Custom range to (overrides the preset)">
+     </span>
+     <button class="fab-clear-btn" onclick="clearMixRangeTop()" title="Clear the custom range and use the preset">Clear</button>
     </span>
-    <span id="daterange-topbar" style="align-items:center;gap:.5rem;">
+    <span id="daterange-topbar" class="fab-daterange">
      <span class="muted">Date range</span>
-     <input type="date" id="g-since" onchange="onDateRangeChange()" title="From" style="width:140px;">
-     <input type="date" id="g-until" onchange="onDateRangeChange()" title="To" style="width:140px;">
+     <span class="fab-dr-fields">
+      <input type="date" id="g-since" onchange="onDateRangeChange()" title="From">
+      <span class="fab-dr-sep">→</span>
+      <input type="date" id="g-until" onchange="onDateRangeChange()" title="To">
+     </span>
     </span>
-    <span id="last-updated" class="muted"></span>
+    <span id="last-updated" class="fab-fresh"></span>
    </div>
   </div>
+ </div>
+ <main class="main">
   <div class="content">
 
    <!-- Odoo fabric-feed staleness banner (shown only when the feed is frozen) -->
