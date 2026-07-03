@@ -1,0 +1,23 @@
+Category	Subcategory	Total Sales (KES)	SOR %	Qty Sold	% Qty	Total SOH	% Total SOH	Stores SOH	% Stores SOH	W/H SOH	W/H % SOH
+Tops	Bodysuits	1,024,362	15.76%	381	1.70%	2,036	2.91%	1,030	2.35%	1,006	3.83%
+Bottoms	Culottes & Capri Pants	8,700	24.00%	6	0.03%	19	0.03%	17	0.04%	2	0.01%
+Tops	Fitted Tops	7,814,398	22.05%	2,300	10.26%	8,131	11.60%	4,713	10.75%	3,418	13.02%
+Bottoms	Full Length Pants	14,977,694	26.54%	3,439	15.35%	9,519	13.58%	5,601	12.78%	3,918	14.93%
+Outerwear	Hoodies & Sweatshirts	688,326	31.69%	161	0.72%	347	0.50%	180	0.41%	167	0.64%
+Outerwear	Jackets & Coats	1,815,927	32.18%	427	1.91%	900	1.28%	645	1.47%	255	0.97%
+Bottoms	Jumpsuits & Playsuits	4,456,383	36.19%	668	2.98%	1,178	1.68%	837	1.91%	341	1.30%
+Dresses	Knee Length Dresses	17,717,988	21.92%	3,392	15.14%	12,081	17.24%	8,271	18.87%	3,810	14.51%
+Skirts	Knee Length Skirts	833,303	12.21%	279	1.25%	2,006	2.86%	1,153	2.63%	853	3.25%
+Bottoms	Leggings	1,124,309	23.49%	440	1.96%	1,433	2.04%	964	2.20%	469	1.79%
+Tops	Loose Tops	9,064,394	27.23%	2,372	10.59%	6,340	9.05%	3,963	9.04%	2,377	9.06%
+Dresses	Maxi Dresses	15,375,841	31.02%	2,460	10.98%	5,470	7.81%	3,596	8.20%	1,874	7.14%
+Skirts	Maxi Skirts	648,919	15.25%	144	0.64%	800	1.14%	474	1.08%	326	1.24%
+Dresses	Midi & Capri Dresses	5,906,222	22.95%	1,013	4.52%	3,401	4.85%	2,025	4.62%	1,376	5.24%
+Skirts	Midi & Capri Skirts	480,195	12.27%	93	0.42%	665	0.95%	361	0.82%	304	1.16%
+Tops	Midriff & Crop Tops	721,204	19.44%	409	1.83%	1,695	2.42%	1,424	3.25%	271	1.03%
+Dresses	Short & Mini Dresses	2,172,918	23.20%	371	1.66%	1,228	1.75%	595	1.36%	633	2.41%
+Bottoms	Shorts & Skorts	237,178	12.19%	98	0.44%	706	1.01%	342	0.78%	364	1.39%
+Outerwear	Sweaters & Ponchos	9,169,110	31.98%	1,871	8.35%	3,979	5.68%	2,713	6.19%	1,266	4.82%
+Tops	T-shirts & Tank Tops	2,340,783	25.19%	1,069	4.77%	3,175	4.53%	2,250	5.13%	925	3.52%
+Outerwear	Waterfalls & Kimonos	4,263,010	16.96%	1,016	4.53%	4,974	7.10%	2,680	6.11%	2,294	8.74%
+TOTAL		101,000,000	24.23%	22,409	100.00%	70,083	100.00%	43,834	100.00%	26,249	100.00%

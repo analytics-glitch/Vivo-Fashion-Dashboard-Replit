@@ -23,7 +23,7 @@ title = "222 return orders in our table not in BigQuery"
 id = "doOqrB-loImWNTWs8haeU"
 uri = "file://exports/subcategory_sor_june2026_excl_online.csv"
 type = "table"
-title = "Subcategory SOR report — June 2026 (excl. Online)"
+title = "Subcategory SOR — June 2026 excl. Online (corrected, gap repaired)"
 
 [[outputs]]
 id = "JcYG4g_cNuOz0-iUgrmCd"

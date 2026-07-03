@@ -691,40 +691,74 @@ def sync_odoo(cur, now, rates):
         else "2026-03-19 00:00:00"
     )
 
-    log.info("Odoo sync since %s", since[:10])
+    # One-off gap-repair overrides (e.g. backfilling a window the anchor has
+    # already run past). ODOO_SYNC_UNTIL bounds write_date so a repair run
+    # cannot collide with the live sync's recent window.
+    since = os.environ.get("ODOO_SYNC_SINCE", since)
+    until = os.environ.get("ODOO_SYNC_UNTIL")
+    if until and until <= since:
+        raise ValueError(
+            f"ODOO_SYNC_UNTIL ({until}) must be after the sync window start ({since})"
+        )
+
+    log.info("Odoo sync since %s%s", since[:10], f" until {until[:10]}" if until else "")
 
     common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
     uid = common.authenticate(ODOO_DB, ODOO_USER, ODOO_PASS, {})
     models = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
 
-    orders = models.execute_kw(
-        ODOO_DB,
-        uid,
-        ODOO_PASS,
-        "pos.order",
-        "search_read",
-        [
-            [
-                ["write_date", ">=", since],
-                ["state", "in", ["done", "invoiced", "paid", "posted"]],
-            ]
-        ],
-        {
-            "fields": [
-                "id",
-                "name",
-                "date_order",
-                "write_date",
-                "amount_total",
-                "amount_tax",
-                "partner_id",
-                "config_id",
-                "lines",
-                "session_id",
-            ],
-            "limit": 5000,
-        },
-    )
+    domain = [
+        ["write_date", ">=", since],
+        ["state", "in", ["done", "invoiced", "paid", "posted"]],
+    ]
+    if until:
+        domain.append(["write_date", "<", until])
+
+    # Paginate oldest-first: pos.order's default sort is date_order DESC, so a
+    # single limited search_read over a wide catch-up window silently keeps only
+    # the NEWEST orders and drops the oldest days — then the `since` anchor
+    # advances past the hole and it never self-heals (this is exactly how the
+    # 2026-06-14..18 Kenya gap formed after a full rebuild).
+    _BATCH = 5000
+    orders = []
+    offset = 0
+    while True:
+        batch = models.execute_kw(
+            ODOO_DB,
+            uid,
+            ODOO_PASS,
+            "pos.order",
+            "search_read",
+            [domain],
+            {
+                "fields": [
+                    "id",
+                    "name",
+                    "date_order",
+                    "write_date",
+                    "amount_total",
+                    "amount_tax",
+                    "partner_id",
+                    "config_id",
+                    "lines",
+                    "session_id",
+                ],
+                "order": "write_date asc, id asc",
+                "limit": _BATCH,
+                "offset": offset,
+            },
+        )
+        orders.extend(batch)
+        if len(batch) < _BATCH:
+            break
+        offset += _BATCH
+        if offset >= 200000:  # hard safety cap (~1 year of orders)
+            log.error(
+                "Odoo sync: pagination safety cap reached at %s orders — window NOT fully "
+                "drained; rerun with a narrower ODOO_SYNC_SINCE/ODOO_SYNC_UNTIL window",
+                offset,
+            )
+            break
 
     if not orders:
         log.info("Odoo — no new orders")

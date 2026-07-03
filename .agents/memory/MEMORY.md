@@ -96,3 +96,4 @@
 - [Startup DDL must never block port bind](startup-hooks-port-bind.md) — orphaned-lock DDL in sync startup hooks crash-looped prod (port never opened); DB startup work goes through _deferred_startup, watchdog port-polls before sync.
 - [Validator reporting-filter parity](validator-reporting-filter-parity.md) — validation_agent must measure under REPORTING_FILTERS (mirror of BASE_FILTERS, lockstep) and show variant_sku to the LLM, or line-item grain reads as "duplicates".
 - [Recon spin-off at artifact cap](recon-standalone-page.md) — at the artifact cap, "standalone app" = the /fabric static-page pattern (/reconcile); server role gate is the enforcement, drop the page id from _LEADERSHIP_PAGES/permissions.js.
+- [Odoo sync pagination gap](odoo-sync-pagination-gap.md) — wide catch-up windows truncated at 5000 NEWEST orders (pos.order sorts date desc) form permanent mid-history holes; paginate asc + ODOO_SYNC_SINCE/UNTIL repair.
