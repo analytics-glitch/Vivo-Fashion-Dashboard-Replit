@@ -1,0 +1,23 @@
+Category	Subcategory	Total Sales (KES)	SOR %	Qty Sold	% Qty	Total SOH	% Total SOH	Stores SOH	% Stores SOH	W/H SOH	W/H % SOH
+Tops	Bodysuits	575,524	9.71%	219	1.21%	2,036	2.91%	1,030	2.35%	1,006	3.83%
+Bottoms	Culottes & Capri Pants	31,821	26.92%	7	0.04%	19	0.03%	17	0.04%	2	0.01%
+Tops	Fitted Tops	6,040,384	17.53%	1,728	9.51%	8,131	11.60%	4,713	10.75%	3,418	13.02%
+Bottoms	Full Length Pants	11,075,758	21.30%	2,576	14.18%	9,519	13.58%	5,601	12.78%	3,918	14.93%
+Outerwear	Hoodies & Sweatshirts	786,424	35.14%	188	1.03%	347	0.50%	180	0.41%	167	0.64%
+Outerwear	Jackets & Coats	1,778,514	29.85%	383	2.11%	900	1.28%	645	1.47%	255	0.97%
+Bottoms	Jumpsuits & Playsuits	3,088,296	28.26%	464	2.55%	1,178	1.68%	837	1.91%	341	1.30%
+Dresses	Knee Length Dresses	12,229,030	16.53%	2,393	13.17%	12,081	17.24%	8,271	18.87%	3,810	14.51%
+Skirts	Knee Length Skirts	749,404	11.04%	249	1.37%	2,006	2.86%	1,153	2.63%	853	3.25%
+Bottoms	Leggings	1,556,758	30.27%	622	3.42%	1,433	2.04%	964	2.20%	469	1.79%
+Tops	Loose Tops	7,458,156	23.57%	1,955	10.76%	6,340	9.05%	3,963	9.04%	2,377	9.06%
+Dresses	Maxi Dresses	11,892,483	25.23%	1,846	10.16%	5,470	7.81%	3,596	8.20%	1,874	7.14%
+Skirts	Maxi Skirts	888,735	18.95%	187	1.03%	800	1.14%	474	1.08%	326	1.24%
+Dresses	Midi & Capri Dresses	3,980,881	16.60%	677	3.73%	3,401	4.85%	2,025	4.62%	1,376	5.24%
+Skirts	Midi & Capri Skirts	451,395	10.62%	79	0.43%	665	0.95%	361	0.82%	304	1.16%
+Tops	Midriff & Crop Tops	1,648,374	31.04%	763	4.20%	1,695	2.42%	1,424	3.25%	271	1.03%
+Dresses	Short & Mini Dresses	1,096,230	13.46%	191	1.05%	1,228	1.75%	595	1.36%	633	2.41%
+Bottoms	Shorts & Skorts	111,994	7.23%	55	0.30%	706	1.01%	342	0.78%	364	1.39%
+Outerwear	Sweaters & Ponchos	7,237,520	27.93%	1,542	8.49%	3,979	5.68%	2,713	6.19%	1,266	4.82%
+Tops	T-shirts & Tank Tops	1,585,774	19.84%	786	4.33%	3,175	4.53%	2,250	5.13%	925	3.52%
+Outerwear	Waterfalls & Kimonos	5,535,213	20.22%	1,261	6.94%	4,974	7.10%	2,680	6.11%	2,294	8.74%
+TOTAL		79,798,668	20.59%	18,171	100.00%	70,083	100.00%	43,834	100.00%	26,249	100.00%
