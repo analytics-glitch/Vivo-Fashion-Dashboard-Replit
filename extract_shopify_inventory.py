@@ -89,8 +89,17 @@ def fetch_variants_map(store_url, token):
     params = {"limit": 250, "fields": "id,title,variants"}
     item_to_sku = {}
     while url:
-        resp = requests.get(url, headers=headers, params=params, timeout=60)
-        resp.raise_for_status()
+        for attempt in range(5):
+            resp = requests.get(url, headers=headers, params=params, timeout=60)
+            if resp.status_code == 429:
+                wait = int(resp.headers.get("Retry-After", 10) or 10)
+                log.warning("429 rate-limited on %s, waiting %ss (attempt %d)", store_url, wait, attempt + 1)
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            break
+        else:
+            resp.raise_for_status()
         for p in resp.json().get("products", []):
             title = p.get("title", "")
             for v in p.get("variants", []):
