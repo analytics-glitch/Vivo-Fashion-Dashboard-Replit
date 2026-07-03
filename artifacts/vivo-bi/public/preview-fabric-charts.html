@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Fabric BI — chart palette preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#FBF7F4; --panel:#ffedd5; --card:#ffffff; --border:#fdba74; --border-strong:#fb923c;
+  --text:#1a1a1a; --text-sub:#4b5563; --muted:#6b7280;
+  --accent:#1a5c38; --accent-deep:#0f3d24; --accent-strong:#00c853;
+  /* Shared categorical chart palette (mirror of fabric_dashboard_live.html) */
+  --chart-primary:#EE5A0E; --chart-primary-deep:#C2410C; --chart-secondary:#22332B; --chart-tertiary:#B8AFA3;
+  --radius:12px;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;}
+body{background:var(--bg);color:var(--text);font-family:"Plus Jakarta Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased;line-height:1.5;padding:28px;}
+.wrap{max-width:1120px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:22px;}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.1rem 1.25rem;box-shadow:0 1px 2px rgba(16,40,24,.04);}
+.section-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+.section-head h3{margin:0;font-size:15.5px;font-weight:700;letter-spacing:-.01em;}
+.muted{font-size:12px;color:var(--muted);}
+.num{font-variant-numeric:tabular-nums;}
+.bar-row{display:flex;align-items:center;gap:11px;margin-bottom:11px;}
+.bar-label{width:150px;font-size:12.5px;color:var(--text-sub);flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;}
+.bar-track{flex:1;height:18px;background:#fff4e6;border:1px solid var(--border);border-radius:6px;overflow:hidden;}
+.bar-fill{height:100%;border-radius:5px 0 0 5px;transition:width .5s ease;}
+.bar-qty{width:90px;text-align:right;font-size:12.5px;font-weight:700;flex-shrink:0;font-variant-numeric:tabular-nums;}
+.bar-sub{width:80px;text-align:right;font-size:11px;color:var(--muted);flex-shrink:0;font-variant-numeric:tabular-nums;}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:7px;flex-shrink:0;}
+.donut-wrap{display:flex;align-items:center;gap:18px;flex-wrap:wrap;}
+.donut-legend{flex:1;min-width:170px;}
+.leg-row{display:flex;align-items:center;gap:8px;font-size:13px;padding:4px 0;}
+.hdr{max-width:1120px;margin:0 auto 18px;font-size:12px;color:var(--muted);}
+</style>
+</head>
+<body>
+<div class="hdr">Preview harness — same design tokens &amp; render code as the live Fabric BI Overview. Representative data only.</div>
+<div class="wrap">
+  <div class="card">
+    <div class="section-head"><h3>Stock by category</h3><span class="muted">% of total metres</span></div>
+    <div id="category-bars"></div>
+  </div>
+  <div class="card">
+    <div class="section-head"><h3>Solid vs Print</h3></div>
+    <div id="split-print"></div>
+  </div>
+</div>
+<script>
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=n=>Math.round(n||0).toLocaleString('en-US');
+const fmt1=n=>(n||0).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
+const fmtKES=n=>'KES '+Math.round(n||0).toLocaleString('en-US');
+function chartColor(i){return i===0?'var(--chart-primary)':i===1?'var(--chart-secondary)':'var(--chart-tertiary)';}
+
+// ── Stock by category (mirrors renderCategoryBars) ──
+const catRows=[
+  {label:'Suiting / Woven', m:184200, kg:61400, v:41200000},
+  {label:'Cotton', m:96400, kg:32100, v:19800000},
+  {label:'Denim', m:41300, kg:18700, v:9600000},
+  {label:'Linen', m:22800, kg:8100, v:5100000},
+  {label:'Viscose', m:15600, kg:5200, v:3400000},
+  {label:'Jersey / Knit', m:9100, kg:3000, v:1900000},
+];
+(function(){
+  const el=document.getElementById('category-bars');
+  const max=Math.max(...catRows.map(r=>Math.abs(r.v||0)),1);
+  const totalM=catRows.reduce((s,r)=>s+(r.m||0),0);
+  el.innerHTML=catRows.map((r,i)=>`<div class="bar-row"><span class="bar-label" title="${esc(r.label)}">${esc(r.label)}</span>
+   <div class="bar-track"><div class="bar-fill" style="width:${(Math.abs(r.v||0)/max*100).toFixed(1)}%;background:${chartColor(i)}"></div></div>
+   <span class="bar-qty">${fmt(r.m)} m</span><span class="bar-qty">${fmt1(r.kg)} kg</span><span class="bar-sub">${(totalM>0?(r.m||0)/totalM*100:0).toFixed(1)}%</span></div>`).join('');
+})();
+
+// ── Donut renderer (mirrors donut()) ──
+function donut(slices){
+  const total=slices.reduce((s,x)=>s+(x.value||0),0);
+  if(total<=0)return '<p class="muted">No data.</p>';
+  const r=52,cx=60,cy=60,c=2*Math.PI*r; let off=0;
+  const segs=slices.map(s=>{
+    const len=(s.value||0)/total*c;
+    const el=`<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${s.color}" stroke-width="16" stroke-dasharray="${len.toFixed(2)} ${(c-len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"/>`;
+    off+=len; return el;
+  }).join('');
+  const center=fmtKES(total);
+  const totalMetres=slices.reduce((s,x)=>s+(x.qty_metres||0),0);
+  const legend=slices.map(s=>`<div class="leg-row"><span class="dot" style="background:${s.color}"></span><span style="width:64px;flex-shrink:0">${esc(s.label)}</span><span class="num" style="width:90px;text-align:right;font-weight:700">${fmt(s.qty_metres)} m</span><span class="num muted" style="width:80px;text-align:right">${(totalMetres>0?(s.qty_metres||0)/totalMetres*100:0).toFixed(1)}%</span></div>`).join('');
+  return `<div class="donut-wrap"><svg viewBox="0 0 120 120" width="120" height="120" aria-hidden="true">${segs}<text x="60" y="64" text-anchor="middle" font-size="11" font-weight="800" fill="var(--text)">${center}</text></svg><div class="donut-legend">${legend}</div></div>`;
+}
+// ── Solid vs Print (mirrors renderPrintDonut) ──
+(function(){
+  const colorFor=v=>/solid|plain/i.test(v)?'var(--chart-primary)':/print/i.test(v)?'var(--chart-secondary)':'var(--chart-tertiary)';
+  const rows=[
+    {value:'Solid', value_kes:75200000, qty_metres:349000},
+    {value:'Print', value_kes:4100000, qty_metres:19000},
+    {value:'Unknown', value_kes:900000, qty_metres:4200},
+  ];
+  const slices=rows.map(r=>({label:r.value,value:r.value_kes||0,color:colorFor(r.value),qty_metres:r.qty_metres}));
+  document.getElementById('split-print').innerHTML=donut(slices);
+})();
+</script>
+</body>
+</html>
