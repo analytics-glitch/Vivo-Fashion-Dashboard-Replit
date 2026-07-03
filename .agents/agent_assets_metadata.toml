@@ -24,3 +24,9 @@ id = "doOqrB-loImWNTWs8haeU"
 uri = "file://exports/subcategory_sor_june2026_excl_online.csv"
 type = "table"
 title = "Subcategory SOR report — June 2026 (excl. Online)"
+
+[[outputs]]
+id = "JcYG4g_cNuOz0-iUgrmCd"
+uri = "file://exports/subcategory_sor_may2026_excl_online.csv"
+type = "table"
+title = "Subcategory SOR report — May 2026 (excl. Online)"

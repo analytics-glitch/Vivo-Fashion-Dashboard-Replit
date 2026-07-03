@@ -1,0 +1,29 @@
+Category,Subcategory,Total Sales (KES),SOR %,Qty Sold,% Qty,Total SOH,% Total SOH,Stores SOH,% Stores SOH,W/H SOH,W/H % SOH
+Bottoms,Full Length Pants,14977694,42.4,3439,15.35,8594,13.70,4676,12.82,3918,14.93
+Dresses,Knee Length Dresses,17717988,33.2,3392,15.14,10630,16.95,6820,18.70,3810,14.51
+Dresses,Maxi Dresses,15375841,45.2,2460,10.98,4855,7.74,2981,8.18,1874,7.14
+Tops,Loose Tops,9064394,42.2,2372,10.59,5627,8.97,3250,8.91,2377,9.06
+Tops,Fitted Tops,7814398,37.1,2300,10.26,7324,11.68,3906,10.71,3418,13.02
+Outerwear,Sweaters & Ponchos,9169110,44.0,1871,8.35,3643,5.81,2377,6.52,1266,4.82
+Tops,T-shirts & Tank Tops,2340783,35.6,1069,4.77,2860,4.56,1935,5.31,925,3.52
+Outerwear,Waterfalls & Kimonos,4263010,31.6,1016,4.53,4489,7.16,2195,6.02,2294,8.74
+Dresses,Midi & Capri Dresses,5906222,37.5,1013,4.52,3062,4.88,1686,4.62,1376,5.24
+Bottoms,Jumpsuits & Playsuits,4456383,48.7,668,2.98,1046,1.67,705,1.93,341,1.30
+Bottoms,Leggings,1124309,34.4,440,1.96,1309,2.09,840,2.30,469,1.79
+Outerwear,Jackets & Coats,1815927,43.4,427,1.91,813,1.30,558,1.53,255,0.97
+Tops,Midriff & Crop Tops,721204,24.6,409,1.83,1525,2.43,1254,3.44,271,1.03
+Tops,Bodysuits,1024362,31.9,381,1.70,1818,2.90,812,2.23,1006,3.83
+Dresses,Short & Mini Dresses,2172918,45.0,371,1.66,1086,1.73,453,1.24,633,2.41
+Skirts,Knee Length Skirts,833303,22.0,279,1.25,1845,2.94,992,2.72,853,3.25
+Outerwear,Hoodies & Sweatshirts,688326,52.4,161,0.72,313,0.50,146,0.40,167,0.64
+Skirts,Maxi Skirts,648919,29.8,144,0.64,666,1.06,340,0.93,326,1.24
+Bottoms,Shorts & Skorts,237178,30.6,98,0.44,586,0.93,222,0.61,364,1.39
+Skirts,Midi & Capri Skirts,480195,23.2,93,0.42,612,0.98,308,0.84,304,1.16
+Bottoms,Culottes & Capri Pants,8700,42.9,6,0.03,10,0.02,8,0.02,2,0.01
+(not in catalog),Men's Bottoms,0,,0,0.00,0,0.00,0,0.00,0,0.00
+(not in catalog),Men's Tops,0,,0,0.00,0,0.00,0,0.00,0,0.00
+(not in catalog),Pants & Top Set,0,,0,0.00,0,0.00,0,0.00,0,0.00
+(not in catalog),Pants & Waterfall Set,0,,0,0.00,0,0.00,0,0.00,0,0.00
+(not in catalog),Short & Mini Skirts,0,,0,0.00,0,0.00,0,0.00,0,0.00
+(not in catalog),Skirts & Top Set,0,,0,0.00,0,0.00,0,0.00,0,0.00
+TOTAL,,100841164,38.1,22409,100.00,62713,100.00,36464,100.00,26249,100.00
