@@ -1,0 +1,30 @@
+# Prompt for Replit — Fabric BI Chart Colour System + Assistant Icon
+
+## Context
+This covers the chart components on the Fabric BI Overview page — the "Stock by category" horizontal bar list, the "Solid vs Print" donut, the "Fabric structure" category list, and the floating BI assistant chat icon (bottom right). Visual/colour pass only — no changes to the underlying data, calculations, or chart types.
+
+## Problem with the current colour system
+Right now there's no single, consistent categorical palette — colour meaning changes chart to chart:
+1. "Stock by category" bars are filled in a dark forest green with no relationship to the Vivo brand orange already established in the header.
+2. "Solid vs Print" donut uses the same dark green for the dominant "Solid" slice (94%), a thin orange sliver for "Print," and a flat grey for "Unknown."
+3. "Fabric structure" introduces a **third, unrelated hue** — blue — for "Unknown," which has no connection to anything else on the page and reads as arbitrary.
+4. Net effect: green currently reads as "the brand colour" of the BI tool, which conflicts with the orange identity already locked in for the header — the dashboard doesn't feel like the same product as the storefront.
+
+## New colour system — define these as shared tokens, used consistently across every chart on this page
+- **Primary / hero series** — Vivo brand orange (sample the exact hex from the storefront logo badge / "Ask Viva" chat button rather than guessing, ~#F15A24). Use for the single most important series in each chart: e.g. the dominant category in a ranked list, or whichever slice the user is meant to focus on first.
+- **Secondary series** — a deep ink-green or charcoal (~#22332B or similar dark neutral, sample from what's already used for primary text) instead of the current bright forest green. This keeps a secondary series legible without it competing with orange for "brand colour" status.
+- **Tertiary / "Unknown" / low-signal series** — a warm neutral grey-tan (~#B8AFA3), not blue. This should read as deliberately de-emphasised, not as a third competing brand colour.
+- **Track / unfilled bar background** — keep the current warm cream (~#F5E1C8-ish), it's already consistent with the page background and doesn't need to change.
+- Apply this same three-tier system (primary orange → secondary ink → tertiary neutral) to all of: the "Stock by category" bar fills, the "Solid vs Print" donut segments, and the "Fabric structure" dots — so a user learns the colour language once and it holds across the whole page. Don't introduce a fourth hue anywhere on this page without a specific reason tied to the data itself (e.g. an actual swatch colour in the "By primary colour" table, which is correctly showing real fabric colours and should stay as-is).
+
+## BI assistant chat icon (bottom right floating button)
+1. Currently rendered in the same dark forest green as the old chart palette, with a small orange notification dot. Recolour the icon's primary fill to the brand orange — this is a primary action affordance and should carry the same colour weight as the storefront's own chat entry point, not a separate internal-tool colour.
+2. Keep the notification dot, but move it to a colour that contrasts against orange (white or the ink/charcoal token) rather than orange-on-orange once the base icon changes.
+3. Check hover/focus state — should be a slightly darker orange shade, not a colour shift to green or any other hue.
+
+## Constraints
+- This is a colour and token consolidation pass, not a chart-library or layout change — bar lengths, donut proportions, and data labels stay exactly where they are.
+- Every chart on this page must pull from the same shared colour tokens (define them once, e.g. `--chart-primary`, `--chart-secondary`, `--chart-tertiary`) rather than each chart component having its own hard-coded colours — this is what caused the drift to three unrelated hues in the first place.
+- Check contrast: orange text/fills over the cream background need to meet at least WCAG AA for the numeric labels sitting next to bars and donut segments.
+
+Show me a screenshot of the updated "Stock by category" and "Solid vs Print" sections before applying the same tokens to the rest of the page, so I can confirm the palette before it propagates everywhere.
