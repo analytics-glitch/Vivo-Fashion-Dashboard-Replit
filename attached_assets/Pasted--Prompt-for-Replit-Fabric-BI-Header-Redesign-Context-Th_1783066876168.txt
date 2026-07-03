@@ -1,0 +1,43 @@
+# Prompt for Replit — Fabric BI Header Redesign
+
+## Context
+This is the top header/navigation zone of the Fabric BI module inside Vivo Fashion Group's internal BI suite (bi.vivofashionbrands.com). Audience: finance, warehouse, and ops staff who check this daily to make stock, value, and ageing decisions. The zone's job is to (1) orient the user — which BI module, which tab, which location/date scope — and (2) surface data freshness, since decisions get made off these numbers.
+
+Redesign the visual/layout treatment only. Do not change functionality, tab labels, filter behaviour, or add features.
+
+## Problems with the current header (fix all of these)
+1. Three horizontal bands — utility bar, tab bar, filter bar — are all rendered in near-identical cream, so there's no visual separation or hierarchy between them.
+2. The tab row has 11 items with no overflow handling — it will wrap or clip at laptop widths (1280–1440px). Needs horizontal scroll with edge fade, or a documented breakpoint strategy.
+3. The page title ("Overview") and the filter controls (Location, Date range) sit on the same row but aren't baseline-aligned against each other.
+4. Native browser date inputs look inconsistent with everything else — default calendar icon, no custom styling. Replace with a single styled date-range control.
+5. "Reset tab order" and "Back to Vivo BI" are utility actions competing for attention with the brand lockup in the same thin strip. De-emphasise these — icon buttons with tooltips, or a smaller type weight.
+6. "Fabric data updated 4 min ago" is the single most trust-critical piece of copy on the page and it's currently quiet grey text easy to miss. Make it a proper freshness indicator — small pill with a live/pulsing dot.
+7. Confirm whether this header is meant to stay pinned while scrolling a long dashboard. If not currently sticky, make it sticky — losing access to Location/Date filters on scroll forces the user back to the top every time they want to change scope.
+
+## Structure: collapse three bands into two
+```
+ROW A (slim utility bar, distinct background from Row B)
+[● Vivo Fabric · Fabric BI]   [Overview] [Stock Mix] [Support Fabrics] ... (scrollable)   [⟲] [↩ Back to Vivo BI]
+
+ROW B (context bar, sticky on scroll)
+Overview                                    Location ▾   [ 04 Jun – 03 Jul 2026 ▾ ]   ● Updated 4 min ago
+Fabric stock, value and health across the warehouse
+```
+Row A: brand lockup left, tabs centred and horizontally scrollable, utility actions right (icon-weight, not full text competing with the logo).
+Row B: title + subtitle left, filter cluster right, vertically centred against the title, not the subtitle.
+
+## Design tokens
+- Primary accent: the actual Vivo brand orange (~#F15A24 sampled from the storefront logo badge — pull the exact hex from the storefront's CSS/brand guidelines rather than my estimate). Use this for the active tab underline, the freshness pill, and any primary action state — not the dark green currently on the "V" badge.
+- Drop the dark green and the brass/gold idea from the last pass — neither is the actual company brand colour, and this header should read as unmistakably Vivo, not as a bespoke internal palette. Reserve "Ink & Brass" for the HR board decks it was built for; don't cross-pollinate it here.
+- Background: replace the flat cream fill across all three bands with a near-white/paper (~#FAF8F4) for Row A and B, matching the storefront's off-white nav bar rather than the peach tone currently used — this is also what currently makes the header read as one undifferentiated block.
+- Text: ink/near-black (~#1A1A1A) for primary labels — matches the storefront's nav text — and warm grey (~#6B6B6B) for secondary copy (subtitle, "net of returns" style captions).
+- Logo/wordmark treatment: match the storefront pattern — orange badge, white "Vivo" wordmark inside it — rather than a separate dark green badge for the BI tool. If "Vivo Fabric" needs to stay visually distinct from the customer-facing site, keep the badge shape and orange fill but adjust only the wordmark/subtitle text, not the colour.
+- Type: keep the current UI face; just tighten the type scale so the title, tab labels, and filter labels are clearly differentiated weights, not just size.
+
+## Constraints
+- This is a data-dense internal tool, not a marketing page — restraint over decoration. The one place to spend any visual "flourish" is the freshness pill; everything else should stay quiet and functional.
+- Must not break at 1280px width — either the tabs scroll cleanly or you define a documented collapse (e.g. overflow menu) at that width.
+- All existing tab labels, dropdown options, and date-range functionality must be preserved exactly — this is a layout/visual pass, not a rebuild.
+- Respect keyboard focus states and don't break existing accessibility on the native controls you're replacing (date picker especially).
+
+Show me a screenshot/preview before wiring up final interactivity so I can sign off on the direction first.
