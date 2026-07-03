@@ -2707,8 +2707,8 @@ function renderCategories(data){
   const max=Math.max(...rows.map(r=>Math.abs(r.v||0)),1);
   const totalM=rows.reduce((s,r)=>s+(r.m||0),0);
   const fa=fx(FX.catStock);
-  el.innerHTML=rows.length?rows.map((r,i)=>`<div class="bar-row"><span class="bar-label" title="${esc(r.label)}">${esc(r.label)}</span>
-     <div class="bar-track"><div class="bar-fill" style="width:${(Math.abs(r.v||0)/max*100).toFixed(1)}%;background:${chartColor(i)}"></div></div>
+  el.innerHTML=rows.length?rows.map(r=>`<div class="bar-row"><span class="bar-label" title="${esc(r.label)}">${esc(r.label)}</span>
+     <div class="bar-track"><div class="bar-fill" style="width:${(Math.abs(r.v||0)/max*100).toFixed(1)}%;background:var(--chart-primary)"></div></div>
      <span class="bar-qty"${fa}>${fmt(r.m)} m</span><span class="bar-qty"${fx(FX.catStockKg)}>${fmt1(r.kg)} kg</span><span class="bar-sub"${fx(FX.catShare)}>${(totalM>0?(r.m||0)/totalM*100:0).toFixed(1)}%</span></div>`).join(''):'<p class="muted">No data.</p>';
 }
 function renderSplit(id,rows,fxText){
