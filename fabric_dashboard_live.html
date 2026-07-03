@@ -589,20 +589,27 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <div id="supplier-cost" style="margin-top:.8rem;"><div class="loading">Loading…</div></div>
      </div>
     </div>
-    <div id="po-drill" style="display:none;">
-     <div class="section-head" style="margin-bottom:.6rem;"><h3 id="po-drill-title">Purchase orders</h3><span class="muted" style="cursor:pointer;" onclick="closePODrill()">✕ close</span></div>
-     <div class="flex" style="margin-bottom:1.1rem;">
-      <input id="po-search" placeholder="Filter supplier…" oninput="debouncedPOs()" style="width:230px;">
-     </div>
-     <div class="card" style="padding:0;">
-      <div class="tbl-wrap">
-       <table class="data">
-        <thead><tr>
-         <th>PO</th><th>Supplier</th><th>Date</th><th>Status</th>
-         <th class="r">Lines</th><th class="r">Value</th><th class="r">Ordered</th><th class="r">Received</th><th class="r">Outstanding</th>
-        </tr></thead>
-        <tbody id="po-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
-       </table>
+    <div id="po-drill-overlay" class="modal-overlay" style="display:none;" onclick="closePODrill()">
+     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="po-drill-title" style="max-width:1040px;" onclick="event.stopPropagation()">
+      <div class="modal-head">
+       <h3 id="po-drill-title" style="margin:0;font-size:1.05rem;">Purchase orders</h3>
+       <button class="modal-close" onclick="closePODrill()" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+       <div class="flex" style="margin-bottom:1.1rem;">
+        <input id="po-search" placeholder="Filter supplier…" oninput="debouncedPOs()" style="width:230px;">
+       </div>
+       <div class="card" style="padding:0;">
+        <div class="tbl-wrap">
+         <table class="data">
+          <thead><tr>
+           <th>PO</th><th>Supplier</th><th>Date</th><th>Status</th>
+           <th class="r">Lines</th><th class="r">Value</th><th class="r">Ordered</th><th class="r">Received</th><th class="r">Outstanding</th>
+          </tr></thead>
+          <tbody id="po-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
+         </table>
+        </div>
+       </div>
       </div>
      </div>
     </div>
@@ -3526,7 +3533,7 @@ function togglePOMonth(period){
   document.querySelectorAll('#po-month-bars .fig-card').forEach(c=>c.classList.remove('is-active'));
   const cards=document.querySelectorAll('#po-month-bars .fig-card');
   cards.forEach(c=>{if(c.getAttribute('onclick')&&c.getAttribute('onclick').indexOf("'"+period+"'")>=0)c.classList.add('is-active');});
-  const drill=document.getElementById('po-drill');drill.style.display='';
+  const drill=document.getElementById('po-drill-overlay');drill.style.display='flex';
   document.getElementById('po-drill-title').textContent='Purchase orders — '+monthLabel(period);
   document.getElementById('po-search').value='';
   loadPOs();
@@ -3534,7 +3541,7 @@ function togglePOMonth(period){
 function closePODrill(){
   poSelMonth=null;
   document.querySelectorAll('#po-month-bars .fig-card.is-active').forEach(c=>c.classList.remove('is-active'));
-  const drill=document.getElementById('po-drill');if(drill)drill.style.display='none';
+  const drill=document.getElementById('po-drill-overlay');if(drill)drill.style.display='none';
 }
 async function loadPOPerf(){
   try{
@@ -3803,9 +3810,12 @@ async function init(){
     const a=e.target.closest('.reg-barcode');
     if(a){e.preventDefault();openFabricDetail(a.dataset.fabId);}
   });
-  // Esc closes the fabric detail modal.
+  // Esc closes the fabric detail modal or the PO drill modal.
   document.addEventListener('keydown',e=>{
-    if(e.key==='Escape'&&document.getElementById('fab-detail-overlay').style.display!=='none')closeFabricDetail();
+    if(e.key!=='Escape')return;
+    if(document.getElementById('fab-detail-overlay').style.display!=='none')closeFabricDetail();
+    const po=document.getElementById('po-drill-overlay');
+    if(po&&po.style.display!=='none')closePODrill();
   });
   // Default global date range: last 30 days → today (local time, ISO date)
   const today=new Date();
