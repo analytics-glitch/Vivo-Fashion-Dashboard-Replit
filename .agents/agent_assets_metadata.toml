@@ -18,3 +18,9 @@ id = "wdCNsuTnVRzPrAH1_4Vyz"
 uri = "file://attached_assets/returns_in_ours_not_bq.csv"
 type = "table"
 title = "222 return orders in our table not in BigQuery"
+
+[[outputs]]
+id = "doOqrB-loImWNTWs8haeU"
+uri = "file://exports/subcategory_sor_june2026_excl_online.csv"
+type = "table"
+title = "Subcategory SOR report — June 2026 (excl. Online)"
