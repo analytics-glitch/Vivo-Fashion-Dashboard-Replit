@@ -35,10 +35,10 @@ title = "Subcategory SOR report — May 2026 (excl. Online)"
 id = "F3ZIQzit6tk_4IDFxmFEO"
 uri = "file://exports/subcategory_sor_june2026_excl_online_PROD.csv"
 type = "table"
-title = "June 2026 subcategory SOR — PRODUCTION (matches dashboard)"
+title = "June 2026 subcategory SOR — matches the live dashboard"
 
 [[outputs]]
 id = "wz98mhaanSKtJzBm5h5uT"
 uri = "file://exports/subcategory_sor_may2026_excl_online_PROD.csv"
 type = "table"
-title = "May 2026 subcategory SOR — PRODUCTION (matches dashboard)"
+title = "May 2026 subcategory SOR — matches the live dashboard"
