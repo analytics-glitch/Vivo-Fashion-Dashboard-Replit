@@ -169,6 +169,10 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .struct-row{display:flex;align-items:center;gap:11px;margin-bottom:11px;}
 .struct-row .bar-label{width:90px;}
 .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:7px;flex-shrink:0;}
+.chart-key{display:flex;align-items:center;flex-wrap:wrap;gap:8px 18px;margin:0 0 16px;padding:9px 14px;background:var(--card);border:1px solid var(--border);border-radius:10px;font-size:12px;color:var(--text-sub);}
+.chart-key-lbl{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);}
+.chart-key-item{display:inline-flex;align-items:center;}
+.chart-key-item .dot{margin-right:8px;}
 
 table.data{width:100%;border-collapse:collapse;font-size:13px;}
 table.data th{font-weight:600;color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;padding:.7rem .75rem;text-align:left;border-bottom:1px solid var(--border);background:var(--bg);white-space:nowrap;position:sticky;top:0;}
@@ -404,6 +408,12 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
 
    <section id="page-overview">
     <div id="kpi-cards" class="kpi-grid"><div class="loading">Loading…</div></div>
+    <div class="chart-key" aria-label="Chart colour key">
+     <span class="chart-key-lbl">Colour key</span>
+     <span class="chart-key-item"><span class="dot" style="background:var(--chart-primary)"></span>Primary &middot; focus / dominant</span>
+     <span class="chart-key-item"><span class="dot" style="background:var(--chart-secondary)"></span>Secondary</span>
+     <span class="chart-key-item"><span class="dot" style="background:var(--chart-tertiary)"></span>Other / unknown</span>
+    </div>
     <div class="grid-2">
      <div class="card">
       <div class="section-head"><h3>Stock by category</h3><span class="muted">% of total metres</span></div>
