@@ -40,6 +40,13 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .nav-item{display:flex;align-items:center;gap:9px;padding:9px 11px;font-size:13.5px;font-weight:500;color:var(--text-sub);border-radius:9px;cursor:pointer;margin-bottom:0;white-space:nowrap;flex-shrink:0;transition:background .12s,color .12s;}
 .nav-item:hover{background:rgba(26,92,56,.06);color:var(--text);}
 .nav-item.active{color:#fff;background:var(--accent);font-weight:600;}
+.nav-item{touch-action:none;}
+.nav-item.nav-dragging{opacity:.55;box-shadow:0 6px 18px rgba(0,0,0,.18);cursor:grabbing;}
+.nav-item.nav-drop-before{box-shadow:-3px 0 0 0 var(--accent);}
+.nav-item.nav-drop-after{box-shadow:3px 0 0 0 var(--accent);}
+.nav-reset{margin-left:12px;padding:0 9px;font-size:11.5px;color:var(--muted);background:none;border:none;cursor:pointer;white-space:nowrap;flex-shrink:0;text-decoration:none;}
+.nav-reset:hover{color:var(--accent);text-decoration:underline;}
+.nav-reset[hidden]{display:none;}
 .nav-acr{font-size:.84em;letter-spacing:.02em;}
 .rsv-lbl{display:block;font-size:11px;font-weight:600;color:var(--text-sub);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;}
 .resv-dropdown{position:absolute;top:100%;left:0;z-index:30;width:340px;max-height:280px;overflow:auto;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.12);margin-top:4px;}
@@ -242,9 +249,10 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div class="brand-sub">FABRIC BI</div>
     </div>
    </div>
+   <button type="button" id="nav-reset" class="nav-reset" hidden title="Restore the default tab order">&#8635; Reset tab order</button>
    <a href="/" class="back-link">&larr; Back to Vivo BI</a>
   </div>
-  <nav class="nav-body">
+  <nav class="nav-body" id="nav-body">
    <div class="nav-item active" data-page="overview">Overview</div>
    <div class="nav-item" data-page="dashboard">Stock Mix</div>
    <div class="nav-item" data-page="ageing">Stock &amp; Ageing</div>
@@ -1250,6 +1258,120 @@ async function loadSupportProducts(category,subcategory,key){
 const LOADERS={dashboard:loadFabricMix,register:()=>loadRegister(0),deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations};
 const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'',deadstock:'Fabric that has been sitting without movement',defects:'',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining & interfacing only — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used'};
 const loadedOnce={};
+
+// ── Draggable / reorderable nav tabs (per-browser, localStorage) ──
+(function(){
+  const NAV=document.getElementById('nav-body');
+  if(!NAV)return;
+  const RESET=document.getElementById('nav-reset');
+  const LS_KEY='fabricbi_nav_order_v1';
+  // capture default order tokens (nav-item -> data-page, nav-group -> grp:<text>)
+  const tokenOf=el=>el.classList.contains('nav-item')?('pg:'+el.dataset.page)
+                   :el.classList.contains('nav-group')?('grp:'+el.textContent.trim()):null;
+  const orderable=()=>Array.from(NAV.children).filter(el=>tokenOf(el)!==null);
+  const DEFAULT_ORDER=orderable().map(tokenOf);
+
+  function currentTokens(){return orderable().map(tokenOf);}
+  function saveOrder(){
+    try{
+      const toks=currentTokens();
+      if(JSON.stringify(toks)===JSON.stringify(DEFAULT_ORDER)){localStorage.removeItem(LS_KEY);}
+      else{localStorage.setItem(LS_KEY,JSON.stringify(toks));}
+    }catch(e){}
+    syncResetVisibility();
+  }
+  function syncResetVisibility(){
+    if(!RESET)return;
+    let saved=null;try{saved=localStorage.getItem(LS_KEY);}catch(e){}
+    RESET.hidden=!saved;
+  }
+  function applyOrder(toks){
+    if(!Array.isArray(toks)||!toks.length)return;
+    const byTok={};orderable().forEach(el=>{byTok[tokenOf(el)]=el;});
+    const seen={};
+    // place saved tokens first (skip unknown/stale ones safely)
+    toks.forEach(t=>{const el=byTok[t];if(el&&!seen[t]){seen[t]=1;NAV.appendChild(el);}});
+    // append any new/default tokens not present in the saved order
+    DEFAULT_ORDER.forEach(t=>{const el=byTok[t];if(el&&!seen[t]){seen[t]=1;NAV.appendChild(el);}});
+  }
+  // restore saved order on load
+  try{const raw=localStorage.getItem(LS_KEY);if(raw)applyOrder(JSON.parse(raw));}catch(e){}
+  syncResetVisibility();
+
+  if(RESET){
+    RESET.addEventListener('click',()=>{
+      try{localStorage.removeItem(LS_KEY);}catch(e){}
+      applyOrder(DEFAULT_ORDER);
+      syncResetVisibility();
+    });
+  }
+
+  // pointer-based drag (works for both mouse and touch)
+  let drag=null; // {el, startX, startY, active}
+  let suppressClick=false;
+  const THRESHOLD=5;
+  // capture-phase click guard on the container fires before the per-tab click
+  // handlers, so a drag that ends on a tab never also triggers a page switch.
+  NAV.addEventListener('click',e=>{
+    if(suppressClick){suppressClick=false;e.stopPropagation();e.preventDefault();}
+  },true);
+  function clearDropMarks(){NAV.querySelectorAll('.nav-drop-before,.nav-drop-after').forEach(el=>el.classList.remove('nav-drop-before','nav-drop-after'));}
+
+  function positionFor(x,y,excludeEl){
+    // find the nearest nav-item (excluding the dragged one) by 2D distance
+    const items=Array.from(NAV.querySelectorAll('.nav-item')).filter(el=>el!==excludeEl);
+    if(!items.length)return null;
+    let best=null,bestD=Infinity;
+    items.forEach(el=>{
+      const r=el.getBoundingClientRect();
+      const cx=r.left+r.width/2, cy=r.top+r.height/2;
+      const d=Math.hypot(x-cx,y-cy);
+      if(d<bestD){bestD=d;best=el;}
+    });
+    if(!best)return null;
+    const r=best.getBoundingClientRect();
+    const after=x> (r.left+r.width/2);
+    return {ref:best,after};
+  }
+
+  NAV.addEventListener('pointerdown',e=>{
+    if(e.button!=null&&e.button!==0)return;
+    const el=e.target.closest('.nav-item');
+    if(!el||!NAV.contains(el))return;
+    drag={el,startX:e.clientX,startY:e.clientY,active:false,pointerId:e.pointerId};
+  });
+  NAV.addEventListener('pointermove',e=>{
+    if(!drag)return;
+    if(!drag.active){
+      if(Math.hypot(e.clientX-drag.startX,e.clientY-drag.startY)<THRESHOLD)return;
+      drag.active=true;
+      drag.el.classList.add('nav-dragging');
+      try{drag.el.setPointerCapture(drag.pointerId);}catch(_){}
+    }
+    e.preventDefault();
+    const pos=positionFor(e.clientX,e.clientY,drag.el);
+    clearDropMarks();
+    if(pos)pos.ref.classList.add(pos.after?'nav-drop-after':'nav-drop-before');
+  });
+  function endDrag(e){
+    if(!drag)return;
+    const d=drag;drag=null;
+    if(d.active){
+      const pos=positionFor(e.clientX,e.clientY,d.el);
+      if(pos){
+        if(pos.after)pos.ref.after(d.el);else pos.ref.before(d.el);
+      }
+      clearDropMarks();
+      d.el.classList.remove('nav-dragging');
+      try{d.el.releasePointerCapture(d.pointerId);}catch(_){}
+      suppressClick=true;
+      saveOrder();
+    }
+  }
+  NAV.addEventListener('pointerup',endDrag);
+  NAV.addEventListener('pointercancel',()=>{if(drag){drag.el.classList.remove('nav-dragging');clearDropMarks();drag=null;}});
+})();
+
 document.querySelectorAll('.nav-item').forEach(el=>{
   el.addEventListener('click',()=>{
     const page=el.dataset.page;
