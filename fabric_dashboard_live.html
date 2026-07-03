@@ -45,7 +45,7 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 /* Brand lockup: orange badge + ink "Vivo" wordmark, warm-grey "Fabric BI" sub. */
 .fab-brand{display:flex;align-items:center;gap:11px;flex-shrink:0;}
 .fab-brandmark{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--fab-orange),var(--fab-orange-deep));color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;box-shadow:0 3px 10px rgba(238,90,14,.28);}
-.fab-brandname{font-size:15px;font-weight:800;color:#fff;letter-spacing:.01em;background:var(--fab-ink);padding:1px 8px;border-radius:6px;display:inline-block;line-height:1.4;}
+.fab-brandname{font-size:15px;font-weight:800;color:#fff;letter-spacing:.01em;background:linear-gradient(135deg,var(--fab-orange),var(--fab-orange-deep));padding:1px 8px;border-radius:6px;display:inline-block;line-height:1.4;box-shadow:0 3px 10px rgba(238,90,14,.28);}
 .fab-brandsub{font-size:10px;color:var(--fab-muted);font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-top:3px;}
 /* Utility actions (Reset tab order, Back) de-emphasised as icon-weight buttons. */
 .fab-utils{display:flex;align-items:center;gap:6px;flex-shrink:0;}
@@ -289,7 +289,6 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
  <div class="fab-header">
   <header class="fab-topnav">
    <div class="fab-brand">
-    <div class="fab-brandmark">V</div>
     <div>
      <div class="fab-brandname">Vivo</div>
      <div class="fab-brandsub">Fabric BI</div>
