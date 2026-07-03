@@ -48,3 +48,9 @@ id = "sK5PgRGAm7fPofzhwpXau"
 uri = "file://exports/subcategory_sor_june2026_all_business_PROD.csv"
 type = "table"
 title = "June 2026 subcategory SOR — all business incl. Online (matches dashboard)"
+
+[[outputs]]
+id = "NQxLGhDuGVjq5no1AmIbA"
+uri = "file://exports/subcategory_sor_april2026_excl_online_PROD.csv"
+type = "table"
+title = "April 2026 subcategory SOR — excl. Online (matches dashboard)"
