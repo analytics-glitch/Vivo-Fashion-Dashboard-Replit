@@ -2721,7 +2721,7 @@ function renderStructure(id,rows,fxText){
   const totalMetres=rows.reduce((s,r)=>s+(r.qty_metres||0),0);
   const fa=fxText?fx(fxText):'';
   el.innerHTML=rows.length?rows.map((r,i)=>{
-    const c=PAL[i%PAL.length];
+    const c=chartColor(i);
     const pct=totalMetres>0?(r.qty_metres||0)/totalMetres*100:0;
     return `<div class="struct-row"><span class="bar-label" title="${esc(r.value)}"><span class="dot" style="background:${c}"></span>${esc(r.value)}</span>
      <span class="bar-qty"${fa}>${fmt(r.qty_metres)} m</span><span class="bar-sub">${pct.toFixed(1)}%</span></div>`;
@@ -4032,10 +4032,10 @@ init();
 
 <!-- ── Fabric BI Assistant — floating chat widget ─────────────────────────── -->
 <style>
-  #fab-chat-launch{position:fixed;bottom:20px;right:20px;z-index:9998;width:56px;height:56px;border-radius:50%;border:none;cursor:pointer;background:linear-gradient(135deg,#1a5c38,#0f3d24);color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 24px rgba(26,92,56,.35);transition:transform .15s ease, box-shadow .15s ease;}
-  #fab-chat-launch:hover{transform:scale(1.06);box-shadow:0 10px 28px rgba(26,92,56,.45);}
+  #fab-chat-launch{position:fixed;bottom:20px;right:20px;z-index:9998;width:56px;height:56px;border-radius:50%;border:none;cursor:pointer;background:linear-gradient(135deg,var(--chart-primary),var(--chart-primary-deep));color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 24px rgba(238,90,14,.35);transition:transform .15s ease, box-shadow .15s ease, background .15s ease;}
+  #fab-chat-launch:hover{transform:scale(1.06);background:var(--chart-primary-deep);box-shadow:0 10px 28px rgba(194,65,12,.5);}
   #fab-chat-launch svg{width:26px;height:26px;}
-  #fab-chat-launch .fab-chat-dot{position:absolute;top:11px;right:12px;width:9px;height:9px;border-radius:50%;background:#fb923c;border:2px solid #0f3d24;}
+  #fab-chat-launch .fab-chat-dot{position:absolute;top:11px;right:12px;width:9px;height:9px;border-radius:50%;background:#fff;border:2px solid var(--chart-primary-deep);}
   #fab-chat-panel{position:fixed;bottom:20px;right:20px;z-index:9999;width:min(384px,calc(100vw - 32px));height:min(580px,calc(100vh - 40px));background:#fff;border:1px solid #fdba74;border-radius:16px;box-shadow:0 24px 60px rgba(16,40,24,.28);display:none;flex-direction:column;overflow:hidden;}
   #fab-chat-panel.open{display:flex;}
   .fab-chat-head{display:flex;align-items:center;gap:10px;padding:13px 14px;background:linear-gradient(135deg,#1a5c38,#0f3d24);color:#fff;}
