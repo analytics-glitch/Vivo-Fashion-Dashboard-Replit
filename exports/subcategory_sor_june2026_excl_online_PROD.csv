@@ -1,0 +1,29 @@
+Category,Subcategory,Total Sales (KES),SOR %,Qty Sold,% Qty,Total SOH,% Total SOH,Stores SOH,% Stores SOH,W/H SOH,W/H % SOH
+Tops,Loose Tops,12427558,36.4,3266,15.77,8948,12.83,5718,12.91,3230,12.70
+Bottoms,Full Length Pants,12699736,33.5,2960,14.30,9827,14.09,5868,13.25,3959,15.56
+Dresses,Knee Length Dresses,14562963,25.9,2826,13.65,12036,17.26,8086,18.25,3950,15.53
+Dresses,Maxi Dresses,12409042,36.1,1940,9.37,5156,7.39,3428,7.74,1728,6.79
+Outerwear,Sweaters & Ponchos,8122813,39.2,1726,8.34,3910,5.61,2679,6.05,1231,4.84
+Outerwear,Waterfalls & Kimonos,6923943,35.6,1567,7.57,4739,6.79,2830,6.39,1909,7.50
+Tops,Fitted Tops,4829018,24.9,1350,6.52,6639,9.52,4064,9.17,2575,10.12
+Tops,Midriff & Crop Tops,1962817,42.2,846,4.09,1431,2.05,1161,2.62,270,1.06
+Tops,T-shirts & Tank Tops,1360622,28.3,777,3.75,2659,3.81,1972,4.45,687,2.70
+Bottoms,Leggings,1719265,41.5,688,3.32,1441,2.07,971,2.19,470,1.85
+Dresses,Midi & Capri Dresses,3106227,22.7,524,2.53,2893,4.15,1786,4.03,1107,4.35
+Bottoms,Jumpsuits & Playsuits,3346011,37.3,507,2.45,1218,1.75,854,1.93,364,1.43
+Outerwear,Jackets & Coats,1998964,39.8,433,2.09,910,1.30,654,1.48,256,1.01
+Skirts,Knee Length Skirts,829794,19.0,281,1.36,1995,2.86,1197,2.70,798,3.14
+Tops,Bodysuits,643199,18.7,244,1.18,2097,3.01,1060,2.39,1037,4.08
+Dresses,Short & Mini Dresses,1131092,24.1,215,1.04,1358,1.95,677,1.53,681,2.68
+Outerwear,Hoodies & Sweatshirts,871505,53.2,207,1.00,349,0.50,182,0.41,167,0.66
+Skirts,Maxi Skirts,968224,31.6,203,0.98,736,1.06,440,0.99,296,1.16
+Skirts,Midi & Capri Skirts,459977,20.3,80,0.39,671,0.96,314,0.71,357,1.40
+Bottoms,Shorts & Skorts,120927,15.1,60,0.29,673,0.96,338,0.76,335,1.32
+Two-Piece Sets,Pants & Top Set,9057,25.0,2,0.01,11,0.02,6,0.01,5,0.02
+Two-Piece Sets,Skirts & Top Set,9519,10.0,1,0.00,36,0.05,9,0.02,27,0.11
+Bottoms,Culottes & Capri Pants,1450,11.1,1,0.00,10,0.01,8,0.02,2,0.01
+(not in catalog),Men's Bottoms,0,,0,0.00,0,0.00,0,0.00,0,0.00
+(not in catalog),Men's Tops,0,,0,0.00,0,0.00,0,0.00,0,0.00
+(not in catalog),Pants & Waterfall Set,0,,0,0.00,0,0.00,0,0.00,0,0.00
+(not in catalog),Short & Mini Skirts,0,,0,0.00,0,0.00,0,0.00,0,0.00
+TOTAL,,90513723,31.8,20704,100.00,69743,100.00,44302,100.00,25441,100.00
