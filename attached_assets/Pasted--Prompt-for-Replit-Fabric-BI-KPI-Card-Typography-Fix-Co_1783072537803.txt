@@ -1,0 +1,18 @@
+# Prompt for Replit — Fabric BI KPI Card Typography Fix
+
+## Context
+The KPI cards on the Fabric BI Overview page (Stock on Hand, Total Fabric Value, Avg Cost/Metre, Consumed Today, Months of Cover, etc.) have a number size that's out of proportion with the rest of the page — bigger than the page title itself, which flattens hierarchy across a 6-across grid instead of giving each number appropriate weight.
+
+## What to change
+1. Find the shared component/class that renders the KPI number in these cards (should be one source of truth used across all ~10 cards on this page — if it's currently being sized per-card rather than through a shared class, consolidate it into one so this fix applies everywhere consistently).
+2. Reduce the KPI number size from its current ~44–48px down to **30–32px**, bold, line-height 1.1.
+3. The unit suffix that sits next to the number (m, /m, KES prefix) currently appears to scale up along with the main figure. Decouple it — set the suffix to a fixed **14–15px**, regular weight, and baseline-align it against the number rather than letting it inherit the number's size.
+4. Leave everything else as is: the uppercase eyebrow label above the number (STOCK ON HAND, etc.), the caption text below (RMAT/Stock only, etc.), and the page title/section header sizes are all already proportional and don't need touching.
+5. Once the number is smaller, re-check card vertical padding — the current padding looks sized to accommodate the oversized number, so with the new scale you can likely tighten it slightly for a cleaner card, but don't force this if it starts affecting the grid's row alignment across cards of different content lengths (e.g. the "Stock on Hand" card has two lines of caption text, others have one).
+
+## Constraints
+- Apply this as a single shared style/token change, not per-card overrides — all KPI cards on this page (and ideally any other page using the same card component) should update together.
+- Don't change card width, grid layout, or spacing between cards — this is a type-scale fix only.
+- Confirm the change against the black "Stock on Hand" hero card too — it uses the same number treatment on a dark background and should shrink in step with the rest.
+
+Show me a before/after screenshot of the KPI row once this is in so I can confirm it before you touch anything else on the page.
