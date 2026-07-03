@@ -1,0 +1,33 @@
+# Prompt for Replit — Fabric BI Assistant Chat Widget (Closed / Minimized / Open)
+
+## Context
+This covers the "Fabric BI Assistant" chat widget in all three of its states: closed (floating icon), minimized (collapsed header bar), and open (full panel). Visual/consistency pass — don't touch the assistant's underlying logic, suggested prompts, or data behaviour.
+
+## Current state, issue by issue
+
+**Closed (floating icon)**
+1. This one's already on-brand — orange fill, correct from the earlier icon-colour fix. Leave the base colour alone.
+2. There's a faint secondary ring/glow around the icon — confirm whether this is an intentional "new activity" pulse indicator. If it is, keep it but make sure it reads clearly as a pulse (subtle animation) rather than a static double-outline, which currently just looks like a rendering artifact.
+
+**Minimized (collapsed bar)**
+3. Header background is still dark green — this is the one state that didn't get the orange/ink update the rest of the dashboard already has. Inconsistent with both the closed icon (now orange) and the open panel's body (already using orange for pills/outlines).
+
+**Open (full panel)**
+4. Same dark green header issue as the minimized bar — carries the same fix.
+5. The send button (bottom right of the input bar) is a dark green circle. Should be orange to match the paperclip icon outline next to it, which is already correctly orange — right now the input bar has two different accent colours sitting next to each other.
+6. The "new" badge next to the subtitle is unstyled plain text. Turn it into an actual small pill — rounded corners, subtle fill — so it reads as a badge rather than floating text that looks like a stray label.
+7. **Bug, not a style issue:** the text input at the bottom is showing up/down spinner arrows next to the placeholder text ("Ask about fabric stock, ageing, consumption..."). That's not an intentional control — it reads like a native number-input or textarea resize handle leaking through. Flag this to Replit explicitly as something to fix, not just restyle, since it'll confuse users into thinking it's a stepper control for something.
+8. Suggested-prompt pills (the four orange-outlined cream pills) are already correct — orange outline, cream fill, consistent with the rest of the page. Don't change these.
+
+## Design direction
+- Replace the dark green header background (both minimized bar and open panel header) with the brand orange itself (~#F15A24, same token as the closed icon and the storefront) — not a dark neutral substitute. The point is for closed, minimized, and open to all read as the same orange surface, so the widget looks like one continuous piece regardless of state.
+- White text/icons on the orange header (title, subtitle, chevron, X) should stay white — check contrast once the background changes, but white-on-this-orange should hold up fine.
+- The send button, the "new" badge, and the paperclip icon all stay orange too — same token as the header, so nothing in the widget reads as a separate colour from anything else in it.
+- Build the closed/minimized/open states off the same header component rather than three separately styled surfaces, so a future colour or copy change only needs to happen once and all three states stay in sync automatically. Right now the fact that closed picked up the orange fix but minimized/open didn't suggests they're currently three disconnected styles.
+
+## Constraints
+- Purely visual/consistency pass plus the one input-field bug fix — don't change the assistant's suggested prompts, response behaviour, or data queries.
+- Confirm text contrast (white text) still passes WCAG AA against the new orange header background — orange backgrounds are more prone to marginal contrast than a dark neutral would be, so actually check this rather than assume it holds.
+- Keep the sparkle icon in its circular badge in the header as is; just recolour its container to sit correctly against the new ink background if needed.
+
+Show me a screenshot of all three states side by side once this is done — closed, minimized, and open — so I can confirm they read as one coherent component before you move on.
