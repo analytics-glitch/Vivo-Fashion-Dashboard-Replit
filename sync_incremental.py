@@ -1894,6 +1894,29 @@ def main():
     except Exception as e:
         log.error("IBT nightly reconcile error: %s", e)
 
+    # Presence-column tidy-up — once a day in the 21:00 UTC window. Live-but-idle
+    # user_sessions rows keep the last_active_at/last_active_page presence stamps
+    # they were last written with, and a long-running Reserved VM rarely reboots
+    # (the boot-time expired-session reap in api_pg._ensure_users_table only fires
+    # then), so those stamps — and the presence index that covers them — accrete
+    # over time. The active-viewers query filters by a 45s recency window, so a
+    # stamp older than that is dead weight. Clear it on any session whose
+    # last_active_at is far past the presence window (1h) to bound index bloat.
+    # Correctness-neutral: expired sessions are still reaped on boot, and a stamp
+    # this old could never satisfy the 45s active-viewers filter.
+    try:
+        if now.hour == 21:
+            cur.execute(
+                "UPDATE user_sessions SET last_active_page=NULL, last_active_at=NULL "
+                "WHERE last_active_at IS NOT NULL "
+                "  AND last_active_at < now() - interval '1 hour'"
+            )
+            log.info("Presence sweep — cleared %d stale presence stamp(s)", cur.rowcount)
+            conn.commit()
+    except Exception as e:
+        log.error("Presence sweep error: %s", e)
+        conn.rollback()
+
     write_heartbeat(conn, "ok")
     conn.close()
     log.info("=== Sync complete ===")
