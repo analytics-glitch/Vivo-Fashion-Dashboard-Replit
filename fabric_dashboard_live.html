@@ -2662,22 +2662,6 @@ function renderKpis(d,mpg,coverDelta){
      else if(pstatus==='ok'&&pcover!=null){pval=coverFmt(pcover);pcls=pcover<1?'amber':'';}
      else{pval='&mdash;';}
      return KpiCard({reserveAction:true,label:'Months of cover',qualifier:'Prev month',value:pval,valueClass:pcls,valueAttrs:fx(FX.monthsCoverPrevMonth),cardAttrs:` title="${ptip}"`,footnote:pnote});})(),
-    (()=>{const bc=(d.basic_months_of_cover!=null)?d.basic_months_of_cover:null;
-     const bst=d.basic_months_of_cover_status||(bc!=null?'ok':'no_data');
-     const bskg=(d.basic_fabrics_stock_kg!=null)?d.basic_fabrics_stock_kg:null;
-     const bm=(d.basic_fabrics_matched!=null)?d.basic_fabrics_matched:null,bt=(d.basic_fabrics_total!=null)?d.basic_fabrics_total:null;
-     // The "N of M curated fabrics matched" count must ALWAYS render — even when
-     // the headline value is unavailable — so a zero-match (mid-rebuild) state is
-     // legible instead of silently blank.
-     const bsub=(bm!=null&&bt!=null)?`${fmt(bm)} of ${fmt(bt)} curated fabrics matched`:'curated staple fabrics';
-     let bval,bcls='',btip='';
-     if(bst==='overstocked'){bval='12+';btip=esc(`Curated staple fabrics have stock on hand${bskg!=null?` (${fmt(bskg)} kg)`:''} but no consumption in the trailing 6-month window, so cover cannot be divided. Shown as 12+ (overstocked / no recent use), not a dash.`);}
-     else if(bst==='ok'&&bc!=null){bval=coverFmt(bc);bcls=bc<1?'amber':'';btip=esc('Combined months of cover across the curated staple-fabric set: live RMAT/Stock kg ÷ the average net run-rate over the last 6 fully completed months.');}
-     else if(bst==='no_match'){bval='&mdash;';btip=esc('No curated staple fabric currently matches a product (this can happen transiently while fabric data is rebuilding). The matched count below shows the gap.');}
-     else{bval='&mdash;';btip=esc('No curated staple-fabric stock and no recent consumption, so there is nothing to compute.');}
-     const bsubLine=(bst==='overstocked')?`${bsub} &middot; no recent use`:bsub;
-     const bdl=(bm!=null)?`<button class="btn ghost" onclick="downloadBasicCoverXlsx()" title="Download the full calculation audit trail (curated staple-fabric pairings, matched products with stock on hand, and the 6-month net consumption run-rate) as an Excel workbook">&#11015; Download (Excel)</button>`:'';
-     return KpiCard({reserveAction:true,label:'Months of cover',qualifier:'Basic fabrics',value:bval,valueClass:bcls,cardAttrs:` title="${btip}"${fx(FX.basicMonthsCover)}`,footnote:bsubLine,action:bdl});})(),
   ];
   document.getElementById('kpi-cards').innerHTML=cards.join('');
 }
