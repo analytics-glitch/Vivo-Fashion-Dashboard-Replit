@@ -102,6 +102,24 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .fab-fresh:empty{display:none;}
 .fab-fresh::before{content:"";flex-shrink:0;width:8px;height:8px;border-radius:50%;background:var(--fab-orange);box-shadow:0 0 0 0 rgba(238,90,14,.55);animation:fabfreshpulse 2.2s ease-out infinite;}
 @keyframes fabfreshpulse{0%{box-shadow:0 0 0 0 rgba(238,90,14,.5);}70%{box-shadow:0 0 0 7px rgba(238,90,14,0);}100%{box-shadow:0 0 0 0 rgba(238,90,14,0);}}
+/* Live viewers presence pill — a green "online" dot + count; hovering/clicking
+   reveals a small popover list of who is currently viewing this page. */
+.fab-presence{position:relative;display:inline-flex;}
+.fab-presence-btn{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:999px;background:#fff;border:1px solid var(--fab-line);font-size:11.5px;font-weight:700;color:var(--fab-ink);white-space:nowrap;cursor:pointer;font-family:inherit;transition:border-color .12s,background .12s;}
+.fab-presence-btn:hover{border-color:var(--ok);background:rgba(21,128,61,.05);}
+.fab-presence-btn::before{content:"";flex-shrink:0;width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 rgba(21,128,61,.55);animation:fabpresencepulse 2.2s ease-out infinite;}
+@keyframes fabpresencepulse{0%{box-shadow:0 0 0 0 rgba(21,128,61,.5);}70%{box-shadow:0 0 0 6px rgba(21,128,61,0);}100%{box-shadow:0 0 0 0 rgba(21,128,61,0);}}
+.fab-presence-pop{position:absolute;top:calc(100% + 6px);right:0;z-index:45;min-width:220px;max-width:300px;max-height:340px;overflow:auto;background:#fff;border:1px solid var(--fab-line);border-radius:10px;box-shadow:0 10px 30px rgba(16,40,24,.15);padding:6px;display:none;}
+.fab-presence-pop.open{display:block;}
+.fab-presence-pop .pp-head{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--fab-muted);padding:6px 8px 8px;}
+.fab-presence-row{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;}
+.fab-presence-row:hover{background:var(--bg);}
+.fab-presence-av{flex-shrink:0;width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,var(--fab-orange),var(--fab-orange-deep));color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;text-transform:uppercase;}
+.fab-presence-meta{min-width:0;display:flex;flex-direction:column;line-height:1.3;}
+.fab-presence-name{font-size:12.5px;font-weight:600;color:var(--fab-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fab-presence-role{font-size:10.5px;color:var(--fab-muted);text-transform:capitalize;}
+.fab-presence-you{font-size:9.5px;font-weight:700;color:var(--ok);text-transform:uppercase;letter-spacing:.04em;margin-left:4px;}
+.fab-presence-empty{font-size:12px;color:var(--fab-muted);padding:8px;}
 .content{padding:1.4rem;overflow:auto;flex:1;}
 
 .eyebrow{text-transform:uppercase;letter-spacing:.09em;font-size:.62rem;font-weight:700;color:var(--muted);}
@@ -310,6 +328,12 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     </nav>
    </div>
    <div class="fab-utils">
+    <div class="fab-presence" id="fab-presence" style="display:none;">
+     <button type="button" class="fab-presence-btn" id="fab-presence-btn" aria-haspopup="true" aria-expanded="false" title="People viewing this page right now">
+      <span id="fab-presence-count">0 viewing now</span>
+     </button>
+     <div class="fab-presence-pop" id="fab-presence-pop" role="menu" aria-label="People viewing now"></div>
+    </div>
     <button type="button" id="nav-reset" class="fab-util-btn" hidden title="Restore the default tab order">&#8635;</button>
     <a href="/" class="fab-util-btn" title="Back to Vivo BI">&larr;</a>
    </div>
@@ -3909,7 +3933,111 @@ async function init(){
   fabSyncMixTopbarVisibility();
   loadOverview();
   startFabricAutoRefresh();   // begin the silent 60s Overview KPI re-poll
+  startFabricPresence();      // live "who's viewing" indicator
 }
+
+// ── Live viewers presence ───────────────────────────────────────────────────
+// Pings POST /api/auth/heartbeat (Bearer token, like the chat calls) on a short
+// interval to stamp this session as active, and polls GET /api/auth/active-viewers
+// to render a small "N viewing now" pill with an expandable list of names + roles.
+// Pinging + polling pause when the tab is hidden so an idle viewer drops off the
+// list within the server's recency window. All interpolated user text is escaped
+// (esc) before it touches innerHTML.
+(function(){
+  const PING_MS = 15000;   // heartbeat cadence — well under the 45s server window
+  const POLL_MS = 8000;    // re-poll the viewer list this often
+  let pingTimer=null, pollTimer=null, popOpen=false, started=false;
+
+  function tok(){ try{ return localStorage.getItem('vivo_token'); }catch(e){ return null; } }
+  function roleLabel(r){ return String(r||'').replace(/_/g,' '); }
+  function initials(name){
+    const parts=String(name||'').trim().split(/\s+/).filter(Boolean);
+    if(!parts.length) return '?';
+    if(parts.length===1) return parts[0].slice(0,2);
+    return (parts[0][0]||'')+(parts[parts.length-1][0]||'');
+  }
+
+  async function ping(){
+    if(document.hidden) return;
+    const t=tok();
+    const headers={'Content-Type':'application/json'};
+    if(t) headers['Authorization']='Bearer '+t;
+    try{
+      await fetch('/api/auth/heartbeat',{
+        method:'POST', credentials:'include', headers:headers,
+        body:JSON.stringify({page:'fabric'})
+      });
+    }catch(e){/* best-effort — presence is non-critical */}
+  }
+
+  async function poll(){
+    if(document.hidden) return;
+    const t=tok();
+    const headers={};
+    if(t) headers['Authorization']='Bearer '+t;
+    try{
+      const r=await fetch('/api/auth/active-viewers?page=fabric',{credentials:'include',headers:headers});
+      if(!r.ok) return;
+      const d=await r.json();
+      render(d&&Array.isArray(d.viewers)?d.viewers:[], (d&&d.count)||0);
+    }catch(e){/* leave the last-known state on a transient failure */}
+  }
+
+  function render(viewers, count){
+    const wrap=document.getElementById('fab-presence');
+    const cntEl=document.getElementById('fab-presence-count');
+    const pop=document.getElementById('fab-presence-pop');
+    if(!wrap||!cntEl||!pop) return;
+    wrap.style.display='inline-flex';
+    const n=count||viewers.length;
+    cntEl.textContent=(n===1?'1 viewing now':n+' viewing now');
+    if(!viewers.length){
+      pop.innerHTML='<div class="fab-presence-empty">No one else is viewing right now.</div>';
+      return;
+    }
+    let html='<div class="pp-head">Viewing now &middot; '+esc(String(n))+'</div>';
+    viewers.forEach(function(v){
+      const nm=esc(v.name||'Someone');
+      html+='<div class="fab-presence-row">'
+        +  '<span class="fab-presence-av">'+esc(initials(v.name))+'</span>'
+        +  '<span class="fab-presence-meta">'
+        +    '<span class="fab-presence-name">'+nm+(v.is_self?'<span class="fab-presence-you">You</span>':'')+'</span>'
+        +    (v.role?'<span class="fab-presence-role">'+esc(roleLabel(v.role))+'</span>':'')
+        +  '</span>'
+        +'</div>';
+    });
+    pop.innerHTML=html;
+  }
+
+  function togglePop(open){
+    const pop=document.getElementById('fab-presence-pop');
+    const btn=document.getElementById('fab-presence-btn');
+    if(!pop||!btn) return;
+    popOpen=(open==null?!popOpen:open);
+    pop.classList.toggle('open',popOpen);
+    btn.setAttribute('aria-expanded',popOpen?'true':'false');
+    if(popOpen) poll();  // refresh the list the moment it's opened
+  }
+
+  window.startFabricPresence=function(){
+    if(started) return; started=true;
+    const btn=document.getElementById('fab-presence-btn');
+    if(btn) btn.addEventListener('click',function(e){ e.stopPropagation(); togglePop(); });
+    document.addEventListener('click',function(e){
+      if(popOpen && !e.target.closest('#fab-presence')) togglePop(false);
+    });
+    document.addEventListener('visibilitychange',function(){
+      if(!document.hidden){ ping(); poll(); }
+    });
+    window.addEventListener('beforeunload',function(){
+      if(pingTimer) clearInterval(pingTimer);
+      if(pollTimer) clearInterval(pollTimer);
+    });
+    ping(); poll();
+    pingTimer=setInterval(ping,PING_MS);
+    pollTimer=setInterval(poll,POLL_MS);
+  };
+})();
 
 // ---------------------------------------------------------------------------
 // Per-column expand — injects a small toggle into every data-table header so

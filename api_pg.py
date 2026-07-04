@@ -675,6 +675,19 @@ def _ensure_users_table():
     """)
     _users_exec(
         "CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id)")
+    # Live-presence tracking: the fabric dashboard (and any future surface) pings
+    # POST /api/auth/heartbeat on a short interval which stamps last_active_at +
+    # the surface (last_active_page). GET /api/auth/active-viewers reads back the
+    # distinct users active within a short recency window. Both columns are added
+    # idempotently so an existing prod user_sessions table gains them on deploy.
+    _users_exec(
+        "ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ")
+    _users_exec(
+        "ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS last_active_page TEXT")
+    # Composite index supports the active-viewers scan (recency window per page).
+    _users_exec(
+        "CREATE INDEX IF NOT EXISTS idx_user_sessions_presence "
+        "ON user_sessions(last_active_page, last_active_at)")
     # Reap expired sessions on boot so the table cannot grow unbounded.
     try:
         _users_exec("DELETE FROM user_sessions WHERE expires_at <= now()")
@@ -18286,7 +18299,73 @@ async def delete_thumbnail_override(style: str, request: Request):
         "DELETE FROM thumbnail_overrides WHERE style_name = %s", (style_name,))
     return {"ok": True, "style_name": style_name}
 @app.post("/api/auth/heartbeat")
-async def stub_auth_heartbeat_post(request: Request): return {"ok": True}
+async def auth_heartbeat_post(request: Request):
+    # Live-presence heartbeat. Stamps the CALLER's own session row as active and
+    # records which surface it is on (defaults to "fabric"). Fired on a short
+    # interval by the fabric dashboard; a single indexed UPDATE keyed on the
+    # session_token PK keeps it cheap. Never raises — presence is best-effort.
+    page = "fabric"
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            p = (body.get("page") or "").strip()
+            if p:
+                page = p[:64]
+    except Exception:
+        pass
+    token = _extract_session_token(request)
+    if token:
+        try:
+            _users_exec(
+                "UPDATE user_sessions SET last_active_at=now(), last_active_page=%s "
+                "WHERE session_token=%s",
+                (page, token))
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+# Recency window (seconds) that counts a session as "viewing now". Kept a bit
+# wider than the client's ping interval so a viewer doesn't flicker off between
+# beats but still drops within a few seconds of closing the tab / going idle.
+_PRESENCE_WINDOW_SEC = 45
+
+
+@app.get("/api/auth/active-viewers")
+def auth_active_viewers(request: Request, page: str = "fabric"):
+    # Distinct active users currently viewing a surface (default "fabric"),
+    # de-duplicated to one entry per user across their sessions. Reachable by any
+    # authenticated, active user (no admin/analyst restriction). Returns name +
+    # role only — never contact PII. Best-effort: on any error returns an empty
+    # list so the widget degrades quietly rather than erroring the page.
+    surface = (page or "fabric").strip()[:64] or "fabric"
+    me = (getattr(request.state, "user", None) or {})
+    my_id = str(me.get("user_id") or me.get("id") or "")
+    try:
+        rows = _users_exec(
+            "SELECT u.user_id, u.name, u.email, u.role, "
+            "       MAX(s.last_active_at) AS last_active_at "
+            "FROM user_sessions s JOIN app_users u ON u.user_id = s.user_id "
+            "WHERE s.last_active_page = %s "
+            "  AND s.last_active_at > now() - make_interval(secs => %s) "
+            "  AND u.status = 'active' "
+            "GROUP BY u.user_id, u.name, u.email, u.role "
+            "ORDER BY MAX(s.last_active_at) DESC",
+            (surface, _PRESENCE_WINDOW_SEC), fetch=True) or []
+    except Exception:
+        rows = []
+    viewers = []
+    for r in rows:
+        uid = str(r.get("user_id") or "")
+        display = (r.get("name") or "").strip() or (r.get("email") or "").split("@")[0]
+        viewers.append({
+            "user_id": uid,
+            "name": display,
+            "role": r.get("role") or "",
+            "is_self": uid == my_id,
+        })
+    return {"count": len(viewers), "viewers": viewers,
+            "window_sec": _PRESENCE_WINDOW_SEC}
 @app.post("/api/recommendations")
 async def post_recommendations(request: Request):
     body = await request.json()
