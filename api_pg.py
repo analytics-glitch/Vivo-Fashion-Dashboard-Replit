@@ -663,6 +663,10 @@ def _ensure_users_table():
     # Local email/password accounts store a PBKDF2 hash here; Google-only
     # identities leave it NULL (they authenticate via OAuth, never a password).
     _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS password_hash TEXT")
+    # Google profile photo URL, captured from the OAuth userinfo `picture` field
+    # at sign-in. Nullable: password-only accounts and pre-existing Google users
+    # (until their next Google sign-in) leave it NULL and fall back to initials.
+    _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS picture TEXT")
     # Opaque server-side sessions. The token is the bearer/cookie value; we never
     # store anything derivable back to a password here.
     _users_exec("""
@@ -695,19 +699,21 @@ def _ensure_users_table():
         pass
 
 
-def _resolve_app_user_db(sub, email, name):
+def _resolve_app_user_db(sub, email, name, picture=None):
     rows = _users_exec(
         "SELECT user_id, email, name, role, status FROM app_users WHERE user_id=%s",
         (sub,), fetch=True)
     if rows:
         rec = rows[0]
-        # Refresh last-login + keep email/name in sync with the IdP, throttled by
-        # the cache TTL (this only runs on a cache miss, ~once per 30s per user).
+        # Refresh last-login + keep email/name/picture in sync with the IdP,
+        # throttled by the cache TTL (this only runs on a cache miss, ~once per 30s
+        # per user). picture COALESCEs so a non-Google resolve never wipes it.
         try:
             _users_exec(
                 "UPDATE app_users SET last_login_at=now(), email=%s, "
-                "name=COALESCE(NULLIF(%s,''), name) WHERE user_id=%s",
-                (email, name or "", sub))
+                "name=COALESCE(NULLIF(%s,''), name), "
+                "picture=COALESCE(NULLIF(%s,''), picture) WHERE user_id=%s",
+                (email, name or "", picture or "", sub))
         except Exception:
             pass
         return rec
@@ -725,8 +731,9 @@ def _resolve_app_user_db(sub, email, name):
         try:
             _users_exec(
                 "UPDATE app_users SET last_login_at=now(), "
-                "name=COALESCE(NULLIF(%s,''), name) WHERE user_id=%s",
-                (name or "", rec["user_id"]))
+                "name=COALESCE(NULLIF(%s,''), name), "
+                "picture=COALESCE(NULLIF(%s,''), picture) WHERE user_id=%s",
+                (name or "", picture or "", rec["user_id"]))
         except Exception:
             pass
         return rec
@@ -742,29 +749,33 @@ def _resolve_app_user_db(sub, email, name):
         status = "active" if bootstrap else "pending"
         cur.execute("""
             INSERT INTO app_users (user_id, email, name, role, status, auth_method,
-                                   last_login_at, approved_at, approved_by)
-            VALUES (%s, %s, %s, %s, %s, 'google', now(),
+                                   picture, last_login_at, approved_at, approved_by)
+            VALUES (%s, %s, %s, %s, %s, 'google', NULLIF(%s,''), now(),
                     CASE WHEN %s='active' THEN now() ELSE NULL END,
                     CASE WHEN %s='active' THEN 'system:bootstrap' ELSE NULL END)
-            ON CONFLICT (user_id) DO UPDATE SET last_login_at=now()
+            ON CONFLICT (user_id) DO UPDATE SET last_login_at=now(),
+                    picture=COALESCE(NULLIF(EXCLUDED.picture,''), app_users.picture)
             RETURNING user_id, email, name, role, status
-        """, (sub, email, name or "", role, status, status, status))
+        """, (sub, email, name or "", role, status, picture or "", status, status))
         row = cur.fetchone()
     return dict(row) if row else {
         "user_id": sub, "email": email, "name": name, "role": role, "status": status,
     }
 
 
-def resolve_app_user(sub, email, name):
+def resolve_app_user(sub, email, name, picture=None):
     """Return the persisted {user_id,email,name,role,status} for a Clerk identity,
     creating the row on first sight. Cached briefly to spare the DB on request
-    bursts; admin mutations invalidate the cache for instant effect."""
+    bursts; admin mutations invalidate the cache for instant effect. A sign-in that
+    carries a profile `picture` always hits the DB so the photo is persisted (the
+    cache read is skipped) — sign-ins are rare relative to the cache TTL."""
     now = time.time()
-    with _user_cache_lock:
-        cached = _user_cache.get(sub)
-        if cached and (now - cached[1]) < _USER_CACHE_TTL:
-            return cached[0]
-    rec = _resolve_app_user_db(sub, email, name)
+    if not picture:
+        with _user_cache_lock:
+            cached = _user_cache.get(sub)
+            if cached and (now - cached[1]) < _USER_CACHE_TTL:
+                return cached[0]
+    rec = _resolve_app_user_db(sub, email, name, picture)
     with _user_cache_lock:
         _user_cache[sub] = (rec, now)
     return rec
@@ -6218,7 +6229,8 @@ def auth_google_callback(request: Request):
         return _back("error=domain_not_allowed")
     sub = "google:" + str(info.get("sub") or email)
     name = info.get("name") or ""
-    rec = resolve_app_user(sub, email, name)
+    picture = (info.get("picture") or "").strip()
+    rec = resolve_app_user(sub, email, name, picture)
     token = _create_session(rec["user_id"])
     resp = _back("token=" + quote(token))
     resp.set_cookie("session_token", token, **_login_cookie_kwargs())
@@ -18343,13 +18355,13 @@ def auth_active_viewers(request: Request, page: str = "fabric"):
     my_id = str(me.get("user_id") or me.get("id") or "")
     try:
         rows = _users_exec(
-            "SELECT u.user_id, u.name, u.email, u.role, "
+            "SELECT u.user_id, u.name, u.email, u.role, u.picture, "
             "       MAX(s.last_active_at) AS last_active_at "
             "FROM user_sessions s JOIN app_users u ON u.user_id = s.user_id "
             "WHERE s.last_active_page = %s "
             "  AND s.last_active_at > now() - make_interval(secs => %s) "
             "  AND u.status = 'active' "
-            "GROUP BY u.user_id, u.name, u.email, u.role "
+            "GROUP BY u.user_id, u.name, u.email, u.role, u.picture "
             "ORDER BY MAX(s.last_active_at) DESC",
             (surface, _PRESENCE_WINDOW_SEC), fetch=True) or []
     except Exception:
@@ -18358,10 +18370,18 @@ def auth_active_viewers(request: Request, page: str = "fabric"):
     for r in rows:
         uid = str(r.get("user_id") or "")
         display = (r.get("name") or "").strip() or (r.get("email") or "").split("@")[0]
+        # `picture` is the viewer's Google profile-photo URL (captured at sign-in);
+        # it is safe to expose (unlike email). Falsy → the client shows initials.
+        # Only surface http(s) URLs — the client assigns this straight to img.src,
+        # so this rejects any javascript:/data: value that ever reached the column.
+        pic = (r.get("picture") or "").strip()
+        if not pic.lower().startswith(("http://", "https://")):
+            pic = None
         viewers.append({
             "user_id": uid,
             "name": display,
             "role": r.get("role") or "",
+            "picture": pic,
             "is_self": uid == my_id,
         })
     return {"count": len(viewers), "viewers": viewers,

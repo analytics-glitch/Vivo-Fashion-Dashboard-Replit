@@ -120,6 +120,18 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .fab-presence-role{font-size:10.5px;color:var(--fab-muted);text-transform:capitalize;}
 .fab-presence-you{font-size:9.5px;font-weight:700;color:var(--ok);text-transform:uppercase;letter-spacing:.04em;margin-left:4px;}
 .fab-presence-empty{font-size:12px;color:var(--fab-muted);padding:8px;}
+/* Overlapping circular viewer avatars (Google-Docs style) shown inside the pill.
+   Each avatar is a real Google profile photo when available, else an initials
+   circle. .fab-av-stk gives the overlap + white ring; .fab-av-self rings green. */
+.fab-av-stack{display:inline-flex;align-items:center;}
+.fab-av{position:relative;flex-shrink:0;width:22px;height:22px;border-radius:50%;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:800;text-transform:uppercase;color:#fff;background:#cbd5e1;line-height:1;}
+.fab-av-img{width:100%;height:100%;object-fit:cover;display:block;}
+.fab-av-fallback{background:linear-gradient(135deg,var(--fab-orange),var(--fab-orange-deep));}
+.fab-av-stk{box-shadow:0 0 0 2px #fff;margin-left:-7px;}
+.fab-av-stk:first-child{margin-left:0;}
+.fab-av-self{box-shadow:0 0 0 2px var(--ok);}
+.fab-av-more{background:var(--fab-muted);font-size:9px;}
+.fab-av-lg{width:26px;height:26px;font-size:11px;}
 .content{padding:1.4rem;overflow:auto;flex:1;}
 
 .eyebrow{text-transform:uppercase;letter-spacing:.09em;font-size:.62rem;font-weight:700;color:var(--muted);}
@@ -330,6 +342,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    <div class="fab-utils">
     <div class="fab-presence" id="fab-presence" style="display:none;">
      <button type="button" class="fab-presence-btn" id="fab-presence-btn" aria-haspopup="true" aria-expanded="false" title="People viewing this page right now">
+      <span class="fab-av-stack" id="fab-presence-avatars"></span>
       <span id="fab-presence-count">0 viewing now</span>
      </button>
      <div class="fab-presence-pop" id="fab-presence-pop" role="menu" aria-label="People viewing now"></div>
@@ -3967,30 +3980,104 @@ async function init(){
     }catch(e){/* leave the last-known state on a transient failure */}
   }
 
+  // Build one circular avatar element: a real photo when a picture URL is present
+  // (with an onerror fallback to the initials circle), else an initials circle.
+  // DOM-built (never innerHTML with a server URL) so the photo URL is only ever an
+  // <img src> attribute and user text is set via textContent — no XSS surface.
+  function avatarEl(v, stacked){
+    const nm=v&&v.name||'Someone';
+    const el=document.createElement('span');
+    el.className='fab-av'+(stacked?' fab-av-stk':'');
+    if(v&&v.is_self) el.classList.add('fab-av-self');
+    el.title=nm+(v&&v.is_self?' (You)':'');
+    const url=v&&v.picture;
+    if(url){
+      const img=document.createElement('img');
+      img.className='fab-av-img';
+      img.src=url;
+      img.alt=nm;
+      img.referrerPolicy='no-referrer';   // Google photo hosts can 403 on referrer
+      img.loading='lazy';
+      img.addEventListener('error',function(){
+        el.classList.add('fab-av-fallback');
+        el.textContent=initials(nm);      // photo blocked/broken → initials
+      });
+      el.appendChild(img);
+    }else{
+      el.classList.add('fab-av-fallback');
+      el.textContent=initials(nm);
+    }
+    return el;
+  }
+
   function render(viewers, count){
     const wrap=document.getElementById('fab-presence');
     const cntEl=document.getElementById('fab-presence-count');
     const pop=document.getElementById('fab-presence-pop');
+    const box=document.getElementById('fab-presence-avatars');
     if(!wrap||!cntEl||!pop) return;
     wrap.style.display='inline-flex';
     const n=count||viewers.length;
-    cntEl.textContent=(n===1?'1 viewing now':n+' viewing now');
+    cntEl.textContent=(n===1?'1 viewing':n+' viewing');
+    // Overlapping avatar stack (cap the visible count, overflow into "+N").
+    if(box){
+      box.textContent='';
+      const MAX=5;
+      const shown=viewers.slice(0,MAX);
+      shown.forEach(function(v,i){
+        const el=avatarEl(v,true);
+        el.style.zIndex=String(shown.length-i);  // leftmost paints on top
+        box.appendChild(el);
+      });
+      const extra=viewers.length-shown.length;
+      if(extra>0){
+        const more=document.createElement('span');
+        more.className='fab-av fab-av-stk fab-av-more';
+        more.textContent='+'+extra;
+        more.title=extra+(extra===1?' more person viewing':' more people viewing');
+        box.appendChild(more);
+      }
+    }
+    // Popover list — same avatar (photo/initials) + name + role. Never any email.
+    pop.textContent='';
+    const head=document.createElement('div');
+    head.className='pp-head';
+    head.textContent='Viewing now \u00b7 '+n;
+    pop.appendChild(head);
     if(!viewers.length){
-      pop.innerHTML='<div class="fab-presence-empty">No one else is viewing right now.</div>';
+      const empty=document.createElement('div');
+      empty.className='fab-presence-empty';
+      empty.textContent='No one else is viewing right now.';
+      pop.appendChild(empty);
       return;
     }
-    let html='<div class="pp-head">Viewing now &middot; '+esc(String(n))+'</div>';
     viewers.forEach(function(v){
-      const nm=esc(v.name||'Someone');
-      html+='<div class="fab-presence-row">'
-        +  '<span class="fab-presence-av">'+esc(initials(v.name))+'</span>'
-        +  '<span class="fab-presence-meta">'
-        +    '<span class="fab-presence-name">'+nm+(v.is_self?'<span class="fab-presence-you">You</span>':'')+'</span>'
-        +    (v.role?'<span class="fab-presence-role">'+esc(roleLabel(v.role))+'</span>':'')
-        +  '</span>'
-        +'</div>';
+      const row=document.createElement('div');
+      row.className='fab-presence-row';
+      const av=avatarEl(v,false);
+      av.classList.add('fab-av-lg');
+      row.appendChild(av);
+      const meta=document.createElement('span');
+      meta.className='fab-presence-meta';
+      const nameEl=document.createElement('span');
+      nameEl.className='fab-presence-name';
+      nameEl.textContent=v.name||'Someone';
+      if(v.is_self){
+        const you=document.createElement('span');
+        you.className='fab-presence-you';
+        you.textContent='You';
+        nameEl.appendChild(you);
+      }
+      meta.appendChild(nameEl);
+      if(v.role){
+        const roleEl=document.createElement('span');
+        roleEl.className='fab-presence-role';
+        roleEl.textContent=roleLabel(v.role);
+        meta.appendChild(roleEl);
+      }
+      row.appendChild(meta);
+      pop.appendChild(row);
     });
-    pop.innerHTML=html;
   }
 
   function togglePop(open){
