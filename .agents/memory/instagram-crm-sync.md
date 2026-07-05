@@ -55,6 +55,24 @@ already-seen pages until cursor exhaustion / budget / target (never stopping on 
 **Why:** first pass ingested the newest page then every later run stopped instantly,
 so the deep history never filled — the same resumability lesson as the FB deep walk.
 
+## Reply delivery must have a branch per (platform, type)
+
+The Inbox reply endpoint (`cl_soc_feedback_reply`) delivers to the real platform
+only via an explicit per-(platform,type) branch: IG comment → `/{id}/replies`,
+FB comment → `/{id}/comments`, FB DM → Send API `/{page_id}/messages`. Any type
+with NO branch falls through to a local-only `UPDATE reply_body/replied_at` and
+returns `delivered=false` — i.e. it is saved but NEVER posted to FB/IG. A missing
+branch is a silent "logged-only success", not a delivery.
+
+**Why:** FB *comment* replies (the bulk of comments) originally had no branch, so
+staff replies were saved locally and never appeared on Facebook. The UI must show
+`delivered` vs logged-only honestly (return `delivery_channel`), or ops assume a
+reply went out when it did not.
+
+**How to apply:** when adding a new ingested type (e.g. IG DMs — task #500), add
+its matching delivery branch AND set `delivery_channel`, or it will silently log
+without sending.
+
 ## Known inherited fragility (accepted for FB parity)
 
 Config finalization runs after `except HTTPException: raise`, so a non-HTTPException

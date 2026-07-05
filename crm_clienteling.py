@@ -3170,6 +3170,7 @@ def _reg_social(app):
         if not row:
             raise HTTPException(404, "Feedback item not found.")
         delivered = False
+        delivery_channel = None
         if row.get("type") == "comment" and row.get("platform") == "instagram":
             # An Instagram comment reply is DELIVERED via the Graph API comment
             # reply edge (POST /{comment-id}/replies), not just logged. The IG
@@ -3187,9 +3188,31 @@ def _reg_social(app):
             try:
                 A._fb_post(f"{cmt_id}/replies", {"message": body.strip()})
                 delivered = True
+                delivery_channel = "Instagram"
             except Exception as e:
                 # Surface the real Graph error instead of a silent failure.
                 raise HTTPException(502, f"Instagram rejected the reply: {e}")
+        elif row.get("type") == "comment" and row.get("platform") == "facebook":
+            # A Facebook comment reply is DELIVERED via the Graph API comment
+            # edge (POST /{comment-id}/comments), not just logged. The FB comment
+            # id lives in source_id as "fb:<comment-id>".
+            sid = (row.get("source_id") or "")
+            cmt_id = sid[3:] if sid.startswith("fb:") else ""
+            if not cmt_id:
+                raise HTTPException(
+                    400, "This comment has no Facebook reference to reply to "
+                         "(re-run the Facebook sync).")
+            if not A._fb_configured():
+                raise HTTPException(400, "Facebook is not configured on the server.")
+            if not body.strip():
+                raise HTTPException(400, "Reply text is empty.")
+            try:
+                A._fb_post(f"{cmt_id}/comments", {"message": body.strip()})
+                delivered = True
+                delivery_channel = "Facebook"
+            except Exception as e:
+                # Surface the real Graph error instead of a silent failure.
+                raise HTTPException(502, f"Facebook rejected the reply: {e}")
         elif row.get("type") == "dm" and row.get("platform") == "facebook":
             # A Facebook DM reply is DELIVERED via Messenger (Send API), not
             # just logged. author_handle holds the sender's page-scoped id.
@@ -3209,6 +3232,7 @@ def _reg_social(app):
                     "message": json.dumps({"text": body.strip()}),
                 })
                 delivered = True
+                delivery_channel = "Messenger"
             except Exception as e:
                 # Surface the real Graph error — e.g. the 24-hour messaging
                 # window has closed — instead of a silent failure.
@@ -3216,10 +3240,10 @@ def _reg_social(app):
         _ex("UPDATE crm_social_feedback SET reply_body=%s, replied_at=now() WHERE id=%s",
             (body, _int(fid)))
         A._crm_audit("social", fid, "reply",
-                     "dm reply delivered via Messenger" if delivered
-                     else "feedback reply", request)
+                     (f"reply delivered to {delivery_channel}" if delivered
+                      else "reply logged (not delivered)"), request)
         return {"feedback_id": fid, "reply_body": body, "replied_at": _today(),
-                "delivered": delivered}
+                "delivered": delivered, "delivery_channel": delivery_channel}
 
     @app.get("/api/social/auto-tasks")
     def cl_soc_auto_tasks(request: Request, include_completed: bool = Query(False)):

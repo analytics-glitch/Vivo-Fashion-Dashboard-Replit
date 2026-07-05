@@ -173,7 +173,11 @@ export default function Inbox() {
     if (!replyBody.trim() || !selected) return;
     try {
       const r = await api.post(`/social/feedback/${selected.feedback_id}/reply`, { body: replyBody });
-      toast.success(r.data?.delivered ? "Reply sent via Messenger" : "Reply logged");
+      toast.success(
+        r.data?.delivered
+          ? `Reply sent to ${r.data.delivery_channel || "the customer"}`
+          : "Reply saved (logged only — not sent to the platform)"
+      );
       setSelected(r.data);
       setReplyOpen(false);
       setReplyBody("");
