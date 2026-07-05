@@ -3165,12 +3165,32 @@ def _reg_social(app):
                               payload: dict = Body(default=None)):
         _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
         body = (payload or {}).get("body") or ""
-        row = _one("SELECT id, platform, type, author_handle "
+        row = _one("SELECT id, platform, type, author_handle, source_id "
                    "FROM crm_social_feedback WHERE id=%s", (_int(fid),))
         if not row:
             raise HTTPException(404, "Feedback item not found.")
         delivered = False
-        if row.get("type") == "dm" and row.get("platform") == "facebook":
+        if row.get("type") == "comment" and row.get("platform") == "instagram":
+            # An Instagram comment reply is DELIVERED via the Graph API comment
+            # reply edge (POST /{comment-id}/replies), not just logged. The IG
+            # comment id lives in source_id as "ig:<comment-id>".
+            sid = (row.get("source_id") or "")
+            cmt_id = sid[3:] if sid.startswith("ig:") else ""
+            if not cmt_id:
+                raise HTTPException(
+                    400, "This comment has no Instagram reference to reply to "
+                         "(re-run the Instagram sync).")
+            if not A._fb_configured():
+                raise HTTPException(400, "Instagram is not configured on the server.")
+            if not body.strip():
+                raise HTTPException(400, "Reply text is empty.")
+            try:
+                A._fb_post(f"{cmt_id}/replies", {"message": body.strip()})
+                delivered = True
+            except Exception as e:
+                # Surface the real Graph error instead of a silent failure.
+                raise HTTPException(502, f"Instagram rejected the reply: {e}")
+        elif row.get("type") == "dm" and row.get("platform") == "facebook":
             # A Facebook DM reply is DELIVERED via Messenger (Send API), not
             # just logged. author_handle holds the sender's page-scoped id.
             psid = (row.get("author_handle") or "").strip()
@@ -3814,6 +3834,506 @@ def _reg_social(app):
                 "dms_stored": stored_dms + new_dms,
                 "dm_blocked": dm_blocked,
                 "dm_error": dm_error,
+                "scopes_missing": sorted(scopes_missing)}
+
+    # ----- Live Instagram wiring ------------------------------------------- #
+    # Instagram Business accounts are managed through the SAME Meta Graph API
+    # and the SAME long-lived Page token the server already holds (the IG
+    # account is linked to the Facebook Page). We resolve the linked IG account
+    # id dynamically from the Page's `instagram_business_account` field (never
+    # hardcoded) and reuse api_pg's _fb_* Graph plumbing verbatim. IG, unlike
+    # Facebook, EXPOSES the commenter's @username. DMs (Instagram Direct) are
+    # intentionally OUT OF SCOPE here — they need extra messaging permissions —
+    # so this engine ingests posts (our media), their comments, and @-mentions
+    # (the /tags edge). A clean DM seam can be added later as a Phase C.
+
+    _IG_SYNC_POST_TARGET = 2000
+    _IG_SYNC_COMMENT_TARGET = 2000
+    _IG_SYNC_MENTION_TARGET = 2000
+    _IG_SYNC_TIME_BUDGET_SEC = 240
+    _ig_sync_lock = threading.Lock()
+    _ig_id_cache = {"id": None, "username": None, "ts": 0.0}
+    _IG_ID_TTL = 3600  # the Page↔IG link changes very rarely
+
+    _IG_C_FIELDS = "id,text,username,timestamp,like_count"
+
+    def _ig_user(force=False):
+        """Resolve the (id, username) of the Instagram Business account linked to
+        the configured Facebook Page. Cached in-process (1h TTL). Returns
+        (None, None) when no IG account is linked (or the Page is unreachable)."""
+        now = time.time()
+        if (not force and _ig_id_cache["id"]
+                and (now - _ig_id_cache["ts"]) < _IG_ID_TTL):
+            return _ig_id_cache["id"], _ig_id_cache["username"]
+        page = A._fb_get(A._fb_page_id(),
+                         {"fields": "instagram_business_account{id,username}"})
+        iga = (page or {}).get("instagram_business_account") or {}
+        iid = iga.get("id")
+        uname = iga.get("username")
+        if iid:
+            _ig_id_cache.update(id=str(iid), username=uname, ts=now)
+            return str(iid), uname
+        return None, None
+
+    @app.get("/api/social/instagram/status")
+    def cl_soc_ig_status(request: Request):
+        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        empty = {"connected": False, "account": None, "last_synced_at": None,
+                 "auto_sync_minutes": None,
+                 "counts": {"real_posts": 0, "real_feedback": 0,
+                            "real_mentions": 0}}
+        if not A._fb_configured():
+            return empty
+        try:
+            iid, uname = _ig_user()
+        except Exception:
+            return empty  # token invalid/unreachable -> show connect banner
+        if not iid:
+            return empty  # no IG business account linked to the Page
+        agg = _one("SELECT count(*) AS feedback, "
+                   " count(*) FILTER (WHERE type='mention') AS mentions "
+                   "FROM crm_social_feedback WHERE platform='instagram'") or {}
+        posts_n = _int(_cfg_get("social.ig.last_sync_posts"), 0)
+        comments_n = _int(_cfg_get("social.ig.last_sync_comments"), 0)
+        mentions_n = _int(_cfg_get("social.ig.last_sync_mentions"), 0)
+        scopes = [s for s in (_cfg_get("social.ig.last_scopes_missing") or "").split(",") if s]
+        last_at = _cfg_get("social.ig.last_synced_at")
+        return {
+            "connected": True,
+            "account": {
+                "ig_user_id": iid,
+                "username": uname,
+                "handle": ("@" + uname) if uname else None,
+                "last_sync_posts": posts_n,
+                "last_sync_comments": comments_n,
+                "last_sync_mentions": mentions_n,
+                "last_sync_scopes_missing": scopes,
+            },
+            "last_synced_at": last_at or None,
+            "auto_sync_minutes": None,
+            "counts": {"real_posts": posts_n,
+                       "real_feedback": _int(agg.get("feedback"), 0),
+                       "real_mentions": _int(agg.get("mentions"), 0)},
+        }
+
+    @app.post("/api/social/instagram/sync")
+    def cl_soc_ig_sync(request: Request, payload: dict = Body(default=None)):
+        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        if not A._fb_configured():
+            raise HTTPException(400, "Instagram is not configured on the server.")
+        if not _ig_sync_lock.acquire(blocking=False):
+            raise HTTPException(409, "An Instagram sync is already running.")
+        try:
+            return _ig_sync_run(request)
+        finally:
+            _ig_sync_lock.release()
+
+    def _ig_sync_run(request):
+        try:
+            ig_id, ig_uname = _ig_user()
+        except Exception as e:
+            raise HTTPException(502, f"Instagram sync failed: {e}")
+        if not ig_id:
+            raise HTTPException(
+                400, "No Instagram Business account is linked to the Facebook "
+                     "Page. Link one in Meta Business settings and retry.")
+        started = time.monotonic()
+
+        def _over_budget():
+            return (time.monotonic() - started) > _IG_SYNC_TIME_BUDGET_SEC
+
+        acct_label = ("@" + ig_uname) if ig_uname else "Our Instagram"
+        scopes_missing = set()
+        new_comments = 0
+        new_posts = 0
+        new_mentions = 0
+        total_comments = 0
+        total_posts = 0
+        total_mentions = 0
+
+        def _ig_author(username):
+            return (username or "Instagram user",
+                    ("@" + username) if username else None)
+
+        def _flatten_ig_comments(craw):
+            """Flatten a raw IG comments batch into (id, text, username) tuples,
+            expanding any inline replies so a reply is an inbox item too."""
+            out = []
+            for c in craw or []:
+                cid = c.get("id")
+                body = (c.get("text") or "").strip()
+                if cid and body:
+                    out.append((cid, body, c.get("username")))
+                for r in ((c.get("replies") or {}).get("data") or []):
+                    rid_ = r.get("id")
+                    rbody = (r.get("text") or "").strip()
+                    if rid_ and rbody:
+                        out.append((rid_, rbody, r.get("username")))
+            return out
+
+        def _ingest_ig_comments(craw, media_id, m_link, m_excerpt):
+            """Insert a batch of IG comments; LLM-classify only the NEW ones
+            (dedup by source_id) so a deep re-sync doesn't re-bill the LLM."""
+            nonlocal new_comments
+            cand = _flatten_ig_comments(craw)
+            if not cand:
+                return
+            sids = ["ig:" + str(cid) for cid, _, _ in cand]
+            try:
+                rows = _ex("SELECT source_id FROM crm_social_feedback "
+                           "WHERE source_id = ANY(%s)", (sids,), fetch=True) or []
+                existing = {r["source_id"] for r in rows}
+            except Exception:
+                existing = set()
+            fresh = [(cid, body, u) for (cid, body, u) in cand
+                     if ("ig:" + str(cid)) not in existing]
+            sent_map = {}
+            for i in range(0, len(fresh), 50):
+                chunk = fresh[i:i + 50]
+                sents = A._fb_sentiment([b for _, b, _ in chunk])
+                for j, (cid, _, _) in enumerate(chunk):
+                    sent_map[cid] = sents.get(j)
+            for cid, body, username in fresh:
+                author, handle = _ig_author(username)
+                rid = _ex(
+                    "INSERT INTO crm_social_feedback "
+                    "(platform,type,author_name,author_handle,body,sentiment,"
+                    " source_id,permalink,parent_source_id,parent_excerpt,"
+                    " posted_at) VALUES "
+                    "('instagram','comment',%s,%s,%s,%s,%s,%s,%s,%s,"
+                    " COALESCE(%s::timestamptz, now())) "
+                    "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
+                    "DO NOTHING RETURNING id",
+                    (author, handle, body, sent_map.get(cid), "ig:" + str(cid),
+                     m_link, "igmedia:" + str(media_id), m_excerpt, None),
+                    fetch=True)
+                if rid:
+                    new_comments += 1
+
+        def _ingest_ig_mentions(mraw):
+            """Insert a batch of tagged-media (@-mention) rows; dedup + classify
+            only the NEW ones."""
+            nonlocal new_mentions
+            cand = []
+            for m in mraw or []:
+                mid = m.get("id")
+                if not mid:
+                    continue
+                cap = (m.get("caption") or "").strip()
+                body = cap or "[Tagged " + acct_label + " in a post]"
+                cand.append((mid, body, m))
+            if not cand:
+                return
+            sids = ["igtag:" + str(mid) for mid, _, _ in cand]
+            try:
+                rows = _ex("SELECT source_id FROM crm_social_feedback "
+                           "WHERE source_id = ANY(%s)", (sids,), fetch=True) or []
+                existing = {r["source_id"] for r in rows}
+            except Exception:
+                existing = set()
+            fresh = [(mid, body, m) for (mid, body, m) in cand
+                     if ("igtag:" + str(mid)) not in existing]
+            sent_map = {}
+            for i in range(0, len(fresh), 50):
+                chunk = fresh[i:i + 50]
+                sents = A._fb_sentiment([b for _, b, _ in chunk])
+                for j, (mid, _, _) in enumerate(chunk):
+                    sent_map[mid] = sents.get(j)
+            for mid, body, m in fresh:
+                author, handle = _ig_author(m.get("username"))
+                rid = _ex(
+                    "INSERT INTO crm_social_feedback "
+                    "(platform,type,author_name,author_handle,body,sentiment,"
+                    " source_id,permalink,parent_source_id,parent_excerpt,"
+                    " posted_at) VALUES "
+                    "('instagram','mention',%s,%s,%s,%s,%s,%s,NULL,NULL,"
+                    " COALESCE(%s::timestamptz, now())) "
+                    "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
+                    "DO NOTHING RETURNING id",
+                    (author, handle, body, sent_map.get(mid),
+                     "igtag:" + str(mid), m.get("permalink"),
+                     _fb_ts(m.get("timestamp"))), fetch=True)
+                if rid:
+                    new_mentions += 1
+
+        stored = _one(
+            "SELECT COUNT(*) FILTER (WHERE type='post') AS p, "
+            " COUNT(*) FILTER (WHERE type='comment') AS c, "
+            " COUNT(*) FILTER (WHERE type='mention') AS m "
+            "FROM crm_social_feedback WHERE platform='instagram'") or {}
+        stored_posts = _int(stored.get("p"), 0)
+        stored_comments = _int(stored.get("c"), 0)
+        stored_mentions = _int(stored.get("m"), 0)
+
+        def _posts_short():
+            return (stored_posts + new_posts) < _IG_SYNC_POST_TARGET
+
+        def _comments_short():
+            return (stored_comments + new_comments) < _IG_SYNC_COMMENT_TARGET
+
+        def _mentions_short():
+            return (stored_mentions + new_mentions) < _IG_SYNC_MENTION_TARGET
+
+        # Media are fetched newest-first, 50 per Graph page, with the first 50
+        # comments (and their inline replies) of each expanded inline.
+        _M_BASE = ("id,caption,permalink,timestamp,media_type,like_count,"
+                   "comments_count")
+        inline_state = {"on": True}
+
+        def _fetch_media_page(after):
+            while True:
+                fields = _M_BASE
+                if inline_state["on"]:
+                    fields += (",comments.limit(50){" + _IG_C_FIELDS
+                               + ",replies.limit(50){" + _IG_C_FIELDS + "}}")
+                params = {"fields": fields, "limit": 50}
+                if after:
+                    params["after"] = after
+                try:
+                    return A._fb_get(f"{ig_id}/media", params)
+                except Exception as e:
+                    m = str(e).lower()
+                    if inline_state["on"] and ("permission" in m or "scope" in m
+                                               or "#10" in m or "#200" in m):
+                        scopes_missing.add("instagram_manage_comments")
+                        inline_state["on"] = False
+                        continue
+                    raise
+
+        def _process_media_page(feed):
+            """Ingest one media page. Returns (n, n_new_posts, next_cursor,
+            completed) — completed=False means the time budget interrupted it."""
+            nonlocal total_posts, total_comments, new_posts
+            media = feed.get("data") or []
+            page_new = 0
+            completed = True
+            for p in media:
+                if _over_budget():
+                    completed = False
+                    break
+                mid = p.get("id")
+                if not mid:
+                    continue
+                total_posts += 1
+                cap = (p.get("caption") or "").strip()
+                m_link = p.get("permalink")
+                m_excerpt = (cap[:90] + "…") if len(cap) > 90 else (
+                    cap or ("[" + (p.get("media_type") or "Media").title()
+                            + " post]"))
+                rid = _ex(
+                    "INSERT INTO crm_social_feedback "
+                    "(platform,type,author_name,author_handle,body,sentiment,"
+                    " source_id,permalink,posted_at) VALUES "
+                    "('instagram','post',%s,%s,%s,NULL,%s,%s,"
+                    " COALESCE(%s::timestamptz, now())) "
+                    "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
+                    "DO NOTHING RETURNING id",
+                    (acct_label, ("@" + ig_uname) if ig_uname else None,
+                     cap or m_excerpt, "igmedia:" + str(mid), m_link,
+                     _fb_ts(p.get("timestamp"))), fetch=True)
+                if rid:
+                    new_posts += 1
+                    page_new += 1
+                cnode = p.get("comments") or {}
+                craw = cnode.get("data") or []
+                c_after = ((cnode.get("paging") or {}).get("cursors")
+                           or {}).get("after")
+                c_more = bool((cnode.get("paging") or {}).get("next"))
+                if not inline_state["on"] and _comments_short():
+                    try:
+                        cres = A._fb_get(f"{mid}/comments", {
+                            "fields": _IG_C_FIELDS + ",replies.limit(50){"
+                            + _IG_C_FIELDS + "}", "limit": 50})
+                        craw = cres.get("data") or []
+                        c_after = ((cres.get("paging") or {}).get("cursors")
+                                   or {}).get("after")
+                        c_more = bool((cres.get("paging") or {}).get("next"))
+                    except Exception as e:
+                        m = str(e).lower()
+                        if ("permission" in m or "scope" in m
+                                or "#10" in m or "#200" in m):
+                            scopes_missing.add("instagram_manage_comments")
+                        craw, c_more = [], False
+                if craw:
+                    total_comments += len(craw)
+                    _ingest_ig_comments(craw, mid, m_link, m_excerpt)
+                while (c_more and c_after and _comments_short()
+                       and not _over_budget()):
+                    try:
+                        cres = A._fb_get(f"{mid}/comments", {
+                            "fields": _IG_C_FIELDS + ",replies.limit(50){"
+                            + _IG_C_FIELDS + "}", "limit": 50, "after": c_after})
+                    except Exception:
+                        break
+                    craw = cres.get("data") or []
+                    if not craw:
+                        break
+                    total_comments += len(craw)
+                    _ingest_ig_comments(craw, mid, m_link, m_excerpt)
+                    c_after = ((cres.get("paging") or {}).get("cursors")
+                               or {}).get("after")
+                    c_more = bool((cres.get("paging") or {}).get("next"))
+            paging = feed.get("paging") or {}
+            nxt = ((paging.get("cursors") or {}).get("after")
+                   if paging.get("next") else None)
+            return len(media), page_new, nxt, completed
+
+        try:
+            # Phase A — fresh media: newest-first until a page adds nothing new.
+            after = None
+            exhausted = False
+            first = True
+            while not _over_budget():
+                page_cursor = after
+                try:
+                    feed = _fetch_media_page(after)
+                except Exception as e:
+                    if first:
+                        raise HTTPException(502, f"Instagram sync failed: {e}")
+                    break
+                n, page_new, nxt, completed = _process_media_page(feed)
+                first = False
+                if not completed:
+                    after = page_cursor
+                    break
+                if not nxt:
+                    exhausted = True
+                    after = None
+                    break
+                after = nxt
+                if n == 0 or page_new == 0:
+                    break
+
+            # Phase B — deep backfill toward the stored targets, resuming from
+            # the persisted cursor.
+            deep_done = (_cfg_get("social.ig.deep_done") or "") == "1" or exhausted
+            if not deep_done and (_posts_short() or _comments_short()):
+                deep_after = (_cfg_get("social.ig.deep_cursor") or "") or after
+                while (deep_after and not _over_budget()
+                       and (_posts_short() or _comments_short())):
+                    page_cursor = deep_after
+                    try:
+                        feed = _fetch_media_page(deep_after)
+                    except Exception:
+                        deep_after = None
+                        break
+                    n, page_new, nxt, completed = _process_media_page(feed)
+                    if not completed:
+                        deep_after = page_cursor
+                        break
+                    if not nxt or n == 0:
+                        deep_done = True
+                        deep_after = None
+                        break
+                    deep_after = nxt
+                _cfg_set("social.ig.deep_cursor", deep_after or "")
+            if deep_done:
+                _cfg_set("social.ig.deep_done", "1")
+                _cfg_set("social.ig.deep_cursor", "")
+
+            # Phase M — @-mentions/tags: media where the account was tagged.
+            # Resumable like the posts deep-backfill (Phase A + Phase B): a fresh
+            # newest-first pass catches new tags each run, then a cursor-resumed
+            # deep pass walks PAST already-seen pages toward the target (it must
+            # NOT stop on a duplicate/zero-new page, or older mentions would never
+            # be reached). A missing permission never fails the posts/comments
+            # sync.
+            mention_blocked = False
+            mention_error = None
+
+            def _fetch_tags_page(after):
+                # Keep the field set minimal: the /tags edge raises Graph error #1
+                # ("please reduce the amount of data you're asking for") when
+                # aggregate fields (like_count/comments_count) are requested over
+                # a large tagged-media set. We only ingest id/caption/username/
+                # permalink/timestamp, so request exactly those.
+                params = {"fields": "id,caption,permalink,timestamp,username",
+                          "limit": 25}
+                if after:
+                    params["after"] = after
+                return A._fb_get(f"{ig_id}/tags", params)
+
+            def _process_tags_page(feed):
+                """Ingest one /tags page. Returns (n, page_new, next_cursor)."""
+                nonlocal total_mentions
+                mraw = feed.get("data") or []
+                page_new = 0
+                if mraw:
+                    total_mentions += len(mraw)
+                    before = new_mentions
+                    _ingest_ig_mentions(mraw)
+                    page_new = new_mentions - before
+                paging = feed.get("paging") or {}
+                nxt = ((paging.get("cursors") or {}).get("after")
+                       if paging.get("next") else None)
+                return len(mraw), page_new, nxt
+
+            # Fresh pass — newest-first until a page adds nothing new.
+            m_after = None
+            m_exhausted = False
+            while not _over_budget():
+                try:
+                    feed = _fetch_tags_page(m_after)
+                except Exception as e:
+                    msg = str(e).lower()
+                    if ("permission" in msg or "scope" in msg or "#10" in msg
+                            or "#200" in msg):
+                        scopes_missing.add("instagram_manage_comments")
+                    mention_blocked = True
+                    mention_error = str(e)[:500]
+                    break
+                n, page_new, nxt = _process_tags_page(feed)
+                if not nxt:
+                    m_exhausted = True
+                    m_after = None
+                    break
+                m_after = nxt
+                if n == 0 or page_new == 0:
+                    break
+
+            # Deep pass — resume from the persisted cursor toward the target,
+            # continuing past already-seen pages (do not stop on 0-new).
+            mention_done = ((_cfg_get("social.ig.mention_done") or "") == "1"
+                            or m_exhausted)
+            if not mention_blocked and not mention_done and _mentions_short():
+                deep_m = (_cfg_get("social.ig.mention_deep_cursor") or "") or m_after
+                while deep_m and not _over_budget() and _mentions_short():
+                    page_cursor = deep_m
+                    try:
+                        feed = _fetch_tags_page(deep_m)
+                    except Exception as e:
+                        mention_error = str(e)[:500]
+                        deep_m = None
+                        break
+                    n, page_new, nxt = _process_tags_page(feed)
+                    if not nxt or n == 0:
+                        mention_done = True
+                        deep_m = None
+                        break
+                    deep_m = nxt
+                _cfg_set("social.ig.mention_deep_cursor", deep_m or "")
+            if mention_done:
+                _cfg_set("social.ig.mention_done", "1")
+                _cfg_set("social.ig.mention_deep_cursor", "")
+        except HTTPException:
+            raise
+        from datetime import datetime, timezone
+        _cfg_set("social.ig.last_synced_at",
+                 datetime.now(timezone.utc).isoformat())
+        _cfg_set("social.ig.last_sync_posts", total_posts)
+        _cfg_set("social.ig.last_sync_comments", total_comments)
+        _cfg_set("social.ig.last_sync_mentions", total_mentions)
+        _cfg_set("social.ig.last_mention_error", mention_error or "")
+        _cfg_set("social.ig.last_scopes_missing", ",".join(sorted(scopes_missing)))
+        A._crm_audit("social", ig_id, "sync",
+                     f"instagram sync: {total_posts} posts, "
+                     f"{new_comments} new comments, {new_mentions} new mentions",
+                     request)
+        return {"account": acct_label, "posts": total_posts,
+                "comments": new_comments, "mentions": new_mentions,
+                "mentions_stored": stored_mentions + new_mentions,
+                "mention_blocked": mention_blocked,
+                "mention_error": mention_error,
                 "scopes_missing": sorted(scopes_missing)}
 
 

@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Search, Reply, Link2, Inbox as InboxIcon, MessageSquare, AtSign, Star, RefreshCw, Facebook, AlertTriangle, CheckCircle2, FileText, ExternalLink, CornerDownRight } from "lucide-react";
+import { Search, Reply, Link2, Inbox as InboxIcon, MessageSquare, AtSign, Star, RefreshCw, Facebook, Instagram, AlertTriangle, CheckCircle2, FileText, ExternalLink, CornerDownRight } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
 const PLATFORMS = ["all", "instagram", "facebook", "tiktok", "x", "whatsapp"];
@@ -35,7 +35,9 @@ export default function Inbox() {
   const [searchResults, setSearchResults] = useState([]);
   const [searchQ, setSearchQ] = useState("");
   const [fbStatus, setFbStatus] = useState(null);
+  const [igStatus, setIgStatus] = useState(null);
   const [syncing, setSyncing] = useState(false);
+  const [igSyncing, setIgSyncing] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
   const [tokenInput, setTokenInput] = useState("");
   const [connecting, setConnecting] = useState(false);
@@ -65,6 +67,31 @@ export default function Inbox() {
       const r = await api.get("/social/facebook/status");
       setFbStatus(r.data);
     } catch { /* ignore */ }
+  };
+
+  const loadIgStatus = async () => {
+    try {
+      const r = await api.get("/social/instagram/status");
+      setIgStatus(r.data);
+    } catch { /* ignore */ }
+  };
+
+  const syncIgNow = async () => {
+    setIgSyncing(true);
+    try {
+      const r = await api.post("/social/instagram/sync", {});
+      const d = r.data || {};
+      toast.success(`Instagram: ${d.posts || 0} posts, ${d.comments || 0} new comments, ${d.mentions || 0} new mentions`);
+      if ((d.scopes_missing || []).length) {
+        toast.warning(`Missing scope: ${d.scopes_missing.join(", ")} — that content cannot be pulled until added.`);
+      }
+      await loadIgStatus();
+      await load();
+    } catch (e) {
+      toast.error("Instagram sync failed: " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setIgSyncing(false);
+    }
   };
 
   const syncNow = async () => {
@@ -114,7 +141,8 @@ export default function Inbox() {
 
   useEffect(() => {
     loadFbStatus();
-    const id = setInterval(loadFbStatus, 60000); // refresh freshness every 60s
+    loadIgStatus();
+    const id = setInterval(() => { loadFbStatus(); loadIgStatus(); }, 60000); // refresh freshness every 60s
     return () => clearInterval(id);
   }, []);
 
@@ -193,11 +221,20 @@ export default function Inbox() {
               {syncing ? "Syncing…" : "Sync from Facebook"}
             </Button>
           )}
+          {igStatus?.connected && (
+            <Button onClick={syncIgNow} disabled={igSyncing} className="rounded-sm h-11 bg-gradient-to-tr from-[#F58529] via-[#DD2A7B] to-[#8134AF] hover:opacity-90 text-white" data-testid="sync-ig-button">
+              <Instagram className={`mr-2 h-4 w-4 ${igSyncing ? "animate-pulse" : ""}`} />
+              {igSyncing ? "Syncing…" : "Sync from Instagram"}
+            </Button>
+          )}
         </div>
       </div>
 
       {/* Facebook live-data banner */}
       <FacebookStatusStrip status={fbStatus} />
+
+      {/* Instagram live-data banner */}
+      <InstagramStatusStrip status={igStatus} />
 
       {/* counts */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mt-6">
@@ -319,7 +356,7 @@ export default function Inbox() {
                   className="inline-flex items-center gap-1.5 mt-4 text-sm text-[var(--vivo-navy)] hover:underline"
                   data-testid="inbox-view-on-facebook"
                 >
-                  <ExternalLink className="h-3.5 w-3.5" /> View on Facebook
+                  <ExternalLink className="h-3.5 w-3.5" /> View on {selected.platform === "instagram" ? "Instagram" : "Facebook"}
                 </a>
               )}
 
@@ -417,7 +454,11 @@ export default function Inbox() {
               ✨ Suggest with AI
             </Button>
             <p className="text-xs text-[var(--vivo-muted)]">
-              {selected?.type === "dm" ? "Sends a real Messenger reply to the customer." : "Logged here · platform delivery later."}
+              {selected?.type === "dm"
+                ? "Sends a real Messenger reply to the customer."
+                : selected?.platform === "instagram" && selected?.type === "comment"
+                  ? "Posts a real reply to this Instagram comment."
+                  : "Logged here · platform delivery later."}
             </p>
           </div>
           <DialogFooter>
@@ -575,6 +616,74 @@ function FacebookStatusStrip({ status }) {
           <strong>Some content locked.</strong> Missing scope:{" "}
           <code className="text-[10px] bg-white px-1 py-0.5 rounded">{[...scopesMissing].join(", ")}</code>.{" "}
           Enable it in your Meta App → Use Cases → "Manage everything on your Page", then regenerate the user token via Graph Explorer and re-run discovery.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InstagramStatusStrip({ status }) {
+  if (!status) return null;
+  const acct = status.account;
+  const lastSynced = status.last_synced_at;
+  const counts = status.counts || {};
+  const scopesMissing = new Set(acct?.last_sync_scopes_missing || []);
+  const ago = lastSynced
+    ? Math.max(0, Math.floor((Date.now() - new Date(lastSynced).getTime()) / 60000))
+    : null;
+
+  if (!status.connected) {
+    return (
+      <div className="mt-3 vivo-card p-5 rounded-sm border-l-2 border-[#DD2A7B]" data-testid="ig-status-strip">
+        <div className="flex items-start gap-3">
+          <Instagram className="h-5 w-5 text-[#DD2A7B] mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <div className="font-medium text-base">Instagram is not connected yet.</div>
+            <div className="text-xs text-[var(--vivo-muted)] mt-1">
+              Link an Instagram Business account to your Facebook Page in Meta Business settings. Once linked, a <strong>"Sync from Instagram"</strong> button appears here to pull real posts, comments &amp; @-mentions into the inbox.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const hasIssues = scopesMissing.size > 0;
+  return (
+    <div className="mt-3 vivo-card p-4 rounded-sm" data-testid="ig-status-strip">
+      <div className="flex items-start gap-3 flex-wrap">
+        <div className="flex items-center gap-2 shrink-0">
+          <Instagram className="h-4 w-4 text-[#DD2A7B]" />
+          <span className="text-sm font-medium">{acct?.handle || acct?.username || "Instagram"} live</span>
+          {hasIssues ? (
+            <span className="text-[10px] uppercase tracking-[0.15em] text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-sm">
+              Limited
+            </span>
+          ) : (
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+          )}
+        </div>
+        <div className="text-xs text-[var(--vivo-muted)] flex items-center gap-3 flex-wrap" data-testid="ig-freshness">
+          <span>
+            Last synced:{" "}
+            <span className="text-[var(--vivo-text)] font-medium">
+              {ago === null ? "never" : ago === 0 ? "just now" : `${ago} min ago`}
+            </span>
+          </span>
+          <span>Manual sync — click "Sync from Instagram" to refresh</span>
+          <span>
+            {counts.real_posts ?? 0} live posts ·{" "}
+            {counts.real_mentions ?? 0} mentions ·{" "}
+            {counts.real_feedback ?? 0} live items
+          </span>
+        </div>
+      </div>
+
+      {hasIssues && (
+        <div className="mt-3 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 p-2 rounded-sm" data-testid="ig-scope-warn">
+          <strong>Some content locked.</strong> Missing scope:{" "}
+          <code className="text-[10px] bg-white px-1 py-0.5 rounded">{[...scopesMissing].join(", ")}</code>.{" "}
+          Enable it in your Meta App → Instagram permissions, then regenerate the Page token and re-run the sync.
         </div>
       )}
     </div>
