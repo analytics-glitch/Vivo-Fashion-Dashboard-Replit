@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 import time
 import logging
 import uuid
+from contextlib import contextmanager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -108,6 +109,59 @@ def run_subprocess_with_heartbeat(cmd, status, interval=60, timeout=None):
     t.start()
     try:
         subprocess.run(cmd, check=True, timeout=timeout)
+    finally:
+        stop.set()
+        t.join(timeout=5)
+
+
+@contextmanager
+def heartbeat_keepalive(status, interval=60):
+    """Keep the sync heartbeat fresh across a slow IN-PROCESS blocking call.
+
+    Same guarantee as run_subprocess_with_heartbeat but for work that is NOT a
+    subprocess — e.g. an internal HTTP POST that can legitimately run up to its
+    server-side time budget (the social CRM sync's 240s per surface). A daemon
+    thread pulses sync_heartbeat on its OWN short-lived autocommit connection
+    (never the caller's `conn`, which is not thread-safe to share) every
+    `interval` seconds until the `with` block exits, so a long deep-backfill run
+    cannot look "stuck" to the watchdog and get killed mid-cycle.
+    """
+    import threading
+
+    stop = threading.Event()
+
+    def _pulse():
+        hb_conn = None
+        try:
+            hb_conn = psycopg2.connect(DATABASE_URL)
+            hb_conn.autocommit = True
+            while not stop.wait(interval):
+                try:
+                    with hb_conn.cursor() as c:
+                        c.execute(
+                            """
+                            INSERT INTO sync_heartbeat (id, last_cycle_at, last_status)
+                            VALUES (1, now(), %s)
+                            ON CONFLICT (id) DO UPDATE
+                                SET last_cycle_at = now(), last_status = EXCLUDED.last_status
+                        """,
+                            (status,),
+                        )
+                except Exception as e:
+                    log.warning("heartbeat keepalive write failed: %s", e)
+        except Exception as e:
+            log.warning("heartbeat keepalive connection failed: %s", e)
+        finally:
+            if hb_conn is not None:
+                try:
+                    hb_conn.close()
+                except Exception:
+                    pass
+
+    t = threading.Thread(target=_pulse, daemon=True)
+    t.start()
+    try:
+        yield
     finally:
         stop.set()
         t.join(timeout=5)
@@ -268,6 +322,13 @@ _LAST_PRODUCT_IMAGES_EXTRACT = None
 # from the single Odoo base64 photo above) to once per 24h. None on boot so a
 # fresh prod DB bootstraps on the first cycle.
 _LAST_SHOPIFY_IMAGES_EXTRACT = None
+# Guards the social CRM sync (Facebook + Instagram → vivo-crm Inbox, feeding
+# crm_social_feedback) to once per hour even though main() runs every 60s. The
+# per-surface deep-backfill is cumulative toward its stored-row targets and
+# resumes from persisted cursors, so an hourly cadence keeps the Inbox fresh
+# without staff pressing "Sync". None on boot so a fresh prod DB bootstraps on
+# the first cycle.
+_LAST_SOCIAL_CRM_SYNC = None
 # Guards the data-validation agent (validation_agent.run) to once per hour even
 # though main() runs every 60s. The agent self-skips outside its active window
 # (06:00-22:00 Africa/Nairobi), so this hourly cadence yields one audit per hour
@@ -1712,6 +1773,82 @@ def main():
             "Skipping Shopify product-image gallery extract — Shopify store/token "
             "secrets not set (lightbox falls back to single Odoo photo)."
         )
+
+    # Social CRM sync — pulls new Facebook + Instagram posts, comments, @-mentions
+    # (and FB Messenger DMs) into the vivo-crm Inbox (crm_social_feedback) so they
+    # appear without anyone pressing "Sync from Facebook/Instagram". Same
+    # self-refreshing pattern as the fabric/production/product-image extracts.
+    # Production runs on a SEPARATE DB, so we bootstrap immediately when
+    # crm_social_feedback is empty (fresh prod DB), then refresh EVERY HOUR. The
+    # sync endpoints are idempotent (ON CONFLICT(source_id) dedup + persisted
+    # resume cursors) and each holds its own server-side 240s budget + non-blocking
+    # lock, so an hourly cadence deep-backfills toward the stored-row targets over
+    # successive runs, then settles to a ~5-10s incremental. We POST them over the
+    # shared proxy authenticated with SESSION_SECRET (X-Internal-Token) — the same
+    # mechanism the other sync-loop internal endpoints use — and wrap the calls in
+    # heartbeat_keepalive so a long first-run deep-backfill can't look "stuck" to
+    # the watchdog and get killed mid-cycle. FB is the token source for IG too, so
+    # both are gated on FACEBOOK_PAGE_ACCESS_TOKEN / FACEBOOK_PAGE_ID being set;
+    # skip QUIETLY when unconfigured so a DB without Meta creds does not log noise.
+    global _LAST_SOCIAL_CRM_SYNC
+    social_table_missing = False
+    social_empty = False
+    try:
+        cur.execute("SELECT to_regclass('public.crm_social_feedback')")
+        if cur.fetchone()[0] is None:
+            social_table_missing = True
+        else:
+            cur.execute("SELECT COUNT(*) FROM crm_social_feedback")
+            social_empty = cur.fetchone()[0] == 0
+        conn.commit()
+    except Exception as e:
+        log.error("Social CRM sync presence check error: %s", e)
+        conn.rollback()
+    social_due = (
+        _LAST_SOCIAL_CRM_SYNC is None
+        or (now_utc - _LAST_SOCIAL_CRM_SYNC).total_seconds() >= 3600
+    )
+    _fb_creds_ok = bool(
+        os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN")
+        and os.environ.get("FACEBOOK_PAGE_ID")
+    )
+    _internal_secret = os.environ.get("SESSION_SECRET")
+    if not social_table_missing and (social_empty or social_due):
+        if not _fb_creds_ok:
+            log.info(
+                "Skipping social CRM sync — FACEBOOK_PAGE_ACCESS_TOKEN / "
+                "FACEBOOK_PAGE_ID not set (Instagram reuses the FB Page token)."
+            )
+        elif not _internal_secret:
+            log.warning("Social CRM sync skipped — SESSION_SECRET unset")
+        else:
+            # Stamp the attempt time up front so a transient failure waits an hour
+            # before retrying — except while still empty, where the social_empty
+            # branch keeps retrying every cycle until the bootstrap succeeds.
+            _LAST_SOCIAL_CRM_SYNC = now_utc
+            # The FB Send-API-backed sync and the IG deep-backfill can each run up
+            # to their 240s server budget, so keep the heartbeat alive throughout.
+            with heartbeat_keepalive("social_crm_sync"):
+                for _label, _url in (
+                    ("Facebook", "http://localhost:80/api/social/facebook/sync"),
+                    ("Instagram", "http://localhost:80/api/social/instagram/sync"),
+                ):
+                    try:
+                        log.info(
+                            "Running %s CRM sync (bootstrap=%s)...",
+                            _label, social_empty,
+                        )
+                        resp = requests.post(
+                            _url,
+                            headers={"X-Internal-Token": _internal_secret},
+                            timeout=300,
+                        )
+                        log.info(
+                            "%s CRM sync — HTTP %s %s",
+                            _label, resp.status_code, resp.text[:200],
+                        )
+                    except Exception as e:
+                        log.error("%s CRM sync error: %s", _label, e)
 
     # BI sales-rollup refresh — feeds the pre-aggregated rollup_* tables that make
     # the Customers / Range Management / Product Analysis endpoints fast. The read

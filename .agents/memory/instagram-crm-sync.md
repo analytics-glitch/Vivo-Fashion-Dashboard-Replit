@@ -38,6 +38,7 @@ node, 1h in-proc cache). Rows land in `crm_social_feedback` with
   via `POST /{page-id}/messages` to the sender's IGSID (stored in `author_handle`),
   surfacing the Graph error (e.g. 24-hour window) as a 502 without stamping
   `replied_at`. IG DM `author_name` is the sender's @username (FB DM uses `name`).
+- **Auto-run:** the IG sync (with the FB sync) now runs hourly from `sync_incremental.py` (no more manual "Sync from Instagram" button dependency) — see the auto-run + two-layer-auth note in `fb-sync-deep-backfill.md`.
 
 **Why:** the marketing team manages @vivo_woman from the same cockpit as the FB
 Page; keeping one engine shape means one mental model and shared helpers (`_fb_get`,

@@ -451,7 +451,9 @@ _AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/readyz", "/api/sync
 # by the shared SESSION_SECRET via the X-Internal-Token header (validated in the
 # auth gate with a constant-time compare). Keep this set minimal.
 _AUTH_INTERNAL_TOKEN_PATHS = {"/api/analytics/replenishment-sor/snapshot",
-                              "/api/ibt/nightly-reconcile"}
+                              "/api/ibt/nightly-reconcile",
+                              "/api/social/facebook/sync",
+                              "/api/social/instagram/sync"}
 
 # Endpoints that accept EITHER a valid internal token (sync loop, no session) OR
 # a normal authenticated staff session (browser). Unlike the strict set above, a

@@ -18,8 +18,8 @@ manager endpoints below re-assert a staff session manually via `_staff`.
 """
 
 import json
-import re
 import os
+import re
 import hmac
 import hashlib
 import base64
@@ -57,6 +57,17 @@ def _one(sql, params=None, fetch=True):
 
 def _actor(request):
     return A._crm_actor(request)
+
+
+def _internal_token_ok(request):
+    """True when the request carries the shared SESSION_SECRET in the
+    X-Internal-Token header (constant-time compare). Lets the incremental sync
+    loop drive staff-gated maintenance endpoints (the social CRM sync) with no
+    user session — the same mechanism the auth gate uses for its internal-token
+    snapshot endpoints."""
+    sec = (os.environ.get("SESSION_SECRET") or "")
+    tok = request.headers.get("x-internal-token") or ""
+    return bool(sec) and hmac.compare_digest(tok, sec)
 
 
 def _staff(request, roles=None):
@@ -3600,7 +3611,8 @@ def _reg_social(app):
 
     @app.post("/api/social/facebook/sync")
     def cl_soc_fb_sync(request: Request, payload: dict = Body(default=None)):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        if not _internal_token_ok(request):
+            _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
         if not A._fb_configured():
             raise HTTPException(400, "Facebook is not configured on the server.")
         if not _fb_sync_lock.acquire(blocking=False):
@@ -4167,7 +4179,8 @@ def _reg_social(app):
 
     @app.post("/api/social/instagram/sync")
     def cl_soc_ig_sync(request: Request, payload: dict = Body(default=None)):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        if not _internal_token_ok(request):
+            _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
         if not A._fb_configured():
             raise HTTPException(400, "Instagram is not configured on the server.")
         if not _ig_sync_lock.acquire(blocking=False):
