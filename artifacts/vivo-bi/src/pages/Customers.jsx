@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
@@ -59,17 +59,28 @@ const daysSince = (iso) => {
   return Math.max(0, Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24)));
 };
 
-// Delta pill vs previous period
+// Delta pill vs previous period.
+// Guard against a tiny/zero comparison base: dividing by a prev of 0 (or a
+// handful) yields meaningless four-digit percentages (e.g. "▲5046.7%" when
+// last-year's window had ~15 identified customers). When prev is 0 we show a
+// plain "new" marker, and any percentage is clamped so the pill never reads
+// as absurd growth off a statistically empty base.
 const Delta = ({ curr, prev, invert }) => {
   if (prev == null || curr == null) return null;
   const diff = curr - prev;
-  const pct = prev ? (diff / prev) * 100 : 0;
+  if (prev === 0) {
+    if (diff === 0) return null;
+    const cls = invert ? "text-danger" : "text-brand";
+    return <span className={`text-[11px] font-semibold ${cls}`}>▲ new</span>;
+  }
+  const pct = (diff / prev) * 100;
   const good = invert ? diff < 0 : diff > 0;
   const neutral = Math.abs(pct) < 0.1;
   const cls = neutral ? "text-muted" : good ? "text-brand" : "text-danger";
+  const label = Math.abs(pct) >= 1000 ? ">999%" : `${Math.abs(pct).toFixed(1)}%`;
   return (
     <span className={`text-[11px] font-semibold ${cls}`}>
-      {diff >= 0 ? "▲" : "▼"} {Math.abs(pct).toFixed(1)}%
+      {diff >= 0 ? "▲" : "▼"} {label}
     </span>
   );
 };
@@ -187,6 +198,14 @@ const Customers = () => {
     return { date_from: iso(fromPrev), date_to: iso(toPrev) };
   }, [compareMode, dateFrom, dateTo]);
 
+  // Signature of the filters that determine what `cust` MEANS (scope +
+  // comparison period). A change here is a genuine filter change, distinct
+  // from the 30 s auto-refresh tick / data-version bump (same signature).
+  const filterSig = JSON.stringify([
+    dateFrom, dateTo, countries, channels, compareMode,
+  ]);
+  const lastFilterSigRef = useRef(null);
+
   useEffect(() => {
     let cancelled = false;
     // Iter 87 — only show the full-page loading skeleton on the FIRST
@@ -195,8 +214,28 @@ const Customers = () => {
     // and refresh data in the background so the page doesn't blink.
     // The freshness pill below the header is the user-visible signal
     // that a refresh happened.
-    const isFirstLoad = !cust;
-    if (isFirstLoad) setLoading(true);
+    //
+    // Iter 89 — a FILTER CHANGE (e.g. All → Uganda) must be treated like a
+    // first load: reset the primary payloads and show the skeleton. The
+    // `/customers` endpoint sits behind an upstream circuit-breaker and is
+    // the heaviest customer query, so a filter-change re-fetch can fail
+    // fast. Previously the catch kept the OLD payload (`isFirstLoad` was
+    // `!cust`, i.e. false on a filter change) so the page silently showed
+    // the PREVIOUS country's KPIs while walk-in / incomplete-profile tiles
+    // (a separate, breaker-free endpoint) correctly switched — making
+    // Uganda look identical to All. Resetting on filter change guarantees a
+    // failed re-fetch shows the loading/error state, never stale
+    // cross-filter numbers.
+    const filterChanged = lastFilterSigRef.current !== filterSig;
+    lastFilterSigRef.current = filterSig;
+    const isFirstLoad = !cust || filterChanged;
+    if (isFirstLoad) {
+      setLoading(true);
+      if (filterChanged) {
+        setCust(null);
+        setCustPrev(null);
+      }
+    }
     setError(null);
     const country = countries.length === 1 ? countries[0] : undefined;
     const channel = channels.length ? channels.join(",") : undefined;
