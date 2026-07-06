@@ -60,20 +60,62 @@ const StockToSalesByVariant = ({ exportSlug }) => {
   // Iter 91q — Own date window (default 30 days). Independent of the
   // subcategory table's window so leadership can compare a 30-day color
   // mix against a 90-day subcategory view in the same session.
+  // Now also supports a Custom From/To range (windowDays === "custom").
   const [windowDays, setWindowDays] = useState(30);
-  const { dateFrom, dateTo } = useMemo(() => {
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+
+  // Effective range: preset N-days ending today, or the custom From/To.
+  // Returns null when the custom range is incomplete/invalid (From > To)
+  // so we can skip the fetch and keep the last good data.
+  const range = useMemo(() => {
+    if (windowDays === "custom") {
+      if (customFrom && customTo && customFrom <= customTo) {
+        return { dateFrom: customFrom, dateTo: customTo };
+      }
+      return null;
+    }
     const today = new Date();
     const to = today.toISOString().slice(0, 10);
     const fromDate = new Date(today);
     fromDate.setUTCDate(fromDate.getUTCDate() - windowDays + 1);
     return { dateFrom: fromDate.toISOString().slice(0, 10), dateTo: to };
-  }, [windowDays]);
+  }, [windowDays, customFrom, customTo]);
+  const dateFrom = range?.dateFrom || "";
+  const dateTo = range?.dateTo || "";
+
+  // Switching to "Custom" seeds the empty pickers from the current numeric
+  // window so the user starts from a sensible range.
+  const handleWindowChange = (v) => {
+    if (v === "custom") {
+      if (!customFrom || !customTo) {
+        const days = typeof windowDays === "number" ? windowDays : 30;
+        const today = new Date();
+        const to = today.toISOString().slice(0, 10);
+        const fromDate = new Date(today);
+        fromDate.setUTCDate(fromDate.getUTCDate() - days + 1);
+        setCustomFrom(fromDate.toISOString().slice(0, 10));
+        setCustomTo(to);
+      }
+      setWindowDays("custom");
+    } else {
+      setWindowDays(v);
+    }
+  };
 
   const [data, setData] = useState({ by_color: [], by_size: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // The range the currently-held `data` was fetched with — so a CSV export
+  // during an incomplete custom edit still names the file after the data on
+  // screen, not the empty in-progress range.
+  const [loadedSlug, setLoadedSlug] = useState("");
 
   useEffect(() => {
+    // Incomplete/invalid custom range → skip the fetch, keep last good data.
+    // Clear any stale fetch error so the user isn't shown an old error while
+    // still editing the custom From/To dates.
+    if (!dateFrom || !dateTo) { setError(null); setLoading(false); return; }
     let cancel = false;
     setLoading(true);
     setError(null);
@@ -85,6 +127,7 @@ const StockToSalesByVariant = ({ exportSlug }) => {
       .then(({ data: d }) => {
         if (cancel) return;
         setData(d || { by_color: [], by_size: [] });
+        setLoadedSlug(`${dateFrom}_${dateTo}`);
       })
       .catch((e) => !cancel && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancel && setLoading(false));
@@ -98,19 +141,30 @@ const StockToSalesByVariant = ({ exportSlug }) => {
   const colorColumns = useMemo(() => buildColumns("Color/Print", "color"), []);
   const sizeColumns = useMemo(() => buildColumns("Size", "size"), []);
 
-  const slug = exportSlug || `${dateFrom}_${dateTo}`;
+  const slug = exportSlug || (dateFrom && dateTo ? `${dateFrom}_${dateTo}` : loadedSlug || "range");
 
   // Iter 91q — Shared date window header so both tables move together.
+  // Now includes a Custom From/To range option alongside the presets.
   const headerWindow = (
     <div className="flex items-center justify-end mb-2 gap-2 flex-wrap">
       <DateWindowSelector
         value={windowDays}
-        onChange={(v) => setWindowDays(v)}
+        onChange={handleWindowChange}
         testId="inv-sts-variant-window"
+        allowCustom
+        customFrom={customFrom}
+        customTo={customTo}
+        onCustomChange={(f, t) => { setCustomFrom(f); setCustomTo(t); }}
       />
-      <span className="text-[10.5px] text-muted tabular-nums">
-        {dateFrom} → {dateTo}
-      </span>
+      {dateFrom && dateTo ? (
+        <span className="text-[10.5px] text-muted tabular-nums">
+          {dateFrom} → {dateTo}
+        </span>
+      ) : (
+        <span className="text-[10.5px] text-red-500 tabular-nums">
+          Pick a valid From → To range
+        </span>
+      )}
     </div>
   );
 
