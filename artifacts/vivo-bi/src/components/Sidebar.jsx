@@ -36,6 +36,7 @@ import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { canAccessPage } from "@/lib/permissions";
 import NotificationBell from "@/components/NotificationBell";
+import LiveViewers from "@/components/LiveViewers";
 import RedisStatusPill from "@/components/RedisStatusPill";
 import ReconciliationStatusPill from "@/components/ReconciliationStatusPill";
 import SyncStatusPill from "@/components/SyncStatusPill";
@@ -369,6 +370,7 @@ const TopNav = () => {
         >
           <ArrowClockwise size={15} weight="bold" />
         </button>
+        <LiveViewers />
         <NotificationBell />
         <BackendUrlWarningPill />
         <UpstreamHealthPill />
