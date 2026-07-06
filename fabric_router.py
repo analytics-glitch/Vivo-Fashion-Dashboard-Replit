@@ -2790,26 +2790,65 @@ def fabric_mix(
                 if dr["id"] not in det_by_pid:
                     det_by_pid[dr["id"]] = dr
 
+        # Blank/NULL fabric name bucket label at the Fabric Name drill level.
+        NO_FABRIC_NAME = "(No fabric name)"
+
+        # Roll a set of raw product nodes up into one aggregate raw node (so a
+        # Fabric Name group carries the same rolled-up sums a category / sub-
+        # category node does, and _finalize derives its %/gap/cover/status the
+        # identical way). Monthly run-rate maps are merged so cover reconciles.
+        def _sum_nodes(name, nodes):
+            agg = _node(name)
+            for n in nodes:
+                for k in ("consumption_kg", "consumption_metres",
+                          "available_kg", "available_metres", "tied_up_kes",
+                          "_cons_kg_nometre", "_avail_kg_nometre",
+                          "out_kg", "out_metres", "return_kg", "return_metres"):
+                    agg[k] += n[k]
+                for mk, mv in n["_mon_kg"].items():
+                    agg["_mon_kg"][mk] = agg["_mon_kg"].get(mk, 0.0) + mv
+                for mk, mv in n["_mon_m"].items():
+                    agg["_mon_m"][mk] = agg["_mon_m"].get(mk, 0.0) + mv
+            return agg
+
+        def _finalize_prod(p):
+            prow = _finalize(p)
+            pid = p.get("_pid")
+            prow["id"] = pid
+            det = det_by_pid.get(pid)
+            if det:
+                prow["default_code"] = det.get("default_code")
+                fc, pc = _derive_fabric_colors(det.get("name"), det.get("fabric_color"))
+                det["derived_fabric_color"] = fc
+                det["derived_primary_color"] = pc
+                # Effective Fabric Colour = the dedicated Odoo field first, the
+                # regex-derived colour only as a fallback when Odoo is empty.
+                det["fabric_color_effective"] = det.get("odoo_fabric_color") or fc
+                prow["detail"] = det
+            return prow
+
         def _finalize_sub(s):
             srow = _finalize(s["_node"])
-            prods = []
+            # Group the sub-category's products by their Fabric Name (from the
+            # product master detail; blank/NULL → one "(No fabric name)" bucket)
+            # so the drill becomes Sub-Category → Fabric Name → Product. As
+            # fabric names get filled in on the master, items move out of the
+            # bucket automatically — it is purely derived from the data.
+            fab_groups = {}
             for p in s["_prods"].values():
-                prow = _finalize(p)
-                pid = p.get("_pid")
-                prow["id"] = pid
-                det = det_by_pid.get(pid)
-                if det:
-                    prow["default_code"] = det.get("default_code")
-                    fc, pc = _derive_fabric_colors(det.get("name"), det.get("fabric_color"))
-                    det["derived_fabric_color"] = fc
-                    det["derived_primary_color"] = pc
-                    # Effective Fabric Colour = the dedicated Odoo field first, the
-                    # regex-derived colour only as a fallback when Odoo is empty.
-                    det["fabric_color_effective"] = det.get("odoo_fabric_color") or fc
-                    prow["detail"] = det
-                prods.append(prow)
-            prods.sort(key=lambda r: r["consumption_metres"], reverse=True)
-            srow["products"] = prods
+                det = det_by_pid.get(p.get("_pid"))
+                fname = (det.get("fabric_name") if det else None) or NO_FABRIC_NAME
+                fab_groups.setdefault(fname, []).append(p)
+            fabrics = []
+            for fname, pnodes in fab_groups.items():
+                frow = _finalize(_sum_nodes(fname, pnodes))
+                prods = [_finalize_prod(p) for p in pnodes]
+                prods.sort(key=lambda r: r["consumption_metres"], reverse=True)
+                frow["fabric_name"] = fname
+                frow["products"] = prods
+                fabrics.append(frow)
+            fabrics.sort(key=lambda r: r["consumption_metres"], reverse=True)
+            srow["fabrics"] = fabrics
             return srow
 
         if group_by == "subcategory":

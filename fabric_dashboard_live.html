@@ -1551,7 +1551,8 @@ let mixCache=null, mixGroup='category';
 let mixCoverBasis='weeks';        // covers column basis: 'weeks' (default) | 'months'
 let mixSort={key:'consumption',dir:'desc'};
 let mixOpen={};                 // category → expanded? (in-place sub-category drill-down)
-let mixSubOpen={};              // "category\u0001subcategory" → expanded? (product drill-down)
+let mixSubOpen={};              // "category\u0001subcategory" → expanded? (fabric-name drill-down)
+let mixFabOpen={};              // "category\u0001subcategory\u0001fabricname" → expanded? (product drill-down)
 let mixAction={has:false};      // last action-banner state (any Buy/Clear/Idle rows?)
 let mixBound=false;             // delegated click handler bound once
 let mixSearch='';               // active product/barcode search (lowercased); '' = off
@@ -1661,6 +1662,7 @@ function indexMixDetails(rows){
   const walk=r=>{
     if(r.id!=null&&r.detail)mixDetailById[String(r.id)]=r.detail;
     if(Array.isArray(r.subcategories))r.subcategories.forEach(walk);
+    if(Array.isArray(r.fabrics))r.fabrics.forEach(walk);
     if(Array.isArray(r.products))r.products.forEach(walk);
   };
   (rows||[]).forEach(walk);
@@ -1701,6 +1703,8 @@ function deriveMixRow(r,totC,totA,weeks,useKg){
   if(r.detail)out.detail=r.detail;
   if(Array.isArray(r.subcategories))
     out.subcategories=r.subcategories.map(s=>deriveMixRow(s,totC,totA,weeks,useKg));
+  if(Array.isArray(r.fabrics))
+    out.fabrics=r.fabrics.map(f=>deriveMixRow(f,totC,totA,weeks,useKg));
   if(Array.isArray(r.products))
     out.products=r.products.map(p=>deriveMixRow(p,totC,totA,weeks,useKg));
   return out;
@@ -1798,8 +1802,10 @@ function mixCell(col,r,kind,opts){
         cell=`<td style="font-weight:700;">${exp?caret(opts.opened):''}${esc(r.group)}${flag}</td>`;
       }else if(kind==='sub'){
         cell=`<td style="padding-left:28px;color:var(--text-sub);">${exp?caret(opts.opened):''}${esc(r.group)}${flag}</td>`;
+      }else if(kind==='fab'){
+        cell=`<td style="padding-left:44px;color:var(--text-sub);font-size:.92em;">${exp?caret(opts.opened):''}${esc(r.group)}${flag}</td>`;
       }else if(kind==='prod'){
-        cell=`<td style="padding-left:52px;color:var(--muted);font-size:.9em;">${esc(r.group)}${flag}</td>`;
+        cell=`<td style="padding-left:68px;color:var(--muted);font-size:.9em;">${esc(r.group)}${flag}</td>`;
       }else{
         cell=`<td style="font-weight:700;">${esc(r.group)}${flag}</td>`;
       }
@@ -1863,6 +1869,10 @@ function mixRowHtml(r,kind,opts){
     attrs=` class="sub-exp" data-subkey="${esc(opts.subKey)}" style="cursor:pointer;"`;
   }else if(kind==='sub'){
     attrs=' class="sub-row"';
+  }else if(kind==='fab'&&opts.expandable){
+    attrs=` class="fab-exp" data-fabkey="${esc(opts.fabKey)}" style="cursor:pointer;"`;
+  }else if(kind==='fab'){
+    attrs=' class="fab-row"';
   }else if(kind==='prod'){
     attrs=' class="prod-row"';
   }
@@ -1873,19 +1883,29 @@ function mixRowHtml(r,kind,opts){
 // lockstep. When searching, any matching product counts; otherwise a product is
 // visible only when its sub-category is expanded.
 function mixHasVisibleProducts(rows,searching,SEP){
+  // Does a sub-category have any product row on screen? Products now live under
+  // the Fabric Name level, so a product is visible only when its fabric is
+  // expanded (or, when searching, when it matches).
+  const subHasVisible=(sub,subKey)=>{
+    const fabs=Array.isArray(sub.fabrics)?sub.fabrics:[];
+    if(searching)return fabs.some(f=>(Array.isArray(f.products)?f.products:[]).some(mixProdMatches));
+    return fabs.some(f=>{
+      const fabKey=subKey+SEP+f.group;
+      return !!mixFabOpen[fabKey]&&(Array.isArray(f.products)?f.products:[]).length>0;
+    });
+  };
   return rows.some(r=>{
     if(mixGroup==='subcategory'){
-      const prods=Array.isArray(r.products)?r.products:[];
-      if(searching)return prods.some(mixProdMatches);
       const subKey=(r.category||'')+SEP+r.group;
-      return !!mixSubOpen[subKey]&&prods.length>0;
+      if(searching)return subHasVisible(r,subKey);
+      return !!mixSubOpen[subKey]&&subHasVisible(r,subKey);
     }
     const subs=Array.isArray(r.subcategories)?r.subcategories:[];
-    if(searching)return subs.some(s=>(Array.isArray(s.products)?s.products:[]).some(mixProdMatches));
+    if(searching)return subs.some(s=>subHasVisible(s,r.group+SEP+s.group));
     if(!mixOpen[r.group])return false;
     return subs.some(s=>{
       const subKey=r.group+SEP+s.group;
-      return !!mixSubOpen[subKey]&&(Array.isArray(s.products)?s.products:[]).length>0;
+      return !!mixSubOpen[subKey]&&subHasVisible(s,subKey);
     });
   });
 }
@@ -1932,6 +1952,8 @@ function renderFabricMix(){
       if(tc&&tc.dataset.cat!=null){mixOpen[tc.dataset.cat]=!mixOpen[tc.dataset.cat];renderFabricMix();return;}
       const ts=e.target.closest('tr.sub-exp');
       if(ts&&ts.dataset.subkey!=null){mixSubOpen[ts.dataset.subkey]=!mixSubOpen[ts.dataset.subkey];renderFabricMix();return;}
+      const tf=e.target.closest('tr.fab-exp');
+      if(tf&&tf.dataset.fabkey!=null){mixFabOpen[tf.dataset.fabkey]=!mixFabOpen[tf.dataset.fabkey];renderFabricMix();return;}
     });
     mixBound=true;
   }
@@ -1946,42 +1968,68 @@ function renderFabricMix(){
   // (non-matching rows/branches are hidden). Clearing the search restores the
   // normal mixOpen/mixSubOpen collapsed view.
   let html='';
+  // Render a sub-category's fabric-name rows (and, when a fabric is open, its
+  // product rows) in NON-search mode. Shared by both group modes.
+  const renderFabs=(sub,subKey)=>{
+    const fabs=Array.isArray(sub.fabrics)?sub.fabrics:[];
+    mixSortRows(fabs).forEach(f=>{
+      const fabKey=subKey+SEP+f.group;
+      const prods=Array.isArray(f.products)?f.products:[];
+      const opened=!!mixFabOpen[fabKey];
+      html+=mixRowHtml(f,'fab',{fabKey,expandable:prods.length>0,opened});
+      if(prods.length&&opened){
+        mixSortRows(prods).forEach(p=>{html+=mixRowHtml(p,'prod');});
+      }
+    });
+  };
+  // Search mode: for a sub-category, return the fabrics that contain a matching
+  // product (each with only its matching products). Ancestry auto-expands.
+  const matchingFabs=sub=>(Array.isArray(sub.fabrics)?sub.fabrics:[])
+    .map(f=>({f,prods:(Array.isArray(f.products)?f.products:[]).filter(mixProdMatches)}))
+    .filter(x=>x.prods.length);
+  const renderMatchFabs=(matchFabs,subKey)=>{
+    matchFabs.forEach(({f,prods})=>{
+      const fabKey=subKey+SEP+f.group;
+      html+=mixRowHtml(f,'fab',{fabKey,expandable:true,opened:true});
+      mixSortRows(prods).forEach(p=>{html+=mixRowHtml(p,'prod');});
+    });
+  };
   rows.forEach(r=>{
     if(mixGroup==='subcategory'){
       const subKey=(r.category||'')+SEP+r.group;
-      let prods=Array.isArray(r.products)?r.products:[];
-      if(searching)prods=prods.filter(mixProdMatches);
-      if(searching&&!prods.length)return;            // hide subs with no match
-      const opened=searching?true:!!mixSubOpen[subKey];
-      html+=mixRowHtml(r,'subflat',{subKey,expandable:prods.length>0,opened});
-      if(prods.length&&opened){
-        mixSortRows(prods).forEach(p=>{html+=mixRowHtml(p,'prod');});
+      if(searching){
+        const matchFabs=matchingFabs(r);
+        if(!matchFabs.length)return;                 // hide subs with no match
+        html+=mixRowHtml(r,'subflat',{subKey,expandable:true,opened:true});
+        renderMatchFabs(matchFabs,subKey);
+      }else{
+        const fabs=Array.isArray(r.fabrics)?r.fabrics:[];
+        const opened=!!mixSubOpen[subKey];
+        html+=mixRowHtml(r,'subflat',{subKey,expandable:fabs.length>0,opened});
+        if(fabs.length&&opened)renderFabs(r,subKey);
       }
     }else{
       // Pre-filter sub-categories so a category with no matching product is hidden.
       let subs=Array.isArray(r.subcategories)?r.subcategories:[];
       if(searching){
-        subs=subs.map(s=>({s,prods:(Array.isArray(s.products)?s.products:[]).filter(mixProdMatches)}))
-                 .filter(x=>x.prods.length);
+        subs=subs.map(s=>({s,matchFabs:matchingFabs(s)})).filter(x=>x.matchFabs.length);
         if(!subs.length)return;
       }
       const catOpen=searching?true:!!mixOpen[r.group];
       html+=mixRowHtml(r,'cat',{opened:catOpen,expandable:true});
       if(catOpen){
         if(searching){
-          subs.forEach(({s,prods})=>{
+          subs.forEach(({s,matchFabs})=>{
             const subKey=r.group+SEP+s.group;
-            html+=mixRowHtml(s,'sub',{subKey,expandable:prods.length>0,opened:true});
-            mixSortRows(prods).forEach(p=>{html+=mixRowHtml(p,'prod');});
+            html+=mixRowHtml(s,'sub',{subKey,expandable:true,opened:true});
+            renderMatchFabs(matchFabs,subKey);
           });
         }else if(Array.isArray(r.subcategories)){
           mixSortRows(r.subcategories).forEach(s=>{
             const subKey=r.group+SEP+s.group;
-            const prods=Array.isArray(s.products)?s.products:[];
-            html+=mixRowHtml(s,'sub',{subKey,expandable:prods.length>0,opened:!!mixSubOpen[subKey]});
-            if(prods.length&&mixSubOpen[subKey]){
-              mixSortRows(prods).forEach(p=>{html+=mixRowHtml(p,'prod');});
-            }
+            const fabs=Array.isArray(s.fabrics)?s.fabrics:[];
+            html+=mixRowHtml(s,'sub',{subKey,expandable:fabs.length>0,opened:!!mixSubOpen[subKey]});
+            if(fabs.length&&mixSubOpen[subKey])renderFabs(s,subKey);
           });
         }
       }
@@ -2019,7 +2067,8 @@ function renderFabricMix(){
   if(scrollBox){
     const anyExpanded=searching
       ||Object.values(mixOpen).some(Boolean)
-      ||Object.values(mixSubOpen).some(Boolean);
+      ||Object.values(mixSubOpen).some(Boolean)
+      ||Object.values(mixFabOpen).some(Boolean);
     scrollBox.classList.toggle('is-expanded',anyExpanded);
   }
   if(window.__fabricEnhanceTables)window.__fabricEnhanceTables();
@@ -2203,6 +2252,7 @@ function mixGroupColors(node){
     if(!n)return;
     if(n.detail&&n.detail.color)set.add(n.detail.color);
     (n.subcategories||[]).forEach(walk);
+    (n.fabrics||[]).forEach(walk);
     (n.products||[]).forEach(walk);
   })(node);
   return Array.from(set).sort((a,b)=>a.localeCompare(b)).join(', ');
@@ -2222,6 +2272,7 @@ function mixGroupCost(node){
       if(dc.cost_metre!=null){wm+=w*Number(dc.cost_metre);sm+=w;}
     }
     (n.subcategories||[]).forEach(walk);
+    (n.fabrics||[]).forEach(walk);
     (n.products||[]).forEach(walk);
   })(node);
   const round2=v=>Math.round(v*100)/100;
@@ -2243,12 +2294,12 @@ function mixProductRows(d){
   const totA=useKg?d.total_available_kg:d.total_available_metres;
   const months=d.months||1, weeks=months*(MIX_DAYS_PER_MONTH/7);
   const rows=[];
-  mixCanonTree(d).forEach(c=>(c.subcategories||[]).forEach(s=>(s.products||[]).forEach(praw=>{
+  mixCanonTree(d).forEach(c=>(c.subcategories||[]).forEach(s=>(s.fabrics||[]).forEach(f=>(f.products||[]).forEach(praw=>{
     const p=deriveMixRow(praw,totC,totA,weeks,useKg);
-    p._cat=c.group;p._sub=s.group;
+    p._cat=c.group;p._sub=s.group;p._fabric=f.group;
     p._sohM=praw.available_metres;p._sohKg=praw.available_kg;
     rows.push(p);
-  })));
+  }))));
   return mixSortRows(rows);
 }
 // The 12 fixed Odoo identity fields (exact order) that LEAD every product-grain
