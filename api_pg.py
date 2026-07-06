@@ -461,7 +461,8 @@ _AUTH_INTERNAL_TOKEN_PATHS = {"/api/analytics/replenishment-sor/snapshot",
 # to decide whether to also assert a staff role.
 _AUTH_INTERNAL_OR_SESSION_PATHS = {"/api/social/x/sync",
                                    "/api/social/facebook/sync",
-                                   "/api/social/instagram/sync"}
+                                   "/api/social/instagram/sync",
+                                   "/api/social/tiktok/sync"}
 
 # Query params that are concatenated into SQL as date literals. We validate them
 # to strict ISO dates at the edge so they can never carry SQL-injection payloads

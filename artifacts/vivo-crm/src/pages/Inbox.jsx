@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Search, Reply, Link2, Inbox as InboxIcon, MessageSquare, AtSign, Star, RefreshCw, Facebook, Instagram, Twitter, AlertTriangle, CheckCircle2, FileText, ExternalLink, CornerDownRight } from "lucide-react";
+import { Search, Reply, Link2, Inbox as InboxIcon, MessageSquare, AtSign, Star, RefreshCw, Facebook, Instagram, Twitter, Music, AlertTriangle, CheckCircle2, FileText, ExternalLink, CornerDownRight } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
 const PLATFORMS = ["all", "instagram", "facebook", "tiktok", "x", "whatsapp"];
@@ -40,6 +40,8 @@ export default function Inbox() {
   const [syncing, setSyncing] = useState(false);
   const [igSyncing, setIgSyncing] = useState(false);
   const [xSyncing, setXSyncing] = useState(false);
+  const [tiktokStatus, setTiktokStatus] = useState(null);
+  const [tiktokSyncing, setTiktokSyncing] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
   const [tokenInput, setTokenInput] = useState("");
   const [connecting, setConnecting] = useState(false);
@@ -51,6 +53,7 @@ export default function Inbox() {
   // and against React's dev double-effect invocation).
   const fbPolling = useRef(false);
   const xPolling = useRef(false);
+  const tiktokPolling = useRef(false);
 
   const load = async () => {
     setLoading(true);
@@ -224,6 +227,84 @@ export default function Inbox() {
     }
   };
 
+  const loadTiktokStatus = async () => {
+    try {
+      const r = await api.get("/social/tiktok/status");
+      setTiktokStatus(r.data);
+    } catch { /* ignore */ }
+  };
+
+  // Poll /social/tiktok/status until the sync stops "running" (or a safety
+  // timeout), then surface the finished counts and reload the inbox items.
+  // TikTok has no DMs — only posts (own videos) + their comments. Mirrors
+  // pollXUntilDone / pollIgUntilDone.
+  const pollTiktokUntilDone = async () => {
+    if (tiktokPolling.current) return; // a poll loop is already watching this sync
+    tiktokPolling.current = true;
+    setTiktokSyncing(true);
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    const deadline = Date.now() + 6 * 60 * 1000; // safety cap
+    try {
+      await sleep(1500);
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        let st = null;
+        try {
+          const r = await api.get("/social/tiktok/status");
+          st = r.data;
+          setTiktokStatus(st);
+        } catch { /* transient — keep polling */ }
+        if (st && !st.running) {
+          const a = st.account || {};
+          toast.success(
+            `TikTok: ${a.last_sync_posts || 0} posts, ${a.last_sync_comments || 0} comments`
+          );
+          if (st.last_run_error) {
+            toast.error("TikTok sync error: " + st.last_run_error);
+          }
+          if ((a.last_sync_scopes_missing || []).length) {
+            toast.warning(`Missing access: ${a.last_sync_scopes_missing.join(", ")} — that content cannot be pulled until your TikTok app scope allows it.`);
+          }
+          await load();
+          return;
+        }
+        if (Date.now() > deadline) {
+          toast.message("TikTok sync is still running — it will finish in the background.");
+          await load();
+          return;
+        }
+        await sleep(3000);
+      }
+    } finally {
+      tiktokPolling.current = false;
+      setTiktokSyncing(false);
+    }
+  };
+
+  const syncTiktokNow = async () => {
+    setTiktokSyncing(true);
+    try {
+      const r = await api.post("/social/tiktok/sync", {});
+      const d = r.data || {};
+      // The sync runs on a background thread and returns immediately, so poll
+      // to completion (the returned counts are the just-STARTED run's zeros).
+      toast.message("TikTok sync started — pulling posts & comments in the background…");
+      if ((d.scopes_missing || []).length) {
+        toast.warning(`Missing access: ${d.scopes_missing.join(", ")} — that content cannot be pulled until your TikTok app scope allows it.`);
+      }
+      await pollTiktokUntilDone();
+    } catch (e) {
+      if (e?.response?.status === 409) {
+        // A sync (manual or the automatic loop) is already running — just watch it.
+        toast.message("A TikTok sync is already running — waiting for it to finish…");
+        await pollTiktokUntilDone();
+      } else {
+        toast.error("TikTok sync failed: " + (e?.response?.data?.detail || e.message));
+        setTiktokSyncing(false);
+      }
+    }
+  };
+
   // Poll /social/facebook/status until the sync stops "running" (or a safety
   // timeout), then surface the finished counts and reload the inbox items.
   // Mirrors pollIgUntilDone so an in-progress sync (manual or the automatic
@@ -327,7 +408,8 @@ export default function Inbox() {
     loadFbStatus();
     loadIgStatus();
     loadXStatus();
-    const id = setInterval(() => { loadFbStatus(); loadIgStatus(); loadXStatus(); }, 60000); // refresh freshness every 60s
+    loadTiktokStatus();
+    const id = setInterval(() => { loadFbStatus(); loadIgStatus(); loadXStatus(); loadTiktokStatus(); }, 60000); // refresh freshness every 60s
     return () => clearInterval(id);
   }, []);
 
@@ -343,6 +425,11 @@ export default function Inbox() {
     if (xStatus?.running && !xPolling.current) pollXUntilDone();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [xStatus?.running]);
+
+  useEffect(() => {
+    if (tiktokStatus?.running && !tiktokPolling.current) pollTiktokUntilDone();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tiktokStatus?.running]);
 
   const reclassify = async () => {
     toast.message("Running classifier…");
@@ -435,6 +522,12 @@ export default function Inbox() {
               {xSyncing ? "Syncing…" : "Sync from X"}
             </Button>
           )}
+          {tiktokStatus?.connected && (
+            <Button onClick={syncTiktokNow} disabled={tiktokSyncing} className="rounded-sm h-11 bg-black hover:bg-black/90 text-white" data-testid="sync-tiktok-button">
+              <Music className={`mr-2 h-4 w-4 ${tiktokSyncing ? "animate-pulse" : ""}`} />
+              {tiktokSyncing ? "Syncing…" : "Sync from TikTok"}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -446,6 +539,9 @@ export default function Inbox() {
 
       {/* X (Twitter) live-data banner */}
       <XStatusStrip status={xStatus} />
+
+      {/* TikTok live-data banner */}
+      <TikTokStatusStrip status={tiktokStatus} />
 
       {/* counts */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mt-6">
@@ -994,6 +1090,73 @@ function XStatusStrip({ status }) {
           <strong>Some content locked.</strong> Missing access:{" "}
           <code className="text-[10px] bg-white px-1 py-0.5 rounded">{[...scopesMissing].join(", ")}</code>.{" "}
           Your X API tier/scope doesn't currently allow that content — upgrade the API tier or add the scope, then re-run the sync.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TikTokStatusStrip({ status }) {
+  if (!status) return null;
+  const acct = status.account;
+  const lastSynced = status.last_synced_at;
+  const counts = status.counts || {};
+  const scopesMissing = new Set(acct?.last_sync_scopes_missing || []);
+  const ago = lastSynced
+    ? Math.max(0, Math.floor((Date.now() - new Date(lastSynced).getTime()) / 60000))
+    : null;
+
+  if (!status.connected) {
+    return (
+      <div className="mt-3 vivo-card p-5 rounded-sm border-l-2 border-black" data-testid="tiktok-status-strip">
+        <div className="flex items-start gap-3">
+          <Music className="h-5 w-5 text-black mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <div className="font-medium text-base">TikTok is not connected yet.</div>
+            <div className="text-xs text-[var(--vivo-muted)] mt-1">
+              Add your TikTok access token to the server (with the <code className="text-[10px] bg-white px-1 py-0.5 rounded">video.list</code> scope for posts and <code className="text-[10px] bg-white px-1 py-0.5 rounded">comment.list</code> for comments). Once configured, a <strong>"Sync from TikTok"</strong> button appears here to pull your videos &amp; their comments into the inbox. TikTok has no public messaging API, so DMs cannot be pulled.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const hasIssues = scopesMissing.size > 0;
+  return (
+    <div className="mt-3 vivo-card p-4 rounded-sm" data-testid="tiktok-status-strip">
+      <div className="flex items-start gap-3 flex-wrap">
+        <div className="flex items-center gap-2 shrink-0">
+          <Music className="h-4 w-4 text-black" />
+          <span className="text-sm font-medium">{acct?.handle || acct?.display_name || "TikTok"} live</span>
+          {hasIssues ? (
+            <span className="text-[10px] uppercase tracking-[0.15em] text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-sm">
+              Limited
+            </span>
+          ) : (
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+          )}
+        </div>
+        <div className="text-xs text-[var(--vivo-muted)] flex items-center gap-3 flex-wrap" data-testid="tiktok-freshness">
+          <span>
+            Last synced:{" "}
+            <span className="text-[var(--vivo-text)] font-medium">
+              {status.running ? "syncing…" : ago === null ? "never" : ago === 0 ? "just now" : `${ago} min ago`}
+            </span>
+          </span>
+          <span>Manual sync — click "Sync from TikTok" to refresh</span>
+          <span>
+            {counts.real_posts ?? 0} live posts ·{" "}
+            {counts.real_comments ?? 0} comments
+          </span>
+        </div>
+      </div>
+
+      {hasIssues && (
+        <div className="mt-3 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 p-2 rounded-sm" data-testid="tiktok-scope-warn">
+          <strong>Some content locked.</strong> Missing access:{" "}
+          <code className="text-[10px] bg-white px-1 py-0.5 rounded">{[...scopesMissing].join(", ")}</code>.{" "}
+          Your TikTok app's scopes don't currently allow that content — add the scope in the TikTok developer portal, then re-run the sync.
         </div>
       )}
     </div>

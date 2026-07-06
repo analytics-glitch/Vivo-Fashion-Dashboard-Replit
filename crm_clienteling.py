@@ -227,6 +227,85 @@ def _x_oauth1_post(path, body=None):
     return r.json()
 
 
+# --------------------------------------------------------------------------- #
+# TikTok API v2 — thin client for the CRM social inbox                         #
+# --------------------------------------------------------------------------- #
+# TikTok has NO public DM API, so this engine covers the brand account's own
+# videos (posts) and the comments on them only. All calls use a single user
+# access token (TIKTOK_ACCESS_TOKEN, an OAuth user token carrying the granted
+# scopes — video.list for reads, comment.list / comment.list.manage for reading
+# and replying to comments). The v2 API returns a 200 with an {"error":{...}}
+# body carrying a non-"ok" code on failure, so every call must inspect BOTH the
+# HTTP status AND error.code and fail loud with the API's own message so a
+# missing scope / rate-limit surfaces (in scopes_missing) instead of silently
+# dropping content. Reads never crash when unconfigured — the surface shows the
+# connect banner until the secret is set.
+_TIKTOK_API = "https://open.tiktokapis.com"
+
+
+def _tiktok_token():
+    return (os.environ.get("TIKTOK_ACCESS_TOKEN") or "").strip()
+
+
+def _tiktok_username_cfg():
+    return (os.environ.get("TIKTOK_USERNAME") or "").strip().lstrip("@")
+
+
+def _tiktok_read_configured():
+    """Reads (own videos + their comments) need a user access token."""
+    return bool(_tiktok_token())
+
+
+def _tiktok_write_configured():
+    """Replying to a comment uses the SAME access token but needs the
+    comment.list.manage scope. There is no separate secret, so presence of the
+    token is the best signal we have; a missing scope is surfaced at call time
+    (the reply fails loud with the API's own message)."""
+    return bool(_tiktok_token())
+
+
+def _tiktok_err(r, j=None):
+    """Extract a human-readable error from a TikTok API v2 response (which
+    reports errors in an {"error":{code,message,log_id}} body even on HTTP 200)."""
+    try:
+        j = j if j is not None else r.json()
+        if isinstance(j, dict):
+            err = j.get("error") or {}
+            code = err.get("code")
+            msg = err.get("message")
+            if msg:
+                return f"TikTok API {code or r.status_code}: {msg}"
+            if code and code != "ok":
+                return f"TikTok API {r.status_code}: {code}"
+    except Exception:
+        pass
+    return f"TikTok API {r.status_code}: {(r.text or '')[:200]}"
+
+
+def _tiktok_call(method, path, params=None, json_body=None):
+    """Bearer request against TikTok API v2. Raises RuntimeError on a non-2xx
+    HTTP status OR an error.code that is present and not "ok" (TikTok signals
+    failures in the body even on 200). Returns the parsed JSON on success."""
+    url = _TIKTOK_API + path
+    headers = {"Authorization": "Bearer " + _tiktok_token()}
+    if (method or "GET").upper() == "GET":
+        r = requests.get(url, headers=headers, params=params or {}, timeout=30)
+    else:
+        headers["Content-Type"] = "application/json"
+        r = requests.post(url, headers=headers, params=params or {},
+                          json=json_body or {}, timeout=30)
+    try:
+        j = r.json()
+    except Exception:
+        j = None
+    if r.status_code // 100 != 2:
+        raise RuntimeError(_tiktok_err(r, j))
+    code = (((j or {}).get("error") or {}).get("code") or "ok")
+    if code and code != "ok":
+        raise RuntimeError(_tiktok_err(r, j))
+    return j or {}
+
+
 def _internal_ok(request):
     """True when the request carries a valid internal token (X-Internal-Token ==
     SESSION_SECRET), letting the sync loop trigger a sync without a staff
@@ -3467,6 +3546,38 @@ def _reg_social(app):
                 delivery_channel = "X Direct"
             except Exception as e:
                 raise HTTPException(502, f"X rejected the reply: {e}")
+        elif row.get("platform") == "tiktok" and row.get("type") == "comment":
+            # A TikTok comment reply is DELIVERED via the comment reply endpoint
+            # (needs the comment.list.manage scope). The comment id lives in
+            # source_id as "tiktok:cmt:<id>"; the parent video id lives in
+            # parent_source_id as "tiktokvid:<video-id>" (both are required by
+            # the API). Best-effort — a missing scope surfaces the real error.
+            sid = (row.get("source_id") or "")
+            cmt_id = sid[len("tiktok:cmt:"):] if sid.startswith("tiktok:cmt:") else ""
+            prow = _one("SELECT parent_source_id FROM crm_social_feedback "
+                        "WHERE id=%s", (_int(fid),)) or {}
+            psid = (prow.get("parent_source_id") or "")
+            video_id = psid[len("tiktokvid:"):] if psid.startswith("tiktokvid:") else ""
+            if not cmt_id or not video_id:
+                raise HTTPException(
+                    400, "This comment has no TikTok reference to reply to "
+                         "(re-run the TikTok sync).")
+            if not _tiktok_write_configured():
+                raise HTTPException(
+                    400, "Replying on TikTok requires TIKTOK_ACCESS_TOKEN "
+                         "(with the comment.list.manage scope) on the server.")
+            if not body.strip():
+                raise HTTPException(400, "Reply text is empty.")
+            try:
+                _tiktok_call("POST", "/v2/video/comment/reply/", json_body={
+                    "video_id": str(video_id),
+                    "comment_id": str(cmt_id),
+                    "text": body.strip(),
+                })
+                delivered = True
+                delivery_channel = "TikTok"
+            except Exception as e:
+                raise HTTPException(502, f"TikTok rejected the reply: {e}")
         _ex("UPDATE crm_social_feedback SET reply_body=%s, replied_at=now() WHERE id=%s",
             (body, _int(fid)))
         A._crm_audit("social", fid, "reply",
@@ -5606,6 +5717,494 @@ def _reg_social(app):
                 "dms_stored": stored_dms + new_dms,
                 "dm_blocked": dm_blocked,
                 "dm_error": dm_error,
+                "scopes_missing": sorted(scopes_missing)}
+
+    # ----------------------------------------------------------------------- #
+    # TikTok engine — own videos (posts) + their comments. No DMs (TikTok has  #
+    # no public messaging API). Mirrors the X/FB engines: a background daemon  #
+    # thread bounded by a time budget, a non-blocking lock with a staleness    #
+    # guard, cumulative deep-backfill targets resumed via persisted cursors,   #
+    # LLM sentiment on NEW comments only, and scope failures surfaced (never    #
+    # crashing) in scopes_missing.                                             #
+    # ----------------------------------------------------------------------- #
+    _TIKTOK_SYNC_POST_TARGET = 2000
+    _TIKTOK_SYNC_COMMENT_TARGET = 2000
+    _TIKTOK_SYNC_TIME_BUDGET_SEC = 240
+    # Reserved tail of the per-run budget guaranteed to the comments phase so a
+    # long post backfill can't starve comments (which run second) forever.
+    _TIKTOK_SYNC_COMMENT_RESERVE_SEC = 90
+    _TIKTOK_SYNC_STALE_MARGIN_SEC = 120
+    # video/list caps max_count at 20 per page; comment/list allows up to 50.
+    _TIKTOK_VIDEO_PAGE = 20
+    _TIKTOK_COMMENT_PAGE = 50
+    # How many of the newest videos to always re-scan for fresh comments each
+    # run before resuming the deep backfill from the persisted position.
+    _TIKTOK_COMMENT_FRESH_VIDEOS = 25
+    _tiktok_sync_state = {"lock": threading.Lock()}
+
+    def _tiktok_started_stale():
+        from datetime import datetime, timezone
+        started = (_cfg_get("social.tiktok.last_started_at") or "").strip()
+        if not started:
+            return True
+        try:
+            dt = datetime.fromisoformat(started)
+        except Exception:
+            return True
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - dt).total_seconds()
+        return age > (_TIKTOK_SYNC_TIME_BUDGET_SEC + _TIKTOK_SYNC_STALE_MARGIN_SEC)
+
+    def _tiktok_sync_running():
+        return (_tiktok_sync_state["lock"].locked()
+                and not _tiktok_started_stale())
+
+    _tiktok_acct_cache = {"data": None, "ts": 0.0}
+    _TIKTOK_ACCT_TTL = 3600
+
+    def _tiktok_account():
+        """Resolve the brand account display info via /v2/user/info/. Cached 1h.
+        Returns a dict {open_id, display_name, username} or None when
+        unresolved/unreachable."""
+        now = time.time()
+        if (_tiktok_acct_cache["data"]
+                and (now - _tiktok_acct_cache["ts"]) < _TIKTOK_ACCT_TTL):
+            return _tiktok_acct_cache["data"]
+        try:
+            j = _tiktok_call(
+                "GET", "/v2/user/info/",
+                params={"fields": "open_id,union_id,display_name,username"})
+        except Exception:
+            return None
+        u = ((j or {}).get("data") or {}).get("user") or {}
+        if not u:
+            return None
+        acct = {
+            "open_id": u.get("open_id") or u.get("union_id"),
+            "display_name": u.get("display_name"),
+            "username": (u.get("username") or _tiktok_username_cfg() or None),
+        }
+        _tiktok_acct_cache.update(data=acct, ts=now)
+        return acct
+
+    @app.get("/api/social/tiktok/status")
+    def cl_soc_tiktok_status(request: Request):
+        _staff(request, roles=("customer_service", "marketing",
+                               "leadership", "admin"))
+        empty = {"connected": False, "running": False, "account": None,
+                 "last_synced_at": None, "write_enabled": False,
+                 "counts": {"real_posts": 0, "real_feedback": 0,
+                            "real_comments": 0}}
+        if not _tiktok_read_configured():
+            return empty
+        acct = _tiktok_account()
+        if not acct:
+            return empty  # token invalid/unreachable -> show connect banner
+        agg = _one("SELECT count(*) AS feedback, "
+                   " count(*) FILTER (WHERE type='post') AS posts, "
+                   " count(*) FILTER (WHERE type='comment') AS comments "
+                   "FROM crm_social_feedback WHERE platform='tiktok'") or {}
+        posts_n = _int(_cfg_get("social.tiktok.last_sync_posts"), 0)
+        comments_n = _int(_cfg_get("social.tiktok.last_sync_comments"), 0)
+        scopes = [s for s in
+                  (_cfg_get("social.tiktok.last_scopes_missing") or "").split(",")
+                  if s]
+        run_error = (_cfg_get("social.tiktok.last_run_error") or "").strip()
+        uname = acct.get("username")
+        return {
+            "connected": True,
+            "running": _tiktok_sync_running(),
+            "account": {
+                "open_id": acct.get("open_id"),
+                "username": uname,
+                "display_name": acct.get("display_name"),
+                "handle": ("@" + uname) if uname else None,
+                "last_sync_posts": posts_n,
+                "last_sync_comments": comments_n,
+                "last_sync_scopes_missing": scopes,
+            },
+            "last_synced_at": _cfg_get("social.tiktok.last_synced_at") or None,
+            "write_enabled": _tiktok_write_configured(),
+            "last_run_error": run_error or None,
+            "counts": {"real_posts": _int(agg.get("posts"), 0),
+                       "real_feedback": _int(agg.get("feedback"), 0),
+                       "real_comments": _int(agg.get("comments"), 0)},
+        }
+
+    def _tiktok_sync_bg(request, lock, max_seconds):
+        from datetime import datetime, timezone
+        try:
+            _tiktok_sync_run(request, max_seconds=max_seconds)
+            _cfg_set("social.tiktok.last_run_error", "")
+        except HTTPException as e:
+            _cfg_set("social.tiktok.last_run_error",
+                     str(getattr(e, "detail", e))[:500])
+        except Exception as e:  # noqa: BLE001 — never let a thread crash silently
+            _cfg_set("social.tiktok.last_run_error", str(e)[:500])
+        finally:
+            _cfg_set("social.tiktok.last_finished_at",
+                     datetime.now(timezone.utc).isoformat())
+            try:
+                lock.release()
+            except RuntimeError:
+                pass  # already released (e.g. abandoned as stale) — harmless
+
+    @app.post("/api/social/tiktok/sync")
+    def cl_soc_tiktok_sync(request: Request, payload: dict = Body(default=None)):
+        # The internal sync loop may trigger this with X-Internal-Token (no
+        # staff session); a browser call must be an authenticated marketing+
+        # staff member (the /api/social role gate already applies to sessions).
+        if not _internal_ok(request):
+            _staff(request, roles=("customer_service", "marketing",
+                                   "leadership", "admin"))
+        if not _tiktok_read_configured():
+            raise HTTPException(400, "TikTok is not configured on the server.")
+        from datetime import datetime, timezone
+        lock = _tiktok_sync_state["lock"]
+        if not lock.acquire(blocking=False):
+            if not _tiktok_started_stale():
+                raise HTTPException(409, "A TikTok sync is already running.")
+            lock = threading.Lock()
+            _tiktok_sync_state["lock"] = lock
+            lock.acquire(blocking=False)
+        budget = None
+        try:
+            budget = int((payload or {}).get("max_seconds"))
+        except (TypeError, ValueError):
+            budget = None
+        _cfg_set("social.tiktok.last_started_at",
+                 datetime.now(timezone.utc).isoformat())
+        threading.Thread(target=_tiktok_sync_bg, args=(request, lock, budget),
+                         name="tiktok-sync", daemon=True).start()
+        return {"started": True, "running": True}
+
+    def _tiktok_access_err(e):
+        m = str(e).lower()
+        return ("scope" in m or "permission" in m or "unauthorized" in m
+                or "forbidden" in m or "403" in m or "access" in m
+                or "not authorized" in m)
+
+    def _tiktok_sync_run(request, max_seconds=None):
+        acct = _tiktok_account()
+        if not acct:
+            raise HTTPException(
+                400, "Could not resolve the TikTok account. Check "
+                     "TIKTOK_ACCESS_TOKEN (and that its scopes include "
+                     "user.info.basic + video.list) and retry.")
+        budget = _TIKTOK_SYNC_TIME_BUDGET_SEC
+        if max_seconds and max_seconds > 0:
+            budget = min(_TIKTOK_SYNC_TIME_BUDGET_SEC, max_seconds)
+        started = time.monotonic()
+
+        def _over_budget():
+            return (time.monotonic() - started) > budget
+
+        def _over_content_budget():
+            # Soft budget for the posts phase so a tail is left for comments.
+            return (time.monotonic() - started) > (
+                budget - _TIKTOK_SYNC_COMMENT_RESERVE_SEC)
+
+        uname = acct.get("username")
+        acct_label = acct.get("display_name") or (
+            ("@" + uname) if uname else "Our TikTok account")
+        scopes_missing = set()
+        new_posts = 0
+        new_comments = 0
+        total_posts = 0
+        total_comments = 0
+
+        def _video_permalink(v):
+            url = (v.get("share_url") or "").strip()
+            if url:
+                return url
+            vid = v.get("id")
+            if uname and vid:
+                return f"https://www.tiktok.com/@{uname}/video/{vid}"
+            return None
+
+        def _ingest_tiktok_posts(videos):
+            """Insert the account's own videos (type='post', sentiment NULL —
+            our own content, not customer feedback)."""
+            nonlocal total_posts, new_posts
+            cand = [(v.get("id"), v) for v in (videos or []) if v.get("id")]
+            if not cand:
+                return 0
+            total_posts += len(cand)
+            sids = ["tiktok:vid:" + str(vid) for vid, _ in cand]
+            try:
+                rows = _ex("SELECT source_id FROM crm_social_feedback "
+                           "WHERE source_id = ANY(%s)", (sids,), fetch=True) or []
+                existing = {r["source_id"] for r in rows}
+            except Exception:
+                existing = set()
+            page_new = 0
+            for vid, v in cand:
+                if ("tiktok:vid:" + str(vid)) in existing:
+                    continue
+                body = (v.get("video_description") or v.get("title") or "").strip()
+                ct = v.get("create_time")
+                # create_time is a UNIX epoch (seconds); convert to a timestamp.
+                posted = None
+                try:
+                    if ct is not None:
+                        from datetime import datetime, timezone
+                        posted = datetime.fromtimestamp(
+                            int(ct), tz=timezone.utc).isoformat()
+                except Exception:
+                    posted = None
+                rid = _ex(
+                    "INSERT INTO crm_social_feedback "
+                    "(platform,type,author_name,author_handle,body,sentiment,"
+                    " source_id,permalink,posted_at) VALUES "
+                    "('tiktok','post',%s,%s,%s,NULL,%s,%s,"
+                    " COALESCE(%s::timestamptz, now())) "
+                    "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
+                    "DO NOTHING RETURNING id",
+                    (acct_label, ("@" + uname) if uname else None,
+                     body or "[TikTok video]", "tiktok:vid:" + str(vid),
+                     _video_permalink(v), posted), fetch=True)
+                if rid:
+                    new_posts += 1
+                    page_new += 1
+            return page_new
+
+        def _ingest_tiktok_comments(comments, video_id, v_link, v_excerpt):
+            """Insert a batch of raw comments on one video; LLM-classify only the
+            NEW ones (dedup by source_id) so a deep re-sync doesn't re-bill the
+            LLM for already-stored comments."""
+            nonlocal total_comments, new_comments
+            cand = []
+            for c in (comments or []):
+                cid = c.get("id")
+                body = (c.get("text") or "").strip()
+                if cid and body:
+                    cand.append((cid, body, c))
+            if not cand:
+                return 0
+            total_comments += len(cand)
+            sids = ["tiktok:cmt:" + str(cid) for cid, _, _ in cand]
+            try:
+                rows = _ex("SELECT source_id FROM crm_social_feedback "
+                           "WHERE source_id = ANY(%s)", (sids,), fetch=True) or []
+                existing = {r["source_id"] for r in rows}
+            except Exception:
+                existing = set()
+            fresh = [(cid, body, c) for (cid, body, c) in cand
+                     if ("tiktok:cmt:" + str(cid)) not in existing]
+            sent_map = {}
+            for i in range(0, len(fresh), 50):
+                chunk = fresh[i:i + 50]
+                sents = A._fb_sentiment([b for _, b, _ in chunk])
+                for j, (cid, _, _) in enumerate(chunk):
+                    sent_map[cid] = sents.get(j)
+            page_new = 0
+            for cid, body, c in fresh:
+                # TikTok withholds the commenter's real identity; a display name
+                # is provided on some scopes, otherwise fall back to a label.
+                author = (c.get("username") or c.get("display_name")
+                          or "TikTok user")
+                ct = c.get("create_time")
+                posted = None
+                try:
+                    if ct is not None:
+                        from datetime import datetime, timezone
+                        posted = datetime.fromtimestamp(
+                            int(ct), tz=timezone.utc).isoformat()
+                except Exception:
+                    posted = None
+                rid = _ex(
+                    "INSERT INTO crm_social_feedback "
+                    "(platform,type,author_name,author_handle,body,sentiment,"
+                    " source_id,permalink,parent_source_id,parent_excerpt,"
+                    " posted_at) VALUES "
+                    "('tiktok','comment',%s,NULL,%s,%s,%s,%s,%s,%s,"
+                    " COALESCE(%s::timestamptz, now())) "
+                    "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
+                    "DO NOTHING RETURNING id",
+                    (author, body, sent_map.get(cid),
+                     "tiktok:cmt:" + str(cid), v_link,
+                     "tiktokvid:" + str(video_id), v_excerpt,
+                     posted), fetch=True)
+                if rid:
+                    new_comments += 1
+                    page_new += 1
+            return page_new
+
+        stored = _one(
+            "SELECT COUNT(*) FILTER (WHERE type='post') AS p, "
+            " COUNT(*) FILTER (WHERE type='comment') AS c "
+            "FROM crm_social_feedback WHERE platform='tiktok'") or {}
+        stored_posts = _int(stored.get("p"), 0)
+        stored_comments = _int(stored.get("c"), 0)
+
+        def _posts_short():
+            return (stored_posts + new_posts) < _TIKTOK_SYNC_POST_TARGET
+
+        def _comments_short():
+            return (stored_comments + new_comments) < _TIKTOK_SYNC_COMMENT_TARGET
+
+        _VIDEO_FIELDS = ("id,title,video_description,create_time,share_url,"
+                         "comment_count,like_count,view_count")
+
+        def _fetch_videos_page(cursor):
+            body = {"max_count": _TIKTOK_VIDEO_PAGE}
+            if cursor:
+                try:
+                    body["cursor"] = int(cursor)
+                except (TypeError, ValueError):
+                    body["cursor"] = cursor
+            j = _tiktok_call("POST", "/v2/video/list/",
+                             params={"fields": _VIDEO_FIELDS}, json_body=body)
+            return j.get("data") or {}
+
+        def _process_videos_page(data):
+            vids = data.get("videos") or []
+            page_new = _ingest_tiktok_posts(vids)
+            has_more = bool(data.get("has_more"))
+            nxt = data.get("cursor") if has_more else None
+            return len(vids), page_new, nxt
+
+        def _fetch_comments_page(video_id, cursor):
+            params = {"fields": "id,text,create_time,like_count,username",
+                      "video_id": str(video_id),
+                      "max_count": _TIKTOK_COMMENT_PAGE}
+            if cursor:
+                try:
+                    params["cursor"] = int(cursor)
+                except (TypeError, ValueError):
+                    params["cursor"] = cursor
+            j = _tiktok_call("GET", "/v2/video/comment/list/", params=params)
+            return j.get("data") or {}
+
+        comments_blocked = {"on": False}
+
+        def _walk_video_comments(video_sid):
+            """Page through one video's comments, ingesting only NEW ones. Sets
+            the shared comments_blocked flag + records the missing scope when the
+            comment API is not permitted, so the whole comment phase stops
+            cleanly without failing the posts that already synced."""
+            if comments_blocked["on"]:
+                return
+            video_id = video_sid[len("tiktok:vid:"):] \
+                if video_sid.startswith("tiktok:vid:") else video_sid
+            row = _one("SELECT permalink, body FROM crm_social_feedback "
+                       "WHERE source_id=%s", (video_sid,)) or {}
+            v_link = row.get("permalink")
+            v_excerpt = (row.get("body") or "")[:180] or None
+            cursor = None
+            while not _over_budget() and _comments_short():
+                try:
+                    data = _fetch_comments_page(video_id, cursor)
+                except Exception as e:
+                    if _tiktok_access_err(e):
+                        scopes_missing.add("comment.list")
+                        comments_blocked["on"] = True
+                    # A per-video error (e.g. comments disabled) shouldn't abort
+                    # the whole phase unless it's a scope block.
+                    return
+                _ingest_tiktok_comments(data.get("comments") or [],
+                                        video_id, v_link, v_excerpt)
+                if not data.get("has_more"):
+                    return
+                cursor = data.get("cursor")
+                if not cursor:
+                    return
+
+        try:
+            # Phase A — fresh own videos: newest-first until a page adds nothing.
+            cursor = None
+            exhausted = False
+            first = True
+            while not _over_content_budget():
+                try:
+                    data = _fetch_videos_page(cursor)
+                except Exception as e:
+                    if first:
+                        raise HTTPException(502, f"TikTok sync failed: {e}")
+                    break
+                n, page_new, nxt = _process_videos_page(data)
+                first = False
+                if not nxt:
+                    exhausted = True
+                    cursor = None
+                    break
+                cursor = nxt
+                if n == 0 or page_new == 0:
+                    break
+
+            # Phase B — deep post backfill toward the target, resuming from the
+            # persisted cursor.
+            deep_done = ((_cfg_get("social.tiktok.deep_done") or "") == "1"
+                         or exhausted)
+            if not deep_done and _posts_short():
+                deep = (_cfg_get("social.tiktok.deep_cursor") or "") or cursor
+                while deep and not _over_content_budget() and _posts_short():
+                    try:
+                        data = _fetch_videos_page(deep)
+                    except Exception:
+                        deep = None
+                        break
+                    n, page_new, nxt = _process_videos_page(data)
+                    if not nxt or n == 0:
+                        deep_done = True
+                        deep = None
+                        break
+                    deep = nxt
+                _cfg_set("social.tiktok.deep_cursor", deep or "")
+            if deep_done:
+                _cfg_set("social.tiktok.deep_done", "1")
+                _cfg_set("social.tiktok.deep_cursor", "")
+
+            # Phase C — comments on the stored videos. Always re-scan the newest
+            # few videos for fresh comments, then resume the deep backfill from
+            # the persisted position over older videos. Missing comment scope is
+            # reported and never fails the posts sync.
+            vids = _ex("SELECT source_id FROM crm_social_feedback "
+                       "WHERE platform='tiktok' AND type='post' "
+                       "ORDER BY posted_at DESC NULLS LAST", fetch=True) or []
+            c_vids = [r["source_id"] for r in vids]
+            fresh_n = min(_TIKTOK_COMMENT_FRESH_VIDEOS, len(c_vids))
+            for sid in c_vids[:fresh_n]:
+                if _over_budget() or comments_blocked["on"]:
+                    break
+                _walk_video_comments(sid)
+
+            c_done = (_cfg_get("social.tiktok.comment_done") or "") == "1"
+            if not comments_blocked["on"] and not c_done and _comments_short():
+                idx = _int(_cfg_get("social.tiktok.comment_deep_index"), fresh_n)
+                if idx < fresh_n:
+                    idx = fresh_n
+                while (idx < len(c_vids) and not _over_budget()
+                       and _comments_short() and not comments_blocked["on"]):
+                    _walk_video_comments(c_vids[idx])
+                    idx += 1
+                if idx >= len(c_vids):
+                    c_done = True
+                _cfg_set("social.tiktok.comment_deep_index", idx)
+            if c_done:
+                _cfg_set("social.tiktok.comment_done", "1")
+        except HTTPException:
+            raise
+
+        from datetime import datetime, timezone
+        _cfg_set("social.tiktok.last_synced_at",
+                 datetime.now(timezone.utc).isoformat())
+        _cfg_set("social.tiktok.last_sync_posts", total_posts)
+        _cfg_set("social.tiktok.last_sync_comments", total_comments)
+        _cfg_set("social.tiktok.last_scopes_missing",
+                 ",".join(sorted(scopes_missing)))
+        try:
+            A._crm_audit("social", acct.get("open_id") or "tiktok", "sync",
+                         f"tiktok sync: {total_posts} posts, "
+                         f"{new_comments} new comments", request)
+        except Exception:
+            pass
+        return {"account": acct_label, "posts": total_posts,
+                "posts_stored": stored_posts + new_posts,
+                "comments": new_comments,
+                "comments_stored": stored_comments + new_comments,
+                "comments_blocked": comments_blocked["on"],
                 "scopes_missing": sorted(scopes_missing)}
 
 
