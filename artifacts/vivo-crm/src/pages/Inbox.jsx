@@ -669,7 +669,7 @@ function FacebookStatusStrip({ status }) {
           <span>
             Last synced:{" "}
             <span className="text-[var(--vivo-text)] font-medium">
-              {ago === null ? "never" : ago === 0 ? "just now" : `${ago} min ago`}
+              {status.running ? "syncing…" : ago === null ? "never" : ago === 0 ? "just now" : `${ago} min ago`}
             </span>
           </span>
           <span>Manual sync — click "Sync from Facebook" to refresh</span>
@@ -852,7 +852,7 @@ function XStatusStrip({ status }) {
           <span>
             Last synced:{" "}
             <span className="text-[var(--vivo-text)] font-medium">
-              {ago === null ? "never" : ago === 0 ? "just now" : `${ago} min ago`}
+              {status.running ? "syncing…" : ago === null ? "never" : ago === 0 ? "just now" : `${ago} min ago`}
             </span>
           </span>
           <span>Manual sync — click "Sync from X" to refresh</span>
