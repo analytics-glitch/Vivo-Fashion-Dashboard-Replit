@@ -178,6 +178,9 @@ export default function Inbox() {
           toast.success(
             `X: ${a.last_sync_posts || 0} posts, ${a.last_sync_mentions || 0} mentions, ${a.last_sync_dms || 0} DMs`
           );
+          if (st.last_run_error) {
+            toast.error("X sync error: " + st.last_run_error);
+          }
           if ((a.last_sync_scopes_missing || []).length) {
             toast.warning(`Missing access: ${a.last_sync_scopes_missing.join(", ")} — that content cannot be pulled until your X API tier/scope allows it.`);
           }
@@ -247,6 +250,9 @@ export default function Inbox() {
           toast.success(
             `Facebook: ${p.last_sync_posts || 0} posts, ${p.last_sync_comments || 0} comments, ${p.last_sync_dms || 0} DMs`
           );
+          if (st.last_run_error) {
+            toast.error("Facebook sync error: " + st.last_run_error);
+          }
           if ((p.last_sync_scopes_missing || []).length) {
             toast.warning(`Missing scope: ${p.last_sync_scopes_missing.join(", ")} — that content cannot be pulled until added.`);
           }

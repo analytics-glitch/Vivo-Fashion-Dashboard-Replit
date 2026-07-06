@@ -3547,6 +3547,7 @@ def _reg_social(app):
         dms_n = _int(_cfg_get("social.fb.last_sync_dms"), 0)
         scopes = [s for s in (_cfg_get("social.fb.last_scopes_missing") or "").split(",") if s]
         last_at = _cfg_get("social.fb.last_synced_at")
+        run_error = (_cfg_get("social.fb.last_run_error") or "").strip()
         return {
             # True only while a sync holds the lock AND its recorded start is
             # still within the budget window — a wedged/stale lock reads as idle
@@ -3562,6 +3563,7 @@ def _reg_social(app):
             }],
             "last_synced_at": last_at or None,
             "auto_sync_minutes": None,
+            "last_run_error": run_error or None,
             "counts": {"real_posts": posts_n,
                        "real_feedback": _int(agg.get("feedback"), 0),
                        "real_dms": _int(agg.get("dms"), 0)},
@@ -5105,6 +5107,7 @@ def _reg_social(app):
         scopes = [s for s in
                   (_cfg_get("social.x.last_scopes_missing") or "").split(",")
                   if s]
+        run_error = (_cfg_get("social.x.last_run_error") or "").strip()
         return {
             "connected": True,
             # True only while a sync holds the lock AND its recorded start is
@@ -5122,6 +5125,7 @@ def _reg_social(app):
             },
             "last_synced_at": _cfg_get("social.x.last_synced_at") or None,
             "write_enabled": _x_write_configured(),
+            "last_run_error": run_error or None,
             "counts": {"real_posts": _int(agg.get("posts"), 0),
                        "real_feedback": _int(agg.get("feedback"), 0),
                        "real_mentions": _int(agg.get("mentions"), 0),

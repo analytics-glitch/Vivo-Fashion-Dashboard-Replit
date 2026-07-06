@@ -451,9 +451,7 @@ _AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/readyz", "/api/sync
 # by the shared SESSION_SECRET via the X-Internal-Token header (validated in the
 # auth gate with a constant-time compare). Keep this set minimal.
 _AUTH_INTERNAL_TOKEN_PATHS = {"/api/analytics/replenishment-sor/snapshot",
-                              "/api/ibt/nightly-reconcile",
-                              "/api/social/facebook/sync",
-                              "/api/social/instagram/sync"}
+                              "/api/ibt/nightly-reconcile"}
 
 # Endpoints that accept EITHER a valid internal token (sync loop, no session) OR
 # a normal authenticated staff session (browser). Unlike the strict set above, a
@@ -461,7 +459,9 @@ _AUTH_INTERNAL_TOKEN_PATHS = {"/api/analytics/replenishment-sor/snapshot",
 # session + role gate, so a marketing+ staff member can trigger it from the CRM
 # while the sync loop can bootstrap it headless. The endpoint re-checks the token
 # to decide whether to also assert a staff role.
-_AUTH_INTERNAL_OR_SESSION_PATHS = {"/api/social/x/sync"}
+_AUTH_INTERNAL_OR_SESSION_PATHS = {"/api/social/x/sync",
+                                   "/api/social/facebook/sync",
+                                   "/api/social/instagram/sync"}
 
 # Query params that are concatenated into SQL as date literals. We validate them
 # to strict ISO dates at the edge so they can never carry SQL-injection payloads
