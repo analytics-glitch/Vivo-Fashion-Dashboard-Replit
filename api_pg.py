@@ -12236,6 +12236,171 @@ def analytics_quarter_scorecard(quarter: int = Query(default=None),
     }
 
 
+# ── Target requirements — the "what it takes" reverse funnel ───────────────
+# Works BACKWARDS from each market's annual revenue target so leadership can
+# read, at a glance, the operational inputs a target implies:
+#
+#   revenue target ÷ average basket value (ABV)      → orders required
+#   orders required ÷ conversion rate                → store visitors required
+#   orders required ÷ orders-per-customer            → customers required
+#
+# The conversion rate ties orders to footfall (retail only — Online has no
+# store traffic). Rates are this-year YTD run-rates, so the requirement
+# reflects how the business ACTUALLY converts today rather than an arbitrary
+# assumption. It also returns the STILL-needed remainder (target − achieved)
+# and the per-day run-rate over the days left in the year, so the same card
+# doubles as an actionable pace tool. Targets + achieved are sourced from
+# /analytics/annual-targets so the funnel reconciles exactly with the tiles
+# above it. Read-only; same auth as annual-targets (leadership page).
+_TR_LABELS = {"Kenya - Retail": "Kenya", "Rwanda": "Rwanda",
+              "Uganda": "Uganda", "Kenya - Online": "Online"}
+_TR_ONLINE = {"Kenya - Online"}
+
+
+@app.get("/api/analytics/target-requirements")
+def analytics_target_requirements(year: int = Query(default=None)):
+    yr = int(year) if year else date.today().year
+    base = analytics_annual_targets(yr)
+    today = date.today()
+    y_end = date(yr, 12, 31)
+    days_left = max(0, (y_end - today).days) if today <= y_end else 0
+    y0 = str(date(yr, 1, 1))
+    y1 = str(min(today, y_end))
+
+    # Sales run-rate by bucket (YTD): net revenue, orders, and identified
+    # orders/customers for ABV and orders-per-customer.
+    sales = {}
+    for r in run_query(
+        "SELECT " + _ACTUAL_BUCKET_CASE + " AS bucket, "
+        "ROUND(" + _TARGET_REVENUE + ") AS net, "
+        "COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders, "
+        "COUNT(DISTINCT CASE WHEN s.sale_kind = 'order' AND LOWER(s.customer_type) "
+        "  IN ('new','returning','registered') THEN s.order_id END) AS id_orders, "
+        "COUNT(DISTINCT CASE WHEN s.sale_kind = 'order' AND LOWER(s.customer_type) "
+        "  IN ('new','returning','registered') THEN s.customer_id END) AS customers "
+        "FROM all_sales s WHERE s.sale_date BETWEEN '" + y0 + "' AND '" + y1 + "' "
+        "AND s.sale_kind IN ('sale','order','return') AND " + BASE_FILTERS + " GROUP BY 1"
+    ):
+        sales[r["bucket"]] = {
+            "net": float(r["net"] or 0), "orders": float(r["orders"] or 0),
+            "id_orders": float(r["id_orders"] or 0), "customers": float(r["customers"] or 0),
+        }
+
+    # Footfall + clean conversion by bucket (YTD). Mirrors the quarter
+    # scorecard's canonical footfall→sales join (ff_canon_sql + store master),
+    # each footfall location mapped to the market of its dominant selling name.
+    ff = {}
+    for r in run_query("""
+        WITH loc_bucket AS (
+            SELECT DISTINCT ON (loc) loc, bucket FROM (
+                SELECT s.pos_location_name AS loc, """ + _ACTUAL_BUCKET_CASE + """ AS bucket, COUNT(*) AS c
+                FROM all_sales s
+                WHERE s.sale_date BETWEEN '""" + y0 + """' AND '""" + y1 + """' AND """ + BASE_FILTERS + """
+                GROUP BY 1, 2
+            ) t ORDER BY loc, c DESC
+        ),
+        ff_daily AS (
+            SELECT """ + ff_canon_sql() + """ AS loc, f.time::date AS d, SUM(f.a01_footfall_in) AS ff
+            FROM footfall f
+            WHERE f.time BETWEEN '""" + y0 + """' AND '""" + y1 + """'
+              AND """ + ff_store_master_predicate() + """
+            GROUP BY 1, 2
+        ),
+        sales_daily AS (
+            SELECT s.pos_location_name AS loc, s.sale_date::date AS d,
+                COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders
+            FROM all_sales s
+            WHERE s.sale_date BETWEEN '""" + y0 + """' AND '""" + y1 + """' AND """ + BASE_FILTERS + """
+            GROUP BY 1, 2
+        ),
+        ff_locs AS (SELECT DISTINCT loc FROM ff_daily),
+        joined AS (
+            SELECT COALESCE(ff.loc, sd.loc) AS loc,
+                COALESCE(ff.ff, 0) AS ff, COALESCE(sd.orders, 0) AS orders
+            FROM ff_daily ff
+            FULL OUTER JOIN sales_daily sd ON sd.loc = ff.loc AND sd.d = ff.d
+            WHERE COALESCE(ff.loc, sd.loc) IN (SELECT loc FROM ff_locs)
+        )
+        SELECT lb.bucket AS bucket,
+            COALESCE(SUM(j.ff), 0) AS footfall,
+            ROUND(SUM(j.orders) FILTER (WHERE j.ff > 0) * 100.0 / NULLIF(SUM(j.ff), 0), 2) AS conversion
+        FROM joined j LEFT JOIN loc_bucket lb ON lb.loc = j.loc
+        WHERE lb.bucket IS NOT NULL
+        GROUP BY 1
+    """, date_to=y1):
+        ff[r["bucket"]] = {
+            "footfall": float(r["footfall"] or 0),
+            "conversion": (float(r["conversion"]) if r["conversion"] is not None else None),
+        }
+
+    def _funnel(name, target, achieved):
+        s = sales.get(name, {})
+        net, orders = s.get("net", 0.0), s.get("orders", 0.0)
+        id_orders, customers = s.get("id_orders", 0.0), s.get("customers", 0.0)
+        abv = (net / orders) if (orders > 0 and net > 0) else None
+        opc = (id_orders / customers) if (customers > 0 and id_orders > 0) else None  # orders per customer
+        conv = ff.get(name, {}).get("conversion")
+        has_ff = (name not in _TR_ONLINE) and conv is not None and conv > 0
+        remaining = max(0.0, target - achieved)
+
+        def _req(rev):
+            o = (rev / abv) if abv else None
+            fo = (o / (conv / 100.0)) if (has_ff and o is not None) else None
+            c = (o / opc) if (opc and o is not None) else None
+            return o, fo, c
+
+        o_t, f_t, c_t = _req(target)
+        o_r, f_r, c_r = _req(remaining)
+        _pd = lambda x: round(x / days_left) if (x is not None and days_left > 0) else None
+        _rn = lambda x: round(x) if x is not None else None
+        return {
+            "bucket": name, "label": _TR_LABELS.get(name, name),
+            "target": round(target), "achieved": round(achieved), "remaining": round(remaining),
+            "pct_achieved": round(100.0 * achieved / target, 1) if target else 0.0,
+            "abv": _rn(abv), "conversion": (round(conv, 1) if conv is not None else None),
+            "orders_per_customer": (round(opc, 2) if opc else None),
+            "has_footfall": has_ff,
+            "orders_needed": _rn(o_t), "footfall_needed": _rn(f_t), "customers_needed": _rn(c_t),
+            "orders_remaining": _rn(o_r), "footfall_remaining": _rn(f_r), "customers_remaining": _rn(c_r),
+            "orders_per_day": _pd(o_r), "footfall_per_day": _pd(f_r), "customers_per_day": _pd(c_r),
+        }
+
+    buckets = [_funnel(b["bucket"], b.get("target_annual", 0), b.get("actual_ytd", 0))
+               for b in base["buckets"]]
+
+    def _sum(key):
+        vals = [b[key] for b in buckets if b.get(key) is not None]
+        return round(sum(vals)) if vals else None
+
+    tt = base["total"]
+    net_all = sum(v.get("net", 0.0) for v in sales.values())
+    orders_all = sum(v.get("orders", 0.0) for v in sales.values())
+    id_orders_all = sum(v.get("id_orders", 0.0) for v in sales.values())
+    customers_all = sum(v.get("customers", 0.0) for v in sales.values())
+    tt_target, tt_achieved = tt["target_annual"], tt["actual_ytd"]
+    overall = {
+        "bucket": "Overall", "label": "Overall",
+        "target": round(tt_target), "achieved": round(tt_achieved),
+        "remaining": round(max(0.0, tt_target - tt_achieved)),
+        "pct_achieved": round(100.0 * tt_achieved / tt_target, 1) if tt_target else 0.0,
+        "abv": round(net_all / orders_all) if orders_all else None,
+        "conversion": None,  # a single blended rate would mislead across markets
+        "orders_per_customer": round(id_orders_all / customers_all, 2) if customers_all else None,
+        "has_footfall": True,
+        "orders_needed": _sum("orders_needed"), "footfall_needed": _sum("footfall_needed"),
+        "customers_needed": _sum("customers_needed"),
+        "orders_remaining": _sum("orders_remaining"), "footfall_remaining": _sum("footfall_remaining"),
+        "customers_remaining": _sum("customers_remaining"),
+        "orders_per_day": _sum("orders_per_day"), "footfall_per_day": _sum("footfall_per_day"),
+        "customers_per_day": _sum("customers_per_day"),
+    }
+    return {
+        "year": yr, "as_of": y1, "days_left": days_left,
+        "buckets": buckets, "overall": overall,
+        "rate_basis": "This-year YTD run-rate (average basket, conversion, orders per customer).",
+    }
+
+
 @app.get("/api/analytics/monthly-targets")
 def analytics_monthly_targets(month: str = Query(default=None)):
     # Per-STORE daily target tracker (pos_location_name). The monthly target

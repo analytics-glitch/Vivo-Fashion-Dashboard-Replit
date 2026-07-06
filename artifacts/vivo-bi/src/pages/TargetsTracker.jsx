@@ -6,6 +6,7 @@ import MonthlyTargetsTracker from "@/components/MonthlyTargetsTracker";
 import TotalSalesSummary from "@/components/TotalSalesSummary";
 import CustomProjectionCard from "@/components/CustomProjectionCard";
 import TargetsSnapshot from "@/components/TargetsSnapshot";
+import TargetFunnelCard from "@/components/TargetFunnelCard";
 import { Target, TrendUp, CalendarBlank, DeviceMobile } from "@phosphor-icons/react";
 
 /**
@@ -508,6 +509,9 @@ export default function TargetsTracker() {
           basisTooltipOverall={"Cumulative share of the FULL-YEAR budget banked so far (achieved \u00f7 annual target, summed across the four budgeted markets). This is a vs-annual figure, not a pace-to-date measure \u2014 see the projected ring and 'vs Pace' for pacing. The Executive Summary instead shows a pro-rata target scaled to the elapsed period, so its on-pace % reads higher."}
         />
       </TargetsCardShell>
+
+      {/* Reverse funnel — what it takes to hit the annual target */}
+      <TargetFunnelCard year={year} />
 
       {/* Current quarter */}
       {cards.current && (
