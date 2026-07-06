@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api, formatDate, timeAgo } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -45,6 +45,12 @@ export default function Inbox() {
   const [connecting, setConnecting] = useState(false);
 
   const navigate = useNavigate();
+
+  // Guards so only one poll-until-done loop runs per platform at a time
+  // (protects against the freshness interval + a manual click both firing,
+  // and against React's dev double-effect invocation).
+  const fbPolling = useRef(false);
+  const xPolling = useRef(false);
 
   const load = async () => {
     setLoading(true);
@@ -148,6 +154,49 @@ export default function Inbox() {
     } catch { /* ignore */ }
   };
 
+  // Poll /social/x/status until the sync stops "running" (or a safety timeout),
+  // then surface the finished counts and reload the inbox items. Mirrors
+  // pollIgUntilDone / pollFbUntilDone.
+  const pollXUntilDone = async () => {
+    if (xPolling.current) return; // a poll loop is already watching this sync
+    xPolling.current = true;
+    setXSyncing(true);
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    const deadline = Date.now() + 6 * 60 * 1000; // safety cap
+    try {
+      await sleep(1500);
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        let st = null;
+        try {
+          const r = await api.get("/social/x/status");
+          st = r.data;
+          setXStatus(st);
+        } catch { /* transient — keep polling */ }
+        if (st && !st.running) {
+          const a = st.account || {};
+          toast.success(
+            `X: ${a.last_sync_posts || 0} posts, ${a.last_sync_mentions || 0} mentions, ${a.last_sync_dms || 0} DMs`
+          );
+          if ((a.last_sync_scopes_missing || []).length) {
+            toast.warning(`Missing access: ${a.last_sync_scopes_missing.join(", ")} — that content cannot be pulled until your X API tier/scope allows it.`);
+          }
+          await load();
+          return;
+        }
+        if (Date.now() > deadline) {
+          toast.message("X sync is still running — it will finish in the background.");
+          await load();
+          return;
+        }
+        await sleep(3000);
+      }
+    } finally {
+      xPolling.current = false;
+      setXSyncing(false);
+    }
+  };
+
   const syncXNow = async () => {
     setXSyncing(true);
     try {
@@ -159,10 +208,61 @@ export default function Inbox() {
       }
       await loadXStatus();
       await load();
-    } catch (e) {
-      toast.error("X sync failed: " + (e?.response?.data?.detail || e.message));
-    } finally {
       setXSyncing(false);
+    } catch (e) {
+      if (e?.response?.status === 409) {
+        // A sync (manual or the automatic loop) is already running — just watch it.
+        toast.message("An X sync is already running — waiting for it to finish…");
+        await pollXUntilDone();
+      } else {
+        toast.error("X sync failed: " + (e?.response?.data?.detail || e.message));
+        setXSyncing(false);
+      }
+    }
+  };
+
+  // Poll /social/facebook/status until the sync stops "running" (or a safety
+  // timeout), then surface the finished counts and reload the inbox items.
+  // Mirrors pollIgUntilDone so an in-progress sync (manual or the automatic
+  // loop) refreshes the moment it finishes instead of waiting for the 60s tick.
+  const pollFbUntilDone = async () => {
+    if (fbPolling.current) return; // a poll loop is already watching this sync
+    fbPolling.current = true;
+    setSyncing(true);
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    const deadline = Date.now() + 6 * 60 * 1000; // safety cap
+    try {
+      // Give the sync a moment to acquire the lock before the first poll.
+      await sleep(1500);
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        let st = null;
+        try {
+          const r = await api.get("/social/facebook/status");
+          st = r.data;
+          setFbStatus(st);
+        } catch { /* transient — keep polling */ }
+        if (st && !st.running) {
+          const p = (st.discovered_pages || [])[0] || {};
+          toast.success(
+            `Facebook: ${p.last_sync_posts || 0} posts, ${p.last_sync_comments || 0} comments, ${p.last_sync_dms || 0} DMs`
+          );
+          if ((p.last_sync_scopes_missing || []).length) {
+            toast.warning(`Missing scope: ${p.last_sync_scopes_missing.join(", ")} — that content cannot be pulled until added.`);
+          }
+          await load();
+          return;
+        }
+        if (Date.now() > deadline) {
+          toast.message("Facebook sync is still running — it will finish in the background.");
+          await load();
+          return;
+        }
+        await sleep(3000);
+      }
+    } finally {
+      fbPolling.current = false;
+      setSyncing(false);
     }
   };
 
@@ -177,10 +277,16 @@ export default function Inbox() {
       }
       await loadFbStatus();
       await load();
-    } catch (e) {
-      toast.error("Sync failed: " + (e?.response?.data?.detail || e.message));
-    } finally {
       setSyncing(false);
+    } catch (e) {
+      if (e?.response?.status === 409) {
+        // A sync (manual or the automatic loop) is already running — just watch it.
+        toast.message("A Facebook sync is already running — waiting for it to finish…");
+        await pollFbUntilDone();
+      } else {
+        toast.error("Sync failed: " + (e?.response?.data?.detail || e.message));
+        setSyncing(false);
+      }
     }
   };
 
@@ -218,6 +324,19 @@ export default function Inbox() {
     const id = setInterval(() => { loadFbStatus(); loadIgStatus(); loadXStatus(); }, 60000); // refresh freshness every 60s
     return () => clearInterval(id);
   }, []);
+
+  // If a Facebook/X sync is detected running (an automatic loop run, or a manual
+  // one on another tab), watch it to completion and auto-refresh the inbox +
+  // toast the moment it finishes — instead of waiting for the next 60s tick.
+  useEffect(() => {
+    if (fbStatus?.running && !fbPolling.current) pollFbUntilDone();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fbStatus?.running]);
+
+  useEffect(() => {
+    if (xStatus?.running && !xPolling.current) pollXUntilDone();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [xStatus?.running]);
 
   const reclassify = async () => {
     toast.message("Running classifier…");
