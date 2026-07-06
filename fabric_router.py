@@ -78,6 +78,21 @@ def _ensure_fabric_tables(conn):
                     "ON fabric_reservations(product_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_resv_status "
                     "ON fabric_reservations(status)")
+        # Manual physical-roll counts the fabric team hand-maintains per fabric
+        # product per stock location. Odoo only knows quantity by weight/length,
+        # not the number of physical rolls, so this is a purely manual figure
+        # (admin-editable) shown alongside the Odoo qty for eyeballing. Keyed by
+        # (product_id, location_name); the audit fields stamp who set it + when.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_roll_counts (
+                product_id      INTEGER NOT NULL,
+                location_name   TEXT NOT NULL,
+                rolls           INTEGER NOT NULL DEFAULT 0,
+                updated_by      TEXT,
+                updated_by_name TEXT,
+                updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (product_id, location_name)
+            )""")
     conn.commit()
     _FABRIC_TABLES_READY = True
 
@@ -4054,6 +4069,153 @@ def delete_reservation(resv_id: int, request: Request):
         log_row["status"] = "deleted"
         _log_fabric_change("Deleted", log_row, request)
         return {"ok": True}
+
+# ── Fabric roll tracking (manual per-location physical roll counts) ──────────
+# Odoo only tracks fabric quantity by weight (kg) / length (m), never the number
+# of physical rolls. The Rolls tab lets the fabric team hand-maintain a roll
+# count per fabric product per stock location, shown alongside the Odoo quantity
+# purely for eyeballing physical stock. Editing is admin-only (enforced in the
+# api_pg auth gate on the POST method); the GET is broadly viewable like the rest
+# of Fabric BI.
+_ROLL_TZ = "Africa/Nairobi"
+
+@fabric_router.get("/api/fabric/rolls")
+def rolls_list(
+    category: str = Query(default=None),
+    subcategory: str = Query(default=None),
+    plain_print: str = Query(default=None),
+    weight_range: str = Query(default=None),
+    fabric_color: str = Query(default=None),
+    search: str = Query(default=None),
+    sort: str = Query(default="value_kes"),
+    dir: str = Query(default="desc"),
+    limit: int = Query(default=100),
+    offset: int = Query(default=0),
+    scope: str = Query(default="main"),
+):
+    """Fabric products with their per-location Odoo quantity (kg + metres where a
+    kg→metre conversion exists) joined to the stored manual roll counts. Shows the
+    two real fabric-stock buckets (RMAT/Stock + Dead/Stock Fabric) side by side.
+    Supports the same search/filter parameters as the Register so the list is
+    navigable identically."""
+    limit = max(1, min(int(limit or 100), 500))
+    offset = max(0, int(offset or 0))
+    with _get_conn() as conn:
+        _ensure_fabric_tables(conn)
+        ALLOWED_SORT = {
+            "default_code", "name", "fabric_category", "fabric_subcategory",
+            "rmat_kg", "dead_kg", "value_kes",
+        }
+        sort_col = sort if sort in ALLOWED_SORT else "value_kes"
+        sort_dir = "ASC" if str(dir).lower() == "asc" else "DESC"
+        order_by = f"ORDER BY {sort_col} {sort_dir} NULLS LAST, p.id ASC"
+
+        where = ["i.location_name IN ('RMAT/Stock','Dead/Stock Fabric')",
+                 "i.quantity > 0", "p.category = 'Fabric'", _scope_sql(scope)]
+        params = []
+        if category:
+            where.append("p.fabric_category = %s"); params.append(category)
+        if subcategory:
+            where.append("p.fabric_subcategory = %s"); params.append(subcategory)
+        if plain_print:
+            where.append("p.plain_print = %s"); params.append(plain_print)
+        if weight_range:
+            where.append("p.weight_range = %s"); params.append(weight_range)
+        if fabric_color:
+            where.append("UPPER(BTRIM(p.fabric_color)) = UPPER(BTRIM(%s))"); params.append(fabric_color)
+        if search:
+            where.append("(p.name ILIKE %s OR p.default_code ILIKE %s OR p.barcode ILIKE %s)")
+            params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+        where_sql = " AND ".join(where)
+
+        rows = q(conn, f"""
+            SELECT
+              p.id, p.name, p.default_code, p.barcode,
+              p.fabric_category, p.fabric_subcategory,
+              p.plain_print, p.weight_range,
+              INITCAP(BTRIM(p.fabric_color)) as fabric_color,
+              p.kg_per_mtr_eff as kg_per_mtr,
+              ROUND(SUM(i.quantity) FILTER (WHERE i.location_name='RMAT/Stock')::numeric,2) as rmat_kg,
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0
+                    THEN SUM(i.quantity) FILTER (WHERE i.location_name='RMAT/Stock')/p.kg_per_mtr_eff
+                    ELSE NULL END::numeric,1) as rmat_metres,
+              ROUND(SUM(i.quantity) FILTER (WHERE i.location_name='Dead/Stock Fabric')::numeric,2) as dead_kg,
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0
+                    THEN SUM(i.quantity) FILTER (WHERE i.location_name='Dead/Stock Fabric')/p.kg_per_mtr_eff
+                    ELSE NULL END::numeric,1) as dead_metres,
+              ROUND(SUM(i.total_value)::numeric,0) as value_kes,
+              rc_r.rolls as rmat_rolls, rc_r.updated_by_name as rmat_updated_by,
+              to_char(rc_r.updated_at AT TIME ZONE '{_ROLL_TZ}','DD Mon YYYY, HH24:MI') as rmat_updated_at,
+              rc_d.rolls as dead_rolls, rc_d.updated_by_name as dead_updated_by,
+              to_char(rc_d.updated_at AT TIME ZONE '{_ROLL_TZ}','DD Mon YYYY, HH24:MI') as dead_updated_at
+            FROM raw_fabric_inventory i
+            JOIN raw_fabric_products p ON p.id = i.product_id
+            LEFT JOIN fabric_roll_counts rc_r ON rc_r.product_id = p.id AND rc_r.location_name='RMAT/Stock'
+            LEFT JOIN fabric_roll_counts rc_d ON rc_d.product_id = p.id AND rc_d.location_name='Dead/Stock Fabric'
+            WHERE {where_sql}
+            GROUP BY p.id, p.name, p.default_code, p.barcode,
+                     p.fabric_category, p.fabric_subcategory,
+                     p.plain_print, p.weight_range, p.fabric_color, p.kg_per_mtr_eff,
+                     rc_r.rolls, rc_r.updated_by_name, rc_r.updated_at,
+                     rc_d.rolls, rc_d.updated_by_name, rc_d.updated_at
+            {order_by}
+            LIMIT %s OFFSET %s
+        """, params + [limit, offset])
+
+        total = q(conn, f"""
+            SELECT COUNT(*) as n FROM (
+              SELECT p.id
+              FROM raw_fabric_inventory i
+              JOIN raw_fabric_products p ON p.id = i.product_id
+              WHERE {where_sql}
+              GROUP BY p.id
+            ) sub
+        """, params)[0]['n']
+
+        return {"total": total, "items": rows}
+
+@fabric_router.post("/api/fabric/rolls")
+def set_roll_count(request: Request, body: dict = Body(...)):
+    """Upsert a manual roll count for a (product, location). Admin-only — the
+    write is gated server-side in the api_pg auth gate; client hiding of the edit
+    controls is not the enforcement point."""
+    product_id = body.get("product_id")
+    location = (body.get("location") or "").strip()
+    if not product_id:
+        raise HTTPException(status_code=400, detail="product_id is required")
+    if location not in _FABRIC_LOCATIONS:
+        raise HTTPException(status_code=400,
+            detail="location must be RMAT/Stock or Dead/Stock Fabric")
+    try:
+        rolls = int(body.get("rolls"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="rolls must be a whole number")
+    if rolls < 0:
+        raise HTTPException(status_code=400, detail="rolls cannot be negative")
+    uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_fabric_tables(conn)
+        prod = q(conn, "SELECT id FROM raw_fabric_products WHERE id=%s", (product_id,))
+        if not prod:
+            raise HTTPException(status_code=404, detail="fabric not found")
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(f"""
+                INSERT INTO fabric_roll_counts
+                  (product_id, location_name, rolls, updated_by, updated_by_name, updated_at)
+                VALUES (%s,%s,%s,%s,%s, now())
+                ON CONFLICT (product_id, location_name) DO UPDATE
+                  SET rolls           = EXCLUDED.rolls,
+                      updated_by      = EXCLUDED.updated_by,
+                      updated_by_name = EXCLUDED.updated_by_name,
+                      updated_at      = now()
+                RETURNING rolls, updated_by_name,
+                  to_char(updated_at AT TIME ZONE '{_ROLL_TZ}','DD Mon YYYY, HH24:MI') as updated_at
+            """, (product_id, location, rolls, uid, name))
+            row = cur.fetchone()
+        conn.commit()
+        return {"ok": True, "rolls": row["rolls"],
+                "updated_by_name": row["updated_by_name"],
+                "updated_at": row["updated_at"]}
 
 
 if __name__ == "__main__":

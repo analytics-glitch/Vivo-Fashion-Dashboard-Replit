@@ -337,6 +337,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div class="nav-item" data-page="pos">Purchase Orders</div>
      <div class="nav-item" data-page="suppliers">Vendors/Suppliers</div>
      <div class="nav-item" data-page="reservations">Fabric Reservations</div>
+     <div class="nav-item" data-page="rolls">Rolls</div>
     </nav>
    </div>
    <div class="fab-utils">
@@ -783,6 +784,45 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        </tr></thead>
        <tbody id="resv-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
       </table>
+     </div>
+    </div>
+   </section>
+
+   <!-- ROLLS -->
+   <section id="page-rolls" style="display:none;">
+    <div id="rolls-note" class="muted" style="margin-bottom:.9rem;font-size:12px;"></div>
+    <div class="flex" style="margin-bottom:1.1rem;">
+     <input id="rolls-search" placeholder="Search fabric or code…" oninput="debouncedRolls()" style="width:220px;">
+     <select id="rolls-category" onchange="loadRolls(0)"><option value="">All categories</option></select>
+     <select id="rolls-print" onchange="loadRolls(0)"><option value="">Solid &amp; print</option><option value="Solid">Solid</option><option value="Print">Print</option></select>
+     <select id="rolls-weight" onchange="loadRolls(0)"><option value="">All weights</option><option value="Light">Light</option><option value="Medium">Medium</option><option value="Heavy">Heavy</option></select>
+     <select id="rolls-color" onchange="loadRolls(0)"><option value="">All colors</option></select>
+    </div>
+    <div class="card" style="padding:0;">
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead>
+        <tr>
+         <th rowspan="2">Code</th>
+         <th rowspan="2">Fabric</th>
+         <th rowspan="2">Category</th>
+         <th colspan="3" style="text-align:center;border-left:1px solid var(--border);">RMAT / Stock</th>
+         <th colspan="3" style="text-align:center;border-left:1px solid var(--border);">Dead / Stock Fabric</th>
+        </tr>
+        <tr>
+         <th class="r" style="border-left:1px solid var(--border);">Odoo qty</th><th class="r">Rolls</th><th>Last updated</th>
+         <th class="r" style="border-left:1px solid var(--border);">Odoo qty</th><th class="r">Rolls</th><th>Last updated</th>
+        </tr>
+       </thead>
+       <tbody id="rolls-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
+     <div class="flex" style="justify-content:space-between;padding:.8rem 1rem;border-top:1px solid var(--border);">
+      <span id="rolls-info" class="muted"></span>
+      <div class="flex">
+       <button class="btn" onclick="rollsPage(-1)">&larr; Prev</button>
+       <button class="btn" onclick="rollsPage(1)">Next &rarr;</button>
+      </div>
      </div>
     </div>
    </section>
@@ -1369,8 +1409,8 @@ async function loadSupportProducts(category,subcategory,key){
 }
 
 // ── Navigation ──
-const LOADERS={dashboard:loadFabricMix,register:()=>loadRegister(0),deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations};
-const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'',deadstock:'Fabric that has been sitting without movement',defects:'',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining & interfacing only — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used'};
+const LOADERS={dashboard:loadFabricMix,register:()=>loadRegister(0),deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0)};
+const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'',deadstock:'Fabric that has been sitting without movement',defects:'',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining & interfacing only — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity'};
 const loadedOnce={};
 
 // ── Draggable / reorderable nav tabs (per-browser, localStorage) ──
@@ -4002,6 +4042,105 @@ async function deleteReservation(id){
   }catch(e){alert('Could not delete.');}
 }
 
+// ── Rolls (manual physical roll counts) ──
+// Records how many physical rolls of each fabric sit in each stock location,
+// alongside the Odoo quantity (kg + metres where a conversion exists). v1 records
+// the number only — no variance, no roll→kg conversion, no flagging. Editing is
+// admin-only: the Save controls only render for admins, and the write is ALSO
+// gated server-side, so hiding them is not the enforcement point.
+let rollsOffset=0, rollsTotal=0, lastRollItems=[], rollsIsAdmin=false, rollsBound=false, _mePromise=null;
+function getMe(){ if(!_mePromise) _mePromise=apiFetch('/api/auth/me').catch(()=>null); return _mePromise; }
+let rollsTimer;
+function debouncedRolls(){clearTimeout(rollsTimer);rollsTimer=setTimeout(()=>loadRolls(0),300);}
+function rollsPage(dir){const o=rollsOffset+dir*PAGE_SIZE;if(o<0||o>=rollsTotal)return;loadRolls(o);}
+async function loadRolls(offset){
+  rollsOffset=offset??rollsOffset;
+  const me=await getMe();
+  rollsIsAdmin=!!(me&&me.role==='admin');
+  const noteEl=document.getElementById('rolls-note');
+  if(noteEl)noteEl.textContent=rollsIsAdmin
+    ?'Enter the physical roll count per location and press Save. This is a manual figure — it is not converted to kg or compared against Odoo.'
+    :'Physical roll counts are view-only. Ask an admin to update them.';
+  const params=new URLSearchParams({limit:PAGE_SIZE,offset:rollsOffset,sort:'value_kes',dir:'desc'});
+  const s=document.getElementById('rolls-search').value;if(s)params.set('search',s);
+  const c=document.getElementById('rolls-category').value;if(c)params.set('category',c);
+  const p=document.getElementById('rolls-print').value;if(p)params.set('plain_print',p);
+  const w=document.getElementById('rolls-weight').value;if(w)params.set('weight_range',w);
+  const fc=document.getElementById('rolls-color').value;if(fc)params.set('fabric_color',fc);
+  try{
+    const d=await apiFetch('/api/fabric/rolls?'+params);
+    rollsTotal=d.total;lastRollItems=d.items||[];
+    renderRollsTable();
+    document.getElementById('rolls-info').textContent=rollsTotal?`${rollsOffset+1}–${Math.min(rollsOffset+PAGE_SIZE,rollsTotal)} of ${fmt(rollsTotal)}`:'0 results';
+  }catch(e){rowErr('rolls-body',9,e);}
+}
+function rollLocCell(r,lk){
+  // lk = 'rmat' | 'dead'. data-lk avoids putting a slash (RMAT/Stock) in DOM
+  // selectors; data-loc carries the real location string for the API.
+  const loc=lk==='rmat'?'RMAT/Stock':'Dead/Stock Fabric';
+  const kg=r[lk+'_kg'], m=r[lk+'_metres'], rolls=r[lk+'_rolls'], by=r[lk+'_updated_by'], at=r[lk+'_updated_at'];
+  const qtyTxt=kg!=null?(fmt1(kg)+' kg'+(m!=null?' · '+fmt1(m)+' m':'')):'—';
+  const rollsInner=rollsIsAdmin
+    ? `<input type="number" min="0" step="1" class="roll-input" data-pid="${esc(r.id)}" data-lk="${lk}" data-loc="${esc(loc)}" value="${rolls!=null?esc(rolls):''}" placeholder="—" style="width:62px;height:30px;text-align:right;"> <button class="btn roll-save" data-pid="${esc(r.id)}" data-lk="${lk}" data-loc="${esc(loc)}" style="padding:3px 9px;font-size:12px;">Save</button>`
+    : (rolls!=null?`<span class="pill pill-neutral">${esc(rolls)}</span>`:'<span class="muted">—</span>');
+  const updInner=at?`${esc(by||'—')}<br><span class="muted" style="font-size:11px;">${esc(at)}</span>`:'<span class="muted">—</span>';
+  return `<td class="r" style="white-space:nowrap;border-left:1px solid var(--border);">${qtyTxt}</td>`
+       + `<td class="r" data-roll-cell data-pid="${esc(r.id)}" data-lk="${lk}" style="white-space:nowrap;">${rollsInner}</td>`
+       + `<td data-roll-upd data-pid="${esc(r.id)}" data-lk="${lk}" style="font-size:12px;">${updInner}</td>`;
+}
+function renderRollsTable(){
+  const body=document.getElementById('rolls-body');
+  if(!lastRollItems.length){body.innerHTML='<tr><td colspan="9" class="muted" style="padding:1rem;">No fabric found for these filters.</td></tr>';return;}
+  body.innerHTML=lastRollItems.map(r=>{
+    const cat=[r.fabric_category,r.fabric_subcategory].filter(Boolean).join(' · ')||'—';
+    return `<tr>
+      <td class="num" style="font-size:12px;white-space:nowrap;">${esc(r.default_code||'—')}</td>
+      <td style="font-weight:600;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.name||'')}">${esc(r.name||'—')}</td>
+      <td style="font-size:12px;color:var(--text-sub);white-space:nowrap;">${esc(cat)}</td>
+      ${rollLocCell(r,'rmat')}
+      ${rollLocCell(r,'dead')}
+    </tr>`;
+  }).join('');
+  if(!rollsBound){
+    body.addEventListener('click',e=>{
+      const btn=e.target.closest('button.roll-save');
+      if(btn)saveRoll(btn);
+    });
+    body.addEventListener('keydown',e=>{
+      if(e.key==='Enter'&&e.target.classList&&e.target.classList.contains('roll-input')){
+        e.preventDefault();
+        const btn=e.target.parentElement.querySelector('button.roll-save');
+        if(btn)saveRoll(btn);
+      }
+    });
+    rollsBound=true;
+  }
+}
+async function saveRoll(btn){
+  const pid=btn.dataset.pid, lk=btn.dataset.lk, loc=btn.dataset.loc;
+  const input=document.querySelector(`.roll-input[data-pid="${pid}"][data-lk="${lk}"]`);
+  const updCell=document.querySelector(`[data-roll-upd][data-pid="${pid}"][data-lk="${lk}"]`);
+  const raw=(input?input.value:'').trim();
+  const rolls=parseInt(raw,10);
+  if(raw===''||isNaN(rolls)||rolls<0){
+    if(updCell)updCell.innerHTML='<span style="color:var(--danger);font-size:11px;">Enter a whole number ≥ 0</span>';
+    return;
+  }
+  const prev=btn.textContent; btn.disabled=true; btn.textContent='Saving…';
+  try{
+    const r=await fetch('/api/fabric/rolls',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({product_id:Number(pid),location:loc,rolls})});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
+    const data=await r.json();
+    if(input)input.value=data.rolls;
+    // keep the in-memory row in sync so a re-render (filter/paging) shows it
+    const it=lastRollItems.find(x=>String(x.id)===String(pid));
+    if(it){it[lk+'_rolls']=data.rolls;it[lk+'_updated_by']=data.updated_by_name;it[lk+'_updated_at']=data.updated_at;}
+    if(updCell)updCell.innerHTML=`${esc(data.updated_by_name||'—')}<br><span class="muted" style="font-size:11px;">${esc(data.updated_at||'')}</span>`;
+  }catch(e){
+    if(updCell)updCell.innerHTML='<span style="color:var(--danger);font-size:11px;">'+esc(e.message==='auth'?'Session expired':('Could not save: '+e.message))+'</span>';
+  }finally{ btn.disabled=false; btn.textContent=prev; }
+}
+
 // ── Boot ──
 // Data Quality is an admin-only hygiene tool. Hide its nav tab + section for
 // non-admins, and remove its loader so it can never run. Fails closed: a failed
@@ -4064,6 +4203,11 @@ async function init(){
     catSel.innerHTML='<option value="">All categories</option>'+f.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
     const colSel=document.getElementById('reg-color');
     if(colSel&&Array.isArray(f.fabric_colors))colSel.innerHTML='<option value="">All colors</option>'+f.fabric_colors.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    // Rolls tab shares the same category/color vocabulary as the Register.
+    const rCatSel=document.getElementById('rolls-category');
+    if(rCatSel)rCatSel.innerHTML='<option value="">All categories</option>'+f.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    const rColSel=document.getElementById('rolls-color');
+    if(rColSel&&Array.isArray(f.fabric_colors))rColSel.innerHTML='<option value="">All colors</option>'+f.fabric_colors.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
   }catch(e){/* overview will surface the auth error */}
   fabSyncMixTopbarVisibility();
   loadOverview();
