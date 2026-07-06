@@ -3003,7 +3003,7 @@ function printFabricSheet(){
   const xf=(label,value)=>`<div class="xf"><span class="lbl">${esc(label)}:</span>${value?`<span class="val">${esc(value)}</span>`:'<span class="blank"></span>'}</div>`;
   const tick=name=>`<span class="tick"><span class="box"></span>${esc(name)}</span>`;
   const left=[
-    blankCell('Fabric title on Shopify'),
+    dataCell('Fabric title',clean(r.name)),
     dataCell('Source',source),
     dataCell('Supplier name',clean(r.supplier)),
     dataCell('Fabric code',clean(r.supplier_fabric_code)),
