@@ -151,7 +151,8 @@ def main():
             list_price, standard_price, categ_name,
             sub_category, style_name, style_number,
             collection, color, brand, vendor,
-            category, gender, season, active, write_date
+            category, gender, season, active,
+            write_date
         FROM raw_odoo_products
         WHERE default_code IS NOT NULL
         AND categ_name = '2. Finished Goods Inventory'
@@ -306,10 +307,10 @@ def main():
             stock_on_hand, stock_available, active, product_id, ever_sold
         ) VALUES %s
         ON CONFLICT (sku) DO UPDATE SET
-            product_name = EXCLUDED.product_name,
-            price        = EXCLUDED.price,
-            cost         = EXCLUDED.cost,
-            active       = EXCLUDED.active
+            product_name    = EXCLUDED.product_name,
+            price           = EXCLUDED.price,
+            cost            = EXCLUDED.cost,
+            active          = EXCLUDED.active
     """, rows, page_size=1000)
 
     cur.execute("SELECT COUNT(*) FROM all_products_clean")
