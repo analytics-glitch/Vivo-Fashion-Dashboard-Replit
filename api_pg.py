@@ -9311,7 +9311,8 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
     c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
     if use_clustering:
         avg_expr = "COALESCE(NULLIF(cs.avg_u, 0), st.avg_u)"
-        cs_join = "LEFT JOIN cluster_stats cs ON cs.style = f.style AND cs.tier_n = t.tier_n"
+        cs_join = ("LEFT JOIN cluster_stats cs ON cs.style = f.style "
+                   "AND cs.tier_n = t.tier_n AND cs.country = t.country")
         adj_filter = "AND ABS(f.tier_n - t.tier_n) <= 1"
     else:
         avg_expr = "st.avg_u"
@@ -9320,6 +9321,7 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
     return f"""
     WITH sv AS (
       SELECT p.style_name AS style, s.pos_location_name AS store,
+             MAX(s.country) AS country,
              SUM(s.net_quantity) AS units_sold,
              CASE WHEN SUM(s.net_quantity) > 0
                   THEN SUM(s.net_sales_kes) / SUM(s.net_quantity) END AS asp
@@ -9334,6 +9336,7 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
     ),
     inv AS (
       SELECT p.style_name AS style, i.pos_location_name AS store,
+             MAX(i.country) AS country,
              SUM(i.available) AS available
       FROM all_inventory i
       JOIN all_products_clean p ON p.sku = i.sku
@@ -9345,6 +9348,7 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
     combined AS (
       SELECT COALESCE(sv.style, inv.style) AS style,
              COALESCE(sv.store, inv.store) AS store,
+             COALESCE(sv.country, inv.country) AS country,
              COALESCE(sv.units_sold, 0) AS units_sold,
              COALESCE(inv.available, 0) AS available, sv.asp
       FROM sv FULL OUTER JOIN inv ON sv.style = inv.style AND sv.store = inv.store
@@ -9354,24 +9358,34 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
       FROM combined GROUP BY style HAVING COUNT(*) >= 2 AND AVG(units_sold) > 0
     ),
     store_rev AS (
-      SELECT s.pos_location_name AS store, SUM(s.net_sales_kes::numeric) AS rev90
+      SELECT s.pos_location_name AS store, s.country AS country,
+             SUM(s.net_sales_kes::numeric) AS rev90
       FROM all_sales s
       WHERE s.sale_kind IN ('sale','order')
         AND s.sale_date >= (CURRENT_DATE - INTERVAL '90 days')::text
         AND {BASE_FILTERS}
         AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
         AND s.pos_location_name NOT ILIKE '%online%' {c_sales}
-      GROUP BY 1
+      GROUP BY 1, 2
     ),
+    -- Tier stores WITHIN their own country (PARTITION BY country). A store's
+    -- cluster (A/B/C) must reflect its rank in its OWN market, not a network-wide
+    -- revenue rank — otherwise the "All countries" view tiers, say, Kenya stores
+    -- against Uganda/Rwanda revenue and the tier-adjacency + cluster-average
+    -- thresholds suppress valid intra-country transfers that appear when the view
+    -- is scoped to one country. This partition is a NO-OP for any single-country
+    -- view (one partition), so it only makes "All countries" a proper superset.
     store_tier AS (
-      SELECT store, NTILE(3) OVER (ORDER BY rev90 DESC) AS tier_n
+      SELECT store, country,
+             NTILE(3) OVER (PARTITION BY country ORDER BY rev90 DESC) AS tier_n
       FROM store_rev
     ),
     cluster_stats AS (
-      SELECT c.style, COALESCE(t.tier_n, 3) AS tier_n, AVG(c.units_sold) AS avg_u
+      SELECT c.style, c.country, COALESCE(t.tier_n, 3) AS tier_n,
+             AVG(c.units_sold) AS avg_u
       FROM combined c
-      LEFT JOIN store_tier t ON t.store = c.store
-      GROUP BY c.style, COALESCE(t.tier_n, 3)
+      LEFT JOIN store_tier t ON t.store = c.store AND t.country = c.country
+      GROUP BY c.style, c.country, COALESCE(t.tier_n, 3)
     ),
     style_inv AS (
       SELECT p.style_name AS style, SUM(i.available) AS avail
@@ -9424,21 +9438,21 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
         AND launch > (CURRENT_DATE - INTERVAL '21 days')
     ),
     froms AS (
-      SELECT c.style, c.store, c.available, c.units_sold,
+      SELECT c.style, c.store, c.country, c.available, c.units_sold,
              COALESCE(stt.tier_n, 3) AS tier_n
       FROM combined c
       JOIN stats st ON st.style = c.style
-      LEFT JOIN store_tier stt ON stt.store = c.store
+      LEFT JOIN store_tier stt ON stt.store = c.store AND stt.country = c.country
       WHERE c.available >= 3
         AND NOT EXISTS (SELECT 1 FROM dead d WHERE d.style = c.style)
         AND NOT EXISTS (SELECT 1 FROM too_new tn WHERE tn.style = c.style)
     ),
     tos AS (
-      SELECT c.style, c.store, c.available, c.units_sold,
+      SELECT c.style, c.store, c.country, c.available, c.units_sold,
              COALESCE(stt.tier_n, 3) AS tier_n
       FROM combined c
       JOIN stats st ON st.style = c.style
-      LEFT JOIN store_tier stt ON stt.store = c.store
+      LEFT JOIN store_tier stt ON stt.store = c.store AND stt.country = c.country
       WHERE c.available <= 2
         AND NOT EXISTS (SELECT 1 FROM dead d WHERE d.style = c.style)
         AND NOT EXISTS (SELECT 1 FROM too_new tn WHERE tn.style = c.style)
