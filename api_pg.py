@@ -453,6 +453,14 @@ _AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/readyz", "/api/sync
 _AUTH_INTERNAL_TOKEN_PATHS = {"/api/analytics/replenishment-sor/snapshot",
                               "/api/ibt/nightly-reconcile"}
 
+# Endpoints that accept EITHER a valid internal token (sync loop, no session) OR
+# a normal authenticated staff session (browser). Unlike the strict set above, a
+# missing/invalid internal token does NOT 401 here — it falls through to the
+# session + role gate, so a marketing+ staff member can trigger it from the CRM
+# while the sync loop can bootstrap it headless. The endpoint re-checks the token
+# to decide whether to also assert a staff role.
+_AUTH_INTERNAL_OR_SESSION_PATHS = {"/api/social/x/sync"}
+
 # Query params that are concatenated into SQL as date literals. We validate them
 # to strict ISO dates at the edge so they can never carry SQL-injection payloads
 # (a value that parses as a date contains only digits/'-'/':'/'T' — none can
@@ -933,6 +941,20 @@ async def clerk_auth_gate(request: Request, call_next):
     # opaque share token internally and 404 on an unknown/expired token.
     if path.startswith("/api/public/"):
         return await call_next(request)
+
+    # Dual-auth endpoints: the internal sync loop may trigger these with a valid
+    # X-Internal-Token (no staff session), but they are ALSO reachable by an
+    # authenticated staff member from the browser. A valid internal token
+    # short-circuits; otherwise we fall through to normal session auth + the
+    # per-prefix role gate below (so an anonymous or wrong-token browser hit is
+    # still refused). The endpoint itself re-checks the token to decide whether
+    # to skip the staff-role assertion.
+    if path in _AUTH_INTERNAL_OR_SESSION_PATHS:
+        _sec = os.environ.get("SESSION_SECRET") or ""
+        _tok = request.headers.get("x-internal-token") or ""
+        if _sec and _tok and hmac.compare_digest(_tok, _sec):
+            return await call_next(request)
+        # else: fall through to session-based auth + role gate.
 
     # Internal sync jobs (no staff session) write a small set of snapshot
     # endpoints, authenticated by the shared SESSION_SECRET via X-Internal-Token

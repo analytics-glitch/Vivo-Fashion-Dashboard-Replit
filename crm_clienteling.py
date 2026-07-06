@@ -19,10 +19,17 @@ manager endpoints below re-assert a staff session manually via `_staff`.
 
 import json
 import re
+import os
+import hmac
+import hashlib
+import base64
+import urllib.parse
 import threading
 import time
 import secrets
 from datetime import datetime, date, timedelta
+
+import requests
 
 from fastapi import Request, Body, HTTPException, Query
 from fastapi.responses import PlainTextResponse, Response
@@ -86,6 +93,139 @@ def _int(v, d=0):
         return int(v)
     except (TypeError, ValueError):
         return d
+
+
+# --------------------------------------------------------------------------- #
+# X (Twitter) API v2 — thin client for the CRM social inbox                    #
+# --------------------------------------------------------------------------- #
+# Reads (own posts + mentions) use an app-only Bearer token; writes (posting a
+# reply) and DM reads/sends need OAuth 1.0a user-context credentials (signed
+# with stdlib hmac-sha1 — no external oauth lib, matching this project's
+# stdlib-first auth conventions). Every call fails loud with the API's own
+# error message so a missing scope / rate-limit is surfaced, never silent.
+_X_API = "https://api.twitter.com"
+
+
+def _x_bearer():
+    return (os.environ.get("X_BEARER_TOKEN") or "").strip()
+
+
+def _x_user_id_cfg():
+    return (os.environ.get("X_USER_ID") or "").strip()
+
+
+def _x_username_cfg():
+    return (os.environ.get("X_USERNAME") or "").strip().lstrip("@")
+
+
+def _x_oauth1_creds():
+    return (
+        (os.environ.get("X_API_KEY") or "").strip(),
+        (os.environ.get("X_API_SECRET") or "").strip(),
+        (os.environ.get("X_ACCESS_TOKEN") or "").strip(),
+        (os.environ.get("X_ACCESS_TOKEN_SECRET") or "").strip(),
+    )
+
+
+def _x_read_configured():
+    """Reads need an app Bearer token plus a target account (id or handle)."""
+    return bool(_x_bearer() and (_x_user_id_cfg() or _x_username_cfg()))
+
+
+def _x_write_configured():
+    """Replies + DM reads/sends need OAuth 1.0a user credentials (all four)."""
+    ck, cs, at, ats = _x_oauth1_creds()
+    return bool(ck and cs and at and ats)
+
+
+def _x_err(r):
+    """Extract a human-readable error from an X API v2 error response."""
+    try:
+        j = r.json()
+        if isinstance(j, dict):
+            if j.get("detail"):
+                return f"X API {r.status_code}: {j.get('detail')}"
+            errs = j.get("errors")
+            if isinstance(errs, list) and errs:
+                msgs = "; ".join(
+                    str(e.get("message") or e.get("detail") or e) for e in errs)
+                return f"X API {r.status_code}: {msgs}"
+            if j.get("title"):
+                return f"X API {r.status_code}: {j.get('title')}"
+    except Exception:
+        pass
+    return f"X API {r.status_code}: {(r.text or '')[:200]}"
+
+
+def _x_get(path, params=None):
+    """App-only Bearer GET against X API v2. Raises RuntimeError on non-2xx."""
+    r = requests.get(_X_API + path,
+                     headers={"Authorization": "Bearer " + _x_bearer()},
+                     params=params or {}, timeout=30)
+    if r.status_code // 100 != 2:
+        raise RuntimeError(_x_err(r))
+    return r.json()
+
+
+def _x_oauth1_header(method, url, params=None):
+    """Build an OAuth 1.0a Authorization header (HMAC-SHA1) for a user-context
+    request. `params` are the query-string params (NOT a JSON body, which does
+    not participate in the signature base string)."""
+    ck, cs, at, ats = _x_oauth1_creds()
+    oauth = {
+        "oauth_consumer_key": ck,
+        "oauth_nonce": secrets.token_hex(16),
+        "oauth_signature_method": "HMAC-SHA1",
+        "oauth_timestamp": str(int(time.time())),
+        "oauth_token": at,
+        "oauth_version": "1.0",
+    }
+    enc = lambda s: urllib.parse.quote(str(s), safe="~")
+    allp = dict(params or {})
+    allp.update(oauth)
+    pstr = "&".join(f"{enc(k)}={enc(allp[k])}" for k in sorted(allp))
+    base = "&".join([method.upper(), enc(url), enc(pstr)])
+    key = enc(cs) + "&" + enc(ats)
+    sig = base64.b64encode(
+        hmac.new(key.encode(), base.encode(), hashlib.sha1).digest()).decode()
+    oauth["oauth_signature"] = sig
+    return "OAuth " + ", ".join(
+        f'{enc(k)}="{enc(v)}"' for k, v in sorted(oauth.items()))
+
+
+def _x_oauth1_get(path, params=None):
+    url = _X_API + path
+    r = requests.get(url,
+                     headers={"Authorization":
+                              _x_oauth1_header("GET", url, params)},
+                     params=params or {}, timeout=30)
+    if r.status_code // 100 != 2:
+        raise RuntimeError(_x_err(r))
+    return r.json()
+
+
+def _x_oauth1_post(path, body=None):
+    url = _X_API + path
+    r = requests.post(url,
+                      headers={"Authorization":
+                               _x_oauth1_header("POST", url, None),
+                               "Content-Type": "application/json"},
+                      json=body or {}, timeout=30)
+    if r.status_code // 100 != 2:
+        raise RuntimeError(_x_err(r))
+    return r.json()
+
+
+def _internal_ok(request):
+    """True when the request carries a valid internal token (X-Internal-Token ==
+    SESSION_SECRET), letting the sync loop trigger a sync without a staff
+    session. Fails closed (constant-time compare) when the secret is unset."""
+    try:
+        sec = os.environ.get("SESSION_SECRET") or ""
+        tok = request.headers.get("x-internal-token") or ""
+        return bool(sec and tok and hmac.compare_digest(tok, sec))
+    except Exception:
+        return False
 
 
 def _clamp(v, lo, hi, d):
@@ -3262,6 +3402,60 @@ def _reg_social(app):
                 # Surface the real Graph error — e.g. the 24-hour messaging
                 # window has closed — instead of a silent failure.
                 raise HTTPException(502, f"Instagram rejected the reply: {e}")
+        elif row.get("platform") == "x" and row.get("type") in ("mention", "post"):
+            # An X reply is DELIVERED as a tweet in reply to the target tweet
+            # (POST /2/tweets with reply.in_reply_to_tweet_id), signed with the
+            # OAuth 1.0a user context. The target tweet id lives in source_id as
+            # "xmention:<id>" (a mention/reply) or "xpost:<id>" (our own tweet).
+            sid = (row.get("source_id") or "")
+            tweet_id = ""
+            if sid.startswith("xmention:"):
+                tweet_id = sid[len("xmention:"):]
+            elif sid.startswith("xpost:"):
+                tweet_id = sid[len("xpost:"):]
+            if not tweet_id:
+                raise HTTPException(
+                    400, "This item has no X tweet reference to reply to "
+                         "(re-run the X sync).")
+            if not _x_write_configured():
+                raise HTTPException(
+                    400, "Replying on X requires OAuth 1.0a credentials "
+                         "(X_API_KEY / X_API_SECRET / X_ACCESS_TOKEN / "
+                         "X_ACCESS_TOKEN_SECRET) on the server.")
+            if not body.strip():
+                raise HTTPException(400, "Reply text is empty.")
+            try:
+                _x_oauth1_post("/2/tweets", {
+                    "text": body.strip(),
+                    "reply": {"in_reply_to_tweet_id": str(tweet_id)},
+                })
+                delivered = True
+                delivery_channel = "X"
+            except Exception as e:
+                raise HTTPException(502, f"X rejected the reply: {e}")
+        elif row.get("platform") == "x" and row.get("type") == "dm":
+            # An X DM reply is DELIVERED via the Direct Messages API
+            # (POST /2/dm_conversations/with/{participant_id}/messages) using the
+            # OAuth 1.0a user context. author_handle holds the sender's user id.
+            participant = (row.get("author_handle") or "").strip()
+            if not participant:
+                raise HTTPException(
+                    400, "This DM has no sender reference to reply to "
+                         "(re-run the X sync).")
+            if not _x_write_configured():
+                raise HTTPException(
+                    400, "Replying to X DMs requires OAuth 1.0a credentials "
+                         "on the server.")
+            if not body.strip():
+                raise HTTPException(400, "Reply text is empty.")
+            try:
+                _x_oauth1_post(
+                    f"/2/dm_conversations/with/{participant}/messages",
+                    {"text": body.strip()})
+                delivered = True
+                delivery_channel = "X Direct"
+            except Exception as e:
+                raise HTTPException(502, f"X rejected the reply: {e}")
         _ex("UPDATE crm_social_feedback SET reply_body=%s, replied_at=now() WHERE id=%s",
             (body, _int(fid)))
         A._crm_audit("social", fid, "reply",
@@ -4580,6 +4774,534 @@ def _reg_social(app):
                      f"{new_dms} new DMs", request)
         return {"account": acct_label, "posts": total_posts,
                 "comments": new_comments, "mentions": new_mentions,
+                "mentions_stored": stored_mentions + new_mentions,
+                "mention_blocked": mention_blocked,
+                "mention_error": mention_error,
+                "dms": new_dms,
+                "dms_stored": stored_dms + new_dms,
+                "dm_blocked": dm_blocked,
+                "dm_error": dm_error,
+                "scopes_missing": sorted(scopes_missing)}
+
+    # ----- Live X (Twitter) wiring ----------------------------------------- #
+    # X is a first-class inbox platform alongside Facebook + Instagram. The
+    # server holds the app Bearer token (reads) and OAuth 1.0a user creds
+    # (writes/DMs) via secrets, resolved by the module-level _x_* helpers. We
+    # pull the brand account's own tweets (posts), @-mentions/replies and
+    # inbound DMs into crm_social_feedback (platform='x') and deliver replies
+    # back. Deep-backfill + cursor-resume + a 240s budget mirror the FB/IG
+    # engines. A missing tier/scope (mentions or DM access is often gated on
+    # X's paid tiers) is reported in scopes_missing and never fails the sync.
+    _X_SYNC_POST_TARGET = 2000
+    _X_SYNC_MENTION_TARGET = 2000
+    _X_SYNC_DM_TARGET = 2000
+    _X_SYNC_TIME_BUDGET_SEC = 240
+    _x_sync_lock = threading.Lock()
+    _x_id_cache = {"id": None, "username": None, "ts": 0.0}
+    _X_ID_TTL = 3600  # the brand handle changes very rarely
+
+    def _x_account():
+        """Resolve (user_id, username) of the configured brand account. Prefers
+        the explicit X_USER_ID/X_USERNAME secrets; otherwise resolves the id
+        from the handle via the API (cached 1h + persisted in crm_config).
+        Returns (None, None) when unresolved/unreachable."""
+        uid = _x_user_id_cfg()
+        uname = _x_username_cfg()
+        if uid:
+            uname = (uname or _x_id_cache["username"]
+                     or _cfg_get("social.x.username") or None)
+            return uid, uname
+        if not uname:
+            return None, None
+        now = time.time()
+        if (_x_id_cache["id"] and _x_id_cache["username"] == uname
+                and (now - _x_id_cache["ts"]) < _X_ID_TTL):
+            return _x_id_cache["id"], uname
+        cached = _cfg_get("social.x.user_id")
+        if cached and (_cfg_get("social.x.username") or "") == uname:
+            _x_id_cache.update(id=str(cached), username=uname, ts=now)
+            return str(cached), uname
+        data = (_x_get("/2/users/by/username/"
+                       + urllib.parse.quote(uname)) or {}).get("data") or {}
+        rid = data.get("id")
+        if rid:
+            _x_id_cache.update(id=str(rid), username=uname, ts=now)
+            _cfg_set("social.x.user_id", str(rid))
+            _cfg_set("social.x.username", uname)
+            return str(rid), uname
+        return None, uname
+
+    @app.get("/api/social/x/status")
+    def cl_soc_x_status(request: Request):
+        _staff(request, roles=("customer_service", "marketing",
+                               "leadership", "admin"))
+        empty = {"connected": False, "account": None, "last_synced_at": None,
+                 "write_enabled": False,
+                 "counts": {"real_posts": 0, "real_feedback": 0,
+                            "real_mentions": 0, "real_dms": 0}}
+        if not _x_read_configured():
+            return empty
+        try:
+            uid, uname = _x_account()
+        except Exception:
+            return empty  # token invalid/unreachable -> show connect banner
+        if not uid:
+            return empty
+        agg = _one("SELECT count(*) AS feedback, "
+                   " count(*) FILTER (WHERE type='post') AS posts, "
+                   " count(*) FILTER (WHERE type='mention') AS mentions, "
+                   " count(*) FILTER (WHERE type='dm') AS dms "
+                   "FROM crm_social_feedback WHERE platform='x'") or {}
+        posts_n = _int(_cfg_get("social.x.last_sync_posts"), 0)
+        mentions_n = _int(_cfg_get("social.x.last_sync_mentions"), 0)
+        dms_n = _int(_cfg_get("social.x.last_sync_dms"), 0)
+        scopes = [s for s in
+                  (_cfg_get("social.x.last_scopes_missing") or "").split(",")
+                  if s]
+        return {
+            "connected": True,
+            "account": {
+                "user_id": uid,
+                "username": uname,
+                "handle": ("@" + uname) if uname else None,
+                "last_sync_posts": posts_n,
+                "last_sync_mentions": mentions_n,
+                "last_sync_dms": dms_n,
+                "last_sync_scopes_missing": scopes,
+            },
+            "last_synced_at": _cfg_get("social.x.last_synced_at") or None,
+            "write_enabled": _x_write_configured(),
+            "counts": {"real_posts": _int(agg.get("posts"), 0),
+                       "real_feedback": _int(agg.get("feedback"), 0),
+                       "real_mentions": _int(agg.get("mentions"), 0),
+                       "real_dms": _int(agg.get("dms"), 0)},
+        }
+
+    @app.post("/api/social/x/sync")
+    def cl_soc_x_sync(request: Request, payload: dict = Body(default=None)):
+        # The internal sync loop may trigger this with X-Internal-Token (no
+        # staff session); a browser call must be an authenticated marketing+
+        # staff member (the /api/social role gate already applies to sessions).
+        if not _internal_ok(request):
+            _staff(request, roles=("customer_service", "marketing",
+                                   "leadership", "admin"))
+        if not _x_read_configured():
+            raise HTTPException(400, "X (Twitter) is not configured on the server.")
+        if not _x_sync_lock.acquire(blocking=False):
+            raise HTTPException(409, "An X sync is already running.")
+        try:
+            budget = None
+            try:
+                budget = int((payload or {}).get("max_seconds"))
+            except (TypeError, ValueError):
+                budget = None
+            return _x_sync_run(request, max_seconds=budget)
+        finally:
+            _x_sync_lock.release()
+
+    def _x_sync_run(request, max_seconds=None):
+        try:
+            uid, uname = _x_account()
+        except Exception as e:
+            raise HTTPException(502, f"X sync failed: {e}")
+        if not uid:
+            raise HTTPException(
+                400, "Could not resolve the X account. Set X_USER_ID or "
+                     "X_USERNAME (with a valid X_BEARER_TOKEN) and retry.")
+        budget = _X_SYNC_TIME_BUDGET_SEC
+        if max_seconds and max_seconds > 0:
+            budget = min(_X_SYNC_TIME_BUDGET_SEC, max_seconds)
+        started = time.monotonic()
+
+        def _over_budget():
+            return (time.monotonic() - started) > budget
+
+        acct_label = ("@" + uname) if uname else "Our X account"
+        scopes_missing = set()
+        new_posts = 0
+        new_mentions = 0
+        new_dms = 0
+        total_posts = 0
+        total_mentions = 0
+        total_dms = 0
+
+        def _permalink(tweet_id, handle=None):
+            h = handle or uname
+            return (f"https://x.com/{h}/status/{tweet_id}" if h
+                    else f"https://x.com/i/web/status/{tweet_id}")
+
+        def _ingest_x_posts(tweets):
+            """Insert the account's own tweets (type='post', sentiment NULL —
+            our own voice, not customer feedback). Returns count of new rows."""
+            nonlocal total_posts, new_posts
+            cand = [(t.get("id"), (t.get("text") or "").strip(), t)
+                    for t in (tweets or []) if t.get("id")]
+            if not cand:
+                return 0
+            total_posts += len(cand)
+            sids = ["xpost:" + str(tid) for tid, _, _ in cand]
+            try:
+                rows = _ex("SELECT source_id FROM crm_social_feedback "
+                           "WHERE source_id = ANY(%s)", (sids,), fetch=True) or []
+                existing = {r["source_id"] for r in rows}
+            except Exception:
+                existing = set()
+            page_new = 0
+            for tid, body, t in cand:
+                if ("xpost:" + str(tid)) in existing:
+                    continue
+                rid = _ex(
+                    "INSERT INTO crm_social_feedback "
+                    "(platform,type,author_name,author_handle,body,sentiment,"
+                    " source_id,permalink,posted_at) VALUES "
+                    "('x','post',%s,%s,%s,NULL,%s,%s,"
+                    " COALESCE(%s::timestamptz, now())) "
+                    "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
+                    "DO NOTHING RETURNING id",
+                    (acct_label, ("@" + uname) if uname else None,
+                     body or "[Tweet]", "xpost:" + str(tid),
+                     _permalink(tid), t.get("created_at")), fetch=True)
+                if rid:
+                    new_posts += 1
+                    page_new += 1
+            return page_new
+
+        def _ingest_x_mentions(tweets, users_by_id):
+            """Insert @-mentions/replies (type='mention'); LLM-classify only the
+            NEW ones. author_handle carries the mentioner's @handle; the reply
+            target is the tweet id held in source_id (xmention:<id>)."""
+            nonlocal total_mentions, new_mentions
+            cand = [(t.get("id"), (t.get("text") or "").strip(), t)
+                    for t in (tweets or [])
+                    if t.get("id") and (t.get("text") or "").strip()]
+            if not cand:
+                return 0
+            total_mentions += len(cand)
+            sids = ["xmention:" + str(tid) for tid, _, _ in cand]
+            try:
+                rows = _ex("SELECT source_id FROM crm_social_feedback "
+                           "WHERE source_id = ANY(%s)", (sids,), fetch=True) or []
+                existing = {r["source_id"] for r in rows}
+            except Exception:
+                existing = set()
+            fresh = [(tid, body, t) for (tid, body, t) in cand
+                     if ("xmention:" + str(tid)) not in existing]
+            sent_map = {}
+            for i in range(0, len(fresh), 50):
+                chunk = fresh[i:i + 50]
+                sents = A._fb_sentiment([b for _, b, _ in chunk])
+                for j, (tid, _, _) in enumerate(chunk):
+                    sent_map[tid] = sents.get(j)
+            page_new = 0
+            for tid, body, t in fresh:
+                u = users_by_id.get(str(t.get("author_id") or "")) or {}
+                au = u.get("username")
+                author = u.get("name") or (("@" + au) if au else "X user")
+                rid = _ex(
+                    "INSERT INTO crm_social_feedback "
+                    "(platform,type,author_name,author_handle,body,sentiment,"
+                    " source_id,permalink,parent_source_id,parent_excerpt,"
+                    " posted_at) VALUES "
+                    "('x','mention',%s,%s,%s,%s,%s,%s,NULL,NULL,"
+                    " COALESCE(%s::timestamptz, now())) "
+                    "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
+                    "DO NOTHING RETURNING id",
+                    (author, ("@" + au) if au else None, body,
+                     sent_map.get(tid), "xmention:" + str(tid),
+                     _permalink(tid, au), t.get("created_at")), fetch=True)
+                if rid:
+                    new_mentions += 1
+                    page_new += 1
+            return page_new
+
+        def _ingest_x_dms(events):
+            """Insert INBOUND DMs (sender != our account) as type='dm';
+            author_handle carries the sender id (the DM reply participant)."""
+            nonlocal total_dms, new_dms
+            cand = []
+            for e in (events or []):
+                if (e.get("event_type") or "MessageCreate") != "MessageCreate":
+                    continue
+                mid = e.get("id")
+                sender = str(e.get("sender_id") or "")
+                body = (e.get("text") or "").strip()
+                if not mid or not sender or sender == str(uid) or not body:
+                    continue  # skip malformed / outbound / attachment-only
+                cand.append((mid, sender, body, e))
+            if not cand:
+                return 0
+            total_dms += len(cand)
+            sids = ["xdm:" + str(mid) for mid, _, _, _ in cand]
+            try:
+                rows = _ex("SELECT source_id FROM crm_social_feedback "
+                           "WHERE source_id = ANY(%s)", (sids,), fetch=True) or []
+                existing = {r["source_id"] for r in rows}
+            except Exception:
+                existing = set()
+            fresh = [(mid, s, b, e) for (mid, s, b, e) in cand
+                     if ("xdm:" + str(mid)) not in existing]
+            sent_map = {}
+            for i in range(0, len(fresh), 50):
+                chunk = fresh[i:i + 50]
+                sents = A._fb_sentiment([b for _, _, b, _ in chunk])
+                for j, (mid, _, _, _) in enumerate(chunk):
+                    sent_map[mid] = sents.get(j)
+            page_new = 0
+            for mid, sender, body, e in fresh:
+                conv = str(e.get("dm_conversation_id") or "") or None
+                rid = _ex(
+                    "INSERT INTO crm_social_feedback "
+                    "(platform,type,author_name,author_handle,body,sentiment,"
+                    " source_id,permalink,parent_source_id,parent_excerpt,"
+                    " posted_at) VALUES "
+                    "('x','dm',%s,%s,%s,%s,%s,NULL,%s,%s,"
+                    " COALESCE(%s::timestamptz, now())) "
+                    "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
+                    "DO NOTHING RETURNING id",
+                    (f"X user {sender}", sender, body, sent_map.get(mid),
+                     "xdm:" + str(mid), ("xconv:" + conv) if conv else None,
+                     "X direct message", e.get("created_at")), fetch=True)
+                if rid:
+                    new_dms += 1
+                    page_new += 1
+            return page_new
+
+        stored = _one(
+            "SELECT COUNT(*) FILTER (WHERE type='post') AS p, "
+            " COUNT(*) FILTER (WHERE type='mention') AS m, "
+            " COUNT(*) FILTER (WHERE type='dm') AS d "
+            "FROM crm_social_feedback WHERE platform='x'") or {}
+        stored_posts = _int(stored.get("p"), 0)
+        stored_mentions = _int(stored.get("m"), 0)
+        stored_dms = _int(stored.get("d"), 0)
+
+        def _posts_short():
+            return (stored_posts + new_posts) < _X_SYNC_POST_TARGET
+
+        def _mentions_short():
+            return (stored_mentions + new_mentions) < _X_SYNC_MENTION_TARGET
+
+        def _dms_short():
+            return (stored_dms + new_dms) < _X_SYNC_DM_TARGET
+
+        def _fetch_posts_page(token):
+            params = {"max_results": 100, "tweet.fields": "created_at",
+                      "exclude": "retweets"}
+            if token:
+                params["pagination_token"] = token
+            return _x_get(f"/2/users/{uid}/tweets", params)
+
+        def _process_posts_page(feed):
+            data = feed.get("data") or []
+            page_new = _ingest_x_posts(data)
+            return len(data), page_new, (feed.get("meta") or {}).get("next_token")
+
+        def _fetch_mentions_page(token):
+            params = {"max_results": 100,
+                      "tweet.fields": "created_at,author_id",
+                      "expansions": "author_id",
+                      "user.fields": "username,name"}
+            if token:
+                params["pagination_token"] = token
+            return _x_get(f"/2/users/{uid}/mentions", params)
+
+        def _process_mentions_page(feed):
+            data = feed.get("data") or []
+            users = {}
+            for u in ((feed.get("includes") or {}).get("users") or []):
+                if u.get("id"):
+                    users[str(u["id"])] = u
+            page_new = _ingest_x_mentions(data, users)
+            return len(data), page_new, (feed.get("meta") or {}).get("next_token")
+
+        def _fetch_dm_page(token):
+            params = {"max_results": 100, "event_types": "MessageCreate",
+                      "dm_event.fields":
+                      "created_at,sender_id,dm_conversation_id,text"}
+            if token:
+                params["pagination_token"] = token
+            return _x_oauth1_get("/2/dm_events", params)
+
+        def _process_dm_page(feed):
+            data = feed.get("data") or []
+            page_new = _ingest_x_dms(data)
+            return len(data), page_new, (feed.get("meta") or {}).get("next_token")
+
+        def _x_access_err(e):
+            m = str(e).lower()
+            return ("403" in m or "forbidden" in m or "not authorized" in m
+                    or "access" in m or "level" in m or "dm.read" in m)
+
+        mention_blocked = False
+        mention_error = None
+        dm_blocked = False
+        dm_error = None
+        try:
+            # Phase A — fresh own tweets: newest-first until a page adds nothing.
+            token = None
+            exhausted = False
+            first = True
+            while not _over_budget():
+                try:
+                    feed = _fetch_posts_page(token)
+                except Exception as e:
+                    if first:
+                        raise HTTPException(502, f"X sync failed: {e}")
+                    break
+                n, page_new, nxt = _process_posts_page(feed)
+                first = False
+                if not nxt:
+                    exhausted = True
+                    token = None
+                    break
+                token = nxt
+                if n == 0 or page_new == 0:
+                    break
+
+            # Phase B — deep post backfill toward the target, resuming from the
+            # persisted cursor (the /tweets timeline caps near ~3.2k tweets, at
+            # which point no next_token is returned and the deep pass completes).
+            deep_done = (_cfg_get("social.x.deep_done") or "") == "1" or exhausted
+            if not deep_done and _posts_short():
+                deep = (_cfg_get("social.x.deep_cursor") or "") or token
+                while deep and not _over_budget() and _posts_short():
+                    try:
+                        feed = _fetch_posts_page(deep)
+                    except Exception:
+                        deep = None
+                        break
+                    n, page_new, nxt = _process_posts_page(feed)
+                    if not nxt or n == 0:
+                        deep_done = True
+                        deep = None
+                        break
+                    deep = nxt
+                _cfg_set("social.x.deep_cursor", deep or "")
+            if deep_done:
+                _cfg_set("social.x.deep_done", "1")
+                _cfg_set("social.x.deep_cursor", "")
+
+            # Phase M — @-mentions/replies. Always attempt at least one fresh
+            # page (m_first) so new mentions are never starved by a long post
+            # backfill. Missing access never fails the posts sync.
+            m_token = None
+            m_exhausted = False
+            m_first = True
+            while m_first or not _over_budget():
+                try:
+                    feed = _fetch_mentions_page(m_token)
+                except Exception as e:
+                    if _x_access_err(e):
+                        scopes_missing.add("mentions_read")
+                    mention_blocked = True
+                    mention_error = str(e)[:500]
+                    break
+                n, page_new, nxt = _process_mentions_page(feed)
+                m_first = False
+                if not nxt:
+                    m_exhausted = True
+                    m_token = None
+                    break
+                m_token = nxt
+                if n == 0 or page_new == 0:
+                    break
+
+            m_done = ((_cfg_get("social.x.mention_done") or "") == "1"
+                      or m_exhausted)
+            if not mention_blocked and not m_done and _mentions_short():
+                deep_m = (_cfg_get("social.x.mention_deep_cursor") or "") or m_token
+                while deep_m and not _over_budget() and _mentions_short():
+                    try:
+                        feed = _fetch_mentions_page(deep_m)
+                    except Exception as e:
+                        mention_error = str(e)[:500]
+                        deep_m = None
+                        break
+                    n, page_new, nxt = _process_mentions_page(feed)
+                    if not nxt or n == 0:
+                        m_done = True
+                        deep_m = None
+                        break
+                    deep_m = nxt
+                _cfg_set("social.x.mention_deep_cursor", deep_m or "")
+            if m_done:
+                _cfg_set("social.x.mention_done", "1")
+                _cfg_set("social.x.mention_deep_cursor", "")
+
+            # Phase D — inbound DMs via OAuth 1.0a user context. DM read access
+            # (dm.read + an elevated tier) is often unavailable; report it in
+            # scopes_missing and never fail the rest of the sync.
+            if not _x_write_configured():
+                scopes_missing.add("dm.read")
+                dm_blocked = True
+                dm_error = "X DM access requires OAuth 1.0a credentials (unset)."
+            else:
+                d_token = None
+                d_exhausted = False
+                d_first = True
+                while d_first or not _over_budget():
+                    try:
+                        feed = _fetch_dm_page(d_token)
+                    except Exception as e:
+                        if _x_access_err(e):
+                            scopes_missing.add("dm.read")
+                        dm_blocked = True
+                        dm_error = str(e)[:500]
+                        break
+                    n, page_new, nxt = _process_dm_page(feed)
+                    d_first = False
+                    if not nxt:
+                        d_exhausted = True
+                        d_token = None
+                        break
+                    d_token = nxt
+                    if n == 0 or page_new == 0:
+                        break
+
+                d_done = ((_cfg_get("social.x.dm_deep_done") or "") == "1"
+                          or d_exhausted)
+                if not dm_blocked and not d_done and _dms_short():
+                    deep_d = (_cfg_get("social.x.dm_deep_cursor") or "") or d_token
+                    while deep_d and not _over_budget() and _dms_short():
+                        try:
+                            feed = _fetch_dm_page(deep_d)
+                        except Exception as e:
+                            if dm_error is None:
+                                dm_error = str(e)[:500]
+                            deep_d = None
+                            break
+                        n, page_new, nxt = _process_dm_page(feed)
+                        if not nxt or n == 0:
+                            d_done = True
+                            deep_d = None
+                            break
+                        deep_d = nxt
+                    _cfg_set("social.x.dm_deep_cursor", deep_d or "")
+                if d_done:
+                    _cfg_set("social.x.dm_deep_done", "1")
+                    _cfg_set("social.x.dm_deep_cursor", "")
+        except HTTPException:
+            raise
+
+        from datetime import datetime, timezone
+        _cfg_set("social.x.last_synced_at",
+                 datetime.now(timezone.utc).isoformat())
+        _cfg_set("social.x.last_sync_posts", total_posts)
+        _cfg_set("social.x.last_sync_mentions", total_mentions)
+        _cfg_set("social.x.last_sync_dms", total_dms)
+        _cfg_set("social.x.last_mention_error", mention_error or "")
+        _cfg_set("social.x.last_dm_error", dm_error or "")
+        _cfg_set("social.x.last_scopes_missing", ",".join(sorted(scopes_missing)))
+        try:
+            A._crm_audit("social", uid, "sync",
+                         f"x sync: {total_posts} posts, "
+                         f"{new_mentions} new mentions, {new_dms} new DMs",
+                         request)
+        except Exception:
+            pass
+        return {"account": acct_label, "posts": total_posts,
+                "posts_stored": stored_posts + new_posts,
+                "mentions": new_mentions,
                 "mentions_stored": stored_mentions + new_mentions,
                 "mention_blocked": mention_blocked,
                 "mention_error": mention_error,
