@@ -3237,6 +3237,31 @@ def _reg_social(app):
                 # Surface the real Graph error — e.g. the 24-hour messaging
                 # window has closed — instead of a silent failure.
                 raise HTTPException(502, f"Facebook rejected the reply: {e}")
+        elif row.get("type") == "dm" and row.get("platform") == "instagram":
+            # An Instagram Direct reply is DELIVERED via the same Send API the
+            # linked Facebook Page uses (POST /{page-id}/messages), addressed to
+            # the sender's Instagram-scoped id (IGSID) held in author_handle.
+            igsid = (row.get("author_handle") or "").strip()
+            if not igsid:
+                raise HTTPException(
+                    400, "This DM has no sender reference to reply to "
+                         "(re-run the Instagram sync).")
+            if not A._fb_configured():
+                raise HTTPException(400, "Instagram is not configured on the server.")
+            if not body.strip():
+                raise HTTPException(400, "Reply text is empty.")
+            try:
+                A._fb_post(f"{A._fb_page_id()}/messages", {
+                    "recipient": json.dumps({"id": igsid}),
+                    "messaging_type": "RESPONSE",
+                    "message": json.dumps({"text": body.strip()}),
+                })
+                delivered = True
+                delivery_channel = "Instagram Direct"
+            except Exception as e:
+                # Surface the real Graph error — e.g. the 24-hour messaging
+                # window has closed — instead of a silent failure.
+                raise HTTPException(502, f"Instagram rejected the reply: {e}")
         _ex("UPDATE crm_social_feedback SET reply_body=%s, replied_at=now() WHERE id=%s",
             (body, _int(fid)))
         A._crm_audit("social", fid, "reply",
@@ -3874,7 +3899,9 @@ def _reg_social(app):
     _IG_SYNC_POST_TARGET = 2000
     _IG_SYNC_COMMENT_TARGET = 2000
     _IG_SYNC_MENTION_TARGET = 2000
+    _IG_SYNC_DM_TARGET = 2000
     _IG_SYNC_TIME_BUDGET_SEC = 240
+    _IG_M_FIELDS = "id,message,from,created_time"
     _ig_sync_lock = threading.Lock()
     _ig_id_cache = {"id": None, "username": None, "ts": 0.0}
     _IG_ID_TTL = 3600  # the Page↔IG link changes very rarely
@@ -3915,11 +3942,13 @@ def _reg_social(app):
         if not iid:
             return empty  # no IG business account linked to the Page
         agg = _one("SELECT count(*) AS feedback, "
-                   " count(*) FILTER (WHERE type='mention') AS mentions "
+                   " count(*) FILTER (WHERE type='mention') AS mentions, "
+                   " count(*) FILTER (WHERE type='dm') AS dms "
                    "FROM crm_social_feedback WHERE platform='instagram'") or {}
         posts_n = _int(_cfg_get("social.ig.last_sync_posts"), 0)
         comments_n = _int(_cfg_get("social.ig.last_sync_comments"), 0)
         mentions_n = _int(_cfg_get("social.ig.last_sync_mentions"), 0)
+        dms_n = _int(_cfg_get("social.ig.last_sync_dms"), 0)
         scopes = [s for s in (_cfg_get("social.ig.last_scopes_missing") or "").split(",") if s]
         last_at = _cfg_get("social.ig.last_synced_at")
         return {
@@ -3931,13 +3960,15 @@ def _reg_social(app):
                 "last_sync_posts": posts_n,
                 "last_sync_comments": comments_n,
                 "last_sync_mentions": mentions_n,
+                "last_sync_dms": dms_n,
                 "last_sync_scopes_missing": scopes,
             },
             "last_synced_at": last_at or None,
             "auto_sync_minutes": None,
             "counts": {"real_posts": posts_n,
                        "real_feedback": _int(agg.get("feedback"), 0),
-                       "real_mentions": _int(agg.get("mentions"), 0)},
+                       "real_mentions": _int(agg.get("mentions"), 0),
+                       "real_dms": _int(agg.get("dms"), 0)},
         }
 
     @app.post("/api/social/instagram/sync")
@@ -3971,9 +4002,11 @@ def _reg_social(app):
         new_comments = 0
         new_posts = 0
         new_mentions = 0
+        new_dms = 0
         total_comments = 0
         total_posts = 0
         total_mentions = 0
+        total_dms = 0
 
         def _ig_author(username):
             return (username or "Instagram user",
@@ -4083,11 +4116,13 @@ def _reg_social(app):
         stored = _one(
             "SELECT COUNT(*) FILTER (WHERE type='post') AS p, "
             " COUNT(*) FILTER (WHERE type='comment') AS c, "
-            " COUNT(*) FILTER (WHERE type='mention') AS m "
+            " COUNT(*) FILTER (WHERE type='mention') AS m, "
+            " COUNT(*) FILTER (WHERE type='dm') AS d "
             "FROM crm_social_feedback WHERE platform='instagram'") or {}
         stored_posts = _int(stored.get("p"), 0)
         stored_comments = _int(stored.get("c"), 0)
         stored_mentions = _int(stored.get("m"), 0)
+        stored_dms = _int(stored.get("d"), 0)
 
         def _posts_short():
             return (stored_posts + new_posts) < _IG_SYNC_POST_TARGET
@@ -4097,6 +4132,67 @@ def _reg_social(app):
 
         def _mentions_short():
             return (stored_mentions + new_mentions) < _IG_SYNC_MENTION_TARGET
+
+        def _dms_short():
+            return (stored_dms + new_dms) < _IG_SYNC_DM_TARGET
+
+        def _ingest_ig_dms(mraw, conv_id, conv_link):
+            """Insert a batch of raw Instagram Direct messages (INBOUND only —
+            the account's own messages are not inbox items); LLM-classify only
+            the NEW ones (dedup by source_id), mirroring the FB DM ingest."""
+            nonlocal new_dms
+            cand = []
+            for m in mraw or []:
+                mid = m.get("id")
+                frm = m.get("from") or {}
+                if not mid:
+                    continue
+                if str(frm.get("id") or "") == str(ig_id):
+                    continue  # outbound (our own reply)
+                body = (m.get("message") or "").strip()
+                if not body:
+                    continue  # attachment/sticker-only message
+                cand.append((mid, body, m))
+            if not cand:
+                return
+            sids = ["igdm:" + str(mid) for mid, _, _ in cand]
+            try:
+                rows = _ex("SELECT source_id FROM crm_social_feedback "
+                           "WHERE source_id = ANY(%s)", (sids,), fetch=True) or []
+                existing = {r["source_id"] for r in rows}
+            except Exception:
+                existing = set()
+            fresh = [(mid, body, m) for (mid, body, m) in cand
+                     if ("igdm:" + str(mid)) not in existing]
+            sent_map = {}
+            for i in range(0, len(fresh), 50):
+                chunk = fresh[i:i + 50]
+                sents = A._fb_sentiment([b for _, b, _ in chunk])
+                for j, (mid, _, _) in enumerate(chunk):
+                    sent_map[mid] = sents.get(j)
+            for mid, body, m in fresh:
+                frm = m.get("from") or {}
+                author = (frm.get("username") or frm.get("name")
+                          or "Instagram user")
+                # author_handle carries the sender's Instagram-scoped id (IGSID)
+                # so the reply endpoint can deliver a Direct reply back.
+                igsid = str(frm.get("id") or "") or None
+                rid = _ex(
+                    "INSERT INTO crm_social_feedback "
+                    "(platform,type,author_name,author_handle,body,sentiment,"
+                    " source_id,permalink,parent_source_id,parent_excerpt,"
+                    " posted_at) VALUES "
+                    "('instagram','dm',%s,%s,%s,%s,%s,%s,%s,%s,"
+                    " COALESCE(%s::timestamptz, now())) "
+                    "ON CONFLICT (source_id) WHERE source_id IS NOT NULL "
+                    "DO NOTHING RETURNING id",
+                    (author, igsid, body, sent_map.get(mid),
+                     "igdm:" + str(mid), conv_link,
+                     "igconv:" + str(conv_id),
+                     f"Instagram conversation with {author}",
+                     _fb_ts(m.get("created_time"))), fetch=True)
+                if rid:
+                    new_dms += 1
 
         # Media are fetched newest-first, 50 per Graph page, with the first 50
         # comments (and their inline replies) of each expanded inline.
@@ -4339,6 +4435,133 @@ def _reg_social(app):
             if mention_done:
                 _cfg_set("social.ig.mention_done", "1")
                 _cfg_set("social.ig.mention_deep_cursor", "")
+
+            # Phase C — Instagram Direct messages: walk the linked account's
+            # conversations (via the Page node with platform=instagram) storing
+            # each INBOUND message as a 'dm' feedback row. Mirrors the FB DM
+            # phase exactly: a missing instagram_manage_messages scope (or any
+            # Graph failure here) never fails the posts/comments/mentions sync —
+            # the missing scope is reported like the comment scope is.
+            def _ig_dm_scope_err(e):
+                m = str(e).lower()
+                return ("permission" in m or "scope" in m or "#10" in m
+                        or "#200" in m or "#230" in m)
+
+            def _fetch_ig_conv_page(after):
+                params = {"platform": "instagram",
+                          "fields": "id,updated_time,"
+                          "messages.limit(100){" + _IG_M_FIELDS + "}",
+                          "limit": 25}
+                if after:
+                    params["after"] = after
+                return A._fb_get(f"{A._fb_page_id()}/conversations", params)
+
+            def _process_ig_conv_page(feed):
+                """Ingest one conversations page. Returns (n_convs, n_new_dms,
+                next_cursor, completed) — completed=False means the time budget
+                interrupted the page (caller must not advance past it)."""
+                nonlocal total_dms
+                convs = feed.get("data") or []
+                before = new_dms
+                completed = True
+                for conv in convs:
+                    if _over_budget():
+                        completed = False
+                        break
+                    conv_id = conv.get("id")
+                    if not conv_id:
+                        continue
+                    mnode = conv.get("messages") or {}
+                    mraw = mnode.get("data") or []
+                    m_after = ((mnode.get("paging") or {}).get("cursors")
+                               or {}).get("after")
+                    m_more = bool((mnode.get("paging") or {}).get("next"))
+                    if mraw:
+                        total_dms += len(mraw)
+                        _ingest_ig_dms(mraw, conv_id, None)
+                    # Older messages of a long thread, while the target is unmet.
+                    while (m_more and m_after and _dms_short()
+                           and not _over_budget()):
+                        try:
+                            mres = A._fb_get(f"{conv_id}/messages", {
+                                "fields": _IG_M_FIELDS, "limit": 100,
+                                "after": m_after})
+                        except Exception:
+                            break
+                        mraw = mres.get("data") or []
+                        if not mraw:
+                            break
+                        total_dms += len(mraw)
+                        _ingest_ig_dms(mraw, conv_id, None)
+                        m_after = ((mres.get("paging") or {}).get("cursors")
+                                   or {}).get("after")
+                        m_more = bool((mres.get("paging") or {}).get("next"))
+                paging = feed.get("paging") or {}
+                nxt = ((paging.get("cursors") or {}).get("after")
+                       if paging.get("next") else None)
+                return len(convs), new_dms - before, nxt, completed
+
+            dm_blocked = False
+            dm_error = None
+            dm_after = None
+            dm_exhausted = False
+            dm_first = True
+            # Fresh DMs: from the most recent conversations until a page adds
+            # nothing new. Always attempt at least the first page, even if the
+            # earlier phases used the whole budget, so DMs are never starved.
+            while dm_first or not _over_budget():
+                page_cursor = dm_after
+                try:
+                    feed = _fetch_ig_conv_page(dm_after)
+                except Exception as e:
+                    if _ig_dm_scope_err(e):
+                        scopes_missing.add("instagram_manage_messages")
+                    dm_blocked = True
+                    dm_error = str(e)[:500]
+                    break  # keep the earlier phases; DM phase reports the error
+                n, page_new, nxt, completed = _process_ig_conv_page(feed)
+                dm_first = False
+                if not completed:
+                    dm_after = page_cursor  # re-do this page next sync
+                    break
+                if not nxt:
+                    dm_exhausted = True
+                    dm_after = None
+                    break
+                dm_after = nxt
+                if n == 0 or page_new == 0:
+                    break
+
+            # DM deep backfill toward the 2000 stored target, resuming where the
+            # previous sync stopped (persisted cursor).
+            if not dm_blocked:
+                dm_deep_done = ((_cfg_get("social.ig.dm_deep_done") or "") == "1"
+                                or dm_exhausted)
+                if not dm_deep_done and _dms_short():
+                    deep_after = (_cfg_get("social.ig.dm_deep_cursor") or "") or dm_after
+                    while (deep_after and not _over_budget() and _dms_short()):
+                        page_cursor = deep_after
+                        try:
+                            feed = _fetch_ig_conv_page(deep_after)
+                        except Exception as e:
+                            # Cursor may have expired — restart next sync.
+                            if dm_error is None:
+                                dm_error = str(e)[:500]
+                            deep_after = None
+                            break
+                        n, page_new, nxt, completed = _process_ig_conv_page(feed)
+                        if not completed:
+                            deep_after = page_cursor
+                            break
+                        if not nxt or n == 0:
+                            dm_deep_done = True
+                            deep_after = None
+                            break
+                        deep_after = nxt
+                    _cfg_set("social.ig.dm_deep_cursor", deep_after or "")
+                if dm_deep_done:
+                    _cfg_set("social.ig.dm_deep_done", "1")
+                    _cfg_set("social.ig.dm_deep_cursor", "")
         except HTTPException:
             raise
         from datetime import datetime, timezone
@@ -4347,17 +4570,23 @@ def _reg_social(app):
         _cfg_set("social.ig.last_sync_posts", total_posts)
         _cfg_set("social.ig.last_sync_comments", total_comments)
         _cfg_set("social.ig.last_sync_mentions", total_mentions)
+        _cfg_set("social.ig.last_sync_dms", total_dms)
         _cfg_set("social.ig.last_mention_error", mention_error or "")
+        _cfg_set("social.ig.last_dm_error", dm_error or "")
         _cfg_set("social.ig.last_scopes_missing", ",".join(sorted(scopes_missing)))
         A._crm_audit("social", ig_id, "sync",
                      f"instagram sync: {total_posts} posts, "
-                     f"{new_comments} new comments, {new_mentions} new mentions",
-                     request)
+                     f"{new_comments} new comments, {new_mentions} new mentions, "
+                     f"{new_dms} new DMs", request)
         return {"account": acct_label, "posts": total_posts,
                 "comments": new_comments, "mentions": new_mentions,
                 "mentions_stored": stored_mentions + new_mentions,
                 "mention_blocked": mention_blocked,
                 "mention_error": mention_error,
+                "dms": new_dms,
+                "dms_stored": stored_dms + new_dms,
+                "dm_blocked": dm_blocked,
+                "dm_error": dm_error,
                 "scopes_missing": sorted(scopes_missing)}
 
 

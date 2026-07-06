@@ -81,7 +81,7 @@ export default function Inbox() {
     try {
       const r = await api.post("/social/instagram/sync", {});
       const d = r.data || {};
-      toast.success(`Instagram: ${d.posts || 0} posts, ${d.comments || 0} new comments, ${d.mentions || 0} new mentions`);
+      toast.success(`Instagram: ${d.posts || 0} posts, ${d.comments || 0} new comments, ${d.mentions || 0} new mentions, ${d.dms || 0} new DMs`);
       if ((d.scopes_missing || []).length) {
         toast.warning(`Missing scope: ${d.scopes_missing.join(", ")} — that content cannot be pulled until added.`);
       }

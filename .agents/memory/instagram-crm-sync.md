@@ -23,11 +23,21 @@ node, 1h in-proc cache). Rows land in `crm_social_feedback` with
   (posts/comments), `mention_deep_cursor`/`mention_done`, `last_mention_error`,
   `last_scopes_missing`.
 - Phases share ONE 240s budget in order (fresh media → posts/comments deep backfill
-  → Phase M mentions). A later phase only gets time once earlier phases finish, so a
-  single run can legitimately skip mentions when posts/comments eat the whole budget
-  — mentions converge over successive runs once posts `deep_done`. This is expected,
-  not a bug, and matches how FB DMs wait behind posts/comments.
-- **DMs are out of scope** by design (a clean seam; add later as a Phase C like FB).
+  → Phase M mentions → Phase C DMs). A later phase only gets time once earlier phases
+  finish, so a single run can legitimately skip mentions/DMs when earlier phases eat
+  the whole budget — they converge over successive runs once earlier phases are
+  `deep_done`. This is expected, not a bug, and matches how FB DMs wait behind
+  posts/comments.
+- **DMs (Instagram Direct) are IN scope** as a Phase C mirroring the FB DM phase:
+  `igdm:<msg_id>` source ids, INBOUND only (`from.id != ig_id`), parent
+  `igconv:<thread>`, cursor keys `social.ig.dm_deep_cursor`/`dm_deep_done`, counters
+  `social.ig.last_sync_dms`, error key `social.ig.last_dm_error`, missing scope
+  `instagram_manage_messages` (reported in `scopes_missing`, never fails the sync).
+  Conversations are walked via `GET /{page-id}/conversations?platform=instagram`
+  (reusing the linked FB Page token) and the Inbox reply sends a real Direct message
+  via `POST /{page-id}/messages` to the sender's IGSID (stored in `author_handle`),
+  surfacing the Graph error (e.g. 24-hour window) as a 502 without stamping
+  `replied_at`. IG DM `author_name` is the sender's @username (FB DM uses `name`).
 
 **Why:** the marketing team manages @vivo_woman from the same cockpit as the FB
 Page; keeping one engine shape means one mental model and shared helpers (`_fb_get`,
