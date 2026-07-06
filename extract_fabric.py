@@ -237,7 +237,8 @@ def extract_products(uid, models, cur, now):
     while True:
         records = models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, "product.product", "search_read",
             [[["categ_id", "in", FABRIC_CATS]]],
-            {"fields": FABRIC_FIELDS, "limit": batch_size, "offset": offset})
+            {"fields": FABRIC_FIELDS, "limit": batch_size, "offset": offset,
+             "context": {"active_test": False}})
         if not records:
             break
         for r in records:
