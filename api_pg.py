@@ -15936,6 +15936,72 @@ def ibt_completed_keys():
     return {"keys": keys, "sku_keys": sku_keys}
 @app.get("/api/leaderboard/streaks")
 def stub_leaderboard_streaks(): return []
+# --- Social sync token-failure surfacing ------------------------------------ #
+# The Meta (Facebook + Instagram share one Page token) and X integrations sync
+# in the background. When a token expires or is revoked the sync silently pulls
+# nothing for weeks. We classify each platform's persisted last_run_error so an
+# expired/invalid token ("reconnect needed") is told apart from a transient
+# network blip, and surface the auth failures passively in the admin bell.
+_SOCIAL_PLATFORMS = [
+    ("facebook", "social.fb", "Facebook"),
+    ("instagram", "social.ig", "Instagram"),
+    ("x", "social.x", "X (Twitter)"),
+]
+# The CRM Inbox (a separate artifact under /crm/) is where the reconnect banner
+# + sync buttons live, so that's the actionable destination.
+_SOCIAL_RECONNECT_LINK = "/crm/inbox"
+
+def _classify_social_error(msg):
+    """Return 'auth' when an error string looks like an expired/invalid/revoked
+    token (a reconnect is required), 'transient' for any other non-empty error
+    (network/rate-limit/etc.), or None when there is no error. Meta surfaces
+    token expiry as OAuthException code 190 / "Error validating access token" /
+    "Session has expired"; X surfaces it as 401 / "Could not authenticate"."""
+    if not msg:
+        return None
+    m = str(msg).lower()
+    auth_markers = (
+        "error validating access token",
+        "session has expired",
+        "oauthexception",
+        "code 190",
+        "invalid oauth access token",
+        "access token",
+        "token has expired",
+        "token expired",
+        "expired token",
+        "reauthorize", "re-authorize", "reconnect",
+        "could not authenticate",
+        "unauthorized",
+        "401",
+        "invalid or expired",
+    )
+    for k in auth_markers:
+        if k in m:
+            return "auth"
+    return "transient"
+
+def _social_token_alerts():
+    """Live-derive the set of platforms whose last background sync failed with an
+    auth (token-expiry) error. Read straight from crm_config so it reflects the
+    latest sync attempt without any stored notification state."""
+    try:
+        rows = _users_exec(
+            "SELECT key, value FROM crm_config WHERE key LIKE 'social.%%'",
+            fetch=True) or []
+    except Exception:
+        return []
+    cfg = {r["key"]: r["value"] for r in rows}
+    out = []
+    for pid, prefix, label in _SOCIAL_PLATFORMS:
+        err = (cfg.get(prefix + ".last_run_error") or "").strip()
+        if not err or _classify_social_error(err) != "auth":
+            continue
+        since = (cfg.get(prefix + ".last_run_error_since") or "").strip()
+        out.append({"platform": pid, "label": label,
+                    "error": err, "since": since or None})
+    return out
+
 @app.get("/api/notifications")
 def notifications_list(request: Request):
     # Surface pending access requests (app_users.status='pending') to admins so
@@ -15958,6 +16024,30 @@ def notifications_list(request: Request):
             "message": f"{who} requested access — review on the Users page.",
             "link": "/users",
             "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+            "read": False,
+        })
+    # Token-expiry alerts for the social integrations (FB/IG/X). Persistent until
+    # a sync succeeds and clears the error, so leadership/admins see the outage
+    # passively instead of only via a toast on a manual sync.
+    for a in _social_token_alerts():
+        since = a.get("since")
+        since_txt = ""
+        if since:
+            try:
+                d = datetime.fromisoformat(since.replace("Z", "+00:00"))
+                since_txt = f" since {d.strftime('%b %-d, %Y')}"
+            except (ValueError, TypeError):
+                since_txt = ""
+        out.append({
+            "event_id": "social_auth:" + a["platform"],
+            "type": "social_token_expired",
+            "title": f"{a['label']} sync needs reconnecting",
+            "message": (f"{a['label']} sync has been failing{since_txt} — the "
+                        "access token looks expired or invalid, so no new posts, "
+                        "comments or DMs are coming in. Reconnect it to resume."),
+            "link": _SOCIAL_RECONNECT_LINK,
+            "external": True,
+            "created_at": since,
             "read": False,
         })
     return out
@@ -17590,7 +17680,9 @@ def notifications_unread_count(request: Request):
         return {"unread": 0}
     rows = _users_exec(
         "SELECT COUNT(*) AS n FROM app_users WHERE status='pending'", fetch=True) or []
-    return {"unread": int(rows[0]["n"]) if rows else 0}
+    n = int(rows[0]["n"]) if rows else 0
+    n += len(_social_token_alerts())
+    return {"unread": n}
 @app.get("/api/leaderboard/store-of-the-week")
 def stub_leaderboard_store_of_the_week(): return {}
 @app.get("/api/thumbnails/lookup")

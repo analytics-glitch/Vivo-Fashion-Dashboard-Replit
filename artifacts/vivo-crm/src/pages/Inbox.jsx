@@ -844,6 +844,54 @@ function Pill({ label, v, tone, testid }) {
   );
 }
 
+// Persistent (non-toast) alert shown whenever a platform's LAST background sync
+// failed. An auth/token error ("reconnect needed") is styled red and actionable;
+// a transient network error is amber and self-heals on the next successful sync.
+// Because it's rendered from the polled status it stays visible without anyone
+// manually triggering a sync — the whole point of this alert.
+function SyncErrorBanner({ status, platform, reconnectHint }) {
+  const err = status?.last_run_error;
+  if (!err) return null;
+  const isAuth = status.error_kind === "auth";
+  const since = status.last_run_error_since
+    ? new Date(status.last_run_error_since)
+    : null;
+  const sinceTxt =
+    since && !Number.isNaN(since.getTime())
+      ? since.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+      : null;
+  const tone = isAuth
+    ? "text-red-900 bg-red-50 border-red-200 border-l-red-500"
+    : "text-amber-900 bg-amber-50 border-amber-200 border-l-amber-500";
+  const iconTone = isAuth ? "text-red-600" : "text-amber-600";
+  return (
+    <div
+      className={`mt-3 text-[12px] p-3 rounded-sm border border-l-2 flex items-start gap-2 ${tone}`}
+      data-testid={`${platform}-sync-error`}
+    >
+      <AlertTriangle className={`h-4 w-4 mt-0.5 shrink-0 ${iconTone}`} />
+      <div className="min-w-0">
+        {isAuth ? (
+          <>
+            <strong>{platform === "ig" ? "Instagram" : platform === "fb" ? "Facebook" : "X"} needs reconnecting.</strong>{" "}
+            The access token looks <strong>expired or invalid</strong>
+            {sinceTxt ? <> — syncing has been failing since <strong>{sinceTxt}</strong></> : null}, so no new
+            posts, comments{platform === "fb" || platform === "ig" ? " or DMs" : " or mentions"} are coming in.{" "}
+            {reconnectHint}
+          </>
+        ) : (
+          <>
+            <strong>Last sync didn't complete.</strong>{" "}
+            {sinceTxt ? <>Failing since <strong>{sinceTxt}</strong>. </> : null}
+            This looks like a temporary network issue — it should clear on the next successful sync. Try “Sync” again.
+          </>
+        )}
+        <div className="text-[11px] opacity-70 mt-1 break-words">Details: {err}</div>
+      </div>
+    </div>
+  );
+}
+
 function FacebookStatusStrip({ status }) {
   if (!status) return null;
   const pages = status.discovered_pages || [];
@@ -856,6 +904,19 @@ function FacebookStatusStrip({ status }) {
     : null;
 
   if (pages.length === 0) {
+    // A token/auth failure means it WAS connected — show the actionable reconnect
+    // banner instead of the misleading "connect Facebook / demo data" copy.
+    if (status.last_run_error) {
+      return (
+        <div className="mt-6" data-testid="fb-status-strip">
+          <SyncErrorBanner
+            status={status}
+            platform="fb"
+            reconnectHint="Regenerate the Page access token in your Meta App and re-run the sync."
+          />
+        </div>
+      );
+    }
     return (
       <div className="mt-6 vivo-card p-5 rounded-sm border-l-2 border-amber-400" data-testid="fb-status-strip">
         <div className="flex items-start gap-3">
@@ -951,6 +1012,18 @@ function InstagramStatusStrip({ status }) {
     : null;
 
   if (!status.connected) {
+    // A token/auth failure means it WAS connected — show the reconnect banner.
+    if (status.last_run_error) {
+      return (
+        <div className="mt-3" data-testid="ig-status-strip">
+          <SyncErrorBanner
+            status={status}
+            platform="ig"
+            reconnectHint="Reconnect the Instagram Business account / regenerate the Page access token in your Meta App, then re-run the sync."
+          />
+        </div>
+      );
+    }
     return (
       <div className="mt-3 vivo-card p-5 rounded-sm border-l-2 border-[#DD2A7B]" data-testid="ig-status-strip">
         <div className="flex items-start gap-3">
@@ -1039,6 +1112,18 @@ function XStatusStrip({ status }) {
     : null;
 
   if (!status.connected) {
+    // A token/auth failure means it WAS connected — show the reconnect banner.
+    if (status.last_run_error) {
+      return (
+        <div className="mt-3" data-testid="x-status-strip">
+          <SyncErrorBanner
+            status={status}
+            platform="x"
+            reconnectHint="Refresh the X API Bearer token (and OAuth 1.0a keys for replies/DMs) on the server, then re-run the sync."
+          />
+        </div>
+      );
+    }
     return (
       <div className="mt-3 vivo-card p-5 rounded-sm border-l-2 border-black" data-testid="x-status-strip">
         <div className="flex items-start gap-3">

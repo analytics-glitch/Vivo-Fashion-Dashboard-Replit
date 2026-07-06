@@ -19,6 +19,7 @@ const TYPE_META = {
   vip_return:     { emoji: "💎", accent: "bg-sky-50 border-sky-200 text-sky-900" },
   anomaly:        { emoji: "🚨", accent: "bg-red-50 border-red-200 text-red-900" },
   access_request: { emoji: "!",  accent: "bg-amber-50 border-amber-200 text-amber-900" },
+  social_token_expired: { emoji: "🔌", accent: "bg-red-50 border-red-200 text-red-900" },
 };
 
 const relative = (iso) => {
@@ -91,7 +92,13 @@ const NotificationBell = () => {
       api.post(`/notifications/${encodeURIComponent(it.event_id)}/read`).catch(() => null);
     }
     setOpen(false);
-    if (it.link) navigate(it.link);
+    if (it.link) {
+      // Some items (e.g. social-token alerts) link to a different artifact under
+      // the shared proxy (e.g. /crm/inbox) that this app's router can't handle,
+      // so navigate the whole window instead of the in-app router.
+      if (it.external) window.location.assign(it.link);
+      else navigate(it.link);
+    }
   };
 
   const markAllRead = async () => {

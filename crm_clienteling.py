@@ -3629,6 +3629,38 @@ def _reg_social(app):
             "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
             (key, str(val)))
 
+    def _note_run_error(prefix, msg):
+        """Persist a background-sync failure for a social platform. Records the
+        error message AND stamps `<prefix>.last_run_error_since` on the FIRST
+        failure of a streak (left untouched while the error persists) so the UI
+        can show "failing since <date>" rather than resetting the clock every
+        retry."""
+        from datetime import datetime, timezone
+        _cfg_set(prefix + ".last_run_error", str(msg)[:500])
+        if not (_cfg_get(prefix + ".last_run_error_since") or "").strip():
+            _cfg_set(prefix + ".last_run_error_since",
+                     datetime.now(timezone.utc).isoformat())
+
+    def _clear_run_error(prefix):
+        """A successful sync clears both the error and its since-timestamp."""
+        _cfg_set(prefix + ".last_run_error", "")
+        _cfg_set(prefix + ".last_run_error_since", "")
+
+    def _probe_fail_payload(prefix, exc):
+        """When a status endpoint's own live token probe fails, build the error
+        fields (merged into the "not connected" payload). Prefers the stored
+        background-sync error (which carries the accurate first-failure date);
+        falls back to the live probe exception. Never mutates — a GET stays
+        read-only; the background sync owns writing last_run_error*."""
+        stored = (_cfg_get(prefix + ".last_run_error") or "").strip()
+        run_error = stored or str(exc)[:500]
+        return {
+            "last_run_error": run_error or None,
+            "last_run_error_since":
+                (_cfg_get(prefix + ".last_run_error_since") or "").strip() or None,
+            "error_kind": A._classify_social_error(run_error) if run_error else None,
+        }
+
     def _fb_ts(s):
         if not s:
             return None
@@ -3648,8 +3680,13 @@ def _reg_social(app):
             return empty
         try:
             page = A._fb_get(A._fb_page_id(), {"fields": "name"})
-        except Exception:
-            return empty  # token invalid/unreachable -> show connect banner
+        except Exception as e:
+            # Token invalid/unreachable. Distinguish a token/auth failure (was
+            # connected, needs reconnect) from a plain "never connected" state so
+            # the UI can show the right, actionable banner instead of just
+            # "connect Facebook". Prefer the stored background-sync error; fall
+            # back to this live probe error.
+            return {**empty, **_probe_fail_payload("social.fb", e)}
         agg = _one("SELECT count(*) AS feedback, "
                    " count(*) FILTER (WHERE type='dm') AS dms "
                    "FROM crm_social_feedback WHERE platform='facebook'") or {}
@@ -3659,6 +3696,8 @@ def _reg_social(app):
         scopes = [s for s in (_cfg_get("social.fb.last_scopes_missing") or "").split(",") if s]
         last_at = _cfg_get("social.fb.last_synced_at")
         run_error = (_cfg_get("social.fb.last_run_error") or "").strip()
+        run_error_since = (_cfg_get("social.fb.last_run_error_since") or "").strip()
+        error_kind = A._classify_social_error(run_error) if run_error else None
         return {
             # True only while a sync holds the lock AND its recorded start is
             # still within the budget window — a wedged/stale lock reads as idle
@@ -3675,6 +3714,8 @@ def _reg_social(app):
             "last_synced_at": last_at or None,
             "auto_sync_minutes": None,
             "last_run_error": run_error or None,
+            "last_run_error_since": run_error_since or None,
+            "error_kind": error_kind,
             "counts": {"real_posts": posts_n,
                        "real_feedback": _int(agg.get("feedback"), 0),
                        "real_dms": _int(agg.get("dms"), 0)},
@@ -3776,11 +3817,11 @@ def _reg_social(app):
         from datetime import datetime, timezone
         try:
             _fb_sync_run(request)
-            _cfg_set("social.fb.last_run_error", "")
+            _clear_run_error("social.fb")
         except HTTPException as e:
-            _cfg_set("social.fb.last_run_error", str(getattr(e, "detail", e))[:500])
+            _note_run_error("social.fb", getattr(e, "detail", e))
         except Exception as e:  # noqa: BLE001 — never let a thread crash silently
-            _cfg_set("social.fb.last_run_error", str(e)[:500])
+            _note_run_error("social.fb", e)
         finally:
             _cfg_set("social.fb.last_finished_at",
                      datetime.now(timezone.utc).isoformat())
@@ -4389,8 +4430,10 @@ def _reg_social(app):
             return empty
         try:
             iid, uname = _ig_user()
-        except Exception:
-            return empty  # token invalid/unreachable -> show connect banner
+        except Exception as e:
+            # See the Facebook probe note: surface a token/auth failure so the
+            # Inbox shows "reconnect Instagram" rather than "never connected".
+            return {**empty, **_probe_fail_payload("social.ig", e)}
         if not iid:
             return empty  # no IG business account linked to the Page
         agg = _one("SELECT count(*) AS feedback, "
@@ -4405,6 +4448,8 @@ def _reg_social(app):
         last_at = _cfg_get("social.ig.last_synced_at")
         dm_error = (_cfg_get("social.ig.last_dm_error") or "").strip()
         run_error = (_cfg_get("social.ig.last_run_error") or "").strip()
+        run_error_since = (_cfg_get("social.ig.last_run_error_since") or "").strip()
+        error_kind = A._classify_social_error(run_error) if run_error else None
         # DMs are blocked when the messaging scope is missing OR the DM phase
         # recorded an error on its last completed run.
         dm_blocked = ("instagram_manage_messages" in scopes) or bool(dm_error)
@@ -4430,6 +4475,8 @@ def _reg_social(app):
             "dm_blocked": dm_blocked,
             "dm_error": dm_error or None,
             "last_run_error": run_error or None,
+            "last_run_error_since": run_error_since or None,
+            "error_kind": error_kind,
             "counts": {"real_posts": posts_n,
                        "real_feedback": _int(agg.get("feedback"), 0),
                        "real_mentions": _int(agg.get("mentions"), 0),
@@ -4448,11 +4495,11 @@ def _reg_social(app):
         from datetime import datetime, timezone
         try:
             _ig_sync_run(request)
-            _cfg_set("social.ig.last_run_error", "")
+            _clear_run_error("social.ig")
         except HTTPException as e:
-            _cfg_set("social.ig.last_run_error", str(getattr(e, "detail", e))[:500])
+            _note_run_error("social.ig", getattr(e, "detail", e))
         except Exception as e:  # noqa: BLE001 — never let a thread crash silently
-            _cfg_set("social.ig.last_run_error", str(e)[:500])
+            _note_run_error("social.ig", e)
         finally:
             _cfg_set("social.ig.last_finished_at",
                      datetime.now(timezone.utc).isoformat())
@@ -5203,8 +5250,10 @@ def _reg_social(app):
             return empty
         try:
             uid, uname = _x_account()
-        except Exception:
-            return empty  # token invalid/unreachable -> show connect banner
+        except Exception as e:
+            # See the Facebook probe note: surface a token/auth failure so the
+            # Inbox shows "reconnect X" rather than "never connected".
+            return {**empty, **_probe_fail_payload("social.x", e)}
         if not uid:
             return empty
         agg = _one("SELECT count(*) AS feedback, "
@@ -5219,6 +5268,8 @@ def _reg_social(app):
                   (_cfg_get("social.x.last_scopes_missing") or "").split(",")
                   if s]
         run_error = (_cfg_get("social.x.last_run_error") or "").strip()
+        run_error_since = (_cfg_get("social.x.last_run_error_since") or "").strip()
+        error_kind = A._classify_social_error(run_error) if run_error else None
         return {
             "connected": True,
             # True only while a sync holds the lock AND its recorded start is
@@ -5237,6 +5288,8 @@ def _reg_social(app):
             "last_synced_at": _cfg_get("social.x.last_synced_at") or None,
             "write_enabled": _x_write_configured(),
             "last_run_error": run_error or None,
+            "last_run_error_since": run_error_since or None,
+            "error_kind": error_kind,
             "counts": {"real_posts": _int(agg.get("posts"), 0),
                        "real_feedback": _int(agg.get("feedback"), 0),
                        "real_mentions": _int(agg.get("mentions"), 0),
@@ -5255,11 +5308,11 @@ def _reg_social(app):
         from datetime import datetime, timezone
         try:
             _x_sync_run(request, max_seconds=max_seconds)
-            _cfg_set("social.x.last_run_error", "")
+            _clear_run_error("social.x")
         except HTTPException as e:
-            _cfg_set("social.x.last_run_error", str(getattr(e, "detail", e))[:500])
+            _note_run_error("social.x", getattr(e, "detail", e))
         except Exception as e:  # noqa: BLE001 — never let a thread crash silently
-            _cfg_set("social.x.last_run_error", str(e)[:500])
+            _note_run_error("social.x", e)
         finally:
             _cfg_set("social.x.last_finished_at",
                      datetime.now(timezone.utc).isoformat())
