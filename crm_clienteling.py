@@ -4132,7 +4132,38 @@ def _reg_social(app):
     _IG_SYNC_DM_RESERVE_SEC = 60
     _IG_SYNC_MENTION_RESERVE_SEC = 60
     _IG_M_FIELDS = "id,message,from,created_time"
-    _ig_sync_lock = threading.Lock()
+    # Staleness guard: a background sync should finish within the time budget.
+    # If the in-process lock is still held but the recorded start is older than
+    # the budget plus this margin, the run is considered wedged/dead — the lock
+    # is treated as "not running" so a new sync can start and the banner clears.
+    # The margin covers a request in flight past the last budget check (each
+    # Graph call is bounded at 30s) plus scheduling/finalisation overhead.
+    _IG_SYNC_STALE_MARGIN_SEC = 120
+    # The lock lives inside a mutable holder so a stale run can be abandoned by
+    # swapping in a fresh lock (the zombie thread keeps its OWN old lock object
+    # and its finally-release can never unlock the new run).
+    _ig_sync_state = {"lock": threading.Lock()}
+
+    def _ig_started_stale():
+        """True when the recorded sync start is older than the time budget +
+        margin (or there is no start record while the lock is held)."""
+        from datetime import datetime, timezone
+        started = (_cfg_get("social.ig.last_started_at") or "").strip()
+        if not started:
+            return True
+        try:
+            dt = datetime.fromisoformat(started)
+        except Exception:
+            return True
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - dt).total_seconds()
+        return age > (_IG_SYNC_TIME_BUDGET_SEC + _IG_SYNC_STALE_MARGIN_SEC)
+
+    def _ig_sync_running():
+        """A sync is 'running' only while the lock is held AND the recorded
+        start is still within the budget window — a stale lock reads as idle."""
+        return _ig_sync_state["lock"].locked() and not _ig_started_stale()
     _ig_id_cache = {"id": None, "username": None, "ts": 0.0}
     _IG_ID_TTL = 3600  # the Page↔IG link changes very rarely
 
@@ -4188,9 +4219,11 @@ def _reg_social(app):
         dm_blocked = ("instagram_manage_messages" in scopes) or bool(dm_error)
         return {
             "connected": True,
-            # True while a background sync thread holds the lock — the Inbox polls
-            # this to know when a triggered sync has finished.
-            "running": _ig_sync_lock.locked(),
+            # True while a background sync thread holds the lock AND its start is
+            # still within the budget window — the Inbox polls this to know when a
+            # triggered sync has finished. A wedged/stale lock reads as idle so the
+            # banner clears instead of showing "syncing…" forever.
+            "running": _ig_sync_running(),
             "account": {
                 "ig_user_id": iid,
                 "username": uname,
@@ -4212,13 +4245,15 @@ def _reg_social(app):
                        "real_dms": _int(agg.get("dms"), 0)},
         }
 
-    def _ig_sync_bg(request):
+    def _ig_sync_bg(request, lock):
         """Run the (up to 240s) Instagram sync on a background thread so it always
         completes server-side regardless of the HTTP client / proxy timeout. The
         endpoint returns immediately; the status endpoint reports `running` (the
         lock) and the persisted `social.ig.last_*` keys reflect the finished run.
         The lock is released here (NOT in the request handler) because the handler
-        returns long before the thread finishes."""
+        returns long before the thread finishes. Each thread releases the SAME
+        lock object it was started with — if a stale run was abandoned and a fresh
+        lock swapped in, this release can never unlock the newer run."""
         from datetime import datetime, timezone
         try:
             _ig_sync_run(request)
@@ -4230,7 +4265,10 @@ def _reg_social(app):
         finally:
             _cfg_set("social.ig.last_finished_at",
                      datetime.now(timezone.utc).isoformat())
-            _ig_sync_lock.release()
+            try:
+                lock.release()
+            except RuntimeError:
+                pass  # already released (e.g. abandoned as stale) — harmless
 
     @app.post("/api/social/instagram/sync")
     def cl_soc_ig_sync(request: Request, payload: dict = Body(default=None)):
@@ -4238,8 +4276,18 @@ def _reg_social(app):
             _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
         if not A._fb_configured():
             raise HTTPException(400, "Instagram is not configured on the server.")
-        if not _ig_sync_lock.acquire(blocking=False):
-            raise HTTPException(409, "An Instagram sync is already running.")
+        lock = _ig_sync_state["lock"]
+        if not lock.acquire(blocking=False):
+            # The lock is held. If the recorded start is stale the previous run
+            # is wedged/dead (a hung thread past the budget window) — abandon its
+            # lock, install a fresh one and take over so a new sync can proceed.
+            # The zombie keeps a reference to the OLD lock object, so its eventual
+            # finally-release cannot unlock this new run.
+            if not _ig_started_stale():
+                raise HTTPException(409, "An Instagram sync is already running.")
+            lock = threading.Lock()
+            _ig_sync_state["lock"] = lock
+            lock.acquire(blocking=False)
         # Kick the work onto a daemon thread and return immediately. The shared
         # proxy/gateway kills a held-open request well before the 240s budget, so
         # a synchronous run was being cut off before the DM phase (which runs last)
@@ -4248,7 +4296,7 @@ def _reg_social(app):
         from datetime import datetime, timezone
         _cfg_set("social.ig.last_started_at",
                  datetime.now(timezone.utc).isoformat())
-        threading.Thread(target=_ig_sync_bg, args=(request,),
+        threading.Thread(target=_ig_sync_bg, args=(request, lock),
                          name="ig-sync", daemon=True).start()
         return {"started": True, "running": True}
 
