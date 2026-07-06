@@ -2742,6 +2742,9 @@ def fabric_mix(
                   p.width_m, p.kg_per_mtr_eff as kg_per_mtr, p.kg_per_mtr_src, p.fiber_content, p.fabric_type,
                   p.supplier, p.supplier_fabric_code, p.active, p.primary_color, p.source_city, p.source_country,
                   INITCAP(BTRIM(p.fabric_color)) as fabric_color,
+                  NULLIF(BTRIM(p.fabric_name),'') as fabric_name,
+                  NULLIF(BTRIM(p.fabric_supplier_name),'') as fabric_supplier_name,
+                  NULLIF(BTRIM(p.odoo_fabric_color),'') as odoo_fabric_color,
                   NULLIF(INITCAP(BTRIM(p.color)),'') as color,
                   ROUND(p.standard_price::numeric,2) as cost_kes,
                   ROUND(p.standard_price::numeric,2) as cost_per_kg,
@@ -2785,6 +2788,9 @@ def fabric_mix(
                     fc, pc = _derive_fabric_colors(det.get("name"), det.get("fabric_color"))
                     det["derived_fabric_color"] = fc
                     det["derived_primary_color"] = pc
+                    # Effective Fabric Colour = the dedicated Odoo field first, the
+                    # regex-derived colour only as a fallback when Odoo is empty.
+                    det["fabric_color_effective"] = det.get("odoo_fabric_color") or fc
                     prow["detail"] = det
                 prods.append(prow)
             prods.sort(key=lambda r: r["consumption_metres"], reverse=True)

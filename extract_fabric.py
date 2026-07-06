@@ -122,6 +122,23 @@ def _derive_color(name):
             return color.title()
     return None
 
+def _props_by_label(props):
+    """Odoo `properties`-type field → {label: value}. The fabric master carries its
+    dedicated Fabric Name / Fabric Supplier Name / Fabric Colour custom fields inside
+    `product_properties` (a list of {name,string,value} dicts keyed off a parent
+    definition), NOT as top-level x_vivo_* columns. Blank/False → dropped so callers
+    can COALESCE cleanly to their fallback."""
+    out = {}
+    if isinstance(props, list):
+        for p in props:
+            if isinstance(p, dict) and p.get("string") is not None:
+                v = p.get("value")
+                if isinstance(v, str):
+                    v = v.strip() or None
+                if v:
+                    out[p["string"]] = v
+    return out
+
 def extract_products(uid, models, cur, now):
     log.info("Extracting fabric products with attributes...")
     
@@ -147,6 +164,9 @@ def extract_products(uid, models, cur, now):
         ADD COLUMN IF NOT EXISTS primary_color TEXT,
         ADD COLUMN IF NOT EXISTS source_city TEXT,
         ADD COLUMN IF NOT EXISTS source_country TEXT,
+        ADD COLUMN IF NOT EXISTS fabric_name TEXT,
+        ADD COLUMN IF NOT EXISTS fabric_supplier_name TEXT,
+        ADD COLUMN IF NOT EXISTS odoo_fabric_color TEXT,
         ADD COLUMN IF NOT EXISTS write_date TIMESTAMP
     """)
 
@@ -205,6 +225,7 @@ def extract_products(uid, models, cur, now):
         "x_vivo_attr_125",  # Source Country
         "barcode",
         "x_vivo_color",
+        "product_properties",  # dedicated Fabric Name / Fabric Supplier Name / Fabric Colour live here
         "write_date",       # Odoo last-modified time (UTC) — drives the category tracker
     ]
     
@@ -227,7 +248,12 @@ def extract_products(uid, models, cur, now):
             kg_mtr = get_m2o(r.get("x_vivo_attr_39"))
             width  = get_m2o(r.get("x_vivo_attr_25"))
             gsm    = get_m2o(r.get("x_vivo_attr_38"))
-            
+
+            props = _props_by_label(r.get("product_properties"))
+            fabric_name_odoo     = props.get("Fabric Name")
+            fabric_supplier_odoo = props.get("Fabric Supplier Name")
+            fabric_color_odoo    = props.get("Fabric Colour")
+
             rows.append((
                 r["id"],
                 r["name"],
@@ -256,6 +282,9 @@ def extract_products(uid, models, cur, now):
                 r["x_vivo_color"][1] if isinstance(r.get("x_vivo_color"), list) else None,
                 _derive_color(r.get("name","")),
                 (r["x_vivo_color"][1] if isinstance(r.get("x_vivo_color"), list) else None) or _derive_color(r.get("name","")),
+                fabric_name_odoo,
+                fabric_supplier_odoo,
+                fabric_color_odoo,
                 r.get("write_date") or None,
                 now
             ))
@@ -271,7 +300,9 @@ def extract_products(uid, models, cur, now):
             fabric_category, fabric_subcategory, stretch_type, weight_range,
             fiber_content, fabric_type, supplier, supplier_fabric_code, primary_color,
             source_city, source_country, barcode, color,
-            derived_color, fabric_color, write_date, _loaded_at
+            derived_color, fabric_color,
+            fabric_name, fabric_supplier_name, odoo_fabric_color,
+            write_date, _loaded_at
         ) VALUES %s
         ON CONFLICT (id) DO UPDATE SET
             name=EXCLUDED.name, standard_price=EXCLUDED.standard_price,
@@ -287,6 +318,9 @@ def extract_products(uid, models, cur, now):
             primary_color=EXCLUDED.primary_color,
             source_city=EXCLUDED.source_city, source_country=EXCLUDED.source_country,
             derived_color=EXCLUDED.derived_color, fabric_color=EXCLUDED.fabric_color,
+            fabric_name=EXCLUDED.fabric_name,
+            fabric_supplier_name=EXCLUDED.fabric_supplier_name,
+            odoo_fabric_color=EXCLUDED.odoo_fabric_color,
             write_date=EXCLUDED.write_date,
             _loaded_at=EXCLUDED._loaded_at
     """, rows, page_size=200)

@@ -2214,24 +2214,26 @@ function mixProductRows(d){
 // The 12 fixed Odoo identity fields (exact order) that LEAD every product-grain
 // export so the CSV doubles as a fabric master-data pull. Barcode/Sku uses the
 // scannable barcode FIRST, falling back to the Odoo internal reference
-// (default_code) — via fabricClean's false/empty handling. Fabric Name has no
-// distinct Odoo field (introspection of product.template/product.product finds
-// only finished-goods "Style Name"/"Print Name"), so per spec it falls back to
-// the product name. Fabric Supplier Name = the existing Vendor/Supplier
-// (x_vivo_attr_42). Fabric Status = active flag → Active/Retired.
+// (default_code) — via fabricClean's false/empty handling. Fabric Name, Fabric
+// Supplier Name and Fabric Colour read the DEDICATED Odoo custom fields (stored
+// in product_properties, surfaced by the API as fabric_name /
+// fabric_supplier_name / odoo_fabric_color); each falls back only when the Odoo
+// field is empty — Fabric Name → product name, Fabric Supplier Name →
+// Vendor/Supplier (x_vivo_attr_42), Fabric Colour → the regex-derived colour.
+// Fabric Status = active flag → Active/Retired.
 function mixIdentityCols(){
   const idv=(r,k)=>fabricClean(r.detail&&r.detail[k]);
   return [
     ['Barcode/Sku',r=>fabricClean(r.detail&&r.detail.barcode)||fabricClean(r.detail&&r.detail.default_code)],
     ['Product Name',r=>idv(r,'name')],
-    ['Fabric Name',r=>idv(r,'name')],
+    ['Fabric Name',r=>idv(r,'fabric_name')||idv(r,'name')],
     ['Supplier Fabric Code',r=>idv(r,'supplier_fabric_code')],
-    ['Fabric Colour',r=>(r.detail&&r.detail.derived_fabric_color)||''],
+    ['Fabric Colour',r=>idv(r,'odoo_fabric_color')||(r.detail&&r.detail.derived_fabric_color)||''],
     ['Fabric Category',r=>idv(r,'fabric_category')||r._cat||''],
     ['Fabric Sub-category',r=>idv(r,'fabric_subcategory')||r._sub||''],
     ['Fabric Status',r=>r.detail?(r.detail.active===false?'Retired':'Active'):''],
     ['Primary Color',r=>(r.detail&&r.detail.derived_primary_color)||''],
-    ['Fabric Supplier Name',r=>idv(r,'supplier')],
+    ['Fabric Supplier Name',r=>idv(r,'fabric_supplier_name')||idv(r,'supplier')],
     ['Source City',r=>idv(r,'source_city')],
     ['Source Country',r=>idv(r,'source_country')],
   ];
