@@ -4064,7 +4064,7 @@ async function init(){
   }catch(e){/* overview will surface the auth error */}
   fabSyncMixTopbarVisibility();
   loadOverview();
-  startFabricAutoRefresh();   // begin the silent 60s Overview KPI re-poll
+  startFabricAutoRefresh();   // begin the silent 60s re-poll of the active tab
   startFabricPresence();      // live "who's viewing" indicator
 }
 
@@ -4321,36 +4321,53 @@ async function init(){
   else boot();
 })();
 
-// ── Silent 60s auto-refresh of the Overview KPIs ────────────────────────────
-// Re-polls the existing overview fetch path (loadOverview → summary / by-category
-// / attribute-split / metres-per-garment + loadColorMix) every 60s so the cards
-// reflect the latest Odoo-sourced figures without a manual reload. It reuses the
-// existing render helpers, so numbers update in place — no spinner, flicker or
-// layout jump. It honours the live Location / Date-range filters (loadOverview
-// and loadColorMix read #location-filter / #g-since / #g-until at call time).
-// It fires ONLY when the Overview page is the visible one, skips a tick while a
-// fetch is already in flight or the fabric-detail modal is open, and pauses
-// entirely while the browser tab is backgrounded (resuming with an immediate
-// refresh on re-show). The interval + visibility listener are installed once.
+// ── Silent 60s auto-refresh of whichever Fabric tab is on screen ────────────
+// Re-polls the currently visible tab's existing fetch path every 60s so its
+// figures reflect the latest Odoo-sourced data without a manual reload. It
+// reuses each tab's own loader (the Overview path → loadOverview, which also
+// kicks off loadColorMix; every other section via the LOADERS page→loader map),
+// so numbers update in place — no spinner, flicker or layout jump. Each loader
+// reads the live Location / Date-range + in-page filters at call time, so active
+// filters are honoured on every tick. The register keeps its current pagination
+// offset (loadRegister() with no arg), so a refresh never jumps a paged user
+// back to page 1. It skips a tick while a fetch is already in flight, the tab is
+// hidden, the visible section has no refreshable loader, or any drill-down
+// overlay (fabric-detail / PO drill) is open. Polling pauses entirely while the
+// browser tab is backgrounded (resuming with an immediate refresh on re-show).
+// The interval + visibility listener are installed once.
 const FABRIC_REFRESH_MS=60000;
 let _fabRefreshTimer=null, _fabRefreshInFlight=false, _fabRefreshInstalled=false;
-function _overviewVisible(){
-  const s=document.getElementById('page-overview');
-  return !!s && s.style.display!=='none';
+function _fabVisiblePage(){
+  // Page key of the currently shown section (id "page-<key>"), or null if none.
+  const secs=document.querySelectorAll('section[id^="page-"]');
+  for(const s of secs){if(s.style.display!=='none')return s.id.slice('page-'.length);}
+  return null;
+}
+function _fabAnyOverlayOpen(){
+  // Any modal/drill-down overlay currently on screen (fabric-detail, PO drill, …).
+  const ovs=document.querySelectorAll('.modal-overlay');
+  for(const ov of ovs){if(ov.style.display!=='none')return true;}
+  return false;
 }
 function _fabRefreshBlocked(){
   // Don't disrupt the user: skip while a fetch is in flight, the tab is hidden,
-  // the Overview isn't the visible page, or the fabric-detail modal is open.
-  if(_fabRefreshInFlight||document.hidden||!_overviewVisible())return true;
-  const ov=document.getElementById('fab-detail-overlay');
-  if(ov&&ov.style.display!=='none')return true;
+  // any drill-down overlay is open, or the visible page has no refresh path.
+  if(_fabRefreshInFlight||document.hidden)return true;
+  if(_fabAnyOverlayOpen())return true;
+  const page=_fabVisiblePage();
+  if(!page||(page!=='overview'&&!LOADERS[page]))return true;
   return false;
 }
 async function fabricAutoRefresh(){
   if(_fabRefreshBlocked())return;
+  const page=_fabVisiblePage();
   _fabRefreshInFlight=true;
-  try{await loadOverview();}   // loadOverview also kicks off loadColorMix()
-  catch(_e){/* loadOverview surfaces its own errors */}
+  try{
+    if(page==='overview'){await loadOverview();}          // also kicks off loadColorMix()
+    else if(page==='register'){await loadRegister();}     // keep current page offset (LOADERS uses 0)
+    else{await LOADERS[page]();}                           // Stock Mix + every other tab
+  }
+  catch(_e){/* each loader surfaces its own errors */}
   finally{_fabRefreshInFlight=false;}
 }
 function _fabStartTimer(){
