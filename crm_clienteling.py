@@ -3548,6 +3548,10 @@ def _reg_social(app):
         scopes = [s for s in (_cfg_get("social.fb.last_scopes_missing") or "").split(",") if s]
         last_at = _cfg_get("social.fb.last_synced_at")
         return {
+            # True only while a sync holds the lock AND its recorded start is
+            # still within the budget window — a wedged/stale lock reads as idle
+            # so the banner clears instead of showing "syncing…" forever.
+            "running": _fb_sync_running(),
             "discovered_pages": [{
                 "page_id": A._fb_page_id(),
                 "page_name": page.get("name") or "Facebook Page",
@@ -3610,10 +3614,42 @@ def _reg_social(app):
     # backfill is still running (otherwise DMs — which run last — are starved
     # forever and never ingest a single conversation on a fresh prod DB).
     _FB_SYNC_DM_RESERVE_SEC = 75
+    # Staleness guard (mirrors the IG engine): a sync should finish within the
+    # time budget. If the in-process lock is still held but the recorded start is
+    # older than the budget plus this margin, the run is considered wedged/dead —
+    # the lock reads as "not running" so a new sync can take over and the banner
+    # clears instead of showing "syncing…" forever. The margin covers a request
+    # in flight past the last budget check (each Graph call is bounded at 30s)
+    # plus scheduling/finalisation overhead.
+    _FB_SYNC_STALE_MARGIN_SEC = 120
     # Only one sync may run at a time: concurrent runs would race the persisted
     # deep-backfill cursor (data stays safe via source_id dedup, but progress
-    # gets noisy and Graph/LLM work is duplicated).
-    _fb_sync_lock = threading.Lock()
+    # gets noisy and Graph/LLM work is duplicated). The lock lives inside a
+    # mutable holder so a stale run can be abandoned by swapping in a fresh lock
+    # (the zombie thread keeps its OWN old lock object and its finally-release
+    # can never unlock the new run).
+    _fb_sync_state = {"lock": threading.Lock()}
+
+    def _fb_started_stale():
+        """True when the recorded sync start is older than the time budget +
+        margin (or there is no start record while the lock is held)."""
+        from datetime import datetime, timezone
+        started = (_cfg_get("social.fb.last_started_at") or "").strip()
+        if not started:
+            return True
+        try:
+            dt = datetime.fromisoformat(started)
+        except Exception:
+            return True
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - dt).total_seconds()
+        return age > (_FB_SYNC_TIME_BUDGET_SEC + _FB_SYNC_STALE_MARGIN_SEC)
+
+    def _fb_sync_running():
+        """A sync is 'running' only while the lock is held AND the recorded
+        start is still within the budget window — a stale lock reads as idle."""
+        return _fb_sync_state["lock"].locked() and not _fb_started_stale()
 
     @app.post("/api/social/facebook/sync")
     def cl_soc_fb_sync(request: Request, payload: dict = Body(default=None)):
@@ -3621,12 +3657,31 @@ def _reg_social(app):
             _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
         if not A._fb_configured():
             raise HTTPException(400, "Facebook is not configured on the server.")
-        if not _fb_sync_lock.acquire(blocking=False):
-            raise HTTPException(409, "A Facebook sync is already running.")
+        from datetime import datetime, timezone
+        lock = _fb_sync_state["lock"]
+        if not lock.acquire(blocking=False):
+            # The lock is held. If the recorded start is stale the previous run
+            # is wedged/dead (a hung thread past the budget window) — abandon its
+            # lock, install a fresh one and take over so a new sync can proceed.
+            # The zombie keeps a reference to the OLD lock object, so its eventual
+            # finally-release cannot unlock this new run.
+            if not _fb_started_stale():
+                raise HTTPException(409, "A Facebook sync is already running.")
+            lock = threading.Lock()
+            _fb_sync_state["lock"] = lock
+            lock.acquire(blocking=False)
+        _cfg_set("social.fb.last_started_at",
+                 datetime.now(timezone.utc).isoformat())
         try:
             return _fb_sync_run(request)
         finally:
-            _fb_sync_lock.release()
+            # Release the SAME lock object this run acquired — if a stale run was
+            # abandoned and a fresh lock swapped in, this release can never unlock
+            # the newer run.
+            try:
+                lock.release()
+            except RuntimeError:
+                pass  # already released (e.g. abandoned as stale) — harmless
 
     def _fb_sync_run(request):
         page_id = A._fb_page_id()
@@ -4933,7 +4988,39 @@ def _reg_social(app):
     _X_SYNC_MENTION_TARGET = 2000
     _X_SYNC_DM_TARGET = 2000
     _X_SYNC_TIME_BUDGET_SEC = 240
-    _x_sync_lock = threading.Lock()
+    # Staleness guard (mirrors the IG/FB engines): a sync should finish within
+    # the time budget. If the in-process lock is still held but the recorded
+    # start is older than the budget plus this margin, the run is considered
+    # wedged/dead — the lock reads as "not running" so a new sync can take over
+    # and the banner clears instead of showing "syncing…" forever. Each API call
+    # is bounded at 30s (timeout=30); the margin covers a request in flight past
+    # the last budget check plus scheduling/finalisation overhead.
+    _X_SYNC_STALE_MARGIN_SEC = 120
+    # The lock lives inside a mutable holder so a stale run can be abandoned by
+    # swapping in a fresh lock (the zombie thread keeps its OWN old lock object
+    # and its finally-release can never unlock the new run).
+    _x_sync_state = {"lock": threading.Lock()}
+
+    def _x_started_stale():
+        """True when the recorded sync start is older than the time budget +
+        margin (or there is no start record while the lock is held)."""
+        from datetime import datetime, timezone
+        started = (_cfg_get("social.x.last_started_at") or "").strip()
+        if not started:
+            return True
+        try:
+            dt = datetime.fromisoformat(started)
+        except Exception:
+            return True
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - dt).total_seconds()
+        return age > (_X_SYNC_TIME_BUDGET_SEC + _X_SYNC_STALE_MARGIN_SEC)
+
+    def _x_sync_running():
+        """A sync is 'running' only while the lock is held AND the recorded
+        start is still within the budget window — a stale lock reads as idle."""
+        return _x_sync_state["lock"].locked() and not _x_started_stale()
     _x_id_cache = {"id": None, "username": None, "ts": 0.0}
     _X_ID_TTL = 3600  # the brand handle changes very rarely
 
@@ -4972,8 +5059,8 @@ def _reg_social(app):
     def cl_soc_x_status(request: Request):
         _staff(request, roles=("customer_service", "marketing",
                                "leadership", "admin"))
-        empty = {"connected": False, "account": None, "last_synced_at": None,
-                 "write_enabled": False,
+        empty = {"connected": False, "running": False, "account": None,
+                 "last_synced_at": None, "write_enabled": False,
                  "counts": {"real_posts": 0, "real_feedback": 0,
                             "real_mentions": 0, "real_dms": 0}}
         if not _x_read_configured():
@@ -4997,6 +5084,10 @@ def _reg_social(app):
                   if s]
         return {
             "connected": True,
+            # True only while a sync holds the lock AND its recorded start is
+            # still within the budget window — a wedged/stale lock reads as idle
+            # so the banner clears instead of showing "syncing…" forever.
+            "running": _x_sync_running(),
             "account": {
                 "user_id": uid,
                 "username": uname,
@@ -5024,8 +5115,21 @@ def _reg_social(app):
                                    "leadership", "admin"))
         if not _x_read_configured():
             raise HTTPException(400, "X (Twitter) is not configured on the server.")
-        if not _x_sync_lock.acquire(blocking=False):
-            raise HTTPException(409, "An X sync is already running.")
+        from datetime import datetime, timezone
+        lock = _x_sync_state["lock"]
+        if not lock.acquire(blocking=False):
+            # The lock is held. If the recorded start is stale the previous run
+            # is wedged/dead (a hung thread past the budget window) — abandon its
+            # lock, install a fresh one and take over so a new sync can proceed.
+            # The zombie keeps a reference to the OLD lock object, so its eventual
+            # finally-release cannot unlock this new run.
+            if not _x_started_stale():
+                raise HTTPException(409, "An X sync is already running.")
+            lock = threading.Lock()
+            _x_sync_state["lock"] = lock
+            lock.acquire(blocking=False)
+        _cfg_set("social.x.last_started_at",
+                 datetime.now(timezone.utc).isoformat())
         try:
             budget = None
             try:
@@ -5034,7 +5138,13 @@ def _reg_social(app):
                 budget = None
             return _x_sync_run(request, max_seconds=budget)
         finally:
-            _x_sync_lock.release()
+            # Release the SAME lock object this run acquired — if a stale run was
+            # abandoned and a fresh lock swapped in, this release can never unlock
+            # the newer run.
+            try:
+                lock.release()
+            except RuntimeError:
+                pass  # already released (e.g. abandoned as stale) — harmless
 
     def _x_sync_run(request, max_seconds=None):
         try:
