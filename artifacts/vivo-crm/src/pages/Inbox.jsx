@@ -546,7 +546,9 @@ export default function Inbox() {
                     : "Posts a real reply on X to this "
                       + (selected?.type === "mention" ? "mention." : "post."))
                 : selected?.type === "dm"
-                  ? "Sends a real Messenger reply to the customer."
+                  ? (selected?.platform === "instagram"
+                      ? "Sends a real Instagram Direct message to the customer."
+                      : "Sends a real Messenger reply to the customer.")
                   : selected?.platform === "instagram" && selected?.type === "comment"
                     ? "Posts a real reply to this Instagram comment."
                     : "Logged here · platform delivery later."}
