@@ -69,6 +69,7 @@ export const PRIMARY_NAV = [
   { to: "/locations", label: "Locations", icon: MapPin, id: "locations", group: "Retail", desc: "Net sales, orders and active selling points by market" },
   { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall", group: "Retail", desc: "Footfall, turn-in and conversion by store" },
   { to: "/targets", label: "Targets", icon: Target, id: "targets", group: "Retail", desc: "Track sales against targets" },
+  { to: "/quarter-scorecard", label: "Q3 Targets", icon: Target, id: "quarter-scorecard", group: "Retail", desc: "Quarterly target scorecard with per-store goals (leadership)" },
 
   // Customer pages & marketing
   { to: "/customers", label: "Customers", icon: Users, id: "customers", group: "Customers & Marketing", desc: "New vs repeat customers, spend and churn" },

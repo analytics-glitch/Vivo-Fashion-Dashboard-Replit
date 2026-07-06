@@ -517,7 +517,7 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "finance"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "finance"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report"],
@@ -1053,6 +1053,13 @@ async def clerk_auth_gate(request: Request, call_next):
     # (approve/reject + staging write-back) — leadership + admin only.
     if path.startswith("/api/recon") and user.get("role") not in ("admin", "leadership"):
         return JSONResponse({"detail": "Reconciliation access requires a leadership or admin role"}, status_code=403)
+
+    # Quarterly target scorecard (/api/analytics/quarter-scorecard) exposes the
+    # leadership revenue budget + per-store goals, so it is leadership + admin
+    # only (matching the "quarter-scorecard" page in _LEADERSHIP_PAGES). Only the
+    # single exact path is gated — the rest of /api/analytics stays open.
+    if path == "/api/analytics/quarter-scorecard" and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "Quarterly scorecard access requires a leadership or admin role"}, status_code=403)
 
     return await call_next(request)
 
@@ -11776,6 +11783,458 @@ def analytics_annual_targets(year: int = Query(default=None)):
         "completion_pct": round(100.0 * days_elapsed / days_total, 1),
         "days_elapsed": days_elapsed, "days_total": days_total, "as_of": today.isoformat(),
     }
+
+
+# ── Quarterly target scorecard (leadership) ────────────────────────────────
+# A single-quarter cockpit for the leadership team: revenue targets (from the
+# seeded budget) broken by market/channel, plus AUTO-DERIVED targets for the
+# operational metrics on the leadership sheet, and a per-store breakdown that
+# splits each market's targets by the store's historical share of sales.
+#
+# Money basis mirrors the rest of the dashboard exactly: net-of-returns via
+# _TARGET_REVENUE (needs sale_kind IN ('sale','order','return')) + BASE_FILTERS,
+# so revenue figures reconcile with the Executive Summary and the annual
+# Targets page. Derived targets are LY-same-quarter actual × an implied growth
+# factor (rev target ÷ LY rev actual, fallback +15%) for COUNT metrics, and the
+# LY rate held/nudged by a small capped uplift for RATE metrics. Metrics with no
+# trustworthy historical quarterly actual (Qty to Buy = forward-looking; Qty to
+# Produce = production board only carries recent orders) are returned as an
+# explicit "not available" state so the UI never shows a fabricated number.
+#
+# Read-only. Registered under /api/analytics (no extra gate here); the page id
+# ("quarter-scorecard") is leadership+admin in the page-access sets so the nav
+# and route are gated, and the underlying figures are the same public BI reads.
+def _quarter_bounds(yr, q):
+    m0 = {1: 1, 2: 4, 3: 7, 4: 10}[q]
+    m1 = m0 + 2
+    start = date(yr, m0, 1)
+    end = (date(yr, 12, 31) if m1 == 12
+           else date(yr, m1 + 1, 1) - timedelta(days=1))
+    return start, end
+
+
+@app.get("/api/analytics/quarter-scorecard")
+def analytics_quarter_scorecard(quarter: int = Query(default=None),
+                                year: int = Query(default=None)):
+    today = date.today()
+    yr = int(year) if year else today.year
+    q = int(quarter) if quarter else (today.month - 1) // 3 + 1
+    if q not in (1, 2, 3, 4):
+        raise HTTPException(status_code=400, detail="quarter must be 1..4")
+
+    q_start, q_end = _quarter_bounds(yr, q)
+    ly_start, ly_end = _quarter_bounds(yr - 1, q)
+    as_of = min(today, q_end)          # quarter-to-date cutoff
+    started = today >= q_start
+    days_total = (q_end - q_start).days + 1
+    days_elapsed = (0 if today < q_start
+                    else days_total if today > q_end
+                    else (as_of - q_start).days + 1)
+    days_left = max(0, days_total - days_elapsed)
+    frac = days_elapsed / days_total if days_total else 0.0
+    # LY same-period-to-date cutoff (equal number of elapsed days) so the "vs LY"
+    # delta is apples-to-apples with the quarter-to-date actual. The FULL LY
+    # quarter stays the derivation basis for the targets.
+    ly_asof = (ly_start + timedelta(days=days_elapsed - 1)) if days_elapsed > 0 else ly_start
+
+    def _win(a, b):
+        return "s.sale_date BETWEEN '" + str(a) + "' AND '" + str(b) + "'"
+
+    # ── Revenue: budget targets + to-date & LY actuals per bucket ──────────
+    budget = {}
+    for r in run_query(
+        "SELECT name, SUM(target_kes)::numeric AS tgt FROM targets_monthly "
+        "WHERE scope = 'region' AND source = 'budget' "
+        "AND EXTRACT(YEAR FROM month) = " + str(yr) + " "
+        "AND EXTRACT(QUARTER FROM month)::int = " + str(q) + " GROUP BY 1"
+    ):
+        budget[r["name"]] = float(r["tgt"] or 0)
+
+    def rev_by_bucket(a, b):
+        m = {}
+        for r in run_query(
+            "SELECT " + _ACTUAL_BUCKET_CASE + " AS bucket, ROUND(" + _TARGET_REVENUE + ") AS net "
+            "FROM all_sales s WHERE " + _win(a, b) +
+            " AND s.sale_kind IN ('sale','order','return') AND " + BASE_FILTERS + " GROUP BY 1"
+        ):
+            m[r["bucket"]] = float(r["net"] or 0)
+        return m
+
+    cur_rev = rev_by_bucket(q_start, as_of) if started else {}
+    ly_rev = rev_by_bucket(ly_start, ly_end)
+    ly_rev_td = rev_by_bucket(ly_start, ly_asof) if started else {}
+
+    tt_target = sum(budget.get(n, 0) for n in _TARGET_BUCKETS)
+    tt_ly = sum(ly_rev.get(n, 0) for n in _TARGET_BUCKETS)
+    # Implied growth factor at the group level (rev target ÷ LY rev actual),
+    # fall back to the +15% stretch convention when LY revenue is missing.
+    growth = (tt_target / tt_ly) if tt_ly > 0 else 1.15
+
+    # Buckets that differ slightly between the leadership summary sheet and the
+    # seeded budget — surfaced (not "fixed") so leadership knows the page reads
+    # the budget as the single source of truth.
+    _SHEET_GAP = {"Kenya - Online", "Rwanda"}
+    revenue = []
+    for n in _TARGET_BUCKETS:
+        tgt = round(budget.get(n, 0))
+        act = round(cur_rev.get(n, 0))
+        ly = round(ly_rev.get(n, 0))
+        ly_td = round(ly_rev_td.get(n, 0))
+        revenue.append({
+            "bucket": n, "target": tgt, "actual": act, "ly": ly, "ly_to_date": ly_td,
+            "pct": round(100.0 * act / tgt, 1) if tgt else 0.0,
+            "yoy_pct": round(100.0 * (act - ly_td) / ly_td, 1) if ly_td else None,
+            "sheet_gap": n in _SHEET_GAP,
+        })
+    tt_ly_td = sum(ly_rev_td.get(n, 0) for n in _TARGET_BUCKETS)
+    rev_total = {
+        "bucket": "Total", "target": round(tt_target),
+        "actual": round(sum(cur_rev.get(n, 0) for n in _TARGET_BUCKETS)),
+        "ly": round(tt_ly), "ly_to_date": round(tt_ly_td),
+    }
+    rev_total["pct"] = (round(100.0 * rev_total["actual"] / rev_total["target"], 1)
+                        if rev_total["target"] else 0.0)
+    rev_total["yoy_pct"] = (round(100.0 * (rev_total["actual"] - tt_ly_td) / tt_ly_td, 1)
+                            if tt_ly_td else None)
+
+    # ── Footfall / conversion / turn-in (group total) ──────────────────────
+    # Mirrors get_footfall's day-level clean-conversion logic (excludes
+    # sensor-gap days) but aggregated to a single company total.
+    def footfall_metrics(a, b):
+        rows = run_query("""
+            WITH ff_daily AS (
+                SELECT """ + ff_canon_sql() + """ AS loc, f.time::date AS d,
+                    SUM(f.a01_footfall_in) AS ff, SUM(f.a05_outside_traffic) AS outside
+                FROM footfall f
+                WHERE f.time BETWEEN '""" + str(a) + """' AND '""" + str(b) + """'
+                  AND """ + ff_store_master_predicate() + """
+                GROUP BY 1, 2
+            ),
+            sales_daily AS (
+                SELECT s.pos_location_name AS loc, s.sale_date::date AS d,
+                    COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders
+                FROM all_sales s
+                WHERE """ + _win(a, b) + """ AND """ + BASE_FILTERS + """
+                GROUP BY 1, 2
+            ),
+            ff_locs AS (SELECT DISTINCT loc FROM ff_daily),
+            joined AS (
+                SELECT COALESCE(ff.ff, 0) AS ff, COALESCE(ff.outside, 0) AS outside,
+                    COALESCE(sd.orders, 0) AS orders
+                FROM ff_daily ff
+                FULL OUTER JOIN sales_daily sd ON sd.loc = ff.loc AND sd.d = ff.d
+                WHERE COALESCE(ff.loc, sd.loc) IN (SELECT loc FROM ff_locs)
+            )
+            SELECT COALESCE(SUM(ff), 0) AS footfall,
+                ROUND(SUM(ff) * 100.0 / NULLIF(SUM(outside), 0), 1) AS turn_in,
+                ROUND(SUM(orders) FILTER (WHERE ff > 0) * 100.0 / NULLIF(SUM(ff), 0), 1) AS conversion
+            FROM joined
+        """, date_to=str(b))
+        r = rows[0] if rows else {}
+        return {
+            "footfall": float(r.get("footfall") or 0),
+            "turn_in": (float(r["turn_in"]) if r.get("turn_in") is not None else None),
+            "conversion": (float(r["conversion"]) if r.get("conversion") is not None else None),
+        }
+
+    # Same clean-conversion/turn-in logic, but resolved PER MARKET (bucket) so a
+    # store inherits its own market's LY rate — a company-wide rate would be
+    # materially wrong for markets whose LY conversion/turn-in differ. Each
+    # footfall location is mapped to the market of its dominant selling name.
+    def footfall_metrics_by_bucket(a, b):
+        rows = run_query("""
+            WITH loc_bucket AS (
+                SELECT DISTINCT ON (loc) loc, bucket FROM (
+                    SELECT s.pos_location_name AS loc, """ + _ACTUAL_BUCKET_CASE + """ AS bucket,
+                        COUNT(*) AS c
+                    FROM all_sales s
+                    WHERE """ + _win(a, b) + """ AND """ + BASE_FILTERS + """
+                    GROUP BY 1, 2
+                ) t ORDER BY loc, c DESC
+            ),
+            ff_daily AS (
+                SELECT """ + ff_canon_sql() + """ AS loc, f.time::date AS d,
+                    SUM(f.a01_footfall_in) AS ff, SUM(f.a05_outside_traffic) AS outside
+                FROM footfall f
+                WHERE f.time BETWEEN '""" + str(a) + """' AND '""" + str(b) + """'
+                  AND """ + ff_store_master_predicate() + """
+                GROUP BY 1, 2
+            ),
+            sales_daily AS (
+                SELECT s.pos_location_name AS loc, s.sale_date::date AS d,
+                    COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders
+                FROM all_sales s
+                WHERE """ + _win(a, b) + """ AND """ + BASE_FILTERS + """
+                GROUP BY 1, 2
+            ),
+            ff_locs AS (SELECT DISTINCT loc FROM ff_daily),
+            joined AS (
+                SELECT COALESCE(ff.loc, sd.loc) AS loc,
+                    COALESCE(ff.ff, 0) AS ff, COALESCE(ff.outside, 0) AS outside,
+                    COALESCE(sd.orders, 0) AS orders
+                FROM ff_daily ff
+                FULL OUTER JOIN sales_daily sd ON sd.loc = ff.loc AND sd.d = ff.d
+                WHERE COALESCE(ff.loc, sd.loc) IN (SELECT loc FROM ff_locs)
+            )
+            SELECT lb.bucket AS bucket,
+                COALESCE(SUM(j.ff), 0) AS footfall,
+                ROUND(SUM(j.ff) * 100.0 / NULLIF(SUM(j.outside), 0), 1) AS turn_in,
+                ROUND(SUM(j.orders) FILTER (WHERE j.ff > 0) * 100.0 / NULLIF(SUM(j.ff), 0), 1) AS conversion
+            FROM joined j LEFT JOIN loc_bucket lb ON lb.loc = j.loc
+            WHERE lb.bucket IS NOT NULL
+            GROUP BY 1
+        """, date_to=str(b))
+        out = {}
+        for r in rows:
+            out[r["bucket"]] = {
+                "footfall": float(r.get("footfall") or 0),
+                "turn_in": (float(r["turn_in"]) if r.get("turn_in") is not None else None),
+                "conversion": (float(r["conversion"]) if r.get("conversion") is not None else None),
+            }
+        return out
+
+    cur_ff = footfall_metrics(q_start, as_of) if started else {"footfall": 0, "turn_in": None, "conversion": None}
+    ly_ff = footfall_metrics(ly_start, ly_end)
+    ly_ff_td = footfall_metrics(ly_start, ly_asof) if started else {"footfall": 0, "turn_in": None, "conversion": None}
+    ly_ff_bucket = footfall_metrics_by_bucket(ly_start, ly_end)
+
+    # ── New / returning customers (group total) ────────────────────────────
+    def cust_metrics(a, b):
+        rows = run_query("WITH " + _unified_first_purchase_ctes() + """,
+            seg AS (
+                SELECT
+                    COUNT(DISTINCT s.customer_id) FILTER (
+                        WHERE fp.first_purchase_date BETWEEN '""" + str(a) + """'::date AND '""" + str(b) + """'::date) AS new_c,
+                    COUNT(DISTINCT s.customer_id) FILTER (
+                        WHERE fp.first_purchase_date < '""" + str(a) + """'::date) AS ret_c
+                FROM all_sales s
+                JOIN first_purchase fp ON fp.customer_id = s.customer_id
+                WHERE """ + _win(a, b) + """
+                  AND s.sale_kind = 'order'
+                  AND LOWER(s.customer_type) IN ('new','returning','registered')
+            )
+            SELECT COALESCE(new_c, 0) AS new_c, COALESCE(ret_c, 0) AS ret_c FROM seg
+        """)
+        r = rows[0] if rows else {}
+        return {"new": float(r.get("new_c") or 0), "ret": float(r.get("ret_c") or 0)}
+
+    # Per-market new/returning so each store's count target is derived from its
+    # OWN market's LY actual (× growth × the store's within-market share).
+    def cust_metrics_by_bucket(a, b):
+        rows = run_query("WITH " + _unified_first_purchase_ctes() + """,
+            seg AS (
+                SELECT """ + _ACTUAL_BUCKET_CASE + """ AS bucket,
+                    COUNT(DISTINCT s.customer_id) FILTER (
+                        WHERE fp.first_purchase_date BETWEEN '""" + str(a) + """'::date AND '""" + str(b) + """'::date) AS new_c,
+                    COUNT(DISTINCT s.customer_id) FILTER (
+                        WHERE fp.first_purchase_date < '""" + str(a) + """'::date) AS ret_c
+                FROM all_sales s
+                JOIN first_purchase fp ON fp.customer_id = s.customer_id
+                WHERE """ + _win(a, b) + """
+                  AND s.sale_kind = 'order'
+                  AND LOWER(s.customer_type) IN ('new','returning','registered')
+                GROUP BY 1
+            )
+            SELECT bucket, COALESCE(new_c, 0) AS new_c, COALESCE(ret_c, 0) AS ret_c FROM seg
+        """)
+        return {r["bucket"]: {"new": float(r.get("new_c") or 0), "ret": float(r.get("ret_c") or 0)}
+                for r in rows}
+
+    cur_cust = cust_metrics(q_start, as_of) if started else {"new": 0, "ret": 0}
+    ly_cust = cust_metrics(ly_start, ly_end)
+    ly_cust_td = cust_metrics(ly_start, ly_asof) if started else {"new": 0, "ret": 0}
+    ly_cust_bucket = cust_metrics_by_bucket(ly_start, ly_end)
+
+    # ── Made in Africa units (Vivo brand, group total) ─────────────────────
+    def mia_units(a, b):
+        rows = run_query(
+            "SELECT COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') "
+            "THEN s.ordered_item_quantity::numeric ELSE 0 END), 0) AS units "
+            "FROM all_sales s JOIN all_products_clean p ON p.sku = s.variant_sku "
+            "WHERE p.brand = 'Vivo' AND " + _win(a, b) + " AND " + BASE_FILTERS
+        )
+        return float(rows[0]["units"] or 0) if rows else 0.0
+
+    # Per-market made-in-Africa units for the same market-share split.
+    def mia_units_by_bucket(a, b):
+        rows = run_query(
+            "SELECT " + _ACTUAL_BUCKET_CASE + " AS bucket, "
+            "COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') "
+            "THEN s.ordered_item_quantity::numeric ELSE 0 END), 0) AS units "
+            "FROM all_sales s JOIN all_products_clean p ON p.sku = s.variant_sku "
+            "WHERE p.brand = 'Vivo' AND " + _win(a, b) + " AND " + BASE_FILTERS + " GROUP BY 1"
+        )
+        return {r["bucket"]: float(r["units"] or 0) for r in rows}
+
+    cur_mia = mia_units(q_start, as_of) if started else 0.0
+    ly_mia = mia_units(ly_start, ly_end)
+    ly_mia_td = mia_units(ly_start, ly_asof) if started else 0.0
+    ly_mia_bucket = mia_units_by_bucket(ly_start, ly_end)
+
+    # ── Assemble derived metric scorecard ──────────────────────────────────
+    def count_metric(key, label, cur, ly, ly_td, note=""):
+        avail = ly > 0
+        return {
+            "key": key, "label": label, "kind": "count",
+            "available": avail,
+            "target": round(ly * growth) if avail else None,
+            "actual": round(cur), "ly": round(ly), "ly_to_date": round(ly_td),
+            "pct": (round(100.0 * cur / (ly * growth), 1) if avail and ly * growth else 0.0),
+            "yoy_pct": (round(100.0 * (cur - ly_td) / ly_td, 1) if ly_td else None),
+            "basis": "LY " + ("Q%d" % q) + " \u00d7 growth" if avail else "no historical actual",
+            "note": note,
+        }
+
+    def rate_metric(key, label, cur, ly, ly_td, note=""):
+        avail = ly is not None
+        # Hold the LY rate, allow a small +5% relative uplift capped at +2.0pp.
+        target = None
+        if avail:
+            target = round(ly + min(2.0, max(0.0, ly * 0.05)), 1)
+        return {
+            "key": key, "label": label, "kind": "rate",
+            "available": avail,
+            "target": target,
+            "actual": (round(cur, 1) if cur is not None else None),
+            "ly": (round(ly, 1) if ly is not None else None),
+            "ly_to_date": (round(ly_td, 1) if ly_td is not None else None),
+            "pct": (round(100.0 * cur / target, 1) if avail and target and cur is not None else None),
+            "yoy_pct": (round(cur - ly_td, 1) if cur is not None and ly_td is not None else None),
+            "basis": "LY " + ("Q%d" % q) + " rate + capped uplift" if avail else "no historical rate",
+            "note": note,
+        }
+
+    def na_metric(key, label, note):
+        return {"key": key, "label": label, "kind": "count", "available": False,
+                "target": None, "actual": None, "ly": None, "ly_to_date": None,
+                "pct": 0.0, "yoy_pct": None,
+                "basis": "no reliable historical actual", "note": note}
+
+    metrics = [
+        rate_metric("conversion", "Conversion Rate", cur_ff["conversion"], ly_ff["conversion"], ly_ff_td["conversion"]),
+        count_metric("footfall", "Footfall", cur_ff["footfall"], ly_ff["footfall"], ly_ff_td["footfall"]),
+        count_metric("new_customers", "New Customers", cur_cust["new"], ly_cust["new"], ly_cust_td["new"]),
+        count_metric("return_customers", "Return Customers", cur_cust["ret"], ly_cust["ret"], ly_cust_td["ret"]),
+        rate_metric("turn_in", "Turn-In Rate", cur_ff["turn_in"], ly_ff["turn_in"], ly_ff_td["turn_in"]),
+        count_metric("made_in_africa_qty", "Made in Africa Qty", cur_mia, ly_mia, ly_mia_td,
+                     note="Units sold of Vivo-brand (made-in-Africa) product."),
+        na_metric("qty_to_buy", "Qty to Buy",
+                  "Forward-looking buying plan \u2014 no historical quarterly actual to derive a target from."),
+        na_metric("qty_to_produce", "Qty to Produce",
+                  "Production board only carries recent buying orders \u2014 no reliable last-year Q%d actual." % q),
+    ]
+
+    # ── Per-store breakdown ────────────────────────────────────────────────
+    # Historical share = each store's trailing-12-month net revenue as a share
+    # of its market (bucket) — so per-store revenue targets add back up to the
+    # market total. Count-metric targets are split by the store's share of the
+    # GROUP-wide trailing-12-month revenue. Rate targets apply at the company
+    # level to each store. Warehouses / non-selling locations are excluded.
+    hist_start = as_of - timedelta(days=365)
+    _NOT_STORE = ("AND s.pos_location_name NOT ILIKE '%warehouse%' "
+                  "AND s.pos_location_name NOT ILIKE '%stock location%'")
+    store_hist = {}
+    for r in run_query(
+        "SELECT s.pos_location_name AS pos, " + _ACTUAL_BUCKET_CASE + " AS bucket, "
+        "ROUND(" + _TARGET_REVENUE + ") AS net FROM all_sales s "
+        "WHERE " + _win(hist_start, as_of) + " AND s.sale_kind IN ('sale','order','return') "
+        "AND " + BASE_FILTERS + " " + _NOT_STORE + " GROUP BY 1, 2"
+    ):
+        net = float(r["net"] or 0)
+        if net <= 0 or r["bucket"] not in _TARGET_BUCKETS:
+            continue
+        store_hist[r["pos"]] = {"bucket": r["bucket"], "hist": net}
+
+    store_cur = {}
+    if started:
+        for r in run_query(
+            "SELECT s.pos_location_name AS pos, ROUND(" + _TARGET_REVENUE + ") AS net "
+            "FROM all_sales s WHERE " + _win(q_start, as_of) +
+            " AND s.sale_kind IN ('sale','order','return') AND " + BASE_FILTERS +
+            " " + _NOT_STORE + " GROUP BY 1"
+        ):
+            store_cur[r["pos"]] = float(r["net"] or 0)
+
+    bucket_hist_total = {n: 0.0 for n in _TARGET_BUCKETS}
+    group_hist_total = 0.0
+    for v in store_hist.values():
+        bucket_hist_total[v["bucket"]] += v["hist"]
+        group_hist_total += v["hist"]
+
+    conv_target = metrics[0]["target"]
+    turn_target = metrics[4]["target"]
+
+    # Per-market rate targets: hold each market's OWN LY rate + the same capped
+    # uplift used for the group metric, falling back to the group target when a
+    # market has no LY footfall history.
+    def _rate_target(ly):
+        if ly is None:
+            return None
+        return round(ly + min(2.0, max(0.0, ly * 0.05)), 1)
+
+    # Per-market COUNT targets = that market's LY actual × the group growth
+    # factor. A store then takes its within-market share of its OWN market's
+    # target, so store goals are allocated inside the market (not across
+    # markets) and the market totals reconcile to the group metric target.
+    market_ff_target = {}
+    market_new_target = {}
+    market_ret_target = {}
+    market_mia_target = {}
+    market_conv_target = {}
+    market_turn_target = {}
+    for _b in _TARGET_BUCKETS:
+        _mb = ly_ff_bucket.get(_b, {})
+        market_ff_target[_b] = _mb.get("footfall", 0.0) * growth
+        _mc = ly_cust_bucket.get(_b, {})
+        market_new_target[_b] = _mc.get("new", 0.0) * growth
+        market_ret_target[_b] = _mc.get("ret", 0.0) * growth
+        market_mia_target[_b] = ly_mia_bucket.get(_b, 0.0) * growth
+        _ct = _rate_target(_mb.get("conversion"))
+        _tt = _rate_target(_mb.get("turn_in"))
+        market_conv_target[_b] = _ct if _ct is not None else conv_target
+        market_turn_target[_b] = _tt if _tt is not None else turn_target
+
+    stores = []
+    for pos, v in store_hist.items():
+        b = v["bucket"]
+        within = v["hist"] / bucket_hist_total[b] if bucket_hist_total[b] else 0.0
+        rev_tgt = budget.get(b, 0) * within
+        rev_act = store_cur.get(pos, 0.0)
+        pace_expected = rev_tgt * frac
+        stores.append({
+            "store": pos, "market": b,
+            "share_pct": round(100.0 * within, 2),
+            "rev_target": round(rev_tgt),
+            "rev_actual": round(rev_act),
+            "pct": round(100.0 * rev_act / rev_tgt, 1) if rev_tgt else 0.0,
+            "pace_expected": round(pace_expected),
+            "required_run_rate": round(max(0.0, rev_tgt - rev_act) / days_left) if days_left else 0,
+            "status": ("ahead" if rev_act >= pace_expected else "behind") if started else "not_started",
+            "footfall_target": round(market_ff_target.get(b, 0.0) * within),
+            "new_customers_target": round(market_new_target.get(b, 0.0) * within),
+            "return_customers_target": round(market_ret_target.get(b, 0.0) * within),
+            "made_in_africa_target": round(market_mia_target.get(b, 0.0) * within),
+            "conversion_target": market_conv_target.get(b, conv_target),
+            "turn_in_target": market_turn_target.get(b, turn_target),
+        })
+    stores.sort(key=lambda s: s["rev_target"], reverse=True)
+
+    return {
+        "quarter": "Q%d" % q, "year": yr,
+        "quarter_start": q_start.isoformat(), "quarter_end": q_end.isoformat(),
+        "as_of": as_of.isoformat(), "started": started,
+        "days_total": days_total, "days_elapsed": days_elapsed, "days_left": days_left,
+        "completion_pct": round(100.0 * days_elapsed / days_total, 1) if days_total else 0.0,
+        "growth_factor": round(growth, 4),
+        "revenue": revenue, "revenue_total": rev_total,
+        "metrics": metrics, "stores": stores,
+        "revenue_note": ("Revenue targets read directly from the seeded 2026 leadership "
+                         "budget (single source of truth). Kenya-Online and Rwanda differ "
+                         "slightly from the leadership summary sheet; the budget value is "
+                         "shown as-is rather than overwritten."),
+    }
+
+
 @app.get("/api/analytics/monthly-targets")
 def analytics_monthly_targets(month: str = Query(default=None)):
     # Per-STORE daily target tracker (pos_location_name). The monthly target

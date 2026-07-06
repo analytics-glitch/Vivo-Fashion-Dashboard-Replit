@@ -20,6 +20,7 @@ const Customers = React.lazy(() => import("@/pages/Customers"));
 const CustomerDetails = React.lazy(() => import("@/pages/CustomerDetails"));
 const Footfall = React.lazy(() => import("@/pages/Footfall"));
 const TargetsTracker = React.lazy(() => import("@/pages/TargetsTracker"));
+const QuarterScorecard = React.lazy(() => import("@/pages/QuarterScorecard"));
 const ReOrder = React.lazy(() => import("@/pages/ReOrder"));
 const WarehouseReturns = React.lazy(() => import("@/pages/WarehouseReturns"));
 const IBT = React.lazy(() => import("@/pages/IBT"));
@@ -170,6 +171,7 @@ function App() {
                 <Route path="/trend-analysis" element={<ProtectedShell pageId="trend-analysis"><TrendAnalysis /></ProtectedShell>} />
                 <Route path="/product-analysis" element={<ProtectedShell pageId="product-analysis"><ProductAnalysis /></ProtectedShell>} />
                 <Route path="/targets" element={<ProtectedShell pageId="targets"><TargetsTracker /></ProtectedShell>} />
+                <Route path="/quarter-scorecard" element={<ProtectedShell pageId="quarter-scorecard"><QuarterScorecard /></ProtectedShell>} />
                 <Route path="/re-order" element={<ProtectedShell pageId="re-order"><ReOrder /></ProtectedShell>} />
                 <Route path="/warehouse-returns" element={<ProtectedShell pageId="warehouse-returns"><WarehouseReturns /></ProtectedShell>} />
                 <Route path="/ibt" element={<ProtectedShell pageId="ibt"><IBT /></ProtectedShell>} />
