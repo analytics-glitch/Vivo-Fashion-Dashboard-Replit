@@ -3651,6 +3651,31 @@ def _reg_social(app):
         start is still within the budget window — a stale lock reads as idle."""
         return _fb_sync_state["lock"].locked() and not _fb_started_stale()
 
+    def _fb_sync_bg(request, lock):
+        """Run the (up to 240s) Facebook sync on a background thread so it always
+        completes server-side regardless of the HTTP client / proxy timeout. The
+        endpoint returns immediately; the status endpoint reports `running` (the
+        lock) and the persisted `social.fb.last_*` keys reflect the finished run.
+        The lock is released here (NOT in the request handler) because the handler
+        returns long before the thread finishes. Each thread releases the SAME
+        lock object it was started with — if a stale run was abandoned and a fresh
+        lock swapped in, this release can never unlock the newer run."""
+        from datetime import datetime, timezone
+        try:
+            _fb_sync_run(request)
+            _cfg_set("social.fb.last_run_error", "")
+        except HTTPException as e:
+            _cfg_set("social.fb.last_run_error", str(getattr(e, "detail", e))[:500])
+        except Exception as e:  # noqa: BLE001 — never let a thread crash silently
+            _cfg_set("social.fb.last_run_error", str(e)[:500])
+        finally:
+            _cfg_set("social.fb.last_finished_at",
+                     datetime.now(timezone.utc).isoformat())
+            try:
+                lock.release()
+            except RuntimeError:
+                pass  # already released (e.g. abandoned as stale) — harmless
+
     @app.post("/api/social/facebook/sync")
     def cl_soc_fb_sync(request: Request, payload: dict = Body(default=None)):
         if not _internal_token_ok(request):
@@ -3670,18 +3695,16 @@ def _reg_social(app):
             lock = threading.Lock()
             _fb_sync_state["lock"] = lock
             lock.acquire(blocking=False)
+        # Kick the work onto a daemon thread and return immediately. The shared
+        # proxy/gateway kills a held-open request well before the 240s budget, so
+        # a synchronous run was being cut off before the DM phase (which runs last)
+        # ever ingested anything. Decoupling lets every phase — including DMs —
+        # run to completion. The non-blocking lock above still prevents overlap.
         _cfg_set("social.fb.last_started_at",
                  datetime.now(timezone.utc).isoformat())
-        try:
-            return _fb_sync_run(request)
-        finally:
-            # Release the SAME lock object this run acquired — if a stale run was
-            # abandoned and a fresh lock swapped in, this release can never unlock
-            # the newer run.
-            try:
-                lock.release()
-            except RuntimeError:
-                pass  # already released (e.g. abandoned as stale) — harmless
+        threading.Thread(target=_fb_sync_bg, args=(request, lock),
+                         name="fb-sync", daemon=True).start()
+        return {"started": True, "running": True}
 
     def _fb_sync_run(request):
         page_id = A._fb_page_id()
@@ -5105,6 +5128,31 @@ def _reg_social(app):
                        "real_dms": _int(agg.get("dms"), 0)},
         }
 
+    def _x_sync_bg(request, lock, max_seconds):
+        """Run the X sync on a background thread so it always completes
+        server-side regardless of the HTTP client / proxy timeout. The endpoint
+        returns immediately; the status endpoint reports `running` (the lock) and
+        the persisted `social.x.last_*` keys reflect the finished run. The lock is
+        released here (NOT in the request handler) because the handler returns
+        long before the thread finishes. Each thread releases the SAME lock object
+        it was started with — if a stale run was abandoned and a fresh lock
+        swapped in, this release can never unlock the newer run."""
+        from datetime import datetime, timezone
+        try:
+            _x_sync_run(request, max_seconds=max_seconds)
+            _cfg_set("social.x.last_run_error", "")
+        except HTTPException as e:
+            _cfg_set("social.x.last_run_error", str(getattr(e, "detail", e))[:500])
+        except Exception as e:  # noqa: BLE001 — never let a thread crash silently
+            _cfg_set("social.x.last_run_error", str(e)[:500])
+        finally:
+            _cfg_set("social.x.last_finished_at",
+                     datetime.now(timezone.utc).isoformat())
+            try:
+                lock.release()
+            except RuntimeError:
+                pass  # already released (e.g. abandoned as stale) — harmless
+
     @app.post("/api/social/x/sync")
     def cl_soc_x_sync(request: Request, payload: dict = Body(default=None)):
         # The internal sync loop may trigger this with X-Internal-Token (no
@@ -5128,23 +5176,21 @@ def _reg_social(app):
             lock = threading.Lock()
             _x_sync_state["lock"] = lock
             lock.acquire(blocking=False)
+        budget = None
+        try:
+            budget = int((payload or {}).get("max_seconds"))
+        except (TypeError, ValueError):
+            budget = None
+        # Kick the work onto a daemon thread and return immediately. The shared
+        # proxy/gateway kills a held-open request well before the budget, so a
+        # synchronous run was being cut off before the DM phase (which runs last)
+        # ever ingested anything. Decoupling lets every phase — including DMs —
+        # run to completion. The non-blocking lock above still prevents overlap.
         _cfg_set("social.x.last_started_at",
                  datetime.now(timezone.utc).isoformat())
-        try:
-            budget = None
-            try:
-                budget = int((payload or {}).get("max_seconds"))
-            except (TypeError, ValueError):
-                budget = None
-            return _x_sync_run(request, max_seconds=budget)
-        finally:
-            # Release the SAME lock object this run acquired — if a stale run was
-            # abandoned and a fresh lock swapped in, this release can never unlock
-            # the newer run.
-            try:
-                lock.release()
-            except RuntimeError:
-                pass  # already released (e.g. abandoned as stale) — harmless
+        threading.Thread(target=_x_sync_bg, args=(request, lock, budget),
+                         name="x-sync", daemon=True).start()
+        return {"started": True, "running": True}
 
     def _x_sync_run(request, max_seconds=None):
         try:
