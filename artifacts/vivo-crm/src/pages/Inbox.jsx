@@ -78,21 +78,66 @@ export default function Inbox() {
     } catch { /* ignore */ }
   };
 
+  // The IG sync now runs server-side on a background thread and returns
+  // immediately, so we poll /social/instagram/status until it stops "running"
+  // (or a safety timeout) and then surface the finished counts / warnings.
+  const pollIgUntilDone = async () => {
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    const deadline = Date.now() + 6 * 60 * 1000; // safety cap (backgrounds on)
+    try {
+      // Give the thread a moment to acquire the lock before the first poll.
+      await sleep(1500);
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        let st = null;
+        try {
+          const r = await api.get("/social/instagram/status");
+          st = r.data;
+          setIgStatus(st);
+        } catch { /* transient — keep polling */ }
+        if (st && !st.running) {
+          const a = st.account || {};
+          toast.success(
+            `Instagram: ${a.last_sync_posts || 0} posts, ${a.last_sync_comments || 0} comments, ${a.last_sync_mentions || 0} mentions, ${a.last_sync_dms || 0} DMs`
+          );
+          if (st.last_run_error) {
+            toast.error("Instagram sync error: " + st.last_run_error);
+          }
+          if ((a.last_sync_scopes_missing || []).length) {
+            toast.warning(`Missing scope: ${a.last_sync_scopes_missing.join(", ")} — that content cannot be pulled until added.`);
+          } else if (st.dm_blocked) {
+            toast.warning("Instagram DMs can't be pulled — the messaging permission is missing on the Page token.");
+          }
+          await load();
+          return;
+        }
+        if (Date.now() > deadline) {
+          toast.message("Instagram sync is still running — it will finish in the background.");
+          await load();
+          return;
+        }
+        await sleep(3000);
+      }
+    } finally {
+      setIgSyncing(false);
+    }
+  };
+
   const syncIgNow = async () => {
     setIgSyncing(true);
     try {
-      const r = await api.post("/social/instagram/sync", {});
-      const d = r.data || {};
-      toast.success(`Instagram: ${d.posts || 0} posts, ${d.comments || 0} new comments, ${d.mentions || 0} new mentions, ${d.dms || 0} new DMs`);
-      if ((d.scopes_missing || []).length) {
-        toast.warning(`Missing scope: ${d.scopes_missing.join(", ")} — that content cannot be pulled until added.`);
-      }
-      await loadIgStatus();
-      await load();
+      await api.post("/social/instagram/sync", {});
+      toast.message("Instagram sync started — pulling posts, comments, mentions & DMs in the background…");
+      await pollIgUntilDone();
     } catch (e) {
-      toast.error("Instagram sync failed: " + (e?.response?.data?.detail || e.message));
-    } finally {
-      setIgSyncing(false);
+      if (e?.response?.status === 409) {
+        // A sync (manual or the automatic loop) is already running — just watch it.
+        toast.message("An Instagram sync is already running — waiting for it to finish…");
+        await pollIgUntilDone();
+      } else {
+        toast.error("Instagram sync failed to start: " + (e?.response?.data?.detail || e.message));
+        setIgSyncing(false);
+      }
     }
   };
 
@@ -674,6 +719,10 @@ function InstagramStatusStrip({ status }) {
   const lastSynced = status.last_synced_at;
   const counts = status.counts || {};
   const scopesMissing = new Set(acct?.last_sync_scopes_missing || []);
+  // The messaging scope gets its own dedicated DM banner below; every other
+  // missing scope stays in the generic "some content locked" strip.
+  const dmBlocked = !!status.dm_blocked || scopesMissing.has("instagram_manage_messages");
+  const otherScopesMissing = [...scopesMissing].filter((s) => s !== "instagram_manage_messages");
   const ago = lastSynced
     ? Math.max(0, Math.floor((Date.now() - new Date(lastSynced).getTime()) / 60000))
     : null;
@@ -713,22 +762,42 @@ function InstagramStatusStrip({ status }) {
           <span>
             Last synced:{" "}
             <span className="text-[var(--vivo-text)] font-medium">
-              {ago === null ? "never" : ago === 0 ? "just now" : `${ago} min ago`}
+              {status.running ? "syncing…" : ago === null ? "never" : ago === 0 ? "just now" : `${ago} min ago`}
             </span>
           </span>
           <span>Manual sync — click "Sync from Instagram" to refresh</span>
           <span>
             {counts.real_posts ?? 0} live posts ·{" "}
             {counts.real_mentions ?? 0} mentions ·{" "}
+            {counts.real_dms ?? 0} DMs ·{" "}
             {counts.real_feedback ?? 0} live items
           </span>
         </div>
       </div>
 
-      {hasIssues && (
+      {/* Persistent DM-permission banner — DMs need instagram_manage_messages on
+          the Page token. Shown whenever the last completed sync flagged the scope
+          as missing (or the DM phase errored), so staff get an actionable message
+          instead of silently seeing no DMs. */}
+      {dmBlocked && (
+        <div className="mt-3 text-[12px] text-amber-900 bg-amber-50 border-l-2 border-amber-500 border border-amber-200 p-3 rounded-sm flex items-start gap-2" data-testid="ig-dm-blocked">
+          <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
+          <div>
+            <strong>Instagram DMs can't be pulled.</strong> The Page token is missing the{" "}
+            <code className="text-[11px] bg-white px-1 py-0.5 rounded">instagram_manage_messages</code>{" "}
+            permission, so Direct messages won't appear in the inbox until it's granted.{" "}
+            Reconnect the Instagram Business account / regenerate the Page token with messaging access in your Meta App, then re-run the sync.
+            {status.dm_error && (
+              <div className="text-[11px] text-amber-700 mt-1 break-words">Details: {status.dm_error}</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {otherScopesMissing.length > 0 && (
         <div className="mt-3 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 p-2 rounded-sm" data-testid="ig-scope-warn">
           <strong>Some content locked.</strong> Missing scope:{" "}
-          <code className="text-[10px] bg-white px-1 py-0.5 rounded">{[...scopesMissing].join(", ")}</code>.{" "}
+          <code className="text-[10px] bg-white px-1 py-0.5 rounded">{otherScopesMissing.join(", ")}</code>.{" "}
           Enable it in your Meta App → Instagram permissions, then regenerate the Page token and re-run the sync.
         </div>
       )}

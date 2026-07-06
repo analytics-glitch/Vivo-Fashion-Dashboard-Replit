@@ -44,6 +44,7 @@ node, 1h in-proc cache). Rows land in `crm_social_feedback` with
   surfacing the Graph error (e.g. 24-hour window) as a 502 without stamping
   `replied_at`. IG DM `author_name` is the sender's @username (FB DM uses `name`).
 - **Auto-run:** the IG sync (with the FB sync) now runs hourly from `sync_incremental.py` (no more manual "Sync from Instagram" button dependency) — see the auto-run + two-layer-auth note in `fb-sync-deep-backfill.md`.
+- **Manual sync is decoupled from the HTTP request (why DMs never appeared):** `/api/social/instagram/sync` runs the whole `_ig_sync_run` on a daemon thread and returns `{started:true}` immediately (the FB sync is still synchronous). The shared proxy kills a held-open request at ~1–2 min, well before the 240s budget, so the DM phase (which runs LAST) was cut off before it ingested anything — and the "missing scope" warning never surfaced because the sync never returned cleanly. The background thread releases `_ig_sync_lock` in its `finally` (NOT the handler). Status reports `running` via `_ig_sync_lock.locked()` plus `dm_blocked`/`dm_error`/`last_run_error`; the Inbox polls `/status` until `running` is false then shows the finished counts + a persistent DM-permission banner. **Don't** revert to a synchronous handler or the proxy-timeout starvation of DMs returns.
 
 **Why:** the marketing team manages @vivo_woman from the same cockpit as the FB
 Page; keeping one engine shape means one mental model and shared helpers (`_fb_get`,

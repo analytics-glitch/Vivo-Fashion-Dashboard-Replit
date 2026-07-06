@@ -4181,8 +4181,16 @@ def _reg_social(app):
         dms_n = _int(_cfg_get("social.ig.last_sync_dms"), 0)
         scopes = [s for s in (_cfg_get("social.ig.last_scopes_missing") or "").split(",") if s]
         last_at = _cfg_get("social.ig.last_synced_at")
+        dm_error = (_cfg_get("social.ig.last_dm_error") or "").strip()
+        run_error = (_cfg_get("social.ig.last_run_error") or "").strip()
+        # DMs are blocked when the messaging scope is missing OR the DM phase
+        # recorded an error on its last completed run.
+        dm_blocked = ("instagram_manage_messages" in scopes) or bool(dm_error)
         return {
             "connected": True,
+            # True while a background sync thread holds the lock — the Inbox polls
+            # this to know when a triggered sync has finished.
+            "running": _ig_sync_lock.locked(),
             "account": {
                 "ig_user_id": iid,
                 "username": uname,
@@ -4195,11 +4203,34 @@ def _reg_social(app):
             },
             "last_synced_at": last_at or None,
             "auto_sync_minutes": None,
+            "dm_blocked": dm_blocked,
+            "dm_error": dm_error or None,
+            "last_run_error": run_error or None,
             "counts": {"real_posts": posts_n,
                        "real_feedback": _int(agg.get("feedback"), 0),
                        "real_mentions": _int(agg.get("mentions"), 0),
                        "real_dms": _int(agg.get("dms"), 0)},
         }
+
+    def _ig_sync_bg(request):
+        """Run the (up to 240s) Instagram sync on a background thread so it always
+        completes server-side regardless of the HTTP client / proxy timeout. The
+        endpoint returns immediately; the status endpoint reports `running` (the
+        lock) and the persisted `social.ig.last_*` keys reflect the finished run.
+        The lock is released here (NOT in the request handler) because the handler
+        returns long before the thread finishes."""
+        from datetime import datetime, timezone
+        try:
+            _ig_sync_run(request)
+            _cfg_set("social.ig.last_run_error", "")
+        except HTTPException as e:
+            _cfg_set("social.ig.last_run_error", str(getattr(e, "detail", e))[:500])
+        except Exception as e:  # noqa: BLE001 — never let a thread crash silently
+            _cfg_set("social.ig.last_run_error", str(e)[:500])
+        finally:
+            _cfg_set("social.ig.last_finished_at",
+                     datetime.now(timezone.utc).isoformat())
+            _ig_sync_lock.release()
 
     @app.post("/api/social/instagram/sync")
     def cl_soc_ig_sync(request: Request, payload: dict = Body(default=None)):
@@ -4209,10 +4240,17 @@ def _reg_social(app):
             raise HTTPException(400, "Instagram is not configured on the server.")
         if not _ig_sync_lock.acquire(blocking=False):
             raise HTTPException(409, "An Instagram sync is already running.")
-        try:
-            return _ig_sync_run(request)
-        finally:
-            _ig_sync_lock.release()
+        # Kick the work onto a daemon thread and return immediately. The shared
+        # proxy/gateway kills a held-open request well before the 240s budget, so
+        # a synchronous run was being cut off before the DM phase (which runs last)
+        # ever ingested anything. Decoupling lets every phase — including DMs —
+        # run to completion. The non-blocking lock above still prevents overlap.
+        from datetime import datetime, timezone
+        _cfg_set("social.ig.last_started_at",
+                 datetime.now(timezone.utc).isoformat())
+        threading.Thread(target=_ig_sync_bg, args=(request,),
+                         name="ig-sync", daemon=True).start()
+        return {"started": True, "running": True}
 
     def _ig_sync_run(request):
         try:
