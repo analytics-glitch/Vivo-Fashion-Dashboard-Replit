@@ -12401,6 +12401,137 @@ def analytics_target_requirements(year: int = Query(default=None)):
     }
 
 
+@app.get("/api/analytics/target-store-breakdown")
+def analytics_target_store_breakdown(year: int = Query(default=None),
+                                     bucket: str = Query(default=None)):
+    """Per-POS-location drill-down for a market target tile.
+
+    Targets are set at MARKET level only (no official per-store budget). To
+    answer "how is each store doing vs target", we split the market's annual
+    target across its stores by each store's SHARE OF LAST YEAR'S sales over
+    the same Jan-1→today window (an independent basis — allocating by THIS
+    year's share would make every store read as exactly on the market pace).
+    The resulting per-store target is clearly labelled "implied".
+
+    Returns, per store: this-year achieved, the implied target + pace-expected,
+    ahead/behind %, projected landing, remaining KES + per-day, orders still to
+    ring up (remaining ÷ the store's own average basket), and YoY vs last year.
+    `bucket` (a _TARGET_BUCKETS name) scopes to one market; omit / "Overall"
+    for every budgeted market.
+    """
+    yr = int(year) if year else date.today().year
+    base = analytics_annual_targets(yr)
+    today = date.today()
+    y_start, y_end = date(yr, 1, 1), date(yr, 12, 31)
+    total = (y_end - y_start).days + 1
+    elapsed = 0 if today < y_start else min((today - y_start).days + 1, total)
+    days_left = max(0, total - elapsed)
+    cy0, cy1 = str(y_start), str(min(today, y_end))
+    # Prior-year same window: Jan 1 → same month/day (clamp Feb 29 → Feb 28).
+    py = yr - 1
+    try:
+        py1d = date(py, today.month, today.day)
+    except ValueError:
+        py1d = date(py, today.month, today.day - 1)
+    py0, py1 = str(date(py, 1, 1)), str(py1d)
+
+    if bucket and bucket not in ("Overall", "") and bucket not in _TARGET_BUCKETS:
+        raise HTTPException(status_code=400,
+                            detail=f"invalid bucket '{bucket}'; expected 'Overall' or one of {list(_TARGET_BUCKETS)}")
+    wanted = ([bucket] if (bucket and bucket not in ("Overall", ""))
+              else list(_TARGET_BUCKETS))
+    tmap = {b["bucket"]: b for b in base["buckets"]}
+    market_target = sum(float(tmap.get(bn, {}).get("target_annual", 0) or 0) for bn in wanted)
+    market_achieved = sum(float(tmap.get(bn, {}).get("actual_ytd", 0) or 0) for bn in wanted)
+    market_label = (_TR_LABELS.get(bucket, bucket) if bucket and bucket not in ("Overall", "")
+                    else "Overall")
+
+    def _stores(d0, d1):
+        # Keyed by (bucket, store) — NOT store name alone. In "Overall" mode
+        # (all 4 buckets) a store name could recur across markets; keying by
+        # name only would let the last row overwrite the earlier one and
+        # corrupt the prior-share basis + per-store math.
+        out = {}
+        for r in run_query(
+            "SELECT s.pos_location_name AS store, " + _ACTUAL_BUCKET_CASE + " AS bucket, "
+            "ROUND(" + _TARGET_REVENUE + ") AS net, "
+            "COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders "
+            "FROM all_sales s WHERE s.sale_date BETWEEN '" + d0 + "' AND '" + d1 + "' "
+            "AND s.sale_kind IN ('sale','order','return') AND " + BASE_FILTERS + " "
+            "GROUP BY 1, 2", date_to=d1,
+        ):
+            if r["bucket"] not in wanted:
+                continue
+            key = (r["bucket"], r["store"] or "(unknown)")
+            out[key] = {"net": float(r["net"] or 0), "orders": float(r["orders"] or 0)}
+        return out
+
+    cur = _stores(cy0, cy1)
+    pri = _stores(py0, py1)
+
+    # Prior-year basis for the pro-rata split. Only positive prior nets count.
+    prior_total = sum(v["net"] for v in pri.values() if v["net"] > 0)
+    keys = sorted(set(cur) | set(pri))
+    pace_frac = (elapsed / total) if total else 0
+
+    rows = []
+    for key in keys:
+        bkt, name = key
+        c = cur.get(key, {})
+        p = pri.get(key, {})
+        achieved = float(c.get("net", 0.0))
+        c_orders = float(c.get("orders", 0.0))
+        prior_net = float(p.get("net", 0.0))
+        share = (prior_net / prior_total) if (prior_total > 0 and prior_net > 0) else None
+        # New store (no positive prior sales) → no implied target basis.
+        implied = (market_target * share) if share is not None else None
+        pace_expected = (implied * pace_frac) if implied is not None else None
+        delta_pct = (round((achieved / pace_expected - 1) * 100, 1)
+                     if (pace_expected and pace_expected > 0) else None)
+        projected = round(achieved / elapsed * total) if elapsed > 0 else 0
+        remaining = max(0.0, implied - achieved) if implied is not None else None
+        abv = (achieved / c_orders) if (c_orders > 0 and achieved > 0) else None
+        orders_to_go = round(remaining / abv) if (remaining is not None and abv) else None
+        per_day = round(remaining / days_left) if (remaining is not None and days_left > 0) else None
+        yoy_pct = (round((achieved - prior_net) / prior_net * 100, 1)
+                   if prior_net > 0 else None)
+        pct_of_target = (round(100.0 * achieved / implied, 1)
+                         if (implied and implied > 0) else None)
+        rows.append({
+            "store": name,
+            "market": _TR_LABELS.get(bkt, bkt),
+            "achieved": round(achieved),
+            "prior": round(prior_net),
+            "implied_target": (round(implied) if implied is not None else None),
+            "pace_expected": (round(pace_expected) if pace_expected is not None else None),
+            "delta_pct": delta_pct,
+            "projected": projected,
+            "remaining": (round(remaining) if remaining is not None else None),
+            "orders_to_go": orders_to_go,
+            "per_day": per_day,
+            "abv": (round(abv) if abv is not None else None),
+            "yoy_pct": yoy_pct,
+            "pct_of_target": pct_of_target,
+            "is_new": share is None,
+        })
+    # Biggest contributors first.
+    rows.sort(key=lambda r: r["achieved"], reverse=True)
+
+    return {
+        "year": yr, "as_of": cy1, "days_left": days_left,
+        "elapsed": elapsed, "total": total,
+        "bucket": (bucket if bucket and bucket not in ("Overall", "") else "Overall"),
+        "label": market_label,
+        "market_target": round(market_target),
+        "market_achieved": round(market_achieved),
+        "market_remaining": round(max(0.0, market_target - market_achieved)),
+        "store_count": len(rows),
+        "basis": ("Store targets are IMPLIED — the market target split by each store's share of "
+                  "last year's sales over the same period. Not official per-store budgets."),
+        "stores": rows,
+    }
+
+
 @app.get("/api/analytics/monthly-targets")
 def analytics_monthly_targets(month: str = Query(default=None)):
     # Per-STORE daily target tracker (pos_location_name). The monthly target

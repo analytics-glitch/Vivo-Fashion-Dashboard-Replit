@@ -7,7 +7,8 @@ import TotalSalesSummary from "@/components/TotalSalesSummary";
 import CustomProjectionCard from "@/components/CustomProjectionCard";
 import TargetsSnapshot from "@/components/TargetsSnapshot";
 import TargetFunnelCard from "@/components/TargetFunnelCard";
-import { Target, TrendUp, CalendarBlank, DeviceMobile } from "@phosphor-icons/react";
+import TargetDrilldownModal from "@/components/TargetDrilldownModal";
+import { Target, TrendUp, CalendarBlank, DeviceMobile, MagnifyingGlassPlus } from "@phosphor-icons/react";
 
 /**
  * Targets Tracker page.
@@ -112,6 +113,7 @@ function TargetTile({
   paceExpected = null,
   prior = null,
   priorLabel = "vs prior",
+  onClick = null,
 }) {
   const achievedPct = target ? (achieved / target) * 100 : 0;
   const projectedPct = target ? (projected / target) * 100 : 0;
@@ -126,15 +128,30 @@ function TargetTile({
   // Pace-expected delta: how much ahead/behind today's pace.
   const paceDeltaPct = (paceExpected != null && paceExpected > 0)
     ? ((achieved - paceExpected) / paceExpected) * 100 : null;
+  const clickable = typeof onClick === "function";
   return (
     <div
       className={`relative overflow-hidden rounded-xl border p-4 transition-transform hover:-translate-y-0.5 ${
         isOverall
           ? "border-[#1a5c38] bg-gradient-to-br from-[#1a5c38] to-[#0f3d24] text-white shadow-lg"
           : "border-[#fdba74] bg-white"
-      }`}
+      } ${clickable ? "cursor-pointer hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-[#1a5c38]/50 group" : ""}`}
       data-testid={testId}
+      {...(clickable
+        ? {
+            role: "button",
+            tabIndex: 0,
+            onClick,
+            onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } },
+            title: `Drill into ${label} — per store, pace & what it takes`,
+          }
+        : {})}
     >
+      {clickable && (
+        <span className={`absolute top-2 right-2 inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide opacity-0 group-hover:opacity-100 transition-opacity ${isOverall ? "text-white/80" : "text-[#c2410c]"}`}>
+          <MagnifyingGlassPlus size={11} weight="bold" /> Drill
+        </span>
+      )}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-1.5 min-w-0">
           {!isOverall && <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: dotColor }} aria-hidden />}
@@ -273,7 +290,7 @@ function TargetsCardShell({ title, badge, subtitle, daysLeft, daysLabel, childre
   );
 }
 
-function TileGrid({ rows, overall, daysLeft, daysLabel, closedLabel, slug, priorLabel, basisSuffix = "target", basisTooltip = "", basisTooltipOverall = "" }) {
+function TileGrid({ rows, overall, daysLeft, daysLabel, closedLabel, slug, priorLabel, basisSuffix = "target", basisTooltip = "", basisTooltipOverall = "", onTileClick = null }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
       {rows.map((r) => (
@@ -292,6 +309,7 @@ function TileGrid({ rows, overall, daysLeft, daysLabel, closedLabel, slug, prior
           basisSuffix={basisSuffix}
           basisTooltip={basisTooltip}
           testId={`${slug}-tile-${r.label.toLowerCase()}`}
+          onClick={onTileClick ? () => onTileClick({ label: r.label, bucket: r.source }) : null}
         />
       ))}
       <TargetTile
@@ -309,6 +327,7 @@ function TileGrid({ rows, overall, daysLeft, daysLabel, closedLabel, slug, prior
         basisTooltip={basisTooltipOverall || basisTooltip}
         isOverall
         testId={`${slug}-tile-overall`}
+        onClick={onTileClick ? () => onTileClick({ label: "Overall", bucket: "Overall" }) : null}
       />
     </div>
   );
@@ -327,6 +346,8 @@ export default function TargetsTracker() {
   const [priorYearData, setPriorYearData] = useState(null);
   const [error, setError] = useState(null);
   const [snapshot, setSnapshot] = useState(false);
+  // Drill-down popup: { label, bucket } for a clicked Annual tile (null = closed).
+  const [drill, setDrill] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -382,7 +403,7 @@ export default function TargetsTracker() {
       }
       const rows = BUCKETS.map(({ source, label }) => {
         const b = byBucket[source];
-        if (!b) return { label, achieved: 0, target: 0, projected: 0, paceExpected: 0, prior: null };
+        if (!b) return { label, source, achieved: 0, target: 0, projected: 0, paceExpected: 0, prior: null };
         let target, achieved, prior = null;
         if (mode === "annual") {
           target = b.target_annual || 0;
@@ -419,7 +440,7 @@ export default function TargetsTracker() {
         else projected = (achieved / elapsed) * total;
         // Expected at today's pace = target × completion fraction.
         const paceExpected = target * (Math.min(elapsed, total) / total);
-        return { label, achieved, target, projected, paceExpected, prior };
+        return { label, source, achieved, target, projected, paceExpected, prior };
       });
       const overall = rows.reduce(
         (a, r) => ({
@@ -507,6 +528,7 @@ export default function TargetsTracker() {
           basisSuffix="full-year target"
           basisTooltip={"Cumulative share of the FULL-YEAR budget banked so far (achieved \u00f7 annual target). This is a vs-annual figure, not a pace-to-date measure \u2014 see the projected ring and 'vs Pace' for pacing. The Executive Summary instead shows a pro-rata target scaled to the elapsed period, so its on-pace % reads higher."}
           basisTooltipOverall={"Cumulative share of the FULL-YEAR budget banked so far (achieved \u00f7 annual target, summed across the four budgeted markets). This is a vs-annual figure, not a pace-to-date measure \u2014 see the projected ring and 'vs Pace' for pacing. The Executive Summary instead shows a pro-rata target scaled to the elapsed period, so its on-pace % reads higher."}
+          onTileClick={setDrill}
         />
       </TargetsCardShell>
 
@@ -575,6 +597,14 @@ export default function TargetsTracker() {
 
       {/* Monthly daily-budget tracker per store. */}
       <MonthlyTargetsTracker month={currentMonthIso} />
+
+      {/* Drill-down popup for a clicked Annual target tile. */}
+      {drill && (
+        <TargetDrilldownModal
+          info={{ year, bucket: drill.bucket, label: drill.label }}
+          onClose={() => setDrill(null)}
+        />
+      )}
     </div>
   );
 }
