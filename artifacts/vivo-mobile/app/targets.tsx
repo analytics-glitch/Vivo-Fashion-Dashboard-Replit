@@ -62,7 +62,6 @@ interface MonthlyTargets {
 
 interface QuarterStore {
   channel: string;
-  sales_target: number;
   qtd_target: number;
   qtd_actual: number;
 }
@@ -103,8 +102,7 @@ export default function TargetsScreen() {
         for (const s of r.stores ?? []) {
           const cur =
             agg.get(s.channel) ??
-            { channel: s.channel, sales_target: 0, qtd_target: 0, qtd_actual: 0 };
-          cur.sales_target += s.sales_target || 0;
+            { channel: s.channel, qtd_target: 0, qtd_actual: 0 };
           cur.qtd_target += s.mtd_target || 0;
           cur.qtd_actual += s.mtd_actual || 0;
           agg.set(s.channel, cur);
@@ -129,7 +127,7 @@ export default function TargetsScreen() {
 
   const stores = (quarterQ.data ?? [])
     .slice()
-    .sort((a, b) => b.sales_target - a.sales_target);
+    .sort((a, b) => b.qtd_target - a.qtd_target);
 
   return (
     <Screen
@@ -253,16 +251,16 @@ export default function TargetsScreen() {
             <MiniTable
               columns={[
                 { key: "market", label: "Market", flex: 1.4 },
-                { key: "target", label: "Qtr Target", align: "right" },
+                { key: "target", label: "QTD Target", align: "right" },
                 { key: "actual", label: "QTD Actual", align: "right" },
                 { key: "att", label: "Att.", align: "right", flex: 0.8 },
               ]}
               rows={stores.map((s) => ({
                 market: s.channel,
-                target: fmtKES(s.sales_target),
+                target: fmtKES(s.qtd_target),
                 actual: fmtKES(s.qtd_actual),
                 att: fmtPct(
-                  s.sales_target ? (s.qtd_actual / s.sales_target) * 100 : 0,
+                  s.qtd_target ? (s.qtd_actual / s.qtd_target) * 100 : 0,
                   0,
                 ),
               }))}

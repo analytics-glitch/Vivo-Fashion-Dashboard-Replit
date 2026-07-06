@@ -65,6 +65,50 @@ JUNE_2026_STORES = {
     "Vivo Acacia": (5_000_000, "Uganda"),
 }
 
+# Typed per-store July 2026 targets → canonical all_sales.pos_location_name.
+# "Greenwood" is the Meru-Greenwood store (posts as "Vivo Meru"). The workbook
+# line "Sarit Safari/Zoya" (3,190,000) is split evenly across the two Sarit
+# sub-stores (Safari Sarit / Zoya Sarit) per leadership instruction, and the
+# Online channel is tracked as the "Online - Shop Zetu" pos_location_name.
+JULY_2026_STORES = {
+    "Vivo Sarit": (9_035_000, "Kenya"),
+    "Vivo Junction": (9_035_000, "Kenya"),
+    "Vivo Mama Ngina St": (7_440_000, "Kenya"),
+    "Vivo Moi Avenue": (6_910_000, "Kenya"),
+    "Vivo Village Market": (6_110_000, "Kenya"),
+    "Vivo Yaya": (6_110_000, "Kenya"),
+    "Vivo Garden City": (4_785_000, "Kenya"),
+    "Vivo Galleria": (4_465_000, "Kenya"),
+    "Vivo Imaara": (4_040_000, "Kenya"),
+    "Vivo Nakuru": (4_040_000, "Kenya"),
+    "Vivo TRM": (3_935_000, "Kenya"),
+    "Vivo Two Rivers": (3_720_000, "Kenya"),
+    "Vivo Capital Centre": (3_720_000, "Kenya"),
+    "Vivo Eldoret": (3_615_000, "Kenya"),
+    "Vivo City Mall": (3_510_000, "Kenya"),
+    "Vivo Hub": (3_510_000, "Kenya"),
+    "Vivo Kisumu": (3_510_000, "Kenya"),
+    "Vivo Runda": (3_405_000, "Kenya"),
+    "Safari Sarit": (1_595_000, "Kenya"),
+    "Zoya Sarit": (1_595_000, "Kenya"),
+    "Vivo MSA Digo Road": (2_925_000, "Kenya"),
+    "Vivo Signature Mall": (2_660_000, "Kenya"),
+    "Vivo T- Mall": (2_555_000, "Kenya"),
+    "Vivo Kileleshwa": (2_445_000, "Kenya"),
+    "Vivo Meru": (2_130_000, "Kenya"),
+    "Vivo Greenspan": (2_130_000, "Kenya"),
+    "Vivo Kigali Heights": (4_680_000, "Rwanda"),
+    "The Oasis Mall": (3_550_000, "Uganda"),
+    "Vivo Acacia": (6_100_000, "Uganda"),
+    "Online - Shop Zetu": (10_000_000, "Online"),
+}
+
+# Per-store targets keyed by month number (add new months here over time).
+STORE_TARGETS_BY_MONTH = {
+    6: JUNE_2026_STORES,
+    7: JULY_2026_STORES,
+}
+
 
 def _num(v):
     try:
@@ -185,10 +229,11 @@ def main():
             n_region += 1
 
     n_store = 0
-    for store, (val, country) in JUNE_2026_STORES.items():
-        cur.execute(upsert, ("store", store, country,
-                             date(YEAR, 6, 1), val, "manual"))
-        n_store += 1
+    for month_num, stores in STORE_TARGETS_BY_MONTH.items():
+        for store, (val, country) in stores.items():
+            cur.execute(upsert, ("store", store, country,
+                                 date(YEAR, month_num, 1), val, "manual"))
+            n_store += 1
 
     conn.commit()
 
@@ -203,11 +248,14 @@ def main():
     print("Region budget annual totals:")
     for name, tot in cur.fetchall():
         print(f"  {name:18s} {float(tot):>16,.0f}")
-    cur.execute(
-        "SELECT SUM(target_kes) FROM targets_monthly "
-        "WHERE scope='store' AND source='manual' AND month=%s", (date(YEAR, 6, 1),))
-    print(f"June manual per-store total: {float(cur.fetchone()[0]):,.0f} "
-          f"across {n_store} stores")
+    for month_num, stores in STORE_TARGETS_BY_MONTH.items():
+        cur.execute(
+            "SELECT SUM(target_kes) FROM targets_monthly "
+            "WHERE scope='store' AND source='manual' AND month=%s",
+            (date(YEAR, month_num, 1),))
+        tot = cur.fetchone()[0] or 0
+        print(f"{MONTHS[month_num - 1]} manual per-store total: "
+              f"{float(tot):,.0f} across {len(stores)} stores")
     print(f"Upserted {n_region} region rows, {n_store} store rows.")
     cur.close()
     conn.close()
