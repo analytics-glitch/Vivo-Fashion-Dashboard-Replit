@@ -3604,6 +3604,12 @@ def _reg_social(app):
     _FB_SYNC_COMMENT_TARGET = 2000
     _FB_SYNC_DM_TARGET = 2000
     _FB_SYNC_TIME_BUDGET_SEC = 240  # hard stop so the HTTP request can't hang forever
+    # Reserved tail of the per-run budget guaranteed to the DM phase. The
+    # posts/comments phases stop at the *soft* budget (hard − reserve) so the DM
+    # phase always gets real processing time, even while the posts/comments
+    # backfill is still running (otherwise DMs — which run last — are starved
+    # forever and never ingest a single conversation on a fresh prod DB).
+    _FB_SYNC_DM_RESERVE_SEC = 75
     # Only one sync may run at a time: concurrent runs would race the persisted
     # deep-backfill cursor (data stays safe via source_id dedup, but progress
     # gets noisy and Graph/LLM work is duplicated).
@@ -3628,6 +3634,12 @@ def _reg_social(app):
 
         def _over_budget():
             return (time.monotonic() - started) > _FB_SYNC_TIME_BUDGET_SEC
+
+        def _over_content_budget():
+            # Soft budget for the non-DM (posts/comments) phases: trips earlier
+            # than the hard cap so a guaranteed tail is left for the DM phase.
+            return (time.monotonic() - started) > (
+                _FB_SYNC_TIME_BUDGET_SEC - _FB_SYNC_DM_RESERVE_SEC)
 
         # Page name labels the brand's own posts/replies (commenters' real names
         # are withheld by the Graph API for privacy, so they show "Facebook user").
@@ -3814,7 +3826,7 @@ def _reg_social(app):
             page_new = 0
             completed = True
             for p in posts:
-                if _over_budget():
+                if _over_content_budget():
                     completed = False
                     break
                 pid = p.get("id")
@@ -3867,7 +3879,7 @@ def _reg_social(app):
                     total_comments += len(craw)
                     _ingest_comments(craw, pid, p_link, p_excerpt)
                 while (c_more and c_after and _comments_short()
-                       and not _over_budget()):
+                       and not _over_content_budget()):
                     try:
                         cres = A._fb_get(f"{pid}/comments", {
                             "fields": _C_FIELDS,
@@ -3894,7 +3906,7 @@ def _reg_social(app):
             after = None
             exhausted = False
             first = True
-            while not _over_budget():
+            while not _over_content_budget():
                 page_cursor = after
                 try:
                     feed = _fetch_page(after)
@@ -3920,7 +3932,7 @@ def _reg_social(app):
             deep_done = (_cfg_get("social.fb.deep_done") or "") == "1" or exhausted
             if not deep_done and (_posts_short() or _comments_short()):
                 deep_after = (_cfg_get("social.fb.deep_cursor") or "") or after
-                while (deep_after and not _over_budget()
+                while (deep_after and not _over_content_budget()
                        and (_posts_short() or _comments_short())):
                     page_cursor = deep_after
                     try:
@@ -3962,16 +3974,20 @@ def _reg_social(app):
                     params["after"] = after
                 return A._fb_get(f"{page_id}/conversations", params)
 
-            def _process_conv_page(feed):
+            def _process_conv_page(feed, guarantee=0):
                 """Ingest one conversations page. Returns (n_convs, n_new_dms,
                 next_cursor, completed) — completed=False means the time budget
-                interrupted the page (caller must not advance past it)."""
+                interrupted the page (caller must not advance past it). The first
+                `guarantee` conversations are ingested regardless of the budget so
+                the DM phase never fetches a page and stores zero (the starvation
+                bug: an over-budget DM phase used to bail before the first
+                ingest)."""
                 nonlocal total_dms
                 convs = feed.get("data") or []
                 before = new_dms
                 completed = True
-                for conv in convs:
-                    if _over_budget():
+                for idx, conv in enumerate(convs):
+                    if idx >= guarantee and _over_budget():
                         completed = False
                         break
                     conv_id = conv.get("id")
@@ -4028,7 +4044,8 @@ def _reg_social(app):
                     dm_blocked = True
                     dm_error = str(e)[:500]
                     break  # keep posts/comments; DM phase reports the error
-                n, page_new, nxt, completed = _process_conv_page(feed)
+                n, page_new, nxt, completed = _process_conv_page(
+                    feed, guarantee=1 if dm_first else 0)
                 dm_first = False
                 if not completed:
                     dm_after = page_cursor  # re-do this page next sync
@@ -4107,6 +4124,13 @@ def _reg_social(app):
     _IG_SYNC_MENTION_TARGET = 2000
     _IG_SYNC_DM_TARGET = 2000
     _IG_SYNC_TIME_BUDGET_SEC = 240
+    # Reserved tails guaranteed to the later phases. Mentions AND DMs both run
+    # after posts/comments (order: media → posts/comments deep → mentions → DMs),
+    # so BOTH are starved on a fresh prod DB while the posts/comments backfill is
+    # still running. Posts/comments stop at (hard − mention − dm reserve),
+    # mentions stop at (hard − dm reserve), and DMs run against the full hard cap.
+    _IG_SYNC_DM_RESERVE_SEC = 60
+    _IG_SYNC_MENTION_RESERVE_SEC = 60
     _IG_M_FIELDS = "id,message,from,created_time"
     _ig_sync_lock = threading.Lock()
     _ig_id_cache = {"id": None, "username": None, "ts": 0.0}
@@ -4203,6 +4227,17 @@ def _reg_social(app):
 
         def _over_budget():
             return (time.monotonic() - started) > _IG_SYNC_TIME_BUDGET_SEC
+
+        def _over_content_budget():
+            # Soft budget for posts/comments: leaves room for BOTH mentions & DMs.
+            return (time.monotonic() - started) > (
+                _IG_SYNC_TIME_BUDGET_SEC - _IG_SYNC_MENTION_RESERVE_SEC
+                - _IG_SYNC_DM_RESERVE_SEC)
+
+        def _over_mention_budget():
+            # Soft budget for the mention phase: leaves the DM reserve intact.
+            return (time.monotonic() - started) > (
+                _IG_SYNC_TIME_BUDGET_SEC - _IG_SYNC_DM_RESERVE_SEC)
 
         acct_label = ("@" + ig_uname) if ig_uname else "Our Instagram"
         scopes_missing = set()
@@ -4435,7 +4470,7 @@ def _reg_social(app):
             page_new = 0
             completed = True
             for p in media:
-                if _over_budget():
+                if _over_content_budget():
                     completed = False
                     break
                 mid = p.get("id")
@@ -4485,7 +4520,7 @@ def _reg_social(app):
                     total_comments += len(craw)
                     _ingest_ig_comments(craw, mid, m_link, m_excerpt)
                 while (c_more and c_after and _comments_short()
-                       and not _over_budget()):
+                       and not _over_content_budget()):
                     try:
                         cres = A._fb_get(f"{mid}/comments", {
                             "fields": _IG_C_FIELDS + ",replies.limit(50){"
@@ -4510,7 +4545,7 @@ def _reg_social(app):
             after = None
             exhausted = False
             first = True
-            while not _over_budget():
+            while not _over_content_budget():
                 page_cursor = after
                 try:
                     feed = _fetch_media_page(after)
@@ -4536,7 +4571,7 @@ def _reg_social(app):
             deep_done = (_cfg_get("social.ig.deep_done") or "") == "1" or exhausted
             if not deep_done and (_posts_short() or _comments_short()):
                 deep_after = (_cfg_get("social.ig.deep_cursor") or "") or after
-                while (deep_after and not _over_budget()
+                while (deep_after and not _over_content_budget()
                        and (_posts_short() or _comments_short())):
                     page_cursor = deep_after
                     try:
@@ -4598,7 +4633,7 @@ def _reg_social(app):
             # Fresh pass — newest-first until a page adds nothing new.
             m_after = None
             m_exhausted = False
-            while not _over_budget():
+            while not _over_mention_budget():
                 try:
                     feed = _fetch_tags_page(m_after)
                 except Exception as e:
@@ -4624,7 +4659,7 @@ def _reg_social(app):
                             or m_exhausted)
             if not mention_blocked and not mention_done and _mentions_short():
                 deep_m = (_cfg_get("social.ig.mention_deep_cursor") or "") or m_after
-                while deep_m and not _over_budget() and _mentions_short():
+                while deep_m and not _over_mention_budget() and _mentions_short():
                     page_cursor = deep_m
                     try:
                         feed = _fetch_tags_page(deep_m)
@@ -4663,16 +4698,18 @@ def _reg_social(app):
                     params["after"] = after
                 return A._fb_get(f"{A._fb_page_id()}/conversations", params)
 
-            def _process_ig_conv_page(feed):
+            def _process_ig_conv_page(feed, guarantee=0):
                 """Ingest one conversations page. Returns (n_convs, n_new_dms,
                 next_cursor, completed) — completed=False means the time budget
-                interrupted the page (caller must not advance past it)."""
+                interrupted the page (caller must not advance past it). The first
+                `guarantee` conversations are ingested regardless of the budget so
+                the DM phase never fetches a page and stores zero."""
                 nonlocal total_dms
                 convs = feed.get("data") or []
                 before = new_dms
                 completed = True
-                for conv in convs:
-                    if _over_budget():
+                for idx, conv in enumerate(convs):
+                    if idx >= guarantee and _over_budget():
                         completed = False
                         break
                     conv_id = conv.get("id")
@@ -4726,7 +4763,8 @@ def _reg_social(app):
                     dm_blocked = True
                     dm_error = str(e)[:500]
                     break  # keep the earlier phases; DM phase reports the error
-                n, page_new, nxt, completed = _process_ig_conv_page(feed)
+                n, page_new, nxt, completed = _process_ig_conv_page(
+                    feed, guarantee=1 if dm_first else 0)
                 dm_first = False
                 if not completed:
                     dm_after = page_cursor  # re-do this page next sync

@@ -23,11 +23,16 @@ node, 1h in-proc cache). Rows land in `crm_social_feedback` with
   (posts/comments), `mention_deep_cursor`/`mention_done`, `last_mention_error`,
   `last_scopes_missing`.
 - Phases share ONE 240s budget in order (fresh media → posts/comments deep backfill
-  → Phase M mentions → Phase C DMs). A later phase only gets time once earlier phases
-  finish, so a single run can legitimately skip mentions/DMs when earlier phases eat
-  the whole budget — they converge over successive runs once earlier phases are
-  `deep_done`. This is expected, not a bug, and matches how FB DMs wait behind
-  posts/comments.
+  → Phase M mentions → Phase C DMs). **Tiered soft-budget reserve** (both mentions
+  AND DMs run after posts/comments, so both were starved on a fresh prod DB while the
+  posts/comments backfill ran): posts/comments stop at `_over_content_budget()` (hard −
+  `_IG_SYNC_MENTION_RESERVE_SEC` − `_IG_SYNC_DM_RESERVE_SEC`), the mention phase stops
+  at `_over_mention_budget()` (hard − DM reserve), and the DM phase runs against the
+  full hard cap. The fresh DM page ingests its first conversation regardless of budget
+  (`_process_ig_conv_page(..., guarantee=1)`). Mirror the FB DM-tail reserve. Once
+  earlier phases are `deep_done`/`mention_done` the soft caps are never reached, so
+  steady state is unchanged. Do NOT collapse the tiers back to one `_over_budget()` or
+  a long backfill starves mentions+DMs again.
 - **DMs (Instagram Direct) are IN scope** as a Phase C mirroring the FB DM phase:
   `igdm:<msg_id>` source ids, INBOUND only (`from.id != ig_id`), parent
   `igconv:<thread>`, cursor keys `social.ig.dm_deep_cursor`/`dm_deep_done`, counters
