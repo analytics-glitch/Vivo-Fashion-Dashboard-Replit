@@ -2740,7 +2740,7 @@ def fabric_mix(
                   p.id, p.name, p.default_code, p.barcode, p.fabric_category, p.fabric_subcategory,
                   p.fabric_structure, p.plain_print, p.weight_range, p.gsm,
                   p.width_m, p.kg_per_mtr_eff as kg_per_mtr, p.kg_per_mtr_src, p.fiber_content, p.fabric_type,
-                  p.supplier, p.primary_color, p.source_city, p.source_country,
+                  p.supplier, p.supplier_fabric_code, p.active, p.primary_color, p.source_city, p.source_country,
                   INITCAP(BTRIM(p.fabric_color)) as fabric_color,
                   NULLIF(INITCAP(BTRIM(p.color)),'') as color,
                   ROUND(p.standard_price::numeric,2) as cost_kes,

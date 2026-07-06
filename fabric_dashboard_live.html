@@ -2258,17 +2258,26 @@ function exportFabricMixProducts(d,prefix){
   const sorted=mixSortRows(rows);
   if(!sorted.length){alert('No products to export.');return;}
   const unit=UNIT==='kg'?'kg':'m';
+  // The product export LEADS with the 12 Odoo identity fields (fixed order) so it
+  // doubles as a fabric master-data pull, THEN the existing analytical columns.
+  // Fabric Name has no distinct Odoo field (only finished-goods "Style Name"),
+  // so per spec it falls back to the product name (same value as Product Name).
+  // Fabric Supplier Name = the existing Vendor/Supplier (x_vivo_attr_42).
+  const idv=(r,k)=>fabricClean(r.detail&&r.detail[k]);
   const cols=[
-    ['Fabric name',r=>r.group],
-    ['Barcode',r=>fabricCode(r.detail)],
+    ['Barcode/Sku',r=>fabricCode(r.detail)],
+    ['Product Name',r=>idv(r,'name')],
+    ['Fabric Name',r=>idv(r,'name')],
+    ['Supplier Fabric Code',r=>idv(r,'supplier_fabric_code')],
+    ['Fabric Colour',r=>(r.detail&&r.detail.derived_fabric_color)||''],
+    ['Fabric Category',r=>idv(r,'fabric_category')||r._cat||''],
+    ['Fabric Sub-category',r=>idv(r,'fabric_subcategory')||r._sub||''],
+    ['Fabric Status',r=>r.detail?(r.detail.active===false?'Retired':'Active'):''],
+    ['Primary Color',r=>(r.detail&&r.detail.derived_primary_color)||''],
+    ['Fabric Supplier Name',r=>idv(r,'supplier')],
+    ['Source City',r=>idv(r,'source_city')],
+    ['Source Country',r=>idv(r,'source_country')],
     ['Color',r=>(r.detail&&r.detail.color)||'None'],
-    ['Fabric Color',r=>(r.detail&&r.detail.derived_fabric_color)||'None'],
-    ['Primary Color',r=>(r.detail&&r.detail.derived_primary_color)||'None'],
-    ['Vendor/Supplier',r=>(r.detail&&r.detail.supplier)||''],
-    ['Source City',r=>(r.detail&&r.detail.source_city)||''],
-    ['Source Country',r=>(r.detail&&r.detail.source_country)||''],
-    ['Category',r=>r._cat],
-    ['Sub-category',r=>r._sub],
     ['Width (m)',r=>{const w=r.detail&&r.detail.width_m;return w==null?'':w;}],
     ['GSM',r=>{const g=r.detail&&r.detail.gsm;return g==null?'':g;}],
     ['kg/Mtr',r=>{const dt=r.detail||{};if(dt.width_m!=null&&dt.gsm!=null)return (dt.width_m*dt.gsm)/1000;return '';}],

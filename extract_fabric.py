@@ -143,6 +143,7 @@ def extract_products(uid, models, cur, now):
         ADD COLUMN IF NOT EXISTS fiber_content TEXT,
         ADD COLUMN IF NOT EXISTS fabric_type TEXT,
         ADD COLUMN IF NOT EXISTS supplier TEXT,
+        ADD COLUMN IF NOT EXISTS supplier_fabric_code TEXT,
         ADD COLUMN IF NOT EXISTS primary_color TEXT,
         ADD COLUMN IF NOT EXISTS source_city TEXT,
         ADD COLUMN IF NOT EXISTS source_country TEXT,
@@ -198,6 +199,7 @@ def extract_products(uid, models, cur, now):
         "x_vivo_attr_46",   # Fiber Content %
         "x_vivo_attr_47",   # Fabric Type
         "x_vivo_attr_42",   # Vendor/Supplier
+        "x_vivo_attr_43",   # Supplier Fabric Code
         "x_vivo_attr_48",   # Primary Color
         "x_vivo_attr_124",  # Source City
         "x_vivo_attr_125",  # Source Country
@@ -246,6 +248,7 @@ def extract_products(uid, models, cur, now):
                 get_m2o(r.get("x_vivo_attr_46")),   # fiber content
                 get_m2o(r.get("x_vivo_attr_47")),   # fabric type
                 get_m2o(r.get("x_vivo_attr_42")),   # supplier
+                get_m2o(r.get("x_vivo_attr_43")),   # supplier fabric code
                 get_m2o(r.get("x_vivo_attr_48")),   # primary color
                 get_m2o(r.get("x_vivo_attr_124")),  # source city
                 get_m2o(r.get("x_vivo_attr_125")),  # source country
@@ -266,7 +269,7 @@ def extract_products(uid, models, cur, now):
             id, name, default_code, category, uom, standard_price, active,
             kg_per_mtr, width_m, gsm, plain_print, fabric_structure,
             fabric_category, fabric_subcategory, stretch_type, weight_range,
-            fiber_content, fabric_type, supplier, primary_color,
+            fiber_content, fabric_type, supplier, supplier_fabric_code, primary_color,
             source_city, source_country, barcode, color,
             derived_color, fabric_color, write_date, _loaded_at
         ) VALUES %s
@@ -279,7 +282,9 @@ def extract_products(uid, models, cur, now):
             fabric_subcategory=EXCLUDED.fabric_subcategory,
             stretch_type=EXCLUDED.stretch_type, weight_range=EXCLUDED.weight_range,
             fiber_content=EXCLUDED.fiber_content, fabric_type=EXCLUDED.fabric_type,
-            supplier=EXCLUDED.supplier, primary_color=EXCLUDED.primary_color,
+            supplier=EXCLUDED.supplier,
+            supplier_fabric_code=EXCLUDED.supplier_fabric_code,
+            primary_color=EXCLUDED.primary_color,
             source_city=EXCLUDED.source_city, source_country=EXCLUDED.source_country,
             derived_color=EXCLUDED.derived_color, fabric_color=EXCLUDED.fabric_color,
             write_date=EXCLUDED.write_date,
