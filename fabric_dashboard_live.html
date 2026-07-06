@@ -553,7 +553,10 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <h3 id="fab-detail-title" style="margin:0;font-size:1.05rem;"></h3>
        <p id="fab-detail-sub" class="muted" style="margin:.25rem 0 0;font-size:12px;"></p>
       </div>
-      <button class="modal-close" onclick="closeFabricDetail()" aria-label="Close">&times;</button>
+      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+       <button type="button" class="btn btn-primary" onclick="printFabricSheet()" title="Print a landscape Buying Fabric Information Sheet for this fabric">🖨 Print as PDF</button>
+       <button class="modal-close" onclick="closeFabricDetail()" aria-label="Close">&times;</button>
+      </div>
      </div>
      <div id="fab-detail-body" class="modal-body"></div>
     </div>
@@ -2946,8 +2949,10 @@ function regCell(col,r){
 // Render the shared fabric detail card from a register-shaped row + a key list.
 // Reused by the register barcode link (DETAIL_KEYS) and the Stock Mix product
 // barcode link (MIX_DETAIL_KEYS) so formatting + labels never drift.
+let curFabricDetail=null;   // last row shown in the shared detail modal (for Print as PDF)
 function renderFabricDetail(r,keys){
   keys=keys||DETAIL_KEYS;
+  curFabricDetail=r;
   document.getElementById('fab-detail-title').textContent=r.name||'Fabric detail';
   document.getElementById('fab-detail-sub').textContent='Barcode: '+(r.default_code||'—');
   document.getElementById('fab-detail-body').innerHTML='<div class="detail-grid">'+keys.map(k=>{
@@ -2977,6 +2982,100 @@ function openFabricDetailFromSupport(id){
   renderFabricDetail(r,DETAIL_KEYS);
 }
 function closeFabricDetail(){document.getElementById('fab-detail-overlay').style.display='none';}
+// Print a landscape "Buying Fabric Information Sheet" (matches the paper form the
+// buying team fills by hand). Pre-fills what the system knows; leaves fields we
+// don't hold (Shopify title, date received, rolls, brand, priority, notes) as
+// blank fill-in lines. All ERP values are esc()'d before injection (stored-XSS).
+function printFabricSheet(){
+  const r=curFabricDetail;
+  if(!r){alert('Open a fabric barcode first, then print.');return;}
+  const clean=x=>{const s=(x==null?'':String(x)).trim();return (s===''||s.toLowerCase()==='false')?'':s;};
+  const numv=(x,dp)=>(x==null||x===''||isNaN(Number(x)))?'':Number(x).toLocaleString(undefined,{maximumFractionDigits:dp});
+  const colour=clean(r.derived_fabric_color)||clean(r.fabric_color);
+  const source=[clean(r.source_city),clean(r.source_country)].filter(Boolean).join(', ');
+  const gsm=numv(r.gsm,0);
+  const width=numv(r.width_m,2)?numv(r.width_m,2)+' m':'';
+  const metres=numv(r.available_metres,1)?numv(r.available_metres,1)+' m':'';
+  const cost=(r.cost_metre!=null&&r.cost_metre!==''&&!isNaN(Number(r.cost_metre)))?'KES '+numv(r.cost_metre,2):'';
+  const photo=clean(r.photo)||clean(r.photo_url)||clean(r.image)||clean(r.image_url);
+  const dataCell=(label,value)=>`<div class="cell"><span class="lbl">${esc(label)}:</span>${value?`<span class="val">${esc(value)}</span>`:'<span class="blank"></span>'}</div>`;
+  const blankCell=(label,hint)=>`<div class="cell"><span class="lbl">${esc(label)}:</span><span class="blank"></span>${hint?`<span class="hint">${esc(hint)}</span>`:''}</div>`;
+  const xf=(label,value)=>`<div class="xf"><span class="lbl">${esc(label)}:</span>${value?`<span class="val">${esc(value)}</span>`:'<span class="blank"></span>'}</div>`;
+  const tick=name=>`<span class="tick"><span class="box"></span>${esc(name)}</span>`;
+  const left=[
+    blankCell('Fabric title on Shopify'),
+    dataCell('Source',source),
+    dataCell('Supplier name',clean(r.supplier)),
+    dataCell('Fabric code',clean(r.supplier_fabric_code)),
+    dataCell('Fabric colour',colour),
+    dataCell('Fabric barcode',clean(r.default_code)),
+    dataCell('Fabric category',clean(r.fabric_category)),
+    dataCell('Fabric sub-category',clean(r.fabric_subcategory)),
+    dataCell('Fabric composition',clean(r.fiber_content)),
+    blankCell('Date received','when fabric arrived'),
+    blankCell('Number of rolls received')
+  ].join('');
+  const photoInner=photo?`<img src="${esc(photo)}" alt="Fabric photo">`:'Photo to be added';
+  const html=`<!doctype html><html><head><meta charset="utf-8"><title>Buying Fabric Information Sheet${clean(r.default_code)?' — '+esc(r.default_code):''}</title>
+<style>
+@page{size:A4 landscape;margin:10mm;}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:12px;}
+.sheet{width:100%;}
+.hd{position:relative;text-align:center;padding:2px 0 12px;}
+.hd h1{margin:0;font-size:19px;font-weight:800;letter-spacing:.02em;text-decoration:underline;text-underline-offset:4px;}
+.vivo{position:absolute;right:0;top:-2px;background:#6b6b6b;color:#fff;font-weight:800;font-style:italic;font-size:22px;letter-spacing:.02em;padding:3px 18px;border-radius:3px;}
+.grid{display:grid;grid-template-columns:1.15fr .85fr;border:1.5px solid #111;}
+.rt{border-left:1.5px solid #111;display:flex;flex-direction:column;}
+.cell{border-bottom:1px solid #111;padding:5px 9px;display:flex;gap:8px;align-items:baseline;min-height:29px;}
+.left .cell:last-child{border-bottom:none;}
+.lbl{font-weight:700;text-transform:uppercase;font-size:10.5px;letter-spacing:.01em;white-space:nowrap;}
+.val{flex:1;font-size:13.5px;font-weight:700;}
+.blank{flex:1;border-bottom:1px dotted #999;align-self:flex-end;min-height:14px;}
+.hint{font-size:9px;color:#888;font-style:italic;white-space:nowrap;align-self:flex-end;}
+.two{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #111;}
+.sec{padding:6px 9px;}
+.two .sec:first-child{border-right:1px solid #111;}
+.sec-h{font-weight:800;text-transform:uppercase;font-size:11px;letter-spacing:.04em;text-align:center;margin-bottom:7px;}
+.ticks{display:flex;flex-direction:column;gap:7px;align-items:flex-start;}
+.tick{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:600;text-transform:uppercase;}
+.box{width:13px;height:13px;border:1.5px solid #111;display:inline-block;flex-shrink:0;}
+.xf{display:flex;gap:8px;padding:5px 9px;border-bottom:1px solid #111;align-items:baseline;min-height:26px;}
+.xf .lbl{width:200px;flex-shrink:0;}
+.xf .val{font-size:13px;}
+.photo{flex:1;padding:6px 9px;display:flex;flex-direction:column;}
+.photo .lbl{margin-bottom:5px;}
+.photo-frame{flex:1;border:1.5px dashed #aaa;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:11px;min-height:120px;overflow:hidden;}
+.photo-frame img{max-width:100%;max-height:100%;object-fit:contain;}
+.notes{border:1.5px solid #111;border-top:none;padding:6px 9px 26px;}
+.notes .lbl{margin-bottom:5px;}
+</style></head><body>
+<div class="sheet">
+ <div class="hd"><h1>BUYING FABRIC INFORMATION SHEET</h1><div class="vivo">Vivo</div></div>
+ <div class="grid">
+  <div class="left">${left}</div>
+  <div class="rt">
+   <div class="two">
+    <div class="sec"><div class="sec-h">Brand</div><div class="ticks">${tick('Vivo')}${tick('Safari')}${tick('Zoya')}</div></div>
+    <div class="sec"><div class="sec-h">Priority</div><div class="ticks">${tick('High')}${tick('Medium')}${tick('Low')}</div></div>
+   </div>
+   ${xf('GSM',gsm)}
+   ${xf('Width',width)}
+   ${xf('Metres available for colour',metres)}
+   ${xf('Cost per metre',cost)}
+   <div class="photo"><div class="lbl">Fabric photo</div><div class="photo-frame">${photoInner}</div></div>
+  </div>
+ </div>
+ <div class="notes"><div class="lbl">Additional Notes:</div></div>
+</div>
+</body></html>`;
+  const w=window.open('','_blank','width=1180,height=820');
+  if(!w){alert('Please allow pop-ups for this site to print the fabric sheet.');return;}
+  w.document.open();w.document.write(html);w.document.close();w.focus();
+  const doPrint=()=>{try{w.print();}catch(_){}};
+  if(w.document.readyState==='complete')setTimeout(doPrint,350);else w.onload=()=>setTimeout(doPrint,350);
+}
 function renderRegisterTable(){
   const cols=REG_COLS.filter(c=>regCols.includes(c.k));
   document.getElementById('register-head').innerHTML='<tr>'+cols.map(c=>{
