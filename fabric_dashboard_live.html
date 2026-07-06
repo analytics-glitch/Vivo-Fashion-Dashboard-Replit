@@ -1525,6 +1525,8 @@ const MIX_COLS=[
   {k:'tied',label:'Stock Value KES',type:'kes'},
   {k:'source_city',label:'Source City',type:'text'},
   {k:'source_country',label:'Source Country',type:'text'},
+  {k:'supplier_fabric_code',label:'Supplier Code',type:'text'},
+  {k:'active',label:'Status',type:'status'},
 ];
 // Effective columns for the current render. The Barcode column is conditionally
 // dropped when no product rows are on screen (see renderFabricMix), so the
@@ -1533,7 +1535,7 @@ let mixActiveCols=MIX_COLS;
 // Product-only columns — they only ever carry a value on the deepest product
 // rows, so (like Barcode) they are hidden entirely until product rows are on
 // screen (a sub-category drilled to products, a search, or a supplier filter).
-const MIX_PROD_ONLY=new Set(['barcode','source_city','source_country']);
+const MIX_PROD_ONLY=new Set(['barcode','source_city','source_country','supplier_fabric_code','active']);
 const MIX_FX={
   consumption:'Consumption = net fabric used over the selected period (OUT moves − production returns), warehouse-wide, in the active unit. Floored at 0: when production returns in this window exceed the matching OUT the net would go negative, so it is shown as 0 — hover the ↩ marker for the OUT vs returned split.',
   available:'Available = current on-hand stock for this category at the selected location, in the active unit.',
@@ -1718,7 +1720,7 @@ function mixSortRows(rows){
   const k=mixSort.key,dir=mixSort.dir==='asc'?1:-1;
   // source_city/source_country/supplier live on the product row's `detail`, not
   // on the row itself, and sort as text (category/sub rows have none → blank).
-  const detailKey=(k==='source_city'||k==='source_country'||k==='supplier');
+  const detailKey=(k==='source_city'||k==='source_country'||k==='supplier'||k==='supplier_fabric_code'||k==='active');
   const getv=r=>detailKey?(r.detail?fabricClean(r.detail[k]):''):r[k];
   return rows.slice().sort((a,b)=>{
     let x=getv(a),y=getv(b);
@@ -1798,6 +1800,13 @@ function mixCell(col,r,kind,opts){
       // rows only; category/sub rows show an em-dash placeholder.
       const v=(kind==='prod'&&r.detail)?fabricClean(r.detail[col.k]):'';
       cell=`<td>${v?esc(v):'<span style="color:var(--muted);">—</span>'}</td>`;break;}
+    case 'status':{
+      // Fabric Active/Retired status (Odoo p.active) — product rows only;
+      // category/sub rows show an em-dash placeholder.
+      if(kind!=='prod'||!r.detail||r.detail.active==null){
+        cell='<td><span style="color:var(--muted);">—</span></td>';break;}
+      const retired=r.detail.active===false;
+      cell=`<td><span class="pill ${retired?'pill-red':'pill-green'}">${retired?'Retired':'Active'}</span></td>`;break;}
     default:cell=`<td>${esc(r[col.k])}</td>`;
   }
   return f?cell.replace('<td','<td'+f):cell;
@@ -1958,7 +1967,7 @@ function renderFabricMix(){
    <td class="r"${fx(MIX_FX.totGap)}>—</td>
    <td class="r"${fx(MIX_FX.totCover)}>—</td>
    <td class="r" style="color:var(--muted);"${fx(MIX_FX.totTied)}>${fmt(d.total_tied_up_kes)}</td>
-   ${showBarcode?'<td></td><td></td>':''}
+   ${showBarcode?'<td></td><td></td><td></td><td></td>':''}
   </tr>`;
   body.innerHTML=html;
   // Fit-to-collapsed by default; only cap the height + turn on the inner scroll
@@ -1974,7 +1983,7 @@ function renderFabricMix(){
 }
 function sortMix(k){
   if(mixSort.key===k)mixSort.dir=mixSort.dir==='asc'?'desc':'asc';
-  else{mixSort.key=k;mixSort.dir=(k==='group'||k==='source_city'||k==='source_country')?'asc':'desc';}
+  else{mixSort.key=k;mixSort.dir=(k==='group'||k==='source_city'||k==='source_country'||k==='supplier_fabric_code'||k==='active')?'asc':'desc';}
   renderFabricMix();
 }
 // ISO (local-time) date string — shared by the mix window sync helpers.
