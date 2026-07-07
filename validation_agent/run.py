@@ -94,10 +94,120 @@ def _upsert_exception(conn, run_id, exc, dry_run) -> int:
         return cur.fetchone()["id"]
 
 
+_SWEEP_EVENT = "stale_learned_range_sweep"
+
+
+def _sweep_already_done(conn) -> bool:
+    with db.cursor(conn) as cur:
+        cur.execute(
+            "SELECT 1 FROM validation_audit WHERE phase='sweep' AND event=%s "
+            "AND dry_run = FALSE LIMIT 1", [_SWEEP_EVENT])
+        return cur.fetchone() is not None
+
+
+def sweep_stale_learned_range(conn=None, force: bool = False) -> dict:
+    """One-time sweep: re-evaluate OPEN tier-2 learned_range exceptions against
+    the CURRENT firing rule (band-mandatory + margin + consensus + low-volume
+    gating in baselines.check_row) and auto-resolve those that no longer fire.
+
+    Findings created before the July 2026 detector fix used a looser
+    single-signal rule, so the approval queue held stale REDs that the current
+    detector would never raise. Each auto-resolve writes a validation_audit
+    entry; findings that STILL fire under the new rule stay open. Idempotent:
+    a completed sweep is recorded in validation_audit and skipped thereafter
+    (pass force=True or use the CLI to re-run).
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = db.connect(autocommit=True)
+        db.ensure_tables(conn)
+    run_id = uuid.uuid4()
+    try:
+        if not force and _sweep_already_done(conn):
+            return {"skipped": "already swept"}
+        with db.cursor(conn) as cur:
+            cur.execute(
+                """
+                SELECT id, entity_type, entity, subcategory, metric, period_date
+                FROM validation_exceptions
+                WHERE status = 'open' AND tier = 2 AND check_code = 'learned_range'
+                  AND period_date IS NOT NULL AND metric IS NOT NULL
+                """)
+            open_exc = cur.fetchall()
+        if not open_exc:
+            _audit(conn, run_id, False, phase="sweep", event=_SWEEP_EVENT,
+                   detail={"open": 0, "resolved": 0, "kept": 0})
+            return {"open": 0, "resolved": 0, "kept": 0}
+
+        d_min = min(e["period_date"] for e in open_exc)
+        d_max = max(e["period_date"] for e in open_exc)
+        rows = compute(conn, d_min, d_max)
+        row_by_key = {(m["entity_type"], m["entity"], m["subcategory"],
+                       m["period_date"]): m for m in rows}
+        index = baselines.load_index_range(
+            conn, d_min - timedelta(days=config.BASELINE_WINDOW_DAYS), d_max)
+
+        # Cache check_row results per metric row (several exceptions can share one).
+        fired_cache: dict = {}
+
+        def _still_fires(exc) -> bool:
+            key = (exc["entity_type"], exc["entity"], exc["subcategory"],
+                   exc["period_date"])
+            m = row_by_key.get(key)
+            if m is None:
+                # Row no longer exists under current reporting scope — nothing
+                # to alert on.
+                return False
+            if key not in fired_cache:
+                fired_cache[key] = baselines.check_row(m, index)
+            return any(f.get("check_code") == "learned_range"
+                       and f.get("metric") == exc["metric"]
+                       for f in fired_cache[key])
+
+        resolved, kept = 0, 0
+        for exc in open_exc:
+            if _still_fires(exc):
+                kept += 1
+                continue
+            with db.cursor(conn) as cur:
+                cur.execute(
+                    "UPDATE validation_exceptions SET status='auto_resolved', "
+                    "resolved_at=now() WHERE id=%s AND status='open'", [exc["id"]])
+                if cur.rowcount == 0:
+                    continue
+            resolved += 1
+            _audit(conn, run_id, False, phase="sweep", event="stale_auto_resolved",
+                   entity=exc["entity"], metric=exc["metric"],
+                   check_code="learned_range", period_date=exc["period_date"],
+                   detail={"exception_id": exc["id"],
+                           "reason": "does not fire under current learned_range rule "
+                                     "(band-mandatory + margin + consensus + "
+                                     "low-volume gating)"})
+        _audit(conn, run_id, False, phase="sweep", event=_SWEEP_EVENT,
+               detail={"open": len(open_exc), "resolved": resolved, "kept": kept,
+                       "window": f"{d_min} .. {d_max}"})
+        summary = {"open": len(open_exc), "resolved": resolved, "kept": kept}
+        print(f"Stale learned_range sweep: {summary}")
+        return summary
+    finally:
+        if own_conn:
+            conn.close()
+
+
 def run(days: int, dry_run: bool, evaluate_days: int, backfill_only: bool = False):
     run_id = uuid.uuid4()
     conn = db.connect(autocommit=True)
     db.ensure_tables(conn)
+
+    # One-time cleanup of pre-July-2026 false learned_range alerts: runs once per
+    # database (audit-marker gated) so a freshly published prod self-heals its
+    # stale approval queue on the first live run after the detector fix shipped.
+    if not dry_run and not backfill_only:
+        try:
+            sweep_stale_learned_range(conn)
+        except Exception as e:  # noqa: BLE001 — sweep must never break the live run
+            _audit(conn, run_id, dry_run, phase="sweep", event="sweep_failed",
+                   detail={"error": str(e)})
 
     # Auto-seed: on a fresh DB the FOLD window widens to ~90d so baselines exist
     # from day one, but the VALIDATION/report window (Tier-1 exceptions, governance,
@@ -394,8 +504,14 @@ def main():
                     help="only (re)build baseline history over N days, no checks/alerts")
     ap.add_argument("--approve", type=int)
     ap.add_argument("--reject", type=int)
+    ap.add_argument("--sweep-stale", action="store_true",
+                    help="re-evaluate open learned_range exceptions against the "
+                         "current firing rule and auto-resolve stale ones (forced)")
     args = ap.parse_args()
 
+    if args.sweep_stale:
+        sweep_stale_learned_range(force=True)
+        return
     if args.approve:
         _resolve(args.approve, approve=True)
         return

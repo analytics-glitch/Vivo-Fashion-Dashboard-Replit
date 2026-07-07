@@ -96,6 +96,12 @@ def load_index(conn, upto: date) -> dict:
     keyed for fast per-day stat computation. Bucketed lookups slice this list.
     """
     win_start = upto - timedelta(days=config.BASELINE_WINDOW_DAYS)
+    return load_index_range(conn, win_start, upto)
+
+
+def load_index_range(conn, win_start: date, upto: date) -> dict:
+    """Like load_index but with an explicit start date — needed when re-checking
+    historical days whose own trailing window starts before upto-WINDOW."""
     idx: dict = {}
     with db.cursor(conn) as cur:
         cur.execute(

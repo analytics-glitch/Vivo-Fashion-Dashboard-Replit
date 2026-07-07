@@ -140,3 +140,17 @@ alerting (email + WhatsApp, degrades gracefully when creds/recipients missing).
   **Why:** any future "add net_sales to page X" check must confirm the endpoint
   exposes net_sales_kes, not re-derive it. Intentional skips are listed in
   `cross_surface.INTENTIONAL_SKIPS` and surfaced in the audit row for visibility.
+
+## Stale-exception sweep after a detector rule change
+When the learned_range firing rule tightens, previously-created 'open' exceptions
+become false REDs that never self-heal (the upsert only touches rows the current
+run re-raises). `run.py sweep_stale_learned_range` re-evaluates ALL open tier-2
+learned_range findings against the current `baselines.check_row` rule and
+auto-resolves the ones that no longer fire (audit event `stale_auto_resolved`).
+**Why:** operators lose trust in the approval queue if stale findings linger.
+**How to apply:** it auto-runs ONCE per database (audit-marker
+`phase='sweep' event='stale_learned_range_sweep'`) at the top of each live run —
+so prod self-heals on its first post-publish run; force a re-run after any future
+rule change with `python3 -m validation_agent.run --sweep-stale`. Needs
+`baselines.load_index_range` (explicit window start) because historical days
+fall outside `load_index`'s trailing window and would spuriously "not fire".
