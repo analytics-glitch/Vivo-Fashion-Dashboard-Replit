@@ -432,6 +432,20 @@ export default function TargetsTracker() {
           if (sourceForPrior) {
             prior = (sourceForPrior.actual_quarters || {})[priorQuarter] || 0;
           }
+          // WS3 — the CURRENT quarter's achieved is only a few days of QTD,
+          // while the prior quarter's actual is a FULL quarter. Comparing
+          // them raw read "−98% vs Q2" 2 days into Q3. Pace-adjust: scale
+          // the prior quarter to the same elapsed fraction. And with < 7
+          // elapsed days the comparison is pure noise — suppress it.
+          if (mode === cqLabel && elapsed < total) {
+            const w = wins[mode];
+            const el = daysElapsedIn(w, now);
+            if (el < 7) {
+              prior = null; // too early — hide the QoQ line entirely
+            } else if (prior != null) {
+              prior = prior * (Math.min(el, total) / total);
+            }
+          }
         }
         // Pace-based projection.
         let projected;
@@ -459,7 +473,19 @@ export default function TargetsTracker() {
 
     return {
       annual: { ...buildRows("annual"), label: `${year}` },
-      current: cq ? { ...buildRows(cqLabel), label: cqLabel, priorLabel: `vs ${priorQOf(cqLabel)}` } : null,
+      // WS3 — while the quarter is in progress, the QoQ line is pace-adjusted
+      // (prior quarter scaled to the same elapsed days), so label it as such.
+      current: cq ? (() => {
+        const built = buildRows(cqLabel);
+        const inProgress = built.elapsed < built.total;
+        return {
+          ...built,
+          label: cqLabel,
+          priorLabel: inProgress
+            ? `vs ${priorQOf(cqLabel)} pace (same days elapsed)`
+            : `vs ${priorQOf(cqLabel)}`,
+        };
+      })() : null,
       previous: prevLabel ? { ...buildRows(prevLabel), label: prevLabel, priorLabel: `vs ${priorQOf(prevLabel)}` } : null,
       annualLeft,
       cqLabel, prevLabel,

@@ -653,10 +653,19 @@ export default function ProductionReport() {
     [byStage]
   );
 
-  const inProgressUnits = useMemo(
-    () => byStage.reduce((s, r) => s + (Number(r.units) || 0), 0),
-    [byStage]
-  );
+  // WS4 T407 — "in progress" must EXCLUDE the terminal warehouse (END) stage:
+  // units already fully delivered are not in progress. Previously this summed
+  // every stage balance, so ~101k completed units inflated the KPI above the
+  // ordered total.
+  const inProgressUnits = useMemo(() => {
+    const term = new Set(
+      (flow?.stages || []).filter((s) => s.is_terminal).map((s) => s.stage_key)
+    );
+    return byStage.reduce(
+      (s, r) => (term.has(r.stage_key) ? s : s + (Number(r.units) || 0)),
+      0
+    );
+  }, [byStage, flow]);
 
   // Order refs in the currently-selected drop bucket (for the table filter).
   const dropOrderRefs = useMemo(() => {
@@ -976,7 +985,7 @@ export default function ProductionReport() {
         <Kpi
           label="Units in progress"
           value={fmtQty(inProgressUnits)}
-          sub="Across all active stages"
+          sub="Active stages only — excludes units already in warehouse"
         />
       </div>
 

@@ -42,10 +42,40 @@ const BUCKET_OPTIONS = [
 
 const kpiCfg = (key) => KPI_OPTIONS.find((o) => o.key === key) || KPI_OPTIONS[0];
 
+// WS3 — is this bucket still accruing? True when the bucket period that
+// starts at `dateStr` contains today (EAT). A partial bucket must never be
+// compared raw against complete ones (a 2-day July vs a full July read −94%).
+export function isPartialBucket(dateStr, bucket) {
+  if (!dateStr) return false;
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Nairobi" });
+  const d = String(dateStr).slice(0, 10);
+  if (bucket === "year") return d.slice(0, 4) === today.slice(0, 4);
+  if (bucket === "month") return d.slice(0, 7) === today.slice(0, 7);
+  // week (or day): bucket start ≤ today ≤ start+6d
+  const start = new Date(d + "T00:00:00Z");
+  const end = new Date(start.getTime() + 6 * 86400000);
+  const t = new Date(today + "T00:00:00Z");
+  return t >= start && t <= end;
+}
+
 // Trend the AI / summary cares about: % change first→last on the chosen KPI.
-function summarize(rows, key) {
-  const pts = rows.filter((r) => r[key] !== null && r[key] !== undefined);
-  if (pts.length < 2) return null;
+// WS3 — the trailing PARTIAL bucket (current month/week/year) is EXCLUDED
+// from the headline first→last delta; it is only surfaced separately as
+// `partialLast` so the UI can show it hollow/annotated.
+function summarize(rows, key, bucket) {
+  const all = rows.filter((r) => r[key] !== null && r[key] !== undefined);
+  if (all.length < 2) return null;
+  const lastRow = all[all.length - 1];
+  const lastIsPartial = isPartialBucket(lastRow.date, bucket);
+  const pts = lastIsPartial ? all.slice(0, -1) : all;
+  if (pts.length < 2) {
+    // Only one complete bucket — no meaningful over-period delta.
+    const avg = pts.length ? Number(pts[0][key]) || 0 : 0;
+    return {
+      first: avg, last: avg, pct: null, peak: pts[0] || lastRow, trough: pts[0] || lastRow,
+      avg, n: all.length, partialLast: lastIsPartial ? lastRow : null,
+    };
+  }
   const first = Number(pts[0][key]) || 0;
   const last = Number(pts[pts.length - 1][key]) || 0;
   const pct = first ? ((last - first) / Math.abs(first)) * 100 : null;
@@ -55,7 +85,7 @@ function summarize(rows, key) {
     if (Number(r[key]) < Number(trough[key])) trough = r;
   }
   const avg = pts.reduce((a, r) => a + (Number(r[key]) || 0), 0) / pts.length;
-  return { first, last, pct, peak, trough, avg, n: pts.length };
+  return { first, last, pct, peak, trough, avg, n: all.length, partialLast: lastIsPartial ? lastRow : null };
 }
 
 const TrendPanel = ({
@@ -113,10 +143,14 @@ const TrendPanel = ({
 
   const cfg = kpiCfg(kpi);
   const chartData = useMemo(
-    () => rows.map((r) => ({ label: r.label, date: r.date, value: r[kpi] ?? null })),
-    [rows, kpi]
+    () => rows.map((r, i) => ({
+      label: r.label, date: r.date, value: r[kpi] ?? null,
+      // Only the trailing bucket can be partial (series is chronological).
+      partial: i === rows.length - 1 && isPartialBucket(r.date, bucket),
+    })),
+    [rows, kpi, bucket]
   );
-  const stats = useMemo(() => summarize(rows, kpi), [rows, kpi]);
+  const stats = useMemo(() => summarize(rows, kpi, bucket), [rows, kpi, bucket]);
 
   const scopeLabel = store
     ? store
@@ -279,9 +313,14 @@ const TrendPanel = ({
             <div className="flex items-baseline gap-2">
               <span className="text-[20px] font-bold num text-foreground">{cfg.tipFmt(stats.last)}</span>
               {stats.pct != null && (
-                <span className={`text-[12.5px] font-semibold num ${deltaCls}`}>
+                <span
+                  className={`text-[12.5px] font-semibold num ${deltaCls}`}
+                  title={stats.partialLast ? `The current ${bucket} is still in progress and is excluded from this delta (it's the hollow point on the chart).` : undefined}
+                >
                   {arrow} {fmtDelta(stats.pct)}
-                  <span className="text-muted font-normal"> over period</span>
+                  <span className="text-muted font-normal">
+                    {" over period"}{stats.partialLast ? ` (excl. current ${bucket})` : ""}
+                  </span>
                 </span>
               )}
             </div>
@@ -328,7 +367,8 @@ const TrendPanel = ({
                 labelFormatter={(_, payload) => {
                   const p = payload && payload[0] && payload[0].payload;
                   if (!p) return "";
-                  return p.date ? `${p.label} · ${p.date}` : p.label;
+                  const base = p.date ? `${p.label} · ${p.date}` : p.label;
+                  return p.partial ? `${base} · in progress (partial ${bucket})` : base;
                 }}
                 contentStyle={{ borderRadius: 8, fontSize: 12, border: "1px solid #d1d5db" }}
               />
@@ -338,7 +378,20 @@ const TrendPanel = ({
                   dataKey="value"
                   stroke={cfg.color}
                   strokeWidth={2.5}
-                  dot={chartData.length <= 40 ? { r: 3, fill: cfg.color } : false}
+                  // WS3 — the trailing partial bucket renders as a HOLLOW dot
+                  // so an in-progress month/week is visually provisional.
+                  dot={(props) => {
+                    const { cx, cy, payload, index } = props;
+                    if (cx == null || cy == null || payload?.value == null) return null;
+                    if (payload.partial) {
+                      return (
+                        <circle key={`dot-${index}`} cx={cx} cy={cy} r={4.5} fill="#ffffff"
+                          stroke={cfg.color} strokeWidth={2} strokeDasharray="2 2" />
+                      );
+                    }
+                    if (chartData.length > 40) return null;
+                    return <circle key={`dot-${index}`} cx={cx} cy={cy} r={3} fill={cfg.color} />;
+                  }}
                   activeDot={{ r: 5 }}
                   isAnimationActive={false}
                   connectNulls
@@ -354,7 +407,20 @@ const TrendPanel = ({
                   )}
                 </Line>
               ) : (
-                <Bar dataKey="value" fill={cfg.color} radius={[3, 3, 0, 0]} isAnimationActive={false} name={cfg.label}>
+                <Bar dataKey="value" radius={[3, 3, 0, 0]} isAnimationActive={false} name={cfg.label}
+                  // WS3 — partial trailing bucket rendered translucent.
+                  shape={(props) => {
+                    const { x, y, width, height, payload } = props;
+                    if (height == null || height <= 0) return null;
+                    return (
+                      <rect x={x} y={y} width={width} height={height} rx={3}
+                        fill={cfg.color}
+                        fillOpacity={payload?.partial ? 0.35 : 1}
+                        stroke={payload?.partial ? cfg.color : "none"}
+                        strokeDasharray={payload?.partial ? "3 3" : undefined} />
+                    );
+                  }}
+                >
                   {chartData.length <= 16 && (
                     <LabelList
                       dataKey="value"

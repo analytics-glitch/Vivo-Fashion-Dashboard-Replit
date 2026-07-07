@@ -515,14 +515,17 @@ const Inventory = () => {
   //             (dead money — IBT or clearance immediately)
   const bucketFor = (r) => {
     const stock = r.current_stock || 0;
-    // Phantom = lots of stock but ZERO sales in the entire 3-month
-    // measurement window. Field is `units_sold_3m`; falls back to the
-    // legacy `units_sold_28d` for any cached row served before the
-    // Feb-2026 window change.
-    const sold3m = r.units_sold_3m ?? r.units_sold_28d ?? 0;
-    if (stock >= 30 && sold3m === 0) return "phantom";
+    // Phantom = lots of stock but ZERO sales in the last-28-day window
+    // (`units_sold_28d` from /analytics/weeks-of-cover) — matches the
+    // ">=30 units, zero sales in 4w" card definition exactly.
+    const sold28 = r.units_sold_28d ?? 0;
+    if (stock >= 30 && sold28 === 0) return "phantom";
     const w = r.weeks_of_cover;
-    if (w == null) return "phantom"; // no sales but not enough stock to call phantom
+    // WS4 T405 — no sales but under the 30-unit phantom threshold: that's
+    // stale (markdown candidate), NOT phantom. Previously these small
+    // 2–16-unit styles leaked into the Phantom card and contradicted the
+    // stated ">=30 units" definition.
+    if (w == null) return "stale";
     if (w < 4)  return "fresh";
     if (w < 8)  return "healthy";
     if (w < 16) return "aging";

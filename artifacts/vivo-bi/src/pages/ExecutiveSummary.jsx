@@ -677,8 +677,9 @@ const AllSubcategories = ({ subcategories }) => {
                     <span className="mx-1.5 opacity-50">·</span>
                     LY: <span className="tabular-nums">{fmtKES(sc.ly)}</span>
                     <span className="mx-1.5 opacity-50">·</span>
-                    ASP: <span className="tabular-nums font-semibold">{fmtKES(asp.cur || 0)}</span>
-                    <span className="opacity-50 ml-0.5">(LY {fmtKES(asp.ly || 0)})</span>
+                    {/* WS4 T403 — render "—" instead of "KES 0" when ASP is unknown */}
+                    ASP: <span className="tabular-nums font-semibold">{asp.cur ? fmtKES(asp.cur) : "—"}</span>
+                    <span className="opacity-50 ml-0.5">(LY {asp.ly ? fmtKES(asp.ly) : "—"})</span>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
                     <span className="text-[9.5px] uppercase text-muted font-bold">Rev</span>
@@ -947,7 +948,8 @@ const CategorySubcatTable = ({ subcategories, view }) => {
                     <td className="px-3 py-2.5 text-right tabular-nums">{fmtNum(c.cur_units)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-muted font-normal">{fmtNum(c.ly_units)}</td>
                     <td className="px-3 py-2.5 text-right"><DeltaCell value={c.units_delta} /></td>
-                    <td className="px-3 py-2.5 text-right tabular-nums">{fmtKES(c.asp_cur)}</td>
+                    {/* WS4 T403 — "—" instead of "KES 0" when units are 0 */}
+                    <td className="px-3 py-2.5 text-right tabular-nums">{c.asp_cur ? fmtKES(c.asp_cur) : "—"}</td>
                     <td className="px-3 py-2.5 text-right"><DeltaCell value={c.asp_delta} /></td>
                   </tr>
                   {/* Subcategory rows */}
@@ -966,7 +968,8 @@ const CategorySubcatTable = ({ subcategories, view }) => {
                         <td className="px-3 py-1.5 text-right tabular-nums">{fmtNum(sc.cur_units)}</td>
                         <td className="px-3 py-1.5 text-right tabular-nums text-muted">{fmtNum(sc.ly_units)}</td>
                         <td className="px-3 py-1.5 text-right"><DeltaCell value={sc.units_delta} /></td>
-                        <td className="px-3 py-1.5 text-right tabular-nums">{fmtKES(aspCur)}</td>
+                        {/* WS4 T403 — "—" instead of "KES 0" when ASP is unknown */}
+                        <td className="px-3 py-1.5 text-right tabular-nums">{aspCur ? fmtKES(aspCur) : "—"}</td>
                         <td className="px-3 py-1.5 text-right"><DeltaCell value={aspDelta} /></td>
                       </tr>
                     );
@@ -1386,7 +1389,11 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
     ];
     const out = [head];
     const tier = (w) => w == null ? "Idle" : w < 4 ? "Restock" : w > 17 ? "Markdown" : "Healthy";
-    const read = (gap) => gap > 5 ? "Over-stocked" : gap < -5 ? "Hot — restock" : "Balanced";
+    // WS4 T402 — "Read" now uses the SAME weeks-of-cover bands as the Cover
+    // tier (<4w hot / 4–17w balanced / >17w over-stocked) so the two columns
+    // can never contradict each other (gap-pp used to say "Balanced" next to
+    // a 40-week Markdown cover pill).
+    const read = (w) => w == null ? "Idle — no sales" : w < 4 ? "Hot — restock" : w > 17 ? "Over-stocked" : "Balanced";
     for (const r of rows) {
       out.push([
         "Category", r.category, "",
@@ -1399,7 +1406,7 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
         tier(r.weeks_of_cover),
         r.asp_mtd != null ? Math.round(r.asp_mtd) : "",
         r.tied_up_kes != null ? Math.round(r.tied_up_kes) : "",
-        read(r.gap_pct ?? 0),
+        read(r.weeks_of_cover),
       ]);
       for (const sc of (r.subcategories || [])) {
         out.push([
@@ -1413,7 +1420,7 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
           tier(sc.weeks_of_cover),
           sc.asp_mtd != null ? Math.round(sc.asp_mtd) : "",
           sc.tied_up_kes != null ? Math.round(sc.tied_up_kes) : "",
-          read(sc.gap_pct ?? 0),
+          read(sc.weeks_of_cover),
         ]);
       }
     }
@@ -1600,11 +1607,12 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
               const gapCls = oversupply ? "text-amber-700 bg-amber-50 border-amber-200"
                 : undersupply ? "text-rose-700 bg-rose-50 border-rose-200"
                 : "text-emerald-700 bg-emerald-50 border-emerald-200";
-              const read = oversupply
-                ? "Over-stocked"
-                : undersupply
-                ? "Hot — restock"
-                : "Balanced";
+              // WS4 T402 — "Read" keyed off weeks-of-cover, same bands as
+              // the Cover pill (<4w / 4–17w / >17w), not the gap-pp signal.
+              const woc = r.weeks_of_cover;
+              const readHot = woc != null && woc < 4;
+              const readOver = woc != null && woc > 17;
+              const read = woc == null ? "Idle — no sales" : readHot ? "Hot — restock" : readOver ? "Over-stocked" : "Balanced";
               return (
                 <React.Fragment key={r.category}>
                   {/* Category roll-up row */}
@@ -1641,9 +1649,10 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
                       />
                     </td>
                     <td className="px-3 py-2 text-[11px] font-semibold whitespace-nowrap">
-                      {oversupply && <span className="text-amber-700">{read}</span>}
-                      {undersupply && <span className="text-rose-700">{read}</span>}
-                      {!oversupply && !undersupply && <span className="text-emerald-700">{read}</span>}
+                      {woc == null && <span className="text-muted">{read}</span>}
+                      {readOver && <span className="text-amber-700">{read}</span>}
+                      {readHot && <span className="text-rose-700">{read}</span>}
+                      {woc != null && !readOver && !readHot && <span className="text-emerald-700">{read}</span>}
                     </td>
                   </tr>
                   {/* Subcategory rows nested underneath the parent */}
@@ -1654,7 +1663,11 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
                     const sGapCls = sOver ? "text-amber-700 bg-amber-50 border-amber-200"
                       : sUnder ? "text-rose-700 bg-rose-50 border-rose-200"
                       : "text-emerald-700 bg-emerald-50 border-emerald-200";
-                    const sRead = sOver ? "Over-stocked" : sUnder ? "Hot — restock" : "Balanced";
+                    // WS4 T402 — same cover-band "Read" as the parent rows.
+                    const sWoc = sc.weeks_of_cover;
+                    const sReadHot = sWoc != null && sWoc < 4;
+                    const sReadOver = sWoc != null && sWoc > 17;
+                    const sRead = sWoc == null ? "Idle — no sales" : sReadHot ? "Hot — restock" : sReadOver ? "Over-stocked" : "Balanced";
                     return (
                       <tr key={`${r.category}-${sc.subcategory}`} className="border-t border-border/50 hover:bg-panel/40 transition-colors" data-testid={`exec-stockmix-sub-${sc.subcategory}`}>
                         <td className="px-3 py-1.5 pl-8 text-[11.5px]">
@@ -1683,9 +1696,10 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
                           />
                         </td>
                         <td className="px-3 py-1.5 text-[10.5px] font-semibold whitespace-nowrap">
-                          {sOver && <span className="text-amber-700">{sRead}</span>}
-                          {sUnder && <span className="text-rose-700">{sRead}</span>}
-                          {!sOver && !sUnder && <span className="text-emerald-700">{sRead}</span>}
+                          {sWoc == null && <span className="text-muted">{sRead}</span>}
+                          {sReadOver && <span className="text-amber-700">{sRead}</span>}
+                          {sReadHot && <span className="text-rose-700">{sRead}</span>}
+                          {sWoc != null && !sReadOver && !sReadHot && <span className="text-emerald-700">{sRead}</span>}
                         </td>
                       </tr>
                     );

@@ -157,6 +157,18 @@ def as_date(v):
     return v[:10] if v else None
 
 
+def _valid_expected(expected, ordered):
+    """WS4 T404 — drop impossible ETAs. Odoo's studio field was bulk-defaulted
+    to a fixed date, so many orders carry an 'expected delivery' that predates
+    the order itself. Those convey no information: return None so downstream
+    surfaces render '—' and never count them as Overdue."""
+    if not expected:
+        return None
+    if ordered and expected < ordered:
+        return None
+    return expected
+
+
 # ----------------------------------------------------------------------
 # Reshape
 # ----------------------------------------------------------------------
@@ -246,8 +258,15 @@ def build(bos, lines, variants):
                 "product_sku": skus[0] if skus else None,
                 "order_qty": round(total, 2),
                 "date_ordered": as_date(b.get("order_date")),
-                "expected_delivery_date": as_date(
-                    b.get("x_studio_expected_delivery_date")
+                # WS4 T404: x_studio_expected_delivery_date is bulk-defaulted
+                # in Odoo (2026-05-07 on ~200 orders regardless of when they
+                # were placed). An "expected delivery" BEFORE the order date is
+                # impossible — treat it as no date (NULL) so the dashboard
+                # shows "—" and excludes it from Overdue, instead of reading
+                # tens of thousands of units as overdue on a phantom ETA.
+                "expected_delivery_date": _valid_expected(
+                    as_date(b.get("x_studio_expected_delivery_date")),
+                    as_date(b.get("order_date")),
                 ),
                 "buyer": b["buyer_id"][1] if b.get("buyer_id") else None,
                 "production_type": b.get("x_studio_production_type") or None,
@@ -441,7 +460,15 @@ def sync_intake(cur, orders, order_variants):
     recorded for that (order, sku, size). The FIRST time an order gains variants
     we also delete its legacy whole-order intake row (from_stage IS NULL AND
     sku IS NULL) so the two shapes never double-count; on later runs that delete
-    matches nothing."""
+    matches nothing.
+
+    Stale-SKU prune (WS4 T406): Odoo sometimes RENAMES an order's variant SKUs
+    between syncs (e.g. BO00336 V0526052* -> V0526032*). The per-(sku,size)
+    delta then sees the new SKUs as brand-new and appends a FULL second intake,
+    doubling the order's buying_order balance (429 ordered / 858 staged). So
+    before the delta pass we delete intake rows whose (sku,size) no longer
+    exists in the order's current variant set, and shrink any intake bucket
+    recorded above its current variant qty."""
     from collections import defaultdict
 
     variants_by_order = defaultdict(list)
@@ -450,6 +477,7 @@ def sync_intake(cur, orders, order_variants):
 
     inserted = 0
     migrated = 0
+    pruned = 0
     for o in orders:
         ref = o["order_ref"]
         variants = variants_by_order.get(ref)
@@ -461,6 +489,24 @@ def sync_intake(cur, orders, order_variants):
                 (ref,),
             )
             migrated += cur.rowcount or 0
+            # Prune intake rows for (sku, size) pairs no longer on the order
+            # (Odoo SKU renames / removed variants) so they can't double-count.
+            current = {(v.get("product_sku"), v.get("size")) for v in variants
+                       if float(v.get("qty") or 0) > 0}
+            cur.execute(
+                "SELECT DISTINCT sku, size FROM stage_movements "
+                "WHERE order_ref = %s AND from_stage IS NULL AND sku IS NOT NULL",
+                (ref,),
+            )
+            for old_sku, old_size in cur.fetchall():
+                if (old_sku, old_size) not in current:
+                    cur.execute(
+                        "DELETE FROM stage_movements "
+                        "WHERE order_ref = %s AND from_stage IS NULL "
+                        "AND sku = %s AND size IS NOT DISTINCT FROM %s",
+                        (ref, old_sku, old_size),
+                    )
+                    pruned += cur.rowcount or 0
             for v in variants:
                 qty = float(v.get("qty") or 0)
                 if qty <= 0:
@@ -482,6 +528,24 @@ def sync_intake(cur, orders, order_variants):
                         "VALUES (%s, NULL, 'buying_order', %s, 'odoo_sync', "
                         "'Intake from Odoo', %s, %s)",
                         (ref, delta, sku, size),
+                    )
+                    inserted += 1
+                elif delta < 0:
+                    # Variant qty shrank on the order — rewrite this bucket's
+                    # intake to the current qty so it can't over-count.
+                    cur.execute(
+                        "DELETE FROM stage_movements "
+                        "WHERE order_ref = %s AND from_stage IS NULL "
+                        "AND sku IS NOT DISTINCT FROM %s AND size IS NOT DISTINCT FROM %s",
+                        (ref, sku, size),
+                    )
+                    pruned += cur.rowcount or 0
+                    cur.execute(
+                        "INSERT INTO stage_movements "
+                        "(order_ref, from_stage, to_stage, qty, moved_by, note, sku, size) "
+                        "VALUES (%s, NULL, 'buying_order', %s, 'odoo_sync', "
+                        "'Intake from Odoo (reconciled)', %s, %s)",
+                        (ref, qty, sku, size),
                     )
                     inserted += 1
         else:
@@ -512,9 +576,11 @@ def sync_intake(cur, orders, order_variants):
                     o["order_qty"],
                 )
     log.info(
-        "Intake: inserted %s movements; migrated %s legacy whole-order rows",
+        "Intake: inserted %s movements; migrated %s legacy whole-order rows; "
+        "pruned %s stale-variant intake rows",
         inserted,
         migrated,
+        pruned,
     )
 
 

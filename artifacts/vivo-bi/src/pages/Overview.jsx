@@ -408,12 +408,19 @@ const Overview = () => {
     if (compareMode === "last_year") {
       rows.push({ key: "sdly", subtitle: "Same Day Last Year", short: "SD LY", ...pairedDays.sdly });
     }
-    const t = pairedDays.today.total_sales || 0;
-    return rows.map((r) => ({
-      ...r,
-      total_sales: adj(r.total_sales),
-      delta_pct: r.key === "today" || !t ? null : ((adj(r.total_sales) - adj(t)) / adj(t)) * 100,
-    }));
+    const t = adj(pairedDays.today.total_sales || 0);
+    // WS3 — delta convention matches the KPI tiles: (today − base) / base,
+    // shown on each comparison bar as "how today is tracking vs that day".
+    // (Previously this was (base − today)/today, which flipped the sign and
+    // showed green +22% while the tile showed red −18% for the same pair.)
+    return rows.map((r) => {
+      const base = adj(r.total_sales);
+      return {
+        ...r,
+        total_sales: base,
+        delta_pct: r.key === "today" || !base ? null : ((t - base) / base) * 100,
+      };
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pairedDays, compareMode]);
 
@@ -508,7 +515,13 @@ const Overview = () => {
 
   const delta = (k) => (kpis && kpisPrev) ? pctDelta(kpis[k], kpisPrev[k]) : null;
   const prev = (k, formatter) => (kpis && kpisPrev && compareMode !== "none" && kpisPrev[k] != null) ? formatter(kpisPrev[k]) : null;
-  const compareLbl = compareMode === "yesterday" ? "vs Yesterday" : compareMode === "last_month" ? "vs Last Month" : compareMode === "last_year" ? "vs Last Year" : null;
+  // WS3 — on a single-day range the "last month/year" comparison base is
+  // the SAME DAY shifted, not the whole month/year; label it honestly.
+  const singleDayRange = dateFrom === dateTo;
+  const compareLbl = compareMode === "yesterday" ? "vs Yesterday"
+    : compareMode === "last_month" ? (singleDayRange ? "vs SDLM (same day last month)" : "vs Last Month")
+    : compareMode === "last_year" ? (singleDayRange ? "vs SDLY (same day last year)" : "vs Last Year")
+    : null;
   // Two upstream-degraded states to surface to users:
   //   1. Hard error (kpisError set): the /kpis call failed and no
   //      cached value was returned. We auto-retry in the background.
@@ -595,6 +608,29 @@ const Overview = () => {
     const t = new Date(dateTo);
     return Math.max(1, Math.round((t - f) / 86400000) + 1);
   }, [dateFrom, dateTo]);
+
+  // WS3 — partial-trading-day guard. Non-null ONLY while viewing TODAY
+  // before the 8:30 PM EAT close. Drives: (a) the "as of HH:MM · N% of
+  // trading day" badge, (b) grey/suppressed KPI deltas (deltaMuted) so a
+  // full comparison day is never colour-judged against a part-day figure.
+  const partialDay = useMemo(() => {
+    if (rangeDays !== 1) return null;
+    const todayKE = new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Nairobi" });
+    if (dateFrom !== todayKE) return null;
+    const _now = new Date(nowTick);
+    const hh = parseInt(_now.toLocaleString("en-GB", { timeZone: "Africa/Nairobi", hour: "2-digit", hour12: false }), 10);
+    const mm = parseInt(_now.toLocaleString("en-GB", { timeZone: "Africa/Nairobi", minute: "2-digit" }), 10);
+    const nowH = hh + (mm || 0) / 60;
+    const start = 9.0, end = 20.5; // same trading window as the projection
+    if (nowH >= end) return null;  // day closed — deltas are final, colour normally
+    const pct = Math.max(0, Math.min(1, (nowH - start) / (end - start)));
+    const hhmm = _now.toLocaleTimeString("en-GB", { timeZone: "Africa/Nairobi", hour: "2-digit", minute: "2-digit" });
+    return { pct, hhmm };
+  }, [rangeDays, dateFrom, nowTick]);
+  const deltaMuted = !!partialDay;
+  const deltaMutedNote = partialDay
+    ? `Today is only ${Math.round(partialDay.pct * 100)}% through the trading day (as of ${partialDay.hhmm} EAT) but the comparison day is complete — the direction isn't meaningful until close (8:30 PM EAT).`
+    : null;
 
   // Live "Projected Today" — closes 8:30 PM Africa/Nairobi.
   // Shape-aware projection: blend the linear pace with the average of
@@ -979,6 +1015,15 @@ const Overview = () => {
             {compareMode !== "none" && compareLbl && (
               <span className="ml-2 pill-neutral">{compareLbl}</span>
             )}
+            {partialDay && (
+              <span
+                className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-amber-300 bg-amber-50 text-amber-800 text-[11px] font-semibold align-middle"
+                data-testid="partial-day-badge"
+                title="Today's figures are still accruing — comparison deltas stay grey until the trading day closes at 8:30 PM EAT."
+              >
+                as of {partialDay.hhmm} EAT · {Math.round(partialDay.pct * 100)}% of trading day
+              </span>
+            )}
           </p>
         </div>
         <button
@@ -1074,28 +1119,28 @@ const Overview = () => {
           <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={kfmt(kpis.total_sales)} valueFull={fmtKESLong(kpis.total_sales)} icon={CurrencyCircleDollar}
               formula="How much money came in this period (before subtracting returns)."
-              delta={delta("total_sales")} deltaLabel={compareLbl} prevValue={prev("total_sales", kfmt)} showDelta={compareMode !== "none"}
+              delta={delta("total_sales")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_sales", kfmt)} showDelta={compareMode !== "none"}
               action={{ label: "See by location", to: "/locations" }}
               prefetch={pf("/locations")} />
             <KPICard testId="kpi-net-sales" label="Net Sales" value={kfmt(kpis.net_sales)} valueFull={fmtKESLong(kpis.net_sales)} icon={Coins}
               formula={`Canonical Net Sales = Total Sales − Returns − Discounts (VAT-inclusive, same basis as Total Sales).\n\nBridge for this period: Total Sales ${fmtKESLong(kpis.total_sales)} (returns of ${fmtKESLong(kpis.total_returns)} already netted out) − discounts ${fmtKESLong(kpis.total_discounts)} = Net Sales ${fmtKESLong(kpis.net_sales)}.\n\nThis is the ONE Net Sales figure — Margin ‘Net Revenue’, Product Analysis and the Sales Export summary all show this same number for the same filters. The VAT-exclusive figure is a different measure and is always labelled ‘Net Sales ex-VAT’.`}
-              delta={delta("net_sales")} deltaLabel={compareLbl} prevValue={prev("net_sales", kfmt)} showDelta={compareMode !== "none"}
+              delta={delta("net_sales")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("net_sales", kfmt)} showDelta={compareMode !== "none"}
               action={{ label: "Drill into returns", to: "/exec-summary#returns" }} />
             <KPICard testId="kpi-orders" label="Transactions" value={fmtNum(kpis.total_orders)} valueFull={fmtNum(kpis.total_orders)} icon={ShoppingCart}
               formula="How many separate purchases were made."
-              delta={delta("total_orders")} deltaLabel={compareLbl} prevValue={prev("total_orders", fmtNum)} showDelta={compareMode !== "none"}
+              delta={delta("total_orders")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_orders", fmtNum)} showDelta={compareMode !== "none"}
               action={{ label: "Order-level export", to: "/exports" }}
               prefetch={pf("/exports")} />
             <KPICard testId="kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} valueFull={fmtNum(kpis.total_units)} icon={Package}
               formula="How many individual Vivo merchandise items left the shelves (excludes Accessories, Sale, Other & Third-Party Brands — canonical definition C)."
-              delta={delta("total_units")} deltaLabel={compareLbl} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}
+              delta={delta("total_units")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}
               action={{ label: "Top styles", to: "/products" }}
               prefetch={pf("/products")} />
             {!isOnlineOnly && (
               <KPICard testId="kpi-footfall" label="Total Footfall" sub="Walk-ins counted at our store sensors" value={fmtNum(footfallAgg.total_footfall)} valueFull={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
                 formula={"Formula: sum of door-sensor walk-ins (a01_footfall_in) across stores for the selected period.\n\nRenamed sensor feeds are mapped back to their store before totalling. Stores flagged for sensor data-quality issues (conversion over 50%) are excluded."}
                 delta={compareMode !== "none" && footfallAggPrev.total_footfall ? pctDelta(footfallAgg.total_footfall, footfallAggPrev.total_footfall) : null}
-                deltaLabel={compareLbl} showDelta={compareMode !== "none"}
+                deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} showDelta={compareMode !== "none"}
                 action={{ label: "Footfall by store", to: "/footfall" }}
                 prefetch={pf("/footfall")} />
             )}
@@ -1103,7 +1148,7 @@ const Overview = () => {
               <KPICard testId="kpi-conversion" label="Conversion Rate" sub="Out of every 100 walk-ins, how many bought" value={fmtPct(footfallAgg.conversion_rate, 2)} valueFull={`${Number(footfallAgg.conversion_rate || 0).toFixed(4)}%`} icon={Target}
                 formula={"Formula: (total transactions ÷ total walk-ins) × 100, pooled across stores.\n\nTransactions and footfall are matched per store, so the renamed sensor feeds (from 2026-06-07) are mapped back to their sales name before dividing. Stores with sensor data-quality issues (conversion over 50%) are excluded."}
                 delta={compareMode !== "none" && footfallAggPrev.conversion_rate ? pctDelta(footfallAgg.conversion_rate, footfallAggPrev.conversion_rate) : null}
-                deltaLabel={compareLbl} showDelta={compareMode !== "none"}
+                deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} showDelta={compareMode !== "none"}
                 action={{ label: "Which stores dropped?", to: "/footfall" }}
                 prefetch={pf("/footfall")} />
             )}
@@ -1124,7 +1169,7 @@ const Overview = () => {
                 const pv = kpisPrev && kpisPrev.total_orders ? kpisPrev.total_sales / kpisPrev.total_orders : null;
                 return pctDelta(cur, pv);
               })()}
-              deltaLabel={compareLbl}
+              deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={kpisPrev && compareMode !== "none" && kpisPrev.total_orders ? fmtKESLong(kpisPrev.total_sales / kpisPrev.total_orders) : null}
               showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-asp" label="ASP" sub="Average Selling Price"
@@ -1132,7 +1177,7 @@ const Overview = () => {
               value={fmtKESLong(kpis.avg_selling_price)}
               valueFull={fmtKESLong(kpis.avg_selling_price)}
               icon={ChartBar}
-              delta={delta("avg_selling_price")} deltaLabel={compareLbl}
+              delta={delta("avg_selling_price")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={prev("avg_selling_price", fmtKESLong)}
               showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-msi" label="MSI" sub="Items per basket"
@@ -1143,20 +1188,20 @@ const Overview = () => {
                 const pv = kpisPrev && kpisPrev.total_orders ? kpisPrev.total_units / kpisPrev.total_orders : null;
                 return pctDelta(cur, pv);
               })()}
-              deltaLabel={compareLbl}
+              deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={kpisPrev && compareMode !== "none" && kpisPrev.total_orders ? (kpisPrev.total_units / kpisPrev.total_orders).toFixed(2) : null}
               showDelta={compareMode !== "none"} />
             <KPICard small testId="kpi-rr" label="Return Rate" sub="Share of sales sent back"
               formula="Out of every 100 KES we sold, how much came back as refunds. Lower is better."
               value={fmtPct(kpis.return_rate, 2)} valueFull={`${Number(kpis.return_rate || 0).toFixed(4)}%`} icon={Percent}
-              higherIsBetter={false} delta={delta("return_rate")} deltaLabel={compareLbl}
+              higherIsBetter={false} delta={delta("return_rate")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={prev("return_rate", (v) => fmtPct(v, 2))}
               showDelta={compareMode !== "none"}
               action={{ label: "Locations w/ highest returns", to: "/locations" }}
               prefetch={pf("/locations")} />
             <KPICard small testId="kpi-returns" label="Return Amount" sub="Refunds in cash" value={kfmt(kpis.total_returns)} valueFull={fmtKESLong(kpis.total_returns)} icon={ArrowUUpLeft}
               formula="Total cash refunded to customers, counted on the day they originally bought it."
-              higherIsBetter={false} delta={delta("total_returns")} deltaLabel={compareLbl}
+              higherIsBetter={false} delta={delta("total_returns")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={prev("total_returns", kfmt)}
               showDelta={compareMode !== "none"}
               action={{ label: "Export returns CSV", to: "/exports" }}
@@ -1391,7 +1436,7 @@ const Overview = () => {
                         wrapperStyle={{ outline: "none", zIndex: 20 }}
                         content={
                           <ChartTooltip formatters={{
-                            total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.orders || 0)} orders${p?.delta_pct != null ? ` · ${p.delta_pct >= 0 ? "+" : ""}${p.delta_pct.toFixed(1)}% vs Today` : ""}`,
+                            total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.orders || 0)} orders${p?.delta_pct != null ? ` · Today ${p.delta_pct >= 0 ? "+" : ""}${p.delta_pct.toFixed(1)}% vs this day` : ""}`,
                           }} labelFormat={(l, p) => `${l}${p?.[0]?.payload?.subtitle && p[0].payload.subtitle !== l ? ` · ${p[0].payload.subtitle}` : ""}`} />
                         }
                       />
@@ -1410,15 +1455,24 @@ const Overview = () => {
                           dataKey="delta_pct"
                           position={isMobile ? "insideTop" : "top"}
                           offset={isMobile ? 8 : 22}
-                          style={{
-                            fontSize: 10,
-                            fontWeight: 700,
-                            fill: isMobile ? "#ffffff" : "#059669",
-                          }}
-                          formatter={(v) => {
-                            if (v == null) return "";
-                            const pos = v > 0;
-                            return `${pos ? "▲" : "▼"} ${Math.abs(v).toFixed(1)}%`;
+                          content={(props) => {
+                            // WS3 — delta is "Today vs this day" ((today−base)/base),
+                            // so the sign & colour now agree with the KPI tiles.
+                            // Partial day → grey (same guard as the tiles).
+                            const { x, y, width, value } = props;
+                            if (value == null) return null;
+                            const pos = value > 0;
+                            const fill = partialDay ? "#9ca3af" : pos ? "#059669" : "#dc2626";
+                            return (
+                              <text
+                                x={(x || 0) + (width || 0) / 2}
+                                y={(y || 0) - (isMobile ? -14 : 22)}
+                                textAnchor="middle"
+                                style={{ fontSize: 10, fontWeight: 700, fill: isMobile ? "#ffffff" : fill }}
+                              >
+                                {`${pos ? "▲" : "▼"} ${Math.abs(value).toFixed(1)}%`}
+                              </text>
+                            );
                           }}
                         />
                       </Bar>

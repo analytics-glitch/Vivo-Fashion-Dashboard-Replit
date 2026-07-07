@@ -8441,8 +8441,12 @@ def analytics_new_styles(
             GROUP BY p.style_name
         ),
         period AS (
+            -- WS4 T401: also return the PERIOD units — the frontend's
+            -- "Units (Period)" column reads units_sold_period, which this
+            -- endpoint previously never emitted (showed 0 next to sales>0).
             SELECT p.style_name,
-                COALESCE(ROUND(SUM(s2.net_sales_kes::numeric)), 0) AS total_sales_period
+                COALESCE(ROUND(SUM(s2.net_sales_kes::numeric)), 0) AS total_sales_period,
+                COALESCE(SUM(s2.net_quantity), 0) AS units_sold_period
             FROM all_products_clean p
             JOIN all_sales s2 ON s2.variant_sku = p.sku AND s2.sale_kind IN ('sale','order')
             WHERE p.style_name IN (SELECT style_name FROM new_styles) AND """ + period_extra + """
@@ -8462,6 +8466,7 @@ def analytics_new_styles(
             COALESCE(l.units_sold_launch, 0) AS units_sold_launch,
             COALESCE(l.total_sales_launch, 0) AS total_sales_launch,
             COALESCE(pr.total_sales_period, 0) AS total_sales_period,
+            COALESCE(pr.units_sold_period, 0) AS units_sold_period,
             COALESCE(st.current_stock, 0) AS current_stock,
             COALESCE(st.current_stock, 0) AS stock_available,
             ROUND(100.0 * COALESCE(l.units_sold_launch, 0)
@@ -13063,12 +13068,16 @@ def _es_categories(cur_from, cur_to, ly_from, ly_to, country):
             continue
         rc = cur.get(sc, {}); rl = ly.get(sc, {})
         rev_c = float(rc.get("total_sales") or 0); rev_l = float(rl.get("total_sales") or 0)
+        u_c = float(rc.get("units_sold") or 0); u_l = float(rl.get("units_sold") or 0)
         subs.append({
             "subcategory": sc,
             "cur": rev_c, "ly": rev_l,
-            "cur_units": float(rc.get("units_sold") or 0),
-            "ly_units": float(rl.get("units_sold") or 0),
+            "cur_units": u_c,
+            "ly_units": u_l,
             "delta_pct": _es_pct(rev_c, rev_l),
+            # WS4 T403: per-subcategory ASP (revenue/units) — previously never
+            # emitted, so the frontend fell back to "KES 0" on every row.
+            "asp": _es_cmp(rev_c / u_c if u_c else 0, rev_l / u_l if u_l else 0),
         })
     subs.sort(key=lambda x: x["cur"], reverse=True)
     return {"subcategories": subs}

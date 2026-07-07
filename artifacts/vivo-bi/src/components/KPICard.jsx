@@ -3,7 +3,7 @@ import { Info, ArrowRight } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { fmtDelta, api } from "@/lib/api";
 
-const DeltaBadge = ({ delta, higherIsBetter = true, label, accent = false }) => {
+const DeltaBadge = ({ delta, higherIsBetter = true, label, accent = false, muted = false, mutedNote = null }) => {
   if (delta === null || delta === undefined) {
     return (
       <span className="text-[11.5px] delta-flat" data-testid="delta-na">
@@ -15,23 +15,38 @@ const DeltaBadge = ({ delta, higherIsBetter = true, label, accent = false }) => 
   const neg = delta < -0.05;
   const good = higherIsBetter ? pos : neg;
   const bad = higherIsBetter ? neg : pos;
-  const cls = good ? "delta-up" : bad ? "delta-down" : "delta-flat";
+  // Muted mode (partial trading day): the comparison base is a FULL day
+  // while the current figure is still accruing, so red/green colouring is
+  // misleading. Render grey with an explanatory note instead of hiding the
+  // number entirely (users still want the raw gap).
+  const cls = muted ? "delta-flat" : good ? "delta-up" : bad ? "delta-down" : "delta-flat";
   const arrow = pos ? "▲" : neg ? "▼" : "◆";
   const onAccent = accent
-    ? pos
+    ? muted
+      ? "text-white/60"
+      : pos
       ? "text-brand-strong"
       : neg
       ? "text-[#ffb4b4]"
       : "text-white/80"
     : "";
   return (
-    <span className={`text-[11.5px] font-semibold ${accent ? onAccent : cls}`}>
+    <span
+      className={`text-[11.5px] font-semibold ${accent ? onAccent : cls}`}
+      data-testid={muted ? "delta-muted" : undefined}
+      title={muted && mutedNote ? mutedNote : undefined}
+    >
       {label && (
         <span className={`${accent ? "text-white/60" : "text-muted"} mr-1 font-normal`}>
           {label}
         </span>
       )}
       {arrow} {fmtDelta(Math.abs(delta) * (delta < 0 ? -1 : 1))}
+      {muted && (
+        <span className={`ml-1 font-normal ${accent ? "text-white/50" : "text-muted/80"}`}>
+          (partial day)
+        </span>
+      )}
     </span>
   );
 };
@@ -53,6 +68,11 @@ export const KPICard = ({
   deltaLabel = null,
   higherIsBetter = true,
   showDelta = true,
+  // WS3 — partial-period guard. When true the delta renders GREY (no
+  // red/green judgement) with a "(partial day)" note + tooltip, because
+  // the base period is complete while the current one is still accruing.
+  deltaMuted = false,
+  deltaMutedNote = null,
   // NEW — docs/formula tooltips on top right (ⓘ icon). Hover shows the
   // formula verbatim; the whole card also carries the formula as a native
   // tooltip (`title`) so users can read it anywhere.
@@ -180,6 +200,8 @@ export const KPICard = ({
             higherIsBetter={higherIsBetter}
             label={deltaLabel}
             accent={accent}
+            muted={deltaMuted}
+            mutedNote={deltaMutedNote}
           />
           {prevValue != null && delta != null && (
             <span
