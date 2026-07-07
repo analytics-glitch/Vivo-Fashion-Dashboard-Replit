@@ -3177,7 +3177,17 @@ function printFabricSheet(){
   const width=numv(r.width_m,2)?numv(r.width_m,2)+' m':'';
   const metres=numv(r.available_metres,1)?numv(r.available_metres,1)+' m':'';
   const cost=(r.cost_metre!=null&&r.cost_metre!==''&&!isNaN(Number(r.cost_metre)))?'KES '+numv(r.cost_metre,2):'';
-  const photo=clean(r.photo)||clean(r.photo_url)||clean(r.image)||clean(r.image_url);
+  // Prefer the photo the user is currently viewing in the carousel (guarded so the
+  // carousel state must belong to this open fabric), then fall back to row fields.
+  const carouselPhoto=(function(){
+    const bc=(r.default_code==null?'':String(r.default_code)).trim();
+    if(bc&&fabImgState.barcode===bc){
+      const cur=(fabImgState.list||[])[fabImgState.idx];
+      if(cur&&cur.url)return String(cur.url).trim();
+    }
+    return '';
+  })();
+  const photo=carouselPhoto||clean(r.photo)||clean(r.photo_url)||clean(r.image)||clean(r.image_url);
   const dataCell=(label,value)=>`<div class="cell"><span class="lbl">${esc(label)}:</span>${value?`<span class="val">${esc(value)}</span>`:'<span class="blank"></span>'}</div>`;
   const blankCell=(label,hint)=>`<div class="cell"><span class="lbl">${esc(label)}:</span><span class="blank"></span>${hint?`<span class="hint">${esc(hint)}</span>`:''}</div>`;
   const xf=(label,value)=>`<div class="xf"><span class="lbl">${esc(label)}:</span>${value?`<span class="val">${esc(value)}</span>`:'<span class="blank"></span>'}</div>`;
@@ -3195,7 +3205,7 @@ function printFabricSheet(){
     blankCell('Date received','when fabric arrived'),
     blankCell('Number of rolls received')
   ].join('');
-  const photoInner=photo?`<img src="${esc(photo)}" alt="Fabric photo">`:'Photo to be added';
+  const photoInner=photo?`<img id="fab-sheet-photo" src="${esc(photo)}" alt="Fabric photo">`:'Photo to be added';
   const html=`<!doctype html><html><head><meta charset="utf-8"><title>Buying Fabric Information Sheet${clean(r.default_code)?' — '+esc(r.default_code):''}</title>
 <style>
 @page{size:A4 landscape;margin:10mm;}
@@ -3254,7 +3264,19 @@ body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:12px;}
   if(!w){alert('Please allow pop-ups for this site to print the fabric sheet.');return;}
   w.document.open();w.document.write(html);w.document.close();w.focus();
   const doPrint=()=>{try{w.print();}catch(_){}};
-  if(w.document.readyState==='complete')setTimeout(doPrint,350);else w.onload=()=>setTimeout(doPrint,350);
+  // Wait for the fabric photo to finish loading before printing so the backend
+  // image is actually present in the printed/PDF output (not a blank/broken box).
+  const printWhenReady=()=>{
+    let img=null;try{img=w.document.getElementById('fab-sheet-photo');}catch(_){}
+    if(!img){doPrint();return;}
+    if(img.complete&&img.naturalWidth>0){doPrint();return;}
+    let done=false;
+    const fire=()=>{if(done)return;done=true;doPrint();};
+    img.addEventListener('load',fire);
+    img.addEventListener('error',fire);
+    setTimeout(fire,4000);
+  };
+  if(w.document.readyState==='complete')setTimeout(printWhenReady,50);else w.onload=()=>setTimeout(printWhenReady,50);
 }
 function renderRegisterTable(){
   const cols=REG_COLS.filter(c=>regCols.includes(c.k));
