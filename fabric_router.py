@@ -1109,6 +1109,12 @@ def summary(location: str = Query(default="RMAT/Stock"),
         # alarming warning only above this critical mark. On the always-on prod VM the
         # fabric extract runs every minute, so this only trips on a real outage.
         CRITICAL_THRESHOLD_HOURS = 24
+        # The product master now refreshes on a strict ~60s cadence. When the last
+        # successful pull slips past this small margin (default 180s ≈ 3 min) — but
+        # is still well short of the 6h "stale" mark — surface a calm, informational
+        # "sync running behind" note. The margin is a few minutes so a single
+        # transient blip (one skipped 60s cycle) never raises it.
+        DELAYED_THRESHOLD_SEC = int(os.environ.get("FABRIC_DELAYED_THRESHOLD_SEC", "180"))
         fresh = q(conn, """
             SELECT MAX(_loaded_at) AS last_loaded,
                    EXTRACT(EPOCH FROM (timezone('UTC', now()) - MAX(_loaded_at))) AS secs
@@ -1127,13 +1133,16 @@ def summary(location: str = Query(default="RMAT/Stock"),
         )
         # No successful pull at all (empty table / never loaded) is treated as stale.
         fabric_stale = (fresh_hours is None) or (fresh_hours > STALE_THRESHOLD_HOURS)
-        # Severity tier drives the banner styling: ok (fresh, no banner) / info
-        # (mildly behind — calm, catching up) / warn (well past threshold or never
-        # loaded — genuinely failing).
+        # Severity tier drives the banner styling: ok (fresh, no banner) /
+        # delayed (a few minutes behind the 60s target — calm note) / info
+        # (hours behind but not yet critical — calm, catching up) / warn (well past
+        # threshold or never loaded — genuinely failing).
         if fresh_hours is None or fresh_hours > CRITICAL_THRESHOLD_HOURS:
             fabric_freshness_severity = "warn"
         elif fresh_hours > STALE_THRESHOLD_HOURS:
             fabric_freshness_severity = "info"
+        elif fresh_secs is not None and fresh_secs > DELAYED_THRESHOLD_SEC:
+            fabric_freshness_severity = "delayed"
         else:
             fabric_freshness_severity = "ok"
 
@@ -1219,6 +1228,7 @@ def summary(location: str = Query(default="RMAT/Stock"),
             "fabric_data_stale": fabric_stale,
             "fabric_stale_threshold_hours": STALE_THRESHOLD_HOURS,
             "fabric_critical_threshold_hours": CRITICAL_THRESHOLD_HOURS,
+            "fabric_delayed_threshold_sec": DELAYED_THRESHOLD_SEC,
             "fabric_freshness_severity": fabric_freshness_severity,
             **cover,
             **cover_prev,

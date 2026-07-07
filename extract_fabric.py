@@ -139,7 +139,7 @@ def _props_by_label(props):
                     out[p["string"]] = v
     return out
 
-def extract_products(uid, models, cur, now):
+def extract_products(uid, models, cur, now, since=None):
     log.info("Extracting fabric products with attributes...")
     
     # First ensure table has new columns
@@ -234,9 +234,19 @@ def extract_products(uid, models, cur, now):
             return str(val[1])
         return None
 
+    # Incremental (fast-path) pull: only products whose Odoo write_date advanced
+    # since the last successful pull (plus a small overlap for clock skew). This
+    # is usually 0–few records, so the 60s cadence stays cheap. `since=None`
+    # (bootstrap / heavy reconcile) pulls every product.
+    domain = [["categ_id", "in", FABRIC_CATS]]
+    if since is not None:
+        since_str = since.strftime("%Y-%m-%d %H:%M:%S")
+        domain.append(["write_date", ">=", since_str])
+        log.info("Incremental product pull since %s (UTC)", since_str)
+
     while True:
         records = models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, "product.product", "search_read",
-            [[["categ_id", "in", FABRIC_CATS]]],
+            [domain],
             {"fields": FABRIC_FIELDS, "limit": batch_size, "offset": offset,
              "context": {"active_test": False}})
         if not records:
@@ -293,8 +303,12 @@ def extract_products(uid, models, cur, now):
         if len(records) < batch_size:
             break
 
-    cur.execute("TRUNCATE raw_fabric_products")
-    execute_values(cur, """
+    # Full pull replaces the whole table (also reconciles hard-deletes); the
+    # incremental fast path upserts only the changed rows and leaves the rest.
+    if since is None:
+        cur.execute("TRUNCATE raw_fabric_products")
+    if rows:
+        execute_values(cur, """
         INSERT INTO raw_fabric_products (
             id, name, default_code, category, uom, standard_price, active,
             kg_per_mtr, width_m, gsm, plain_print, fabric_structure,
@@ -306,7 +320,9 @@ def extract_products(uid, models, cur, now):
             write_date, _loaded_at
         ) VALUES %s
         ON CONFLICT (id) DO UPDATE SET
-            name=EXCLUDED.name, standard_price=EXCLUDED.standard_price,
+            name=EXCLUDED.name, default_code=EXCLUDED.default_code,
+            category=EXCLUDED.category, uom=EXCLUDED.uom,
+            standard_price=EXCLUDED.standard_price, active=EXCLUDED.active,
             kg_per_mtr=EXCLUDED.kg_per_mtr, width_m=EXCLUDED.width_m,
             gsm=EXCLUDED.gsm, plain_print=EXCLUDED.plain_print,
             fabric_structure=EXCLUDED.fabric_structure,
@@ -318,22 +334,41 @@ def extract_products(uid, models, cur, now):
             supplier_fabric_code=EXCLUDED.supplier_fabric_code,
             primary_color=EXCLUDED.primary_color,
             source_city=EXCLUDED.source_city, source_country=EXCLUDED.source_country,
+            barcode=EXCLUDED.barcode, color=EXCLUDED.color,
             derived_color=EXCLUDED.derived_color, fabric_color=EXCLUDED.fabric_color,
             fabric_name=EXCLUDED.fabric_name,
             fabric_supplier_name=EXCLUDED.fabric_supplier_name,
             odoo_fabric_color=EXCLUDED.odoo_fabric_color,
             write_date=EXCLUDED.write_date,
             _loaded_at=EXCLUDED._loaded_at
-    """, rows, page_size=200)
-    log.info("✅ raw_fabric_products: %d rows", len(rows))
+        """, rows, page_size=200)
+    if since is not None:
+        # Advance the freshness clock for the WHOLE table so the page's
+        # MAX(_loaded_at) age reflects this successful sync even on cycles where
+        # nothing changed (0 changed rows is the normal steady state).
+        cur.execute("UPDATE raw_fabric_products SET _loaded_at = %s", (now,))
+    log.info("✅ raw_fabric_products: %d changed rows (incremental=%s)",
+             len(rows), since is not None)
 
 def extract_inventory(uid, models, cur, now):
     log.info("Extracting fabric inventory...")
-    # Get product prices
-    prices = {r['id']: (r.get('standard_price',0), r.get('categ_id',[None,None])[1], r.get('uom_id',[None,None])[1])
-              for r in models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, 'product.product', 'search_read',
+    # Product price / category / uom come from the already-refreshed
+    # raw_fabric_products table (populated earlier in THIS run) instead of a
+    # second full product.product pull from Odoo — that redundant pull was one of
+    # the biggest slow points in the cycle. Tuple order: (price, category, uom).
+    cur.execute("SELECT id, standard_price, category, uom FROM raw_fabric_products")
+    prices = {r[0]: (float(r[1]) if r[1] is not None else 0, r[2], r[3])
+              for r in cur.fetchall()}
+    if not prices:
+        # Bootstrap fallback: products table empty (should not happen because
+        # products run first) — pull straight from Odoo, deriving the category.
+        for r in models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, 'product.product', 'search_read',
                 [[['categ_id','in',FABRIC_CATS]]],
-                {'fields': ['standard_price','categ_id','uom_id']})}
+                {'fields': ['standard_price','categ_id','uom_id']}):
+            catn = str((r.get('categ_id') or [None, ''])[1] or '')
+            prices[r['id']] = (r.get('standard_price', 0),
+                               'Fabric' if 'Raw' in catn else 'Trim',
+                               (r.get('uom_id') or [None, None])[1])
 
     batch_size = 500
     offset = 0
@@ -348,11 +383,11 @@ def extract_inventory(uid, models, cur, now):
         for r in records:
             pid = r['product_id'][0] if r.get('product_id') else None
             pname = r['product_id'][1] if r.get('product_id') else None
-            price_info = prices.get(pid, (0, None, None))
+            price_info = prices.get(pid, (0, 'Trim', None))
             qty = r.get('quantity', 0)
             res = r.get('reserved_quantity', 0)
-            cat_name = str(price_info[1] or '')
-            category = 'Fabric' if 'Raw' in cat_name else 'Trim'
+            # price_info[1] is already the mapped 'Fabric'/'Trim' category.
+            category = price_info[1] or 'Trim'
             rows.append((
                 r['id'], pid, pname, None,
                 r['location_id'][0] if r.get('location_id') else None,
@@ -515,19 +550,72 @@ def extract_purchase_orders(uid, models, cur, now):
     """, rows, page_size=500)
     log.info("✅ raw_fabric_purchase_orders: %d rows", len(rows))
 
-def main():
+def main(mode="full"):
+    """Fabric extract with three cadences (see the sync loop):
+
+    - "fast"  (every ~60s): product master (INCREMENTAL via write_date) + fabric
+      inventory (stock.quant). Feeds the Stock Mix table + "All products" export;
+      reflects an Odoo product edit within ~60s. Prices reuse the just-refreshed
+      products table, so there is no second full product.product pull.
+    - "heavy" (slow cadence): a FULL product reconcile (catches archives/hard
+      deletes the incremental path would miss) plus the genuinely heavy,
+      slow-changing history — BOMs, stock moves, purchase orders.
+    - "full"  (bootstrap / standalone default): everything, all full pulls.
+
+    Every mode is idempotent (TRUNCATE+upsert or ON CONFLICT), so re-running is
+    always safe.
+    """
     uid, models = odoo_connect()
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
     now = datetime.utcnow()
     create_tables(cur)
     conn.commit()
-    extract_products(uid, models, cur, now)
-    extract_inventory(uid, models, cur, now)
-    extract_boms(uid, models, cur, now)
-    extract_moves(uid, models, cur, now)
-    extract_purchase_orders(uid, models, cur, now)
-    conn.commit()
+
+    if mode in ("fast", "full"):
+        since = None
+        if mode == "fast":
+            # Incremental window = last stored write_date minus a small overlap
+            # (guards clock skew / a mid-write pull). Empty table → full pull.
+            cur.execute("SELECT MAX(write_date) FROM raw_fabric_products")
+            last_wd = cur.fetchone()[0]
+            if last_wd is not None:
+                since = last_wd - timedelta(minutes=5)
+        extract_products(uid, models, cur, now, since=since)
+        conn.commit()
+        extract_inventory(uid, models, cur, now)
+        conn.commit()
+
+    if mode in ("heavy", "full"):
+        # Concurrency guard: only one heavy reconcile at a time. The sync loop
+        # launches heavy fire-and-forget, and an operator may kick off a
+        # standalone run; a pg session advisory lock ensures they never overlap
+        # (double full-product TRUNCATE + heavy pulls). If the lock is already
+        # held, skip the heavy work rather than pile on. (Skipped for "full"
+        # bootstrap, which is a one-shot standalone run by design.)
+        heavy_lock_key = 0x7FAB12C0  # arbitrary, fabric-heavy specific
+        have_lock = True
+        if mode == "heavy":
+            cur.execute("SELECT pg_try_advisory_lock(%s)", (heavy_lock_key,))
+            have_lock = cur.fetchone()[0]
+            conn.commit()
+        if not have_lock:
+            log.info("Heavy fabric extract already running elsewhere — skipping.")
+        else:
+            try:
+                if mode == "heavy":
+                    # Full product reconcile on the slow cadence so archives / rare
+                    # hard deletes the incremental fast path can't see get cleared.
+                    extract_products(uid, models, cur, now, since=None)
+                    conn.commit()
+                extract_boms(uid, models, cur, now)
+                extract_moves(uid, models, cur, now)
+                extract_purchase_orders(uid, models, cur, now)
+                conn.commit()
+            finally:
+                if mode == "heavy":
+                    cur.execute("SELECT pg_advisory_unlock(%s)", (heavy_lock_key,))
+                    conn.commit()
 
     # Summary
     for table in ['raw_fabric_products','raw_fabric_inventory','raw_fabric_boms',
@@ -537,4 +625,10 @@ def main():
     conn.close()
 
 if __name__ == '__main__':
-    main()
+    import argparse
+    ap = argparse.ArgumentParser(description="Fabric BI Odoo extract")
+    ap.add_argument("--mode", choices=["fast", "heavy", "full"], default="full",
+                    help="fast=product+inventory (60s), heavy=boms/moves/pos + full "
+                         "product reconcile, full=everything (bootstrap/standalone)")
+    args = ap.parse_args()
+    main(mode=args.mode)

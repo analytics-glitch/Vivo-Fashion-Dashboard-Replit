@@ -284,10 +284,28 @@ LOOKBACK_DAYS = int(os.environ.get("SYNC_LOOKBACK_DAYS", "2"))
 # though main() is invoked every 60s by the supervising loop. Persists for the
 # lifetime of the process.
 _LAST_FABRIC_EXTRACT = None
+# Guards the HEAVY fabric extract (full product reconcile + BOMs + stock moves +
+# purchase orders — the slow, slow-changing pulls) to a much slower cadence so it
+# never gates the fast ~60s product/inventory refresh. Default 30 min.
+_LAST_FABRIC_HEAVY_EXTRACT = None
+# Handle to the currently-running heavy extract subprocess (if any). The heavy
+# pull is launched NON-BLOCKING (Popen, fire-and-forget) so the ~60s fast
+# product/inventory refresh keeps firing every cycle while it runs; this handle
+# is the concurrency guard so we never start a second heavy run on top of one
+# still in flight. A pg advisory lock inside extract_fabric.py --mode heavy is
+# the belt-and-braces guard against a concurrent standalone run.
+_FABRIC_HEAVY_PROC = None
+# UTC time the current heavy subprocess was launched, so a stalled/hung heavy run
+# can be killed once it exceeds FABRIC_HEAVY_TIMEOUT_SEC (the Popen is
+# non-blocking, so the timeout is enforced by the loop when it reaps the proc).
+_FABRIC_HEAVY_STARTED_AT = None
+FABRIC_HEAVY_INTERVAL_SEC = int(os.environ.get("FABRIC_HEAVY_INTERVAL_SEC", "1800"))
 # Hard timeout for the fabric (Odoo) extract subprocess so a hung/slow Odoo pull
 # can't stall the whole sync loop indefinitely. On timeout the subprocess is
 # killed, the failure is logged, and the loop continues (the next cycle retries).
+# The fast path is quick; the heavy path gets its own (longer) timeout below.
 FABRIC_EXTRACT_TIMEOUT_SEC = int(os.environ.get("FABRIC_EXTRACT_TIMEOUT_SEC", "600"))
+FABRIC_HEAVY_TIMEOUT_SEC = int(os.environ.get("FABRIC_HEAVY_TIMEOUT_SEC", "900"))
 # Same once-per-minute guard for the fabric consumption/returns sheet override loader.
 _LAST_FABRIC_SHEET_EXTRACT = None
 _LAST_RECON_RUN = None  # date of the last nightly reconciliation run
@@ -1229,8 +1247,11 @@ def main():
     # a hang; on timeout/error we log and continue (next cycle retries).
     import sys
 
+    import subprocess as _subprocess
+
     now_utc = datetime.now(timezone.utc)
-    global _LAST_FABRIC_EXTRACT
+    global _LAST_FABRIC_EXTRACT, _LAST_FABRIC_HEAVY_EXTRACT, _FABRIC_HEAVY_PROC
+    global _FABRIC_HEAVY_STARTED_AT
     fabric_empty = False
     try:
         cur.execute("SELECT to_regclass('public.raw_fabric_inventory')")
@@ -1248,20 +1269,87 @@ def main():
         or (now_utc - _LAST_FABRIC_EXTRACT).total_seconds() >= 60
     )
     if fabric_empty or fabric_due:
+        # FAST path (every ~60s): incremental product master + fabric inventory.
+        # On a fresh/empty prod DB the first run is a FULL bootstrap so every
+        # table populates; thereafter it is the cheap incremental pull that keeps
+        # the Stock Mix table + export within ~60s of Odoo.
         # Stamp the attempt time up front so a transient failure waits a minute
         # (when still empty, the fabric_empty branch retries on the next cycle).
         _LAST_FABRIC_EXTRACT = now_utc
+        fast_mode = "full" if fabric_empty else "fast"
         try:
-            log.info("Running fabric (Odoo) extract (bootstrap=%s)...", fabric_empty)
+            log.info("Running fabric (Odoo) extract mode=%s (bootstrap=%s)...",
+                     fast_mode, fabric_empty)
             run_subprocess_with_heartbeat(
-                [sys.executable, "/home/runner/workspace/extract_fabric.py"],
+                [sys.executable, "/home/runner/workspace/extract_fabric.py",
+                 "--mode", fast_mode],
                 "fabric",
                 timeout=FABRIC_EXTRACT_TIMEOUT_SEC,
             )
             write_heartbeat(conn, "fabric")
-            log.info("✅ Fabric extract complete")
+            log.info("✅ Fabric fast extract complete")
+            # A full bootstrap already pulled the heavy tables — start their slow
+            # timer now so we don't immediately re-run them.
+            if fabric_empty:
+                _LAST_FABRIC_HEAVY_EXTRACT = now_utc
         except Exception as e:
             log.error("Fabric extract error: %s", e)
+
+    # HEAVY path (slow cadence, default 30 min): full product reconcile + BOMs +
+    # stock moves + purchase orders. Runs as its OWN subprocess on its own timer
+    # so these slow, slow-changing pulls never gate the fast ~60s refresh above.
+    heavy_due = (
+        _LAST_FABRIC_HEAVY_EXTRACT is None
+        or (now_utc - _LAST_FABRIC_HEAVY_EXTRACT).total_seconds()
+        >= FABRIC_HEAVY_INTERVAL_SEC
+    )
+    # First, reap any previously-launched heavy run. If it finished we log its
+    # outcome and free the concurrency slot; if it has been running longer than
+    # FABRIC_HEAVY_TIMEOUT_SEC we kill it (a hung Odoo pull must not squat the
+    # slot forever). Either way this NEVER blocks the cycle — the fast path above
+    # already ran and the loop returns normally.
+    if _FABRIC_HEAVY_PROC is not None:
+        if _FABRIC_HEAVY_PROC.poll() is not None:
+            rc = _FABRIC_HEAVY_PROC.returncode
+            if rc == 0:
+                log.info("✅ Fabric heavy extract complete")
+            else:
+                log.error("Fabric heavy extract exited with code %s", rc)
+            _FABRIC_HEAVY_PROC = None
+            _FABRIC_HEAVY_STARTED_AT = None
+        elif (
+            _FABRIC_HEAVY_STARTED_AT is not None
+            and (now_utc - _FABRIC_HEAVY_STARTED_AT).total_seconds()
+            > FABRIC_HEAVY_TIMEOUT_SEC
+        ):
+            log.error("Fabric heavy extract exceeded %ss — killing it.",
+                      FABRIC_HEAVY_TIMEOUT_SEC)
+            try:
+                _FABRIC_HEAVY_PROC.kill()
+                _FABRIC_HEAVY_PROC.wait(timeout=10)
+            except Exception as e:
+                log.error("Failed to kill hung fabric heavy extract: %s", e)
+            _FABRIC_HEAVY_PROC = None
+            _FABRIC_HEAVY_STARTED_AT = None
+    heavy_running = _FABRIC_HEAVY_PROC is not None and _FABRIC_HEAVY_PROC.poll() is None
+    if heavy_due and not fabric_empty and not heavy_running:
+        _LAST_FABRIC_HEAVY_EXTRACT = now_utc
+        try:
+            log.info("Launching fabric (Odoo) HEAVY extract (boms/moves/pos) in background...")
+            # NON-BLOCKING: launch and return immediately so the ~60s fast
+            # product/inventory cycle is never gated by the slow heavy pull. The
+            # child inherits stdout/stderr (logs interleave into the sync log) and
+            # runs an internal pg advisory lock so a concurrent standalone heavy
+            # run can't overlap it.
+            _FABRIC_HEAVY_PROC = _subprocess.Popen(
+                [sys.executable, "/home/runner/workspace/extract_fabric.py",
+                 "--mode", "heavy"],
+            )
+            _FABRIC_HEAVY_STARTED_AT = now_utc
+        except Exception as e:
+            log.error("Fabric heavy extract launch error: %s", e)
+            _FABRIC_HEAVY_PROC = None
+            _FABRIC_HEAVY_STARTED_AT = None
 
     for store in STORES:
         try:

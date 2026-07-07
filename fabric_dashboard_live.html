@@ -1266,12 +1266,12 @@ function applyFabricFreshness(d){
   if(lu)lu.textContent=age?('Fabric data updated '+age):'Fabric data: no successful pull yet';
   if(bn){
     // Severity: 'warn' (well past threshold / never loaded — genuinely failing) shows
-    // the alarming amber warning; 'info' (mildly behind / catching up) shows a calm
-    // blue informational note; anything else clears the banner. All interpolated
-    // values are esc()'d — the message is built as text fragments, no raw innerHTML
-    // of untrusted values.
+    // the alarming amber warning; 'delayed' (a few minutes behind the ~60s target)
+    // and 'info' (hours behind but catching up) both show a calm blue informational
+    // note; anything else clears the banner. All interpolated values are esc()'d —
+    // the message is built as text fragments, no raw innerHTML of untrusted values.
     const sev=f.fabric_freshness_severity||(f.fabric_data_stale?'warn':'ok');
-    if(sev==='warn'||sev==='info'){
+    if(sev==='warn'||sev==='info'||sev==='delayed'){
       // Prefer the exact Nairobi time; fall back to the relative age, then 'unknown'.
       const when=exact?(esc(exact)+(age?' ('+esc(age)+')':'')):esc(age||'unknown');
       if(sev==='warn'){
@@ -1279,6 +1279,9 @@ function applyFabricFreshness(d){
         bn.innerHTML=age?
           ('⚠ Odoo fabric sync is stale — last successful pull was '+when+'. Categories may be out of date.'):
           ('⚠ Odoo fabric sync has not completed a successful pull yet. Figures may be unavailable or out of date.');
+      }else if(sev==='delayed'){
+        bn.className='banner banner-info';
+        bn.innerHTML='Fabric sync is running a little behind — last successful Odoo pull was '+when+'. Live figures may lag by a few minutes.';
       }else{
         bn.className='banner banner-info';
         bn.innerHTML='Fabric data is catching up — last successful Odoo pull was '+when+'. Figures may be slightly behind.';
