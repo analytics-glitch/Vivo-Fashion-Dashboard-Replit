@@ -267,7 +267,14 @@ const Footfall = () => {
       const prevAuth = prevSalesMap.get(r.location);
       const sales = auth ? (auth.total_sales || 0) : (r.total_sales || 0);
       const orders = auth ? (auth.orders || auth.total_orders || 0) : (r.orders || 0);
-      const conversion = r.total_footfall ? (orders / r.total_footfall) * 100 : 0;
+      // WS5 — server-side counter reliability flags. A store whose visitor
+      // counter was dark for >25% of the window (`footfall_counter_gaps`)
+      // cannot have a trustworthy conversion; suppress it (null → "—")
+      // instead of showing an inflated %.
+      const ffCounterOk = r.ff_counter_ok !== false;
+      const conversion = !ffCounterOk
+        ? null
+        : r.total_footfall ? (orders / r.total_footfall) * 100 : 0;
       const abv = orders ? sales / orders : 0;
       const prevFootfall = prevR?.total_footfall || 0;
       const footfallDelta = prevFootfall ? ((r.total_footfall - prevFootfall) / prevFootfall) * 100 : null;
@@ -294,9 +301,15 @@ const Footfall = () => {
       // raw numbers on the row even when null so consumers can decide
       // how to display.
       const outside = Number(r.outside_traffic || 0);
-      const turnIn = outside > 0
-        ? ((r.total_footfall || 0) / outside) * 100
-        : null;
+      // WS5 — `outside_counter_fault` (turn-in > 100%: pavement counter
+      // undercounting) suppresses turn-in entirely rather than showing an
+      // impossible 6042.6%.
+      const outsideCounterOk = r.outside_counter_ok !== false;
+      const turnIn = !outsideCounterOk
+        ? null
+        : outside > 0
+          ? ((r.total_footfall || 0) / outside) * 100
+          : null;
       const prevOutside = Number(prevR?.outside_traffic || 0);
       const prevTurnIn = prevOutside > 0
         ? ((prevR?.total_footfall || 0) / prevOutside) * 100
@@ -357,7 +370,7 @@ const Footfall = () => {
     scopedEnriched,
     {
       valueKey: "conversion_rate",
-      filter: (r) => r.physical !== false && (r.total_footfall || 0) >= 200,
+      filter: (r) => r.physical !== false && (r.total_footfall || 0) >= 200 && r.conversion_rate != null,
       hardHi: { at: 50, reason: "Unusually high CR (≥50%) — likely counter miscalibration" },
       hardLo: { at: 1, reason: "Unusually low CR (<1%) — counter may be over-counting traffic" },
       label: "CR",
@@ -368,7 +381,13 @@ const Footfall = () => {
 
   const byConversion = useMemo(
     () => {
-      const sorted = [...enrichedWithFlag].sort((a, b) => (b.conversion_rate || 0) - (a.conversion_rate || 0));
+      // WS5 — stores whose conversion was suppressed (counter gaps) are
+      // excluded from the conversion chart entirely (a 0-length bar would
+      // read as "0% conversion", which is exactly the fake figure we're
+      // trying to avoid).
+      const sorted = [...enrichedWithFlag]
+        .filter((r) => r.conversion_rate != null)
+        .sort((a, b) => (b.conversion_rate || 0) - (a.conversion_rate || 0));
       // For conversion we use the actual %-point delta (already computed
       // as conv_delta_pp). Expose it as `delta_pct` for the standard label.
       return sorted.map((r) => ({ ...r, delta_pct: r.conv_delta_pp }));
@@ -945,6 +964,15 @@ const Footfall = () => {
                   label: "Conversion",
                   numeric: true,
                   render: (r) => {
+                    if (r.conversion_rate == null)
+                      return (
+                        <span
+                          className="pill-neutral text-[10px]"
+                          title="Footfall counter was dark for >25% of the window — conversion suppressed (unreliable)."
+                        >
+                          counter gaps
+                        </span>
+                      );
                     const cr = r.conversion_rate || 0;
                     if (r.outlier) return <span className="pill-amber">{fmtPct(cr, 2)}</span>;
                     const pill = cr >= groupAvgConv + 3 ? "pill-green" : cr >= groupAvgConv - 2 ? "pill-amber" : "pill-red";

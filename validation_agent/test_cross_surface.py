@@ -415,5 +415,80 @@ class ProductCheckTests(unittest.TestCase):
                       {e["check_code"] for e in out})
 
 
+
+class CustomerCheckTests(unittest.TestCase):
+    """``_check_customers`` — WS6 walk-in-excluded universe reconciliation.
+
+    Every customer surface must exclude the same pseudo-account set, so the
+    headline total, the frequency-bucket sum, and the detail-table total are
+    contractually equal, and the two in-period repeat counts agree. ``_get``
+    is patched so no API is needed.
+    """
+
+    GREEN = {
+        "/customers": {"total_customers": 10377, "new_customers": 2970,
+                       "returning_customers": 7407},
+        "/customer-frequency": [
+            {"frequency_bucket": "1 order", "customer_count": 8824},
+            {"frequency_bucket": "2 orders", "customer_count": 1100},
+            {"frequency_bucket": "3 orders", "customer_count": 300},
+            {"frequency_bucket": "4 orders", "customer_count": 100},
+            {"frequency_bucket": "5+ orders", "customer_count": 53},
+        ],
+        "/analytics/customer-details": [{"total_customer_count": 10377}],
+        "/analytics/repeat-customers": [{"total_repeat_count": 1553}],
+        "/analytics/customer-retention": {"total_customers": 10377},
+    }
+
+    def _run(self, payloads):
+        out = []
+        with mock.patch.object(
+                cross_surface, "_get",
+                side_effect=lambda s, path, params, timeout=None: payloads[path]):
+            cross_surface._check_customers(None, date(2026, 7, 7), out)
+        return out
+
+    def test_consistent_payloads_no_exceptions(self):
+        self.assertEqual(self._run(self.GREEN), [])
+
+    def test_total_vs_frequency_mismatch_fires(self):
+        bad = dict(self.GREEN)
+        bad["/customers"] = {**self.GREEN["/customers"], "total_customers": 10447,
+                             "new_customers": 3040}
+        codes = {e["check_code"] for e in self._run(bad)}
+        self.assertIn("xsurf_cust_total_vs_freq", codes)
+
+    def test_total_vs_details_mismatch_fires(self):
+        bad = dict(self.GREEN)
+        bad["/analytics/customer-details"] = [{"total_customer_count": 9000}]
+        codes = {e["check_code"] for e in self._run(bad)}
+        self.assertIn("xsurf_cust_total_vs_details", codes)
+
+    def test_repeat_pair_mismatch_fires(self):
+        bad = dict(self.GREEN)
+        bad["/analytics/repeat-customers"] = [{"total_repeat_count": 500}]
+        codes = {e["check_code"] for e in self._run(bad)}
+        self.assertIn("xsurf_cust_repeat_pair", codes)
+
+    def test_new_plus_returning_partition_fires(self):
+        bad = dict(self.GREEN)
+        bad["/customers"] = {**self.GREEN["/customers"], "returning_customers": 7000}
+        codes = {e["check_code"] for e in self._run(bad)}
+        self.assertIn("xsurf_cust_new_ret_partition", codes)
+
+    def test_retention_total_mismatch_fires(self):
+        bad = dict(self.GREEN)
+        bad["/analytics/customer-retention"] = {"total_customers": 9999}
+        codes = {e["check_code"] for e in self._run(bad)}
+        self.assertIn("xsurf_cust_retention_total", codes)
+
+    def test_empty_lists_do_not_crash(self):
+        bad = dict(self.GREEN)
+        bad["/analytics/customer-details"] = []
+        bad["/analytics/repeat-customers"] = []
+        excs = self._run(bad)  # must not raise
+        self.assertTrue(any(e["check_code"] == "xsurf_cust_total_vs_details" for e in excs))
+
+
 if __name__ == "__main__":
     unittest.main()

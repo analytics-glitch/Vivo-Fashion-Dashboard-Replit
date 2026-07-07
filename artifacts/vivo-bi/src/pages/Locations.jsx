@@ -209,7 +209,11 @@ const Locations = () => {
       const msi = orders ? units / orders : 0;
 
       const ffCount = ff ? (ff.total_footfall || 0) : 0;
-      const conv = ffCount ? (orders / ffCount) * 100 : null;
+      // WS5 — server-side counter flag: a store whose visitor counter was
+      // dark for >25% of the window has an unreliable footfall base, so
+      // conversion is suppressed (null → "—"), matching the Footfall page.
+      const ffOk = !ff || ff.ff_counter_ok !== false;
+      const conv = ffOk && ffCount ? (orders / ffCount) * 100 : null;
       // Previous conversion = prev orders ÷ prev footfall when both exist.
       // Pull prev footfall from the dedicated /footfall fetch on the prev
       // window (the upstream /footfall endpoint doesn't return previous-
@@ -282,7 +286,11 @@ const Locations = () => {
       const sensorGapDays = r.sensor_gap_days || 0;
       // clean_orders excludes orders booked on days the sensor reported 0.
       const cleanOrders = r.clean_orders != null ? r.clean_orders : orders;
-      const conv = footfallCount ? (cleanOrders / footfallCount) * 100 : null;
+      // WS5 — same counter-gap suppression as the Footfall page: flagged
+      // stores (counter dark >25% of window) get conv=null, not a fake %.
+      const conv = r.ff_counter_ok !== false && footfallCount
+        ? (cleanOrders / footfallCount) * 100
+        : null;
 
       const pFf = prevFootfallMap.get(loc);
       const prevFootfallCount = pFf ? (pFf.total_footfall || 0) : 0;

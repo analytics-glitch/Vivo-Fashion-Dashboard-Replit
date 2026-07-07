@@ -3502,6 +3502,37 @@ def csv_to_sql(val):
     # (backslashes are literal), so doubling quotes is sufficient.
     return "'" + "','".join(v.strip().replace("'", "''") for v in val.split(",")) + "'"
 
+
+# ── WS5: central "no stock feed" detection ────────────────────────────────────
+# The hourly inventory extract currently only carries Kenya; UG/RW/Online
+# stores have ZERO rows in all_inventory. "No rows at all" means the stock
+# feed is ABSENT for that location — fundamentally different from "stock = 0".
+# Every stock-derived surface (sell-through, cover, size health, size gaps,
+# IBT) must render "no stock data" for those stores and exclude them from
+# group averages, instead of showing 0% / 100% artefacts.
+_STOCK_FEED_CACHE = {"at": 0.0, "locs": frozenset()}
+_STOCK_FEED_TTL = 300  # seconds
+
+def _stock_feed_locations():
+    """Set of pos_location_name values that have at least one row in
+    all_inventory (i.e. the stock feed covers them). Cached briefly."""
+    now = time.time()
+    if now - _STOCK_FEED_CACHE["at"] > _STOCK_FEED_TTL:
+        rows = run_query(
+            "SELECT DISTINCT pos_location_name AS loc FROM all_inventory "
+            "WHERE COALESCE(pos_location_name,'') <> ''") or []
+        _STOCK_FEED_CACHE["locs"] = frozenset(r["loc"] for r in rows)
+        _STOCK_FEED_CACHE["at"] = now
+    return _STOCK_FEED_CACHE["locs"]
+
+def _has_stock_feed(loc):
+    return loc in _stock_feed_locations()
+
+# SQL predicate fragment: <alias> must be a location column expression.
+def _stock_feed_sql(col):
+    return ("EXISTS (SELECT 1 FROM all_inventory sfl "
+            "WHERE sfl.pos_location_name = " + col + ")")
+
 def build_filters(date_from, date_to, country=None, channel=None, extra=None):
     parts = [
         "s.sale_date BETWEEN '" + date_from + "' AND '" + date_to + "'",
@@ -4590,7 +4621,7 @@ def get_footfall(
     # and recompute a clean conversion that excludes those days. Top-level
     # fields stay byte-for-byte compatible with the prior store-level query;
     # `sensor_gap_days` / `clean_orders` / `clean_conversion_rate` are additive.
-    return run_query("""
+    rows = run_query("""
         WITH ff_daily AS (
             SELECT """ + ff_canon_sql() + """ AS loc,
                 f.time::date AS d,
@@ -4637,6 +4668,43 @@ def get_footfall(
         GROUP BY loc
         ORDER BY total_footfall DESC
     """, date_to=date_to)
+
+    # WS5/T503 — ONE broken-counter rule, applied server-side so Footfall and
+    # Locations render identically:
+    #   * footfall counter unreliable — sensor dark (ff=0 while selling) on
+    #     > 25% of the window days → conversion suppressed + flagged.
+    #   * outside (pavement) counter unreliable — derived turn-in > 100%
+    #     (counter miscount/partial sample, e.g. Yaya 6042.6%, Zoya 586.7%)
+    #     → turn-in suppressed + flagged, and the store's outside traffic is
+    #     EXCLUDED from any group turn-in denominator (raw values retained in
+    #     raw_* fields for tooltips/diagnostics).
+    rows = rows or []
+    try:
+        _days = (date.fromisoformat(date_to[:10])
+                 - date.fromisoformat(date_from[:10])).days + 1
+    except Exception:
+        _days = 30
+    _days = max(_days, 1)
+    for r in rows:
+        gaps = int(r.get("sensor_gap_days") or 0)
+        ff_ok = gaps <= 0.25 * _days
+        ti = r.get("turn_in_rate")
+        out_ok = ti is not None and float(ti) <= 100.0
+        flags = []
+        r["raw_conversion_rate"] = r.get("conversion_rate")
+        r["raw_clean_conversion_rate"] = r.get("clean_conversion_rate")
+        r["raw_turn_in_rate"] = ti
+        if not ff_ok:
+            flags.append("footfall_counter_gaps")
+            r["conversion_rate"] = None
+            r["clean_conversion_rate"] = None
+        if not out_ok:
+            flags.append("outside_counter_fault")
+            r["turn_in_rate"] = None
+        r["ff_counter_ok"] = ff_ok
+        r["outside_counter_ok"] = out_ok
+        r["counter_flags"] = flags
+    return rows
 
 @app.get("/api/footfall/weekday-pattern")
 def get_footfall_weekday(
@@ -4749,7 +4817,29 @@ def get_footfall_weekday(
 # Walk-in / placeholder / brand pseudo-accounts (matched case-insensitively on the
 # customer name) are not real identified customers and are excluded from the customer
 # universe (new / returning / repeat / total) wherever those counts are computed.
-_WALKIN_NAME_REGEX = r"(walk[ -]?in|vivo|safari|zoya)"
+_WALKIN_NAME_REGEX = r"(walk[ -]?in|vivo|safari|zoya|anonymous customer|cbd digo)"
+# Company-owned emails are the strongest pseudo-account signal (store counter
+# logins like vivo.sarit@vivofashiongroup.com, "Village MKT"), plus Shopify
+# anonymous-guest placeholders.
+_PSEUDO_EMAIL_REGEX = r"@(vivofashiongroup|vivoactivewear|fashiongroup|shopzetu|vivowoman)\.|^anonymous-[0-9]+@example\.com"
+# ONE canonical predicate (over an all_customers row) deciding "this customer_id
+# is a walk-in / placeholder / brand pseudo-account". Every customer surface
+# must use this same rule so counts reconcile across pages.
+_WALKIN_PSEUDO_COND = (
+    "((COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) ~* '" + _WALKIN_NAME_REGEX + "'"
+    " OR COALESCE(email,'') ~* '" + _PSEUDO_EMAIL_REGEX + "')"
+)
+
+def _not_walkin_pseudo_sql(alias: str = "s") -> str:
+    """SQL fragment excluding walk-in / placeholder / brand pseudo-accounts
+    (name matches _WALKIN_NAME_REGEX) from a customer-level surface. The SAME
+    rule /api/customers uses for its identified universe, so every customer
+    page (Top customers, Repeat, Customer Details, RFM) reconciles with the
+    Customers KPIs. Walk-in volume is surfaced separately by
+    /api/customers/walk-ins."""
+    return (alias + ".customer_id NOT IN (SELECT customer_id FROM all_customers "
+            "WHERE customer_id IS NOT NULL AND " + _WALKIN_PSEUDO_COND + ")")
+
 
 
 @app.get("/api/customers")
@@ -4802,7 +4892,7 @@ def get_customers(
             SELECT DISTINCT customer_id
             FROM all_customers
             WHERE customer_id IS NOT NULL
-              AND (COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) ~* '""" + _WALKIN_NAME_REGEX + """'
+              AND """ + _WALKIN_PSEUDO_COND + """
         ),
         cust_profile AS (
             -- One profile row per customer_id (best non-empty value across store rows),
@@ -4858,7 +4948,8 @@ def get_customers(
             WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
             AND s.sale_kind = 'order'
             AND LOWER(s.customer_type) IN ('new','returning','registered')
-            """ + country_filter + " " + channel_filter + """
+            AND s.customer_id NOT IN (SELECT customer_id FROM excluded)
+            AND """ + BASE_FILTERS + " " + country_filter + " " + channel_filter + """
         ),
         first_time_reg AS (
             -- Additive metric: registered (POS counter) orders whose customer's
@@ -4872,6 +4963,8 @@ def get_customers(
             WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
             AND s.sale_kind = 'order'
             AND LOWER(s.customer_type) = 'registered'
+            AND s.customer_id NOT IN (SELECT customer_id FROM excluded)
+            AND """ + BASE_FILTERS + """
             AND fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date
             """ + country_filter + " " + channel_filter + """
         ),
@@ -4917,7 +5010,7 @@ def get_top_customers(
     reveal:    bool = Query(default=False),
 ):
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')")
+        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND " + _not_walkin_pseudo_sql())
     rows = run_query("""
         SELECT
             ROW_NUMBER() OVER (ORDER BY SUM(s.total_sales_kes::numeric) DESC) AS rank,
@@ -4962,6 +5055,7 @@ def get_customer_search(
             FROM all_sales s
             WHERE s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL
             AND s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+            AND """ + _not_walkin_pseudo_sql() + """
             GROUP BY s.customer_id
         )
         SELECT sa.customer_id,
@@ -5593,7 +5687,7 @@ def get_customer_frequency(
     channel:   str = Query(default=None),
 ):
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')")
+        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND " + _not_walkin_pseudo_sql())
     return run_query("""
         WITH order_counts AS (
             SELECT customer_id, COUNT(DISTINCT order_id) AS order_count
@@ -5621,7 +5715,7 @@ def get_customer_trend(
     where = build_filters(date_from, date_to, country,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')"
         " AND s.customer_id NOT IN (SELECT customer_id FROM all_customers WHERE customer_id IS NOT NULL"
-        " AND (COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) ~* '" + _WALKIN_NAME_REGEX + "')")
+        " AND " + _WALKIN_PSEUDO_COND + ")")
     return run_query("""
         WITH """ + _unified_first_purchase_ctes("all_time", "first_purchase") + """
         SELECT s.sale_date AS day,
@@ -5643,7 +5737,7 @@ def get_customers_by_location(
     where = build_filters(date_from, date_to, country,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')"
         " AND s.customer_id NOT IN (SELECT customer_id FROM all_customers WHERE customer_id IS NOT NULL"
-        " AND (COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) ~* '" + _WALKIN_NAME_REGEX + "')")
+        " AND " + _WALKIN_PSEUDO_COND + ")")
     return run_query("""
         WITH """ + _unified_first_purchase_ctes("all_time", "first_purchase") + """
         SELECT s.pos_location_name, s.country,
@@ -5676,6 +5770,7 @@ def get_churned_customers(
             WHERE s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL
             AND s.customer_id NOT IN ('None','null','')
             AND """ + BASE_FILTERS + """
+            AND """ + _not_walkin_pseudo_sql() + """
             GROUP BY s.customer_id
         )
         SELECT lp.customer_id,
@@ -5716,7 +5811,7 @@ def analytics_customer_details(
         type_filter = "AND p.product_type IN (" + types_sql + ")"
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL "
-              "AND s.customer_id NOT IN ('None','null','') " + type_filter)
+              "AND s.customer_id NOT IN ('None','null','') AND " + _not_walkin_pseudo_sql() + " " + type_filter)
     rows = run_query("""
         SELECT s.customer_id,
             c.first_name, c.last_name, c.email,
@@ -5964,7 +6059,7 @@ def get_stock_to_sales(
     # sales row was matched against catalog-wide stock (or vice versa).
     loc_sales_filter = ("AND s.pos_location_name IN (" + csv_to_sql(locations) + ")") if locations else ""
     loc_inv_filter = ("AND i.pos_location_name IN (" + csv_to_sql(locations) + ")") if locations else ""
-    return run_query("""
+    rows = run_query("""
         WITH sales AS (
             SELECT s.pos_location_name, s.country,
                 SUM(s.ordered_item_quantity) AS units_sold,
@@ -5990,6 +6085,18 @@ def get_stock_to_sales(
         LEFT JOIN inventory i ON s.pos_location_name = i.pos_location_name
         ORDER BY stock_to_sales_ratio DESC
     """, date_to=date_to)
+
+    # WS5 — locations with no stock feed (zero all_inventory rows) show a fake
+    # 0 stock / 0.00x cover multiplier. Null the stock-derived fields + flag.
+    rows = rows or []
+    feed = _stock_feed_locations()
+    for r in rows:
+        has = r.get("location") in feed
+        r["has_stock_data"] = has
+        if not has:
+            r["current_stock"] = None
+            r["stock_to_sales_ratio"] = None
+    return rows
 
 @app.get("/api/customer-type-spend")
 def get_customer_type_spend(
@@ -6484,7 +6591,7 @@ def analytics_sell_through_by_location(
     sales_where = build_filters(date_from, date_to, country,
         extra="s.sale_kind IN ('sale','order') AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")")
     inv_country_filter = ("AND i.country IN (" + csv_to_sql(country) + ")") if country else ""
-    return run_query("""
+    rows = run_query("""
         WITH sales AS (
             SELECT s.pos_location_name AS location, s.country,
                 SUM(s.ordered_item_quantity) AS units_sold,
@@ -6525,6 +6632,22 @@ def analytics_sell_through_by_location(
         FULL OUTER JOIN inv i ON s.location = i.location
         ORDER BY units_sold DESC
     """, date_to=date_to)
+
+    # WS5 — a store with NO rows in all_inventory has no stock feed at all
+    # (UG/RW/Online). Sold>0 + available=0 would otherwise compute a fake
+    # 100% "strong" sell-through; suppress the ratio and flag the row.
+    rows = rows or []
+    feed = _stock_feed_locations()
+    for r in rows:
+        has = r.get("location") in feed
+        r["has_stock_data"] = has
+        if not has:
+            r["available"] = None
+            r["current_stock"] = None
+            r["sell_through"] = None
+            r["sell_through_pct"] = None
+            r["health"] = "no_stock_data"
+    return rows
 
 @app.get("/api/analytics/sor-all-styles")
 def analytics_sor_all_styles(
@@ -8339,7 +8462,7 @@ def analytics_rfm(
     lim = max(1, min(int(limit or 2000), 5000))
     ref = str(date_to)[:10]
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order','return') AND s.customer_id IS NOT NULL AND s.customer_id <> ''")
+        extra="s.sale_kind IN ('sale','order','return') AND s.customer_id IS NOT NULL AND s.customer_id <> '' AND " + _not_walkin_pseudo_sql())
     monetary_expr = ("SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric - s.discounts_kes::numeric "
                      "WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END)")
     freq_expr = "COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END)"
@@ -9096,7 +9219,7 @@ def analytics_repeat_customers(
     channel:   str = Query(default=None),
 ):
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')")
+        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND " + _not_walkin_pseudo_sql())
     return run_query("""
         WITH cust AS (
             SELECT s.customer_id,
@@ -9115,7 +9238,8 @@ def analytics_repeat_customers(
             COALESCE(cu.phone,'') AS mobile,
             cu.email,
             c.order_count, c.total_spend_kes, c.total_units,
-            c.first_order_date, c.last_order_date
+            c.first_order_date, c.last_order_date,
+            COUNT(*) OVER() AS total_repeat_count
         FROM cust c
         LEFT JOIN all_customers cu ON c.customer_id = cu.customer_id
         ORDER BY c.total_spend_kes DESC
@@ -9142,7 +9266,7 @@ def analytics_customer_retention(
     except (TypeError, ValueError, ZeroDivisionError):
         repeat_rate = 0.0
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')")
+        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND " + _not_walkin_pseudo_sql())
     months = run_query("""
         SELECT substring(s.sale_date, 1, 7) AS month,
             COUNT(DISTINCT s.customer_id) AS customers
@@ -9167,7 +9291,7 @@ def analytics_customer_crosswalk(
     top:       int = Query(default=15),
 ):
     where = build_filters(date_from, date_to, country,
-        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")")
+        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ") AND " + _not_walkin_pseudo_sql())
     return run_query("""
         WITH cust_stores AS (
             SELECT DISTINCT s.customer_id, s.pos_location_name
@@ -9205,6 +9329,7 @@ def customers_churn_rate():
             FROM all_sales
             WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
               AND customer_id NOT IN ('None','null','')
+              AND """ + _not_walkin_pseudo_sql(alias="all_sales") + """
             GROUP BY customer_id
         ),
         agg AS (
@@ -9252,8 +9377,7 @@ def customers_walk_ins(
     )
     pseudo_cte = (
         "pseudo AS (SELECT DISTINCT customer_id FROM all_customers "
-        "WHERE customer_id IS NOT NULL AND (COALESCE(first_name,'') || ' ' || "
-        "COALESCE(last_name,'')) ~* '" + _WALKIN_NAME_REGEX + "')"
+        "WHERE customer_id IS NOT NULL AND " + _WALKIN_PSEUDO_COND + ")"
     )
 
     def _shares(r):
@@ -9322,7 +9446,7 @@ def customers_walk_ins(
         WITH excluded AS (
             SELECT DISTINCT customer_id FROM all_customers
             WHERE customer_id IS NOT NULL
-              AND (COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) ~* '""" + _WALKIN_NAME_REGEX + """'
+              AND """ + _WALKIN_PSEUDO_COND + """
         ),
         cust_profile AS (
             SELECT customer_id,
@@ -9543,6 +9667,11 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
       JOIN stats st ON st.style = c.style
       LEFT JOIN store_tier stt ON stt.store = c.store AND stt.country = c.country
       WHERE c.available <= 2
+        -- WS5: a receiver must be covered by the stock feed. Stores with ZERO
+        -- rows in all_inventory (UG/RW/Online) look like "available = 0" but
+        -- their true stock is unknown — never ship into a blind store.
+        AND EXISTS (SELECT 1 FROM all_inventory sfl
+                    WHERE sfl.pos_location_name = c.store)
         AND NOT EXISTS (SELECT 1 FROM dead d WHERE d.style = c.style)
         AND NOT EXISTS (SELECT 1 FROM too_new tn WHERE tn.style = c.style)
     ),
@@ -12057,14 +12186,23 @@ def analytics_quarter_scorecard(quarter: int = Query(default=None),
             ),
             ff_locs AS (SELECT DISTINCT loc FROM ff_daily),
             joined AS (
-                SELECT COALESCE(ff.ff, 0) AS ff, COALESCE(ff.outside, 0) AS outside,
+                SELECT COALESCE(ff.loc, sd.loc) AS loc,
+                    COALESCE(ff.ff, 0) AS ff, COALESCE(ff.outside, 0) AS outside,
                     COALESCE(sd.orders, 0) AS orders
                 FROM ff_daily ff
                 FULL OUTER JOIN sales_daily sd ON sd.loc = ff.loc AND sd.d = ff.d
                 WHERE COALESCE(ff.loc, sd.loc) IN (SELECT loc FROM ff_locs)
+            ),
+            -- WS5/T503: a store whose window turn-in exceeds 100% has a broken
+            -- pavement counter (partial-sample outside traffic). Exclude it from
+            -- the GROUP turn-in numerator AND denominator (conversion unaffected).
+            good_outside AS (
+                SELECT loc FROM joined GROUP BY loc
+                HAVING SUM(outside) > 0 AND SUM(ff) <= SUM(outside)
             )
             SELECT COALESCE(SUM(ff), 0) AS footfall,
-                ROUND(SUM(ff) * 100.0 / NULLIF(SUM(outside), 0), 1) AS turn_in,
+                ROUND(SUM(ff) FILTER (WHERE loc IN (SELECT loc FROM good_outside)) * 100.0
+                      / NULLIF(SUM(outside) FILTER (WHERE loc IN (SELECT loc FROM good_outside)), 0), 1) AS turn_in,
                 ROUND(SUM(orders) FILTER (WHERE ff > 0) * 100.0 / NULLIF(SUM(ff), 0), 1) AS conversion
             FROM joined
         """, date_to=str(b))
@@ -12114,9 +12252,14 @@ def analytics_quarter_scorecard(quarter: int = Query(default=None),
                 FULL OUTER JOIN sales_daily sd ON sd.loc = ff.loc AND sd.d = ff.d
                 WHERE COALESCE(ff.loc, sd.loc) IN (SELECT loc FROM ff_locs)
             )
+            good_outside AS (
+                SELECT loc FROM joined GROUP BY loc
+                HAVING SUM(outside) > 0 AND SUM(ff) <= SUM(outside)
+            )
             SELECT lb.bucket AS bucket,
                 COALESCE(SUM(j.ff), 0) AS footfall,
-                ROUND(SUM(j.ff) * 100.0 / NULLIF(SUM(j.outside), 0), 1) AS turn_in,
+                ROUND(SUM(j.ff) FILTER (WHERE j.loc IN (SELECT loc FROM good_outside)) * 100.0
+                      / NULLIF(SUM(j.outside) FILTER (WHERE j.loc IN (SELECT loc FROM good_outside)), 0), 1) AS turn_in,
                 ROUND(SUM(j.orders) FILTER (WHERE j.ff > 0) * 100.0 / NULLIF(SUM(j.ff), 0), 1) AS conversion
             FROM joined j LEFT JOIN loc_bucket lb ON lb.loc = j.loc
             WHERE lb.bucket IS NOT NULL
@@ -22700,8 +22843,13 @@ def analytics_size_gaps(country: str = Query(default=None)):
     for r in active:
         n_active[r["style"]] = n_active.get(r["style"], 0) + 1
     out = []
+    feed = _stock_feed_locations()
     for r in active:
         store, style = r["store"], r["style"]
+        # WS5 — a store with no stock feed would report EVERY selling size as
+        # "missing" (its stock is invisible, not absent). Skip it.
+        if store not in feed:
+            continue
         dsizes = demand_by_style.get(style, [])
         missing = [sz for sz in dsizes if (store, style, sz) not in instock_set]
         if not missing:
@@ -22778,8 +22926,16 @@ def analytics_size_run_health(country: str = Query(default=None)):
             acc["full"] += 1
         else:
             acc["broken"] += 1
+    # WS5 — stores with no stock feed (zero all_inventory rows) would score
+    # 0% "all broken" purely because their stock is invisible. Split them into
+    # a separate no_data_stores list and keep them OUT of the scored table so
+    # they cannot drag the page-level averages.
+    feed = _stock_feed_locations()
+    no_data_stores = sorted(st for st in stores if st not in feed)
     out = []
     for store, acc in stores.items():
+        if store not in feed:
+            continue
         h = acc["healths"]
         out.append({
             "store": store,
@@ -22790,6 +22946,7 @@ def analytics_size_run_health(country: str = Query(default=None)):
         })
     out.sort(key=lambda x: x["avg_size_run_health_pct"])
     return {"stores": out, "total": len(out),
+            "no_data_stores": no_data_stores,
             "health_trend_vs_30d": None,
             "note": "Per-store size-run history is not retained in stockout_snapshots (style/country grain only), so a 30-day trend is not available yet."}
 

@@ -1869,7 +1869,12 @@ const Customers = () => {
           {/* ---- Repeat Customers Detail (≥2 distinct orders in window) ---- */}
           {(() => {
             const rows = repeatCustomers || [];
-            const total = rows.length;
+            // True in-period repeat-buyer count from the endpoint (COUNT OVER),
+            // NOT rows.length — the list itself is capped at the top 500 by
+            // spend, which previously made this read "500" while the KPI card
+            // (from /customer-frequency) said e.g. "985 bought 2+".
+            const total = rows[0]?.total_repeat_count || rows.length;
+            const capped = total > rows.length;
             const totalSpend = rows.reduce((s, r) => s + (r.total_spend_kes || 0), 0);
             const totalOrders = rows.reduce((s, r) => s + (r.order_count || 0), 0);
             const csvFor = () => {
@@ -1902,7 +1907,7 @@ const Customers = () => {
                   <div>
                     <SectionTitle>Repeat Customers Detail</SectionTitle>
                     <div className="text-[12px] text-muted mt-0.5">
-                      Identified customers with <strong>≥ 2 distinct orders in the selected window</strong> (in-period repeat buyers) — {repeatCustomersLoading ? "…" : <strong>{fmtNum(total)}</strong>} customers. This is a <strong>different measure</strong> from the lifetime <strong>Repeat Customer Rate</strong> above, which counts customers with <em>any</em> prior purchase. Walk-ins excluded. Click any row to expand.
+                      Identified customers with <strong>≥ 2 distinct orders in the selected window</strong> (in-period repeat buyers) — {repeatCustomersLoading ? "…" : <strong>{fmtNum(total)}</strong>} customers{capped ? <> (showing top {fmtNum(rows.length)} by spend)</> : null}. This is a <strong>different measure</strong> from the lifetime <strong>Repeat Customer Rate</strong> above, which counts customers with <em>any</em> prior purchase. Walk-ins excluded. Click any row to expand.
                     </div>
                   </div>
                   <button

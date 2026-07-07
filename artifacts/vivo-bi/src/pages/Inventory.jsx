@@ -1330,7 +1330,7 @@ const Inventory = () => {
                 { key: "location", label: "Location", align: "left", render: (r) => <span className="font-medium">{r.location}</span> },
                 { key: "country", label: "Country", align: "left", render: (r) => <CountryDot country={r.country} />, csv: (r) => r.country },
                 { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
-                { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
+                { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => (r.has_stock_data === false ? <span className="pill-neutral text-[10px]">no stock data</span> : fmtNum(r.current_stock)), csv: (r) => (r.has_stock_data === false ? "" : r.current_stock) },
                 { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="font-semibold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
                 {
                   key: "stock_to_sales_ratio",
@@ -1340,13 +1340,14 @@ const Inventory = () => {
                     </span>
                   ),
                   numeric: true,
-                  sortValue: (r) => r.stock_to_sales_ratio || 0,
+                  sortValue: (r) => (r.has_stock_data === false ? -1 : r.stock_to_sales_ratio || 0),
                   render: (r) => {
+                    if (r.has_stock_data === false) return <span className="pill-neutral text-[10px]">no stock data</span>;
                     const v = r.stock_to_sales_ratio || 0;
                     const pill = v > 10 ? "pill-red" : v >= 3 ? "pill-amber" : v >= 1 ? "pill-green" : "pill-neutral";
                     return <span className={pill}>{fmtDec(v, 2)}×</span>;
                   },
-                  csv: (r) => r.stock_to_sales_ratio?.toFixed(2),
+                  csv: (r) => (r.has_stock_data === false ? "" : r.stock_to_sales_ratio?.toFixed(2)),
                 },
                 {
                   key: "weeks_of_cover",
@@ -1393,7 +1394,7 @@ const Inventory = () => {
                   { key: "location", label: "Location", align: "left", mobilePrimary: true, render: (r) => <span className="font-medium">{r.location}</span> },
                   { key: "country", label: "Country", align: "left", render: (r) => r.country ? <CountryDot country={r.country} /> : <span>—</span>, csv: (r) => r.country },
                   { key: "units_sold", label: "Units Sold", numeric: true, render: (r) => fmtNum(r.units_sold) },
-                  { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => fmtNum(Math.round(r.current_stock || 0)) },
+                  { key: "current_stock", label: "Current Stock", numeric: true, render: (r) => (r.has_stock_data === false ? <span className="pill-neutral text-[10px]">no stock data</span> : fmtNum(Math.round(r.current_stock || 0))), csv: (r) => (r.has_stock_data === false ? "" : Math.round(r.current_stock || 0)) },
                   { key: "total_sales", label: "Total Sales", numeric: true, render: (r) => <span className="font-semibold">{fmtKES(r.total_sales)}</span>, csv: (r) => r.total_sales },
                   {
                     key: "sell_through_pct", label: "Sell-Through %", numeric: true,

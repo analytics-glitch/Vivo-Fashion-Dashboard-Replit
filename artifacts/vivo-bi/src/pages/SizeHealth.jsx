@@ -67,6 +67,7 @@ const SizeHealth = () => {
   const [gapsError, setGapsError] = useState(null);
 
   const [storeHealth, setStoreHealth] = useState([]);
+  const [noDataStores, setNoDataStores] = useState([]);
   const [shLoading, setShLoading] = useState(true);
   const [shError, setShError] = useState(null);
 
@@ -112,6 +113,7 @@ const SizeHealth = () => {
       .then((r) => {
         if (cancelled) return;
         setStoreHealth(r.data?.stores || []);
+        setNoDataStores(r.data?.no_data_stores || []);
       })
       .catch((e) => !cancelled && setShError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setShLoading(false));
@@ -316,9 +318,16 @@ const SizeHealth = () => {
           <Loading label="Scoring stores…" />
         ) : shError ? (
           <ErrorBox message={shError} />
-        ) : storeHealth.length === 0 ? (
+        ) : storeHealth.length === 0 && noDataStores.length === 0 ? (
           <Empty label="No store size-run data for the selected filters." />
         ) : (
+          <>
+          {noDataStores.length > 0 && (
+            <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-[12px] text-muted" data-testid="size-run-no-data-note">
+              <span className="pill-neutral text-[10px] mr-2">no stock data</span>
+              Not scored (no inventory feed): {noDataStores.join(", ")}
+            </div>
+          )}
           <SortableTable
             columns={shColumns}
             rows={storeHealth}
@@ -329,6 +338,7 @@ const SizeHealth = () => {
             mobileCards
             emptyLabel="No store size-run data for the selected filters."
           />
+          </>
         )}
       </div>
     </div>

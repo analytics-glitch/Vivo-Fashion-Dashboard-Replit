@@ -63,7 +63,9 @@ def fetch_inventory(store_url, token, location_id):
             try:
                 resp = requests.get(url, headers=headers, params=params, timeout=60)
                 if resp.status_code == 429:
-                    wait = int(resp.headers.get("Retry-After", 10))
+                    # Retry-After can be a float string (e.g. '2.0') — int() on it
+                    # raises ValueError; parse via float like fetch_variants_map.
+                    wait = max(1, int(float(resp.headers.get("Retry-After") or 10)))
                     time.sleep(wait)
                     continue
                 resp.raise_for_status()
@@ -92,7 +94,12 @@ def fetch_variants_map(store_url, token):
         for attempt in range(5):
             resp = requests.get(url, headers=headers, params=params, timeout=60)
             if resp.status_code == 429:
-                wait = int(resp.headers.get("Retry-After", 10) or 10)
+                # Retry-After can be a float string (e.g. '2.0') — int() on it
+                # raises ValueError and killed the whole extract mid-run.
+                try:
+                    wait = max(1, int(float(resp.headers.get("Retry-After") or 10)))
+                except (TypeError, ValueError):
+                    wait = 10
                 log.warning("429 rate-limited on %s, waiting %ss (attempt %d)", store_url, wait, attempt + 1)
                 time.sleep(wait)
                 continue
@@ -120,17 +127,12 @@ def main():
     cur  = conn.cursor()
     now  = datetime.now(timezone.utc)
 
-    # Remove existing Shopify inventory rows
-    cur.execute("""
-        DELETE FROM all_inventory
-        WHERE pos_location_name IN (
-            'The Oasis Mall', 'Vivo Acacia',
-            'Vivo Kigali Heights', 'Vivo M-peace Plaza',
-            'Online - Shop Zetu'
-        )
-    """)
-    log.info("Cleared existing Shopify inventory rows: %d", cur.rowcount)
-
+    # WS5 — the old code deleted ALL Shopify-store rows up front, then
+    # committed per store: if a later store's API pull crashed, every other
+    # store's inventory stayed deleted (a fake "no stock feed" outage).
+    # Now each store's rows are deleted+reinserted inside ITS OWN
+    # transaction (see the loop), so a crash affects only rows not yet
+    # processed — never wipes a healthy store.
     for store in STORES:
         store_id  = store["store_id"]
         store_url = store["store_url"]
@@ -192,6 +194,16 @@ def main():
                     now,
                 ))
 
+        # Delete THIS store's existing rows in the same transaction as the
+        # insert, so replacement is atomic per store. Uses the fetched
+        # location names (covers renames) — falls back to nothing if empty.
+        loc_names = tuple(set(locations.values()))
+        if loc_names:
+            cur.execute(
+                "DELETE FROM all_inventory WHERE pos_location_name IN %s",
+                (loc_names,),
+            )
+            log.info("%s — cleared %d existing rows", store_id, cur.rowcount)
         if rows:
             execute_values(cur, """
                 INSERT INTO all_inventory (
@@ -200,8 +212,8 @@ def main():
                     country, available, on_hand, _loaded_at
                 ) VALUES %s
             """, rows, page_size=500)
-            conn.commit()
             log.info("✅ %s — inserted %d rows", store_id, len(rows))
+        conn.commit()
 
     cur.execute("""
         SELECT pos_location_name, COUNT(DISTINCT sku) as skus,

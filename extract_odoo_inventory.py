@@ -142,7 +142,21 @@ def main():
         )
     """)
 
-    cur.execute("TRUNCATE all_inventory")
+    # WS5 — do NOT truncate the whole table: this extract only owns the
+    # Odoo (Kenya) locations. The Shopify (UG/RW) and Shop Zetu (Online)
+    # extracts own their own rows and run AFTER this one; a TRUNCATE here
+    # followed by a transient failure in either of them left UG/RW/Online
+    # with ZERO inventory rows (a "no stock feed" outage) until the next
+    # successful poll. Delete only the rows this extract will repopulate.
+    cur.execute("""
+        DELETE FROM all_inventory
+        WHERE pos_location_name IS NULL
+           OR pos_location_name NOT IN (
+            'The Oasis Mall', 'Vivo Acacia',
+            'Vivo Kigali Heights', 'Vivo M-peace Plaza',
+            'Online - Shop Zetu'
+        )
+    """)
     log.info("Fetching stock.quant...")
 
     while True:

@@ -106,3 +106,4 @@
 - [Google Reviews CRM inbox](google-reviews-crm-inbox.md) — Business Profile reviews sync/reply reuses the sign-in OAuth client; reviews API is still v4; new sync endpoints must join _AUTH_INTERNAL_OR_SESSION_PATHS or the internal-token loop 401s.
 - [Metro crashes on repo-root .cache churn](metro-watches-repo-cache-crash.md) — Expo bundler dies with uncaught ENOENT watching `.cache/uv/.tmp*` after a Python install; fix = `config.resolver.blockList=/[\\/]\.(cache|git)[\\/].*/`. Stale log glob faked "still failing".
 - [run_query cache rows are shared](run-query-cache-mutation.md) — cached dicts are returned by reference; copy dict(r) before pop/mutate or 2nd call within TTL breaks.
+- [Customer pseudo-exclusion canon](customer-pseudo-exclusion.md) — every customer-grain endpoint must apply _not_walkin_pseudo_sql; repeat list capped 500 so counts use COUNT() OVER; xsurf_cust_* checks lock the identities.

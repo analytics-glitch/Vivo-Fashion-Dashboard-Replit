@@ -450,6 +450,58 @@ def _check_products(session, period, out):
         out.append(exc)
 
 
+def _check_customers(session, period, out):
+    """Reconcile the Customers-page surfaces over ONE identified universe.
+
+    Task WS6: every customer surface must exclude the same walk-in /
+    placeholder / brand pseudo-account set (the canonical
+    ``_WALKIN_PSEUDO_COND`` in api_pg), so these totals are contractually
+    EQUAL for the same window:
+      - /customers.total_customers            (headline KPI)
+      - /customer-frequency Σ buckets          (loyalty distribution base)
+      - /analytics/customer-details total_customer_count (detail table)
+    and the in-period repeat-buyer count must agree between:
+      - /customer-frequency (Σ buckets − the '1 order' bucket)
+      - /analytics/repeat-customers total_repeat_count (COUNT OVER, not the
+        capped row list)
+    RFM is deliberately NOT compared (it excludes net-negative / zero-monetary
+    customers by design).
+    """
+    params = {"date_from": _ago(period, 30), "date_to": str(period)}
+    cust = _get(session, "/customers", params)
+    freq = _get(session, "/customer-frequency", params) or []
+    details = _get(session, "/analytics/customer-details", {**params, "limit": 1}) or []
+    repeat = _get(session, "/analytics/repeat-customers", params) or []
+
+    freq_total = _sum(freq, "customer_count")
+    freq_one = next((float(r.get("customer_count") or 0) for r in freq
+                     if r.get("frequency_bucket") == "1 order"), 0.0)
+    details_total = float((details[0].get("total_customer_count") or 0)) if details else 0.0
+    repeat_total = float((repeat[0].get("total_repeat_count") or 0)) if repeat else 0.0
+
+    retention = _get(session, "/analytics/customer-retention", params) or {}
+
+    checks = [
+        ("customer_count", "customer-retention.total_customers == customers.total_customers",
+         "xsurf_cust_retention_total", retention.get("total_customers"),
+         cust.get("total_customers"), False),
+        ("customer_count", "customers.total_customers == Σ customer-frequency buckets",
+         "xsurf_cust_total_vs_freq", cust.get("total_customers"), freq_total, False),
+        ("customer_count", "customers.total_customers == customer-details.total_customer_count",
+         "xsurf_cust_total_vs_details", cust.get("total_customers"), details_total, False),
+        ("customer_count", "customer-frequency repeat(2+) == repeat-customers.total_repeat_count",
+         "xsurf_cust_repeat_pair", freq_total - freq_one, repeat_total, False),
+        ("customer_count", "customers.new + returning == total",
+         "xsurf_cust_new_ret_partition",
+         float(cust.get("new_customers") or 0) + float(cust.get("returning_customers") or 0),
+         cust.get("total_customers"), False),
+    ]
+    for metric, identity, code, a, b, money in checks:
+        exc = _cmp("customers", metric, identity, code, a, b, money, period, params)
+        if exc:
+            out.append(exc)
+
+
 def _ago(period: date, win: int) -> str:
     return str(period - timedelta(days=max(1, win) - 1))
 
@@ -508,5 +560,12 @@ def run_checks(period: date):
         skips.append(f"products: {s}")
     except Exception as e:  # noqa: BLE001
         skips.append(f"products: {e}")
+
+    try:
+        _check_customers(session, period, exceptions)
+    except _Skip as s:
+        skips.append(f"customers: {s}")
+    except Exception as e:  # noqa: BLE001
+        skips.append(f"customers: {e}")
 
     return exceptions, ("; ".join(skips) if skips else None)
