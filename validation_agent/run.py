@@ -62,7 +62,23 @@ def _upsert_exception(conn, run_id, exc, dry_run) -> int:
                 last_seen_at = now(), run_id = EXCLUDED.run_id,
                 severity = EXCLUDED.severity, diagnosis = EXCLUDED.diagnosis,
                 proposed_fix_sql = EXCLUDED.proposed_fix_sql,
-                auto_fixable = EXCLUDED.auto_fixable, observed = EXCLUDED.observed
+                auto_fixable = EXCLUDED.auto_fixable, observed = EXCLUDED.observed,
+                -- Persist agent-side status transitions (open -> auto_resolved /
+                -- auto_fixed) so a previously-open finding stops surfacing as
+                -- actionable once the current run resolves it. Operator verdicts
+                -- (approved / rejected) are never overwritten.
+                status = CASE
+                    WHEN validation_exceptions.status = 'open'
+                         AND EXCLUDED.status IN ('auto_resolved', 'auto_fixed')
+                    THEN EXCLUDED.status
+                    ELSE validation_exceptions.status
+                END,
+                resolved_at = CASE
+                    WHEN validation_exceptions.status = 'open'
+                         AND EXCLUDED.status IN ('auto_resolved', 'auto_fixed')
+                    THEN now()
+                    ELSE validation_exceptions.resolved_at
+                END
             RETURNING id
             """,
             [fp, str(run_id), exc.get("status", "open"), exc["tier"],
@@ -146,7 +162,10 @@ def run(days: int, dry_run: bool, evaluate_days: int, backfill_only: bool = Fals
     all_exc = tier1 + tier2
     diagnosed = 0
     if config.llm_enabled() and not backfill_only:
-        ranked = sorted(all_exc, key=lambda e: -(e.get("materiality_kes") or 0))
+        # Informational notes (low_volume) don't need an LLM diagnosis — don't
+        # spend budget on them.
+        ranked = sorted((e for e in all_exc if not e.get("informational")),
+                        key=lambda e: -(e.get("materiality_kes") or 0))
         for exc in ranked[: config.LLM_MAX_DIAGNOSES]:
             rr = diagnose.sample_rows(conn, exc)
             exc["raw_rows"] = rr
@@ -160,6 +179,15 @@ def run(days: int, dry_run: bool, evaluate_days: int, backfill_only: bool = Fals
         decision = governance.decide(exc)
         exc["severity"] = decision["severity"]
         exc["auto_fixable"] = decision["auto_fixable"]
+        if decision["action"] == "auto_resolve":
+            # Informational / diagnosed-real-business-event findings stay
+            # recorded for visibility but never enter the approval queue.
+            exc["status"] = "auto_resolved"
+            _audit(conn, run_id, dry_run, phase="governance",
+                   event="auto_resolved", entity=exc.get("entity"),
+                   metric=exc.get("metric"), check_code=exc.get("check_code"),
+                   detail={"reason": "informational or REAL_BUSINESS_EVENT diagnosis",
+                           "classification": (exc.get("diagnosis") or {}).get("classification")})
         if not dry_run and decision["action"] == "auto_fix" and decision["matched_pattern"]:
             res = governance.apply_fix(conn, exc, decision["matched_pattern"])
             exc["status"] = "auto_fixed" if res.get("applied") else "open"

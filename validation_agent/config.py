@@ -75,6 +75,18 @@ POP_CAP = _f("VALIDATION_POP_CAP", 0.75)
 # record-but-internally-consistent day no longer trips dozens of single-signal
 # alerts. Set False to restore the legacy "any single signal fires" behaviour.
 REQUIRE_CONSENSUS = _b("VALIDATION_REQUIRE_CONSENSUS", True)
+# Materiality margin around the learned p1-p99 band: a value only counts as
+# breaching the band when it clears the edge by this fraction of the edge's
+# magnitude (default 5%). A day that lands a few percent above a record p99 is a
+# strong-but-real day, not an anomaly worth a developer's time.
+BAND_MARGIN = _f("VALIDATION_BAND_MARGIN", 0.05)
+# Ratio/average metrics are mathematically unstable on very thin days (a 2-row
+# day gives a "correct" but meaningless ASP; one refund collapses ABV). Below
+# this many transactions, ratio metrics are skipped for range-checking and the
+# day is surfaced once as an informational low-volume note instead.
+RATIO_MIN_TXN = _i("VALIDATION_RATIO_MIN_TXN", 5)
+RATIO_METRICS = {"abv", "asp", "msi", "return_rate", "conversion_rate"}
+RETURN_METRICS = {"return_amount", "return_rate"}
 
 BASELINE_WINDOW_DAYS = _i("VALIDATION_BASELINE_WINDOW_DAYS", 90)
 MIN_BUCKET_POINTS = _i("VALIDATION_MIN_BUCKET", 4)

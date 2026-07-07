@@ -179,6 +179,25 @@ def check_row(m: dict, index: dict) -> list[dict]:
         if st is None:
             continue
 
+        # Minimum-volume gate for ratio/average metrics: on a very thin day
+        # (a couple of transactions) abv/asp/msi/return_rate are mathematically
+        # correct but statistically meaningless — one bulk basket or one refund
+        # swings them far outside any learned band. Report the day ONCE as an
+        # informational low-volume note instead of a range anomaly per metric.
+        txn = float(m.get("transactions") or 0)
+        if metric in config.RATIO_METRICS and txn < config.RATIO_MIN_TXN:
+            if not any(f.get("check_code") == "low_volume" for f in fails):
+                fails.append({
+                    "tier": 2, "metric": metric, "check_code": "low_volume",
+                    "broken_identity": (
+                        f"only {txn:.0f} transaction(s) — ratio metrics skipped "
+                        f"(min {config.RATIO_MIN_TXN})"),
+                    "observed": val, "expected_low": st["p1"],
+                    "expected_high": st["p99"], "materiality_kes": 0.0,
+                    "informational": True,
+                })
+            continue
+
         reasons = []
         # Independent signal FAMILIES (not raw signals) that agree on this point.
         z = (val - st["mean"]) / st["std"] if st["std"] > 0 else 0.0
@@ -186,19 +205,23 @@ def check_row(m: dict, index: dict) -> list[dict]:
         if z_hit:
             reasons.append(f"z={z:.1f}")
 
-        # Non-parametric band — percentile OR Tukey fence count as ONE family: both
-        # are read off the same distribution and almost always trip together, so a
-        # strong-but-real day that merely clips the band must not masquerade as two
-        # independent confirmations.
-        np_hit = False
-        if val < st["p1"] or val > st["p99"]:
-            np_hit = True
-            reasons.append("outside p1-p99")
-        lo = st["q1"] - config.IQR_K * st["iqr"]
-        hi = st["q3"] + config.IQR_K * st["iqr"]
-        if st["iqr"] > 0 and (val < lo or val > hi):
-            np_hit = True
-            reasons.append("outside IQR fence")
+        # Non-parametric band. A finding REQUIRES an actual p1-p99 band breach —
+        # PoP, z or the Tukey fence alone must never raise one (findings once
+        # fired "outside IQR fence + PoP" while the value sat INSIDE the learned
+        # band). The band edges carry a materiality margin (BAND_MARGIN, default
+        # 5% of the edge magnitude) so a value a few percent above a record p99
+        # is tolerated as a strong-but-real day. The Tukey fence is recorded as
+        # corroborating context only, never as an independent trigger.
+        pad_lo = abs(st["p1"]) * config.BAND_MARGIN
+        pad_hi = abs(st["p99"]) * config.BAND_MARGIN
+        band_hit = val < st["p1"] - pad_lo or val > st["p99"] + pad_hi
+        if band_hit:
+            reasons.append("outside p1-p99 (with margin)")
+            lo = st["q1"] - config.IQR_K * st["iqr"]
+            hi = st["q3"] + config.IQR_K * st["iqr"]
+            if st["iqr"] > 0 and (val < lo or val > hi):
+                reasons.append("outside IQR fence")
+        np_hit = band_hit
 
         # Seasonal period-over-period: compare to the most recent prior value in the
         # SAME (day-of-week, promo) bucket — NOT literally yesterday. Retail swings
@@ -226,7 +249,11 @@ def check_row(m: dict, index: dict) -> list[dict]:
         families = int(z_hit) + int(np_hit) + int(pop_hit)
         severe = st["std"] > 0 and abs(z) >= config.Z_SEVERE
         if config.REQUIRE_CONSENSUS:
-            fire = severe or families >= 2
+            # The band breach is MANDATORY: an extreme z or z+PoP agreement with
+            # the observed value still inside the learned p1-p99 band is a
+            # distribution quirk, not an anomaly (a tight low-variance history
+            # makes small moves look like huge z-scores).
+            fire = band_hit and (severe or families >= 2)
         else:
             fire = bool(reasons)
 

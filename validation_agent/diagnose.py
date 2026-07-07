@@ -136,6 +136,12 @@ def sample_rows(conn, exc: dict, limit: int = 25) -> list[dict]:
     # gift-card or staff-purchase line would otherwise mislead the diagnosis).
     where = [config.REPORTING_FILTERS.strip(), "sale_date::date = %(d)s"]
     params = {"d": exc.get("period_date"), "lim": limit}
+    # For return metrics the driving rows are the RETURN rows (sale_kind='return',
+    # value in returns_kes) — a sample of the day's biggest order rows misleads
+    # the diagnosis into reasoning about sales it cannot see the returns in.
+    is_return_metric = exc.get("metric") in config.RETURN_METRICS
+    if is_return_metric:
+        where.append("sale_kind = 'return'")
     if exc.get("entity_type") == "store":
         where.append("pos_location_name = %(ent)s")
         params["ent"] = exc.get("entity")
@@ -148,7 +154,7 @@ def sample_rows(conn, exc: dict, limit: int = 25) -> list[dict]:
                discounts_kes, returns_kes, ordered_item_quantity
         FROM all_sales
         WHERE {' AND '.join(where)}
-        ORDER BY ABS(COALESCE(total_sales_kes,0)) DESC
+        ORDER BY {'ABS(COALESCE(returns_kes,0))' if is_return_metric else 'ABS(COALESCE(total_sales_kes,0))'} DESC
         LIMIT %(lim)s
     """
     try:

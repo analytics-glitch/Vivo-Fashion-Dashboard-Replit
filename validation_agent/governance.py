@@ -71,6 +71,20 @@ def decide(exc: dict) -> dict:
                 "matched_pattern": matched, "below_threshold": below_threshold}
 
     structural = exc.get("check_code") in _STRUCTURAL
+
+    # Informational notes (e.g. low-volume ratio days) and learned_range findings
+    # the LLM diagnosed as a REAL BUSINESS EVENT with clean rows are auto-resolved:
+    # they stay recorded/visible but never land in the "needs a developer fix"
+    # queue. A range finding on a legitimate busy day is a fact about trading,
+    # not a defect — materiality alone must not escalate it to RED.
+    if exc.get("informational") or (
+        classification == "REAL_BUSINESS_EVENT"
+        and exc.get("check_code") == "learned_range"
+        and not structural
+    ):
+        return {"severity": "amber", "action": "auto_resolve", "auto_fixable": False,
+                "matched_pattern": None, "below_threshold": below_threshold}
+
     if classification == "REAL_BUSINESS_EVENT":
         severity = "red" if (structural or not below_threshold) else "amber"
     elif structural:
