@@ -175,6 +175,92 @@ class FixSafetyFence(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("allowlisted", reason)
 
+    def test_allowlisted_name_in_line_comment_rejected(self):
+        # The classic smuggle: target is app_users, allowlisted name only in a comment.
+        ok, reason = self._safe(
+            "UPDATE app_users SET role = 'admin' -- all_sales")
+        self.assertFalse(ok)
+        self.assertIn("allowlisted", reason)
+
+    def test_allowlisted_name_in_block_comment_rejected(self):
+        ok, _ = self._safe(
+            "UPDATE app_users /* all_sales */ SET role = 'admin'")
+        self.assertFalse(ok)
+
+    def test_allowlisted_name_in_string_literal_rejected(self):
+        ok, _ = self._safe(
+            "UPDATE app_users SET note = 'fix for all_sales' WHERE id = 1")
+        self.assertFalse(ok)
+
+    def test_forbidden_verb_hidden_after_line_comment_rejected(self):
+        # Multi-line: second statement survives comment stripping and must fail.
+        ok, _ = self._safe(
+            "UPDATE all_sales SET x = 1 -- harmless\n; DELETE FROM all_sales")
+        self.assertFalse(ok)
+
+    def test_semicolon_inside_comment_is_not_multiple_statements(self):
+        ok, reason = self._safe(
+            "UPDATE all_sales SET x = 1 -- note; not a second statement\nWHERE id = 2")
+        self.assertTrue(ok, reason)
+
+    def test_semicolon_inside_string_literal_is_not_multiple_statements(self):
+        ok, reason = self._safe(
+            "UPDATE all_sales SET note = 'a;b' WHERE id = 1")
+        self.assertTrue(ok, reason)
+
+    def test_line_comment_marker_inside_string_cannot_hide_second_statement(self):
+        # `--` INSIDE a string literal is data, not a comment: the `; DELETE`
+        # after it is real executable SQL and must be rejected. (A naive
+        # strip-comments-before-strings pipeline let this through.)
+        ok, _ = self._safe(
+            "UPDATE all_sales SET note='abc --'; DELETE FROM all_sales")
+        self.assertFalse(ok)
+
+    def test_block_comment_marker_inside_string_cannot_hide_second_statement(self):
+        ok, _ = self._safe(
+            "UPDATE all_sales SET note='abc /*'; DELETE FROM all_sales")
+        self.assertFalse(ok)
+
+    def test_escaped_quote_in_string_does_not_desync_lexer(self):
+        ok, reason = self._safe(
+            "UPDATE all_sales SET note = 'it''s fine; -- really' WHERE id = 1")
+        self.assertTrue(ok, reason)
+
+    def test_unterminated_string_rejected_not_misparsed(self):
+        # Rest of text is consumed as the literal -> no hidden DELETE runs,
+        # and the truncated statement must not be accepted either way.
+        ok, _ = self._safe(
+            "UPDATE app_users SET note = 'oops; DELETE FROM all_sales")
+        self.assertFalse(ok)
+
+    def test_column_named_created_at_not_mistaken_for_create(self):
+        ok, reason = self._safe(
+            "UPDATE all_sales SET created_at = now() WHERE id = 1")
+        self.assertTrue(ok, reason)
+
+    def test_leading_with_cte_rejected(self):
+        ok, _ = self._safe(
+            "WITH d AS (SELECT 1) UPDATE all_sales SET x = 1")
+        self.assertFalse(ok)
+
+    def test_target_table_parsed_not_substring(self):
+        # UPDATE target is app_users; an EXISTS subquery referencing all_sales
+        # must not satisfy the allowlist.
+        ok, _ = self._safe(
+            "UPDATE app_users SET role = 'admin' "
+            "WHERE EXISTS (SELECT 1 FROM all_sales)")
+        self.assertFalse(ok)
+
+    def test_schema_qualified_and_quoted_target_allowed(self):
+        ok, reason = self._safe(
+            'UPDATE ONLY public."all_sales" SET x = 1 WHERE id = 2')
+        self.assertTrue(ok, reason)
+
+    def test_leading_comment_before_update_allowed(self):
+        ok, reason = self._safe(
+            "/* fix */ UPDATE all_sales SET x = 1 WHERE id = 2")
+        self.assertTrue(ok, reason)
+
     def test_apply_fix_rejects_unsafe_sql_without_touching_db(self):
         patterns = {"bad": {
             "matcher": lambda exc, diag: True,

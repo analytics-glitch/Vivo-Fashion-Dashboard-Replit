@@ -11135,11 +11135,37 @@ def _validation_fix_is_safe(sql: str):
     import re
     if not sql or not sql.strip():
         return False, "no fix SQL"
+    # Remove comments + blank string literals in ONE quote-aware pass.
+    # A regex pipeline is NOT safe: stripping `--` comments before string
+    # literals misreads a `--` INSIDE a literal as a comment and can hide a
+    # second statement ("... SET note='abc --'; DELETE ...").
     raw = sql.strip()
-    # Strip block + line comments, then blank out string literals.
-    no_block = re.sub(r"/\*.*?\*/", " ", raw, flags=re.S)
-    no_comments = re.sub(r"--[^\n]*", " ", no_block)
-    scan = re.sub(r"'(?:[^']|'')*'", " '' ", no_comments)
+    out = []
+    i, n = 0, len(raw)
+    while i < n:
+        c = raw[i]
+        if c == "'":
+            out.append(" '' ")
+            i += 1
+            while i < n:
+                if raw[i] == "'":
+                    if i + 1 < n and raw[i + 1] == "'":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+        elif c == "-" and raw[i:i + 2] == "--":
+            while i < n and raw[i] != "\n":
+                i += 1
+        elif c == "/" and raw[i:i + 2] == "/*":
+            j = raw.find("*/", i + 2)
+            i = n if j == -1 else j + 2
+            out.append(" ")
+        else:
+            out.append(c)
+            i += 1
+    scan = "".join(out)
     upper = scan.upper().strip()
     body = upper[:-1].strip() if upper.endswith(";") else upper
     if ";" in body:

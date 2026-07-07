@@ -16,15 +16,18 @@ schema-qualifier tolerated) against the allowlist — otherwise
 `UPDATE app_users SET role='admin' WHERE EXISTS (SELECT 1 FROM all_sales)`
 passes (an allowlisted name appears *somewhere*) and escalates privilege.
 
-**Why:** the autonomous governance fence (`validation_agent/governance.py`
-`_fix_is_safe`) is safe only because its SQL comes from *trusted pattern
-builders*; the endpoint runs arbitrary proposed SQL, so it needs stricter target
-enforcement than governance's any-token check.
+**Why:** the endpoint runs arbitrary LLM-proposed SQL, so it needs full target
+enforcement. The autonomous governance fence (`validation_agent/governance.py`
+`_fix_is_safe`) now applies the SAME hardening (comment/string stripping,
+word-boundary keywords, parsed UPDATE target vs the pattern's allowlist) even
+though its SQL comes from trusted pattern builders — keep the two in lockstep.
 
 **How to apply (the checks, in order):**
-1. Strip block `/*..*/` + line `--..` comments, then blank string literals
-   (`'...'`) BEFORE scanning — else a table name / keyword / `;` can be smuggled
-   in a comment or string to fool the fence.
+1. Remove `/*..*/` + `--` comments and blank `'...'` literals in ONE
+   quote-aware single-pass lexer BEFORE scanning. A regex pipeline that strips
+   comments before strings is bypassable: `--` INSIDE a literal is data, so
+   `UPDATE t SET note='abc --'; DELETE …` slips past. Handle `''` escapes;
+   unterminated literals consume the rest (conservative).
 2. Single statement: no `;` in the body.
 3. Must *start with* `UPDATE` (rejects leading `WITH` CTE, incl. data-modifying
    CTEs); also reject `WITH` anywhere.
