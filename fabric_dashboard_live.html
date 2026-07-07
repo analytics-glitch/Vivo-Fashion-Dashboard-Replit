@@ -285,8 +285,18 @@ tr.sub-row td{background:var(--bg);font-size:12.5px;}
 .detail-item .dl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);}
 .detail-item .dv{font-size:14px;color:var(--text);}
 @media(max-width:560px){.detail-grid{grid-template-columns:1fr;}.detail-item:nth-child(even){padding-left:0;}}
+/* The barcode detail popup is wider than the default modal so the info grid and
+   the photo column sit comfortably side by side on desktop. */
+#fab-detail-overlay .modal-card{max-width:960px;}
+/* Two-column layout for the barcode detail popup: info on the left, photo on
+   the right. Collapses to one column on narrow screens (photo below info). */
+.fab-detail-cols{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px;align-items:start;}
+.fab-detail-cols .detail-grid{margin-top:6px;}
+@media(max-width:720px){.fab-detail-cols{grid-template-columns:1fr;gap:6px;}}
 /* Fabric product-image panel inside the barcode detail popup */
 .fab-img-panel{margin:12px 0 6px;}
+.fab-img-actions{display:flex;justify-content:center;margin-top:10px;}
+.fab-img-err{color:var(--danger,#c0392b);font-size:12px;text-align:center;margin-top:7px;}
 .fab-img-stage{position:relative;background:var(--bg);border:1px solid var(--border);border-radius:12px;height:280px;display:flex;align-items:center;justify-content:center;overflow:hidden;}
 .fab-img-stage img{max-width:100%;max-height:100%;object-fit:contain;display:block;}
 .fab-img-empty{display:flex;flex-direction:column;align-items:center;gap:8px;color:var(--muted);font-size:13px;text-align:center;padding:0 16px;}
@@ -3060,12 +3070,14 @@ function renderFabricDetail(r,keys){
   document.getElementById('fab-detail-title').textContent=r.name||'Fabric detail';
   document.getElementById('fab-detail-sub').textContent='Barcode: '+(r.default_code||'—');
   document.getElementById('fab-detail-body').innerHTML=
-    '<div id="fab-img-panel" class="fab-img-panel"></div>'+
-    '<div class="detail-grid">'+keys.map(k=>{
-    const col=REG_COLS.find(c=>c.k===k);if(!col)return '';
-    const f=REG_FX[k]?fx(REG_FX[k]):'';
-    return `<div class="detail-item"><span class="dl"${f}>${esc(col.label)}</span><span class="dv">${regValueHtml(col,r)}</span></div>`;
-  }).join('')+'</div>';
+    '<div class="fab-detail-cols">'+
+      '<div class="detail-grid">'+keys.map(k=>{
+        const col=REG_COLS.find(c=>c.k===k);if(!col)return '';
+        const f=REG_FX[k]?fx(REG_FX[k]):'';
+        return `<div class="detail-item"><span class="dl"${f}>${esc(col.label)}</span><span class="dv">${regValueHtml(col,r)}</span></div>`;
+      }).join('')+'</div>'+
+      '<div id="fab-img-panel" class="fab-img-panel"></div>'+
+    '</div>';
   document.getElementById('fab-detail-overlay').style.display='flex';
   loadFabricImages(r.default_code);
 }
@@ -3085,12 +3097,24 @@ function loadFabricImages(barcode){
     .then(d=>{ if(fabImgState.barcode!==bc)return; fabImgState.list=(d&&d.images)||[]; fabImgState.idx=0; renderFabImgPanel(); })
     .catch(()=>{ if(fabImgState.barcode!==bc)return; fabImgState.list=[]; renderFabImgPanel(); });
 }
+// The Import control (hidden file input + button) shown in the photo panel,
+// both when photos exist and in the empty-state placeholder.
+function fabImgImportHtml(){
+  const busy=fabImgState.uploading;
+  const label=busy?'Uploading…':'⇧ Import';
+  return '<input type="file" id="fab-img-file" accept="image/*" style="display:none" onchange="uploadFabricImage(this)">'+
+    '<div class="fab-img-actions"><button type="button" class="btn" id="fab-img-import-btn"'+
+    (busy?' disabled':'')+' onclick="document.getElementById(\'fab-img-file\').click()"'+
+    ' title="Upload a photo for this fabric from your computer">'+label+'</button></div>'+
+    (fabImgState.error?'<div class="fab-img-err">'+esc(fabImgState.error)+'</div>':'');
+}
 function renderFabImgPanel(){
   const panel=document.getElementById('fab-img-panel');
   if(!panel)return;
   const list=fabImgState.list||[];
   if(!list.length){
-    panel.innerHTML='<div class="fab-img-stage"><div class="fab-img-empty"><span class="ic">🖼️</span><span>No image for this fabric</span></div></div>';
+    panel.innerHTML='<div class="fab-img-stage"><div class="fab-img-empty"><span class="ic">🖼️</span><span>No image for this fabric</span></div></div>'+
+      fabImgImportHtml();
     return;
   }
   if(fabImgState.idx>=list.length)fabImgState.idx=0;
@@ -3102,13 +3126,48 @@ function renderFabImgPanel(){
      '<button type="button" class="fab-img-nav fab-img-next" onclick="stepFabricImage(1)" aria-label="Next photo">&#8250;</button>'
     :'';
   panel.innerHTML='<div class="fab-img-stage"><img src="'+esc(cur.url)+'" alt="Fabric photo" loading="lazy">'+nav+'</div>'+
-    (multi?'<div class="fab-img-counter">'+(fabImgState.idx+1)+' / '+list.length+'</div>':'');
+    (multi?'<div class="fab-img-counter">'+(fabImgState.idx+1)+' / '+list.length+'</div>':'')+
+    fabImgImportHtml();
 }
 function stepFabricImage(delta){
   const n=(fabImgState.list||[]).length;
   if(!n)return;
   fabImgState.idx=((fabImgState.idx+delta)%n+n)%n;
   renderFabImgPanel();
+}
+// Upload the chosen file for the currently-open fabric barcode, then refresh the
+// photo list so the new image shows immediately (jumping to it).
+function uploadFabricImage(input){
+  const bc=fabImgState.barcode;
+  const file=input&&input.files&&input.files[0];
+  if(!file){return;}
+  if(!bc||bc.toLowerCase()==='false'){
+    fabImgState.error='No barcode — cannot attach a photo.';renderFabImgPanel();return;
+  }
+  if(!/^image\//i.test(file.type||'')){
+    fabImgState.error='Please choose an image file.';renderFabImgPanel();return;
+  }
+  fabImgState.uploading=true;fabImgState.error=null;renderFabImgPanel();
+  const fd=new FormData();fd.append('file',file);
+  fetch('/api/fabric/images/'+encodeURIComponent(bc),{method:'POST',credentials:'include',body:fd})
+    .then(r=>r.ok?r.json():r.json().then(e=>{throw new Error((e&&e.detail)||('Upload failed ('+r.status+')'));},()=>{throw new Error('Upload failed ('+r.status+')');}))
+    .then(()=>{
+      if(fabImgState.barcode!==bc){fabImgState.uploading=false;return;}
+      return fetch('/api/fabric/images/'+encodeURIComponent(bc),{credentials:'include'})
+        .then(r=>r.ok?r.json():{images:[]})
+        .then(d=>{
+          if(fabImgState.barcode!==bc)return;
+          fabImgState.list=(d&&d.images)||[];
+          fabImgState.idx=Math.max(0,fabImgState.list.length-1);
+          fabImgState.uploading=false;fabImgState.error=null;renderFabImgPanel();
+        });
+    })
+    .catch(err=>{
+      if(fabImgState.barcode!==bc)return;
+      fabImgState.uploading=false;
+      fabImgState.error=(err&&err.message)||'Upload failed.';
+      renderFabImgPanel();
+    });
 }
 function openFabricDetail(id){
   const r=(lastRegItems||[]).find(x=>String(x.id)===String(id));

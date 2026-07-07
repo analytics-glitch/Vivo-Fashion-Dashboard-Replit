@@ -159,9 +159,14 @@ def _ensure_table(conn):
                 mime       TEXT    NOT NULL DEFAULT 'image/jpeg',
                 image_b64  TEXT    NOT NULL,
                 drive_id   TEXT,
+                source     TEXT    NOT NULL DEFAULT 'drive',
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 PRIMARY KEY (barcode, idx)
             )""")
+        # `source` tells Drive-sourced rows apart from staff uploads; this extract
+        # only ever writes/prunes source='drive' rows so uploads survive a resync.
+        cur.execute("ALTER TABLE fabric_images "
+                    "ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'drive'")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_images_barcode "
                     "ON fabric_images(barcode)")
     conn.commit()
@@ -172,19 +177,26 @@ def _store_barcode(conn, barcode, items):
     {filename, mime, b64, drive_id}). Idempotent: upsert idx 0..n, prune extras."""
     with conn.cursor() as cur:
         for idx, it in enumerate(items):
+            # Drive photos always occupy idx 0..n; staff uploads live in a high
+            # idx range (>= 100000, source='upload'), so this never collides with
+            # an upload. Stamp source='drive' so the guarded prune below can tell
+            # them apart.
             cur.execute("""
                 INSERT INTO fabric_images
-                    (barcode, idx, filename, mime, image_b64, drive_id, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, now())
+                    (barcode, idx, filename, mime, image_b64, drive_id, source, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, 'drive', now())
                 ON CONFLICT (barcode, idx) DO UPDATE SET
                     filename   = EXCLUDED.filename,
                     mime       = EXCLUDED.mime,
                     image_b64  = EXCLUDED.image_b64,
                     drive_id   = EXCLUDED.drive_id,
+                    source     = 'drive',
                     updated_at = now()
             """, (barcode, idx, it["filename"], it["mime"],
                   it["b64"], it.get("drive_id")))
-        cur.execute("DELETE FROM fabric_images WHERE barcode=%s AND idx>=%s",
+        # Prune trailing Drive rows only — never touch staff uploads.
+        cur.execute("DELETE FROM fabric_images "
+                    "WHERE barcode=%s AND idx>=%s AND source='drive'",
                     (barcode, len(items)))
     conn.commit()
 
@@ -251,7 +263,8 @@ def run(conn=None, heartbeat=None):
             with conn.cursor() as cur:
                 seen = list(by_barcode.keys())
                 cur.execute(
-                    "DELETE FROM fabric_images WHERE NOT (barcode = ANY(%s))",
+                    "DELETE FROM fabric_images "
+                    "WHERE source='drive' AND NOT (barcode = ANY(%s))",
                     (seen,))
                 pruned = cur.rowcount or 0
             conn.commit()
