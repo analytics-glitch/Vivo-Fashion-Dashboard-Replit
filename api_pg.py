@@ -27645,6 +27645,15 @@ async def serve_tiktok_domain_verification():
     resp = PlainTextResponse(content=_TIKTOK_VERIFY_CONTENT)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
+_TIKTOK_VERIFY_FILENAME_2 = "tiktokk6FXJJjsKxj6c7S5DGT00YAaX5CstwWr.txt"
+_TIKTOK_VERIFY_CONTENT_2 = "tiktok-developers-site-verification=k6FXJJjsKxj6c7S5DGT00YAaX5CstwWr"
+
+@app.get(f"/{_TIKTOK_VERIFY_FILENAME_2}")
+async def serve_tiktok_domain_verification_2():
+    from fastapi.responses import PlainTextResponse
+    resp = PlainTextResponse(content=_TIKTOK_VERIFY_CONTENT_2)
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
 
 
 # Serve React build as static files
