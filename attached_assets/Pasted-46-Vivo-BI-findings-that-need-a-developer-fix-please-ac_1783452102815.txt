@@ -1,0 +1,599 @@
+46 Vivo BI findings that need a developer fix (please action them in order, one issue at a time):
+
+--- Finding 1 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Sarit
+• Metric: total_sales
+• Period: 2026-07-03
+• Observed: 610,800   Expected: 96,760–580,542
+• Diagnosis: The observed total of KES 610,800 on 2026-07-03 is only ~5% above the expected ceiling (KES 580,542), a modest overshoot consistent with an exceptionally busy trading day at a high-footfall mall location like Sarit Centre. All 25 sampled rows show distinct (order_id, variant_sku) combinations with individually plausible unit prices (KES 5,550–6,900), no duplicate triplets, and correct VAT-exclusive net figures, indicating clean, authentic transactions rather than any ingestion or fan-out error.
+• Broken identity: z=3.2; outside p1-p99; outside IQR fence
+
+Desired outcome: "total_sales" for store:Vivo Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 2 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Sarit
+• Metric: net_sales
+• Period: 2026-07-03
+• Observed: 526,551.76   Expected: 83,413.8–501,751.71
+• Diagnosis: The 25 sampled rows all have distinct (order_id, variant_sku) combinations — including multi-item orders like #40820 and #40883 that carry two different SKUs each — confirming genuine line-item diversity with no duplication. Vivo Sarit's net_sales of KES 526,551.76 on 2026-07-03 is ~5% above the p99 ceiling (KES 501,751.71), consistent with an unusually busy trading day (e.g. a weekend, promotion, or seasonal peak) rather than any data corruption.
+• Broken identity: z=3.2; outside p1-p99; outside IQR fence
+
+Desired outcome: "net_sales" for store:Vivo Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 3 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Hub
+• Metric: total_sales
+• Period: 2026-07-02
+• Observed: 255,700   Expected: 27,495.5–186,692.91
+• Diagnosis: The elevated total sales of KES 255,700 on 2026-07-02 at Vivo Hub is consistent with a genuinely busy trading day: the sample shows ~25 distinct (order_id, variant_sku) line-item pairs across many different orders, with no duplicate (order_id + variant_sku + amount) rows that would indicate a double-load. Notably, order 40398 alone spans at least 7 distinct SKUs (S0326022LIL2X, V0326018BLAM, V1123172PR37M, V0526025PR4F, V0526025DGRNF, V0226016BLAL, and more), constituting a legitimate large multi-item bulk purchase, and the remaining order IDs are all unique single- or dual-item transactions at plausible unit prices (KES 5,500–7,400).
+• Broken identity: z=3.6; outside p1-p99; outside IQR fence; PoP 178% vs same weekday
+
+Desired outcome: "total_sales" for store:Vivo Hub should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 4 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Imaara
+• Metric: total_sales
+• Period: 2026-07-04
+• Observed: 257,580   Expected: 25,795–205,131.05
+• Diagnosis: The 25 sampled rows all show distinct (order_id, variant_sku, amount) combinations — including multi-line orders (e.g. 41531 with 3 different SKUs, 41686 with 3 different SKUs, 41265 and 41695 each with 2 different SKUs) — which are normal multi-item purchases, not duplicates. The observed total of KES 257,580 is ~25% above the p99 ceiling (KES 205,131), consistent with an unusually busy trading day at Vivo Imaara (e.g. a weekend, payday, or promotional event) rather than any data corruption.
+• Broken identity: z=3.4; outside p1-p99; outside IQR fence
+
+Desired outcome: "total_sales" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 5 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Hub
+• Metric: net_sales
+• Period: 2026-07-02
+• Observed: 220,431.07   Expected: 23,703.01–160,942.17
+• Diagnosis: The sample rows show a high volume of distinct orders (order IDs ranging from 40398 to 40780) with no duplicated (order_id, variant_sku, amount) combinations — every row is a unique line item on a legitimate transaction. Order 40398 alone contains at least 8 distinct SKUs (V0825017BLAM, V0326018BLAM, V1123172PR37M, V0526025PR4F, V0526025DGRNF, V0226016BLAL, V1223034PR15M, V0121168DTEA1X…), consistent with a normal bulk purchase, and the overall observed net_sales of KES 220,431 is plausibly explained by an unusually busy trading day or a combination of several multi-item orders at Vivo Hub on 2026-07-02.
+• Broken identity: z=3.6; outside p1-p99; outside IQR fence; PoP 178% vs same weekday
+
+Desired outcome: "net_sales" for store:Vivo Hub should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 6 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Imaara
+• Metric: net_sales
+• Period: 2026-07-04
+• Observed: 222,051.76   Expected: 22,237.07–177,385.68
+• Diagnosis: The sample rows show 25+ distinct (order_id, variant_sku, amount) combinations across many separate orders — all with clean, positive values, no duplicates, and consistent VAT-exclusive net figures — indicating a genuinely high-volume trading day at Vivo Imaara. The observed net_sales of KES 222,051.76 (~25% above the p99 ceiling of ~KES 177,386) is plausibly explained by an unusually busy day (e.g. a local promotion, payday weekend, or holiday foot-traffic spike) rather than any data corruption.
+• Broken identity: z=3.4; outside p1-p99; outside IQR fence
+
+Desired outcome: "net_sales" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 7 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Signature Mall
+• Metric: total_sales
+• Period: 2026-07-03
+• Observed: 197,250   Expected: 10,116–150,158.4
+• Diagnosis: The sample rows show a high volume of distinct (order_id, variant_sku) combinations across multiple separate orders — notably order #41259 alone carries at least 10 different SKUs, consistent with a large bulk purchase — with no duplicated (order_id, variant_sku, amount) triplets, clean VAT relationships between total and net figures, and all amounts individually plausible (KES 4,700–6,900 per line item). The 173% week-on-week spike and breach of expected range are most likely explained by an unusually busy trading day at Vivo Signature Mall, potentially driven by a large basket/bulk-buy customer(s) and/or a promotional event, rather than any data corruption.
+• Broken identity: z=3.8; outside p1-p99; outside IQR fence; PoP 173% vs same weekday
+
+Desired outcome: "total_sales" for store:Vivo Signature Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 8 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Signature Mall
+• Metric: net_sales
+• Period: 2026-07-03
+• Observed: 170,043.11   Expected: 8,720.68–129,446.9
+• Diagnosis: The elevated net sales of KES 170,043.11 — 173% above the same-weekday baseline — is driven by an exceptionally high volume of distinct, legitimate order lines across many unique order IDs (40796, 40839, 40871, 40892, 41059, 41132, 41202, 41209, 41218, 41238, 41259, etc.) and distinct SKUs, with no duplicated (order_id, variant_sku, amount) triplets visible in the sample. Notably, order 41259 alone carries at least 10 distinct SKUs (a large bulk purchase), which is consistent with normal multi-item shopping behaviour and not indicative of data corruption.
+• Broken identity: z=3.8; outside p1-p99; outside IQR fence; PoP 173% vs same weekday
+
+Desired outcome: "net_sales" for store:Vivo Signature Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 9 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: total_sales
+• Period: 2026-07-04
+• Observed: 139,350   Expected: 4,242–108,316
+• Diagnosis: The elevated total of KES 139,350 is driven by several legitimate multi-item orders on the same day — notably order 41611 (at least 8 distinct SKUs visible in the sample alone) and order 41358 (at least 5 distinct SKUs), both consistent with normal bulk/basket purchases at Vivo Kileleshwa. Every row in the sample has a unique (order_id, variant_sku) combination, amounts are all plausible retail price points (KES 2,900–6,900), and there are no duplicated lines, negative amounts, or impossible values to suggest data corruption.
+• Broken identity: z=3.1; outside p1-p99
+
+Desired outcome: "total_sales" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 10 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kisumu
+• Metric: total_sales
+• Period: 2026-07-06
+• Observed: 13,800   Expected: 27,135–201,313.5
+• Diagnosis: The sample contains only 2 line-item rows totalling KES 13,800, which exactly matches the observed value — meaning the dashboard is reporting that only these two transactions occurred at Vivo Kisumu on 2026-07-06, an -81% drop vs the same weekday. This could be a genuine ultra-slow trading day, a POS connectivity/sync failure causing most transactions to not yet be ingested, or a filter/location-mapping issue silently dropping rows, but the two-row sample alone is insufficient to distinguish between these scenarios.
+• Broken identity: outside p1-p99; PoP -81% vs same weekday
+
+Desired outcome: "total_sales" for store:Vivo Kisumu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 11 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: net_sales
+• Period: 2026-07-04
+• Observed: 120,129.32   Expected: 3,656.9–93,568.97
+• Diagnosis: The observed net_sales of KES 120,129.32 — above the p99 upper bound of ~KES 93,569 — is driven by a genuinely busy trading day featuring multiple multi-item orders: order 41611 alone carries at least 9 distinct SKUs, order 41358 has at least 5, order 41463 at least 3, and order 41554 at least 3, all with different variant_SKUs and clean, consistent figures (no duplicated order_id + SKU + amount combos). Every row is a legitimate line-item purchase with no negative amounts, no impossible values, and no signs of double-loading, making this a high-volume day rather than a data error.
+• Broken identity: z=3.1; outside p1-p99
+
+Desired outcome: "net_sales" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 12 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: total_sales
+• Period: 2026-07-05
+• Observed: 126,450   Expected: 4,286.5–124,102.5
+• Diagnosis: The spike is driven primarily by order #41747, which contains at least 15 distinct variant SKUs spanning a wide price range (KES 3,900–5,900), consistent with a legitimate large bulk purchase on a single transaction. All rows are clean (no duplicate order_id + variant_sku + amount combinations, returns_kes = 0, amounts are positive and internally consistent between total/gross/net), and the observed value of KES 126,450 is only ~2% above the p99 ceiling, well within what a single unusually large basket plus normal trading volume can explain.
+• Broken identity: outside p1-p99; PoP 93% vs same weekday
+
+Desired outcome: "total_sales" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 13 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kisumu
+• Metric: net_sales
+• Period: 2026-07-06
+• Observed: 11,896.56   Expected: 23,392.24–174,084.07
+• Diagnosis: The sample contains only 2 line-item rows totalling KES 11,896.56 in net sales, which exactly matches the observed value — meaning these may be the only two transactions recorded for Vivo Kisumu on 2026-07-06, an 81% drop vs. the same weekday. However, with just two rows it is impossible to determine whether the store genuinely traded very little that day (e.g. power outage, staff absence, system downtime, public holiday effect) or whether a batch of transactions failed to load into the reporting table.
+• Broken identity: outside p1-p99; PoP -81% vs same weekday
+
+Desired outcome: "net_sales" for store:Vivo Kisumu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 14 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: net_sales
+• Period: 2026-07-05
+• Observed: 109,008.63   Expected: 3,695.26–106,984.93
+• Diagnosis: The elevated net sales of KES 109,008.63 — roughly 2% above the p99 ceiling of KES 106,984.93 and 93% above the same-weekday prior period — is driven by a genuinely busy trading day featuring several multi-item orders, most notably order 41747 which alone spans at least 15 distinct variant SKUs (a legitimate bulk purchase). All sampled rows have unique (order_id, variant_sku) combinations, consistent net/total VAT relationships, zero returns, and no duplicated line items, so no data corruption is present.
+• Broken identity: outside p1-p99; PoP 93% vs same weekday
+
+Desired outcome: "net_sales" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 15 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Safari Sarit
+• Metric: total_sales
+• Period: 2026-07-03
+• Observed: 107,400   Expected: 8,821–105,721.5
+• Diagnosis: The observed total of KES 107,400 is driven by a genuinely busy trading day across multiple distinct orders (40804, 40961, 41024, 41056, 41096, 41103, 41192, 41210, etc.), with each row carrying a unique (order_id, variant_sku, amount) combination — there are no duplicate line items. Notably, order 41024 alone contains at least 8 distinct SKUs spanning a range of price points, consistent with a large legitimate multi-item purchase, and all other orders are similarly clean single-unit lines at plausible retail prices.
+• Broken identity: outside p1-p99; PoP 117% vs same weekday
+
+Desired outcome: "total_sales" for store:Safari Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 16 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Safari Sarit
+• Metric: net_sales
+• Period: 2026-07-03
+• Observed: 92,586.17   Expected: 7,604.31–91,485.13
+• Diagnosis: The observed net_sales of KES 92,586.17 is only marginally above the p99 ceiling (KES 91,485.13), representing a ~1.2% overshoot — a very thin breach consistent with a genuinely busy trading day rather than any data corruption. The sample rows show multiple distinct orders (40804, 40961, 41024, 41056, 41096, 41103, 41192, 41210) each carrying several different variant_SKUs at plausible per-unit prices, with no duplicate (order_id, variant_sku, amount) triplets — all of which is consistent with legitimate multi-item retail transactions on a high-traffic day.
+• Broken identity: outside p1-p99; PoP 117% vs same weekday
+
+Desired outcome: "net_sales" for store:Safari Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 17 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Yaya
+• Metric: return_amount
+• Period: 2026-07-02
+• Observed: 24,800   Expected: 0–17,630
+• Diagnosis: The flagged metric is return_amount (KES 24,800), but every single one of the 25 sample rows is sale_kind='order' with returns_kes=0.0 — not a single return row (sale_kind='return') has been provided. Per the data model, return_amount is derived exclusively from return rows, so the sample set shown is the wrong grain/filter to diagnose this anomaly.
+• Broken identity: z=5.5; outside p1-p99; outside IQR fence; PoP 259% vs same weekday
+
+Desired outcome: "return_amount" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 18 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Junction
+• Metric: return_amount
+• Period: 2026-07-04
+• Observed: 23,350   Expected: 0–17,316
+• Diagnosis: The flagged metric is return_amount (KES 23,350 vs. expected ≤ KES 17,316), yet every single row in the sample has sale_kind='order' and returns_kes=0.0 — no return rows (sale_kind='return') are present at all. Per the data model, return_amount is sourced exclusively from rows where sale_kind='return', so the rows needed to explain or validate the spike are entirely absent from the sample.
+• Broken identity: z=4.6; outside p1-p99; outside IQR fence
+
+Desired outcome: "return_amount" for store:Vivo Junction should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 19 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Runda
+• Metric: return_amount
+• Period: 2026-07-03
+• Observed: 13,100   Expected: 0–11,961
+• Diagnosis: Three distinct return rows (order_ids 41095, 40945, 41187) with different SKUs and varying amounts (KES 3,700 + 3,900 + 5,500 = KES 13,100) account for the full observed return_amount — each is a structurally valid sale_kind='return' row with total/net = 0 and the refund in returns_kes, exactly as the data model specifies. The spike above the p99 ceiling (KES 11,961) is driven by the single higher-value return of KES 5,500 on order 41187 (SKU V0719290DTAM/L) landing on an otherwise moderate-return day, which is an uncommon but entirely plausible trading event for a fashion retail store.
+• Broken identity: z=4.2; outside p1-p99
+
+Desired outcome: "return_amount" for store:Vivo Runda should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 20 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: return_amount
+• Period: 2026-07-03
+• Observed: 11,100   Expected: 0–6,864
+• Diagnosis: Two legitimate return rows on 2026-07-03 at Vivo Kileleshwa — order 40798 returning SKU V0623042RUSS/M (KES 5,550) and order 41171 returning SKU V0819102BLAF (KES 5,550) — sum to exactly KES 11,100, accounting for the full observed return_amount. Both return rows are structurally correct (sale_kind='return', total/net = 0, returns_kes carrying the refund value, distinct order_id + variant_sku combinations with no duplication), so the elevated figure reflects two high-value garment returns processed on the same day, not any data corruption.
+• Broken identity: z=6.9; outside p1-p99
+
+Desired outcome: "return_amount" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 21 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo City Mall
+• Metric: return_amount
+• Period: 2026-07-05
+• Observed: 6,900   Expected: 0–5,170
+• Diagnosis: A single return row (order_id 41763, SKU V0425034PR31X, sale_kind='return') accounts for the entire KES 6,900 return amount on 2026-07-05 at Vivo City Mall; this is a structurally valid return record following the expected convention (returns_kes populated, total/net = 0). The value is 33% above the p99 upper bound (KES 5,170), which is unusual but entirely plausible as a one-off high-value item return — the refund amount is in line with the order-line prices seen on the same day (e.g. KES 6,200 for SKU V0226016BLA2X).
+• Broken identity: z=4.7; outside p1-p99
+
+Desired outcome: "return_amount" for store:Vivo City Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 22 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kisumu
+• Metric: asp
+• Period: 2026-07-06
+• Observed: 6,900   Expected: 3,007.88–5,467.44
+• Diagnosis: On 2026-07-06, Vivo Kisumu recorded only two sales transactions (orders 42098 and 42167), both for distinct SKUs (V0825017BLAM and V0825017BLA1X) each priced at KES 6,900 — a legitimate, consistent price point with no signs of corruption. With just two line items sold, the ASP of KES 6,900 is mathematically correct but is pulled above the expected range simply because the day's volume was very low and both units happened to be a higher-priced item, not because of any data anomaly.
+• Broken identity: z=4.9; outside p1-p99; outside IQR fence
+
+Desired outcome: "asp" for store:Vivo Kisumu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 23 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kisumu
+• Metric: units_sold
+• Period: 2026-07-06
+• Observed: 2   Expected: 7.44–46.34
+• Diagnosis: Only 2 sale rows are visible for Vivo Kisumu on 2026-07-06, yielding units_sold = 2 — well below the expected range of 7–46. However, the sample may be incomplete; if the dashboard's reporting filters (e.g. excluding internal locations, gift cards, bags) or a data-pipeline lag have silently dropped additional order rows for the day, the true unit count could still be within range.
+• Broken identity: outside p1-p99; PoP -88% vs same weekday
+
+Desired outcome: "units_sold" for store:Vivo Kisumu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 24 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kisumu
+• Metric: transactions
+• Period: 2026-07-06
+• Observed: 2   Expected: 4–22.78
+• Diagnosis: Only 2 sample rows are visible, each representing a distinct order (order_id 42098 and 42167) with different variant SKUs — consistent with 2 legitimate transactions. However, the expected range (4–22.78) and a -78% week-on-week drop strongly suggest either additional transactions are missing from the extract or the store genuinely traded at an unusually low volume, and the current sample alone cannot distinguish between a data pipeline gap and a real slow trading day.
+• Broken identity: outside p1-p99; PoP -78% vs same weekday
+
+Desired outcome: "transactions" for store:Vivo Kisumu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 25 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Yaya
+• Metric: return_rate
+• Period: 2026-07-05
+• Observed: 0.18   Expected: 0–0.11
+• Diagnosis: On 2026-07-05, Vivo Yaya processed 3 return lines totalling KES 16,300 (order 41739: KES 4,200 + KES 6,200; order 41893: KES 5,900) against a relatively modest day of sales across ~10 distinct orders, pushing the return rate to ~18.4% — well above the p99 ceiling of ~10.8%. This is a legitimate spike driven by a small number of high-value returns on a quieter trading day, not a data integrity issue; all return rows are correctly structured (sale_kind='return', total/net=0, returns_kes > 0) and all order rows are clean with no duplicates.
+• Broken identity: z=5.9; outside p1-p99; outside IQR fence
+
+Desired outcome: "return_rate" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 26 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Moi Avenue
+• Metric: return_rate
+• Period: 2026-07-05
+• Observed: 0.16   Expected: 0–0.16
+• Diagnosis: On 2026-07-05, Vivo Moi Avenue processed two return rows — order_id 41729 (KES 3,900) and order_id 41726 (KES 5,550), totalling KES 9,450 in refunds — against a modest sales day, pushing the return rate to ~16.1%, just above the p99 ceiling of ~15.8%. The sample rows are structurally clean: each return is a properly formed sale_kind='return' row with returns_kes populated and total/net = 0, and each order line carries a distinct (order_id, variant_sku, amount) combination with no sign of duplication or data corruption.
+• Broken identity: z=3.7; outside p1-p99; outside IQR fence
+
+Desired outcome: "return_rate" for store:Vivo Moi Avenue should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 27 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo MSA Digo Road
+• Metric: msi
+• Period: 2026-07-05
+• Observed: 4   Expected: 1–3.5
+• Diagnosis: The flagged MSI (Mean Items per Sale) of 4.0 is driven by a single order (order_id 41767) containing exactly 4 distinct line items (4 different variant_SKUs: V0423050DMUSM, V0725002HUNL, V0725001HUNL, V0126004WHIL), each with a quantity of 1 — a clean, legitimate multi-item basket with no duplicates or anomalies. This is a genuine bulk/multi-item purchase at Vivo MSA Digo Road on 2026-07-05, and the elevated MSI simply reflects that this one order (possibly the only or dominant order of the day) contained 4 items, pushing the daily average above the expected ceiling of ~3.5.
+• Broken identity: z=4.5; outside p1-p99; outside IQR fence; PoP 300% vs same weekday
+
+Desired outcome: "msi" for store:Vivo MSA Digo Road should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 28 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo MSA Digo Road
+• Metric: abv
+• Period: 2026-07-05
+• Observed: 17,000   Expected: 3,742.77–16,717.93
+• Diagnosis: Order 41767 is a single legitimate multi-item basket containing 4 distinct SKUs (V0423050DMUSM, V0725002HUNL, V0725001HUNL, V0126004WHIL) totalling KES 17,000, which drives the elevated Average Basket Value for the day. All line-item amounts are positive, internally consistent (VAT-inclusive totals vs. VAT-exclusive net figures reconcile at ~15.5% VAT), with no duplicate (order_id, variant_sku, amount) combinations, making this a genuine high-value single-order trading event rather than any data corruption.
+• Broken identity: z=3.7; outside p1-p99; outside IQR fence; PoP 168% vs same weekday
+
+Desired outcome: "abv" for store:Vivo MSA Digo Road should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 29 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: msi
+• Period: 2026-07-05
+• Observed: 5.17   Expected: 1–5.1
+• Diagnosis: Order 41747 is a large multi-item bulk purchase containing at least 15 distinct variant SKUs (e.g. V0226007WREDM, V0126033DBLUES, V0126011TAUF, V0126017TAUS, V0819003BLAS, V0819003TEAS, V0126023MARM, V0326030OFFS/M, V0326045OFWS, V0122078BLAS, V0226025BLAXS/S, V0126023MUSM, V0925054NAVM, and more), which inflates the Mean Basket Size (MSI) metric to 5.17 items per transaction for the day. This is a legitimate high-basket-size shopping event, consistent with a single customer making a large wardrobe purchase, and all rows have distinct (order_id, variant_sku) combinations with no duplicates.
+• Broken identity: z=3.5; outside p1-p99; outside IQR fence; PoP 101% vs same weekday
+
+Desired outcome: "msi" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 30 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: abv
+• Period: 2026-07-05
+• Observed: 21,075   Expected: 2,747.5–23,145.5
+• Diagnosis: Order #41747 alone contains at least 15 distinct variant SKUs (e.g. V0226007WREDM, V0126033DBLUES, V0126011TAUF, V0126017TAUS, V0819003BLAS, V0819003TEAS, V0126023MARM, V0326030OFFS/M, V0326045OFWS, V0122078BLAS, V0226025BLAXS/S, V0126023MUSM, V0925054NAVM, V0226025BLAXS/S — all with different SKUs and valid amounts), constituting a large legitimate multi-item basket that inflates the Average Basket Value (ABV) for the day. Every row in the sample has a distinct (order_id, variant_sku) combination, no amount inconsistencies, and all figures are internally coherent (total_sales_kes VAT-inclusive, net_sales_kes VAT-exclusive), so the spike is driven by one or a small number of high-value bulk purchases on a lower-than-usual order-count day.
+• Broken identity: z=3.1; outside IQR fence; PoP 126% vs same weekday
+
+Desired outcome: "abv" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 31 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo City Mall
+• Metric: return_rate
+• Period: 2026-07-05
+• Observed: 0.35   Expected: 0–0.08
+• Diagnosis: The sample rows show only 5 order lines and 1 return row, which is far too small a slice to explain a return_rate of ~34.7% — nearly 4× the p99 ceiling of ~8.2%. The full population of all order and return rows for Vivo City Mall on 2026-07-05 is required to determine whether the high rate stems from a genuine surge in customer returns, a batch of POS refund lines, a data-loading anomaly (e.g. return rows duplicated across a reload), or a denominator collapse (very few sales that day making a modest return amount look outsized).
+• Broken identity: z=18.9; outside p1-p99
+
+Desired outcome: "return_rate" for store:Vivo City Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 32 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Safari Sarit
+• Metric: footfall
+• Period: 2026-07-05
+• Observed: 155   Expected: 55.14–144.87
+• Diagnosis: The observed footfall of 155 at Safari Sarit on 2026-07-05 is driven by genuine multi-item orders from real, distinct customers: the sample rows show several separate order IDs (41725, 41837, 41908, 41941, 41943, 41947, etc.), each with uniquely different variant SKUs and amounts, consistent with normal busy-day trading rather than any duplication or data error. The 78% period-over-period spike is plausible for a Saturday or a promotional/event day that drew unusually high in-store traffic compared to the same weekday baseline.
+• Broken identity: z=3.1; outside p1-p99; outside IQR fence; PoP 78% vs same weekday
+
+Desired outcome: "footfall" for store:Safari Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 33 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Two Rivers
+• Metric: transactions
+• Period: 2026-07-04
+• Observed: 26   Expected: 4.58–23.42
+• Diagnosis: The 26 transactions observed on 2026-07-04 at Vivo Two Rivers exceed the expected upper bound (23.42) by only ~2–3 units, a modest overshoot consistent with a busy trading day (e.g. a Friday or public-holiday-adjacent date). The sample rows show 26 distinct (order_id, variant_sku) combinations with no duplicated triplets and several multi-item orders (e.g. order 41414 with 3 SKUs, order 41540 with 3 SKUs, order 41644 with 3 SKUs, order 41487 with 2 SKUs, order 41570 with 2 SKUs) — all well-formed line-item grain records with clean, internally consistent amounts — indicating genuine customer purchases, not data corruption.
+• Broken identity: z=3.4; outside p1-p99; outside IQR fence
+
+Desired outcome: "transactions" for store:Vivo Two Rivers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 34 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo T- Mall
+• Metric: return_rate
+• Period: 2026-07-04
+• Observed: 0.09   Expected: 0–0.09
+• Diagnosis: On 2026-07-04, Vivo T-Mall processed a return row (order_id 41651, SKU V1123172PR38M, KES 6,900) which, against a relatively low-volume trading day, is enough to push the return rate from ~8.6% to ~9.4% — a z-score of 3.6 but only marginally above the p99 ceiling. The return row is structurally correct: sale_kind='return', returns_kes=6900, total/net=0, and it corresponds to the same order (41651) that also has a matching sale line (V1123172PR38S, KES 6,900), consistent with a same-day or near-day return of a garment in a different size variant.
+• Broken identity: z=3.6; outside p1-p99
+
+Desired outcome: "return_rate" for store:Vivo T- Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 35 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Meru
+• Metric: msi
+• Period: 2026-07-04
+• Observed: 4.67   Expected: 1–3.57
+• Diagnosis: The elevated MSI (Mean Sale per Item ≈ KES 4,667) is driven by three legitimate multi-item orders (41609 with 9 distinct SKUs, 41477 with 3 SKUs, and 41347 with 4 SKUs) all containing high-unit-price apparel lines (KES 1,950–6,500), pushing the average item value well above the expected ceiling of KES 3,572. Every row has a unique (order_id, variant_sku) combination with clean amounts, zero returns, and no duplication — consistent with a genuinely strong trading day at Vivo Meru, not a data error.
+• Broken identity: z=4.4; outside p1-p99; outside IQR fence; PoP 367% vs same weekday
+
+Desired outcome: "msi" for store:Vivo Meru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 36 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Meru
+• Metric: abv
+• Period: 2026-07-04
+• Observed: 19,533.33   Expected: 3,170.67–18,377.67
+• Diagnosis: The elevated ABV of KES 19,533 is driven by three legitimate multi-item orders on 2026-07-04: order 41609 contains at least 7 distinct SKUs totalling ~KES 33,000, order 41477 contains 3 distinct SKUs totalling ~KES 11,300, and order 41347 contains 4 distinct SKUs totalling ~KES 14,350 — all line items carry unique variant_SKUs, clean amounts, zero returns, and no duplicates. On a low-volume day at a smaller branch like Vivo Meru, just a few large basket transactions are enough to push the daily ABV well above the historical norm.
+• Broken identity: z=3.5; outside p1-p99; outside IQR fence; PoP 301% vs same weekday
+
+Desired outcome: "abv" for store:Vivo Meru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 37 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Kileleshwa
+• Metric: units_sold
+• Period: 2026-07-04
+• Observed: 34   Expected: 1–26.88
+• Diagnosis: The 34 units sold on 2026-07-04 at Vivo Kileleshwa are spread across multiple distinct orders (41290, 41295, 41358, 41386, 41463, 41473, 41554, 41557, 41611), each containing several different variant SKUs — every (order_id, variant_sku, amount) combination in the sample is unique, confirming no duplication. Two orders in particular (41358 with ≥5 lines and 41611 with ≥10 lines) represent multi-item bulk purchases that are entirely normal trading behaviour, collectively lifting the day's unit count above the historical p99 ceiling.
+• Broken identity: z=3.2; outside p1-p99; outside IQR fence; PoP 100% vs same weekday
+
+Desired outcome: "units_sold" for store:Vivo Kileleshwa should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 38 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Imaara
+• Metric: units_sold
+• Period: 2026-07-04
+• Observed: 59   Expected: 6.18–49.05
+• Diagnosis: The 59 units sold at Vivo Imaara on 2026-07-04 is above the historical p99 upper fence (~49 units) but is consistent with a genuinely busy trading day: the sample shows 25 distinct (order_id, variant_sku) line-item combinations across many separate order IDs, each with a unique SKU, clean amounts, no negative values, and no duplicate rows. There is no evidence of batch double-loading or data corruption; the elevated unit count most likely reflects a high-footfall day (e.g. a weekend, public holiday, or in-store promotion at the Imaara Mall location).
+• Broken identity: z=3.3; outside p1-p99; outside IQR fence
+
+Desired outcome: "units_sold" for store:Vivo Imaara should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 39 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Safari Sarit
+• Metric: footfall
+• Period: 2026-07-04
+• Observed: 150   Expected: 55.14–135.87
+• Diagnosis: The observed footfall of 150 at Safari Sarit on 2026-07-04 (a Saturday/public holiday-adjacent date) is above the p99 upper fence of 135.87 but only moderately so (z=3.2), consistent with a genuinely busy trading day rather than data corruption. The sample rows show 10 distinct order IDs, each with different variant SKUs and plausible, non-duplicated amounts, confirming real multi-item customer transactions with no signs of double-loading or data error.
+• Broken identity: z=3.2; outside p1-p99; outside IQR fence
+
+Desired outcome: "footfall" for store:Safari Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 40 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Signature Mall
+• Metric: units_sold
+• Period: 2026-07-03
+• Observed: 43   Expected: 2–36.4
+• Diagnosis: The 43 units sold on 2026-07-03 at Vivo Signature Mall are fully consistent with a genuine high-traffic trading day driven by a mix of regular single-item orders and at least one large multi-item basket: order 41259 alone accounts for at least 9 distinct SKUs (V0722064TEAS/M, S0226026NAVS, S0226011NAVXS/S, V0426023DPURM, V0423050MULM, V0725047OFWS, V0126017DRDS, V0526007DBRM, V0725047MULM — all with different variant_SKUs and different amounts), which is a normal bulk purchase under the data model rules. Every sampled row has a unique (order_id, variant_sku) combination — no identical tuple is repeated — so there is no evidence of double-loading, fan-out, or any other data corruption.
+• Broken identity: z=3.2; outside p1-p99; outside IQR fence; PoP 207% vs same weekday
+
+Desired outcome: "units_sold" for store:Vivo Signature Mall should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 41 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Sarit
+• Metric: units_sold
+• Period: 2026-07-03
+• Observed: 138   Expected: 22.56–142.28
+• Diagnosis: The 25 sample rows all carry distinct (order_id, variant_sku) combinations — including multi-item orders such as 40820 (two different SKUs) and 40883 (two different SKUs) and 40857 (two different SKUs) — confirming genuine, non-duplicated line-item sales. An observed value of 138 units is only just above the expected upper fence of ~142, consistent with an unusually busy Thursday at Vivo Sarit (e.g. a promotion or high foot-traffic day) rather than any data corruption.
+• Broken identity: z=3.0; outside IQR fence
+
+Desired outcome: "units_sold" for store:Vivo Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 42 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Runda
+• Metric: return_rate
+• Period: 2026-07-03
+• Observed: 0.15   Expected: 0–0.12
+• Diagnosis: Vivo Runda recorded three legitimate return rows on 2026-07-03 (order_ids 41095, 40945, 41187) totalling KES 13,100 in returns against a modest day of sales, which is sufficient to push the return rate to ~15.5% — well above the p99 ceiling of ~12.3%. No structural anomalies are present: every return row correctly carries total/net = 0 with the refunded amount in returns_kes, all order rows carry returns_kes = 0, and there are no duplicate (order_id, variant_sku, amount) combinations.
+• Broken identity: z=4.9; outside p1-p99; PoP 98% vs same weekday
+
+Desired outcome: "return_rate" for store:Vivo Runda should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 43 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Online - Shop Zetu
+• Metric: return_rate
+• Period: 2026-07-03
+• Observed: 1.02   Expected: -0.54–95.83
+• Diagnosis: The flagged return_rate of ~1.02% is well within the expected range (−0.54% to 95.83%), so the statistical alarm is likely triggered by the period-over-period comparison (4503% vs. the same weekday), meaning last Thursday had near-zero returns rather than today's figure being abnormally high. The sample rows show structurally clean, well-formed return lines (sale_kind='return', positive returns_kes, negative total/net, gross=0, quantity=0) across distinct order IDs and SKUs — consistent with a normal day of online returns processing, not data corruption.
+• Broken identity: outside IQR fence; PoP 4503% vs same weekday
+
+Desired outcome: "return_rate" for store:Online - Shop Zetu should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 44 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Yaya
+• Metric: return_rate
+• Period: 2026-07-02
+• Observed: 0.12   Expected: 0–0.08
+• Diagnosis: The flagged metric is return_rate, which is driven by return rows (sale_kind='return') carrying non-zero returns_kes values; however, all 25 sample rows provided are sale_kind='order' lines with returns_kes=0.0, so the actual return transactions that produced the elevated 12.4% rate are entirely absent from this sample. Without seeing the return rows for 2026-07-02 at Vivo Yaya — their order_ids, amounts, and whether any order_ids appear duplicated across multiple return rows — it is impossible to determine whether the spike reflects a genuine surge in customer returns or a batch-loading error that double-posted return entries.
+• Broken identity: z=4.8; outside p1-p99; outside IQR fence; PoP 90% vs same weekday
+
+Desired outcome: "return_rate" for store:Vivo Yaya should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 45 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Hub
+• Metric: units_sold
+• Period: 2026-07-02
+• Observed: 48   Expected: 5.59–44.64
+• Diagnosis: The 48 units sold at Vivo Hub on 2026-07-02 are spread across many distinct (order_id, variant_sku) combinations with no duplicate rows, indicating genuine multi-item purchases — notably order #40398 alone accounts for at least 7 distinct SKUs (a legitimate bulk/multi-item transaction). Every line item is internally consistent (VAT-inclusive total vs. VAT-exclusive net reconcile correctly, no negative amounts, no repeated order_id + SKU + amount triplets), so the elevated unit count reflects an authentically busy trading day rather than any data corruption.
+• Broken identity: outside p1-p99; PoP 129% vs same weekday
+
+Desired outcome: "units_sold" for store:Vivo Hub should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 46 of 46 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Village Market
+• Metric: abv
+• Period: 2026-07-01
+• Observed: 14,362.5   Expected: 6,224.79–14,384.4
+• Diagnosis: The elevated ABV of KES 14,362.5 is driven by a mix of genuinely high-value single-item orders (e.g. order 40122 at KES 8,950 and order 40236 at KES 8,800) and one notable bulk order (40197) spanning at least 9 distinct SKUs totalling ~KES 40,050, and another (40236) with 4 distinct SKUs at ~KES 28,400 — both of which inflate the per-basket average legitimately. All rows have unique (order_id, variant_sku) combinations with no signs of duplication, and every amount, VAT relationship and sale_kind value is internally consistent.
+• Broken identity: outside IQR fence; PoP 100% vs same weekday
+
+Desired outcome: "abv" for store:Vivo Village Market should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
