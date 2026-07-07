@@ -3822,6 +3822,46 @@ def _reg_social(app):
                 delivery_channel = "TikTok"
             except Exception as e:
                 raise HTTPException(502, f"TikTok rejected the reply: {e}")
+        elif row.get("platform") == "google" and row.get("type") == "review":
+            # A Google review reply is DELIVERED via the Business Profile v4
+            # reviews/reply endpoint (PUT upserts — it also updates an existing
+            # reply). The review resource name lives in source_id as
+            # "greview:accounts/<a>/locations/<l>/reviews/<r>".
+            sid = (row.get("source_id") or "")
+            rname = sid[len("greview:"):] if sid.startswith("greview:") else ""
+            if not rname:
+                raise HTTPException(
+                    400, "This review has no Google reference to reply to "
+                         "(re-run the Google Reviews sync).")
+            if not _grev_configured():
+                raise HTTPException(
+                    400, "Google Reviews is not connected on the server.")
+            if not body.strip():
+                raise HTTPException(400, "Reply text is empty.")
+            try:
+                gr = requests.put(
+                    f"https://mybusiness.googleapis.com/v4/{rname}/reply",
+                    json={"comment": body.strip()},
+                    headers={"Authorization": "Bearer " + _grev_token()},
+                    timeout=30)
+                if gr.status_code >= 400:
+                    gj = {}
+                    try:
+                        gj = gr.json() if gr.content else {}
+                    except ValueError:
+                        pass
+                    msg = ((gj.get("error") or {}).get("message")
+                           if isinstance(gj.get("error"), dict)
+                           else gj.get("error"))
+                    raise RuntimeError(f"HTTP {gr.status_code}: "
+                                       f"{msg or gr.text[:200]}")
+                delivered = True
+                delivery_channel = "Google Reviews"
+            except HTTPException:
+                raise
+            except Exception as e:
+                # Surface the real Google error instead of a silent failure.
+                raise HTTPException(502, f"Google rejected the reply: {e}")
         _ex("UPDATE crm_social_feedback SET reply_body=%s, replied_at=now() WHERE id=%s",
             (body, _int(fid)))
         A._crm_audit("social", fid, "reply",
@@ -6681,6 +6721,468 @@ def _reg_social(app):
                 "comments_stored": stored_comments + new_comments,
                 "comments_blocked": comments_blocked["on"],
                 "scopes_missing": sorted(scopes_missing)}
+
+    # ----- Google Reviews (Business Profile) wiring ------------------------ #
+    # Pulls the reviews of every Business Profile location the connected
+    # Google account manages into crm_social_feedback (platform='google',
+    # type='review') and DELIVERS replies via the Business Profile v4
+    # reviews/reply endpoint. Reuses the project's GOOGLE_CLIENT_ID /
+    # GOOGLE_CLIENT_SECRET (same OAuth client as sign-in) with the
+    # business.manage scope; the refresh token is persisted in crm_config so
+    # the sync keeps working unattended. NOTE: the Google Cloud project must
+    # have Business Profile API access approved by Google AND the
+    # "My Business Account Management", "My Business Business Information"
+    # and "Google My Business" APIs enabled — otherwise the sync surfaces the
+    # exact Google error in last_run_error.
+    _GREV_CFG = "social.greviews"
+    _GREV_SCOPE = "https://www.googleapis.com/auth/business.manage"
+    _GREV_SYNC_TIME_BUDGET_SEC = 240
+    _GREV_SYNC_STALE_MARGIN_SEC = 120
+    _grev_sync_state = {"lock": threading.Lock()}
+    _GREV_STARS = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5}
+
+    def _grev_client_creds():
+        return ((os.environ.get("GOOGLE_CLIENT_ID") or "").strip(),
+                (os.environ.get("GOOGLE_CLIENT_SECRET") or "").strip())
+
+    def _grev_configured():
+        return bool((_cfg_get(_GREV_CFG + ".refresh_token") or "").strip())
+
+    def _grev_reconnect_error():
+        return (_cfg_get(_GREV_CFG + ".reconnect_error") or "").strip() or None
+
+    def _grev_token():
+        """Return a live access token, refreshing via the stored refresh token
+        when the cached one is missing/near expiry. A definitive refresh
+        rejection (invalid_grant = revoked/expired) flags reconnect_required
+        instead of failing silently."""
+        tok = (_cfg_get(_GREV_CFG + ".access_token") or "").strip()
+        try:
+            exp = float(_cfg_get(_GREV_CFG + ".access_token_exp") or 0)
+        except (TypeError, ValueError):
+            exp = 0
+        if tok and time.time() < exp - 60:
+            return tok
+        cid, sec = _grev_client_creds()
+        rtok = (_cfg_get(_GREV_CFG + ".refresh_token") or "").strip()
+        if not (cid and sec and rtok):
+            raise HTTPException(400, "Google Reviews is not connected.")
+        r = requests.post("https://oauth2.googleapis.com/token", data={
+            "client_id": cid, "client_secret": sec,
+            "refresh_token": rtok, "grant_type": "refresh_token",
+        }, timeout=20)
+        j = r.json() if r.content else {}
+        atok = (j.get("access_token") or "").strip()
+        if r.status_code >= 400 or not atok:
+            err = str(j.get("error") or f"HTTP {r.status_code}")
+            desc = str(j.get("error_description") or "")
+            if err == "invalid_grant":
+                # Revoked/expired refresh token — an actionable reconnect state.
+                _cfg_set(_GREV_CFG + ".reconnect_error",
+                         (err + ": " + desc).strip(": ")[:300])
+            raise HTTPException(
+                502, f"Google token refresh failed: {err} {desc}".strip())
+        try:
+            exp_in = float(j.get("expires_in") or 0)
+        except (TypeError, ValueError):
+            exp_in = 0
+        _cfg_set(_GREV_CFG + ".access_token", atok)
+        _cfg_set(_GREV_CFG + ".access_token_exp",
+                 time.time() + (exp_in or 3300))
+        _cfg_set(_GREV_CFG + ".reconnect_error", "")
+        return atok
+
+    def _grev_get(url, params=None):
+        r = requests.get(url, params=params or {}, headers={
+            "Authorization": "Bearer " + _grev_token()}, timeout=30)
+        j = {}
+        try:
+            j = r.json() if r.content else {}
+        except ValueError:
+            pass
+        if r.status_code >= 400:
+            msg = ((j.get("error") or {}).get("message")
+                   if isinstance(j.get("error"), dict) else j.get("error"))
+            raise RuntimeError(f"Google API {r.status_code}: "
+                               f"{msg or r.text[:200]}")
+        return j
+
+    def _grev_redirect_uri(request):
+        override = (os.environ.get("GOOGLE_REVIEWS_REDIRECT_URI") or "").strip()
+        if override:
+            return override
+        proto = request.headers.get("x-forwarded-proto", "https")
+        host = (request.headers.get("x-forwarded-host")
+                or request.headers.get("host") or "")
+        return f"{proto}://{host}/api/social/google/oauth/callback"
+
+    def _grev_oauth_page(title, body_html, ok=True):
+        color = "#16a34a" if ok else "#dc2626"
+        resp = HTMLResponse(
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            f"<title>{title}</title></head>"
+            "<body style=\"font-family:system-ui,sans-serif;background:#0b0b0f;"
+            "color:#e5e7eb;display:flex;align-items:center;justify-content:center;"
+            "min-height:100vh;margin:0\"><div style=\"max-width:460px;padding:32px;"
+            "background:#17171d;border:1px solid #2a2a33;border-radius:12px\">"
+            f"<h2 style=\"margin:0 0 12px;color:{color}\">{title}</h2>"
+            f"<div style=\"line-height:1.5\">{body_html}</div>"
+            "<p style=\"margin-top:20px;color:#9ca3af;font-size:13px\">You can "
+            "close this tab and return to the CRM Inbox.</p></div></body></html>",
+            headers={"Cache-Control": "no-store"})
+        resp.delete_cookie("grev_oauth_state", path="/")
+        return resp
+
+    @app.get("/api/social/google/oauth/authorize")
+    def cl_soc_grev_oauth_authorize(request: Request):
+        # Connecting the brand's Business Profile is an operator action —
+        # admin/leadership only (same bar as the TikTok connect).
+        _staff(request, roles=("leadership", "admin"))
+        cid, sec = _grev_client_creds()
+        if not (cid and sec):
+            raise HTTPException(
+                503, "Google OAuth is not configured — set GOOGLE_CLIENT_ID / "
+                     "GOOGLE_CLIENT_SECRET first.")
+        state = secrets.token_urlsafe(24)
+        params = urllib.parse.urlencode({
+            "client_id": cid,
+            "redirect_uri": _grev_redirect_uri(request),
+            "response_type": "code",
+            "scope": _GREV_SCOPE,
+            "access_type": "offline",
+            "prompt": "consent",  # force a refresh_token on every connect
+            "state": state,
+        })
+        resp = RedirectResponse(
+            "https://accounts.google.com/o/oauth2/v2/auth?" + params)
+        resp.set_cookie("grev_oauth_state", state, httponly=True,
+                        samesite="lax", secure=True, max_age=600, path="/")
+        return resp
+
+    @app.get("/api/social/google/oauth/callback")
+    def cl_soc_grev_oauth_callback(request: Request):
+        # Public path (whitelisted in api_pg's auth gate): Google redirects the
+        # operator's browser here. The state cookie (set only by /authorize,
+        # which is admin-gated) proves the flow started from an authorized
+        # session.
+        cid, sec = _grev_client_creds()
+        if not (cid and sec):
+            return _grev_oauth_page(
+                "Google Reviews connect failed",
+                "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are not set.",
+                ok=False)
+        err = request.query_params.get("error")
+        if err:
+            return _grev_oauth_page(
+                "Google Reviews connect failed",
+                f"Google returned: <b>{_html_escape(err)}</b>", ok=False)
+        code = request.query_params.get("code")
+        state = request.query_params.get("state")
+        cookie_state = request.cookies.get("grev_oauth_state")
+        if not code or not state or not cookie_state \
+                or not hmac.compare_digest(state, cookie_state):
+            return _grev_oauth_page(
+                "Google Reviews connect failed",
+                "Invalid or expired sign-in state. Start the connect flow "
+                "again from the CRM Inbox.", ok=False)
+        try:
+            r = requests.post("https://oauth2.googleapis.com/token", data={
+                "client_id": cid, "client_secret": sec, "code": code,
+                "grant_type": "authorization_code",
+                "redirect_uri": _grev_redirect_uri(request),
+            }, timeout=20)
+            j = r.json() if r.content else {}
+        except Exception as e:  # noqa: BLE001 — surface the failure to the page
+            return _grev_oauth_page(
+                "Google Reviews connect failed",
+                f"Token exchange error: {_html_escape(str(e)[:300])}", ok=False)
+        atok = (j.get("access_token") or "").strip()
+        rtok = (j.get("refresh_token") or "").strip()
+        if r.status_code >= 400 or not atok or not rtok:
+            detail = (j.get("error_description") or j.get("error")
+                      or f"HTTP {r.status_code}")
+            if atok and not rtok:
+                detail = ("Google did not return a refresh token — remove the "
+                          "app's access at myaccount.google.com/permissions "
+                          "and connect again.")
+            return _grev_oauth_page(
+                "Google Reviews connect failed",
+                f"Token exchange failed: {_html_escape(str(detail)[:300])}",
+                ok=False)
+        try:
+            exp_in = float(j.get("expires_in") or 0)
+        except (TypeError, ValueError):
+            exp_in = 0
+        _cfg_set(_GREV_CFG + ".refresh_token", rtok)
+        _cfg_set(_GREV_CFG + ".access_token", atok)
+        _cfg_set(_GREV_CFG + ".access_token_exp", time.time() + (exp_in or 3300))
+        _cfg_set(_GREV_CFG + ".reconnect_error", "")
+        # Best-effort: resolve + remember the connected account label so the
+        # status strip can show WHO is connected. Never fails the connect.
+        acct_label = ""
+        try:
+            aj = _grev_get("https://mybusinessaccountmanagement.googleapis.com"
+                           "/v1/accounts", params={"pageSize": 20})
+            accts = aj.get("accounts") or []
+            acct_label = ", ".join(
+                a.get("accountName") or a.get("name") or "?"
+                for a in accts[:3])
+            _cfg_set(_GREV_CFG + ".account_label", acct_label)
+        except Exception as e:  # noqa: BLE001 — API not approved yet, etc.
+            _cfg_set(_GREV_CFG + ".account_label", "")
+            return _grev_oauth_page(
+                "Google connected — but the API is not ready",
+                "The sign-in worked and the connection is stored, but Google's "
+                "Business Profile API rejected the first call:<br><br><b>"
+                f"{_html_escape(str(e)[:300])}</b><br><br>Usually this means "
+                "the Google Cloud project still needs Business Profile API "
+                "access approval (a Google request form) and the My Business "
+                "APIs enabled. Once approved, the sync will work without "
+                "reconnecting.", ok=True)
+        return _grev_oauth_page(
+            "Google Reviews connected ✓",
+            "Reviews for every location managed by "
+            f"<b>{_html_escape(acct_label or 'the connected account')}</b> "
+            "will sync into the Inbox on the next cycle.")
+
+    def _grev_started_stale():
+        from datetime import datetime, timezone
+        started = (_cfg_get(_GREV_CFG + ".last_started_at") or "").strip()
+        if not started:
+            return True
+        try:
+            dt = datetime.fromisoformat(started)
+        except Exception:
+            return True
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - dt).total_seconds()
+        return age > (_GREV_SYNC_TIME_BUDGET_SEC + _GREV_SYNC_STALE_MARGIN_SEC)
+
+    def _grev_sync_running():
+        return (_grev_sync_state["lock"].locked()
+                and not _grev_started_stale())
+
+    @app.get("/api/social/google/status")
+    def cl_soc_grev_status(request: Request):
+        _staff(request, roles=("customer_service", "marketing",
+                               "leadership", "admin"))
+        empty = {"connected": False, "running": False, "account": None,
+                 "last_synced_at": None, "reconnect_required": False,
+                 "reconnect_error": None, "last_run_error": None,
+                 "counts": {"real_reviews": 0, "locations": 0}}
+        if not _grev_configured():
+            return empty
+        recon = _grev_reconnect_error()
+        if recon:
+            out = dict(empty)
+            out["reconnect_required"] = True
+            out["reconnect_error"] = recon
+            out["last_synced_at"] = _cfg_get(_GREV_CFG + ".last_synced_at") or None
+            return out
+        agg = _one("SELECT count(*) AS reviews FROM crm_social_feedback "
+                   "WHERE platform='google' AND type='review'") or {}
+        run_error = (_cfg_get(_GREV_CFG + ".last_run_error") or "").strip()
+        return {
+            "connected": True,
+            "running": _grev_sync_running(),
+            "account": {
+                "label": _cfg_get(_GREV_CFG + ".account_label") or None,
+                "last_sync_reviews": _int(
+                    _cfg_get(_GREV_CFG + ".last_sync_reviews"), 0),
+                "last_sync_new": _int(
+                    _cfg_get(_GREV_CFG + ".last_sync_new"), 0),
+            },
+            "last_synced_at": _cfg_get(_GREV_CFG + ".last_synced_at") or None,
+            "reconnect_required": False,
+            "reconnect_error": None,
+            "last_run_error": run_error or None,
+            "counts": {"real_reviews": _int(agg.get("reviews"), 0),
+                       "locations": _int(
+                           _cfg_get(_GREV_CFG + ".last_sync_locations"), 0)},
+        }
+
+    def _grev_sync_run(request, max_seconds=None):
+        """Walk every account → location → reviews page, upserting into
+        crm_social_feedback. Idempotent (unique source_id); re-upserts refresh
+        an edited review's text/rating without clobbering a reply logged in
+        the CRM. Sentiment maps directly from the star rating (no LLM)."""
+        budget = max_seconds or _GREV_SYNC_TIME_BUDGET_SEC
+        t0 = time.time()
+
+        def _over_budget():
+            return (time.time() - t0) > budget
+
+        aj = _grev_get("https://mybusinessaccountmanagement.googleapis.com"
+                       "/v1/accounts", params={"pageSize": 20})
+        accounts = aj.get("accounts") or []
+        if not accounts:
+            raise RuntimeError(
+                "The connected Google account manages no Business Profiles.")
+        total_reviews = 0
+        new_reviews = 0
+        loc_count = 0
+        for acct in accounts:
+            aname = acct.get("name") or ""
+            if not aname:
+                continue
+            page = None
+            while True:
+                if _over_budget():
+                    break
+                params = {"readMask": "name,title", "pageSize": 100}
+                if page:
+                    params["pageToken"] = page
+                lj = _grev_get(
+                    "https://mybusinessbusinessinformation.googleapis.com"
+                    f"/v1/{aname}/locations", params=params)
+                for loc in lj.get("locations") or []:
+                    lname = loc.get("name") or ""  # "locations/<id>"
+                    if not lname:
+                        continue
+                    loc_count += 1
+                    ltitle = (loc.get("title") or "").strip() or lname
+                    v4name = f"{aname}/{lname}"
+                    rpage = None
+                    while True:
+                        if _over_budget():
+                            break
+                        rparams = {"pageSize": 50}
+                        if rpage:
+                            rparams["pageToken"] = rpage
+                        rj = _grev_get(
+                            "https://mybusiness.googleapis.com"
+                            f"/v4/{v4name}/reviews", params=rparams)
+                        reviews = rj.get("reviews") or []
+                        total_reviews += len(reviews)
+                        sids = ["greview:" + (rv.get("name") or "")
+                                for rv in reviews if rv.get("name")]
+                        existing = set()
+                        if sids:
+                            try:
+                                rows = _ex(
+                                    "SELECT source_id FROM crm_social_feedback "
+                                    "WHERE source_id = ANY(%s)", (sids,),
+                                    fetch=True) or []
+                                existing = {r["source_id"] for r in rows}
+                            except Exception:
+                                existing = set()
+                        for rv in reviews:
+                            rvname = rv.get("name") or ""
+                            if not rvname:
+                                continue
+                            stars = _GREV_STARS.get(
+                                str(rv.get("starRating") or ""), 0)
+                            comment = (rv.get("comment") or "").strip()
+                            head = ("★" * stars + "☆" * (5 - stars)
+                                    + f" ({stars}/5)") if stars else ""
+                            body_txt = (head + ("\n\n" + comment
+                                                if comment else "")) \
+                                or comment or "[Review]"
+                            sentiment = ("positive" if stars >= 4 else
+                                         "negative" if 1 <= stars <= 2 else
+                                         "neutral")
+                            reviewer = ((rv.get("reviewer") or {})
+                                        .get("displayName") or "Google user")
+                            reply = (rv.get("reviewReply") or {})
+                            sid = "greview:" + rvname
+                            _ex(
+                                "INSERT INTO crm_social_feedback "
+                                "(platform,type,author_name,author_handle,"
+                                " body,sentiment,source_id,permalink,"
+                                " parent_source_id,parent_excerpt,posted_at,"
+                                " reply_body,replied_at) VALUES "
+                                "('google','review',%s,%s,%s,%s,%s,NULL,%s,%s,"
+                                " COALESCE(%s::timestamptz, now()),"
+                                " %s,%s::timestamptz) "
+                                "ON CONFLICT (source_id) "
+                                "WHERE source_id IS NOT NULL DO UPDATE SET "
+                                " body=EXCLUDED.body,"
+                                " sentiment=EXCLUDED.sentiment,"
+                                " posted_at=EXCLUDED.posted_at,"
+                                " reply_body=COALESCE("
+                                "   crm_social_feedback.reply_body,"
+                                "   EXCLUDED.reply_body),"
+                                " replied_at=COALESCE("
+                                "   crm_social_feedback.replied_at,"
+                                "   EXCLUDED.replied_at)",
+                                (reviewer, ltitle, body_txt, sentiment, sid,
+                                 "gloc:" + v4name, ltitle,
+                                 rv.get("updateTime") or rv.get("createTime"),
+                                 (reply.get("comment") or "").strip() or None,
+                                 reply.get("updateTime")))
+                            if sid not in existing:
+                                new_reviews += 1
+                        rpage = rj.get("nextPageToken")
+                        if not rpage:
+                            break
+                page = lj.get("nextPageToken")
+                if not page:
+                    break
+        from datetime import datetime, timezone
+        _cfg_set(_GREV_CFG + ".last_synced_at",
+                 datetime.now(timezone.utc).isoformat())
+        _cfg_set(_GREV_CFG + ".last_sync_reviews", total_reviews)
+        _cfg_set(_GREV_CFG + ".last_sync_new", new_reviews)
+        _cfg_set(_GREV_CFG + ".last_sync_locations", loc_count)
+        try:
+            A._crm_audit("social", "google-reviews", "sync",
+                         f"google reviews sync: {total_reviews} reviews "
+                         f"({new_reviews} new) across {loc_count} locations",
+                         request)
+        except Exception:
+            pass
+        return {"reviews": total_reviews, "new": new_reviews,
+                "locations": loc_count}
+
+    def _grev_sync_bg(request, lock, max_seconds):
+        from datetime import datetime, timezone
+        try:
+            _grev_sync_run(request, max_seconds=max_seconds)
+            _clear_run_error(_GREV_CFG)
+        except HTTPException as e:
+            _note_run_error(_GREV_CFG, str(getattr(e, "detail", e)))
+        except Exception as e:  # noqa: BLE001 — never let a thread crash silently
+            _note_run_error(_GREV_CFG, str(e))
+        finally:
+            _cfg_set(_GREV_CFG + ".last_finished_at",
+                     datetime.now(timezone.utc).isoformat())
+            try:
+                lock.release()
+            except RuntimeError:
+                pass  # already released (abandoned as stale) — harmless
+
+    @app.post("/api/social/google/sync")
+    def cl_soc_grev_sync(request: Request, payload: dict = Body(default=None)):
+        # The internal sync loop may trigger this with X-Internal-Token (no
+        # staff session); a browser call must be an authenticated marketing+
+        # staff member.
+        if not _internal_ok(request):
+            _staff(request, roles=("customer_service", "marketing",
+                                   "leadership", "admin"))
+        if not _grev_configured():
+            raise HTTPException(
+                400, "Google Reviews is not connected on the server.")
+        from datetime import datetime, timezone
+        lock = _grev_sync_state["lock"]
+        if not lock.acquire(blocking=False):
+            if not _grev_started_stale():
+                raise HTTPException(
+                    409, "A Google Reviews sync is already running.")
+            lock = threading.Lock()
+            _grev_sync_state["lock"] = lock
+            lock.acquire(blocking=False)
+        budget = None
+        try:
+            budget = int((payload or {}).get("max_seconds"))
+        except (TypeError, ValueError):
+            budget = None
+        _cfg_set(_GREV_CFG + ".last_started_at",
+                 datetime.now(timezone.utc).isoformat())
+        threading.Thread(target=_grev_sync_bg, args=(request, lock, budget),
+                         name="greviews-sync", daemon=True).start()
+        return {"started": True, "running": True}
 
 
 def _quick_sentiment(text):

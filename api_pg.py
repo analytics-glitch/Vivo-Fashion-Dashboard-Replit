@@ -462,7 +462,8 @@ _AUTH_INTERNAL_TOKEN_PATHS = {"/api/analytics/replenishment-sor/snapshot",
 _AUTH_INTERNAL_OR_SESSION_PATHS = {"/api/social/x/sync",
                                    "/api/social/facebook/sync",
                                    "/api/social/instagram/sync",
-                                   "/api/social/tiktok/sync"}
+                                   "/api/social/tiktok/sync",
+                                   "/api/social/google/sync"}
 
 # Query params that are concatenated into SQL as date literals. We validate them
 # to strict ISO dates at the edge so they can never carry SQL-injection payloads
@@ -567,6 +568,11 @@ _AUTH_PUBLIC_AUTH_PATHS = {
     # /api/social/tiktok/oauth/authorize, and the callback rejects any hit
     # whose state does not match it.
     "/api/social/tiktok/oauth/callback",
+    # Google Reviews (Business Profile) connect callback — same pattern as the
+    # TikTok callback above: public by necessity, protected by the state
+    # cookie only ever set by the admin-gated
+    # /api/social/google/oauth/authorize.
+    "/api/social/google/oauth/callback",
 }
 
 _USER_CACHE_TTL = 30  # seconds — bounds how long a role/status change lags

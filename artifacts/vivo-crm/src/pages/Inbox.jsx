@@ -11,7 +11,7 @@ import { toast } from "sonner";
 import { Search, Reply, Link2, Inbox as InboxIcon, MessageSquare, AtSign, Star, RefreshCw, Facebook, Instagram, Twitter, Music, AlertTriangle, CheckCircle2, FileText, ExternalLink, CornerDownRight } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
-const PLATFORMS = ["all", "instagram", "facebook", "tiktok", "x", "whatsapp"];
+const PLATFORMS = ["all", "instagram", "facebook", "tiktok", "x", "google", "whatsapp"];
 const TYPES = ["all", "post", "comment", "mention", "dm", "review"];
 const SENTIMENTS = ["all", "positive", "neutral", "negative"];
 
@@ -42,6 +42,8 @@ export default function Inbox() {
   const [xSyncing, setXSyncing] = useState(false);
   const [tiktokStatus, setTiktokStatus] = useState(null);
   const [tiktokSyncing, setTiktokSyncing] = useState(false);
+  const [googleStatus, setGoogleStatus] = useState(null);
+  const [googleSyncing, setGoogleSyncing] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
   const [tokenInput, setTokenInput] = useState("");
   const [connecting, setConnecting] = useState(false);
@@ -54,6 +56,7 @@ export default function Inbox() {
   const fbPolling = useRef(false);
   const xPolling = useRef(false);
   const tiktokPolling = useRef(false);
+  const googlePolling = useRef(false);
 
   const load = async () => {
     setLoading(true);
@@ -304,6 +307,77 @@ export default function Inbox() {
     }
   };
 
+  const loadGoogleStatus = async () => {
+    try {
+      const r = await api.get("/social/google/status");
+      setGoogleStatus(r.data);
+    } catch {
+      setGoogleStatus(null);
+    }
+  };
+
+  // Poll /social/google/status until the sync stops "running" (or a safety
+  // timeout), then surface the finished counts and reload the inbox items.
+  // Mirrors pollTiktokUntilDone.
+  const pollGoogleUntilDone = async () => {
+    if (googlePolling.current) return; // a poll loop is already watching this sync
+    googlePolling.current = true;
+    setGoogleSyncing(true);
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    const deadline = Date.now() + 6 * 60 * 1000; // safety cap
+    try {
+      await sleep(1500);
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        let st = null;
+        try {
+          const r = await api.get("/social/google/status");
+          st = r.data;
+          setGoogleStatus(st);
+        } catch { /* transient — keep polling */ }
+        if (st && !st.running) {
+          const a = st.account || {};
+          if (st.last_run_error) {
+            toast.error("Google Reviews sync error: " + st.last_run_error);
+          } else {
+            toast.success(`Google: ${a.last_sync_reviews || 0} reviews (${a.last_sync_new || 0} new) across ${st.counts?.locations || 0} locations`);
+          }
+          await load();
+          return;
+        }
+        if (Date.now() > deadline) {
+          toast.message("Google Reviews sync is still running — it will finish in the background.");
+          await load();
+          return;
+        }
+        await sleep(3000);
+      }
+    } finally {
+      googlePolling.current = false;
+      setGoogleSyncing(false);
+    }
+  };
+
+  const syncGoogleNow = async () => {
+    setGoogleSyncing(true);
+    try {
+      await api.post("/social/google/sync", {});
+      // The sync runs on a background thread and returns immediately, so poll
+      // to completion.
+      toast.message("Google Reviews sync started — pulling reviews for every location in the background…");
+      await pollGoogleUntilDone();
+    } catch (e) {
+      if (e?.response?.status === 409) {
+        // A sync (manual or the automatic loop) is already running — just watch it.
+        toast.message("A Google Reviews sync is already running — waiting for it to finish…");
+        await pollGoogleUntilDone();
+      } else {
+        toast.error("Google Reviews sync failed: " + (e?.response?.data?.detail || e.message));
+        setGoogleSyncing(false);
+      }
+    }
+  };
+
   // Poll /social/facebook/status until the sync stops "running" (or a safety
   // timeout), then surface the finished counts and reload the inbox items.
   // Mirrors pollIgUntilDone so an in-progress sync (manual or the automatic
@@ -408,7 +482,8 @@ export default function Inbox() {
     loadIgStatus();
     loadXStatus();
     loadTiktokStatus();
-    const id = setInterval(() => { loadFbStatus(); loadIgStatus(); loadXStatus(); loadTiktokStatus(); }, 60000); // refresh freshness every 60s
+    loadGoogleStatus();
+    const id = setInterval(() => { loadFbStatus(); loadIgStatus(); loadXStatus(); loadTiktokStatus(); loadGoogleStatus(); }, 60000); // refresh freshness every 60s
     return () => clearInterval(id);
   }, []);
 
@@ -429,6 +504,11 @@ export default function Inbox() {
     if (tiktokStatus?.running && !tiktokPolling.current) pollTiktokUntilDone();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tiktokStatus?.running]);
+
+  useEffect(() => {
+    if (googleStatus?.running && !googlePolling.current) pollGoogleUntilDone();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [googleStatus?.running]);
 
   const reclassify = async () => {
     toast.message("Running classifier…");
@@ -527,6 +607,12 @@ export default function Inbox() {
               {tiktokSyncing ? "Syncing…" : "Sync from TikTok"}
             </Button>
           )}
+          {googleStatus?.connected && (
+            <Button onClick={syncGoogleNow} disabled={googleSyncing} className="rounded-sm h-11 bg-[#4285F4] hover:bg-[#4285F4]/90 text-white" data-testid="sync-google-button">
+              <Star className={`mr-2 h-4 w-4 ${googleSyncing ? "animate-pulse" : ""}`} />
+              {googleSyncing ? "Syncing…" : "Sync Google Reviews"}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -541,6 +627,9 @@ export default function Inbox() {
 
       {/* TikTok live-data banner */}
       <TikTokStatusStrip status={tiktokStatus} />
+
+      {/* Google Reviews live-data banner */}
+      <GoogleStatusStrip status={googleStatus} />
 
       {/* counts */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mt-6">
@@ -771,7 +860,9 @@ export default function Inbox() {
                       : "Sends a real Messenger reply to the customer.")
                   : selected?.platform === "instagram" && selected?.type === "comment"
                     ? "Posts a real reply to this Instagram comment."
-                    : "Logged here · platform delivery later."}
+                    : selected?.platform === "google" && selected?.type === "review"
+                      ? "Posts the official owner reply on the Google review — visible to everyone on Google Maps/Search."
+                      : "Logged here · platform delivery later."}
             </p>
           </div>
           <DialogFooter>
@@ -1281,6 +1372,100 @@ function TikTokStatusStrip({ status }) {
           <strong>Some content locked.</strong> Missing access:{" "}
           <code className="text-[10px] bg-white px-1 py-0.5 rounded">{[...scopesMissing].join(", ")}</code>.{" "}
           Your TikTok app's scopes don't currently allow that content — add the scope in the TikTok developer portal, then re-run the sync.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GoogleStatusStrip({ status }) {
+  if (!status) return null;
+  const acct = status.account;
+  const lastSynced = status.last_synced_at;
+  const counts = status.counts || {};
+  const ago = lastSynced
+    ? Math.max(0, Math.floor((Date.now() - new Date(lastSynced).getTime()) / 60000))
+    : null;
+
+  if (status.reconnect_required) {
+    return (
+      <div className="mt-3 vivo-card p-5 rounded-sm border-l-2 border-amber-500" data-testid="google-status-strip">
+        <div className="flex items-start gap-3">
+          <Star className="h-5 w-5 text-amber-700 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <div className="font-medium text-base">Google Reviews needs to be reconnected.</div>
+            <div className="text-xs text-[var(--vivo-muted)] mt-1">
+              Google rejected the stored refresh token (it can be revoked from the Google account's security settings). An admin can reconnect by signing in with Google again — the connection restores immediately.
+            </div>
+            <Button
+              onClick={() => window.open("/api/social/google/oauth/authorize", "_blank")}
+              className="mt-3 rounded-sm h-9 bg-[#4285F4] hover:bg-[#4285F4]/90 text-white"
+              data-testid="reconnect-google-button"
+            >
+              <Star className="mr-2 h-4 w-4" /> Reconnect Google
+            </Button>
+            {status.reconnect_error && (
+              <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1 mt-2 break-all" data-testid="google-reconnect-error">
+                {status.reconnect_error}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!status.connected) {
+    return (
+      <div className="mt-3 vivo-card p-5 rounded-sm border-l-2 border-[#4285F4]" data-testid="google-status-strip">
+        <div className="flex items-start gap-3">
+          <Star className="h-5 w-5 text-[#4285F4] mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <div className="font-medium text-base">Google Reviews is not connected yet.</div>
+            <div className="text-xs text-[var(--vivo-muted)] mt-1">
+              An admin can connect the company's Google Business Profile with the button below — you'll be sent to Google to sign in with the account that manages the store listings. Once connected, the reviews of <strong>every Vivo location</strong> flow into this inbox and replies post straight to Google Maps. Note: the Google Cloud project needs Business Profile API access approved by Google first.
+            </div>
+            <Button
+              onClick={() => window.open("/api/social/google/oauth/authorize", "_blank")}
+              className="mt-3 rounded-sm h-9 bg-[#4285F4] hover:bg-[#4285F4]/90 text-white"
+              data-testid="connect-google-button"
+            >
+              <Star className="mr-2 h-4 w-4" /> Connect Google Reviews
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 vivo-card p-4 rounded-sm" data-testid="google-status-strip">
+      <div className="flex items-start gap-3 flex-wrap">
+        <div className="flex items-center gap-2 shrink-0">
+          <Star className="h-4 w-4 text-[#4285F4]" />
+          <span className="text-sm font-medium">{acct?.label || "Google Reviews"} live</span>
+          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+        </div>
+        <div className="text-xs text-[var(--vivo-muted)] flex items-center gap-3 flex-wrap" data-testid="google-freshness">
+          <span>
+            Last synced:{" "}
+            <span className="text-[var(--vivo-text)] font-medium">
+              {status.running ? "syncing…" : ago === null ? "never" : ago === 0 ? "just now" : `${ago} min ago`}
+            </span>
+          </span>
+          <span>Auto-syncs hourly — or click "Sync Google Reviews"</span>
+          <span>
+            {counts.real_reviews ?? 0} reviews · {counts.locations ?? 0} locations
+          </span>
+        </div>
+      </div>
+
+      {status.last_run_error && (
+        <div className="mt-3 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 p-2 rounded-sm break-all" data-testid="google-run-error">
+          <strong>Last sync failed.</strong> {status.last_run_error}
+          {/access|permission|not.*approved|403|has not been used|disabled/i.test(status.last_run_error) && (
+            <> — this usually means the Google Cloud project's Business Profile API access hasn't been approved/enabled yet.</>
+          )}
         </div>
       )}
     </div>

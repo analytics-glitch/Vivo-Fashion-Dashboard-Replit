@@ -393,6 +393,7 @@ _LAST_X_SYNC = None
 # hammering TikTok's rate-limited API. None on boot so a fresh prod DB bootstraps
 # the inbox on the first cycle.
 _LAST_TIKTOK_SYNC = None
+_LAST_GREVIEWS_SYNC = None
 # Guards the inventory extracts (Odoo + Shopify + Shop Zetu stock levels feeding
 # all_inventory). Was once-a-day at midnight EAT, which left shelf stock up to
 # ~24h stale — so the replenishment engine could recommend moving a unit that had
@@ -2348,6 +2349,44 @@ def main():
                 log.warning("TikTok sync skipped — SESSION_SECRET unset")
         except Exception as e:
             log.error("TikTok CRM sync error: %s", e)
+
+    # Google Reviews (Business Profile) CRM inbox sync — once per hour,
+    # mirroring the TikTok block. Idempotent (unique source_id upserts), small
+    # time budget so a large multi-location walk can't stall the loop. A 400
+    # "not connected" is expected + harmless; a 409 means a run is already in
+    # flight — benign, log quietly.
+    global _LAST_GREVIEWS_SYNC
+    greviews_sync_due = (
+        _LAST_GREVIEWS_SYNC is None
+        or (now - _LAST_GREVIEWS_SYNC).total_seconds() >= 3600
+    )
+    if greviews_sync_due:
+        try:
+            _secret = os.environ.get("SESSION_SECRET")
+            if _secret:
+                resp = requests.post(
+                    "http://localhost:80/api/social/google/sync",
+                    headers={"X-Internal-Token": _secret},
+                    json={"max_seconds": 120},
+                    timeout=150,
+                )
+                if resp.status_code == 400:
+                    # Not connected — stamp so we don't retry for an hour.
+                    _LAST_GREVIEWS_SYNC = now
+                    log.info("Google Reviews sync skipped — not connected")
+                elif resp.status_code == 409:
+                    _LAST_GREVIEWS_SYNC = now
+                    log.info("Google Reviews sync skipped — already running")
+                else:
+                    _LAST_GREVIEWS_SYNC = now
+                    log.info(
+                        "Google Reviews CRM sync — HTTP %s %s",
+                        resp.status_code, resp.text[:200]
+                    )
+            else:
+                log.warning("Google Reviews sync skipped — SESSION_SECRET unset")
+        except Exception as e:
+            log.error("Google Reviews CRM sync error: %s", e)
 
     # Presence-column tidy-up — once a day in the 21:00 UTC window. Live-but-idle
     # user_sessions rows keep the last_active_at/last_active_page presence stamps
