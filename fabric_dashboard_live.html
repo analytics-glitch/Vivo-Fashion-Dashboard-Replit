@@ -495,8 +495,12 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div id="support-kpis" class="kpi-grid"><div class="loading">Loading…</div></div>
     <div class="card" style="padding:0;margin-top:1.1rem;">
      <div class="section-head" style="padding:.9rem 1.1rem 0;"><h3>Stock mix — support fabrics</h3><span class="muted">Lining &amp; interfacing &middot; RMAT/Stock</span>
-      <input id="support-search" placeholder="Find product or barcode…" oninput="onSupportSearchInput()" title="Find a support-fabric product across all categories/sub-categories" style="width:210px;margin-left:1rem;">
-      <select id="support-supplier" onchange="onSupportSupplierChange()" onmousedown="ensureSupportSupplierOptions()" title="Filter support-fabric products by source supplier/vendor"><option value="">All suppliers</option></select>
+      <div class="seg" id="support-mix-group-seg" style="margin-left:1rem;">
+       <button class="unit-btn active" data-grp="category" onclick="setMixGroup('category','support')">By Category</button>
+       <button class="unit-btn" data-grp="subcategory" onclick="setMixGroup('subcategory','support')">By Sub-Category</button>
+      </div>
+      <input id="support-search" placeholder="Find product or barcode…" oninput="onMixSearch('support')" title="Find a support-fabric product across all categories/sub-categories" style="width:210px;margin-left:1rem;">
+      <select id="support-supplier" onchange="onMixSupplier('support')" title="Filter support-fabric products by source supplier/vendor"><option value="">All suppliers</option></select>
       <div style="margin-left:auto;position:relative;">
        <button class="btn" id="support-export-btn" aria-haspopup="true" aria-expanded="false" onclick="toggleSupportExportMenu(event)">Export CSV ▾</button>
        <div class="export-menu" id="support-export-menu" style="display:none;">
@@ -508,19 +512,12 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </div>
      </div>
      <!-- .mix-scroll reused (not just .tbl-wrap) so this drill-down table shares
-          the fit-to-collapsed / scroll-on-expand + pinned-header behaviour. -->
+          the fit-to-collapsed / scroll-on-expand + pinned-header behaviour. The
+          header is rendered by the shared renderMix() ctx so it stays in lockstep
+          with the main Stock Mix tab (indented single hierarchy column + toggle). -->
      <div class="tbl-wrap mix-scroll">
       <table class="data">
-       <thead><tr>
-        <th style="width:28px;"></th>
-        <th>Category</th><th>Sub-category</th>
-        <th style="text-align:right;">Fabrics</th>
-        <th style="text-align:right;">Metres</th>
-        <th style="text-align:right;">Kg</th>
-        <th style="text-align:right;">Cost per Kg (KES)</th>
-        <th style="text-align:right;">Cost per metre (KES)</th>
-        <th style="text-align:right;">Value (KES)</th>
-       </tr></thead>
+       <thead id="support-mix-head"><tr><th class="loading">Loading…</th></tr></thead>
        <tbody id="support-body"><tr><td class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
@@ -1311,18 +1308,14 @@ function bars(id,rows,labelKey,valKey,subFmt,colored,fxText){
 
 // ── Support Fabrics (lining + interfacing only, scope=support) ──
 async function loadSupport(){
+  // KPI cards use the support summary; the Stock-mix table below is the shared
+  // ctx-driven renderer (mixSupport, scope=support) — identical to the main tab.
   try{
-    const [d,cat]=await Promise.all([
-      apiFetch('/api/fabric/summary?location=RMAT/Stock&scope=support'),
-      apiFetch('/api/fabric/by-category?location=RMAT/Stock&scope=support'),
-    ]);
+    const d=await apiFetch('/api/fabric/summary?location=RMAT/Stock&scope=support');
     renderSupportKpis(d);
-    renderSupportTable(cat);
     applyFabricFreshness(d);
-    // Pre-warm the full support register (mix tree) so the search box + supplier
-    // dropdown work across every category immediately (best-effort, non-blocking).
-    prewarmSupportSearch();
-  }catch(e){showErr('support-kpis',e);const b=document.getElementById('support-body');if(b)b.innerHTML='<tr><td colspan="9" class="muted">Failed to load.</td></tr>';}
+  }catch(e){showErr('support-kpis',e);}
+  loadMix(mixSupport);
 }
 function renderSupportKpis(d){
   const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
@@ -1332,270 +1325,6 @@ function renderSupportKpis(d){
    ${KpiCard({label:'Consumed today',value:fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres),unit:unitLabel(),valueAttrs:fx(FX.supfConsToday),footnote:`${consumedTodaySub(d)}${consumptionSourcesLink('support')}`})}
    ${KpiCard({label:'Consumed 30d',value:fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres),unit:unitLabel(),valueAttrs:fx(FX.supfCons30d),footnote:'net of returns'})}
    ${KpiCard({label:'Dead stock',prefix:'KES',value:fmtKESval(d.dead_stock_value),valueClass:'danger',valueAttrs:fx(FX.supfDead),footnote:'support fabrics'})}`;
-}
-// Support Fabrics drill-down state. supportRows holds the last category summary
-// so the delegated click handler can re-render; supportOpen tracks expanded
-// groups; supportProds caches each group's product rows ('loading' | {error} |
-// array) so re-expanding never refetches. Key = category\u0001subcategory.
-const SUP_SEP='\u0001';
-let supportRows=[];
-let supportOpen={};
-let supportProds={};
-let supportBound=false;
-// Register-shaped support product rows indexed by id so a barcode-link click can
-// resolve back to the full row for the shared fabric detail card (mirrors mixDetailById).
-let supDetailById={};
-// ── Support Fabrics product/barcode + supplier search (mirrors the main Stock
-// Mix tab's #mix-search / #mix-supplier). Driven off the FULL support mix tree
-// (scope=support) — the same tree the support "Export → All products" caches via
-// loadSupportMixTree/supportMixCache — so a search/supplier spans every category
-// & sub-category, not just the lazily-loaded on-screen groups. When active, the
-// normal drill-down is replaced by the matching products (groups auto-expanded).
-let supSearch='';                 // active product/barcode search (lowercased); '' = off
-let supSupplier='';               // active supplier filter (exact match); '' = all suppliers
-// Support-tree product `detail` objects indexed by id so a search-result barcode
-// click opens the shared fabric detail card (mix field-set, mirrors mixDetailById).
-let supMixDetailById={};
-const supKey=r=>(r.category||'')+SUP_SEP+(r.subcategory||'');
-function renderSupportTable(rows){
-  if(rows!==undefined)supportRows=rows||[];
-  const b=document.getElementById('support-body'); if(!b)return;
-  if(!supportBound){
-    // Delegated expand/collapse — read the group key from a data-* attribute
-    // (never an inline handler), mirroring the Stock Mix drill-down.
-    b.addEventListener('click',e=>{
-      // Search-result barcode → shared fabric detail card (mix field-set, resolved
-      // from the support mix tree). Checked first so it never falls through.
-      const amb=e.target.closest('a.sup-mix-barcode');
-      if(amb){e.preventDefault();openFabricDetailFromSupportMix(amb.dataset.fabId);return;}
-      // Product barcode → shared fabric detail card (Register field set). Checked
-      // first so the click never falls through to row expand/collapse.
-      const ab=e.target.closest('a.sup-barcode');
-      if(ab){e.preventDefault();openFabricDetailFromSupport(ab.dataset.fabId);return;}
-      // Retry a failed product drill-down (checked first so it doesn't fall
-      // through to a row toggle). The group key carries enough to refetch.
-      const rl=e.target.closest('a.sup-retry');
-      if(rl){e.preventDefault();const k=rl.dataset.key||'';const parts=k.split(SUP_SEP);supportProds[k]=undefined;loadSupportProducts(parts[0]||'',parts[1]||'',k);return;}
-      const tr=e.target.closest('tr.sup-cat');
-      if(!tr||tr.dataset.key==null)return;
-      const key=tr.dataset.key;
-      supportOpen[key]=!supportOpen[key];
-      if(supportOpen[key]&&supportProds[key]===undefined)loadSupportProducts(tr.dataset.category||'',tr.dataset.subcategory||'',key);
-      renderSupportTable();
-    });
-    supportBound=true;
-  }
-  // A product/barcode or supplier filter replaces the drill-down with matching
-  // products (groups auto-expanded), driven off the full support mix tree.
-  if(supSearch||supSupplier){renderSupportSearch();return;}
-  if(!supportRows.length){b.innerHTML='<tr><td colspan="9" class="muted">No support fabrics in stock.</td></tr>';return;}
-  let html='';
-  supportRows.forEach(r=>{
-    const key=supKey(r);
-    const open=!!supportOpen[key];
-    const caret=`<span class="caret">${open?'▾':'▸'}</span>`;
-    html+=`<tr class="sup-cat" data-key="${esc(key)}" data-category="${esc(r.category||'')}" data-subcategory="${esc(r.subcategory||'')}" style="cursor:pointer;">
-       <td style="text-align:center;color:var(--muted);">${caret}</td>
-       <td style="font-weight:700;">${esc(r.category||'—')}</td>
-       <td>${esc(r.subcategory||'—')}</td>
-       <td style="text-align:right;"${fx(FX.supfFabrics)}>${fmt(r.fabrics)}</td>
-       <td style="text-align:right;"${fx(FX.supfMetres)}>${fmt1(r.qty_metres)}</td>
-       <td style="text-align:right;"${fx(FX.supfKg)}>${fmt1(r.qty_kg)}</td>
-       <td style="text-align:right;color:var(--muted);"${fx(FX.supfCostKg)}>${fmt2(r.cost_per_kg)}</td>
-       <td style="text-align:right;color:var(--muted);"${fx(FX.supfCostMetre)}>${fmt2(r.cost_metre)}</td>
-       <td style="text-align:right;"${fx(FX.supfRowValue)}>${fmt(r.value_kes)}</td>
-      </tr>`;
-    if(open)html+=renderSupportProductRows(key);
-  });
-  b.innerHTML=html;
-  // Fit-to-collapsed by default; cap height + inner scroll only when a group is
-  // expanded to its products (mirrors the Stock Mix table behaviour).
-  const scrollBox=b.closest('.mix-scroll');
-  if(scrollBox)scrollBox.classList.toggle('is-expanded',Object.values(supportOpen).some(Boolean));
-}
-function renderSupportProductRows(key){
-  const p=supportProds[key];
-  const cell=msg=>`<tr class="sup-prod"><td></td><td colspan="8" class="muted" style="padding-left:24px;">${msg}</td></tr>`;
-  if(p===undefined||p==='loading')return cell('Loading products…');
-  if(p&&p.error)return cell('Could not load products. <a href="#" class="sup-retry" data-key="'+esc(key)+'">Retry</a>');
-  const items=Array.isArray(p)?p:[];
-  if(!items.length)return cell('No individual products in this group.');
-  return items.map(it=>{
-    // Index the register-shaped row so a barcode-link click can resolve back to it.
-    if(it.id!=null)supDetailById[String(it.id)]=it;
-    const rawCode=fabricCode(it);
-    // Clickable barcode → shared fabric detail card (Register field set), mirroring
-    // the Stock Mix barcode link styling. Falls back to plain text when no barcode.
-    const code=rawCode
-      ? `<a href="#" class="sup-barcode" data-fab-id="${esc(it.id)}" title="View all fabric details" style="color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px;font-size:.92em;">${esc(rawCode)}</a>`
-      : '—';
-    const meta=[it.supplier,it.fabric_structure].map(x=>fabricClean(x)).filter(Boolean).map(esc).join(' · ');
-    return `<tr class="sup-prod">
-       <td></td>
-       <td style="padding-left:24px;font-size:.92em;">${code}</td>
-       <td style="color:var(--text-sub);font-size:.92em;">${esc(it.name||'—')}${meta?`<div class="muted" style="font-size:.85em;">${meta}</div>`:''}</td>
-       <td></td>
-       <td style="text-align:right;color:var(--text-sub);"${fx(FX.supfMetres)}>${fmt1(it.qty_metres)}</td>
-       <td style="text-align:right;color:var(--text-sub);"${fx(FX.supfKg)}>${fmt1(it.qty_kg)}</td>
-       <td style="text-align:right;color:var(--muted);"${fx(FX.supfCostKg)}>${fmt2(it.cost_per_kg)}</td>
-       <td style="text-align:right;color:var(--muted);"${fx(FX.supfCostMetre)}>${fmt2(it.cost_metre)}</td>
-       <td style="text-align:right;color:var(--text-sub);"${fx(FX.supfRowValue)}>${fmt(it.value_kes)}</td>
-      </tr>`;
-  }).join('');
-}
-async function loadSupportProducts(category,subcategory,key){
-  supportProds[key]='loading';
-  try{
-    let url='/api/fabric/register?location=RMAT/Stock&scope=support&limit=500';
-    if(category)url+='&category='+encodeURIComponent(category);
-    if(subcategory)url+='&subcategory='+encodeURIComponent(subcategory);
-    const res=await apiFetch(url);
-    supportProds[key]=Array.isArray(res&&res.items)?res.items:[];
-  }catch(e){supportProds[key]={error:true};}
-  renderSupportTable();
-}
-// ── Support Fabrics search helpers (product/barcode + supplier) ──
-// Walk every product node in the cached support mix tree, calling fn(product,
-// category, subcategory). Tree is category → subcategories → fabrics → products.
-function supTreeWalkProducts(fn){
-  const d=supportMixCache&&supportMixCache.data;
-  (d&&d.rows||[]).forEach(c=>(c.subcategories||[]).forEach(s=>(s.fabrics||[]).forEach(f=>(f.products||[]).forEach(p=>fn(p,c.group||'',s.group||'')))));
-}
-// Does a support-tree product match the active search/supplier? Matches product
-// name, Odoo internal ref (default_code) and scannable barcode — so a barcode
-// typed/scanned in still finds it (mirrors mixProdMatches).
-function supProdMatches(p){
-  const dc=p.detail||{};
-  if(supSupplier&&fabricClean(dc.supplier)!==supSupplier)return false;
-  if(!supSearch)return true;
-  const hay=[p.group,dc.name,fabricClean(dc.default_code),fabricClean(dc.barcode)].filter(Boolean).join(' ').toLowerCase();
-  return hay.indexOf(supSearch)>=0;
-}
-// (Re)build the support supplier dropdown from the tree's product details,
-// preserving the active selection (suppliers A→Z; blank/"false" skipped).
-function populateSupportSupplierOptions(){
-  const el=document.getElementById('support-supplier');if(!el)return;
-  const set=new Set();
-  supTreeWalkProducts(p=>{const s=fabricClean(p.detail&&p.detail.supplier);if(s)set.add(s);});
-  const cur=supSupplier;
-  const opts=['<option value="">All suppliers</option>']
-    .concat(Array.from(set).sort((a,b)=>a.localeCompare(b)).map(s=>`<option value="${esc(s)}">${esc(s)}</option>`));
-  el.innerHTML=opts.join('');
-  if(cur&&set.has(cur)){el.value=cur;}else if(cur){supSupplier='';el.value='';}
-}
-// Open the shared fabric detail card for a support SEARCH-RESULT barcode. The
-// rows come from the mix tree, so use the mix field-set (mirrors openFabricDetailFromMix).
-function openFabricDetailFromSupportMix(id){
-  const r=supMixDetailById[String(id)];
-  if(!r)return;
-  renderFabricDetail(r,MIX_DETAIL_KEYS);
-}
-// Render the support table in SEARCH mode: matching products grouped by
-// (category, sub-category) with their group auto-expanded, mirroring the main
-// Stock Mix search. Aggregate cells sum the matched hits in each group; a
-// clickable barcode opens the shared fabric detail card. Shows the same
-// "no matches" message the main tab uses when nothing matches.
-function renderSupportSearch(){
-  const b=document.getElementById('support-body'); if(!b)return;
-  const scrollBox=b.closest('.mix-scroll');
-  if(!(supportMixCache&&supportMixCache.data)){
-    b.innerHTML='<tr><td colspan="9" class="loading">Loading products…</td></tr>';return;
-  }
-  const groups=new Map();   // "category\u0001subcategory" → {category,subcategory,items:[]}
-  supTreeWalkProducts((p,cat,sub)=>{
-    if(!supProdMatches(p))return;
-    const key=cat+SUP_SEP+sub;
-    let g=groups.get(key);
-    if(!g){g={category:cat,subcategory:sub,items:[]};groups.set(key,g);}
-    g.items.push(p);
-  });
-  if(!groups.size){
-    const what=supSearch?`“${esc(supSearch)}”`:(supSupplier?`supplier “${esc(supSupplier)}”`:'the current filters');
-    b.innerHTML=`<tr><td colspan="9" class="muted">No support fabric matches ${what}.</td></tr>`;
-    if(scrollBox)scrollBox.classList.add('is-expanded');
-    return;
-  }
-  supMixDetailById={};
-  let html='';
-  Array.from(groups.values())
-    .sort((a,b)=>(a.category+SUP_SEP+a.subcategory).localeCompare(b.category+SUP_SEP+b.subcategory))
-    .forEach(g=>{
-      let sm=0,sk=0,sv=0;
-      g.items.forEach(p=>{sm+=Number(p.available_metres)||0;sk+=Number(p.available_kg)||0;sv+=Number(p.tied_up_kes)||0;});
-      const cpk=sk>0?sv/sk:null, cpm=sm>0?sv/sm:null;
-      html+=`<tr class="sup-cat" style="cursor:default;">
-       <td style="text-align:center;color:var(--muted);"><span class="caret">▾</span></td>
-       <td style="font-weight:700;">${esc(g.category||'—')}</td>
-       <td>${esc(g.subcategory||'—')}</td>
-       <td style="text-align:right;"${fx(FX.supfFabrics)}>${fmt(g.items.length)}</td>
-       <td style="text-align:right;"${fx(FX.supfMetres)}>${fmt1(sm)}</td>
-       <td style="text-align:right;"${fx(FX.supfKg)}>${fmt1(sk)}</td>
-       <td style="text-align:right;color:var(--muted);"${fx(FX.supfCostKg)}>${cpk==null?'—':fmt2(cpk)}</td>
-       <td style="text-align:right;color:var(--muted);"${fx(FX.supfCostMetre)}>${cpm==null?'—':fmt2(cpm)}</td>
-       <td style="text-align:right;"${fx(FX.supfRowValue)}>${fmt(sv)}</td>
-      </tr>`;
-      g.items.forEach(p=>{
-        const dd=p.detail||{};
-        if(p.id!=null)supMixDetailById[String(p.id)]=dd;
-        const rawCode=fabricCode(dd);
-        const code=rawCode
-          ? `<a href="#" class="sup-mix-barcode" data-fab-id="${esc(p.id)}" title="View all fabric details" style="color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px;font-size:.92em;">${esc(rawCode)}</a>`
-          : '—';
-        const meta=[dd.supplier,dd.fabric_structure].map(x=>fabricClean(x)).filter(Boolean).map(esc).join(' · ');
-        html+=`<tr class="sup-prod">
-         <td></td>
-         <td style="padding-left:24px;font-size:.92em;">${code}</td>
-         <td style="color:var(--text-sub);font-size:.92em;">${esc(dd.name||p.group||'—')}${meta?`<div class="muted" style="font-size:.85em;">${meta}</div>`:''}</td>
-         <td></td>
-         <td style="text-align:right;color:var(--text-sub);"${fx(FX.supfMetres)}>${fmt1(p.available_metres)}</td>
-         <td style="text-align:right;color:var(--text-sub);"${fx(FX.supfKg)}>${fmt1(p.available_kg)}</td>
-         <td style="text-align:right;color:var(--muted);"${fx(FX.supfCostKg)}>${fmt2(dd.cost_per_kg)}</td>
-         <td style="text-align:right;color:var(--muted);"${fx(FX.supfCostMetre)}>${fmt2(dd.cost_metre)}</td>
-         <td style="text-align:right;color:var(--text-sub);"${fx(FX.supfRowValue)}>${fmt(p.tied_up_kes)}</td>
-        </tr>`;
-      });
-    });
-  b.innerHTML=html;
-  if(scrollBox)scrollBox.classList.add('is-expanded');
-}
-// Ensure the support mix tree is cached for the current window, then run cb.
-// Shows a loading state in the table body while fetching (only when searching).
-function ensureSupportMixTree(cb){
-  const qs=supportMixParams();
-  if(supportMixCache&&supportMixCache.key===qs){cb&&cb();return;}
-  const searching=!!(supSearch||supSupplier);
-  const b=document.getElementById('support-body');
-  if(searching&&b)b.innerHTML='<tr><td colspan="9" class="loading">Loading products…</td></tr>';
-  loadSupportMixTree(qs).then(()=>{cb&&cb();}).catch(()=>{
-    if(searching&&b)b.innerHTML='<tr><td colspan="9" class="muted">Could not load support fabric search data.</td></tr>';
-  });
-}
-// Lazy-populate the supplier dropdown when it is first opened (in case the
-// page-load pre-warm has not finished / failed).
-function ensureSupportSupplierOptions(){ensureSupportMixTree(populateSupportSupplierOptions);}
-// Pre-warm the support mix tree on page load so the search box + supplier
-// dropdown work across the FULL support register immediately (best-effort).
-function prewarmSupportSearch(){
-  const qs=supportMixParams();
-  if(supportMixCache&&supportMixCache.key===qs){populateSupportSupplierOptions();return;}
-  loadSupportMixTree(qs).then(()=>{
-    populateSupportSupplierOptions();
-    if(supSearch||supSupplier)renderSupportTable();
-  }).catch(()=>{});
-}
-function runSupportSearch(){
-  if(!(supSearch||supSupplier)){renderSupportTable();return;}   // cleared → normal drill-down
-  ensureSupportMixTree(()=>{populateSupportSupplierOptions();renderSupportTable();});
-}
-function onSupportSearchInput(){
-  const el=document.getElementById('support-search');
-  supSearch=(el&&el.value||'').trim().toLowerCase();
-  runSupportSearch();
-}
-function onSupportSupplierChange(){
-  const el=document.getElementById('support-supplier');
-  supSupplier=(el&&el.value)||'';
-  runSupportSearch();
 }
 
 // ── Navigation ──
@@ -1770,6 +1499,50 @@ let mixActiveCols=MIX_COLS;
 // rows, so (like Barcode) they are hidden entirely until product rows are on
 // screen (a sub-category drilled to products, a search, or a supplier filter).
 const MIX_PROD_ONLY=new Set(['barcode','source_city','source_country','supplier_fabric_code','active']);
+// ── Stock Mix render context ────────────────────────────────────────────────
+// The Stock Mix drill-down renderer (renderMix) is parametrized by a `ctx` so
+// the main Stock Mix tab AND the Support Fabrics tab share the exact same
+// 4-level (category → sub-category → fabric → barcode) render, with fully
+// ISOLATED state (open/collapse, sort, group, search, supplier, active cols).
+// `mixMain` proxies the long-standing module-level globals (so the export
+// builders + inline handlers that still read them keep working unchanged);
+// `mixSupport` is its own independent state bag scoped to scope=support at the
+// fixed RMAT/Stock location. `MIX_CTX` resolves a ctx from a string key so
+// inline onclick handlers can name their table without capturing the object.
+const MIX_CTX={};
+const mixMain={
+  key:'main', scope:'main',
+  get cache(){return mixCache;},            set cache(v){mixCache=v;},
+  get group(){return mixGroup;},            set group(v){mixGroup=v;},
+  get coverBasis(){return mixCoverBasis;},  set coverBasis(v){mixCoverBasis=v;},
+  get sort(){return mixSort;},
+  get open(){return mixOpen;},
+  get subOpen(){return mixSubOpen;},
+  get fabOpen(){return mixFabOpen;},
+  get action(){return mixAction;},
+  get bound(){return mixBound;},            set bound(v){mixBound=v;},
+  get search(){return mixSearch;},          set search(v){mixSearch=v;},
+  get supplier(){return mixSupplier;},      set supplier(v){mixSupplier=v;},
+  get activeCols(){return mixActiveCols;},  set activeCols(v){mixActiveCols=v;},
+  get detailById(){return mixDetailById;},  set detailById(v){mixDetailById=v;},
+  location:()=>loc(),
+  ids:{kpis:'mix-kpis',narrative:'mix-narrative',head:'mix-head',body:'mix-body',
+       supplier:'mix-supplier',search:'mix-search',groupSeg:'mix-group-seg',coverSeg:'mix-cover-seg'},
+};
+MIX_CTX.main=mixMain;
+const mixSupport={
+  key:'support', scope:'support',
+  cache:null, group:'category', coverBasis:'weeks',
+  sort:{key:'consumption',dir:'desc'},
+  open:{}, subOpen:{}, fabOpen:{},
+  action:{has:false}, bound:false,
+  search:'', supplier:'',
+  activeCols:MIX_COLS, detailById:{},
+  location:()=>'RMAT/Stock',
+  ids:{kpis:null,narrative:null,head:'support-mix-head',body:'support-body',
+       supplier:'support-supplier',search:'support-search',groupSeg:'support-mix-group-seg',coverSeg:null},
+};
+MIX_CTX.support=mixSupport;
 const MIX_FX={
   consumption:'Consumption = net fabric used over the selected period (OUT moves − production returns), warehouse-wide, in the active unit. Floored at 0: when production returns in this window exceed the matching OUT the net would go negative, so it is shown as 0 — hover the ↩ marker for the OUT vs returned split.',
   available:'Available = current on-hand stock for this category at the selected location, in the active unit.',
@@ -1806,63 +1579,71 @@ function mixVerdict(r){
   if(clear) return {key:'clear', label:'Overstock — overstocked', cls:'pill-amber'};
   return {key:'hold', label:'Hold — balanced', cls:'pill-green'};
 }
-function setMixGroup(g){
-  if(mixGroup===g)return; mixGroup=g;
-  document.querySelectorAll('#mix-group-seg .unit-btn').forEach(b=>b.classList.toggle('active',b.dataset.grp===g));
-  loadFabricMix();
+function setMixGroup(g,ctxKey){
+  const ctx=MIX_CTX[ctxKey]||mixMain;
+  if(ctx.group===g)return; ctx.group=g;
+  if(ctx.ids.groupSeg)document.querySelectorAll('#'+ctx.ids.groupSeg+' .unit-btn').forEach(b=>b.classList.toggle('active',b.dataset.grp===g));
+  loadMix(ctx);
 }
 // Product/barcode search: re-render from the cached mix tree (no refetch).
-function onMixSearch(){
-  const el=document.getElementById('mix-search');
-  mixSearch=(el&&el.value||'').trim().toLowerCase();
-  renderFabricMix();
+function onMixSearch(ctxKey){
+  const ctx=MIX_CTX[ctxKey]||mixMain;
+  const el=document.getElementById(ctx.ids.search);
+  ctx.search=(el&&el.value||'').trim().toLowerCase();
+  renderMix(ctx);
 }
 // Supplier filter: re-render from the cached mix tree (no refetch). Surfaces
 // every product of the chosen supplier across all categories (like search).
-function onMixSupplier(){
-  const el=document.getElementById('mix-supplier');
-  mixSupplier=(el&&el.value)||'';
-  renderFabricMix();
+function onMixSupplier(ctxKey){
+  const ctx=MIX_CTX[ctxKey]||mixMain;
+  const el=document.getElementById(ctx.ids.supplier);
+  ctx.supplier=(el&&el.value)||'';
+  renderMix(ctx);
 }
 // (Re)build the supplier dropdown from the product details in the current tree,
 // preserving the active selection. Suppliers sorted A→Z; blank/"false" skipped.
-function populateMixSupplierOptions(){
-  const el=document.getElementById('mix-supplier');if(!el)return;
+function populateMixSupplierOptions(ctx){
+  ctx=ctx||mixMain;
+  const el=document.getElementById(ctx.ids.supplier);if(!el)return;
   const set=new Set();
-  Object.values(mixDetailById||{}).forEach(d=>{const s=fabricClean(d&&d.supplier);if(s)set.add(s);});
-  const cur=mixSupplier;
+  Object.values(ctx.detailById||{}).forEach(d=>{const s=fabricClean(d&&d.supplier);if(s)set.add(s);});
+  const cur=ctx.supplier;
   const opts=['<option value="">All suppliers</option>']
     .concat(Array.from(set).sort((a,b)=>a.localeCompare(b)).map(s=>`<option value="${esc(s)}">${esc(s)}</option>`));
   el.innerHTML=opts.join('');
-  if(cur&&set.has(cur)){el.value=cur;}else if(cur){mixSupplier='';el.value='';}
+  if(cur&&set.has(cur)){el.value=cur;}else if(cur){ctx.supplier='';el.value='';}
 }
 // Does a product row match the active search? Matches name, barcode (default_code)
 // and the detail's name/default_code so a barcode typed in still finds it.
-function mixProdMatches(p){
+function mixProdMatches(p,ctx){
+  ctx=ctx||mixMain;
   const dc=p.detail||{};
-  if(mixSupplier&&fabricClean(dc.supplier)!==mixSupplier)return false;
-  if(!mixSearch)return true;
+  if(ctx.supplier&&fabricClean(dc.supplier)!==ctx.supplier)return false;
+  if(!ctx.search)return true;
   const hay=[p.group,dc.name,fabricClean(dc.default_code),fabricClean(dc.barcode)].filter(Boolean).join(' ').toLowerCase();
-  return hay.indexOf(mixSearch)>=0;
+  return hay.indexOf(ctx.search)>=0;
 }
 // Index every product row's register detail by product_id so the barcode link can
 // open the shared detail card. Walks the full tree regardless of group mode.
-function indexMixDetails(rows){
-  mixDetailById={};
+function indexMixDetails(rows,ctx){
+  ctx=ctx||mixMain;
+  const map={};
   const walk=r=>{
-    if(r.id!=null&&r.detail)mixDetailById[String(r.id)]=r.detail;
+    if(r.id!=null&&r.detail)map[String(r.id)]=r.detail;
     if(Array.isArray(r.subcategories))r.subcategories.forEach(walk);
     if(Array.isArray(r.fabrics))r.fabrics.forEach(walk);
     if(Array.isArray(r.products))r.products.forEach(walk);
   };
   (rows||[]).forEach(walk);
+  ctx.detailById=map;
 }
 // Weeks/Months toggle for the Covers column — re-renders from cache (no refetch);
 // covers values are already derived for both bases, so only the display switches.
-function setMixCover(basis){
-  if(mixCoverBasis===basis)return; mixCoverBasis=basis;
-  document.querySelectorAll('#mix-cover-seg .unit-btn').forEach(b=>b.classList.toggle('active',b.dataset.cov===basis));
-  renderFabricMix();
+function setMixCover(basis,ctxKey){
+  const ctx=MIX_CTX[ctxKey]||mixMain;
+  if(ctx.coverBasis===basis)return; ctx.coverBasis=basis;
+  if(ctx.ids.coverSeg)document.querySelectorAll('#'+ctx.ids.coverSeg+' .unit-btn').forEach(b=>b.classList.toggle('active',b.dataset.cov===basis));
+  renderMix(ctx);
 }
 // Derive a single row's display metrics for the active unit. `subcategories`
 // (present on category rows when grouping by category) are derived recursively so
@@ -1917,11 +1698,15 @@ function deriveMixRows(d){
 }
 // Quantified action banner: money + units at risk for CLEAR / BUY / IDLE,
 // each with a count, units, KES and named example categories.
-function mixActionBanner(rows){
+function mixActionBanner(rows,ctx){
+  ctx=ctx||mixMain;
   const clears=rows.filter(r=>r.verdict.key==='clear');
   const buys=rows.filter(r=>r.verdict.key==='buy');
   const idles=rows.filter(r=>r.verdict.key==='idle');
-  mixAction.has=!!(clears.length||buys.length||idles.length);
+  ctx.action.has=!!(clears.length||buys.length||idles.length);
+  // The Support Fabrics tab has no action banner element — the verdict tally is
+  // still computed above (harmless) but there is nothing to render into.
+  if(!ctx.ids.narrative)return;
   const sum=(arr,f)=>arr.reduce((s,r)=>s+(f(r)||0),0);
   const shortUnits=r=>Math.max(0,r.consumption-r.available);            // unmet usage
   const shortKes=r=>r.available>0?shortUnits(r)*(r.tied/r.available):0;  // × implied unit value
@@ -1941,7 +1726,7 @@ function mixActionBanner(rows){
   let html='<div class="card" style="margin-bottom:1.2rem;">'
     +'<div class="section-head" style="margin-bottom:.7rem;"><h3>Action — money &amp; units at risk</h3>'
     +'<button class="btn" onclick="exportFabricMixActions(this)">Export action rows</button></div>';
-  if(!mixAction.has){
+  if(!ctx.action.has){
     html+='<p class="muted" style="margin:0;">Consumption and stock are broadly in balance — nothing flagged as Overstock, Shortage or Idle in this period.</p>';
   }else{
     html+='<div class="action-grid">'
@@ -1953,8 +1738,9 @@ function mixActionBanner(rows){
   html+='</div>';
   document.getElementById('mix-narrative').innerHTML=html;
 }
-function mixSortRows(rows){
-  const k=mixSort.key,dir=mixSort.dir==='asc'?1:-1;
+function mixSortRows(rows,ctx){
+  ctx=ctx||mixMain;
+  const k=ctx.sort.key,dir=ctx.sort.dir==='asc'?1:-1;
   // source_city/source_country/supplier live on the product row's `detail`, not
   // on the row itself, and sort as text (category/sub rows have none → blank).
   const detailKey=(k==='source_city'||k==='source_country'||k==='supplier'||k==='supplier_fabric_code'||k==='active');
@@ -1978,7 +1764,8 @@ function fabricClean(v){
 function fabricCode(d){
   return fabricClean(d&&d.default_code)||fabricClean(d&&d.barcode);
 }
-function mixCell(col,r,kind,opts){
+function mixCell(col,r,kind,opts,ctx){
+  ctx=ctx||mixMain;
   const f=MIX_FX[col.k]?fx(MIX_FX[col.k]):'';
   let cell;
   switch(col.type){
@@ -2023,13 +1810,13 @@ function mixCell(col,r,kind,opts){
       cell=`<td class="r">${inner}</td>`;break;}
     case 'pct':cell=`<td class="r">${(r[col.k]||0).toFixed(1)}</td>`;break;
     case 'gap':cell=`<td class="r">${gapChip(r.gap,true)}</td>`;break;
-    case 'cover':{const wk=r.covers;const v=mixCoverBasis==='months'?r.coversMonthly:wk;
+    case 'cover':{const wk=r.covers;const v=ctx.coverBasis==='months'?r.coversMonthly:wk;
       const c=wk==null?'pill-neutral':wk<1?'pill-red':wk<3?'pill-amber':wk>12?'pill-blue':'pill-green';
       if(v==null){cell='<td class="r">—</td>';break;}
       const capped=wk>MIX_COVER_CAP_WEEKS;
-      const capV=mixCoverBasis==='months'?MIX_COVER_CAP_MONTHS:MIX_COVER_CAP_WEEKS;
+      const capV=ctx.coverBasis==='months'?MIX_COVER_CAP_MONTHS:MIX_COVER_CAP_WEEKS;
       const disp=capped?(fmt1(capV)+'+'):fmt1(v);
-      const ttl=capped?` title="Capped at ${fmt1(capV)} ${mixCoverBasis==='months'?'months':'weeks'} — actual ≈ ${fmt1(v)}. Beyond ~2 years the figure reflects negligible usage and is not meaningful (effectively idle stock)."`:'';
+      const ttl=capped?` title="Capped at ${fmt1(capV)} ${ctx.coverBasis==='months'?'months':'weeks'} — actual ≈ ${fmt1(v)}. Beyond ~2 years the figure reflects negligible usage and is not meaningful (effectively idle stock)."`:'';
       cell=`<td class="r"><span class="pill ${c}"${ttl}>${disp}</span></td>`;break;}
     case 'kes':cell=`<td class="r" style="color:var(--muted);">${fmt(r[col.k])}</td>`;break;
     case 'verdict':{const v=r.verdict||mixVerdict(r);
@@ -2050,7 +1837,8 @@ function mixCell(col,r,kind,opts){
   }
   return f?cell.replace('<td','<td'+f):cell;
 }
-function mixRowHtml(r,kind,opts){
+function mixRowHtml(r,kind,opts,ctx){
+  ctx=ctx||mixMain;
   opts=opts||{};
   let attrs='';
   if(kind==='cat'){
@@ -2066,88 +1854,101 @@ function mixRowHtml(r,kind,opts){
   }else if(kind==='prod'){
     attrs=' class="prod-row"';
   }
-  return `<tr${attrs}>`+mixActiveCols.map(c=>mixCell(c,r,kind,opts)).join('')+'</tr>';
+  return `<tr${attrs}>`+ctx.activeCols.map(c=>mixCell(c,r,kind,opts,ctx)).join('')+'</tr>';
 }
 // Will the upcoming render put any product (deepest) rows on screen? Mirrors the
 // body-builder's visibility logic so the Barcode column can be shown/hidden in
 // lockstep. When searching, any matching product counts; otherwise a product is
 // visible only when its sub-category is expanded.
-function mixHasVisibleProducts(rows,searching,SEP){
+function mixHasVisibleProducts(rows,searching,SEP,ctx){
+  ctx=ctx||mixMain;
   // Does a sub-category have any product row on screen? Products now live under
   // the Fabric Name level, so a product is visible only when its fabric is
   // expanded (or, when searching, when it matches).
   const subHasVisible=(sub,subKey)=>{
     const fabs=Array.isArray(sub.fabrics)?sub.fabrics:[];
-    if(searching)return fabs.some(f=>(Array.isArray(f.products)?f.products:[]).some(mixProdMatches));
+    if(searching)return fabs.some(f=>(Array.isArray(f.products)?f.products:[]).some(p=>mixProdMatches(p,ctx)));
     return fabs.some(f=>{
       const fabKey=subKey+SEP+f.group;
-      return !!mixFabOpen[fabKey]&&(Array.isArray(f.products)?f.products:[]).length>0;
+      return !!ctx.fabOpen[fabKey]&&(Array.isArray(f.products)?f.products:[]).length>0;
     });
   };
   return rows.some(r=>{
-    if(mixGroup==='subcategory'){
+    if(ctx.group==='subcategory'){
       const subKey=(r.category||'')+SEP+r.group;
       if(searching)return subHasVisible(r,subKey);
-      return !!mixSubOpen[subKey]&&subHasVisible(r,subKey);
+      return !!ctx.subOpen[subKey]&&subHasVisible(r,subKey);
     }
     const subs=Array.isArray(r.subcategories)?r.subcategories:[];
     if(searching)return subs.some(s=>subHasVisible(s,r.group+SEP+s.group));
-    if(!mixOpen[r.group])return false;
+    if(!ctx.open[r.group])return false;
     return subs.some(s=>{
       const subKey=r.group+SEP+s.group;
-      return !!mixSubOpen[subKey]&&subHasVisible(s,subKey);
+      return !!ctx.subOpen[subKey]&&subHasVisible(s,subKey);
     });
   });
 }
-function renderFabricMix(){
-  const d=mixCache;if(!d)return;
+// Main Stock Mix tab — thin wrapper over the shared, ctx-parametrized renderer.
+function renderFabricMix(){return renderMix(mixMain);}
+// Shared 4-level (category → sub-category → fabric → barcode) drill-down render,
+// driven by a `ctx` (mixMain or mixSupport). All DOM ids, state (open/collapse,
+// sort, group, search, supplier, active cols) and the header/totals come from
+// ctx, so the main Stock Mix tab and the Support Fabrics tab render identically
+// with fully isolated state. Support (ctx.ids.kpis/narrative === null) simply
+// skips the KPI band + action banner it has no elements for.
+function renderMix(ctx){
+  ctx=ctx||mixMain;
+  const d=ctx.cache;if(!d)return;
   const useKg=UNIT==='kg';
   const totC=useKg?d.total_consumption_kg:d.total_consumption_metres;
   const totA=useKg?d.total_available_kg:d.total_available_metres;
   const win=(d.date_from&&d.date_to)?`${d.date_from} → ${d.date_to}`:`${fmt1(d.months)} months`;
-  // Header band
-  document.getElementById('mix-kpis').innerHTML=`
-   ${KpiCard({label:'Consumption period',value:fmt(d.days),unit:'days',valueAttrs:fx(FX.mixPeriodDays),footnote:`<span${fx(FX.mixWindow)}>${esc(win)}</span> &middot; ${mixGroup==='subcategory'?'by sub-category':'by category'}`})}
-   ${KpiCard({label:'Total consumption',value:totC==null?'&mdash;':fmt(totC),unit:totC==null?'':'m',valueAttrs:fx(FX.mixTotalConsumption),footnote:'net used (OUT − returns)'})}
-   ${KpiCard({label:'Total SOH',value:totA==null?'&mdash;':fmt(totA),unit:totA==null?'':'m',valueAttrs:fx(FX.mixTotalSOH),footnote:'available stock on hand'})}
-   ${KpiCard({label:'Tied-up capital',prefix:'KES',value:fmtKESval(d.total_tied_up_kes),valueAttrs:fx(FX.mixTiedCapital),footnote:'value of available stock'})}`;
-  const rows=mixSortRows(deriveMixRows(d));
-  indexMixDetails(rows);
-  populateMixSupplierOptions();
-  mixActionBanner(rows);
+  // Header band (main tab only — the support tab has its own KPI cards above).
+  if(ctx.ids.kpis){
+    document.getElementById(ctx.ids.kpis).innerHTML=`
+     ${KpiCard({label:'Consumption period',value:fmt(d.days),unit:'days',valueAttrs:fx(FX.mixPeriodDays),footnote:`<span${fx(FX.mixWindow)}>${esc(win)}</span> &middot; ${ctx.group==='subcategory'?'by sub-category':'by category'}`})}
+     ${KpiCard({label:'Total consumption',value:totC==null?'&mdash;':fmt(totC),unit:totC==null?'':'m',valueAttrs:fx(FX.mixTotalConsumption),footnote:'net used (OUT − returns)'})}
+     ${KpiCard({label:'Total SOH',value:totA==null?'&mdash;':fmt(totA),unit:totA==null?'':'m',valueAttrs:fx(FX.mixTotalSOH),footnote:'available stock on hand'})}
+     ${KpiCard({label:'Tied-up capital',prefix:'KES',value:fmtKESval(d.total_tied_up_kes),valueAttrs:fx(FX.mixTiedCapital),footnote:'value of available stock'})}`;
+  }
+  const rows=mixSortRows(deriveMixRows(d),ctx);
+  indexMixDetails(rows,ctx);
+  populateMixSupplierOptions(ctx);
+  mixActionBanner(rows,ctx);
   // The Barcode column only ever carries a value on product (deepest) rows, so
   // it is hidden entirely until product rows are actually on screen — i.e. a
   // sub-category is drilled down to its products, or a search surfaces matches.
-  const searching=!!mixSearch||!!mixSupplier;
+  const searching=!!ctx.search||!!ctx.supplier;
   const SEP='\u0001';
-  const showBarcode=mixHasVisibleProducts(rows,searching,SEP);
-  mixActiveCols=showBarcode?MIX_COLS:MIX_COLS.filter(c=>!MIX_PROD_ONLY.has(c.k));
+  const showBarcode=mixHasVisibleProducts(rows,searching,SEP,ctx);
+  ctx.activeCols=showBarcode?MIX_COLS:MIX_COLS.filter(c=>!MIX_PROD_ONLY.has(c.k));
   // Header
-  document.getElementById('mix-head').innerHTML='<tr>'+mixActiveCols.map(c=>{
-    const arrow=mixSort.key===c.k?(mixSort.dir==='asc'?' \u25B2':' \u25BC'):'';
-    const label=c.k==='group'?(mixGroup==='subcategory'?'Fabric sub-category':'Fabric category')
-      :(c.k==='covers'?(mixCoverBasis==='months'?'Monthly covers':'Weeks of Cover'):c.label);
-    return `<th class="${MIX_NUM[c.type]?'r ':''}sortable" onclick="sortMix('${c.k}')">${esc(label)}${arrow}</th>`;
+  document.getElementById(ctx.ids.head).innerHTML='<tr>'+ctx.activeCols.map(c=>{
+    const arrow=ctx.sort.key===c.k?(ctx.sort.dir==='asc'?' \u25B2':' \u25BC'):'';
+    const label=c.k==='group'?(ctx.group==='subcategory'?'Fabric sub-category':'Fabric category')
+      :(c.k==='covers'?(ctx.coverBasis==='months'?'Monthly covers':'Weeks of Cover'):c.label);
+    return `<th class="${MIX_NUM[c.type]?'r ':''}sortable" onclick="sortMix('${c.k}','${ctx.key}')">${esc(label)}${arrow}</th>`;
   }).join('')+'</tr>';
-  const body=document.getElementById('mix-body');
-  if(!mixBound){
+  const body=document.getElementById(ctx.ids.body);
+  if(!ctx.bound){
     // Delegated expand/collapse: read the (untrusted) category from a data-*
-    // attribute, never from an inline JS handler (XSS-safe).
+    // attribute, never from an inline JS handler (XSS-safe). Bound ONCE per ctx
+    // (the closure captures ctx) so the two tables never cross-render.
     body.addEventListener('click',e=>{
       // Product barcode → shared fabric detail card (checked first so the click
       // never falls through to row expand/collapse).
       const ab=e.target.closest('a.mix-barcode');
-      if(ab){e.preventDefault();openFabricDetailFromMix(ab.dataset.fabId);return;}
+      if(ab){e.preventDefault();openFabricDetailFromMix(ab.dataset.fabId,ctx);return;}
       const tc=e.target.closest('tr.cat-row');
-      if(tc&&tc.dataset.cat!=null){mixOpen[tc.dataset.cat]=!mixOpen[tc.dataset.cat];renderFabricMix();return;}
+      if(tc&&tc.dataset.cat!=null){ctx.open[tc.dataset.cat]=!ctx.open[tc.dataset.cat];renderMix(ctx);return;}
       const ts=e.target.closest('tr.sub-exp');
-      if(ts&&ts.dataset.subkey!=null){mixSubOpen[ts.dataset.subkey]=!mixSubOpen[ts.dataset.subkey];renderFabricMix();return;}
+      if(ts&&ts.dataset.subkey!=null){ctx.subOpen[ts.dataset.subkey]=!ctx.subOpen[ts.dataset.subkey];renderMix(ctx);return;}
       const tf=e.target.closest('tr.fab-exp');
-      if(tf&&tf.dataset.fabkey!=null){mixFabOpen[tf.dataset.fabkey]=!mixFabOpen[tf.dataset.fabkey];renderFabricMix();return;}
+      if(tf&&tf.dataset.fabkey!=null){ctx.fabOpen[tf.dataset.fabkey]=!ctx.fabOpen[tf.dataset.fabkey];renderMix(ctx);return;}
     });
-    mixBound=true;
+    ctx.bound=true;
   }
-  if(!rows.length){body.innerHTML=`<tr><td colspan="${mixActiveCols.length}" class="loading">No consumption or stock in this period.</td></tr>`;return;}
+  if(!rows.length){body.innerHTML=`<tr><td colspan="${ctx.activeCols.length}" class="loading">No consumption or stock in this period.</td></tr>`;return;}
   // Three-level in-place drill-down: category → sub-category → individual product.
   // Category mode nests subs (expandable) under each category; sub-category mode
   // renders a flat list of subs. Either way a sub-row with products is expandable
@@ -2156,46 +1957,46 @@ function renderFabricMix(){
   // When a search is active, the matching products are surfaced directly: their
   // category/sub-category auto-expand and only the matching product rows show
   // (non-matching rows/branches are hidden). Clearing the search restores the
-  // normal mixOpen/mixSubOpen collapsed view.
+  // normal collapsed view.
   let html='';
   // Render a sub-category's fabric-name rows (and, when a fabric is open, its
   // product rows) in NON-search mode. Shared by both group modes.
   const renderFabs=(sub,subKey)=>{
     const fabs=Array.isArray(sub.fabrics)?sub.fabrics:[];
-    mixSortRows(fabs).forEach(f=>{
+    mixSortRows(fabs,ctx).forEach(f=>{
       const fabKey=subKey+SEP+f.group;
       const prods=Array.isArray(f.products)?f.products:[];
-      const opened=!!mixFabOpen[fabKey];
-      html+=mixRowHtml(f,'fab',{fabKey,expandable:prods.length>0,opened});
+      const opened=!!ctx.fabOpen[fabKey];
+      html+=mixRowHtml(f,'fab',{fabKey,expandable:prods.length>0,opened},ctx);
       if(prods.length&&opened){
-        mixSortRows(prods).forEach(p=>{html+=mixRowHtml(p,'prod');});
+        mixSortRows(prods,ctx).forEach(p=>{html+=mixRowHtml(p,'prod',null,ctx);});
       }
     });
   };
   // Search mode: for a sub-category, return the fabrics that contain a matching
   // product (each with only its matching products). Ancestry auto-expands.
   const matchingFabs=sub=>(Array.isArray(sub.fabrics)?sub.fabrics:[])
-    .map(f=>({f,prods:(Array.isArray(f.products)?f.products:[]).filter(mixProdMatches)}))
+    .map(f=>({f,prods:(Array.isArray(f.products)?f.products:[]).filter(p=>mixProdMatches(p,ctx))}))
     .filter(x=>x.prods.length);
   const renderMatchFabs=(matchFabs,subKey)=>{
     matchFabs.forEach(({f,prods})=>{
       const fabKey=subKey+SEP+f.group;
-      html+=mixRowHtml(f,'fab',{fabKey,expandable:true,opened:true});
-      mixSortRows(prods).forEach(p=>{html+=mixRowHtml(p,'prod');});
+      html+=mixRowHtml(f,'fab',{fabKey,expandable:true,opened:true},ctx);
+      mixSortRows(prods,ctx).forEach(p=>{html+=mixRowHtml(p,'prod',null,ctx);});
     });
   };
   rows.forEach(r=>{
-    if(mixGroup==='subcategory'){
+    if(ctx.group==='subcategory'){
       const subKey=(r.category||'')+SEP+r.group;
       if(searching){
         const matchFabs=matchingFabs(r);
         if(!matchFabs.length)return;                 // hide subs with no match
-        html+=mixRowHtml(r,'subflat',{subKey,expandable:true,opened:true});
+        html+=mixRowHtml(r,'subflat',{subKey,expandable:true,opened:true},ctx);
         renderMatchFabs(matchFabs,subKey);
       }else{
         const fabs=Array.isArray(r.fabrics)?r.fabrics:[];
-        const opened=!!mixSubOpen[subKey];
-        html+=mixRowHtml(r,'subflat',{subKey,expandable:fabs.length>0,opened});
+        const opened=!!ctx.subOpen[subKey];
+        html+=mixRowHtml(r,'subflat',{subKey,expandable:fabs.length>0,opened},ctx);
         if(fabs.length&&opened)renderFabs(r,subKey);
       }
     }else{
@@ -2205,29 +2006,29 @@ function renderFabricMix(){
         subs=subs.map(s=>({s,matchFabs:matchingFabs(s)})).filter(x=>x.matchFabs.length);
         if(!subs.length)return;
       }
-      const catOpen=searching?true:!!mixOpen[r.group];
-      html+=mixRowHtml(r,'cat',{opened:catOpen,expandable:true});
+      const catOpen=searching?true:!!ctx.open[r.group];
+      html+=mixRowHtml(r,'cat',{opened:catOpen,expandable:true},ctx);
       if(catOpen){
         if(searching){
           subs.forEach(({s,matchFabs})=>{
             const subKey=r.group+SEP+s.group;
-            html+=mixRowHtml(s,'sub',{subKey,expandable:true,opened:true});
+            html+=mixRowHtml(s,'sub',{subKey,expandable:true,opened:true},ctx);
             renderMatchFabs(matchFabs,subKey);
           });
         }else if(Array.isArray(r.subcategories)){
-          mixSortRows(r.subcategories).forEach(s=>{
+          mixSortRows(r.subcategories,ctx).forEach(s=>{
             const subKey=r.group+SEP+s.group;
             const fabs=Array.isArray(s.fabrics)?s.fabrics:[];
-            html+=mixRowHtml(s,'sub',{subKey,expandable:fabs.length>0,opened:!!mixSubOpen[subKey]});
-            if(fabs.length&&mixSubOpen[subKey])renderFabs(s,subKey);
+            html+=mixRowHtml(s,'sub',{subKey,expandable:fabs.length>0,opened:!!ctx.subOpen[subKey]},ctx);
+            if(fabs.length&&ctx.subOpen[subKey])renderFabs(s,subKey);
           });
         }
       }
     }
   });
   if(searching&&!html){
-    const what=mixSearch?`“${esc(mixSearch)}”`:(mixSupplier?`supplier “${esc(mixSupplier)}”`:'the current filters');
-    body.innerHTML=`<tr><td colspan="${mixActiveCols.length}" class="loading">No product matches ${what}.</td></tr>`;
+    const what=ctx.search?`“${esc(ctx.search)}”`:(ctx.supplier?`supplier “${esc(ctx.supplier)}”`:'the current filters');
+    body.innerHTML=`<tr><td colspan="${ctx.activeCols.length}" class="loading">No product matches ${what}.</td></tr>`;
     return;
   }
   // Totals row — every numeric cell carries its own formula tooltip (data-fx).
@@ -2256,17 +2057,18 @@ function renderFabricMix(){
   const scrollBox=body.closest('.mix-scroll');
   if(scrollBox){
     const anyExpanded=searching
-      ||Object.values(mixOpen).some(Boolean)
-      ||Object.values(mixSubOpen).some(Boolean)
-      ||Object.values(mixFabOpen).some(Boolean);
+      ||Object.values(ctx.open).some(Boolean)
+      ||Object.values(ctx.subOpen).some(Boolean)
+      ||Object.values(ctx.fabOpen).some(Boolean);
     scrollBox.classList.toggle('is-expanded',anyExpanded);
   }
   if(window.__fabricEnhanceTables)window.__fabricEnhanceTables();
 }
-function sortMix(k){
-  if(mixSort.key===k)mixSort.dir=mixSort.dir==='asc'?'desc':'asc';
-  else{mixSort.key=k;mixSort.dir=(k==='group'||k==='source_city'||k==='source_country'||k==='supplier_fabric_code'||k==='active')?'asc':'desc';}
-  renderFabricMix();
+function sortMix(k,ctxKey){
+  const ctx=MIX_CTX[ctxKey]||mixMain;
+  if(ctx.sort.key===k)ctx.sort.dir=ctx.sort.dir==='asc'?'desc':'asc';
+  else{ctx.sort.key=k;ctx.sort.dir=(k==='group'||k==='source_city'||k==='source_country'||k==='supplier_fabric_code'||k==='active')?'asc':'desc';}
+  renderMix(ctx);
 }
 // ISO (local-time) date string — shared by the mix window sync helpers.
 const fabIso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -2301,18 +2103,29 @@ function fabSyncMixInputs(){
   if(toTop)toTop.value=to;
   if(selTop){if(n!=null)selTop.value=String(n); else selTop.selectedIndex=-1;}
 }
-async function loadFabricMix(){
+// Main Stock Mix tab loader — thin wrapper over the shared, ctx-parametrized loader.
+function loadFabricMix(){return loadMix(mixMain);}
+// Shared /api/fabric/mix loader for either table (mixMain or mixSupport). The
+// scope=support param is only added for the support ctx; the top Date range is
+// the single source of truth for both, so the in-page controls only exist on the
+// main tab (support has no fabSyncMixInputs / mix-period elements).
+async function loadMix(ctx){
+  ctx=ctx||mixMain;
   try{
-    fabSyncMixInputs();   // keep the in-page controls in lock-step with the top range
+    if(ctx.ids.kpis)fabSyncMixInputs();   // main tab: keep in-page controls in lock-step
     const from=document.getElementById('g-since').value;
     const to=document.getElementById('g-until').value;
-    const params=new URLSearchParams({group_by:mixGroup,location:loc()});
+    const params=new URLSearchParams({group_by:ctx.group,location:ctx.location()});
+    if(ctx.scope==='support')params.set('scope','support');
     if(from&&to){params.set('date_from',from);params.set('date_to',to);}
     else{params.set('days',document.getElementById('mix-period').value||90);}
-    mixCache=await apiFetch('/api/fabric/mix?'+params);
-    renderFabricMix();
+    ctx.cache=await apiFetch('/api/fabric/mix?'+params);
+    renderMix(ctx);
     applyFabricFreshness();
-  }catch(e){rowErr('mix-body',mixActiveCols.length,e);document.getElementById('mix-narrative').innerHTML='';}
+  }catch(e){
+    rowErr(ctx.ids.body,ctx.activeCols.length,e);
+    if(ctx.ids.narrative)document.getElementById(ctx.ids.narrative).innerHTML='';
+  }
 }
 // In-page preset → compute concrete from/to (window ends today), write them into
 // the top Date range, then a single reload. Both controls then agree.
@@ -2645,7 +2458,6 @@ function exportFabricMixActions(d,prefix){
 // Cache is keyed by the effective window query-string so it can NEVER serve a
 // stale period: any change to the consumption window (from the top Date range OR
 // the Stock Mix in-page/topbar controls) changes the key, forcing a re-fetch.
-let supportMixCache=null;        // {key, data}
 function supportMixParams(){
   const from=document.getElementById('g-since').value;
   const to=document.getElementById('g-until').value;
@@ -2672,20 +2484,17 @@ function closeSupportExportMenu(){
 document.addEventListener('click',e=>{
   if(!(e.target.closest&&e.target.closest('#support-export-menu,#support-export-btn')))closeSupportExportMenu();
 });
-async function loadSupportMixTree(qs){
-  const data=await apiFetch('/api/fabric/mix?'+qs);
-  supportMixCache={key:qs,data};
-  return data;
-}
 async function supportMixExport(kind){
   closeSupportExportMenu();
   const btn=document.getElementById('support-export-btn');
   const orig=btn?btn.textContent:'';
-  const qs=supportMixParams();
-  let d=(supportMixCache&&supportMixCache.key===qs)?supportMixCache.data:null;
+  // Prefer the already-loaded support Stock-mix data when it is grouped by
+  // category (the export walks the full category→sub→fabric→product nesting);
+  // otherwise fetch the full category-grouped tree for the current window.
+  let d=(mixSupport.cache&&mixSupport.group==='category')?mixSupport.cache:null;
   if(!d){
     if(btn){btn.textContent='Loading…';btn.disabled=true;}
-    try{d=await loadSupportMixTree(qs);}
+    try{d=await apiFetch('/api/fabric/mix?'+supportMixParams());}
     catch(e){alert('Could not load support fabric data to export.');return;}
     finally{if(btn){btn.textContent=orig;btn.disabled=false;}}
   }
@@ -3345,17 +3154,11 @@ function openFabricDetail(id){
 }
 // Open the detail card for a Stock Mix product row (data was carried on the
 // mix response and indexed by product_id during render).
-function openFabricDetailFromMix(id){
-  const r=mixDetailById[String(id)];
+function openFabricDetailFromMix(id,ctx){
+  ctx=ctx||mixMain;
+  const r=ctx.detailById[String(id)];
   if(!r)return;
   renderFabricDetail(r,MIX_DETAIL_KEYS);
-}
-// Open the detail card for a Support Fabrics product row. The rows are already
-// register-shaped (from /api/fabric/register), so use the Register field set.
-function openFabricDetailFromSupport(id){
-  const r=supDetailById[String(id)];
-  if(!r)return;
-  renderFabricDetail(r,DETAIL_KEYS);
 }
 function closeFabricDetail(){document.getElementById('fab-detail-overlay').style.display='none';}
 // Print a landscape "Buying Fabric Information Sheet" (matches the paper form the
@@ -3809,6 +3612,10 @@ function onDateRangeChange(){
   // The Overview's "By primary colour" consumption panel follows the top range.
   if(document.getElementById('page-overview').style.display!=='none'){
     loadColorMix();
+  }
+  // The Support Fabrics Stock-mix table follows the same top Date range too.
+  if(document.getElementById('page-support').style.display!=='none'){
+    loadMix(mixSupport);
   }
 }
 
