@@ -499,7 +499,7 @@ const IBT = () => {
           {markdownCandidates.length > 0 && (
             <div className="card-white p-4 sm:p-5" data-testid="ibt-markdown-card">
               <SectionTitle
-                title={`Markdown instead · ${markdownCandidates.length}`}
+                title={`IBT markdown fork · ${markdownCandidates.length}`}
                 subtitle="Slow stock that qualifies for a move on stock balance but does NOT pay to ship — once transit time and freight/duty are paid, the destination sells it no faster (or the value is wiped out). Clear it locally with a markdown rather than redeploying it."
               />
               <div className="overflow-x-auto -mx-1">

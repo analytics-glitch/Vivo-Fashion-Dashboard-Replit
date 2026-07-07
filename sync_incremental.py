@@ -2199,6 +2199,50 @@ def main():
     except Exception as e:
         log.error("Stockout snapshot error: %s", e)
 
+    # Restatement check — once a day in the same 21:00 UTC window. Snapshots
+    # closed-month canonical KPIs and records a restatement when history was
+    # rewritten (re-extracts / re-netting / recovery backfills), so the
+    # dashboard can badge affected comparison bases with "restated on DATE".
+    # The endpoint is idempotent (drift-vs-snapshot compare; same-day upsert).
+    try:
+        if now.hour == 21:
+            _secret = os.environ.get("SESSION_SECRET")
+            if _secret:
+                resp = requests.post(
+                    "http://localhost:80/api/internal/restatement-check",
+                    headers={"X-Internal-Token": _secret},
+                    timeout=180,
+                )
+                log.info(
+                    "Restatement check — HTTP %s %s", resp.status_code, resp.text[:200]
+                )
+            else:
+                log.warning("Restatement check skipped — SESSION_SECRET unset")
+    except Exception as e:
+        log.error("Restatement check error: %s", e)
+
+    # Cross-page reconciliation — once a day in the same 21:00 UTC window.
+    # Asserts the WS1-2 identities (Net/Total Sales + canonical GROSS units
+    # equal across Overview KPIs / Locations country summary / Trend series)
+    # and persists results to dq_cross_checks for the Data Quality page.
+    # Idempotent per day (upsert on run_date+check_name).
+    try:
+        if now.hour == 21:
+            _secret = os.environ.get("SESSION_SECRET")
+            if _secret:
+                resp = requests.post(
+                    "http://localhost:80/api/data-quality/cross-check",
+                    headers={"X-Internal-Token": _secret},
+                    timeout=180,
+                )
+                log.info(
+                    "Cross-page reconcile — HTTP %s %s", resp.status_code, resp.text[:200]
+                )
+            else:
+                log.warning("Cross-page reconcile skipped — SESSION_SECRET unset")
+    except Exception as e:
+        log.error("Cross-page reconcile error: %s", e)
+
     # Data-quality log — once a day in the same 21:00 UTC window. Records the
     # current overall data-quality score onto a sync_health_log row so quality
     # is tracked alongside sync health. Authenticates with the shared secret.

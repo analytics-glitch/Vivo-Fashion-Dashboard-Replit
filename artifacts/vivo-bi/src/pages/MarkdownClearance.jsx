@@ -175,7 +175,7 @@ const MarkdownClearance = () => {
           className={`px-4 py-2 text-[12.5px] font-medium ${tab === "candidates" ? "bg-brand text-white" : "bg-white hover:bg-panel"}`}
           data-testid="mc-tab-candidates"
         >
-          Markdown Candidates
+          Clearance Candidates
         </button>
         <button
           type="button"
@@ -191,12 +191,12 @@ const MarkdownClearance = () => {
 
       {tab === "candidates" && (
         <>
-          {mkLoading && <Loading label="Scanning for markdown candidates…" />}
+          {mkLoading && <Loading label="Scanning for clearance candidates…" />}
           {!mkLoading && mkError && <ErrorBox message={mkError} />}
           {!mkLoading && !mkError && (
             <>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <KPICard testId="mc-kpi-count" accent label="Markdown Candidates"
+                <KPICard testId="mc-kpi-count" accent label="Clearance Candidates"
                   value={fmtNum(mk?.total || 0)} icon={TagChevron} showDelta={false}
                   sub="Overstocked, slow-moving styles" />
                 <KPICard testId="mc-kpi-units" label="Units to Clear"
@@ -214,11 +214,11 @@ const MarkdownClearance = () => {
 
               <div className="card-white p-4 sm:p-5" data-testid="mc-candidates-card">
                 <SectionTitle
-                  title={`Markdown Candidates · ${candidates.length} styles`}
+                  title={`Clearance Candidates · ${candidates.length} styles`}
                   subtitle="Styles with high weeks-of-cover and weak 8-week sell-through. Recommended markdown scales with overstock depth."
                 />
                 {candidates.length === 0 ? (
-                  <Empty label="No markdown candidates for the current filters." />
+                  <Empty label="No clearance candidates for the current filters." />
                 ) : (
                   <SortableTable
                     columns={columns}

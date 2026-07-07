@@ -58,7 +58,7 @@ const PAGES = [
   { group: "Products & Range", route: "/range-mgmt", label: "Range Mgmt",
     purpose: "Range classification & assortment planning.", reports: ["Lifecycle tier (T1–T4) classification", "SOR-since-launch", "Retirement pipeline"] },
   { group: "Products & Range", route: "/markdown-clearance", label: "Markdown & Clearance",
-    purpose: "Markdown candidates & clearance plan.", reports: ["Markdown candidates (WoC, sell-through, rec. markdown %, est. revenue)", "Clearance plan grouped IMMEDIATE vs PLANNED"] },
+    purpose: "Clearance candidates & clearance plan.", reports: ["Clearance candidates (style-level: WoC, sell-through, rec. markdown %, est. revenue)", "Clearance plan grouped IMMEDIATE vs PLANNED"] },
 
   // Inventory & Replenishment
   { group: "Inventory & Replenishment", route: "/inventory", label: "Inventory",
@@ -68,7 +68,7 @@ const PAGES = [
   { group: "Inventory & Replenishment", route: "/size-health", label: "Size Health",
     purpose: "Broken size-curve detection by style.", reports: ["Stock on hand by size", "Broken size-curve flags", "Broken size %"] },
   { group: "Inventory & Replenishment", route: "/re-order", label: "Re-Order",
-    purpose: "Styles to re-order based on demand.", reports: ["Buy plan with priority (High/Med/Low)", "Total units needed"] },
+    purpose: "Styles to re-order, ranked by opportunity value.", reports: ["Opportunity-value ranking (forecast buy engine)", "Forecast buy quantities per style", "Priority buckets (High/Med/Low)"] },
   { group: "Inventory & Replenishment", route: "/ibt", label: "IBT",
     purpose: "Inter-branch transfer recommendations.", reports: ["Store-to-store transfer suggestions", "Warehouse-to-store suggestions", "Completed-transfer audit"] },
   { group: "Inventory & Replenishment", route: "/allocations", label: "Allocations",
@@ -177,7 +177,7 @@ const RULES = [
       "Freshness indicator (Phase 3): an 'as of HH:MM:SS EAT' pill reads the sales-sync heartbeat; when the sync is stale beyond the SLA the destructive scan buttons soft-lock so an operator cannot act on figures that may be behind the POS.",
       "Net cash-conversion-days (net-CCC) per unit = donor days-to-sell (capped) − destination days-to-sell − corridor in-transit days. Days-to-sell come from a per-(store, SKU) weekly velocity with category shrinkage: a SKU that held stock but did not sell is treated as genuinely slow, while a no-signal cell falls back to its category prior (not mistaken for dead). Transit days come from a corridor lead-time table (domestic ≈ 2d, cross-border ≈ 7d, refreshed nightly from observed completions).",
       "Value per unit = ASP − transport (domestic vs cross-border per-unit) − cross-border duty. A move must clear net-CCC > 0 to ship.",
-      "Markdown fork: a donor (store, style) whose slow stock qualifies on stock-balance but does NOT pay to ship — freight/duty wipes the value, or the destination sells it no faster once transit is paid — is sent to the 'Markdown instead' list (gated to ≥ 4 on-hand) to be cleared locally rather than redeployed.",
+      "Markdown fork: a donor (store, style) whose slow stock qualifies on stock-balance but does NOT pay to ship — freight/duty wipes the value, or the destination sells it no faster once transit is paid — is sent to the 'IBT markdown fork' list (gated to ≥ 4 on-hand) to be cleared locally rather than redeployed.",
       "Stores tiered A/B/C by revenue; with cluster-aware matching ON (default) transfers stay within the same or adjacent tier. The toggle turns it off for chain-wide matching.",
       "Low Seller (donor): style sells ≤ 20% of the group average at that store while holding available stock. High Seller (receiver): sells ≥ 150% of average while running low (≤ 1 unit) — the demand budget then caps each SKU at the receiver's two-week gap.",
       "Newly-arrived stock is protected — a style launched within the last 21 days (3 weeks) is excluded on both sides (retail carries no per-store received date, so the catalogue launch date is the proxy; styles with no launch date are kept).",

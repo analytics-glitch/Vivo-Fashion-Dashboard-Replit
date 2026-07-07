@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
+import { useRestatements, RestatedBadge } from "@/lib/useRestatements";
 import { isMerchandise, categoryFor as sharedCategoryFor } from "@/lib/productCategory";
 import {
   api,
@@ -518,6 +519,13 @@ const Overview = () => {
   // WS3 — on a single-day range the "last month/year" comparison base is
   // the SAME DAY shifted, not the whole month/year; label it honestly.
   const singleDayRange = dateFrom === dateTo;
+  // WS7 T702 — badge any restated month overlapping the viewed OR compare window
+  const restateBase = useMemo(() => {
+    const prv = comparePeriod(dateFrom, dateTo, compareMode, { date_from: compareDateFrom, date_to: compareDateTo });
+    const from = prv?.date_from && prv.date_from < dateFrom ? prv.date_from : dateFrom;
+    return { from, to: dateTo };
+  }, [dateFrom, dateTo, compareMode, compareDateFrom, compareDateTo]);
+  const restatements = useRestatements(restateBase.from, restateBase.to);
   const compareLbl = compareMode === "yesterday" ? "vs Yesterday"
     : compareMode === "last_month" ? (singleDayRange ? "vs SDLM (same day last month)" : "vs Last Month")
     : compareMode === "last_year" ? (singleDayRange ? "vs SDLY (same day last year)" : "vs Last Year")
@@ -1015,6 +1023,7 @@ const Overview = () => {
             {compareMode !== "none" && compareLbl && (
               <span className="ml-2 pill-neutral">{compareLbl}</span>
             )}
+            <RestatedBadge restatements={restatements} className="ml-2 align-middle" />
             {partialDay && (
               <span
                 className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-amber-300 bg-amber-50 text-amber-800 text-[11px] font-semibold align-middle"
@@ -1137,7 +1146,7 @@ const Overview = () => {
               action={{ label: "Top styles", to: "/products" }}
               prefetch={pf("/products")} />
             {!isOnlineOnly && (
-              <KPICard testId="kpi-footfall" label="Total Footfall" sub="Walk-ins counted at our store sensors" value={fmtNum(footfallAgg.total_footfall)} valueFull={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
+              <KPICard testId="kpi-footfall" label="Total Footfall" sub="Walk-ins counted at our store sensors" value={loading ? "\u2014" : fmtNum(footfallAgg.total_footfall)} valueFull={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
                 formula={"Formula: sum of door-sensor walk-ins (a01_footfall_in) across stores for the selected period.\n\nRenamed sensor feeds are mapped back to their store before totalling. Stores flagged for sensor data-quality issues (conversion over 50%) are excluded."}
                 delta={compareMode !== "none" && footfallAggPrev.total_footfall ? pctDelta(footfallAgg.total_footfall, footfallAggPrev.total_footfall) : null}
                 deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} showDelta={compareMode !== "none"}
@@ -1145,7 +1154,7 @@ const Overview = () => {
                 prefetch={pf("/footfall")} />
             )}
             {!isOnlineOnly && (
-              <KPICard testId="kpi-conversion" label="Conversion Rate" sub="Out of every 100 walk-ins, how many bought" value={fmtPct(footfallAgg.conversion_rate, 2)} valueFull={`${Number(footfallAgg.conversion_rate || 0).toFixed(4)}%`} icon={Target}
+              <KPICard testId="kpi-conversion" label="Conversion Rate" sub="Store orders ÷ store footfall (pooled)" value={loading ? "\u2014" : fmtPct(footfallAgg.conversion_rate, 2)} valueFull={`${Number(footfallAgg.conversion_rate || 0).toFixed(4)}%`} icon={Target}
                 formula={"Formula: (total transactions ÷ total walk-ins) × 100, pooled across stores.\n\nTransactions and footfall are matched per store, so the renamed sensor feeds (from 2026-06-07) are mapped back to their sales name before dividing. Stores with sensor data-quality issues (conversion over 50%) are excluded."}
                 delta={compareMode !== "none" && footfallAggPrev.conversion_rate ? pctDelta(footfallAgg.conversion_rate, footfallAggPrev.conversion_rate) : null}
                 deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} showDelta={compareMode !== "none"}
@@ -1159,7 +1168,7 @@ const Overview = () => {
                 inline (not compacted). User explicitly asked for the
                 exact value to avoid rounding ambiguity when comparing
                 across days. */}
-            <KPICard small testId="kpi-abv" label="ABV" sub="Average Basket Value"
+            <KPICard small testId="kpi-abv" label="ABV" sub="Gross Total Sales ÷ transactions"
               formula="What a typical customer spends per visit — Total Sales ÷ transactions, on gross (VAT-inclusive) sales, the same basis as the Total Sales headline (not net of discounts/returns). Higher means people are buying more in one go."
               value={fmtKESLong(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)}
               valueFull={fmtKESLong(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)}
@@ -1208,10 +1217,28 @@ const Overview = () => {
               prefetch={pf("/exports")} />
           </div>
 
+          {/* WS9 T903 — KPI tiles (useKpis) resolve before the bootstrap chart
+              payload, so charts used to silently show the PREVIOUS period for
+              up to a minute after a filter change. While the bootstrap is
+              in-flight, veil the whole chart region with an "Updating…"
+              overlay so stale figures are never mistaken for current ones. */}
+          <div className="relative">
+            {loading && (
+              <div
+                className="absolute inset-0 z-20 bg-white/60 backdrop-blur-[1px] rounded-xl flex items-start justify-center pt-24"
+                data-testid="charts-stale-overlay"
+              >
+                <span className="inline-flex items-center gap-2 rounded-full bg-white border border-border shadow-sm px-4 py-2 text-[12.5px] font-semibold text-foreground/80">
+                  <span className="h-3.5 w-3.5 rounded-full border-2 border-brand border-t-transparent animate-spin" />
+                  Updating charts for the new period…
+                </span>
+              </div>
+            )}
+
           <div className={`grid grid-cols-1 ${isOnlineOnly ? "md:grid-cols-1" : "md:grid-cols-3"} gap-3`}>
             <HighlightCard testId="highlight-top-subcategory" label="Top Subcategory"
               name={subcatTop && subcatTop.length ? subcatTop[0].subcategory : "—"}
-              amount={subcatTop && subcatTop.length ? `${fmtKES(subcatTop[0].total_sales)} · ${subcatTop[0].pct.toFixed(1)}%` : "—"} icon={ChartBar} />
+              amount={subcatTop && subcatTop.length ? `${fmtKES(subcatTop[0].total_sales)} · ${(kpis && kpis.total_sales ? (subcatTop[0].total_sales / kpis.total_sales) * 100 : subcatTop[0].pct).toFixed(1)}% of Total Sales` : "—"} icon={ChartBar} />
             {!isOnlineOnly && (
               <HighlightCard testId="highlight-top-location" label="Top Location"
                 name={topChannel ? topChannel.channel : "—"}
@@ -1251,7 +1278,7 @@ const Overview = () => {
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="card-white p-5 lg:col-span-2" data-testid="chart-top-channels">
-              <SectionTitle title={`Sales by Location · ${top15.length}`} subtitle="How much each store sold this period. Numbers in brackets show that store's share of total sales." />
+              <SectionTitle title={`Sales by Location (${top15.length} stores)`} subtitle="How much each store sold this period. Numbers in brackets show that store's share of total sales." />
               {top15.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: Math.max(380, 40 + top15.length * 22) }}>
                   <ResponsiveContainer>
@@ -1683,6 +1710,7 @@ const Overview = () => {
               <WinsThisWeekCard />
               {!isOnlineOnly && <StoreOfTheWeek />}
             </div>
+          </div>
           </div>
         </>
       )}

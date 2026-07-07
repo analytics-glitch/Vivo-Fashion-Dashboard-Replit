@@ -5,6 +5,7 @@ import calendar
 import logging
 from collections import deque
 from datetime import date, timedelta
+from dq_cross_compare import cross_surface_compare
 import psycopg2
 import psycopg2.extras
 import os
@@ -460,6 +461,8 @@ _AUTH_INTERNAL_TOKEN_PATHS = {"/api/analytics/replenishment-sor/snapshot",
 # while the sync loop can bootstrap it headless. The endpoint re-checks the token
 # to decide whether to also assert a staff role.
 _AUTH_INTERNAL_OR_SESSION_PATHS = {"/api/social/x/sync",
+                                   "/api/internal/restatement-check",
+                                   "/api/data-quality/cross-check",
                                    "/api/social/facebook/sync",
                                    "/api/social/instagram/sync",
                                    "/api/social/tiktok/sync",
@@ -895,6 +898,17 @@ def _user_for_session(token):
         (token,), fetch=True)
     if not rows:
         return None
+    # WS9 T901 — sliding expiry: an active user must never be logged out
+    # mid-week just because the fixed 7-day window elapsed. Renew whenever a
+    # DB validation happens with less than half the TTL remaining (the 60s
+    # session cache above keeps this write infrequent). Best-effort.
+    try:
+        _users_exec(
+            "UPDATE user_sessions SET expires_at = now() + make_interval(secs => %s) "
+            "WHERE session_token=%s AND expires_at < now() + make_interval(secs => %s)",
+            (_SESSION_TTL, token, _SESSION_TTL // 2))
+    except Exception:
+        pass
     user = _user_dict(rows[0])
     with _session_cache_lock:
         _session_cache[token] = (user, now)
@@ -6416,8 +6430,15 @@ def auth_google_callback(request: Request):
     sub = "google:" + str(info.get("sub") or email)
     name = info.get("name") or ""
     picture = (info.get("picture") or "").strip()
-    rec = resolve_app_user(sub, email, name, picture)
-    token = _create_session(rec["user_id"])
+    # WS9 T901 — a user-store hiccup here used to escape as a raw 500 (the SPA
+    # then showed a dead white page). Fail back to the callback with a coded
+    # error the login screen can render instead.
+    try:
+        rec = resolve_app_user(sub, email, name, picture)
+        token = _create_session(rec["user_id"])
+    except Exception:
+        logging.exception("google oauth provisioning failed for %s", email)
+        return _back("error=provisioning")
     resp = _back("token=" + quote(token))
     resp.set_cookie("session_token", token, **_login_cookie_kwargs())
     resp.delete_cookie("g_oauth_state", path="/")
@@ -6569,7 +6590,11 @@ def analytics_active_pos(
               "AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ") "
               "AND LOWER(s.pos_location_name) NOT LIKE '%online%' "
               "AND LOWER(s.pos_location_name) NOT LIKE '%third-party%' "
-              "AND LOWER(s.pos_location_name) NOT LIKE '%third party%'")
+              "AND LOWER(s.pos_location_name) NOT LIKE '%third party%' "
+              # Holding locations (e.g. 'The Oasis Mall Holding Location') are
+              # stock-staging points, not selling stores — keep them out of the
+              # Trend/FilterBar store selectors.
+              "AND LOWER(s.pos_location_name) NOT LIKE '%holding location%'")
     return run_query("""
         SELECT s.pos_location_name AS channel, s.country,
             COUNT(DISTINCT s.order_id) AS orders,
@@ -8132,11 +8157,36 @@ def analytics_velocity(
             GROUP BY p.style_name
         ),
         base AS (
+            -- sales rows are (style, product_type) grain but stock/velocity are
+            -- style grain: joining directly duplicated the full stock figure
+            -- onto every subcategory row of a style (Satin Kaftan bug). Instead
+            -- apportion stock and weekly velocity across a style's rows by
+            -- units-sold share; a zero-units style gives everything to its
+            -- first row so totals still reconcile.
             SELECT sa.style_name, sa.brand, sa.product_type,
                 sa.units_sold, sa.total_sales,
-                COALESCE(st.current_stock, 0) AS current_stock,
-                ((COALESCE(v.u28, 0) * 2)
-                  + GREATEST(COALESCE(v.u56, 0) - COALESCE(v.u28, 0), 0)) / 12.0 AS weekly_units
+                CASE
+                    WHEN SUM(sa.units_sold) OVER (PARTITION BY sa.style_name) > 0
+                    THEN ROUND(COALESCE(st.current_stock, 0)
+                         * sa.units_sold::numeric
+                         / SUM(sa.units_sold) OVER (PARTITION BY sa.style_name))
+                    WHEN ROW_NUMBER() OVER (PARTITION BY sa.style_name
+                                            ORDER BY sa.product_type NULLS LAST) = 1
+                    THEN COALESCE(st.current_stock, 0)
+                    ELSE 0
+                END AS current_stock,
+                CASE
+                    WHEN SUM(sa.units_sold) OVER (PARTITION BY sa.style_name) > 0
+                    THEN (((COALESCE(v.u28, 0) * 2)
+                          + GREATEST(COALESCE(v.u56, 0) - COALESCE(v.u28, 0), 0)) / 12.0)
+                         * sa.units_sold::numeric
+                         / SUM(sa.units_sold) OVER (PARTITION BY sa.style_name)
+                    WHEN ROW_NUMBER() OVER (PARTITION BY sa.style_name
+                                            ORDER BY sa.product_type NULLS LAST) = 1
+                    THEN ((COALESCE(v.u28, 0) * 2)
+                          + GREATEST(COALESCE(v.u56, 0) - COALESCE(v.u28, 0), 0)) / 12.0
+                    ELSE 0
+                END AS weekly_units
             FROM sales sa
             LEFT JOIN vel v ON v.style_name = sa.style_name
             LEFT JOIN stock st ON sa.style_name = st.style_name
@@ -9058,6 +9108,14 @@ def analytics_warehouse_return_candidates(
     warehouse return). Warehouses themselves are excluded as the destination."""
     m = "retired" if str(mode).lower() == "retired" else "aged"
     n = max(0, int(min_days))
+    # WS9 T902 — this scan (all_inventory x last-sale semi-join) is heavy enough
+    # to feel like a hang on first load; serve from a snapshot-coherent cache so
+    # repeat visits are instant. Keyed on the inventory snapshot version like
+    # the Product Analysis cache, so a new stock snapshot invalidates it.
+    _wr_ck = "wrc:" + _inventory_version() + f":{m}:{n}"
+    _wr_cached = cache_get(_wr_ck)
+    if _wr_cached is not None:
+        return _wr_cached
     if m == "aged":
         # Aged = not sold AT ITS STORE in >= n days. Make Aged and Retired
         # mutually exclusive (a SKU must land in exactly one bucket): exclude
@@ -9132,7 +9190,9 @@ def analytics_warehouse_return_candidates(
         ORDER BY days_since_last_sale DESC, soh DESC
         LIMIT 1500
     """)
-    return {"mode": m, "min_days": n, "rows": rows}
+    out = {"mode": m, "min_days": n, "rows": rows}
+    cache_set(_wr_ck, out, ttl=600)
+    return out
 
 @app.get("/api/inventory/freshness")
 def inventory_freshness():
@@ -18190,6 +18250,221 @@ def _fmt_bucket_label(d, bucket):
         return d.strftime("%Y")
     return d.strftime("%b %d")
 
+# ── Prior-period restatement tracking (WS7) ─────────────────────────────────
+# Historical months are supposed to be immutable, but the pipeline CAN rewrite
+# history (re-extracts, re-netting, recovery backfills). When that happens the
+# comparison bases on Overview/Trend silently shift with no notice. We snapshot
+# each CLOSED month's canonical headline figures (same SQL as /api/kpis, all
+# countries/channels, BASE_FILTERS) once a night; when a closed month's figure
+# drifts from its snapshot beyond tolerance we record a RESTATEMENT (old→new +
+# date) and update the snapshot. The frontend shows a "restated on DATE"
+# marker whenever a compare base overlaps a restated month.
+
+_RESTATE_REL_TOL = 0.001   # 0.1% relative drift on money
+_RESTATE_MONTHS_BACK = 24
+
+
+def _ensure_restatement_tables(conn):
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS kpi_month_snapshots (
+                month        date PRIMARY KEY,
+                total_sales  numeric NOT NULL,
+                net_sales    numeric NOT NULL,
+                units        bigint  NOT NULL,
+                orders       bigint  NOT NULL,
+                captured_at  timestamptz NOT NULL DEFAULT now()
+            )""")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS kpi_restatements (
+                id            serial PRIMARY KEY,
+                month         date NOT NULL,
+                restated_on   date NOT NULL,
+                old_total_sales numeric, new_total_sales numeric,
+                old_net_sales   numeric, new_net_sales   numeric,
+                old_units       bigint,  new_units       bigint,
+                old_orders      bigint,  new_orders      bigint,
+                created_at    timestamptz NOT NULL DEFAULT now(),
+                UNIQUE (month, restated_on)
+            )""")
+    conn.commit()
+
+
+@_deferred_startup
+def _apply_product_master_overrides_boot():
+    # WS8 T810 — durable product-master corrections (Safari brand, Soko
+    # earrings/Maxi-skirt subcategory fixes). Idempotent; also runs at the end
+    # of transform_all_products_clean.py. Boot application means prod heals on
+    # the next publish without a rebuild.
+    try:
+        from product_master_overrides import apply_overrides
+        conn = get_conn()
+        try:
+            n = apply_overrides(conn, log)
+            conn.commit()
+            if n:
+                log.info("Product-master overrides: %d rows corrected", n)
+        finally:
+            conn.close()
+    except Exception as e:
+        log.error("Product-master override boot apply failed: %s", e)
+
+
+@_deferred_startup
+def _init_restatement_tables():
+    try:
+        conn = get_conn()
+        try:
+            _ensure_restatement_tables(conn)
+        finally:
+            conn.close()
+    except Exception as e:
+        log.error("Restatement table init failed: %s", e)
+
+
+def _restatement_month_figures():
+    """Canonical per-month headline figures for CLOSED months (same formulas
+    and BASE_FILTERS as /api/kpis and /api/analytics/kpi-trend, all countries
+    and channels), limited to the trailing window."""
+    return run_query("""
+        SELECT date_trunc('month', s.sale_date::date)::date AS month,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
+                - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric - s.discounts_kes::numeric
+                          WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS net_sales,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
+            COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders
+        FROM all_sales s
+        WHERE """ + BASE_FILTERS + """
+          AND s.sale_date::date >= date_trunc('month', CURRENT_DATE) - INTERVAL '""" + str(_RESTATE_MONTHS_BACK) + """ months'
+          AND s.sale_date::date < date_trunc('month', CURRENT_DATE)
+        GROUP BY 1 ORDER BY 1
+    """)
+
+
+def _restatement_drifted(old, new):
+    """True when a closed month's figures moved beyond tolerance."""
+    try:
+        o, n = float(old["total_sales"] or 0), float(new["total_sales"] or 0)
+        if abs(n - o) > max(abs(o) * _RESTATE_REL_TOL, 1000):
+            return True
+        o, n = float(old["net_sales"] or 0), float(new["net_sales"] or 0)
+        if abs(n - o) > max(abs(o) * _RESTATE_REL_TOL, 1000):
+            return True
+        if int(old["units"] or 0) != int(new["units"] or 0):
+            return True
+        if int(old["orders"] or 0) != int(new["orders"] or 0):
+            return True
+    except (TypeError, ValueError, KeyError):
+        return True
+    return False
+
+
+def _restatement_check_impl():
+    """Idempotent: first run seeds snapshots (no restatement rows); later runs
+    record a restatement only when a closed month drifted from its snapshot,
+    then re-baseline the snapshot. Safe to call any number of times a day
+    (a second same-day drift updates the same (month, restated_on) row)."""
+    current = _restatement_month_figures()
+    conn = get_conn()
+    try:
+        _ensure_restatement_tables(conn)
+        seeded = restated = unchanged = 0
+        with conn.cursor() as cur:
+            cur.execute("SELECT month, total_sales, net_sales, units, orders FROM kpi_month_snapshots")
+            snaps = {r[0]: {"total_sales": r[1], "net_sales": r[2], "units": r[3], "orders": r[4]}
+                     for r in cur.fetchall()}
+            for row in current:
+                m = row["month"]
+                snap = snaps.get(m)
+                if snap is None:
+                    cur.execute(
+                        "INSERT INTO kpi_month_snapshots (month, total_sales, net_sales, units, orders) "
+                        "VALUES (%s,%s,%s,%s,%s) ON CONFLICT (month) DO NOTHING",
+                        (m, row["total_sales"], row["net_sales"], row["units"], row["orders"]))
+                    seeded += 1
+                elif _restatement_drifted(snap, row):
+                    cur.execute("""
+                        INSERT INTO kpi_restatements
+                            (month, restated_on, old_total_sales, new_total_sales,
+                             old_net_sales, new_net_sales, old_units, new_units,
+                             old_orders, new_orders)
+                        VALUES (%s, CURRENT_DATE, %s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (month, restated_on) DO UPDATE SET
+                            new_total_sales = EXCLUDED.new_total_sales,
+                            new_net_sales   = EXCLUDED.new_net_sales,
+                            new_units       = EXCLUDED.new_units,
+                            new_orders      = EXCLUDED.new_orders
+                    """, (m, snap["total_sales"], row["total_sales"],
+                          snap["net_sales"], row["net_sales"],
+                          snap["units"], row["units"],
+                          snap["orders"], row["orders"]))
+                    cur.execute(
+                        "UPDATE kpi_month_snapshots SET total_sales=%s, net_sales=%s, "
+                        "units=%s, orders=%s, captured_at=now() WHERE month=%s",
+                        (row["total_sales"], row["net_sales"], row["units"], row["orders"], m))
+                    restated += 1
+                else:
+                    unchanged += 1
+        conn.commit()
+        return {"ok": True, "months_checked": len(current), "seeded": seeded,
+                "restated": restated, "unchanged": unchanged}
+    finally:
+        conn.close()
+
+
+@app.post("/api/internal/restatement-check")
+def internal_restatement_check(request: Request):
+    # Dual-auth: the nightly sync loop calls with X-Internal-Token; an admin
+    # session can also trigger it manually.
+    _sec = os.environ.get("SESSION_SECRET") or ""
+    _tok = request.headers.get("x-internal-token") or ""
+    if not (_sec and _tok and hmac.compare_digest(_tok, _sec)):
+        u = getattr(request.state, "user", None)
+        if not u or u.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="admin only")
+    return _restatement_check_impl()
+
+
+@app.get("/api/analytics/restatements")
+def analytics_restatements(
+    date_from: str = Query(default=None),
+    date_to:   str = Query(default=None),
+    months:    int = Query(default=13),
+):
+    """Restatement log. With date_from/date_to, returns restatements whose MONTH
+    overlaps the window (used by Overview/Trend to badge affected bases);
+    otherwise the trailing `months` months of log entries."""
+    conn = get_conn()
+    try:
+        _ensure_restatement_tables(conn)
+        with conn.cursor() as cur:
+            if date_from and date_to:
+                cur.execute("""
+                    SELECT month, restated_on, old_total_sales, new_total_sales,
+                           old_net_sales, new_net_sales, old_units, new_units,
+                           old_orders, new_orders
+                    FROM kpi_restatements
+                    WHERE month >= date_trunc('month', %s::date)
+                      AND month <= date_trunc('month', %s::date)
+                    ORDER BY month, restated_on
+                """, (date_from, date_to))
+            else:
+                cur.execute("""
+                    SELECT month, restated_on, old_total_sales, new_total_sales,
+                           old_net_sales, new_net_sales, old_units, new_units,
+                           old_orders, new_orders
+                    FROM kpi_restatements
+                    WHERE month >= date_trunc('month', CURRENT_DATE) - make_interval(months => %s)
+                    ORDER BY month, restated_on
+                """, (months,))
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, (str(v) if hasattr(v, "isoformat") else v for v in r)))
+                    for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 @app.get("/api/analytics/kpi-trend")
 def get_kpi_trend(
     date_from: str = Query(default=str(date.today().replace(day=1))),
@@ -21628,6 +21903,13 @@ async def post_recommendations_bulk(request: Request):
                 "transfer_ref=COALESCE(EXCLUDED.transfer_ref, recommendation_actions.transfer_ref)",
                 (rt, rk, stt, note, au, by, (tref or None)))
             updated += cur.rowcount
+    # WS9 T902 — the warehouse-return-candidates payload caches already_marked;
+    # bust it whenever a warehouse_return action changes so mark/unmark shows
+    # immediately on reload instead of after the 600s TTL.
+    if any(isinstance(a, dict) and (a.get("rec_type") or a.get("item_type")) == "warehouse_return"
+           for a in actions):
+        for _k in [k for k in list(_cache) if k.startswith("wrc:")]:
+            _cache.pop(_k, None)
     return {"ok": True, "updated": updated}
 
 
@@ -23392,6 +23674,78 @@ def data_quality_log(request: Request):
             ("data_quality", note[:500], score))
     return {"ok": True, "data_quality_score": score, "skipped": False,
             "checks": rep["checks"]}
+
+
+# ── WS9 T904 — nightly cross-page reconciliation ─────────────────────────────
+# Asserts the Workstream 1-2 acceptance identities hold on live data:
+#   * Net/Total Sales equality: Overview KPIs vs Locations country summary vs
+#     the Trend Analysis month bucket, on the SAME window + canon.
+#   * Units equality (canonical GROSS ordered_item_quantity everywhere).
+# Runs nightly from the sync loop (21:00 UTC window, idempotent per day) and is
+# surfaced on the Data Quality page. Tolerance covers per-group ROUND() only.
+
+def _ensure_dq_cross_table():
+    _users_exec(
+        "CREATE TABLE IF NOT EXISTS dq_cross_checks ("
+        " run_date date NOT NULL,"
+        " check_name text NOT NULL,"
+        " status text NOT NULL,"
+        " detail text,"
+        " checked_at timestamptz NOT NULL DEFAULT now(),"
+        " PRIMARY KEY (run_date, check_name))")
+
+
+def _cross_check_impl():
+    _ensure_dq_cross_table()
+    # Window: trailing 30 completed days (ends yesterday, so partial today never
+    # produces a false mismatch between surfaces cached at different moments).
+    d_to = (date.today() - timedelta(days=1)).isoformat()
+    d_from = (date.today() - timedelta(days=30)).isoformat()
+
+    # Each side goes through its REAL production path (the same functions the
+    # pages call), so a failure means two live pages actually disagree — NOT a
+    # re-run of one shared SQL (that would be tautological and never fire).
+    kpi = get_kpis(d_from, d_to, None, None)
+    country_rows = get_country_summary(d_from, d_to) or []
+    trend = get_trend_series(d_from, d_to, None, None, "day") or []
+    trend_rows = trend.get("series") if isinstance(trend, dict) else trend
+
+    checks = cross_surface_compare(
+        kpi, country_rows, trend_rows,
+        window_label=f"window {d_from}..{d_to}")
+
+    run_date = date.today().isoformat()
+    with _users_tx() as cur:
+        for c in checks:
+            cur.execute(
+                "INSERT INTO dq_cross_checks (run_date, check_name, status, detail, checked_at) "
+                "VALUES (%s,%s,%s,%s,now()) "
+                "ON CONFLICT (run_date, check_name) DO UPDATE SET "
+                "status=EXCLUDED.status, detail=EXCLUDED.detail, checked_at=now()",
+                (run_date, c["check_name"], c["status"], c["detail"]))
+    failures = [c for c in checks if c["status"] != "ok"]
+    return {"ok": len(failures) == 0, "run_date": run_date,
+            "window": {"date_from": d_from, "date_to": d_to},
+            "checks": checks, "failures": len(failures)}
+
+
+@app.post("/api/data-quality/cross-check")
+def data_quality_cross_check(request: Request):
+    return _cross_check_impl()
+
+
+@app.get("/api/data-quality/cross-checks")
+def data_quality_cross_checks():
+    _ensure_dq_cross_table()
+    rows = _users_exec(
+        "SELECT run_date, check_name, status, detail, checked_at "
+        "FROM dq_cross_checks "
+        "WHERE run_date = (SELECT MAX(run_date) FROM dq_cross_checks) "
+        "ORDER BY check_name", None, fetch=True) or []
+    out = [{k: (str(v) if hasattr(v, "isoformat") else v) for k, v in dict(r).items()}
+           for r in rows]
+    return {"run_date": out[0]["run_date"] if out else None, "checks": out,
+            "failures": sum(1 for r in out if r["status"] != "ok")}
 
 
 # =====================================================================

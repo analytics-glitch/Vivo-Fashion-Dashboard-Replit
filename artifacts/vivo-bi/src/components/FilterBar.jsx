@@ -221,51 +221,9 @@ const DateRangeButton = () => {
           </div>
           {/* Right calendar panel */}
           <div className="flex-1 p-3 sm:p-4">
-            {/* Date inputs */}
-            <div className="flex items-center gap-2 mb-3">
-              <input
-                type="date"
-                value={draftFromInput}
-                onChange={(e) => {
-                  setDraftFromInput(e.target.value);
-                  if (e.target.value) {
-                    setDraftRange((r) => ({ ...r, from: new Date(e.target.value + "T00:00:00") }));
-                  }
-                }}
-                data-testid="date-input-from"
-                className="flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-border text-[12px] outline-none focus:border-brand"
-              />
-              <span className="text-muted text-[14px]">→</span>
-              <input
-                type="date"
-                value={draftToInput}
-                onChange={(e) => {
-                  setDraftToInput(e.target.value);
-                  if (e.target.value) {
-                    setDraftRange((r) => ({ ...r, to: new Date(e.target.value + "T00:00:00") }));
-                  }
-                }}
-                data-testid="date-input-to"
-                className="flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-border text-[12px] outline-none focus:border-brand"
-              />
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      disabled
-                      className="p-1.5 rounded-lg border border-border text-muted opacity-50 cursor-not-allowed"
-                      aria-label="Time picker"
-                    >
-                      <ClockCounterClockwise size={14} />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    Time picker coming soon
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </div>
+            {/* WS8 T809 — the free-range from/to inputs were removed: they
+                duplicated the calendar below (two ways to set the same range).
+                Presets + calendar are now the single date control. */}
             {/* Dual-month on desktop, single month on mobile (saves height
                 so the Apply/Cancel footer remains visible without scrolling
                 inside the popover). */}
@@ -656,7 +614,6 @@ const FilterBar = () => {
   // Order: All/Retail/Online segment → Date Range → Compare → Currency → Country/POS
   const ControlsInline = (
     <>
-      <ChannelGroupToggle />
       <DateRangeButton />
       <CompareButton />
       <CurrencyButton />
@@ -673,16 +630,25 @@ const FilterBar = () => {
         placeholder="All countries"
         width={210}
       />
-      <MultiSelect
-        testId="filter-channels"
-        label="POS"
-        icon={Storefront}
-        options={channelOptions}
-        value={f.channels}
-        onChange={f.setChannels}
-        placeholder="All POS"
-        width={220}
-      />
+      {/* WS8 T809 — the All/Retail/Online segment and the POS picker are ONE
+          merged control: the segment scopes the channel population, the
+          multiselect picks stores within it. */}
+      <div
+        className="inline-flex items-center gap-1.5 rounded-full border border-border bg-white/70 pl-1 pr-1 py-0.5"
+        data-testid="pos-filter-group"
+      >
+        <ChannelGroupToggle />
+        <MultiSelect
+          testId="filter-channels"
+          label="POS"
+          icon={Storefront}
+          options={channelOptions}
+          value={f.channels}
+          onChange={f.setChannels}
+          placeholder="All POS"
+          width={220}
+        />
+      </div>
     </>
   );
 
@@ -728,7 +694,7 @@ const FilterBar = () => {
       <div className="flex md:hidden flex-col gap-2">
         <div className="flex items-center gap-2">
           <BackButton />
-          <div className="flex-1 min-w-0"><ChannelGroupToggle /></div>
+          <div className="flex-1 min-w-0" />
           <button
             type="button"
             onClick={handleShare}
@@ -770,16 +736,21 @@ const FilterBar = () => {
             width={210}
           />
         </div>
-        <MultiSelect
-          testId="filter-channels"
-          label="POS"
-          icon={Storefront}
-          options={channelOptions}
-          value={f.channels}
-          onChange={f.setChannels}
-          placeholder="All POS"
-          width={220}
-        />
+        <div className="flex items-center gap-2" data-testid="pos-filter-group-mobile">
+          <ChannelGroupToggle />
+          <div className="flex-1 min-w-0">
+            <MultiSelect
+              testId="filter-channels"
+              label="POS"
+              icon={Storefront}
+              options={channelOptions}
+              value={f.channels}
+              onChange={f.setChannels}
+              placeholder="All POS"
+              width={220}
+            />
+          </div>
+        </div>
         <div className="flex justify-center pt-0.5">
           <DataUpdatedPill />
         </div>

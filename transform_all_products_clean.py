@@ -595,6 +595,14 @@ def main():
         WHERE product_type IS NOT NULL
     """)
     log.info("Final category sync done")
+
+    # ── Durable product-master overrides (WS8 T810) ──────────────────────────
+    # Odoo attribute data carries a few wrong brand/subcategory values; the
+    # shared override list (also applied on API boot) corrects them here so a
+    # re-extract never resurrects them.
+    from product_master_overrides import apply_overrides
+    fixed = apply_overrides(conn, log)
+    log.info("Product-master overrides applied: %d rows", fixed)
     conn.commit()
 
     # ── Verify no style number has multiple subcats ──────────────────────────

@@ -1289,7 +1289,7 @@ const QuickActions = ({ stockMix }) => {
               <span data-testid="exec-quickact-markdown">
                 <span className="inline-block w-2 h-2 rounded-full bg-amber-500 mr-1.5 -mb-px" />
                 <span className="font-extrabold text-amber-800 tabular-nums">{buckets.markdown.length}</span>
-                <span className="text-foreground"> markdown candidates · </span>
+                <span className="text-foreground"> subcategory markdown flags · </span>
                 <span className="font-bold tabular-nums">{fmtNum(buckets.mdUnits)}</span> units
                 <span className="text-muted"> · </span>
                 <span className="font-extrabold tabular-nums">{fmtKES(buckets.tied)}</span>

@@ -98,6 +98,7 @@ const DataQuality = () => {
   const [report, setReport] = useState(null);
   const [coverage, setCoverage] = useState([]);
   const [syncStatus, setSyncStatus] = useState(null);
+  const [crossChecks, setCrossChecks] = useState(null);
   const [healthLoading, setHealthLoading] = useState(true);
   const [healthError, setHealthError] = useState(null);
 
@@ -109,8 +110,9 @@ const DataQuality = () => {
       api.get("/data-quality/report"),
       api.get("/data-quality/sku-coverage"),
       api.get("/sync-status"),
+      api.get("/data-quality/cross-checks"),
     ])
-      .then(([repRes, covRes, syncRes]) => {
+      .then(([repRes, covRes, syncRes, crossRes]) => {
         if (cancel) return;
         if (repRes.status === "fulfilled") setReport(repRes.value.data || null);
         else setReport(null);
@@ -120,6 +122,8 @@ const DataQuality = () => {
         } else setCoverage([]);
         if (syncRes.status === "fulfilled") setSyncStatus(syncRes.value.data || null);
         else setSyncStatus(null);
+        if (crossRes.status === "fulfilled") setCrossChecks(crossRes.value.data || null);
+        else setCrossChecks(null);
         // Only hard-error if every section failed.
         if (
           repRes.status === "rejected" &&
@@ -476,6 +480,62 @@ const DataQuality = () => {
             ]}
             rows={coverage}
           />
+        )}
+      </div>
+
+      {/* ── WS9 T904: Nightly cross-page reconciliation ── */}
+      <div className="card-white p-5" data-testid="dq-cross-card">
+        <SectionTitle
+          title="Cross-Page Reconciliation — Nightly"
+          subtitle="Every night the pipeline re-asserts that Total/Net Sales and canonical (gross) Units Sold agree across the Overview KPIs, the Locations country summary and the Trend series, on the same 30-day window. A failure means two pages could show different figures for the same question."
+          action={
+            crossChecks?.checks?.length ? (
+              <span
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10.5px] font-bold border ${
+                  crossChecks.failures > 0
+                    ? "bg-red-100 text-red-700 border-red-300"
+                    : "bg-green-100 text-green-700 border-green-300"
+                }`}
+                data-testid="dq-cross-status"
+              >
+                {crossChecks.failures > 0
+                  ? `${crossChecks.failures} FAILING`
+                  : "ALL RECONCILED"}
+              </span>
+            ) : null
+          }
+        />
+        {!crossChecks || !Array.isArray(crossChecks.checks) || crossChecks.checks.length === 0 ? (
+          <Empty label="No reconciliation run recorded yet — the first run happens in tonight's 21:00 UTC sync window." />
+        ) : (
+          <div className="mt-3 space-y-2">
+            <div className="text-[11px] text-muted">
+              Last run: {crossChecks.run_date}
+            </div>
+            {crossChecks.checks.map((c) => (
+              <div
+                key={c.check_name}
+                className={`flex items-start gap-2.5 rounded-lg border p-3 ${
+                  c.status === "ok"
+                    ? "border-gray-200 bg-panel/40"
+                    : "border-red-300 bg-red-50"
+                }`}
+                data-testid={`dq-cross-${c.check_name}`}
+              >
+                {c.status === "ok" ? (
+                  <CheckCircle size={16} weight="fill" className="text-green-600 mt-0.5 shrink-0" />
+                ) : (
+                  <Warning size={16} weight="fill" className="text-red-600 mt-0.5 shrink-0" />
+                )}
+                <div className="min-w-0">
+                  <div className="text-[12.5px] font-bold text-brand-deep">
+                    {humanize(c.check_name)}
+                  </div>
+                  <div className="text-[11.5px] text-foreground/75 break-words">{c.detail}</div>
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 

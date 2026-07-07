@@ -13,7 +13,18 @@ const AuthCallback = () => {
       const params = new URLSearchParams(hash);
       const errParam = params.get("error");
       if (errParam) {
-        setError(decodeURIComponent(errParam));
+        // WS9 T901 — map backend error codes to friendly copy (a raw code like
+        // "provisioning" means nothing to a store manager).
+        const code = decodeURIComponent(errParam);
+        const friendly = {
+          not_configured: "Google sign-in isn't configured yet. Use email & password, or contact an admin.",
+          invalid_state: "The sign-in link expired or was reused. Please try signing in again.",
+          token_exchange: "Google didn't complete the sign-in. Please try again.",
+          profile: "We couldn't read your Google profile. Please try again.",
+          domain_not_allowed: "This Google account isn't on an allowed company domain.",
+          provisioning: "Sign-in succeeded but we couldn't set up your account just now. Please try again in a minute.",
+        }[code];
+        setError(friendly || code);
         return;
       }
       const token = params.get("token");

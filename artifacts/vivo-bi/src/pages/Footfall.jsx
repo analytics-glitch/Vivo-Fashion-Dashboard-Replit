@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
 import { useKpis } from "@/lib/useKpis";
+import { displayStoreName } from "@/lib/storeNames";
 import {
   api,
   fmtKES,
@@ -96,7 +97,8 @@ const Footfall = () => {
     if (!explorationPrevRange) { setExplorationPrev([]); return; }
     let cancelled = false;
     api.get("/footfall", { params: explorationPrevRange })
-      .then(({ data }) => { if (!cancelled) setExplorationPrev(data || []); })
+      .then(({ data }) => { if (!cancelled) setExplorationPrev((data || []).map((r) =>
+        r && r.location ? { ...r, location: displayStoreName(r.location) } : r)); })
       .catch(() => { if (!cancelled) setExplorationPrev([]); });
     return () => { cancelled = true; };
   }, [explorationPrevRange?.date_from, explorationPrevRange?.date_to]);
@@ -119,8 +121,12 @@ const Footfall = () => {
     ])
       .then(([f, p, l, s, ps]) => {
         if (cancelled) return;
-        setRows(f.data || []);
-        setPrev(p.data || []);
+        // WS8 T806 — normalise store display names through ONE lookup so a
+        // renamed sensor feed never renders beside its spaced twin.
+        const norm = (arr) => (arr || []).map((r) =>
+          r && r.location ? { ...r, location: displayStoreName(r.location) } : r);
+        setRows(norm(f.data));
+        setPrev(norm(p.data));
         setLocations(l.data || []);
         setSalesRows(s.data || []);
         setPrevSalesRows(ps.data || []);

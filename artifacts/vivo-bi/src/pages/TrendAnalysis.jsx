@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { useRestatements, RestatedBadge } from "@/lib/useRestatements";
 import { useFilters } from "@/lib/filters";
 import { api, fmtDate } from "@/lib/api";
 import TrendPanel from "@/components/TrendPanel";
@@ -204,6 +205,8 @@ const TrendAnalysis = () => {
   // Page-local date range — defaults to the last 12 months.
   const [dateFrom, setDateFrom] = useState(() => toISO(monthsAgo(12)));
   const [dateTo, setDateTo] = useState(() => toISO(new Date()));
+  // WS7 T702 — flag restated months inside the trend window
+  const restatements = useRestatements(dateFrom, dateTo);
   const [presetMonths, setPresetMonths] = useState(12);
 
   const onDateChange = useCallback(({ from, to, presetMonths: pm }) => {
@@ -260,6 +263,7 @@ const TrendAnalysis = () => {
             <span className="num">{fmtDate(dateFrom)} – {fmtDate(dateTo)}</span>
             <span className="mx-1.5">·</span>
             <span>{countryLabel}</span>
+            <RestatedBadge restatements={restatements} className="ml-2 align-middle" />
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">

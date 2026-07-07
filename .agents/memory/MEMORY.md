@@ -107,3 +107,4 @@
 - [Metro crashes on repo-root .cache churn](metro-watches-repo-cache-crash.md) — Expo bundler dies with uncaught ENOENT watching `.cache/uv/.tmp*` after a Python install; fix = `config.resolver.blockList=/[\\/]\.(cache|git)[\\/].*/`. Stale log glob faked "still failing".
 - [run_query cache rows are shared](run-query-cache-mutation.md) — cached dicts are returned by reference; copy dict(r) before pop/mutate or 2nd call within TTL breaks.
 - [Customer pseudo-exclusion canon](customer-pseudo-exclusion.md) — every customer-grain endpoint must apply _not_walkin_pseudo_sql; repeat list capped 500 so counts use COUNT() OVER; xsurf_cust_* checks lock the identities.
+- [Cross-surface reconcile must use real paths](cross-surface-reconcile-real-paths.md) — a reconciliation check that re-runs one shared SQL for both sides is tautological; each side must go through its page's production function + pure compare module with divergence tests.

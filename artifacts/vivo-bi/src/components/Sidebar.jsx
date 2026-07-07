@@ -37,7 +37,6 @@ import { api } from "@/lib/api";
 import { canAccessPage } from "@/lib/permissions";
 import NotificationBell from "@/components/NotificationBell";
 import LiveViewers from "@/components/LiveViewers";
-import RedisStatusPill from "@/components/RedisStatusPill";
 import ReconciliationStatusPill from "@/components/ReconciliationStatusPill";
 import SyncStatusPill from "@/components/SyncStatusPill";
 import UpstreamHealthPill from "@/components/UpstreamHealthPill";
@@ -378,7 +377,6 @@ const TopNav = () => {
         <ReconciliationStatusPill />
         <DataQualityStatusPill />
         <CacheStatsPill />
-        <RedisStatusPill />
         <UserMenu />
       </div>
       </div>
