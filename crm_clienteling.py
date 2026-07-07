@@ -32,7 +32,9 @@ from datetime import datetime, date, timedelta
 import requests
 
 from fastapi import Request, Body, HTTPException, Query
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import (PlainTextResponse, Response, HTMLResponse,
+                               RedirectResponse)
+from html import escape as _html_escape
 
 # Set in register_clienteling_routes() to the fully-loaded api_pg module. Routes
 # only dereference it at request time, by which point it is populated.
@@ -6056,6 +6058,143 @@ def _reg_social(app):
         }
         _tiktok_acct_cache.update(data=acct, ts=now)
         return acct
+
+    # ── TikTok Login Kit OAuth (connect flow, mirrors the Google OAuth
+    # pattern in api_pg.py: state cookie for CSRF, code→token exchange).
+    # Purpose: lets an operator connect the brand's TikTok account end-to-end
+    # in the browser (required by TikTok's app review: a registered Redirect
+    # URI + a demo video of the working flow). On success the rotated token
+    # chain is persisted into crm_config, so the sync works immediately with
+    # NO TIKTOK_REFRESH_TOKEN secret paste. Uses TIKTOK_CLIENT_KEY /
+    # TIKTOK_CLIENT_SECRET / TIKTOK_REDIRECT_URI env vars.
+    def _tiktok_redirect_uri(request):
+        override = (os.environ.get("TIKTOK_REDIRECT_URI") or "").strip()
+        if override:
+            return override
+        proto = request.headers.get("x-forwarded-proto", "https")
+        host = (request.headers.get("x-forwarded-host")
+                or request.headers.get("host") or "")
+        return f"{proto}://{host}/api/social/tiktok/oauth/callback"
+
+    def _tiktok_oauth_page(title, body_html, ok=True):
+        # Always clears the state cookie — a state is single-use whether the
+        # exchange succeeded or failed.
+        color = "#16a34a" if ok else "#dc2626"
+        resp = HTMLResponse(
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            f"<title>{title}</title></head>"
+            "<body style=\"font-family:system-ui,sans-serif;background:#0b0b0f;"
+            "color:#e5e7eb;display:flex;align-items:center;justify-content:center;"
+            "min-height:100vh;margin:0\"><div style=\"max-width:460px;padding:32px;"
+            "background:#17171d;border:1px solid #2a2a33;border-radius:12px\">"
+            f"<h2 style=\"margin:0 0 12px;color:{color}\">{title}</h2>"
+            f"<div style=\"line-height:1.5\">{body_html}</div>"
+            "<p style=\"margin-top:20px;color:#9ca3af;font-size:13px\">You can "
+            "close this tab and return to the CRM Inbox.</p></div></body></html>",
+            headers={"Cache-Control": "no-store"})
+        resp.delete_cookie("tt_oauth_state", path="/")
+        return resp
+
+    @app.get("/api/social/tiktok/oauth/authorize")
+    def cl_soc_tiktok_oauth_authorize(request: Request):
+        # Connecting the brand account is an operator action — admin/leadership
+        # only (stricter than the marketing+ read surface).
+        _staff(request, roles=("leadership", "admin"))
+        key, sec = _tiktok_client_creds()
+        if not (key and sec):
+            raise HTTPException(
+                503, "TikTok Login Kit is not configured — set the "
+                     "TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET secrets first.")
+        state = secrets.token_urlsafe(24)
+        scopes = "user.info.basic,video.list"
+        if _TIKTOK_COMMENTS_AVAILABLE:  # only if TikTok ever grants them
+            scopes += ",comment.list,comment.list.manage"
+        params = urllib.parse.urlencode({
+            "client_key": key,
+            "scope": scopes,
+            "response_type": "code",
+            "redirect_uri": _tiktok_redirect_uri(request),
+            "state": state,
+        })
+        resp = RedirectResponse(
+            "https://www.tiktok.com/v2/auth/authorize/?" + params)
+        # Short-lived CSRF state cookie, validated on the callback.
+        resp.set_cookie("tt_oauth_state", state, httponly=True,
+                        samesite="lax", secure=True, max_age=600, path="/")
+        return resp
+
+    @app.get("/api/social/tiktok/oauth/callback")
+    def cl_soc_tiktok_oauth_callback(request: Request):
+        # Public path (whitelisted in api_pg's auth gate): TikTok redirects the
+        # operator's browser here. The state cookie (set only by /authorize,
+        # which is admin-gated) is the proof this flow started from an
+        # authorized session — without it the code is rejected.
+        key, sec = _tiktok_client_creds()
+        if not (key and sec):
+            return _tiktok_oauth_page(
+                "TikTok connect failed",
+                "TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET are not set.",
+                ok=False)
+        err = request.query_params.get("error")
+        if err:
+            desc = request.query_params.get("error_description") or ""
+            return _tiktok_oauth_page(
+                "TikTok connect failed",
+                f"TikTok returned: <b>{_html_escape(err)}</b> "
+                f"{_html_escape(desc)}", ok=False)
+        code = request.query_params.get("code")
+        state = request.query_params.get("state")
+        cookie_state = request.cookies.get("tt_oauth_state")
+        if not code or not state or not cookie_state \
+                or not hmac.compare_digest(state, cookie_state):
+            return _tiktok_oauth_page(
+                "TikTok connect failed",
+                "Invalid or expired sign-in state. Start the connect flow "
+                "again from the CRM Inbox.", ok=False)
+        try:
+            r = requests.post(
+                _TIKTOK_API + "/v2/oauth/token/",
+                data={"client_key": key, "client_secret": sec,
+                      "code": code, "grant_type": "authorization_code",
+                      "redirect_uri": _tiktok_redirect_uri(request)},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=20)
+            j = r.json() if r.content else {}
+        except Exception as e:  # noqa: BLE001 — surface the failure to the page
+            return _tiktok_oauth_page(
+                "TikTok connect failed",
+                f"Token exchange error: {_html_escape(str(e)[:300])}",
+                ok=False)
+        atok = (j.get("access_token") or "").strip()
+        rtok = (j.get("refresh_token") or "").strip()
+        if r.status_code >= 400 or not atok or not rtok:
+            detail = (j.get("error_description") or j.get("error")
+                      or f"HTTP {r.status_code}")
+            return _tiktok_oauth_page(
+                "TikTok connect failed",
+                f"Token exchange failed: {_html_escape(str(detail)[:300])}",
+                ok=False)
+        # Persist the full token chain (same keys the refresh manager uses).
+        # Seed = current env TIKTOK_REFRESH_TOKEN so the stored (OAuth) chain
+        # wins in _tiktok_current_refresh_token() even if a stale secret is set.
+        try:
+            exp_in = float(j.get("expires_in") or 0)
+        except (TypeError, ValueError):
+            exp_in = 0
+        _tt_cfg_set(_TT_CFG_TOKEN, atok)
+        _tt_cfg_set(_TT_CFG_TOKEN_EXP, time.time() + (exp_in or 86400))
+        _tt_cfg_set(_TT_CFG_REFRESH, rtok)
+        _tt_cfg_set(_TT_CFG_REFRESH_SEED,
+                    (os.environ.get("TIKTOK_REFRESH_TOKEN") or "").strip())
+        _tt_cfg_set(_TT_CFG_RECONNECT, "")  # clear any reconnect-required flag
+        _tiktok_acct_cache.update(data=None, ts=0)  # force a fresh /user/info
+        granted = _html_escape(str(j.get("scope") or ""))
+        resp = _tiktok_oauth_page(
+            "TikTok connected ✓",
+            "The TikTok account is now connected — posts will sync on the "
+            f"next cycle.<br><br><b>Granted scopes:</b> {granted or '—'}")
+        return resp
 
     @app.get("/api/social/tiktok/status")
     def cl_soc_tiktok_status(request: Request):

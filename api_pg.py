@@ -561,6 +561,12 @@ _AUTH_PUBLIC_AUTH_PATHS = {
     "/api/auth/google/login",
     "/api/auth/google/callback",
     "/api/auth/allowed-domains",
+    # TikTok Login Kit callback — TikTok redirects the operator's browser here
+    # after consent. Public by necessity (like the Google callback); the flow
+    # is still protected: the state cookie is only set by the admin-gated
+    # /api/social/tiktok/oauth/authorize, and the callback rejects any hit
+    # whose state does not match it.
+    "/api/social/tiktok/oauth/callback",
 }
 
 _USER_CACHE_TTL = 30  # seconds — bounds how long a role/status change lags
