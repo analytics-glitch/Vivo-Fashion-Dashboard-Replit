@@ -300,7 +300,24 @@ def _tt_cfg_set(key, val):
         pass
 
 
+def _tiktok_sandbox_mode():
+    """True when the operator opts into TikTok Sandbox credentials (an
+    unreviewed app's separate client key/secret + target test users). Driven
+    by the TIKTOK_USE_SANDBOX env var so it can be enabled in development
+    only — production is never flipped by a global secret change."""
+    return (os.environ.get("TIKTOK_USE_SANDBOX") or "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _tiktok_client_creds():
+    if _tiktok_sandbox_mode():
+        key = (os.environ.get("TIKTOK_SANDBOX_CLIENT_KEY") or "").strip()
+        sec = (os.environ.get("TIKTOK_SANDBOX_CLIENT_SECRET") or "").strip()
+        if key and sec:
+            return key, sec
+        # Sandbox requested but creds missing — fail loud (empty pair) rather
+        # than silently falling back to the production app's credentials.
+        return "", ""
     return ((os.environ.get("TIKTOK_CLIENT_KEY") or "").strip(),
             (os.environ.get("TIKTOK_CLIENT_SECRET") or "").strip())
 
