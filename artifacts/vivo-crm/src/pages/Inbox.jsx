@@ -1198,8 +1198,15 @@ function TikTokStatusStrip({ status }) {
           <div className="flex-1">
             <div className="font-medium text-base">TikTok needs to be reconnected.</div>
             <div className="text-xs text-[var(--vivo-muted)] mt-1">
-              TikTok rejected the stored refresh token (refresh tokens last about a year and can be revoked). Generate a new refresh token from the TikTok developer portal and update the <code className="text-[10px] bg-white px-1 py-0.5 rounded">TIKTOK_REFRESH_TOKEN</code> secret on the server — the connection then restores automatically.
+              TikTok rejected the stored refresh token (refresh tokens last about a year and can be revoked). An admin can reconnect by signing in with TikTok again — the connection restores immediately.
             </div>
+            <Button
+              onClick={() => window.open("/api/social/tiktok/oauth/authorize", "_blank")}
+              className="mt-3 rounded-sm h-9 bg-black hover:bg-black/90 text-white"
+              data-testid="reconnect-tiktok-button"
+            >
+              <Music className="mr-2 h-4 w-4" /> Reconnect TikTok
+            </Button>
             {status.reconnect_error && (
               <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1 mt-2 break-all" data-testid="tiktok-reconnect-error">
                 {status.reconnect_error}
@@ -1219,8 +1226,15 @@ function TikTokStatusStrip({ status }) {
           <div className="flex-1">
             <div className="font-medium text-base">TikTok is not connected yet.</div>
             <div className="text-xs text-[var(--vivo-muted)] mt-1">
-              Add your TikTok access token to the server (with the <code className="text-[10px] bg-white px-1 py-0.5 rounded">user.info.basic</code> and <code className="text-[10px] bg-white px-1 py-0.5 rounded">video.list</code> scopes). Once configured, a <strong>"Sync from TikTok"</strong> button appears here to pull your videos into the inbox. TikTok's public API offers no comment or messaging access, so comments and DMs cannot be pulled.
+              An admin can connect the brand's TikTok account with the button below — you'll be sent to TikTok to sign in and approve access (<code className="text-[10px] bg-white px-1 py-0.5 rounded">user.info.basic</code> + <code className="text-[10px] bg-white px-1 py-0.5 rounded">video.list</code>). Once connected, a <strong>"Sync from TikTok"</strong> button appears here to pull your videos into the inbox. TikTok's public API offers no comment or messaging access, so comments and DMs cannot be pulled.
             </div>
+            <Button
+              onClick={() => window.open("/api/social/tiktok/oauth/authorize", "_blank")}
+              className="mt-3 rounded-sm h-9 bg-black hover:bg-black/90 text-white"
+              data-testid="connect-tiktok-button"
+            >
+              <Music className="mr-2 h-4 w-4" /> Connect TikTok
+            </Button>
           </div>
         </div>
       </div>
