@@ -322,6 +322,13 @@ _LAST_PRODUCT_IMAGES_EXTRACT = None
 # from the single Odoo base64 photo above) to once per 24h. None on boot so a
 # fresh prod DB bootstraps on the first cycle.
 _LAST_SHOPIFY_IMAGES_EXTRACT = None
+# Guards the FABRIC product-image extract (extract_fabric_images.py — Drive photos
+# matched to a fabric by filename=barcode, feeding the /fabric barcode-detail popup
+# carousel via the fabric_images table) to once per 24h even though main() runs
+# every 60s. Fabric photos change rarely and this is a Drive crawl + base64 fetch.
+# None on boot so a fresh prod DB bootstraps on the first cycle. Dormant (no-op)
+# until FABRIC_IMAGES_GSA_JSON + FABRIC_IMAGES_DRIVE_FOLDER_ID are set.
+_LAST_FABRIC_IMAGES_EXTRACT = None
 # Guards the social CRM sync (Facebook + Instagram → vivo-crm Inbox, feeding
 # crm_social_feedback) to once per hour even though main() runs every 60s. The
 # per-surface deep-backfill is cumulative toward its stored-row targets and
@@ -1777,6 +1784,65 @@ def main():
         log.info(
             "Skipping Shopify product-image gallery extract — Shopify store/token "
             "secrets not set (lightbox falls back to single Odoo photo)."
+        )
+
+    # Fabric product-image extract — feeds the /fabric barcode-detail popup carousel
+    # (fabric_images: Drive photos matched to a fabric by filename=barcode). Same
+    # self-refreshing pattern as the product-image extracts above. Production runs on
+    # a SEPARATE DB, so we bootstrap immediately when fabric_images is missing/empty
+    # (fresh prod DB), then refresh EVERY 24 HOURS (fabric photos change rarely and
+    # this is a Drive crawl + base64 fetch). The extractor is DORMANT (no-op) until
+    # FABRIC_IMAGES_GSA_JSON + FABRIC_IMAGES_DRIVE_FOLDER_ID are set, so a DB without
+    # those secrets never crash-loops — skip QUIETLY in that case. It upserts idx
+    # 0..n and prunes (idempotent), so re-running never duplicates. Run in-process
+    # under a heartbeat keepalive so a slow Drive crawl can't stall the watchdog.
+    global _LAST_FABRIC_IMAGES_EXTRACT
+    fab_img_empty = False
+    try:
+        cur.execute("SELECT to_regclass('public.fabric_images')")
+        if cur.fetchone()[0] is None:
+            fab_img_empty = True
+        else:
+            cur.execute("SELECT COUNT(*) FROM fabric_images")
+            fab_img_empty = cur.fetchone()[0] == 0
+        conn.commit()
+    except Exception as e:
+        log.error("Fabric images presence check error: %s", e)
+        conn.rollback()
+    fab_img_due = (
+        _LAST_FABRIC_IMAGES_EXTRACT is None
+        or (now_utc - _LAST_FABRIC_IMAGES_EXTRACT).total_seconds() >= 86400
+    )
+    fab_img_creds_ok = bool(
+        os.environ.get("FABRIC_IMAGES_GSA_JSON")
+        and os.environ.get("FABRIC_IMAGES_DRIVE_FOLDER_ID")
+    )
+    if fab_img_creds_ok and (fab_img_empty or fab_img_due):
+        # Stamp the attempt time up front so a transient failure waits 24h before
+        # retrying — except while still empty, where the fab_img_empty branch keeps
+        # retrying every cycle until the bootstrap succeeds.
+        _LAST_FABRIC_IMAGES_EXTRACT = now_utc
+        try:
+            import extract_fabric_images
+
+            log.info(
+                "Running fabric product-image extract (bootstrap=%s)...",
+                fab_img_empty,
+            )
+
+            def _run_fab_img(hb):
+                with psycopg2.connect(DATABASE_URL) as fconn:
+                    extract_fabric_images.run(fconn, heartbeat=hb)
+
+            with heartbeat_keepalive("fabric_image_extract") as hb:
+                _run_fab_img(hb)
+            log.info("✅ Fabric product-image extract complete")
+        except Exception as e:
+            log.error("Fabric product-image extract error: %s", e)
+    elif (fab_img_empty or fab_img_due) and not fab_img_creds_ok:
+        log.info(
+            "Skipping fabric product-image extract — FABRIC_IMAGES_GSA_JSON / "
+            "FABRIC_IMAGES_DRIVE_FOLDER_ID not set (popup shows 'No image')."
         )
 
     # Social CRM sync — pulls new Facebook + Instagram posts, comments, @-mentions

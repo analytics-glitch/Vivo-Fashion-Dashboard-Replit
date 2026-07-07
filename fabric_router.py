@@ -3,11 +3,14 @@ Vivo Fabric BI — Standalone FastAPI
 Serves data for the Fabric BI dashboard
 Run: uvicorn fabric_api:app --port 8081
 """
+import base64
 import datetime
 import os
 import re
+from urllib.parse import quote
 import psycopg2.extras
 from fastapi import APIRouter, Query, Request, Body, HTTPException
+from fastapi.responses import Response
 
 import fabric_sheet_override as ov
 
@@ -95,6 +98,80 @@ def _ensure_fabric_tables(conn):
             )""")
     conn.commit()
     _FABRIC_TABLES_READY = True
+
+# ── Fabric product images (barcode-keyed) ───────────────────────────
+# Fabric photos live in a Google Drive folder, filenames prefixed by the fabric
+# barcode ("304649.jpg", "304649-2.jpg", "304649_back.png" → barcode "304649").
+# extract_fabric_images.py pulls them through our backend into `fabric_images`
+# (base64, one row per image, ordered by `idx`) so the dashboard serves cached
+# bytes from our own API — no live Drive fetch per open, no browser Google creds.
+# Table is created lazily (idempotent) the first time an image endpoint is hit,
+# mirroring _ensure_fabric_tables. Prod is a SEPARATE DB, so it stays empty until
+# the sync-loop bootstrap (or a manual backfill) populates it after publish.
+_FABRIC_IMAGES_READY = False
+
+def _ensure_fabric_images_table(conn):
+    global _FABRIC_IMAGES_READY
+    if _FABRIC_IMAGES_READY:
+        return
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_images (
+                barcode    TEXT    NOT NULL,
+                idx        INTEGER NOT NULL,
+                filename   TEXT,
+                mime       TEXT    NOT NULL DEFAULT 'image/jpeg',
+                image_b64  TEXT    NOT NULL,
+                drive_id   TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (barcode, idx)
+            )""")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_images_barcode "
+                    "ON fabric_images(barcode)")
+    conn.commit()
+    _FABRIC_IMAGES_READY = True
+
+@fabric_router.get("/api/fabric/images/{barcode}")
+def fabric_images_list(barcode: str):
+    """List the stored photos for a fabric barcode, in display order. Each entry
+    carries a `url` pointing at our own cached-bytes endpoint (no Drive round-trip
+    on open). Empty list when none, so the popup shows a friendly placeholder."""
+    barcode = (barcode or "").strip()
+    if not barcode:
+        return {"barcode": barcode, "count": 0, "images": []}
+    with _get_conn() as conn:
+        _ensure_fabric_images_table(conn)
+        rows = q(conn,
+                 "SELECT idx, filename FROM fabric_images "
+                 "WHERE barcode=%s ORDER BY idx", (barcode,))
+    images = [{
+        "idx": r["idx"],
+        "filename": r["filename"],
+        "url": "/api/fabric/image/" + quote(barcode, safe="") + "/" + str(r["idx"]),
+    } for r in rows]
+    return {"barcode": barcode, "count": len(images), "images": images}
+
+@fabric_router.get("/api/fabric/image/{barcode}/{idx}")
+def fabric_image_bytes(barcode: str, idx: int):
+    """Serve one stored fabric photo as raw image bytes (long-cached). 404 when
+    the (barcode, idx) has no stored image so the frontend falls back cleanly."""
+    barcode = (barcode or "").strip()
+    if not barcode:
+        return Response(status_code=404)
+    with _get_conn() as conn:
+        _ensure_fabric_images_table(conn)
+        rows = q(conn,
+                 "SELECT image_b64, mime FROM fabric_images "
+                 "WHERE barcode=%s AND idx=%s", (barcode, idx))
+    if not rows or not rows[0].get("image_b64"):
+        return Response(status_code=404)
+    try:
+        raw = base64.b64decode(rows[0]["image_b64"])
+    except Exception:
+        return Response(status_code=404)
+    return Response(content=raw,
+                    media_type=rows[0].get("mime") or "image/jpeg",
+                    headers={"Cache-Control": "public, max-age=604800"})
 
 def _fabric_actor(request):
     """(user_id, name) for the current signed-in user, mirroring CRM's actor helper."""

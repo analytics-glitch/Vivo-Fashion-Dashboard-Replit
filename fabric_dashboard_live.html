@@ -285,6 +285,17 @@ tr.sub-row td{background:var(--bg);font-size:12.5px;}
 .detail-item .dl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);}
 .detail-item .dv{font-size:14px;color:var(--text);}
 @media(max-width:560px){.detail-grid{grid-template-columns:1fr;}.detail-item:nth-child(even){padding-left:0;}}
+/* Fabric product-image panel inside the barcode detail popup */
+.fab-img-panel{margin:12px 0 6px;}
+.fab-img-stage{position:relative;background:var(--bg);border:1px solid var(--border);border-radius:12px;height:280px;display:flex;align-items:center;justify-content:center;overflow:hidden;}
+.fab-img-stage img{max-width:100%;max-height:100%;object-fit:contain;display:block;}
+.fab-img-empty{display:flex;flex-direction:column;align-items:center;gap:8px;color:var(--muted);font-size:13px;text-align:center;padding:0 16px;}
+.fab-img-empty .ic{font-size:30px;opacity:.6;line-height:1;}
+.fab-img-nav{position:absolute;top:50%;transform:translateY(-50%);border:none;background:rgba(26,26,26,.5);color:#fff;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:20px;line-height:1;display:flex;align-items:center;justify-content:center;transition:background .15s;}
+.fab-img-nav:hover{background:rgba(26,26,26,.78);}
+.fab-img-prev{left:10px;}
+.fab-img-next{right:10px;}
+.fab-img-counter{text-align:center;font-size:12px;color:var(--muted);margin-top:7px;letter-spacing:.02em;}
 .col-opt input{height:auto;width:auto;margin:0;}
 table.data th.sortable{cursor:pointer;}
 table.data th.sortable:hover{color:var(--accent);}
@@ -3048,12 +3059,56 @@ function renderFabricDetail(r,keys){
   curFabricDetail=r;
   document.getElementById('fab-detail-title').textContent=r.name||'Fabric detail';
   document.getElementById('fab-detail-sub').textContent='Barcode: '+(r.default_code||'—');
-  document.getElementById('fab-detail-body').innerHTML='<div class="detail-grid">'+keys.map(k=>{
+  document.getElementById('fab-detail-body').innerHTML=
+    '<div id="fab-img-panel" class="fab-img-panel"></div>'+
+    '<div class="detail-grid">'+keys.map(k=>{
     const col=REG_COLS.find(c=>c.k===k);if(!col)return '';
     const f=REG_FX[k]?fx(REG_FX[k]):'';
     return `<div class="detail-item"><span class="dl"${f}>${esc(col.label)}</span><span class="dv">${regValueHtml(col,r)}</span></div>`;
   }).join('')+'</div>';
   document.getElementById('fab-detail-overlay').style.display='flex';
+  loadFabricImages(r.default_code);
+}
+// ── Fabric product-image carousel (barcode detail popup) ──
+// Photos are matched to a fabric by filename=barcode and served as cached bytes
+// from our own backend (/api/fabric/image/...); no live Drive fetch on open.
+let fabImgState={list:[],idx:0,barcode:null};
+function loadFabricImages(barcode){
+  const panel=document.getElementById('fab-img-panel');
+  if(!panel)return;
+  const bc=(barcode==null?'':String(barcode)).trim();
+  fabImgState={list:[],idx:0,barcode:bc};
+  if(!bc||bc.toLowerCase()==='false'){renderFabImgPanel();return;}
+  panel.innerHTML='<div class="fab-img-stage"><div class="fab-img-empty"><span class="ic">🖼️</span><span>Loading photos…</span></div></div>';
+  fetch('/api/fabric/images/'+encodeURIComponent(bc),{credentials:'include'})
+    .then(r=>r.ok?r.json():{images:[]})
+    .then(d=>{ if(fabImgState.barcode!==bc)return; fabImgState.list=(d&&d.images)||[]; fabImgState.idx=0; renderFabImgPanel(); })
+    .catch(()=>{ if(fabImgState.barcode!==bc)return; fabImgState.list=[]; renderFabImgPanel(); });
+}
+function renderFabImgPanel(){
+  const panel=document.getElementById('fab-img-panel');
+  if(!panel)return;
+  const list=fabImgState.list||[];
+  if(!list.length){
+    panel.innerHTML='<div class="fab-img-stage"><div class="fab-img-empty"><span class="ic">🖼️</span><span>No image for this fabric</span></div></div>';
+    return;
+  }
+  if(fabImgState.idx>=list.length)fabImgState.idx=0;
+  if(fabImgState.idx<0)fabImgState.idx=list.length-1;
+  const cur=list[fabImgState.idx];
+  const multi=list.length>1;
+  const nav=multi
+    ?'<button type="button" class="fab-img-nav fab-img-prev" onclick="stepFabricImage(-1)" aria-label="Previous photo">&#8249;</button>'+
+     '<button type="button" class="fab-img-nav fab-img-next" onclick="stepFabricImage(1)" aria-label="Next photo">&#8250;</button>'
+    :'';
+  panel.innerHTML='<div class="fab-img-stage"><img src="'+esc(cur.url)+'" alt="Fabric photo" loading="lazy">'+nav+'</div>'+
+    (multi?'<div class="fab-img-counter">'+(fabImgState.idx+1)+' / '+list.length+'</div>':'');
+}
+function stepFabricImage(delta){
+  const n=(fabImgState.list||[]).length;
+  if(!n)return;
+  fabImgState.idx=((fabImgState.idx+delta)%n+n)%n;
+  renderFabImgPanel();
 }
 function openFabricDetail(id){
   const r=(lastRegItems||[]).find(x=>String(x.id)===String(id));
