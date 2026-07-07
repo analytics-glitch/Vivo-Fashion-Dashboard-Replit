@@ -995,7 +995,10 @@ const ProductAnalysis = () => {
               <KPICard
                 small showDelta={false} accent testId="pa-kpi-revenue"
                 label="Revenue" value={fmtKES(summary.revenue)} valueFull={fmtKESLong(summary.revenue)} icon={ChartBar}
-                sub={`Net ${fmtKES(summary.net_revenue)}`}
+                sub={summary.net_revenue_canonical != null
+                  ? `Net ${fmtKES(summary.net_revenue_canonical)}`
+                  : `Net ${fmtKES(summary.net_revenue)} (styles scope)`}
+                formula="Revenue sums the styles listed below. Net = canonical Net Sales (Total Sales − Returns − Discounts, VAT-inclusive) for the same date/country/store window — identical to the Overview ‘Net Sales’ tile. When the styles are narrowed (brand / category / tier / status), Net falls back to the sum over the shown styles and is marked ‘styles scope’."
               />
               <KPICard
                 small showDelta={false} testId="pa-kpi-units"

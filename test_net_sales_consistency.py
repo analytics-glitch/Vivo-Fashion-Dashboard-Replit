@@ -1,0 +1,105 @@
+"""Canonical Net Sales consistency test.
+
+Asserts that every surface labelled "Net Sales" / "Net Revenue" shows the SAME
+figure, to the shilling, for one fixed window — and that the Catalogue formula
+(Net = Total − Returns − Discounts, with Total already net of returns, so
+Net = Total − Discounts) reproduces it from the /api/kpis components.
+
+Surfaces compared (all via the live API, same filters):
+  1. /api/kpis                       net_sales            (Overview tile)
+  2. /api/orders-summary             net                  (Sales Export summary)
+  3. /api/analytics/product-analysis summary.net_revenue_canonical
+  4. /api/custom-report              Σ net_revenue        (Custom Report; also the
+                                                           Margin card reads /api/kpis)
+
+Run:  python test_net_sales_consistency.py
+Requires the api-server workflow running and SEED_ADMIN_PASSWORD in the env.
+"""
+import json
+import os
+import sys
+import urllib.parse
+import urllib.request
+
+BASE = os.environ.get("NET_TEST_BASE", "http://localhost:80/api")
+DATE_FROM = os.environ.get("NET_TEST_FROM", "2026-06-01")
+DATE_TO = os.environ.get("NET_TEST_TO", "2026-06-30")
+
+
+def _req(path, token=None, method="GET", body=None):
+    url = BASE + path
+    data = json.dumps(body).encode() if body is not None else None
+    r = urllib.request.Request(url, data=data, method=method)
+    r.add_header("Content-Type", "application/json")
+    if token:
+        r.add_header("Authorization", "Bearer " + token)
+    with urllib.request.urlopen(r, timeout=120) as resp:
+        return json.loads(resp.read().decode())
+
+
+def main():
+    pw = os.environ.get("SEED_ADMIN_PASSWORD")
+    email = os.environ.get("SEED_ADMIN_EMAIL", "admin@vivofashiongroup.com")
+    if not pw:
+        print("SKIP: SEED_ADMIN_PASSWORD not set")
+        return 0
+    token = _req("/auth/login", method="POST", body={"email": email, "password": pw})["token"]
+    q = f"?date_from={DATE_FROM}&date_to={DATE_TO}"
+
+    kpis = _req("/kpis" + q, token)
+    osum = _req("/orders-summary" + q, token)
+    pa = _req("/analytics/product-analysis" + q, token)
+    rep = _req("/custom-report" + q + "&dims=country&measures=net_revenue", token)
+
+    net_kpis = round(float(kpis["net_sales"]))
+    net_export = round(float(osum["net"]))
+    net_pa = round(float(pa["summary"]["net_revenue_canonical"]))
+    net_report = round(sum(float(r["net_revenue"] or 0) for r in rep["rows"]))
+
+    # Catalogue formula: Net = Total (already net of returns) − Discounts
+    bridge = round(float(kpis["total_sales"]) - float(kpis["total_discounts"]))
+
+    # Narrowed-PA contract: when the style universe is filtered (e.g. a brand),
+    # summary.net_revenue_canonical must be omitted (None) — equality with the
+    # window canonical is NOT expected there and the UI falls back to the
+    # styles-scope sum labelled "(styles scope)".
+    pa_rows = pa.get("rows") or []
+    brands = sorted({(r.get("brand") or "") for r in pa_rows if r.get("brand")})
+    pa_narrow_note = "no brand available to test narrowed PA"
+    pa_narrow_fail = None
+    if brands:
+        pa_n = _req("/analytics/product-analysis" + q +
+                    "&brand=" + urllib.parse.quote(brands[0]), token)
+        s_n = pa_n.get("summary", {})
+        pa_narrow_note = (f"narrowed PA (brand={brands[0]!r}): canonical="
+                          f"{s_n.get('net_revenue_canonical')} styles-scope net="
+                          f"{s_n.get('net_revenue')}")
+        if s_n.get("net_revenue_canonical") is not None:
+            pa_narrow_fail = ("narrowed PA returned net_revenue_canonical — "
+                              "contract is None when the style universe is filtered")
+        elif s_n.get("net_revenue") is None:
+            pa_narrow_fail = "narrowed PA missing styles-scope net_revenue fallback"
+
+    failures = []
+    if pa_narrow_fail:
+        failures.append(pa_narrow_fail)
+    for name, val in [("orders-summary net", net_export),
+                      ("product-analysis canonical", net_pa),
+                      ("custom-report Σ net_revenue", net_report),
+                      ("catalogue bridge (total − discounts)", bridge)]:
+        if val != net_kpis:
+            failures.append(f"{name} = {val:,} != kpis net_sales {net_kpis:,}")
+
+    print(f"Window {DATE_FROM}..{DATE_TO}: kpis net_sales = {net_kpis:,}")
+    print(f"  orders-summary: {net_export:,} | PA canonical: {net_pa:,} | "
+          f"custom-report: {net_report:,} | bridge: {bridge:,}")
+    print(f"  {pa_narrow_note}")
+    if failures:
+        print("FAIL:\n  " + "\n  ".join(failures))
+        return 1
+    print("PASS: all Net Sales surfaces identical to the shilling.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

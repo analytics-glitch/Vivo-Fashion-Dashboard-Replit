@@ -4058,8 +4058,23 @@ _REPORT_DIMENSIONS = {
 # dimensions (see _INVENTORY_MEASURES below).
 _UNITS = "SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END)"
 _ORDERS = "COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END)"
-_NET = ("SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric "
+# ── Canonical Net Sales ──────────────────────────────────────────────────────
+# ONE definition, used by every surface labelled "Net Sales" / "Net Revenue"
+# (Overview /api/kpis, Margin, Product Analysis, Sales Export summary, custom
+# report, RFM monetary, kpi-trend, trend-series):
+#
+#   Net Sales (KES, VAT-inclusive) = Total Sales − Returns − Discounts
+#     = SUM(total_sales_kes − discounts_kes) over sale/order rows
+#       − SUM(returns_kes) over return rows
+#
+# It lives on the SAME basis as the Total Sales headline (VAT-inclusive item
+# value; Total Sales already nets returns), so the Total → Net bridge is
+# simply "Total Sales − Discounts". The old figure (net_sales_kes, which is
+# total/(1+VAT)) is a DIFFERENT measure and must be labelled
+# "Net Sales ex-VAT" wherever it is still exposed — never "Net Sales".
+_NET = ("SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric - s.discounts_kes::numeric "
         "WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END)")
+NET_SALES_CANON = _NET
 _REPORT_MEASURES = {
     "revenue":      {"sql": "ROUND(SUM(s.total_sales_kes::numeric), 0)",                                                       "label": "Revenue (KES)",        "group": "Sales"},
     "net_revenue":  {"sql": f"ROUND({_NET}, 0)",                                                                               "label": "Net Revenue (KES)",    "group": "Sales"},
@@ -4332,7 +4347,9 @@ def get_kpis(
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END), 0) AS total_discounts,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_returns,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
+            -- Canonical Net Sales = Total Sales − Returns − Discounts (VAT-incl,
+            -- same basis as total_sales; see NET_SALES_CANON).
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric - s.discounts_kes::numeric
                           WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS net_sales,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS total_orders,
             -- Units sold = GROSS units on sale/order rows, the single canonical
@@ -5879,6 +5896,11 @@ def get_orders(
             ROUND(s.gross_sales_kes::numeric, 0) AS gross_sales_kes,
             ROUND(s.discounts_kes::numeric, 0) AS discount_kes,
             ROUND(s.returns_kes::numeric, 0) AS returns_kes,
+            -- Canonical per-line Net Sales (VAT-incl): total − discount for
+            -- sale/order lines, −returns for return lines (see NET_SALES_CANON).
+            ROUND(CASE WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric
+                       ELSE s.total_sales_kes::numeric - s.discounts_kes::numeric END, 0) AS net_sales_canon_kes,
+            -- Legacy VAT-exclusive figure — exposed as "Net Sales ex-VAT" only.
             ROUND(s.net_sales_kes::numeric, 0) AS net_sales_kes
         FROM all_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
@@ -5914,12 +5936,17 @@ def get_orders_summary(
             ROUND(COALESCE(SUM(s.gross_sales_kes::numeric), 0), 0) AS gross,
             ROUND(COALESCE(SUM(s.discounts_kes::numeric), 0), 0) AS discount,
             ROUND(COALESCE(SUM(s.returns_kes::numeric), 0), 0) AS returns,
-            ROUND(COALESCE(SUM(s.net_sales_kes::numeric), 0), 0) AS net
+            -- Canonical Net Sales (VAT-incl): Total − Returns − Discounts
+            -- (see NET_SALES_CANON); matches /api/kpis net_sales exactly.
+            ROUND(COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric - s.discounts_kes::numeric
+                                    WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0), 0) AS net,
+            -- Legacy VAT-exclusive sum — surface as "Net Sales ex-VAT" only.
+            ROUND(COALESCE(SUM(s.net_sales_kes::numeric), 0), 0) AS net_ex_vat
         FROM all_sales s""" + join + """
         WHERE """ + where, date_to=date_to)
     return rows[0] if rows else {
         "orders": 0, "lines": 0, "qty": 0, "total": 0,
-        "gross": 0, "discount": 0, "returns": 0, "net": 0,
+        "gross": 0, "discount": 0, "returns": 0, "net": 0, "net_ex_vat": 0,
     }
 
 @app.get("/api/stock-to-sales")
@@ -6403,8 +6430,10 @@ def analytics_total_sales_summary(
     rows = run_query("""
         SELECT
             COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0), 0) AS total_sales,
-            COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
-                          WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0), 0) AS net_sales,
+            -- Canonical Net Sales (NET_SALES_CANON): total − discounts − returns,
+            -- VAT-inclusive — must stay identical to /api/kpis net_sales (the
+            -- validation agent reconciles the two to the shilling).
+            COALESCE(ROUND(""" + NET_SALES_CANON + """, 0), 0) AS net_sales,
             COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0), 0) AS gross_sales,
             COALESCE(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0) AS orders,
             COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END), 0) AS units
@@ -7050,7 +7079,7 @@ def analytics_product_analysis(
             " SELECT p.style_name,"
             " COALESCE(SUM(s.net_quantity),0) AS units_period,"
             " COALESCE(ROUND(SUM(" + _PA_KES_CASE + ")),0) AS revenue_period,"
-            " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes"
+            " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes - s.discounts_kes"
             " WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)),0) AS net_revenue_period,"
             " COALESCE(SUM(" + _PA_GROSS_CASE + "),0) AS gross_units_period,"
             " COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_kind IN ('sale','order')) AS orders_period"
@@ -7101,7 +7130,7 @@ def analytics_product_analysis(
             " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes"
             " WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)"
             " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "')),0) AS revenue_period,"
-            " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes"
+            " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes - s.discounts_kes"
             " WHEN s.sale_kind='return' THEN -s.returns_kes ELSE 0 END)"
             " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "')),0) AS net_revenue_period,"
             " COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END)"
@@ -7431,6 +7460,26 @@ def analytics_product_analysis(
     tot_net = sum(g["net_revenue"] for g in kept.values())
     tot_stock = sum(g["stock"] for g in kept.values())
     tot_vel = sum(g["units_vel"] for g in kept.values())
+
+    # Canonical Net Sales for the SAME date/country/store window over ALL sales
+    # (no product-master join, no style scoping) — identical to /api/kpis
+    # net_sales so the PA header ties out to Overview / Margin / Sales Export to
+    # the shilling. Only meaningful when the style universe is NOT narrowed
+    # (brand / category / subcategory / tier / pareto / status all default);
+    # otherwise omitted (None) and the UI falls back to the styles-scope sum.
+    net_revenue_canonical = None
+    if (not brand and not category and not subcategory and not tier
+            and rev_pct is None and style_status == "all"):
+        try:
+            _canon_where = build_filters(df, dt, country, store)
+            _canon_rows = run_query(
+                "SELECT ROUND(" + NET_SALES_CANON + ", 0) AS net FROM all_sales s WHERE " + _canon_where,
+                date_to=dt)
+            if _canon_rows and _canon_rows[0].get("net") is not None:
+                net_revenue_canonical = float(_canon_rows[0]["net"])
+        except Exception:
+            net_revenue_canonical = None
+
     summary = {
         "styles": len(kept),
         # Lifecycle status counts over the kept set (Active + Retired == styles).
@@ -7443,6 +7492,9 @@ def analytics_product_analysis(
         "units": tot_units,
         "revenue": tot_rev,
         "net_revenue": tot_net,
+        # Canonical Net Sales over the full window scope (see above); None when
+        # the style universe is narrowed and equality is not expected.
+        "net_revenue_canonical": net_revenue_canonical,
         "stock_units": tot_stock,
         "avg_sor": _sor(tot_units, tot_stock),
         "avg_woc": _woc(tot_stock, tot_vel),
@@ -8076,7 +8128,10 @@ def analytics_margin(
     # SKU, so gross_margin / margin_pct are computed over the COSTED subset only
     # (lines with cost > 0) and cost_coverage (% of units with a known cost) is
     # returned so the margin figure is read honestly. discount_rate =
-    # discounts / gross (pre-discount). net_revenue nets returns like /api/kpis.
+    # discounts / gross (pre-discount). net_revenue = canonical Net Sales
+    # (total − discounts − returns, VAT-incl — see NET_SALES_CANON); this page
+    # joins the product master so its rows cover catalog-matched SKUs only.
+    # costed_net (margin math) stays on the ex-VAT figure deliberately.
     col = _MARGIN_DIMS.get(dim, _MARGIN_DIMS["category"])
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order','return') AND COALESCE(" + col + ", '') <> ''")
@@ -8086,7 +8141,7 @@ def analytics_margin(
                 SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
                 SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END) AS gross,
                 SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END) AS discounts,
-                SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
+                SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric - s.discounts_kes::numeric
                          WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END) AS net_revenue,
                 SUM(CASE WHEN s.sale_kind IN ('sale','order') AND p.cost IS NOT NULL AND p.cost > 0
                          THEN s.ordered_item_quantity ELSE 0 END) AS costed_units,
@@ -8268,7 +8323,7 @@ def analytics_rfm(
     ref = str(date_to)[:10]
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order','return') AND s.customer_id IS NOT NULL AND s.customer_id <> ''")
-    monetary_expr = ("SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric "
+    monetary_expr = ("SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric - s.discounts_kes::numeric "
                      "WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END)")
     freq_expr = "COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END)"
     base_cte = """
@@ -17979,7 +18034,7 @@ def get_kpi_trend(
         SELECT
             date_trunc('""" + bucket + """', s.sale_date::date)::date AS bucket_date,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric - s.discounts_kes::numeric
                           WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS net_sales,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
@@ -18003,7 +18058,7 @@ def get_kpi_trend(
 # single store (pos_location_name), and (c) folds in FOOTFALL and CONVERSION by
 # joining the footfall sensor table per bucket. Metric definitions deliberately
 # MIRROR /api/kpis so a trend ties out to the Overview KPI cards:
-#   total_sales = net of returns; net_sales = net incl. returns; units = net_quantity;
+#   total_sales = net of returns; net_sales = canonical (total − discounts − returns); units = net_quantity;
 #   ABV = total_sales / orders; ASP = total_sales / ordered_item_quantity.
 @app.get("/api/analytics/trend-series")
 def get_trend_series(
@@ -18022,7 +18077,7 @@ def get_trend_series(
             date_trunc('""" + bucket + """', s.sale_date::date)::date AS bucket_date,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
                 - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric - s.discounts_kes::numeric
                           WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS net_sales,
             SUM(s.net_quantity) AS units_sold,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,

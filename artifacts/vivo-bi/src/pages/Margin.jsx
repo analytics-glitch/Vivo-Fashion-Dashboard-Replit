@@ -46,6 +46,7 @@ const Margin = () => {
 
   const [dim, setDim] = useState("category");
   const [rows, setRows] = useState([]);
+  const [kpis, setKpis] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -53,11 +54,17 @@ const Margin = () => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    api
-      .get("/analytics/margin", { params: buildParams(filters, { dim }) })
-      .then((r) => {
+    // The headline Net Sales card comes from /kpis (canonical, full population —
+    // identical to the Overview tile to the shilling); the table stays on
+    // /analytics/margin (catalog-matched SKUs, needed for cost/margin).
+    Promise.all([
+      api.get("/analytics/margin", { params: buildParams(filters, { dim }) }),
+      api.get("/kpis", { params: buildParams(filters) }),
+    ])
+      .then(([r, kr]) => {
         if (cancelled) return;
         setRows(r.data || []);
+        setKpis(kr.data || null);
         touchLastUpdated();
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
@@ -117,7 +124,7 @@ const Margin = () => {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <KPICard label="Net Revenue" value={fmtKES(k.net)} valueFull={fmtKESLong(k.net)} icon={ChartLineUp} testId="kpi-mg-net" showDelta={false} formula="Item sales after discounts, minus returns — same formula as the Overview ‘Net Sales’ KPI, but this page joins to the product master to compute cost, so it covers only catalog-matched SKUs. Sales for SKUs missing from the catalog are excluded, so it reads slightly below Overview Net Sales." />
+        <KPICard label="Net Revenue" value={fmtKES(kpis?.net_sales)} valueFull={fmtKESLong(kpis?.net_sales)} icon={ChartLineUp} testId="kpi-mg-net" showDelta={false} formula="Canonical Net Sales = Total Sales − Returns − Discounts (VAT-inclusive, same basis as Total Sales). Identical to the Overview ‘Net Sales’ tile for the same filters. The table below joins to the product master to compute cost, so its Net Revenue column covers only catalog-matched SKUs and its sum can read slightly below this card." />
         <KPICard label="Gross Margin" value={fmtKES(k.gm)} valueFull={fmtKESLong(k.gm)} icon={Coins} testId="kpi-mg-gm" showDelta={false} suffix={`${fmtPct(k.coverage)} cost coverage`} />
         <KPICard label="Margin %" value={fmtPct(k.marginPct)} icon={Percent} testId="kpi-mg-pct" showDelta={false} formula="Gross margin ÷ costed net revenue (costed lines only)" />
         <KPICard label="Discounts" value={fmtKES(k.discounts)} valueFull={fmtKESLong(k.discounts)} icon={Receipt} testId="kpi-mg-disc" showDelta={false} />

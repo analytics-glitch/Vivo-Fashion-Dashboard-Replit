@@ -55,16 +55,17 @@ from . import config
 
 # Reconciliations intentionally NOT performed, with rationale (surfaced in the
 # ``validation_audit`` cross_surface row for audit visibility). ``kpis.net_sales``
-# sums the stored per-row ``net_sales_kes`` column (a VAT / structurally-adjusted
-# figure), which is NOT equal to gross_sales - discounts - returns derived from
-# the breakdown endpoints' returned fields (empirically ~9% apart). Those
-# endpoints do not expose net_sales at all, so net_sales is not derivable there
-# and is reconciled ONLY against /analytics/total-sales-summary, which exposes it.
+# is now the CANONICAL Net Sales (NET_SALES_CANON in api_pg.py: total_sales -
+# discounts - returns, VAT-inclusive), NOT the stored per-row ``net_sales_kes``
+# column (that ex-VAT figure is surfaced separately as "Net Sales ex-VAT").
+# The breakdown endpoints (country-summary, sales-summary, daily-trend) do not
+# expose net_sales, so it is reconciled ONLY against
+# /analytics/total-sales-summary, which computes the SAME canonical expression.
 INTENTIONAL_SKIPS = [
     "net_sales vs Σ country-summary/sales-summary/daily-trend: skipped -- those "
-    "endpoints do not expose net_sales and it is not derivable from their fields "
-    "(gross-discounts-returns != stored net_sales_kes). net_sales is reconciled "
-    "directly vs analytics/total-sales-summary.",
+    "endpoints do not expose net_sales. kpis.net_sales is the canonical "
+    "total - discounts - returns (VAT-incl) figure and is reconciled directly "
+    "vs analytics/total-sales-summary, which uses the same NET_SALES_CANON SQL.",
     "product-analysis.active_styles vs range-mgmt.total_active_styles: skipped -- "
     "DIFFERENT 'active' definitions (PA active = lifecycle status: not manually "
     "retired and not gated to the 'Retire' tier; range-mgmt active = SOP-gated tier "

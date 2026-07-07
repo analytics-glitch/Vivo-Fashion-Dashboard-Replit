@@ -1078,7 +1078,7 @@ const Overview = () => {
               action={{ label: "See by location", to: "/locations" }}
               prefetch={pf("/locations")} />
             <KPICard testId="kpi-net-sales" label="Net Sales" value={kfmt(kpis.net_sales)} valueFull={fmtKESLong(kpis.net_sales)} icon={Coins}
-              formula="Item sales after discounts, minus returns — VAT-exclusive. The cash you actually kept. This is the most inclusive net figure (all filtered sales, including anonymous walk-ins and SKUs not yet in the product master) and is the canonical Net Sales other pages reconcile to. Margin ‘Net Revenue’ (catalog-matched SKUs only) and RFM ‘Net Spend’ (identified customers only) use the same formula on narrower scopes, so they read slightly lower."
+              formula={`Canonical Net Sales = Total Sales − Returns − Discounts (VAT-inclusive, same basis as Total Sales).\n\nBridge for this period: Total Sales ${fmtKESLong(kpis.total_sales)} (returns of ${fmtKESLong(kpis.total_returns)} already netted out) − discounts ${fmtKESLong(kpis.total_discounts)} = Net Sales ${fmtKESLong(kpis.net_sales)}.\n\nThis is the ONE Net Sales figure — Margin ‘Net Revenue’, Product Analysis and the Sales Export summary all show this same number for the same filters. The VAT-exclusive figure is a different measure and is always labelled ‘Net Sales ex-VAT’.`}
               delta={delta("net_sales")} deltaLabel={compareLbl} prevValue={prev("net_sales", kfmt)} showDelta={compareMode !== "none"}
               action={{ label: "Drill into returns", to: "/exec-summary#returns" }} />
             <KPICard testId="kpi-orders" label="Transactions" value={fmtNum(kpis.total_orders)} valueFull={fmtNum(kpis.total_orders)} icon={ShoppingCart}

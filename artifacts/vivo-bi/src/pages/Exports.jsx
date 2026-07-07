@@ -560,7 +560,8 @@ const SalesExport = () => {
       ["gross_sales_kes", "Gross Sales (KES)"],
       ["discount_kes", "Discount (KES)"],
       ["returns_kes", "Returns (KES)"],
-      ["net_sales_kes", "Net Sales (KES)"],
+      ["net_sales_canon_kes", "Net Sales (KES)"],
+      ["net_sales_kes", "Net Sales ex-VAT (KES)"],
     ];
     const esc = (v) => {
       if (v === null || v === undefined) return "";
@@ -743,7 +744,12 @@ const SalesExport = () => {
                   { key: "discount_kes", label: "Discount", numeric: true, render: (r) => r.discount_kes ? <span className="text-danger">{fmtKES(r.discount_kes)}</span> : fmtKES(0), csv: (r) => r.discount_kes },
                   { key: "returns_kes", label: "Returns", numeric: true, render: (r) => r.returns_kes ? <span className="text-danger">{fmtKES(r.returns_kes)}</span> : fmtKES(0), csv: (r) => r.returns_kes },
                   { key: "total_sales_kes", label: "Total", numeric: true, render: (r) => <span className="font-semibold">{fmtKES(r.total_sales_kes)}</span>, csv: (r) => r.total_sales_kes },
-                  { key: "net_sales_kes", label: "Net Sales", numeric: true, render: (r) => <span className="text-brand font-bold">{fmtKES(r.net_sales_kes)}</span>, csv: (r) => r.net_sales_kes },
+                  { key: "net_sales_canon_kes", label: "Net Sales", numeric: true,
+                    headerTitle: "Canonical Net Sales = Total − Discount per line (returns show as negative). Sums to the Net Sales summary card and the Overview tile.",
+                    render: (r) => r.net_sales_canon_kes == null ? "—" : <span className="text-brand font-bold">{fmtKES(r.net_sales_canon_kes)}</span>, csv: (r) => r.net_sales_canon_kes },
+                  { key: "net_sales_kes", label: "Net Sales ex-VAT", numeric: true,
+                    headerTitle: "VAT-exclusive figure (total ÷ (1+VAT)) — a different measure from canonical Net Sales.",
+                    render: (r) => r.net_sales_kes == null ? "—" : <span className="text-muted">{fmtKES(r.net_sales_kes)}</span>, csv: (r) => r.net_sales_kes },
                 ]}
                 rows={filtered}
               />
