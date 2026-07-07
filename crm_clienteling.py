@@ -304,7 +304,12 @@ def _tiktok_sandbox_mode():
     """True when the operator opts into TikTok Sandbox credentials (an
     unreviewed app's separate client key/secret + target test users). Driven
     by the TIKTOK_USE_SANDBOX env var so it can be enabled in development
-    only — production is never flipped by a global secret change."""
+    only. Deployments are HARD-EXCLUDED: REPLIT_DEPLOYMENT is set in prod, and
+    sandbox mode must never activate there even if TIKTOK_USE_SANDBOX leaks in
+    as a global secret (that once sent prod's Connect button to the sandbox
+    client_key → redirect_uri mismatch)."""
+    if (os.environ.get("REPLIT_DEPLOYMENT") or "").strip():
+        return False
     return (os.environ.get("TIKTOK_USE_SANDBOX") or "").strip().lower() in (
         "1", "true", "yes", "on")
 
@@ -6742,6 +6747,14 @@ def _reg_social(app):
     _GREV_STARS = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5}
 
     def _grev_client_creds():
+        # Prefer a DEDICATED OAuth client for Business Profile (the API-access
+        # approval is per-GCP-project, which may not be the sign-in client's
+        # project). Falls back to the sign-in client when the override secrets
+        # are absent.
+        cid = (os.environ.get("GOOGLE_REVIEWS_CLIENT_ID") or "").strip()
+        sec = (os.environ.get("GOOGLE_REVIEWS_CLIENT_SECRET") or "").strip()
+        if cid and sec:
+            return cid, sec
         return ((os.environ.get("GOOGLE_CLIENT_ID") or "").strip(),
                 (os.environ.get("GOOGLE_CLIENT_SECRET") or "").strip())
 
