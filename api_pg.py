@@ -6407,10 +6407,14 @@ def analytics_canonical_units_sold(
     # is ~97% NULL and joined product_type only covers ~70% of sold units, so any
     # product_type filter would drop ~30% of real units and contradict the ASP /
     # transactions KPIs computed off the same base.
-    where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0")
+    #
+    # Definition = _UNITS exactly (gross ordered_item_quantity over sale/order
+    # rows) so this endpoint equals /api/kpis total_units BY CONSTRUCTION —
+    # the old extra "quantity > 0" guard created a second, subtly different
+    # units population whenever negative-qty correction rows existed.
+    where = build_filters(date_from, date_to, country, channel)
     rows = run_query("""
-        SELECT COALESCE(SUM(s.ordered_item_quantity), 0) AS units_sold
+        SELECT COALESCE(""" + _UNITS + """, 0) AS units_sold
         FROM all_sales s
         WHERE """ + where, date_to=date_to)
     return {"units_sold": int((rows[0].get("units_sold") if rows and rows[0].get("units_sold") is not None else 0))}
@@ -7468,17 +7472,22 @@ def analytics_product_analysis(
     # (brand / category / subcategory / tier / pareto / status all default);
     # otherwise omitted (None) and the UI falls back to the styles-scope sum.
     net_revenue_canonical = None
+    units_canonical = None
     if (not brand and not category and not subcategory and not tier
             and rev_pct is None and style_status == "all"):
         try:
             _canon_where = build_filters(df, dt, country, store)
             _canon_rows = run_query(
-                "SELECT ROUND(" + NET_SALES_CANON + ", 0) AS net FROM all_sales s WHERE " + _canon_where,
+                "SELECT ROUND(" + NET_SALES_CANON + ", 0) AS net, "
+                + _UNITS + " AS units FROM all_sales s WHERE " + _canon_where,
                 date_to=dt)
             if _canon_rows and _canon_rows[0].get("net") is not None:
                 net_revenue_canonical = float(_canon_rows[0]["net"])
+            if _canon_rows and _canon_rows[0].get("units") is not None:
+                units_canonical = int(_canon_rows[0]["units"])
         except Exception:
             net_revenue_canonical = None
+            units_canonical = None
 
     summary = {
         "styles": len(kept),
@@ -7490,6 +7499,11 @@ def analytics_product_analysis(
         # with Retired selected this is "retired styles that still sold".
         "actively_selling": sum(1 for k in kept if selling_by_style.get(k)),
         "units": tot_units,
+        # Canonical Units Sold over the full window scope (same query as
+        # /api/analytics/canonical-units-sold); None when the style universe is
+        # narrowed and equality is not expected. Lets the UI quantify the gap
+        # between the styles-scope units sum and the company-wide headline.
+        "units_canonical": units_canonical,
         "revenue": tot_rev,
         "net_revenue": tot_net,
         # Canonical Net Sales over the full window scope (see above); None when
@@ -7954,8 +7968,11 @@ def analytics_velocity(
     # selected period; weeks_of_cover = current store stock / rate_of_sale.
     # sell_through follows the SOR convention (sold / (sold + current stock)).
     # Current stock excludes warehouses, matching every other stock breakdown.
+    # NOTE: no "ordered_item_quantity > 0" guard — units_sold must be the same
+    # gross sale/order-row population as /api/top-skus and /api/sor so the SAME
+    # style shows the SAME units on Products, Velocity and Catalog SOR.
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.style_name IS NOT NULL")
+        extra="s.sale_kind IN ('sale','order') AND p.style_name IS NOT NULL")
     # Phase 2 A6/A1 — rate_of_sale & weeks_of_cover use the standardized
     # recency-weighted weekly velocity (last 28 days double-weighted over a
     # 12-week-equivalent denominator, computed on a trailing 56-day window) so
@@ -18046,11 +18063,16 @@ def get_kpi_trend(
         GROUP BY 1
         ORDER BY 1
     """, date_to=date_to)
+    # run_query returns CACHED row dicts — never mutate them in place (a pop()
+    # here made the second call within the cache TTL 500 with KeyError).
+    out = []
     for r in rows:
+        r = dict(r)
         d = r.pop("bucket_date")
         r["date"] = str(d)
         r["label"] = _fmt_bucket_label(d, bucket)
-    return rows
+        out.append(r)
+    return out
 
 # ── Trend Analysis ────────────────────────────────────────────────────────────
 # A dedicated, richer time-series used by the Trend Analysis page. Unlike
@@ -18058,7 +18080,9 @@ def get_kpi_trend(
 # single store (pos_location_name), and (c) folds in FOOTFALL and CONVERSION by
 # joining the footfall sensor table per bucket. Metric definitions deliberately
 # MIRROR /api/kpis so a trend ties out to the Overview KPI cards:
-#   total_sales = net of returns; net_sales = canonical (total − discounts − returns); units = net_quantity;
+#   total_sales = net of returns; net_sales = canonical (total − discounts − returns);
+#   units = canonical GROSS ordered_item_quantity on sale/order rows (same as
+#   /api/kpis total_units — net_quantity is velocity-only, never a headline);
 #   ABV = total_sales / orders; ASP = total_sales / ordered_item_quantity.
 @app.get("/api/analytics/trend-series")
 def get_trend_series(
@@ -18079,7 +18103,7 @@ def get_trend_series(
                 - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric - s.discounts_kes::numeric
                           WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS net_sales,
-            SUM(s.net_quantity) AS units_sold,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
             ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
                 - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END))
@@ -18110,6 +18134,7 @@ def get_trend_series(
 
     out = []
     for r in sales_rows:
+        r = dict(r)  # run_query rows are CACHED — never mutate in place
         d = r.pop("bucket_date")
         key = str(d)
         ff = ff_by_bucket.pop(key, 0) or 0

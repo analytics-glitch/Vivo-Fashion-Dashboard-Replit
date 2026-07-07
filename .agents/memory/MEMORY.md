@@ -105,3 +105,4 @@
 - [Customers stale cross-filter KPIs](customers-stale-cross-filter.md) — a payload kept visible across a scope change must be gated by the scope it was fetched under; else a fail-fast /customers (circuit-breaker) shows the old country's KPIs. Delta pill must guard tiny/zero base.
 - [Google Reviews CRM inbox](google-reviews-crm-inbox.md) — Business Profile reviews sync/reply reuses the sign-in OAuth client; reviews API is still v4; new sync endpoints must join _AUTH_INTERNAL_OR_SESSION_PATHS or the internal-token loop 401s.
 - [Metro crashes on repo-root .cache churn](metro-watches-repo-cache-crash.md) — Expo bundler dies with uncaught ENOENT watching `.cache/uv/.tmp*` after a Python install; fix = `config.resolver.blockList=/[\\/]\.(cache|git)[\\/].*/`. Stale log glob faked "still failing".
+- [run_query cache rows are shared](run-query-cache-mutation.md) — cached dicts are returned by reference; copy dict(r) before pop/mutate or 2nd call within TTL breaks.

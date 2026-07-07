@@ -104,6 +104,10 @@ const Inventory = () => {
   // effect — read by the table to derive weeks_of_cover. Keeps the UI
   // perfectly synced with the data that was actually requested.
   const [stsEffectiveDays, setStsEffectiveDays] = useState(30);
+  // The exact date range the STS endpoints were called with — stamped on the
+  // table captions so readers know Units Sold covers THIS window, not the
+  // page-level filter bar range.
+  const [stsAppliedRange, setStsAppliedRange] = useState(null);
   // Stock-to-Sales stock scope: which inventory rolls up into the
   // current_stock column. "stores" (POS only), "warehouse", or "combined".
   // Iter 89w-c — STS / "Stock to Sales" scope.  Default "combined"
@@ -190,6 +194,7 @@ const Inventory = () => {
     // Surface the effective window in state so the table can derive
     // weeks_of_cover off the same number the API was called with.
     setStsEffectiveDays(stsEffectiveWindowDays);
+    setStsAppliedRange({ from: stsDateFrom, to: stsDateTo });
     const dateParams = {
       date_from: stsDateFrom, date_to: stsDateTo,
       country: countryCsv, locations: locationsCsv,
@@ -1083,6 +1088,9 @@ const Inventory = () => {
                 subtitle={
                   <span>
                     Granular view — one row per merchandise subcategory. Switch to Grouped to fold rows under collapsible category headers. Red = action needed (stockout or overstock risk). Green = healthy balance.
+                    {stsAppliedRange && (
+                      <span className="text-muted"> Units Sold covers <span className="font-semibold text-foreground">{stsAppliedRange.from} → {stsAppliedRange.to}</span> ({stsEffectiveDays}d, this card's own window — not the page filter), so it may not match page-level Units Sold.</span>
+                    )}
                     {posSelected && stockScopeIsAuto && (
                       <span
                         className="ml-2 inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap align-middle"
@@ -1308,7 +1316,8 @@ const Inventory = () => {
           <div className="card-white p-5" data-testid="stock-to-sales-section">
             <SectionTitle
               title="Stock cover (units-sold multiplier) by location"
-              subtitle="Stock-to-units-sold multiplier — a HIGH value means low velocity (potential overstock). Weeks of Cover (next table) uses last-4-week velocity and is more actionable for replenishment decisions."
+              subtitle={`Stock-to-units-sold multiplier — a HIGH value means low velocity (potential overstock). Weeks of Cover (next table) uses last-4-week velocity and is more actionable for replenishment decisions.${
+                stsAppliedRange ? ` Units Sold covers ${stsAppliedRange.from} → ${stsAppliedRange.to} (${stsEffectiveDays}d, this card's own window — not the page filter).` : ""}`}
             />
             <SortableTable
               testId="sts-location"

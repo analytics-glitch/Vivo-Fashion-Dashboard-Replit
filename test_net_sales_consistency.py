@@ -12,6 +12,14 @@ Surfaces compared (all via the live API, same filters):
   4. /api/custom-report              Σ net_revenue        (Custom Report; also the
                                                            Margin card reads /api/kpis)
 
+Units Sold surfaces compared (canonical = gross ordered_item_quantity over
+sale/order rows under BASE_FILTERS, i.e. the _UNITS measure):
+  A. /api/kpis                            total_units          (Overview tile)
+  B. /api/analytics/canonical-units-sold  units_sold           (canonical endpoint)
+  C. /api/analytics/kpi-trend             Σ units_sold          (Trend page KPIs)
+  D. /api/analytics/trend-series          Σ units_sold          (Trend page chart)
+  E. /api/analytics/product-analysis      summary.units_canonical
+
 Run:  python test_net_sales_consistency.py
 Requires the api-server workflow running and SEED_ADMIN_PASSWORD in the env.
 """
@@ -79,8 +87,46 @@ def main():
                               "contract is None when the style universe is filtered")
         elif s_n.get("net_revenue") is None:
             pa_narrow_fail = "narrowed PA missing styles-scope net_revenue fallback"
+        elif s_n.get("units_canonical") is not None:
+            pa_narrow_fail = ("narrowed PA returned units_canonical — "
+                              "contract is None when the style universe is filtered")
+
+    # ---- Units Sold (canonical gross units) ------------------------------
+    canon = _req("/analytics/canonical-units-sold" + q, token)
+    trend = _req("/analytics/kpi-trend" + q + "&bucket=month", token)
+    series = _req("/analytics/trend-series" + q + "&bucket=month", token)
+    # Cache-immutability regression: a second call within the cache TTL must
+    # return the SAME payload. The handlers once mutated cached row dicts
+    # in-place (r.pop("bucket_date")), so the 2nd call 500'd / lost fields.
+    trend2 = _req("/analytics/kpi-trend" + q + "&bucket=month", token)
+    series2 = _req("/analytics/trend-series" + q + "&bucket=month", token)
+    cache_fail = None
+    if trend2 != trend:
+        cache_fail = "kpi-trend second call within cache TTL differs (cached rows mutated)"
+    elif series2 != series:
+        cache_fail = "trend-series second call within cache TTL differs (cached rows mutated)"
+
+    units_kpis = int(kpis["total_units"])
+    units_canon = int(canon["units_sold"])
+    units_trend = sum(int(r.get("units_sold") or 0) for r in trend)
+    units_series = sum(int(r.get("units_sold") or 0) for r in series)
+    units_pa = pa["summary"].get("units_canonical")
+
+    unit_failures = []
+    for name, val in [("canonical-units-sold", units_canon),
+                      ("kpi-trend Σ units_sold", units_trend),
+                      ("trend-series Σ units_sold", units_series),
+                      ("PA summary units_canonical",
+                       int(units_pa) if units_pa is not None else None)]:
+        if val is None:
+            unit_failures.append(f"{name} missing (expected {units_kpis:,})")
+        elif val != units_kpis:
+            unit_failures.append(f"{name} = {val:,} != kpis total_units {units_kpis:,}")
 
     failures = []
+    failures.extend(unit_failures)
+    if cache_fail:
+        failures.append(cache_fail)
     if pa_narrow_fail:
         failures.append(pa_narrow_fail)
     for name, val in [("orders-summary net", net_export),
@@ -94,10 +140,13 @@ def main():
     print(f"  orders-summary: {net_export:,} | PA canonical: {net_pa:,} | "
           f"custom-report: {net_report:,} | bridge: {bridge:,}")
     print(f"  {pa_narrow_note}")
+    print(f"Units: kpis total_units = {units_kpis:,} | canonical: {units_canon:,} | "
+          f"kpi-trend: {units_trend:,} | trend-series: {units_series:,} | "
+          f"PA canonical: {units_pa if units_pa is None else format(int(units_pa), ',')}")
     if failures:
         print("FAIL:\n  " + "\n  ".join(failures))
         return 1
-    print("PASS: all Net Sales surfaces identical to the shilling.")
+    print("PASS: all Net Sales + Units Sold surfaces identical.")
     return 0
 
 

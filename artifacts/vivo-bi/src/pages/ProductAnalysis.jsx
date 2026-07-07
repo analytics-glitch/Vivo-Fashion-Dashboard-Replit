@@ -1003,6 +1003,13 @@ const ProductAnalysis = () => {
               <KPICard
                 small showDelta={false} testId="pa-kpi-units"
                 label="Units Sold" value={fmtNum(summary.units)} icon={Cube}
+                sub={summary.units_canonical != null && Number(summary.units_canonical) !== Number(summary.units)
+                  ? `vs ${fmtNum(summary.units_canonical)} company-wide`
+                  : undefined}
+                formula={`Gross units summed over the styles listed below (same gross measure as Overview).${
+                  summary.units_canonical != null && Number(summary.units_canonical) !== Number(summary.units)
+                    ? ` Company-wide Units Sold for this window is ${fmtNum(summary.units_canonical)}; the ${fmtNum(Number(summary.units_canonical) - Number(summary.units))}-unit difference sits on sale lines outside this style universe (no catalog match, zero-stock or third-party styles).`
+                    : ""}`}
               />
               <KPICard
                 small showDelta={false} testId="pa-kpi-stock"

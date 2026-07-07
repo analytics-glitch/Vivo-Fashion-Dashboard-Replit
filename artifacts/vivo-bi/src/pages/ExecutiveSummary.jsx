@@ -1440,7 +1440,7 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
             Share of units on hand (group-wide inventory) compared with share of units sold over the selected window, by category. A positive gap means we're carrying more stock than the sell-through justifies; a negative gap means demand outpaces supply.
             <span className="ml-1.5">Total on hand: <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_stock_units)}u</span>
             <span className="text-muted"> (</span><span className="font-semibold tabular-nums">{fmtNum(stockMix.total_stock_units_warehouse)}u</span><span className="text-muted"> warehouse · </span><span className="font-semibold tabular-nums">{fmtNum(stockMix.total_stock_units_stores)}u</span><span className="text-muted"> stores)</span>
-            <span> · Sold ({wd}d): <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}u</span></span>
+            <span> · Sold ({customRange?.from && customRange?.to ? `${customRange.from} → ${customRange.to}` : `${wd}d`}): <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}u</span><span className="text-muted"> — this card's own sales window (set below), not the page filter, so Sold may not match page-level Units Sold</span></span>
             {stockMix.total_weeks_of_cover != null && (
               <span> · Group cover: <span className="font-bold text-foreground tabular-nums">{stockMix.total_weeks_of_cover.toFixed(1)}w</span></span>
             )}

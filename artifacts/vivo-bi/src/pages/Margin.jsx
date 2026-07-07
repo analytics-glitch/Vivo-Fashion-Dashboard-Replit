@@ -86,7 +86,7 @@ const Margin = () => {
     // Coverage weighted by units (server returns per-row coverage %).
     const coveredUnits = rows.reduce((s, r) => s + Number(r.units || 0) * Number(r.cost_coverage || 0) / 100, 0);
     const coverage = units > 0 ? (coveredUnits * 100) / units : 0;
-    return { gross, discounts, net, cogs, gm, marginPct, discountRate, coverage };
+    return { gross, discounts, net, cogs, gm, marginPct, discountRate, coverage, units };
   }, [rows]);
 
   const dimLabel = DIMS.find((d) => d.id === dim)?.label || "Category";
@@ -134,7 +134,10 @@ const Margin = () => {
       <div className="card-white p-4 sm:p-5">
         <SectionTitle
           title="Markdown & Margin"
-          subtitle="Gross margin uses per-unit cost; COGS, gross margin and margin % cover the subset of units with a known cost (see Cost Coverage)."
+          subtitle={`Gross margin uses per-unit cost; COGS, gross margin and margin % cover the subset of units with a known cost (see Cost Coverage).${
+            !loading && !error && kpis?.total_units != null && k.units !== Number(kpis.total_units)
+              ? ` Σ Units here = ${fmtNum(k.units)} vs the company-wide Units Sold of ${fmtNum(kpis.total_units)} — the ${fmtNum(Number(kpis.total_units) - k.units)}-unit gap sits on sale lines without a catalog match or a ${dimLabel.toLowerCase()} value.`
+              : ""}`}
           testId="margin-section"
           action={
             <div className="flex flex-wrap gap-1.5">

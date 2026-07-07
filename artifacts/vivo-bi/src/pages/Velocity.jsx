@@ -26,6 +26,9 @@ const Velocity = () => {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // Canonical Units Sold for the same window/scope (the Overview headline) so
+  // the styles-scope sum below can be reconciled with a quantified caption.
+  const [canonicalUnits, setCanonicalUnits] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,6 +43,11 @@ const Velocity = () => {
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
+    setCanonicalUnits(null);
+    api
+      .get("/analytics/canonical-units-sold", { params: buildParams(filters) })
+      .then((r) => { if (!cancelled) setCanonicalUnits(r.data?.units_sold ?? null); })
+      .catch(() => { if (!cancelled) setCanonicalUnits(null); });
     return () => { cancelled = true; };
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
@@ -82,7 +90,11 @@ const Velocity = () => {
     <div className="space-y-6">
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <KPICard label="Styles" value={fmtNum(k.styles)} icon={Stack} testId="kpi-vel-styles" showDelta={false} />
-        <KPICard label="Units Sold" value={fmtNum(k.units)} icon={ChartLineUp} testId="kpi-vel-units" showDelta={false} formula="Same gross units measure as Overview, over the selected period, but summed only across styles in the velocity universe (lines without a resolved style are excluded) — so this can read slightly below the Overview Units Sold." />
+        <KPICard label="Units Sold" value={fmtNum(k.units)} icon={ChartLineUp} testId="kpi-vel-units" showDelta={false}
+          sub={canonicalUnits != null && canonicalUnits !== k.units
+            ? `vs ${fmtNum(canonicalUnits)} company-wide (${fmtNum(canonicalUnits - k.units)} on lines without a resolved style)`
+            : undefined}
+          formula={`Same gross units measure as Overview, over the selected period, but summed only across styles in the velocity universe (lines without a resolved style are excluded).${canonicalUnits != null ? ` Company-wide Units Sold for this window is ${fmtNum(canonicalUnits)}; the difference of ${fmtNum(canonicalUnits - k.units)} units sits on sale lines whose SKU is not in the product catalog.` : ""}`} />
         <KPICard label="Weekly Rate" value={`${fmtDec(k.weeklyRate, 0)} / wk`} icon={Lightning} testId="kpi-vel-rate" showDelta={false} sub={`${k.fast} fast · ${k.slow} slow`} />
         <KPICard label="Current Stock" value={fmtNum(k.stock)} icon={Package} testId="kpi-vel-stock" showDelta={false} />
         <KPICard label="Sell-Through" value={fmtPct(k.sellThrough)} icon={Gauge} testId="kpi-vel-sor" showDelta={false} formula="Units sold ÷ (units sold + current stock)" />
