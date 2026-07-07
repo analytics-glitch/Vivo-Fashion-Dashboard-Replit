@@ -236,7 +236,8 @@ export default function Inbox() {
 
   // Poll /social/tiktok/status until the sync stops "running" (or a safety
   // timeout), then surface the finished counts and reload the inbox items.
-  // TikTok has no DMs — only posts (own videos) + their comments. Mirrors
+  // TikTok has no DMs, and its public API grants no comment scopes either —
+  // only the account's own posts (videos) are synced. Mirrors
   // pollXUntilDone / pollIgUntilDone.
   const pollTiktokUntilDone = async () => {
     if (tiktokPolling.current) return; // a poll loop is already watching this sync
@@ -256,9 +257,7 @@ export default function Inbox() {
         } catch { /* transient — keep polling */ }
         if (st && !st.running) {
           const a = st.account || {};
-          toast.success(
-            `TikTok: ${a.last_sync_posts || 0} posts, ${a.last_sync_comments || 0} comments`
-          );
+          toast.success(`TikTok: ${a.last_sync_posts || 0} posts`);
           if (st.last_run_error) {
             toast.error("TikTok sync error: " + st.last_run_error);
           }
@@ -288,7 +287,7 @@ export default function Inbox() {
       const d = r.data || {};
       // The sync runs on a background thread and returns immediately, so poll
       // to completion (the returned counts are the just-STARTED run's zeros).
-      toast.message("TikTok sync started — pulling posts & comments in the background…");
+      toast.message("TikTok sync started — pulling posts in the background… (TikTok's public API doesn't allow reading comments)");
       if ((d.scopes_missing || []).length) {
         toast.warning(`Missing access: ${d.scopes_missing.join(", ")} — that content cannot be pulled until your TikTok app scope allows it.`);
       }
@@ -1220,7 +1219,7 @@ function TikTokStatusStrip({ status }) {
           <div className="flex-1">
             <div className="font-medium text-base">TikTok is not connected yet.</div>
             <div className="text-xs text-[var(--vivo-muted)] mt-1">
-              Add your TikTok access token to the server (with the <code className="text-[10px] bg-white px-1 py-0.5 rounded">video.list</code> scope for posts and <code className="text-[10px] bg-white px-1 py-0.5 rounded">comment.list</code> for comments). Once configured, a <strong>"Sync from TikTok"</strong> button appears here to pull your videos &amp; their comments into the inbox. TikTok has no public messaging API, so DMs cannot be pulled.
+              Add your TikTok access token to the server (with the <code className="text-[10px] bg-white px-1 py-0.5 rounded">user.info.basic</code> and <code className="text-[10px] bg-white px-1 py-0.5 rounded">video.list</code> scopes). Once configured, a <strong>"Sync from TikTok"</strong> button appears here to pull your videos into the inbox. TikTok's public API offers no comment or messaging access, so comments and DMs cannot be pulled.
             </div>
           </div>
         </div>
@@ -1252,9 +1251,14 @@ function TikTokStatusStrip({ status }) {
           </span>
           <span>Manual sync — click "Sync from TikTok" to refresh</span>
           <span>
-            {counts.real_posts ?? 0} live posts ·{" "}
-            {counts.real_comments ?? 0} comments
+            {counts.real_posts ?? 0} live posts
+            {status.comments_available ? ` · ${counts.real_comments ?? 0} comments` : ""}
           </span>
+          {!status.comments_available && (
+            <span className="text-[10px] uppercase tracking-[0.15em] text-[var(--vivo-muted)]">
+              Posts only — TikTok's API doesn't allow reading comments
+            </span>
+          )}
         </div>
       </div>
 

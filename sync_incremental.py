@@ -2310,7 +2310,8 @@ def main():
             log.error("X CRM sync error: %s", e)
 
     # TikTok CRM inbox sync — once per hour, mirroring the X block. Own videos
-    # (posts) + their comments only (TikTok has no public DM API). Idempotent +
+    # (posts) ONLY — TikTok's public API has no DM API and grants no comment
+    # scopes (comment sync is gated off in crm_clienteling.py). Idempotent +
     # cursor-resumed, small time budget so a deep backfill can't stall the loop.
     # A 400 "not configured" is expected + harmless; a 409 means a run is already
     # in flight — benign, log quietly.

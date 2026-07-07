@@ -230,11 +230,14 @@ def _x_oauth1_post(path, body=None):
 # --------------------------------------------------------------------------- #
 # TikTok API v2 — thin client for the CRM social inbox                         #
 # --------------------------------------------------------------------------- #
-# TikTok has NO public DM API, so this engine covers the brand account's own
-# videos (posts) and the comments on them only. All calls use a single user
-# access token (TIKTOK_ACCESS_TOKEN, an OAuth user token carrying the granted
-# scopes — video.list for reads, comment.list / comment.list.manage for reading
-# and replying to comments). The v2 API returns a 200 with an {"error":{...}}
+# TikTok has NO public DM API, and (as of 2026-07) its public Developer Portal
+# offers NO comment scopes either — the only addable scopes are
+# user.info.basic, video.list and video.upload. So this engine covers the
+# brand account's own videos (posts) ONLY. The comment sync/reply code paths
+# are kept but hard-gated behind _TIKTOK_COMMENTS_AVAILABLE = False so they
+# can be re-enabled if TikTok ever grants comment.list / comment.list.manage.
+# All calls use a single user access token (TIKTOK_ACCESS_TOKEN, an OAuth user
+# token carrying the granted scopes). The v2 API returns a 200 with an {"error":{...}}
 # body carrying a non-"ok" code on failure, so every call must inspect BOTH the
 # HTTP status AND error.code and fail loud with the API's own message so a
 # missing scope / rate-limit surfaces (in scopes_missing) instead of silently
@@ -256,6 +259,11 @@ def _x_oauth1_post(path, body=None):
 # a silent disconnect. The legacy pasted TIKTOK_ACCESS_TOKEN remains the
 # fallback when no refresh credentials are configured.
 _TIKTOK_API = "https://open.tiktokapis.com"
+# TikTok's public API does not offer any comment-reading or comment-reply
+# scope (no comment.list / comment.list.manage in the Developer Portal's
+# addable scopes). Comment sync (phase C) and comment replies are therefore
+# disabled. Flip to True ONLY if TikTok makes those scopes grantable.
+_TIKTOK_COMMENTS_AVAILABLE = False
 # Refresh this many seconds before the stored expiry (safety margin).
 _TIKTOK_REFRESH_MARGIN_SEC = 900
 _TIKTOK_TOKEN_LOCK = threading.Lock()
@@ -437,11 +445,13 @@ def _tiktok_read_configured():
 
 
 def _tiktok_write_configured():
-    """Replying to a comment uses the SAME access token but needs the
+    """TikTok's public API offers no comment-reply scope, so writes are
+    disabled regardless of credentials (see _TIKTOK_COMMENTS_AVAILABLE).
+    Replying to a comment would use the SAME access token but needs the
     comment.list.manage scope. There is no separate secret, so presence of the
     token is the best signal we have; a missing scope is surfaced at call time
     (the reply fails loud with the API's own message)."""
-    return _tiktok_read_configured()
+    return _TIKTOK_COMMENTS_AVAILABLE and _tiktok_read_configured()
 
 
 def _tiktok_err(r, j=None):
@@ -3756,6 +3766,12 @@ def _reg_social(app):
                         "WHERE id=%s", (_int(fid),)) or {}
             psid = (prow.get("parent_source_id") or "")
             video_id = psid[len("tiktokvid:"):] if psid.startswith("tiktokvid:") else ""
+            if not _TIKTOK_COMMENTS_AVAILABLE:
+                raise HTTPException(
+                    400, "Replying to TikTok comments is not available: "
+                         "TikTok's public API does not offer a comment-reply "
+                         "scope (only user.info.basic, video.list and "
+                         "video.upload are grantable).")
             if not cmt_id or not video_id:
                 raise HTTPException(
                     400, "This comment has no TikTok reference to reply to "
@@ -6047,6 +6063,7 @@ def _reg_social(app):
                                "leadership", "admin"))
         empty = {"connected": False, "running": False, "account": None,
                  "last_synced_at": None, "write_enabled": False,
+                 "comments_available": _TIKTOK_COMMENTS_AVAILABLE,
                  "reconnect_required": False, "reconnect_error": None,
                  "counts": {"real_posts": 0, "real_feedback": 0,
                             "real_comments": 0}}
@@ -6100,6 +6117,7 @@ def _reg_social(app):
             },
             "last_synced_at": _cfg_get("social.tiktok.last_synced_at") or None,
             "write_enabled": _tiktok_write_configured(),
+            "comments_available": _TIKTOK_COMMENTS_AVAILABLE,
             "last_run_error": run_error or None,
             "counts": {"real_posts": _int(agg.get("posts"), 0),
                        "real_feedback": _int(agg.get("feedback"), 0),
@@ -6183,6 +6201,10 @@ def _reg_social(app):
 
         def _over_content_budget():
             # Soft budget for the posts phase so a tail is left for comments.
+            # With comments unavailable (no public scope) the posts phase gets
+            # the full budget.
+            if not _TIKTOK_COMMENTS_AVAILABLE:
+                return _over_budget()
             return (time.monotonic() - started) > (
                 budget - _TIKTOK_SYNC_COMMENT_RESERVE_SEC)
 
@@ -6437,34 +6459,37 @@ def _reg_social(app):
                 _cfg_set("social.tiktok.deep_done", "1")
                 _cfg_set("social.tiktok.deep_cursor", "")
 
-            # Phase C — comments on the stored videos. Always re-scan the newest
-            # few videos for fresh comments, then resume the deep backfill from
-            # the persisted position over older videos. Missing comment scope is
-            # reported and never fails the posts sync.
-            vids = _ex("SELECT source_id FROM crm_social_feedback "
-                       "WHERE platform='tiktok' AND type='post' "
-                       "ORDER BY posted_at DESC NULLS LAST", fetch=True) or []
-            c_vids = [r["source_id"] for r in vids]
-            fresh_n = min(_TIKTOK_COMMENT_FRESH_VIDEOS, len(c_vids))
-            for sid in c_vids[:fresh_n]:
-                if _over_budget() or comments_blocked["on"]:
-                    break
-                _walk_video_comments(sid)
+            # Phase C — comments on the stored videos. GATED OFF: TikTok's
+            # public API offers no comment.list scope (only user.info.basic,
+            # video.list, video.upload are grantable in the Developer Portal),
+            # so this phase is skipped entirely until TikTok makes the scope
+            # available (_TIKTOK_COMMENTS_AVAILABLE).
+            if _TIKTOK_COMMENTS_AVAILABLE:
+                vids = _ex("SELECT source_id FROM crm_social_feedback "
+                           "WHERE platform='tiktok' AND type='post' "
+                           "ORDER BY posted_at DESC NULLS LAST", fetch=True) or []
+                c_vids = [r["source_id"] for r in vids]
+                fresh_n = min(_TIKTOK_COMMENT_FRESH_VIDEOS, len(c_vids))
+                for sid in c_vids[:fresh_n]:
+                    if _over_budget() or comments_blocked["on"]:
+                        break
+                    _walk_video_comments(sid)
 
-            c_done = (_cfg_get("social.tiktok.comment_done") or "") == "1"
-            if not comments_blocked["on"] and not c_done and _comments_short():
-                idx = _int(_cfg_get("social.tiktok.comment_deep_index"), fresh_n)
-                if idx < fresh_n:
-                    idx = fresh_n
-                while (idx < len(c_vids) and not _over_budget()
-                       and _comments_short() and not comments_blocked["on"]):
-                    _walk_video_comments(c_vids[idx])
-                    idx += 1
-                if idx >= len(c_vids):
-                    c_done = True
-                _cfg_set("social.tiktok.comment_deep_index", idx)
-            if c_done:
-                _cfg_set("social.tiktok.comment_done", "1")
+                c_done = (_cfg_get("social.tiktok.comment_done") or "") == "1"
+                if not comments_blocked["on"] and not c_done and _comments_short():
+                    idx = _int(_cfg_get("social.tiktok.comment_deep_index"),
+                               fresh_n)
+                    if idx < fresh_n:
+                        idx = fresh_n
+                    while (idx < len(c_vids) and not _over_budget()
+                           and _comments_short() and not comments_blocked["on"]):
+                        _walk_video_comments(c_vids[idx])
+                        idx += 1
+                    if idx >= len(c_vids):
+                        c_done = True
+                    _cfg_set("social.tiktok.comment_deep_index", idx)
+                if c_done:
+                    _cfg_set("social.tiktok.comment_done", "1")
         except HTTPException:
             raise
 
@@ -6476,9 +6501,13 @@ def _reg_social(app):
         _cfg_set("social.tiktok.last_scopes_missing",
                  ",".join(sorted(scopes_missing)))
         try:
+            audit_msg = f"tiktok sync: {total_posts} posts"
+            if _TIKTOK_COMMENTS_AVAILABLE:
+                audit_msg += f", {new_comments} new comments"
+            else:
+                audit_msg += " (posts only — no public comment scope)"
             A._crm_audit("social", acct.get("open_id") or "tiktok", "sync",
-                         f"tiktok sync: {total_posts} posts, "
-                         f"{new_comments} new comments", request)
+                         audit_msg, request)
         except Exception:
             pass
         return {"account": acct_label, "posts": total_posts,
