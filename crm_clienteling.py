@@ -322,6 +322,15 @@ def _tiktok_client_creds():
             (os.environ.get("TIKTOK_CLIENT_SECRET") or "").strip())
 
 
+def _tiktok_creds_secret_names():
+    """The secret names the operator must set for the active mode — used in
+    misconfiguration error messages so sandbox mode never tells the operator
+    to set the production secrets."""
+    if _tiktok_sandbox_mode():
+        return "TIKTOK_SANDBOX_CLIENT_KEY / TIKTOK_SANDBOX_CLIENT_SECRET"
+    return "TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET"
+
+
 def _tiktok_current_refresh_token():
     """The refresh token to use for the next exchange. Normally the stored
     (rotated) token; but if the operator has updated the TIKTOK_REFRESH_TOKEN
@@ -6122,7 +6131,7 @@ def _reg_social(app):
         if not (key and sec):
             raise HTTPException(
                 503, "TikTok Login Kit is not configured — set the "
-                     "TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET secrets first.")
+                     f"{_tiktok_creds_secret_names()} secrets first.")
         state = secrets.token_urlsafe(24)
         scopes = "user.info.basic,video.list"
         if _TIKTOK_COMMENTS_AVAILABLE:  # only if TikTok ever grants them
@@ -6151,7 +6160,7 @@ def _reg_social(app):
         if not (key and sec):
             return _tiktok_oauth_page(
                 "TikTok connect failed",
-                "TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET are not set.",
+                f"{_tiktok_creds_secret_names()} are not set.",
                 ok=False)
         err = request.query_params.get("error")
         if err:
