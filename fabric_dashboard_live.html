@@ -3052,7 +3052,17 @@ function renderFabricDetail(r,keys){
       '<div class="detail-grid">'+keys.map(k=>{
         const col=REG_COLS.find(c=>c.k===k);if(!col)return '';
         const f=REG_FX[k]?fx(REG_FX[k]):'';
-        return `<div class="detail-item"><span class="dl"${f}>${esc(col.label)}</span><span class="dv">${regValueHtml(col,r)}</span></div>`;
+        // The "Fabric Color" field surfaces Odoo's dedicated Fabric Colour field
+        // (odoo_fabric_color) as the source of truth — NOT the variant colour;
+        // when the Odoo field is empty show a dash (no fallback).
+        let valHtml;
+        if(k==='fabric_color'){
+          const oc=(r.odoo_fabric_color==null?'':String(r.odoo_fabric_color)).trim();
+          valHtml=esc((oc&&oc.toLowerCase()!=='false')?oc:'—');
+        }else{
+          valHtml=regValueHtml(col,r);
+        }
+        return `<div class="detail-item"><span class="dl"${f}>${esc(col.label)}</span><span class="dv">${valHtml}</span></div>`;
       }).join('')+'</div>'+
       '<div id="fab-img-panel" class="fab-img-panel"></div>'+
     '</div>';
@@ -3171,11 +3181,22 @@ function printFabricSheet(){
   if(!r){alert('Open a fabric barcode first, then print.');return;}
   const clean=x=>{const s=(x==null?'':String(x)).trim();return (s===''||s.toLowerCase()==='false')?'':s;};
   const numv=(x,dp)=>(x==null||x===''||isNaN(Number(x)))?'':Number(x).toLocaleString(undefined,{maximumFractionDigits:dp});
-  const colour=clean(r.derived_fabric_color)||clean(r.fabric_color);
+  // Fabric colour = Odoo's dedicated Fabric Colour field only (empty → blank);
+  // no fallback to the variant/derived colour.
+  const colour=clean(r.odoo_fabric_color);
   const source=[clean(r.source_city),clean(r.source_country)].filter(Boolean).join(', ');
   const gsm=numv(r.gsm,0);
   const width=numv(r.width_m,2)?numv(r.width_m,2)+' m':'';
-  const metres=numv(r.available_metres,1)?numv(r.available_metres,1)+' m':'';
+  // TOTAL AVAILABLE METRES: distinguish "no width/GSM conversion" from genuine
+  // zero stock. Missing kg_per_mtr → cannot compute; SOH 0 → ZERO; else metres.
+  const totalMetres=(function(){
+    const kpm=r.kg_per_mtr;
+    if(kpm==null||kpm===''||isNaN(Number(kpm)))return 'Missing Width/GSM';
+    const avKg=r.available_kg;
+    if(avKg==null||avKg===''||isNaN(Number(avKg))||Number(avKg)<=0)return 'ZERO';
+    const m=numv(r.available_metres,1);
+    return m?m+' m':'ZERO';
+  })();
   const cost=(r.cost_metre!=null&&r.cost_metre!==''&&!isNaN(Number(r.cost_metre)))?'KES '+numv(r.cost_metre,2):'';
   // Prefer the photo the user is currently viewing in the carousel (guarded so the
   // carousel state must belong to this open fabric), then fall back to row fields.
@@ -3252,7 +3273,7 @@ body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:12px;}
    </div>
    ${xf('GSM',gsm)}
    ${xf('Width',width)}
-   ${xf('Metres available for colour',metres)}
+   ${xf('TOTAL AVAILABLE METRES',totalMetres)}
    ${xf('Cost per metre',cost)}
    <div class="photo"><div class="lbl">Fabric photo</div><div class="photo-frame">${photoInner}</div></div>
   </div>

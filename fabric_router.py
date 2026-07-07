@@ -2342,6 +2342,7 @@ def register(
               p.fabric_structure, p.plain_print, p.weight_range, p.gsm,
               p.width_m, p.kg_per_mtr_eff as kg_per_mtr, p.kg_per_mtr_src, p.fiber_content, p.fabric_type,
               p.supplier, p.primary_color, INITCAP(BTRIM(p.fabric_color)) as fabric_color,
+              NULLIF(BTRIM(p.odoo_fabric_color),'') as odoo_fabric_color,
               NULLIF(INITCAP(BTRIM(p.color)),'') as color,
               p.standard_price, p.uom,
               ROUND(p.standard_price::numeric,2) as cost_kes,
