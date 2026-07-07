@@ -27627,6 +27627,26 @@ async def serve_recon_subpath(sub_path: str):
     return _serve_recon_page()
 
 
+# TikTok developer domain verification. In production the platform proxy routes
+# unclaimed root paths to the vivo-bi static host, whose SPA fallback returns
+# index.html for unknown files — so the git-tracked copy under
+# artifacts/vivo-bi/public never reliably surfaces at the published domain root.
+# Serve it explicitly from the API server (same pattern as /fabric and
+# /reconcile: registered OUTSIDE the build_dir guard, in-memory PlainTextResponse
+# so GZipMiddleware never hits the pathsend extension) and claim the path in the
+# api-server artifact.toml `paths` so the proxy routes it here.
+_TIKTOK_VERIFY_FILENAME = "tiktokecdOdOLGOstI9a9rEZzScUsE7H5MF9fz.txt"
+_TIKTOK_VERIFY_CONTENT = "tiktok-developers-site-verification=ecdOdOLGOstI9a9rEZzScUsE7H5MF9fz"
+
+
+@app.get(f"/{_TIKTOK_VERIFY_FILENAME}")
+async def serve_tiktok_domain_verification():
+    from fastapi.responses import PlainTextResponse
+    resp = PlainTextResponse(content=_TIKTOK_VERIFY_CONTENT)
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
+
+
 # Serve React build as static files
 build_dir = pathlib.Path(__file__).parent / "dashboard" / "build"
 if build_dir.exists():
