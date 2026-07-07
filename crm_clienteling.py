@@ -240,11 +240,190 @@ def _x_oauth1_post(path, body=None):
 # missing scope / rate-limit surfaces (in scopes_missing) instead of silently
 # dropping content. Reads never crash when unconfigured — the surface shows the
 # connect banner until the secret is set.
+#
+# Token lifecycle: TikTok user access tokens live ~24h, so a manually pasted
+# TIKTOK_ACCESS_TOKEN always goes stale. When the refresh credentials are
+# configured (TIKTOK_CLIENT_KEY + TIKTOK_CLIENT_SECRET + TIKTOK_REFRESH_TOKEN),
+# a token manager below keeps a fresh access token in crm_config
+# (social.tiktok.access_token / .access_token_expires_at / .refresh_token),
+# exchanging the refresh token via POST /v2/oauth/token/ whenever the stored
+# token is missing or near expiry. TikTok ROTATES the refresh token on every
+# refresh, so the newly returned refresh_token is always persisted (the env
+# secret is only the one-time seed). A module lock single-flights refreshes so
+# the hourly sync, status calls and replies never refresh concurrently. If the
+# refresh token itself is rejected (expired/revoked — they last ~365 days) the
+# failure is persisted so /status can surface "reconnect required" instead of
+# a silent disconnect. The legacy pasted TIKTOK_ACCESS_TOKEN remains the
+# fallback when no refresh credentials are configured.
 _TIKTOK_API = "https://open.tiktokapis.com"
+# Refresh this many seconds before the stored expiry (safety margin).
+_TIKTOK_REFRESH_MARGIN_SEC = 900
+_TIKTOK_TOKEN_LOCK = threading.Lock()
+
+_TT_CFG_TOKEN = "social.tiktok.access_token"
+_TT_CFG_TOKEN_EXP = "social.tiktok.access_token_expires_at"
+_TT_CFG_REFRESH = "social.tiktok.refresh_token"
+# The env TIKTOK_REFRESH_TOKEN value the stored refresh chain was seeded from.
+# When the operator rotates the secret (reconnect flow), the env value differs
+# from this seed and MUST take precedence over the stale stored token so the
+# connection restores automatically without any DB edit.
+_TT_CFG_REFRESH_SEED = "social.tiktok.refresh_token_seed"
+_TT_CFG_RECONNECT = "social.tiktok.reconnect_required"
+
+
+def _tt_cfg_get(key):
+    """crm_config read usable at module level (mirrors the registered _cfg_get;
+    never raises — a missing table just reads as unset)."""
+    try:
+        r = _one("SELECT value FROM crm_config WHERE key=%s", (key,))
+        return r["value"] if r else None
+    except Exception:
+        return None
+
+
+def _tt_cfg_set(key, val):
+    try:
+        _ex("INSERT INTO crm_config (key,value) VALUES (%s,%s) "
+            "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
+            (key, str(val)))
+    except Exception:
+        pass
+
+
+def _tiktok_client_creds():
+    return ((os.environ.get("TIKTOK_CLIENT_KEY") or "").strip(),
+            (os.environ.get("TIKTOK_CLIENT_SECRET") or "").strip())
+
+
+def _tiktok_current_refresh_token():
+    """The refresh token to use for the next exchange. Normally the stored
+    (rotated) token; but if the operator has updated the TIKTOK_REFRESH_TOKEN
+    secret since the stored chain was seeded (env != recorded seed), the NEW
+    env value wins — that is the reconnect path after an expired/revoked
+    refresh token, and it must work with no manual DB edit."""
+    env = (os.environ.get("TIKTOK_REFRESH_TOKEN") or "").strip()
+    stored = (_tt_cfg_get(_TT_CFG_REFRESH) or "").strip()
+    seed = (_tt_cfg_get(_TT_CFG_REFRESH_SEED) or "").strip()
+    if env and env != seed:
+        return env  # freshly rotated secret supersedes the stale stored chain
+    return stored or env
+
+
+def _tiktok_refresh_configured():
+    key, sec = _tiktok_client_creds()
+    return bool(key and sec and _tiktok_current_refresh_token())
+
+
+def _tiktok_legacy_token():
+    return (os.environ.get("TIKTOK_ACCESS_TOKEN") or "").strip()
+
+
+def _tiktok_stored_token_fresh():
+    """(token, fresh) — the stored access token and whether it is still inside
+    its safety margin."""
+    tok = (_tt_cfg_get(_TT_CFG_TOKEN) or "").strip()
+    if not tok:
+        return "", False
+    try:
+        exp = float(_tt_cfg_get(_TT_CFG_TOKEN_EXP) or 0)
+    except (TypeError, ValueError):
+        exp = 0
+    return tok, (time.time() < (exp - _TIKTOK_REFRESH_MARGIN_SEC))
+
+
+def _tiktok_refresh_access_token(force=False):
+    """Exchange the refresh token for a fresh access token (single-flight).
+    Persists the new access token + expiry + ROTATED refresh token. Raises
+    RuntimeError on failure (and records it for the reconnect-required
+    surface). Returns the fresh access token."""
+    key, sec = _tiktok_client_creds()
+    with _TIKTOK_TOKEN_LOCK:
+        # Double-check under the lock — a concurrent caller may have already
+        # refreshed while we waited.
+        tok, fresh = _tiktok_stored_token_fresh()
+        if tok and fresh and not force:
+            return tok
+        rtok = _tiktok_current_refresh_token()
+        if not (key and sec and rtok):
+            raise RuntimeError("TikTok refresh credentials are not configured.")
+        try:
+            r = requests.post(
+                _TIKTOK_API + "/v2/oauth/token/",
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={"client_key": key, "client_secret": sec,
+                      "grant_type": "refresh_token", "refresh_token": rtok},
+                timeout=30)
+        except Exception as e:
+            # Transport failure — transient; do NOT flag reconnect_required.
+            raise RuntimeError(f"TikTok token refresh unreachable: {e}")
+        try:
+            j = r.json() or {}
+        except Exception:
+            j = {}
+        access = (j.get("access_token") or "").strip()
+        if r.status_code // 100 != 2 or not access:
+            # The oauth endpoint reports flat {error,error_description}.
+            msg = (j.get("error_description") or j.get("error")
+                   or (r.text or "")[:200])
+            err = f"TikTok token refresh failed ({r.status_code}): {msg}"
+            # Flag "reconnect required" ONLY for a definitive client-side
+            # rejection of the grant (4xx = invalid/expired/revoked refresh
+            # token or bad client creds). A 5xx / gateway blip is transient —
+            # flagging it would show a false reconnect banner.
+            if 400 <= r.status_code < 500:
+                _tt_cfg_set(_TT_CFG_RECONNECT, err)
+            raise RuntimeError(err)
+        try:
+            expires_in = int(j.get("expires_in") or 86400)
+        except (TypeError, ValueError):
+            expires_in = 86400
+        _tt_cfg_set(_TT_CFG_TOKEN, access)
+        _tt_cfg_set(_TT_CFG_TOKEN_EXP, str(time.time() + expires_in))
+        new_rtok = (j.get("refresh_token") or "").strip()
+        if new_rtok:  # TikTok rotates refresh tokens — always keep the latest
+            _tt_cfg_set(_TT_CFG_REFRESH, new_rtok)
+        # Record which env secret value this (now healthy) chain came from, so
+        # a FUTURE secret rotation is detected as fresh and supersedes the
+        # stored chain (automatic reconnect with no DB edit).
+        env_seed = (os.environ.get("TIKTOK_REFRESH_TOKEN") or "").strip()
+        if env_seed:
+            _tt_cfg_set(_TT_CFG_REFRESH_SEED, env_seed)
+        _tt_cfg_set(_TT_CFG_RECONNECT, "")
+        return access
+
+
+def _tiktok_reconnect_error():
+    """Non-empty string when the refresh token itself was rejected — the user
+    must obtain a new refresh token from the TikTok developer portal. If the
+    TIKTOK_REFRESH_TOKEN secret has been rotated since the failure (env value
+    differs from the recorded seed), the stale flag is suppressed so the next
+    call path retries with the fresh token and reconnects automatically."""
+    if not _tiktok_refresh_configured():
+        return ""
+    err = (_tt_cfg_get(_TT_CFG_RECONNECT) or "").strip()
+    if not err:
+        return ""
+    env = (os.environ.get("TIKTOK_REFRESH_TOKEN") or "").strip()
+    seed = (_tt_cfg_get(_TT_CFG_REFRESH_SEED) or "").strip()
+    if env and env != seed:
+        return ""  # a fresh secret is waiting — let the retry path use it
+    return err
 
 
 def _tiktok_token():
-    return (os.environ.get("TIKTOK_ACCESS_TOKEN") or "").strip()
+    """The access token to use right now. With refresh credentials configured
+    this is the managed (auto-refreshed) token; otherwise the legacy pasted
+    TIKTOK_ACCESS_TOKEN. Never raises — returns "" when nothing usable exists
+    (callers fail loud with TikTok's own 401)."""
+    if _tiktok_refresh_configured():
+        tok, fresh = _tiktok_stored_token_fresh()
+        if tok and fresh:
+            return tok
+        try:
+            return _tiktok_refresh_access_token()
+        except Exception:
+            return tok  # stale-but-present beats nothing; "" shows the banner
+    return _tiktok_legacy_token()
 
 
 def _tiktok_username_cfg():
@@ -252,8 +431,9 @@ def _tiktok_username_cfg():
 
 
 def _tiktok_read_configured():
-    """Reads (own videos + their comments) need a user access token."""
-    return bool(_tiktok_token())
+    """Reads (own videos + their comments) need a user access token — either
+    managed refresh credentials or the legacy pasted token."""
+    return _tiktok_refresh_configured() or bool(_tiktok_legacy_token())
 
 
 def _tiktok_write_configured():
@@ -261,7 +441,7 @@ def _tiktok_write_configured():
     comment.list.manage scope. There is no separate secret, so presence of the
     token is the best signal we have; a missing scope is surfaced at call time
     (the reply fails loud with the API's own message)."""
-    return bool(_tiktok_token())
+    return _tiktok_read_configured()
 
 
 def _tiktok_err(r, j=None):
@@ -282,12 +462,9 @@ def _tiktok_err(r, j=None):
     return f"TikTok API {r.status_code}: {(r.text or '')[:200]}"
 
 
-def _tiktok_call(method, path, params=None, json_body=None):
-    """Bearer request against TikTok API v2. Raises RuntimeError on a non-2xx
-    HTTP status OR an error.code that is present and not "ok" (TikTok signals
-    failures in the body even on 200). Returns the parsed JSON on success."""
+def _tiktok_call_once(method, path, params=None, json_body=None, token=None):
     url = _TIKTOK_API + path
-    headers = {"Authorization": "Bearer " + _tiktok_token()}
+    headers = {"Authorization": "Bearer " + (token or _tiktok_token())}
     if (method or "GET").upper() == "GET":
         r = requests.get(url, headers=headers, params=params or {}, timeout=30)
     else:
@@ -304,6 +481,27 @@ def _tiktok_call(method, path, params=None, json_body=None):
     if code and code != "ok":
         raise RuntimeError(_tiktok_err(r, j))
     return j or {}
+
+
+def _tiktok_invalid_token_err(e):
+    m = str(e).lower()
+    return ("access_token_invalid" in m or "access token is invalid" in m
+            or "401" in m)
+
+
+def _tiktok_call(method, path, params=None, json_body=None):
+    """Bearer request against TikTok API v2. Raises RuntimeError on a non-2xx
+    HTTP status OR an error.code that is present and not "ok" (TikTok signals
+    failures in the body even on 200). Returns the parsed JSON on success.
+    When refresh credentials are configured, an invalid-token failure forces
+    ONE refresh and retries once before failing."""
+    try:
+        return _tiktok_call_once(method, path, params, json_body)
+    except RuntimeError as e:
+        if not (_tiktok_refresh_configured() and _tiktok_invalid_token_err(e)):
+            raise
+        fresh = _tiktok_refresh_access_token(force=True)  # raises on failure
+        return _tiktok_call_once(method, path, params, json_body, token=fresh)
 
 
 def _internal_ok(request):
@@ -3564,8 +3762,10 @@ def _reg_social(app):
                          "(re-run the TikTok sync).")
             if not _tiktok_write_configured():
                 raise HTTPException(
-                    400, "Replying on TikTok requires TIKTOK_ACCESS_TOKEN "
-                         "(with the comment.list.manage scope) on the server.")
+                    400, "Replying on TikTok requires the TikTok credentials "
+                         "(TIKTOK_CLIENT_KEY/SECRET + TIKTOK_REFRESH_TOKEN, or "
+                         "a legacy TIKTOK_ACCESS_TOKEN with the "
+                         "comment.list.manage scope) on the server.")
             if not body.strip():
                 raise HTTPException(400, "Reply text is empty.")
             try:
@@ -5847,12 +6047,33 @@ def _reg_social(app):
                                "leadership", "admin"))
         empty = {"connected": False, "running": False, "account": None,
                  "last_synced_at": None, "write_enabled": False,
+                 "reconnect_required": False, "reconnect_error": None,
                  "counts": {"real_posts": 0, "real_feedback": 0,
                             "real_comments": 0}}
         if not _tiktok_read_configured():
             return empty
+        recon = _tiktok_reconnect_error()
+        if recon:
+            # The refresh token itself was rejected (expired/revoked) — an
+            # actionable "reconnect required" state, NOT a silent disconnect.
+            out = dict(empty)
+            out["reconnect_required"] = True
+            out["reconnect_error"] = recon
+            out["last_synced_at"] = _cfg_get("social.tiktok.last_synced_at") or None
+            return out
         acct = _tiktok_account()
         if not acct:
+            # Could not resolve the account. If refresh creds are configured a
+            # refresh was already attempted inside _tiktok_token(); re-check
+            # whether that attempt flagged a definitive refresh-token rejection.
+            recon = _tiktok_reconnect_error()
+            if recon:
+                out = dict(empty)
+                out["reconnect_required"] = True
+                out["reconnect_error"] = recon
+                out["last_synced_at"] = (_cfg_get("social.tiktok.last_synced_at")
+                                         or None)
+                return out
             return empty  # token invalid/unreachable -> show connect banner
         agg = _one("SELECT count(*) AS feedback, "
                    " count(*) FILTER (WHERE type='post') AS posts, "
@@ -5941,9 +6162,16 @@ def _reg_social(app):
     def _tiktok_sync_run(request, max_seconds=None):
         acct = _tiktok_account()
         if not acct:
+            recon = _tiktok_reconnect_error()
+            if recon:
+                raise HTTPException(
+                    400, "TikTok reconnect required — the refresh token was "
+                         "rejected. Obtain a new refresh token from the "
+                         "TikTok developer portal and update "
+                         f"TIKTOK_REFRESH_TOKEN. ({recon})")
             raise HTTPException(
-                400, "Could not resolve the TikTok account. Check "
-                     "TIKTOK_ACCESS_TOKEN (and that its scopes include "
+                400, "Could not resolve the TikTok account. Check the TikTok "
+                     "credentials (and that the token scopes include "
                      "user.info.basic + video.list) and retry.")
         budget = _TIKTOK_SYNC_TIME_BUDGET_SEC
         if max_seconds and max_seconds > 0:

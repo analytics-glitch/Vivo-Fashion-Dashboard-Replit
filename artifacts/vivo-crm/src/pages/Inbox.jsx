@@ -1191,6 +1191,27 @@ function TikTokStatusStrip({ status }) {
     ? Math.max(0, Math.floor((Date.now() - new Date(lastSynced).getTime()) / 60000))
     : null;
 
+  if (status.reconnect_required) {
+    return (
+      <div className="mt-3 vivo-card p-5 rounded-sm border-l-2 border-amber-500" data-testid="tiktok-status-strip">
+        <div className="flex items-start gap-3">
+          <Music className="h-5 w-5 text-amber-700 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <div className="font-medium text-base">TikTok needs to be reconnected.</div>
+            <div className="text-xs text-[var(--vivo-muted)] mt-1">
+              TikTok rejected the stored refresh token (refresh tokens last about a year and can be revoked). Generate a new refresh token from the TikTok developer portal and update the <code className="text-[10px] bg-white px-1 py-0.5 rounded">TIKTOK_REFRESH_TOKEN</code> secret on the server — the connection then restores automatically.
+            </div>
+            {status.reconnect_error && (
+              <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1 mt-2 break-all" data-testid="tiktok-reconnect-error">
+                {status.reconnect_error}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!status.connected) {
     return (
       <div className="mt-3 vivo-card p-5 rounded-sm border-l-2 border-black" data-testid="tiktok-status-strip">
