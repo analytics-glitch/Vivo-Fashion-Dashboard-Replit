@@ -572,50 +572,57 @@ def main(mode="full"):
     create_tables(cur)
     conn.commit()
 
-    if mode in ("fast", "full"):
-        since = None
-        if mode == "fast":
-            # Incremental window = last stored write_date minus a small overlap
-            # (guards clock skew / a mid-write pull). Empty table → full pull.
-            cur.execute("SELECT MAX(write_date) FROM raw_fabric_products")
-            last_wd = cur.fetchone()[0]
-            if last_wd is not None:
-                since = last_wd - timedelta(minutes=5)
-        extract_products(uid, models, cur, now, since=since)
+    # Concurrency guard: ONE fabric extract touches the raw_fabric_* tables at a
+    # time. The sync loop now runs the fast pull on its own ~60s thread and
+    # launches the heavy reconcile fire-and-forget, so a fast pull can fire while
+    # a previous heavy pull is still running; an operator may also kick off a
+    # standalone run. A single pg session advisory lock (shared by BOTH fast and
+    # heavy) makes them mutually exclusive so a fast incremental upsert can never
+    # overlap a heavy full-product TRUNCATE+reconcile. If the lock is already
+    # held, the losing run skips this pass rather than piling on (the fast path
+    # simply retries on its next ~60s tick — well under the 180s staleness
+    # banner). "full" (bootstrap) is a one-shot standalone run by design and is
+    # NOT gated (nothing else runs against an empty fresh DB at that point).
+    lock_key = 0x7FAB12C0  # arbitrary, fabric-extract specific
+    have_lock = True
+    if mode in ("fast", "heavy"):
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_key,))
+        have_lock = cur.fetchone()[0]
         conn.commit()
-        extract_inventory(uid, models, cur, now)
-        conn.commit()
+    if not have_lock:
+        log.info("Fabric extract (mode=%s) — another fabric run holds the lock, skipping.", mode)
+        conn.close()
+        return
 
-    if mode in ("heavy", "full"):
-        # Concurrency guard: only one heavy reconcile at a time. The sync loop
-        # launches heavy fire-and-forget, and an operator may kick off a
-        # standalone run; a pg session advisory lock ensures they never overlap
-        # (double full-product TRUNCATE + heavy pulls). If the lock is already
-        # held, skip the heavy work rather than pile on. (Skipped for "full"
-        # bootstrap, which is a one-shot standalone run by design.)
-        heavy_lock_key = 0x7FAB12C0  # arbitrary, fabric-heavy specific
-        have_lock = True
-        if mode == "heavy":
-            cur.execute("SELECT pg_try_advisory_lock(%s)", (heavy_lock_key,))
-            have_lock = cur.fetchone()[0]
+    try:
+        if mode in ("fast", "full"):
+            since = None
+            if mode == "fast":
+                # Incremental window = last stored write_date minus a small overlap
+                # (guards clock skew / a mid-write pull). Empty table → full pull.
+                cur.execute("SELECT MAX(write_date) FROM raw_fabric_products")
+                last_wd = cur.fetchone()[0]
+                if last_wd is not None:
+                    since = last_wd - timedelta(minutes=5)
+            extract_products(uid, models, cur, now, since=since)
             conn.commit()
-        if not have_lock:
-            log.info("Heavy fabric extract already running elsewhere — skipping.")
-        else:
-            try:
-                if mode == "heavy":
-                    # Full product reconcile on the slow cadence so archives / rare
-                    # hard deletes the incremental fast path can't see get cleared.
-                    extract_products(uid, models, cur, now, since=None)
-                    conn.commit()
-                extract_boms(uid, models, cur, now)
-                extract_moves(uid, models, cur, now)
-                extract_purchase_orders(uid, models, cur, now)
+            extract_inventory(uid, models, cur, now)
+            conn.commit()
+
+        if mode in ("heavy", "full"):
+            if mode == "heavy":
+                # Full product reconcile on the slow cadence so archives / rare
+                # hard deletes the incremental fast path can't see get cleared.
+                extract_products(uid, models, cur, now, since=None)
                 conn.commit()
-            finally:
-                if mode == "heavy":
-                    cur.execute("SELECT pg_advisory_unlock(%s)", (heavy_lock_key,))
-                    conn.commit()
+            extract_boms(uid, models, cur, now)
+            extract_moves(uid, models, cur, now)
+            extract_purchase_orders(uid, models, cur, now)
+            conn.commit()
+    finally:
+        if mode in ("fast", "heavy"):
+            cur.execute("SELECT pg_advisory_unlock(%s)", (lock_key,))
+            conn.commit()
 
     # Summary
     for table in ['raw_fabric_products','raw_fabric_inventory','raw_fabric_boms',
