@@ -598,6 +598,9 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    <!-- SLOW MOVING -->
    <section id="page-deadstock" style="display:none;">
     <div id="dead-kpis" class="kpi-grid"></div>
+    <div class="flex" style="margin-bottom:1.1rem;justify-content:flex-end;">
+     <button class="btn" onclick="exportDeadStock(this)" title="Download the full slow-moving list as a CSV — fetched fresh at click time">Export CSV</button>
+    </div>
     <div class="card" style="padding:0;">
      <div class="tbl-wrap">
       <table class="data">
@@ -1332,7 +1335,7 @@ function renderSupportKpis(d){
 }
 
 // ── Navigation ──
-const LOADERS={dashboard:loadFabricMix,register:()=>loadRegister(0),deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0)};
+const LOADERS={dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0)};
 const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'',deadstock:'Fabric that has been sitting without movement',defects:'',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining & interfacing only — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity'};
 const loadedOnce={};
 
@@ -1460,6 +1463,12 @@ document.querySelectorAll('.nav-item').forEach(el=>{
     document.getElementById('page-desc').textContent=DESCS[page]||'';
     fabSyncMixTopbarVisibility();
     if(LOADERS[page]&&!loadedOnce[page]){loadedOnce[page]=true;LOADERS[page]();}
+    // Already-loaded window-driven pages: the top Date range (or location) may
+    // have changed while this page was hidden — the cached mix tree (which the
+    // on-screen table AND the CSV exports read) would then be stale. Re-fetch
+    // whenever the cache's query no longer matches the current controls.
+    else if(page==='dashboard'&&(!mixMain.cache||mixMain.cacheParams!==mixQueryString(mixMain))){loadFabricMix();}
+    else if(page==='support'&&(!mixSupport.cache||mixSupport.cacheParams!==mixQueryString(mixSupport))){loadMix(mixSupport);}
   });
 });
 function onLocationChange(){
@@ -1529,6 +1538,7 @@ const mixMain={
   get supplier(){return mixSupplier;},      set supplier(v){mixSupplier=v;},
   get activeCols(){return mixActiveCols;},  set activeCols(v){mixActiveCols=v;},
   get detailById(){return mixDetailById;},  set detailById(v){mixDetailById=v;},
+  cacheParams:null,   // query string the cache was fetched with (staleness key)
   location:()=>loc(),
   ids:{kpis:'mix-kpis',narrative:'mix-narrative',head:'mix-head',body:'mix-body',
        supplier:'mix-supplier',search:'mix-search',groupSeg:'mix-group-seg',coverSeg:'mix-cover-seg'},
@@ -1542,6 +1552,7 @@ const mixSupport={
   action:{has:false}, bound:false,
   search:'', supplier:'',
   activeCols:MIX_COLS, detailById:{},
+  cacheParams:null,   // query string the cache was fetched with (staleness key)
   location:()=>'RMAT/Stock',
   ids:{kpis:null,narrative:null,head:'support-mix-head',body:'support-body',
        supplier:'support-supplier',search:'support-search',groupSeg:'support-mix-group-seg',coverSeg:null},
@@ -1729,7 +1740,7 @@ function mixActionBanner(rows,ctx){
     </div>`;
   let html='<div class="card" style="margin-bottom:1.2rem;">'
     +'<div class="section-head" style="margin-bottom:.7rem;"><h3>Action — money &amp; units at risk</h3>'
-    +'<button class="btn" onclick="exportFabricMixActions(this)">Export action rows</button></div>';
+    +'<button class="btn" onclick="mixExport(\'actions\')">Export action rows</button></div>';
   if(!ctx.action.has){
     html+='<p class="muted" style="margin:0;">Consumption and stock are broadly in balance — nothing flagged as Overstock, Shortage or Idle in this period.</p>';
   }else{
@@ -2109,6 +2120,33 @@ function fabSyncMixInputs(){
 }
 // Main Stock Mix tab loader — thin wrapper over the shared, ctx-parametrized loader.
 function loadFabricMix(){return loadMix(mixMain);}
+// First open of the Stock Mix page: if the user has not touched the top Date
+// range, seed the window from the Consumption-period preset (its advertised
+// 90-day default) instead of silently inheriting the global 30-day seed — that
+// mismatch once made the first load (and its exports) a 30d window while the
+// dropdown read 90. Runs the seeding exactly once; every later call (incl. the
+// 60s auto-refresh) is a plain reload.
+let _fabRangeTouched=false, _mixDefaultApplied=false;
+function loadFabricMixFirst(){
+  if(!_mixDefaultApplied){
+    _mixDefaultApplied=true;
+    if(!_fabRangeTouched)return onMixPreset();   // seeds g-since/g-until then loads
+  }
+  return loadFabricMix();
+}
+// Canonical /api/fabric/mix query string for a ctx under the CURRENT controls.
+// Single source of truth shared by the loader, the nav-switch staleness check
+// and the export freshness guards, so "is this cache current?" is always an
+// exact string compare against ctx.cacheParams.
+function mixQueryString(ctx,groupOverride){
+  const from=document.getElementById('g-since').value;
+  const to=document.getElementById('g-until').value;
+  const params=new URLSearchParams({group_by:groupOverride||ctx.group,location:ctx.location()});
+  if(ctx.scope==='support')params.set('scope','support');
+  if(from&&to){params.set('date_from',from);params.set('date_to',to);}
+  else{params.set('days',(document.getElementById('mix-period')&&document.getElementById('mix-period').value)||90);}
+  return params.toString();
+}
 // Shared /api/fabric/mix loader for either table (mixMain or mixSupport). The
 // scope=support param is only added for the support ctx; the top Date range is
 // the single source of truth for both, so the in-page controls only exist on the
@@ -2117,13 +2155,9 @@ async function loadMix(ctx){
   ctx=ctx||mixMain;
   try{
     if(ctx.ids.kpis)fabSyncMixInputs();   // main tab: keep in-page controls in lock-step
-    const from=document.getElementById('g-since').value;
-    const to=document.getElementById('g-until').value;
-    const params=new URLSearchParams({group_by:ctx.group,location:ctx.location()});
-    if(ctx.scope==='support')params.set('scope','support');
-    if(from&&to){params.set('date_from',from);params.set('date_to',to);}
-    else{params.set('days',document.getElementById('mix-period').value||90);}
-    ctx.cache=await apiFetch('/api/fabric/mix?'+params);
+    const qs=mixQueryString(ctx);
+    ctx.cache=await apiFetch('/api/fabric/mix?'+qs);
+    ctx.cacheParams=qs;   // staleness key — exports/nav compare against this
     renderMix(ctx);
     applyFabricFreshness();
   }catch(e){
@@ -2187,6 +2221,8 @@ function fabSyncMixTopbarVisibility(){
 // exports. Every export reflects the WHOLE warehouse for the selected location +
 // the active consumption window/unit/cover-basis, independent of the on-screen
 // search box, drill-down state AND the By-Category / By-Sub-Category toggle.
+// The two PRODUCT-grain exports (All products / Action items) additionally
+// honour an active supplier filter, matching the rows on screen.
 function toggleMixExportMenu(e){
   if(e)e.stopPropagation();
   const m=document.getElementById('mix-export-menu');
@@ -2205,8 +2241,16 @@ function closeMixExportMenu(){
 document.addEventListener('click',e=>{
   if(!(e.target.closest&&e.target.closest('#mix-export-menu,#mix-export-btn')))closeMixExportMenu();
 });
-function mixExport(kind){
+async function mixExport(kind){
   closeMixExportMenu();
+  // Freshness guard: never export a cache fetched under a different window /
+  // location than the controls currently show — re-fetch (and re-render) first.
+  if(!mixCache||mixMain.cacheParams!==mixQueryString(mixMain)){
+    await loadMix(mixMain);
+    if(!mixCache||mixMain.cacheParams!==mixQueryString(mixMain)){
+      alert('Could not refresh the stock-mix data for export — please retry.');return;
+    }
+  }
   if(kind==='category')exportFabricMix();
   else if(kind==='subcategory')exportFabricMixSub();
   else if(kind==='products')exportFabricMixProducts();
@@ -2295,13 +2339,17 @@ function mixGroupCostMetreVal(r){const v=mixGroupCost(r).perMetre;return v==null
 // derived so % / gap / cover / verdict match the on-screen table, tagged with
 // category/sub-category and BOTH SOH units. Shared so the two exports stay in
 // lockstep on grain and identity fields.
-function mixProductRows(d){
+function mixProductRows(d,supplier){
   const useKg=UNIT==='kg';
   const totC=useKg?d.total_consumption_kg:d.total_consumption_metres;
   const totA=useKg?d.total_available_kg:d.total_available_metres;
   const months=d.months||1, weeks=months*(MIX_DAYS_PER_MONTH/7);
+  // Active supplier filter (same predicate as the on-screen table) narrows the
+  // product-grain exports; undefined = the main Stock Mix filter.
+  const sup=supplier===undefined?mixSupplier:supplier;
   const rows=[];
   mixCanonTree(d).forEach(c=>(c.subcategories||[]).forEach(s=>(s.fabrics||[]).forEach(f=>(f.products||[]).forEach(praw=>{
+    if(sup&&fabricClean(praw.detail&&praw.detail.supplier)!==sup)return;
     const p=deriveMixRow(praw,totC,totA,weeks,useKg);
     p._cat=c.group;p._sub=s.group;p._fabric=f.group;
     p._sohM=praw.available_metres;p._sohKg=praw.available_kg;
@@ -2395,11 +2443,11 @@ function exportFabricMixSub(d,prefix){
 // Derived per-product so % / gap / cover / verdict match the table; SOH metres
 // and SOH kg are read from the raw node so BOTH units are emitted regardless of
 // the active unit toggle (Consumption + cover follow the active unit).
-function exportFabricMixProducts(d,prefix){
+function exportFabricMixProducts(d,prefix,supplier){
   if(d&&d.nodeType){d=null;}
   d=d||mixCache;prefix=prefix||'fabric_mix';
   if(!d){alert('Nothing to export yet.');return;}
-  const sorted=mixProductRows(d);
+  const sorted=mixProductRows(d,supplier);
   if(!sorted.length){alert('No products to export.');return;}
   const unit=UNIT==='kg'?'kg':'m';
   // The product export LEADS with the 12 Odoo identity fields (mixIdentityCols,
@@ -2428,11 +2476,11 @@ function exportFabricMixProducts(d,prefix){
 // 4) Action items only — PRODUCT-grain: every individual fabric whose verdict is
 // an action (not "hold"), leading with the 12 Odoo identity fields then the
 // per-product shortage/exposure figures the action banner is built from.
-function exportFabricMixActions(d,prefix){
+function exportFabricMixActions(d,prefix,supplier){
   if(d&&d.nodeType){d=null;}
   d=d||mixCache;prefix=prefix||'fabric_mix';
   if(!d){alert('Nothing to export yet.');return;}
-  const rows=mixProductRows(d).filter(r=>r.verdict.key!=='hold');
+  const rows=mixProductRows(d,supplier).filter(r=>r.verdict.key!=='hold');
   if(!rows.length){alert('No action rows in this period.');return;}
   const unit=UNIT==='kg'?'kg':'m';
   const shortUnits=r=>Math.max(0,r.consumption-r.available);
@@ -2462,14 +2510,7 @@ function exportFabricMixActions(d,prefix){
 // Cache is keyed by the effective window query-string so it can NEVER serve a
 // stale period: any change to the consumption window (from the top Date range OR
 // the Stock Mix in-page/topbar controls) changes the key, forcing a re-fetch.
-function supportMixParams(){
-  const from=document.getElementById('g-since').value;
-  const to=document.getElementById('g-until').value;
-  const params=new URLSearchParams({group_by:'category',location:'RMAT/Stock',scope:'support'});
-  if(from&&to){params.set('date_from',from);params.set('date_to',to);}
-  else{params.set('days',(document.getElementById('mix-period')&&document.getElementById('mix-period').value)||90);}
-  return params.toString();
-}
+function supportMixParams(){return mixQueryString(mixSupport,'category');}
 function toggleSupportExportMenu(e){
   if(e)e.stopPropagation();
   const m=document.getElementById('support-export-menu');
@@ -2492,21 +2533,23 @@ async function supportMixExport(kind){
   closeSupportExportMenu();
   const btn=document.getElementById('support-export-btn');
   const orig=btn?btn.textContent:'';
-  // Prefer the already-loaded support Stock-mix data when it is grouped by
-  // category (the export walks the full category→sub→fabric→product nesting);
+  // Prefer the already-loaded support Stock-mix data ONLY when it is grouped by
+  // category (the export walks the full category→sub→fabric→product nesting)
+  // AND was fetched under the exact current window/location (cacheParams key);
   // otherwise fetch the full category-grouped tree for the current window.
-  let d=(mixSupport.cache&&mixSupport.group==='category')?mixSupport.cache:null;
+  const expected=supportMixParams();
+  let d=(mixSupport.cache&&mixSupport.group==='category'&&mixSupport.cacheParams===expected)?mixSupport.cache:null;
   if(!d){
     if(btn){btn.textContent='Loading…';btn.disabled=true;}
-    try{d=await apiFetch('/api/fabric/mix?'+supportMixParams());}
+    try{d=await apiFetch('/api/fabric/mix?'+expected);}
     catch(e){alert('Could not load support fabric data to export.');return;}
     finally{if(btn){btn.textContent=orig;btn.disabled=false;}}
   }
   const prefix='support_fabric_mix';
   if(kind==='category')exportFabricMix(d,prefix);
   else if(kind==='subcategory')exportFabricMixSub(d,prefix);
-  else if(kind==='products')exportFabricMixProducts(d,prefix);
-  else if(kind==='actions')exportFabricMixActions(d,prefix);
+  else if(kind==='products')exportFabricMixProducts(d,prefix,mixSupport.supplier);
+  else if(kind==='actions')exportFabricMixActions(d,prefix,mixSupport.supplier);
 }
 
 // ── Overview ──
@@ -3364,6 +3407,32 @@ async function loadDeadStock(){
      </tr>`).join(''):'<tr><td colspan="7" class="loading">No slow moving stock recorded.</td></tr>';
   }catch(e){rowErr('dead-body',7,e);}
 }
+// Slow Moving CSV export. The page has no window/filter controls (the list is
+// definitionally the Dead/Stock location, no date range), but the export still
+// follows the same freshness guarantee as Stock Mix/Support: it fetches the
+// list FRESH at click time (never a render-time cache), so it can never
+// download data older than the moment the button was pressed. Columns mirror
+// the on-screen table exactly.
+async function exportDeadStock(btn){
+  const orig=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='Exporting…';}
+  try{
+    const d=await apiFetch('/api/fabric/dead-stock');
+    const items=(d&&d.items)||[];
+    if(!items.length){alert('No slow moving stock to export.');return;}
+    const cols=[
+      ['Fabric',r=>r.product_name||''],
+      ['Category',r=>r.fabric_subcategory||r.fabric_category||''],
+      ['Kg',r=>r.qty_kg==null?'':r.qty_kg],
+      ['Metres',r=>r.qty_metres==null?'':r.qty_metres],
+      ['Value (KES)',r=>r.value_kes==null?'':r.value_kes],
+      ['Last move',r=>r.last_move||''],
+      ['Days idle',r=>r.days_since_move==null?'':r.days_since_move],
+    ];
+    mixDownloadCsv(cols,items,'fabric_slow_moving.csv');
+  }catch(e){alert('Export failed: '+(e&&e.message?e.message:e));}
+  finally{if(btn){btn.disabled=false;btn.textContent=orig;}}
+}
 
 // ── Data quality: fabrics missing kg-per-metre ──
 const DQ_SRC={stock:{label:'Stock only',cls:'pill-blue'},usage:{label:'Usage only',cls:'pill-amber'},both:{label:'Both',cls:'pill-red'}};
@@ -3638,6 +3707,7 @@ function exportUnmatched(btn){
 // (The Trend Analysis page has its OWN page-local date range and is intentionally
 // NOT wired to the topbar Date range.)
 function onDateRangeChange(){
+  _fabRangeTouched=true;   // user set the window — never overwrite with defaults
   // The Stock Mix KPIs follow the same top Date range when that page is shown.
   if(document.getElementById('page-dashboard').style.display!=='none'){
     loadFabricMix();
