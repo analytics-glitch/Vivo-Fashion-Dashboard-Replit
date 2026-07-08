@@ -1992,6 +1992,9 @@ def main():
             def _run_fab_img(hb):
                 with psycopg2.connect(DATABASE_URL) as fconn:
                     extract_fabric_images.run(fconn, heartbeat=hb)
+                    # Odoo image_1920 for fabrics (categs 18,19) -> source='odoo',
+                    # idx=-1 (canonical primary). Only touches source='odoo' rows.
+                    extract_fabric_images.run_odoo(fconn, heartbeat=hb)
 
             with heartbeat_keepalive("fabric_image_extract") as hb:
                 _run_fab_img(hb)

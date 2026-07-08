@@ -283,6 +283,77 @@ def run(conn=None, heartbeat=None):
     }
 
 
+
+
+# ---------------------------------------------------------------------------
+# Odoo source — pull image_1920 for fabric products (categs 18,19) keyed by
+# barcode. Odoo is the CANONICAL fabric image: stored at idx=-1 so it sorts
+# BEFORE any Drive (idx 0..n) or upload (idx>=100000) photo in the display
+# order (ORDER BY idx). Only ever writes/prunes source='odoo' rows, so Drive
+# and upload photos are never touched. NO-OP if Odoo env vars are absent.
+# ---------------------------------------------------------------------------
+import xmlrpc.client as _xmlrpc
+
+_ODOO_FABRIC_CATS = [18, 19]   # 18=Raw Materials-Fabric, 19=Accessories & Trims
+_ODOO_IMG_IDX = -1             # canonical primary slot (sorts first)
+
+def run_odoo(conn=None, heartbeat=None):
+    """Pull image_1920 for fabric products with a barcode into fabric_images
+    as source='odoo', idx=-1. Idempotent upsert + prune of stale odoo rows."""
+    url=os.environ.get("ODOO_URL"); db=os.environ.get("ODOO_DB")
+    user=os.environ.get("ODOO_USER"); pw=os.environ.get("ODOO_PASSWORD")
+    if not all([url,db,user,pw]):
+        _log("odoo: env not set — skipping (no-op)")
+        return 0
+    own_conn = conn is None
+    if own_conn:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    try:
+        _ensure_table(conn)
+        common=_xmlrpc.ServerProxy(f"{url}/xmlrpc/2/common")
+        uid=common.authenticate(db,user,pw,{})
+        models=_xmlrpc.ServerProxy(f"{url}/xmlrpc/2/object")
+        # fabric products that have a barcode
+        ids=models.execute_kw(db,uid,pw,"product.product","search",
+            [[["categ_id","in",_ODOO_FABRIC_CATS],["barcode","!=",False]]])
+        _log(f"odoo: {len(ids)} fabric products with a barcode")
+        seen=[]; stored=0
+        for i in range(0,len(ids),100):
+            chunk=ids[i:i+100]
+            recs=models.execute_kw(db,uid,pw,"product.product","read",
+                [chunk],{"fields":["barcode","image_1920"]})
+            with conn.cursor() as cur:
+                for r in recs:
+                    bc=(r.get("barcode") or "").strip()
+                    img=r.get("image_1920")
+                    if not bc or not img or len(img)<100:
+                        continue
+                    seen.append(bc)
+                    cur.execute("""
+                        INSERT INTO fabric_images
+                            (barcode, idx, filename, mime, image_b64, source, updated_at)
+                        VALUES (%s,%s,%s,'image/jpeg',%s,'odoo',now())
+                        ON CONFLICT (barcode, idx) DO UPDATE SET
+                            image_b64=EXCLUDED.image_b64, mime='image/jpeg',
+                            source='odoo', updated_at=now()
+                    """, (bc, _ODOO_IMG_IDX, f"{bc}_odoo.jpg", img))
+                    stored+=1
+            conn.commit()
+            if heartbeat: heartbeat()
+        # prune odoo rows whose barcode is no longer a fabric-with-image in Odoo
+        with conn.cursor() as cur:
+            if seen:
+                cur.execute("DELETE FROM fabric_images WHERE source='odoo' AND NOT (barcode = ANY(%s))",(seen,))
+            else:
+                cur.execute("DELETE FROM fabric_images WHERE source='odoo'")
+            pruned=cur.rowcount
+        conn.commit()
+        _log(f"odoo: stored/updated {stored} images, pruned {pruned} stale")
+        return stored
+    finally:
+        if own_conn: conn.close()
+
+
 if __name__ == "__main__":
     try:
         result = run()
