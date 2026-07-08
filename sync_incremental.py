@@ -357,6 +357,7 @@ _LAST_ROLLUP_REFRESH = None
 # even though main() runs every 60s. Product photos change rarely and this is
 # the heaviest Odoo pull (full image fetch per template), so a daily cadence is
 # plenty. None on boot so a fresh prod DB bootstraps on the first cycle.
+_LAST_PRODUCT_MASTER_SYNC = None  # nightly: extract_odoo_products + transform_all_products_clean
 _LAST_PRODUCT_IMAGES_EXTRACT = None
 # Guards the Shopify product-image GALLERY extract (extract_shopify_images.py —
 # the multi-image scrollable lightbox gallery in product_image_urls, distinct
@@ -1477,6 +1478,44 @@ def main():
     # a (re)start. Stamped up front so a transient failure waits the full interval
     # before retrying instead of hammering Odoo/Shopify on every 60s cycle.
     now_utc = datetime.now(timezone.utc)
+    # ---- Product master (Odoo products -> raw_odoo_products -> all_products_clean) ----
+    # Runs once per 24h. The product master was previously ONLY refreshed by the
+    # manual sync_all.py, so raw_odoo_products froze (e.g. at 2026-06-13) and every
+    # product created after that was invisible to the dashboard AND replenishment.
+    # Also bootstraps immediately when raw is stale (>36h old newest write_date) or
+    # missing, so a fresh/behind prod DB catches up on the first cycle.
+    global _LAST_PRODUCT_MASTER_SYNC
+    try:
+        import sys as _sys
+        pm_conn = psycopg2.connect(DATABASE_URL)
+        pm_stale = True
+        try:
+            with pm_conn.cursor() as _c:
+                _c.execute("SELECT to_regclass('public.raw_odoo_products')")
+                if _c.fetchone()[0]:
+                    _c.execute("SELECT MAX(write_date::timestamp) FROM raw_odoo_products")
+                    mx = _c.fetchone()[0]
+                    pm_stale = (mx is None) or ((now_utc.replace(tzinfo=None) - mx).total_seconds() > 129600)  # >36h
+        finally:
+            pm_conn.close()
+        pm_due = (
+            _LAST_PRODUCT_MASTER_SYNC is None
+            or (now_utc - _LAST_PRODUCT_MASTER_SYNC).total_seconds() >= 86400
+        )
+        if pm_stale or pm_due:
+            _LAST_PRODUCT_MASTER_SYNC = now_utc
+            log.info("Running product master sync (stale=%s, due=%s)...", pm_stale, pm_due)
+            run_subprocess_with_heartbeat(
+                [_sys.executable, "/home/runner/workspace/extract_odoo_products.py"],
+                "product_master_extract",
+            )
+            run_subprocess_with_heartbeat(
+                [_sys.executable, "/home/runner/workspace/transform_all_products_clean.py"],
+                "product_master_transform",
+            )
+            log.info("\u2705 Product master sync complete")
+    except Exception as e:
+        log.error("Product master sync error: %s", e)
     global _LAST_INVENTORY_SYNC
     inventory_due = (
         _LAST_INVENTORY_SYNC is None
