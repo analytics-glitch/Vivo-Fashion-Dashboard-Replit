@@ -7,7 +7,7 @@
 // page can badge comparison bases with "restated on DATE" instead of silently
 // showing a different figure than last week.
 import React, { useEffect, useState } from "react";
-import api from "@/lib/api";
+import { api } from "@/lib/api";
 
 export function useRestatements(dateFrom, dateTo, enabled = true) {
   const [rows, setRows] = useState([]);
