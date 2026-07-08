@@ -2780,7 +2780,7 @@ function renderKpis(d,mpg,coverDelta){
       ?`overstocked &middot; no recent use${coverStockKg!=null?` &middot; ${fmt(coverStockKg)} kg on hand`:''}`
       :(coverStatus==='no_data')
         ?'no stock or recent usage'
-        :(cover!=null)?'stock &divide; monthly use &middot; last 6 completed months':'stock &divide; monthly use';
+        :'';
   const coverTip=(coverStatus==='overstocked')
       ?esc(`Stock is on hand but there was no consumption over the last 6 completed months, so months-of-cover cannot be divided. Cover is effectively very high (shown as 12+). This is a genuinely slow-moving staple or a transient state while fabric data is rebuilding — not a broken metric.`)
       :(coverStatus==='no_data')
@@ -2829,7 +2829,7 @@ function renderKpis(d,mpg,coverDelta){
      else if(coverStatus==='ok'&&cover!=null){cval=coverFmt(cover);ccls=cover<1?'amber':'';}
      else{cval='&mdash;';}
      const dl=(cover!=null)?`<button class="btn ghost" onclick="downloadMonthsCoverXlsx()" title="Download the calculation audit trail (fabric stock, the 6-month net run-rate and the per-month consumption behind it) as an Excel workbook">&#11015; Download (Excel)</button>`:'';
-     return KpiCard({reserveAction:true,label:'Months of cover',value:cval,valueClass:ccls,valueAttrs:fx(FX.monthsCover),cardAttrs:` title="${coverTip}"`,footnote:coverNote,footnoteAttrs:' style="margin-top:0;"',action:dl});})(),
+     return KpiCard({reserveAction:true,label:'Months of cover',qualifier:'Last 6 Months Consump.',value:cval,valueClass:ccls,valueAttrs:fx(FX.monthsCover),cardAttrs:` title="${coverTip}"`,footnote:coverNote,footnoteAttrs:' style="margin-top:0;"',action:dl});})(),
     (()=>{
      // Prev-month cover: stock ÷ the PREVIOUS full calendar month's net use — a
      // more reactive signal than the 6-month average. Sits next to it and degrades
@@ -2842,7 +2842,7 @@ function renderKpis(d,mpg,coverDelta){
          ?`overstocked &middot; no use last month${pkg!=null?` &middot; ${fmt(pkg)} kg on hand`:''}`
          :(pstatus==='no_data')
            ?'no stock or last-month usage'
-           :`stock &divide; last month&rsquo;s use${plabel?` &middot; ${esc(plabel)}`:''}`;
+           :'';
      const ptip=(pstatus==='overstocked')
          ?esc(`Stock is on hand but there was NO consumption in the previous full calendar month, so months-of-cover cannot be divided. Cover is effectively very high (shown as 12+). A genuinely slow-moving staple or a transient state while fabric data is rebuilding — not a broken metric.`)
          :(pstatus==='no_data')
@@ -2852,7 +2852,7 @@ function renderKpis(d,mpg,coverDelta){
      if(pstatus==='overstocked'){pval='12+';}
      else if(pstatus==='ok'&&pcover!=null){pval=coverFmt(pcover);pcls=pcover<1?'amber':'';}
      else{pval='&mdash;';}
-     return KpiCard({reserveAction:true,label:'Months of cover',qualifier:'Prev month',value:pval,valueClass:pcls,valueAttrs:fx(FX.monthsCoverPrevMonth),cardAttrs:` title="${ptip}"`,footnote:pnote});})(),
+     return KpiCard({reserveAction:true,label:'Months of cover',qualifier:'Previous Month Consumption',value:pval,valueClass:pcls,valueAttrs:fx(FX.monthsCoverPrevMonth),cardAttrs:` title="${ptip}"`,footnote:pnote});})(),
   ];
   document.getElementById('kpi-cards').innerHTML=cards.join('');
 }
