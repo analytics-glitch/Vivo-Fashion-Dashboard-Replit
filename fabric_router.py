@@ -568,6 +568,20 @@ def _months_of_cover_prev_month(conn, fabric_stock_kg, scope="main", product_ids
 _ALL_LOC = {"", "all", "__all__"}
 _FABRIC_LOCATIONS = ("RMAT/Stock", "Dead/Stock Fabric")
 
+# "Last Move" must reflect REAL movements only (vendor receipts, consumption,
+# genuine internal transfers) — never a stocktake/inventory adjustment, which
+# lands in raw_fabric_moves as INTERNAL with Odoo's virtual adjustment location
+# on one side. Use this predicate at EVERY MAX(date) last_move/days_since_move
+# site so ordering, aging bands and detail cards stay consistent.
+# NOTE: exact label match (verified in raw_fabric_moves) — deliberately avoids
+# %/ILIKE wildcards because some q() call sites run with no params and a
+# literal % breaks psycopg2 interpolation at the parametrized sites.
+_ADJ_LOCATION = "Virtual Locations/Inventory adjustment"
+
+def _real_move_sql(alias="m"):
+    return (f"COALESCE({alias}.location_from,'') <> '{_ADJ_LOCATION}' "
+            f"AND COALESCE({alias}.location_to,'') <> '{_ADJ_LOCATION}'")
+
 def _loc_filter(location, alias="i"):
     """Return (sql_fragment, params) for the location_name filter.
 
@@ -2342,8 +2356,8 @@ def register(
                    ELSE NULL END as months_cover,
               ROUND(COALESCE(rv.reserved_kg,0)::numeric,2) as team_reserved_kg,
               ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN COALESCE(rv.reserved_kg,0)/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as team_reserved_metres,
-              (SELECT MAX(date)::date FROM raw_fabric_moves m WHERE m.product_id=i.product_id) as last_move,
-              CURRENT_DATE - (SELECT MAX(date)::date FROM raw_fabric_moves m WHERE m.product_id=i.product_id) as days_since_move
+              (SELECT MAX(date)::date FROM raw_fabric_moves m WHERE m.product_id=i.product_id AND {_real_move_sql('m')}) as last_move,
+              CURRENT_DATE - (SELECT MAX(date)::date FROM raw_fabric_moves m WHERE m.product_id=i.product_id AND {_real_move_sql('m')}) as days_since_move
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             LEFT JOIN cons_win c ON c.product_id = i.product_id
@@ -2398,6 +2412,7 @@ def ageing(location: str = Query(default="RMAT/Stock"),
               FROM raw_fabric_inventory i
               JOIN raw_fabric_products p ON p.id = i.product_id
               LEFT JOIN raw_fabric_moves m ON m.product_id = i.product_id
+                AND {_real_move_sql('m')}
               WHERE i.quantity > 0 {loc_sql}
                 AND p.category = 'Fabric'
                 AND {_scope_sql(scope)}
@@ -2905,8 +2920,8 @@ def fabric_mix(
                        ELSE NULL END as months_cover,
                   ROUND(COALESCE(rv.reserved_kg,0)::numeric,2) as team_reserved_kg,
                   ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN COALESCE(rv.reserved_kg,0)/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as team_reserved_metres,
-                  (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id) as last_move,
-                  CURRENT_DATE - (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id) as days_since_move
+                  (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id AND {_real_move_sql('mm')}) as last_move,
+                  CURRENT_DATE - (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id AND {_real_move_sql('mm')}) as days_since_move
                 FROM raw_fabric_products p
                 LEFT JOIN inv ON inv.product_id = p.id
                 LEFT JOIN cons_win c ON c.product_id = p.id
@@ -3062,7 +3077,7 @@ def missing_kg_per_metre(scope: str = Query(default="main")):
               ll.last_known_location AS last_known_location,
               ROUND(COALESCE(st.stock_kg,0)::numeric,1) AS stock_kg,
               ROUND(GREATEST(COALESCE(us.usage_kg,0),0)::numeric,1) AS usage_kg,
-              (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id) AS last_move
+              (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id AND {_real_move_sql('mm')}) AS last_move
             FROM raw_fabric_products p
             LEFT JOIN stock st ON st.product_id = p.id
             LEFT JOIN usage us ON us.product_id = p.id
@@ -3152,6 +3167,7 @@ def dead_stock(scope: str = Query(default="main")):
             FROM raw_fabric_inventory i
             LEFT JOIN raw_fabric_products p ON p.id = i.product_id
             LEFT JOIN raw_fabric_moves m ON m.product_id = i.product_id
+              AND {_real_move_sql('m')}
             WHERE i.location_name = 'Dead/Stock Fabric' AND i.quantity > 0
               AND p.category = 'Fabric'
               AND {_scope_sql(scope)}

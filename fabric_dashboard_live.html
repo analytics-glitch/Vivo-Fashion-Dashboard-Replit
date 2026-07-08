@@ -1153,8 +1153,8 @@ const REG_FX={
   team_reserved_kg:'Reserved (kg) = buying-team reservations (open), in kg.',
   value_kes:'Value = on-hand kg × standard cost (KES).',
   weeks_cover:'Weekly Covers = on-hand kg ÷ weekly run-rate, aligned with the Stock Mix page: warehouse-wide net consumption over the last 90 days (effective moves) converted to a weekly rate. Reconciles with the Stock Mix page (monthly covers × ~4.35 ≈ weeks).',
-  last_move:'Last move = date of the most recent stock movement (Odoo).',
-  days_since_move:'Days idle = today − date of the last stock movement.',
+  last_move:'Last move = date of the most recent ACTUAL stock movement (Odoo transfers: vendor receipt, issue to production/customer, or internal transfer). Stocktakes / inventory adjustments are excluded.',
+  days_since_move:'Days idle = today − date of the last actual stock movement (excludes stocktakes / inventory adjustments).',
 };
 // Single delegated tooltip controller — works for static and dynamically
 // re-rendered tables alike (no per-render rebinding). Positions the tip above
