@@ -593,6 +593,16 @@ const Inventory = () => {
     [sts, filtersActive, visibleLocations]
   );
 
+  // Sell-through table follows the same local-filter contract as the STS
+  // tables: when a search/brand/category filter is active, show only the
+  // locations that actually hold the matching inventory.
+  const filteredSellThrough = useMemo(
+    () => (filtersActive
+      ? (sellThrough || []).filter((r) => visibleLocations.has(r.location))
+      : (sellThrough || [])),
+    [sellThrough, filtersActive, visibleLocations]
+  );
+
   const filteredStsByCat = useMemo(() => {
     let src = stsByCat.filter((r) => !["Accessories", "Sale", "Other"].includes(r.category) && r.category);
     if (visibleCategories) src = src.filter((r) => visibleCategories.has(r.category));
@@ -1378,10 +1388,10 @@ const Inventory = () => {
 
           <div className="card-white p-5" data-testid="sell-through-by-location">
             <SectionTitle
-              title={`Sell-Through Rate · by Location · ${(sellThrough || []).filter((r) => r.sell_through_pct != null).length} POS`}
+              title={`Sell-Through Rate · by Location · ${(filteredSellThrough || []).filter((r) => r.sell_through_pct != null).length} POS`}
               subtitle={`Sell-through % = units sold ${stsAppliedRange ? `(${stsAppliedRange.from} → ${stsAppliedRange.to})` : "in window"} ÷ (units sold + current stock). Uses its own ${stsEffectiveDays || 30}-day window, independent of the page date filter. Higher = stock is actually moving. 25%+ = strong · 12–25% = healthy · 5–12% = slow · <5% = stuck. Use this alongside Weeks-of-Cover to spot overstocked stores.`}
             />
-            {(!sellThrough || sellThrough.length === 0) ? (
+            {(!filteredSellThrough || filteredSellThrough.length === 0) ? (
               <Empty label="No sell-through data for the selected window." />
             ) : (
               <SortableTable
@@ -1423,7 +1433,7 @@ const Inventory = () => {
                     csv: (r) => r.health,
                   },
                 ]}
-                rows={sellThrough}
+                rows={filteredSellThrough}
               />
             )}
             <p className="text-[11px] text-muted italic mt-2">

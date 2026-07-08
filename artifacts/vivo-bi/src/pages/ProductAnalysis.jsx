@@ -309,6 +309,7 @@ const ProductAnalysis = () => {
   useEffect(() => { setAi(null); setAiError(null); }, [
     localFrom, localTo, countryParam, storeParam, status, dimsParam, velDays,
     brands.join(","), cats.join(","), subcats.join(","), tierParam, revPctParam,
+    search,
   ]);
 
   useEffect(() => {
@@ -393,6 +394,86 @@ const ProductAnalysis = () => {
       (r.style_number || "").toLowerCase().includes(q)
     );
   }, [rows, search]);
+
+  // ── Search-scoped aggregates ──────────────────────────────────────
+  // When the style search is active, EVERY visual on the page (KPI band,
+  // by-brand and by-subcategory tables) must reflect only the matching
+  // styles — not just the master table. These roll the (possibly
+  // dim-exploded) filteredRows up client-side; with no search they are
+  // null and the server aggregates are used unchanged.
+  const searchActive = Boolean(search.trim()) && filteredRows !== rows;
+  const searchAgg = useMemo(() => {
+    if (!searchActive) return null;
+    const wk = velDays / 7;
+    const styleSet = new Set();
+    const sellingSet = new Set();
+    let units = 0, revenue = 0, stock = 0, vel = 0;
+    const byB = new Map();
+    const byS = new Map();
+    const bump = (map, key, r) => {
+      const g = map.get(key) || { styles: new Set(), units: 0, revenue: 0, stock: 0, vel: 0 };
+      g.styles.add(r.style_name);
+      g.units += r.units_sold || 0;
+      g.revenue += r.revenue || 0;
+      g.stock += r.current_stock || 0;
+      g.vel += r.units_vel || 0;
+      map.set(key, g);
+      return g;
+    };
+    for (const r of filteredRows) {
+      styleSet.add(r.style_name);
+      if ((r.units_sold || 0) > 0) sellingSet.add(r.style_name);
+      units += r.units_sold || 0;
+      revenue += r.revenue || 0;
+      stock += r.current_stock || 0;
+      vel += r.units_vel || 0;
+      bump(byB, r.brand || "—", r);
+      bump(byS, r.subcategory || "—", r);
+    }
+    const finish = (map, keyName) => {
+      const totStock = stock || 0, totUnits = units || 0, totRev = revenue || 0;
+      const totStyles = styleSet.size || 0;
+      return Array.from(map.entries()).map(([k, g]) => {
+        const weekly = wk > 0 ? g.vel / wk : 0;
+        return {
+          [keyName]: k,
+          styles: g.styles.size,
+          units: g.units,
+          revenue: g.revenue,
+          stock: g.stock,
+          sor: (g.units + g.stock) > 0 ? (g.units * 100.0) / (g.units + g.stock) : null,
+          woc: weekly > 0 ? g.stock / weekly : null,
+          pct_range: totStyles > 0 ? (g.styles.size * 100.0) / totStyles : null,
+          pct_stock: totStock > 0 ? (g.stock * 100.0) / totStock : null,
+          pct_units: totUnits > 0 ? (g.units * 100.0) / totUnits : null,
+          pct_revenue: totRev > 0 ? (g.revenue * 100.0) / totRev : null,
+        };
+      });
+    };
+    const weeklyAll = wk > 0 ? vel / wk : 0;
+    return {
+      summary: {
+        styles: styleSet.size,
+        actively_selling: sellingSet.size,
+        revenue,
+        net_revenue: null,
+        net_revenue_canonical: null,
+        units,
+        units_canonical: null,
+        stock_units: stock,
+        avg_sor: (units + stock) > 0 ? (units * 100.0) / (units + stock) : null,
+        avg_woc: weeklyAll > 0 ? stock / weeklyAll : null,
+      },
+      byBrand: finish(byB, "brand"),
+      bySubcat: finish(byS, "subcategory"),
+    };
+  }, [searchActive, filteredRows, velDays]);
+
+  // Display-side aggregates: search-scoped when a search is typed, server
+  // aggregates otherwise. (generateAi keeps the full server `summary`.)
+  const dispSummary = searchAgg ? searchAgg.summary : summary;
+  const dispByBrand = searchAgg ? searchAgg.byBrand : byBrand;
+  const dispBySubcat = searchAgg ? searchAgg.bySubcat : bySubcat;
 
   const rangeLabel = localFrom && localTo ? `${fmtDate(localFrom)} – ${fmtDate(localTo)}` : "";
   const scopeLabel = stores.length
@@ -704,18 +785,21 @@ const ProductAnalysis = () => {
   }, [filteredRows, dims, stores, includePhotos]);
 
   const generateAi = useCallback(() => {
-    if (!summary) return;
+    if (!dispSummary) return;
     setAiLoading(true);
     setAiError(null);
     // Build the grounded fact lists from the same rows (style grain). When the
     // master is exploded by colour/print/size, roll the dim rows up to STYLE
     // grain and RECOMPUTE woc/sor from the aggregated totals (carrying a single
     // dim row's woc/sor would mis-rank overstock / slow-movers).
+    // When a search is typed, ground the AI on the SHOWN styles only (same
+    // scope as the KPI band and snapshot tables).
+    const srcRows = searchActive ? filteredRows : rows;
     let styleRows;
     if (dims.length === 0) {
-      styleRows = rows;
+      styleRows = srcRows;
     } else {
-      const agg = rows.reduce((acc, r) => {
+      const agg = srcRows.reduce((acc, r) => {
         const k = r.style_name;
         const g = acc[k] || (acc[k] = {
           style_name: r.style_name, units_sold: 0, revenue: 0,
@@ -755,9 +839,9 @@ const ProductAnalysis = () => {
       .map((r) => ({ style_name: r.style_name, sor: r.sor, current_stock: r.current_stock }));
     api
       .post("/analytics/product-analysis/ai", {
-        scope_label: scopeLabel,
+        scope_label: searchActive ? `${scopeLabel} — search “${search.trim()}”` : scopeLabel,
         date_label: rangeLabel,
-        summary,
+        summary: dispSummary,
         overstock,
         top_sellers: topSellers,
         slow_movers: slow,
@@ -773,7 +857,7 @@ const ProductAnalysis = () => {
       })
       .catch((e) => setAiError(e?.response?.data?.detail || e?.message || "AI request failed"))
       .finally(() => setAiLoading(false));
-  }, [summary, rows, dims, velDays, scopeLabel, rangeLabel]);
+  }, [dispSummary, rows, filteredRows, searchActive, search, dims, velDays, scopeLabel, rangeLabel]);
 
   return (
     <div
@@ -965,7 +1049,7 @@ const ProductAnalysis = () => {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search style or style #"
+            placeholder="Search style or style # — filters every card & table"
             className="bg-transparent text-[12px] outline-none w-[170px]"
             data-testid="pa-search"
           />
@@ -983,47 +1067,49 @@ const ProductAnalysis = () => {
       {!loading && !error && data && (
         <>
           {/* Summary band */}
-          {summary && (
+          {dispSummary && (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
               <KPICard
                 small showDelta={false} testId="pa-kpi-styles"
                 label={status === "active" ? "Active Styles" : status === "retired" ? "Retired Styles" : "Styles"}
-                value={fmtNum(summary.styles)} icon={Tag}
-                sub={`${fmtNum(summary.actively_selling)} actively selling`}
+                value={fmtNum(dispSummary.styles)} icon={Tag}
+                sub={`${fmtNum(dispSummary.actively_selling)} actively selling`}
                 formula="Styles counts only Vivo Fashion Group styles that currently hold stock (third-party consignment and zero-stock styles are excluded). Active vs Retired is a lifecycle status: a style is Retired when it is manually retired or gated to the underperforming/aged 'Retire' tier, and Active otherwise — independent of window sales. 'Actively selling' means the style sold at least one unit within the selected date range (30D/90D/120D or a custom range) — so it grows as you widen the window; it is an overlay across both Active and Retired, distinct from the velocity window used for weeks-of-cover."
               />
               <KPICard
                 small showDelta={false} accent testId="pa-kpi-revenue"
-                label="Revenue" value={fmtKES(summary.revenue)} valueFull={fmtKESLong(summary.revenue)} icon={ChartBar}
-                sub={summary.net_revenue_canonical != null
-                  ? `Net ${fmtKES(summary.net_revenue_canonical)}`
-                  : `Net ${fmtKES(summary.net_revenue)} (styles scope)`}
+                label="Revenue" value={fmtKES(dispSummary.revenue)} valueFull={fmtKESLong(dispSummary.revenue)} icon={ChartBar}
+                sub={searchActive
+                  ? "Search scope — shown styles only"
+                  : dispSummary.net_revenue_canonical != null
+                  ? `Net ${fmtKES(dispSummary.net_revenue_canonical)}`
+                  : `Net ${fmtKES(dispSummary.net_revenue)} (styles scope)`}
                 formula="Revenue sums the styles listed below. Net = canonical Net Sales (Total Sales − Returns − Discounts, VAT-inclusive) for the same date/country/store window — identical to the Overview ‘Net Sales’ tile. When the styles are narrowed (brand / category / tier / status), Net falls back to the sum over the shown styles and is marked ‘styles scope’."
               />
               <KPICard
                 small showDelta={false} testId="pa-kpi-units"
-                label="Units Sold" value={fmtNum(summary.units)} icon={Cube}
-                sub={summary.units_canonical != null && Number(summary.units_canonical) !== Number(summary.units)
-                  ? `vs ${fmtNum(summary.units_canonical)} company-wide`
+                label="Units Sold" value={fmtNum(dispSummary.units)} icon={Cube}
+                sub={dispSummary.units_canonical != null && Number(dispSummary.units_canonical) !== Number(dispSummary.units)
+                  ? `vs ${fmtNum(dispSummary.units_canonical)} company-wide`
                   : undefined}
                 formula={`Gross units summed over the styles listed below (same gross measure as Overview).${
-                  summary.units_canonical != null && Number(summary.units_canonical) !== Number(summary.units)
-                    ? ` Company-wide Units Sold for this window is ${fmtNum(summary.units_canonical)}; the ${fmtNum(Number(summary.units_canonical) - Number(summary.units))}-unit difference sits on sale lines outside this style universe (no catalog match, zero-stock or third-party styles).`
+                  dispSummary.units_canonical != null && Number(dispSummary.units_canonical) !== Number(dispSummary.units)
+                    ? ` Company-wide Units Sold for this window is ${fmtNum(dispSummary.units_canonical)}; the ${fmtNum(Number(dispSummary.units_canonical) - Number(dispSummary.units))}-unit difference sits on sale lines outside this style universe (no catalog match, zero-stock or third-party styles).`
                     : ""}`}
               />
               <KPICard
                 small showDelta={false} testId="pa-kpi-stock"
-                label="Current Stock" value={fmtNum(summary.stock_units)} icon={Package}
+                label="Current Stock" value={fmtNum(dispSummary.stock_units)} icon={Package}
                 sub="units on hand (scope)"
               />
               <KPICard
                 small showDelta={false} testId="pa-kpi-sor"
-                label="Avg Sell-Out" value={fmtSor(summary.avg_sor)} icon={Percent}
+                label="Avg Sell-Out" value={fmtSor(dispSummary.avg_sor)} icon={Percent}
                 formula="Sell-out rate = units sold ÷ (units sold + current stock)"
               />
               <KPICard
                 small showDelta={false} testId="pa-kpi-woc"
-                label="Avg Weeks Cover" value={fmtWoc(summary.avg_woc)} icon={ChartBar}
+                label="Avg Weeks Cover" value={fmtWoc(dispSummary.avg_woc)} icon={ChartBar}
                 formula="Weeks of cover = current stock ÷ weekly velocity"
               />
             </div>
@@ -1033,10 +1119,10 @@ const ProductAnalysis = () => {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="card-white p-4">
               <div className="eyebrow mb-2">By brand</div>
-              {byBrand.length ? (
+              {dispByBrand.length ? (
                 <SortableTable
                   testId="pa-by-brand"
-                  rows={byBrand}
+                  rows={dispByBrand}
                   initialSort={{ key: "revenue", dir: "desc" }}
                   exportName="product_analysis_by_brand.csv"
                   maxHeight={300}
@@ -1054,10 +1140,10 @@ const ProductAnalysis = () => {
             </div>
             <div className="card-white p-4">
               <div className="eyebrow mb-2">By sub-category</div>
-              {bySubcat.length ? (
+              {dispBySubcat.length ? (
                 <SortableTable
                   testId="pa-by-subcat"
-                  rows={bySubcat}
+                  rows={dispBySubcat}
                   initialSort={{ key: "revenue", dir: "desc" }}
                   exportName="product_analysis_by_subcategory.csv"
                   maxHeight={300}
