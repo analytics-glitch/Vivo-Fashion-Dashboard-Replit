@@ -155,7 +155,7 @@ def main():
             write_date
         FROM raw_odoo_products
         WHERE default_code IS NOT NULL
-        AND categ_name = '2. Finished Goods Inventory'
+        AND categ_name IN ('2. Finished Goods Inventory', '01. Finished Goods Inventory', '2. Finished Goods Inventory ')
         AND LOWER(name) NOT LIKE '%shopping bag%'
         AND LOWER(name) NOT LIKE '%gift voucher%'
         AND LOWER(name) NOT LIKE '%gift card%'
