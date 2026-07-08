@@ -2001,6 +2001,77 @@ def months_of_cover_xlsx():
     )
 
 
+# ── Months of Cover (prev month) — downloadable .xlsx calculations report ──
+# Audit trail behind the "Months of cover · Prev Month Consumpt." KPI card: the
+# same main-scope RMAT/Stock on-hand kg, but divided by ONLY the previous full
+# calendar month's (M-1) net consumption instead of the 6-month run-rate. Stock
+# base + figure MUST mirror the summary card exactly (same RMAT/Stock query +
+# same `_months_of_cover_prev_month` projection) so the workbook reconciles.
+@fabric_router.get("/api/fabric/months-of-cover-prev-month.xlsx")
+def months_of_cover_prev_month_xlsx():
+    from fastapi.responses import Response
+    import io
+    import openpyxl
+    from openpyxl.styles import Font
+
+    with _get_conn() as conn:
+        rmat_kg = q(conn, f"""
+            SELECT ROUND(SUM(i.quantity)::numeric,1) AS kg
+            FROM raw_fabric_inventory i
+            JOIN raw_fabric_products p ON p.id = i.product_id
+            WHERE i.quantity > 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
+              AND {_scope_sql('main')}
+        """)[0]['kg'] or 0
+        rmat_kg = round(float(rmat_kg), 1)
+
+        cov = _months_of_cover_prev_month(conn, rmat_kg, "main")
+
+    status = cov["months_of_cover_prev_month_status"]
+    _status_text = {
+        "ok": "OK — computed from last month's net consumption",
+        "overstocked": "Overstocked — stock on hand but no consumption last month",
+        "no_data": "No data — no stock or last-month consumption",
+    }
+    cover_disp = (cov["months_of_cover_prev_month"]
+                  if status == "ok" and cov["months_of_cover_prev_month"] is not None
+                  else ("12+ (overstocked)" if status == "overstocked" else "—"))
+
+    wb = openpyxl.Workbook()
+    TITLE = Font(bold=True, size=13)
+    LBL = Font(bold=True)
+    ws = wb.active
+    ws.title = "Summary"
+    ws["A1"] = "Months of cover (prev month) — calculations report"
+    ws["A1"].font = TITLE
+    srows = [
+        ("Months of cover, prev month (KPI)", cover_disp),
+        ("Status", _status_text.get(status, status)),
+        ("RMAT/Stock on hand (kg)", rmat_kg),
+        ("Previous month", cov.get("months_of_cover_prev_month_label")),
+        ("Prev-month net consumption (kg)",
+         cov.get("months_of_cover_prev_month_consumption_kg")),
+        ("Basis", "RMAT/Stock on-hand kg ÷ the net consumption of the previous "
+                  "full calendar month (M-1), main-scope fabrics — more reactive "
+                  "than the 6-month average"),
+        ("Reconciliation", "Stock on hand ÷ Prev-month net consumption "
+                           "= Months of cover (prev month)"),
+    ]
+    for i, (label, val) in enumerate(srows):
+        ws.cell(row=3 + i, column=1, value=label).font = LBL
+        ws.cell(row=3 + i, column=2, value=val)
+    ws.column_dimensions["A"].width = 40
+    ws.column_dimensions["B"].width = 70
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition":
+                 'attachment; filename="months-of-cover-prev-month.xlsx"'},
+    )
+
+
 # ── Data quality: fabrics driving the metres/garment fallback ──────────
 # The "Avg metres / garment" KPI converts any Done-DPS MO whose main fabric has
 # no usable kg→metre conversion using the overall fabric-average (fallback) so the

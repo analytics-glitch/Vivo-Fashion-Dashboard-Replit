@@ -158,7 +158,7 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .kpi.hero:hover{border-color:var(--kpi-ink);box-shadow:0 2px 8px rgba(26,26,26,.14);}
 .kpi .eyebrow{display:block;line-height:1.25;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);text-align:center;}
 .kpi .eyebrow-main{display:block;}
-.kpi .eyebrow-qual{display:block;min-height:1.25em;color:var(--kpi-orange);}
+.kpi .eyebrow-qual{display:block;min-height:1.25em;color:var(--kpi-orange);white-space:nowrap;}
 .kpi.hero .eyebrow{color:rgba(255,255,255,.66);}
 .kpi.hero .eyebrow-qual{color:var(--kpi-orange);}
 .kpi-value{font-size:32px;font-weight:700;letter-spacing:-.02em;line-height:1.1;margin:8px 0 0;color:var(--kpi-ink);font-variant-numeric:tabular-nums;font-feature-settings:"tnum";white-space:nowrap;max-width:100%;}
@@ -172,9 +172,9 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .kpi.hero .kpi-value-unit{color:rgba(255,255,255,.7);}
 .kpi-delta{font-size:12px;font-weight:700;line-height:1.3;margin-top:4px;}
 .kpi-delta:empty{display:none;}
-.kpi-sub{font-size:12px;font-weight:400;color:var(--muted);margin-top:auto;padding-top:8px;line-height:1.4;}
+.kpi-sub{font-size:12px;font-weight:400;color:var(--muted);margin-top:0;padding-top:8px;line-height:1.4;}
 .kpi.hero .kpi-sub{color:rgba(255,255,255,.72);}
-.kpi-action{margin-top:10px;}
+.kpi-action{margin-top:auto;padding-top:10px;}
 .kpi-action:empty:not(.kpi-action--reserved){display:none;}
 .kpi-action--reserved{min-height:28px;}
 .kpi-pill{display:inline-flex;align-items:center;gap:.25rem;padding:.12rem .5rem;border-radius:999px;font-size:11px;font-weight:600;line-height:1.3;background:#FEF3C7;color:var(--amber);white-space:normal;}
@@ -2630,6 +2630,22 @@ async function downloadMonthsCoverXlsx(){
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
   }catch(e){alert('Could not generate the Excel report. Please try again.');}
 }
+// Prev-month "Months of cover" calculations workbook — the main-scope RMAT/Stock
+// kg and the previous full calendar month's (M-1) net consumption behind the
+// more-reactive cover figure. Same credentialed-blob pattern as the 6-month one.
+async function downloadMonthsCoverPrevMonthXlsx(){
+  try{
+    const r=await fetch('/api/fabric/months-of-cover-prev-month.xlsx',{credentials:'include'});
+    if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
+    if(!r.ok)throw new Error('http '+r.status);
+    const blob=await r.blob();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='months-of-cover-prev-month.xlsx';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  }catch(e){alert('Could not generate the Excel report. Please try again.');}
+}
 // Solid vs Print calculations workbook — the full classification audit trail
 // (per-fabric Solid/Print/Unknown, which rule matched, kg, kg→metre conversion,
 // derived metres and KES value). Passes the page's CURRENT location + scope so
@@ -2852,7 +2868,8 @@ function renderKpis(d,mpg,coverDelta){
      if(pstatus==='overstocked'){pval='12+';}
      else if(pstatus==='ok'&&pcover!=null){pval=coverFmt(pcover);pcls=pcover<1?'amber':'';}
      else{pval='&mdash;';}
-     return KpiCard({reserveAction:true,label:'Months of cover',qualifier:'Previous Month Consumption',value:pval,valueClass:pcls,valueAttrs:fx(FX.monthsCoverPrevMonth),cardAttrs:` title="${ptip}"`,footnote:pnote});})(),
+     const pdl=(pcover!=null)?`<button class="btn ghost" onclick="downloadMonthsCoverPrevMonthXlsx()" title="Download the calculation audit trail (fabric stock on hand and the previous full calendar month's net consumption behind this cover figure) as an Excel workbook">&#11015; Download (Excel)</button>`:'';
+     return KpiCard({reserveAction:true,label:'Months of cover',qualifier:'Prev Month Consumpt.',value:pval,valueClass:pcls,valueAttrs:fx(FX.monthsCoverPrevMonth),cardAttrs:` title="${ptip}"`,footnote:pnote,action:pdl});})(),
   ];
   document.getElementById('kpi-cards').innerHTML=cards.join('');
 }
