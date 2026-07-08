@@ -1789,7 +1789,8 @@ WAREHOUSE_LOCATIONS = (
     "'Cutting - Spreading','Washing','Wandia','Galleria Holding','Studio Location',"
     "'Product Development','Repairs','Sampling Fabric','Sampling','Sale Stock',"
     "'Shopping Bags','Recall Location','Fabric Production','Defects Location',"
-    "'Staff purchases'"
+    "'Staff purchases',"
+    "'Sew/Stock/A','Sew/Stock/B','Sew/Stock/C','Sew/Stock/D','Sew/Stock/E'"
 )
 
 # Merchandise subcategories — the set of all_products_clean.product_type values
@@ -4520,7 +4521,7 @@ def get_top_skus(
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order','return') AND p.style_name IS NOT NULL")
     return run_query("""
-        SELECT p.style_name, p.collection, p.brand, p.product_type,
+        SELECT p.style_name, MAX(p.collection) AS collection, MAX(p.brand) AS brand, MAX(p.product_type) AS product_type,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
                            WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
@@ -4530,7 +4531,7 @@ def get_top_skus(
         FROM all_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
         WHERE """ + where + """
-        GROUP BY p.style_name, p.collection, p.brand, p.product_type
+        GROUP BY p.style_name
         ORDER BY units_sold DESC
         LIMIT """ + str(limit), date_to=date_to)
 
@@ -5900,7 +5901,7 @@ def get_sor(
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order','return') AND p.style_name IS NOT NULL")
     rows = run_query("""
-        SELECT p.style_name, p.collection, p.brand, p.product_type,
+        SELECT p.style_name, MAX(p.collection) AS collection, MAX(p.brand) AS brand, MAX(p.product_type) AS product_type,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric
                            WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
@@ -5917,7 +5918,7 @@ def get_sor(
             GROUP BY p2.style_name
         ) i ON p.style_name = i.style_name
         WHERE """ + where + """
-        GROUP BY p.style_name, p.collection, p.brand, p.product_type
+        GROUP BY p.style_name
         ORDER BY units_sold DESC
         LIMIT 50000
     """, date_to=date_to)
@@ -6090,13 +6091,26 @@ def get_stock_to_sales(
             WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
             """ + inv_country_filter + " " + loc_inv_filter + """
             GROUP BY i.pos_location_name, i.country
+        ),
+        last28 AS (
+            -- Weeks of Cover uses the standard last-4-week velocity basis,
+            -- independent of the table's selected window.
+            SELECT s.pos_location_name, SUM(s.ordered_item_quantity) AS u28
+            FROM all_sales s
+            WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days'
+            AND s.sale_kind IN ('sale','order')
+            AND """ + BASE_FILTERS + " " + country_filter + " " + loc_sales_filter + """
+            GROUP BY s.pos_location_name
         )
         SELECT s.pos_location_name AS location, s.country,
             s.units_sold, s.total_sales,
             COALESCE(i.total_stock, 0) AS current_stock,
-            ROUND(COALESCE(i.total_stock,0)::numeric / NULLIF(s.units_sold, 0), 2) AS stock_to_sales_ratio
+            ROUND(COALESCE(i.total_stock,0)::numeric / NULLIF(s.units_sold, 0), 2) AS stock_to_sales_ratio,
+            ROUND(COALESCE(i.total_stock,0)::numeric
+                / NULLIF(COALESCE(l.u28, 0) / 4.0, 0), 2) AS weeks_of_cover
         FROM sales s
         LEFT JOIN inventory i ON s.pos_location_name = i.pos_location_name
+        LEFT JOIN last28 l ON s.pos_location_name = l.pos_location_name
         ORDER BY stock_to_sales_ratio DESC
     """, date_to=date_to)
 
@@ -6110,6 +6124,7 @@ def get_stock_to_sales(
         if not has:
             r["current_stock"] = None
             r["stock_to_sales_ratio"] = None
+            r["weeks_of_cover"] = None
     return rows
 
 @app.get("/api/customer-type-spend")
@@ -8129,13 +8144,13 @@ def analytics_velocity(
     vel_cc = _country_channel_filter(country, channel)
     rows = run_query("""
         WITH sales AS (
-            SELECT p.style_name, p.brand, p.product_type,
+            SELECT p.style_name, MAX(p.brand) AS brand, MAX(p.product_type) AS product_type,
                 SUM(s.ordered_item_quantity) AS units_sold,
                 ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales
             FROM all_sales s
             JOIN all_products_clean p ON s.variant_sku = p.sku
             WHERE """ + where + """
-            GROUP BY p.style_name, p.brand, p.product_type
+            GROUP BY p.style_name
         ),
         vel AS (
             SELECT p.style_name,
@@ -8265,7 +8280,13 @@ def analytics_size_curve(
                 string_agg(CASE WHEN COALESCE(st.avail, 0) <= 0 THEN c.size END, ', ' ORDER BY c.size) AS missing_sizes,
                 SUM(COALESCE(d.u, 0) * (CASE WHEN COALESCE(st.avail, 0) > 0 THEN 1 ELSE 0 END)) AS dem_in_stock,
                 SUM(COALESCE(d.u, 0)) AS dem_total,
-                bool_or(COALESCE(st.avail, 0) <= 0 AND COALESCE(w.a, 0) > 0) AS ibt_opportunity
+                bool_or(COALESCE(st.avail, 0) <= 0 AND COALESCE(w.a, 0) > 0) AS ibt_opportunity,
+                -- A style with zero availability at EVERY selling location AND
+                -- zero warehouse stock has no size data to assess (dead /
+                -- retired / fully sold out of the network) — it must not count
+                -- as a "broken curve" nor drag the average health down.
+                (COUNT(*) FILTER (WHERE COALESCE(st.avail, 0) > 0) = 0
+                 AND NOT bool_or(COALESCE(w.a, 0) > 0)) AS no_size_data
             FROM catalog c
             LEFT JOIN stock st ON c.style_name = st.style_name AND c.size = st.size
             LEFT JOIN dem d ON c.style_name = d.style_name AND c.size = d.size
@@ -8281,19 +8302,26 @@ def analytics_size_curve(
             COALESCE(sa.units_sold, 0) AS units_sold,
             cu.total_sizes,
             cu.sizes_in_stock,
-            cu.total_sizes - cu.sizes_in_stock AS broken_sizes,
-            ROUND(cu.sizes_in_stock * 100.0 / NULLIF(cu.total_sizes, 0), 0) AS health_pct,
-            COALESCE(
+            cu.no_size_data,
+            CASE WHEN cu.no_size_data THEN NULL
+                 ELSE cu.total_sizes - cu.sizes_in_stock END AS broken_sizes,
+            CASE WHEN cu.no_size_data THEN NULL
+                 ELSE ROUND(cu.sizes_in_stock * 100.0 / NULLIF(cu.total_sizes, 0), 0)
+            END AS health_pct,
+            CASE WHEN cu.no_size_data THEN NULL ELSE COALESCE(
                 ROUND(cu.dem_in_stock * 100.0 / NULLIF(cu.dem_total, 0), 0),
                 ROUND(cu.sizes_in_stock * 100.0 / NULLIF(cu.total_sizes, 0), 0)
-            ) AS demand_weighted_health,
+            ) END AS demand_weighted_health,
             COALESCE(cu.ibt_opportunity, false) AS ibt_opportunity,
-            cu.missing_sizes
+            CASE WHEN cu.no_size_data THEN NULL ELSE cu.missing_sizes END AS missing_sizes
         FROM curve cu
         LEFT JOIN sales sa ON cu.style_name = sa.style_name
         LEFT JOIN meta m ON cu.style_name = m.style_name
         WHERE cu.total_sizes >= 2
-        ORDER BY units_sold DESC, broken_sizes DESC
+        -- Usable rows (styles with stock somewhere) fill the LIMIT first; the
+        -- old "broken_sizes DESC" tiebreak flooded the cap with dead styles on
+        -- a fresh catalog-heavy DB, making every returned row read broken.
+        ORDER BY cu.no_size_data ASC, units_sold DESC, cu.dem_total DESC NULLS LAST, cu.style_name
         LIMIT 3000
     """, date_to=date_to)
 
@@ -27659,9 +27687,18 @@ def _production_flow_stages():
         LEFT JOIN bal ON bal.stage = s.stage_key
         ORDER BY s.sort_order""", fetch=True)
     total = sum(float(r["units"] or 0) for r in rows)
+    # "% of WIP" must use the same WIP definition as the Units-in-Progress KPI
+    # (terminal/END stages excluded). Terminal stages get a share of the whole
+    # book instead, flagged via pct_basis so the UI can label it honestly.
+    wip_total = sum(float(r["units"] or 0) for r in rows if not r.get("is_terminal"))
     for r in rows:
         u = float(r["units"] or 0)
-        r["pct"] = round(u / total * 100, 1) if total else 0.0
+        if r.get("is_terminal"):
+            r["pct"] = round(u / total * 100, 1) if total else 0.0
+            r["pct_basis"] = "book"
+        else:
+            r["pct"] = round(u / wip_total * 100, 1) if wip_total else 0.0
+            r["pct_basis"] = "wip"
     return rows, total
 
 

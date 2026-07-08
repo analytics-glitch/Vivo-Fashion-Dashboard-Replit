@@ -122,18 +122,24 @@ const SizeHealth = () => {
   }, [JSON.stringify(countries), dataVersion]);
 
   const view = useMemo(
-    () => (brokenOnly ? rows.filter((r) => Number(r.broken_sizes || 0) > 0) : rows),
+    () => (brokenOnly ? rows.filter((r) => !r.no_size_data && Number(r.broken_sizes || 0) > 0) : rows),
     [rows, brokenOnly]
   );
 
+  // Styles with no stock anywhere (no_size_data) are excluded from the
+  // headline KPIs — they have no size data to assess and would otherwise
+  // read every style as "broken" and drag the average to near-zero.
   const k = useMemo(() => {
-    const broken = rows.filter((r) => Number(r.broken_sizes || 0) > 0);
-    const whole = rows.length - broken.length;
-    const avgHealth = rows.length
-      ? rows.reduce((s, r) => s + Number(r.health_pct || 0), 0) / rows.length
-      : 0;
+    const usable = rows.filter((r) => !r.no_size_data);
+    const noData = rows.length - usable.length;
+    const broken = usable.filter((r) => Number(r.broken_sizes || 0) > 0);
+    const whole = usable.length - broken.length;
+    const withHealth = usable.filter((r) => r.health_pct != null);
+    const avgHealth = withHealth.length
+      ? withHealth.reduce((s, r) => s + Number(r.health_pct || 0), 0) / withHealth.length
+      : null;
     const missingUnits = broken.reduce((s, r) => s + Number(r.units_sold || 0), 0);
-    return { styles: rows.length, broken: broken.length, whole, avgHealth, missingUnits };
+    return { styles: usable.length, noData, broken: broken.length, whole, avgHealth, missingUnits };
   }, [rows]);
 
   const columns = [
@@ -145,12 +151,21 @@ const SizeHealth = () => {
     { key: "total_sizes", label: "Sizes", numeric: true, render: (r) => fmtNum(r.total_sizes) },
     { key: "sizes_in_stock", label: "In Stock", numeric: true, render: (r) => fmtNum(r.sizes_in_stock) },
     { key: "broken_sizes", label: "Broken", numeric: true,
-      render: (r) => { const b = Number(r.broken_sizes || 0); return <span className={b > 0 ? "text-danger font-semibold" : "text-muted"}>{fmtNum(b)}</span>; } },
+      render: (r) => {
+        if (r.no_size_data || r.broken_sizes == null) return <span className="text-muted">—</span>;
+        const b = Number(r.broken_sizes || 0);
+        return <span className={b > 0 ? "text-danger font-semibold" : "text-muted"}>{fmtNum(b)}</span>;
+      } },
     { key: "health_pct", label: "Curve Health", numeric: true,
-      render: (r) => { const t = healthTag(r.health_pct); return <span className={t.cls}>{t.label}</span>; },
-      csv: (r) => `${Number(r.health_pct || 0)}%` },
+      render: (r) => {
+        if (r.no_size_data || r.health_pct == null)
+          return <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10.5px] font-semibold bg-panel text-muted border border-border">No size data</span>;
+        const t = healthTag(r.health_pct);
+        return <span className={t.cls}>{t.label}</span>;
+      },
+      csv: (r) => (r.health_pct == null ? "" : `${Number(r.health_pct)}%`) },
     { key: "missing_sizes", label: "Missing Sizes", sortable: false, mobileHidden: true,
-      render: (r) => <span className="text-[12px] text-muted">{r.missing_sizes || "—"}</span> },
+      render: (r) => <span className="text-[12px] text-muted">{r.no_size_data ? "—" : (r.missing_sizes || "—")}</span> },
   ];
 
   // Size gaps: per-store broken-curve opportunities with cross-store source
@@ -246,10 +261,10 @@ const SizeHealth = () => {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <KPICard label="Styles Tracked" value={fmtNum(k.styles)} icon={Stack} testId="kpi-sh-styles" showDelta={false} />
+        <KPICard label="Styles Tracked" value={fmtNum(k.styles)} icon={Stack} testId="kpi-sh-styles" showDelta={false} sub={k.noData > 0 ? `${fmtNum(k.noData)} styles with no stock anywhere excluded` : "Styles with stock in the network"} />
         <KPICard label="Broken Curves" value={fmtNum(k.broken)} icon={Warning} testId="kpi-sh-broken" showDelta={false} sub="One or more sizes out of stock" />
         <KPICard label="Fully Stocked" value={fmtNum(k.whole)} icon={CheckCircle} testId="kpi-sh-whole" showDelta={false} />
-        <KPICard label="Avg Curve Health" value={fmtPct(k.avgHealth)} icon={Ruler} testId="kpi-sh-health" showDelta={false} formula="Average of (sizes in stock ÷ catalogued sizes) across styles" />
+        <KPICard label="Avg Curve Health" value={k.avgHealth == null ? "—" : fmtPct(k.avgHealth)} icon={Ruler} testId="kpi-sh-health" showDelta={false} formula="Average of (sizes in stock ÷ catalogued sizes) across styles with stock; styles with no stock anywhere are excluded" />
       </div>
 
       <div className="card-white p-4 sm:p-5">

@@ -108,3 +108,4 @@
 - [run_query cache rows are shared](run-query-cache-mutation.md) — cached dicts are returned by reference; copy dict(r) before pop/mutate or 2nd call within TTL breaks.
 - [Customer pseudo-exclusion canon](customer-pseudo-exclusion.md) — every customer-grain endpoint must apply _not_walkin_pseudo_sql; repeat list capped 500 so counts use COUNT() OVER; xsurf_cust_* checks lock the identities.
 - [Cross-surface reconcile must use real paths](cross-surface-reconcile-real-paths.md) — a reconciliation check that re-runs one shared SQL for both sides is tautological; each side must go through its page's production function + pure compare module with divergence tests.
+- [Style-grain single row](style-grain-single-row.md) — top-skus/SOR/velocity must GROUP BY style_name only (MAX dims); collection/product_type in the grain splits style units across rows.

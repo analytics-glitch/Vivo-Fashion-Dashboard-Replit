@@ -277,7 +277,7 @@ function FlowDiagram({ stages, activeStage, onPick }) {
                   />
                 </div>
                 <div className="text-[10px] text-muted mt-0.5 tabular-nums">
-                  {(Number(s.pct) || 0).toFixed(1)}% of WIP
+                  {(Number(s.pct) || 0).toFixed(1)}% {s.pct_basis === "book" || s.is_terminal ? "of whole book" : "of WIP"}
                 </div>
               </button>
               {i < nodes.length - 1 && (

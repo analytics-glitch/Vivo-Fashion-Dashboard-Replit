@@ -213,7 +213,7 @@ const Inventory = () => {
       api.get("/analytics/stock-to-sales-by-subcat", { params: dateParams }),
       api.get("/analytics/stock-to-sales-by-category", { params: dateParams }),
       api.get("/analytics/weeks-of-cover", { params: { country: countryCsv, locations: locationsCsv, stock_scope: stockScope } }),
-      api.get("/analytics/sell-through-by-location", { params: { date_from: dateFrom, date_to: dateTo, country: countryCsv } })
+      api.get("/analytics/sell-through-by-location", { params: { date_from: stsDateFrom, date_to: stsDateTo, country: countryCsv } })
         .catch(() => ({ data: [] })),
     ])
       .then(([s, st, sc, cat, woc, str]) => {
@@ -1379,7 +1379,7 @@ const Inventory = () => {
           <div className="card-white p-5" data-testid="sell-through-by-location">
             <SectionTitle
               title={`Sell-Through Rate · by Location · ${(sellThrough || []).filter((r) => r.sell_through_pct != null).length} POS`}
-              subtitle="Sell-through % = units sold in window ÷ (units sold + current stock). Higher = stock is actually moving. 25%+ = strong · 12–25% = healthy · 5–12% = slow · <5% = stuck. Use this alongside Weeks-of-Cover to spot overstocked stores."
+              subtitle={`Sell-through % = units sold ${stsAppliedRange ? `(${stsAppliedRange.from} → ${stsAppliedRange.to})` : "in window"} ÷ (units sold + current stock). Uses its own ${stsEffectiveDays || 30}-day window, independent of the page date filter. Higher = stock is actually moving. 25%+ = strong · 12–25% = healthy · 5–12% = slow · <5% = stuck. Use this alongside Weeks-of-Cover to spot overstocked stores.`}
             />
             {(!sellThrough || sellThrough.length === 0) ? (
               <Empty label="No sell-through data for the selected window." />

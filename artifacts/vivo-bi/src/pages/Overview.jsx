@@ -1278,7 +1278,7 @@ const Overview = () => {
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="card-white p-5 lg:col-span-2" data-testid="chart-top-channels">
-              <SectionTitle title={`Sales by Location (${top15.length} stores)`} subtitle="How much each store sold this period. Numbers in brackets show that store's share of total sales." />
+              <SectionTitle title={`Sales by Location (${top15.length} ${top15.length === 1 ? "store" : "stores"})`} subtitle="How much each store sold this period. Numbers in brackets show that store's share of total sales." />
               {top15.length === 0 ? <Empty /> : (
                 <div style={{ width: "100%", height: Math.max(380, 40 + top15.length * 22) }}>
                   <ResponsiveContainer>
