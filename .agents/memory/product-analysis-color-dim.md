@@ -29,6 +29,20 @@ through the product master for those dims.
 formatted differently and inventory's is mostly NULL; never join sales/stock to
 products on raw colour/print strings.
 
+## Same bug for size (fixed the same way)
+`all_inventory.size` is 100% NULL (0 of ~41k rows), so keying the stock CTE on
+`i.size` collapsed every stock group to '(none)' and the size explosion dropped
+almost everything ("adding Size makes everything zero", 655 → 59 rows). Fix is
+identical: `pc.size` via `need_stock_pc`. **Rule: ALL product-attribute dims
+(colour, print, size) must derive their stock-side key from the product master
+via SKU — never trust `all_inventory` attribute columns.** SKU is unique in
+`all_products_clean` (verified), so the pc join cannot fan out.
+
+**Gotcha when verifying:** the live sync updates `all_inventory` continuously,
+so two PA responses fetched minutes apart (or one cached) can show small stock
+drifts between the dim and no-dim grains. Refetch both back-to-back before
+concluding a reconciliation bug.
+
 ## Primary Color (AI) field
 `_primary_color_map()` maps each style's colour tokens onto a fixed palette:
 in-process memo -> persistent `color_primary_map` table -> deterministic keyword

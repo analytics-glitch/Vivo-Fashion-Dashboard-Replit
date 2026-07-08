@@ -7168,6 +7168,15 @@ def analytics_product_analysis(
             # all three CTEs share one consistent colour key.
             expr_st = "COALESCE(NULLIF(TRIM(pc.color_print),''),'(none)')"
             need_stock_pc = True
+        elif d == "size":
+            # all_inventory.size is 100% NULL (verified 0 of ~41k rows), so
+            # joining stock on i.size collapses every stock row to '(none)',
+            # the USING join misses, soh reads 0 and the holds-stock filter
+            # drops nearly all rows (the "everything zero when Size is added"
+            # bug — same failure mode as colour). Derive size from the product
+            # master via sku, like colour/print.
+            expr_st = "COALESCE(NULLIF(TRIM(pc.size),''),'(none)')"
+            need_stock_pc = True
         else:
             expr_st = "COALESCE(NULLIF(TRIM(i." + src + "),''),'(none)')"
         prod_grp += ", " + expr_p
