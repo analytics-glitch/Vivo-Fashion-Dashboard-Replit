@@ -363,12 +363,13 @@ _LAST_PRODUCT_IMAGES_EXTRACT = None
 # from the single Odoo base64 photo above) to once per 24h. None on boot so a
 # fresh prod DB bootstraps on the first cycle.
 _LAST_SHOPIFY_IMAGES_EXTRACT = None
-# Guards the FABRIC product-image extract (extract_fabric_images.py — Drive photos
-# matched to a fabric by filename=barcode, feeding the /fabric barcode-detail popup
-# carousel via the fabric_images table) to once per 24h even though main() runs
-# every 60s. Fabric photos change rarely and this is a Drive crawl + base64 fetch.
-# None on boot so a fresh prod DB bootstraps on the first cycle. Dormant (no-op)
-# until FABRIC_IMAGES_GSA_JSON + FABRIC_IMAGES_DRIVE_FOLDER_ID are set.
+# Guards the FABRIC product-image extract (extract_fabric_images.py — ODOO-only:
+# primary image_1920 'Face' at idx=-1 + product.image gallery photos labeled by
+# their Odoo name e.g. 'Back', feeding the /fabric barcode-detail popup carousel
+# via the fabric_images table) to once per 24h even though main() runs every 60s.
+# Fabric photos change rarely and this is a per-template base64 fetch. None on
+# boot so a fresh prod DB bootstraps on the first cycle. Dormant (no-op) until
+# the ODOO_* secrets are set. The extract also purges retired drive/upload rows.
 _LAST_FABRIC_IMAGES_EXTRACT = None
 # Guards the social CRM sync (Facebook + Instagram → vivo-crm Inbox, feeding
 # crm_social_feedback) to once per hour even though main() runs every 60s. The
@@ -1973,8 +1974,8 @@ def main():
         or (now_utc - _LAST_FABRIC_IMAGES_EXTRACT).total_seconds() >= 86400
     )
     fab_img_creds_ok = bool(
-        os.environ.get("FABRIC_IMAGES_GSA_JSON")
-        and os.environ.get("FABRIC_IMAGES_DRIVE_FOLDER_ID")
+        os.environ.get("ODOO_URL") and os.environ.get("ODOO_DB")
+        and os.environ.get("ODOO_USER") and os.environ.get("ODOO_PASSWORD")
     )
     if fab_img_creds_ok and (fab_img_empty or fab_img_due):
         # Stamp the attempt time up front so a transient failure waits 24h before
@@ -1991,9 +1992,11 @@ def main():
 
             def _run_fab_img(hb):
                 with psycopg2.connect(DATABASE_URL) as fconn:
-                    extract_fabric_images.run(fconn, heartbeat=hb)
-                    # Odoo image_1920 for fabrics (categs 18,19) -> source='odoo',
-                    # idx=-1 (canonical primary). Only touches source='odoo' rows.
+                    # Odoo is the EXCLUSIVE fabric image source: primary
+                    # image_1920 ('Face', idx=-1) + extra-media gallery photos
+                    # (idx 0..n, label = Odoo image name, e.g. 'Back').
+                    # run_odoo also purges retired drive/upload rows, so the
+                    # cleanup self-applies on prod after publish.
                     extract_fabric_images.run_odoo(fconn, heartbeat=hb)
 
             with heartbeat_keepalive("fabric_image_extract") as hb:
@@ -2003,8 +2006,8 @@ def main():
             log.error("Fabric product-image extract error: %s", e)
     elif (fab_img_empty or fab_img_due) and not fab_img_creds_ok:
         log.info(
-            "Skipping fabric product-image extract — FABRIC_IMAGES_GSA_JSON / "
-            "FABRIC_IMAGES_DRIVE_FOLDER_ID not set (popup shows 'No image')."
+            "Skipping fabric product-image extract — ODOO_* secrets not set "
+            "(popup shows 'No image')."
         )
 
     # Social CRM sync — pulls new Facebook + Instagram posts, comments, @-mentions

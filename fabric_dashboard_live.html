@@ -3097,8 +3097,9 @@ function renderFabricDetail(r,keys){
   loadFabricImages(r.default_code);
 }
 // ── Fabric product-image carousel (barcode detail popup) ──
-// Photos are matched to a fabric by filename=barcode and served as cached bytes
-// from our own backend (/api/fabric/image/...); no live Drive fetch on open.
+// Photos come exclusively from Odoo (primary image = "Face"; extra-media
+// gallery photo named "Back" = Back) and are served as cached bytes from our
+// own backend (/api/fabric/image/...). No uploads, no Drive.
 let fabImgState={list:[],idx:0,barcode:null};
 function loadFabricImages(barcode){
   const panel=document.getElementById('fab-img-panel');
@@ -3112,24 +3113,19 @@ function loadFabricImages(barcode){
     .then(d=>{ if(fabImgState.barcode!==bc)return; fabImgState.list=(d&&d.images)||[]; fabImgState.idx=0; renderFabImgPanel(); })
     .catch(()=>{ if(fabImgState.barcode!==bc)return; fabImgState.list=[]; renderFabImgPanel(); });
 }
-// The Import control (hidden file input + button) shown in the photo panel,
-// both when photos exist and in the empty-state placeholder.
-function fabImgImportHtml(){
-  const busy=fabImgState.uploading;
-  const label=busy?'Uploading…':'⇧ Import';
-  return '<input type="file" id="fab-img-file" accept="image/*" style="display:none" onchange="uploadFabricImage(this)">'+
-    '<div class="fab-img-actions"><button type="button" class="btn" id="fab-img-import-btn"'+
-    (busy?' disabled':'')+' onclick="document.getElementById(\'fab-img-file\').click()"'+
-    ' title="Upload a photo for this fabric from your computer">'+label+'</button></div>'+
-    (fabImgState.error?'<div class="fab-img-err">'+esc(fabImgState.error)+'</div>':'');
+// Label for the photo at position i: the API's Odoo-derived label ("Face" /
+// "Back" / the gallery image's actual name); fall back to Face for the first
+// photo and Back for the rest. Always esc()'d by the caller (stored-XSS rule).
+function fabImgLabel(img,i){
+  const l=(img&&img.label!=null?String(img.label):'').trim();
+  return l||(i===0?'Face':'Back');
 }
 function renderFabImgPanel(){
   const panel=document.getElementById('fab-img-panel');
   if(!panel)return;
   const list=fabImgState.list||[];
   if(!list.length){
-    panel.innerHTML='<div class="fab-img-stage"><div class="fab-img-empty"><span class="ic">🖼️</span><span>No image for this fabric</span></div></div>'+
-      fabImgImportHtml();
+    panel.innerHTML='<div class="fab-img-stage"><div class="fab-img-empty"><span class="ic">🖼️</span><span>No image for this fabric</span></div></div>';
     return;
   }
   if(fabImgState.idx>=list.length)fabImgState.idx=0;
@@ -3140,53 +3136,15 @@ function renderFabImgPanel(){
     ?'<button type="button" class="fab-img-nav fab-img-prev" onclick="stepFabricImage(-1)" aria-label="Previous photo">&#8249;</button>'+
      '<button type="button" class="fab-img-nav fab-img-next" onclick="stepFabricImage(1)" aria-label="Next photo">&#8250;</button>'
     :'';
-  panel.innerHTML='<div class="fab-img-stage"><img src="'+esc(cur.url)+'" alt="Fabric photo" loading="lazy">'+nav+'</div>'+
-    (multi?'<div class="fab-img-counter">'+(fabImgState.idx+1)+' / '+list.length+'</div>':'')+
-    fabImgImportHtml();
+  const label=fabImgLabel(cur,fabImgState.idx);
+  panel.innerHTML='<div class="fab-img-stage"><img src="'+esc(cur.url)+'" alt="Fabric photo ('+esc(label)+')" loading="lazy">'+nav+'</div>'+
+    '<div class="fab-img-counter">'+esc(label)+'</div>';
 }
 function stepFabricImage(delta){
   const n=(fabImgState.list||[]).length;
   if(!n)return;
   fabImgState.idx=((fabImgState.idx+delta)%n+n)%n;
   renderFabImgPanel();
-}
-// Upload the chosen file for the currently-open fabric barcode, then refresh the
-// photo list so the new image shows immediately (jumping to it).
-function uploadFabricImage(input){
-  const bc=fabImgState.barcode;
-  const file=input&&input.files&&input.files[0];
-  if(!file){return;}
-  if(!bc||bc.toLowerCase()==='false'){
-    fabImgState.error='No barcode — cannot attach a photo.';renderFabImgPanel();return;
-  }
-  if(!/^image\//i.test(file.type||'')){
-    fabImgState.error='Please choose an image file.';renderFabImgPanel();return;
-  }
-  fabImgState.uploading=true;fabImgState.error=null;renderFabImgPanel();
-  const fd=new FormData();fd.append('file',file);
-  fetch('/api/fabric/images/'+encodeURIComponent(bc),{method:'POST',credentials:'include',body:fd})
-    .then(r=>r.ok?r.json():r.json().then(e=>{throw new Error((e&&e.detail)||('Upload failed ('+r.status+')'));},()=>{throw new Error('Upload failed ('+r.status+')');}))
-    .then(()=>{
-      if(fabImgState.barcode!==bc){fabImgState.uploading=false;return;}
-      return fetch('/api/fabric/images/'+encodeURIComponent(bc),{credentials:'include'})
-        .then(r=>r.ok?r.json():{images:[]})
-        .then(d=>{
-          if(fabImgState.barcode!==bc)return;
-          fabImgState.list=(d&&d.images)||[];
-          fabImgState.idx=Math.max(0,fabImgState.list.length-1);
-          fabImgState.uploading=false;fabImgState.error=null;renderFabImgPanel();
-          // A new photo may be this fabric's FIRST — refresh the register's
-          // thumbnail index so the new photo shows on the next render.
-          fabImgIndex=null;
-          loadFabImgIndex().then(()=>{if(lastRegItems&&lastRegItems.length)renderRegisterTable();});
-        });
-    })
-    .catch(err=>{
-      if(fabImgState.barcode!==bc)return;
-      fabImgState.uploading=false;
-      fabImgState.error=(err&&err.message)||'Upload failed.';
-      renderFabImgPanel();
-    });
 }
 function openFabricDetail(id){
   const r=(lastRegItems||[]).find(x=>String(x.id)===String(id));

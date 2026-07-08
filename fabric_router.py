@@ -9,7 +9,7 @@ import os
 import re
 from urllib.parse import quote
 import psycopg2.extras
-from fastapi import APIRouter, Query, Request, Body, HTTPException, UploadFile, File
+from fastapi import APIRouter, Query, Request, Body, HTTPException
 from fastapi.responses import Response
 
 import fabric_sheet_override as ov
@@ -99,15 +99,16 @@ def _ensure_fabric_tables(conn):
     conn.commit()
     _FABRIC_TABLES_READY = True
 
-# ── Fabric product images (barcode-keyed) ───────────────────────────
-# Fabric photos live in a Google Drive folder, filenames prefixed by the fabric
-# barcode ("304649.jpg", "304649-2.jpg", "304649_back.png" → barcode "304649").
-# extract_fabric_images.py pulls them through our backend into `fabric_images`
-# (base64, one row per image, ordered by `idx`) so the dashboard serves cached
-# bytes from our own API — no live Drive fetch per open, no browser Google creds.
-# Table is created lazily (idempotent) the first time an image endpoint is hit,
-# mirroring _ensure_fabric_tables. Prod is a SEPARATE DB, so it stays empty until
-# the sync-loop bootstrap (or a manual backfill) populates it after publish.
+# ── Fabric product images (barcode-keyed, ODOO-only) ────────────────
+# Fabric photos come EXCLUSIVELY from Odoo: the template's primary image
+# ("Face", idx=-1) plus its extra-media gallery photos (idx 0..n, label = the
+# Odoo image name, conventionally "Back"). extract_fabric_images.run_odoo pulls
+# them into `fabric_images` (base64, one row per image, ordered by `idx`) so the
+# dashboard serves cached bytes from our own API. The old Drive/upload sources
+# are retired (the extract purges leftover rows; the endpoints below only ever
+# serve source='odoo'). Table is created lazily (idempotent), mirroring
+# _ensure_fabric_tables. Prod is a SEPARATE DB, so it stays empty until the
+# sync-loop bootstrap populates it after publish.
 _FABRIC_IMAGES_READY = False
 
 def _ensure_fabric_images_table(conn):
@@ -123,15 +124,17 @@ def _ensure_fabric_images_table(conn):
                 mime       TEXT    NOT NULL DEFAULT 'image/jpeg',
                 image_b64  TEXT    NOT NULL,
                 drive_id   TEXT,
-                source     TEXT    NOT NULL DEFAULT 'drive',
+                source     TEXT    NOT NULL DEFAULT 'odoo',
+                label      TEXT,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 PRIMARY KEY (barcode, idx)
             )""")
-        # Older tables predate `source`; add it so uploaded photos can be told
-        # apart from Drive-sourced ones (the Drive extract only ever touches
-        # source='drive' rows, leaving uploads untouched).
+        # Older tables predate `source`/`label`; add them so the Odoo-only
+        # filter and the Face/Back labels work on an existing DB.
         cur.execute("ALTER TABLE fabric_images "
-                    "ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'drive'")
+                    "ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'odoo'")
+        cur.execute("ALTER TABLE fabric_images "
+                    "ADD COLUMN IF NOT EXISTS label TEXT")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_images_barcode "
                     "ON fabric_images(barcode)")
     conn.commit()
@@ -139,22 +142,26 @@ def _ensure_fabric_images_table(conn):
 
 @fabric_router.get("/api/fabric/images/{barcode}")
 def fabric_images_list(barcode: str):
-    """List the stored photos for a fabric barcode, in display order. Each entry
-    carries a `url` pointing at our own cached-bytes endpoint (no Drive round-trip
-    on open). Empty list when none, so the popup shows a friendly placeholder."""
+    """List the stored ODOO photos for a fabric barcode, in display order
+    (primary "Face" first, then the gallery photos). Each entry carries a
+    `label` ("Face" / "Back" / the Odoo gallery-image name) and a `url`
+    pointing at our own cached-bytes endpoint. Empty list when none, so the
+    popup shows a friendly placeholder."""
     barcode = (barcode or "").strip()
     if not barcode:
         return {"barcode": barcode, "count": 0, "images": []}
     with _get_conn() as conn:
         _ensure_fabric_images_table(conn)
         rows = q(conn,
-                 "SELECT idx, filename FROM fabric_images "
-                 "WHERE barcode=%s ORDER BY idx", (barcode,))
+                 "SELECT idx, filename, label FROM fabric_images "
+                 "WHERE barcode=%s AND source='odoo' ORDER BY idx", (barcode,))
     images = [{
         "idx": r["idx"],
         "filename": r["filename"],
+        "label": (r.get("label") or "").strip()
+                 or ("Face" if i == 0 else "Back"),
         "url": "/api/fabric/image/" + quote(barcode, safe="") + "/" + str(r["idx"]),
-    } for r in rows]
+    } for i, r in enumerate(rows)]
     return {"barcode": barcode, "count": len(images), "images": images}
 
 @fabric_router.get("/api/fabric/images-index")
@@ -166,7 +173,7 @@ def fabric_images_index():
         _ensure_fabric_images_table(conn)
         rows = q(conn,
                  "SELECT barcode, MIN(idx) AS idx FROM fabric_images "
-                 "GROUP BY barcode")
+                 "WHERE source='odoo' GROUP BY barcode")
     return {"barcodes": {r["barcode"]: r["idx"] for r in rows}}
 
 @fabric_router.get("/api/fabric/image/{barcode}/{idx}")
@@ -180,7 +187,8 @@ def fabric_image_bytes(barcode: str, idx: int):
         _ensure_fabric_images_table(conn)
         rows = q(conn,
                  "SELECT image_b64, mime FROM fabric_images "
-                 "WHERE barcode=%s AND idx=%s", (barcode, idx))
+                 "WHERE barcode=%s AND idx=%s AND source='odoo'",
+                 (barcode, idx))
     if not rows or not rows[0].get("image_b64"):
         return Response(status_code=404)
     try:
@@ -191,59 +199,17 @@ def fabric_image_bytes(barcode: str, idx: int):
                     media_type=rows[0].get("mime") or "image/jpeg",
                     headers={"Cache-Control": "public, max-age=604800"})
 
-# Uploaded photos live in their own high idx range so the Drive extract (which
-# writes idx 0..n and prunes idx>=n) can never collide with or overwrite them.
-_UPLOAD_IDX_BASE = 100000
-# ~8 MB decoded cap — plenty for a phone photo, keeps a base64 blob out of pool
-# trouble. Enforced on the decoded byte length.
-_MAX_UPLOAD_BYTES = 8 * 1024 * 1024
-
+# Staff uploads are RETIRED — fabric photos are maintained in Odoo only
+# (primary = "Face", extra-media gallery photo named "Back" = Back). The old
+# POST route now answers 410 Gone so any stale client gets a clear message
+# instead of silently writing rows the Odoo-only reads would never serve.
 @fabric_router.post("/api/fabric/images/{barcode}")
-async def fabric_image_upload(barcode: str, request: Request,
-                              file: UploadFile = File(...)):
-    """Store a staff-uploaded photo for a fabric barcode (base64 in
-    `fabric_images`, source='upload'). The row is placed at the next free upload
-    idx (>= 100000) so it lives alongside — and is never clobbered by — the
-    Drive-sourced photos. Returns the new image's list entry so the popup can
-    refresh. Authenticated (the /api gate populates request.state.user)."""
-    barcode = (barcode or "").strip()
-    if not barcode or barcode.lower() == "false":
-        raise HTTPException(status_code=400, detail="A valid barcode is required.")
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Empty file.")
-    if len(raw) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="Image is too large (max 8 MB).")
-    mime = (file.content_type or "").strip().lower()
-    if not mime.startswith("image/"):
-        raise HTTPException(status_code=400,
-                            detail="Only image files can be uploaded.")
-    b64 = base64.b64encode(raw).decode("ascii")
-    with _get_conn() as conn:
-        _ensure_fabric_images_table(conn)
-        rows = q(conn,
-                 "SELECT COALESCE(MAX(idx), %s) + 1 AS next_idx "
-                 "FROM fabric_images WHERE barcode=%s AND source='upload'",
-                 (_UPLOAD_IDX_BASE - 1, barcode))
-        next_idx = (rows[0]["next_idx"] if rows else _UPLOAD_IDX_BASE)
-        if next_idx < _UPLOAD_IDX_BASE:
-            next_idx = _UPLOAD_IDX_BASE
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO fabric_images "
-                "(barcode, idx, filename, mime, image_b64, drive_id, source, updated_at) "
-                "VALUES (%s, %s, %s, %s, %s, NULL, 'upload', now())",
-                (barcode, next_idx, file.filename, mime, b64))
-        conn.commit()
-    _log_fabric_change("image_upload",
-                       {"barcode": barcode, "filename": file.filename,
-                        "idx": next_idx}, request)
-    return {
-        "barcode": barcode,
-        "idx": next_idx,
-        "filename": file.filename,
-        "url": "/api/fabric/image/" + quote(barcode, safe="") + "/" + str(next_idx),
-    }
+async def fabric_image_upload(barcode: str):
+    raise HTTPException(
+        status_code=410,
+        detail="Fabric photo uploads are retired — add photos to the product "
+               "in Odoo instead (primary image = Face; extra media image "
+               "named 'Back' = Back).")
 
 def _fabric_actor(request):
     """(user_id, name) for the current signed-in user, mirroring CRM's actor helper."""
