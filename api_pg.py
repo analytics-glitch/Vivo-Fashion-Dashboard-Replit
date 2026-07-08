@@ -21013,7 +21013,18 @@ fabric_moves_effective m  — stock MOVES (USE THIS VIEW, not raw_fabric_moves, 
 consumption — it carries the verified-sheet overrides and an is_fabric flag):
   m.product_id -> p.id, m.qty, m.uom ('g' grams or 'kg'),
   m.move_type ('IN','OUT','INTERNAL'), m.location_from, m.location_to, m.date,
-  m.is_fabric (TRUE only for fabric moves)
+  m.reference, m.is_fabric (TRUE only for fabric moves)
+  SHEET-OVERRIDE WINDOW (Jan 1 2026 .. Apr 30 2026 inclusive): Odoo's raw moves for
+  that window were inflated, so inside it the view DROPS Odoo's consumption/return
+  legs and replaces them with buying-team sheet-reconciled pseudo moves
+  (m.reference = 'sheet:consumption' — INTERNAL 'RMAT/Stock'->'PROD/Stock' — and
+  'sheet:return' — INTERNAL 'Virtual Locations/Production'->'RMAT/Stock', dated the
+  1st of the month, uom 'kg'). Sheet rows with an unmatched barcode have
+  product_id NULL — they still count in aggregate totals but drop out of
+  per-fabric breakdowns (mention this if a per-fabric Jan–Apr 2026 figure looks
+  low). IN moves and inventory adjustments are always kept from Odoo; everything
+  outside Jan–Apr 2026 is untouched Odoo data. Never use raw_fabric_moves for
+  consumption maths.
 
 fabric_reservations r  — BUYING-TEAM manual reservations (an app-owned table,
 distinct from Odoo's i.reserved_qty ERP allocation). The buying team earmarks a
@@ -21021,11 +21032,29 @@ fabric for a specific style, then later marks it used:
   r.product_id -> p.id, r.qty, r.uom ('m' or 'kg'), r.qty_kg (always normalised to
   kg), r.style_name (style it is reserved for), r.note, r.reserved_by_name,
   r.reserved_at, r.used_at, r.used_by,
-  r.status ('active' = OPEN/still held, 'used' = consumed)
+  r.status — ONLY two values exist in the table: 'active' (OPEN/still held) and
+  'used' (consumed; 'use' stamps used_at + used_by, only allowed from 'active').
+  There is NO 'deleted'/'cancelled' status: deleting a reservation removes the row
+  entirely (a deleted reservation is simply absent). The create/use/delete audit
+  trail is filed to an external Google Sheet, NOT a queryable DB table.
   OPEN (active) reserved kg per fabric = SUM(r.qty_kg) WHERE r.status='active'.
   Days held = CURRENT_DATE - r.reserved_at::date; time-to-use (used rows) =
   r.used_at::date - r.reserved_at::date. Compare reserved kg to that fabric's stock
   on hand = SUM(i.quantity) over its inventory rows.
+
+fabric_roll_counts rc  — MANUAL physical roll counts (the Rolls tab). Odoo only
+tracks fabric by weight/length, never physical rolls, so the fabric team
+hand-maintains a roll count per product per stock location:
+  rc.product_id -> p.id, rc.location_name ('RMAT/Stock' or 'Dead/Stock Fabric'),
+  rc.rolls (integer), rc.updated_by_name, rc.updated_at
+  e.g. rolls of a fabric in RMAT/Stock = rc.rolls WHERE rc.location_name='RMAT/Stock'
+  joined via product. A fabric with no row simply has no recorded roll count (say
+  so; do not treat as 0 rolls of physical stock). These counts are manual eyeball
+  figures and may lag the Odoo kg quantity.
+
+fabric_images  — fabric product photos (base64 bytes keyed by barcode; Odoo-sourced,
+visual-only). NOT analytical — never query it for figures; if asked about photos,
+say they are viewable on the dashboard.
 
 mo_fabric_consumption c  — per-manufacturing-order (Done DPS MO) fabric usage, the
 source for "avg metres per garment" and the MO data-quality check:
@@ -21063,12 +21092,69 @@ METRIC CONVENTIONS — match these so answers agree with the dashboard:
          ELSE 0 END
   Restrict consumption rows to: m.is_fabric AND m.uom IN ('g','kg').
 - DEAD STOCK = inventory in location 'Dead/Stock Fabric' (i.total_value = its value).
-- AGEING / idle = CURRENT_DATE - (last move date for that product).
-- SUPPORT FABRICS = the two categories Lining and Fusable Interfacing
-  (LOWER(BTRIM(p.fabric_category)) IN ('lining','fusable interfacing')). The main
-  fabric dashboard EXCLUDES these — only include them if the user asks about
-  lining / interfacing / support fabric.
-- MONTHS OF COVER ≈ on-hand stock kg / average monthly net consumption kg.
+- LAST MOVE / AGEING: days idle = CURRENT_DATE - (last REAL move date for that
+  product from raw_fabric_moves, EXCLUDING stocktake adjustments: rows where
+  location_from or location_to = 'Virtual Locations/Inventory adjustment' never
+  count as a move). Products with stock but NO real move ever fall in the oldest
+  band. The dashboard's ageing bands over on-hand stock (i.quantity>0) are:
+    '0-3 months' days<=90, '3-6 months' days<=180, '6-12 months' days<=365,
+    '12+ months' otherwise (also when no move exists).
+  Report ageing with these exact four buckets so answers match the Ageing tab.
+- OVERDUE PO (dashboard definition) = a non-cancelled PO whose planned date has
+  passed and which is still not fully received: po.date_planned < CURRENT_DATE
+  AND po.qty_ordered > po.qty_received AND po.state <> 'cancel'. Count POs as
+  COUNT(DISTINCT po.po_name).
+- DATA FRESHNESS ("when was the fabric data last updated?"): the dashboard's
+  freshness pill = MAX(_loaded_at) FROM raw_fabric_products (the most recent
+  successful Odoo fabric pull). _loaded_at is a NAIVE UTC timestamp — compute age
+  as timezone('UTC', now()) - MAX(_loaded_at), and present the time in
+  Africa/Nairobi (UTC+3). The extract normally runs about every minute; > 6h old
+  = stale, > 24h = critically stale.
+- SUPPORT FABRICS scope (exact rule, matches the Main/Support dashboard tabs):
+  support = LOWER(BTRIM(p.fabric_category)) IN ('lining','fusable interfacing')
+  — EXACT equality after trim/lowercase, NEVER a substring match (e.g. a
+  'Crepe Lining' category would NOT be support). Main = NOT support, and a NULL
+  or blank fabric_category is MAIN. The main dashboard EXCLUDES support fabrics —
+  only include them if the user asks about lining / interfacing / support fabric;
+  main + support together reconcile to the all-fabric total.
+- COVER (two equivalent framings; support BOTH weeks and months):
+  * Headline "Months of Cover" KPI = live RMAT/Stock kg ÷ (net consumption over
+    the last 6 FULLY COMPLETED calendar months ÷ 6) — the current month is
+    excluded. Zero 6-month consumption with stock on hand = effectively "12+ /
+    no recent use", not an error.
+  * Register/mix per-fabric cover over a selected window of N days (default 90):
+    months_cover = on-hand kg * (N / 30.4375) / net consumption kg in window;
+    weeks_cover  = on-hand kg * (N / 7.0)     / net consumption kg in window.
+    NULL (shown "—") when window consumption is zero.
+  * Weeks<->months conversion: 1 month = 52/12 ≈ 4.3333 weeks (30.4375 days).
+- CANONICAL COLOURS (the dashboard's Colour breakdown does NOT use the messy raw
+  colour columns — p.primary_color is empty and p.fabric_color is inconsistent).
+  It derives a colour by scanning the PRODUCT NAME (fall back to p.fabric_color)
+  case-insensitively for a known colour phrase — most-specific/longest phrase
+  wins, matched on word boundaries — then maps it to ONE of 14 primary colours.
+  In SQL use word-boundary regex on LOWER(p.name), testing multi-word phrases
+  BEFORE their single-word suffixes (e.g. 'olive green' before 'green'). The
+  primary-colour groups (phrases that map to each):
+    Black: black. Blue: baby blue, blue, dark blue, dark teal, denim blue/denim,
+    light blue, light teal, navy blue/navy, royal blue/royal, teal, turquoise,
+    aqua. Brown: beige, brown, caramel, chocolate brown/chocolate, dark beige,
+    dark brown, dark tan, dark taupe, khaki beige, khaki brown, light beige,
+    light brown, light tan, light taupe, sand, tan, taupe. Green: army green/army,
+    dark green, dark olive green, emerald green/emerald, forest green/forest,
+    green, hunters green/hunter(s), jungle green/jungle, khaki green, light green,
+    light olive green, lime green/lime, neon green, olive green/olive, sea green.
+    Grey: dark grey, grey, khaki grey, light grey, charcoal. Metallic: brass,
+    copper, gold, silver. Multicolor: multicolor. Orange: burnt orange, coral,
+    dark orange, dark rust, light orange, light rust, orange, peach, rust.
+    Pink: dark pink, dusty pink, dusty rose, fuchsia, light pink, magenta,
+    neon pink, pink, rose pink. Purple: bright purple, dark purple, light purple,
+    lilac, plum, purple, violet. Red: burgundy, dark burgundy, dark maroon,
+    dark red, light burgundy, light red, maroon, red, wine. White: cream, ivory,
+    off white, white. Yellow: bright yellow, buttermilk, dark mustard,
+    light mustard, lime yellow, marigold, mustard, yellow.
+  So "how much Blue fabric?" must include Navy, Teal, Turquoise, Denim etc.
+  Products whose name/colour resolves to none of these are 'Unknown'. Example
+  fragment: LOWER(p.name) ~ '\\mnavy\\M' (word-boundary regex; no % needed).
 - SUPPLIER EXPOSURE (the Suppliers tab) — group raw_fabric_purchase_orders by
   po.supplier, state <> 'cancel': outstanding_value = SUM((po.qty_ordered -
   po.qty_received) * po.price_unit), outstanding_qty = SUM(po.qty_ordered -
@@ -21172,7 +21258,15 @@ def _fabric_chat_system_prompt(ctx):
         "buying-team reservations (who reserved what, open vs used, reserved vs "
         "available stock); the attribute explorer (plain/print, weight, structure, "
         "fibre); and data quality (fabrics missing a kg-per-metre conversion, MOs "
-        "missing a conversion). All money is Kenyan Shillings (KES).\n\n"
+        "missing a conversion). You also cover manual physical ROLL counts (the "
+        "Rolls tab), canonical colour breakdowns, and data freshness (when the "
+        "fabric feed last updated). All money is Kenyan Shillings (KES).\n\n"
+        "OUT OF SCOPE — PRODUCTION TRACKER: the Production Tracker board (buying "
+        "orders, production stages / stage movements, order progress) is a "
+        "separate surface you do NOT cover. If asked about it, politely say the "
+        "Production Tracker is outside this assistant's scope and to check the "
+        "Production Tracker page directly. Never query production_orders or "
+        "stage_movements.\n\n"
         "HOW TO ANSWER:\n"
         "- Use the run_readonly_sql tool to query the live fabric data; never invent "
         "numbers. Follow the schema and metric conventions exactly so your answers "
