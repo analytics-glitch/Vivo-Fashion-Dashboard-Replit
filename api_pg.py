@@ -5984,6 +5984,7 @@ def get_orders(
     brand:     str = Query(default=None),
     sale_kind: str = Query(default=None),
     limit:     int = Query(default=1000),
+    include_stock: int = Query(default=0),
 ):
     where = build_filters(date_from, date_to, country, channel)
     if brand:
@@ -5993,7 +5994,24 @@ def get_orders(
     # Clamp the cap so the Sales Export can pull a whole month for the CSV /
     # summary (well above the 5,000-line table preview) without an unbounded scan.
     safe_limit = max(1, min(int(limit or 1000), 100000))
-    return run_query("""
+    # Optional: current stock of the line's SKU at the line's POS location.
+    # Pre-aggregated per (pos_location_name, sku) in its own CTE (never join
+    # raw all_inventory to all_sales — it fans out; see the inventory
+    # pre-aggregation invariant). NULL (rendered "—") when the location has
+    # no inventory feed for that SKU — never coerced to 0.
+    stock_cte = ""
+    stock_col = ""
+    stock_join = ""
+    if include_stock:
+        stock_cte = """
+        WITH stock AS (
+            SELECT i.pos_location_name, i.sku, SUM(i.available) AS soh
+            FROM all_inventory i
+            GROUP BY i.pos_location_name, i.sku
+        )"""
+        stock_col = ",\n            st.soh AS current_stock"
+        stock_join = "\n        LEFT JOIN stock st ON st.pos_location_name = s.pos_location_name AND st.sku = s.variant_sku"
+    return run_query(stock_cte + """
         SELECT s.order_id, s.order_name, s.sale_date AS order_date,
             s.pos_location_name, s.country,
             s.customer_id, s.customer_type, s.sale_kind,
@@ -6011,9 +6029,9 @@ def get_orders(
             ROUND(CASE WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric
                        ELSE s.total_sales_kes::numeric - s.discounts_kes::numeric END, 0) AS net_sales_canon_kes,
             -- Legacy VAT-exclusive figure — exposed as "Net Sales ex-VAT" only.
-            ROUND(s.net_sales_kes::numeric, 0) AS net_sales_kes
+            ROUND(s.net_sales_kes::numeric, 0) AS net_sales_kes""" + stock_col + """
         FROM all_sales s
-        LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
+        LEFT JOIN all_products_clean p ON s.variant_sku = p.sku""" + stock_join + """
         WHERE """ + where + """
         ORDER BY s.sale_date DESC, s.order_id
         LIMIT """ + str(safe_limit), date_to=date_to)

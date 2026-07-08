@@ -434,6 +434,9 @@ const SalesExport = () => {
   // the free-text search (the backend can't replicate it).
   const [summary, setSummary] = useState(null);
   const [exporting, setExporting] = useState(false);
+  // Adds a per-line "Current Stock" column: the SKU's available units at the
+  // line's POS location right now (a snapshot, not scoped to the date range).
+  const [includeStock, setIncludeStock] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput.trim().toLowerCase()), 120);
@@ -448,7 +451,8 @@ const SalesExport = () => {
     const channel = channels.length ? channels.join(",") : undefined;
     api
       .get("/orders", {
-        params: { date_from: dateFrom, date_to: dateTo, country, channel, limit: 5000 },
+        params: { date_from: dateFrom, date_to: dateTo, country, channel, limit: 5000,
+                  include_stock: includeStock ? 1 : undefined },
       })
       .then((r) => {
         if (cancelled) return;
@@ -474,7 +478,7 @@ const SalesExport = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion, includeStock]);
 
   // Full-period aggregate for the summary cards (un-capped). Re-runs when the
   // global filters OR the brand / sale-kind selections change so the cards always
@@ -562,6 +566,7 @@ const SalesExport = () => {
       ["returns_kes", "Returns (KES)"],
       ["net_sales_canon_kes", "Net Sales (KES)"],
       ["net_sales_kes", "Net Sales ex-VAT (KES)"],
+      ...(includeStock ? [["current_stock", "Current Stock (SKU @ location)"]] : []),
     ];
     const esc = (v) => {
       if (v === null || v === undefined) return "";
@@ -574,7 +579,8 @@ const SalesExport = () => {
       const brand = brandSel.length ? brandSel.join(",") : undefined;
       const sale_kind = kindSel.length ? kindSel.join(",") : undefined;
       const resp = await api.get("/orders", {
-        params: { date_from: dateFrom, date_to: dateTo, country, channel, brand, sale_kind, limit: EXPORT_CAP },
+        params: { date_from: dateFrom, date_to: dateTo, country, channel, brand, sale_kind, limit: EXPORT_CAP,
+                  include_stock: includeStock ? 1 : undefined },
       });
       const all = resp.data || [];
       // Re-apply the free-text search (server can't replicate it) so the export
@@ -717,6 +723,18 @@ const SalesExport = () => {
             <SectionTitle
               title={`${fmtNum(filtered.length)} line items shown${rows.length >= 5000 ? " · preview capped at 5,000 — use Download CSV for the full period" : ""}`}
               subtitle="One row per product line on an order. Sort by clicking headers · paginate below."
+              action={
+                <label className="inline-flex items-center gap-2 text-[12px] text-muted cursor-pointer select-none"
+                  title="Adds a Current Stock column: the SKU's available units at that line's POS location right now (a live snapshot — not scoped to the date range). '—' = no inventory feed for that SKU at that location.">
+                  <input
+                    type="checkbox"
+                    checked={includeStock}
+                    onChange={(e) => setIncludeStock(e.target.checked)}
+                    data-testid="sales-export-include-stock"
+                  />
+                  Include current stock
+                </label>
+              }
             />
             {filtered.length === 0 ? (
               <Empty label="No order lines match the current filters." />
@@ -750,6 +768,14 @@ const SalesExport = () => {
                   { key: "net_sales_kes", label: "Net Sales ex-VAT", numeric: true,
                     headerTitle: "VAT-exclusive figure (total ÷ (1+VAT)) — a different measure from canonical Net Sales.",
                     render: (r) => r.net_sales_kes == null ? "—" : <span className="text-muted">{fmtKES(r.net_sales_kes)}</span>, csv: (r) => r.net_sales_kes },
+                  ...(includeStock ? [
+                    { key: "current_stock", label: "Current Stock", numeric: true,
+                      headerTitle: "Available units of this SKU at this POS location right now (live snapshot, not scoped to the date range). '—' = no inventory feed for that SKU at that location.",
+                      render: (r) => r.current_stock == null
+                        ? <span className="text-muted">—</span>
+                        : <span className={Number(r.current_stock) <= 0 ? "text-danger font-semibold" : "font-semibold"}>{fmtNum(r.current_stock)}</span>,
+                      csv: (r) => r.current_stock },
+                  ] : []),
                 ]}
                 rows={filtered}
               />

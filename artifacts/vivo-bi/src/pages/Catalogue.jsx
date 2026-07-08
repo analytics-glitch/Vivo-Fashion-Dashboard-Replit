@@ -86,7 +86,7 @@ const PAGES = [
   { group: "Tools", route: "/custom-report", label: "Custom Report",
     purpose: "Build your own breakdown.", reports: ["Pivot by dimensions & measures", "CSV export"] },
   { group: "Tools", route: "/exports", label: "Exports",
-    purpose: "Download raw sales & inventory.", reports: ["Sales CSV", "Inventory CSV"] },
+    purpose: "Download raw sales & inventory.", reports: ["Sales CSV (optional Current Stock column — SKU's available units at that line's POS location, live snapshot, not scoped to the date range; '—' = no inventory feed)", "Inventory CSV"] },
 ];
 
 const GROUP_ORDER = [
