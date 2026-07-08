@@ -32,6 +32,7 @@ import difflib
 import json
 import os
 import re
+import threading
 from datetime import date, datetime, timedelta
 
 import requests
@@ -451,16 +452,47 @@ def _sync_training():
 
 
 def _training_autosync():
-    """Populate the training tables from the sheet if they are still empty.
-    Best-effort: never raises, so a missing connector just yields empty data."""
+    """Populate the training tables from the sheet if they are empty OR the
+    last sync is stale (> _TRAINING_SYNC_TTL_MIN minutes old), so new sheet
+    rows show up on the dashboard without a manual sync.
+    Best-effort: never raises, so a missing connector just yields stale (or
+    empty) data instead of a 500. A non-blocking in-process lock ensures only
+    ONE request pays the sheet-pull cost; concurrent readers keep serving the
+    existing rows."""
     try:
         _ensure_training_tables()
-        r = _rows("SELECT COUNT(*) AS n FROM hr_training")
-        if r and int(r[0]["n"] or 0) > 0:
+        r = _rows(
+            """SELECT (SELECT COUNT(*) FROM hr_training) AS n,
+                      (SELECT last_synced_at FROM hr_training_sync WHERE id=1) AS ts"""
+        )
+        n = int(r[0]["n"] or 0) if r else 0
+        ts = r[0]["ts"] if r else None
+        if n > 0 and ts is not None:
+            fresh = _rows(
+                "SELECT (now() - %s::timestamptz) < make_interval(mins => %s) AS fresh",
+                (ts, _TRAINING_SYNC_TTL_MIN),
+            )
+            if fresh and fresh[0]["fresh"]:
+                return
+        # Non-blocking in-process guard: only ONE request pays the sheet-pull
+        # cost; concurrent readers keep serving the existing rows. (The sync
+        # itself is a single TRUNCATE+INSERT transaction, so even a cross-
+        # process race is safe — just wasteful.)
+        if not _TRAINING_SYNC_LOCK.acquire(blocking=False):
             return
-        _sync_training()
-    except Exception:
-        pass
+        try:
+            _sync_training()
+        finally:
+            _TRAINING_SYNC_LOCK.release()
+    except Exception as e:
+        # Serve stale data rather than fail the read — but leave a trace so
+        # a broken sheet connector is observable in the server logs.
+        print(f"[hr_training] autosync failed (serving existing rows): {e}", flush=True)
+
+
+# How long training-sheet data may serve before a read triggers a re-pull.
+_TRAINING_SYNC_TTL_MIN = 30
+_TRAINING_SYNC_LOCK = threading.Lock()
 
 
 # Filter WHERE builder shared by every training read endpoint.
