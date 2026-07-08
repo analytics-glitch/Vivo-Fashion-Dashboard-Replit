@@ -293,6 +293,10 @@ tr.sub-row td{background:var(--bg);font-size:12.5px;}
 .fab-detail-cols{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px;align-items:start;}
 .fab-detail-cols .detail-grid{margin-top:6px;}
 @media(max-width:720px){.fab-detail-cols{grid-template-columns:1fr;gap:6px;}}
+/* Register-table photo thumbnails */
+.reg-thumb-cell{padding-top:4px;padding-bottom:4px;}
+.reg-thumb{width:38px;height:38px;object-fit:cover;border-radius:6px;border:1px solid var(--fab-line);display:block;background:#f4f2ef;}
+.reg-thumb-none{color:var(--muted,#9a9a9a);}
 /* Fabric product-image panel inside the barcode detail popup */
 .fab-img-panel{margin:12px 0 6px;}
 .fab-img-actions{display:flex;justify-content:center;margin-top:10px;}
@@ -2903,6 +2907,7 @@ function renderPrintDonut(rows){
 const REG_COLS=[
   {k:'default_code',label:'Barcode',type:'code'},
   {k:'name',label:'Fabric Name',type:'name'},
+  {k:'photo',label:'Photo',type:'img'},
   {k:'fabric_category',label:'Category',type:'text'},
   {k:'fabric_subcategory',label:'Subcategory',type:'text'},
   {k:'fiber_content',label:'Fabric Composition (%)',type:'text'},
@@ -2929,7 +2934,7 @@ const REG_COLS=[
   {k:'last_move',label:'Last move',type:'date'},
   {k:'days_since_move',label:'Days idle',type:'num'},
 ];
-const REG_DEFAULT=['default_code','name','fabric_category','fabric_subcategory','cost_per_kg','cost_metre','available_metres','available_kg','color','weeks_cover'];
+const REG_DEFAULT=['default_code','name','photo','fabric_category','fabric_subcategory','cost_per_kg','cost_metre','available_metres','available_kg','color','weeks_cover'];
 // Fields shown in the per-fabric barcode detail view (everything not in the
 // default 10 columns above), in display order.
 const DETAIL_KEYS=['fiber_content','plain_print','fabric_structure','gsm','width_m','kg_per_mtr','m_per_kg','supplier','fabric_color','cost_kes','qty_metres','qty_kg','team_reserved_metres','team_reserved_kg','value_kes','last_move','days_since_move'];
@@ -2942,9 +2947,24 @@ let mixDetailById={};
 const NUM_TYPES={num:1,num1:1,numb:1,kes:1,kesc:1,wcover:1,rsv:1};
 // Persisted-selection key is versioned (_v3): bumping it retires every user's
 // old saved column set so they pick up the new 10-column default once.
-const REG_COLS_KEY='fabricRegCols_v3';
+const REG_COLS_KEY='fabricRegCols_v4';
 let regCols=(()=>{try{const s=JSON.parse(localStorage.getItem(REG_COLS_KEY));if(Array.isArray(s)&&s.length){const mapped=s.map(k=>k==='primary_color'?'fabric_color':k);return [...new Set(mapped)].filter(k=>REG_COLS.some(c=>c.k===k));}return REG_DEFAULT.slice();}catch(_){return REG_DEFAULT.slice();}})();
 let regSort={key:'value_kes',dir:'desc'};
+// barcode -> first photo idx (from /api/fabric/images-index). null = not loaded
+// yet; refreshed lazily and invalidated after a photo upload so a new photo's
+// thumbnail appears on the next register render.
+let fabImgIndex=null,fabImgIndexLoading=null;
+function loadFabImgIndex(){
+  if(fabImgIndex)return Promise.resolve(fabImgIndex);
+  if(!fabImgIndexLoading){
+    fabImgIndexLoading=fetch('/api/fabric/images-index',{credentials:'include'})
+      .then(r=>r.ok?r.json():{barcodes:{}})
+      .then(d=>{fabImgIndex=(d&&d.barcodes)||{};return fabImgIndex;})
+      .catch(()=>{fabImgIndex={};return fabImgIndex;})
+      .finally(()=>{fabImgIndexLoading=null;});
+  }
+  return fabImgIndexLoading;
+}
 // Covers column basis: 'weeks' (default) | 'months' — mirrors the Stock Mix
 // page's Weeks/Months toggle. Both values come from the backend per row, so the
 // toggle only swaps the displayed value/header (no refetch); the order is
@@ -2967,7 +2987,7 @@ async function loadRegister(offset){
   const w=document.getElementById('reg-weight').value;if(w)params.set('weight_range',w);
   const fc=document.getElementById('reg-color').value;if(fc)params.set('fabric_color',fc);
   try{
-    const d=await apiFetch('/api/fabric/register?'+params);
+    const [d]=await Promise.all([apiFetch('/api/fabric/register?'+params),loadFabImgIndex()]);
     regTotal=d.total;lastRegItems=d.items;
     renderRegisterTable();
     document.getElementById('reg-info').textContent=regTotal?`${regOffset+1}–${Math.min(regOffset+PAGE_SIZE,regTotal)} of ${fmt(regTotal)}`:'0 results';
@@ -3009,6 +3029,12 @@ function regValueHtml(col,r){
     }
     case 'rsv':return v!=null&&v!==''&&Number(v)>0?`<span class="pill pill-amber">${fmt1(v)}</span>`:'—';
     case 'date':return esc(v||'—');
+    case 'img':{
+      const bc=(r.default_code==null?'':String(r.default_code)).trim();
+      const idx=(fabImgIndex&&bc&&bc.toLowerCase()!=='false')?fabImgIndex[bc]:undefined;
+      if(idx===undefined||idx===null)return '<span class="reg-thumb-none">—</span>';
+      return '<img class="reg-thumb" loading="lazy" alt="Fabric photo" src="/api/fabric/image/'+encodeURIComponent(bc)+'/'+idx+'">';
+    }
     default:return esc(v||'—');
   }
 }
@@ -3030,6 +3056,7 @@ function regCell(col,r){
     case 'wcover':return `<td class="r">${inner}</td>`;
     case 'rsv':return `<td class="r">${inner}</td>`;
     case 'date':return `<td style="color:var(--muted);font-size:12px;white-space:nowrap;">${inner}</td>`;
+    case 'img':return `<td class="reg-thumb-cell"><a href="#" class="reg-barcode" data-fab-id="${esc(r.id)}" title="View fabric details & photos">${inner}</a></td>`;
     default:return `<td style="color:var(--text-sub);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${esc(v||'')}">${inner}</td>`;
   }
   })();
@@ -3148,6 +3175,10 @@ function uploadFabricImage(input){
           fabImgState.list=(d&&d.images)||[];
           fabImgState.idx=Math.max(0,fabImgState.list.length-1);
           fabImgState.uploading=false;fabImgState.error=null;renderFabImgPanel();
+          // A new photo may be this fabric's FIRST — refresh the register's
+          // thumbnail index so the new photo shows on the next render.
+          fabImgIndex=null;
+          loadFabImgIndex().then(()=>{if(lastRegItems&&lastRegItems.length)renderRegisterTable();});
         });
     })
     .catch(err=>{
@@ -3302,6 +3333,7 @@ body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:12px;}
 function renderRegisterTable(){
   const cols=REG_COLS.filter(c=>regCols.includes(c.k));
   document.getElementById('register-head').innerHTML='<tr>'+cols.map(c=>{
+    if(c.type==='img')return `<th data-key="${esc(c.k)}">${esc(c.label)}</th>`;
     const arrow=regSort.key===c.k?(regSort.dir==='asc'?' \u25B2':' \u25BC'):'';
     const label=c.k==='weeks_cover'?(regCoverBasis==='months'?'Monthly Covers':'Weekly Covers'):c.label;
     return `<th class="${NUM_TYPES[c.type]?'r ':''}sortable" data-key="${esc(c.k)}" onclick="sortReg('${c.k}')">${esc(label)}${arrow}</th>`;
@@ -3334,7 +3366,7 @@ function regPage(dir){const o=regOffset+dir*PAGE_SIZE;if(o<0||o>=regTotal)return
 async function exportRegister(btn){
   // Export the FULL filtered/sorted register, not just the visible 50-row page.
   // Re-fetch all matching rows (offset 0, large limit) so the CSV is complete.
-  const cols=REG_COLS.filter(c=>regCols.includes(c.k));
+  const cols=REG_COLS.filter(c=>regCols.includes(c.k)&&c.type!=='img');
   const params=new URLSearchParams({location:loc(),limit:1000000,offset:0,sort:regSort.key,dir:regSort.dir,days:regPeriodDays()});
   const s=document.getElementById('reg-search').value;if(s)params.set('search',s);
   const c=document.getElementById('reg-category').value;if(c)params.set('category',c);

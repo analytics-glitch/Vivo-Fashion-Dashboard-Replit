@@ -157,6 +157,18 @@ def fabric_images_list(barcode: str):
     } for r in rows]
     return {"barcode": barcode, "count": len(images), "images": images}
 
+@fabric_router.get("/api/fabric/images-index")
+def fabric_images_index():
+    """Barcode -> first stored photo idx, for every fabric that has at least one
+    photo. One tiny query so the register table can render thumbnails without a
+    per-row probe (and without 404 churn for fabrics that have no photo)."""
+    with _get_conn() as conn:
+        _ensure_fabric_images_table(conn)
+        rows = q(conn,
+                 "SELECT barcode, MIN(idx) AS idx FROM fabric_images "
+                 "GROUP BY barcode")
+    return {"barcodes": {r["barcode"]: r["idx"] for r in rows}}
+
 @fabric_router.get("/api/fabric/image/{barcode}/{idx}")
 def fabric_image_bytes(barcode: str, idx: int):
     """Serve one stored fabric photo as raw image bytes (long-cached). 404 when
