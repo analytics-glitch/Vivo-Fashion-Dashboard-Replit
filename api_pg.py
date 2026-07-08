@@ -7802,9 +7802,10 @@ def analytics_product_analysis_style(
             " WHERE p.style_name = " + st_lit + " AND " + BASE_FILTERS + cf + chf +
             " GROUP BY 1"
             "), stock AS ("
-            " SELECT COALESCE(NULLIF(TRIM(i." + dim_col + "),''),'(none)') AS k,"
+            " SELECT COALESCE(NULLIF(TRIM(p2." + dim_col + "),''),'(none)') AS k,"
             " COALESCE(SUM(i.available) FILTER (WHERE " + current_loc_clause + "),0) AS stock"
-            " FROM all_inventory i WHERE i.style_name = " + st_lit + icf +
+            " FROM all_inventory i JOIN all_products_clean p2 ON p2.sku = i.sku"
+            " WHERE p2.style_name = " + st_lit + icf +
             " GROUP BY 1"
             ") SELECT COALESCE(sa.k, st.k) AS k, COALESCE(sa.units,0) AS units,"
             " COALESCE(sa.revenue,0) AS revenue, COALESCE(st.stock,0) AS stock"
@@ -7823,7 +7824,8 @@ def analytics_product_analysis_style(
         "WITH stock AS ("
         " SELECT i.pos_location_name AS location, MAX(i.country) AS country,"
         " COALESCE(SUM(i.available),0) AS stock"
-        " FROM all_inventory i WHERE i.style_name = " + st_lit + icf +
+        " FROM all_inventory i JOIN all_products_clean p2 ON p2.sku = i.sku"
+        " WHERE p2.style_name = " + st_lit + icf +
         " GROUP BY i.pos_location_name"
         "), sales AS ("
         " SELECT s.pos_location_name AS location,"

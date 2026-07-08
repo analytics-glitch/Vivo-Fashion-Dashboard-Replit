@@ -1297,7 +1297,13 @@ const ProductAnalysis = () => {
                 { label: "Units sold (period)", value: fmtNum(drillStyle.units_sold) },
                 { label: "Units since launch", value: fmtNum(drillStyle.units_life) },
                 { label: "Revenue (period)", value: fmtKES(drillStyle.revenue) },
-                { label: "Current stock", value: fmtNum(drillStyle.current_stock) },
+                {
+                  label: "Current stock (stores + WH)",
+                  // Total on-hand across the network: retail stores + warehouse,
+                  // regardless of the page's "include warehouse" toggle — the
+                  // two cards beside it show the split.
+                  value: fmtNum((drillStyle.store_stock || 0) + (drillStyle.warehouse_stock || 0)),
+                },
                 { label: "SOH stores", value: fmtNum(drillStyle.store_stock) },
                 { label: "SOH warehouse", value: fmtNum(drillStyle.warehouse_stock) },
                 { label: "Weeks of cover", value: fmtWoc(drillStyle.woc) },
