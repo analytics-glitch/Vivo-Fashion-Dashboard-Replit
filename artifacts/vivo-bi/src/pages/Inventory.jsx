@@ -141,6 +141,28 @@ const Inventory = () => {
     return () => clearTimeout(t);
   }, [searchInput]);
 
+  // Server-side search scope — a slower debounce than the client-side `search`
+  // (which filters in-memory rows on every keystroke settle) so the four
+  // stock-to-sales endpoints aren't refetched mid-typing.
+  const [serverSearch, setServerSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setServerSearch(searchInput.trim()), 450);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  // Params sent to the STS endpoints so the server scopes BOTH the stock and
+  // sales sides to the local product filters. Category-tree filters
+  // (merchCats/merchSubs) stay client-side (they map 1:1 to whole subcat rows).
+  const serverScopeParams = useMemo(() => ({
+    search: serverSearch || undefined,
+    brand: brandFilter || undefined,
+    product_type: typeFilter || undefined,
+  }), [serverSearch, brandFilter, typeFilter]);
+  // True when the server responses are already scoped to search/brand/type —
+  // the client-side sales-merge fallback must then be skipped or it would
+  // overwrite correctly-scoped server values with a different basis.
+  const serverScoped = Boolean(serverSearch || brandFilter || typeFilter);
+
   // Iter 89w-b — counts pill, refetched only when country/POS filters
   // change (NOT on styleStatus changes — these counts are always both
   // sides of the bucket so the user can see "1234 active · 200
@@ -209,11 +231,11 @@ const Inventory = () => {
     // on the ~50K-row /inventory payload.
     Promise.all([
       api.get("/analytics/inventory-summary", { params: refreshParams }),
-      api.get("/stock-to-sales", { params: { date_from: stsDateFrom, date_to: stsDateTo, country: countryCsv, locations: locationsCsv } }),
-      api.get("/analytics/stock-to-sales-by-subcat", { params: dateParams }),
-      api.get("/analytics/stock-to-sales-by-category", { params: dateParams }),
+      api.get("/stock-to-sales", { params: { date_from: stsDateFrom, date_to: stsDateTo, country: countryCsv, locations: locationsCsv, ...serverScopeParams } }),
+      api.get("/analytics/stock-to-sales-by-subcat", { params: { ...dateParams, ...serverScopeParams } }),
+      api.get("/analytics/stock-to-sales-by-category", { params: { ...dateParams, ...serverScopeParams } }),
       api.get("/analytics/weeks-of-cover", { params: { country: countryCsv, locations: locationsCsv, stock_scope: stockScope } }),
-      api.get("/analytics/sell-through-by-location", { params: { date_from: stsDateFrom, date_to: stsDateTo, country: countryCsv } })
+      api.get("/analytics/sell-through-by-location", { params: { date_from: stsDateFrom, date_to: stsDateTo, country: countryCsv, ...serverScopeParams } })
         .catch(() => ({ data: [] })),
     ])
       .then(([s, st, sc, cat, woc, str]) => {
@@ -258,7 +280,7 @@ const Inventory = () => {
       .finally(() => !cancelled && setRowsLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion, includeWarehouse, stockScope, styleStatus, stsWindowDays, stsCustomRange.from, stsCustomRange.to]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion, includeWarehouse, stockScope, styleStatus, stsWindowDays, stsCustomRange.from, stsCustomRange.to, serverSearch, brandFilter, typeFilter]);
 
   // --- Merchandise-only raw inventory ---
   // Hard rule: exclude Accessories, Sale, Belts/Scarves/Fragrances/Sample &
@@ -606,6 +628,10 @@ const Inventory = () => {
   const filteredStsByCat = useMemo(() => {
     let src = stsByCat.filter((r) => !["Accessories", "Sale", "Other"].includes(r.category) && r.category);
     if (visibleCategories) src = src.filter((r) => visibleCategories.has(r.category));
+    // When search/brand/type filters are active the SERVER already scoped
+    // both the sales and stock sides of these rows — skip the client-side
+    // sales merge (it uses the page-filter window, a different basis).
+    if (serverScoped) return src;
     if (!filtersActive || !salesByVisibleCategory) return src;
     // Override units_sold + recompute %-shares from the visible-styles
     // numbers so the tile reflects only the searched styles.
@@ -624,12 +650,15 @@ const Inventory = () => {
         variance: pctSold - pctStock,
       };
     });
-  }, [stsByCat, visibleCategories, filtersActive, salesByVisibleCategory]);
+  }, [stsByCat, visibleCategories, filtersActive, salesByVisibleCategory, serverScoped]);
 
   const filteredSubcatSS = useMemo(() => {
     const base = subcatSS
       .filter((r) => isMerchandise(r.subcategory))
       .filter((r) => !filtersActive || visibleSubcats.has(r.subcategory));
+    // Server already scoped these rows when search/brand/type are active —
+    // don't overwrite with the client merge (different date-window basis).
+    if (serverScoped) return base;
     if (!filtersActive || !salesByVisibleSubcat) return base;
     const totUnits = base.reduce((s, r) => s + (salesByVisibleSubcat.get(r.subcategory)?.units_sold || 0), 0);
     const totStock = base.reduce((s, r) => s + (r.current_stock || 0), 0);
@@ -646,7 +675,7 @@ const Inventory = () => {
         variance: pctSold - pctStock,
       };
     });
-  }, [subcatSS, filtersActive, visibleSubcats, salesByVisibleSubcat]);
+  }, [subcatSS, filtersActive, visibleSubcats, salesByVisibleSubcat, serverScoped]);
 
   const understockedSubcats = useMemo(() => {
     return filteredSubcatSS
@@ -1324,7 +1353,12 @@ const Inventory = () => {
             )}
           </div>
 
-          <StockToSalesByVariant exportSlug={exportSlug} />
+          <StockToSalesByVariant
+            exportSlug={exportSlug}
+            search={serverSearch}
+            brand={brandFilter}
+            productType={typeFilter}
+          />
 
           <div className="card-white p-5" data-testid="stock-to-sales-section">
             <SectionTitle

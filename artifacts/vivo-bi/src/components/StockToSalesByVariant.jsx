@@ -53,7 +53,7 @@ const buildColumns = (keyLabel, keyField) => [
   },
 ];
 
-const StockToSalesByVariant = ({ exportSlug }) => {
+const StockToSalesByVariant = ({ exportSlug, search = "", brand = "", productType = "" }) => {
   const { applied } = useFilters();
   const { countries, channels, dataVersion } = applied;
 
@@ -122,6 +122,13 @@ const StockToSalesByVariant = ({ exportSlug }) => {
     const params = { date_from: dateFrom, date_to: dateTo };
     if (countries && countries.length) params.country = countries.map((c) => c.toLowerCase()).join(",");
     if (channels && channels.length) params.locations = channels.join(",");
+    // Inventory-page local product filters — the server scopes both the
+    // sales and stock sides so these attribute aggregates reflect only the
+    // searched/filtered products (impossible to filter client-side: rows
+    // are color/size aggregates, not style-level).
+    if (search) params.search = search;
+    if (brand) params.brand = brand;
+    if (productType) params.product_type = productType;
     api
       .get("/analytics/stock-to-sales-by-attribute", { params, timeout: 240000 })
       .then(({ data: d }) => {
@@ -133,7 +140,7 @@ const StockToSalesByVariant = ({ exportSlug }) => {
       .finally(() => !cancel && setLoading(false));
     return () => { cancel = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion, search, brand, productType]);
 
   const byColor = data.by_color || [];
   const bySize = data.by_size || [];

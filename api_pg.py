@@ -5931,10 +5931,16 @@ def get_subcategory_stock_sales(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
+    search:    str = Query(default=None),
+    brand:     str = Query(default=None),
+    product_type: str = Query(default=None),
 ):
     subcat_list = "'" + "','".join(PRODUCT_SUBCATS) + "'"
+    # Inventory-page local filters (search / brand / subcategory pill) scope
+    # BOTH the sales and stock sides — see analytics_sts_by_category.
+    local_scope = _inv_local_scope_sql(search, brand, product_type, alias="p")
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.product_type IN (" + subcat_list + ")")
+        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.product_type IN (" + subcat_list + ")") + local_scope
     # The filter-bar country / POS-location ("channel" param = pos_location_name)
     # selection must scope the STOCK side too, not just sales — otherwise a
     # store-scoped Units Sold was matched against catalog-wide Inventory and the
@@ -5958,7 +5964,7 @@ def get_subcategory_stock_sales(
             LEFT JOIN all_products_clean p ON i.sku = p.sku
             WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
             AND p.product_type IN (""" + subcat_list + """)
-            """ + inv_country_filter + " " + inv_loc_filter + """
+            """ + inv_country_filter + " " + inv_loc_filter + local_scope + """
             GROUP BY p.product_type
         )
         SELECT COALESCE(s.subcategory, st.subcategory) AS subcategory,
@@ -6083,9 +6089,18 @@ def get_stock_to_sales(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     locations: str = Query(default=None),
+    search:    str = Query(default=None),
+    brand:     str = Query(default=None),
+    product_type: str = Query(default=None),
 ):
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     inv_country_filter = ("AND i.country IN (" + csv_to_sql(country) + ")") if country else ""
+    # Inventory-page local filters (search / brand / subcategory pill) —
+    # EXISTS form since this query never joins the product master. Applied to
+    # BOTH the sales and stock sides so the per-location row reflects only
+    # the matching products.
+    sales_scope = _inv_local_scope_exists(search, brand, product_type, sku_expr="s.variant_sku")
+    inv_scope = _inv_local_scope_exists(search, brand, product_type, sku_expr="i.sku")
     # The filter-bar "store" param (sent by the Inventory page as `locations`)
     # carries pos_location_name values. Apply it to BOTH the sales and the
     # inventory CTE so the table scopes consistently — otherwise a store-scoped
@@ -6100,14 +6115,14 @@ def get_stock_to_sales(
             FROM all_sales s
             WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
             AND s.sale_kind IN ('sale','order')
-            AND """ + BASE_FILTERS + " " + country_filter + " " + loc_sales_filter + """
+            AND """ + BASE_FILTERS + " " + country_filter + " " + loc_sales_filter + sales_scope + """
             GROUP BY s.pos_location_name, s.country
         ),
         inventory AS (
             SELECT i.pos_location_name, i.country, SUM(i.available) AS total_stock
             FROM all_inventory i
             WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
-            """ + inv_country_filter + " " + loc_inv_filter + """
+            """ + inv_country_filter + " " + loc_inv_filter + inv_scope + """
             GROUP BY i.pos_location_name, i.country
         ),
         last28 AS (
@@ -6117,7 +6132,7 @@ def get_stock_to_sales(
             FROM all_sales s
             WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days'
             AND s.sale_kind IN ('sale','order')
-            AND """ + BASE_FILTERS + " " + country_filter + " " + loc_sales_filter + """
+            AND """ + BASE_FILTERS + " " + country_filter + " " + loc_sales_filter + sales_scope + """
             GROUP BY s.pos_location_name
         )
         SELECT s.pos_location_name AS location, s.country,
@@ -6645,9 +6660,16 @@ def analytics_sell_through_by_location(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
+    search:    str = Query(default=None),
+    brand:     str = Query(default=None),
+    product_type: str = Query(default=None),
 ):
+    # Inventory-page local filters (search / brand / subcategory pill) —
+    # EXISTS form; applied to BOTH the sales and stock sides.
+    sales_scope = _inv_local_scope_exists(search, brand, product_type, sku_expr="s.variant_sku")
+    inv_scope = _inv_local_scope_exists(search, brand, product_type, sku_expr="i.sku")
     sales_where = build_filters(date_from, date_to, country,
-        extra="s.sale_kind IN ('sale','order') AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")")
+        extra="s.sale_kind IN ('sale','order') AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")") + sales_scope
     inv_country_filter = ("AND i.country IN (" + csv_to_sql(country) + ")") if country else ""
     rows = run_query("""
         WITH sales AS (
@@ -6663,7 +6685,7 @@ def analytics_sell_through_by_location(
                 SUM(i.available) AS available
             FROM all_inventory i
             WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
-            """ + inv_country_filter + """
+            """ + inv_country_filter + inv_scope + """
             GROUP BY i.pos_location_name, i.country
         )
         SELECT COALESCE(s.location, i.location) AS location,
@@ -8072,9 +8094,16 @@ def analytics_sts_by_category(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
+    search:    str = Query(default=None),
+    brand:     str = Query(default=None),
+    product_type: str = Query(default=None),
 ):
+    # Inventory-page local filters (search / brand / subcategory pill) scope
+    # BOTH the sales and stock sides so the table reflects only the matching
+    # products, not category-wide totals.
+    local_scope = _inv_local_scope_sql(search, brand, product_type, alias="p")
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.category IS NOT NULL AND p.category <> ''")
+        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.category IS NOT NULL AND p.category <> ''") + local_scope
     # The filter-bar country / POS-location ("channel" param = pos_location_name)
     # selection must scope the STOCK side too, not just sales — otherwise the
     # store-scoped Units Sold was matched against catalog-wide Inventory and the
@@ -8099,7 +8128,7 @@ def analytics_sts_by_category(
             LEFT JOIN all_products_clean p ON i.sku = p.sku
             WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
             AND p.category IS NOT NULL AND p.category <> ''
-            """ + inv_country_filter + " " + inv_loc_filter + """
+            """ + inv_country_filter + " " + inv_loc_filter + local_scope + """
             GROUP BY p.category
         )
         SELECT COALESCE(s.category, st.category) AS category,
@@ -8126,8 +8155,12 @@ def analytics_sts_by_subcat(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
+    search:    str = Query(default=None),
+    brand:     str = Query(default=None),
+    product_type: str = Query(default=None),
 ):
-    rows = get_subcategory_stock_sales(date_from, date_to, country, channel)
+    rows = get_subcategory_stock_sales(date_from, date_to, country, channel,
+                                       search, brand, product_type)
     for r in rows:
         sold = r.get("pct_of_total_sold") or 0
         stock = r.get("pct_of_total_stock") or 0
@@ -9618,6 +9651,41 @@ def customers_walk_ins(
 
 def _sql_str(s):
     return (s or "").replace("'", "''")
+
+
+def _inv_local_scope_sql(search=None, brand=None, product_type=None, alias="p"):
+    """SQL fragment (prefixed with AND) scoping a query to the Inventory
+    page's LOCAL filters (search box / brand pill / subcategory pill) via the
+    product master. `alias` is the all_products_clean alias in the query.
+
+    The search blob mirrors the frontend's client-side `_search` blob
+    (product_name + style_name + sku + barcode) so server-scoped tables agree
+    with the client-filtered SKU table. ILIKE wildcards in the user's input
+    are escaped so a literal "%"/"_" can't blow the match wide open.
+    """
+    a = alias
+    parts = []
+    if search:
+        pat = (search or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pat = _sql_str(pat)
+        blob = ("(COALESCE(" + a + ".product_name,'') || ' ' || COALESCE(" + a + ".style_name,'') || ' ' || "
+                "COALESCE(" + a + ".sku,'') || ' ' || COALESCE(" + a + ".barcode,''))")
+        parts.append(blob + " ILIKE '%" + pat + "%' ESCAPE '\\'")
+    if brand:
+        parts.append(a + ".brand = '" + _sql_str(brand) + "'")
+    if product_type:
+        parts.append(a + ".product_type = '" + _sql_str(product_type) + "'")
+    return (" AND " + " AND ".join(parts)) if parts else ""
+
+
+def _inv_local_scope_exists(search=None, brand=None, product_type=None, sku_expr="s.variant_sku"):
+    """EXISTS form of _inv_local_scope_sql for queries that don't already
+    join all_products_clean (e.g. per-location stock-to-sales)."""
+    scope = _inv_local_scope_sql(search, brand, product_type, alias="pxx")
+    if not scope:
+        return ""
+    return (" AND EXISTS (SELECT 1 FROM all_products_clean pxx WHERE pxx.sku = "
+            + sku_expr + scope + ")")
 
 # ── IBT global-solve knobs (Phase 1) ──────────────────────────────────────
 # Minimum bundle size below which a from->to transfer is not worth the pick +
@@ -17375,7 +17443,7 @@ def analytics_category_country_matrix(
     }
 
 
-def _x_attr_variance(attr_col, key_name, date_from, date_to, cf, chf, inv_cf):
+def _x_attr_variance(attr_col, key_name, date_from, date_to, cf, chf, inv_cf, local_scope=""):
     rows = run_query(
         """
         WITH sales AS (
@@ -17384,14 +17452,14 @@ def _x_attr_variance(attr_col, key_name, date_from, date_to, cf, chf, inv_cf):
             JOIN all_products_clean p ON s.variant_sku = p.sku
             WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
               AND s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0
-              AND """ + BASE_FILTERS + cf + chf + """
+              AND """ + BASE_FILTERS + cf + chf + local_scope + """
             GROUP BY p.""" + attr_col + """
         ),
         stock AS (
             SELECT p.""" + attr_col + """ AS k, SUM(i.available) AS current_stock
             FROM all_inventory i
             JOIN all_products_clean p ON i.sku = p.sku
-            WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)""" + inv_cf + """
+            WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)""" + inv_cf + local_scope + """
             GROUP BY p.""" + attr_col + """
         )
         SELECT COALESCE(s.k, st.k) AS k,
@@ -17430,15 +17498,24 @@ def analytics_stock_to_sales_by_attribute(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     locations: str = Query(default=None),
+    search:    str = Query(default=None),
+    brand:     str = Query(default=None),
+    product_type: str = Query(default=None),
 ):
     # Stock-to-sales variance by color/print and by size. country is a
     # lowercased CSV (matched case-insensitively); locations is a CSV of
     # pos_location_name values applied to the sales side.
     cf, chf = _style_filters(country, locations, "s")
     inv_cf, _ = _style_filters(country, None, "i")
+    # Inventory-page local filters (search / brand / subcategory pill) —
+    # both CTEs already join the product master as `p`, so the scope fragment
+    # applies to sales AND stock. This is what makes the by-Color / by-Size
+    # tables respect the page's product search (they cannot be filtered
+    # client-side: rows are attribute aggregates, not style-level).
+    local_scope = _inv_local_scope_sql(search, brand, product_type, alias="p")
     return {
-        "by_color": _x_attr_variance("color_print", "color", date_from, date_to, cf, chf, inv_cf),
-        "by_size": _x_attr_variance("size", "size", date_from, date_to, cf, chf, inv_cf),
+        "by_color": _x_attr_variance("color_print", "color", date_from, date_to, cf, chf, inv_cf, local_scope),
+        "by_size": _x_attr_variance("size", "size", date_from, date_to, cf, chf, inv_cf, local_scope),
     }
 
 
