@@ -879,7 +879,11 @@ const RangeManagement = () => {
                     ) },
                   { key: "soh_warehouse", label: "Stock in Warehouse", numeric: true,
                     render: (r) => (
-                      <FormulaCell title={`Stock in Warehouse = Σ available units across warehouse / holding / staging locations\n= ${fmtNum(r.soh_warehouse)} units`}>{fmtNum(r.soh_warehouse)}</FormulaCell>
+                      <FormulaCell title={`Stock in Warehouse = Σ available units across warehouse / holding / staging locations (production pipeline NOT included)\n= ${fmtNum(r.soh_warehouse)} units`}>{fmtNum(r.soh_warehouse)}</FormulaCell>
+                    ) },
+                  { key: "soh_pipeline", label: "Stock in Pipeline", numeric: true,
+                    render: (r) => (
+                      <FormulaCell title={`Stock in Pipeline = Σ available units in production WIP — Waiting Sewing (Fabric Trimming), Sewing (Sew/Stock A–E), Finishing (Finished Goods Production). Not yet sellable, excluded from Total SOH.\n= ${fmtNum(r.soh_pipeline)} units`}>{r.soh_pipeline ? fmtNum(r.soh_pipeline) : "—"}</FormulaCell>
                     ) },
                   { key: "units_online", label: "Units Sold Online", numeric: true,
                     render: (r) => (
@@ -1175,6 +1179,8 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
                   render: (r) => fmtNum(r.soh_stores) },
                 { key: "soh_warehouse", label: "Stock Warehouse", numeric: true,
                   render: (r) => fmtNum(r.soh_warehouse) },
+                { key: "soh_pipeline", label: "Stock Pipeline", numeric: true,
+                  render: (r) => (r.soh_pipeline ? fmtNum(r.soh_pipeline) : "—") },
                 { key: "units_online", label: "Units Online", numeric: true,
                   render: (r) => fmtNum(r.units_online) },
                 { key: "units_stores", label: "Units Stores", numeric: true,

@@ -5495,7 +5495,7 @@ def product_detail(sku: str = Query(default=""), barcode: str = Query(default=""
         "soh_stores": soh_stores,
         "soh_warehouse": soh_warehouse,
         "soh_pipeline": soh_pipeline,
-        "soh_total": soh_stores + soh_warehouse + soh_pipeline,
+        "soh_total": soh_stores + soh_warehouse,
         "last_sale": str(last_sale) if last_sale else None,
         "days_since_last_sale": (today - last_sale).days if last_sale else None,
     }
@@ -6924,7 +6924,7 @@ def analytics_sor_all_styles(
         soh_stores = int(r["soh_stores"] or 0)
         soh_warehouse = int(r["soh_warehouse"] or 0)
         soh_pipeline = int(r["soh_pipeline"] or 0)
-        soh_total = soh_stores + soh_warehouse + soh_pipeline
+        soh_total = soh_stores + soh_warehouse  # pipeline NOT in total SOH
         # Style status semantics: active = sold in window; retired = has
         # stock but no sales in window; all = either. A manually-retired
         # style is force-treated as retired (never active, always satisfies
@@ -7082,7 +7082,7 @@ def analytics_sor_style_colors(
         soh_stores = int(r["soh_stores"] or 0)
         soh_warehouse = int(r["soh_warehouse"] or 0)
         soh_pipeline = int(r["soh_pipeline"] or 0)
-        soh_total = soh_stores + soh_warehouse + soh_pipeline
+        soh_total = soh_stores + soh_warehouse  # pipeline NOT in total SOH
         units_30d = int(r["units_30d"] or 0)
         weekly_avg = round(units_30d / (30.0 / 7.0), 1)
         woc = round(soh_total / weekly_avg, 1) if weekly_avg > 0 else None
@@ -7678,7 +7678,8 @@ def analytics_product_analysis(
         "stock AS ("
         " SELECT COALESCE(m.style_name, i.style_name) AS style_name" + stock_dim_sel + stock_pos_sel + ","
         " COALESCE(SUM(i.available) FILTER (WHERE " + current_loc_clause + "),0) AS soh_current,"
-        " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_warehouse,"
+        " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (" + WAREHOUSE_LOCATIONS + ") AND i.pos_location_name NOT IN (" + PIPELINE_LOCATIONS + ")),0) AS soh_warehouse,"
+        " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (" + PIPELINE_LOCATIONS + ")),0) AS soh_pipeline,"
         " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_stores,"
         " string_agg(DISTINCT i.pos_location_name, ', ' ORDER BY i.pos_location_name)"
         " FILTER (WHERE i.available > 0 AND (" + current_loc_clause + ")) AS store_locations"
@@ -7698,6 +7699,7 @@ def analytics_product_analysis(
         " COALESCE(sa.units_24m,0) AS units_24m, COALESCE(sa.revenue_24m,0) AS revenue_24m, COALESCE(sa.gross_units_24m,0) AS gross_units_24m,"
         " sa.last_sale, sa.first_sale,"
         " COALESCE(st.soh_current,0) AS soh_current, COALESCE(st.soh_warehouse,0) AS soh_warehouse,"
+        " COALESCE(st.soh_pipeline,0) AS soh_pipeline,"
         " COALESCE(st.soh_stores,0) AS soh_stores," + pos_out + " sa.current_price,"
         " COALESCE(nos.months_active_12,0) AS months_active_12"
         + from_join + activity_where
@@ -7793,6 +7795,7 @@ def analytics_product_analysis(
             "orders": int(r["orders_period"] or 0),
             "current_stock": stock,
             "warehouse_stock": int(r["soh_warehouse"] or 0),
+            "pipeline_stock": int(r["soh_pipeline"] or 0),
             "store_stock": int(r["soh_stores"] or 0),
             "pos_location": r["pos_location"] or None,
             "units_vel": units_vel,
@@ -13766,7 +13769,9 @@ def _es_stock_mix(sold_from, sold_to, window_days, country):
     sales_country = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     inv = run_query("""
         SELECT p.product_type AS subcategory,
-            SUM(CASE WHEN i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """) THEN i.available ELSE 0 END) AS wh_units,
+            SUM(CASE WHEN i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+                      AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """) THEN i.available ELSE 0 END) AS wh_units,
+            SUM(CASE WHEN i.pos_location_name IN (""" + PIPELINE_LOCATIONS + """) THEN i.available ELSE 0 END) AS pipeline_units,
             SUM(CASE WHEN i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """) THEN i.available ELSE 0 END) AS st_units
         FROM all_inventory i
         JOIN all_products_clean p ON i.sku = p.sku
@@ -13795,14 +13800,16 @@ def _es_stock_mix(sold_from, sold_to, window_days, country):
             continue
         iv = inv_map.get(sc, {}); sv = sales_map.get(sc, {})
         wh = float(iv.get("wh_units") or 0); st = float(iv.get("st_units") or 0)
+        pipe = float(iv.get("pipeline_units") or 0)
         raw.append({
             "subcategory": sc, "category": SUBCATEGORY_TO_CATEGORY.get(sc, "Other"),
-            "wh": wh, "st": st, "stock": wh + st,
+            "wh": wh, "st": st, "pipe": pipe, "stock": wh + st,
             "sold": float(sv.get("sold_units") or 0), "rev": float(sv.get("sold_rev") or 0),
         })
     tot_stock = sum(r["stock"] for r in raw)
     tot_wh = sum(r["wh"] for r in raw)
     tot_st = sum(r["st"] for r in raw)
+    tot_pipe = sum(r.get("pipe", 0.0) for r in raw)
     tot_sold = sum(r["sold"] for r in raw)
 
     def cover(stock, sold):
@@ -13825,6 +13832,7 @@ def _es_stock_mix(sold_from, sold_to, window_days, country):
             "stock_pct_warehouse": round(d["wh"] / tot_wh * 100, 2) if tot_wh else 0,
             "stock_units_stores": d["st"],
             "stock_pct_stores": round(d["st"] / tot_st * 100, 2) if tot_st else 0,
+            "stock_units_pipeline": d.get("pipe", 0.0),
             "sold_units": sold, "sold_pct": round(sold_pct, 2),
             "gap_pct": round(stock_pct - sold_pct, 2),
             "weeks_of_cover": cover(stock, sold),
@@ -13834,9 +13842,9 @@ def _es_stock_mix(sold_from, sold_to, window_days, country):
     cats = {}
     for d in raw:
         c = cats.setdefault(d["category"], {"category": d["category"], "wh": 0.0,
-                                            "st": 0.0, "stock": 0.0, "sold": 0.0,
+                                            "st": 0.0, "pipe": 0.0, "stock": 0.0, "sold": 0.0,
                                             "rev": 0.0, "subs": []})
-        c["wh"] += d["wh"]; c["st"] += d["st"]; c["stock"] += d["stock"]
+        c["wh"] += d["wh"]; c["st"] += d["st"]; c["pipe"] += d.get("pipe", 0.0); c["stock"] += d["stock"]
         c["sold"] += d["sold"]; c["rev"] += d["rev"]; c["subs"].append(d)
     categories = []
     for c in cats.values():
@@ -13854,6 +13862,7 @@ def _es_stock_mix(sold_from, sold_to, window_days, country):
         "total_stock_units": tot_stock,
         "total_stock_units_warehouse": tot_wh,
         "total_stock_units_stores": tot_st,
+        "total_stock_units_pipeline": tot_pipe,
         "total_stock_pct_warehouse": round(tot_wh / tot_stock * 100, 2) if tot_stock else 0,
         "total_stock_pct_stores": round(tot_st / tot_stock * 100, 2) if tot_stock else 0,
         "total_sold_units_mtd": tot_sold,
@@ -16875,7 +16884,7 @@ def _sku_breakdown(style_names, country=None, channel=None):
     """)
     inv = run_query("""
         SELECT p.sku,
-            SUM(i.available) AS soh_total,
+            SUM(CASE WHEN i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """) THEN i.available ELSE 0 END) AS soh_total,
             SUM(CASE WHEN i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
                       AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)
                      THEN i.available ELSE 0 END) AS soh_wh,
@@ -16894,7 +16903,7 @@ def _sku_breakdown(style_names, country=None, channel=None):
         soh_pipeline = float(soh.get("soh_pipeline") or 0)
         u6 = float(r["units_6m"] or 0)
         u3 = float(r["units_3w"] or 0)
-        if u6 == 0 and u3 == 0 and soh_total == 0:
+        if u6 == 0 and u3 == 0 and soh_total == 0 and soh_pipeline == 0:
             continue
         out.setdefault(r["style_name"], []).append({
             "color": r["color"] or "—", "size": r["size"] or "—", "sku": r["sku"],
@@ -17291,7 +17300,9 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         stock AS (
             SELECT COALESCE(m.style_name, i.style_name) AS style_name,
                 COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
-                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_warehouse
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+                                                    AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)), 0) AS soh_warehouse,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + PIPELINE_LOCATIONS + """)), 0) AS soh_pipeline
             FROM all_inventory i
             LEFT JOIN """ + SKU_STYLE_MAP + """ m ON m.sku = i.sku
             WHERE COALESCE(m.style_name, i.style_name) IS NOT NULL""" + icf + ichf + """
@@ -17306,6 +17317,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             COALESCE(sa.units_online, 0) AS units_online, COALESCE(sa.units_stores, 0) AS units_stores,
             sa.last_sale, sa.first_sale,
             COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse,
+            COALESCE(st.soh_pipeline, 0) AS soh_pipeline,
             COALESCE(nos.months_active_12, 0) AS months_active_12
         FROM prod p
         LEFT JOIN sales sa USING (style_name)
@@ -17326,6 +17338,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         units_prior_30d = int(r["units_prior_30d"] or 0)
         soh_stores = int(r["soh_stores"] or 0)
         soh_warehouse = int(r["soh_warehouse"] or 0)
+        soh_pipeline = int(r["soh_pipeline"] or 0)
         current_stock = soh_stores + soh_warehouse
         months_active_12 = int(r["months_active_12"] or 0)
         last_sale = r["last_sale"]
@@ -17409,6 +17422,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             "current_stock": current_stock,
             "soh_stores": soh_stores,
             "soh_warehouse": soh_warehouse,
+            "soh_pipeline": soh_pipeline,
             "units_online": int(r["units_online"] or 0),
             "units_stores": int(r["units_stores"] or 0),
             "units_since_launch": units_life,
@@ -17626,7 +17640,9 @@ def analytics_sor_new_styles_l10(
         stock AS (
             SELECT COALESCE(m.style_name, i.style_name) AS style_name,
                 COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
-                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_warehouse
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+                                                    AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)), 0) AS soh_warehouse,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + PIPELINE_LOCATIONS + """)), 0) AS soh_pipeline
             FROM all_inventory i
             LEFT JOIN """ + SKU_STYLE_MAP + """ m ON m.sku = i.sku
             WHERE COALESCE(m.style_name, i.style_name) IS NOT NULL
@@ -17636,7 +17652,8 @@ def analytics_sor_new_styles_l10(
             COALESCE(sa.units_6m, 0) AS units_6m, COALESCE(sa.sales_6m, 0) AS sales_6m,
             COALESCE(sa.units_3w, 0) AS units_3w, COALESCE(sa.units_30d, 0) AS units_30d,
             sa.last_sale, sa.first_sale,
-            COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse
+            COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse,
+            COALESCE(st.soh_pipeline, 0) AS soh_pipeline
         FROM prod p
         JOIN sales sa USING (style_name)
         LEFT JOIN stock st USING (style_name)
@@ -17656,6 +17673,7 @@ def analytics_sor_new_styles_l10(
         units_6m = int(r["units_6m"] or 0)
         soh_stores = int(r["soh_stores"] or 0)
         soh_warehouse = int(r["soh_warehouse"] or 0)
+        soh_pipeline = int(r["soh_pipeline"] or 0)
         soh_total = soh_stores + soh_warehouse
         if (units_6m + soh_total) < 50:
             continue
@@ -17677,6 +17695,7 @@ def analytics_sor_new_styles_l10(
             "weekly_avg": weekly_avg,
             "soh_total": soh_total,
             "soh_wh": soh_warehouse,
+            "soh_pipeline": soh_pipeline,
             "woc": woc,
             "pct_in_wh": round(100.0 * soh_warehouse / soh_total, 1) if soh_total else 0.0,
             "asp_6m": round(sales_6m / units_6m) if units_6m > 0 else None,
@@ -17816,9 +17835,11 @@ def analytics_products_plan(
         ),
         stock AS (
             SELECT p.category, p.product_type AS subcategory,
-                SUM(i.available) AS total_soh,
+                SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)) AS total_soh,
                 SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)) AS stores_soh,
-                SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)) AS wh_soh
+                SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+                                           AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)) AS wh_soh,
+                SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + PIPELINE_LOCATIONS + """)) AS pipeline_soh
             FROM all_inventory i
             JOIN all_products_clean p ON i.sku = p.sku
             WHERE p.product_type IN (""" + MERCH_SUBCATEGORIES_SQL + """)""" + inv_country + """
@@ -17830,7 +17851,8 @@ def analytics_products_plan(
             COALESCE(s.qty_sold, 0) AS qty_sold,
             COALESCE(st.total_soh, 0) AS total_soh,
             COALESCE(st.stores_soh, 0) AS stores_soh,
-            COALESCE(st.wh_soh, 0) AS wh_soh
+            COALESCE(st.wh_soh, 0) AS wh_soh,
+            COALESCE(st.pipeline_soh, 0) AS pipeline_soh
         FROM sales s
         FULL OUTER JOIN stock st ON s.category = st.category AND s.subcategory = st.subcategory
         WHERE COALESCE(s.subcategory, st.subcategory) IS NOT NULL
@@ -17861,6 +17883,7 @@ def analytics_products_plan(
             "pct_stores_soh": round(stores / tot_stores * 100, 1) if tot_stores else 0.0,
             "wh_soh": int(wh),
             "pct_wh_soh": round(wh / tot_wh * 100, 1) if tot_wh else 0.0,
+            "pipeline_soh": int(float(r["pipeline_soh"] or 0)),
         })
     out.sort(key=lambda x: -x["qty_sold"])
     return out

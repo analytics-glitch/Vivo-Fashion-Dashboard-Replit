@@ -90,11 +90,24 @@ const ProductDetailModal = ({ sku, barcode, onClose }) => {
               <Field label="Brand">{data.brand || "—"}</Field>
               <Field label="SKU">{data.sku || "—"}</Field>
               <Field label="Stock on hand">
-                {fmtNum(data.soh_total || 0)}
-                <span className="text-[11px] text-muted font-normal">
-                  {" "}({fmtNum(data.soh_stores || 0)} stores · {fmtNum(data.soh_warehouse || 0)} wh
-                  {data.soh_pipeline > 0 ? ` · ${fmtNum(data.soh_pipeline)} pipeline` : ""})
-                </span>
+                <div className="space-y-0.5">
+                  <div className="flex justify-between gap-3 text-[12px] font-normal">
+                    <span className="text-muted">Stores</span>
+                    <span className="tabular-nums">{fmtNum(data.soh_stores || 0)}</span>
+                  </div>
+                  <div className="flex justify-between gap-3 text-[12px] font-normal">
+                    <span className="text-muted">Warehouse Finished Goods</span>
+                    <span className="tabular-nums">{fmtNum(data.soh_warehouse || 0)}</span>
+                  </div>
+                  <div className="flex justify-between gap-3 text-[12px] font-normal">
+                    <span className="text-muted">Pipeline (WIP)</span>
+                    <span className="tabular-nums">{fmtNum(data.soh_pipeline || 0)}</span>
+                  </div>
+                  <div className="flex justify-between gap-3 border-t border-border pt-0.5">
+                    <span title="Total SOH = Stores + Warehouse Finished Goods (pipeline excluded)">Total SOH</span>
+                    <span className="tabular-nums">{fmtNum(data.soh_total || 0)}</span>
+                  </div>
+                </div>
               </Field>
               <Field label="Days since last sale">{lastSale}</Field>
             </div>

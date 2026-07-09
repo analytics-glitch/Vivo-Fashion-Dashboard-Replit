@@ -245,7 +245,7 @@ const SorStylesTable = ({
       // computed off the last-3-month burn rate (see backend
       // `sor-all-styles`) so it reflects current sell-through.
       { key: "weekly_avg",   label: "Weekly Avg",   numeric: true, render: (r) => (r.weekly_avg || 0).toFixed(1), csv: (r) => r.weekly_avg },
-      { key: "soh_total",    label: "SOH",          numeric: true, headerTitle: "Total stock on hand = stores + warehouse + production pipeline", render: (r) => fmtNum(Math.round(r.soh_total)), csv: (r) => r.soh_total },
+      { key: "soh_total",    label: "SOH",          numeric: true, headerTitle: "Total stock on hand = stores + sellable warehouse (production pipeline NOT included)", render: (r) => fmtNum(Math.round(r.soh_total)), csv: (r) => r.soh_total },
       { key: "soh_wh",       label: "SOH W/H",      numeric: true, headerTitle: "Sellable warehouse stock (excludes the production pipeline)", render: (r) => fmtNum(Math.round(r.soh_wh)), csv: (r) => r.soh_wh },
       {
         key: "soh_pipeline", label: "SOH Pipeline", numeric: true,

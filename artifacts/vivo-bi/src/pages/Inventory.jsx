@@ -47,6 +47,15 @@ const isWarehouseLocation = (loc) =>
     (loc || "").toLowerCase()
   );
 
+// Production pipeline (WIP) locations — Waiting Sewing (Fabric Trimming),
+// Sewing (Sew/Stock A–E), Finishing (Finished Goods Production). Mirrors the
+// backend PIPELINE_LOCATIONS list. Not sellable — excluded from Total SOH
+// (Total = Stores + Warehouse only). Checked BEFORE the warehouse classifier.
+const isPipelineLocation = (loc) =>
+  /fabric trimming|finished goods production|sew\/stock/.test(
+    (loc || "").toLowerCase()
+  );
+
 const Inventory = () => {
   const { applied, touchLastUpdated } = useFilters();
   const { dateFrom, dateTo, countries, channels, dataVersion } = applied;
@@ -420,11 +429,13 @@ const Inventory = () => {
   const storeVsWarehouse = useMemo(() => {
     let store = 0;
     let warehouse = 0;
+    let pipeline = 0;
     for (const r of filteredInv) {
-      if (isWarehouseLocation(r.location_name)) warehouse += r.available || 0;
+      if (isPipelineLocation(r.location_name)) pipeline += r.available || 0;
+      else if (isWarehouseLocation(r.location_name)) warehouse += r.available || 0;
       else store += r.available || 0;
     }
-    return { store, warehouse };
+    return { store, warehouse, pipeline };
   }, [filteredInv]);
 
   // Store vs Warehouse split from the backend by_location aggregate, used for
@@ -433,11 +444,13 @@ const Inventory = () => {
   const summaryStoreWarehouse = useMemo(() => {
     let store = 0;
     let warehouse = 0;
+    let pipeline = 0;
     for (const r of summary?.by_location || []) {
-      if (isWarehouseLocation(r.location)) warehouse += r.units || 0;
+      if (isPipelineLocation(r.location)) pipeline += r.units || 0;
+      else if (isWarehouseLocation(r.location)) warehouse += r.units || 0;
       else store += r.units || 0;
     }
-    return { store, warehouse };
+    return { store, warehouse, pipeline };
   }, [summary]);
 
   const lowStockByStyle = useMemo(() => {
@@ -694,11 +707,16 @@ const Inventory = () => {
   // aggregates over filteredInv. (Country/channel scoping is applied server-side
   // on the summary, so it stays correct without local filters.)
   const useSummaryKpis = Boolean(summary && summary.by_location && !filtersActive);
-  const kpiTotal = useSummaryKpis ? summary.total_units : totalFilteredUnits;
   const kpiStore = useSummaryKpis ? summaryStoreWarehouse.store : storeVsWarehouse.store;
   const kpiWarehouse = useSummaryKpis
     ? summaryStoreWarehouse.warehouse
     : storeVsWarehouse.warehouse;
+  const kpiPipeline = useSummaryKpis
+    ? summaryStoreWarehouse.pipeline
+    : storeVsWarehouse.pipeline;
+  // Total SOH = Stores + Warehouse only — the production pipeline (WIP) is
+  // NOT sellable stock and is always excluded from the headline total.
+  const kpiTotal = kpiStore + kpiWarehouse;
 
   // Export filename slug reflecting the active filters — makes traceability
   // obvious when sharing CSVs via email/chat.
@@ -850,7 +868,7 @@ const Inventory = () => {
               testId="inv-kpi-units"
               accent
               label="Total Available Units"
-              sub={filtersActive ? "Filtered" : "All merchandise"}
+              sub={filtersActive ? "Filtered · stores + warehouse (pipeline excl.)" : "Stores + warehouse (pipeline excl.)"}
               value={fmtNum(kpiTotal)}
               icon={Package}
               showDelta={false}
@@ -873,6 +891,14 @@ const Inventory = () => {
               icon={Cube}
               showDelta={false}
               action={{ label: "Plan distribution", to: "/ibt" }}
+            />
+            <KPICard
+              testId="inv-kpi-pipeline-stock"
+              label="Stock in Pipeline"
+              sub="Production WIP — not sellable, excluded from total"
+              value={fmtNum(kpiPipeline)}
+              icon={Cube}
+              showDelta={false}
             />
             {(() => {
               // Overall Weeks of Cover. Use the chain-wide summary from

@@ -1381,6 +1381,7 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
       "Stock Units", "Stock %",
       "Warehouse Units", "Warehouse %",
       "Stores Units", "Stores %",
+      "Pipeline Units",
       soldLbl, "Sold %",
       "Gap (pp)",
       "Weeks of Cover", "Cover Tier",
@@ -1400,6 +1401,7 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
         Math.round(r.stock_units || 0), (r.stock_pct ?? 0).toFixed(2),
         Math.round(r.stock_units_warehouse || 0), (r.stock_pct_warehouse ?? 0).toFixed(2),
         Math.round(r.stock_units_stores || 0), (r.stock_pct_stores ?? 0).toFixed(2),
+        Math.round(r.stock_units_pipeline || 0),
         Math.round(r.sold_units || 0), (r.sold_pct ?? 0).toFixed(2),
         (r.gap_pct ?? 0).toFixed(2),
         r.weeks_of_cover != null ? r.weeks_of_cover.toFixed(2) : "",
@@ -1414,6 +1416,7 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
           Math.round(sc.stock_units || 0), (sc.stock_pct ?? 0).toFixed(2),
           Math.round(sc.stock_units_warehouse || 0), (sc.stock_pct_warehouse ?? 0).toFixed(2),
           Math.round(sc.stock_units_stores || 0), (sc.stock_pct_stores ?? 0).toFixed(2),
+          Math.round(sc.stock_units_pipeline || 0),
           Math.round(sc.sold_units || 0), (sc.sold_pct ?? 0).toFixed(2),
           (sc.gap_pct ?? 0).toFixed(2),
           sc.weeks_of_cover != null ? sc.weeks_of_cover.toFixed(2) : "",
@@ -1430,6 +1433,7 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
       Math.round(stockMix.total_stock_units || 0), "100.00",
       Math.round(stockMix.total_stock_units_warehouse || 0), (stockMix.total_stock_pct_warehouse ?? 0).toFixed(2),
       Math.round(stockMix.total_stock_units_stores || 0), (stockMix.total_stock_pct_stores ?? 0).toFixed(2),
+      Math.round(stockMix.total_stock_units_pipeline || 0),
       Math.round(stockMix.total_sold_units_mtd || 0), "100.00",
       "", stockMix.total_weeks_of_cover != null ? stockMix.total_weeks_of_cover.toFixed(2) : "",
       tier(stockMix.total_weeks_of_cover),
@@ -1446,7 +1450,7 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
           <span>
             Share of units on hand (group-wide inventory) compared with share of units sold over the selected window, by category. A positive gap means we're carrying more stock than the sell-through justifies; a negative gap means demand outpaces supply.
             <span className="ml-1.5">Total on hand: <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_stock_units)}u</span>
-            <span className="text-muted"> (</span><span className="font-semibold tabular-nums">{fmtNum(stockMix.total_stock_units_warehouse)}u</span><span className="text-muted"> warehouse · </span><span className="font-semibold tabular-nums">{fmtNum(stockMix.total_stock_units_stores)}u</span><span className="text-muted"> stores)</span>
+            <span className="text-muted"> (</span><span className="font-semibold tabular-nums">{fmtNum(stockMix.total_stock_units_warehouse)}u</span><span className="text-muted"> warehouse · </span><span className="font-semibold tabular-nums">{fmtNum(stockMix.total_stock_units_stores)}u</span><span className="text-muted"> stores; pipeline excluded — </span><span className="font-semibold tabular-nums">{fmtNum(stockMix.total_stock_units_pipeline)}u</span><span className="text-muted"> in production)</span>
             <span> · Sold ({customRange?.from && customRange?.to ? `${customRange.from} → ${customRange.to}` : `${wd}d`}): <span className="font-bold text-foreground tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}u</span><span className="text-muted"> — this card's own sales window (set below), not the page filter, so Sold may not match page-level Units Sold</span></span>
             {stockMix.total_weeks_of_cover != null && (
               <span> · Group cover: <span className="font-bold text-foreground tabular-nums">{stockMix.total_weeks_of_cover.toFixed(1)}w</span></span>
@@ -1572,7 +1576,7 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Stock %</th>
               <th
                 className="px-3 py-2 font-semibold whitespace-nowrap text-right cursor-help"
-                title="Units sitting in central warehouse locations (Warehouse Finished Goods, Vivo Warehouse, etc.). Stock Units = Warehouse + Stores."
+                title="Sellable units in central warehouse locations (production pipeline NOT included). Stock Units = Warehouse + Stores."
               >Warehouse</th>
               <th
                 className="px-3 py-2 font-semibold whitespace-nowrap text-right cursor-help"
@@ -1586,6 +1590,10 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
                 className="px-3 py-2 font-semibold whitespace-nowrap text-right cursor-help"
                 title="Share of this row's stock that sits on shop floors."
               >Store %</th>
+              <th
+                className="px-3 py-2 font-semibold whitespace-nowrap text-right cursor-help"
+                title="Units in the production pipeline (Waiting Sewing / Sewing / Finishing). Not sellable — excluded from Stock Units."
+              >Pipeline</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">{soldLbl}</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Sold %</th>
               <th className="px-3 py-2 font-semibold whitespace-nowrap text-right">Gap (pp)</th>
@@ -1631,6 +1639,7 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
                     <td className="px-3 py-2 text-right tabular-nums text-muted">{(r.stock_pct_warehouse ?? 0).toFixed(1)}%</td>
                     <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.stock_units_stores)}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-muted">{(r.stock_pct_stores ?? 0).toFixed(1)}%</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-muted">{r.stock_units_pipeline ? fmtNum(r.stock_units_pipeline) : "—"}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.sold_units)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{r.sold_pct.toFixed(1)}%</td>
                     <td className="px-3 py-2 text-right">
@@ -1679,6 +1688,7 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
                         <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px] text-muted">{(sc.stock_pct_warehouse ?? 0).toFixed(1)}%</td>
                         <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px]">{fmtNum(sc.stock_units_stores)}</td>
                         <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px] text-muted">{(sc.stock_pct_stores ?? 0).toFixed(1)}%</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px] text-muted">{sc.stock_units_pipeline ? fmtNum(sc.stock_units_pipeline) : "—"}</td>
                         <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px]">{fmtNum(sc.sold_units)}</td>
                         <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px]">{sc.sold_pct.toFixed(1)}%</td>
                         <td className="px-3 py-1.5 text-right">
@@ -1717,6 +1727,7 @@ const StockMix = ({ stockMix, windowDays, onWindowChange, windowLoading = false,
               <td className="px-3 py-2 text-right tabular-nums text-muted">{(stockMix.total_stock_pct_warehouse ?? 0).toFixed(1)}%</td>
               <td className="px-3 py-2 text-right tabular-nums">{fmtNum(stockMix.total_stock_units_stores)}</td>
               <td className="px-3 py-2 text-right tabular-nums text-muted">{(stockMix.total_stock_pct_stores ?? 0).toFixed(1)}%</td>
+              <td className="px-3 py-2 text-right tabular-nums text-muted">{fmtNum(stockMix.total_stock_units_pipeline)}</td>
               <td className="px-3 py-2 text-right tabular-nums">{fmtNum(stockMix.total_sold_units_mtd)}</td>
               <td className="px-3 py-2 text-right tabular-nums">100%</td>
               <td className="px-3 py-2"></td>

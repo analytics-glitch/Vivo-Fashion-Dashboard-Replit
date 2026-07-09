@@ -55,8 +55,9 @@ const ProductsPlan = () => {
         total_soh: acc.total_soh + (r.total_soh || 0),
         stores_soh: acc.stores_soh + (r.stores_soh || 0),
         wh_soh: acc.wh_soh + (r.wh_soh || 0),
+        pipeline_soh: acc.pipeline_soh + (r.pipeline_soh || 0),
       }),
-      { total_sales: 0, qty_sold: 0, total_soh: 0, stores_soh: 0, wh_soh: 0 }
+      { total_sales: 0, qty_sold: 0, total_soh: 0, stores_soh: 0, wh_soh: 0, pipeline_soh: 0 }
     );
   }, [rows]);
 
@@ -153,11 +154,17 @@ const ProductsPlan = () => {
                   render: (r) => <span className="text-muted num">{fmtPct(r.pct_wh_soh, 1)}</span>,
                   csv: (r) => r.pct_wh_soh,
                 },
+                {
+                  key: "pipeline_soh", label: "Pipeline SOH", numeric: true,
+                  headerTitle: "Production pipeline (Waiting Sewing / Sewing / Finishing). Not sellable — excluded from Total SOH.",
+                  render: (r) => <span className="num">{r.pipeline_soh ? fmtNum(r.pipeline_soh) : "—"}</span>,
+                  csv: (r) => r.pipeline_soh ?? 0,
+                },
               ]}
               rows={rows}
             />
 
-            <div className="mt-3 grid grid-cols-2 md:grid-cols-5 gap-3 text-[12px]" data-testid="products-plan-totals">
+            <div className="mt-3 grid grid-cols-2 md:grid-cols-6 gap-3 text-[12px]" data-testid="products-plan-totals">
               <div className="rounded-lg border border-border bg-panel px-3 py-2">
                 <div className="eyebrow">Total sales</div>
                 <div className="font-semibold num">{fmtKES(totals.total_sales)}</div>
@@ -177,6 +184,10 @@ const ProductsPlan = () => {
               <div className="rounded-lg border border-border bg-panel px-3 py-2">
                 <div className="eyebrow">W/H SOH</div>
                 <div className="font-semibold num">{fmtNum(totals.wh_soh)}</div>
+              </div>
+              <div className="rounded-lg border border-border bg-panel px-3 py-2" title="Production pipeline (Waiting Sewing / Sewing / Finishing). Not sellable — excluded from Total SOH.">
+                <div className="eyebrow">Pipeline SOH</div>
+                <div className="font-semibold num">{fmtNum(totals.pipeline_soh)}</div>
               </div>
             </div>
           </>

@@ -546,8 +546,14 @@ const ProductAnalysis = () => {
       },
       {
         key: "soh_warehouse", label: "SOH in Warehouse", numeric: true,
-        headerTitle: "Stock on hand held in the warehouse",
+        headerTitle: "Sellable stock in Warehouse Finished Goods (production pipeline NOT included)",
         render: (r) => fmtNum(r.warehouse_stock), csv: (r) => r.warehouse_stock ?? "",
+      },
+      {
+        key: "soh_pipeline", label: "SOH Pipeline", numeric: true,
+        headerTitle: "In the production pipeline — Waiting Sewing (Fabric Trimming), Sewing (Sew/Stock A–E), Finishing (Finished Goods Production). Not yet sellable, excluded from Total SOH.",
+        render: (r) => (r.pipeline_stock ? fmtNum(r.pipeline_stock) : <span className="text-muted">—</span>),
+        csv: (r) => r.pipeline_stock ?? 0,
       },
       {
         key: "pos_location", label: "POS Location",
@@ -747,6 +753,7 @@ const ProductAnalysis = () => {
       { key: "units_sold", label: "Units Sold", csv: (r) => r.units_sold },
       { key: "soh_stores", label: "SOH in Stores", csv: (r) => r.store_stock ?? "" },
       { key: "soh_warehouse", label: "SOH in Warehouse", csv: (r) => r.warehouse_stock ?? "" },
+      { key: "soh_pipeline", label: "SOH Pipeline", csv: (r) => r.pipeline_stock ?? 0 },
       { key: "pos_location", label: "POS Location", csv: (r) => r.pos_location || "" },
       { key: "style_status", label: "Style Status", csv: (r) => r.style_status || "" },
       { key: "days_since_last_sale", label: "Days Since Last Sale", csv: (r) => { const d = daysSinceSale(r.last_sale); return d == null ? "" : d; } },
@@ -1392,6 +1399,7 @@ const ProductAnalysis = () => {
                 },
                 { label: "SOH stores", value: fmtNum(drillStyle.store_stock) },
                 { label: "SOH warehouse", value: fmtNum(drillStyle.warehouse_stock) },
+                { label: "SOH pipeline (excl. from total)", value: fmtNum(drillStyle.pipeline_stock) },
                 { label: "Weeks of cover", value: fmtWoc(drillStyle.woc) },
                 { label: "Reorders", value: fmtNum(drillStyle.reorder_count) },
                 { label: "ASP", value: fmtAsp(drillStyle.asp) },
