@@ -86,6 +86,9 @@ EXCLUDED_LOCATIONS = {
     'Recall Location', 'Holding Warehouse Finished Goods',
     'Studio Location', 'Product Development', 'Sampling Fabric',
     'Repairs', 'Sampling', 'Sale Stock',
+    # Unfinished goods (WIP) — sewing / finishing / trim stock must NEVER be
+    # counted as sellable product or warehouse stock (substring-matched).
+    'Sew/Stock', 'Sewing', 'Finishing',
     'PDACC', 'RMAT', 'FTRIM', 'PROD', 'SZONL', 'Dead/Stock Fabric',
     'FGPRD', 'INTRA', 'HWHFN', 'WHREC', 'KIHOL', 'OAHOL', 'GALHO',
     'OASIS', 'KIGAL', 'Buyin', 'Retir', 'WND', 'Wash', 'CUTT',
