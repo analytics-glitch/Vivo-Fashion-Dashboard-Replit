@@ -110,5 +110,6 @@
 - [Cross-surface reconcile must use real paths](cross-surface-reconcile-real-paths.md) — a reconciliation check that re-runs one shared SQL for both sides is tautological; each side must go through its page's production function + pure compare module with divergence tests.
 - [Style-grain single row](style-grain-single-row.md) — top-skus/SOR/velocity must GROUP BY style_name only (MAX dims); collection/product_type in the grain splits style units across rows.
 - [Ranked LIMIT before allocator](ranked-limit-before-allocator.md) — a small top-N cap upstream of a shared-pool (warehouse) allocator both hides valid rows and misallocates the pool; cap must be a generous safety bound + truncated flag.
+- [Product category map drift](product-category-map-drift.md) — category derives from CATEGORY_MAP(sub_category), not Odoo's raw column; missing subcats = blank category; SQL sync passes generated from the dict.
 - [Triad joins are SKU-only](triad-joins-sku-only.md) — all_sales↔all_inventory↔all_products_clean must join on SKU (16.7k inventory rows have blank style_name; name joins silently zero stock).
 - [Rebuild transform OOM + bg reaping](transform-oom-batching.md) — stream all_sales rebuild in 50k batches (fetchall OOM-killed silently); nohup in agent bash gets reaped — run batch jobs as workflows; merge-restarts auto-run destructive batch workflows.

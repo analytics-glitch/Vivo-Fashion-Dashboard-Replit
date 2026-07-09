@@ -34,6 +34,7 @@ CATEGORY_MAP = {
     'Knee Length Skirts':       'Skirts',
     'Maxi Skirts':              'Skirts',
     'Midi & Capri Skirts':      'Skirts',
+    'Short & Mini Skirts':      'Skirts',
     'Full Length Pants':        'Bottoms',
     'Leggings':                 'Bottoms',
     'Shorts & Skorts':          'Bottoms',
@@ -44,13 +45,32 @@ CATEGORY_MAP = {
     'Hoodies & Sweatshirts':    'Outerwear',
     'Sweaters & Ponchos':       'Outerwear',
     'Two-Piece Sets':           'Two-Piece Sets',
+    'Pants & Top Set':          'Two-Piece Sets',
+    'Skirts & Top Set':         'Two-Piece Sets',
+    'Pants & Waterfall Set':    'Two-Piece Sets',
+    "Men's Tops":               'Tops',
+    "Men's Bottoms":            'Bottoms',
     'Scarves':                  'Accessories',
     'Accessories':              'Accessories',
+    'Earrings':                 'Accessories',
+    'Necklaces':                'Accessories',
+    'Rings':                    'Accessories',
+    'Belts':                    'Accessories',
+    'Bangles & Bracelets':      'Accessories',
+    'Body Mists & Fragrances':  'Accessories',
     'Sample & Sale Items':      'Sale',
     'Gift Vouchers':            'Gift Vouchers',
 }
 
 VALID_SUBCATS = set(CATEGORY_MAP.keys())
+
+# SQL CASE fragment generated from CATEGORY_MAP so the in-Python mapping and
+# the SQL category-sync passes can never drift apart. Names/labels contain no
+# untrusted input; single quotes are escaped defensively anyway.
+CATEGORY_CASE_SQL = "CASE product_type " + " ".join(
+    "WHEN '{}' THEN '{}'".format(k.replace("'", "''"), v.replace("'", "''"))
+    for k, v in CATEGORY_MAP.items()
+) + " ELSE category END"
 
 
 def extract_size(sku):
@@ -443,35 +463,7 @@ def main():
     # ── Sync category to match subcat ────────────────────────────────────────
     cur.execute("""
         UPDATE all_products_clean
-        SET category = CASE product_type
-            WHEN 'Fitted Tops'           THEN 'Tops'
-            WHEN 'Loose Tops'            THEN 'Tops'
-            WHEN 'T-shirts & Tank Tops'  THEN 'Tops'
-            WHEN 'Bodysuits'             THEN 'Tops'
-            WHEN 'Midriff & Crop Tops'   THEN 'Tops'
-            WHEN 'Knee Length Dresses'   THEN 'Dresses'
-            WHEN 'Maxi Dresses'          THEN 'Dresses'
-            WHEN 'Midi & Capri Dresses'  THEN 'Dresses'
-            WHEN 'Short & Mini Dresses'  THEN 'Dresses'
-            WHEN 'Knee Length Skirts'    THEN 'Skirts'
-            WHEN 'Maxi Skirts'           THEN 'Skirts'
-            WHEN 'Midi & Capri Skirts'   THEN 'Skirts'
-            WHEN 'Full Length Pants'     THEN 'Bottoms'
-            WHEN 'Leggings'              THEN 'Bottoms'
-            WHEN 'Shorts & Skorts'       THEN 'Bottoms'
-            WHEN 'Culottes & Capri Pants' THEN 'Bottoms'
-            WHEN 'Jumpsuits & Playsuits' THEN 'Bottoms'
-            WHEN 'Jackets & Coats'       THEN 'Outerwear'
-            WHEN 'Waterfalls & Kimonos'  THEN 'Outerwear'
-            WHEN 'Hoodies & Sweatshirts' THEN 'Outerwear'
-            WHEN 'Sweaters & Ponchos'    THEN 'Outerwear'
-            WHEN 'Two-Piece Sets'        THEN 'Two-Piece Sets'
-            WHEN 'Scarves'               THEN 'Accessories'
-            WHEN 'Accessories'           THEN 'Accessories'
-            WHEN 'Sample & Sale Items'   THEN 'Sale'
-            WHEN 'Gift Vouchers'         THEN 'Gift Vouchers'
-            ELSE category
-        END
+        SET category = """ + CATEGORY_CASE_SQL + """
         WHERE product_type IS NOT NULL
     """)
     log.info("Categories synced to subcats")
@@ -574,24 +566,7 @@ def main():
             break
     cur.execute("""
         UPDATE all_products_clean
-        SET category = CASE product_type
-            WHEN 'Fitted Tops' THEN 'Tops' WHEN 'Loose Tops' THEN 'Tops'
-            WHEN 'T-shirts & Tank Tops' THEN 'Tops' WHEN 'Bodysuits' THEN 'Tops'
-            WHEN 'Midriff & Crop Tops' THEN 'Tops'
-            WHEN 'Knee Length Dresses' THEN 'Dresses' WHEN 'Maxi Dresses' THEN 'Dresses'
-            WHEN 'Midi & Capri Dresses' THEN 'Dresses' WHEN 'Short & Mini Dresses' THEN 'Dresses'
-            WHEN 'Knee Length Skirts' THEN 'Skirts' WHEN 'Maxi Skirts' THEN 'Skirts'
-            WHEN 'Midi & Capri Skirts' THEN 'Skirts'
-            WHEN 'Full Length Pants' THEN 'Bottoms' WHEN 'Leggings' THEN 'Bottoms'
-            WHEN 'Shorts & Skorts' THEN 'Bottoms' WHEN 'Culottes & Capri Pants' THEN 'Bottoms'
-            WHEN 'Jumpsuits & Playsuits' THEN 'Bottoms'
-            WHEN 'Jackets & Coats' THEN 'Outerwear' WHEN 'Waterfalls & Kimonos' THEN 'Outerwear'
-            WHEN 'Hoodies & Sweatshirts' THEN 'Outerwear' WHEN 'Sweaters & Ponchos' THEN 'Outerwear'
-            WHEN 'Two-Piece Sets' THEN 'Two-Piece Sets' WHEN 'Pants & Top Set' THEN 'Two-Piece Sets'
-            WHEN 'Skirts & Top Set' THEN 'Two-Piece Sets'
-            WHEN 'Scarves' THEN 'Accessories' WHEN 'Accessories' THEN 'Accessories'
-            WHEN 'Sample & Sale Items' THEN 'Sale' WHEN 'Gift Vouchers' THEN 'Gift Vouchers'
-            ELSE category END
+        SET category = """ + CATEGORY_CASE_SQL + """
         WHERE product_type IS NOT NULL
     """)
     log.info("Final category sync done")
