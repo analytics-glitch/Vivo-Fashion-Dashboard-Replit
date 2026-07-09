@@ -15461,7 +15461,7 @@ def analytics_replenish_gaps_export(
         wb, f"Replenish_Gaps_{safe}_{date.today().isoformat()}.xlsx")
 
 
-def _replen_item_history(q):
+def _replen_item_history(q, store="", date_from="", date_to=""):
     """Pick-list history tracker for one item ("why didn't store X get item Y?").
 
     Given a SKU, barcode or style-name query, returns every appearance of the
@@ -15570,6 +15570,24 @@ def _replen_item_history(q):
                 "acted_at": str(mark["acted_at"]) if (is_done and mark.get("acted_at")) else "",
             })
     out.sort(key=lambda x: (x["business_date"], x["pos_location"]), reverse=True)
+    label = out[0]["style_name"] or out[0]["product_name"] or out[0]["sku"]
+
+    # Full (unfiltered) store list so the frontend dropdown keeps every option
+    # even while a store filter is active.
+    all_stores = sorted({r["pos_location"] for r in out})
+
+    # Optional post-filters (store dropdown + date range). business_date is an
+    # ISO yyyy-mm-dd string, so lexicographic compare is date compare. Dates
+    # are validated to the ISO shape; anything else is ignored.
+    store = _replen_clean_text(store, 120)
+    date_from = date_from if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_from or "") else ""
+    date_to = date_to if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_to or "") else ""
+    if store:
+        out = [r for r in out if r["pos_location"] == store]
+    if date_from:
+        out = [r for r in out if r["business_date"] >= date_from]
+    if date_to:
+        out = [r for r in out if r["business_date"] <= date_to]
 
     dates = {r["business_date"] for r in out}
     stores = {r["pos_location"] for r in out}
@@ -15578,16 +15596,19 @@ def _replen_item_history(q):
         "dates": len(dates), "stores": len(stores),
         "store_days": len(out), "done": done_n,
         "not_done": len(out) - done_n,
-        "first_date": min(dates), "last_date": max(dates),
-    }
-    label = out[0]["style_name"] or out[0]["product_name"] or out[0]["sku"]
+        "first_date": min(dates) if dates else None,
+        "last_date": max(dates) if dates else None,
+    } if out else None
     return {"query": qn, "rows": out, "found_item": True, "appeared": True,
-            "item_label": label, "summary": summary}
+            "item_label": label, "all_stores": all_stores, "summary": summary}
 
 
 @app.get("/api/analytics/replenishment-item-history")
-def analytics_replenishment_item_history(q: str = Query(default="")):
-    return _replen_item_history(q)
+def analytics_replenishment_item_history(
+        q: str = Query(default=""), store: str = Query(default=""),
+        date_from: str = Query(default=""), date_to: str = Query(default="")):
+    return _replen_item_history(q, store=store, date_from=date_from,
+                                date_to=date_to)
 
 
 _REPLEN_HISTORY_XLSX_COLS = [
@@ -15598,11 +15619,15 @@ _REPLEN_HISTORY_XLSX_COLS = [
 
 
 @app.get("/api/analytics/replenishment-item-history/export")
-def analytics_replenishment_item_history_export(q: str = Query(default="")):
+def analytics_replenishment_item_history_export(
+        q: str = Query(default=""), store: str = Query(default=""),
+        date_from: str = Query(default=""), date_to: str = Query(default="")):
     # Excel export of the Track-an-item history — reuses the JSON builder
-    # verbatim (no SQL duplication), same pattern as the other replen exports.
+    # verbatim (no SQL duplication, same store/date filters), same pattern as
+    # the other replen exports.
     from openpyxl import Workbook
-    data = _replen_item_history(q)
+    data = _replen_item_history(q, store=store, date_from=date_from,
+                                date_to=date_to)
     wb = Workbook()
     ws = wb.active
     ws.title = _xlsx_sheet_title("Item History", set())

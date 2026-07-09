@@ -1331,30 +1331,38 @@ const TrackItemHistory = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [store, setStore] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(q.trim()), 450);
     return () => clearTimeout(t);
   }, [q]);
 
+  // A new item search resets the store/date filters (they belong to the item).
+  useEffect(() => { setStore(""); setDateFrom(""); setDateTo(""); }, [debouncedQ]);
+
+  const filterParams = { q: debouncedQ, store, date_from: dateFrom, date_to: dateTo };
+
   useEffect(() => {
     if (!debouncedQ) { setData(null); setError(""); return; }
     let cancel = false;
     setLoading(true);
     setError("");
-    api.get("/analytics/replenishment-item-history", { params: { q: debouncedQ } })
+    api.get("/analytics/replenishment-item-history", { params: { q: debouncedQ, store, date_from: dateFrom, date_to: dateTo } })
       .then(({ data: d }) => { if (!cancel) setData(d); })
       .catch((e) => { if (!cancel) { setData(null); setError(e?.response?.data?.detail || e.message); } })
       .finally(() => { if (!cancel) setLoading(false); });
     return () => { cancel = true; };
-  }, [debouncedQ]);
+  }, [debouncedQ, store, dateFrom, dateTo]);
 
   const exportXlsx = async () => {
     if (!debouncedQ) return;
     setExporting(true);
     try {
       const resp = await api.get("/analytics/replenishment-item-history/export", {
-        params: { q: debouncedQ }, responseType: "blob", forceFresh: true, timeout: 120000,
+        params: filterParams, responseType: "blob", forceFresh: true, timeout: 120000,
       });
       const blob = resp?.data instanceof Blob ? resp.data : new Blob([resp.data]);
       const url = URL.createObjectURL(blob);
@@ -1428,9 +1436,57 @@ const TrackItemHistory = () => {
 
       {!loading && !error && data?.appeared && (
         <>
-          <p className="text-[12.5px] text-foreground mb-3" data-testid="replen-track-summary">
-            <b>{data.item_label}</b> appeared on <b>{fmtNum(s.dates)}</b> pick-list day{s.dates === 1 ? "" : "s"} across <b>{fmtNum(s.stores)}</b> store{s.stores === 1 ? "" : "s"} ({s.first_date} → {s.last_date}) — <span className="text-emerald-800 font-bold">{fmtNum(s.done)}</span> store-day{s.done === 1 ? "" : "s"} picked, <span className="text-amber-800 font-bold">{fmtNum(s.not_done)}</span> not picked.
-          </p>
+          <div className="flex flex-wrap items-center gap-2 mb-3" data-testid="replen-track-filters">
+            <select
+              value={store}
+              onChange={(e) => setStore(e.target.value)}
+              className="text-[12px] border border-border rounded-full px-2.5 py-1.5 bg-white"
+              data-testid="replen-track-store-filter"
+              aria-label="Filter by store"
+            >
+              <option value="">All stores{data.all_stores?.length ? ` (${data.all_stores.length})` : ""}</option>
+              {(data.all_stores || []).map((st) => (
+                <option key={st} value={st}>{st}</option>
+              ))}
+            </select>
+            <label className="inline-flex items-center gap-1.5 text-[11.5px] text-muted">
+              From
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="text-[12px] border border-border rounded-full px-2.5 py-1 bg-white text-foreground"
+                data-testid="replen-track-date-from"
+              />
+            </label>
+            <label className="inline-flex items-center gap-1.5 text-[11.5px] text-muted">
+              To
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="text-[12px] border border-border rounded-full px-2.5 py-1 bg-white text-foreground"
+                data-testid="replen-track-date-to"
+              />
+            </label>
+            {(store || dateFrom || dateTo) && (
+              <button
+                type="button"
+                onClick={() => { setStore(""); setDateFrom(""); setDateTo(""); }}
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-muted hover:text-foreground border border-border px-2 py-1 rounded-full"
+                data-testid="replen-track-clear-filters"
+              >
+                <XIcon size={11} weight="bold" /> Clear filters
+              </button>
+            )}
+          </div>
+          {s ? (
+            <p className="text-[12.5px] text-foreground mb-3" data-testid="replen-track-summary">
+              <b>{data.item_label}</b> appeared on <b>{fmtNum(s.dates)}</b> pick-list day{s.dates === 1 ? "" : "s"} across <b>{fmtNum(s.stores)}</b> store{s.stores === 1 ? "" : "s"} ({s.first_date} → {s.last_date}) — <span className="text-emerald-800 font-bold">{fmtNum(s.done)}</span> store-day{s.done === 1 ? "" : "s"} picked, <span className="text-amber-800 font-bold">{fmtNum(s.not_done)}</span> not picked{(store || dateFrom || dateTo) ? <span className="text-muted"> (filtered view)</span> : null}.
+            </p>
+          ) : (
+            <Empty label={`No pick-list appearances of ${data.item_label || "this item"} match the current store/date filters.`} />
+          )}
           <div className="overflow-x-auto rounded-lg border border-border bg-white">
             <table className="w-full min-w-max text-[12px]" data-testid="replen-track-table">
               <thead className="bg-panel">
