@@ -155,6 +155,7 @@ const ReplenTable = ({ rows, sort, sorts, toggleSort, actuals, setActual, refs, 
           <SortableTh sortKey="days_lapsed" sort={sort} sorts={sorts} onSort={toggleSort} numeric className="px-3 py-2">Days lapsed</SortableTh>
           <SortableTh sortKey="last_sale" sort={sort} sorts={sorts} onSort={toggleSort} className="px-3 py-2">Last sold</SortableTh>
           <SortableTh sortKey="product_name" sort={sort} sorts={sorts} onSort={toggleSort} className="px-3 py-2">Product</SortableTh>
+          <SortableTh sortKey="category" sort={sort} sorts={sorts} onSort={toggleSort} className="px-3 py-2">Category</SortableTh>
           <SortableTh sortKey="size" sort={sort} sorts={sorts} onSort={toggleSort} className="px-3 py-2">Size</SortableTh>
           <SortableTh sortKey="barcode" sort={sort} sorts={sorts} onSort={toggleSort} className="px-3 py-2">Barcode</SortableTh>
           <SortableTh sortKey="bin" sort={sort} sorts={sorts} onSort={toggleSort} className="px-3 py-2">Bin</SortableTh>
@@ -190,6 +191,7 @@ const ReplenTable = ({ rows, sort, sorts, toggleSort, actuals, setActual, refs, 
                 <div className="font-medium break-words">{r.style_name || r.product_name || "—"}</div>
                 <div className="text-xs text-muted-foreground">{r.sku}{r.barcode ? ` · ${r.barcode}` : ""}</div>
               </td>
+              <td className="px-3 py-2 whitespace-nowrap">{r.category || <span className="text-muted-foreground text-[11px]">—</span>}</td>
               <td className="px-3 py-2 whitespace-nowrap">{r.size || "—"}</td>
               <td className="px-3 py-2 whitespace-nowrap font-mono text-[11px]">{r.barcode || "—"}</td>
               <td className="px-3 py-2 whitespace-nowrap">
