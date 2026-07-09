@@ -15461,6 +15461,167 @@ def analytics_replenish_gaps_export(
         wb, f"Replenish_Gaps_{safe}_{date.today().isoformat()}.xlsx")
 
 
+def _replen_item_history(q):
+    """Pick-list history tracker for one item ("why didn't store X get item Y?").
+
+    Given a SKU, barcode or style-name query, returns every appearance of the
+    item on the SOR pick-list snapshots (fact_replen_suggestion) — one row per
+    (business_date, store, sku), preferring the canonical 4-week demand-window
+    run when several runs exist for a day — joined to the done marks from the
+    recommendation_actions ledger.
+
+    Done-mark attribution: a mark only keeps its LATEST state (twin sku/barcode
+    rows, dedup'd here to the canonical SKU), so it is attributed to the MOST
+    RECENT list date on/before the mark's EAT acted-at day for that (store,
+    item); earlier appearances are shown as not picked. The item is passed as a
+    query parameter (never a path segment) because SKUs contain slashes.
+    """
+    _ensure_replen_tables()
+    qn = _replen_clean_text(q, 120)
+    if not qn:
+        return {"query": "", "rows": [], "found_item": False, "appeared": False,
+                "summary": None}
+    like = "%" + qn + "%"
+    sugg = _users_exec(
+        "SELECT DISTINCT ON (business_date, pos_location, sku) "
+        " business_date::text AS business_date, pos_location, sku, "
+        " COALESCE(barcode,'') AS barcode, COALESCE(style_name,'') AS style_name, "
+        " COALESCE(size,'') AS size, COALESCE(demand_weeks,0) AS demand_weeks, "
+        " COALESCE(suggested_qty,0) AS suggested_qty, deploy_now "
+        "FROM fact_replen_suggestion "
+        "WHERE upper(sku)=upper(%s) "
+        "   OR (COALESCE(barcode,'')<>'' AND barcode=%s) "
+        "   OR style_name ILIKE %s "
+        "ORDER BY business_date, pos_location, sku, "
+        " CASE WHEN demand_weeks=4 THEN 0 ELSE 1 END",
+        (qn, qn, like), fetch=True) or []
+
+    # Does the item exist in the product master at all? Distinguishes "never on
+    # any replenishment list" from "no such item".
+    lit = _sql_str(qn)
+    prod = run_query(
+        "SELECT sku, COALESCE(product_name,'') AS product_name, "
+        " COALESCE(style_name,'') AS style_name, COALESCE(barcode,'') AS barcode "
+        "FROM all_products_clean "
+        "WHERE upper(sku)=upper('" + lit + "') OR barcode='" + lit + "' "
+        "   OR style_name ILIKE '%" + lit + "%' LIMIT 200") or []
+    found_item = bool(prod) or bool(sugg)
+    prod_by_sku = {p["sku"]: p for p in prod}
+
+    if not sugg:
+        return {"query": qn, "rows": [], "found_item": found_item,
+                "appeared": False,
+                "item_label": (prod[0]["style_name"] or prod[0]["product_name"]) if prod else "",
+                "summary": None}
+
+    # Group appearances per (store, canonical sku); collect twin rec_keys.
+    groups = {}
+    rec_keys = set()
+    for r in sugg:
+        key = (r["pos_location"], r["sku"])
+        groups.setdefault(key, []).append(r)
+        rec_keys.add(f"{r['pos_location']}|sku|{r['sku']}")
+        if r["barcode"]:
+            rec_keys.add(f"{r['pos_location']}|barcode|{r['barcode']}")
+    marks = {}
+    if rec_keys:
+        mrows = _users_exec(
+            "SELECT rec_key, COALESCE(actual_units,0) AS actual_units, "
+            " COALESCE(transfer_ref,'') AS transfer_ref, "
+            " COALESCE(acted_by,'') AS acted_by, acted_at, "
+            " (acted_at AT TIME ZONE 'Africa/Nairobi')::date::text AS acted_day "
+            "FROM recommendation_actions "
+            "WHERE rec_type='replenish' AND status='done' AND rec_key = ANY(%s)",
+            (list(rec_keys),), fetch=True) or []
+        for m in mrows:
+            parts = (m["rec_key"] or "").split("|", 2)
+            if len(parts) == 3:
+                marks[(parts[0], parts[1], parts[2])] = m
+
+    out = []
+    for (pos, sku), rows_ in groups.items():
+        barcode = next((r["barcode"] for r in rows_ if r["barcode"]), "")
+        # Twin-row dedup: prefer the sku-kind mark, fall back to barcode-kind.
+        mark = marks.get((pos, "sku", sku)) or (
+            marks.get((pos, "barcode", barcode)) if barcode else None)
+        done_date = None
+        if mark and mark.get("acted_day"):
+            qualifying = [r["business_date"] for r in rows_
+                          if r["business_date"] <= mark["acted_day"]]
+            done_date = max(qualifying) if qualifying else None
+        for r in rows_:
+            is_done = bool(mark) and r["business_date"] == done_date
+            p = prod_by_sku.get(sku) or {}
+            out.append({
+                "business_date": r["business_date"],
+                "pos_location": pos,
+                "sku": sku,
+                "barcode": barcode,
+                "style_name": r["style_name"] or p.get("style_name") or "",
+                "product_name": p.get("product_name") or "",
+                "size": r["size"],
+                "demand_weeks": int(r["demand_weeks"] or 0),
+                "suggested_qty": int(r["suggested_qty"] or 0),
+                "deploy_now": bool(r["deploy_now"]),
+                "done": is_done,
+                "actual_units": int(mark["actual_units"]) if is_done else 0,
+                "transfer_ref": (mark["transfer_ref"] or "") if is_done else "",
+                "acted_by": (mark["acted_by"] or "") if is_done else "",
+                "acted_at": str(mark["acted_at"]) if (is_done and mark.get("acted_at")) else "",
+            })
+    out.sort(key=lambda x: (x["business_date"], x["pos_location"]), reverse=True)
+
+    dates = {r["business_date"] for r in out}
+    stores = {r["pos_location"] for r in out}
+    done_n = sum(1 for r in out if r["done"])
+    summary = {
+        "dates": len(dates), "stores": len(stores),
+        "store_days": len(out), "done": done_n,
+        "not_done": len(out) - done_n,
+        "first_date": min(dates), "last_date": max(dates),
+    }
+    label = out[0]["style_name"] or out[0]["product_name"] or out[0]["sku"]
+    return {"query": qn, "rows": out, "found_item": True, "appeared": True,
+            "item_label": label, "summary": summary}
+
+
+@app.get("/api/analytics/replenishment-item-history")
+def analytics_replenishment_item_history(q: str = Query(default="")):
+    return _replen_item_history(q)
+
+
+_REPLEN_HISTORY_XLSX_COLS = [
+    "List Date", "Store", "Product / Style", "Size", "SKU", "Barcode",
+    "Window (wks)", "Suggested", "Deploy Now", "Done", "Actual Units",
+    "Transfer Ref", "Marked By", "Marked At",
+]
+
+
+@app.get("/api/analytics/replenishment-item-history/export")
+def analytics_replenishment_item_history_export(q: str = Query(default="")):
+    # Excel export of the Track-an-item history — reuses the JSON builder
+    # verbatim (no SQL duplication), same pattern as the other replen exports.
+    from openpyxl import Workbook
+    data = _replen_item_history(q)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = _xlsx_sheet_title("Item History", set())
+    _xlsx_header(ws, _REPLEN_HISTORY_XLSX_COLS)
+    for r in data.get("rows", []):
+        ws.append([
+            r["business_date"], r["pos_location"],
+            r["style_name"] or r["product_name"], r["size"],
+            r["sku"], r["barcode"], r["demand_weeks"], r["suggested_qty"],
+            "Yes" if r["deploy_now"] else "", "Done" if r["done"] else "Not picked",
+            r["actual_units"] if r["done"] else "",
+            r["transfer_ref"], r["acted_by"],
+            (r["acted_at"][:16] if r["acted_at"] else ""),
+        ])
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", (data.get("query") or "item")).strip("_") or "item"
+    return _xlsx_response(
+        wb, f"Replen_Item_History_{safe}_{date.today().isoformat()}.xlsx")
+
+
 # ── Replenishment SOR engine (Phase 1) ───────────────────────────────────────
 # Days to the next dispatch slot used to bound the conservative projected-SOR
 # uplift (spec §7/§10). Kenya metro runs ~2×/week, so the next slot is ~3.5 days

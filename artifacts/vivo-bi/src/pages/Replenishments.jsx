@@ -9,7 +9,7 @@ import {
   CheckCircle, Package, ArrowCounterClockwise, MagnifyingGlass,
   Warning, Info, CaretDown, CaretRight, Clock, Lightning,
   ArrowsClockwise, X as XIcon, Prohibit, ArrowUUpLeft,
-  Truck, CalendarBlank, Trash, PaperPlaneTilt,
+  Truck, CalendarBlank, Trash, PaperPlaneTilt, DownloadSimple,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import ReplenishmentTransferReport from "@/components/ReplenishmentTransferReport";
@@ -1115,6 +1115,9 @@ const Replenishments = () => {
       {/* Transfer Tracking — reconcile marked-done items vs the Odoo transfer doc. */}
       <ReplenishmentTransferReport />
 
+      {/* Track an item — full pick-list history for one SKU / barcode / style. */}
+      <TrackItemHistory />
+
       {/* Completed report (admin/owner). */}
       {isAdmin && (
         <div className="card-white p-5" data-testid="replen-completed-card">
@@ -1312,6 +1315,176 @@ const BatchCard = ({ batch, onMarkDone, onDelete, savingKey, canDelete = true })
             </tbody>
           </table>
         </div>
+      )}
+    </div>
+  );
+};
+
+// Track an item — searches the immutable pick-list snapshots for one SKU /
+// barcode / style and shows every date it appeared, per store, with the done
+// state from the recommendations ledger. Read-only; visible to all page users.
+// The item goes to the API as a QUERY PARAM (SKUs contain slashes, e.g. 1X/2X).
+const TrackItemHistory = () => {
+  const [q, setQ] = useState("");
+  const [debouncedQ, setDebouncedQ] = useState("");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQ(q.trim()), 450);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  useEffect(() => {
+    if (!debouncedQ) { setData(null); setError(""); return; }
+    let cancel = false;
+    setLoading(true);
+    setError("");
+    api.get("/analytics/replenishment-item-history", { params: { q: debouncedQ } })
+      .then(({ data: d }) => { if (!cancel) setData(d); })
+      .catch((e) => { if (!cancel) { setData(null); setError(e?.response?.data?.detail || e.message); } })
+      .finally(() => { if (!cancel) setLoading(false); });
+    return () => { cancel = true; };
+  }, [debouncedQ]);
+
+  const exportXlsx = async () => {
+    if (!debouncedQ) return;
+    setExporting(true);
+    try {
+      const resp = await api.get("/analytics/replenishment-item-history/export", {
+        params: { q: debouncedQ }, responseType: "blob", forceFresh: true, timeout: 120000,
+      });
+      const blob = resp?.data instanceof Blob ? resp.data : new Blob([resp.data]);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `Replen_Item_History_${debouncedQ.replace(/[^A-Za-z0-9._-]+/g, "_") || "item"}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Excel export downloaded.");
+    } catch (e) {
+      toast.error("Export failed — " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const rows = data?.rows || [];
+  const s = data?.summary;
+  return (
+    <div className="card-white p-5" data-testid="replen-track-item-card">
+      <SectionTitle
+        title={<span className="inline-flex items-center gap-2"><MagnifyingGlass size={16} weight="duotone" className="text-brand-deep" /> Track an item</span>}
+        subtitle="Every date an item appeared on the daily replenishment pick list, per store, with whether it was actually picked. Answers &ldquo;why hasn't store X received item Y?&rdquo; — search by SKU, barcode or style name."
+      />
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="flex items-center gap-2 input-pill" style={{ maxWidth: 380, flex: "1 1 260px" }}>
+          <MagnifyingGlass size={14} className="text-muted" />
+          <input
+            placeholder="SKU, barcode or style name…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            data-testid="replen-track-input"
+            className="bg-transparent outline-none text-[13px] w-full"
+          />
+          {q && (
+            <button type="button" onClick={() => setQ("")} className="text-muted hover:text-foreground" aria-label="Clear item search">
+              <XIcon size={13} weight="bold" />
+            </button>
+          )}
+        </div>
+        {rows.length > 0 && (
+          <button
+            type="button"
+            onClick={exportXlsx}
+            disabled={exporting}
+            className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-brand-deep border border-border hover:bg-panel disabled:opacity-50 px-2.5 py-1.5 rounded-full"
+            data-testid="replen-track-export"
+          >
+            <DownloadSimple size={13} weight="bold" /> {exporting ? "Exporting…" : "Export Excel"}
+          </button>
+        )}
+      </div>
+
+      {!debouncedQ && (
+        <p className="text-[12px] text-muted" data-testid="replen-track-hint">
+          Type a SKU, barcode or style name to see its full pick-list history.
+        </p>
+      )}
+      {loading && <Loading label="Searching pick-list history…" />}
+      {error && <ErrorBox message={error} />}
+
+      {!loading && !error && debouncedQ && data && !data.appeared && (
+        data.found_item ? (
+          <Empty label={`${data.item_label ? `"${data.item_label}"` : "This item"} exists in the catalogue but has never appeared on a replenishment pick list — no store has proven local demand with warehouse cover for it yet. Seed a first allocation from the Allocations tool.`} />
+        ) : (
+          <Empty label={`No item matches "${data.query}" — check the SKU, barcode or style spelling.`} />
+        )
+      )}
+
+      {!loading && !error && data?.appeared && (
+        <>
+          <p className="text-[12.5px] text-foreground mb-3" data-testid="replen-track-summary">
+            <b>{data.item_label}</b> appeared on <b>{fmtNum(s.dates)}</b> pick-list day{s.dates === 1 ? "" : "s"} across <b>{fmtNum(s.stores)}</b> store{s.stores === 1 ? "" : "s"} ({s.first_date} → {s.last_date}) — <span className="text-emerald-800 font-bold">{fmtNum(s.done)}</span> store-day{s.done === 1 ? "" : "s"} picked, <span className="text-amber-800 font-bold">{fmtNum(s.not_done)}</span> not picked.
+          </p>
+          <div className="overflow-x-auto rounded-lg border border-border bg-white">
+            <table className="w-full min-w-max text-[12px]" data-testid="replen-track-table">
+              <thead className="bg-panel">
+                <tr className="text-left">
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">List date</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">Store</th>
+                  <th className="px-3 py-2 font-semibold">Product / Style</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">Size</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">SKU</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">Barcode</th>
+                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Demand lookback window of the snapshot run">Window</th>
+                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Suggested</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">Status</th>
+                  <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Actual</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">Transfer ref</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">By</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={`${r.business_date}|${r.pos_location}|${r.sku}`} className={`border-t border-border/50 ${i % 2 === 0 ? "bg-white" : "bg-panel/30"}`} data-testid={`replen-track-row-${i}`}>
+                    <td className="px-3 py-2 whitespace-nowrap tabular-nums font-semibold">{r.business_date}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">{r.pos_location}</td>
+                    <td className="px-3 py-2 break-words max-w-[260px]" style={{ whiteSpace: "normal", wordBreak: "break-word" }}>{r.style_name || r.product_name || "—"}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">{r.size || "—"}</td>
+                    <td className="px-3 py-2 whitespace-nowrap font-mono text-[11px]">{r.sku}</td>
+                    <td className="px-3 py-2 whitespace-nowrap font-mono text-[11px]">{r.barcode || "—"}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{r.demand_weeks ? `${r.demand_weeks}w` : "—"}</td>
+                    <td className="px-3 py-2 text-right tabular-nums font-bold">{fmtNum(r.suggested_qty)}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <span className="inline-flex items-center gap-1.5">
+                        {r.done
+                          ? <span className="inline-flex items-center gap-1 bg-emerald-100 text-emerald-900 text-[10px] font-bold px-2 py-0.5 rounded-full"><CheckCircle size={11} weight="fill" /> Picked</span>
+                          : <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-900 text-[10px] font-bold px-2 py-0.5 rounded-full">Not picked</span>}
+                        {r.deploy_now && (
+                          <span className="inline-flex items-center gap-0.5 bg-amber-200 text-amber-900 border border-amber-400 text-[9.5px] font-bold px-1.5 py-0.5 rounded-full" title="Was flagged deploy-now: proven-demand store at zero shelf stock with warehouse cover.">
+                            <Lightning size={9} weight="fill" /> DEPLOY NOW
+                          </span>
+                        )}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">{r.done ? <span className="font-bold text-emerald-800">{fmtNum(r.actual_units)}</span> : <span className="text-muted">—</span>}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {r.transfer_ref ? <span className="inline-flex items-center bg-sky-100 text-sky-900 text-[11px] font-semibold px-2 py-0.5 rounded-full font-mono">{r.transfer_ref}</span> : <span className="text-muted">—</span>}
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">{r.acted_by || <span className="text-muted">—</span>}</td>
+                    <td className="px-3 py-2 whitespace-nowrap text-[11px] tabular-nums text-muted">{r.acted_at ? r.acted_at.replace("T", " ").slice(0, 16) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );
