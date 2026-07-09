@@ -20,8 +20,6 @@ import {
  *   4. The full movement history.
  * The only writer is POST /api/production/move (optionally carrying sku + size).
  */
-const SEWING_LINE_OPTS = ["A", "B", "C", "D", "E"];
-
 function ageClasses(days) {
   const d = Number(days) || 0;
   if (d > 7) return "bg-rose-50 text-rose-700 border-rose-200";
@@ -217,7 +215,6 @@ function JourneyStepper({ steps }) {
 function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
   const [toStage, setToStage] = useState(allowed[0] || "");
   const [qty, setQty] = useState(row.qty_here);
-  const [sewingLine, setSewingLine] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -227,12 +224,16 @@ function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
     ? row.sku
     : "Whole order";
 
-  // A line is captured only when sending INTO sewing. Repairs -> Sewing
-  // auto-routes back to the piece's original line (read-only) when one is on
-  // record; otherwise the operator must pick one.
+  // Sewing lines are DERIVED from the Odoo stock location now, so no line is
+  // ever required on a move. Repairs -> Sewing still shows the original line
+  // it will auto-route back to when one is on record.
   const intoSewing = toStage === "sewing";
   const autoLine = row.stage === "repairs" ? row.last_sewing_line || null : null;
-  const needLinePicker = intoSewing && !autoLine;
+  // Rows sitting in a LIVE stage (Waiting Sewing / Sewing) can't be moved
+  // manually — they advance as stock moves in Odoo. Finishing is live too but
+  // keeps its manual outs (washing/repairs/defects/warehouse).
+  const liveLocked = row.live && allowed.length === 0;
+  const clearOnly = row.stage === "cutting";
 
   const move = async () => {
     setError(null);
@@ -240,7 +241,6 @@ function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
     if (!toStage) { setError("Pick a destination."); return; }
     if (!(q > 0)) { setError("Qty must be > 0."); return; }
     if (q > Number(row.qty_here)) { setError(`Only ${fmtQty(row.qty_here)} here.`); return; }
-    if (needLinePicker && !sewingLine) { setError("Pick a sewing line (A–E)."); return; }
     setSubmitting(true);
     try {
       const { data } = await api.post("/production/move", {
@@ -250,7 +250,7 @@ function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
         qty: q,
         sku: row.sku || undefined,
         size: row.size || undefined,
-        sewing_line: intoSewing ? (autoLine || sewingLine || undefined) : undefined,
+        sewing_line: intoSewing ? (autoLine || undefined) : undefined,
       });
       onMoved?.(data);
     } catch (err) {
@@ -273,20 +273,29 @@ function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
           <div className="text-[14px] font-bold text-brand leading-none tabular-nums">{fmtQty(row.qty_here)}</div>
           <div className="text-[9.5px] text-muted">here</div>
         </div>
-        {isTerminal ? (
+        {liveLocked ? (
+          <span
+            className="text-[10.5px] font-semibold text-sky-700 bg-sky-50 border border-sky-200 rounded px-1.5 py-1 shrink-0"
+            title="Advances automatically as stock moves between locations in Odoo."
+          >
+            Live from Odoo{row.last_sewing_line ? ` · Line ${row.last_sewing_line}` : ""}
+          </span>
+        ) : isTerminal ? (
           <span className="text-[11px] text-muted italic shrink-0">Final stage</span>
         ) : (
           <div className="flex items-center gap-1.5 shrink-0">
-            <select
-              value={toStage}
-              onChange={(e) => setToStage(e.target.value)}
-              className="input-pill text-[11.5px] py-1"
-              data-testid={`prod-move-to-${row.stage}-${row.sku || "whole"}`}
-            >
-              {allowed.map((s) => (
-                <option key={s} value={s}>{stageLabel(s)}</option>
-              ))}
-            </select>
+            {!clearOnly && (
+              <select
+                value={toStage}
+                onChange={(e) => setToStage(e.target.value)}
+                className="input-pill text-[11.5px] py-1"
+                data-testid={`prod-move-to-${row.stage}-${row.sku || "whole"}`}
+              >
+                {allowed.map((s) => (
+                  <option key={s} value={s}>{stageLabel(s)}</option>
+                ))}
+              </select>
+            )}
             {intoSewing && autoLine && (
               <span
                 className="text-[10.5px] font-semibold text-[#0f3d24] bg-emerald-50 border border-emerald-200 rounded px-1.5 py-1 whitespace-nowrap"
@@ -295,19 +304,6 @@ function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
               >
                 Line {autoLine}
               </span>
-            )}
-            {needLinePicker && (
-              <select
-                value={sewingLine}
-                onChange={(e) => setSewingLine(e.target.value)}
-                className="input-pill text-[11.5px] py-1"
-                data-testid={`prod-move-line-${row.stage}-${row.sku || "whole"}`}
-              >
-                <option value="">Line…</option>
-                {SEWING_LINE_OPTS.map((l) => (
-                  <option key={l} value={l}>Line {l}</option>
-                ))}
-              </select>
             )}
             <input
               type="number"
@@ -323,9 +319,10 @@ function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
               onClick={move}
               disabled={submitting}
               className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-2.5 py-1.5 rounded-md disabled:opacity-50"
+              title={clearOnly ? "Clear to the sewing floor — tracked live from Odoo stock after this" : undefined}
               data-testid={`prod-move-btn-${row.stage}-${row.sku || "whole"}`}
             >
-              {submitting ? "…" : <ArrowRight size={12} weight="bold" />}
+              {submitting ? "…" : clearOnly ? <>Clear <ArrowRight size={12} weight="bold" /></> : <ArrowRight size={12} weight="bold" />}
             </button>
           </div>
         )}
@@ -339,32 +336,24 @@ function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
   );
 }
 
-/** Advance an entire stage's units to the next stage in one action. */
+/** Advance an entire stage's units to the next stage in one action. Cutting's
+ * only action is "Clear" — hand the cut bundles to the sewing floor. */
 function WholeStageMove({ orderRef, stage, allowed, onMoved }) {
+  const clearOnly = stage === "cutting";
   const [toStage, setToStage] = useState(allowed[0] || "");
-  const [sewingLine, setSewingLine] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
-  const intoSewing = toStage === "sewing";
-  const fromRepairs = stage === "repairs";
-  // Repairs -> Sewing auto-routes each piece back to its own original line, so no
-  // line is required; but pieces with no line on record need a fallback, so we
-  // still offer an OPTIONAL picker. Any other move into Sewing requires one line.
-  const needLine = intoSewing && !fromRepairs;
-  const offerFallback = intoSewing && fromRepairs;
-
   const move = async () => {
     setError(null);
-    if (!toStage) { setError("Pick a destination."); return; }
-    if (needLine && !sewingLine) { setError("Pick a sewing line (A–E)."); return; }
+    const dest = clearOnly ? "waiting_sewing" : toStage;
+    if (!dest) { setError("Pick a destination."); return; }
     setSubmitting(true);
     try {
       const { data } = await api.post("/production/bulk-move", {
         order_refs: [orderRef],
         from_stage: stage,
-        to_stage: toStage,
-        sewing_line: intoSewing ? (sewingLine || undefined) : undefined,
+        to_stage: dest,
       });
       const r = data?.results?.[0];
       if (r && r.ok === false) { setError(r.error || "Move failed"); return; }
@@ -379,32 +368,23 @@ function WholeStageMove({ orderRef, stage, allowed, onMoved }) {
   return (
     <div className="border-t border-line px-3 py-2 bg-panel/20" data-testid={`prod-whole-move-${stage}`}>
       <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-[11px] font-semibold text-[#0f3d24] mr-1">Move whole order</span>
-        <select
-          value={toStage}
-          onChange={(e) => setToStage(e.target.value)}
-          className="input-pill text-[11.5px] py-1"
-          data-testid={`prod-whole-to-${stage}`}
-        >
-          {allowed.map((s) => (
-            <option key={s} value={s}>{stageLabel(s)}</option>
-          ))}
-        </select>
-        {(needLine || offerFallback) && (
+        <span className="text-[11px] font-semibold text-[#0f3d24] mr-1">
+          {clearOnly ? "Clear whole order to the sewing floor" : "Move whole order"}
+        </span>
+        {!clearOnly && (
           <select
-            value={sewingLine}
-            onChange={(e) => setSewingLine(e.target.value)}
+            value={toStage}
+            onChange={(e) => setToStage(e.target.value)}
             className="input-pill text-[11.5px] py-1"
-            data-testid={`prod-whole-line-${stage}`}
+            data-testid={`prod-whole-to-${stage}`}
           >
-            <option value="">{offerFallback ? "Fallback line…" : "Line…"}</option>
-            {SEWING_LINE_OPTS.map((l) => (
-              <option key={l} value={l}>Line {l}</option>
+            {allowed.map((s) => (
+              <option key={s} value={s}>{stageLabel(s)}</option>
             ))}
           </select>
         )}
-        {offerFallback && (
-          <span className="text-[10.5px] text-muted italic">auto-routes to original line; fallback for unknowns</span>
+        {clearOnly && (
+          <span className="text-[10.5px] text-muted italic">tracked live from Odoo stock after this</span>
         )}
         <button
           type="button"
@@ -413,7 +393,7 @@ function WholeStageMove({ orderRef, stage, allowed, onMoved }) {
           className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-2.5 py-1.5 rounded-md disabled:opacity-50"
           data-testid={`prod-whole-btn-${stage}`}
         >
-          {submitting ? "…" : <>Move all <ArrowRight size={12} weight="bold" /></>}
+          {submitting ? "…" : clearOnly ? <>Clear all <ArrowRight size={12} weight="bold" /></> : <>Move all <ArrowRight size={12} weight="bold" /></>}
         </button>
       </div>
       {error && (
@@ -431,7 +411,8 @@ function StageGroup({ orderRef, group, onMoved }) {
   const total = rows.reduce((s, r) => s + (Number(r.qty_here) || 0), 0);
   const maxDays = rows.reduce((m, r) => Math.max(m, Number(r.days_in_stage) || 0), 0);
   const allowed = group.allowed_next || [];
-  const isTerminal = group.is_terminal || allowed.length === 0;
+  const live = rows.some((r) => r.live);
+  const isTerminal = !live && (group.is_terminal || allowed.length === 0);
   const [open, setOpen] = useState(rows.length <= 10);
 
   return (
@@ -444,9 +425,18 @@ function StageGroup({ orderRef, group, onMoved }) {
         <div className="flex items-center gap-1.5 min-w-0">
           {open ? <CaretDown size={13} /> : <CaretRight size={13} />}
           <span className="font-semibold text-[13px] text-[#0f3d24] truncate">{group.stage_name}</span>
-          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${ageClasses(maxDays)}`}>
-            {fmtDays(maxDays)} oldest
-          </span>
+          {live ? (
+            <span
+              className="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-sky-50 text-sky-700 border-sky-200"
+              title="Derived live from Odoo stock locations."
+            >
+              live
+            </span>
+          ) : (
+            <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${ageClasses(maxDays)}`}>
+              {fmtDays(maxDays)} oldest
+            </span>
+          )}
         </div>
         <div className="text-right shrink-0">
           <span className="text-[14px] font-extrabold text-brand tabular-nums">{fmtQty(total)}</span>
@@ -455,7 +445,7 @@ function StageGroup({ orderRef, group, onMoved }) {
       </button>
       {open && (
         <div>
-          {!isTerminal && rows.length > 1 && (
+          {!isTerminal && allowed.length > 0 && rows.length > 1 && (
             <WholeStageMove
               orderRef={orderRef}
               stage={group.stage}

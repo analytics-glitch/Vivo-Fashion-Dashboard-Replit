@@ -364,7 +364,6 @@ function DropStrip({ buckets, today, activeDrop, onPick }) {
   );
 }
 
-const SEWING_LINE_OPTS = ["A", "B", "C", "D", "E"];
 
 /**
  * Bulk-advance toolbar for the active order table. The operator picks a FROM
@@ -376,7 +375,6 @@ const SEWING_LINE_OPTS = ["A", "B", "C", "D", "E"];
 function ReportBulkToolbar({ fromStages, flowStages, count, busy, msg, onMove, onClear }) {
   const [fromStage, setFromStage] = useState("");
   const [toStage, setToStage] = useState("");
-  const [sewingLine, setSewingLine] = useState("");
   const [err, setErr] = useState(null);
   const [confirm, setConfirm] = useState(null);
 
@@ -397,20 +395,13 @@ function ReportBulkToolbar({ fromStages, flowStages, count, busy, msg, onMove, o
   }, [allowed, toStage]);
 
   const stageName = (key) => flowStages.find((s) => s.stage_key === key)?.stage_name || String(key).replace(/_/g, " ");
-  const intoSewing = toStage === "sewing";
-  const fromRepairs = fromStage === "repairs";
-  // Repairs -> Sewing auto-routes each piece to its original line, so no line is
-  // required — but pieces with no line on record need a fallback, so still offer
-  // an OPTIONAL picker. Any other move into Sewing needs one chosen line.
-  const needLine = intoSewing && !fromRepairs;
-  const offerFallback = intoSewing && fromRepairs;
-
+  // Sewing lines are DERIVED from Odoo stock locations now — no picker needed;
+  // Repairs -> Sewing still auto-routes each piece to its original line.
   const submit = () => {
     setErr(null);
     if (!fromStage) { setErr("Pick a current stage."); return; }
     if (!toStage) { setErr("Pick a destination."); return; }
-    if (needLine && !sewingLine) { setErr("Pick a sewing line (A–E)."); return; }
-    setConfirm({ fromStage, toStage, sewingLine: intoSewing ? (sewingLine || undefined) : undefined });
+    setConfirm({ fromStage, toStage, sewingLine: undefined });
   };
 
   if (confirm) {
@@ -475,22 +466,6 @@ function ReportBulkToolbar({ fromStages, flowStages, count, busy, msg, onMove, o
             <option key={k} value={k}>{stageName(k)}</option>
           ))}
         </select>
-        {(needLine || offerFallback) && (
-          <select
-            value={sewingLine}
-            onChange={(e) => setSewingLine(e.target.value)}
-            className="input-pill text-[12px]"
-            data-testid="production-report-bulk-line"
-          >
-            <option value="">{offerFallback ? "Fallback line…" : "Sewing line…"}</option>
-            {SEWING_LINE_OPTS.map((l) => (
-              <option key={l} value={l}>Line {l}</option>
-            ))}
-          </select>
-        )}
-        {offerFallback && (
-          <span className="text-[11px] text-muted italic">auto-routes to original line; fallback for unknowns</span>
-        )}
         <button
           type="button"
           onClick={submit}
@@ -848,7 +823,9 @@ export default function ProductionReport() {
   }, [filtered]);
 
   // Stages that at least one selected order currently holds units in — these are
-  // the valid "from" stages for a bulk advance (one move per from-stage).
+  // the valid "from" stages for a bulk advance (one move per from-stage). Stages
+  // with no manual next step (the LIVE Waiting Sewing / Sewing stages derived
+  // from Odoo stock) are excluded — they advance on their own.
   const selectableFromStages = useMemo(() => {
     const keys = new Set();
     for (const o of selectedOrders) {
@@ -856,7 +833,7 @@ export default function ProductionReport() {
         if (Number(v) > 0 && !terminalKeys.has(k)) keys.add(k);
       }
     }
-    return flowStages.filter((s) => keys.has(s.stage_key));
+    return flowStages.filter((s) => keys.has(s.stage_key) && (s.allowed_next || []).length > 0);
   }, [selectedOrders, flowStages, terminalKeys]);
 
   const lifecycleOptions = useMemo(

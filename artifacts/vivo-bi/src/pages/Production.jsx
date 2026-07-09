@@ -52,12 +52,12 @@ function fmtNairobi(iso) {
   }
 }
 
-const SEWING_LINE_OPTS = ["A", "B", "C", "D", "E"];
-
-/** Per-column bulk-advance bar shown when ≥1 card in this stage is selected. */
+/** Per-column bulk-advance bar shown when ≥1 card in this stage is selected.
+ * Cutting is a special case: its only action is "Clear" — hand the bundles to
+ * the sewing floor; from there the board tracks them live from Odoo stock. */
 function ColumnBulkBar({ stageKey, allowed, count, busy, onMove, onClear }) {
+  const clearOnly = stageKey === "cutting";
   const [toStage, setToStage] = useState(allowed[0] || "");
-  const [sewingLine, setSewingLine] = useState("");
   const [err, setErr] = useState(null);
   const [confirm, setConfirm] = useState(null);
 
@@ -65,32 +65,27 @@ function ColumnBulkBar({ stageKey, allowed, count, busy, onMove, onClear }) {
     if (!allowed.includes(toStage)) setToStage(allowed[0] || "");
   }, [allowed, toStage]);
 
-  const intoSewing = toStage === "sewing";
-  const fromRepairs = stageKey === "repairs";
-  // Repairs -> Sewing auto-routes each piece to its original line, so no line is
-  // required — but pieces with no line on record need a fallback, so still offer
-  // an OPTIONAL picker. Any other move into Sewing needs one chosen line.
-  const needLine = intoSewing && !fromRepairs;
-  const offerFallback = intoSewing && fromRepairs;
-
   const stageLabel = (k) => String(k || "").replace(/_/g, " ");
 
   const submit = () => {
     setErr(null);
-    if (!toStage) { setErr("Pick a destination."); return; }
-    if (needLine && !sewingLine) { setErr("Pick a sewing line (A–E)."); return; }
-    setConfirm({ toStage, sewingLine: intoSewing ? (sewingLine || undefined) : undefined });
+    const dest = clearOnly ? "waiting_sewing" : toStage;
+    if (!dest) { setErr("Pick a destination."); return; }
+    setConfirm({ toStage: dest });
   };
 
   if (confirm) {
     return (
       <div className="px-2 py-2 border-t border-line bg-brand/5" data-testid={`production-bulkbar-${stageKey}`}>
-        <div className="text-[11px] font-bold text-[#0f3d24] mb-1">Confirm move</div>
+        <div className="text-[11px] font-bold text-[#0f3d24] mb-1">{clearOnly ? "Confirm clear" : "Confirm move"}</div>
         <div className="text-[10.5px] text-[#0f3d24] mb-2" data-testid={`production-bulk-confirm-summary-${stageKey}`}>
-          Move <span className="font-bold">{count}</span> order{count === 1 ? "" : "s"} from{" "}
-          <span className="font-semibold capitalize">{stageLabel(stageKey)}</span> to{" "}
-          <span className="font-semibold capitalize">{stageLabel(confirm.toStage)}</span>
-          {confirm.sewingLine ? <> · line <span className="font-semibold">{confirm.sewingLine}</span></> : null}?
+          {clearOnly ? (
+            <>Clear <span className="font-bold">{count}</span> order{count === 1 ? "" : "s"} out of Cutting to the sewing floor? From here on the board tracks the pieces live from Odoo stock.</>
+          ) : (
+            <>Move <span className="font-bold">{count}</span> order{count === 1 ? "" : "s"} from{" "}
+            <span className="font-semibold capitalize">{stageLabel(stageKey)}</span> to{" "}
+            <span className="font-semibold capitalize">{stageLabel(confirm.toStage)}</span>?</>
+          )}
         </div>
         <div className="flex items-center gap-1.5">
           <button
@@ -130,26 +125,15 @@ function ColumnBulkBar({ stageKey, allowed, count, busy, onMove, onClear }) {
         </button>
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
-        <select
-          value={toStage}
-          onChange={(e) => setToStage(e.target.value)}
-          className="input-pill text-[11px] py-1 flex-1 min-w-0"
-          data-testid={`production-bulk-to-${stageKey}`}
-        >
-          {allowed.map((s) => (
-            <option key={s} value={s}>{String(s).replace(/_/g, " ")}</option>
-          ))}
-        </select>
-        {(needLine || offerFallback) && (
+        {!clearOnly && (
           <select
-            value={sewingLine}
-            onChange={(e) => setSewingLine(e.target.value)}
-            className="input-pill text-[11px] py-1"
-            data-testid={`production-bulk-line-${stageKey}`}
+            value={toStage}
+            onChange={(e) => setToStage(e.target.value)}
+            className="input-pill text-[11px] py-1 flex-1 min-w-0"
+            data-testid={`production-bulk-to-${stageKey}`}
           >
-            <option value="">{offerFallback ? "Fallback line…" : "Line…"}</option>
-            {SEWING_LINE_OPTS.map((l) => (
-              <option key={l} value={l}>Line {l}</option>
+            {allowed.map((s) => (
+              <option key={s} value={s}>{String(s).replace(/_/g, " ")}</option>
             ))}
           </select>
         )}
@@ -157,14 +141,14 @@ function ColumnBulkBar({ stageKey, allowed, count, busy, onMove, onClear }) {
           type="button"
           onClick={submit}
           disabled={busy}
-          className="text-[11px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-2.5 py-1.5 rounded-md disabled:opacity-50"
+          className={`text-[11px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-2.5 py-1.5 rounded-md disabled:opacity-50 ${clearOnly ? "flex-1" : ""}`}
           data-testid={`production-bulk-move-${stageKey}`}
         >
-          {busy ? "…" : "Advance"}
+          {busy ? "…" : clearOnly ? "Clear to sewing floor" : "Advance"}
         </button>
       </div>
-      {offerFallback && (
-        <div className="mt-1 text-[10px] text-muted italic">auto-routes to original line; fallback for unknowns</div>
+      {clearOnly && (
+        <div className="mt-1 text-[10px] text-muted italic">hands the cut bundles over — tracked live from Odoo stock after this</div>
       )}
       {err && <div className="mt-1 text-[10.5px] text-rose-700">{err}</div>}
     </div>
@@ -424,7 +408,14 @@ export default function Production() {
                   >
                     <div className="px-3 py-2.5 border-b border-line">
                       <div className="flex items-center justify-between gap-2">
-                        <div className="font-bold text-[13px] text-[#0f3d24] truncate">{st.stage_name}</div>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <div className="font-bold text-[13px] text-[#0f3d24] truncate">{st.stage_name}</div>
+                          {st.live && (
+                            <span className="text-[9px] font-bold uppercase tracking-wide text-sky-700 bg-sky-100 border border-sky-200 rounded-full px-1.5 py-0.5 shrink-0" title="Derived live from Odoo stock locations — advances automatically as stock moves in Odoo.">
+                              Live
+                            </span>
+                          )}
+                        </div>
                         <span
                           title="Orders with units in this stage. An order spanning stages appears in each column, so these per-stage counts can total more than the distinct active-orders figure above."
                           className="text-[11px] font-semibold text-muted bg-white border border-line rounded-full px-1.5 py-0.5"
@@ -450,7 +441,7 @@ export default function Production() {
                           return (
                             <div
                               key={`${c.order_ref}-${c.stage}`}
-                              className={`rounded-lg border border-line border-l-4 bg-white hover:shadow-sm transition p-2.5 ${ageClasses(c.days_in_stage)} ${selected ? "ring-2 ring-brand/50" : ""}`}
+                              className={`rounded-lg border border-line border-l-4 bg-white hover:shadow-sm transition p-2.5 ${c.live ? "border-l-sky-400 bg-sky-50/30" : ageClasses(c.days_in_stage)} ${selected ? "ring-2 ring-brand/50" : ""}`}
                               data-testid={`production-card-${c.order_ref}-${c.stage}`}
                             >
                               <div className="flex items-start gap-2">
@@ -485,10 +476,25 @@ export default function Production() {
                                   </div>
                                   <div className="flex items-center justify-between gap-2 mt-1.5">
                                     <span className="text-[10.5px] text-muted font-mono truncate">{c.order_ref}</span>
-                                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${ageBadge(c.days_in_stage)}`}>
-                                      {fmtDays(c.days_in_stage)}d
-                                    </span>
+                                    {c.live ? (
+                                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">
+                                        live
+                                      </span>
+                                    ) : (
+                                      <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${ageBadge(c.days_in_stage)}`}>
+                                        {fmtDays(c.days_in_stage)}d
+                                      </span>
+                                    )}
                                   </div>
+                                  {c.live && c.sewing_lines && c.sewing_lines.length > 0 && (
+                                    <div className="mt-1 flex flex-wrap gap-1">
+                                      {c.sewing_lines.map((l) => (
+                                        <span key={l} className="text-[9.5px] font-semibold text-[#0f3d24] bg-white border border-line rounded px-1 py-0.5">
+                                          Line {l}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
                                 </button>
                               </div>
                             </div>

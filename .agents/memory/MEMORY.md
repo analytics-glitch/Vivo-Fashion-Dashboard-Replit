@@ -116,3 +116,4 @@
 - [WIP locations excluded at ingestion](wip-locations-excluded-ingestion.md) — sewing/finishing/trim (Sew/Stock/*) stock must never enter all_inventory; exclude in the extract's EXCLUDED_LOCATIONS (substring), not downstream, or it counts as warehouse stock.
 - [Triad joins are SKU-only](triad-joins-sku-only.md) — all_sales↔all_inventory↔all_products_clean must join on SKU (16.7k inventory rows have blank style_name; name joins silently zero stock).
 - [Rebuild transform OOM + bg reaping](transform-oom-batching.md) — stream all_sales rebuild in 50k batches (fetchall OOM-killed silently); nohup in agent bash gets reaped — run batch jobs as workflows; merge-restarts auto-run destructive batch workflows.
+- [Production Tracker derived live stages](production-derived-live-stages.md) — Waiting Sewing/Sewing/Finishing derive from all_inventory locations; every endpoint must override the ledger, gate move UI on allowed_next.

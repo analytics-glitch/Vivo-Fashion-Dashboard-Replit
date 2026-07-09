@@ -28258,6 +28258,177 @@ def _init_replen_store():
         log.error("Replenishment fact-table init failed: %s", e)
 
 
+# ---------------------------------------------------------------------------
+# Production tracker: DERIVED stages — live from Odoo stock locations.
+#
+# Waiting Sewing / Sewing / Finishing quantities are NOT ledger-driven any more:
+# they are read live from all_inventory at the physical pipeline locations
+#   Fabric Trimming            -> waiting_sewing
+#   Sew/Stock/A..E             -> sewing   (the location suffix IS the line)
+#   Finished Goods Production  -> finishing
+# The manual movement ledger keeps owning buying_order, cutting, washing,
+# repairs, defects and warehouse. Inventory is per-SKU (not per buying order),
+# so stock is ATTRIBUTED to orders that contain the SKU: newest order first,
+# capped at each order's ordered qty for that variant; any residual beyond all
+# caps sticks to the newest order so the board total always matches physical
+# stock. Units manually pulled into washing/repairs/defects usually remain at
+# the Finished Goods Production location in Odoo, so the order's current
+# washing/repairs/defects ledger balance is subtracted from its derived
+# finishing figure (floored at 0) to avoid double counting.
+# ---------------------------------------------------------------------------
+_PROD_DERIVED_STAGES = ("waiting_sewing", "sewing", "finishing")
+_prod_derived_cache = {"ts": 0.0, "rows": None}
+
+
+def _prod_effective_next(stage_key, allowed):
+    """Transitions the UI may offer. waiting_sewing/sewing are display-only
+    (stock advances them automatically in Odoo); everything else keeps its
+    configured allowed_next."""
+    if stage_key in ("waiting_sewing", "sewing"):
+        return []
+    return list(allowed or [])
+
+
+def _prod_derived_invalidate():
+    _prod_derived_cache["rows"] = None
+
+
+def _production_derived_balances():
+    """Live derived WIP rows: one dict per (order_ref, stage, sku, sewing_line)
+    with qty, size, colour, variant_name. 60s in-process cache (several board
+    endpoints call this in one page load)."""
+    import time as _time
+    if (_prod_derived_cache["rows"] is not None
+            and _time.time() - _prod_derived_cache["ts"] < 60):
+        return _prod_derived_cache["rows"]
+    inv = _users_exec("""
+        SELECT sku,
+               CASE WHEN pos_location_name = 'Fabric Trimming' THEN 'waiting_sewing'
+                    WHEN pos_location_name LIKE 'Sew/Stock/%%' THEN 'sewing'
+                    ELSE 'finishing' END AS stage,
+               CASE WHEN pos_location_name LIKE 'Sew/Stock/%%'
+                    THEN UPPER(RIGHT(pos_location_name, 1)) END AS sewing_line,
+               SUM(GREATEST(COALESCE(available, 0), 0)) AS qty
+        FROM all_inventory
+        WHERE pos_location_name = 'Fabric Trimming'
+           OR pos_location_name LIKE 'Sew/Stock/%%'
+           OR pos_location_name = 'Finished Goods Production'
+        GROUP BY 1, 2, 3
+        HAVING SUM(GREATEST(COALESCE(available, 0), 0)) > 0""", fetch=True)
+    variants = _users_exec("""
+        SELECT v.order_ref, v.product_sku AS sku, v.size, v.colour,
+               v.variant_name, COALESCE(v.qty, 0) AS qty, po.date_ordered
+        FROM production_order_variants v
+        JOIN production_orders po ON po.order_ref = v.order_ref
+        WHERE v.product_sku IS NOT NULL AND v.product_sku <> ''""", fetch=True)
+    offsets = _users_exec("""
+        SELECT order_ref, sku, SUM(qty_here) AS qty
+        FROM v_stage_sku_balances
+        WHERE stage IN ('washing', 'repairs', 'defects')
+        GROUP BY 1, 2""", fetch=True)
+
+    from collections import defaultdict as _dd
+    from datetime import date as _d
+    by_sku = _dd(list)
+    caps = {}
+    meta = {}
+    for v in variants:
+        by_sku[v["sku"]].append(v)
+        k = (v["order_ref"], v["sku"])
+        caps[k] = caps.get(k, 0.0) + float(v["qty"] or 0)
+        if k not in meta:
+            meta[k] = v
+    for lst in by_sku.values():
+        lst.sort(key=lambda v: (v["date_ordered"] or _d.min, v["order_ref"]),
+                 reverse=True)
+
+    acc = {}  # (order_ref, stage, sku, line) -> qty
+
+    def _add(order_ref, stage, sku, line, qty):
+        if qty <= 0:
+            return
+        k = (order_ref, stage, sku, line)
+        acc[k] = acc.get(k, 0.0) + qty
+
+    for r in inv:
+        sku, stage, line = r["sku"], r["stage"], r["sewing_line"]
+        qty = float(r["qty"] or 0)
+        cands = by_sku.get(sku)
+        if not cands or qty <= 0:
+            continue
+        seen_orders = []
+        for v in cands:
+            if v["order_ref"] not in seen_orders:
+                seen_orders.append(v["order_ref"])
+        for oref in seen_orders:
+            if qty <= 0:
+                break
+            k = (oref, sku)
+            take = min(qty, caps.get(k, 0.0))
+            if take <= 0:
+                continue
+            caps[k] -= take
+            qty -= take
+            _add(oref, stage, sku, line, take)
+        if qty > 0:
+            _add(seen_orders[0], stage, sku, line, qty)
+
+    # Subtract units the ledger says were pulled out of finishing (washing /
+    # repairs / defects) but that Odoo stock still shows at the location.
+    off = {}
+    for o in offsets:
+        off[(o["order_ref"], o["sku"])] = float(o["qty"] or 0)
+    if off:
+        for k in sorted(acc.keys()):
+            oref, stage, sku, line = k
+            if stage != "finishing":
+                continue
+            for ok in ((oref, sku), (oref, None)):
+                rem = off.get(ok, 0.0)
+                if rem <= 0:
+                    continue
+                cut = min(rem, acc[k])
+                acc[k] -= cut
+                off[ok] = rem - cut
+
+    rows = []
+    for (oref, stage, sku, line), qty in acc.items():
+        if qty <= 0:
+            continue
+        v = meta.get((oref, sku)) or {}
+        rows.append({
+            "order_ref": oref, "stage": stage, "sku": sku,
+            "size": v.get("size"), "colour": v.get("colour"),
+            "variant_name": v.get("variant_name"),
+            "sewing_line": line, "qty": round(qty, 2),
+        })
+    _prod_derived_cache["rows"] = rows
+    _prod_derived_cache["ts"] = _time.time()
+    return rows
+
+
+def _prod_derived_for_order(order_ref):
+    return [r for r in _production_derived_balances() if r["order_ref"] == order_ref]
+
+
+def _prod_stage_buckets(order_ref, stage):
+    """(sku, size, qty_here) buckets an order currently holds at a stage —
+    from live derived stock for derived stages, else the movement ledger."""
+    if stage in _PROD_DERIVED_STAGES:
+        agg = {}
+        for r in _prod_derived_for_order(order_ref):
+            if r["stage"] != stage:
+                continue
+            k = (r["sku"], r["size"])
+            agg[k] = agg.get(k, 0.0) + float(r["qty"] or 0)
+        return [{"sku": s, "size": z, "qty_here": q} for (s, z), q in agg.items() if q > 0]
+    rows = _users_exec(
+        "SELECT sku, size, qty_here FROM v_stage_sku_balances "
+        "WHERE order_ref = %s AND stage = %s AND qty_here > 0",
+        (order_ref, stage), fetch=True)
+    return rows or []
+
+
 def _production_order_detail(order_ref):
     """One order: header, current per-stage balances, full movement history.
     Returns None when the order_ref is unknown so callers can 404."""
@@ -28326,6 +28497,50 @@ def _production_order_detail(order_ref):
     stages = _users_exec("""
         SELECT stage_key, stage_name, sort_order, allowed_next, is_terminal
         FROM production_stages ORDER BY sort_order""", fetch=True)
+    smeta = {s["stage_key"]: s for s in stages}
+    for s in stages:
+        s["allowed_next"] = _prod_effective_next(s["stage_key"], s["allowed_next"])
+        s["live"] = s["stage_key"] in _PROD_DERIVED_STAGES
+
+    # Replace ledger figures for the derived stages with live Odoo-stock ones.
+    balances = [b for b in balances if b["stage"] not in _PROD_DERIVED_STAGES]
+    sku_balances = [r for r in sku_balances if r["stage"] not in _PROD_DERIVED_STAGES]
+    for b in balances:
+        b["allowed_next"] = _prod_effective_next(b["stage"], b["allowed_next"])
+        b["live"] = False
+    for r in sku_balances:
+        r["allowed_next"] = _prod_effective_next(r["stage"], r["allowed_next"])
+        r["live"] = False
+    derived = _prod_derived_for_order(order_ref)
+    dstage_tot = {}
+    for r in derived:
+        dstage_tot[r["stage"]] = dstage_tot.get(r["stage"], 0.0) + float(r["qty"] or 0)
+        s = smeta.get(r["stage"], {})
+        sku_balances.append({
+            "stage": r["stage"], "stage_name": s.get("stage_name"),
+            "sort_order": s.get("sort_order"),
+            "allowed_next": _prod_effective_next(r["stage"], None) if r["stage"] != "finishing"
+                            else _prod_effective_next("finishing", smeta.get("finishing", {}).get("allowed_next")),
+            "is_terminal": s.get("is_terminal", False),
+            "sku": r["sku"], "size": r["size"], "qty_here": r["qty"],
+            "days_in_stage": None, "colour": r["colour"],
+            "variant_name": r["variant_name"],
+            "last_sewing_line": r["sewing_line"], "live": True,
+        })
+    for stage, qty in dstage_tot.items():
+        s = smeta.get(stage, {})
+        balances.append({
+            "stage": stage, "stage_name": s.get("stage_name"),
+            "allowed_next": _prod_effective_next(stage, s.get("allowed_next")),
+            "is_terminal": s.get("is_terminal", False),
+            "qty_here": round(qty, 2), "days_in_stage": None, "live": True,
+        })
+    order_sort = {s["stage_key"]: s["sort_order"] for s in stages}
+    balances.sort(key=lambda b: order_sort.get(b["stage"], 99))
+    sku_balances.sort(key=lambda r: (order_sort.get(r["stage"], 99),
+                                     str(r.get("colour") or "~"),
+                                     str(r.get("size") or "~"),
+                                     str(r.get("sku") or "")))
     return {"order": order_rows[0], "balances": balances, "history": history,
             "lines": lines, "variants": variants,
             "sku_balances": sku_balances, "stages": stages}
@@ -28344,6 +28559,22 @@ def production_stages():
         FROM production_stages s
         LEFT JOIN v_wip_summary w ON w.stage = s.stage_key
         ORDER BY s.sort_order""", fetch=True)
+    derived = _production_derived_balances()
+    dstats = {}
+    for r in derived:
+        st = dstats.setdefault(r["stage"], {"units": 0.0, "orders": set()})
+        st["units"] += float(r["qty"] or 0)
+        st["orders"].add(r["order_ref"])
+    for s in rows:
+        key = s["stage_key"]
+        s["allowed_next"] = _prod_effective_next(key, s["allowed_next"])
+        s["live"] = key in _PROD_DERIVED_STAGES
+        if s["live"]:
+            d = dstats.get(key, {"units": 0.0, "orders": set()})
+            s["units_here"] = round(d["units"], 2)
+            s["orders_here"] = len(d["orders"])
+            s["avg_days_in_stage"] = None
+            s["oldest_days_in_stage"] = None
     return {"stages": rows}
 
 
@@ -28357,7 +28588,40 @@ def production_board():
         FROM v_stage_balances b
         JOIN production_orders po ON po.order_ref = b.order_ref
         JOIN production_stages s  ON s.stage_key  = b.stage
+        WHERE b.stage NOT IN ('waiting_sewing', 'sewing', 'finishing')
         ORDER BY s.sort_order, b.days_since_last_in DESC""", fetch=True)
+    for r in rows:
+        r["live"] = False
+        r["sewing_lines"] = []
+    # Derived cards: live per-order slices at the Odoo pipeline locations.
+    derived = _production_derived_balances()
+    agg = {}
+    for r in derived:
+        k = (r["order_ref"], r["stage"])
+        a = agg.setdefault(k, {"qty": 0.0, "lines": set()})
+        a["qty"] += float(r["qty"] or 0)
+        if r["sewing_line"]:
+            a["lines"].add(r["sewing_line"])
+    if agg:
+        refs = sorted({k[0] for k in agg})
+        po = _users_exec(
+            "SELECT order_ref, style_number, product_name, order_qty, date_ordered "
+            "FROM production_orders WHERE order_ref = ANY(%s)", (refs,), fetch=True)
+        pom = {p["order_ref"]: p for p in po}
+        sortk = {"waiting_sewing": 2, "sewing": 3, "finishing": 5}
+        for (oref, stage), a in sorted(agg.items(),
+                                       key=lambda kv: (sortk.get(kv[0][1], 9), -kv[1]["qty"])):
+            p = pom.get(oref) or {}
+            rows.append({
+                "order_ref": oref, "stage": stage,
+                "qty_here": round(a["qty"], 2), "days_in_stage": None,
+                "style_number": p.get("style_number"),
+                "product_name": p.get("product_name"),
+                "order_qty": p.get("order_qty"),
+                "date_ordered": p.get("date_ordered"),
+                "live": True,
+                "sewing_lines": sorted(a["lines"]),
+            })
     return {"cards": rows}
 
 
@@ -28408,6 +28672,31 @@ def _production_flow_stages():
         FROM production_stages s
         LEFT JOIN bal ON bal.stage = s.stage_key
         ORDER BY s.sort_order""", fetch=True)
+    # Derived stages: replace ledger figures with live Odoo-stock ones.
+    derived = _production_derived_balances()
+    dstats = {}
+    if derived:
+        refs = sorted({r["order_ref"] for r in derived})
+        po = _users_exec(
+            "SELECT order_ref, style_number FROM production_orders "
+            "WHERE order_ref = ANY(%s)", (refs,), fetch=True)
+        styl = {p["order_ref"]: p["style_number"] for p in po}
+        for r in derived:
+            d = dstats.setdefault(r["stage"],
+                                  {"units": 0.0, "orders": set(), "styles": set()})
+            d["units"] += float(r["qty"] or 0)
+            d["orders"].add(r["order_ref"])
+            if styl.get(r["order_ref"]):
+                d["styles"].add(styl[r["order_ref"]])
+    for r in rows:
+        key = r["stage_key"]
+        r["allowed_next"] = _prod_effective_next(key, r["allowed_next"])
+        r["live"] = key in _PROD_DERIVED_STAGES
+        if r["live"]:
+            d = dstats.get(key, {"units": 0.0, "orders": set(), "styles": set()})
+            r["units"] = round(d["units"], 2)
+            r["orders"] = len(d["orders"])
+            r["styles"] = len(d["styles"])
     total = sum(float(r["units"] or 0) for r in rows)
     # "% of WIP" must use the same WIP definition as the Units-in-Progress KPI
     # (terminal/END stages excluded). Terminal stages get a share of the whole
@@ -28629,6 +28918,51 @@ def production_summary():
         GROUP BY 1
         ORDER BY (COALESCE(c.sewing_line, 'Unspecified') = 'Unspecified'), label""", fetch=True)
 
+    # ---- Derived-stage overrides (live Odoo stock) ----
+    derived = _production_derived_balances()
+    styl = {o["order_ref"]: o["style_number"] for o in orders}
+    dstage = {}
+    dorder = {}           # order_ref -> {stage: qty}
+    dlines = {}           # order_ref -> set(lines)
+    lstats = {}           # sewing line -> stats
+    for r in derived:
+        d = dstage.setdefault(r["stage"], {"units": 0.0, "orders": set()})
+        d["units"] += float(r["qty"] or 0)
+        d["orders"].add(r["order_ref"])
+        om = dorder.setdefault(r["order_ref"], {})
+        om[r["stage"]] = om.get(r["stage"], 0.0) + float(r["qty"] or 0)
+        if r["stage"] == "sewing":
+            line = r["sewing_line"] or "Unspecified"
+            if r["sewing_line"]:
+                dlines.setdefault(r["order_ref"], set()).add(r["sewing_line"])
+            ls = lstats.setdefault(line, {"orders": set(), "units": 0.0, "styles": set()})
+            ls["orders"].add(r["order_ref"])
+            ls["units"] += float(r["qty"] or 0)
+            if styl.get(r["order_ref"]):
+                ls["styles"].add(styl[r["order_ref"]])
+    for s in by_stage:
+        key = s["stage_key"]
+        s["live"] = key in _PROD_DERIVED_STAGES
+        if s["live"]:
+            d = dstage.get(key, {"units": 0.0, "orders": set()})
+            s["units"] = round(d["units"], 2)
+            s["orders"] = len(d["orders"])
+    for o in orders:
+        sq = dict(o.get("stage_qty") or {})
+        for k in _PROD_DERIVED_STAGES:
+            sq.pop(k, None)
+        for stage, q in (dorder.get(o["order_ref"]) or {}).items():
+            sq[stage] = round(q, 2)
+        o["stage_qty"] = sq or None
+        o["units_in_progress"] = round(sum(float(v or 0) for v in sq.values()), 2)
+        o["sewing_lines"] = sorted(dlines.get(o["order_ref"], set()))
+    by_sewing_line = [
+        {"label": line, "orders": len(ls["orders"]),
+         "units": round(ls["units"], 2), "styles": len(ls["styles"])}
+        for line, ls in sorted(lstats.items(),
+                               key=lambda kv: (kv[0] == "Unspecified", kv[0]))
+    ]
+
     return {
         "totals": (totals[0] if totals else {"orders": 0, "units": 0, "styles": 0}),
         "by_lifecycle": _grouped("lifecycle_type"),
@@ -28677,26 +29011,17 @@ def _derive_prior_sewing_line(cur, order_ref, sku, size):
 
 def _resolve_sewing_line(cur, order_ref, from_stage, to_stage, sku, size, supplied):
     """Return the sewing line to record on a move, or None when to_stage is not
-    'sewing'. Repairs -> Sewing auto-routes to the piece's original line (falling
-    back to a supplied line only when none was ever recorded); every other move
-    into Sewing requires an explicit A–E line. Raises _MoveError on anything
-    missing or invalid."""
+    'sewing'. Lines are derived from the Odoo Sew/Stock/A–E location now, so the
+    recorded line is optional bookkeeping only. Raises _MoveError on an invalid
+    supplied line."""
     if to_stage != "sewing":
         return None
+    # Sewing lines are now DERIVED from the Odoo stock location (Sew/Stock/A–E),
+    # so a line on the move itself is purely optional bookkeeping: use the prior
+    # recorded line if any, else whatever was supplied, else none.
     supplied = (supplied or "").strip().upper() or None
-    if from_stage == "repairs":
-        line = _derive_prior_sewing_line(cur, order_ref, sku, size)
-        if not line:
-            line = supplied
-            if not line:
-                raise _MoveError(
-                    "No original sewing line is on record for this item — "
-                    "please choose a line (A–E).")
-    else:
-        line = supplied
-        if not line:
-            raise _MoveError("A sewing line (A–E) is required when moving into Sewing.")
-    if line not in SEWING_LINES:
+    line = _derive_prior_sewing_line(cur, order_ref, sku, size) or supplied
+    if line and line not in SEWING_LINES:
         raise _MoveError("Sewing line must be one of A, B, C, D or E.")
     return line
 
@@ -28717,13 +29042,15 @@ def _advance_whole_order(cur, order_ref, from_stage, to_stage, supplied_line, mo
     row = cur.fetchone()
     if not row:
         raise _MoveError(f"Unknown stage: {from_stage}")
+    if from_stage in ("waiting_sewing", "sewing"):
+        raise _MoveError(
+            f"{from_stage.replace('_', ' ')} is live from Odoo stock — it advances "
+            "automatically as stock moves between locations in Odoo.")
     if to_stage not in (row["allowed_next"] or []):
         raise _MoveError(f"Cannot move from {from_stage} to {to_stage}")
-    cur.execute(
-        "SELECT sku, size, qty_here FROM v_stage_sku_balances "
-        "WHERE order_ref = %s AND stage = %s AND qty_here > 0",
-        (order_ref, from_stage))
-    buckets = cur.fetchall()
+    if from_stage in _PROD_DERIVED_STAGES:
+        _prod_derived_invalidate()
+    buckets = _prod_stage_buckets(order_ref, from_stage)
     if not buckets:
         raise _MoveError(f"No units are currently at {from_stage}")
     total = 0.0
@@ -28803,12 +29130,34 @@ async def production_move(request: Request):
             cur.connection.rollback()
             return JSONResponse(
                 {"detail": f"Unknown stage: {from_stage}"}, status_code=400)
+        if from_stage in ("waiting_sewing", "sewing"):
+            cur.connection.rollback()
+            return JSONResponse(
+                {"detail": f"{from_stage.replace('_', ' ')} is live from Odoo stock — "
+                           "it advances automatically as stock moves in Odoo."},
+                status_code=400)
         if to_stage not in (row["allowed_next"] or []):
             cur.connection.rollback()
             return JSONResponse(
                 {"detail": f"Cannot move from {from_stage} to {to_stage}"},
                 status_code=400)
-        if sku:
+        if from_stage in _PROD_DERIVED_STAGES:
+            # Finishing: availability comes from LIVE Odoo stock attribution,
+            # not the ledger (there is no ledger inbound for derived stages).
+            _prod_derived_invalidate()
+            buckets = _prod_stage_buckets(order_ref, from_stage)
+            if sku:
+                available = sum(float(b["qty_here"] or 0) for b in buckets
+                                if b["sku"] == sku)
+            else:
+                available = sum(float(b["qty_here"] or 0) for b in buckets)
+            if qty > available + 1e-9:
+                cur.connection.rollback()
+                return JSONResponse(
+                    {"detail": f"Only {available:g} units "
+                               f"{'of ' + sku + ' ' if sku else ''}at {from_stage} (live stock)"},
+                    status_code=400)
+        elif sku:
             # SKU-level: only as many units of this exact variant at this stage.
             cur.execute(
                 "SELECT COALESCE(SUM(qty_here), 0) AS avail "
@@ -28846,6 +29195,8 @@ async def production_move(request: Request):
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (order_ref, from_stage, to_stage, qty, moved_by, note, sku, size, sewing_line))
 
+    # Ledger offsets feed the derived finishing figure — recompute on next read.
+    _prod_derived_invalidate()
     # Return the order's fresh state so the UI can update in place.
     return _production_order_detail(order_ref)
 
@@ -28906,6 +29257,7 @@ async def production_bulk_move(request: Request):
             results.append({"order_ref": order_ref, "ok": False, "error": str(e)})
             failed_count += 1
 
+    _prod_derived_invalidate()
     return {"results": results, "moved_count": moved_count, "failed_count": failed_count}
 
 
