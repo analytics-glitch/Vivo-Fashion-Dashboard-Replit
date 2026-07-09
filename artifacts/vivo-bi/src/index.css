@@ -261,6 +261,18 @@ body {
     table.data.abv-compact td {
         padding: 0.5rem 0.625rem;
     }
+    /* Ultra-compact density for very wide tables (SOR Report): tight cell
+       padding, smaller type, no trailing whitespace between columns. */
+    .sor-compact table.data th {
+        padding: 0.35rem 0.4rem;
+        font-size: 0.62rem;
+        letter-spacing: 0.04em;
+    }
+    .sor-compact table.data td {
+        padding: 0.3rem 0.4rem;
+        font-size: 0.74rem;
+        white-space: nowrap;
+    }
 }
 
 @keyframes fadeIn {
