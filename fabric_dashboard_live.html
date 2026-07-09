@@ -906,8 +906,18 @@ const fmtDayMon=s=>{if(!s)return '';const dt=new Date(String(s)+'T00:00:00');ret
 // quiet freshness cue (last posted date + "no production activity yet today")
 // so a legitimate quiet-day zero is distinguishable from a stalled feed.
 function consumedTodaySub(d){
-  const isZero=!(Number(d&&d.consumption_today_kg)>0);
-  if(!isZero)return 'net of returns';
+  const net=Number(d&&d.consumption_today_kg)||0;
+  if(net<0){
+    // Negative net = production returned more fabric to the warehouse than it
+    // drew today. Explain it, with the gross issued/returned breakdown.
+    const useKg=(UNIT==='kg');
+    const iss=Number(useKg?(d&&d.consumption_today_issued_kg):(d&&d.consumption_today_issued_metres))||0;
+    const ret=Number(useKg?(d&&d.consumption_today_returned_kg):(d&&d.consumption_today_returned_metres))||0;
+    const u=useKg?'kg':'m';
+    return `<span style="color:#b45309;font-weight:600;">returns exceeded issues &mdash; fabric returned to warehouse</span>`
+      +` &middot; ${esc(fmt(iss))}${u} issued &middot; ${esc(fmt(ret))}${u} returned`;
+  }
+  if(net>0)return 'net of returns';
   const day=fmtDayMon(d&&d.last_consumption_date);
   return day?`no production activity yet today &middot; last consumption posted: ${esc(day)}`:'no production activity yet today';
 }

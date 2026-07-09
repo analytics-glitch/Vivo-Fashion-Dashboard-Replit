@@ -1157,10 +1157,16 @@ def summary(location: str = Query(default="RMAT/Stock"),
               AND m.date >= NOW() - INTERVAL '30 days'
         """)[0]
 
-        # Consumption so far today — net of production returns (m.date is a date/ts)
+        # Consumption so far today — net of production returns (m.date is a date/ts).
+        # Also split the gross legs (issued OUT vs returned from production) so the
+        # UI can explain a negative net figure ("returns exceeded issues").
         cons_today = q(conn, f"""
             SELECT ROUND(SUM({_net_kg('m')})::numeric,1) as kg,
-                   ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN ({_net_kg('m')})/p.kg_per_mtr_eff ELSE 0 END)::numeric,0) as metres
+                   ROUND(SUM(CASE WHEN p.kg_per_mtr_eff>0 THEN ({_net_kg('m')})/p.kg_per_mtr_eff ELSE 0 END)::numeric,0) as metres,
+                   ROUND(SUM(CASE WHEN {_consume_pred('m')} THEN {_kg('m')} ELSE 0 END)::numeric,1) as issued_kg,
+                   ROUND(SUM(CASE WHEN {_consume_pred('m')} AND p.kg_per_mtr_eff>0 THEN {_kg('m')}/p.kg_per_mtr_eff ELSE 0 END)::numeric,0) as issued_metres,
+                   ROUND(SUM(CASE WHEN {_rmat_return_pred('m')} THEN {_kg('m')} ELSE 0 END)::numeric,1) as returned_kg,
+                   ROUND(SUM(CASE WHEN {_rmat_return_pred('m')} AND p.kg_per_mtr_eff>0 THEN {_kg('m')}/p.kg_per_mtr_eff ELSE 0 END)::numeric,0) as returned_metres
             FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {_net_cons_where('m')}
@@ -1302,6 +1308,10 @@ def summary(location: str = Query(default="RMAT/Stock"),
             "consumption_30d_metres": cons['metres'] or 0,
             "consumption_today_kg": cons_today['kg'] or 0,
             "consumption_today_metres": cons_today['metres'] or 0,
+            "consumption_today_issued_kg": cons_today['issued_kg'] or 0,
+            "consumption_today_issued_metres": cons_today['issued_metres'] or 0,
+            "consumption_today_returned_kg": cons_today['returned_kg'] or 0,
+            "consumption_today_returned_metres": cons_today['returned_metres'] or 0,
             "last_consumption_date": (last_cons['d'].isoformat() if last_cons['d'] else None),
             "styles_with_bom": bom['styles'] or 0,
             "basic_months_of_cover": basic_cover,
