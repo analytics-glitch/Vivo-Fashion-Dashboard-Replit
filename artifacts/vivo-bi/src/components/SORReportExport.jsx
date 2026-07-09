@@ -22,10 +22,20 @@ import { DownloadSimple, MagnifyingGlass, X } from "@phosphor-icons/react";
 
 // Shared metric column definitions used by BOTH the master style table and
 // the expanded per-colour table so the two always show identical columns.
-const metricColumns = () => [
-  { key: "sales_sel", label: "Sales Sel", sortable: true, align: "right",
+// Actual length in days of the selected period (inclusive). Falls back to
+// the backend default of 180 days when no custom range is set.
+const selPeriodDays = (dateFrom, dateTo) => {
+  const from = dateFrom ? new Date(dateFrom + "T00:00:00") : null;
+  const to = dateTo ? new Date(dateTo + "T00:00:00") : new Date();
+  if (!from || isNaN(from) || isNaN(to)) return 180;
+  const days = Math.round((to - from) / 86400000) + 1;
+  return days > 0 ? days : 180;
+};
+
+const metricColumns = (selDays = 180) => [
+  { key: "sales_sel", label: `Sales Sel (${selDays}d)`, sortable: true, align: "right",
     render: (r) => fmtKES(r.sales_sel) },
-  { key: "units_sel", label: "Units Sel", sortable: true, align: "right",
+  { key: "units_sel", label: `Units Sel (${selDays}d)`, sortable: true, align: "right",
     render: (r) => fmtNum(r.units_sel) },
   { key: "weekly_avg", label: "Wk Avg", sortable: true, align: "right",
     render: (r) => (r.weekly_avg ?? 0).toFixed(1) },
@@ -59,9 +69,9 @@ const metricColumns = () => [
     render: (r) => <SorPct v={r.sor_6m} /> },
   { key: "sor_since_launch", label: "SOR Life", sortable: true, align: "right",
     render: (r) => <SorPct v={r.sor_since_launch} /> },
-  { key: "sor_sel", label: "SOR Sel", sortable: true, align: "right",
+  { key: "sor_sel", label: `SOR Sel (${selDays}d)`, sortable: true, align: "right",
     render: (r) => <SorPct v={r.sor_sel} /> },
-  { key: "asp_sel", label: "ASP Sel", sortable: true, align: "right",
+  { key: "asp_sel", label: `ASP Sel (${selDays}d)`, sortable: true, align: "right",
     render: (r) => r.asp_sel == null ? <span className="text-muted">—</span> : fmtKES(r.asp_sel) },
   { key: "pct_of_full", label: "% Full Price", sortable: true, align: "right",
     render: (r) => {
@@ -104,6 +114,7 @@ const SORReport = () => {
   // % Full Price. Empty = backend default (trailing 180 days).
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const selDays = selPeriodDays(dateFrom, dateTo);
 
   // Per-style COLOUR breakdown cache (for row expand). Keyed by style_name.
   const [colorCache, setColorCache] = useState({});
@@ -269,7 +280,7 @@ const SORReport = () => {
   const exportCsv = () => {
     const header = [
       "Style Name", "Style Number",
-      "Sales (Selected Period)", "Units (Selected Period)",
+      `Sales (Selected Period ${selDays}d)`, `Units (Selected Period ${selDays}d)`,
       "Weekly Average", "Units Since Launch", "SOH", "SOH Warehouse",
       "Weeks of Cover", "% In WH", "ASP 6 Months", "Full Price",
       "Days Since Last Sale", "6 Months SOR", "SOR Since Launch",
@@ -464,7 +475,7 @@ const SORReport = () => {
                     render: (r) => <span className="font-semibold block max-w-[200px]" style={{ whiteSpace: "normal", wordBreak: "break-word", overflowWrap: "anywhere" }} title={r.style_name}>{r.style_name}</span> },
                   { key: "style_number", label: "Style #", sortable: true,
                     render: (r) => <span className="font-mono text-[10.5px]">{r.style_number || "—"}</span> },
-                  ...metricColumns(),
+                  ...metricColumns(selDays),
                   { key: "category", label: "Category", sortable: true,
                     render: (r) => r.category || "—" },
                   { key: "subcategory", label: "Sub Cat", sortable: true,
@@ -478,6 +489,7 @@ const SORReport = () => {
                   <ColorBreakdown
                     rows={colorCache[row.style_name]}
                     loading={colorLoading[row.style_name]}
+                    selDays={selDays}
                     selectedColor={row.style_name === selectedStyle ? selectedColor : null}
                     onColorClick={(color) => {
                       // Anchor the location pane to this style first so
@@ -537,7 +549,7 @@ const Tile = ({ label, value, sub, tone }) => {
 // One row per colour, with EXACTLY the same column set as the master
 // style table (shared `metricColumns()` definitions). Clicking a colour
 // row filters the per-location pane on the right.
-const ColorBreakdown = ({ rows, loading, selectedColor, onColorClick }) => {
+const ColorBreakdown = ({ rows, loading, selectedColor, onColorClick, selDays = 180 }) => {
   if (loading && (!rows || rows.length === 0)) {
     return <div className="text-[12px] text-muted py-2 px-2">Loading colour breakdown…</div>;
   }
@@ -554,7 +566,7 @@ const ColorBreakdown = ({ rows, loading, selectedColor, onColorClick }) => {
         columns={[
           { key: "color", label: "Colour", sortable: true,
             render: (r) => <span className="font-semibold">{r.color || "—"}</span> },
-          ...metricColumns(),
+          ...metricColumns(selDays),
         ]}
         rows={rows}
         initialSort={{ key: "sales_sel", dir: "desc" }}

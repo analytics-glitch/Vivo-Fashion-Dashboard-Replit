@@ -25,3 +25,5 @@ like they were "still failing" identically (same random `.tmpXXXX` name every ti
 that sameness is the tell it's a stale file, since a live crawl couldn't rediscover a
 deleted random-named dir). Always confirm current workflow state with
 `refresh_all_logs`, not by tailing an old glob match.
+
+2026-07-09 update: the same crash recurred watching a vanished `.local/skills/.old-deployment-*` dir (platform-managed temp). blockList widened to `/[\\/]\.(cache|git|local)[\\/].*/` — any repo-root dotdir with transient churn must be in the blockList.
