@@ -2294,19 +2294,21 @@ function mixDownloadCsv(cols,rows,filename){
 // Covers column header + value follow the on-screen weeks/months toggle.
 function mixCoverHdr(){return mixCoverBasis==='months'?'Monthly covers':'Weeks of Cover';}
 function mixCoverVal(r){const v=mixCoverBasis==='months'?r.coversMonthly:r.covers;if(v==null)return '';const cap=mixCoverBasis==='months'?MIX_COVER_CAP_MONTHS:MIX_COVER_CAP_WEEKS;return (v>cap?cap:v).toFixed(2);}
-// Distinct, sorted, comma-joined Odoo Color values (detail.color = x_vivo_color)
-// across a derived tree node's descendant product rows. Used by the aggregate
-// exports where a single per-row color isn't meaningful.
+// Distinct, sorted, comma-joined Fabric Colour values (dedicated Odoo field
+// first, regex-derived fallback — detail.fabric_color_effective) across a
+// derived tree node's descendant product rows. Used by the aggregate exports
+// where a single per-row colour isn't meaningful. "None" when no product in
+// the group carries a colour.
 function mixGroupColors(node){
   const set=new Set();
   (function walk(n){
     if(!n)return;
-    if(n.detail&&n.detail.color)set.add(n.detail.color);
+    if(n.detail&&n.detail.fabric_color_effective)set.add(n.detail.fabric_color_effective);
     (n.subcategories||[]).forEach(walk);
     (n.fabrics||[]).forEach(walk);
     (n.products||[]).forEach(walk);
   })(node);
-  return Array.from(set).sort((a,b)=>a.localeCompare(b)).join(', ');
+  return Array.from(set).sort((a,b)=>a.localeCompare(b)).join(', ')||'None';
 }
 // Stock-value-weighted representative cost for a derived tree node — the group's
 // products weighted by their tied-up stock value (so a group of mostly expensive
@@ -2455,7 +2457,6 @@ function exportFabricMixProducts(d,prefix,supplier){
   // analytical columns (none removed).
   const cols=[
     ...mixIdentityCols(),
-    ['Color',r=>(r.detail&&r.detail.color)||'None'],
     ['Width (m)',r=>{const w=r.detail&&r.detail.width_m;return w==null?'':w;}],
     ['GSM',r=>{const g=r.detail&&r.detail.gsm;return g==null?'':g;}],
     ['kg/Mtr',r=>{const dt=r.detail||{};if(dt.width_m!=null&&dt.gsm!=null)return (dt.width_m*dt.gsm)/1000;return '';}],
@@ -2979,7 +2980,6 @@ const REG_COLS=[
   {k:'m_per_kg',label:'m/Kg',type:'num1'},
   {k:'supplier',label:'Supplier',type:'text'},
   {k:'fabric_color',label:'Fabric Color',type:'text'},
-  {k:'color',label:'Color',type:'text'},
   {k:'cost_kes',label:'Cost (KES)',type:'kesc'},
   {k:'cost_per_kg',label:'Cost/kg',type:'kesc'},
   {k:'cost_metre',label:'Cost/metre',type:'kesc'},
@@ -2994,7 +2994,7 @@ const REG_COLS=[
   {k:'last_move',label:'Last move',type:'date'},
   {k:'days_since_move',label:'Days idle',type:'num'},
 ];
-const REG_DEFAULT=['default_code','name','photo','fabric_category','fabric_subcategory','cost_per_kg','cost_metre','available_metres','available_kg','color','weeks_cover'];
+const REG_DEFAULT=['default_code','name','photo','fabric_category','fabric_subcategory','cost_per_kg','cost_metre','available_metres','available_kg','fabric_color','weeks_cover'];
 // Fields shown in the per-fabric barcode detail view (everything not in the
 // default 10 columns above), in display order.
 const DETAIL_KEYS=['fiber_content','plain_print','fabric_structure','gsm','width_m','kg_per_mtr','m_per_kg','supplier','fabric_color','cost_kes','qty_metres','qty_kg','team_reserved_metres','team_reserved_kg','value_kes','last_move','days_since_move'];
@@ -3008,7 +3008,7 @@ const NUM_TYPES={num:1,num1:1,numb:1,kes:1,kesc:1,wcover:1,rsv:1};
 // Persisted-selection key is versioned (_v3): bumping it retires every user's
 // old saved column set so they pick up the new 10-column default once.
 const REG_COLS_KEY='fabricRegCols_v4';
-let regCols=(()=>{try{const s=JSON.parse(localStorage.getItem(REG_COLS_KEY));if(Array.isArray(s)&&s.length){const mapped=s.map(k=>k==='primary_color'?'fabric_color':k);return [...new Set(mapped)].filter(k=>REG_COLS.some(c=>c.k===k));}return REG_DEFAULT.slice();}catch(_){return REG_DEFAULT.slice();}})();
+let regCols=(()=>{try{const s=JSON.parse(localStorage.getItem(REG_COLS_KEY));if(Array.isArray(s)&&s.length){const mapped=s.map(k=>(k==='primary_color'||k==='color')?'fabric_color':k);return [...new Set(mapped)].filter(k=>REG_COLS.some(c=>c.k===k));}return REG_DEFAULT.slice();}catch(_){return REG_DEFAULT.slice();}})();
 let regSort={key:'value_kes',dir:'desc'};
 // barcode -> first photo idx (from /api/fabric/images-index). null = not loaded
 // yet; refreshed lazily and invalidated after a photo upload so a new photo's

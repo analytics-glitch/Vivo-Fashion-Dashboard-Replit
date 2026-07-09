@@ -224,7 +224,6 @@ def extract_products(uid, models, cur, now, since=None):
         "x_vivo_attr_124",  # Source City
         "x_vivo_attr_125",  # Source Country
         "barcode",
-        "x_vivo_color",
         "product_properties",  # dedicated Fabric Name / Fabric Supplier Name / Fabric Colour live here
         "write_date",       # Odoo last-modified time (UTC) — drives the category tracker
     ]
@@ -290,9 +289,8 @@ def extract_products(uid, models, cur, now, since=None):
                 get_m2o(r.get("x_vivo_attr_124")),  # source city
                 get_m2o(r.get("x_vivo_attr_125")),  # source country
                 r.get("barcode") or None,
-                r["x_vivo_color"][1] if isinstance(r.get("x_vivo_color"), list) else None,
                 _derive_color(r.get("name","")),
-                (r["x_vivo_color"][1] if isinstance(r.get("x_vivo_color"), list) else None) or _derive_color(r.get("name","")),
+                _derive_color(r.get("name","")),
                 fabric_name_odoo,
                 fabric_supplier_odoo,
                 fabric_color_odoo,
@@ -314,7 +312,7 @@ def extract_products(uid, models, cur, now, since=None):
             kg_per_mtr, width_m, gsm, plain_print, fabric_structure,
             fabric_category, fabric_subcategory, stretch_type, weight_range,
             fiber_content, fabric_type, supplier, supplier_fabric_code, primary_color,
-            source_city, source_country, barcode, color,
+            source_city, source_country, barcode,
             derived_color, fabric_color,
             fabric_name, fabric_supplier_name, odoo_fabric_color,
             write_date, _loaded_at
@@ -334,7 +332,7 @@ def extract_products(uid, models, cur, now, since=None):
             supplier_fabric_code=EXCLUDED.supplier_fabric_code,
             primary_color=EXCLUDED.primary_color,
             source_city=EXCLUDED.source_city, source_country=EXCLUDED.source_country,
-            barcode=EXCLUDED.barcode, color=EXCLUDED.color,
+            barcode=EXCLUDED.barcode,
             derived_color=EXCLUDED.derived_color, fabric_color=EXCLUDED.fabric_color,
             fabric_name=EXCLUDED.fabric_name,
             fabric_supplier_name=EXCLUDED.fabric_supplier_name,
