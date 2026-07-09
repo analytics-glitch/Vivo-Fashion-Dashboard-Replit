@@ -1042,6 +1042,14 @@ async def clerk_auth_gate(request: Request, call_next):
             and user.get("role") != "admin":
         return JSONResponse({"detail": "Admin access required"}, status_code=403)
 
+    # Support-scope overrides: viewing the rule list is broadly accessible (the
+    # Support tab surfaces the active rules), but ADDING/REMOVING a rule is
+    # admin-only — same server-side pattern as the rolls write gate above.
+    if path.startswith("/api/fabric/support-overrides") \
+            and request.method not in ("GET", "HEAD", "OPTIONS") \
+            and user.get("role") != "admin":
+        return JSONResponse({"detail": "Admin access required"}, status_code=403)
+
     # CRM is a customer-facing surface (customer service / marketing / leadership
     # / admin). Enforce server-side so client-side nav/route hiding can never be
     # bypassed (e.g. direct API or mobile). Specific CRM mutations still apply

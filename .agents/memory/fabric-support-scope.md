@@ -19,6 +19,19 @@ the substring form wrongly pulled in the near-named category "Crepe Lining". Sup
 Fabrics is defined as EXACTLY the two Odoo categories **Lining** and **Fusable
 Interfacing** — nothing else. "Crepe Lining" stays in MAIN.
 
+**Product-level overrides:** the category rule is OR'd with an admin-editable list of
+case-insensitive product-NAME prefixes (`fabric_support_overrides` table, lazily
+ensured + code-seeded from `_SUPPORT_OVERRIDE_SEED`, CRUD at
+`/api/fabric/support-overrides`, writes admin-gated in the api_pg auth gate like
+rolls). These force whole fabric families (e.g. sampling-only Dexing/Yiyi lines whose
+Odoo category is a main-fabric one) into SUPPORT regardless of category. The match
+uses `starts_with()` (never `LIKE '%'` — psycopg2 literal-% trap) and is wrapped in
+`COALESCE(id IN (…), FALSE)` so NULL-product rows still land in MAIN (reconciliation).
+In support-scope responses, override-only products are relabelled **"Lining/Sampling"**
+via `_category_label_sql(scope, col)` — every category-displaying endpoint must use it
+or the Support tab surfaces confusing main-category names. The seed matched 55
+products in dev (the request estimated ~45 — prefix families are bigger than eyeballed).
+
 **Reconciliation invariant:** `main + support == the old all-fabric totals`.
 Rows with NULL/'' category (e.g. sheet-override moves whose product_id didn't resolve)
 normalize to '' → `NOT support` → they stay in MAIN. So never route unclassified rows

@@ -255,6 +255,11 @@ def _get_conn():
     return api.get_conn()
 
 def q(conn, sql, params=()):
+    # Every fabric read funnels through here, so this is the one choke point
+    # where the support-override table can be lazily ensured before any query
+    # that embeds _scope_sql (which subselects from it) runs. Uses its OWN
+    # pooled connection so it never disturbs the caller's transaction.
+    _ensure_support_overrides()
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(sql, params)
         return [dict(r) for r in cur.fetchall()]
@@ -605,18 +610,112 @@ def _loc_filter(location, alias="i"):
 # product_id didn't resolve to a product master) normalize to '' → NOT support →
 # they stay in MAIN. That preserves the reconciliation main + support == the old
 # all-fabric totals (and honours the "sheet rows always count" rule).
+# In addition to the two categories, a DB-stored, admin-editable list of
+# case-insensitive product-family NAME PREFIXES (fabric_support_overrides)
+# forces matching products into the support scope regardless of their Odoo
+# category — used for sampling-only families that Odoo categorises as regular
+# fabric. Matching uses starts_with() (never LIKE '%') so the fragment is safe
+# at BOTH parametrized and no-param q() call sites (psycopg2 literal-% trap).
+_SUPPORT_OVERRIDE_SEED = [
+    "Dexing 100D",
+    "Dexing 30S",
+    "Dexing 45S",
+    "Dexing 491709",
+    "Dexing 491725",
+    "Dexing 491774",
+    "Dexing 491880",
+    "Dexing CEY",
+    "Dexing Nylon Rayon Slub",
+    "Dexing SPH",
+    "Huaming Imitation Hemp",
+    "Yiyi 7294",
+    "Al Sawae-Zara China-Lining",
+]
+
+_SUPPORT_OVR_READY = False
+
+def _ensure_support_overrides():
+    """Lazily create + seed the fabric_support_overrides table (idempotent,
+    process-flagged). Opens its OWN pooled connection so it never commits a
+    caller's in-flight transaction. Safe on a fresh prod DB: the first fabric
+    query of the process runs this before any _scope_sql subselect executes."""
+    global _SUPPORT_OVR_READY
+    if _SUPPORT_OVR_READY:
+        return
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS fabric_support_overrides (
+                    id          SERIAL PRIMARY KEY,
+                    name_prefix TEXT NOT NULL,
+                    created_by  TEXT,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+            """)
+            cur.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS fabric_support_overrides_prefix_uq
+                ON fabric_support_overrides ((LOWER(BTRIM(name_prefix))))
+            """)
+            for prefix in _SUPPORT_OVERRIDE_SEED:
+                cur.execute("""
+                    INSERT INTO fabric_support_overrides (name_prefix, created_by)
+                    VALUES (%s, 'seed')
+                    ON CONFLICT ((LOWER(BTRIM(name_prefix)))) DO NOTHING
+                """, (prefix,))
+        conn.commit()
+    finally:
+        conn.close()
+    _SUPPORT_OVR_READY = True
+
+def _support_ovr_ids_sql():
+    """Subselect of product ids whose name starts with any override prefix."""
+    return ("SELECT rp.id FROM raw_fabric_products rp "
+            "JOIN fabric_support_overrides so "
+            "ON starts_with(LOWER(BTRIM(rp.name)), LOWER(BTRIM(so.name_prefix)))")
+
+def _id_col_for(col):
+    """Derive the product-id column matching a category column reference:
+    'p.fabric_category' → 'p.id'; bare 'fabric_category' (a query directly on
+    raw_fabric_products) → 'id'."""
+    return f"{col.rsplit('.', 1)[0]}.id" if "." in col else "id"
+
+def _support_ovr_match(col):
+    # COALESCE(..., FALSE) is load-bearing: LEFT-JOINed rows with a NULL
+    # product id (e.g. sheet-override moves) must evaluate FALSE, not NULL,
+    # or `NOT (…)` silently drops them from MAIN and breaks the
+    # main + support == all-fabric reconciliation.
+    return f"COALESCE({_id_col_for(col)} IN ({_support_ovr_ids_sql()}), FALSE)"
+
 def _support_match(col):
     # Support fabrics = EXACTLY the two Odoo categories the user defined:
     # "Lining" and "Fusable Interfacing". Matched case-insensitively and trimmed.
     # An exact IN (not a substring LIKE) so near-named categories like
     # "Crepe Lining" stay in the MAIN dashboard, per the user's explicit scope.
+    # OR'd with the admin-editable product-name-prefix override list.
     c = f"LOWER(BTRIM(COALESCE({col},'')))"
-    return f"({c} IN ('lining', 'fusable interfacing'))"
+    return (f"({c} IN ('lining', 'fusable interfacing') "
+            f"OR {_support_ovr_match(col)})")
 
 def _scope_sql(scope, col="p.fabric_category"):
     """SQL boolean fragment restricting rows to the requested support-fabric scope."""
     m = _support_match(col)
     return m if str(scope or "").lower() == "support" else f"NOT {m}"
+
+def _category_label_sql(scope, col="p.fabric_category"):
+    """Display expression for the fabric category. In the SUPPORT scope,
+    products that are support-only via the name-prefix override list (i.e. their
+    Odoo category is NOT Lining/Fusable Interfacing) are relabelled
+    'Lining/Sampling' so the tab doesn't surface confusing main-fabric category
+    names; genuine Lining / Fusable Interfacing products keep their own label.
+    Everywhere else this is the plain COALESCE(…,'Unknown') expression."""
+    base = f"COALESCE(NULLIF({col},''),'Unknown')"
+    if str(scope or "").lower() != "support":
+        return base
+    c = f"LOWER(BTRIM(COALESCE({col},'')))"
+    return (f"(CASE WHEN {c} NOT IN ('lining', 'fusable interfacing') "
+            f"AND {_support_ovr_match(col)} "
+            f"THEN 'Lining/Sampling' ELSE {base} END)")
 
 # ── Basic (core staple) fabrics ─────────────────────────────
 # A curated set of staple fabrics the buying team always wants to keep in stock,
@@ -2285,7 +2384,7 @@ def by_category(location: str = Query(default="RMAT/Stock"),
         loc_sql, loc_params = _loc_filter(location)
         return q(conn, f"""
             SELECT 
-              p.fabric_category as category,
+              {_category_label_sql(scope)} as category,
               p.fabric_subcategory as subcategory,
               COUNT(DISTINCT i.product_id) as fabrics,
               ROUND(SUM(i.quantity)::numeric,1) as qty_kg,
@@ -2310,7 +2409,7 @@ def by_category(location: str = Query(default="RMAT/Stock"),
               AND p.category = 'Fabric'
               AND p.fabric_category IS NOT NULL
               AND {_scope_sql(scope)}
-            GROUP BY p.fabric_category, p.fabric_subcategory
+            GROUP BY 1, 2
             ORDER BY value_kes DESC
         """, loc_params)
 
@@ -2401,7 +2500,8 @@ def register(
               GROUP BY product_id
             )
             SELECT 
-              p.id, p.name, p.default_code, p.barcode, p.fabric_category, p.fabric_subcategory,
+              p.id, p.name, p.default_code, p.barcode,
+              {_category_label_sql(scope)} as fabric_category, p.fabric_subcategory,
               p.fabric_structure, p.plain_print, p.weight_range, p.gsm,
               p.width_m, p.kg_per_mtr_eff as kg_per_mtr, p.kg_per_mtr_src, p.fiber_content, p.fabric_type,
               p.supplier, p.primary_color, INITCAP(BTRIM(p.fabric_color)) as fabric_color,
@@ -2514,7 +2614,7 @@ def consumption(
         # Dimension breakdowns (by fabric category or individual fabric) vs.
         # the default time-series (day/week/month).
         if group_by in ("category", "fabric"):
-            dim = ("COALESCE(NULLIF(p.fabric_category,''),'Unknown')"
+            dim = (_category_label_sql(scope)
                    if group_by == "category"
                    else "COALESCE(NULLIF(m.product_name,''),'Unknown')")
             limit = "" if group_by == "category" else "LIMIT 50"
@@ -2593,7 +2693,7 @@ def category_stock_consumption(
         _ensure_fabric_sheet(conn)
         loc_sql, loc_params = _loc_filter(location)
         stock = q(conn, f"""
-            SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
+            SELECT {_category_label_sql(scope)} as category,
                    COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') as subcategory,
                    ROUND(SUM(i.quantity)::numeric,1) as stock_kg
             FROM raw_fabric_inventory i
@@ -2604,7 +2704,7 @@ def category_stock_consumption(
             GROUP BY 1, 2
         """, loc_params)
         cons = q(conn, f"""
-            SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
+            SELECT {_category_label_sql(scope)} as category,
                    COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') as subcategory,
                    ROUND(SUM({_net_kg('m')})::numeric,1) as consumed_kg
             FROM {EFFECTIVE_MOVES} m
@@ -2710,7 +2810,7 @@ def fabric_mix(
         _ensure_fabric_tables(conn)
         loc_sql, loc_params = _loc_filter(location)
         stock = q(conn, f"""
-            SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
+            SELECT {_category_label_sql(scope)} as category,
                    COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') as subcategory,
                    i.product_id as product_id,
                    COALESCE(NULLIF(p.name,''), NULLIF(p.default_code,''), 'Unknown') as product_name,
@@ -2737,7 +2837,7 @@ def fabric_mix(
         # UI can explain a net figure that has been floored to 0 (a window-aligned
         # return can otherwise read as "negative usage").
         cons = q(conn, f"""
-            SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
+            SELECT {_category_label_sql(scope)} as category,
                    COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') as subcategory,
                    m.product_id as product_id,
                    COALESCE(NULLIF(p.name,''), NULLIF(p.default_code,''), 'Unknown') as product_name,
@@ -2763,7 +2863,7 @@ def fabric_mix(
         # is a linear combination of the group's monthly net kg, the category
         # run-rates sum back to the warehouse-wide run-rate (so covers reconcile).
         rr_rows = q(conn, f"""
-            SELECT COALESCE(NULLIF(p.fabric_category,''),'Unknown') as category,
+            SELECT {_category_label_sql(scope)} as category,
                    COALESCE(NULLIF(p.fabric_subcategory,''),'Unknown') as subcategory,
                    m.product_id as product_id,
                    to_char(date_trunc('month', m.date::date),'YYYY-MM') AS mon,
@@ -3226,7 +3326,7 @@ def dead_stock(scope: str = Query(default="main")):
     with _get_conn() as conn:
         rows = q(conn, f"""
             SELECT 
-              i.product_name, p.fabric_category, p.fabric_subcategory,
+              i.product_name, {_category_label_sql(scope)} as fabric_category, p.fabric_subcategory,
               p.kg_per_mtr_eff as kg_per_mtr, p.kg_per_mtr_src, p.width_m, p.gsm, p.plain_print,
               ROUND(i.quantity::numeric,1) as qty_kg,
               ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as qty_metres,
@@ -3240,7 +3340,7 @@ def dead_stock(scope: str = Query(default="main")):
             WHERE i.location_name = 'Dead/Stock Fabric' AND i.quantity > 0
               AND p.category = 'Fabric'
               AND {_scope_sql(scope)}
-            GROUP BY i.product_name, p.fabric_category, p.fabric_subcategory,
+            GROUP BY 1, 2, 3,
                      p.kg_per_mtr_eff, p.kg_per_mtr_src, p.width_m, p.gsm, p.plain_print,
                      i.quantity, i.total_value
             ORDER BY i.total_value DESC
@@ -4146,11 +4246,12 @@ def supplier_source_cities(supplier: str = Query(...),
 def filters(scope: str = Query(default="main")):
     with _get_conn() as conn:
         cats = q(conn, f"""
-            SELECT DISTINCT fabric_category as value FROM raw_fabric_products 
+            SELECT DISTINCT {_category_label_sql(scope, 'fabric_category')} as value FROM raw_fabric_products 
             WHERE fabric_category IS NOT NULL AND {_scope_sql(scope, 'fabric_category')} ORDER BY 1
         """)
         subcats = q(conn, f"""
-            SELECT DISTINCT fabric_category, fabric_subcategory FROM raw_fabric_products
+            SELECT DISTINCT {_category_label_sql(scope, 'fabric_category')} as fabric_category, fabric_subcategory
+            FROM raw_fabric_products
             WHERE fabric_subcategory IS NOT NULL AND {_scope_sql(scope, 'fabric_category')} ORDER BY 1, 2
         """)
         locs = q(conn, """
@@ -4321,6 +4422,96 @@ def delete_reservation(resv_id: int, request: Request):
         _log_fabric_change("Deleted", log_row, request)
         return {"ok": True}
 
+# ── Support-scope name-prefix overrides (admin-editable) ─────────────────────
+# CRUD for the fabric_support_overrides list that _scope_sql consults. Viewing
+# is broadly accessible (the Support tab shows the active rules); WRITES are
+# admin-only, gated server-side in the api_pg auth gate (same pattern as
+# /api/fabric/rolls). Rules take effect immediately — the scope predicate
+# subselects the table live on every query.
+
+def _support_ovr_rule_stats(conn, prefix):
+    """Live matched-product stats for a prefix: how many product rows match,
+    and a small sample of names for eyeballing."""
+    rows = q(conn, """
+        SELECT name FROM raw_fabric_products
+        WHERE starts_with(LOWER(BTRIM(name)), LOWER(BTRIM(%s)))
+        ORDER BY name
+    """, (prefix,))
+    names = [r["name"] for r in rows]
+    return {"matched_products": len(names), "sample_names": names[:8]}
+
+@fabric_router.get("/api/fabric/support-overrides")
+def support_overrides_list():
+    with _get_conn() as conn:
+        rules = q(conn, """
+            SELECT o.id, o.name_prefix, o.created_by,
+                   to_char(o.created_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY') as created_at,
+                   COUNT(rp.id) as matched_products
+            FROM fabric_support_overrides o
+            LEFT JOIN raw_fabric_products rp
+              ON starts_with(LOWER(BTRIM(rp.name)), LOWER(BTRIM(o.name_prefix)))
+            GROUP BY o.id, o.name_prefix, o.created_by, o.created_at
+            ORDER BY LOWER(o.name_prefix)
+        """)
+        return {"rules": rules}
+
+@fabric_router.get("/api/fabric/support-overrides/preview")
+def support_overrides_preview(prefix: str = Query(default="")):
+    """Live preview while typing a new rule: how many products the prefix
+    would pull into the support scope, with sample names."""
+    prefix = (prefix or "").strip()
+    if not prefix:
+        return {"matched_products": 0, "sample_names": []}
+    with _get_conn() as conn:
+        _ensure_support_overrides()
+        return _support_ovr_rule_stats(conn, prefix)
+
+@fabric_router.post("/api/fabric/support-overrides")
+def support_overrides_add(request: Request, body: dict = Body(...)):
+    """Add a name-prefix rule (admin-only via the api_pg auth gate)."""
+    prefix = str(body.get("name_prefix") or "").strip()
+    if len(prefix) < 3:
+        raise HTTPException(status_code=400,
+            detail="name_prefix must be at least 3 characters")
+    uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_support_overrides()
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                INSERT INTO fabric_support_overrides (name_prefix, created_by)
+                VALUES (%s, %s)
+                ON CONFLICT ((LOWER(BTRIM(name_prefix)))) DO NOTHING
+                RETURNING id, name_prefix
+            """, (prefix, name or uid or "admin"))
+            row = cur.fetchone()
+        conn.commit()
+        if not row:
+            raise HTTPException(status_code=409, detail="rule already exists")
+        stats = _support_ovr_rule_stats(conn, prefix)
+        _log_fabric_change("Added support override",
+                           {"id": row["id"], "name_prefix": row["name_prefix"],
+                            "status": "created"}, request)
+        return {"ok": True, "id": row["id"], "name_prefix": row["name_prefix"],
+                **stats}
+
+@fabric_router.delete("/api/fabric/support-overrides/{rule_id}")
+def support_overrides_delete(rule_id: int, request: Request):
+    """Remove a rule (admin-only via the api_pg auth gate)."""
+    with _get_conn() as conn:
+        _ensure_support_overrides()
+        rows = q(conn, "SELECT id, name_prefix FROM fabric_support_overrides WHERE id=%s",
+                 (rule_id,))
+        if not rows:
+            raise HTTPException(status_code=404, detail="rule not found")
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM fabric_support_overrides WHERE id=%s", (rule_id,))
+        conn.commit()
+        _log_fabric_change("Removed support override",
+                           {"id": rule_id, "name_prefix": rows[0]["name_prefix"],
+                            "status": "deleted"}, request)
+        return {"ok": True}
+
 # ── Fabric roll tracking (manual per-location physical roll counts) ──────────
 # Odoo only tracks fabric quantity by weight (kg) / length (m), never the number
 # of physical rolls. The Rolls tab lets the fabric team hand-maintain a roll
@@ -4382,7 +4573,7 @@ def rolls_list(
         rows = q(conn, f"""
             SELECT
               p.id, p.name, p.default_code, p.barcode,
-              p.fabric_category, p.fabric_subcategory,
+              {_category_label_sql(scope)} as fabric_category, p.fabric_subcategory,
               p.plain_print, p.weight_range,
               INITCAP(BTRIM(p.fabric_color)) as fabric_color,
               p.kg_per_mtr_eff as kg_per_mtr,

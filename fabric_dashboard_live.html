@@ -526,6 +526,23 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </table>
      </div>
     </div>
+    <div class="card" style="margin-top:1.1rem;">
+     <div class="section-head"><h3>Support overrides</h3><span class="muted">Products whose <b>name</b> starts with one of these prefixes are treated as support fabrics regardless of their Odoo category (shown as "Lining/Sampling")</span></div>
+     <p class="muted" id="supovr-note" style="margin:.4rem 0 .8rem;font-size:12.5px;"></p>
+     <div id="supovr-add" style="display:none;margin-bottom:.8rem;">
+      <div class="flex" style="gap:.5rem;align-items:center;">
+       <input id="supovr-prefix" placeholder="Family-name prefix, e.g. Zara Lining" style="width:280px;" oninput="supOvrPreviewDebounced()">
+       <button class="btn" id="supovr-add-btn" onclick="supOvrAdd()">Add rule</button>
+      </div>
+      <p class="muted" id="supovr-preview" style="margin:.4rem 0 0;font-size:12.5px;"></p>
+     </div>
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr><th>Name prefix</th><th class="r">Matched products</th><th>Added by</th><th>Added</th><th></th></tr></thead>
+       <tbody id="supovr-body"><tr><td colspan="5" class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
+    </div>
    </section>
 
    <!-- REGISTER -->
@@ -1323,6 +1340,82 @@ async function loadSupport(){
     applyFabricFreshness(d);
   }catch(e){showErr('support-kpis',e);}
   loadMix(mixSupport);
+  loadSupportOverrides();
+}
+
+// ── Support overrides admin panel ──
+// Rule list is visible to everyone; add/remove controls appear for admins only
+// (real enforcement is server-side in the api_pg auth gate). All dynamic text
+// goes through esc()/textContent — never raw innerHTML interpolation.
+let supOvrTimer=null;
+function supOvrPreviewDebounced(){clearTimeout(supOvrTimer);supOvrTimer=setTimeout(supOvrPreview,350);}
+async function supOvrPreview(){
+  const el=document.getElementById('supovr-preview'); if(!el)return;
+  const p=(document.getElementById('supovr-prefix').value||'').trim();
+  if(p.length<3){el.textContent=p?'Type at least 3 characters.':'';return;}
+  try{
+    const d=await apiFetch('/api/fabric/support-overrides/preview?prefix='+encodeURIComponent(p));
+    el.textContent=d.matched_products
+      ? `Would match ${d.matched_products} product${d.matched_products===1?'':'s'}: ${d.sample_names.join(' · ')}${d.matched_products>d.sample_names.length?' …':''}`
+      : 'No products currently start with this prefix.';
+  }catch(e){el.textContent='Preview failed.';}
+}
+async function loadSupportOverrides(){
+  const body=document.getElementById('supovr-body'); if(!body)return;
+  const me=await getMe();
+  const isAdmin=!!(me&&me.role==='admin');
+  const addEl=document.getElementById('supovr-add');
+  if(addEl)addEl.style.display=isAdmin?'':'none';
+  const note=document.getElementById('supovr-note');
+  if(note)note.textContent=isAdmin
+    ?'Rules apply immediately across every Fabric BI page (stock mix, register, consumption, dead stock, rolls). Matching is case-insensitive on the start of the product name.'
+    :'View-only. Ask an admin to add or remove override rules.';
+  try{
+    const d=await apiFetch('/api/fabric/support-overrides');
+    body.innerHTML='';
+    if(!d.rules.length){body.innerHTML='<tr><td colspan="5" class="muted" style="padding:.8rem;">No override rules.</td></tr>';return;}
+    d.rules.forEach(r=>{
+      const tr=document.createElement('tr');
+      const tdP=document.createElement('td');tdP.textContent=r.name_prefix;tr.appendChild(tdP);
+      const tdM=document.createElement('td');tdM.className='r';tdM.textContent=r.matched_products;tr.appendChild(tdM);
+      const tdB=document.createElement('td');tdB.textContent=r.created_by||'—';tr.appendChild(tdB);
+      const tdA=document.createElement('td');tdA.textContent=r.created_at||'—';tr.appendChild(tdA);
+      const tdX=document.createElement('td');
+      if(isAdmin){
+        const btn=document.createElement('button');
+        btn.className='btn';btn.style.cssText='padding:2px 9px;font-size:12px;';
+        btn.textContent='Remove';
+        btn.onclick=()=>supOvrDelete(r.id,r.name_prefix);
+        tdX.appendChild(btn);
+      }
+      tr.appendChild(tdX);
+      body.appendChild(tr);
+    });
+  }catch(e){rowErr('supovr-body',5,e);}
+}
+async function supOvrAdd(){
+  const inp=document.getElementById('supovr-prefix');
+  const p=(inp.value||'').trim();
+  const pv=document.getElementById('supovr-preview');
+  if(p.length<3){if(pv)pv.textContent='Type at least 3 characters.';return;}
+  const btn=document.getElementById('supovr-add-btn');btn.disabled=true;
+  try{
+    const r=await fetch('/api/fabric/support-overrides',{method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({name_prefix:p})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.detail||('http '+r.status));
+    inp.value='';if(pv)pv.textContent=`Added — matches ${d.matched_products} product${d.matched_products===1?'':'s'}.`;
+    loadSupportOverrides();loadSupport();
+  }catch(e){if(pv)pv.textContent='Add failed: '+e.message;}
+  finally{btn.disabled=false;}
+}
+async function supOvrDelete(id,prefix){
+  if(!confirm('Remove override rule "'+prefix+'"? Matching products will fall back to their Odoo category scope.'))return;
+  try{
+    const r=await fetch('/api/fabric/support-overrides/'+encodeURIComponent(id),{method:'DELETE',credentials:'include'});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||('http '+r.status));}
+    loadSupportOverrides();loadSupport();
+  }catch(e){alert('Remove failed: '+e.message);}
 }
 function renderSupportKpis(d){
   const stockQty=UNIT==='kg'?d.fabric_stock_kg:d.fabric_stock_metres;
