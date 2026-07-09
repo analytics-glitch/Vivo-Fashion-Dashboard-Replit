@@ -997,12 +997,19 @@ def sync_odoo(cur, now, rates):
             if units_qty >= 20 and price_unit <= 1.0:
                 units_qty = 1
 
-            # Match BigQuery: total_sales = price_subtotal_incl (VAT-inclusive)
-            total_sales = total_incl  # keep sign — negative qty = return
-            gross_sales = price_unit * qty  # before discount
-            discounts = gross_sales - total_sales if not is_return else 0.0
-            discounts = max(discounts, 0.0)
-            returns = abs(total_sales) if is_return else 0.0
+            # total_sales must be GROSS (pre-discount, VAT-inclusive) to match
+            # the Shopify convention: the KPI SQL computes
+            # net = total_sales_kes − discounts_kes, so storing the
+            # post-discount price_subtotal_incl here double-subtracted the
+            # discount (and made Net Sales == Total Sales on no-promo days).
+            raw_gross = price_unit * qty  # before discount
+            discounts = max(raw_gross - total_incl, 0.0) if not is_return else 0.0
+            # Reconstruct gross as post-discount + discount so that
+            # total − discounts == price_subtotal_incl exactly, even when a
+            # cashier price-override makes raw_gross < total_incl.
+            total_sales = (total_incl + discounts) if not is_return else total_incl
+            gross_sales = total_sales
+            returns = abs(total_incl) if is_return else 0.0
             total_out = total_sales if not is_return else 0.0
 
             # KES conversion (rate=1 for Kenya, formula matches BigQuery)
@@ -1010,7 +1017,8 @@ def sync_odoo(cur, now, rates):
             gross_sales_kes = round((gross_sales if not is_return else 0.0) / rate, 2)
             discounts_kes = round(discounts / rate, 2)
             returns_kes = round(returns / rate, 2)
-            net_sales_kes = round(total_out / vat / rate, 2)
+            # Ex-VAT net stays on the POST-discount amount (unchanged basis)
+            net_sales_kes = round((total_incl if not is_return else 0.0) / vat / rate, 2)
             product_price_kes = round(price_unit / rate, 2)
 
             sku = sku_map.get(product[0], "") if product else ""

@@ -472,10 +472,16 @@ def transform_odoo(cur, conn, rates):
             units_qty = 1.0 if qty > 0 else -1.0
 
         sale_kind = "return" if qty < 0 else "order"
-        gross = subtotal_i if qty >= 0 else 0.0
-        disc = round(subtotal_i - subtotal, 2) if qty >= 0 else 0.0
+        # total/gross must be GROSS (pre-discount, VAT-inclusive) to match the
+        # Shopify convention: KPI SQL computes net = total_sales_kes −
+        # discounts_kes, so storing the post-discount price_subtotal_incl here
+        # double-subtracted discounts. (The old disc = incl − excl was the VAT
+        # amount, not the discount.) Mirrors sync_incremental's Odoo path.
+        raw_gross = price * qty
+        disc = max(round(raw_gross - subtotal_i, 2), 0.0) if qty >= 0 else 0.0
+        gross = (subtotal_i + disc) if qty >= 0 else 0.0
         ret = abs(subtotal_i) if qty < 0 else 0.0
-        total = subtotal_i if qty >= 0 else -abs(subtotal_i)
+        total = (subtotal_i + disc) if qty >= 0 else -abs(subtotal_i)
         net = subtotal if qty >= 0 else -abs(subtotal)
 
         mapped = ODOO_LOCATION_MAP.get(pos_location_name, pos_location_name)
