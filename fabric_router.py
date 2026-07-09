@@ -703,19 +703,16 @@ def _scope_sql(scope, col="p.fabric_category"):
     return m if str(scope or "").lower() == "support" else f"NOT {m}"
 
 def _category_label_sql(scope, col="p.fabric_category"):
-    """Display expression for the fabric category. In the SUPPORT scope,
-    products that are support-only via the name-prefix override list (i.e. their
-    Odoo category is NOT Lining/Fusable Interfacing) are relabelled
-    'Lining/Sampling' so the tab doesn't surface confusing main-fabric category
-    names; genuine Lining / Fusable Interfacing products keep their own label.
-    Everywhere else this is the plain COALESCE(…,'Unknown') expression."""
-    base = f"COALESCE(NULLIF({col},''),'Unknown')"
-    if str(scope or "").lower() != "support":
-        return base
-    c = f"LOWER(BTRIM(COALESCE({col},'')))"
-    return (f"(CASE WHEN {c} NOT IN ('lining', 'fusable interfacing') "
-            f"AND {_support_ovr_match(col)} "
-            f"THEN 'Lining/Sampling' ELSE {base} END)")
+    """Display expression for the fabric category: the product's REAL Odoo
+    category, with NULL/blank bucketed as 'Unknown'. Support-override
+    products (pulled into the support scope by the name-prefix list) are NOT
+    relabelled — they show under their real category/subcategory exactly like
+    the two native support categories, so the Support tab integrates them with
+    Lining / Fusable Interfacing instead of a generic 'Lining/Sampling' bucket.
+    `scope` is kept in the signature for call-site stability (labeling is now
+    scope-independent)."""
+    _ = scope
+    return f"COALESCE(NULLIF({col},''),'Unknown')"
 
 # ── Basic (core staple) fabrics ─────────────────────────────
 # A curated set of staple fabrics the buying team always wants to keep in stock,

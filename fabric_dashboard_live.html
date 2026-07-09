@@ -498,7 +498,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    <section id="page-support" style="display:none;">
     <div id="support-kpis" class="kpi-grid"><div class="loading">Loading…</div></div>
     <div class="card" style="padding:0;margin-top:1.1rem;">
-     <div class="section-head" style="padding:.9rem 1.1rem 0;"><h3>Stock mix — support fabrics</h3><span class="muted">Lining &amp; interfacing &middot; RMAT/Stock</span>
+     <div class="section-head" style="padding:.9rem 1.1rem 0;"><h3>Stock mix — support fabrics</h3><span class="muted">Lining, interfacing &amp; support overrides &middot; RMAT/Stock</span>
       <div class="seg" id="support-mix-group-seg" style="margin-left:1rem;">
        <button class="unit-btn active" data-grp="category" onclick="setMixGroup('category','support')">By Category</button>
        <button class="unit-btn" data-grp="subcategory" onclick="setMixGroup('subcategory','support')">By Sub-Category</button>
@@ -527,7 +527,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      </div>
     </div>
     <div class="card" style="margin-top:1.1rem;">
-     <div class="section-head"><h3>Support overrides</h3><span class="muted">Products whose <b>name</b> starts with one of these prefixes are treated as support fabrics regardless of their Odoo category (shown as "Lining/Sampling")</span></div>
+     <div class="section-head"><h3>Support overrides</h3><span class="muted">Products whose <b>name</b> starts with one of these prefixes are treated as support fabrics regardless of their Odoo category (shown under their real category)</span></div>
      <p class="muted" id="supovr-note" style="margin:.4rem 0 .8rem;font-size:12.5px;"></p>
      <div id="supovr-add" style="display:none;margin-bottom:.8rem;">
       <div class="flex" style="gap:.5rem;align-items:center;">
@@ -1429,7 +1429,7 @@ function renderSupportKpis(d){
 
 // ── Navigation ──
 const LOADERS={dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0)};
-const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'',deadstock:'Fabric that has been sitting without movement',defects:'',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining & interfacing only — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity'};
+const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'',deadstock:'Fabric that has been sitting without movement',defects:'',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity'};
 const loadedOnce={};
 
 // ── Draggable / reorderable nav tabs (per-browser, localStorage) ──

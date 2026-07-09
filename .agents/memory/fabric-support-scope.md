@@ -27,9 +27,11 @@ rolls). These force whole fabric families (e.g. sampling-only Dexing/Yiyi lines 
 Odoo category is a main-fabric one) into SUPPORT regardless of category. The match
 uses `starts_with()` (never `LIKE '%'` — psycopg2 literal-% trap) and is wrapped in
 `COALESCE(id IN (…), FALSE)` so NULL-product rows still land in MAIN (reconciliation).
-In support-scope responses, override-only products are relabelled **"Lining/Sampling"**
-via `_category_label_sql(scope, col)` — every category-displaying endpoint must use it
-or the Support tab surfaces confusing main-category names. The seed matched 55
+In support-scope responses, override products are **NOT relabelled** — they show under
+their **real Odoo category/subcategory** just like Lining/Fusable Interfacing (the old
+"Lining/Sampling" bucket was removed by user request; `_category_label_sql` is now a
+plain scope-independent `COALESCE(NULLIF(col,''),'Unknown')`, kept for call-site
+stability). The seed matched 55
 products in dev (the request estimated ~45 — prefix families are bigger than eyeballed).
 
 **Reconciliation invariant:** `main + support == the old all-fabric totals`.
