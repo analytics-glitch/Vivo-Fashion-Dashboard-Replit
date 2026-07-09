@@ -7051,7 +7051,9 @@ def analytics_sor_style_colors(
         stock AS (
             SELECT k.color,
                 COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
-                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_warehouse
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+                                                    AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)), 0) AS soh_warehouse,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + PIPELINE_LOCATIONS + """)), 0) AS soh_pipeline
             FROM skus k
             JOIN all_inventory i ON i.sku = k.sku
             GROUP BY k.color
@@ -7062,12 +7064,14 @@ def analytics_sor_style_colors(
             COALESCE(sa.units_since_launch, 0) AS units_since_launch,
             COALESCE(sa.units_sel, 0) AS units_sel, COALESCE(sa.sales_sel, 0) AS sales_sel,
             sa.last_sale, sa.first_sale,
-            COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse
+            COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse,
+            COALESCE(st.soh_pipeline, 0) AS soh_pipeline
         FROM prod p
         LEFT JOIN sales sa USING (color)
         LEFT JOIN stock st USING (color)
         WHERE COALESCE(sa.units_since_launch, 0) > 0
            OR COALESCE(st.soh_stores, 0) > 0 OR COALESCE(st.soh_warehouse, 0) > 0
+           OR COALESCE(st.soh_pipeline, 0) > 0
         """
     ) or []
     today = date.today()
@@ -7077,7 +7081,8 @@ def analytics_sor_style_colors(
         sales_6m = float(r["sales_6m"] or 0)
         soh_stores = int(r["soh_stores"] or 0)
         soh_warehouse = int(r["soh_warehouse"] or 0)
-        soh_total = soh_stores + soh_warehouse
+        soh_pipeline = int(r["soh_pipeline"] or 0)
+        soh_total = soh_stores + soh_warehouse + soh_pipeline
         units_30d = int(r["units_30d"] or 0)
         weekly_avg = round(units_30d / (30.0 / 7.0), 1)
         woc = round(soh_total / weekly_avg, 1) if weekly_avg > 0 else None
@@ -7106,6 +7111,7 @@ def analytics_sor_style_colors(
             "weekly_avg": weekly_avg,
             "soh_total": soh_total,
             "soh_wh": soh_warehouse,
+            "soh_pipeline": soh_pipeline,
             "woc": woc,
             "pct_in_wh": round(100.0 * soh_warehouse / soh_total, 1) if soh_total else 0.0,
             "asp_6m": round(sales_6m / units_6m) if units_6m > 0 else None,
@@ -16870,7 +16876,10 @@ def _sku_breakdown(style_names, country=None, channel=None):
     inv = run_query("""
         SELECT p.sku,
             SUM(i.available) AS soh_total,
-            SUM(CASE WHEN i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """) THEN i.available ELSE 0 END) AS soh_wh
+            SUM(CASE WHEN i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+                      AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)
+                     THEN i.available ELSE 0 END) AS soh_wh,
+            SUM(CASE WHEN i.pos_location_name IN (""" + PIPELINE_LOCATIONS + """) THEN i.available ELSE 0 END) AS soh_pipeline
         FROM all_products_clean p
         LEFT JOIN all_inventory i ON i.sku = p.sku""" + inv_cf + """
         WHERE p.style_name IN (""" + names_sql + """)
@@ -16882,6 +16891,7 @@ def _sku_breakdown(style_names, country=None, channel=None):
         soh = inv_map.get(r["sku"], {})
         soh_total = float(soh.get("soh_total") or 0)
         soh_wh = float(soh.get("soh_wh") or 0)
+        soh_pipeline = float(soh.get("soh_pipeline") or 0)
         u6 = float(r["units_6m"] or 0)
         u3 = float(r["units_3w"] or 0)
         if u6 == 0 and u3 == 0 and soh_total == 0:
@@ -16891,6 +16901,7 @@ def _sku_breakdown(style_names, country=None, channel=None):
             "units_6m": int(u6), "units_3w": int(u3),
             "sales_6m": round(float(r["sales_6m"] or 0)),
             "soh_total": int(soh_total), "soh_wh": int(soh_wh),
+            "soh_pipeline": int(soh_pipeline),
             "pct_in_wh": round(100.0 * soh_wh / soh_total, 1) if soh_total else 0.0,
         })
     return out

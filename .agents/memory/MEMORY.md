@@ -112,6 +112,7 @@
 - [Style-grain single row](style-grain-single-row.md) — top-skus/SOR/velocity must GROUP BY style_name only (MAX dims); collection/product_type in the grain splits style units across rows.
 - [Ranked LIMIT before allocator](ranked-limit-before-allocator.md) — a small top-N cap upstream of a shared-pool (warehouse) allocator both hides valid rows and misallocates the pool; cap must be a generous safety bound + truncated flag.
 - [Product category map drift](product-category-map-drift.md) — category derives from CATEGORY_MAP(sub_category), not Odoo's raw column; missing subcats = blank category; SQL sync passes generated from the dict.
+- [Pipeline SOH bucket](pipeline-soh-bucket.md) — PIPELINE_LOCATIONS ⊂ WAREHOUSE_LOCATIONS; endpoints exposing soh_pipeline must exclude it from soh_wh & keep master/drilldown semantics aligned.
 - [WIP locations excluded at ingestion](wip-locations-excluded-ingestion.md) — sewing/finishing/trim (Sew/Stock/*) stock must never enter all_inventory; exclude in the extract's EXCLUDED_LOCATIONS (substring), not downstream, or it counts as warehouse stock.
 - [Triad joins are SKU-only](triad-joins-sku-only.md) — all_sales↔all_inventory↔all_products_clean must join on SKU (16.7k inventory rows have blank style_name; name joins silently zero stock).
 - [Rebuild transform OOM + bg reaping](transform-oom-batching.md) — stream all_sales rebuild in 50k batches (fetchall OOM-killed silently); nohup in agent bash gets reaped — run batch jobs as workflows; merge-restarts auto-run destructive batch workflows.

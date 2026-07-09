@@ -127,7 +127,7 @@ const SorStylesTable = ({
           buckets.set(k, {
             color: s.color, size: s.size, sku: s.sku,
             units_6m: 0, units_3w: 0, sales_6m: 0,
-            soh_total: 0, soh_store: 0, soh_wh: 0,
+            soh_total: 0, soh_store: 0, soh_wh: 0, soh_pipeline: 0,
           });
         }
         const b = buckets.get(k);
@@ -137,6 +137,7 @@ const SorStylesTable = ({
         b.soh_total += s.soh_total || 0;
         b.soh_store += s.soh_store || 0;
         b.soh_wh += s.soh_wh || 0;
+        b.soh_pipeline += s.soh_pipeline || 0;
       }
       const sorted = [...buckets.values()].sort((a, b) => b.units_6m - a.units_6m);
       for (let i = 0; i < sorted.length; i++) {
@@ -158,6 +159,7 @@ const SorStylesTable = ({
           soh_total: v.soh_total,
           soh_store: v.soh_store,
           soh_wh: v.soh_wh,
+          soh_pipeline: v.soh_pipeline,
           pct_in_wh,
           sor_6m,
           asp_6m: v.units_6m > 0 ? v.sales_6m / v.units_6m : 0,
@@ -243,8 +245,14 @@ const SorStylesTable = ({
       // computed off the last-3-month burn rate (see backend
       // `sor-all-styles`) so it reflects current sell-through.
       { key: "weekly_avg",   label: "Weekly Avg",   numeric: true, render: (r) => (r.weekly_avg || 0).toFixed(1), csv: (r) => r.weekly_avg },
-      { key: "soh_total",    label: "SOH",          numeric: true, render: (r) => fmtNum(Math.round(r.soh_total)), csv: (r) => r.soh_total },
-      { key: "soh_wh",       label: "SOH W/H",      numeric: true, render: (r) => fmtNum(Math.round(r.soh_wh)), csv: (r) => r.soh_wh },
+      { key: "soh_total",    label: "SOH",          numeric: true, headerTitle: "Total stock on hand = stores + warehouse + production pipeline", render: (r) => fmtNum(Math.round(r.soh_total)), csv: (r) => r.soh_total },
+      { key: "soh_wh",       label: "SOH W/H",      numeric: true, headerTitle: "Sellable warehouse stock (excludes the production pipeline)", render: (r) => fmtNum(Math.round(r.soh_wh)), csv: (r) => r.soh_wh },
+      {
+        key: "soh_pipeline", label: "SOH Pipeline", numeric: true,
+        headerTitle: "In the production pipeline — Waiting Sewing (Fabric Trimming), Sewing (Sew/Stock A–E), Finishing (Finished Goods Production). Not yet sellable.",
+        render: (r) => (r.soh_pipeline ? fmtNum(Math.round(r.soh_pipeline)) : <span className="text-muted">—</span>),
+        csv: (r) => r.soh_pipeline ?? 0,
+      },
       {
         key: "woc", label: "WOC", numeric: true,
         sortValue: (r) => r.woc == null ? 9999 : r.woc,

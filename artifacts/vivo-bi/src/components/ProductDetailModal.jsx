@@ -92,7 +92,8 @@ const ProductDetailModal = ({ sku, barcode, onClose }) => {
               <Field label="Stock on hand">
                 {fmtNum(data.soh_total || 0)}
                 <span className="text-[11px] text-muted font-normal">
-                  {" "}({fmtNum(data.soh_stores || 0)} stores · {fmtNum(data.soh_warehouse || 0)} wh)
+                  {" "}({fmtNum(data.soh_stores || 0)} stores · {fmtNum(data.soh_warehouse || 0)} wh
+                  {data.soh_pipeline > 0 ? ` · ${fmtNum(data.soh_pipeline)} pipeline` : ""})
                 </span>
               </Field>
               <Field label="Days since last sale">{lastSale}</Field>
