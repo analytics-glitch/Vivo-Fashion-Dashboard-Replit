@@ -407,6 +407,16 @@ const ReplenishByItem = () => {
   const itemVisible = itemSorted.filter(isOpenRow);
   const gapVisible = gapSorted.filter(isOpenRow);
 
+  // Store Gaps pagination — the All-stores gap universe can be thousands of
+  // rows, so the table renders one page at a time (export always carries the
+  // full set server-side).
+  const GAP_PAGE_SIZE = 200;
+  const [gapPage, setGapPage] = useState(0);
+  useEffect(() => { setGapPage(0); }, [store, dateFrom, dateTo, threshold, ownerFilter, gapSort, gapSorts]);
+  const gapPageCount = Math.max(1, Math.ceil(gapVisible.length / GAP_PAGE_SIZE));
+  const gapPageSafe = Math.min(gapPage, gapPageCount - 1);
+  const gapPaged = gapVisible.slice(gapPageSafe * GAP_PAGE_SIZE, (gapPageSafe + 1) * GAP_PAGE_SIZE);
+
   // Excel export — server-built XLSX (same pattern as Replenishments/IBT). The
   // axios cookie auth rides along; the file mirrors the visible table columns.
   const [exporting, setExporting] = useState(false);
@@ -628,16 +638,54 @@ const ReplenishByItem = () => {
                   <DownloadSimple size={14} weight="bold" /> {exporting ? "Exporting…" : "Export Excel"}
                 </button>
               </div>
+              {gapData.truncated && (
+                <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-[12px] text-amber-800" data-testid="gaps-truncation-notice">
+                  List truncated — the server safety cap of {fmtNum(gapData.row_cap)} rows was hit, so some
+                  qualifying gaps may be missing. Narrow the date window or pick a single store.
+                </div>
+              )}
               {gapVisible.length === 0
                 ? <Empty label={gapRows.length === 0
                     ? "No demand gaps — this store stocks what it sells (or warehouse is empty)."
                     : "All gaps marked done — see Transfer Tracking below."} />
                 : (
-                  <ReplenTable
-                    rows={gapVisible} sort={gapSort} sorts={gapSorts} toggleSort={gapToggle}
-                    actuals={actuals} setActual={setActual} refs={refs} setRef={setRef}
-                    savingKey={savingKey} onMarkDone={markAsDone} done={done}
-                  />
+                  <>
+                    <ReplenTable
+                      rows={gapPaged} sort={gapSort} sorts={gapSorts} toggleSort={gapToggle}
+                      actuals={actuals} setActual={setActual} refs={refs} setRef={setRef}
+                      savingKey={savingKey} onMarkDone={markAsDone} done={done}
+                    />
+                    {gapPageCount > 1 && (
+                      <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-2.5 text-sm" data-testid="gaps-pagination">
+                        <span className="text-muted-foreground text-[12px]">
+                          Showing {fmtNum(gapPageSafe * GAP_PAGE_SIZE + 1)}–{fmtNum(Math.min((gapPageSafe + 1) * GAP_PAGE_SIZE, gapVisible.length))} of {fmtNum(gapVisible.length)} gaps
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setGapPage((p) => Math.max(0, p - 1))}
+                            disabled={gapPageSafe === 0}
+                            className="rounded-md border border-border bg-card px-2.5 py-1.5 text-[12px] font-medium hover:bg-muted/50 disabled:opacity-50"
+                            data-testid="gaps-page-prev"
+                          >
+                            Previous
+                          </button>
+                          <span className="text-[12px] text-muted-foreground tabular-nums">
+                            Page {gapPageSafe + 1} / {gapPageCount}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setGapPage((p) => Math.min(gapPageCount - 1, p + 1))}
+                            disabled={gapPageSafe >= gapPageCount - 1}
+                            className="rounded-md border border-border bg-card px-2.5 py-1.5 text-[12px] font-medium hover:bg-muted/50 disabled:opacity-50"
+                            data-testid="gaps-page-next"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
             </>
           )}

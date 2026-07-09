@@ -109,4 +109,5 @@
 - [Customer pseudo-exclusion canon](customer-pseudo-exclusion.md) — every customer-grain endpoint must apply _not_walkin_pseudo_sql; repeat list capped 500 so counts use COUNT() OVER; xsurf_cust_* checks lock the identities.
 - [Cross-surface reconcile must use real paths](cross-surface-reconcile-real-paths.md) — a reconciliation check that re-runs one shared SQL for both sides is tautological; each side must go through its page's production function + pure compare module with divergence tests.
 - [Style-grain single row](style-grain-single-row.md) — top-skus/SOR/velocity must GROUP BY style_name only (MAX dims); collection/product_type in the grain splits style units across rows.
+- [Ranked LIMIT before allocator](ranked-limit-before-allocator.md) — a small top-N cap upstream of a shared-pool (warehouse) allocator both hides valid rows and misallocates the pool; cap must be a generous safety bound + truncated flag.
 - [Triad joins are SKU-only](triad-joins-sku-only.md) — all_sales↔all_inventory↔all_products_clean must join on SKU (16.7k inventory rows have blank style_name; name joins silently zero stock).

@@ -15039,19 +15039,26 @@ def analytics_replenish_gaps(
     date_from: str = Query(default=None),
     date_to: str = Query(default=None),
     low_threshold: int = Query(default=2),
-    limit: int = Query(default=300),
+    limit: int = Query(default=20000),
 ):
     # Store-centric gap finder: items a store SOLD in the window but barely
     # stocks now (store SOH below ``low_threshold``) while the warehouse has
     # units to send — i.e. proven local demand the store can't currently serve.
+    # ``limit`` is a SAFETY bound only (default 20k covers the full ~3k gap
+    # universe with plenty of headroom). The SQL applies the low-stock +
+    # warehouse filters BEFORE the LIMIT, but a small cap (the old 300) ranked
+    # by units sold silently starved slower-selling yet valid gaps — so the
+    # default must stay far above the realistic row count, and any hit of the
+    # cap is reported via ``truncated``/``row_cap`` in the response.
     _warehouse_bins_refresh()
     st = _replen_clean_text(store, 120)
     if not st:
-        return {"store": "", "rows": []}
+        return {"store": "", "rows": [], "truncated": False, "row_cap": 0}
     if not date_from or not date_to:
         date_to = str(date.today())
         date_from = str(date.today() - timedelta(days=90))
     thr = max(0, int(low_threshold))
+    lim = max(1, min(int(limit), 50000))
     # "__all__" = every selling store at once (one row per store × sku). Warehouses
     # are excluded and online channels are dropped except Online - Shop Zetu, matching
     # the cross-store replenishment report. A single store name uses an exact match.
@@ -15100,7 +15107,7 @@ def analytics_replenish_gaps(
             LEFT JOIN warehouse_bins wb ON wb.barcode = p.barcode
             WHERE COALESCE(ss.soh, 0) < """ + str(thr) + """ AND COALESCE(w.soh_wh, 0) > 0
             ORDER BY sold.units_sold DESC
-            LIMIT """ + str(int(limit)))
+            LIMIT """ + str(lim))
     else:
         lit = st.replace("'", "''")
         rows = run_query("""
@@ -15144,7 +15151,7 @@ def analytics_replenish_gaps(
             LEFT JOIN warehouse_bins wb ON wb.barcode = p.barcode
             WHERE COALESCE(ss.soh, 0) < """ + str(thr) + """ AND COALESCE(w.soh_wh, 0) > 0
             ORDER BY sold.units_sold DESC
-            LIMIT """ + str(int(limit)))
+            LIMIT """ + str(lim))
     store_map = _replen_store_owner_map()
     _owners = _replen_owners()
     marks_all = _replen_marks()
@@ -15186,8 +15193,11 @@ def analytics_replenish_gaps(
     # Drop rows the warehouse pool can no longer cover (suggested capped to 0) — a
     # zero-unit suggestion is not actionable and must not appear in the list.
     out = [r for r in out if int(r.get("suggested_units") or 0) > 0]
+    # Truncation is reported when the SQL safety cap was actually hit — the
+    # only case where qualifying rows could have been cut before allocation.
     return {"store": st, "date_from": date_from, "date_to": date_to,
-            "low_threshold": thr, "rows": out}
+            "low_threshold": thr, "rows": out,
+            "truncated": len(rows) >= lim, "row_cap": lim}
 
 
 # Shared XLSX column set for the Replenish by Style / SKU exports — mirrors the
@@ -15255,9 +15265,12 @@ def analytics_replenish_gaps_export(
     date_from: str = Query(default=None),
     date_to: str = Query(default=None),
     low_threshold: int = Query(default=2),
-    limit: int = Query(default=300),
+    limit: int = Query(default=50000),
 ):
     # Excel export of the Store Gaps view — same reuse pattern as By Item.
+    # The export must always contain the FULL qualifying set, so its default
+    # limit is pinned to the endpoint's maximum safety cap (50k), independent
+    # of whatever page size the UI displays.
     from openpyxl import Workbook
     data = analytics_replenish_gaps(
         store=store, date_from=date_from, date_to=date_to,
