@@ -2515,7 +2515,7 @@ def _reset_role_pages(role):
 def _replen_marks():
     """All replenishment marks keyed by (pos_location, kind, value)."""
     rows = _users_exec(
-        "SELECT rec_key, actual_units, transfer_ref FROM recommendation_actions "
+        "SELECT rec_key, actual_units, transfer_ref, acted_at FROM recommendation_actions "
         "WHERE rec_type='replenish' AND status='done'", fetch=True) or []
     marks = {}
     for r in rows:
@@ -2525,8 +2525,68 @@ def _replen_marks():
                 "replenished": True,
                 "actual_units_replenished": int(r["actual_units"] or 0),
                 "transfer_ref": r.get("transfer_ref") or "",
+                "acted_date": str(r["acted_at"])[:10] if r.get("acted_at") else None,
             }
     return marks
+
+
+def _resurface_stale_marks(rows, marks_all, need_key=None, cap=None):
+    """Demand-aware mark expiry: a 'done' mark must stop suppressing a line once
+    the store has sold MORE units since the mark than it currently holds — a
+    genuine NEW gap after the transfer. Without this, a (store, SKU) marked done
+    once stays hidden forever even while it keeps selling, so stores stop
+    receiving what they are actively selling.
+
+    Mutates ``rows`` in place: for stale marks, flips ``replenished`` back to
+    False (the line resurfaces in the active pick list) and, when ``need_key``
+    is given, restates that field to the POST-mark gap
+    (sold_since_mark - soh_store, optionally capped) so pre-transfer sales that
+    were already covered are not double-counted. Never raises — a staleness
+    lookup hiccup must not block the pick list (marks then behave as before).
+    """
+    try:
+        pend = []  # (row, acted_date)
+        for row in rows:
+            if not row.get("replenished"):
+                continue
+            mk = (marks_all.get((row.get("pos_location"), "sku", row.get("sku")))
+                  or marks_all.get((row.get("pos_location"), "barcode", row.get("barcode")))
+                  or {})
+            ad = mk.get("acted_date")
+            if ad:
+                pend.append((row, ad))
+        if not pend:
+            return
+        min_acted = min(ad for _, ad in pend)
+        pairs = sorted({(r.get("pos_location") or "", r.get("sku") or "")
+                        for r, _ in pend})
+        vals = ",".join("('" + _sql_str(p) + "','" + _sql_str(s) + "')"
+                        for p, s in pairs)
+        sold = run_query("""
+            SELECT s.pos_location_name AS pos, s.variant_sku AS sku,
+                s.sale_date::date AS d, SUM(s.net_quantity) AS q
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date > '""" + _sql_str(min_acted) + """'
+              AND (s.pos_location_name, s.variant_sku) IN (""" + vals + """)
+            GROUP BY 1, 2, 3""") or []
+        by_pair = {}
+        for sr in sold:
+            by_pair.setdefault((sr["pos"], sr["sku"]), []).append(
+                (str(sr["d"])[:10], float(sr["q"] or 0)))
+        for row, ad in pend:
+            days = by_pair.get((row.get("pos_location"), row.get("sku"))) or []
+            sold_since = int(sum(q for d, q in days if d > ad))
+            soh = int(row.get("soh_store") or 0)
+            if sold_since > soh:
+                row["replenished"] = False
+                if need_key is not None:
+                    gap = max(0, sold_since - soh)
+                    if cap is not None:
+                        gap = min(gap, cap)
+                    row[need_key] = gap
+    except Exception as e:
+        log.warning("replen mark staleness check failed (marks left as-is): %s", e)
 
 
 def _set_replen_mark(pos_location, kind, value, replenished, actual,

@@ -66,6 +66,8 @@ LOCATION_COUNTRY_MAP = {
     "KILEL":  ("Vivo Kileleshwa",      "Kenya"),
     "MERU":   ("Vivo Meru",            "Kenya"),
     "SAFAR":  ("Safari Sarit",         "Kenya"),
+    "FTRIM":  ("Fabric Trimming",           "Kenya"),
+    "FGPRD":  ("Finished Goods Production",  "Kenya"),
     "STPUR":  ("Staff purchases",      "Kenya"),
     "WHFIN":  ("Warehouse Finished Goods", "Kenya"),
     "ZOYA":   ("Zoya Sarit",           "Kenya"),
@@ -79,8 +81,8 @@ LOCATION_COUNTRY_MAP = {
 
 EXCLUDED_LOCATIONS = {
     'Production Accessories', 'Raw Materials', 'Production',
-    'Fabric Trimming', 'Shopping Bags', 'Dead Stock Fabric',
-    'Finished Goods Production', 'Defects Location',
+    'Shopping Bags', 'Dead Stock Fabric',
+    'Defects Location',
     'Buying & Merchandise', 'Fabric Production', 'Wandia',
     'Galleria Holding', 'Washing', 'Cutting - Spreading',
     'Recall Location', 'Holding Warehouse Finished Goods',
@@ -88,9 +90,9 @@ EXCLUDED_LOCATIONS = {
     'Repairs', 'Sampling', 'Sale Stock',
     # Unfinished goods (WIP) — sewing / finishing / trim stock must NEVER be
     # counted as sellable product or warehouse stock (substring-matched).
-    'Sew/Stock', 'Sewing', 'Finishing',
-    'PDACC', 'RMAT', 'FTRIM', 'PROD', 'SZONL', 'Dead/Stock Fabric',
-    'FGPRD', 'INTRA', 'HWHFN', 'WHREC', 'KIHOL', 'OAHOL', 'GALHO',
+    'Finishing',
+    'PDACC', 'RMAT', 'PROD', 'SZONL', 'Dead/Stock Fabric',
+    'INTRA', 'HWHFN', 'WHREC', 'KIHOL', 'OAHOL', 'GALHO',
     'OASIS', 'KIGAL', 'Buyin', 'Retir', 'WND', 'Wash', 'CUTT',
     'RCALL', 'Studi', 'PDDEV', 'Repai', 'Samp', 'SALE', 'FABPR',
     'Archv', 'Wholesale', 'Defects', 'HQ/Stock', 'ACCHO', 'ACHO',
