@@ -2869,7 +2869,7 @@ function renderKpis(d,mpg,coverDelta){
      else if(pstatus==='ok'&&pcover!=null){pval=coverFmt(pcover);pcls=pcover<1?'amber':'';}
      else{pval='&mdash;';}
      const pdl=(pcover!=null)?`<button class="btn ghost" onclick="downloadMonthsCoverPrevMonthXlsx()" title="Download the calculation audit trail (fabric stock on hand and the previous full calendar month's net consumption behind this cover figure) as an Excel workbook">&#11015; Download (Excel)</button>`:'';
-     return KpiCard({reserveAction:true,label:'Months of cover',qualifier:'Prev Month Consumpt.',value:pval,valueClass:pcls,valueAttrs:fx(FX.monthsCoverPrevMonth),cardAttrs:` title="${ptip}"`,footnote:pnote,action:pdl});})(),
+     return KpiCard({reserveAction:true,label:'Months of cover',qualifier:'Prev Month Consump.',value:pval,valueClass:pcls,valueAttrs:fx(FX.monthsCoverPrevMonth),cardAttrs:` title="${ptip}"`,footnote:pnote,action:pdl});})(),
   ];
   document.getElementById('kpi-cards').innerHTML=cards.join('');
 }
@@ -5142,17 +5142,24 @@ init();
       body:JSON.stringify({ message:msg, session_id:sessionId, context:ctx(), attachments:(atts&&atts.length?atts:undefined) })
     }).then(function(res){
       if(!res.ok || !res.body) throw new Error("stream "+res.status);
-      var reader=res.body.getReader(), decoder=new TextDecoder(), buf="", gotAny=false;
+      var reader=res.body.getReader(), decoder=new TextDecoder(), buf="", gotAny=false, errMsg=null;
       function handle(ev){
         if(ev.type==="token"){ gotAny=true; toolStatus=null; patchLast(function(m){ m.content=(m.content||"")+ev.text; return m; }); render(); }
         else if(ev.type==="tool"){ if(ev.status==="running"){ toolStatus=TOOL_LABELS[ev.name]||"Looking that up"; render(); } }
         else if(ev.type==="rows"){ patchLast(function(m){ m.exportRows=ev.rows||[]; m.exportCols=ev.columns||[]; return m; }); }
-        else if(ev.type==="error"){ gotAny=true; toolStatus=null; patchLast(function(m){ m.content=(m.content||"")+(m.content?"\n\n":"")+ev.message; return m; }); render(); }
+        else if(ev.type==="error"){
+          // Don't render the error yet: if the stream produced NO real answer
+          // tokens, we throw at end-of-stream so the non-streaming fallback
+          // retries silently. Only an error after partial output is appended.
+          toolStatus=null;
+          if(gotAny){ patchLast(function(m){ m.content=(m.content||"")+(m.content?"\n\n":"")+ev.message; return m; }); render(); }
+          else{ errMsg=ev.message; }
+        }
         else if(ev.type==="done"){ if(ev.session_id) sessionId=ev.session_id; if(Array.isArray(ev.followups)) followups=ev.followups; toolStatus=null; }
       }
       function pump(){
         return reader.read().then(function(r){
-          if(r.done){ if(!gotAny) throw new Error("empty stream"); return; }
+          if(r.done){ if(!gotAny) throw new Error(errMsg?"error-only stream":"empty stream"); return; }
           buf+=decoder.decode(r.value,{stream:true});
           var chunks=buf.split("\n\n"); buf=chunks.pop()||"";
           chunks.forEach(function(chunk){

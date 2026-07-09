@@ -20805,7 +20805,15 @@ def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False,
 
     final_parts = []
     answered = False
-    try:
+    # Transient AI-service blips (timeouts, 5xx from the LLM proxy) shouldn't
+    # surface an error bubble to the user: retry the whole attempt ONCE after a
+    # short backoff, but only when nothing has been streamed yet (retrying after
+    # partial output would duplicate visible text). The original error message
+    # stays as the final fallback when the retry also fails.
+    for _attempt in range(2):
+      final_parts = []
+      answered = False
+      try:
         for _step in range(_CHAT_TOOL_STEPS):
             content_buf = ""
             toolcalls = []
@@ -20859,8 +20867,14 @@ def _chat_agent_events(message, session_id, ctx, revealed, want_followups=False,
                     yield {"type": "token", "text": forced}
             except Exception:
                 pass
-    except Exception:
-        log.exception("_chat_agent_events failed (session_id=%s)", session_id)
+        break
+      except Exception:
+        log.exception("_chat_agent_events failed (session_id=%s, attempt=%d)",
+                      session_id, _attempt + 1)
+        if _attempt == 0 and not final_parts:
+            # Nothing reached the client yet — silently retry once.
+            time.sleep(1.5)
+            continue
         yield {"type": "error",
                "message": "Sorry, I couldn't reach the assistant just now. Please try again in a moment."}
         return
