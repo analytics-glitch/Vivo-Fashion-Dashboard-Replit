@@ -5461,13 +5461,17 @@ def product_detail(sku: str = Query(default=""), barcode: str = Query(default=""
             "COALESCE(SUM(available) FILTER (WHERE pos_location_name NOT IN ("
             + WAREHOUSE_LOCATIONS + ")),0) AS soh_stores, "
             "COALESCE(SUM(available) FILTER (WHERE pos_location_name IN ("
-            + WAREHOUSE_LOCATIONS + ")),0) AS soh_warehouse "
+            + WAREHOUSE_LOCATIONS + ") AND pos_location_name NOT IN ("
+            + PIPELINE_LOCATIONS + ")),0) AS soh_warehouse, "
+            "COALESCE(SUM(available) FILTER (WHERE pos_location_name IN ("
+            + PIPELINE_LOCATIONS + ")),0) AS soh_pipeline "
             "FROM all_inventory WHERE sku = %s",
             (sku_val,),
         )
         srow = cur.fetchone()
         soh_stores = int((srow[0] if srow else 0) or 0)
         soh_warehouse = int((srow[1] if srow else 0) or 0)
+        soh_pipeline = int((srow[2] if srow else 0) or 0)
         cur.execute(
             "SELECT MAX(sale_date::date) FROM all_sales "
             "WHERE variant_sku = %s AND sale_kind IN ('sale','order')",
@@ -5490,7 +5494,8 @@ def product_detail(sku: str = Query(default=""), barcode: str = Query(default=""
         "category": d["category"],
         "soh_stores": soh_stores,
         "soh_warehouse": soh_warehouse,
-        "soh_total": soh_stores + soh_warehouse,
+        "soh_pipeline": soh_pipeline,
+        "soh_total": soh_stores + soh_warehouse + soh_pipeline,
         "last_sale": str(last_sale) if last_sale else None,
         "days_since_last_sale": (today - last_sale).days if last_sale else None,
     }
@@ -6887,7 +6892,8 @@ def analytics_sor_all_styles(
         stock AS (
             SELECT COALESCE(m.style_name, i.style_name) AS style_name,
                 COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
-                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_warehouse
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """) AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)), 0) AS soh_warehouse,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + PIPELINE_LOCATIONS + """)), 0) AS soh_pipeline
             FROM all_inventory i
             LEFT JOIN """ + SKU_STYLE_MAP + """ m ON m.sku = i.sku
             WHERE COALESCE(m.style_name, i.style_name) IS NOT NULL
@@ -6901,7 +6907,8 @@ def analytics_sor_all_styles(
             COALESCE(sa.units_sel, 0) AS units_sel,
             COALESCE(sa.sales_sel, 0) AS sales_sel,
             sa.last_sale, sa.first_sale,
-            COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse
+            COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse,
+                COALESCE(st.soh_pipeline, 0) AS soh_pipeline
         FROM prod p
         LEFT JOIN sales sa USING (style_name)
         LEFT JOIN stock st USING (style_name)
@@ -6916,7 +6923,8 @@ def analytics_sor_all_styles(
         units_6m = int(r["units_6m"] or 0)
         soh_stores = int(r["soh_stores"] or 0)
         soh_warehouse = int(r["soh_warehouse"] or 0)
-        soh_total = soh_stores + soh_warehouse
+        soh_pipeline = int(r["soh_pipeline"] or 0)
+        soh_total = soh_stores + soh_warehouse + soh_pipeline
         # Style status semantics: active = sold in window; retired = has
         # stock but no sales in window; all = either. A manually-retired
         # style is force-treated as retired (never active, always satisfies
@@ -6967,6 +6975,7 @@ def analytics_sor_all_styles(
             "weekly_avg": weekly_avg,
             "soh_total": soh_total,
             "soh_wh": soh_warehouse,
+            "soh_pipeline": soh_pipeline,
             "woc": woc,
             "pct_in_wh": round(100.0 * soh_warehouse / soh_total, 1) if soh_total else 0.0,
             "asp_6m": round(sales_6m / units_6m) if units_6m > 0 else None,
