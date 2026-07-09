@@ -383,7 +383,26 @@ const SORReport = () => {
         {/* Custom "Selected Period" date range — drives the SOR Sel / ASP Sel
             / % Full Price columns. Defaults to the trailing 180 days. */}
         <div className="flex items-center flex-wrap gap-2 mb-3" data-testid="sor-date-filter">
-          <span className="text-[11px] font-bold uppercase text-muted">Selected Period</span>
+          <span className="text-[11px] font-bold uppercase text-muted">Select Sales Period</span>
+          {[30, 90, 120].map((d) => {
+            const from = new Date(Date.now() - d * 86400000);
+            const pad = (n) => String(n).padStart(2, "0");
+            const iso = `${from.getFullYear()}-${pad(from.getMonth() + 1)}-${pad(from.getDate())}`;
+            const now = new Date();
+            const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+            const active = dateFrom === iso && (dateTo === today || dateTo === "");
+            return (
+              <button
+                key={d}
+                type="button"
+                onClick={() => { setDateFrom(iso); setDateTo(today); }}
+                className={`px-2 py-1 rounded-lg border text-[11.5px] font-semibold ${active ? "border-amber-500 bg-amber-50 text-amber-700" : "border-border bg-white text-muted hover:text-fg"}`}
+                data-testid={`sor-preset-${d}d`}
+              >
+                {d}D
+              </button>
+            );
+          })}
           <input
             type="date"
             value={dateFrom}
