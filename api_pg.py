@@ -1800,6 +1800,15 @@ WAREHOUSE_LOCATIONS = (
     "'Staff purchases',"
     "'Sew/Stock/A','Sew/Stock/B','Sew/Stock/C','Sew/Stock/D','Sew/Stock/E'"
 )
+# Pipeline (WIP / production) locations — a SUBSET of WAREHOUSE_LOCATIONS above.
+# Kept inside WAREHOUSE_LOCATIONS so the binary store/non-store split is unaffected
+# (stores = NOT IN WAREHOUSE_LOCATIONS stays correct). Used ONLY where the dashboard
+# shows the 3-way SOH breakdown: Warehouse = IN WAREHOUSE_LOCATIONS AND NOT IN
+# PIPELINE_LOCATIONS; Pipeline = IN PIPELINE_LOCATIONS.
+PIPELINE_LOCATIONS = (
+    "'Fabric Trimming','Finished Goods Production',"
+    "'Sew/Stock/A','Sew/Stock/B','Sew/Stock/C','Sew/Stock/D','Sew/Stock/E'"
+)
 
 # Merchandise subcategories — the set of all_products_clean.product_type values
 # that count as sellable apparel. MUST stay in lock-step with
@@ -2543,6 +2552,13 @@ def _resurface_stale_marks(rows, marks_all, need_key=None, cap=None):
     (sold_since_mark - soh_store, optionally capped) so pre-transfer sales that
     were already covered are not double-counted. Never raises — a staleness
     lookup hiccup must not block the pick list (marks then behave as before).
+
+    Granularity is intentionally DAY-level (sale_date strictly AFTER the mark's
+    calendar day): all_sales.sale_date is date-only (no time component exists in
+    the source), so a same-day split is impossible. Counting the mark's own day
+    (>=) would instantly resurface every fresh mark — the pre-transfer sales
+    that prompted it would read as post-mark demand. Worst-case resurfacing
+    latency is therefore one day, which is the best the data grain allows.
     """
     try:
         pend = []  # (row, acted_date)
@@ -15252,6 +15268,8 @@ def analytics_replenish_by_item(
             "actual_units_replenished": int(mark.get("actual_units_replenished", 0)),
             "transfer_ref": mark.get("transfer_ref") or "",
         })
+    # Demand-aware mark expiry: resurface done lines with a genuine post-mark gap.
+    _resurface_stale_marks(out, marks_all)
     # Allocate each SKU's warehouse pool across stores (top sellers first) so the
     # suggested total per SKU never exceeds its warehouse stock.
     _cap_replenish_to_warehouse(out, need_key="suggested_units", out_key="suggested_units")
@@ -15424,6 +15442,8 @@ def analytics_replenish_gaps(
             "actual_units_replenished": int(mark.get("actual_units_replenished", 0)),
             "transfer_ref": mark.get("transfer_ref") or "",
         })
+    # Demand-aware mark expiry: resurface done lines with a genuine post-mark gap.
+    _resurface_stale_marks(out, marks_all)
     # Allocate each SKU's warehouse pool across stores (top sellers first) so the
     # suggested total per SKU never exceeds its warehouse stock.
     _cap_replenish_to_warehouse(out, need_key="suggested_units", out_key="suggested_units")
@@ -16143,6 +16163,9 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
     _allocate_replenishment_fair_share(actionable, cfg, margin_map,
                                        need_key="need", out_key="replenish")
     actionable = [r for r in actionable if int(r.get("replenish") or 0) > 0]
+    # Demand-aware mark expiry: resurface done lines with a genuine post-mark gap
+    # (flag-only here — need/replenish already come from the velocity targets).
+    _resurface_stale_marks(actionable, marks_all)
 
     # Phase 3 step 2: corridor dispatch cadence + min-transfer gate. Each line is
     # mapped to a dispatch corridor (calendar), its next dispatch date / dispatch-
@@ -16404,6 +16427,11 @@ def _compute_replenishment_report_rows(date_from=None, date_to=None, limit=400):
             "transfer_ref": mark.get("transfer_ref") or "",
             "days_lapsed": days_lapsed,
         })
+    # Demand-aware mark expiry: a line marked done resurfaces once the store has
+    # sold more units SINCE the mark than it currently holds — stores must keep
+    # receiving what they are actively selling; a mark is not a permanent hide.
+    _resurface_stale_marks(out_rows, marks_all, need_key="replenish",
+                           cap=REPLEN_MAX_UNITS_PER_LINE)
     # Allocate each SKU's warehouse pool across stores (top sellers first) so the
     # suggested ("replenish") never exceeds warehouse stock for that SKU.
     _cap_replenish_to_warehouse(out_rows, need_key="replenish", out_key="replenish")
