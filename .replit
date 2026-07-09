@@ -26,14 +26,6 @@ args = "Shopify Full Extract"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Rebuild all_sales"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "ShopZetu QL Backfill"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
 args = "compile"
 
 [[workflows.workflow.tasks]]
@@ -61,25 +53,6 @@ args = "python3 shopify_full_extract.py"
 
 [workflows.workflow.metadata]
 outputType = "console"
-
-[[workflows.workflow]]
-name = "Rebuild all_sales"
-author = "agent"
-
-[workflows.workflow.metadata]
-outputType = "console"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python3 transform_all_sales.py"
-
-[[workflows.workflow]]
-name = "ShopZetu QL Backfill"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python3 extract_shopzetu_sales.py --since=2022-01-01 --until=2026-06-13"
 
 [[workflows.workflow]]
 name = "compile"
