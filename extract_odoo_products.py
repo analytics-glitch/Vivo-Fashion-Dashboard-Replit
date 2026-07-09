@@ -42,9 +42,13 @@ def main():
         "active", "write_date"
     ]
 
-    domain = [["default_code", "!=", False]]
+    # Keyset pagination on the immutable id (NOT offset over a write_date sort):
+    # offset paging over a mutable sort key skips rows whenever a product is
+    # edited in Odoo mid-extract (rows shift between pages), which silently
+    # dropped ~350 products (missing barcodes downstream). id is stable, so
+    # every product is visited exactly once regardless of concurrent edits.
     batch_size = 1000
-    offset = 0
+    last_id = 0
     total = 0
     now = datetime.now(timezone.utc)
 
@@ -56,9 +60,9 @@ def main():
         records = models.execute_kw(
             ODOO_DB, uid, ODOO_PASSWORD,
             "product.product", "search_read",
-            [domain],
-            {"fields": fields, "limit": batch_size, "offset": offset,
-             "order": "write_date asc", "context": {"active_test": False}}
+            [[["default_code", "!=", False], ["id", ">", last_id]]],
+            {"fields": fields, "limit": batch_size,
+             "order": "id asc", "context": {"active_test": False}}
         )
         if not records:
             break
@@ -107,7 +111,7 @@ def main():
         """, rows)
 
         total += len(rows)
-        offset += batch_size
+        last_id = records[-1]["id"]
         log.info("Products: %d synced so far", total)
 
         if len(records) < batch_size:
