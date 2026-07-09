@@ -110,9 +110,25 @@ def bulk_insert(cur, conn, rows, label):
 
 
 def transform_shopify(cur, conn, rates):
-    """Mirror BigQuery shopify_deduped exactly."""
+    """Mirror BigQuery shopify_deduped exactly.
+
+    Streams the deduped rows in batches via a server-side cursor on a
+    SEPARATE read connection (a plain fetchall of ~1.4M wide rows plus the
+    rebuilt insert tuples peaked past available memory and got the process
+    OOM-killed with no traceback).
+    """
     log.info("Transforming Shopify sales...")
-    cur.execute("""
+    rconn = psycopg2.connect(DATABASE_URL)
+    try:
+        _transform_shopify_stream(cur, conn, rates, rconn)
+    finally:
+        rconn.close()
+
+
+def _transform_shopify_stream(cur, conn, rates, rconn):
+    rcur = rconn.cursor(name="shopify_stream")
+    rcur.itersize = 50000
+    rcur.execute("""
         SELECT
             s.line_item_id AS id, s.store_id, s.day, s.order_id, s.order_name,
             s.purchase_option, s.sale_kind, s.sale_line_type,
@@ -141,12 +157,10 @@ def transform_shopify(cur, conn, rates):
         ) o ON s.order_id::text = o.id::text AND s.store_id = o.store_id
         WHERE s.rn = 1
     """)
-    rows = cur.fetchall()
-    log.info("Shopify deduped rows: %d", len(rows))
-
     now = datetime.now(timezone.utc)
+    total_rows = 0
     insert_rows = []
-    for r in rows:
+    for r in rcur:
         (
             id_,
             store_id,
@@ -248,8 +262,14 @@ def transform_shopify(cur, conn, rates):
                 round(net / rate, 2),
             )
         )
+        total_rows += 1
+        if len(insert_rows) >= 50000:
+            bulk_insert(cur, conn, insert_rows, "Shopify batch")
+            insert_rows = []
 
-    bulk_insert(cur, conn, insert_rows, "Shopify")
+    bulk_insert(cur, conn, insert_rows, "Shopify final batch")
+    rcur.close()
+    log.info("Shopify deduped rows: %d", total_rows)
 
 
 def transform_shopzetu(cur, conn, rates):
