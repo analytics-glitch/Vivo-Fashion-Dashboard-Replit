@@ -383,6 +383,20 @@ export const SortableTable = ({
 
   // --- Opt-in column resizing (drag right edge / double-click to auto-fit) ---
   const tableRef = useRef(null);
+  // Scroll container ref + measured visible width — used to pin the
+  // expanded panel to the viewport during horizontal scroll.
+  const scrollRef = useRef(null);
+  const [viewportW, setViewportW] = useState(null);
+  useLayoutEffect(() => {
+    if (!renderExpanded) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const update = () => setViewportW(el.clientWidth || null);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [renderExpanded]);
   const [colWidths, setColWidths] = useState({}); // { [colKey]: px }
   const didInitWidths = useRef(false);
   // DOM column index accounting for the leading expander column, if any.
@@ -564,6 +578,7 @@ export const SortableTable = ({
         )}
       </div>
       <div
+        ref={scrollRef}
         className={`overflow-auto ${mobileCards ? "hidden md:block" : ""}`}
         style={maxHeight ? { maxHeight: typeof maxHeight === "number" ? `${maxHeight}px` : maxHeight } : undefined}
       >
@@ -682,7 +697,15 @@ export const SortableTable = ({
                   {renderExpanded && isOpen && (
                     <tr className="bg-panel/40">
                       <td colSpan={columns.length + 1} className="p-0">
-                        <div className="px-4 py-3 border-y border-brand/30">
+                        {/* Pin the expanded panel to the LEFT of the scroll
+                           viewport (sized to the visible width) so it does
+                           not slide away when the master table is scrolled
+                           horizontally; any table inside it then scrolls on
+                           its own with its own sticky first column. */}
+                        <div
+                          className="px-4 py-3 border-y border-brand/30 sticky left-0"
+                          style={viewportW ? { width: viewportW, maxWidth: viewportW } : undefined}
+                        >
                           {renderExpanded(r)}
                         </div>
                       </td>

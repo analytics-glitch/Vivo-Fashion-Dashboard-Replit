@@ -570,7 +570,7 @@ const ColorBreakdown = ({ rows, loading, selectedColor, onColorClick, selDays = 
         ]}
         rows={rows}
         initialSort={{ key: "sales_sel", dir: "desc" }}
-        stickyFirstCol={false}
+        stickyFirstCol
         maxHeight={null}
         onRowClick={(r) => { if (onColorClick) onColorClick(r.color); }}
         rowClassName={(r) => (r.color === selectedColor ? "bg-amber-100/70" : "")}
