@@ -23,12 +23,10 @@ import { DownloadSimple, MagnifyingGlass, X } from "@phosphor-icons/react";
 // Shared metric column definitions used by BOTH the master style table and
 // the expanded per-colour table so the two always show identical columns.
 const metricColumns = () => [
-  { key: "sales_6m", label: "Sales 6M", sortable: true, align: "right",
-    render: (r) => fmtKES(r.sales_6m) },
-  { key: "units_6m", label: "Units 6M", sortable: true, align: "right",
-    render: (r) => fmtNum(r.units_6m) },
-  { key: "units_3w", label: "Units 3W", sortable: true, align: "right",
-    render: (r) => fmtNum(r.units_3w) },
+  { key: "sales_sel", label: "Sales Sel", sortable: true, align: "right",
+    render: (r) => fmtKES(r.sales_sel) },
+  { key: "units_sel", label: "Units Sel", sortable: true, align: "right",
+    render: (r) => fmtNum(r.units_sel) },
   { key: "weekly_avg", label: "Wk Avg", sortable: true, align: "right",
     render: (r) => (r.weekly_avg ?? 0).toFixed(1) },
   { key: "units_since_launch", label: "Units Life", sortable: true, align: "right",
@@ -178,10 +176,10 @@ const SORReport = () => {
   }, [rows, search, catSel, subcatSel, brandSel, launchMonthSel]);
 
   const stats = useMemo(() => {
-    const totalSales = filtered.reduce((s, r) => s + (r.sales_6m || 0), 0);
-    const totalUnits = filtered.reduce((s, r) => s + (r.units_6m || 0), 0);
+    const totalSales = filtered.reduce((s, r) => s + (r.sales_sel || 0), 0);
+    const totalUnits = filtered.reduce((s, r) => s + (r.units_sel || 0), 0);
     const totalSOH = filtered.reduce((s, r) => s + (r.soh_total || 0), 0);
-    const denom = filtered.reduce((s, r) => s + ((r.units_6m || 0) + (r.soh_total || 0)), 0);
+    const denom = filtered.reduce((s, r) => s + ((r.units_sel || 0) + (r.soh_total || 0)), 0);
     const wSor = denom > 0 ? totalUnits / denom * 100 : 0;
     // Iter 89d — Catalog-wide Weeks-of-Cover.
     //   weekly_burn = Σ(weekly_avg) — already 3-month based (Iter 89c).
@@ -271,7 +269,7 @@ const SORReport = () => {
   const exportCsv = () => {
     const header = [
       "Style Name", "Style Number",
-      "Sales Last 6 Months", "Units Last 6 Months", "Units Last 3 Weeks",
+      "Sales (Selected Period)", "Units (Selected Period)",
       "Weekly Average", "Units Since Launch", "SOH", "SOH Warehouse",
       "Weeks of Cover", "% In WH", "ASP 6 Months", "Full Price",
       "Days Since Last Sale", "6 Months SOR", "SOR Since Launch",
@@ -283,7 +281,7 @@ const SORReport = () => {
     for (const r of filtered) {
       lines.push([
         r.style_name || "", r.style_number || "",
-        r.sales_6m ?? "", r.units_6m ?? "", r.units_3w ?? "",
+        r.sales_sel ?? "", r.units_sel ?? "",
         r.weekly_avg ?? "", r.units_since_launch ?? "", r.soh_total ?? "", r.soh_wh ?? "",
         r.woc ?? "", r.pct_in_wh ?? "", r.asp_6m ?? "", r.original_price ?? "",
         r.days_since_last_sale ?? "", r.sor_6m ?? "", r.sor_since_launch ?? "",
@@ -454,7 +452,7 @@ const SORReport = () => {
                     render: (r) => r.subcategory || "—" },
                 ]}
                 rows={filtered}
-                initialSort={{ key: "sales_6m", dir: "desc" }}
+                initialSort={{ key: "sales_sel", dir: "desc" }}
                 pageSize={50}
                 stickyFirstCol
                 renderExpanded={(row) => (
@@ -540,7 +538,7 @@ const ColorBreakdown = ({ rows, loading, selectedColor, onColorClick }) => {
           ...metricColumns(),
         ]}
         rows={rows}
-        initialSort={{ key: "sales_6m", dir: "desc" }}
+        initialSort={{ key: "sales_sel", dir: "desc" }}
         stickyFirstCol={false}
         maxHeight={null}
         onRowClick={(r) => { if (onColorClick) onColorClick(r.color); }}
