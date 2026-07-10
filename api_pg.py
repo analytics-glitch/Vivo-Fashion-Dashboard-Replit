@@ -28852,7 +28852,13 @@ def _production_order_detail(order_ref):
 
 @app.get("/api/production/stages")
 def production_stages():
-    """Stage definitions with live order/unit counts — drives the board columns."""
+    """Stage definitions with live order/unit counts — drives the board columns.
+
+    The 'buying_order' stage is display-filtered to DRAFT BOs only (a planned
+    BO — partially/fully_planned — is already in production planning, so it no
+    longer belongs in the Buying Orders column). The underlying ledger is NOT
+    filtered, so moves out of buying_order (e.g. into Cutting) keep working
+    for planned BOs."""
     rows = _users_exec("""
         SELECT s.stage_key, s.stage_name, s.sort_order,
                s.is_terminal, s.allowed_next,
@@ -28861,7 +28867,18 @@ def production_stages():
                COALESCE(w.avg_days_in_stage, 0)   AS avg_days_in_stage,
                COALESCE(w.oldest_days_in_stage,0) AS oldest_days_in_stage
         FROM production_stages s
-        LEFT JOIN v_wip_summary w ON w.stage = s.stage_key
+        LEFT JOIN (
+            SELECT b.stage,
+                   COUNT(DISTINCT b.order_ref) AS orders_here,
+                   SUM(b.qty_here) AS units_here,
+                   ROUND(AVG(b.days_since_last_in)::numeric, 1) AS avg_days_in_stage,
+                   ROUND(MAX(b.days_since_last_in)::numeric, 1) AS oldest_days_in_stage
+            FROM v_stage_balances b
+            JOIN production_orders po ON po.order_ref = b.order_ref
+            WHERE NOT (b.stage = 'buying_order'
+                       AND COALESCE(po.bo_state, '') <> 'draft')
+            GROUP BY b.stage
+        ) w ON w.stage = s.stage_key
         ORDER BY s.sort_order""", fetch=True)
     derived = _production_derived_balances()
     dstats = {}
@@ -28893,6 +28910,8 @@ def production_board():
         JOIN production_orders po ON po.order_ref = b.order_ref
         JOIN production_stages s  ON s.stage_key  = b.stage
         WHERE b.stage NOT IN ('waiting_sewing', 'sewing', 'finishing')
+          AND NOT (b.stage = 'buying_order'
+                   AND COALESCE(po.bo_state, '') <> 'draft')
         ORDER BY s.sort_order, b.days_since_last_in DESC""", fetch=True)
     for r in rows:
         r["live"] = False
@@ -28967,6 +28986,8 @@ def _production_flow_stages():
                    COUNT(DISTINCT po.style_number) AS styles
             FROM v_stage_balances b
             JOIN production_orders po ON po.order_ref = b.order_ref
+            WHERE NOT (b.stage = 'buying_order'
+                       AND COALESCE(po.bo_state, '') <> 'draft')
             GROUP BY b.stage
         )
         SELECT s.stage_key, s.stage_name, s.sort_order, s.is_terminal, s.allowed_next,
@@ -29133,7 +29154,16 @@ def production_summary():
                COALESCE(w.orders_here, 0) AS orders,
                COALESCE(w.units_here, 0)  AS units
         FROM production_stages s
-        LEFT JOIN v_wip_summary w ON w.stage = s.stage_key
+        LEFT JOIN (
+            SELECT b.stage,
+                   COUNT(DISTINCT b.order_ref) AS orders_here,
+                   SUM(b.qty_here) AS units_here
+            FROM v_stage_balances b
+            JOIN production_orders po ON po.order_ref = b.order_ref
+            WHERE NOT (b.stage = 'buying_order'
+                       AND COALESCE(po.bo_state, '') <> 'draft')
+            GROUP BY b.stage
+        ) w ON w.stage = s.stage_key
         ORDER BY s.sort_order""", fetch=True)
 
     by_buyer = _users_exec("""
@@ -29255,6 +29285,11 @@ def production_summary():
         sq = dict(o.get("stage_qty") or {})
         for k in _PROD_DERIVED_STAGES:
             sq.pop(k, None)
+        # Buying Orders is a draft-only display stage: a planned BO is already
+        # in production planning, so its buying_order balance is hidden from
+        # the report (mirrors the board/stage counts).
+        if (o.get("bo_state") or "") != "draft":
+            sq.pop("buying_order", None)
         for stage, q in (dorder.get(o["order_ref"]) or {}).items():
             sq[stage] = round(q, 2)
         o["stage_qty"] = sq or None
