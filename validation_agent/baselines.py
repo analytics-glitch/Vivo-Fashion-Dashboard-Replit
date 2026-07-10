@@ -191,7 +191,9 @@ def check_row(m: dict, index: dict) -> list[dict]:
         # swings them far outside any learned band. Report the day ONCE as an
         # informational low-volume note instead of a range anomaly per metric.
         txn = float(m.get("transactions") or 0)
-        if metric in config.RATIO_METRICS and txn < config.RATIO_MIN_TXN:
+        min_txn = (config.RETURN_RATE_MIN_TXN if metric == "return_rate"
+                   else config.RATIO_MIN_TXN)
+        if metric in config.RATIO_METRICS and txn < min_txn:
             if not any(f.get("check_code") == "low_volume" for f in fails):
                 fails.append({
                     "tier": 2, "metric": metric, "check_code": "low_volume",

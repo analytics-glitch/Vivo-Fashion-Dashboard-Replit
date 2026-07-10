@@ -128,6 +128,49 @@ class LearnedRangeFiringRule(unittest.TestCase):
         self.assertTrue(f.get("informational"))
         self.assertEqual(f["materiality_kes"], 0.0)
 
+    def test_return_rate_uses_higher_min_txn_floor(self):
+        # return_rate needs more volume than the other ratio metrics: a single
+        # refund receipt against a handful of orders is a mathematically real
+        # but meaningless spike (Vivo Meru 2026-07-09: 2 refunds / 7 orders ->
+        # 0.34). A day with transactions between RATIO_MIN_TXN and
+        # RETURN_RATE_MIN_TXN must gate return_rate as low_volume while abv
+        # (generic floor) is still evaluated normally.
+        self.assertLess(config.RATIO_MIN_TXN, config.RETURN_RATE_MIN_TXN)
+        txn = config.RATIO_MIN_TXN + 2  # above generic floor, below return_rate's
+        self.assertLess(txn, config.RETURN_RATE_MIN_TXN)
+
+        rr_hist = [0.01 + 0.001 * i for i in range(12)]
+        abv_hist = [3_000 + 50 * i for i in range(12)]
+        index = {}
+        index.update(_mk_index("return_rate", rr_hist))
+        index.update(_mk_index("abv", abv_hist))
+
+        # return_rate wildly out of band, abv comfortably in band -> ONE
+        # informational low_volume note (for return_rate), nothing for abv.
+        row = _row(return_rate=0.34, abv=3_300, transactions=txn)
+        fails = baselines.check_row(row, index)
+        self.assertEqual([f["check_code"] for f in fails], ["low_volume"])
+        self.assertTrue(fails[0].get("informational"))
+
+        # Same day but abv also wildly out of band -> abv still evaluates
+        # (learned_range fires) because it is above the generic floor.
+        row2 = _row(return_rate=0.34, abv=50_000, transactions=txn)
+        with patch.object(config, "Z_THRESHOLD", 0.01):
+            fails2 = baselines.check_row(row2, index)
+        codes2 = sorted(f["check_code"] for f in fails2)
+        self.assertIn("learned_range", codes2)
+        self.assertIn("low_volume", codes2)
+        lr = [f for f in fails2 if f["check_code"] == "learned_range"]
+        self.assertEqual([f["metric"] for f in lr], ["abv"])
+
+        # At/above RETURN_RATE_MIN_TXN the same spike evaluates normally.
+        row3 = _row(return_rate=0.34, transactions=config.RETURN_RATE_MIN_TXN)
+        with patch.object(config, "Z_THRESHOLD", 0.01):
+            fails3 = baselines.check_row(row3, {k: v for k, v in index.items()
+                                                if k[3] == "return_rate"})
+        self.assertEqual([f["check_code"] for f in fails3], ["learned_range"])
+        self.assertEqual(fails3[0]["metric"], "return_rate")
+
     def test_thin_day_gate_does_not_touch_volume_metrics(self):
         # total_sales is not a ratio metric: a genuine severe breach still fires
         # even on a thin day.

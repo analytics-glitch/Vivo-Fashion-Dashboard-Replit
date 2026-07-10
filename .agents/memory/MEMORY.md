@@ -119,3 +119,5 @@
 - [Rebuild transform OOM + bg reaping](transform-oom-batching.md) — stream all_sales rebuild in 50k batches (fetchall OOM-killed silently); nohup in agent bash gets reaped — run batch jobs as workflows; merge-restarts auto-run destructive batch workflows.
 - [Production Tracker derived live stages](production-derived-live-stages.md) — Waiting Sewing/Sewing/Finishing derive from all_inventory locations; every endpoint must override the ledger, gate move UI on allowed_next.
 - [Sales by Hour data sources](sales-by-hour-sources.md) — hourly sales = raw order headers split at the cutover; raw_shopify_orders.total_price is 0 (join shopify_sales lines); never import sync_incremental from api_pg (env-free odoo_locations.py).
+- [Rollup INNER JOIN lag drop](rollup-inner-join-lag-drop.md) — INNER JOIN on a refreshed rollup silently drops entities born after the refresh; LEFT JOIN + classify the NULL case.
+- [Daily-trend order attribution](daily-trend-order-attribution.md) — Σ per-day distinct orders > window distinct when orders span sale_dates; attribute each order to its first day, null-safe country join.

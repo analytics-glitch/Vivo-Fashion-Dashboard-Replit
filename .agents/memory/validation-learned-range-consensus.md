@@ -50,3 +50,14 @@ Verified: the July 1–2 FP flood dropped to ZERO learned_range findings under a
 Tier-1 first (identities), and tune the Tier-2 knobs in `validation_agent/config.py`
 (`Z_SEVERE`, `REQUIRE_CONSENSUS`, `POP_CAP`, `MIN_BUCKET_POINTS`, `BAND_MARGIN`,
 `RATIO_MIN_TXN`), don't touch BI sales calc.
+
+## return_rate needs a higher min-transaction floor
+
+`return_rate` is far noisier than the other ratio metrics at low volume: one
+refund receipt against a handful of orders is a mathematically real but
+meaningless spike (a store day with 2 refunds / 7 orders → 0.34). The
+low-volume gate therefore uses a separate, higher floor for
+`metric == "return_rate"` (`RETURN_RATE_MIN_TXN`, default 20, env-tunable)
+while other ratio metrics keep the generic `RATIO_MIN_TXN` (5). Below the
+floor the day is reported once as an informational `low_volume` note, never a
+range anomaly.

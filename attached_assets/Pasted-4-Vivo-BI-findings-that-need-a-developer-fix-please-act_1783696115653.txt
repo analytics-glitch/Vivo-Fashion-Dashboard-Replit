@@ -1,0 +1,53 @@
+4 Vivo BI findings that need a developer fix (please action them in order, one issue at a time):
+
+--- Finding 1 of 4 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Meru
+• Metric: return_rate
+• Period: 2026-07-09
+• Observed: 0.34   Expected: 0–0.11
+• Diagnosis: The return_rate of ~33.8% is well above the expected ceiling of ~10.7%, but the three sample return rows alone cannot confirm whether this is a genuine spike or a data error — we can see the return items but not the full set of order (sale_kind='order') rows for the same day and store that form the denominator of the rate. Specifically, two distinct orders (43177 and 43188) are being returned, with order 43177 itself containing two distinct SKUs (V0523165BLAM and V0126017DBRS), which looks structurally clean, but we cannot rule out a suppressed or missing sales volume on the day that artificially inflates the rate.
+• Broken identity: z=14.3; outside p1-p99 (with margin)
+
+Desired outcome: "return_rate" for store:Vivo Meru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 2 of 4 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: xsurf_cust_total_vs_details
+• Entity: cross_surface:customers
+• Metric: customer_count
+• Period: 2026-07-10
+• Observed: 8,330   Expected: 8,154.92–8,163.08
+• Diagnosis: customers.total_customers == customer-details.total_customer_count: observed 8,330.00 vs expected 8,375.00 (0.537% gap) under filters date_from=2026-06-11 date_to=2026-07-10 country=ALL channel=ALL
+• Broken identity: customers.total_customers == customer-details.total_customer_count
+
+Desired outcome: "customer_count" for cross_surface:customers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 3 of 4 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: xsurf_cust_total_vs_freq
+• Entity: cross_surface:customers
+• Metric: customer_count
+• Period: 2026-07-10
+• Observed: 8,330   Expected: 8,154.92–8,163.08
+• Diagnosis: customers.total_customers == Σ customer-frequency buckets: observed 8,330.00 vs expected 8,375.00 (0.537% gap) under filters date_from=2026-06-11 date_to=2026-07-10 country=ALL channel=ALL
+• Broken identity: customers.total_customers == Σ customer-frequency buckets
+
+Desired outcome: "customer_count" for cross_surface:customers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 4 of 4 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: xsurf_kpis_vs_daily_trend
+• Entity: cross_surface:30d_online
+• Metric: total_orders
+• Period: 2026-07-10
+• Observed: 1,342   Expected: 1,307.35–1,308.65
+• Diagnosis: kpis.total_orders == Σ daily-trend.orders: observed 1,342.00 vs expected 1,345.00 (0.223% gap) under filters date_from=2026-06-11 date_to=2026-07-10 country=Online channel=ALL
+• Broken identity: kpis.total_orders == Σ daily-trend.orders
+
+Desired outcome: "total_orders" for cross_surface:30d_online should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.

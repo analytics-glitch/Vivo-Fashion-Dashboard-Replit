@@ -4560,18 +4560,52 @@ def get_daily_trend(
     # Net of returns so the trend sums to the headline (variant A). Return rows
     # are INCLUDED (no sale_kind filter) so returns_kes subtracts on the return's
     # own date; orders/units/gross stay sale+order only.
+    #
+    # Orders are attributed to the order's FIRST sale_date in the window (not
+    # counted DISTINCT per day): a Shopify order edit can land lines on a later
+    # sale_date, and a per-day distinct count then tallies that order twice, so
+    # Σ(daily orders) drifts above /api/kpis total_orders (window-wide distinct).
+    # First-day attribution keeps the two surfaces identical; money/units stay
+    # summed on each row's own day.
     where = build_filters(date_from, date_to, country)
     return run_query("""
-        SELECT s.sale_date AS day, s.country,
-            COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
-            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
-                - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales
-        FROM all_sales s
-        WHERE """ + where + """
-        GROUP BY s.sale_date, s.country
-        ORDER BY s.sale_date, s.country
+        WITH base AS (
+            SELECT s.sale_date, s.country, s.order_id, s.sale_kind,
+                   s.ordered_item_quantity, s.total_sales_kes, s.gross_sales_kes, s.returns_kes
+            FROM all_sales s
+            WHERE """ + where + """
+        ),
+        day_agg AS (
+            SELECT sale_date AS day, country,
+                SUM(CASE WHEN sale_kind IN ('sale','order') THEN ordered_item_quantity ELSE 0 END) AS units,
+                ROUND(SUM(CASE WHEN sale_kind IN ('sale','order') THEN total_sales_kes::numeric ELSE 0 END)
+                    - SUM(CASE WHEN sale_kind = 'return' THEN returns_kes::numeric ELSE 0 END), 0) AS total_sales,
+                ROUND(SUM(CASE WHEN sale_kind IN ('sale','order') THEN gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales
+            FROM base
+            GROUP BY sale_date, country
+        ),
+        order_first AS (
+            -- Exactly ONE row per order_id (matching /api/kpis
+            -- COUNT(DISTINCT order_id) semantics): earliest sale_date wins,
+            -- country tie-broken deterministically so a dirty order that
+            -- appears under two countries still counts once.
+            SELECT DISTINCT ON (order_id) order_id, country, sale_date AS day
+            FROM base
+            WHERE sale_kind IN ('sale','order') AND order_id IS NOT NULL
+            ORDER BY order_id, sale_date, country
+        ),
+        order_cnt AS (
+            SELECT day, country, COUNT(*) AS orders
+            FROM order_first
+            GROUP BY day, country
+        )
+        SELECT d.day, d.country,
+            COALESCE(o.orders, 0) AS orders,
+            d.units, d.total_sales, d.gross_sales
+        FROM day_agg d
+        LEFT JOIN order_cnt o
+            ON o.day = d.day AND o.country IS NOT DISTINCT FROM d.country
+        ORDER BY d.day, d.country
     """, date_to=date_to)
 
 @app.get("/api/subcategory-sales")
@@ -5046,14 +5080,23 @@ def get_customers(
             -- customer_type in new/returning/registered (walk-in / Guest / blank
             -- are excluded and surfaced separately by /api/customers/walk-ins).
             -- Counts are DISTINCT order_id, matching /api/customer-type-spend.
+            --
+            -- LEFT JOIN (not INNER): when first_purchase is served from the
+            -- rollup, a customer whose first-EVER purchase happened AFTER the
+            -- rollup's last refresh is missing from it — an INNER JOIN silently
+            -- dropped them from total_c, making Customers KPIs undercount vs
+            -- customer-details / customer-frequency (which don't join it). A
+            -- rollup-missing customer's first purchase post-dates the refresh,
+            -- so in any window that reaches them they are New.
             SELECT
                 COUNT(DISTINCT s.customer_id) FILTER (
-                    WHERE fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date) AS new_c,
+                    WHERE fp.customer_id IS NULL
+                       OR fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date) AS new_c,
                 COUNT(DISTINCT s.customer_id) FILTER (
                     WHERE fp.first_purchase_date < '""" + date_from + """'::date) AS ret_c,
                 COUNT(DISTINCT s.customer_id) AS total_c
             FROM all_sales s
-            JOIN first_purchase fp ON fp.customer_id = s.customer_id
+            LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
             WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
             AND s.sale_kind = 'order'
             AND LOWER(s.customer_type) IN ('new','returning','registered')
@@ -5066,15 +5109,17 @@ def get_customers(
             -- genuine first-time registered shoppers WITHOUT changing the
             -- New/Returning split (registered still rolls into Returning in
             -- seg). Honors the same country/channel filters as the period.
+            -- LEFT JOIN + NULL-is-new: same rollup-lag rule as seg above.
             SELECT COUNT(DISTINCT s.order_id) AS first_time_registered
             FROM all_sales s
-            JOIN first_purchase fp ON fp.customer_id = s.customer_id
+            LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
             WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
             AND s.sale_kind = 'order'
             AND LOWER(s.customer_type) = 'registered'
             AND s.customer_id NOT IN (SELECT customer_id FROM excluded)
             AND """ + BASE_FILTERS + """
-            AND fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date
+            AND (fp.customer_id IS NULL
+                 OR fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date)
             """ + country_filter + " " + channel_filter + """
         ),
         pc_agg AS (

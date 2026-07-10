@@ -87,6 +87,14 @@ BAND_MARGIN = _f("VALIDATION_BAND_MARGIN", 0.05)
 RATIO_MIN_TXN = _i("VALIDATION_RATIO_MIN_TXN", 5)
 RATIO_METRICS = {"abv", "asp", "msi", "return_rate", "conversion_rate"}
 RETURN_METRICS = {"return_amount", "return_rate"}
+# return_rate gets a HIGHER floor than the other ratios: returns relate to
+# sales made on PRIOR days, so the day-grain ratio (day's refunds / day's
+# sales) is structurally noisy at small stores — 2 genuine refund receipts on
+# a 7-transaction day is a mathematically correct ~30% "return rate" that
+# says nothing about data quality (confirmed real in raw Odoo). Below this
+# many transactions the metric is skipped for range-checking (the day still
+# surfaces once as the informational low-volume note).
+RETURN_RATE_MIN_TXN = _i("VALIDATION_RETURN_RATE_MIN_TXN", 20)
 
 BASELINE_WINDOW_DAYS = _i("VALIDATION_BASELINE_WINDOW_DAYS", 90)
 MIN_BUCKET_POINTS = _i("VALIDATION_MIN_BUCKET", 4)
