@@ -6658,6 +6658,147 @@ def bootstrap_overview(
         "daily_by_country_prev": _daily_by_country_q(compare_from, compare_to, country, channel) if has_prev else {},
     }
 
+# ── Sales by Hour (Overview bottom chart) ────────────────────────────────────
+# all_sales.sale_date is date-only, so hour-of-day comes from the RAW order
+# headers: raw_odoo_pos_orders.date_order (UTC text, Kenya POS since the
+# 2026-03-20 cutover; kept fresh by sync_incremental's header upsert) and
+# raw_shopify_orders.created_at (ISO with the store's LOCAL offset — hour is
+# already local; vivowoman = Kenya pre-cutover history, vivo-uganda /
+# vivo-rwanda = current). The Online channel (raw_shopify_vendor_sales) is
+# daily-grain only and is intentionally excluded — no hourly data exists.
+_KENYA_POS_CUTOVER = "2026-03-20"
+_HOURLY_SHOPIFY_STORE_COUNTRY = {
+    "vivowoman": "Kenya",
+    "vivo-uganda": "Uganda",
+    "vivo-rwanda": "Rwanda",
+}
+
+def _hour_label(h):
+    if h == 0:
+        return "12am"
+    if h < 12:
+        return f"{h}am"
+    if h == 12:
+        return "12pm"
+    return f"{h - 12}pm"
+
+@app.get("/api/analytics/sales-by-hour")
+def analytics_sales_by_hour(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    """Gross order value by LOCAL hour of day (EAT), hours 8am-11pm.
+
+    Filter contract: date range + country always apply. channel (POS location
+    names) applies to the Kenya Odoo side only — the raw Shopify order headers
+    carry no store-location column, so when a channel filter is set the
+    Shopify (Uganda/Rwanda + Kenya pre-cutover) rows are EXCLUDED rather than
+    misattributed. Amounts are order-header totals (VAT-incl, before the
+    line-level gift-voucher exclusion), so this is a shape/trend view — not
+    reconciled to the Total Sales KPI.
+    """
+    countries = [c.strip() for c in country.split(",") if c.strip()] if country else []
+    channels = [c.strip() for c in channel.split(",") if c.strip()] if channel else []
+
+    # Reverse channel (pos_location_name) → Odoo config_name via the sync's
+    # canonical map, so both sides can never drift.
+    try:
+        from sync_incremental import ODOO_LOCATION_MAP as _cfg_to_pos
+    except Exception:
+        _cfg_to_pos = {}
+
+    buckets = {h: {"total_sales": 0.0, "orders": 0} for h in range(24)}
+    sources = []
+
+    # ── Kenya Odoo POS (date_order is UTC → +3h = EAT) ──
+    kenya_ok = (not countries) or ("Kenya" in countries)
+    odoo_cfg_filter = ""
+    if channels:
+        cfgs = [cfg for cfg, pos in _cfg_to_pos.items() if pos in channels]
+        if cfgs:
+            odoo_cfg_filter = "AND o.config_name IN (" + csv_to_sql(",".join(cfgs)) + ")"
+        else:
+            kenya_ok = False
+    if kenya_ok:
+        odoo_rows = run_query(f"""
+            SELECT EXTRACT(hour FROM ts)::int AS hour,
+                   COUNT(*) AS orders,
+                   SUM(amount_total) AS total_sales
+            FROM (
+                SELECT (o.date_order::timestamp + interval '3 hours') AS ts,
+                       o.amount_total
+                FROM raw_odoo_pos_orders o
+                WHERE o.date_order IS NOT NULL AND o.date_order <> ''
+                  AND (o.state IS NULL OR o.state IN ('done','paid','invoiced'))
+                  AND COALESCE(o.config_name, '') <> 'Shopzetu Online'
+                  {odoo_cfg_filter}
+            ) t
+            WHERE ts::date BETWEEN '{date_from}' AND '{date_to}'
+              AND ts::date >= '{_KENYA_POS_CUTOVER}'
+            GROUP BY 1
+        """, date_to=date_to)
+        for r in odoo_rows:
+            h = int(r["hour"])
+            buckets[h]["total_sales"] += float(r["total_sales"] or 0)
+            buckets[h]["orders"] += int(r["orders"] or 0)
+        sources.append("kenya_pos")
+
+    # ── Shopify retail history (created_at hour is already store-local) ──
+    if not channels:
+        stores = [s for s, c in _HOURLY_SHOPIFY_STORE_COUNTRY.items()
+                  if (not countries) or (c in countries)]
+        if stores:
+            rates = {r["country"]: float(r["rate"] or 1) or 1.0 for r in run_query(
+                "SELECT DISTINCT ON (country) country, rate FROM currency_rates ORDER BY country, month DESC"
+            )}
+            ug = rates.get("Uganda", 1.0)
+            rw = rates.get("Rwanda", 1.0)
+            shop_rows = run_query(f"""
+                SELECT substring(created_at, 12, 2)::int AS hour,
+                       COUNT(*) AS orders,
+                       SUM(total_price / CASE store_id
+                             WHEN 'vivo-uganda' THEN {ug}
+                             WHEN 'vivo-rwanda' THEN {rw}
+                             ELSE 1 END) AS total_sales
+                FROM raw_shopify_orders
+                WHERE length(created_at) >= 13
+                  AND substring(created_at, 1, 10) BETWEEN '{date_from}' AND '{date_to}'
+                  AND store_id IN ({csv_to_sql(",".join(stores))})
+                  AND (store_id <> 'vivowoman' OR substring(created_at, 1, 10) < '{_KENYA_POS_CUTOVER}')
+                  AND COALESCE(financial_status, '') NOT IN ('voided')
+                GROUP BY 1
+            """, date_to=date_to)
+            for r in shop_rows:
+                h = int(r["hour"])
+                if 0 <= h <= 23:
+                    buckets[h]["total_sales"] += float(r["total_sales"] or 0)
+                    buckets[h]["orders"] += int(r["orders"] or 0)
+            sources.append("shopify_retail")
+
+    hours = [
+        {
+            "hour": h,
+            "label": _hour_label(h),
+            "total_sales": round(buckets[h]["total_sales"]),
+            "orders": buckets[h]["orders"],
+        }
+        for h in range(8, 24)
+    ]
+    try:
+        n_days = (datetime.strptime(date_to, "%Y-%m-%d").date()
+                  - datetime.strptime(date_from, "%Y-%m-%d").date()).days + 1
+    except Exception:
+        n_days = None
+    return {
+        "hours": hours,
+        "days": max(n_days, 1) if n_days else None,
+        "sources": sources,
+        "channel_applied": bool(channels),
+        "online_excluded": True,
+    }
+
 @app.get("/api/analytics/canonical-units-sold")
 def analytics_canonical_units_sold(
     date_from: str = Query(default=str(date.today().replace(day=1))),
@@ -28353,8 +28494,16 @@ def _production_derived_balances():
     for r in inv:
         sku, stage, line = r["sku"], r["stage"], r["sewing_line"]
         qty = float(r["qty"] or 0)
+        if qty <= 0:
+            continue
         cands = by_sku.get(sku)
-        if not cands or qty <= 0:
+        if not cands:
+            # Live Odoo stock at this pipeline location with no matching
+            # production_order_variants record — previously silently dropped,
+            # which undercounted the stage vs Odoo's own available figure.
+            # Surface it under a sentinel order so stage TOTALS match Odoo
+            # while the per-order board can render it as its own card.
+            _add('UNASSIGNED', stage, sku, line, qty)
             continue
         seen_orders = []
         for v in cands:
