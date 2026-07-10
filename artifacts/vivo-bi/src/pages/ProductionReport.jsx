@@ -8,7 +8,6 @@ import {
   X,
   DownloadSimple,
   ArrowRight,
-  CalendarBlank,
   Funnel,
   CaretUp,
   CaretDown,
@@ -19,13 +18,10 @@ import {
  * Production Report — a flow cockpit over the Production Tracker. It answers:
  *   1. The line as a FLOW: a horizontal stage-flow diagram (units / #styles / %
  *      per stage with arrows). Click a stage to filter the order table to it.
- *   2. When is product landing: a weekly "expected drops" strip by Odoo
- *      expected_delivery_date (Overdue / this week / next weeks / Later). Click a
- *      week to filter the table to that drop window.
- *   3. Per order: colours, sizes and "what is where". Click a row to open the
+ *   2. Per order: colours, sizes and "what is where". Click a row to open the
  *      style's journey + SKU-level move modal.
- *   4. Cross-order roll-ups (order type, BO state, current stage) with % graphics.
- * Reads /api/production/summary + /flow + /expected-drops.
+ *   3. Cross-order roll-ups (order type, BO state, current stage) with % graphics.
+ * Reads /api/production/summary + /flow.
  */
 function fmtQty(n) {
   const v = Number(n) || 0;
@@ -68,15 +64,6 @@ function SortTh({ label, sortKey, sort, onSort, align = "left" }) {
       </button>
     </th>
   );
-}
-
-function fmtDayShort(d) {
-  if (!d) return "—";
-  try {
-    return new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  } catch {
-    return String(d);
-  }
 }
 
 function titleize(s) {
@@ -296,74 +283,6 @@ function FlowDiagram({ stages, activeStage, onPick }) {
   );
 }
 
-/**
- * Weekly "expected drops" strip — when product is due to land, by Odoo
- * expected_delivery_date. Click a week to filter the table to that window.
- */
-function DropStrip({ buckets, today, activeDrop, onPick }) {
-  if (!buckets || buckets.length === 0) {
-    return null;
-  }
-  const kindStyle = (b, isActive) => {
-    if (isActive) return "border-[#1a5c38] bg-emerald-50 ring-1 ring-[#1a5c38]";
-    if (b.kind === "overdue") return "border-rose-200 bg-rose-50 hover:bg-rose-100";
-    if (b.kind === "later") return "border-line bg-white opacity-70 hover:opacity-100";
-    return "border-line bg-white hover:border-[#1a5c38]/50 hover:bg-panel/30";
-  };
-  const isThisWeek = (b) => b.kind === "week" && b.week_start && b.week_start <= today && today <= b.week_end;
-  return (
-    <div className="card-white p-4">
-      <div className="flex items-center justify-between gap-2 mb-3">
-        <div className="eyebrow flex items-center gap-1.5">
-          <CalendarBlank size={13} /> Expected drops — pending units by delivery week
-        </div>
-        {activeDrop && (
-          <button
-            type="button"
-            onClick={() => onPick(null)}
-            className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0f3d24] bg-panel/60 border border-line rounded-full px-2 py-0.5 hover:bg-panel"
-          >
-            Clear week filter <X size={11} />
-          </button>
-        )}
-      </div>
-      <div className="flex items-stretch gap-2 overflow-x-auto pb-1">
-        {buckets.map((b) => {
-          const isActive = b.key === activeDrop;
-          const label =
-            b.kind === "week"
-              ? `${fmtDayShort(b.week_start)}–${fmtDayShort(b.week_end)}`
-              : b.label;
-          const empty = Number(b.units) === 0;
-          return (
-            <button
-              key={b.key}
-              type="button"
-              disabled={empty}
-              onClick={() => onPick(isActive ? null : b.key)}
-              className={`shrink-0 text-left rounded-lg border px-3 py-2 min-w-[110px] transition ${kindStyle(b, isActive)} ${empty ? "cursor-default" : ""}`}
-              data-testid={`prod-drop-${b.key}`}
-            >
-              <div className="flex items-center gap-1 text-[11px] font-semibold text-[#0f3d24]">
-                <span className="truncate">{label}</span>
-                {isThisWeek(b) && (
-                  <span className="text-[8.5px] uppercase tracking-wide text-[#1a5c38] bg-emerald-100 rounded px-1">now</span>
-                )}
-              </div>
-              <div className={`text-[18px] font-extrabold leading-tight mt-0.5 tabular-nums ${b.kind === "overdue" ? "text-rose-700" : "text-brand"}`}>
-                {fmtQty(b.units)}
-              </div>
-              <div className="text-[10px] text-muted">
-                {fmtQty(b.styles)} style{Number(b.styles) === 1 ? "" : "s"}
-              </div>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 
 /**
  * Bulk-advance toolbar for the active order table. The operator picks a FROM
@@ -519,7 +438,6 @@ function ReportBulkToolbar({ fromStages, flowStages, count, busy, msg, onMove, o
 export default function ProductionReport() {
   const [data, setData] = useState(null);
   const [flow, setFlow] = useState(null);
-  const [drops, setDrops] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -527,7 +445,6 @@ export default function ProductionReport() {
   const [lifecycleFilter, setLifecycleFilter] = useState("");
   const [sewingLineFilter, setSewingLineFilter] = useState("");
   const [stageFilter, setStageFilter] = useState(null);
-  const [dropFilter, setDropFilter] = useState(null);
   const [openOrder, setOpenOrder] = useState(null);
   const [showCompleted, setShowCompleted] = useState(false);
   // Multi-BO bulk advance (active table only).
@@ -544,14 +461,12 @@ export default function ProductionReport() {
     setError(null);
     const opts = force ? { forceFresh: true } : {};
     try {
-      const [summaryRes, flowRes, dropsRes] = await Promise.all([
+      const [summaryRes, flowRes] = await Promise.all([
         api.get("/production/summary", opts),
         api.get("/production/flow", opts),
-        api.get("/production/expected-drops", opts),
       ]);
       setData(summaryRes.data);
       setFlow(flowRes.data);
-      setDrops(dropsRes.data);
     } catch (err) {
       setError(
         err?.response?.data?.detail ||
@@ -642,14 +557,6 @@ export default function ProductionReport() {
     );
   }, [byStage, flow]);
 
-  // Order refs in the currently-selected drop bucket (for the table filter).
-  const dropOrderRefs = useMemo(() => {
-    if (!dropFilter) return null;
-    const b = (drops?.buckets || []).find((x) => x.key === dropFilter);
-    if (!b) return null;
-    return new Set((b.orders || []).map((o) => o.order_ref));
-  }, [dropFilter, drops]);
-
   const activeStageName = useMemo(
     () => flowStages.find((s) => s.stage_key === stageFilter)?.stage_name || "",
     [flowStages, stageFilter]
@@ -690,8 +597,8 @@ export default function ProductionReport() {
     [query, lifecycleFilter, sewingLineFilter]
   );
 
-  // Active orders honour every filter (incl. stage-flow + drop window); completed
-  // orders have all arrived, so the WIP-oriented stage/drop filters don't apply to
+  // Active orders honour every filter (incl. stage-flow); completed orders
+  // have all arrived, so the WIP-oriented stage filter doesn't apply to
   // them — only the text + lifecycle filters do.
   const filtered = useMemo(() => {
     return orders.filter((o) => {
@@ -699,10 +606,9 @@ export default function ProductionReport() {
       if (!matchesText(o)) return false;
       if (stageFilter && !(Number((o.stage_qty || {})[stageFilter]) > 0))
         return false;
-      if (dropOrderRefs && !dropOrderRefs.has(o.order_ref)) return false;
       return true;
     });
-  }, [orders, matchesText, isComplete, stageFilter, dropOrderRefs]);
+  }, [orders, matchesText, isComplete, stageFilter]);
 
   const completedOrders = useMemo(
     () => orders.filter((o) => isComplete(o) && matchesText(o)),
@@ -915,13 +821,13 @@ export default function ProductionReport() {
   if (loading) return <Loading label="Loading the production report…" />;
   if (error) return <ErrorBox message={error} />;
 
-  const hasTableFilter = stageFilter || dropFilter || lifecycleFilter || query;
+  const hasTableFilter = stageFilter || lifecycleFilter || query;
 
   return (
     <div className="space-y-5" data-testid="production-report">
       <SectionTitle
         title="Production Report"
-        subtitle="The line as a flow — where every buying order's units sit across the stages, when product is due to land, and the colour/size detail behind each style."
+        subtitle="The line as a flow — where every buying order's units sit across the stages, and the colour/size detail behind each style."
         action={
           <div className="flex items-center gap-2">
             <button
@@ -971,14 +877,6 @@ export default function ProductionReport() {
         stages={flowStages}
         activeStage={stageFilter}
         onPick={setStageFilter}
-      />
-
-      {/* Expected drops strip */}
-      <DropStrip
-        buckets={drops?.buckets}
-        today={drops?.today}
-        activeDrop={dropFilter}
-        onPick={setDropFilter}
       />
 
       {/* Breakdowns */}
@@ -1081,15 +979,6 @@ export default function ProductionReport() {
                 className="inline-flex items-center gap-1 font-semibold text-[#0f3d24] bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5"
               >
                 Stage: {activeStageName} <X size={11} />
-              </button>
-            )}
-            {dropFilter && (
-              <button
-                type="button"
-                onClick={() => setDropFilter(null)}
-                className="inline-flex items-center gap-1 font-semibold text-[#0f3d24] bg-sky-50 border border-sky-200 rounded-full px-2 py-0.5"
-              >
-                Drop window <X size={11} />
               </button>
             )}
             {lifecycleFilter && (
