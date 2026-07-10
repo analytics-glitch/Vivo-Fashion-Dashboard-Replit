@@ -1759,7 +1759,14 @@ const Overview = () => {
                         total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.orders)} orders`,
                       }} />
                     } />
-                    <Bar dataKey="total_sales" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Total Sales" />
+                    <Bar dataKey="total_sales" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Total Sales">
+                      <LabelList
+                        dataKey="total_sales"
+                        position="top"
+                        formatter={(v) => (v > 0 ? fmtAxisKES(v) : "")}
+                        style={{ fontSize: isMobile ? 8 : 10, fill: "#1a5c38", fontWeight: 600 }}
+                      />
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
