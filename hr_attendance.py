@@ -35,6 +35,7 @@ import re
 import threading
 from datetime import date, datetime, timedelta
 
+import psycopg2
 import requests
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -613,6 +614,30 @@ def _ensure_hr_tables():
         )""")
     _ex("CREATE INDEX IF NOT EXISTS ix_hr_salary_advances_status ON hr_salary_advances(status)")
     _ex("CREATE INDEX IF NOT EXISTS ix_hr_salary_advances_applied_by ON hr_salary_advances(applied_by)")
+    # One pending application per staff code, enforced at the DB level so two
+    # concurrent submissions can never both land (the endpoint's NOT EXISTS
+    # pre-check alone is not race-safe under default isolation). Before the
+    # index is created, idempotently collapse any pre-existing duplicates —
+    # keep the OLDEST pending per staff code (the first legitimate submission)
+    # and auto-reject the later stacked ones — so index creation can't fail on
+    # dirty data (this must also hold when the code migrates to prod).
+    _ex("""
+        UPDATE hr_salary_advances a
+        SET status = 'rejected',
+            rejection_reason = 'Auto-rejected: duplicate of an earlier pending application',
+            decided_at = now()
+        WHERE a.status = 'pending'
+          AND EXISTS (
+            SELECT 1 FROM hr_salary_advances b
+            WHERE b.employee_code = a.employee_code
+              AND b.status = 'pending'
+              AND (b.created_at < a.created_at
+                   OR (b.created_at = a.created_at AND b.id < a.id))
+          )""")
+    _ex("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_hr_salary_advances_pending
+        ON hr_salary_advances(employee_code) WHERE status = 'pending'
+    """)
 
 
 # --------------------------------------------------------------------------- #
@@ -2004,18 +2029,53 @@ def register_hr_routes(app):
                                 status_code=404)
         e = emp[0]
         uid, uname, _ = _actor(request)
-        rows = _rows("""
-            INSERT INTO hr_salary_advances
-                (employee_code, employee_name, entity, country, department,
-                 team, job_title, amount, mpesa_number, status,
-                 applied_by, applied_by_name)
-            VALUES (%(ec)s,%(en)s,%(ent)s,%(c)s,%(d)s,%(t)s,%(jt)s,
-                    %(amt)s,%(mp)s,'pending',%(ab)s,%(abn)s)
-            RETURNING id
-        """, {"ec": e["employee_id"], "en": e["name"], "ent": e["entity"],
-              "c": e["country"], "d": e["department"], "t": e["team"],
-              "jt": e["job_title"], "amt": amount, "mp": mpesa,
-              "ab": str(uid), "abn": uname})
+
+        def _pending_conflict():
+            pend = _rows("""
+                SELECT amount, created_at FROM hr_salary_advances
+                WHERE employee_code = %(ec)s AND status = 'pending'
+                ORDER BY created_at DESC LIMIT 1
+            """, {"ec": e["employee_id"]})
+            if not pend:
+                return None
+            p = pend[0]
+            when = ""
+            try:
+                when = f" (submitted {p['created_at'].strftime('%d %b %Y')})"
+            except Exception:
+                pass
+            return JSONResponse(
+                {"detail": f"{e['name']} already has a pending salary-advance "
+                           f"application for KES {float(p['amount']):,.0f}{when}. "
+                           "Please wait for HR to approve or reject it before "
+                           "applying again."},
+                status_code=409)
+
+        conflict = _pending_conflict()
+        if conflict:
+            return conflict
+        # Race safety: the partial unique index ux_hr_salary_advances_pending
+        # (employee_code WHERE status='pending') is the real guard — two
+        # concurrent submissions past the pre-check above collapse to one
+        # insert + one unique-violation, which we translate to the same 409.
+        try:
+            rows = _rows("""
+                INSERT INTO hr_salary_advances
+                    (employee_code, employee_name, entity, country, department,
+                     team, job_title, amount, mpesa_number, status,
+                     applied_by, applied_by_name)
+                VALUES (%(ec)s,%(en)s,%(ent)s,%(c)s,%(d)s,%(t)s,%(jt)s,
+                        %(amt)s,%(mp)s,'pending',%(ab)s,%(abn)s)
+                RETURNING id
+            """, {"ec": e["employee_id"], "en": e["name"], "ent": e["entity"],
+                  "c": e["country"], "d": e["department"], "t": e["team"],
+                  "jt": e["job_title"], "amt": amount, "mp": mpesa,
+                  "ab": str(uid), "abn": uname})
+        except psycopg2.errors.UniqueViolation:
+            return _pending_conflict() or JSONResponse(
+                {"detail": "A pending application already exists for this "
+                           "staff code. Please wait for HR review."},
+                status_code=409)
         aid = rows[0]["id"] if rows else None
         A._crm_audit("hr_salary_advance", aid, "create",
                      f"{e['name']} KES {amount:,.0f}", request)

@@ -105,6 +105,7 @@ export default function SalaryAdvance() {
       await refreshApps();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Failed to submit application");
+      if (e?.response?.status === 409) await refreshApps();
     } finally { setSubmitting(false); }
   };
 
