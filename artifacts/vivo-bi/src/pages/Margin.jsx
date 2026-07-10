@@ -124,7 +124,7 @@ const Margin = () => {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <KPICard label="Net Revenue" value={fmtKES(kpis?.net_sales)} valueFull={fmtKESLong(kpis?.net_sales)} icon={ChartLineUp} testId="kpi-mg-net" showDelta={false} formula="Canonical Net Sales = Total Sales − Returns − Discounts (VAT-inclusive, same basis as Total Sales). Identical to the Overview ‘Net Sales’ tile for the same filters. The table below joins to the product master to compute cost, so its Net Revenue column covers only catalog-matched SKUs and its sum can read slightly below this card." />
+        <KPICard label="Net Revenue" value={fmtKES(kpis?.net_sales)} valueFull={fmtKESLong(kpis?.net_sales)} icon={ChartLineUp} testId="kpi-mg-net" showDelta={false} formula="Canonical Net Sales = (Total Sales − Returns − Discounts) excluding VAT (16% Kenya & Online, 18% Uganda/Rwanda). Identical to the Overview ‘Net Sales’ tile for the same filters. The table below joins to the product master to compute cost, so its Net Revenue column covers only catalog-matched SKUs and its sum can read slightly below this card." />
         <KPICard label="Gross Margin" value={fmtKES(k.gm)} valueFull={fmtKESLong(k.gm)} icon={Coins} testId="kpi-mg-gm" showDelta={false} suffix={`${fmtPct(k.coverage)} cost coverage`} />
         <KPICard label="Margin %" value={fmtPct(k.marginPct)} icon={Percent} testId="kpi-mg-pct" showDelta={false} formula="Gross margin ÷ costed net revenue (costed lines only)" />
         <KPICard label="Discounts" value={fmtKES(k.discounts)} valueFull={fmtKESLong(k.discounts)} icon={Receipt} testId="kpi-mg-disc" showDelta={false} />

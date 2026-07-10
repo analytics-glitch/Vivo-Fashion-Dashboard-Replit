@@ -55,16 +55,16 @@ from . import config
 
 # Reconciliations intentionally NOT performed, with rationale (surfaced in the
 # ``validation_audit`` cross_surface row for audit visibility). ``kpis.net_sales``
-# is now the CANONICAL Net Sales (NET_SALES_CANON in api_pg.py: total_sales -
-# discounts - returns, VAT-inclusive), NOT the stored per-row ``net_sales_kes``
-# column (that ex-VAT figure is surfaced separately as "Net Sales ex-VAT").
+# is the CANONICAL Net Sales (NET_SALES_CANON in api_pg.py: (total_sales -
+# discounts - returns) EX-VAT, per-country VAT divisor), NOT the stored per-row
+# ``net_sales_kes`` column (whose sync path zeroes returns).
 # The breakdown endpoints (country-summary, sales-summary, daily-trend) do not
 # expose net_sales, so it is reconciled ONLY against
 # /analytics/total-sales-summary, which computes the SAME canonical expression.
 INTENTIONAL_SKIPS = [
     "net_sales vs Σ country-summary/sales-summary/daily-trend: skipped -- those "
     "endpoints do not expose net_sales. kpis.net_sales is the canonical "
-    "total - discounts - returns (VAT-incl) figure and is reconciled directly "
+    "(total - discounts - returns) ex-VAT figure and is reconciled directly "
     "vs analytics/total-sales-summary, which uses the same NET_SALES_CANON SQL.",
     "product-analysis.active_styles vs range-mgmt.total_active_styles: skipped -- "
     "DIFFERENT 'active' definitions (PA active = lifecycle status: not manually "

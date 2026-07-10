@@ -220,8 +220,7 @@ const RULES = [
     formula: "One set of figures, two label vocabularies — the Overview/exec pages and the Custom Report use different words for the SAME measures.",
     notes: [
       "Total Sales (Overview) = \"Revenue\" / \"Gross Revenue\" (Custom Report) — gross, VAT-inclusive sales value. The canonical headline figure.",
-      "Net Sales (Overview) = \"Net Revenue\" (Custom Report / Margin / Product Analysis) = \"Net Sales\" (Sales Export summary) — the ONE canonical net figure: Net Sales = Total Sales − Returns − Discounts (VAT-inclusive, same basis as Total Sales; Total already nets returns, so equivalently Total − Discounts). All four surfaces show the identical shilling for the same filters.",
-      "Net Sales ex-VAT — a DIFFERENT measure (total ÷ (1 + VAT rate)); always carries the \"ex-VAT\" label and is never called plain Net Sales.",
+      "Net Sales (Overview) = \"Net Revenue\" (Custom Report / Margin / Product Analysis) = \"Net Sales\" (Sales Export summary) — the ONE canonical net figure: Net Sales = (Total Sales − Returns − Discounts) excluding VAT (16% Kenya & Online, 18% Uganda/Rwanda). Total Sales stays VAT-inclusive, so the Total → Net gap is mostly the VAT share (~14%) plus discounts. All four surfaces show the identical shilling for the same filters.",
       "Transactions (Overview) = \"Orders\" (Custom Report) — count of sales orders / receipts.",
       "ABV / Average Basket Value (Overview) = \"Average Order Value (AOV)\" (Custom Report) — sales ÷ transactions.",
       "These are alternate labels for one calculation, not different numbers. When two pages disagree on a value it is a period or scope difference (see the per-page period note), never a difference in how the metric is defined.",

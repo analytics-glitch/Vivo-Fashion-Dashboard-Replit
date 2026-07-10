@@ -1,9 +1,13 @@
 """Canonical Net Sales consistency test.
 
 Asserts that every surface labelled "Net Sales" / "Net Revenue" shows the SAME
-figure, to the shilling, for one fixed window — and that the Catalogue formula
-(Net = Total − Returns − Discounts, with Total already net of returns, so
-Net = Total − Discounts) reproduces it from the /api/kpis components.
+figure for one fixed window — and that the Catalogue formula
+(Net = (Total − Returns − Discounts) excluding VAT; Total already nets returns)
+brackets it from the /api/kpis components: since the per-country VAT mix (16%
+Kenya & Online, 18% Uganda/Rwanda) is not in the payload, the bridge is a band
+[(total − discounts)/1.18 .. (total − discounts)/1.16] rather than an equality.
+custom-report rounds each dimension row before the Σ, so it gets a small
+per-row rounding tolerance; all other surfaces must match to the shilling.
 
 Surfaces compared (all via the live API, same filters):
   1. /api/kpis                       net_sales            (Overview tile)
@@ -64,8 +68,13 @@ def main():
     net_pa = round(float(pa["summary"]["net_revenue_canonical"]))
     net_report = round(sum(float(r["net_revenue"] or 0) for r in rep["rows"]))
 
-    # Catalogue formula: Net = Total (already net of returns) − Discounts
-    bridge = round(float(kpis["total_sales"]) - float(kpis["total_discounts"]))
+    # Catalogue formula: Net = (Total (already net of returns) − Discounts)
+    # ex-VAT. The exact figure depends on the per-country VAT mix (16% Kenya &
+    # Online, 18% Uganda/Rwanda), so bound it between the two extremes instead
+    # of asserting equality.
+    bridge_base = float(kpis["total_sales"]) - float(kpis["total_discounts"])
+    bridge_lo = round(bridge_base / 1.18)
+    bridge_hi = round(bridge_base / 1.16)
 
     # Narrowed-PA contract: when the style universe is filtered (e.g. a brand),
     # summary.net_revenue_canonical must be omitted (None) — equality with the
@@ -130,15 +139,23 @@ def main():
     if pa_narrow_fail:
         failures.append(pa_narrow_fail)
     for name, val in [("orders-summary net", net_export),
-                      ("product-analysis canonical", net_pa),
-                      ("custom-report Σ net_revenue", net_report),
-                      ("catalogue bridge (total − discounts)", bridge)]:
+                      ("product-analysis canonical", net_pa)]:
         if val != net_kpis:
             failures.append(f"{name} = {val:,} != kpis net_sales {net_kpis:,}")
+    # custom-report rounds each dimension row before the Σ, so the ex-VAT
+    # division allows ±0.5/row of rounding drift vs round-of-total.
+    report_tol = max(2, -(-len(rep["rows"]) // 2) + 1)
+    if abs(net_report - net_kpis) > report_tol:
+        failures.append(f"custom-report Σ net_revenue = {net_report:,} != "
+                        f"kpis net_sales {net_kpis:,} (tol {report_tol})")
+    if not (bridge_lo - 2 <= net_kpis <= bridge_hi + 2):
+        failures.append(
+            f"catalogue bridge: net {net_kpis:,} outside ex-VAT band "
+            f"[{bridge_lo:,} .. {bridge_hi:,}] of (total − discounts)")
 
     print(f"Window {DATE_FROM}..{DATE_TO}: kpis net_sales = {net_kpis:,}")
     print(f"  orders-summary: {net_export:,} | PA canonical: {net_pa:,} | "
-          f"custom-report: {net_report:,} | bridge: {bridge:,}")
+          f"custom-report: {net_report:,} | bridge band: {bridge_lo:,}..{bridge_hi:,}")
     print(f"  {pa_narrow_note}")
     print(f"Units: kpis total_units = {units_kpis:,} | canonical: {units_canon:,} | "
           f"kpi-trend: {units_trend:,} | trend-series: {units_series:,} | "
