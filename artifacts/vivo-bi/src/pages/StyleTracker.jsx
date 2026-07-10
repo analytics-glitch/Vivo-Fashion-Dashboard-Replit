@@ -54,8 +54,14 @@ const fmtShortDate = (iso) => {
 
 const weekKey = (w) => `${w.iso_year}-${w.iso_week}`;
 
+/** True when a style's deliver-by date has passed (vs the board's EAT today)
+ *  and it isn't completed yet. Both are YYYY-MM-DD strings, so a plain
+ *  lexicographic compare is a correct date compare. */
+const isLateStyle = (style, today) =>
+  !!(style?.deliver_by && today && !style.completed && style.deliver_by < today);
+
 /** One draggable style card. */
-function StyleCard({ style, statuses, busy, onUpdate, onDelete, onDragStart, onDragEnd }) {
+function StyleCard({ style, statuses, busy, late, onUpdate, onDelete, onDragStart, onDragEnd }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const done = !!style.completed;
   return (
@@ -64,7 +70,7 @@ function StyleCard({ style, statuses, busy, onUpdate, onDelete, onDragStart, onD
       onDragStart={(e) => onDragStart(e, style)}
       onDragEnd={onDragEnd}
       className={`rounded-lg border border-line border-l-4 bg-white p-2.5 transition hover:shadow-sm ${
-        done ? "border-l-emerald-500 bg-emerald-50/40" : "border-l-[#1a5c38]/40"
+        done ? "border-l-emerald-500 bg-emerald-50/40" : late ? "border-l-rose-500 bg-rose-50/40" : "border-l-[#1a5c38]/40"
       } ${busy ? "opacity-60" : "cursor-grab active:cursor-grabbing"}`}
       data-testid={`style-card-${style.id}`}
     >
@@ -98,6 +104,15 @@ function StyleCard({ style, statuses, busy, onUpdate, onDelete, onDragStart, onD
         <span className="text-[10.5px] font-semibold text-[#0f3d24] bg-panel border border-line rounded-full px-1.5 py-0.5">
           {fmtUnits(style.quantity)} pcs
         </span>
+        {late && (
+          <span
+            className="flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide text-rose-800 bg-rose-100 border border-rose-300 rounded-full px-1.5 py-0.5"
+            title="Deliver-by date has passed and this style isn't completed"
+            data-testid={`style-card-late-${style.id}`}
+          >
+            <Warning size={9} weight="fill" /> Late
+          </span>
+        )}
       </div>
 
       <div className="flex items-center gap-1.5 mt-2">
@@ -146,10 +161,14 @@ function StyleCard({ style, statuses, busy, onUpdate, onDelete, onDragStart, onD
         )}
       </div>
 
-      <div className="flex items-center gap-1 mt-1.5 text-[10.5px] text-muted">
+      <div className={`flex items-center gap-1 mt-1.5 text-[10.5px] ${late ? "text-rose-700" : "text-muted"}`}>
         <CalendarBlank size={12} className="shrink-0" />
         {style.deliver_by ? (
-          <span>Deliver to WH/FIN by <span className="font-semibold text-[#0f3d24]">{fmtShortDate(style.deliver_by)}</span></span>
+          <span>
+            Deliver to WH/FIN by{" "}
+            <span className={`font-semibold ${late ? "text-rose-700" : "text-[#0f3d24]"}`}>{fmtShortDate(style.deliver_by)}</span>
+            {late && <span className="font-bold"> — past due</span>}
+          </span>
         ) : (
           <span>No deliver-by date</span>
         )}
@@ -441,6 +460,15 @@ const StyleTracker = () => {
     [board]
   );
 
+  const lateCount = useMemo(
+    () =>
+      (board?.weeks || []).reduce(
+        (n, w) => n + w.styles.filter((s) => isLateStyle(s, board?.today)).length,
+        0
+      ),
+    [board]
+  );
+
   if (loading) return <Loading label="Loading style tracker…" />;
   if (error) return <ErrorBox message={error} />;
   if (!board) return null;
@@ -489,6 +517,15 @@ const StyleTracker = () => {
               <Warning size={15} weight="fill" className="shrink-0 text-amber-600" />
               <span>
                 <span className="font-bold">{overdueCount} overdue week{overdueCount === 1 ? "" : "s"}</span> with incomplete styles — complete or re-plan them, then archive the week.
+              </span>
+            </div>
+          )}
+
+          {lateCount > 0 && (
+            <div className="flex items-center gap-2 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-[12px] text-rose-900" data-testid="style-tracker-late-banner">
+              <Warning size={15} weight="fill" className="shrink-0 text-rose-600" />
+              <span>
+                <span className="font-bold">{lateCount} late style{lateCount === 1 ? "" : "s"}</span> past the deliver-by date and not completed — look for the red <span className="font-bold">Late</span> cards.
               </span>
             </div>
           )}
@@ -560,6 +597,7 @@ const StyleTracker = () => {
                           style={s}
                           statuses={statuses}
                           busy={busyIds.has(s.id)}
+                          late={isLateStyle(s, board.today)}
                           onUpdate={updateStyle}
                           onDelete={deleteStyle}
                           onDragStart={onCardDragStart}
