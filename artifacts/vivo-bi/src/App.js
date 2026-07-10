@@ -51,6 +51,7 @@ const Margin = React.lazy(() => import("@/pages/Margin"));
 const Finance = React.lazy(() => import("@/pages/Finance"));
 const RFM = React.lazy(() => import("@/pages/RFM"));
 const Catalogue = React.lazy(() => import("@/pages/Catalogue"));
+const SOPs = React.lazy(() => import("@/pages/SOPs"));
 const Gallery = React.lazy(() => import("@/pages/Gallery"));
 const Login = React.lazy(() => import("@/pages/Login"));
 const AuthCallback = React.lazy(() => import("@/pages/AuthCallback"));
@@ -147,6 +148,7 @@ function App() {
                 <Route path="/" element={<ProtectedShell><RootLanding /></ProtectedShell>} />
                 <Route path="/home" element={<ProtectedShell><Home /></ProtectedShell>} />
                 <Route path="/catalogue" element={<ProtectedShell pageId="catalogue"><Catalogue /></ProtectedShell>} />
+                <Route path="/sops" element={<ProtectedShell pageId="sops"><SOPs /></ProtectedShell>} />
                 <Route path="/gallery" element={<ProtectedShell pageId="gallery"><Gallery /></ProtectedShell>} />
                 <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
                 <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />

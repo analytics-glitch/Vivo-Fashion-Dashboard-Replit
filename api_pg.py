@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, Request, Body, HTTPException
+from fastapi import FastAPI, Query, Request, Body, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 import calendar
@@ -518,7 +518,7 @@ def _dedup(seq):
     return out
 
 
-_VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "gallery", "fabric"]
+_VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "gallery", "fabric", "sops"]
 # NOTE: "finance" (the Finance Reports Suite) is a leadership + admin surface, so
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
@@ -526,14 +526,14 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 _LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "finance"])
 
 DEFAULT_ROLE_PAGES = {
-    "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report"],
-    "retail": ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "exports"],
-    "warehouse": ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "re-order", "allocations", "data-quality", "exports"],
-    "store_manager": ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "ibt"],
+    "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report", "sops"],
+    "retail": ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "exports", "sops"],
+    "warehouse": ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"],
+    "store_manager": ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "sops"],
     "leadership": _LEADERSHIP_PAGES,
-    "customer_service": ["customers", "customer-details", "crm", "footfall", "rfm"],
-    "marketing": ["marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm"],
-    "hr": ["hr"],
+    "customer_service": ["customers", "customer-details", "crm", "footfall", "rfm", "sops"],
+    "marketing": ["marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm", "sops"],
+    "hr": ["hr", "sops"],
 }
 
 # Admin management page ids (admin- prefix). These are route-guarded as
@@ -18896,6 +18896,275 @@ def list_thumbnail_overrides(request: Request):
         if ua is not None:
             r["updated_at"] = ua.isoformat()
     return rows
+
+
+# ── SOP document library ──────────────────────────────────────────────────────
+# Each department keeps its Standard Operating Procedure documents in its own
+# folder. Every signed-in active user can browse/view/download; uploading and
+# deleting is restricted server-side to admins plus users holding an explicit
+# per-department grant (managed by admins). Files live as bytes in Postgres so
+# production keeps its own library in its own DB (no dev→prod migration needed).
+SOP_DEPARTMENTS = [
+    {"slug": "brand-marketing-ecommerce", "name": "Brand, Marketing & E-Commerce"},
+    {"slug": "finance-operations", "name": "Finance & Operations"},
+    {"slug": "hr-admin", "name": "HR & Admin"},
+    {"slug": "product-development", "name": "Product Development"},
+    {"slug": "production", "name": "Production"},
+    {"slug": "retail-cx", "name": "Retail & Customer Experience"},
+    {"slug": "warehouse", "name": "Warehouse"},
+]
+_SOP_DEPT_SLUGS = {d["slug"] for d in SOP_DEPARTMENTS}
+_SOP_MAX_BYTES = 20 * 1024 * 1024  # 20 MB per file — generous for SOP docs
+# Document + image formats only; anything executable/archive is refused.
+_SOP_ALLOWED_EXTS = {
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp",
+}
+
+
+def _ensure_sop_tables():
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS sop_files (
+            id            SERIAL PRIMARY KEY,
+            department    TEXT NOT NULL,
+            filename      TEXT NOT NULL,
+            content_type  TEXT,
+            size_bytes    BIGINT NOT NULL DEFAULT 0,
+            data          BYTEA NOT NULL,
+            uploaded_by   TEXT,
+            uploaded_by_email TEXT,
+            uploaded_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (department, filename)
+        )""")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS sop_upload_grants (
+            user_id     TEXT NOT NULL,
+            department  TEXT NOT NULL,
+            granted_by  TEXT,
+            granted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (user_id, department)
+        )""")
+
+
+@_deferred_startup
+def _init_sop_tables():
+    try:
+        _ensure_sop_tables()
+    except Exception as e:
+        log.error("SOP tables ensure failed: %s", e)
+
+
+def _sop_user_grants(user_id):
+    try:
+        rows = _users_exec(
+            "SELECT department FROM sop_upload_grants WHERE user_id=%s",
+            (user_id,), fetch=True) or []
+        return {r["department"] for r in rows}
+    except Exception:
+        # Fail closed — no grants readable means no upload rights.
+        return set()
+
+
+def _sop_can_upload(user, department):
+    if (user or {}).get("role") == "admin":
+        return True
+    return department in _sop_user_grants((user or {}).get("user_id") or "")
+
+
+def _sop_safe_filename(name):
+    # Basename only, strip path separators + control chars, bound length.
+    base = os.path.basename((name or "").replace("\\", "/")).strip()
+    base = "".join(c for c in base if c.isprintable() and c not in '<>:"|?*')
+    return base[:200]
+
+
+@app.get("/api/sops/departments")
+def sops_departments(request: Request):
+    """Folder grid: every department with its file count + whether the caller
+    may upload into it. Readable by any signed-in active user."""
+    _ensure_sop_tables()
+    user = getattr(request.state, "user", None) or {}
+    counts = {}
+    try:
+        for r in _users_exec(
+                "SELECT department, COUNT(*) AS n FROM sop_files GROUP BY department",
+                fetch=True) or []:
+            counts[r["department"]] = int(r["n"])
+    except Exception:
+        pass
+    is_admin = user.get("role") == "admin"
+    grants = set() if is_admin else _sop_user_grants(user.get("user_id") or "")
+    return [{
+        "slug": d["slug"], "name": d["name"],
+        "file_count": counts.get(d["slug"], 0),
+        "can_upload": is_admin or d["slug"] in grants,
+    } for d in SOP_DEPARTMENTS]
+
+
+@app.get("/api/sops/files")
+def sops_files(request: Request, department: str = Query(...)):
+    if department not in _SOP_DEPT_SLUGS:
+        raise HTTPException(status_code=400, detail="Unknown department")
+    _ensure_sop_tables()
+    user = getattr(request.state, "user", None) or {}
+    rows = _users_exec(
+        "SELECT id, department, filename, content_type, size_bytes, "
+        "uploaded_by, uploaded_by_email, uploaded_at "
+        "FROM sop_files WHERE department=%s ORDER BY lower(filename)",
+        (department,), fetch=True) or []
+    for r in rows:
+        ua = r.get("uploaded_at")
+        if ua is not None:
+            r["uploaded_at"] = ua.isoformat()
+    return {"department": department,
+            "can_upload": _sop_can_upload(user, department),
+            "files": rows}
+
+
+@app.get("/api/sops/files/{file_id}/download")
+def sops_download(file_id: int, request: Request, inline: int = Query(0)):
+    _ensure_sop_tables()
+    rows = _users_exec(
+        "SELECT filename, content_type, data FROM sop_files WHERE id=%s",
+        (file_id,), fetch=True)
+    if not rows:
+        raise HTTPException(status_code=404, detail="File not found")
+    row = rows[0]
+    data = bytes(row["data"])
+    fname = row["filename"] or f"sop-{file_id}"
+    # RFC 5987 filename* for non-ASCII names, with an ASCII fallback.
+    ascii_name = fname.encode("ascii", "replace").decode("ascii").replace('"', "")
+    disp = "inline" if inline else "attachment"
+    headers = {
+        "Content-Disposition":
+            f"{disp}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(fname)}",
+        # SOP docs change rarely, but a replace must show up immediately.
+        "Cache-Control": "no-cache",
+    }
+    return Response(content=data,
+                    media_type=row["content_type"] or "application/octet-stream",
+                    headers=headers)
+
+
+@app.post("/api/sops/upload")
+async def sops_upload(request: Request,
+                      department: str = Form(...),
+                      file: UploadFile = File(...)):
+    if department not in _SOP_DEPT_SLUGS:
+        raise HTTPException(status_code=400, detail="Unknown department")
+    user = getattr(request.state, "user", None) or {}
+    if not _sop_can_upload(user, department):
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have upload rights for this department")
+    _ensure_sop_tables()
+    fname = _sop_safe_filename(file.filename)
+    if not fname:
+        raise HTTPException(status_code=400, detail="Missing filename")
+    ext = os.path.splitext(fname)[1].lower()
+    if ext not in _SOP_ALLOWED_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type — allowed: PDF, Word, Excel, "
+                   "PowerPoint and images")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="File is empty")
+    if len(data) > _SOP_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large — the limit is {_SOP_MAX_BYTES // (1024 * 1024)} MB")
+    # Upsert on (department, filename): uploading the same name REPLACES the
+    # document, which is the natural "new revision" flow for SOPs.
+    rows = _users_exec("""
+        INSERT INTO sop_files (department, filename, content_type, size_bytes,
+                               data, uploaded_by, uploaded_by_email)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (department, filename) DO UPDATE SET
+            content_type = EXCLUDED.content_type,
+            size_bytes   = EXCLUDED.size_bytes,
+            data         = EXCLUDED.data,
+            uploaded_by  = EXCLUDED.uploaded_by,
+            uploaded_by_email = EXCLUDED.uploaded_by_email,
+            uploaded_at  = now()
+        RETURNING id, filename, size_bytes
+    """, (department, fname, file.content_type or "application/octet-stream",
+          len(data), psycopg2.Binary(data),
+          user.get("name") or user.get("email"), user.get("email")),
+        fetch=True)
+    return {"ok": True, "file": rows[0] if rows else None}
+
+
+@app.delete("/api/sops/files/{file_id}")
+def sops_delete(file_id: int, request: Request):
+    _ensure_sop_tables()
+    rows = _users_exec(
+        "SELECT department, filename FROM sop_files WHERE id=%s",
+        (file_id,), fetch=True)
+    if not rows:
+        raise HTTPException(status_code=404, detail="File not found")
+    user = getattr(request.state, "user", None) or {}
+    if not _sop_can_upload(user, rows[0]["department"]):
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have delete rights for this department")
+    _users_exec("DELETE FROM sop_files WHERE id=%s", (file_id,))
+    return {"ok": True, "deleted": rows[0]["filename"]}
+
+
+# Admin management of per-user upload grants. The /api/admin prefix is already
+# admin-gated by clerk_auth_gate, so no extra role check is needed here.
+@app.get("/api/admin/sop-grants")
+def admin_sop_grants(request: Request):
+    _ensure_sop_tables()
+    rows = _users_exec("""
+        SELECT g.user_id, g.department, g.granted_by, g.granted_at,
+               u.email, u.name
+        FROM sop_upload_grants g
+        LEFT JOIN app_users u ON u.user_id = g.user_id
+        ORDER BY lower(COALESCE(u.email, g.user_id)), g.department
+    """, fetch=True) or []
+    for r in rows:
+        ga = r.get("granted_at")
+        if ga is not None:
+            r["granted_at"] = ga.isoformat()
+    return rows
+
+
+@app.post("/api/admin/sop-grants")
+def admin_sop_grant_add(request: Request, payload: dict = Body(...)):
+    user_id = (payload.get("user_id") or "").strip()
+    department = (payload.get("department") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    if department not in _SOP_DEPT_SLUGS:
+        raise HTTPException(status_code=400, detail="Unknown department")
+    _ensure_sop_tables()
+    urows = _users_exec("SELECT user_id FROM app_users WHERE user_id=%s",
+                        (user_id,), fetch=True)
+    if not urows:
+        raise HTTPException(status_code=404, detail="User not found")
+    admin = getattr(request.state, "user", None) or {}
+    _users_exec("""
+        INSERT INTO sop_upload_grants (user_id, department, granted_by)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (user_id, department) DO NOTHING
+    """, (user_id, department, admin.get("email")))
+    return {"ok": True}
+
+
+@app.delete("/api/admin/sop-grants")
+def admin_sop_grant_remove(request: Request,
+                           user_id: str = Query(...),
+                           department: str = Query(...)):
+    if department not in _SOP_DEPT_SLUGS:
+        raise HTTPException(status_code=400, detail="Unknown department")
+    _ensure_sop_tables()
+    _users_exec(
+        "DELETE FROM sop_upload_grants WHERE user_id=%s AND department=%s",
+        (user_id, department))
+    return {"ok": True}
+
 
 # --- GET stubs returning objects ---
 @app.get("/api/analytics/cache-stats")
