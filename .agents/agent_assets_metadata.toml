@@ -54,3 +54,9 @@ id = "NQxLGhDuGVjq5no1AmIbA"
 uri = "file://exports/subcategory_sor_april2026_excl_online_PROD.csv"
 type = "table"
 title = "April 2026 subcategory SOR — excl. Online (matches dashboard)"
+
+[[outputs]]
+id = "Dt90ljqCnilq-IIjG3783"
+uri = "file://exports/retired_no_online_sales_4w_shopzetu.csv"
+type = "table"
+title = "Retired items — no Shop Zetu online sales in 4 weeks"
