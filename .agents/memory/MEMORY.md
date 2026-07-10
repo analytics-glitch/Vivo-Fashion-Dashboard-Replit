@@ -118,3 +118,4 @@
 - [Triad joins are SKU-only](triad-joins-sku-only.md) — all_sales↔all_inventory↔all_products_clean must join on SKU (16.7k inventory rows have blank style_name; name joins silently zero stock).
 - [Rebuild transform OOM + bg reaping](transform-oom-batching.md) — stream all_sales rebuild in 50k batches (fetchall OOM-killed silently); nohup in agent bash gets reaped — run batch jobs as workflows; merge-restarts auto-run destructive batch workflows.
 - [Production Tracker derived live stages](production-derived-live-stages.md) — Waiting Sewing/Sewing/Finishing derive from all_inventory locations; every endpoint must override the ledger, gate move UI on allowed_next.
+- [Sales by Hour data sources](sales-by-hour-sources.md) — hourly sales = raw order headers split at the cutover; raw_shopify_orders.total_price is 0 (join shopify_sales lines); never import sync_incremental from api_pg (env-free odoo_locations.py).

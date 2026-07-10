@@ -272,6 +272,8 @@ const Overview = () => {
 
   // B8 — page-level addition: IBT ROI card.
   const [ibtRoi, setIbtRoi] = useState(null);
+  const [hourly, setHourly] = useState(null); // Sales by Hour (bottom chart)
+  const [hourlyErr, setHourlyErr] = useState(null);
 
   // VAT logic has been removed per product decision — all monetary values
   // rendered as-is from upstream (excl. VAT). `adj` is a no-op identity to
@@ -394,6 +396,27 @@ const Overview = () => {
     api.get("/ibt/roi-dashboard", { params: { date_from: dateFrom, date_to: dateTo } })
       .then((r) => { if (!cancelled) setIbtRoi(r.data || null); })
       .catch(() => { if (!cancelled) setIbtRoi(null); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+
+  // Sales by Hour (bottom chart) — hourly trend 8am–11pm EAT from the raw
+  // order-header timestamps. Own loading/error state so a failure here never
+  // reads as fake-healthy zeros (per-section state).
+  useEffect(() => {
+    let cancelled = false;
+    setHourly(null);
+    setHourlyErr(null);
+    api.get("/analytics/sales-by-hour", {
+      params: {
+        date_from: dateFrom,
+        date_to: dateTo,
+        ...(countries.length ? { country: countries.join(",") } : {}),
+        ...(channels.length ? { channel: channels.join(",") } : {}),
+      },
+    })
+      .then((r) => { if (!cancelled) setHourly(r.data || null); })
+      .catch((e) => { if (!cancelled) setHourlyErr(e?.response?.data?.detail || e.message); });
     return () => { cancelled = true; };
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
@@ -1710,6 +1733,37 @@ const Overview = () => {
               <WinsThisWeekCard />
               {!isOnlineOnly && <StoreOfTheWeek />}
             </div>
+          </div>
+
+          {/* ---- Sales by Hour (8am–11pm EAT) ---- */}
+          <div className="card-white p-5" data-testid="sales-by-hour-section">
+            <SectionTitle
+              title="Sales by Hour"
+              subtitle={`Gross order value by local hour of day (8am–11pm, East Africa Time) summed over the selected period${hourly?.days > 1 ? ` (${fmtNum(hourly.days)} days)` : ""}. Built from till/order timestamps, so it's a shape view — totals won't reconcile exactly to the Total Sales KPI. The Online channel has no hourly data and is excluded.`}
+            />
+            {hourlyErr ? (
+              <ErrorBox message={hourlyErr} />
+            ) : !hourly ? (
+              <Loading />
+            ) : !(hourly.hours || []).some((h) => h.total_sales > 0 || h.orders > 0) ? (
+              <Empty />
+            ) : (
+              <div style={{ width: "100%", height: 320 }}>
+                <ResponsiveContainer>
+                  <BarChart data={hourly.hours} margin={{ top: 24, right: 12, left: 0, bottom: 8 }}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 11 }} interval={isMobile ? 1 : 0} />
+                    <YAxis tickFormatter={(v) => fmtAxisKES(v)} tick={{ fontSize: 11 }} />
+                    <Tooltip content={
+                      <ChartTooltip formatters={{
+                        total_sales: (v, p) => `${fmtKES(v)} · ${fmtNum(p?.orders)} orders`,
+                      }} />
+                    } />
+                    <Bar dataKey="total_sales" fill="#1a5c38" radius={[5, 5, 0, 0]} name="Total Sales" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </div>
           </div>
         </>

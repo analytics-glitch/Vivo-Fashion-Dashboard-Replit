@@ -6,6 +6,7 @@ import logging
 from collections import deque
 from datetime import date, timedelta
 from dq_cross_compare import cross_surface_compare
+from odoo_locations import ODOO_LOCATION_MAP
 import psycopg2
 import psycopg2.extras
 import os
@@ -6691,23 +6692,20 @@ def analytics_sales_by_hour(
 ):
     """Gross order value by LOCAL hour of day (EAT), hours 8am-11pm.
 
-    Filter contract: date range + country always apply. channel (POS location
-    names) applies to the Kenya Odoo side only — the raw Shopify order headers
-    carry no store-location column, so when a channel filter is set the
-    Shopify (Uganda/Rwanda + Kenya pre-cutover) rows are EXCLUDED rather than
-    misattributed. Amounts are order-header totals (VAT-incl, before the
+    Filter contract: date range, country and channel (POS location names) all
+    apply. The Kenya Odoo side maps channel → config_name via the sync's
+    ODOO_LOCATION_MAP; the Shopify side filters shopify_sales.pos_location_name
+    directly. Amounts are order-level gross totals (VAT-incl, before the
     line-level gift-voucher exclusion), so this is a shape/trend view — not
     reconciled to the Total Sales KPI.
     """
     countries = [c.strip() for c in country.split(",") if c.strip()] if country else []
     channels = [c.strip() for c in channel.split(",") if c.strip()] if channel else []
 
-    # Reverse channel (pos_location_name) → Odoo config_name via the sync's
-    # canonical map, so both sides can never drift.
-    try:
-        from sync_incremental import ODOO_LOCATION_MAP as _cfg_to_pos
-    except Exception:
-        _cfg_to_pos = {}
+    # Reverse channel (pos_location_name) → Odoo config_name via the shared
+    # env-free odoo_locations module (same map the sync loop uses, so the two
+    # sides can never drift). Imported at module top — no silent fallback.
+    _cfg_to_pos = ODOO_LOCATION_MAP
 
     buckets = {h: {"total_sales": 0.0, "orders": 0} for h in range(24)}
     sources = []
@@ -6746,36 +6744,48 @@ def analytics_sales_by_hour(
         sources.append("kenya_pos")
 
     # ── Shopify retail history (created_at hour is already store-local) ──
-    if not channels:
-        stores = [s for s, c in _HOURLY_SHOPIFY_STORE_COUNTRY.items()
-                  if (not countries) or (c in countries)]
-        if stores:
-            rates = {r["country"]: float(r["rate"] or 1) or 1.0 for r in run_query(
-                "SELECT DISTINCT ON (country) country, rate FROM currency_rates ORDER BY country, month DESC"
-            )}
-            ug = rates.get("Uganda", 1.0)
-            rw = rates.get("Rwanda", 1.0)
-            shop_rows = run_query(f"""
-                SELECT substring(created_at, 12, 2)::int AS hour,
-                       COUNT(*) AS orders,
-                       SUM(total_price / CASE store_id
-                             WHEN 'vivo-uganda' THEN {ug}
-                             WHEN 'vivo-rwanda' THEN {rw}
-                             ELSE 1 END) AS total_sales
-                FROM raw_shopify_orders
-                WHERE length(created_at) >= 13
-                  AND substring(created_at, 1, 10) BETWEEN '{date_from}' AND '{date_to}'
-                  AND store_id IN ({csv_to_sql(",".join(stores))})
-                  AND (store_id <> 'vivowoman' OR substring(created_at, 1, 10) < '{_KENYA_POS_CUTOVER}')
-                  AND COALESCE(financial_status, '') NOT IN ('voided')
-                GROUP BY 1
-            """, date_to=date_to)
-            for r in shop_rows:
-                h = int(r["hour"])
-                if 0 <= h <= 23:
-                    buckets[h]["total_sales"] += float(r["total_sales"] or 0)
-                    buckets[h]["orders"] += int(r["orders"] or 0)
-            sources.append("shopify_retail")
+    # raw_shopify_orders.total_price was never populated by the historical
+    # extract (all 0.0), so order VALUE comes from the line-level
+    # shopify_sales table (order_id join, 100% coverage; total_sales is in
+    # the STORE's local currency → convert UGX/RWF to KES via currency_rates).
+    # shopify_sales also carries pos_location_name, so the channel filter
+    # applies to this side too.
+    stores = [s for s, c in _HOURLY_SHOPIFY_STORE_COUNTRY.items()
+              if (not countries) or (c in countries)]
+    if stores:
+        rates = {r["country"]: float(r["rate"] or 1) or 1.0 for r in run_query(
+            "SELECT DISTINCT ON (country) country, rate FROM currency_rates ORDER BY country, month DESC"
+        )}
+        ug = rates.get("Uganda", 1.0)
+        rw = rates.get("Rwanda", 1.0)
+        shop_chan_filter = ""
+        if channels:
+            shop_chan_filter = "AND l.pos_location_name IN (" + csv_to_sql(",".join(channels)) + ")"
+        shop_rows = run_query(f"""
+            SELECT substring(o.created_at, 12, 2)::int AS hour,
+                   COUNT(DISTINCT o.id) AS orders,
+                   SUM(l.total_sales / CASE o.store_id
+                         WHEN 'vivo-uganda' THEN {ug}
+                         WHEN 'vivo-rwanda' THEN {rw}
+                         ELSE 1 END) AS total_sales
+            FROM raw_shopify_orders o
+            JOIN shopify_sales l
+              ON l.order_id::text = o.id AND l.store_id = o.store_id
+            WHERE length(o.created_at) >= 13
+              AND substring(o.created_at, 1, 10) BETWEEN '{date_from}' AND '{date_to}'
+              AND l.day BETWEEN '{date_from}' AND '{date_to}'
+              AND l.sale_kind = 'order'
+              AND o.store_id IN ({csv_to_sql(",".join(stores))})
+              AND (o.store_id <> 'vivowoman' OR substring(o.created_at, 1, 10) < '{_KENYA_POS_CUTOVER}')
+              {shop_chan_filter}
+            GROUP BY 1
+        """, date_to=date_to)
+        for r in shop_rows:
+            h = int(r["hour"])
+            if 0 <= h <= 23:
+                buckets[h]["total_sales"] += float(r["total_sales"] or 0)
+                buckets[h]["orders"] += int(r["orders"] or 0)
+        sources.append("shopify_retail")
 
     hours = [
         {
@@ -6787,8 +6797,7 @@ def analytics_sales_by_hour(
         for h in range(8, 24)
     ]
     try:
-        n_days = (datetime.strptime(date_to, "%Y-%m-%d").date()
-                  - datetime.strptime(date_from, "%Y-%m-%d").date()).days + 1
+        n_days = (date.fromisoformat(date_to) - date.fromisoformat(date_from)).days + 1
     except Exception:
         n_days = None
     return {

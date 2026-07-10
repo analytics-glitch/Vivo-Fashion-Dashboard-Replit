@@ -238,36 +238,10 @@ SITE_LOCATION_MAP = {
     "Vivo Imaara": "Vivo Imaara",
 }
 
-ODOO_LOCATION_MAP = {
-    "Capital Centre": "Vivo Capital Centre",
-    "Eldoret (Rupa)": "Vivo Eldoret",
-    "Galleria": "Vivo Galleria",
-    "Garden City": "Vivo Garden City",
-    "Greenspan": "Vivo Greenspan",
-    "HQ Outlet": "Staff purchases",
-    "Hub": "Vivo Hub",
-    "Imaara": "Vivo Imaara",
-    "Junction": "Vivo Junction",
-    "Kileleshwa": "Vivo Kileleshwa",
-    "Kisumu (United Mall)": "Vivo Kisumu",
-    "Mama Ngina": "Vivo Mama Ngina St",
-    "Meru (Green Wood)": "Vivo Meru",
-    "Moi Avenue": "Vivo Moi Avenue",
-    "Mombasa (City Mall)": "Vivo City Mall",
-    "Mombasa CBD": "Vivo MSA Digo Road",
-    "Nakuru (Westside Mall)": "Vivo Nakuru",
-    "Runda Mall": "Vivo Runda",
-    "Sarit": "Vivo Sarit",
-    "Sarit Safari": "Safari Sarit",
-    "Signature Mall": "Vivo Signature Mall",
-    "Thika Road Mall": "Vivo TRM",
-    "Tmall": "Vivo T- Mall",
-    "Two Rivers": "Vivo Two Rivers",
-    "Village Market": "Vivo Village Market",
-    "Yaya": "Vivo Yaya",
-    "Zoya Sarit": "Zoya Sarit",
-    "Shopzetu Online": "Online - Shop Zetu",
-}
+# Canonical config_name → pos_location_name map now lives in the env-free
+# odoo_locations.py so api_pg.py can import it without importing this module
+# (which reads SHOPIFY_*/DATABASE_URL env vars at import time).
+from odoo_locations import ODOO_LOCATION_MAP
 
 UGANDA_VAT_LOCATIONS = {"The Oasis Mall", "Vivo Acacia"}
 RWANDA_VAT_LOCATIONS = {"Vivo Kigali Heights", "Vivo M-peace Plaza"}
@@ -665,6 +639,44 @@ def process_shopify_store(store, cur, now, rates):
         return 0
 
     order_ids = [str(o["id"]) for o in orders]
+
+    # Keep raw_shopify_orders (order headers WITH time-of-day in created_at)
+    # fresh: the Overview "Sales by Hour" chart reads it, and outside a full
+    # extract nothing else refreshes it. Data is already in hand — no extra
+    # Shopify calls.
+    hdr_rows = []
+    for o in orders:
+        cust = o.get("customer") or {}
+        billing = o.get("billing_address") or {}
+        shipping = o.get("shipping_address") or {}
+        cust_id = cust.get("id")
+        hdr_rows.append((
+            str(o["id"]), store_id, o.get("name", ""),
+            o.get("created_at", ""), o.get("updated_at", ""),
+            str(cust_id) if cust_id else None, cust.get("email"),
+            cust.get("first_name"), cust.get("last_name"),
+            float(o.get("total_price") or 0), o.get("financial_status", ""),
+            o.get("fulfillment_status"), o.get("source_name"),
+            billing.get("city"), billing.get("country"),
+            shipping.get("city"), shipping.get("country"), now,
+        ))
+    if hdr_rows:
+        execute_values(cur, """
+            INSERT INTO raw_shopify_orders (
+                id, store_id, name, created_at, updated_at,
+                customer_id, customer_email, customer_first_name,
+                customer_last_name, total_price, financial_status,
+                fulfillment_status, source_name, billing_city,
+                billing_country, shipping_city, shipping_country, _loaded_at
+            ) VALUES %s
+            ON CONFLICT (id, store_id) DO UPDATE SET
+                updated_at         = EXCLUDED.updated_at,
+                total_price        = EXCLUDED.total_price,
+                financial_status   = EXCLUDED.financial_status,
+                fulfillment_status = EXCLUDED.fulfillment_status,
+                _loaded_at         = EXCLUDED._loaded_at
+        """, hdr_rows)
+
     rows = []
 
     for order in orders:
@@ -941,6 +953,38 @@ def sync_odoo(cur, now, rates):
             {"fields": ["id", "name"]},
         )
         configs = {c["id"]: c["name"] for c in cfg_data}
+
+    # Keep raw_odoo_pos_orders (order headers with UTC time-of-day in
+    # date_order) fresh: the Overview "Sales by Hour" chart reads it, and
+    # outside a full rebuild only extract_odoo_orders.py writes it. Data is
+    # already in hand — no extra Odoo calls. Only a stable subset of columns
+    # is written; ON CONFLICT leaves the extractor's richer fields untouched.
+    hdr_rows = []
+    for o in orders:
+        hdr_rows.append((
+            int(o["id"]), o.get("name", ""), o.get("date_order", ""),
+            int(o["config_id"][0]) if o.get("config_id") else None,
+            configs.get(o["config_id"][0], "") if o.get("config_id") else "",
+            int(o["session_id"][0]) if o.get("session_id") else None,
+            int(o["partner_id"][0]) if o.get("partner_id") else None,
+            o["partner_id"][1] if o.get("partner_id") else None,
+            float(o.get("amount_total") or 0),
+            float(o.get("amount_tax") or 0),
+            o.get("write_date", ""), now,
+        ))
+    if hdr_rows:
+        execute_values(cur, """
+            INSERT INTO raw_odoo_pos_orders (
+                id, name, date_order, config_id, config_name, session_id,
+                partner_id, partner_name, amount_total, amount_tax,
+                write_date, _synced_at
+            ) VALUES %s
+            ON CONFLICT (id) DO UPDATE SET
+                amount_total = EXCLUDED.amount_total,
+                amount_tax   = EXCLUDED.amount_tax,
+                write_date   = EXCLUDED.write_date,
+                _synced_at   = EXCLUDED._synced_at
+        """, hdr_rows)
 
     kenya_rate = rates.get("Kenya", 1.0)
 
