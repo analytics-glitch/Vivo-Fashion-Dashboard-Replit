@@ -523,10 +523,10 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "finance"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance"])
 
 DEFAULT_ROLE_PAGES = {
-    "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report", "sops"],
+    "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"],
     "retail": ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "exports", "sops"],
     "warehouse": ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"],
     "store_manager": ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "sops"],
@@ -30038,6 +30038,430 @@ async def production_bulk_move(request: Request):
 
     _prod_derived_invalidate()
     return {"results": results, "moved_count": moved_count, "failed_count": failed_count}
+
+
+# ── Weekly Style Tracker (manual kanban of styles by launch ISO week) ─────────
+# A manually-maintained board (NO Odoo/Production-Tracker linkage): each style
+# card carries name/brand/category/qty/status/deliver-by and lives in a launch
+# week stored as ISO year + week (year rollovers stay correct). The board view
+# is the current ISO week + the next 4; older weeks that still hold
+# not-completed styles surface as amber "Overdue" columns until everything in
+# them is completed + archived. All endpoints live under /api/style-tracker/*
+# and are session-gated by clerk_auth_gate like every other /api path.
+_STYLE_TRACKER_STATUSES = [
+    "Cutting", "Team B", "Team D", "Trimming",
+    "Trimming/Bartack", "Finishing", "Warehouse",
+]
+_STYLE_TRACKER_BRANDS = ["VIVO", "SBV", "STUDIO"]
+_STYLE_TRACKER_CATEGORIES = ["WOVEN", "KNIT"]
+_STYLE_TRACKER_WINDOW = 5  # current week + next 4
+
+
+def _ensure_style_tracker_tables():
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS style_tracker_styles (
+            id           BIGSERIAL PRIMARY KEY,
+            style_name   TEXT NOT NULL,
+            brand        TEXT NOT NULL DEFAULT 'VIVO',
+            category     TEXT NOT NULL DEFAULT 'WOVEN',
+            quantity     INT  NOT NULL DEFAULT 0,
+            order_date   DATE,
+            status       TEXT NOT NULL DEFAULT 'Cutting',
+            deliver_by   DATE,
+            iso_year     INT NOT NULL,
+            iso_week     INT NOT NULL,
+            completed    BOOLEAN NOT NULL DEFAULT FALSE,
+            archived     BOOLEAN NOT NULL DEFAULT FALSE,
+            archived_at  TIMESTAMPTZ,
+            created_by   TEXT,
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    _users_exec(
+        "CREATE INDEX IF NOT EXISTS idx_style_tracker_week "
+        "ON style_tracker_styles(iso_year, iso_week) WHERE NOT archived")
+    # Seed-marker home. app_config already exists on every long-lived DB; the
+    # IF NOT EXISTS covers a brand-new (prod) database bootstrapping itself.
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS app_config (
+            key        TEXT PRIMARY KEY,
+            value      JSONB,
+            updated_at TIMESTAMPTZ DEFAULT now()
+        )""")
+
+
+# Seed rows exactly as specified for ISO weeks 26-30 of 2026. Guarded by a
+# ONE-TIME marker (app_config key), NOT a row-count guard: once seeded, user
+# deletions/archives must never be re-inserted by a restart.
+# (name, brand, category, qty, status, deliver_by | None, completed, week)
+_STYLE_TRACKER_SEED = [
+    ("Vivo Amai Round Neck Maxi Kaftan in Satin",      "VIVO", "WOVEN", 304, "Warehouse",        None,        True,  26),
+    ("Safari by Vivo Pin Tuck Shirt Dress in Cotton",  "SBV",  "WOVEN", 333, "Warehouse",        None,        True,  26),
+    ("Safari Mansi Wide Hem Tent Dress in Cotton",     "SBV",  "WOVEN", 378, "Trimming/Bartack", "2026-06-26", False, 26),
+    ("Vivo Long Sleeve Tie Dress in Crepe",            "VIVO", "WOVEN", 418, "Finishing",        "2026-07-03", False, 27),
+    ("Vivo Studio Cowl Neck Maxi Dress in Satin",      "VIVO", "WOVEN", 250, "Team D",           "2026-07-08", False, 27),
+    ("Vivo Wide Top in Chiffon",                       "VIVO", "WOVEN", 352, "Warehouse",        None,        True,  27),
+    ("Vivo Pintuck Waist Pants in Crepe",              "VIVO", "WOVEN", 209, "Warehouse",        None,        True,  27),
+    ("Vivo Diella V-Neck Jumpsuit in Crepe",           "VIVO", "WOVEN", 407, "Warehouse",        None,        True,  27),
+    ("Safari by Vivo Crop Trench Coat in Kitenge",     "SBV",  "WOVEN", 214, "Warehouse",        None,        True,  27),
+    ("Safari by Vivo Samira Maxi Dress in Cotton",     "SBV",  "WOVEN", 422, "Warehouse",        None,        True,  27),
+    ("Vivo Amai Maxi Kaftan in Textured Satin",        "VIVO", "WOVEN", 284, "Trimming",         "2026-07-01", False, 27),
+    ("Vivo Hanabi Wrap Maxi Dress in Satin",           "VIVO", "WOVEN", 440, "Warehouse",        "2026-07-03", True,  28),
+    ("Vivo Lounge Pants in Rib",                       "VIVO", "KNIT",  473, "Finishing",        "2026-07-03", False, 28),
+    ("Safari by Vivo Bubble Sleeve Tent Dress",        "SBV",  "WOVEN", 121, "Trimming",         "2026-07-03", False, 28),
+    ("Vivo Straight Leg Pants in Satin",               "VIVO", "WOVEN", 308, "Cutting",          "2026-07-08", False, 29),
+    ("Vivo 3/4 Sleeve Side Slit Top in Satin",         "VIVO", "WOVEN", 440, "Team B",           "2026-07-08", False, 29),
+    ("Vivo Long Sleeve Maxi Waterfall in Jersey",      "VIVO", "KNIT",  416, "Warehouse",        "2026-07-08", True,  29),
+    ("Vivo Jamila Slit Sleeve Dress in Crepe",         "VIVO", "WOVEN", 165, "Finishing",        "2026-07-08", False, 29),
+    ("Vivo Maisha Straight Leg Pants in Crepe",        "VIVO", "WOVEN", 242, "Cutting",          "2026-07-15", False, 30),
+    ("Vivo Long Sleeve Wrap Dress in Satin",           "VIVO", "WOVEN", 427, "Cutting",          "2026-07-15", False, 30),
+    ("Vivo Scooped Neck Top in Jersey",                "VIVO", "KNIT",  374, "Warehouse",        "2026-07-15", True,  30),
+]
+_STYLE_TRACKER_SEED_KEY = "style_tracker_seed_v1"
+# Distinct advisory-lock key (separate from targets/finance/admin lock keys).
+_STYLE_TRACKER_SEED_LOCK_KEY = 733026
+
+
+def _seed_style_tracker():
+    """One-time idempotent seed of the WK 26-30 (2026) styles.
+
+    Marker-guarded (NOT count-guarded): the marker row in app_config is written
+    in the SAME transaction as the inserts, under an advisory lock, so
+    concurrent boots can't double-seed and a crash can't leave the marker
+    without the rows (or vice versa). Once the marker exists the seed never
+    runs again — user deletions/archives are never re-created."""
+    conn = None
+    try:
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(%s)",
+                    (_STYLE_TRACKER_SEED_LOCK_KEY,))
+        cur.execute("SELECT 1 FROM app_config WHERE key = %s",
+                    (_STYLE_TRACKER_SEED_KEY,))
+        if cur.fetchone():
+            conn.rollback()
+            cur.close()
+            return
+        rows = []
+        for (name, brand, cat, qty, status, deliver_by, completed, week) in _STYLE_TRACKER_SEED:
+            rows.append((name, brand, cat, qty, status, deliver_by,
+                         2026, week, completed))
+        cur.executemany(
+            "INSERT INTO style_tracker_styles "
+            "(style_name, brand, category, quantity, status, deliver_by, "
+            " iso_year, iso_week, completed, created_by) "
+            "VALUES (%s, %s, %s, %s, %s, %s::date, %s, %s, %s, 'system:seed')",
+            rows)
+        cur.execute(
+            "INSERT INTO app_config (key, value, updated_at) "
+            "VALUES (%s, %s::jsonb, now()) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+            (_STYLE_TRACKER_SEED_KEY,
+             json.dumps({"seeded_rows": len(rows)})))
+        conn.commit()
+        cur.close()
+        print(f"[style-tracker] seeded {len(rows)} styles (one-time)", flush=True)
+    except Exception as e:  # pragma: no cover - best effort, never block boot
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        print(f"[style-tracker] seed failed: {e}", flush=True)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@_deferred_startup
+def _init_style_tracker():
+    try:
+        _ensure_style_tracker_tables()
+        _seed_style_tracker()
+    except Exception as e:
+        log.error("Style tracker init failed: %s", e)
+
+
+def _st_today_eat():
+    """Today's date in Africa/Nairobi (UTC+3, no DST)."""
+    from datetime import datetime as _dt, timezone as _tz
+    return (_dt.now(_tz.utc) + timedelta(hours=3)).date()
+
+
+def _st_week_label(iso_year, iso_week):
+    """'WK 28 (6-12 Jul)' — Monday-Sunday day-month range of the ISO week."""
+    mon = date.fromisocalendar(iso_year, iso_week, 1)
+    sun = mon + timedelta(days=6)
+    if mon.month == sun.month:
+        rng = f"{mon.day}-{sun.day} {sun.strftime('%b')}"
+    else:
+        rng = f"{mon.day} {mon.strftime('%b')}-{sun.day} {sun.strftime('%b')}"
+    return f"WK {iso_week} ({rng})"
+
+
+def _st_valid_week(iso_year, iso_week):
+    try:
+        iso_year, iso_week = int(iso_year), int(iso_week)
+    except (TypeError, ValueError):
+        return None
+    if not (2000 <= iso_year <= 2100):
+        return None
+    try:
+        date.fromisocalendar(iso_year, iso_week, 1)  # validates week 1..52/53
+    except ValueError:
+        return None
+    return (iso_year, iso_week)
+
+
+def _st_parse_date(val, field):
+    """None/'' -> None; else strict YYYY-MM-DD or _MoveError-style ValueError."""
+    if val in (None, "", "-"):
+        return None
+    try:
+        return date.fromisoformat(str(val).strip())
+    except ValueError:
+        raise ValueError(f"{field} must be a YYYY-MM-DD date")
+
+
+def _st_row_out(r):
+    out = dict(r)
+    for k in ("order_date", "deliver_by"):
+        if out.get(k) is not None:
+            out[k] = out[k].isoformat()
+    for k in ("created_at", "updated_at", "archived_at"):
+        if out.get(k) is not None:
+            out[k] = out[k].isoformat()
+    return out
+
+
+@app.get("/api/style-tracker/board")
+def style_tracker_board():
+    """The kanban board: the current ISO week + next 4 (always present, even
+    when empty) plus, on the left, any OLDER week that still holds a
+    not-completed, not-archived style ('Overdue'). Older weeks whose styles are
+    all completed/archived (or empty) are hidden. Also returns weeks BEYOND the
+    window that already hold styles (a card dragged/created far ahead must
+    never silently vanish from the board)."""
+    _ensure_style_tracker_tables()
+    today = _st_today_eat()
+    cur_y, cur_w, _ = today.isocalendar()
+    cur_key = (cur_y, cur_w)
+
+    rows = _users_exec(
+        "SELECT * FROM style_tracker_styles WHERE NOT archived "
+        "ORDER BY completed, id", fetch=True) or []
+    by_week = {}
+    for r in rows:
+        by_week.setdefault((r["iso_year"], r["iso_week"]), []).append(r)
+
+    # The fixed 5-week window, keyed by walking Mondays (handles year rollover).
+    window = []
+    mon = date.fromisocalendar(cur_y, cur_w, 1)
+    for i in range(_STYLE_TRACKER_WINDOW):
+        y, w, _d = (mon + timedelta(weeks=i)).isocalendar()
+        window.append((y, w))
+    window_set = set(window)
+
+    # Overdue: strictly older than the current week, with >=1 incomplete style.
+    overdue_keys = sorted(
+        k for k, styles in by_week.items()
+        if k < cur_key and any(not s["completed"] for s in styles))
+    # Future weeks beyond the window that already hold styles.
+    beyond_keys = sorted(
+        k for k in by_week
+        if k not in window_set and k > cur_key)
+
+    weeks = []
+    for key in overdue_keys + window + beyond_keys:
+        y, w = key
+        styles = by_week.get(key, [])
+        weeks.append({
+            "iso_year": y,
+            "iso_week": w,
+            "label": _st_week_label(y, w),
+            "is_current": key == cur_key,
+            "is_past": key < cur_key,
+            "overdue": key in set(overdue_keys),
+            "styles": [_st_row_out(s) for s in styles],
+            "count": len(styles),
+            "total_units": int(sum(int(s["quantity"] or 0) for s in styles)),
+        })
+    return {
+        "today": today.isoformat(),
+        "current": {"iso_year": cur_y, "iso_week": cur_w},
+        "statuses": _STYLE_TRACKER_STATUSES,
+        "brands": _STYLE_TRACKER_BRANDS,
+        "categories": _STYLE_TRACKER_CATEGORIES,
+        "weeks": weeks,
+    }
+
+
+def _st_validate_payload(body, partial=False, current=None):
+    """Validate/normalize a create (partial=False) or update (partial=True)
+    payload. Returns (fields dict, error string | None)."""
+    fields = {}
+    if "style_name" in body or not partial:
+        name = str(body.get("style_name") or "").strip()
+        if not name:
+            return None, "style_name is required"
+        if len(name) > 200:
+            return None, "style_name is too long (max 200 chars)"
+        fields["style_name"] = name
+    if "brand" in body or not partial:
+        brand = str(body.get("brand") or ("VIVO" if not partial else "")).strip().upper()
+        if brand not in _STYLE_TRACKER_BRANDS:
+            return None, f"brand must be one of: {', '.join(_STYLE_TRACKER_BRANDS)}"
+        fields["brand"] = brand
+    if "category" in body or not partial:
+        cat = str(body.get("category") or ("WOVEN" if not partial else "")).strip().upper()
+        if cat not in _STYLE_TRACKER_CATEGORIES:
+            return None, f"category must be one of: {', '.join(_STYLE_TRACKER_CATEGORIES)}"
+        fields["category"] = cat
+    if "quantity" in body or not partial:
+        try:
+            qty = int(body.get("quantity") or 0)
+        except (TypeError, ValueError):
+            return None, "quantity must be a whole number"
+        if qty < 0 or qty > 1_000_000:
+            return None, "quantity must be between 0 and 1,000,000"
+        fields["quantity"] = qty
+    if "status" in body or not partial:
+        status = str(body.get("status") or ("Cutting" if not partial else "")).strip()
+        if status not in _STYLE_TRACKER_STATUSES:
+            return None, f"status must be one of: {', '.join(_STYLE_TRACKER_STATUSES)}"
+        fields["status"] = status
+    for key in ("order_date", "deliver_by"):
+        if key in body:
+            try:
+                fields[key] = _st_parse_date(body.get(key), key)
+            except ValueError as e:
+                return None, str(e)
+    if "iso_year" in body or "iso_week" in body or not partial:
+        base = current or {}
+        wk = _st_valid_week(
+            body.get("iso_year", base.get("iso_year")),
+            body.get("iso_week", base.get("iso_week")))
+        if wk is None:
+            return None, "iso_year + iso_week must be a valid ISO week"
+        fields["iso_year"], fields["iso_week"] = wk
+    if "completed" in body:
+        fields["completed"] = bool(body.get("completed"))
+    return fields, None
+
+
+@app.post("/api/style-tracker/styles")
+async def style_tracker_create(request: Request):
+    """Create a style card in a given launch week."""
+    _ensure_style_tracker_tables()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    fields, err = _st_validate_payload(body, partial=False)
+    if err:
+        return JSONResponse({"detail": err}, status_code=400)
+    u = getattr(request.state, "user", None) or {}
+    created_by = u.get("email") or u.get("name") or "unknown"
+    rows = _users_exec(
+        "INSERT INTO style_tracker_styles "
+        "(style_name, brand, category, quantity, order_date, status, "
+        " deliver_by, iso_year, iso_week, completed, created_by) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
+        (fields["style_name"], fields["brand"], fields["category"],
+         fields["quantity"], fields.get("order_date"), fields["status"],
+         fields.get("deliver_by"), fields["iso_year"], fields["iso_week"],
+         fields.get("completed", False), created_by),
+        fetch=True)
+    return {"ok": True, "style": _st_row_out(rows[0])}
+
+
+@app.post("/api/style-tracker/styles/{style_id}")
+async def style_tracker_update(style_id: int, request: Request):
+    """Partial update: status / completed / week move (drag) / field edits."""
+    _ensure_style_tracker_tables()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    existing = _users_exec(
+        "SELECT * FROM style_tracker_styles WHERE id = %s", (style_id,),
+        fetch=True)
+    if not existing:
+        return JSONResponse({"detail": "Style not found"}, status_code=404)
+    fields, err = _st_validate_payload(body, partial=True, current=existing[0])
+    if err:
+        return JSONResponse({"detail": err}, status_code=400)
+    if not fields:
+        return JSONResponse({"detail": "Nothing to update"}, status_code=400)
+    sets = ", ".join(f"{k} = %s" for k in fields)
+    params = list(fields.values()) + [style_id]
+    rows = _users_exec(
+        f"UPDATE style_tracker_styles SET {sets}, updated_at = now() "
+        "WHERE id = %s RETURNING *", tuple(params), fetch=True)
+    return {"ok": True, "style": _st_row_out(rows[0])}
+
+
+@app.post("/api/style-tracker/styles/{style_id}/delete")
+async def style_tracker_delete(style_id: int, request: Request):
+    rows = _users_exec(
+        "DELETE FROM style_tracker_styles WHERE id = %s RETURNING id",
+        (style_id,), fetch=True)
+    if not rows:
+        return JSONResponse({"detail": "Style not found"}, status_code=404)
+    return {"ok": True, "deleted_id": style_id}
+
+
+@app.post("/api/style-tracker/archive-week")
+async def style_tracker_archive_week(request: Request):
+    """Archive every COMPLETED style in one week; incomplete styles stay put
+    (so the week keeps showing as Overdue until they're done)."""
+    _ensure_style_tracker_tables()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    wk = _st_valid_week(body.get("iso_year"), body.get("iso_week"))
+    if wk is None:
+        return JSONResponse(
+            {"detail": "iso_year + iso_week must be a valid ISO week"},
+            status_code=400)
+    rows = _users_exec(
+        "UPDATE style_tracker_styles "
+        "SET archived = TRUE, archived_at = now(), updated_at = now() "
+        "WHERE iso_year = %s AND iso_week = %s AND completed AND NOT archived "
+        "RETURNING id", wk, fetch=True) or []
+    return {"ok": True, "archived_count": len(rows),
+            "iso_year": wk[0], "iso_week": wk[1]}
+
+
+@app.get("/api/style-tracker/archived")
+def style_tracker_archived():
+    """Archived styles, newest first, with their week labels for display."""
+    _ensure_style_tracker_tables()
+    rows = _users_exec(
+        "SELECT * FROM style_tracker_styles WHERE archived "
+        "ORDER BY archived_at DESC NULLS LAST, id DESC LIMIT 1000",
+        fetch=True) or []
+    out = []
+    for r in rows:
+        d = _st_row_out(r)
+        d["week_label"] = _st_week_label(r["iso_year"], r["iso_week"])
+        out.append(d)
+    return {"styles": out, "count": len(out)}
+
+
+@app.post("/api/style-tracker/styles/{style_id}/restore")
+async def style_tracker_restore(style_id: int, request: Request):
+    """Un-archive a style — it reappears on the board in its stored week."""
+    rows = _users_exec(
+        "UPDATE style_tracker_styles "
+        "SET archived = FALSE, archived_at = NULL, updated_at = now() "
+        "WHERE id = %s AND archived RETURNING *", (style_id,), fetch=True)
+    if not rows:
+        return JSONResponse(
+            {"detail": "Style not found or not archived"}, status_code=404)
+    return {"ok": True, "style": _st_row_out(rows[0])}
 
 
 # Clienteling CRM endpoints (ported vivo-crm frontend at /crm/). Registered HERE,

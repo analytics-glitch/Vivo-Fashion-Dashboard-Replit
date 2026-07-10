@@ -63,6 +63,7 @@ export const PRIMARY_NAV = [
   { to: "/size-health", label: "Size Health", icon: Ruler, id: "size-health", group: "Products & Range", desc: "Broken size-curve detection by style" },
   { to: "/production", label: "Production Tracker", icon: Factory, id: "production", group: "Products & Range", desc: "Kanban board tracking buying orders through the manufacturing stages" },
   { to: "/production-report", label: "Production Report", icon: Table, id: "production-report", group: "Products & Range", desc: "Detailed buying-order report: colours, sizes, stage distribution and cross-order roll-ups by order & production type" },
+  { to: "/style-tracker", label: "Weekly Style Tracker", icon: ClockClockwise, id: "style-tracker", group: "Products & Range", desc: "Kanban of styles by launch week: drag between weeks, track status and archive completed weeks" },
   { to: "/fabric", label: "Fabric", icon: ChartBar, id: "fabric", external: true, group: "Products & Range", desc: "Standalone Fabric BI dashboard (opens full-page)" },
 
   // Retail pages

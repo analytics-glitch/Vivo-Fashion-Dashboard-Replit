@@ -121,3 +121,4 @@
 - [Sales by Hour data sources](sales-by-hour-sources.md) — hourly sales = raw order headers split at the cutover; raw_shopify_orders.total_price is 0 (join shopify_sales lines); never import sync_incremental from api_pg (env-free odoo_locations.py).
 - [Rollup INNER JOIN lag drop](rollup-inner-join-lag-drop.md) — INNER JOIN on a refreshed rollup silently drops entities born after the refresh; LEFT JOIN + classify the NULL case.
 - [Daily-trend order attribution](daily-trend-order-attribution.md) — Σ per-day distinct orders > window distinct when orders span sale_dates; attribute each order to its first day, null-safe country join.
+- [Custom-auth UI testing](custom-auth-ui-testing.md) — test gated pages by inserting a temp user_sessions row + localStorage vivo_token in the Playwright plan; delete it and undo test data mutations after.

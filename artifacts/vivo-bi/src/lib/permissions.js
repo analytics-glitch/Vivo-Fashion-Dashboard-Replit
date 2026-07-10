@@ -15,14 +15,14 @@
 // Base analytical set shared by the broadest groups.
 const VIEWER = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "gallery", "fabric", "sops"];
 
-const PRODUCT_DEVELOPMENT = ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report", "sops"];
+const PRODUCT_DEVELOPMENT = ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"];
 const RETAIL = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "exports", "sops"];
 const WAREHOUSE = ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"];
 const STORE_MANAGER = ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "sops"];
 // "finance" (the Finance Reports Suite) is a leadership + admin surface, so it
 // lives in LEADERSHIP (ADMIN spreads LEADERSHIP). The server /api/finance gate
 // independently restricts the underlying API to leadership + admin.
-const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-scorecard", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "finance"])];
+const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-scorecard", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance"])];
 const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "footfall", "rfm", "sops"];
 const MARKETING = ["marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm", "sops"];
 const HR = ["hr", "sops"];

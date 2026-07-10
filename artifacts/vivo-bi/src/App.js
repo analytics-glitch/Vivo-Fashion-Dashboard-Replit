@@ -44,6 +44,7 @@ const CustomReport = React.lazy(() => import("@/pages/CustomReport"));
 const RangeManagement = React.lazy(() => import("@/pages/RangeManagement"));
 const Production = React.lazy(() => import("@/pages/Production"));
 const ProductionReport = React.lazy(() => import("@/pages/ProductionReport"));
+const StyleTracker = React.lazy(() => import("@/pages/StyleTracker"));
 const Velocity = React.lazy(() => import("@/pages/Velocity"));
 const SizeHealth = React.lazy(() => import("@/pages/SizeHealth"));
 const MarkdownClearance = React.lazy(() => import("@/pages/MarkdownClearance"));
@@ -179,6 +180,7 @@ function App() {
                 <Route path="/ibt" element={<ProtectedShell pageId="ibt"><IBT /></ProtectedShell>} />
                 <Route path="/production" element={<ProtectedShell pageId="production"><Production /></ProtectedShell>} />
                 <Route path="/production-report" element={<ProtectedShell pageId="production-report"><ProductionReport /></ProtectedShell>} />
+                <Route path="/style-tracker" element={<ProtectedShell pageId="style-tracker"><StyleTracker /></ProtectedShell>} />
                 <Route path="/data-quality" element={<ProtectedShell pageId="data-quality"><DataQuality /></ProtectedShell>} />
                 <Route path="/feedback" element={<ProtectedShell pageId="feedback"><Feedback /></ProtectedShell>} />
                 <Route path="/allocations" element={<ProtectedShell pageId="allocations"><Allocations /></ProtectedShell>} />
