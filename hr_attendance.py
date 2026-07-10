@@ -77,12 +77,12 @@ COUT_LOCAL = f"to_char({_LOUT}, 'YYYY-MM-DD\"T\"HH24:MI:SS')"
 
 # Department groups that may write notes/leaves (executive / HR-manager view).
 # Plain store_manager (-> branch_manager) is read-only.
-_WRITER_ROLES = {"admin", "leadership", "hr"}
+_WRITER_ROLES = {"admin", "leadership", "smt", "hr"}
 # Roles that see ALL branches' notes/leaves (executive + HR-manager + retail
 # oversight). Any other permitted HR role (store_manager -> branch_manager) is
 # scoped to its own branch only — fail-closed: a branch with no resolvable
 # assignment sees none.
-_GLOBAL_VIEW_ROLES = {"admin", "leadership", "retail", "hr"}
+_GLOBAL_VIEW_ROLES = {"admin", "leadership", "smt", "retail", "hr"}
 
 
 # --------------------------------------------------------------------------- #
@@ -1366,7 +1366,7 @@ def register_hr_routes(app):
     @app.post("/api/hr/employees/rematch")
     def hr_employees_rematch(request: Request):
         _, _, role = _actor(request)
-        if role not in ("admin", "leadership"):
+        if role not in ("admin", "leadership", "smt"):
             return JSONResponse({"detail": "forbidden"}, status_code=403)
         use_ai = (request.query_params.get("ai") or "1") != "0"
         reimport = (request.query_params.get("reimport") or "0") == "1"

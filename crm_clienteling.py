@@ -3417,7 +3417,7 @@ def _reg_social(app):
     @app.get("/api/social/summary")
     def cl_soc_summary(request: Request, date_from: str = Query(None),
                        date_to: str = Query(None)):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         f = _safe_date(date_from, _ago(30))
         t = _safe_date(date_to, _today())
         agg = _one(
@@ -3452,7 +3452,7 @@ def _reg_social(app):
     @app.get("/api/social/mentions")
     def cl_soc_mentions(request: Request, date_from: str = Query(None),
                         date_to: str = Query(None), limit: int = Query(50)):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         f = _safe_date(date_from, _ago(30))
         t = _safe_date(date_to, _today())
         lim = _clamp(limit, 1, 200, 50)
@@ -3471,7 +3471,7 @@ def _reg_social(app):
 
     @app.get("/api/social/influencers")
     def cl_soc_influencers(request: Request, limit: int = Query(15)):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         lim = _clamp(limit, 1, 100, 15)
         rows = _ex(
             "SELECT COALESCE(author_handle,author_name,'unknown') AS handle, "
@@ -3489,7 +3489,7 @@ def _reg_social(app):
 
     @app.get("/api/social/platforms/status")
     def cl_soc_platforms_status(request: Request):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         fb_ok = bool(A._fb_enabled()) if hasattr(A, "_fb_enabled") else bool(
             __import__("os").environ.get("FACEBOOK_PAGE_ACCESS_TOKEN"))
         connected = ["facebook"] if fb_ok else []
@@ -3501,18 +3501,18 @@ def _reg_social(app):
     @app.post("/api/social/platforms/{platform}/connect")
     def cl_soc_platform_connect(request: Request, platform: str,
                                 payload: dict = Body(default=None)):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         return {"status": "unavailable", "platform": platform,
                 "note": "Connect this platform from workspace secrets."}
 
     @app.delete("/api/social/platforms/{platform}")
     def cl_soc_platform_disconnect(request: Request, platform: str):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         return {"ok": True, "platform": platform, "status": "disconnected"}
 
     @app.get("/api/social/handles/{cid}")
     def cl_soc_handles(request: Request, cid: str):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         rows = _ex(
             "SELECT platform, handle, added_at FROM crm_social_handle "
             "WHERE customer_id=%s ORDER BY platform", (cid,), fetch=True) or []
@@ -3522,7 +3522,7 @@ def _reg_social(app):
     @app.post("/api/social/handles/{cid}")
     def cl_soc_handle_add(request: Request, cid: str,
                           payload: dict = Body(default=None)):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         p = payload or {}
         plat = (p.get("platform") or "").strip().lower()[:40]
         handle = (p.get("handle") or "").strip()[:120]
@@ -3539,14 +3539,14 @@ def _reg_social(app):
 
     @app.delete("/api/social/handles/{cid}/{platform}")
     def cl_soc_handle_del(request: Request, cid: str, platform: str):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         _ex("DELETE FROM crm_social_handle WHERE customer_id=%s AND platform=%s",
             (cid, platform.lower()))
         return {"ok": True}
 
     @app.get("/api/social/timeline/{cid}")
     def cl_soc_timeline(request: Request, cid: str):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         handles = _ex(
             "SELECT platform, handle, added_at FROM crm_social_handle "
             "WHERE customer_id=%s", (cid,), fetch=True) or []
@@ -3569,7 +3569,7 @@ def _reg_social(app):
                         sentiment: str = Query(None), customer_id: str = Query(None),
                         unmatched: bool = Query(False), q: str = Query(None),
                         type: str = Query(None), limit: int = Query(100)):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         # Cap high enough that a deep-synced page (2000 posts + 2000 comments)
         # is fully visible in the inbox.
         lim = _clamp(limit, 1, 5000, 100)
@@ -3611,7 +3611,7 @@ def _reg_social(app):
 
     @app.post("/api/social/feedback")
     def cl_soc_feedback_add(request: Request, payload: dict = Body(default=None)):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         p = payload or {}
         rid = _ex(
             "INSERT INTO crm_social_feedback (platform,type,author_name,author_handle,"
@@ -3625,7 +3625,7 @@ def _reg_social(app):
     @app.post("/api/social/feedback/{fid}/link")
     def cl_soc_feedback_link(request: Request, fid: str,
                              payload: dict = Body(default=None)):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         cid = (payload or {}).get("customer_id")
         _ex("UPDATE crm_social_feedback SET customer_id=%s WHERE id=%s",
             (cid, _int(fid)))
@@ -3634,7 +3634,7 @@ def _reg_social(app):
     @app.post("/api/social/feedback/{fid}/reply")
     def cl_soc_feedback_reply(request: Request, fid: str,
                               payload: dict = Body(default=None)):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         body = (payload or {}).get("body") or ""
         row = _one("SELECT id, platform, type, author_handle, source_id "
                    "FROM crm_social_feedback WHERE id=%s", (_int(fid),))
@@ -3877,22 +3877,22 @@ def _reg_social(app):
 
     @app.get("/api/social/auto-tasks")
     def cl_soc_auto_tasks(request: Request, include_completed: bool = Query(False)):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         return []
 
     @app.get("/api/social/auto-tasks/kpi")
     def cl_soc_auto_tasks_kpi(request: Request):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         return {"open": 0, "completed_14d": 0, "top_themes": []}
 
     @app.post("/api/social/auto-tasks/run")
     def cl_soc_auto_tasks_run(request: Request):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         return {"already_run": False, "tasks_created": 0, "themes": []}
 
     @app.post("/api/social/classify-pending")
     def cl_soc_classify_pending(request: Request):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         rows = _ex(
             "SELECT id, body FROM crm_social_feedback WHERE sentiment IS NULL LIMIT 50",
             fetch=True) or []
@@ -3961,7 +3961,7 @@ def _reg_social(app):
 
     @app.get("/api/social/facebook/status")
     def cl_soc_fb_status(request: Request):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         empty = {"discovered_pages": [], "last_synced_at": None,
                  "auto_sync_minutes": 15,
                  "counts": {"real_posts": 0, "real_feedback": 0}}
@@ -4012,7 +4012,7 @@ def _reg_social(app):
 
     @app.post("/api/social/facebook/discover")
     def cl_soc_fb_discover(request: Request, payload: dict = Body(default=None)):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         # The Page is connected server-side via secrets; a pasted user token is
         # not required. Report the configured Page as discovered when reachable.
         if not A._fb_configured():
@@ -4025,7 +4025,7 @@ def _reg_social(app):
 
     @app.get("/api/social/facebook/pages")
     def cl_soc_fb_pages(request: Request):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         if not A._fb_configured():
             return []
         try:
@@ -4037,7 +4037,7 @@ def _reg_social(app):
 
     @app.delete("/api/social/facebook/pages/{page_id}")
     def cl_soc_fb_page_del(request: Request, page_id: str):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         # The Page comes from server secrets, not a stored connection, so there
         # is nothing to disconnect here; clear cached sync metadata only.
         for k in ("social.fb.last_sync_posts", "social.fb.last_sync_comments",
@@ -4122,7 +4122,7 @@ def _reg_social(app):
     @app.post("/api/social/facebook/sync")
     def cl_soc_fb_sync(request: Request, payload: dict = Body(default=None)):
         if not _internal_token_ok(request):
-            _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+            _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         if not A._fb_configured():
             raise HTTPException(400, "Facebook is not configured on the server.")
         from datetime import datetime, timezone
@@ -4710,7 +4710,7 @@ def _reg_social(app):
 
     @app.get("/api/social/instagram/status")
     def cl_soc_ig_status(request: Request):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         empty = {"connected": False, "account": None, "last_synced_at": None,
                  "auto_sync_minutes": None,
                  "counts": {"real_posts": 0, "real_feedback": 0,
@@ -4800,7 +4800,7 @@ def _reg_social(app):
     @app.post("/api/social/instagram/sync")
     def cl_soc_ig_sync(request: Request, payload: dict = Body(default=None)):
         if not _internal_token_ok(request):
-            _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+            _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         if not A._fb_configured():
             raise HTTPException(400, "Instagram is not configured on the server.")
         lock = _ig_sync_state["lock"]
@@ -5530,7 +5530,7 @@ def _reg_social(app):
     @app.get("/api/social/x/status")
     def cl_soc_x_status(request: Request):
         _staff(request, roles=("customer_service", "marketing",
-                               "leadership", "admin"))
+                               "leadership", "smt", "admin"))
         empty = {"connected": False, "running": False, "account": None,
                  "last_synced_at": None, "write_enabled": False,
                  "counts": {"real_posts": 0, "real_feedback": 0,
@@ -5617,7 +5617,7 @@ def _reg_social(app):
         # staff member (the /api/social role gate already applies to sessions).
         if not _internal_ok(request):
             _staff(request, roles=("customer_service", "marketing",
-                                   "leadership", "admin"))
+                                   "leadership", "smt", "admin"))
         if not _x_read_configured():
             raise HTTPException(400, "X (Twitter) is not configured on the server.")
         from datetime import datetime, timezone
@@ -6171,7 +6171,7 @@ def _reg_social(app):
     def cl_soc_tiktok_oauth_authorize(request: Request):
         # Connecting the brand account is an operator action — admin/leadership
         # only (stricter than the marketing+ read surface).
-        _staff(request, roles=("leadership", "admin"))
+        _staff(request, roles=("leadership", "smt", "admin"))
         key, sec = _tiktok_client_creds()
         if not (key and sec):
             raise HTTPException(
@@ -6270,7 +6270,7 @@ def _reg_social(app):
     @app.get("/api/social/tiktok/status")
     def cl_soc_tiktok_status(request: Request):
         _staff(request, roles=("customer_service", "marketing",
-                               "leadership", "admin"))
+                               "leadership", "smt", "admin"))
         empty = {"connected": False, "running": False, "account": None,
                  "last_synced_at": None, "write_enabled": False,
                  "comments_available": _TIKTOK_COMMENTS_AVAILABLE,
@@ -6359,7 +6359,7 @@ def _reg_social(app):
         # staff member (the /api/social role gate already applies to sessions).
         if not _internal_ok(request):
             _staff(request, roles=("customer_service", "marketing",
-                                   "leadership", "admin"))
+                                   "leadership", "smt", "admin"))
         if not _tiktok_read_configured():
             raise HTTPException(400, "TikTok is not configured on the server.")
         from datetime import datetime, timezone
@@ -6851,7 +6851,7 @@ def _reg_social(app):
     def cl_soc_grev_oauth_authorize(request: Request):
         # Connecting the brand's Business Profile is an operator action —
         # admin/leadership only (same bar as the TikTok connect).
-        _staff(request, roles=("leadership", "admin"))
+        _staff(request, roles=("leadership", "smt", "admin"))
         cid, sec = _grev_client_creds()
         if not (cid and sec):
             raise HTTPException(
@@ -6980,7 +6980,7 @@ def _reg_social(app):
     @app.get("/api/social/google/status")
     def cl_soc_grev_status(request: Request):
         _staff(request, roles=("customer_service", "marketing",
-                               "leadership", "admin"))
+                               "leadership", "smt", "admin"))
         empty = {"connected": False, "running": False, "account": None,
                  "last_synced_at": None, "reconnect_required": False,
                  "reconnect_error": None, "last_run_error": None,
@@ -7173,7 +7173,7 @@ def _reg_social(app):
         # staff member.
         if not _internal_ok(request):
             _staff(request, roles=("customer_service", "marketing",
-                                   "leadership", "admin"))
+                                   "leadership", "smt", "admin"))
         if not _grev_configured():
             raise HTTPException(
                 400, "Google Reviews is not connected on the server.")
@@ -7631,7 +7631,7 @@ def _reg_misc(app):
 
     @app.get("/api/manager/data-deletion-requests")
     def cl_data_deletion(request: Request):
-        _staff(request, roles=("admin", "leadership"))
+        _staff(request, roles=("admin", "leadership", "smt"))
         recent = _ex(
             "SELECT entity_id, created_at FROM crm_audit "
             "WHERE entity='customer' AND action='forget' "
@@ -7656,7 +7656,7 @@ def _reg_misc(app):
 
     @app.post("/api/insights/social/suggest-reply")
     def cl_suggest_reply(request: Request, payload: dict = Body(default=None)):
-        _staff(request, roles=("customer_service", "marketing", "leadership", "admin"))
+        _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         p = payload or {}
         fid = p.get("feedback_id")
         fb = _one("SELECT body, sentiment, author_name, platform "

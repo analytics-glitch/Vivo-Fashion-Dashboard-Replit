@@ -486,7 +486,8 @@ _DATE_QUERY_PARAMS = ("date_from", "date_to", "compare_from", "compare_to")
 # artifacts/vivo-bi/src/lib/permissions.js for the page mapping.
 VALID_ROLES = (
     "product_development", "retail", "warehouse", "store_manager",
-    "leadership", "customer_service", "marketing", "hr", "admin",
+    "leadership", "smt", "production", "fabric_warehouse",
+    "customer_service", "marketing", "hr", "admin",
 )
 VALID_STATUSES = ("pending", "active", "rejected", "disabled")
 # Lowest-access department a self-signup lands on while pending; an admin
@@ -531,6 +532,13 @@ DEFAULT_ROLE_PAGES = {
     "warehouse": ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"],
     "store_manager": ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "sops"],
     "leadership": _LEADERSHIP_PAGES,
+    # SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
+    # Finance Reports Suite. The /api/finance gate below also excludes "smt".
+    "smt": [p for p in _LEADERSHIP_PAGES if p != "finance"],
+    # Production department — manufacturing board + report, fabric warehouse view.
+    "production": ["production", "production-report", "fabric", "sops"],
+    # Fabric Warehouse department — fabric stock + general inventory.
+    "fabric_warehouse": ["fabric", "inventory", "sops"],
     "customer_service": ["customers", "customer-details", "crm", "footfall", "rfm", "sops"],
     "marketing": ["marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm", "sops"],
     "hr": ["hr", "sops"],
@@ -1057,14 +1065,14 @@ async def clerk_auth_gate(request: Request, call_next):
     # their own finer-grained checks (e.g. loyalty adjust / config require admin
     # via _crm_is_admin).
     if path.startswith("/api/crm") and user.get("role") not in (
-        "customer_service", "marketing", "leadership", "admin"
+        "customer_service", "marketing", "leadership", "smt", "admin"
     ):
         return JSONResponse({"detail": "CRM access requires a customer service, marketing, leadership or admin role"}, status_code=403)
 
     # Social (Facebook Page) management is a marketing action: publishing offers
     # and replying to customers. Marketing + leadership + admin only.
     if path.startswith("/api/social") and user.get("role") not in (
-        "marketing", "leadership", "admin"
+        "marketing", "leadership", "smt", "admin"
     ):
         return JSONResponse({"detail": "Social access requires a marketing, leadership or admin role"}, status_code=403)
 
@@ -1073,9 +1081,9 @@ async def clerk_auth_gate(request: Request, call_next):
     # manufacturing stages. Product development + leadership + admin only;
     # enforced here so hidden web nav can't be bypassed via direct API.
     if path.startswith("/api/production") and user.get("role") not in (
-        "product_development", "leadership", "admin"
+        "product_development", "production", "leadership", "smt", "admin"
     ):
-        return JSONResponse({"detail": "Production tracker access requires a product development, leadership or admin role"}, status_code=403)
+        return JSONResponse({"detail": "Production tracker access requires a production, product development, leadership or admin role"}, status_code=403)
 
     # HR attendance dashboard (/api/hr/*) is a staff surface. Leadership + admin
     # get the executive/HR-manager view; store managers map to branch managers
@@ -1091,7 +1099,7 @@ async def clerk_auth_gate(request: Request, call_next):
         path.startswith("/api/hr")
         and not path.startswith("/api/hr/salary-advances")
         and user.get("role") not in (
-            "admin", "leadership", "store_manager", "retail", "hr"
+            "admin", "leadership", "smt", "store_manager", "retail", "hr"
         )
     ):
         return JSONResponse({"detail": "HR dashboard access requires a staff role"}, status_code=403)
@@ -1111,7 +1119,7 @@ async def clerk_auth_gate(request: Request, call_next):
     # leadership revenue budget + per-store goals, so it is leadership + admin
     # only (matching the "quarter-scorecard" page in _LEADERSHIP_PAGES). Only the
     # single exact path is gated — the rest of /api/analytics stays open.
-    if path == "/api/analytics/quarter-scorecard" and user.get("role") not in ("admin", "leadership"):
+    if path == "/api/analytics/quarter-scorecard" and user.get("role") not in ("admin", "leadership", "smt"):
         return JSONResponse({"detail": "Quarterly scorecard access requires a leadership or admin role"}, status_code=403)
 
     return await call_next(request)
@@ -13082,7 +13090,7 @@ def analytics_quarter_scorecard(quarter: int = Query(default=None),
                 FROM ff_daily ff
                 FULL OUTER JOIN sales_daily sd ON sd.loc = ff.loc AND sd.d = ff.d
                 WHERE COALESCE(ff.loc, sd.loc) IN (SELECT loc FROM ff_locs)
-            )
+            ),
             good_outside AS (
                 SELECT loc FROM joined GROUP BY loc
                 HAVING SUM(outside) > 0 AND SUM(ff) <= SUM(outside)

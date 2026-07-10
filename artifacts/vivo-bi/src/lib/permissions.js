@@ -4,9 +4,10 @@
  * fall back to this static map.
  *
  * Roles are business-friendly DEPARTMENT GROUPS (plus Admin), not technical
- * tiers. The nine groups are:
+ * tiers. The twelve groups are:
  *   product_development · retail · warehouse · store_manager ·
- *   leadership · customer_service · marketing · hr · admin
+ *   leadership (SLT) · smt · production · fabric_warehouse ·
+ *   customer_service · marketing · hr · admin
  *
  * Page IDs match the `id` field on `tabs` in `components/Sidebar.jsx` /
  * `navItems.jsx`. Admin-only pages use the `admin-` prefix.
@@ -23,6 +24,11 @@ const STORE_MANAGER = ["locations", "footfall", "replenishments", "replenish-by-
 // lives in LEADERSHIP (ADMIN spreads LEADERSHIP). The server /api/finance gate
 // independently restricts the underlying API to leadership + admin.
 const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-scorecard", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance"])];
+// SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
+// Finance Reports Suite. The server /api/finance gate also excludes SMT.
+const SMT = LEADERSHIP.filter((p) => p !== "finance");
+const PRODUCTION = ["production", "production-report", "fabric", "sops"];
+const FABRIC_WAREHOUSE = ["fabric", "inventory", "sops"];
 const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "footfall", "rfm", "sops"];
 const MARKETING = ["marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm", "sops"];
 const HR = ["hr", "sops"];
@@ -34,6 +40,9 @@ export const ROLE_PAGES = {
   warehouse: WAREHOUSE,
   store_manager: STORE_MANAGER,
   leadership: LEADERSHIP,
+  smt: SMT,
+  production: PRODUCTION,
+  fabric_warehouse: FABRIC_WAREHOUSE,
   customer_service: CUSTOMER_SERVICE,
   marketing: MARKETING,
   hr: HR,
@@ -41,16 +50,22 @@ export const ROLE_PAGES = {
 };
 
 /**
- * The 9 selectable department groups, with human-readable labels + short
+ * The 12 selectable department groups, with human-readable labels + short
  * descriptions. Drives the approval / create-user dropdowns on the Users page.
  * `store_manager` is the lowest-access default a self-signup gets while pending.
+ * NOTE: "SLT" is a LABEL-only rename of the internal `leadership` group —
+ * existing members, stored Group Access overrides and server role gates all
+ * keep working unchanged.
  */
 export const ROLE_OPTIONS = [
   { value: "product_development", label: "Product Development Team", desc: "Products, range, inventory & quality" },
   { value: "retail", label: "Retail Team", desc: "Sales, footfall, customers & replenishment" },
   { value: "warehouse", label: "Warehouse Team", desc: "Stock movement & inventory ops" },
   { value: "store_manager", label: "Store Managers", desc: "Store performance & replenishment" },
-  { value: "leadership", label: "Senior Leadership", desc: "Full analytical & executive access" },
+  { value: "production", label: "Production", desc: "Production tracker, report & fabric" },
+  { value: "fabric_warehouse", label: "Fabric Warehouse", desc: "Fabric & inventory" },
+  { value: "leadership", label: "SLT (Senior Leadership Team)", desc: "Full analytical & executive access" },
+  { value: "smt", label: "SMT (Senior Management Team)", desc: "Everything SLT sees except Finance" },
   { value: "customer_service", label: "Customer Service", desc: "Customers, CRM & service" },
   { value: "marketing", label: "Marketing", desc: "Marketing, social, CRM & customers" },
   { value: "hr", label: "HR Team", desc: "HR & attendance only" },

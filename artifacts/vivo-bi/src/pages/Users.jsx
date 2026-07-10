@@ -178,9 +178,9 @@ const Users = () => {
                 label: "Role",
                 align: "left",
                 render: (r) => {
-                  const cls = (r.role === "admin" || r.role === "leadership") ? "pill-green"
-                    : "pill-amber";
-                  const icon = (r.role === "admin" || r.role === "leadership") ? <ShieldCheck size={11} /> : <Eye size={11} />;
+                  const senior = r.role === "admin" || r.role === "leadership" || r.role === "smt";
+                  const cls = senior ? "pill-green" : "pill-amber";
+                  const icon = senior ? <ShieldCheck size={11} /> : <Eye size={11} />;
                   return (
                     <span className={`${cls} inline-flex items-center gap-1`}>
                       {icon}{roleLabel(r.role)}
