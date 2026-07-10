@@ -143,7 +143,7 @@ const ActivityLogs = () => {
   return (
     <div className="space-y-6" data-testid="activity-logs-page">
       <div>
-        <p className="text-muted text-[13px] mt-0.5">Every authenticated API request is logged. Useful for auditing access.</p>
+        <p className="text-muted text-[13px] mt-0.5">Audit trail of admin-sensitive actions — SOP document uploads, replacements, deletions and upload-grant changes.</p>
       </div>
 
       <ActiveUsersSection />
@@ -190,8 +190,8 @@ const ActivityLogs = () => {
               { key: "path", label: "Path", align: "left", render: (r) => (
                 <span className="font-mono text-[11px]">{r.path}</span>
               ) },
-              { key: "query", label: "Query", align: "left", render: (r) => (
-                <span className="text-muted font-mono text-[10.5px] max-w-[280px] truncate inline-block" title={r.query}>{r.query || "—"}</span>
+              { key: "query", label: "Detail", align: "left", render: (r) => (
+                <span className="text-muted text-[11.5px] max-w-[320px] truncate inline-block" title={r.query}>{r.query || "—"}</span>
               ) },
               { key: "status_code", label: "Status", numeric: true, render: (r) => (
                 <span className={`pill-${r.status_code < 300 ? "green" : r.status_code < 400 ? "neutral" : "red"}`}>{r.status_code}</span>

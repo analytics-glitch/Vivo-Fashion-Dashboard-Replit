@@ -11737,7 +11737,38 @@ def ibt_warehouse_to_store(
 @app.get("/api/admin/active-sessions")
 def stub_admin_active_sessions(): return []
 @app.get("/api/admin/activity-logs")
-def stub_admin_activity_logs(): return []
+def admin_activity_logs(request: Request,
+                        limit: int = Query(100, ge=1, le=500),
+                        skip: int = Query(0, ge=0),
+                        path: str = Query(None)):
+    """Admin audit trail (app_activity_log): SOP document uploads / replaces /
+    deletes and upload-grant changes. Shape matches ActivityLogs.jsx:
+    {rows: [{ts,email,method,path,query,status_code,duration_ms,ip}], total}.
+    /api/admin is admin-gated by clerk_auth_gate. Best-effort: an empty log
+    store (fresh DB, table not yet created) returns zero rows, not a 500."""
+    try:
+        _ensure_activity_log()
+        where, params = "", []
+        if path:
+            where = " WHERE path ILIKE %s OR query ILIKE %s"
+            params = [f"%{path}%", f"%{path}%"]
+        total_rows = _users_exec(
+            "SELECT COUNT(*) AS n FROM app_activity_log" + where,
+            params or None, fetch=True) or []
+        total = int(total_rows[0]["n"]) if total_rows else 0
+        rows = _users_exec(
+            "SELECT ts, user_id, email, method, path, query, "
+            "status_code, duration_ms, ip "
+            "FROM app_activity_log" + where +
+            " ORDER BY ts DESC, id DESC LIMIT %s OFFSET %s",
+            (params + [limit, skip]), fetch=True) or []
+        for r in rows:
+            if r.get("ts") is not None:
+                r["ts"] = r["ts"].isoformat()
+        return {"rows": rows, "total": total}
+    except Exception as e:
+        log.warning("activity-logs read failed: %s", e)
+        return {"rows": [], "total": 0}
 @app.get("/api/admin/audit-log")
 def stub_admin_audit_log(): return []
 @app.get("/api/admin/store-clusters")
@@ -18943,6 +18974,67 @@ def list_thumbnail_overrides(request: Request):
     return rows
 
 
+# ── Admin activity log ────────────────────────────────────────────────────────
+# Audit trail surfaced on the admin Activity Logs page (/api/admin/activity-logs).
+# Rows are written by explicit audit calls (currently the SOP document library:
+# upload / replace / delete / grant / revoke) rather than by blanket request
+# logging, so each entry can carry a human-readable detail string (which file,
+# which department, which user was granted). The row shape matches what the
+# frontend table renders: ts / email / method / path / query(detail) / status /
+# ip. Writes are best-effort and never fail the calling request.
+_ACTIVITY_LOG_READY = False
+
+
+def _ensure_activity_log():
+    global _ACTIVITY_LOG_READY
+    if _ACTIVITY_LOG_READY:
+        return
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS app_activity_log (
+            id          BIGSERIAL PRIMARY KEY,
+            ts          TIMESTAMPTZ NOT NULL DEFAULT now(),
+            user_id     TEXT,
+            email       TEXT,
+            method      TEXT,
+            path        TEXT,
+            query       TEXT,
+            status_code INT,
+            duration_ms INT,
+            ip          TEXT
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_app_activity_log_ts "
+                "ON app_activity_log (ts DESC)")
+    _ACTIVITY_LOG_READY = True
+
+
+def _client_ip(request):
+    try:
+        fwd = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        if fwd:
+            return fwd[:64]
+        client = getattr(request, "client", None)
+        return (getattr(client, "host", None) or "")[:64] or None
+    except Exception:
+        return None
+
+
+def _log_activity(request, method, path, detail, status_code=200):
+    """Best-effort audit insert for the Activity Logs page. Never raises —
+    an unavailable log store must not fail the underlying action."""
+    try:
+        _ensure_activity_log()
+        user = getattr(request.state, "user", None) or {}
+        _users_exec(
+            "INSERT INTO app_activity_log "
+            "(user_id, email, method, path, query, status_code, ip) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (user.get("user_id"), user.get("email"),
+             (method or "")[:10], (path or "")[:300], (detail or "")[:500],
+             int(status_code), _client_ip(request)))
+    except Exception as e:
+        log.warning("activity log write failed: %s", e)
+
+
 # ── SOP document library ──────────────────────────────────────────────────────
 # Each department keeps its Standard Operating Procedure documents in its own
 # folder. Every signed-in active user can browse/view/download; uploading and
@@ -19121,6 +19213,9 @@ async def sops_upload(request: Request,
             detail=f"File too large — the limit is {_SOP_MAX_BYTES // (1024 * 1024)} MB")
     # Upsert on (department, filename): uploading the same name REPLACES the
     # document, which is the natural "new revision" flow for SOPs.
+    existing = _users_exec(
+        "SELECT id FROM sop_files WHERE department=%s AND filename=%s",
+        (department, fname), fetch=True)
     rows = _users_exec("""
         INSERT INTO sop_files (department, filename, content_type, size_bytes,
                                data, uploaded_by, uploaded_by_email)
@@ -19137,6 +19232,11 @@ async def sops_upload(request: Request,
           len(data), psycopg2.Binary(data),
           user.get("name") or user.get("email"), user.get("email")),
         fetch=True)
+    action = "replace" if existing else "upload"
+    _log_activity(
+        request, "POST", "/api/sops/upload",
+        f"SOP {action}: {fname} · department={department} "
+        f"· {len(data):,} bytes")
     return {"ok": True, "file": rows[0] if rows else None}
 
 
@@ -19154,6 +19254,10 @@ def sops_delete(file_id: int, request: Request):
             status_code=403,
             detail="You don't have delete rights for this department")
     _users_exec("DELETE FROM sop_files WHERE id=%s", (file_id,))
+    _log_activity(
+        request, "DELETE", f"/api/sops/files/{file_id}",
+        f"SOP delete: {rows[0]['filename']} "
+        f"· department={rows[0]['department']}")
     return {"ok": True, "deleted": rows[0]["filename"]}
 
 
@@ -19185,7 +19289,7 @@ def admin_sop_grant_add(request: Request, payload: dict = Body(...)):
     if department not in _SOP_DEPT_SLUGS:
         raise HTTPException(status_code=400, detail="Unknown department")
     _ensure_sop_tables()
-    urows = _users_exec("SELECT user_id FROM app_users WHERE user_id=%s",
+    urows = _users_exec("SELECT user_id, email FROM app_users WHERE user_id=%s",
                         (user_id,), fetch=True)
     if not urows:
         raise HTTPException(status_code=404, detail="User not found")
@@ -19195,6 +19299,10 @@ def admin_sop_grant_add(request: Request, payload: dict = Body(...)):
         VALUES (%s, %s, %s)
         ON CONFLICT (user_id, department) DO NOTHING
     """, (user_id, department, admin.get("email")))
+    _log_activity(
+        request, "POST", "/api/admin/sop-grants",
+        f"SOP grant: {urows[0].get('email') or user_id} "
+        f"· department={department}")
     return {"ok": True}
 
 
@@ -19208,6 +19316,15 @@ def admin_sop_grant_remove(request: Request,
     _users_exec(
         "DELETE FROM sop_upload_grants WHERE user_id=%s AND department=%s",
         (user_id, department))
+    try:
+        urows = _users_exec("SELECT email FROM app_users WHERE user_id=%s",
+                            (user_id,), fetch=True) or []
+        target = (urows[0].get("email") if urows else None) or user_id
+    except Exception:
+        target = user_id
+    _log_activity(
+        request, "DELETE", "/api/admin/sop-grants",
+        f"SOP revoke: {target} · department={department}")
     return {"ok": True}
 
 
