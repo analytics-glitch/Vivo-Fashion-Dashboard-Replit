@@ -28747,6 +28747,7 @@ def _production_order_detail(order_ref):
         FROM v_stage_balances b
         JOIN production_stages s ON s.stage_key = b.stage
         WHERE b.order_ref = %s
+          AND b.stage NOT IN ('waiting_sewing', 'sewing', 'finishing')
         ORDER BY s.sort_order""", (order_ref,), fetch=True)
     history = _users_exec("""
         SELECT from_stage, to_stage, qty, sku, size, sewing_line, moved_at, moved_by, note
