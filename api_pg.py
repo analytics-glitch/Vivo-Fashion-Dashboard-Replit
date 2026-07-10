@@ -1082,8 +1082,17 @@ async def clerk_auth_gate(request: Request, call_next):
     # (own-branch scope); retail gets a read view. Other departments have no HR
     # mandate and are blocked server-side so hidden web nav / mobile routes can't
     # be bypassed. Finer write/branch-scope checks live in hr_attendance.py.
-    if path.startswith("/api/hr") and user.get("role") not in (
-        "admin", "leadership", "store_manager", "retail", "hr"
+    # EXCEPTION: salary-advance self-service (/api/hr/salary-advances*) is open
+    # to EVERY authenticated active staff member — any employee may apply for an
+    # advance regardless of dashboard role. Approve/reject stays restricted
+    # inside hr_attendance.py via _can_write, and non-reviewers only ever see
+    # their own applications, so no HR data leaks through this carve-out.
+    if (
+        path.startswith("/api/hr")
+        and not path.startswith("/api/hr/salary-advances")
+        and user.get("role") not in (
+            "admin", "leadership", "store_manager", "retail", "hr"
+        )
     ):
         return JSONResponse({"detail": "HR dashboard access requires a staff role"}, status_code=403)
 

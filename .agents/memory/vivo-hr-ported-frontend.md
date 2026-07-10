@@ -88,3 +88,15 @@ route added to a ported app must be checked against existing api_pg/crm routes.
 - The reference login screen shows cosmetic "demo accounts" hints
   (exec@vivofashion.com …) — they fill the form but are not real accounts.
 - `@radix-ui/react-visually-hidden` had to be added (BranchDetailSheet.jsx).
+- **Role-gate vs mapRole mismatch to remember when testing/reviewing:** the
+  api_pg `/api/hr` gate allows {admin, leadership, store_manager, retail, hr}
+  and `_can_write` allows {admin, leadership, hr} — but the frontend `mapRole`
+  sends `leadership` to branch_manager (review/write UI hidden) and `analyst`
+  is 403'd by the gate entirely. A working HR-reviewer test account must use
+  role `hr` (or `admin`). Salary Advance (`/salary-advance`,
+  `hr_salary_advances` table) is deliberately carved OUT of the /api/hr role
+  gate (`/api/hr/salary-advances*` bypasses the role list — ANY authenticated
+  active user may apply; self-service, own-rows-only). Review stays
+  `_can_write` server-side + the server's `can_review` flag client-side.
+  Don't "tighten" the carve-out back into the role list — that reintroduces
+  the "staff can't apply" bug.

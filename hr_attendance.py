@@ -586,6 +586,46 @@ def _ensure_hr_tables():
             updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
         )""")
     _ex("CREATE INDEX IF NOT EXISTS ix_hr_employee_match_eid ON hr_employee_match(employee_id)")
+    # Salary-advance applications. Employee details are SNAPSHOTTED from the
+    # roster row at application time (the roster is a full-refresh import whose
+    # ids churn on every sync, so a foreign key would dangle — the staff code +
+    # snapshot keeps the record self-contained and auditable).
+    _ex("""
+        CREATE TABLE IF NOT EXISTS hr_salary_advances (
+            id               SERIAL PRIMARY KEY,
+            employee_code    TEXT,
+            employee_name    TEXT NOT NULL,
+            entity           TEXT,
+            country          TEXT,
+            department       TEXT,
+            team             TEXT,
+            job_title        TEXT,
+            amount           NUMERIC NOT NULL,
+            mpesa_number     TEXT NOT NULL,
+            status           TEXT NOT NULL DEFAULT 'pending',
+            rejection_reason TEXT,
+            applied_by       TEXT,
+            applied_by_name  TEXT,
+            decided_by       TEXT,
+            decided_by_name  TEXT,
+            decided_at       TIMESTAMPTZ,
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    _ex("CREATE INDEX IF NOT EXISTS ix_hr_salary_advances_status ON hr_salary_advances(status)")
+    _ex("CREATE INDEX IF NOT EXISTS ix_hr_salary_advances_applied_by ON hr_salary_advances(applied_by)")
+
+
+# --------------------------------------------------------------------------- #
+# M-Pesa phone normalization                                                   #
+# --------------------------------------------------------------------------- #
+def _normalize_mpesa(raw):
+    """Validate + normalize a Kenyan M-Pesa number to +2547XXXXXXXX /
+    +2541XXXXXXXX. Accepts 07XX/01XX local formats and 2547XX/2541XX with or
+    without the leading '+', tolerating spaces/dashes. Returns the normalized
+    string or None when the input is not a valid Kenyan mobile number."""
+    s = re.sub(r"[\s\-()]", "", str(raw or ""))
+    m = re.fullmatch(r"(?:\+?254|0)((?:7|1)\d{8})", s)
+    return f"+254{m.group(1)}" if m else None
 
 
 # --------------------------------------------------------------------------- #
@@ -1873,6 +1913,156 @@ def register_hr_routes(app):
         _ex("DELETE FROM hr_leaves WHERE id=%(id)s", {"id": leave_id})
         A._crm_audit("hr_leave", leave_id, "delete", "", request)
         return {"ok": True}
+
+    # ---------------- Salary advances (application + HR approval) --------- #
+
+    @app.get("/api/hr/salary-advances/employees")
+    def hr_salary_advance_employees(request: Request):
+        """Roster picker for the application form: every employee with a staff
+        code, plus the read-only details the form auto-fills. Any logged-in
+        staff member may apply, so this is not role-gated."""
+        rows = _rows("""
+            SELECT id, employee_id, entity, country, name,
+                   department, team, job_title
+            FROM hr_employees
+            WHERE COALESCE(NULLIF(TRIM(employee_id), ''), '') <> ''
+            ORDER BY entity, name
+        """)
+        return rows
+
+    @app.get("/api/hr/salary-advances")
+    def hr_salary_advances_list(request: Request):
+        """HR-write roles see every application (with optional status filter);
+        everyone else sees only the applications they submitted themselves."""
+        qp = request.query_params
+        uid, _, _ = _actor(request)
+        can_review = _can_write(request)
+        where, params = [], {}
+        if not can_review:
+            where.append("applied_by = %(uid)s")
+            params["uid"] = str(uid)
+        status = (qp.get("status") or "").strip().lower()
+        if status in ("pending", "approved", "rejected"):
+            where.append("status = %(st)s")
+            params["st"] = status
+        wsql = (" WHERE " + " AND ".join(where)) if where else ""
+        rows = _rows(f"""
+            SELECT id, employee_code, employee_name, entity, country,
+                   department, team, job_title,
+                   amount::float8 AS amount, mpesa_number, status,
+                   rejection_reason, applied_by, applied_by_name,
+                   decided_by_name,
+                   to_char(decided_at AT TIME ZONE '{TZ}', 'YYYY-MM-DD"T"HH24:MI:SS') AS decided_at,
+                   to_char(created_at AT TIME ZONE '{TZ}', 'YYYY-MM-DD"T"HH24:MI:SS') AS created_at
+            FROM hr_salary_advances{wsql}
+            ORDER BY created_at DESC LIMIT 500
+        """, params)
+        pend_w = "" if can_review else " AND applied_by = %(uid)s"
+        pend = _rows(
+            f"SELECT COUNT(*) AS n FROM hr_salary_advances WHERE status='pending'{pend_w}",
+            params if not can_review else None)
+        return {
+            "applications": rows,
+            "pending_count": int((pend[0]["n"] if pend else 0) or 0),
+            "can_review": can_review,
+        }
+
+    @app.post("/api/hr/salary-advances")
+    async def hr_salary_advance_create(request: Request):
+        """Submit an application. Open to any logged-in staff member; the
+        employee details are snapshotted from the roster row so the record
+        stays self-contained even after a roster re-import."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        emp_id = body.get("employee_id")
+        try:
+            emp_id = int(emp_id)
+        except (TypeError, ValueError):
+            return JSONResponse({"detail": "employee_id (roster id) is required"},
+                                status_code=400)
+        try:
+            amount = float(body.get("amount"))
+        except (TypeError, ValueError):
+            return JSONResponse({"detail": "amount must be a number"}, status_code=400)
+        if not (amount > 0):
+            return JSONResponse({"detail": "amount must be a positive number"},
+                                status_code=400)
+        mpesa = _normalize_mpesa(body.get("mpesa_number"))
+        if not mpesa:
+            return JSONResponse(
+                {"detail": "mpesa_number must be a valid Kenyan mobile number "
+                           "(07XX/01XX or +2547XX/+2541XX)"},
+                status_code=400)
+        emp = _rows("""
+            SELECT employee_id, entity, country, name, department, team, job_title
+            FROM hr_employees WHERE id = %(id)s
+        """, {"id": emp_id})
+        if not emp:
+            return JSONResponse({"detail": "employee not found in the roster"},
+                                status_code=404)
+        e = emp[0]
+        uid, uname, _ = _actor(request)
+        rows = _rows("""
+            INSERT INTO hr_salary_advances
+                (employee_code, employee_name, entity, country, department,
+                 team, job_title, amount, mpesa_number, status,
+                 applied_by, applied_by_name)
+            VALUES (%(ec)s,%(en)s,%(ent)s,%(c)s,%(d)s,%(t)s,%(jt)s,
+                    %(amt)s,%(mp)s,'pending',%(ab)s,%(abn)s)
+            RETURNING id
+        """, {"ec": e["employee_id"], "en": e["name"], "ent": e["entity"],
+              "c": e["country"], "d": e["department"], "t": e["team"],
+              "jt": e["job_title"], "amt": amount, "mp": mpesa,
+              "ab": str(uid), "abn": uname})
+        aid = rows[0]["id"] if rows else None
+        A._crm_audit("hr_salary_advance", aid, "create",
+                     f"{e['name']} KES {amount:,.0f}", request)
+        return {"ok": True, "id": aid, "status": "pending", "mpesa_number": mpesa}
+
+    @app.post("/api/hr/salary-advances/{advance_id}/decision")
+    async def hr_salary_advance_decide(advance_id: int, request: Request):
+        """Approve or reject a pending application. Server-side gated to the
+        HR-write roles; records who decided and when. The UPDATE is guarded on
+        status='pending' so two concurrent reviewers can't both decide."""
+        if not _can_write(request):
+            return JSONResponse(
+                {"detail": "Approving or rejecting requires an HR or executive role"},
+                status_code=403)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        action = (body.get("action") or "").strip().lower()
+        if action not in ("approve", "reject"):
+            return JSONResponse({"detail": "action must be approve|reject"},
+                                status_code=400)
+        reason = (body.get("reason") or "").strip() or None
+        uid, uname, _ = _actor(request)
+        new_status = "approved" if action == "approve" else "rejected"
+        rows = _rows("""
+            UPDATE hr_salary_advances
+            SET status = %(st)s,
+                rejection_reason = %(rs)s,
+                decided_by = %(db)s,
+                decided_by_name = %(dbn)s,
+                decided_at = now()
+            WHERE id = %(id)s AND status = 'pending'
+            RETURNING id
+        """, {"st": new_status, "rs": reason if action == "reject" else None,
+              "db": str(uid), "dbn": uname, "id": advance_id})
+        if not rows:
+            exists = _rows("SELECT status FROM hr_salary_advances WHERE id=%(id)s",
+                           {"id": advance_id})
+            if not exists:
+                return JSONResponse({"detail": "application not found"}, status_code=404)
+            return JSONResponse(
+                {"detail": f"application already {exists[0]['status']}"},
+                status_code=409)
+        A._crm_audit("hr_salary_advance", advance_id, new_status,
+                     reason or "", request)
+        return {"ok": True, "id": advance_id, "status": new_status}
 
     # ---------------- Staff Training (Google Sheet → hr_training*) --------- #
 

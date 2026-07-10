@@ -20,6 +20,7 @@ import LeaveAndNotes from "./pages/LeaveAndNotes";
 import DaysWorked from "./pages/DaysWorked";
 import HoursLost from "./pages/HoursLost";
 import Heatmap from "./pages/Heatmap";
+import SalaryAdvance from "./pages/SalaryAdvance";
 
 // Router base — the app is mounted under /hr/ by the shared proxy.
 const BASENAME = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -44,6 +45,7 @@ function App() {
             <Route path="/days-worked" element={<ProtectedRoute><DaysWorked /></ProtectedRoute>} />
             <Route path="/hours-lost" element={<ProtectedRoute><HoursLost /></ProtectedRoute>} />
             <Route path="/heatmap" element={<ProtectedRoute><Heatmap /></ProtectedRoute>} />
+            <Route path="/salary-advance" element={<ProtectedRoute><SalaryAdvance /></ProtectedRoute>} />
             <Route path="/leave" element={<ProtectedRoute roles={["executive", "hr_manager"]}><LeaveAndNotes /></ProtectedRoute>} />
           </Routes>
           <Toaster position="top-right" richColors />
