@@ -9423,7 +9423,7 @@ def analytics_buy_candidates(
             SELECT po.style_name, SUM(b.qty_here) AS wip_units
             FROM production_orders po
             JOIN v_stage_balances b ON b.order_ref = po.order_ref
-            WHERE b.stage <> 'warehouse' AND po.style_name IS NOT NULL
+            WHERE b.stage NOT IN ('warehouse', 'waiting_sewing', 'sewing', 'finishing') AND po.style_name IS NOT NULL
             GROUP BY po.style_name
         ),
         recent_store AS (
