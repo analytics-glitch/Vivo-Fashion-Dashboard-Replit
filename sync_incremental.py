@@ -870,6 +870,7 @@ def sync_odoo(cur, now, rates):
                     "name",
                     "date_order",
                     "write_date",
+                    "state",
                     "amount_total",
                     "amount_tax",
                     "partner_id",
@@ -970,6 +971,12 @@ def sync_odoo(cur, now, rates):
             o["partner_id"][1] if o.get("partner_id") else None,
             float(o.get("amount_total") or 0),
             float(o.get("amount_tax") or 0),
+            # state MUST be written: transform_odoo filters
+            # o.state IN ('done','paid','invoiced'), so a NULL-state header
+            # written here makes a scoped/full re-transform silently drop
+            # every order first seen by the sync (recent-day sales vanish).
+            # The fetch domain already restricts to valid states.
+            o.get("state") or "done",
             o.get("write_date", ""), now,
         ))
     if hdr_rows:
@@ -977,11 +984,12 @@ def sync_odoo(cur, now, rates):
             INSERT INTO raw_odoo_pos_orders (
                 id, name, date_order, config_id, config_name, session_id,
                 partner_id, partner_name, amount_total, amount_tax,
-                write_date, _synced_at
+                state, write_date, _synced_at
             ) VALUES %s
             ON CONFLICT (id) DO UPDATE SET
                 amount_total = EXCLUDED.amount_total,
                 amount_tax   = EXCLUDED.amount_tax,
+                state        = EXCLUDED.state,
                 write_date   = EXCLUDED.write_date,
                 _synced_at   = EXCLUDED._synced_at
         """, hdr_rows)

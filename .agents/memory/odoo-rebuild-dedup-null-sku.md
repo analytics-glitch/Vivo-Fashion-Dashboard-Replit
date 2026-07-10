@@ -33,6 +33,17 @@ distinct lines — catastrophically so for NULL/duplicate SKUs.
 (`extract_odoo_products.py` TRUNCATEs + full-reloads). Refresh it before a rebuild
 so SKUs/categories are correct; the `l.id` dedup makes value correct regardless.
 
+## Scoped Odoo-only re-transform (lighter than a full rebuild)
+For an Odoo-path-only data fix (e.g. the VAT-as-discount taint), DELETE
+`store_id='vivofashiongroup'` + re-run `transform_odoo` in ONE transaction
+(`rebuild_odoo_discounts.py` pattern) — bulk_insert's ON CONFLICT does NOT
+update `discounts_kes`, so a plain re-run cannot heal rows in place.
+**Trap:** raw headers upserted by the live sync have `state` NULL (the sync's
+header upsert omits it), so the transform's `o.state IN (...)` filter silently
+drops orders first seen by the sync — today's sales vanish. Either run
+`extract_odoo_orders.py` first, or accept it and let the restored sync loop
+self-heal recent days (verify the day totals recover before finishing).
+
 ## Safe full-clean rebuild procedure (no doubling, no June regression)
 1. Idle the watchdog: `configureWorkflow("Sync Watchdog", "<idle loop>")` (running it
    during a rebuild doubles history — non-colliding ids, no PK guard).
