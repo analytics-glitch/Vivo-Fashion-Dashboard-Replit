@@ -7280,6 +7280,151 @@ def analytics_sor_style_colors(
     out.sort(key=lambda x: -(x["sales_6m"] or 0))
     return out
 
+
+@app.get("/api/analytics/sor-style-sizes")
+def analytics_sor_style_sizes(
+    style_name: str = Query(...),
+    color: str = Query(...),
+    country: str = Query(default=None),
+    channel: str = Query(default=None),
+    window_days: int = Query(default=180),
+    date_from: str = Query(default=None),
+    date_to: str = Query(default=None),
+):
+    """Per-SIZE breakdown for ONE style + colour with the SAME column set as
+    /sor-all-styles and /sor-style-colors, so the SOR Report's colour rows can
+    drill one level further (style → colour → size) with identical columns.
+    Size comes from the product master (all_products_clean.size); sales/stock
+    join on SKU only (triad joins are SKU-only)."""
+    win = int(window_days) if window_days and int(window_days) > 0 else 180
+    sel_from, sel_to = _sor_selected_period(date_from, date_to)
+    sn = (style_name or "").strip().replace("'", "''")
+    if not sn:
+        raise HTTPException(status_code=422, detail="style_name is required")
+    col_raw = (color or "").strip()
+    if not col_raw:
+        raise HTTPException(status_code=422, detail="color is required")
+    col = col_raw.replace("'", "''")
+    # The colour endpoint maps blank/NULL colour to the '—' placeholder;
+    # accept that placeholder back and match the blank/NULL rows.
+    color_pred = (
+        "COALESCE(NULLIF(TRIM(color_print), ''), '—') = '" + col + "'"
+    )
+    cf, chf = _style_filters(country, channel, "s")
+    raw = run_query(
+        """
+        WITH prod AS (
+            SELECT COALESCE(NULLIF(TRIM(size), ''), '—') AS size,
+                mode() WITHIN GROUP (ORDER BY price::numeric) FILTER (WHERE price::numeric > 0) AS original_price
+            FROM all_products_clean
+            WHERE style_name = '""" + sn + """' AND """ + color_pred + """
+            GROUP BY 1
+        ),
+        skus AS (
+            SELECT sku, COALESCE(NULLIF(TRIM(size), ''), '—') AS size
+            FROM all_products_clean
+            WHERE style_name = '""" + sn + """' AND """ + color_pred + """
+              AND sku IS NOT NULL AND sku <> ''
+        ),
+        sales AS (
+            SELECT k.size,
+                SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '""" + str(win) + """ days') AS units_6m,
+                ROUND(SUM(s.net_sales_kes::numeric) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '""" + str(win) + """ days')) AS sales_6m,
+                SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '21 days') AS units_3w,
+                SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '30 days') AS units_30d,
+                SUM(s.net_quantity) AS units_since_launch,
+                SUM(s.net_quantity) FILTER (WHERE s.sale_date::date BETWEEN '""" + sel_from + """' AND '""" + sel_to + """') AS units_sel,
+                ROUND(SUM(s.net_sales_kes::numeric) FILTER (WHERE s.sale_date::date BETWEEN '""" + sel_from + """' AND '""" + sel_to + """')) AS sales_sel,
+                MAX(s.sale_date::date) AS last_sale,
+                MIN(s.sale_date::date) AS first_sale
+            FROM skus k
+            JOIN all_sales s ON s.variant_sku = k.sku
+            WHERE s.sale_kind IN ('sale','order')
+              AND """ + BASE_FILTERS + cf + chf + """
+            GROUP BY k.size
+        ),
+        stock AS (
+            SELECT k.size,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+                                                    AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)), 0) AS soh_warehouse,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + PIPELINE_LOCATIONS + """)), 0) AS soh_pipeline
+            FROM skus k
+            JOIN all_inventory i ON i.sku = k.sku
+            GROUP BY k.size
+        )
+        SELECT p.size, p.original_price,
+            COALESCE(sa.units_6m, 0) AS units_6m, COALESCE(sa.sales_6m, 0) AS sales_6m,
+            COALESCE(sa.units_3w, 0) AS units_3w, COALESCE(sa.units_30d, 0) AS units_30d,
+            COALESCE(sa.units_since_launch, 0) AS units_since_launch,
+            COALESCE(sa.units_sel, 0) AS units_sel, COALESCE(sa.sales_sel, 0) AS sales_sel,
+            sa.last_sale, sa.first_sale,
+            COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse,
+            COALESCE(st.soh_pipeline, 0) AS soh_pipeline
+        FROM prod p
+        LEFT JOIN sales sa USING (size)
+        LEFT JOIN stock st USING (size)
+        WHERE COALESCE(sa.units_since_launch, 0) > 0
+           OR COALESCE(st.soh_stores, 0) > 0 OR COALESCE(st.soh_warehouse, 0) > 0
+           OR COALESCE(st.soh_pipeline, 0) > 0
+        """
+    ) or []
+    today = date.today()
+    out = []
+    for r in raw:
+        units_6m = int(r["units_6m"] or 0)
+        sales_6m = float(r["sales_6m"] or 0)
+        soh_stores = int(r["soh_stores"] or 0)
+        soh_warehouse = int(r["soh_warehouse"] or 0)
+        soh_pipeline = int(r["soh_pipeline"] or 0)
+        soh_total = soh_stores + soh_warehouse  # pipeline NOT in total SOH
+        units_30d = int(r["units_30d"] or 0)
+        weekly_avg = round(units_30d / (30.0 / 7.0), 1)
+        woc = round(soh_total / weekly_avg, 1) if weekly_avg > 0 else None
+        denom = units_6m + soh_total
+        units_since_launch = int(r["units_since_launch"] or 0)
+        life_denom = units_since_launch + soh_total
+        last_sale = r["last_sale"]
+        first_sale = r["first_sale"]
+        age_days = (today - first_sale).days if first_sale else None
+        original_price = r["original_price"]
+        units_sel = int(r["units_sel"] or 0)
+        sales_sel = float(r["sales_sel"] or 0)
+        sel_denom = units_sel + soh_total
+        asp_sel = round(sales_sel / units_sel) if units_sel > 0 else None
+        op = float(original_price) if original_price is not None else None
+        pct_of_full = (
+            round(100.0 * asp_sel / op, 1)
+            if asp_sel is not None and op and op > 0 else None
+        )
+        out.append({
+            "size": r["size"],
+            "sales_6m": round(sales_6m),
+            "units_6m": units_6m,
+            "units_3w": int(r["units_3w"] or 0),
+            "units_since_launch": units_since_launch,
+            "weekly_avg": weekly_avg,
+            "soh_total": soh_total,
+            "soh_wh": soh_warehouse,
+            "soh_pipeline": soh_pipeline,
+            "woc": woc,
+            "pct_in_wh": round(100.0 * soh_warehouse / soh_total, 1) if soh_total else 0.0,
+            "asp_6m": round(sales_6m / units_6m) if units_6m > 0 else None,
+            "original_price": round(op) if op is not None else None,
+            "days_since_last_sale": (today - last_sale).days if last_sale else None,
+            "sor_6m": round(100.0 * units_6m / denom, 1) if denom > 0 else None,
+            "sor_since_launch": round(100.0 * units_since_launch / life_denom, 1) if life_denom > 0 else None,
+            "units_sel": units_sel,
+            "sales_sel": round(sales_sel),
+            "sor_sel": round(100.0 * units_sel / sel_denom, 1) if sel_denom > 0 else None,
+            "asp_sel": asp_sel,
+            "pct_of_full": pct_of_full,
+            "launch_date": str(first_sale) if first_sale else None,
+            "style_age_weeks": round(age_days / 7.0) if age_days is not None else 0,
+        })
+    out.sort(key=lambda x: -(x["sales_6m"] or 0))
+    return out
+
 # ---------------------------------------------------------------------------
 # Product Analysis cockpit — one canonical style-level dataset
 # ---------------------------------------------------------------------------

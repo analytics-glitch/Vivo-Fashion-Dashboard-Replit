@@ -122,6 +122,11 @@ const SORReport = () => {
   const [colorCache, setColorCache] = useState({});
   const [colorLoading, setColorLoading] = useState({});
 
+  // Per-(style+colour) SIZE breakdown cache (for colour-row expand).
+  // Keyed by `style|color`.
+  const [sizeCache, setSizeCache] = useState({});
+  const [sizeLoading, setSizeLoading] = useState({});
+
   // Per-style location breakdown cache. Keyed by `style|color|size`
   // (color/size = "" for the all-rollup view) so the same style can
   // show all-colours, per-colour, AND per-(colour+size) drills without
@@ -155,6 +160,7 @@ const SORReport = () => {
   // so we don't show a Kenya-scoped breakdown for an Online-scoped table.
   useEffect(() => {
     setColorCache({});
+    setSizeCache({});
     setLocCache({});
     setSelectedStyle(null);
   }, [countryParam, channelParam, dateFrom, dateTo]);
@@ -225,6 +231,32 @@ const SORReport = () => {
         setColorCache((c) => ({ ...c, [style]: [] }));
       })
       .finally(() => setColorLoading((s) => ({ ...s, [style]: false })));
+  };
+
+  // Lazy-load the per-size breakdown when a colour row expands. Same full
+  // column set as the master/colour rows (backend /analytics/sor-style-sizes).
+  const loadSizes = (style, color) => {
+    if (!style || color == null) return;
+    const key = `${style}|${color}`;
+    if (sizeCache[key] || sizeLoading[key]) return;
+    setSizeLoading((s) => ({ ...s, [key]: true }));
+    api.get("/analytics/sor-style-sizes", {
+      params: {
+        style_name: style,
+        color,
+        country: countryParam,
+        channel: channelParam,
+        ...(dateFrom ? { date_from: dateFrom } : {}),
+        ...(dateTo ? { date_to: dateTo } : {}),
+      },
+    })
+      .then((r) => {
+        setSizeCache((c) => ({ ...c, [key]: Array.isArray(r.data) ? r.data : [] }));
+      })
+      .catch(() => {
+        setSizeCache((c) => ({ ...c, [key]: [] }));
+      })
+      .finally(() => setSizeLoading((s) => ({ ...s, [key]: false })));
   };
 
   // Lazy-load location breakdown when a style (and optionally color +
@@ -495,6 +527,10 @@ const SORReport = () => {
                     loading={colorLoading[row.style_name]}
                     selDays={selDays}
                     selectedColor={row.style_name === selectedStyle ? selectedColor : null}
+                    selectedSize={row.style_name === selectedStyle ? selectedSize : null}
+                    sizeCache={sizeCache}
+                    sizeLoading={sizeLoading}
+                    styleName={row.style_name}
                     onColorClick={(color) => {
                       // Anchor the location pane to this style first so
                       // useEffect re-fires the loader. Toggling: same
@@ -502,6 +538,17 @@ const SORReport = () => {
                       setSelectedStyle(row.style_name);
                       setSelectedSize(null);
                       setSelectedColor((prev) => (prev === color ? null : color));
+                      // Warm the per-size drill for this colour so the
+                      // expanded size table shows up immediately.
+                      loadSizes(row.style_name, color);
+                    }}
+                    onSizeClick={(color, size) => {
+                      // Clicking a size row scopes the location pane to
+                      // style + colour + size. Toggling: same size again
+                      // clears the size filter (colour stays).
+                      setSelectedStyle(row.style_name);
+                      setSelectedColor(color);
+                      setSelectedSize((prev) => (prev === size ? null : size));
                     }}
                   />
                 )}
@@ -552,8 +599,12 @@ const Tile = ({ label, value, sub, tone }) => {
 //
 // One row per colour, with EXACTLY the same column set as the master
 // style table (shared `metricColumns()` definitions). Clicking a colour
-// row filters the per-location pane on the right.
-const ColorBreakdown = ({ rows, loading, selectedColor, onColorClick, selDays = 180 }) => {
+// row filters the per-location pane on the right AND expands a nested
+// per-SIZE table (same columns again) for that colour.
+const ColorBreakdown = ({
+  rows, loading, selectedColor, onColorClick, selDays = 180,
+  styleName, sizeCache = {}, sizeLoading = {}, selectedSize, onSizeClick,
+}) => {
   if (loading && (!rows || rows.length === 0)) {
     return <div className="text-[12px] text-muted py-2 px-2">Loading colour breakdown…</div>;
   }
@@ -563,7 +614,7 @@ const ColorBreakdown = ({ rows, loading, selectedColor, onColorClick, selDays = 
   return (
     <div className="px-2 py-1 sor-compact" data-testid="sor-color-breakdown">
       <div className="text-[11px] font-bold uppercase text-muted mb-2">
-        By Colour — {rows.length} colour{rows.length === 1 ? "" : "s"} · click a row to filter locations
+        By Colour — {rows.length} colour{rows.length === 1 ? "" : "s"} · click a row to filter locations & see sizes
       </div>
       <SortableTable
         testId="sor-color-table"
@@ -573,11 +624,57 @@ const ColorBreakdown = ({ rows, loading, selectedColor, onColorClick, selDays = 
           ...metricColumns(selDays),
         ]}
         rows={rows}
+        rowKey={(r) => r.color}
         initialSort={{ key: "sales_sel", dir: "desc" }}
         stickyFirstCol
         maxHeight={null}
         onRowClick={(r) => { if (onColorClick) onColorClick(r.color); }}
         rowClassName={(r) => (r.color === selectedColor ? "bg-amber-100/70" : "")}
+        renderExpanded={(r) => (
+          <SizeBreakdown
+            rows={sizeCache[`${styleName}|${r.color}`]}
+            loading={sizeLoading[`${styleName}|${r.color}`]}
+            selDays={selDays}
+            color={r.color}
+            selectedSize={r.color === selectedColor ? selectedSize : null}
+            onSizeClick={(size) => { if (onSizeClick) onSizeClick(r.color, size); }}
+          />
+        )}
+      />
+    </div>
+  );
+};
+
+// ---- Size breakdown (colour-row expand) ----
+//
+// One row per size for a single style + colour — again the SAME column
+// set as the style/colour rows. Clicking a size row scopes the location
+// pane to style + colour + size.
+const SizeBreakdown = ({ rows, loading, color, selectedSize, onSizeClick, selDays = 180 }) => {
+  if (loading && (!rows || rows.length === 0)) {
+    return <div className="text-[12px] text-muted py-2 px-2">Loading size breakdown…</div>;
+  }
+  if (!rows || !rows.length) {
+    return <div className="text-[12px] text-muted py-2 px-2">No size detail available for this colour.</div>;
+  }
+  return (
+    <div className="px-2 py-1 sor-compact" data-testid="sor-size-breakdown">
+      <div className="text-[11px] font-bold uppercase text-muted mb-2">
+        By Size — {color || "—"} · {rows.length} size{rows.length === 1 ? "" : "s"} · click a row to filter locations
+      </div>
+      <SortableTable
+        testId="sor-size-table"
+        columns={[
+          { key: "size", label: "Size", sortable: true,
+            render: (r) => <span className="font-semibold">{r.size || "—"}</span> },
+          ...metricColumns(selDays),
+        ]}
+        rows={rows}
+        initialSort={{ key: "sales_sel", dir: "desc" }}
+        stickyFirstCol
+        maxHeight={null}
+        onRowClick={(r) => { if (onSizeClick) onSizeClick(r.size); }}
+        rowClassName={(r) => (r.size === selectedSize ? "bg-sky-100/70" : "")}
       />
     </div>
   );
