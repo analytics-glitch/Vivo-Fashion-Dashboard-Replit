@@ -913,21 +913,56 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      </div>
     </div>
     <div class="section-head" style="margin-top:1.3rem;"><h3>Saved receiving sheets</h3><span class="muted">reopen &amp; reprint any past delivery</span></div>
-    <div class="flex" style="margin-bottom:.9rem;">
+    <div class="flex" style="margin-bottom:.9rem;gap:.6rem;align-items:center;">
      <input id="recv-list-search" placeholder="Filter fabric / barcode…" oninput="debouncedRecvList()" style="width:240px;">
+     <button class="btn btn-primary" id="recv-print-selected" onclick="printSelectedReceiving()" disabled style="padding:4px 12px;font-size:12px;">🖨 Print selected</button>
+     <span class="muted" id="recv-selected-count" style="font-size:12px;"></span>
     </div>
     <div class="card" style="padding:0;">
      <div class="tbl-wrap">
       <table class="data">
        <thead><tr>
-        <th>Saved</th><th>Fabric</th><th>Barcode</th><th class="r">Rolls</th><th class="r">Total kgs</th><th class="r">Total mtrs</th><th>By</th><th></th>
+        <th style="width:1%;"><input type="checkbox" id="recv-select-all" title="Select all" onclick="toggleAllReceiving(this.checked)"></th>
+        <th>Saved</th><th>Fabric</th><th>Barcode</th><th class="r">Rolls</th><th class="r">Total kgs</th><th class="r">Total mtrs</th><th>Quality</th><th>By</th><th></th>
        </tr></thead>
-       <tbody id="recv-list-body"><tr><td colspan="8" class="loading">Loading…</td></tr></tbody>
+       <tbody id="recv-list-body"><tr><td colspan="10" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
     </div>
    </section>
 
+  </div>
+
+  <div id="recv-edit-overlay" class="modal-overlay" style="display:none;" onclick="closeReceivingEdit()">
+   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="recv-edit-title" style="max-width:760px;" onclick="event.stopPropagation()">
+    <div class="modal-head">
+     <div><h3 id="recv-edit-title" style="margin:0;">Quality &amp; edit</h3><div class="muted" id="recv-edit-sub" style="font-size:12px;margin-top:2px;"></div></div>
+     <button class="modal-close" onclick="closeReceivingEdit()" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+     <div id="recv-edit-err"></div>
+     <div id="recv-edit-adminnote" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
+     <div class="tbl-wrap">
+      <table class="data" id="recv-edit-table">
+       <thead><tr>
+        <th style="width:1%;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th>
+        <th style="width:1%;">Quality</th><th>Quality notes</th><th id="recv-edit-remove-h" style="width:1%;"></th>
+       </tr></thead>
+       <tbody id="recv-edit-body"></tbody>
+      </table>
+     </div>
+     <div id="recv-edit-admin-actions" style="display:none;margin-top:10px;">
+      <button class="btn" onclick="recvEditAddRoll()">+ Add roll</button>
+      <label class="rsv-lbl" style="margin-left:12px;">Sheet note</label>
+      <input id="recv-edit-note" placeholder="optional" style="width:240px;">
+     </div>
+     <div class="flex" style="margin-top:14px;gap:.6rem;justify-content:flex-end;">
+      <button class="btn" onclick="closeReceivingEdit()">Cancel</button>
+      <button class="btn btn-primary" id="recv-edit-save-quality" onclick="saveReceivingQuality()">Save quality</button>
+      <button class="btn btn-primary" id="recv-edit-save-all" style="display:none;" onclick="saveReceivingEdit()">Save roll changes (admin)</button>
+     </div>
+    </div>
+   </div>
   </div>
  </main>
 </div>
@@ -3576,9 +3611,17 @@ function recvBindOnce(){
   });
   document.getElementById('recv-list-body').addEventListener('click',e=>{
     const pr=e.target.closest('button[data-print]');
+    const ed=e.target.closest('button[data-edit]');
     const del=e.target.closest('button[data-del]');
     if(pr)reprintReceivingSheet(pr.dataset.print);
+    else if(ed)openReceivingEdit(ed.dataset.edit);
     else if(del)deleteReceivingSheet(del.dataset.del);
+  });
+  document.getElementById('recv-list-body').addEventListener('change',e=>{
+    const chk=e.target.closest('.recv-row-chk');
+    if(!chk)return;
+    if(chk.checked)recvSelected.add(chk.dataset.id);else recvSelected.delete(chk.dataset.id);
+    syncRecvSelectionUI();
   });
 }
 function recvKpm(){const k=recvSel&&recvSel.kg_per_mtr;return (k!=null&&k!==''&&Number(k)>0)?Number(k):null;}
@@ -3684,22 +3727,63 @@ async function loadReceivingSheets(){
     renderReceivingList(d.items||[]);
   }catch(e){rowErr('recv-list-body',8,e);}
 }
+function recvQualityCell(s){
+  const total=Number(s.rolls_count||0);
+  const pass=Number(s.q_pass||0), fail=Number(s.q_fail||0), inspected=Number(s.q_inspected||0);
+  if(!total)return '<span class="muted">—</span>';
+  if(!inspected)return '<span class="muted" title="No quality results recorded yet">Pending</span>';
+  const bits=[];
+  if(pass)bits.push('<span style="color:#0a7d33;font-weight:700;">'+pass+' pass</span>');
+  if(fail)bits.push('<span style="color:var(--danger);font-weight:700;">'+fail+' fail</span>');
+  const rem=total-inspected;
+  if(rem>0)bits.push('<span class="muted">'+rem+' pending</span>');
+  return bits.join(' · ');
+}
 function renderReceivingList(items){
   const body=document.getElementById('recv-list-body');
-  if(!items.length){body.innerHTML='<tr><td colspan="8" class="muted" style="padding:1rem;">No receiving sheets saved yet.</td></tr>';return;}
+  recvSheetIds=items.map(s=>String(s.id));
+  if(!items.length){body.innerHTML='<tr><td colspan="10" class="muted" style="padding:1rem;">No receiving sheets saved yet.</td></tr>';recvSelected.clear();syncRecvSelectionUI();return;}
   body.innerHTML=items.map(s=>{
     const mtrs=s.total_mtrs!=null?fmt1(s.total_mtrs):'<span style="color:var(--danger);" title="This fabric had no Width/GSM conversion when the sheet was saved">Missing Width/GSM</span>';
+    const edited=s.updated_at?`<div class="muted" style="font-size:11px;" title="Last edited">edited ${esc(s.updated_at)}${s.updated_by_name?' · '+esc(s.updated_by_name):''}</div>`:'';
     return `<tr>
-      <td style="white-space:nowrap;">${esc(s.created_at||'—')}</td>
+      <td style="width:1%;"><input type="checkbox" class="recv-row-chk" data-id="${esc(String(s.id))}" ${recvSelected.has(String(s.id))?'checked':''}></td>
+      <td style="white-space:nowrap;">${esc(s.created_at||'—')}${edited}</td>
       <td>${esc(s.fabric_name||'—')}${s.note?`<div class="muted" style="font-size:11px;">${esc(s.note)}</div>`:''}</td>
       <td>${esc(s.barcode||'—')}</td>
       <td class="r">${fmt(s.rolls_count)}</td>
       <td class="r">${fmt2(s.total_kg)}</td>
       <td class="r">${mtrs}</td>
+      <td style="white-space:nowrap;">${recvQualityCell(s)}</td>
       <td>${esc(s.created_by_name||'—')}</td>
-      <td style="white-space:nowrap;"><button class="btn btn-primary" data-print="${s.id}" style="padding:4px 10px;font-size:12px;">🖨 Print</button> <button class="btn" data-del="${s.id}" style="padding:4px 8px;font-size:12px;">Delete</button></td>
+      <td style="white-space:nowrap;"><button class="btn btn-primary" data-print="${s.id}" style="padding:4px 10px;font-size:12px;">🖨 Print</button> <button class="btn" data-edit="${s.id}" style="padding:4px 8px;font-size:12px;">Quality / Edit</button> <button class="btn" data-del="${s.id}" style="padding:4px 8px;font-size:12px;">Delete</button></td>
     </tr>`;
   }).join('');
+  syncRecvSelectionUI();
+}
+// ── Batch-print selection state ──
+let recvSheetIds=[], recvSelected=new Set();
+function syncRecvSelectionUI(){
+  // Drop selections for rows no longer present (e.g. after a filter/delete).
+  Array.from(recvSelected).forEach(id=>{if(!recvSheetIds.includes(id))recvSelected.delete(id);});
+  const n=recvSelected.size;
+  const btn=document.getElementById('recv-print-selected');
+  if(btn)btn.disabled=n===0;
+  const lbl=document.getElementById('recv-selected-count');
+  if(lbl)lbl.textContent=n?(n+' selected'):'';
+  const all=document.getElementById('recv-select-all');
+  if(all)all.checked=recvSheetIds.length>0&&n===recvSheetIds.length;
+}
+function toggleAllReceiving(on){
+  recvSelected.clear();
+  if(on)recvSheetIds.forEach(id=>recvSelected.add(id));
+  document.querySelectorAll('.recv-row-chk').forEach(c=>{c.checked=on;});
+  syncRecvSelectionUI();
+}
+function printSelectedReceiving(){
+  const ids=recvSheetIds.filter(id=>recvSelected.has(id));
+  if(!ids.length)return;
+  printReceivingSheets(ids);
 }
 async function reprintReceivingSheet(id){
   try{
@@ -3714,6 +3798,114 @@ async function deleteReceivingSheet(id){
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     loadReceivingSheets();
   }catch(e){alert('Could not delete: '+e.message);}
+}
+// ── Quality / edit modal ──
+// Any signed-in fabric user records per-roll QUALITY (status + notes); editing
+// the rolls/quantities themselves is admin-only (also enforced server-side).
+let recvEditState={id:null,rolls:[],kpm:null,isAdmin:false};
+const RECV_Q_OPTS=['','Pass','Fail','Pending'];
+async function openReceivingEdit(id){
+  try{
+    const [d,me]=await Promise.all([
+      apiFetch('/api/fabric/receiving/'+encodeURIComponent(id)),
+      getMe()
+    ]);
+    const s=d.sheet||{}, kpm=(s.kg_per_mtr!=null&&s.kg_per_mtr!==''&&Number(s.kg_per_mtr)>0)?Number(s.kg_per_mtr):null;
+    recvEditState={
+      id:id, kpm:kpm, isAdmin:!!(me&&me.role==='admin'),
+      rolls:(d.rolls||[]).map(r=>({
+        roll_id:r.roll_id, roll_no:r.roll_no, qty_kg:r.qty_kg, qty_mtrs:r.qty_mtrs,
+        quality_status:r.quality_status||'', quality_notes:r.quality_notes||''
+      }))
+    };
+    document.getElementById('recv-edit-err').innerHTML='';
+    document.getElementById('recv-edit-title').textContent='Quality & edit — '+(s.fabric_name||'sheet');
+    document.getElementById('recv-edit-sub').textContent=[s.barcode?('Barcode '+s.barcode):'',s.created_at?('saved '+s.created_at):''].filter(Boolean).join(' · ');
+    document.getElementById('recv-edit-note').value=s.note||'';
+    const admin=recvEditState.isAdmin;
+    document.getElementById('recv-edit-admin-actions').style.display=admin?'':'none';
+    document.getElementById('recv-edit-save-all').style.display=admin?'':'none';
+    document.getElementById('recv-edit-remove-h').style.display=admin?'':'none';
+    document.getElementById('recv-edit-adminnote').textContent=admin
+      ? 'You are an admin: you may edit roll numbers and kgs (timestamped). Metres re-derive from this sheet\u2019s saved conversion. Quality is fillable by any fabric user.'
+      : 'Record the inspection / testing result for each roll. Roll numbers and quantities can only be changed by an admin.';
+    renderReceivingEditRows();
+    document.getElementById('recv-edit-overlay').style.display='flex';
+  }catch(e){alert(errHtml(e).replace(/<[^>]*>/g,''));}
+}
+function closeReceivingEdit(){document.getElementById('recv-edit-overlay').style.display='none';}
+function recvEditDerived(kg){const kpm=recvEditState.kpm;const k=parseFloat(kg);if(!kpm||isNaN(k)||k<=0)return null;return k/kpm;}
+function renderReceivingEditRows(){
+  const admin=recvEditState.isAdmin;
+  document.getElementById('recv-edit-body').innerHTML=recvEditState.rolls.map((r,i)=>{
+    const m=r.qty_mtrs!=null?fmt1(r.qty_mtrs):(recvEditState.kpm?'—':'<span style="color:var(--danger);">Missing Width/GSM</span>');
+    const noCell=admin
+      ? `<input type="number" min="1" step="1" data-ei="${i}" data-ek="no" value="${esc(String(r.roll_no))}" style="width:70px;">`
+      : esc(String(r.roll_no));
+    const kgCell=admin
+      ? `<input type="number" min="0" step="any" data-ei="${i}" data-ek="kg" value="${esc(String(r.qty_kg))}" style="width:100px;text-align:right;">`
+      : esc(fmt2(r.qty_kg));
+    const opts=RECV_Q_OPTS.map(o=>`<option value="${esc(o)}" ${r.quality_status===o?'selected':''}>${o===''?'—':esc(o)}</option>`).join('');
+    return `<tr>
+      <td>${noCell}</td>
+      <td class="r">${kgCell}</td>
+      <td class="r" id="recv-edit-m-${i}">${m}</td>
+      <td><select data-ei="${i}" data-ek="status" style="width:110px;">${opts}</select></td>
+      <td><input type="text" data-ei="${i}" data-ek="notes" value="${esc(String(r.quality_notes||''))}" placeholder="optional" style="width:100%;min-width:180px;"></td>
+      ${admin?`<td><button class="btn" data-ei="${i}" data-ek="del" title="Remove roll" style="padding:2px 8px;font-size:12px;">&times;</button></td>`:''}
+    </tr>`;
+  }).join('');
+  const body=document.getElementById('recv-edit-body');
+  body.oninput=e=>{
+    const el=e.target.closest('[data-ei]');if(!el)return;
+    const i=Number(el.dataset.ei),k=el.dataset.ek,r=recvEditState.rolls[i];if(!r)return;
+    if(k==='no')r.roll_no=el.value;
+    else if(k==='kg'){r.qty_kg=el.value;r.qty_mtrs=recvEditDerived(el.value);const c=document.getElementById('recv-edit-m-'+i);if(c)c.innerHTML=r.qty_mtrs!=null?fmt1(r.qty_mtrs):(recvEditState.kpm?'—':'<span style="color:var(--danger);">Missing Width/GSM</span>');}
+    else if(k==='notes')r.quality_notes=el.value;
+  };
+  body.onchange=e=>{const el=e.target.closest('[data-ek="status"]');if(!el)return;const i=Number(el.dataset.ei);if(recvEditState.rolls[i])recvEditState.rolls[i].quality_status=el.value;};
+  body.onclick=e=>{const el=e.target.closest('[data-ek="del"]');if(!el)return;recvEditState.rolls.splice(Number(el.dataset.ei),1);renderReceivingEditRows();};
+}
+function recvEditAddRoll(){
+  if(!recvEditState.isAdmin)return;
+  if(recvEditState.rolls.length>=50){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">A sheet holds at most 50 rolls.</div>';return;}
+  const maxNo=recvEditState.rolls.reduce((m,r)=>Math.max(m,parseInt(r.roll_no,10)||0),0);
+  recvEditState.rolls.push({roll_id:null,roll_no:String(maxNo+1),qty_kg:'',qty_mtrs:null,quality_status:'',quality_notes:''});
+  renderReceivingEditRows();
+}
+async function saveReceivingQuality(){
+  document.getElementById('recv-edit-err').innerHTML='';
+  const rolls=recvEditState.rolls
+    .filter(r=>r.roll_id!=null)
+    .map(r=>({roll_id:r.roll_id,status:r.quality_status||'',notes:r.quality_notes||''}));
+  if(!rolls.length){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Nothing to save — save roll changes first for newly added rolls.</div>';return;}
+  try{
+    const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(recvEditState.id)+'/quality',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({rolls})});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
+    closeReceivingEdit();loadReceivingSheets();
+  }catch(e){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Could not save quality: '+esc(e.message)+'</div>';}
+}
+async function saveReceivingEdit(){
+  if(!recvEditState.isAdmin)return;
+  document.getElementById('recv-edit-err').innerHTML='';
+  const rolls=[];
+  for(let i=0;i<recvEditState.rolls.length;i++){
+    const r=recvEditState.rolls[i];
+    const no=parseInt(r.roll_no,10), kg=parseFloat(r.qty_kg);
+    if(isNaN(no)||no<=0){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Row '+(i+1)+': roll number must be greater than zero.</div>';return;}
+    if(isNaN(kg)||kg<=0){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Row '+(i+1)+': kgs must be greater than zero.</div>';return;}
+    rolls.push({roll_no:no,qty_kg:kg});
+  }
+  if(!rolls.length){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">A sheet needs at least one roll.</div>';return;}
+  // Fold quality into the SAME roll payload so the admin edit is one atomic call
+  // (rolls rewrite + quality write together) — no separate, swallow-able request.
+  recvEditState.rolls.forEach((x,i)=>{if(rolls[i]){rolls[i].status=x.quality_status||'';rolls[i].notes=x.quality_notes||'';}});
+  const note=document.getElementById('recv-edit-note').value.trim();
+  try{
+    const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(recvEditState.id),{method:'PUT',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({rolls,note})});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
+    closeReceivingEdit();loadReceivingSheets();
+  }catch(e){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Could not save: '+esc(e.message)+(String(e.message).toLowerCase().indexOf('admin')>=0?' (only an admin can edit rolls/quantities)':'')+'</div>';}
 }
 // Launched from the product popup's Print chooser: jump to the Receiving tab
 // with this fabric pre-selected (curFabricDetail carries the same header fields
@@ -3732,8 +3924,59 @@ function openReceivingFromDetail(){
 // Odoo stock), Date received / Number of rolls are FILLED, and a rolls table
 // (kgs + derived mtrs) is printed below. Missing conversion prints an explicit
 // "Missing Width/GSM" flag, never a silent blank/0.
-async function printReceivingSheet(d){
+// Shared print CSS for the receiving sheet(s). Each printed sheet is wrapped in
+// a .sheet-page so batch printing puts every sheet on its own physical page.
+const RECV_SHEET_CSS=`
+@page{size:A4 landscape;margin:10mm;}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:12px;}
+.sheet-page{width:100%;}
+.sheet-page + .sheet-page{page-break-before:always;break-before:page;}
+.sheet{width:100%;}
+.hd{position:relative;text-align:center;padding:2px 0 12px;}
+.hd h1{margin:0;font-size:19px;font-weight:800;letter-spacing:.02em;text-decoration:underline;text-underline-offset:4px;}
+.vivo-logo{position:absolute;right:0;top:-4px;height:46px;width:auto;border-radius:3px;}
+.grid{display:grid;grid-template-columns:1.15fr .85fr;border:1.5px solid #111;}
+.rt{border-left:1.5px solid #111;display:flex;flex-direction:column;}
+.cell{border-bottom:1px solid #111;padding:5px 9px;display:flex;gap:8px;align-items:baseline;min-height:29px;}
+.left .cell:last-child{border-bottom:none;}
+.lbl{font-weight:700;text-transform:uppercase;font-size:10.5px;letter-spacing:.01em;white-space:nowrap;}
+.val{flex:1;font-size:13.5px;font-weight:700;}
+.blank{flex:1;border-bottom:1px dotted #999;align-self:flex-end;min-height:14px;}
+.xf{display:flex;gap:8px;padding:5px 9px;border-bottom:1px solid #111;align-items:baseline;min-height:26px;}
+.xf .lbl{width:200px;flex-shrink:0;}
+.xf .val{font-size:13px;}
+.photo{flex:1;padding:6px 9px;display:flex;flex-direction:column;}
+.photo .lbl{margin-bottom:5px;}
+.photo-frame{flex:1;border:1.5px dashed #aaa;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:11px;min-height:100px;overflow:hidden;}
+.photo-frame img{max-width:100%;max-height:100%;object-fit:contain;}
+.rolls-wrap{display:flex;gap:10px;align-items:flex-start;margin-top:10px;}
+.rolls{border-collapse:collapse;flex:1;}
+.rolls th,.rolls td{border:1px solid #111;padding:2px 5px;font-size:11px;}
+.rolls th{background:#f0f0f0;text-transform:uppercase;font-size:9.5px;letter-spacing:.02em;}
+.rolls td:first-child,.rolls th:first-child{width:1%;white-space:nowrap;}
+.rolls .r{text-align:right;}
+.miss{color:#b00020;font-size:9.5px;font-weight:700;}
+.tot{margin-top:8px;border:1.5px solid #111;padding:6px 9px;display:flex;gap:26px;font-size:12.5px;}
+.tot b{text-transform:uppercase;font-size:11px;}
+.recv-note{margin-top:6px;font-size:11px;color:#555;}
+.quality{margin-top:10px;border:2px solid #111;padding:0;}
+.quality .qh{background:#111;color:#fff;font-weight:800;text-transform:uppercase;font-size:11px;letter-spacing:.04em;padding:5px 10px;}
+.quality .qsum{display:flex;flex-wrap:wrap;gap:18px;padding:8px 10px;font-size:12.5px;border-bottom:1px solid #111;}
+.quality .qsum b{text-transform:uppercase;font-size:10.5px;}
+.quality .qsum .pass{color:#0a7d33;}
+.quality .qsum .fail{color:#b00020;}
+.quality .qbody{min-height:70px;padding:8px 10px;}
+.quality .qlines{min-height:56px;background:repeating-linear-gradient(#fff,#fff 22px,#bbb 23px);}
+`;
+// Build the printable body (one .sheet-page) for a single receiving sheet.
+// `d` is the /api/fabric/receiving/{id} payload (sheet, rolls, fabric,
+// quality_summary). Fetches the fabric photo best-effort. NOTE: the RECEIVING
+// sheet intentionally omits "Cost per metre" (kept only on the Buying sheet).
+async function buildReceivingSheetBody(d){
   const s=d.sheet||{},f=d.fabric||{},rolls=d.rolls||[];
+  const qs=d.quality_summary||{rolls:rolls.length,pass:0,fail:0,pending:rolls.length,inspected:0};
   const clean=x=>{const v=(x==null?'':String(x)).trim();return (v===''||v.toLowerCase()==='false')?'':v;};
   const numv=(x,dp)=>(x==null||x===''||isNaN(Number(x)))?'':Number(x).toLocaleString(undefined,{maximumFractionDigits:dp});
   const source=[clean(f.source_city),clean(f.source_country)].filter(Boolean).join(', ');
@@ -3741,7 +3984,6 @@ async function printReceivingSheet(d){
   const width=numv(f.width_m,2)?numv(f.width_m,2)+' m':'';
   const missingConv=s.total_mtrs==null;
   const totalMtrs=missingConv?'Missing Width/GSM':numv(s.total_mtrs,1)+' m';
-  const cost=(f.cost_metre!=null&&f.cost_metre!==''&&!isNaN(Number(f.cost_metre)))?'KES '+numv(f.cost_metre,2):'';
   // Fabric photo: best-effort first Odoo image for this barcode.
   let photo='';
   const bc=clean(f.default_code)||clean(s.barcode);
@@ -3771,43 +4013,22 @@ async function printReceivingSheet(d){
   const rollsCols=groups.map(g=>`<table class="rolls"><thead><tr><th>Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th></tr></thead><tbody>${
     g.map(r=>`<tr><td>${esc(String(r.roll_no))}</td><td class="r">${esc(numv(r.qty_kg,2))}</td><td class="r">${r.qty_mtrs!=null?esc(numv(r.qty_mtrs,1)):'<span class="miss">Missing Width/GSM</span>'}</td></tr>`).join('')
   }</tbody></table>`).join('');
-  const photoInner=photo?`<img id="fab-sheet-photo" src="${esc(photo)}" alt="Fabric photo">`:'Photo to be added';
-  const html=`<!doctype html><html><head><meta charset="utf-8"><title>Fabric Receiving Information Sheet${bc?' — '+esc(bc):''}</title>
-<style>
-@page{size:A4 landscape;margin:10mm;}
-*{box-sizing:border-box;}
-html,body{margin:0;padding:0;}
-body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:12px;}
-.sheet{width:100%;}
-.hd{position:relative;text-align:center;padding:2px 0 12px;}
-.hd h1{margin:0;font-size:19px;font-weight:800;letter-spacing:.02em;text-decoration:underline;text-underline-offset:4px;}
-.vivo-logo{position:absolute;right:0;top:-4px;height:46px;width:auto;border-radius:3px;}
-.grid{display:grid;grid-template-columns:1.15fr .85fr;border:1.5px solid #111;}
-.rt{border-left:1.5px solid #111;display:flex;flex-direction:column;}
-.cell{border-bottom:1px solid #111;padding:5px 9px;display:flex;gap:8px;align-items:baseline;min-height:29px;}
-.left .cell:last-child{border-bottom:none;}
-.lbl{font-weight:700;text-transform:uppercase;font-size:10.5px;letter-spacing:.01em;white-space:nowrap;}
-.val{flex:1;font-size:13.5px;font-weight:700;}
-.blank{flex:1;border-bottom:1px dotted #999;align-self:flex-end;min-height:14px;}
-.xf{display:flex;gap:8px;padding:5px 9px;border-bottom:1px solid #111;align-items:baseline;min-height:26px;}
-.xf .lbl{width:200px;flex-shrink:0;}
-.xf .val{font-size:13px;}
-.photo{flex:1;padding:6px 9px;display:flex;flex-direction:column;}
-.photo .lbl{margin-bottom:5px;}
-.photo-frame{flex:1;border:1.5px dashed #aaa;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:11px;min-height:100px;overflow:hidden;}
-.photo-frame img{max-width:100%;max-height:100%;object-fit:contain;}
-.rolls-wrap{display:flex;gap:10px;align-items:flex-start;margin-top:10px;}
-.rolls{border-collapse:collapse;flex:1;}
-.rolls th,.rolls td{border:1px solid #111;padding:2px 5px;font-size:11px;}
-.rolls th{background:#f0f0f0;text-transform:uppercase;font-size:9.5px;letter-spacing:.02em;}
-.rolls td:first-child,.rolls th:first-child{width:1%;white-space:nowrap;}
-.rolls .r{text-align:right;}
-.miss{color:#b00020;font-size:9.5px;font-weight:700;}
-.tot{margin-top:8px;border:1.5px solid #111;padding:6px 9px;display:flex;gap:26px;font-size:12.5px;}
-.tot b{text-transform:uppercase;font-size:11px;}
-.recv-note{margin-top:6px;font-size:11px;color:#555;}
-</style></head><body>
-<div class="sheet">
+  // Photo <img> uses a shared class (multiple sheets in one batch document).
+  const photoInner=photo?`<img class="fab-sheet-photo" src="${esc(photo)}" alt="Fabric photo">`:'Photo to be added';
+  // Quality box: a SUMMARY per barcode/product (NOT per-roll) plus a larger
+  // bordered space for the written inspection / testing results.
+  const qualityBox=`<div class="quality">
+   <div class="qh">Quality — inspection / testing results</div>
+   <div class="qsum">
+     <span><b>Rolls:</b> ${esc(String(qs.rolls||0))}</span>
+     <span class="pass"><b>Passed:</b> ${esc(String(qs.pass||0))}</span>
+     <span class="fail"><b>Failed:</b> ${esc(String(qs.fail||0))}</span>
+     <span><b>Pending:</b> ${esc(String(qs.pending||0))}</span>
+     <span><b>Inspected:</b> ${esc(String(qs.inspected||0))} / ${esc(String(qs.rolls||0))}</span>
+   </div>
+   <div class="qbody"><div class="qlines"></div></div>
+  </div>`;
+  return `<div class="sheet-page"><div class="sheet">
  <div class="hd"><h1>FABRIC RECEIVING INFORMATION SHEET</h1><img class="vivo-logo" src="${VIVO_LOGO_DATA_URI}" alt="Vivo"></div>
  <div class="grid">
   <div class="left">${left}</div>
@@ -3815,31 +4036,51 @@ body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:12px;}
    ${xf('GSM',gsm)}
    ${xf('Width',width)}
    ${xf('TOTAL RECEIVED MTRS',totalMtrs)}
-   ${xf('Cost per metre',cost)}
    <div class="photo"><div class="lbl">Fabric photo</div><div class="photo-frame">${photoInner}</div></div>
   </div>
  </div>
  <div class="rolls-wrap">${rollsCols}</div>
  <div class="tot"><span><b>Rolls received:</b> ${esc(String(rolls.length))}</span><span><b>Total kgs:</b> ${esc(numv(s.total_kg,2))}</span><span><b>Total received mtrs:</b> ${esc(totalMtrs)}</span></div>
+ ${qualityBox}
  ${clean(s.note)?`<div class="recv-note"><b>Note:</b> ${esc(s.note)}</div>`:''}
  ${missingConv?'<div class="recv-note" style="color:#b00020;"><b>Metres could not be derived:</b> this fabric has no Width/GSM (kg→metre) conversion. Total shown as Missing Width/GSM — fix the fabric master data and reprint.</div>':''}
-</div>
-</body></html>`;
+</div></div>`;
+}
+// Open a print window with the given sheet bodies and print once all fabric
+// photos have loaded (or a 5s cap elapses).
+function openReceivingPrintWindow(bodies,title){
+  const html=`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title||'Fabric Receiving Information Sheet')}</title>
+<style>${RECV_SHEET_CSS}</style></head><body>${bodies.join('\n')}</body></html>`;
   const w=window.open('','_blank','width=1180,height=820');
   if(!w){alert('Please allow pop-ups for this site to print the receiving sheet.');return;}
   w.document.open();w.document.write(html);w.document.close();w.focus();
   const doPrint=()=>{try{w.print();}catch(_){}};
   const printWhenReady=()=>{
-    let img=null;try{img=w.document.getElementById('fab-sheet-photo');}catch(_){}
-    if(!img){doPrint();return;}
-    if(img.complete&&img.naturalWidth>0){doPrint();return;}
-    let done=false;
-    const fire=()=>{if(done)return;done=true;doPrint();};
-    img.addEventListener('load',fire);
-    img.addEventListener('error',fire);
-    setTimeout(fire,4000);
+    let imgs=[];try{imgs=Array.from(w.document.getElementsByClassName('fab-sheet-photo'));}catch(_){}
+    const pending=imgs.filter(im=>!(im.complete&&im.naturalWidth>0));
+    if(!pending.length){doPrint();return;}
+    let left=pending.length,done=false;
+    const fire=()=>{if(done)return;if(--left<=0){done=true;doPrint();}};
+    pending.forEach(im=>{im.addEventListener('load',fire);im.addEventListener('error',fire);});
+    setTimeout(()=>{if(!done){done=true;doPrint();}},5000);
   };
   if(w.document.readyState==='complete')setTimeout(printWhenReady,50);else w.onload=()=>setTimeout(printWhenReady,50);
+}
+async function printReceivingSheet(d){
+  const body=await buildReceivingSheetBody(d);
+  const bc=(d.fabric&&d.fabric.default_code)||(d.sheet&&d.sheet.barcode)||'';
+  openReceivingPrintWindow([body],'Fabric Receiving Information Sheet'+(bc?' — '+esc(String(bc)):''));
+}
+// Batch print: fetch each selected sheet, build a page per sheet, print together.
+async function printReceivingSheets(ids){
+  if(!ids||!ids.length)return;
+  const bodies=[];
+  for(const id of ids){
+    try{const d=await apiFetch('/api/fabric/receiving/'+encodeURIComponent(id));bodies.push(await buildReceivingSheetBody(d));}
+    catch(_){/* skip a sheet that failed to load rather than abort the batch */}
+  }
+  if(!bodies.length){alert('Could not load the selected sheets for printing.');return;}
+  openReceivingPrintWindow(bodies,'Fabric Receiving Sheets ('+bodies.length+')');
 }
 
 function renderRegisterTable(){

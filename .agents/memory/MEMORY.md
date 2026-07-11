@@ -122,3 +122,4 @@
 - [Rollup INNER JOIN lag drop](rollup-inner-join-lag-drop.md) — INNER JOIN on a refreshed rollup silently drops entities born after the refresh; LEFT JOIN + classify the NULL case.
 - [Daily-trend order attribution](daily-trend-order-attribution.md) — Σ per-day distinct orders > window distinct when orders span sale_dates; attribute each order to its first day, null-safe country join.
 - [Custom-auth UI testing](custom-auth-ui-testing.md) — test gated pages by inserting a temp user_sessions row + localStorage vivo_token in the Playwright plan; delete it and undo test data mutations after.
+- [Fabric receiving quality + edit](fabric-receiving-quality.md) — per-roll quality by any user, rolls/qty admin-only; roll_no MUST be unique per sheet (carry-over keys on it, app-enforced not DB); admin PUT writes rolls+quality atomically.

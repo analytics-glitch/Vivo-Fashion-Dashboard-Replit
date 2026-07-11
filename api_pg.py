@@ -1051,6 +1051,15 @@ async def clerk_auth_gate(request: Request, call_next):
             and user.get("role") != "admin":
         return JSONResponse({"detail": "Admin access required"}, status_code=403)
 
+    # Fabric Receiving sheets: recording per-roll QUALITY results
+    # (POST .../receiving/{id}/quality) is broadly accessible, but EDITING the
+    # rolls/quantities of a saved sheet (PUT .../receiving/{id}) is admin-only.
+    # Gate the bare PUT-to-a-sheet path server-side so hiding the admin edit
+    # controls in the dashboard cannot be bypassed via a direct API call.
+    if re.match(r"^/api/fabric/receiving/\d+$", path) \
+            and request.method == "PUT" and user.get("role") != "admin":
+        return JSONResponse({"detail": "Admin access required"}, status_code=403)
+
     # Support-scope overrides: viewing the rule list is broadly accessible (the
     # Support tab surfaces the active rules), but ADDING/REMOVING a rule is
     # admin-only — same server-side pattern as the rolls write gate above.

@@ -4713,8 +4713,51 @@ def _ensure_receiving_tables(conn):
                     "ON fabric_receiving_rolls(sheet_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_recv_product "
                     "ON fabric_receiving_sheets(product_id)")
+        # Quality inspection / testing results, recorded PER ROLL and fillable
+        # AFTER the sheet is saved (data comes later). Status is one of
+        # Pass/Fail/Pending (NULL = not yet inspected); notes is free text.
+        # Each update stamps who/when. Added idempotently so an existing table
+        # gains the columns on first touch.
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS quality_status TEXT")
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS quality_notes TEXT")
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS quality_updated_at TIMESTAMPTZ")
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS quality_updated_by TEXT")
+        # Admin-only edits to rolls/quantities are timestamped on the sheet.
+        cur.execute("ALTER TABLE fabric_receiving_sheets "
+                    "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ")
+        cur.execute("ALTER TABLE fabric_receiving_sheets "
+                    "ADD COLUMN IF NOT EXISTS updated_by_name TEXT")
     conn.commit()
     _RECEIVING_TABLES_READY = True
+
+# Allowed per-roll quality statuses (NULL/'' = not yet inspected → treated as
+# Pending in the UI). Kept small + explicit; validated server-side.
+_RECV_QUALITY_STATUSES = ("Pass", "Fail", "Pending")
+
+def _recv_quality_summary(rolls):
+    """Roll up the per-roll quality of a sheet into counts for the printed
+    summary box: total rolls, how many Pass/Fail/Pending, and how many are
+    still uninspected (NULL/'' status)."""
+    total = len(rolls)
+    counts = {"Pass": 0, "Fail": 0, "Pending": 0}
+    inspected = 0
+    for r in rolls:
+        st = (r.get("quality_status") or "").strip()
+        if st in counts:
+            counts[st] += 1
+            if st in ("Pass", "Fail"):
+                inspected += 1
+    return {
+        "rolls": total,
+        "pass": counts["Pass"],
+        "fail": counts["Fail"],
+        "pending": counts["Pending"] + (total - inspected - counts["Pending"]),
+        "inspected": inspected,
+    }
 
 # The full product-info block the printed sheet header needs (same fields the
 # Buying sheet uses). Anchored on the product master — NO stock requirement,
@@ -4767,6 +4810,7 @@ def _recv_parse_rolls(body):
     if len(rolls_in) > 50:
         raise HTTPException(status_code=400, detail="a sheet holds at most 50 rolls")
     rolls = []
+    seen = set()
     for i, r in enumerate(rolls_in, start=1):
         if not isinstance(r, dict):
             raise HTTPException(status_code=400, detail=f"roll {i}: invalid entry")
@@ -4778,6 +4822,11 @@ def _recv_parse_rolls(body):
         if roll_no <= 0:
             raise HTTPException(status_code=400,
                 detail=f"roll {i}: roll number must be greater than zero")
+        if roll_no in seen:
+            raise HTTPException(status_code=400,
+                detail=f"roll number {roll_no} is used more than once — "
+                       "each roll must have a unique number")
+        seen.add(roll_no)
         try:
             qty_kg = float(r.get("qty_kg"))
         except (TypeError, ValueError):
@@ -4854,8 +4903,21 @@ def receiving_list(search: str = Query(default=""),
                    s.kg_per_mtr, s.total_kg, s.total_mtrs, s.rolls_count,
                    s.note, s.created_by_name,
                    to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
-                           'DD Mon YYYY, HH24:MI') as created_at
+                           'DD Mon YYYY, HH24:MI') as created_at,
+                   to_char(s.updated_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY, HH24:MI') as updated_at,
+                   s.updated_by_name,
+                   COALESCE(qc.pass_n,0)    as q_pass,
+                   COALESCE(qc.fail_n,0)    as q_fail,
+                   COALESCE(qc.inspected,0) as q_inspected
             FROM fabric_receiving_sheets s
+            LEFT JOIN (
+                SELECT sheet_id,
+                       COUNT(*) FILTER (WHERE quality_status='Pass') as pass_n,
+                       COUNT(*) FILTER (WHERE quality_status='Fail') as fail_n,
+                       COUNT(*) FILTER (WHERE quality_status IN ('Pass','Fail')) as inspected
+                FROM fabric_receiving_rolls GROUP BY sheet_id
+            ) qc ON qc.sheet_id = s.id
             {where}
             ORDER BY s.created_at DESC, s.id DESC
             LIMIT %s
@@ -4874,18 +4936,23 @@ def receiving_fetch(sheet_id: int):
         sheets = q(conn, """
             SELECT s.id, s.product_id, s.barcode, s.fabric_name,
                    s.kg_per_mtr, s.total_kg, s.total_mtrs, s.rolls_count,
-                   s.note, s.created_by_name,
+                   s.note, s.created_by_name, s.updated_by_name,
                    to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
                            'DD Mon YYYY') as created_date,
                    to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
-                           'DD Mon YYYY, HH24:MI') as created_at
+                           'DD Mon YYYY, HH24:MI') as created_at,
+                   to_char(s.updated_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY, HH24:MI') as updated_at
             FROM fabric_receiving_sheets s WHERE s.id=%s
         """, (sheet_id,))
         if not sheets:
             raise HTTPException(status_code=404, detail="receiving sheet not found")
         sheet = sheets[0]
         rolls = q(conn, """
-            SELECT roll_no, qty_kg, qty_mtrs
+            SELECT id as roll_id, roll_no, qty_kg, qty_mtrs,
+                   quality_status, quality_notes, quality_updated_by,
+                   to_char(quality_updated_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY, HH24:MI') as quality_updated_at
             FROM fabric_receiving_rolls WHERE sheet_id=%s
             ORDER BY roll_no, id
         """, (sheet_id,))
@@ -4894,7 +4961,148 @@ def receiving_fetch(sheet_id: int):
             "default_code": sheet["barcode"], "kg_per_mtr": sheet["kg_per_mtr"],
         }
     return {"sheet": sheet, "rolls": rolls, "fabric": prod,
+            "quality_summary": _recv_quality_summary(rolls),
             "missing_conversion": sheet.get("kg_per_mtr") in (None, "")}
+
+@fabric_router.post("/api/fabric/receiving/{sheet_id}/quality")
+def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(...)):
+    """Record per-roll quality inspection / testing results on a SAVED sheet.
+    This is fillable by any signed-in fabric user AFTER the sheet exists (the
+    rolls/quantities themselves stay locked to admins). Body:
+      {"rolls":[{"roll_id":<id>, "status":"Pass|Fail|Pending"|"", "notes":"…"}]}
+    (roll_no accepted as a fallback key). Each changed roll stamps who/when."""
+    items = body.get("rolls")
+    if not isinstance(items, list) or not items:
+        raise HTTPException(status_code=400, detail="rolls list is required")
+    _uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        exists = q(conn, "SELECT id, fabric_name FROM fabric_receiving_sheets "
+                         "WHERE id=%s", (sheet_id,))
+        if not exists:
+            raise HTTPException(status_code=404, detail="receiving sheet not found")
+        updated = 0
+        with conn.cursor() as cur:
+            for it in items:
+                if not isinstance(it, dict):
+                    raise HTTPException(status_code=400, detail="invalid roll entry")
+                status = (str(it.get("status") or "").strip() or None)
+                if status is not None and status not in _RECV_QUALITY_STATUSES:
+                    raise HTTPException(status_code=400,
+                        detail=f"status must be one of {', '.join(_RECV_QUALITY_STATUSES)}")
+                notes = (str(it.get("notes") or "").strip() or None)
+                roll_id = it.get("roll_id")
+                roll_no = it.get("roll_no")
+                if roll_id not in (None, ""):
+                    cur.execute("""
+                        UPDATE fabric_receiving_rolls
+                           SET quality_status=%s, quality_notes=%s,
+                               quality_updated_at=now(), quality_updated_by=%s
+                         WHERE id=%s AND sheet_id=%s
+                    """, (status, notes, name, roll_id, sheet_id))
+                elif roll_no not in (None, ""):
+                    cur.execute("""
+                        UPDATE fabric_receiving_rolls
+                           SET quality_status=%s, quality_notes=%s,
+                               quality_updated_at=now(), quality_updated_by=%s
+                         WHERE sheet_id=%s AND roll_no=%s
+                    """, (status, notes, name, sheet_id, int(roll_no)))
+                else:
+                    raise HTTPException(status_code=400,
+                        detail="each roll needs a roll_id or roll_no")
+                updated += cur.rowcount
+        conn.commit()
+        _log_fabric_change("Receiving quality updated", {
+            "id": sheet_id, "product": exists[0].get("fabric_name"),
+            "style_name": "", "qty": updated, "uom": "rolls",
+            "note": "quality results", "status": "quality",
+        }, request)
+    return {"ok": True, "updated": updated}
+
+@fabric_router.put("/api/fabric/receiving/{sheet_id}")
+def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
+    """ADMIN-ONLY (gated by path in api_pg's auth middleware): correct the rolls,
+    quantities and note of a saved sheet. Metres re-derive from the sheet's
+    snapshotted kg->metre conversion (the historical factor, not a live re-read),
+    per-roll quality is carried over by roll number, and the edit is timestamped
+    on the sheet."""
+    rolls = _recv_parse_rolls(body)
+    note = str(body.get("note") or "").strip() or None
+    # Optional inline quality edits, keyed by roll_no (unique per sheet, enforced
+    # by _recv_parse_rolls). Folding quality into this one admin transaction keeps
+    # the rolls rewrite + quality write ATOMIC — no separate, swallow-able call.
+    q_in = {}
+    for r in (body.get("rolls") or []):
+        if not isinstance(r, dict) or "roll_no" not in r:
+            continue
+        if "status" not in r and "notes" not in r:
+            continue  # roll carries no explicit quality edit → fall back to prev
+        try:
+            rn = int(r.get("roll_no"))
+        except (TypeError, ValueError):
+            continue
+        st = (str(r.get("status") or "").strip() or None)
+        if st is not None and st not in _RECV_QUALITY_STATUSES:
+            raise HTTPException(status_code=400,
+                detail=f"status must be one of {', '.join(_RECV_QUALITY_STATUSES)}")
+        q_in[rn] = {"status": st, "notes": (str(r.get("notes") or "").strip() or None)}
+    _uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        srow = q(conn, "SELECT id, kg_per_mtr, fabric_name "
+                       "FROM fabric_receiving_sheets WHERE id=%s", (sheet_id,))
+        if not srow:
+            raise HTTPException(status_code=404, detail="receiving sheet not found")
+        kpm = srow[0].get("kg_per_mtr")
+        kpm = float(kpm) if kpm not in (None, "") and float(kpm) > 0 else None
+        # Preserve existing per-roll quality across the rolls rewrite, keyed by
+        # roll number (the stable, user-facing identifier).
+        prev = q(conn, "SELECT roll_no, quality_status, quality_notes, "
+                       "quality_updated_by, quality_updated_at "
+                       "FROM fabric_receiving_rolls WHERE sheet_id=%s", (sheet_id,))
+        qmap = {r["roll_no"]: r for r in prev}
+        total_kg = round(sum(kg for _, kg in rolls), 3)
+        total_mtrs = round(total_kg / kpm, 1) if kpm else None
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM fabric_receiving_rolls WHERE sheet_id=%s",
+                        (sheet_id,))
+            for roll_no, qty_kg in rolls:
+                pq = qmap.get(roll_no)
+                edit = q_in.get(roll_no)
+                if edit is not None:
+                    # Explicit quality edit in this request wins; stamp the editor.
+                    q_status, q_notes = edit["status"], edit["notes"]
+                    q_by, q_at = name, None  # None → SQL now() below
+                else:
+                    q_status = pq.get("quality_status") if pq else None
+                    q_notes = pq.get("quality_notes") if pq else None
+                    q_by = pq.get("quality_updated_by") if pq else None
+                    q_at = pq.get("quality_updated_at") if pq else None
+                cur.execute("""
+                    INSERT INTO fabric_receiving_rolls
+                      (sheet_id, roll_no, qty_kg, qty_mtrs,
+                       quality_status, quality_notes,
+                       quality_updated_by, quality_updated_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,
+                            COALESCE(%s, CASE WHEN %s THEN now() ELSE NULL END))
+                """, (sheet_id, roll_no, qty_kg,
+                      round(qty_kg / kpm, 2) if kpm else None,
+                      q_status, q_notes, q_by,
+                      q_at, edit is not None))
+            cur.execute("""
+                UPDATE fabric_receiving_sheets
+                   SET total_kg=%s, total_mtrs=%s, rolls_count=%s, note=%s,
+                       updated_at=now(), updated_by_name=%s
+                 WHERE id=%s
+            """, (total_kg, total_mtrs, len(rolls), note, name, sheet_id))
+        conn.commit()
+        _log_fabric_change("Receiving sheet edited", {
+            "id": sheet_id, "product": srow[0].get("fabric_name"),
+            "style_name": "", "qty": total_kg, "uom": "kg",
+            "note": f"{len(rolls)} rolls (admin edit)", "status": "edited",
+        }, request)
+    return {"ok": True, "id": sheet_id, "total_kg": total_kg,
+            "total_mtrs": total_mtrs, "missing_conversion": kpm is None}
 
 @fabric_router.delete("/api/fabric/receiving/{sheet_id}")
 def receiving_delete(sheet_id: int, request: Request):
