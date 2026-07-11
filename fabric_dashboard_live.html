@@ -363,6 +363,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div class="nav-item" data-page="suppliers">Vendors/Suppliers</div>
      <div class="nav-item" data-page="reservations">Fabric Reservations</div>
      <div class="nav-item" data-page="rolls">Rolls</div>
+     <div class="nav-item" data-page="receiving">Receiving</div>
     </nav>
    </div>
    <div class="fab-utils">
@@ -596,7 +597,13 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <p id="fab-detail-sub" class="muted" style="margin:.25rem 0 0;font-size:12px;"></p>
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
-       <button type="button" class="btn btn-primary" onclick="printFabricSheet()" title="Print a landscape Buying Fabric Information Sheet for this fabric">🖨 Print as PDF</button>
+       <div style="position:relative;">
+        <button type="button" class="btn btn-primary" id="fab-print-btn" aria-haspopup="true" aria-expanded="false" onclick="togglePrintMenu(event)" title="Print a landscape information sheet for this fabric">🖨 Print as PDF ▾</button>
+        <div class="export-menu" id="fab-print-menu" style="display:none;">
+         <button onclick="closePrintMenu();printFabricSheet()">SOH — Buying Fabric Information Sheet</button>
+         <button onclick="closePrintMenu();openReceivingFromDetail()">Receiving — Fabric Receiving Information Sheet</button>
+        </div>
+       </div>
        <button class="modal-close" onclick="closeFabricDetail()" aria-label="Close">&times;</button>
       </div>
      </div>
@@ -867,6 +874,56 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <button class="btn" onclick="rollsPage(-1)">&larr; Prev</button>
        <button class="btn" onclick="rollsPage(1)">Next &rarr;</button>
       </div>
+     </div>
+    </div>
+   </section>
+
+   <!-- RECEIVING -->
+   <section id="page-receiving" style="display:none;">
+    <div class="card">
+     <div class="section-head"><h3>New receiving sheet</h3><span class="muted">record each roll of an arriving delivery, then print the receiving sheet</span></div>
+     <div id="recv-form-err"></div>
+     <div class="flex" style="flex-wrap:wrap;gap:12px;align-items:flex-end;">
+      <div style="position:relative;">
+       <label class="rsv-lbl">Fabric</label>
+       <input id="recv-fabric-search" placeholder="Search fabric name, code or barcode…" autocomplete="off" style="width:300px;" oninput="debouncedRecvProductSearch()" onfocus="debouncedRecvProductSearch()">
+       <div id="recv-fabric-list" class="resv-dropdown" style="display:none;"></div>
+      </div>
+      <button class="btn" id="recv-clear-btn" style="display:none;" onclick="recvClearSelection()">Clear selection</button>
+     </div>
+     <div id="recv-product-card" style="margin-top:12px;"></div>
+     <div id="recv-rolls-wrap" style="display:none;margin-top:12px;">
+      <div class="flex" style="gap:10px;align-items:center;margin-bottom:8px;">
+       <b>Rolls</b><span class="muted" style="font-size:12px;">up to 50 rolls — roll numbers are editable; metres derive from the kg→metre conversion</span>
+       <span style="margin-left:auto;"></span>
+       <button class="btn" onclick="recvAddRoll()">+ Add roll</button>
+      </div>
+      <div class="card" style="padding:0;max-width:600px;">
+       <table class="data">
+        <thead><tr><th style="width:120px;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th style="width:42px;"></th></tr></thead>
+        <tbody id="recv-rolls-body"></tbody>
+        <tfoot><tr style="font-weight:700;"><td>Total</td><td class="r" id="recv-total-kg">—</td><td class="r" id="recv-total-mtrs">—</td><td></td></tr></tfoot>
+       </table>
+      </div>
+      <div class="flex" style="gap:10px;margin-top:12px;align-items:flex-end;flex-wrap:wrap;">
+       <div><label class="rsv-lbl">Note (optional)</label><input id="recv-note" placeholder="optional" style="width:260px;"></div>
+       <button class="btn" onclick="saveReceivingSheet(false)">Save</button>
+       <button class="btn btn-primary" onclick="saveReceivingSheet(true)">Save &amp; Print</button>
+      </div>
+     </div>
+    </div>
+    <div class="section-head" style="margin-top:1.3rem;"><h3>Saved receiving sheets</h3><span class="muted">reopen &amp; reprint any past delivery</span></div>
+    <div class="flex" style="margin-bottom:.9rem;">
+     <input id="recv-list-search" placeholder="Filter fabric / barcode…" oninput="debouncedRecvList()" style="width:240px;">
+    </div>
+    <div class="card" style="padding:0;">
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr>
+        <th>Saved</th><th>Fabric</th><th>Barcode</th><th class="r">Rolls</th><th class="r">Total kgs</th><th class="r">Total mtrs</th><th>By</th><th></th>
+       </tr></thead>
+       <tbody id="recv-list-body"><tr><td colspan="8" class="loading">Loading…</td></tr></tbody>
+      </table>
      </div>
     </div>
    </section>
@@ -1438,8 +1495,8 @@ function renderSupportKpis(d){
 }
 
 // ── Navigation ──
-const LOADERS={dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0)};
-const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'',deadstock:'Fabric that has been sitting without movement',defects:'',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity'};
+const LOADERS={dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingSheets};
+const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'',deadstock:'Fabric that has been sitting without movement',defects:'',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet'};
 const loadedOnce={};
 
 // ── Draggable / reorderable nav tabs (per-browser, localStorage) ──
@@ -3451,6 +3508,331 @@ body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:12px;}
   };
   if(w.document.readyState==='complete')setTimeout(printWhenReady,50);else w.onload=()=>setTimeout(printWhenReady,50);
 }
+
+// ── Print chooser on the product popup (SOH sheet vs Receiving sheet) ──
+function togglePrintMenu(e){
+  if(e)e.stopPropagation();
+  const m=document.getElementById('fab-print-menu');
+  const btn=document.getElementById('fab-print-btn');
+  const open=!m||m.style.display==='none';
+  if(m)m.style.display=open?'block':'none';
+  if(btn)btn.setAttribute('aria-expanded',open?'true':'false');
+}
+function closePrintMenu(){
+  const m=document.getElementById('fab-print-menu');
+  const btn=document.getElementById('fab-print-btn');
+  if(m)m.style.display='none';
+  if(btn)btn.setAttribute('aria-expanded','false');
+}
+document.addEventListener('click',()=>{closePrintMenu();const b=document.getElementById('recv-fabric-list');if(b)b.style.display='none';});
+
+// ── Receiving sheets (roll-by-roll fabric intake) ──
+// recvSel holds the picked fabric's full product-info block (from the receiving
+// product-search, or the register-shaped curFabricDetail row when launched from
+// the product popup — both carry the same header fields). Rolls are entered as
+// kgs; metres derive live from kg_per_mtr. Saving posts to Postgres only.
+let recvSel=null, recvRolls=[], recvSearchRows=[];
+let recvPsTimer=null, recvListTimer=null, recvBound=false;
+function debouncedRecvProductSearch(){clearTimeout(recvPsTimer);recvPsTimer=setTimeout(runRecvProductSearch,250);}
+function debouncedRecvList(){clearTimeout(recvListTimer);recvListTimer=setTimeout(loadReceivingSheets,300);}
+async function runRecvProductSearch(){
+  const term=document.getElementById('recv-fabric-search').value.trim();
+  const box=document.getElementById('recv-fabric-list');
+  try{
+    const rows=await apiFetch('/api/fabric/receiving/product-search?q='+encodeURIComponent(term));
+    recvSearchRows=rows||[];
+    if(!recvSearchRows.length){box.innerHTML='<div class="resv-opt muted">No matching fabric.</div>';box.style.display='';return;}
+    box.innerHTML=recvSearchRows.map((r,i)=>{
+      const conv=(r.kg_per_mtr!=null&&Number(r.kg_per_mtr)>0)?'':' · <span style="color:var(--danger);">no Width/GSM conversion</span>';
+      const sub=[r.default_code?('#'+esc(r.default_code)):'',esc(r.fabric_supplier_name||'')].filter(Boolean).join(' · ')+conv;
+      return `<div class="resv-opt" data-i="${i}">${esc(r.name||'—')}<div class="ro-code">${sub}</div></div>`;
+    }).join('');
+    box.style.display='';
+  }catch(e){box.innerHTML='<div class="resv-opt muted">Could not search.</div>';box.style.display='';}
+}
+function recvBindOnce(){
+  if(recvBound)return;recvBound=true;
+  document.getElementById('recv-fabric-list').addEventListener('click',e=>{
+    e.stopPropagation();
+    const opt=e.target.closest('.resv-opt');if(!opt||opt.dataset.i==null)return;
+    const r=recvSearchRows[Number(opt.dataset.i)];if(!r)return;
+    document.getElementById('recv-fabric-list').style.display='none';
+    recvSetFabric(r);
+  });
+  document.getElementById('recv-rolls-body').addEventListener('input',e=>{
+    const el=e.target;const i=Number(el.dataset.row);
+    if(isNaN(i)||!recvRolls[i])return;
+    if(el.dataset.kind==='no')recvRolls[i].no=el.value;
+    else if(el.dataset.kind==='kg'){recvRolls[i].kg=el.value;recvUpdateDerived(i);}
+  });
+  document.getElementById('recv-rolls-body').addEventListener('click',e=>{
+    const del=e.target.closest('button[data-del-roll]');
+    if(del){recvRolls.splice(Number(del.dataset.delRoll),1);renderRecvRolls();}
+  });
+  document.getElementById('recv-list-body').addEventListener('click',e=>{
+    const pr=e.target.closest('button[data-print]');
+    const del=e.target.closest('button[data-del]');
+    if(pr)reprintReceivingSheet(pr.dataset.print);
+    else if(del)deleteReceivingSheet(del.dataset.del);
+  });
+}
+function recvKpm(){const k=recvSel&&recvSel.kg_per_mtr;return (k!=null&&k!==''&&Number(k)>0)?Number(k):null;}
+function recvSetFabric(r){
+  recvSel=r;
+  recvRolls=[{no:'1',kg:''}];
+  document.getElementById('recv-fabric-search').value=r.name||'';
+  document.getElementById('recv-clear-btn').style.display='';
+  document.getElementById('recv-form-err').innerHTML='';
+  const kpm=recvKpm();
+  const bits=[
+    r.default_code?('Barcode <b>'+esc(r.default_code)+'</b>'):'',
+    r.fabric_supplier_name?('Supplier '+esc(r.fabric_supplier_name)):'',
+    (r.gsm!=null&&r.gsm!=='')?('GSM '+esc(String(r.gsm))):'',
+    (r.width_m!=null&&r.width_m!=='')?('Width '+fmt2(r.width_m)+' m'):'',
+    kpm?('Conversion <b>'+kpm+' kg/m</b>'):''
+  ].filter(Boolean).join(' &nbsp;·&nbsp; ');
+  const warn=kpm?'' :'<div class="banner banner-err" style="margin-top:8px;">This fabric has no Width/GSM conversion — metres cannot be derived. Kgs will be saved; the printed sheet will show <b>Missing Width/GSM</b> instead of metres.</div>';
+  document.getElementById('recv-product-card').innerHTML=
+    '<div class="banner" style="background:rgba(26,92,56,.06);border:1px solid var(--border);padding:.6rem .8rem;border-radius:8px;font-size:12.5px;">'
+    +'<b>'+esc(r.name||'—')+'</b><div class="muted" style="margin-top:3px;">'+bits+'</div></div>'+warn;
+  document.getElementById('recv-rolls-wrap').style.display='';
+  renderRecvRolls();
+}
+function recvClearSelection(){
+  recvSel=null;recvRolls=[];
+  document.getElementById('recv-fabric-search').value='';
+  document.getElementById('recv-product-card').innerHTML='';
+  document.getElementById('recv-rolls-wrap').style.display='none';
+  document.getElementById('recv-clear-btn').style.display='none';
+  document.getElementById('recv-form-err').innerHTML='';
+  document.getElementById('recv-note').value='';
+}
+function recvAddRoll(){
+  if(recvRolls.length>=50){showRecvErr('A sheet holds at most 50 rolls.');return;}
+  const maxNo=recvRolls.reduce((m,r)=>Math.max(m,parseInt(r.no,10)||0),0);
+  recvRolls.push({no:String(maxNo+1),kg:''});
+  renderRecvRolls();
+  const rows=document.querySelectorAll('#recv-rolls-body input[data-kind="kg"]');
+  if(rows.length)rows[rows.length-1].focus();
+}
+function recvDerivedM(kg){
+  const kpm=recvKpm();const k=parseFloat(kg);
+  if(!kpm||isNaN(k)||k<=0)return null;
+  return k/kpm;
+}
+function recvUpdateDerived(i){
+  const cell=document.getElementById('recv-m-'+i);
+  if(cell){const m=recvDerivedM(recvRolls[i].kg);cell.textContent=m==null?(recvKpm()?'—':'Missing Width/GSM'):fmt1(m);}
+  recvUpdateTotals();
+}
+function recvUpdateTotals(){
+  let kg=0,any=false;
+  recvRolls.forEach(r=>{const k=parseFloat(r.kg);if(!isNaN(k)&&k>0){kg+=k;any=true;}});
+  const kpm=recvKpm();
+  document.getElementById('recv-total-kg').textContent=any?fmt2(kg):'—';
+  document.getElementById('recv-total-mtrs').textContent=!any?'—':(kpm?fmt1(kg/kpm):'Missing Width/GSM');
+}
+function renderRecvRolls(){
+  const body=document.getElementById('recv-rolls-body');
+  body.innerHTML=recvRolls.map((r,i)=>{
+    const m=recvDerivedM(r.kg);
+    const mTxt=m==null?(recvKpm()?'—':'Missing Width/GSM'):fmt1(m);
+    return `<tr>
+      <td><input type="number" min="1" step="1" data-row="${i}" data-kind="no" value="${esc(String(r.no))}" style="width:80px;"></td>
+      <td class="r"><input type="number" min="0" step="any" data-row="${i}" data-kind="kg" value="${esc(String(r.kg))}" placeholder="0.0" style="width:110px;text-align:right;"></td>
+      <td class="r" id="recv-m-${i}">${mTxt}</td>
+      <td><button class="btn" data-del-roll="${i}" title="Remove roll" style="padding:2px 8px;font-size:12px;">&times;</button></td>
+    </tr>`;
+  }).join('');
+  recvUpdateTotals();
+}
+function showRecvErr(msg){document.getElementById('recv-form-err').innerHTML='<div class="banner banner-err">'+esc(msg)+'</div>';}
+async function saveReceivingSheet(alsoPrint){
+  document.getElementById('recv-form-err').innerHTML='';
+  if(!recvSel){showRecvErr('Pick a fabric from the list first.');return;}
+  const rolls=[];
+  for(let i=0;i<recvRolls.length;i++){
+    const no=parseInt(recvRolls[i].no,10);
+    const kg=parseFloat(recvRolls[i].kg);
+    if(isNaN(no)||no<=0){showRecvErr('Row '+(i+1)+': enter a roll number greater than zero.');return;}
+    if(isNaN(kg)||kg<=0){showRecvErr('Row '+(i+1)+': enter the kgs received (greater than zero).');return;}
+    rolls.push({roll_no:no,qty_kg:kg});
+  }
+  if(!rolls.length){showRecvErr('Add at least one roll.');return;}
+  if(rolls.length>50){showRecvErr('A sheet holds at most 50 rolls.');return;}
+  const note=document.getElementById('recv-note').value.trim();
+  try{
+    const r=await fetch('/api/fabric/receiving',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({product_id:Number(recvSel.id),rolls,note})});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
+    const res=await r.json();
+    recvClearSelection();
+    loadReceivingSheets();
+    if(alsoPrint&&res.id)reprintReceivingSheet(res.id);
+  }catch(e){showRecvErr(e.message==='auth'?'Your session has expired. Sign in again.':('Could not save: '+e.message));}
+}
+async function loadReceivingSheets(){
+  recvBindOnce();
+  const search=document.getElementById('recv-list-search').value.trim();
+  const params=new URLSearchParams();if(search)params.set('search',search);
+  try{
+    const d=await apiFetch('/api/fabric/receiving?'+params);
+    renderReceivingList(d.items||[]);
+  }catch(e){rowErr('recv-list-body',8,e);}
+}
+function renderReceivingList(items){
+  const body=document.getElementById('recv-list-body');
+  if(!items.length){body.innerHTML='<tr><td colspan="8" class="muted" style="padding:1rem;">No receiving sheets saved yet.</td></tr>';return;}
+  body.innerHTML=items.map(s=>{
+    const mtrs=s.total_mtrs!=null?fmt1(s.total_mtrs):'<span style="color:var(--danger);" title="This fabric had no Width/GSM conversion when the sheet was saved">Missing Width/GSM</span>';
+    return `<tr>
+      <td style="white-space:nowrap;">${esc(s.created_at||'—')}</td>
+      <td>${esc(s.fabric_name||'—')}${s.note?`<div class="muted" style="font-size:11px;">${esc(s.note)}</div>`:''}</td>
+      <td>${esc(s.barcode||'—')}</td>
+      <td class="r">${fmt(s.rolls_count)}</td>
+      <td class="r">${fmt2(s.total_kg)}</td>
+      <td class="r">${mtrs}</td>
+      <td>${esc(s.created_by_name||'—')}</td>
+      <td style="white-space:nowrap;"><button class="btn btn-primary" data-print="${s.id}" style="padding:4px 10px;font-size:12px;">🖨 Print</button> <button class="btn" data-del="${s.id}" style="padding:4px 8px;font-size:12px;">Delete</button></td>
+    </tr>`;
+  }).join('');
+}
+async function reprintReceivingSheet(id){
+  try{
+    const d=await apiFetch('/api/fabric/receiving/'+encodeURIComponent(id));
+    await printReceivingSheet(d);
+  }catch(e){alert(errHtml(e).replace(/<[^>]*>/g,''));}
+}
+async function deleteReceivingSheet(id){
+  if(!confirm('Delete this receiving sheet? This cannot be undone.'))return;
+  try{
+    const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(id),{method:'DELETE',credentials:'include'});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
+    loadReceivingSheets();
+  }catch(e){alert('Could not delete: '+e.message);}
+}
+// Launched from the product popup's Print chooser: jump to the Receiving tab
+// with this fabric pre-selected (curFabricDetail carries the same header fields
+// the receiving product-search returns).
+function openReceivingFromDetail(){
+  const r=curFabricDetail;
+  if(!r){alert('Open a fabric first.');return;}
+  closeFabricDetail();
+  const tab=document.querySelector('.nav-item[data-page="receiving"]');
+  if(tab)tab.click();
+  recvBindOnce();
+  recvSetFabric(r);
+}
+// FABRIC RECEIVING INFORMATION SHEET — same A4-landscape header block as the
+// Buying sheet, but TOTAL AVAILABLE MTRS comes from the ENTERED rolls (never
+// Odoo stock), Date received / Number of rolls are FILLED, and a rolls table
+// (kgs + derived mtrs) is printed below. Missing conversion prints an explicit
+// "Missing Width/GSM" flag, never a silent blank/0.
+async function printReceivingSheet(d){
+  const s=d.sheet||{},f=d.fabric||{},rolls=d.rolls||[];
+  const clean=x=>{const v=(x==null?'':String(x)).trim();return (v===''||v.toLowerCase()==='false')?'':v;};
+  const numv=(x,dp)=>(x==null||x===''||isNaN(Number(x)))?'':Number(x).toLocaleString(undefined,{maximumFractionDigits:dp});
+  const source=[clean(f.source_city),clean(f.source_country)].filter(Boolean).join(', ');
+  const gsm=numv(f.gsm,0);
+  const width=numv(f.width_m,2)?numv(f.width_m,2)+' m':'';
+  const missingConv=s.total_mtrs==null;
+  const totalMtrs=missingConv?'Missing Width/GSM':numv(s.total_mtrs,1)+' m';
+  const cost=(f.cost_metre!=null&&f.cost_metre!==''&&!isNaN(Number(f.cost_metre)))?'KES '+numv(f.cost_metre,2):'';
+  // Fabric photo: best-effort first Odoo image for this barcode.
+  let photo='';
+  const bc=clean(f.default_code)||clean(s.barcode);
+  if(bc){try{const imgs=await apiFetch('/api/fabric/images/'+encodeURIComponent(bc));const first=(imgs&&imgs.images&&imgs.images[0])||(Array.isArray(imgs)?imgs[0]:null);if(first&&first.url)photo=String(first.url).trim();}catch(_){}}
+  const dataCell=(label,value)=>`<div class="cell"><span class="lbl">${esc(label)}:</span>${value?`<span class="val">${esc(value)}</span>`:'<span class="blank"></span>'}</div>`;
+  const xf=(label,value)=>`<div class="xf"><span class="lbl">${esc(label)}:</span>${value?`<span class="val">${esc(value)}</span>`:'<span class="blank"></span>'}</div>`;
+  const left=[
+    dataCell('Fabric title',clean(s.fabric_name)||clean(f.name)),
+    dataCell('Source',source),
+    dataCell('Fabric Supplier Name',clean(f.fabric_supplier_name)),
+    dataCell('Fabric code',clean(f.supplier_fabric_code)),
+    dataCell('Fabric colour',clean(f.odoo_fabric_color)),
+    dataCell('Fabric barcode',bc),
+    dataCell('Fabric category',clean(f.fabric_category)),
+    dataCell('Fabric sub-category',clean(f.fabric_subcategory)),
+    dataCell('Fabric composition',clean(f.fiber_content)),
+    dataCell('Date received',clean(s.created_date)),
+    dataCell('Number of rolls received',String(rolls.length))
+  ].join('');
+  // Rolls print in column groups (~13 rows each) so up to 50 fit one page.
+  const perCol=Math.max(1,Math.ceil(rolls.length/Math.min(4,Math.max(1,Math.ceil(rolls.length/13)))));
+  const groups=[];
+  for(let i=0;i<rolls.length;i+=perCol)groups.push(rolls.slice(i,i+perCol));
+  const rollsCols=groups.map(g=>`<table class="rolls"><thead><tr><th>Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th></tr></thead><tbody>${
+    g.map(r=>`<tr><td>${esc(String(r.roll_no))}</td><td class="r">${esc(numv(r.qty_kg,2))}</td><td class="r">${r.qty_mtrs!=null?esc(numv(r.qty_mtrs,1)):'<span class="miss">Missing Width/GSM</span>'}</td></tr>`).join('')
+  }</tbody></table>`).join('');
+  const photoInner=photo?`<img id="fab-sheet-photo" src="${esc(photo)}" alt="Fabric photo">`:'Photo to be added';
+  const html=`<!doctype html><html><head><meta charset="utf-8"><title>Fabric Receiving Information Sheet${bc?' — '+esc(bc):''}</title>
+<style>
+@page{size:A4 landscape;margin:10mm;}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:12px;}
+.sheet{width:100%;}
+.hd{position:relative;text-align:center;padding:2px 0 12px;}
+.hd h1{margin:0;font-size:19px;font-weight:800;letter-spacing:.02em;text-decoration:underline;text-underline-offset:4px;}
+.vivo-logo{position:absolute;right:0;top:-4px;height:46px;width:auto;border-radius:3px;}
+.grid{display:grid;grid-template-columns:1.15fr .85fr;border:1.5px solid #111;}
+.rt{border-left:1.5px solid #111;display:flex;flex-direction:column;}
+.cell{border-bottom:1px solid #111;padding:5px 9px;display:flex;gap:8px;align-items:baseline;min-height:29px;}
+.left .cell:last-child{border-bottom:none;}
+.lbl{font-weight:700;text-transform:uppercase;font-size:10.5px;letter-spacing:.01em;white-space:nowrap;}
+.val{flex:1;font-size:13.5px;font-weight:700;}
+.blank{flex:1;border-bottom:1px dotted #999;align-self:flex-end;min-height:14px;}
+.xf{display:flex;gap:8px;padding:5px 9px;border-bottom:1px solid #111;align-items:baseline;min-height:26px;}
+.xf .lbl{width:200px;flex-shrink:0;}
+.xf .val{font-size:13px;}
+.photo{flex:1;padding:6px 9px;display:flex;flex-direction:column;}
+.photo .lbl{margin-bottom:5px;}
+.photo-frame{flex:1;border:1.5px dashed #aaa;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:11px;min-height:100px;overflow:hidden;}
+.photo-frame img{max-width:100%;max-height:100%;object-fit:contain;}
+.rolls-wrap{display:flex;gap:10px;align-items:flex-start;margin-top:10px;}
+.rolls{border-collapse:collapse;flex:1;}
+.rolls th,.rolls td{border:1px solid #111;padding:3px 8px;font-size:11px;}
+.rolls th{background:#f0f0f0;text-transform:uppercase;font-size:9.5px;letter-spacing:.02em;}
+.rolls .r{text-align:right;}
+.miss{color:#b00020;font-size:9.5px;font-weight:700;}
+.tot{margin-top:8px;border:1.5px solid #111;padding:6px 9px;display:flex;gap:26px;font-size:12.5px;}
+.tot b{text-transform:uppercase;font-size:11px;}
+.recv-note{margin-top:6px;font-size:11px;color:#555;}
+</style></head><body>
+<div class="sheet">
+ <div class="hd"><h1>FABRIC RECEIVING INFORMATION SHEET</h1><img class="vivo-logo" src="${VIVO_LOGO_DATA_URI}" alt="Vivo"></div>
+ <div class="grid">
+  <div class="left">${left}</div>
+  <div class="rt">
+   ${xf('GSM',gsm)}
+   ${xf('Width',width)}
+   ${xf('TOTAL AVAILABLE MTRS',totalMtrs)}
+   ${xf('Cost per metre',cost)}
+   <div class="photo"><div class="lbl">Fabric photo</div><div class="photo-frame">${photoInner}</div></div>
+  </div>
+ </div>
+ <div class="rolls-wrap">${rollsCols}</div>
+ <div class="tot"><span><b>Rolls received:</b> ${esc(String(rolls.length))}</span><span><b>Total kgs:</b> ${esc(numv(s.total_kg,2))}</span><span><b>Total available mtrs:</b> ${esc(totalMtrs)}</span></div>
+ ${clean(s.note)?`<div class="recv-note"><b>Note:</b> ${esc(s.note)}</div>`:''}
+ ${missingConv?'<div class="recv-note" style="color:#b00020;"><b>Metres could not be derived:</b> this fabric has no Width/GSM (kg→metre) conversion. Total shown as Missing Width/GSM — fix the fabric master data and reprint.</div>':''}
+</div>
+</body></html>`;
+  const w=window.open('','_blank','width=1180,height=820');
+  if(!w){alert('Please allow pop-ups for this site to print the receiving sheet.');return;}
+  w.document.open();w.document.write(html);w.document.close();w.focus();
+  const doPrint=()=>{try{w.print();}catch(_){}};
+  const printWhenReady=()=>{
+    let img=null;try{img=w.document.getElementById('fab-sheet-photo');}catch(_){}
+    if(!img){doPrint();return;}
+    if(img.complete&&img.naturalWidth>0){doPrint();return;}
+    let done=false;
+    const fire=()=>{if(done)return;done=true;doPrint();};
+    img.addEventListener('load',fire);
+    img.addEventListener('error',fire);
+    setTimeout(fire,4000);
+  };
+  if(w.document.readyState==='complete')setTimeout(printWhenReady,50);else w.onload=()=>setTimeout(printWhenReady,50);
+}
+
 function renderRegisterTable(){
   const cols=REG_COLS.filter(c=>regCols.includes(c.k));
   document.getElementById('register-head').innerHTML='<tr>'+cols.map(c=>{

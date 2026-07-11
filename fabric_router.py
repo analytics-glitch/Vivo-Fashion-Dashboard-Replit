@@ -4667,6 +4667,256 @@ def set_roll_count(request: Request, body: dict = Body(...)):
                 "updated_at": row["updated_at"]}
 
 
+# ── Fabric receiving sheets (printable roll-by-roll intake records) ──────────
+# When a fabric delivery arrives, the team records each physical roll's weight
+# (kg) and prints a "FABRIC RECEIVING INFORMATION SHEET" — the same product
+# header as the Buying sheet plus a rolls table where metres are derived from
+# the product's kg->metre conversion (kg_per_mtr_eff). Sheets persist in
+# Postgres ONLY (no Odoo writes); the conversion factor is SNAPSHOTTED on the
+# sheet at save time so a later Width/GSM correction never silently rewrites an
+# already-printed historical record. A missing conversion is stored as NULL
+# metres and explicitly flagged (never a silent 0/blank). Tables are created
+# lazily, mirroring the fabric_reservations pattern. Auth: same broad session
+# gate as the rest of /api/fabric/* (no extra role gating).
+_RECEIVING_TABLES_READY = False
+
+def _ensure_receiving_tables(conn):
+    global _RECEIVING_TABLES_READY
+    if _RECEIVING_TABLES_READY:
+        return
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_receiving_sheets (
+                id              SERIAL PRIMARY KEY,
+                product_id      INTEGER NOT NULL,
+                barcode         TEXT,
+                fabric_name     TEXT,
+                kg_per_mtr      NUMERIC,
+                total_kg        NUMERIC NOT NULL DEFAULT 0,
+                total_mtrs      NUMERIC,
+                rolls_count     INTEGER NOT NULL DEFAULT 0,
+                note            TEXT,
+                created_by      TEXT,
+                created_by_name TEXT,
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+            )""")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_receiving_rolls (
+                id       SERIAL PRIMARY KEY,
+                sheet_id INTEGER NOT NULL
+                         REFERENCES fabric_receiving_sheets(id) ON DELETE CASCADE,
+                roll_no  INTEGER NOT NULL,
+                qty_kg   NUMERIC NOT NULL,
+                qty_mtrs NUMERIC
+            )""")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_recv_rolls_sheet "
+                    "ON fabric_receiving_rolls(sheet_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_recv_product "
+                    "ON fabric_receiving_sheets(product_id)")
+    conn.commit()
+    _RECEIVING_TABLES_READY = True
+
+# The full product-info block the printed sheet header needs (same fields the
+# Buying sheet uses). Anchored on the product master — NO stock requirement,
+# because a delivery being received often has zero current Odoo stock.
+_RECV_PRODUCT_SQL = """
+    SELECT
+      p.id, p.name, p.default_code, p.barcode,
+      p.fabric_category, p.fabric_subcategory, p.fiber_content,
+      p.gsm, p.width_m, p.kg_per_mtr_eff as kg_per_mtr,
+      p.source_city, p.source_country, p.supplier_fabric_code,
+      NULLIF(BTRIM(p.fabric_supplier_name),'') as fabric_supplier_name,
+      NULLIF(BTRIM(p.odoo_fabric_color),'')    as odoo_fabric_color,
+      ROUND(CASE WHEN p.kg_per_mtr_eff>0
+            THEN p.standard_price*p.kg_per_mtr_eff ELSE NULL END::numeric,2)
+        as cost_metre
+    FROM raw_fabric_products p
+"""
+
+def _recv_product_info(conn, product_id):
+    rows = q(conn, _RECV_PRODUCT_SQL + " WHERE p.id=%s", (product_id,))
+    return rows[0] if rows else None
+
+@fabric_router.get("/api/fabric/receiving/product-search")
+def receiving_product_search(q_: str = Query(default="", alias="q"),
+                             limit: int = Query(default=20)):
+    """Fabric picker for the Receiving tab: searches the register (product
+    master) by name / internal code / barcode WITHOUT a stock-on-hand filter,
+    since newly arriving fabric may have no Odoo stock yet. Returns the full
+    product-info block so the picked row can drive the sheet header directly."""
+    term = (q_ or "").strip()
+    limit = max(1, min(int(limit or 20), 50))
+    with _get_conn() as conn:
+        where = "p.category = 'Fabric'"
+        params = []
+        if term:
+            where += " AND (p.name ILIKE %s OR p.default_code ILIKE %s OR p.barcode ILIKE %s)"
+            like = f"%{term}%"
+            params = [like, like, like]
+        rows = q(conn, _RECV_PRODUCT_SQL +
+                 f" WHERE {where} ORDER BY p.name LIMIT %s",
+                 params + [limit])
+    return rows
+
+def _recv_parse_rolls(body):
+    """Validate + normalize the rolls payload: 1..50 rows, each with a whole
+    roll number > 0 and a kg weight > 0. Raises 400 with a specific message."""
+    rolls_in = body.get("rolls")
+    if not isinstance(rolls_in, list) or not rolls_in:
+        raise HTTPException(status_code=400, detail="rolls list is required")
+    if len(rolls_in) > 50:
+        raise HTTPException(status_code=400, detail="a sheet holds at most 50 rolls")
+    rolls = []
+    for i, r in enumerate(rolls_in, start=1):
+        if not isinstance(r, dict):
+            raise HTTPException(status_code=400, detail=f"roll {i}: invalid entry")
+        try:
+            roll_no = int(r.get("roll_no"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                detail=f"roll {i}: roll number must be a whole number")
+        if roll_no <= 0:
+            raise HTTPException(status_code=400,
+                detail=f"roll {i}: roll number must be greater than zero")
+        try:
+            qty_kg = float(r.get("qty_kg"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                detail=f"roll {i}: kgs must be a number")
+        if not (qty_kg > 0):
+            raise HTTPException(status_code=400,
+                detail=f"roll {i}: kgs must be greater than zero")
+        rolls.append((roll_no, round(qty_kg, 3)))
+    return rolls
+
+@fabric_router.post("/api/fabric/receiving")
+def receiving_create(request: Request, body: dict = Body(...)):
+    """Save a receiving sheet: the picked fabric + its roll weights. Metres are
+    derived server-side from the product's CURRENT kg_per_mtr_eff and the factor
+    is snapshotted on the sheet; a missing conversion stores NULL metres and is
+    flagged in the response (missing_conversion) — never a silent zero."""
+    product_id = body.get("product_id")
+    if not product_id:
+        raise HTTPException(status_code=400, detail="product_id is required")
+    note = str(body.get("note") or "").strip() or None
+    rolls = _recv_parse_rolls(body)
+    uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        prod = _recv_product_info(conn, product_id)
+        if not prod:
+            raise HTTPException(status_code=404, detail="fabric not found")
+        kpm = prod.get("kg_per_mtr")
+        kpm = float(kpm) if kpm not in (None, "") and float(kpm) > 0 else None
+        total_kg = round(sum(kg for _, kg in rolls), 3)
+        total_mtrs = round(total_kg / kpm, 1) if kpm else None
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                INSERT INTO fabric_receiving_sheets
+                  (product_id, barcode, fabric_name, kg_per_mtr,
+                   total_kg, total_mtrs, rolls_count, note,
+                   created_by, created_by_name)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+            """, (product_id, prod.get("default_code"), prod.get("name"), kpm,
+                  total_kg, total_mtrs, len(rolls), note, uid, name))
+            sheet_id = cur.fetchone()["id"]
+            for roll_no, qty_kg in rolls:
+                cur.execute("""
+                    INSERT INTO fabric_receiving_rolls (sheet_id, roll_no, qty_kg, qty_mtrs)
+                    VALUES (%s,%s,%s,%s)
+                """, (sheet_id, roll_no, qty_kg,
+                      round(qty_kg / kpm, 2) if kpm else None))
+        conn.commit()
+        _log_fabric_change("Receiving sheet saved", {
+            "id": sheet_id, "product": prod.get("name"),
+            "style_name": "", "qty": total_kg, "uom": "kg",
+            "note": f"{len(rolls)} rolls", "status": "received",
+        }, request)
+        return {"ok": True, "id": sheet_id,
+                "missing_conversion": kpm is None}
+
+@fabric_router.get("/api/fabric/receiving")
+def receiving_list(search: str = Query(default=""),
+                   limit: int = Query(default=200)):
+    """Saved receiving sheets, newest first, for the Receiving tab list."""
+    limit = max(1, min(int(limit or 200), 500))
+    term = (search or "").strip()
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        where, params = "", []
+        if term:
+            where = "WHERE (s.fabric_name ILIKE %s OR s.barcode ILIKE %s)"
+            like = f"%{term}%"
+            params = [like, like]
+        rows = q(conn, f"""
+            SELECT s.id, s.product_id, s.barcode, s.fabric_name,
+                   s.kg_per_mtr, s.total_kg, s.total_mtrs, s.rolls_count,
+                   s.note, s.created_by_name,
+                   to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY, HH24:MI') as created_at
+            FROM fabric_receiving_sheets s
+            {where}
+            ORDER BY s.created_at DESC, s.id DESC
+            LIMIT %s
+        """, params + [limit])
+    return {"items": rows}
+
+@fabric_router.get("/api/fabric/receiving/{sheet_id}")
+def receiving_fetch(sheet_id: int):
+    """One sheet + its rolls + the LIVE product-info block for reprinting.
+    Rolls keep the metres computed with the conversion snapshotted at save time
+    (historical record); the header product fields are re-read live so contact/
+    source details stay current. Falls back to the stored name/barcode when the
+    product row no longer exists."""
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        sheets = q(conn, """
+            SELECT s.id, s.product_id, s.barcode, s.fabric_name,
+                   s.kg_per_mtr, s.total_kg, s.total_mtrs, s.rolls_count,
+                   s.note, s.created_by_name,
+                   to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY') as created_date,
+                   to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY, HH24:MI') as created_at
+            FROM fabric_receiving_sheets s WHERE s.id=%s
+        """, (sheet_id,))
+        if not sheets:
+            raise HTTPException(status_code=404, detail="receiving sheet not found")
+        sheet = sheets[0]
+        rolls = q(conn, """
+            SELECT roll_no, qty_kg, qty_mtrs
+            FROM fabric_receiving_rolls WHERE sheet_id=%s
+            ORDER BY roll_no, id
+        """, (sheet_id,))
+        prod = _recv_product_info(conn, sheet["product_id"]) or {
+            "id": sheet["product_id"], "name": sheet["fabric_name"],
+            "default_code": sheet["barcode"], "kg_per_mtr": sheet["kg_per_mtr"],
+        }
+    return {"sheet": sheet, "rolls": rolls, "fabric": prod,
+            "missing_conversion": sheet.get("kg_per_mtr") in (None, "")}
+
+@fabric_router.delete("/api/fabric/receiving/{sheet_id}")
+def receiving_delete(sheet_id: int, request: Request):
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        snap = q(conn, "SELECT id, fabric_name, total_kg, rolls_count "
+                       "FROM fabric_receiving_sheets WHERE id=%s", (sheet_id,))
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM fabric_receiving_sheets WHERE id=%s", (sheet_id,))
+            deleted = cur.rowcount
+        conn.commit()
+        if not deleted:
+            raise HTTPException(status_code=404, detail="receiving sheet not found")
+        s = snap[0] if snap else {"id": sheet_id}
+        _log_fabric_change("Receiving sheet deleted", {
+            "id": sheet_id, "product": s.get("fabric_name"),
+            "style_name": "", "qty": s.get("total_kg"), "uom": "kg",
+            "note": f"{s.get('rolls_count') or 0} rolls", "status": "deleted",
+        }, request)
+        return {"ok": True}
+
+
 if __name__ == "__main__":
     # Standalone one-time backfill of the Months-of-Cover daily snapshot. The
     # writer is idempotent (upserts on today's EAT capture date), so this is safe
