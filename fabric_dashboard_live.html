@@ -3728,7 +3728,7 @@ function openReceivingFromDetail(){
   recvSetFabric(r);
 }
 // FABRIC RECEIVING INFORMATION SHEET — same A4-landscape header block as the
-// Buying sheet, but TOTAL AVAILABLE MTRS comes from the ENTERED rolls (never
+// Buying sheet, but TOTAL RECEIVED MTRS comes from the ENTERED rolls (never
 // Odoo stock), Date received / Number of rolls are FILLED, and a rolls table
 // (kgs + derived mtrs) is printed below. Missing conversion prints an explicit
 // "Missing Width/GSM" flag, never a silent blank/0.
@@ -3761,8 +3761,11 @@ async function printReceivingSheet(d){
     dataCell('Date received',clean(s.created_date)),
     dataCell('Number of rolls received',String(rolls.length))
   ].join('');
-  // Rolls print in column groups (~13 rows each) so up to 50 fit one page.
-  const perCol=Math.max(1,Math.ceil(rolls.length/Math.min(4,Math.max(1,Math.ceil(rolls.length/13)))));
+  // Rolls print in side-by-side column groups so a typical sheet fits one page.
+  // Pack horizontally first (~6 rows/column) up to 6 columns; only genuinely
+  // large roll counts grow the rows-per-column and spill to a second page.
+  const cols=Math.min(6,Math.max(1,Math.ceil(rolls.length/6)));
+  const perCol=Math.max(1,Math.ceil(rolls.length/cols));
   const groups=[];
   for(let i=0;i<rolls.length;i+=perCol)groups.push(rolls.slice(i,i+perCol));
   const rollsCols=groups.map(g=>`<table class="rolls"><thead><tr><th>Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th></tr></thead><tbody>${
@@ -3795,8 +3798,9 @@ body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:12px;}
 .photo-frame img{max-width:100%;max-height:100%;object-fit:contain;}
 .rolls-wrap{display:flex;gap:10px;align-items:flex-start;margin-top:10px;}
 .rolls{border-collapse:collapse;flex:1;}
-.rolls th,.rolls td{border:1px solid #111;padding:3px 8px;font-size:11px;}
+.rolls th,.rolls td{border:1px solid #111;padding:2px 5px;font-size:11px;}
 .rolls th{background:#f0f0f0;text-transform:uppercase;font-size:9.5px;letter-spacing:.02em;}
+.rolls td:first-child,.rolls th:first-child{width:1%;white-space:nowrap;}
 .rolls .r{text-align:right;}
 .miss{color:#b00020;font-size:9.5px;font-weight:700;}
 .tot{margin-top:8px;border:1.5px solid #111;padding:6px 9px;display:flex;gap:26px;font-size:12.5px;}
@@ -3810,13 +3814,13 @@ body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:12px;}
   <div class="rt">
    ${xf('GSM',gsm)}
    ${xf('Width',width)}
-   ${xf('TOTAL AVAILABLE MTRS',totalMtrs)}
+   ${xf('TOTAL RECEIVED MTRS',totalMtrs)}
    ${xf('Cost per metre',cost)}
    <div class="photo"><div class="lbl">Fabric photo</div><div class="photo-frame">${photoInner}</div></div>
   </div>
  </div>
  <div class="rolls-wrap">${rollsCols}</div>
- <div class="tot"><span><b>Rolls received:</b> ${esc(String(rolls.length))}</span><span><b>Total kgs:</b> ${esc(numv(s.total_kg,2))}</span><span><b>Total available mtrs:</b> ${esc(totalMtrs)}</span></div>
+ <div class="tot"><span><b>Rolls received:</b> ${esc(String(rolls.length))}</span><span><b>Total kgs:</b> ${esc(numv(s.total_kg,2))}</span><span><b>Total received mtrs:</b> ${esc(totalMtrs)}</span></div>
  ${clean(s.note)?`<div class="recv-note"><b>Note:</b> ${esc(s.note)}</div>`:''}
  ${missingConv?'<div class="recv-note" style="color:#b00020;"><b>Metres could not be derived:</b> this fabric has no Width/GSM (kg→metre) conversion. Total shown as Missing Width/GSM — fix the fabric master data and reprint.</div>':''}
 </div>
