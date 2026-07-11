@@ -3565,6 +3565,11 @@ function recvBindOnce(){
     if(el.dataset.kind==='no')recvRolls[i].no=el.value;
     else if(el.dataset.kind==='kg'){recvRolls[i].kg=el.value;recvUpdateDerived(i);}
   });
+  document.getElementById('recv-rolls-body').addEventListener('keydown',e=>{
+    if(e.key!=='Enter')return;
+    const el=e.target;
+    if(el.dataset.kind==='no'||el.dataset.kind==='kg'){e.preventDefault();recvAddRoll();}
+  });
   document.getElementById('recv-rolls-body').addEventListener('click',e=>{
     const del=e.target.closest('button[data-del-roll]');
     if(del){recvRolls.splice(Number(del.dataset.delRoll),1);renderRecvRolls();}
