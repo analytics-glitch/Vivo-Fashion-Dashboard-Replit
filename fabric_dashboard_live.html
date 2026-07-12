@@ -19,8 +19,10 @@
   --chart-primary:#EE5A0E; --chart-primary-deep:#C2410C; --chart-secondary:#22332B; --chart-tertiary:#B8AFA3;
   /* KPI card design tokens — white cards, one ink hero, Vivo-orange accent */
   --kpi-surface:#ffffff; --kpi-border:#ECE6E1; --kpi-ink:#1A1A1A; --kpi-orange:#EE5A0E; --kpi-orange-deep:#C2410C;
-  /* Header (Fabric BI top zone) tokens — near-white paper bands, Vivo-orange accent, ink + warm-grey text */
-  --fab-paper:#FAF8F4; --fab-line:#ECE6E1; --fab-ink:#1A1A1A; --fab-muted:#6B6B6B; --fab-orange:var(--kpi-orange); --fab-orange-deep:var(--kpi-orange-deep);
+  /* Header (Fabric BI top zone) tokens — near-white paper bands, Vivo-orange accent, ink + warm-grey text.
+     Brand rule: #F15A24 appears in exactly three places — the 3px top rule, the
+     logo block and the active nav item (flat, no gradients/shadows). */
+  --fab-paper:#FAF8F4; --fab-line:#ECE6E1; --fab-ink:#1A1A1A; --fab-muted:#6B6B6B; --fab-orange:#F15A24; --fab-orange-deep:#D14A1B;
   --radius:12px;
 }
 *{box-sizing:border-box;}
@@ -33,64 +35,83 @@ select,input{font-family:inherit;height:38px;border:1px solid var(--border);bord
 select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26,92,56,.1);}
 
 .layout{display:flex;flex-direction:column;min-height:100vh;}
-/* Header wrapper: Row A (utility bar) + Row B (context bar) pinned together so
-   both the tabs and the Location/Date filters stay reachable on long pages. */
-.fab-header{position:sticky;top:0;z-index:41;display:flex;flex-direction:column;}
-.fab-topnav{display:flex;align-items:center;gap:18px;background:var(--fab-paper);border-bottom:1px solid var(--fab-line);padding:9px 20px;}
-.fab-tabs-scroll{flex:1;min-width:0;display:flex;}
-/* Grouped, wrapping tab nav: clusters (caption + its tabs) sit side by side and
-   wrap onto multiple rows instead of a single sideways-scrolling strip. */
-.nav-body{display:flex;align-items:flex-start;flex-wrap:wrap;gap:4px 4px;margin:0;padding:2px 0;}
-.nav-cluster{display:flex;flex-direction:column;gap:1px;padding:0 4px;}
-.nav-cluster + .nav-cluster{border-left:1px solid var(--fab-line);}
-.nav-cluster-items{display:flex;align-items:center;flex-wrap:wrap;gap:1px;}
+/* Header wrapper: three stacked strips (utility / nav / title) pinned together
+   so navigation and the global filters stay reachable on long pages. A flat 3px
+   Vivo-orange rule tops the whole header — one of the three accent uses. */
+.fab-header{position:sticky;top:0;z-index:41;display:flex;flex-direction:column;border-top:3px solid var(--fab-orange);}
+/* Strip 1 — utility: brand lockup left; presence, Location, date range, Back right. */
+.fab-strip-util{display:flex;align-items:center;gap:16px;background:var(--fab-paper);border-bottom:1px solid var(--fab-line);padding:9px 20px;}
 .main{flex:1;min-width:0;display:flex;flex-direction:column;}
 
-/* Brand lockup: orange badge + ink "Vivo" wordmark, warm-grey "Fabric BI" sub. */
-.fab-brand{display:flex;align-items:center;gap:11px;flex-shrink:0;}
-.fab-brandmark{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--fab-orange),var(--fab-orange-deep));color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;box-shadow:0 3px 10px rgba(238,90,14,.28);}
-.fab-brandname{font-size:15px;font-weight:800;color:#fff;letter-spacing:.01em;background:linear-gradient(135deg,var(--fab-orange),var(--fab-orange-deep));padding:1px 8px;border-radius:6px;display:inline-block;line-height:1.4;box-shadow:0 3px 10px rgba(238,90,14,.28);}
-.fab-brandsub{font-size:10px;color:var(--fab-muted);font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-top:3px;}
-/* Utility actions (Reset tab order, Back) de-emphasised as icon-weight buttons. */
-.fab-utils{display:flex;align-items:center;gap:6px;flex-shrink:0;}
-.fab-util-btn{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:8px;border:1px solid var(--fab-line);background:#fff;color:var(--fab-muted);font-size:15px;line-height:1;cursor:pointer;text-decoration:none;transition:color .12s,border-color .12s,background .12s;}
-.fab-util-btn:hover{color:var(--fab-orange);border-color:var(--fab-orange);background:rgba(238,90,14,.06);}
+/* Brand lockup: flat orange "Vivo" block + ink "Fabric BI" title, warm-grey sub. */
+.fab-brand{display:flex;align-items:center;gap:11px;flex-shrink:0;margin-right:auto;}
+.fab-brandname{font-size:14px;font-weight:800;color:#fff;letter-spacing:.01em;background:var(--fab-orange);padding:5px 10px;border-radius:7px;display:inline-block;line-height:1.3;}
+.fab-brandtitle{font-size:14px;font-weight:800;color:var(--fab-ink);line-height:1.2;letter-spacing:-.01em;}
+.fab-brandsub{font-size:10px;color:var(--fab-muted);font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-top:2px;}
+/* Utility cluster (right side of strip 1). */
+.fab-utils{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;}
+.fab-utils .muted,.fab-title-actions .muted{font-size:11px;font-weight:700;color:var(--fab-muted);text-transform:uppercase;letter-spacing:.04em;}
+.fab-util-btn{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:8px;border:1px solid var(--fab-line);background:#fff;color:var(--fab-muted);font-size:15px;line-height:1;cursor:pointer;text-decoration:none;transition:color .12s,border-color .12s,background .12s;flex-shrink:0;}
+.fab-util-btn:hover{color:var(--fab-ink);border-color:var(--fab-ink);background:rgba(26,26,26,.04);}
 .fab-util-btn[hidden]{display:none;}
-.nav-group{font-size:.6rem;letter-spacing:.09em;text-transform:uppercase;color:var(--fab-muted);font-weight:700;padding:0 0 0 9px;white-space:nowrap;}
-/* Tabs: text-weight items with a Vivo-orange underline indicator on the active one. */
-.nav-item{position:relative;display:flex;align-items:center;gap:7px;padding:7px 9px;font-size:13px;font-weight:600;color:var(--fab-muted);cursor:pointer;white-space:nowrap;flex-shrink:0;transition:color .12s;border-radius:7px;}
-.nav-item svg{width:15px;height:15px;flex-shrink:0;opacity:.85;}
-.nav-item::after{content:"";position:absolute;left:9px;right:9px;bottom:0;height:2.5px;border-radius:2px;background:transparent;transition:background .12s;}
+.fab-util-btn svg{width:16px;height:16px;}
+/* Date-range pill: shows the window like "13 Jun – 12 Jul 2026"; clicking opens
+   a small popover holding the EXISTING native date inputs (same ids/onchange). */
+.fab-dr-btn{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 12px;border:1px solid var(--fab-line);border-radius:8px;background:#fff;color:var(--fab-ink);font-family:inherit;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;transition:border-color .12s;}
+.fab-dr-btn:hover{border-color:var(--fab-ink);}
+.fab-dr-btn svg{width:14px;height:14px;color:var(--fab-muted);flex-shrink:0;}
+.fab-dr-caret{font-size:9px;color:var(--fab-muted);}
+.fab-dr-pop{position:absolute;top:calc(100% + 6px);right:0;z-index:45;background:#fff;border:1px solid var(--fab-line);border-radius:10px;box-shadow:0 10px 30px rgba(16,40,24,.12);padding:10px;align-items:center;gap:8px;}
+/* Strip 2 — nav: ONE tier, five groups split by hairline dividers, no captions. */
+.fab-strip-nav{background:var(--fab-paper);border-bottom:1px solid var(--fab-line);padding:0 20px;}
+.nav-body{display:flex;align-items:stretch;flex-wrap:wrap;margin:0;padding:0;list-style:none;}
+.nav-groupli{display:flex;}
+.nav-groupli + .nav-groupli{border-left:0.5px solid var(--fab-line);}
+.nav-cluster-items{display:flex;align-items:stretch;flex-wrap:wrap;gap:2px;margin:0;padding:0 8px;list-style:none;}
+.nav-groupli:first-child .nav-cluster-items{padding-left:0;}
+.nav-cluster-items li{display:flex;}
+/* Tabs: grey text-weight items; the active one is Vivo orange with a flat 2px underline. */
+.nav-item{position:relative;display:flex;align-items:center;gap:7px;padding:11px 9px 12px;font-size:13px;font-weight:600;color:var(--fab-muted);cursor:pointer;white-space:nowrap;flex-shrink:0;transition:color .12s;background:none;border:none;font-family:inherit;line-height:1.2;}
+.nav-item svg{width:16px;height:16px;flex-shrink:0;opacity:.85;}
+.nav-item::after{content:"";position:absolute;left:9px;right:9px;bottom:-1px;height:2px;background:transparent;transition:background .12s;}
 .nav-item:hover{color:var(--fab-ink);}
+.nav-item:focus-visible{outline:2px solid var(--fab-ink);outline-offset:-2px;}
 .nav-item.active{color:var(--fab-orange);font-weight:700;}
 .nav-item.active svg{opacity:1;}
 .nav-item.active::after{background:var(--fab-orange);}
-.nav-acr{font-size:.84em;letter-spacing:.02em;}
+/* "More ▾" collapse target for navOverflow="menu" — hidden in the default wrap mode. */
+.nav-more-li{display:none;position:relative;}
+.nav-more-li .export-menu{left:0;right:auto;}
+@media (max-width:1100px){
+  .nav-mode-menu .nav-groupli[data-collapse]{display:none;}
+  .nav-mode-menu .nav-more-li{display:flex;}
+}
 /* ── Responsive nav ──
-   Step 1 (≤1240px): tighten spacing so the clusters wrap less aggressively.
+   Step 1 (≤1240px): tighten spacing so the groups wrap less aggressively.
    Step 2 (≤1000px): compact icon-only tabs — labels hide (native title tooltips
    carry them, set from the span text in JS), the ACTIVE tab keeps its label so
-   orientation never gets lost, and the section captions stay visible.
+   orientation never gets lost.
    Step 3 (≤620px): last resort — one non-wrapping row with horizontal scroll. */
 @media (max-width:1240px){
-  .fab-topnav{gap:12px;padding:9px 14px;}
-  .nav-item{padding:7px 7px;font-size:12.5px;gap:6px;}
-  .nav-cluster{padding:0 3px;}
+  .fab-strip-util{gap:12px;padding:9px 14px;}
+  .fab-strip-nav{padding:0 14px;}
+  .nav-item{padding:11px 7px 12px;font-size:12.5px;gap:6px;}
+  .nav-cluster-items{padding:0 5px;}
 }
 @media (max-width:1000px){
   .nav-item span{display:none;}
-  .nav-item.active span{display:inline;}
-  .nav-item{padding:8px 8px;}
-  .nav-item svg{width:17px;height:17px;}
+  .nav-item.active span,.nav-item.nav-more-btn span{display:inline;}
+  .nav-item{padding:11px 8px 12px;}
   .nav-item::after{left:5px;right:5px;}
-  .nav-group{padding-left:5px;}
 }
 @media (max-width:620px){
-  .fab-topnav{flex-wrap:wrap;row-gap:6px;}
-  .fab-tabs-scroll{order:3;flex-basis:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;}
+  .fab-strip-util{flex-wrap:wrap;row-gap:8px;}
+  .fab-utils{flex:1 1 100%;justify-content:flex-start;}
+  .fab-strip-nav{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;}
   .nav-body{flex-wrap:nowrap;width:max-content;}
   .nav-cluster-items{flex-wrap:nowrap;}
   .nav-item.active span{display:none;}
+  .nav-item.nav-more-btn span{display:inline;}
 }
 .rsv-lbl{display:block;font-size:11px;font-weight:600;color:var(--text-sub);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;}
 .resv-dropdown{position:absolute;top:100%;left:0;z-index:30;width:340px;max-height:280px;overflow:auto;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.12);margin-top:4px;}
@@ -100,35 +121,41 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .resv-opt{padding:8px 11px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border);}
 .resv-opt:hover{background:rgba(26,92,56,.07);}
 .resv-opt .ro-code{color:var(--text-sub);font-size:11px;}
-.back-link{display:block;margin-left:auto;padding:0 9px;font-size:12px;color:var(--muted);text-decoration:none;white-space:nowrap;flex-shrink:0;}
-/* Row B — context bar: page title/subtitle on the left, filter cluster on the right. */
-.fab-context{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--fab-line);background:var(--fab-paper);flex-wrap:wrap;}
+/* Strip 3 — title band: active page title/subtitle left, actions (consumption
+   cluster on Stock mix, freshness pill, Export) right. */
+.fab-strip-title{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--fab-line);background:var(--fab-paper);flex-wrap:wrap;}
 .fab-context-title{flex-shrink:0;}
 .fab-context-title h1{margin:0;font-size:20px;font-weight:800;letter-spacing:-.02em;color:var(--fab-ink);line-height:1.25;}
 .fab-context-title .sub{font-size:12px;color:var(--fab-muted);margin-top:2px;}
-.fab-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
-.fab-filter-item,.fab-daterange{display:inline-flex;align-items:center;gap:7px;}
+.fab-title-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;}
+.fab-filter-item{display:inline-flex;align-items:center;gap:7px;}
+.fab-daterange{position:relative;display:inline-flex;}
 .fab-cluster{align-items:center;gap:9px;flex-wrap:wrap;}
-.fab-filters .muted{font-size:11px;font-weight:700;color:var(--fab-muted);text-transform:uppercase;letter-spacing:.04em;}
+/* Header Export button + its dropdown anchor. */
+.fab-export-wrap{position:relative;display:inline-flex;}
+.fab-export-btn{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 14px;border:1px solid var(--fab-line);border-radius:8px;background:#fff;color:var(--fab-ink);font-family:inherit;font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap;transition:border-color .12s,background .12s;}
+.fab-export-btn:hover{border-color:var(--fab-ink);}
+.fab-export-btn svg{width:14px;height:14px;color:var(--fab-muted);flex-shrink:0;}
 /* Styled dropdowns + a single cohesive date-range control (native inputs kept
    inside a bordered shell — same values, onchange wiring and keyboard access). */
 .fab-select{height:34px;padding:0 30px 0 11px;border:1px solid var(--fab-line);border-radius:8px;background:#fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%236B6B6B' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>") no-repeat right 11px center;font-family:inherit;font-size:12.5px;font-weight:600;color:var(--fab-ink);cursor:pointer;appearance:none;-webkit-appearance:none;-moz-appearance:none;outline:none;transition:border-color .12s,box-shadow .12s;}
-.fab-select:hover{border-color:var(--fab-orange);}
-.fab-select:focus-visible{border-color:var(--fab-orange);box-shadow:0 0 0 2px rgba(238,90,14,.15);}
+.fab-select:hover{border-color:var(--fab-ink);}
+.fab-select:focus-visible{border-color:var(--fab-ink);box-shadow:0 0 0 2px rgba(26,26,26,.12);}
 .fab-dr-fields{display:inline-flex;align-items:center;height:34px;padding:0 6px;border:1px solid var(--fab-line);border-radius:8px;background:#fff;transition:border-color .12s,box-shadow .12s;}
-.fab-dr-fields:focus-within{border-color:var(--fab-orange);box-shadow:0 0 0 2px rgba(238,90,14,.15);}
+.fab-dr-fields:focus-within{border-color:var(--fab-ink);box-shadow:0 0 0 2px rgba(26,26,26,.12);}
 .fab-dr-fields input[type=date]{border:none;background:transparent;height:30px;padding:0 4px;font-family:inherit;font-size:12.5px;font-weight:600;color:var(--fab-ink);outline:none;box-shadow:none;color-scheme:light;}
 .fab-dr-fields input[type=date]:focus{border:none;box-shadow:none;}
 .fab-dr-fields input[type=date]::-webkit-calendar-picker-indicator{opacity:.5;cursor:pointer;padding:0;margin:0;}
 .fab-dr-fields input[type=date]:hover::-webkit-calendar-picker-indicator{opacity:.85;}
 .fab-dr-sep{color:var(--fab-muted);font-size:12px;padding:0 1px;}
 .fab-clear-btn{height:34px;padding:0 11px;border:1px solid var(--fab-line);border-radius:8px;background:#fff;color:var(--fab-muted);font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;transition:color .12s,border-color .12s,background .12s;}
-.fab-clear-btn:hover{color:var(--fab-orange);border-color:var(--fab-orange);background:rgba(238,90,14,.06);}
-/* Freshness pill — the one flourish: a live/pulsing orange dot + legible label. */
+.fab-clear-btn:hover{color:var(--fab-ink);border-color:var(--fab-ink);background:rgba(26,26,26,.04);}
+/* Freshness pill — a live/pulsing green dot + legible label (accent stays
+   reserved for the top rule / logo / active nav). */
 .fab-fresh{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:999px;background:#fff;border:1px solid var(--fab-line);font-size:11.5px;font-weight:700;color:var(--fab-ink);white-space:nowrap;}
 .fab-fresh:empty{display:none;}
-.fab-fresh::before{content:"";flex-shrink:0;width:8px;height:8px;border-radius:50%;background:var(--fab-orange);box-shadow:0 0 0 0 rgba(238,90,14,.55);animation:fabfreshpulse 2.2s ease-out infinite;}
-@keyframes fabfreshpulse{0%{box-shadow:0 0 0 0 rgba(238,90,14,.5);}70%{box-shadow:0 0 0 7px rgba(238,90,14,0);}100%{box-shadow:0 0 0 0 rgba(238,90,14,0);}}
+.fab-fresh::before{content:"";flex-shrink:0;width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 rgba(21,128,61,.55);animation:fabfreshpulse 2.2s ease-out infinite;}
+@keyframes fabfreshpulse{0%{box-shadow:0 0 0 0 rgba(21,128,61,.5);}70%{box-shadow:0 0 0 7px rgba(21,128,61,0);}100%{box-shadow:0 0 0 0 rgba(21,128,61,0);}}
 /* ── Responsive context bar (Row B) ──
    ≤620px (phone): the title takes the full width, then each filter control gets
    its own tidy row — a fixed label column on the left and the control stretching
@@ -138,19 +165,19 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
    cluster/daterange display is JS-inline-driven (inline-flex vs none), so this
    block only reshapes widths and wrapping — it never touches `display`. */
 @media (max-width:620px){
-  .fab-context{padding:10px 1rem 12px;row-gap:10px;}
+  .fab-strip-title{padding:10px 1rem 12px;row-gap:10px;}
   .fab-context-title{flex:1 1 100%;}
   .fab-context-title h1{font-size:17px;}
-  .fab-filters{flex:1 1 100%;gap:8px;}
-  .fab-filter-item,.fab-daterange,.fab-cluster{width:100%;min-width:0;flex-wrap:wrap;}
-  .fab-filter-item>.muted,.fab-daterange>.muted,.fab-cluster>.muted:first-child{flex:0 0 74px;white-space:normal;line-height:1.2;}
+  .fab-title-actions{flex:1 1 100%;gap:8px;justify-content:flex-start;}
+  .fab-filter-item,.fab-cluster{width:100%;min-width:0;flex-wrap:wrap;}
+  .fab-filter-item>.muted,.fab-cluster>.muted:first-child{flex:0 0 74px;white-space:normal;line-height:1.2;}
   .fab-filter-item>.fab-select{flex:1 1 0;min-width:0;height:38px;}
   .fab-cluster>.fab-select{flex:1 1 150px;min-width:0;height:38px;}
-  .fab-filters .fab-dr-fields{flex:1 1 0;min-width:0;height:38px;}
   .fab-cluster .fab-dr-fields{flex:1 1 170px;}
   .fab-dr-fields input[type=date]{flex:1 1 0;min-width:0;width:auto;font-size:12px;padding:0 2px;}
   .fab-clear-btn{height:38px;flex-shrink:0;}
   .fab-fresh{max-width:100%;overflow:hidden;text-overflow:ellipsis;}
+  .fab-dr-pop{right:auto;left:0;}
 }
 /* Live viewers presence pill — a green "online" dot + count; hovering/clicking
    reveals a small popover list of who is currently viewing this page. */
@@ -164,7 +191,7 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .fab-presence-pop .pp-head{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--fab-muted);padding:6px 8px 8px;}
 .fab-presence-row{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;}
 .fab-presence-row:hover{background:var(--bg);}
-.fab-presence-av{flex-shrink:0;width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,var(--fab-orange),var(--fab-orange-deep));color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;text-transform:uppercase;}
+.fab-presence-av{flex-shrink:0;width:26px;height:26px;border-radius:50%;background:var(--fab-orange-deep);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;text-transform:uppercase;}
 .fab-presence-meta{min-width:0;display:flex;flex-direction:column;line-height:1.3;}
 .fab-presence-name{font-size:12.5px;font-weight:600;color:var(--fab-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .fab-presence-role{font-size:10.5px;color:var(--fab-muted);text-transform:capitalize;}
@@ -176,7 +203,7 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .fab-av-stack{display:inline-flex;align-items:center;}
 .fab-av{position:relative;flex-shrink:0;width:22px;height:22px;border-radius:50%;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:800;text-transform:uppercase;color:#fff;background:#cbd5e1;line-height:1;}
 .fab-av-img{width:100%;height:100%;object-fit:cover;display:block;}
-.fab-av-fallback{background:linear-gradient(135deg,var(--fab-orange),var(--fab-orange-deep));}
+.fab-av-fallback{background:var(--fab-orange-deep);}
 .fab-av-stk{box-shadow:0 0 0 2px #fff;margin-left:-7px;}
 .fab-av-stk:first-child{margin-left:0;}
 .fab-av-self{box-shadow:0 0 0 2px var(--ok);}
@@ -313,7 +340,7 @@ tr.sub-row td{background:var(--bg);font-size:12.5px;}
 .banner-warn{background:#fef3c7;color:#92400e;border:1px solid #fcd34d;font-weight:600;}
 .banner-info{background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;}
 .flex{display:flex;gap:9px;flex-wrap:wrap;align-items:center;}
-@media(max-width:760px){.fab-topnav,.fab-context{padding-left:1rem;padding-right:1rem;}}
+@media(max-width:760px){.fab-strip-util,.fab-strip-nav,.fab-strip-title{padding-left:1rem;padding-right:1rem;}}
 
 .seg{display:inline-flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;}
 .seg .unit-btn{height:36px;padding:0 14px;border:none;background:var(--card);color:var(--text-sub);font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;}
@@ -392,54 +419,13 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
 <body>
 <div class="layout">
  <div class="fab-header">
-  <header class="fab-topnav">
+  <header class="fab-strip-util">
    <div class="fab-brand">
+    <div class="fab-brandname">Vivo</div>
     <div>
-     <div class="fab-brandname">Vivo</div>
-     <div class="fab-brandsub">Fabric BI</div>
+     <div class="fab-brandtitle">Fabric BI</div>
+     <div class="fab-brandsub">Warehouse intelligence</div>
     </div>
-   </div>
-   <div class="fab-tabs-scroll">
-    <nav class="nav-body" id="nav-body">
-     <div class="nav-cluster">
-      <div class="nav-group">Overview</div>
-      <div class="nav-cluster-items">
-       <div class="nav-item active" data-page="overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg><span>Overview</span></div>
-       <div class="nav-item" data-page="movement"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg><span>Trend Analysis</span></div>
-      </div>
-     </div>
-     <div class="nav-cluster">
-      <div class="nav-group">Stock &amp; Health</div>
-      <div class="nav-cluster-items">
-       <div class="nav-item" data-page="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg><span>Stock Mix</span></div>
-       <div class="nav-item" data-page="ageing"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg><span>Stock &amp; Ageing</span></div>
-       <div class="nav-item" data-page="deadstock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline><polyline points="17 18 23 18 23 12"></polyline></svg><span>Slow Moving</span></div>
-       <div class="nav-item" data-page="support"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="4"></circle><line x1="4.93" y1="4.93" x2="9.17" y2="9.17"></line><line x1="14.83" y1="14.83" x2="19.07" y2="19.07"></line><line x1="14.83" y1="9.17" x2="19.07" y2="4.93"></line><line x1="4.93" y1="19.07" x2="9.17" y2="14.83"></line></svg><span>Support Fabrics</span></div>
-      </div>
-     </div>
-     <div class="nav-cluster">
-      <div class="nav-group">Quality</div>
-      <div class="nav-cluster-items">
-       <div class="nav-item" data-page="defects"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg><span>Fabric QC</span></div>
-       <div class="nav-item" data-page="dataquality"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg><span>Data Quality</span></div>
-      </div>
-     </div>
-     <div class="nav-cluster">
-      <div class="nav-group">Procurement</div>
-      <div class="nav-cluster-items">
-       <div class="nav-item" data-page="pos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg><span>Purchase Orders</span></div>
-       <div class="nav-item" data-page="suppliers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg><span>Vendors/Suppliers</span></div>
-       <div class="nav-item" data-page="reservations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg><span>Fabric Reservations</span></div>
-      </div>
-     </div>
-     <div class="nav-cluster">
-      <div class="nav-group">Receiving</div>
-      <div class="nav-cluster-items">
-       <div class="nav-item" data-page="rolls"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg><span>Rolls</span></div>
-       <div class="nav-item" data-page="receiving"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg><span>Receiving</span></div>
-      </div>
-     </div>
-    </nav>
    </div>
    <div class="fab-utils">
     <div class="fab-presence" id="fab-presence" style="display:none;">
@@ -449,19 +435,75 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      </button>
      <div class="fab-presence-pop" id="fab-presence-pop" role="menu" aria-label="People viewing now"></div>
     </div>
-    <a href="/" class="fab-util-btn" title="Back to Vivo BI">&larr;</a>
+    <span class="fab-filter-item">
+     <span class="muted">Location</span>
+     <select id="location-filter" class="fab-select" aria-label="Stock location" onchange="onLocationChange()"></select>
+    </span>
+    <span id="daterange-topbar" class="fab-daterange">
+     <button type="button" class="fab-dr-btn" id="fab-dr-btn" aria-haspopup="true" aria-expanded="false" aria-label="Change the report date range" title="Change the report date range" onclick="toggleFabDrPop(event)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+      <span id="fab-dr-label">Date range</span>
+      <span class="fab-dr-caret" aria-hidden="true">&#9662;</span>
+     </button>
+     <div class="fab-dr-pop" id="fab-dr-pop" style="display:none;">
+      <span class="muted">Date range</span>
+      <span class="fab-dr-fields">
+       <input type="date" id="g-since" onchange="onDateRangeChange()" title="From" aria-label="From date">
+       <span class="fab-dr-sep">→</span>
+       <input type="date" id="g-until" onchange="onDateRangeChange()" title="To" aria-label="To date">
+      </span>
+     </div>
+    </span>
+    <a href="/" class="fab-util-btn" aria-label="Back to Vivo BI" title="Back to Vivo BI"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg></a>
    </div>
   </header>
-  <div class="fab-context">
+  <nav class="fab-strip-nav" id="fab-nav" aria-label="Fabric BI sections">
+   <ul class="nav-body" id="nav-body">
+    <li class="nav-groupli">
+     <ul class="nav-cluster-items">
+      <li><button type="button" class="nav-item active" data-page="overview" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg><span>Overview</span></button></li>
+      <li><button type="button" class="nav-item" data-page="movement"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg><span>Trends</span></button></li>
+     </ul>
+    </li>
+    <li class="nav-groupli">
+     <ul class="nav-cluster-items">
+      <li><button type="button" class="nav-item" data-page="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg><span>Stock mix</span></button></li>
+      <li><button type="button" class="nav-item" data-page="ageing"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg><span>Ageing</span></button></li>
+      <li><button type="button" class="nav-item" data-page="deadstock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline><polyline points="17 18 23 18 23 12"></polyline></svg><span>Slow moving</span></button></li>
+      <li><button type="button" class="nav-item" data-page="support"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="4"></circle><line x1="4.93" y1="4.93" x2="9.17" y2="9.17"></line><line x1="14.83" y1="14.83" x2="19.07" y2="19.07"></line><line x1="14.83" y1="9.17" x2="19.07" y2="4.93"></line><line x1="4.93" y1="19.07" x2="9.17" y2="14.83"></line></svg><span>Support</span></button></li>
+     </ul>
+    </li>
+    <li class="nav-groupli">
+     <ul class="nav-cluster-items">
+      <li><button type="button" class="nav-item" data-page="defects"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg><span>Fabric QC</span></button></li>
+      <li><button type="button" class="nav-item" data-page="dataquality"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg><span>Data quality</span></button></li>
+     </ul>
+    </li>
+    <li class="nav-groupli" data-collapse="1">
+     <ul class="nav-cluster-items">
+      <li><button type="button" class="nav-item" data-page="pos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg><span>Purchase orders</span></button></li>
+      <li><button type="button" class="nav-item" data-page="suppliers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg><span>Vendors</span></button></li>
+      <li><button type="button" class="nav-item" data-page="reservations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg><span>Reservations</span></button></li>
+     </ul>
+    </li>
+    <li class="nav-groupli" data-collapse="1">
+     <ul class="nav-cluster-items">
+      <li><button type="button" class="nav-item" data-page="rolls"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg><span>Rolls</span></button></li>
+      <li><button type="button" class="nav-item" data-page="receiving"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg><span>Receiving</span></button></li>
+     </ul>
+    </li>
+    <li class="nav-more-li" id="nav-more-li">
+     <button type="button" class="nav-item nav-more-btn" id="nav-more-btn" aria-haspopup="true" aria-expanded="false" onclick="toggleFabNavMore(event)"><span>More</span><span class="fab-dr-caret" aria-hidden="true">&#9662;</span></button>
+     <div class="export-menu" id="nav-more-menu" style="display:none;" role="menu" aria-label="More sections"></div>
+    </li>
+   </ul>
+  </nav>
+  <div class="fab-strip-title">
    <div class="fab-context-title">
     <h1 id="page-title">Overview</h1>
     <div class="sub" id="page-desc">Fabric stock, value and health across the warehouse</div>
    </div>
-   <div class="fab-filters">
-    <span class="fab-filter-item">
-     <span class="muted">Location</span>
-     <select id="location-filter" class="fab-select" onchange="onLocationChange()"></select>
-    </span>
+   <div class="fab-title-actions">
     <span id="mix-period-topbar" class="fab-cluster" style="display:none;">
      <span class="muted">Consumption period</span>
      <select id="mix-period-top" class="fab-select" onchange="onMixPresetTop()">
@@ -478,15 +520,11 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      </span>
      <button class="fab-clear-btn" onclick="clearMixRangeTop()" title="Clear the custom range and use the preset">Clear</button>
     </span>
-    <span id="daterange-topbar" class="fab-daterange">
-     <span class="muted">Date range</span>
-     <span class="fab-dr-fields">
-      <input type="date" id="g-since" onchange="onDateRangeChange()" title="From">
-      <span class="fab-dr-sep">→</span>
-      <input type="date" id="g-until" onchange="onDateRangeChange()" title="To">
-     </span>
-    </span>
     <span id="last-updated" class="fab-fresh"></span>
+    <span class="fab-export-wrap">
+     <button type="button" class="fab-export-btn" id="fab-export-btn" aria-haspopup="true" aria-expanded="false" onclick="fabHeaderExport(event)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg><span>Export</span></button>
+     <div class="export-menu" id="fab-export-menu" style="display:none;" role="menu" aria-label="Export options"></div>
+    </span>
    </div>
   </div>
  </div>
@@ -1605,23 +1643,29 @@ function renderSupportKpis(d){
 
 // ── Navigation ──
 const LOADERS={dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingSheets};
-const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'',deadstock:'Fabric that has been sitting without movement',defects:'',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet'};
+const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Fabric quality control tracking and reporting — coming soon',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet'};
 const loadedOnce={};
 
-document.querySelectorAll('.nav-item').forEach(el=>{
+// Bind ONLY real page tabs ([data-page]) — the "More ▾" trigger is also a
+// .nav-item but has its own toggle handler and no page to show.
+document.querySelectorAll('.nav-item[data-page]').forEach(el=>{
   // Native tooltip carries the tab label when the compact (icon-only) nav
   // breakpoint hides the text — harmless at full width too.
   const lbl=el.querySelector('span');
   if(lbl&&!el.title) el.title=lbl.textContent.trim();
   el.addEventListener('click',()=>{
     const page=el.dataset.page;
+    if(!page||!document.getElementById('page-'+page))return;
     document.querySelectorAll('section[id^="page-"]').forEach(p=>p.style.display='none');
     document.getElementById('page-'+page).style.display='';
-    document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n=>{n.classList.remove('active');n.removeAttribute('aria-current');});
     el.classList.add('active');
+    el.setAttribute('aria-current','page');
     document.getElementById('page-title').textContent=el.textContent.trim();
     document.getElementById('page-desc').textContent=DESCS[page]||'';
     fabSyncMixTopbarVisibility();
+    fabSyncMoreActive();
+    fabCloseHeaderExportMenu();
     if(LOADERS[page]&&!loadedOnce[page]){loadedOnce[page]=true;LOADERS[page]();}
     // Already-loaded window-driven pages: the top Date range (or location) may
     // have changed while this page was hidden — the cached mix tree (which the
@@ -2277,6 +2321,7 @@ function fabSyncMixInputs(){
   if(fromTop)fromTop.value=from;
   if(toTop)toTop.value=to;
   if(selTop){if(n!=null)selTop.value=String(n); else selTop.selectedIndex=-1;}
+  fabUpdateRangeLabel();
 }
 // Main Stock Mix tab loader — thin wrapper over the shared, ctx-parametrized loader.
 function loadFabricMix(){return loadMix(mixMain);}
@@ -2371,10 +2416,140 @@ function fabSyncMixTopbarVisibility(){
   const onMix=currentPage()==='dashboard';
   const el=document.getElementById('mix-period-topbar');
   if(el)el.style.display=onMix?'inline-flex':'none';
-  // The redundant Date range box is hidden on the Fabric Mix page (the
-  // Consumption period cluster drives that page), but stays for every other page.
-  const dr=document.getElementById('daterange-topbar');
-  if(dr)dr.style.display=onMix?'none':'inline-flex';
+  // The utility-strip Date range pill is PERSISTENT on every page — on Stock Mix
+  // it coexists with the Consumption-period cluster because both drive the same
+  // g-since/g-until source of truth (onMixPreset/onMixRange write those inputs
+  // and fabSyncMixInputs mirrors the result back, keeping the pill label live).
+}
+// ── Three-strip header helpers ───────────────────────────────────────────────
+// Date-range pill label — renders the g-since/g-until window like
+// "13 Jun – 12 Jul 2026" (the year is shown once when both ends share it).
+function fabUpdateRangeLabel(){
+  const el=document.getElementById('fab-dr-label'); if(!el)return;
+  const from=(document.getElementById('g-since')||{}).value;
+  const to=(document.getElementById('g-until')||{}).value;
+  if(!from||!to){el.textContent='Date range';return;}
+  const f=new Date(from+'T00:00:00'),t=new Date(to+'T00:00:00');
+  if(isNaN(f)||isNaN(t)){el.textContent='Date range';return;}
+  const dm=d=>d.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  const dmy=d=>d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+  el.textContent=(f.getFullYear()===t.getFullYear()?dm(f):dmy(f))+' – '+dmy(t);
+}
+function fabCloseDrPop(){
+  const p=document.getElementById('fab-dr-pop');
+  if(p)p.style.display='none';
+  const b=document.getElementById('fab-dr-btn');
+  if(b)b.setAttribute('aria-expanded','false');
+}
+function toggleFabDrPop(e){
+  if(e)e.stopPropagation();
+  const p=document.getElementById('fab-dr-pop'); if(!p)return;
+  const open=p.style.display==='none';
+  p.style.display=open?'flex':'none';
+  const b=document.getElementById('fab-dr-btn');
+  if(b)b.setAttribute('aria-expanded',open?'true':'false');
+}
+document.addEventListener('click',e=>{
+  if(!(e.target.closest&&e.target.closest('#daterange-topbar')))fabCloseDrPop();
+  if(!(e.target.closest&&e.target.closest('.fab-export-wrap')))fabCloseHeaderExportMenu();
+  if(!(e.target.closest&&e.target.closest('#nav-more-li')))fabCloseNavMore();
+});
+// Title-strip Export — proxies the ACTIVE page's existing export functionality.
+// Multi-export pages get a dropdown of the same warehouse-wide exports their
+// in-page control offers; single-export pages run theirs directly; pages with
+// no export get a brief "No export here" stub on the button itself. Labels are
+// static strings rendered with textContent — never HTML.
+const HEADER_EXPORTS={
+  dashboard:[
+    {label:'Category summary (CSV)',run:()=>mixExport('category')},
+    {label:'Sub-category summary (CSV)',run:()=>mixExport('subcategory')},
+    {label:'All products — full stock mix (CSV)',run:()=>mixExport('products')},
+    {label:'Action items only (CSV)',run:()=>mixExport('actions')}],
+  support:[
+    {label:'Category summary (CSV)',run:()=>supportMixExport('category')},
+    {label:'Sub-category summary (CSV)',run:()=>supportMixExport('subcategory')},
+    {label:'All products — full support register (CSV)',run:()=>supportMixExport('products')},
+    {label:'Action items only (CSV)',run:()=>supportMixExport('actions')}],
+  register:[{label:'Fabric register (CSV)',run:()=>exportRegister(null)}],
+  deadstock:[{label:'Slow-moving list (CSV)',run:()=>exportDeadStock(null)}],
+  dataquality:[
+    {label:'Missing kg-per-metre (CSV)',run:()=>exportDataQuality(null)},
+    {label:'MOs missing conversion (CSV)',run:()=>exportMoMissing(null)},
+    {label:'Unmatched purchase lines (CSV)',run:()=>exportUnmatched(null)}],
+};
+function fabCloseHeaderExportMenu(){
+  const m=document.getElementById('fab-export-menu');
+  if(m)m.style.display='none';
+  const b=document.getElementById('fab-export-btn');
+  if(b)b.setAttribute('aria-expanded','false');
+}
+function fabHeaderExport(e){
+  if(e)e.stopPropagation();
+  const btn=document.getElementById('fab-export-btn');
+  const menu=document.getElementById('fab-export-menu');
+  const items=HEADER_EXPORTS[currentPage()];
+  if(!items||!items.length){
+    // Stub: this page has no export (yet) — say so briefly on the button.
+    const sp=btn.querySelector('span');
+    if(sp&&!btn.dataset.stub){
+      btn.dataset.stub='1';
+      const old=sp.textContent;
+      sp.textContent='No export here';
+      setTimeout(()=>{sp.textContent=old;delete btn.dataset.stub;},1500);
+    }
+    return;
+  }
+  if(items.length===1){items[0].run();return;}
+  const open=menu.style.display==='none';
+  if(open){
+    menu.innerHTML='';
+    items.forEach(it=>{
+      const b=document.createElement('button');
+      b.type='button';
+      b.textContent=it.label;
+      b.onclick=()=>{fabCloseHeaderExportMenu();it.run();};
+      menu.appendChild(b);
+    });
+  }
+  menu.style.display=open?'block':'none';
+  btn.setAttribute('aria-expanded',open?'true':'false');
+}
+// navOverflow: "wrap" (default — the five nav groups wrap onto extra rows) or
+// "menu" (the Procurement + Receiving groups [data-collapse] fold into a
+// "More ▾" menu at ≤1100px). Flip this constant to switch behaviour.
+const navOverflow='wrap';
+if(navOverflow==='menu'){const n=document.getElementById('fab-nav');if(n)n.classList.add('nav-mode-menu');}
+function fabCloseNavMore(){
+  const m=document.getElementById('nav-more-menu');
+  if(m)m.style.display='none';
+  const b=document.getElementById('nav-more-btn');
+  if(b)b.setAttribute('aria-expanded','false');
+}
+function toggleFabNavMore(e){
+  if(e)e.stopPropagation();
+  const m=document.getElementById('nav-more-menu');
+  const btn=document.getElementById('nav-more-btn');
+  const open=m.style.display==='none';
+  if(open){
+    // Proxy buttons — clicking one clicks the REAL (hidden) nav item so every
+    // existing handler, loader and active-state rule keeps working untouched.
+    m.innerHTML='';
+    document.querySelectorAll('.nav-groupli[data-collapse] .nav-item').forEach(it=>{
+      const b=document.createElement('button');
+      b.type='button';
+      b.textContent=((it.querySelector('span')||it).textContent||'').trim();
+      if(it.classList.contains('active'))b.style.color='var(--fab-orange)';
+      b.onclick=()=>{fabCloseNavMore();it.click();};
+      m.appendChild(b);
+    });
+  }
+  m.style.display=open?'block':'none';
+  btn.setAttribute('aria-expanded',open?'true':'false');
+}
+// Tint the "More ▾" trigger when the active page lives inside a collapsed group.
+function fabSyncMoreActive(){
+  const btn=document.getElementById('nav-more-btn'); if(!btn)return;
+  btn.classList.toggle('active',!!document.querySelector('.nav-groupli[data-collapse] .nav-item.active'));
 }
 // ── Export dropdown ──────────────────────────────────────────────────────────
 // The Stock Mix "Export CSV" control is a dropdown of four warehouse-wide
@@ -4425,6 +4600,7 @@ function exportUnmatched(btn){
 // NOT wired to the topbar Date range.)
 function onDateRangeChange(){
   _fabRangeTouched=true;   // user set the window — never overwrite with defaults
+  fabUpdateRangeLabel();   // keep the utility-strip pill label in sync
   // The Stock Mix KPIs follow the same top Date range when that page is shown.
   if(document.getElementById('page-dashboard').style.display!=='none'){
     loadFabricMix();
@@ -5171,6 +5347,7 @@ async function init(){
     if(rColSel&&Array.isArray(f.fabric_colors))rColSel.innerHTML='<option value="">All colors</option>'+f.fabric_colors.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
   }catch(e){/* overview will surface the auth error */}
   fabSyncMixTopbarVisibility();
+  fabUpdateRangeLabel();
   loadOverview();
   startFabricAutoRefresh();   // begin the silent 60s re-poll of the active tab
   startFabricPresence();      // live "who's viewing" indicator
