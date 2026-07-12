@@ -37,9 +37,13 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
    both the tabs and the Location/Date filters stay reachable on long pages. */
 .fab-header{position:sticky;top:0;z-index:41;display:flex;flex-direction:column;}
 .fab-topnav{display:flex;align-items:center;gap:18px;background:var(--fab-paper);border-bottom:1px solid var(--fab-line);padding:9px 20px;}
-.fab-tabs-scroll{flex:1;min-width:0;display:flex;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-mask-image:linear-gradient(90deg,transparent 0,#000 22px,#000 calc(100% - 22px),transparent 100%);mask-image:linear-gradient(90deg,transparent 0,#000 22px,#000 calc(100% - 22px),transparent 100%);}
-.fab-tabs-scroll::-webkit-scrollbar{display:none;height:0;}
-.nav-body{display:flex;align-items:center;flex-wrap:nowrap;gap:2px;margin:0 auto;padding:0 2px;}
+.fab-tabs-scroll{flex:1;min-width:0;display:flex;}
+/* Grouped, wrapping tab nav: clusters (caption + its tabs) sit side by side and
+   wrap onto multiple rows instead of a single sideways-scrolling strip. */
+.nav-body{display:flex;align-items:flex-start;flex-wrap:wrap;gap:4px 4px;margin:0;padding:2px 0;}
+.nav-cluster{display:flex;flex-direction:column;gap:1px;padding:0 4px;}
+.nav-cluster + .nav-cluster{border-left:1px solid var(--fab-line);}
+.nav-cluster-items{display:flex;align-items:center;flex-wrap:wrap;gap:1px;}
 .main{flex:1;min-width:0;display:flex;flex-direction:column;}
 
 /* Brand lockup: orange badge + ink "Vivo" wordmark, warm-grey "Fabric BI" sub. */
@@ -52,18 +56,15 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .fab-util-btn{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:8px;border:1px solid var(--fab-line);background:#fff;color:var(--fab-muted);font-size:15px;line-height:1;cursor:pointer;text-decoration:none;transition:color .12s,border-color .12s,background .12s;}
 .fab-util-btn:hover{color:var(--fab-orange);border-color:var(--fab-orange);background:rgba(238,90,14,.06);}
 .fab-util-btn[hidden]{display:none;}
-.nav-group{font-size:.62rem;letter-spacing:.09em;text-transform:uppercase;color:var(--fab-muted);font-weight:700;padding:0 4px 0 10px;align-self:center;flex-shrink:0;}
-.nav-body .nav-group:first-child{padding-left:0;}
+.nav-group{font-size:.6rem;letter-spacing:.09em;text-transform:uppercase;color:var(--fab-muted);font-weight:700;padding:0 0 0 9px;white-space:nowrap;}
 /* Tabs: text-weight items with a Vivo-orange underline indicator on the active one. */
-.nav-item{position:relative;display:flex;align-items:center;gap:9px;padding:10px 13px;font-size:13.5px;font-weight:600;color:var(--fab-muted);cursor:pointer;white-space:nowrap;flex-shrink:0;transition:color .12s;}
-.nav-item::after{content:"";position:absolute;left:12px;right:12px;bottom:0;height:2.5px;border-radius:2px;background:transparent;transition:background .12s;}
+.nav-item{position:relative;display:flex;align-items:center;gap:7px;padding:7px 9px;font-size:13px;font-weight:600;color:var(--fab-muted);cursor:pointer;white-space:nowrap;flex-shrink:0;transition:color .12s;border-radius:7px;}
+.nav-item svg{width:15px;height:15px;flex-shrink:0;opacity:.85;}
+.nav-item::after{content:"";position:absolute;left:9px;right:9px;bottom:0;height:2.5px;border-radius:2px;background:transparent;transition:background .12s;}
 .nav-item:hover{color:var(--fab-ink);}
 .nav-item.active{color:var(--fab-orange);font-weight:700;}
+.nav-item.active svg{opacity:1;}
 .nav-item.active::after{background:var(--fab-orange);}
-.nav-item{touch-action:none;}
-.nav-item.nav-dragging{opacity:.55;box-shadow:0 6px 18px rgba(0,0,0,.18);cursor:grabbing;background:#fff;border-radius:8px;}
-.nav-item.nav-drop-before{box-shadow:-3px 0 0 0 var(--fab-orange);}
-.nav-item.nav-drop-after{box-shadow:3px 0 0 0 var(--fab-orange);}
 .nav-acr{font-size:.84em;letter-spacing:.02em;}
 .rsv-lbl{display:block;font-size:11px;font-weight:600;color:var(--text-sub);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;}
 .resv-dropdown{position:absolute;top:100%;left:0;z-index:30;width:340px;max-height:280px;overflow:auto;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.12);margin-top:4px;}
@@ -351,19 +352,44 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    </div>
    <div class="fab-tabs-scroll">
     <nav class="nav-body" id="nav-body">
-     <div class="nav-item active" data-page="overview">Overview</div>
-     <div class="nav-item" data-page="dashboard">Stock Mix</div>
-     <div class="nav-item" data-page="ageing">Stock &amp; Ageing</div>
-     <div class="nav-item" data-page="deadstock">Slow Moving</div>
-     <div class="nav-item" data-page="defects">Fabric QC</div>
-     <div class="nav-item" data-page="support">Support Fabrics</div>
-     <div class="nav-item" data-page="dataquality">Data Quality</div>
-     <div class="nav-item" data-page="movement">Trend Analysis</div>
-     <div class="nav-item" data-page="pos">Purchase Orders</div>
-     <div class="nav-item" data-page="suppliers">Vendors/Suppliers</div>
-     <div class="nav-item" data-page="reservations">Fabric Reservations</div>
-     <div class="nav-item" data-page="rolls">Rolls</div>
-     <div class="nav-item" data-page="receiving">Receiving</div>
+     <div class="nav-cluster">
+      <div class="nav-group">Overview</div>
+      <div class="nav-cluster-items">
+       <div class="nav-item active" data-page="overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg><span>Overview</span></div>
+       <div class="nav-item" data-page="movement"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg><span>Trend Analysis</span></div>
+      </div>
+     </div>
+     <div class="nav-cluster">
+      <div class="nav-group">Stock &amp; Health</div>
+      <div class="nav-cluster-items">
+       <div class="nav-item" data-page="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg><span>Stock Mix</span></div>
+       <div class="nav-item" data-page="ageing"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg><span>Stock &amp; Ageing</span></div>
+       <div class="nav-item" data-page="deadstock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline><polyline points="17 18 23 18 23 12"></polyline></svg><span>Slow Moving</span></div>
+       <div class="nav-item" data-page="support"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="4"></circle><line x1="4.93" y1="4.93" x2="9.17" y2="9.17"></line><line x1="14.83" y1="14.83" x2="19.07" y2="19.07"></line><line x1="14.83" y1="9.17" x2="19.07" y2="4.93"></line><line x1="4.93" y1="19.07" x2="9.17" y2="14.83"></line></svg><span>Support Fabrics</span></div>
+      </div>
+     </div>
+     <div class="nav-cluster">
+      <div class="nav-group">Quality</div>
+      <div class="nav-cluster-items">
+       <div class="nav-item" data-page="defects"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg><span>Fabric QC</span></div>
+       <div class="nav-item" data-page="dataquality"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg><span>Data Quality</span></div>
+      </div>
+     </div>
+     <div class="nav-cluster">
+      <div class="nav-group">Procurement</div>
+      <div class="nav-cluster-items">
+       <div class="nav-item" data-page="pos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg><span>Purchase Orders</span></div>
+       <div class="nav-item" data-page="suppliers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg><span>Vendors/Suppliers</span></div>
+       <div class="nav-item" data-page="reservations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg><span>Fabric Reservations</span></div>
+      </div>
+     </div>
+     <div class="nav-cluster">
+      <div class="nav-group">Receiving</div>
+      <div class="nav-cluster-items">
+       <div class="nav-item" data-page="rolls"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg><span>Rolls</span></div>
+       <div class="nav-item" data-page="receiving"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg><span>Receiving</span></div>
+      </div>
+     </div>
     </nav>
    </div>
    <div class="fab-utils">
@@ -374,7 +400,6 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      </button>
      <div class="fab-presence-pop" id="fab-presence-pop" role="menu" aria-label="People viewing now"></div>
     </div>
-    <button type="button" id="nav-reset" class="fab-util-btn" hidden title="Restore the default tab order">&#8635;</button>
     <a href="/" class="fab-util-btn" title="Back to Vivo BI">&larr;</a>
    </div>
   </header>
@@ -1533,119 +1558,6 @@ function renderSupportKpis(d){
 const LOADERS={dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingSheets};
 const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'',deadstock:'Fabric that has been sitting without movement',defects:'',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet'};
 const loadedOnce={};
-
-// ── Draggable / reorderable nav tabs (per-browser, localStorage) ──
-(function(){
-  const NAV=document.getElementById('nav-body');
-  if(!NAV)return;
-  const RESET=document.getElementById('nav-reset');
-  const LS_KEY='fabricbi_nav_order_v1';
-  // capture default order tokens (nav-item -> data-page, nav-group -> grp:<text>)
-  const tokenOf=el=>el.classList.contains('nav-item')?('pg:'+el.dataset.page)
-                   :el.classList.contains('nav-group')?('grp:'+el.textContent.trim()):null;
-  const orderable=()=>Array.from(NAV.children).filter(el=>tokenOf(el)!==null);
-  const DEFAULT_ORDER=orderable().map(tokenOf);
-
-  function currentTokens(){return orderable().map(tokenOf);}
-  function saveOrder(){
-    try{
-      const toks=currentTokens();
-      if(JSON.stringify(toks)===JSON.stringify(DEFAULT_ORDER)){localStorage.removeItem(LS_KEY);}
-      else{localStorage.setItem(LS_KEY,JSON.stringify(toks));}
-    }catch(e){}
-    syncResetVisibility();
-  }
-  function syncResetVisibility(){
-    if(!RESET)return;
-    let saved=null;try{saved=localStorage.getItem(LS_KEY);}catch(e){}
-    RESET.hidden=!saved;
-  }
-  function applyOrder(toks){
-    if(!Array.isArray(toks)||!toks.length)return;
-    const byTok={};orderable().forEach(el=>{byTok[tokenOf(el)]=el;});
-    const seen={};
-    // place saved tokens first (skip unknown/stale ones safely)
-    toks.forEach(t=>{const el=byTok[t];if(el&&!seen[t]){seen[t]=1;NAV.appendChild(el);}});
-    // append any new/default tokens not present in the saved order
-    DEFAULT_ORDER.forEach(t=>{const el=byTok[t];if(el&&!seen[t]){seen[t]=1;NAV.appendChild(el);}});
-  }
-  // restore saved order on load
-  try{const raw=localStorage.getItem(LS_KEY);if(raw)applyOrder(JSON.parse(raw));}catch(e){}
-  syncResetVisibility();
-
-  if(RESET){
-    RESET.addEventListener('click',()=>{
-      try{localStorage.removeItem(LS_KEY);}catch(e){}
-      applyOrder(DEFAULT_ORDER);
-      syncResetVisibility();
-    });
-  }
-
-  // pointer-based drag (works for both mouse and touch)
-  let drag=null; // {el, startX, startY, active}
-  let suppressClick=false;
-  const THRESHOLD=5;
-  // capture-phase click guard on the container fires before the per-tab click
-  // handlers, so a drag that ends on a tab never also triggers a page switch.
-  NAV.addEventListener('click',e=>{
-    if(suppressClick){suppressClick=false;e.stopPropagation();e.preventDefault();}
-  },true);
-  function clearDropMarks(){NAV.querySelectorAll('.nav-drop-before,.nav-drop-after').forEach(el=>el.classList.remove('nav-drop-before','nav-drop-after'));}
-
-  function positionFor(x,y,excludeEl){
-    // find the nearest nav-item (excluding the dragged one) by 2D distance
-    const items=Array.from(NAV.querySelectorAll('.nav-item')).filter(el=>el!==excludeEl);
-    if(!items.length)return null;
-    let best=null,bestD=Infinity;
-    items.forEach(el=>{
-      const r=el.getBoundingClientRect();
-      const cx=r.left+r.width/2, cy=r.top+r.height/2;
-      const d=Math.hypot(x-cx,y-cy);
-      if(d<bestD){bestD=d;best=el;}
-    });
-    if(!best)return null;
-    const r=best.getBoundingClientRect();
-    const after=x> (r.left+r.width/2);
-    return {ref:best,after};
-  }
-
-  NAV.addEventListener('pointerdown',e=>{
-    if(e.button!=null&&e.button!==0)return;
-    const el=e.target.closest('.nav-item');
-    if(!el||!NAV.contains(el))return;
-    drag={el,startX:e.clientX,startY:e.clientY,active:false,pointerId:e.pointerId};
-  });
-  NAV.addEventListener('pointermove',e=>{
-    if(!drag)return;
-    if(!drag.active){
-      if(Math.hypot(e.clientX-drag.startX,e.clientY-drag.startY)<THRESHOLD)return;
-      drag.active=true;
-      drag.el.classList.add('nav-dragging');
-      try{drag.el.setPointerCapture(drag.pointerId);}catch(_){}
-    }
-    e.preventDefault();
-    const pos=positionFor(e.clientX,e.clientY,drag.el);
-    clearDropMarks();
-    if(pos)pos.ref.classList.add(pos.after?'nav-drop-after':'nav-drop-before');
-  });
-  function endDrag(e){
-    if(!drag)return;
-    const d=drag;drag=null;
-    if(d.active){
-      const pos=positionFor(e.clientX,e.clientY,d.el);
-      if(pos){
-        if(pos.after)pos.ref.after(d.el);else pos.ref.before(d.el);
-      }
-      clearDropMarks();
-      d.el.classList.remove('nav-dragging');
-      try{d.el.releasePointerCapture(d.pointerId);}catch(_){}
-      suppressClick=true;
-      saveOrder();
-    }
-  }
-  NAV.addEventListener('pointerup',endDrag);
-  NAV.addEventListener('pointercancel',()=>{if(drag){drag.el.classList.remove('nav-dragging');clearDropMarks();drag=null;}});
-})();
 
 document.querySelectorAll('.nav-item').forEach(el=>{
   el.addEventListener('click',()=>{
