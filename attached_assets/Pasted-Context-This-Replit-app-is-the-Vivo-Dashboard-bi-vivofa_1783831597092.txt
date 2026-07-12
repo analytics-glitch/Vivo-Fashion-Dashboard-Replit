@@ -1,0 +1,84 @@
+Context: This Replit app is the Vivo Dashboard (bi.vivofashionbrands.com). It has
+a main BI dashboard AND a separate Fabric BI section. This task touches the
+FABRIC BI SECTION ONLY. Do not modify, refactor, or restyle the main BI dashboard,
+its global/shared header, its layout wrapper, or any component the main BI also
+uses. If the Fabric BI topbar is currently built from a shared component, DO NOT
+edit that shared component — instead create a Fabric-BI-specific header component
+and use it only within the Fabric BI section. Nothing outside Fabric BI may change
+visually or behaviourally.
+
+SCOPE GUARD (read first)
+- Allowed to change: the Fabric BI section's own topbar/nav and the Fabric BI
+  pages that render it.
+- NOT allowed to change: main BI dashboard, shared app shell, global nav, routing
+  config, theme tokens, or any component rendered outside Fabric BI.
+- Before writing code, list the Fabric BI route(s)/directory and the exact
+  component file(s) you will create or edit, and confirm none of them are shared
+  with the main BI. Wait for nothing else — just show me this list, then proceed.
+
+GOAL
+Redesign the Fabric BI topbar into a cleaner three-strip header. This is a
+presentational refactor of the Fabric BI header only — keep all Fabric BI routes,
+data, filters, and page logic intact. Match the app's existing stack/conventions;
+introduce no new UI framework.
+
+BRAND
+- Accent #F15A24 (Vivo orange) used ONLY for: 3px top rule, the logo block, and
+  the ACTIVE nav item (text + 2px bottom underline).
+- Everything else neutral: dark ink text, muted grey secondary, hairline borders.
+  No gradients, no shadows.
+
+STRUCTURE — three horizontal strips:
+
+1) UTILITY STRIP (Fabric BI global controls, persistent across Fabric BI tabs)
+   - Left: orange "Vivo" logo block + "Fabric BI" with muted subtitle
+     "Warehouse intelligence".
+   - Right, matching pill controls:
+     a) Presence pill: green dot + "AD" avatar + "N viewing" (wire to Fabric BI's
+        existing presence source).
+     b) Location selector — wire to Fabric BI's EXISTING location filter state.
+     c) Date range — wire to Fabric BI's EXISTING date range state; display like
+        "13 Jun – 12 Jul 2026".
+     d) Back button (icon-only arrow-left), preserving current behaviour.
+   - Move Location and Date Range UP from the Fabric BI page-title area into this
+     strip and remove the old duplicates, so they persist across Fabric BI tabs
+     only. Do not touch the main BI's filters.
+
+2) NAV STRIP (single tier; five groups split by 0.5px vertical dividers). Keep
+   these exact Fabric BI items and grouping, each pointing to its EXISTING Fabric
+   BI route:
+   - Overview: Overview, Trends (was "Trend Analysis")
+   - Stock & health: Stock mix, Ageing (was "Stock & Ageing"), Slow moving,
+     Support (was "Support Fabrics")
+   - Quality: Fabric QC
+   - Procurement: Purchase orders, Vendors (was "Vendors/Suppliers"),
+     Reservations (was "Fabric Reservations")
+   - Receiving: Rolls, Receiving
+   Rules: one 16px icon per item (existing icon set), grey default / orange active;
+   active = orange text + 2px orange underline derived from the current Fabric BI
+   route; even padding on all items; no per-group header labels; sentence case.
+
+3) TITLE STRIP (light surface band)
+   - Left: Fabric BI page title (e.g. "Overview") + one-line subtitle
+     ("Fabric stock, value and health across the warehouse"), driven by the active
+     Fabric BI page.
+   - Right: "Export" button — wire to the Fabric BI page's existing export if
+     present, else stub the handler.
+
+RESPONSIVE
+- Default "wrap": nav wraps to a second line neatly, groups/dividers intact.
+- Provide a `navOverflow` flag with "wrap" (default) and "menu" (collapse
+  Procurement + Receiving into "More ▾" on narrow widths). Ship "wrap" active.
+
+ACCESSIBILITY
+- <nav> with a labelled list; active item aria-current="page"; icon-only buttons
+  have aria-labels; AA contrast in the current theme.
+
+CONSTRAINTS
+- Fabric BI only. No routing changes, no data-fetch changes, no edits to shared or
+  main-BI components or global theme tokens.
+- Reuse existing Fabric BI controls (dropdown, date picker, buttons); don't rebuild
+  them.
+- Wire the moved Location/Date Range/presence to the SAME state Fabric BI uses
+  today — do not create new state.
+- List every file you touch and confirm each belongs to Fabric BI only.
