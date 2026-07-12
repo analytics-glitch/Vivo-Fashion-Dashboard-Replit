@@ -129,6 +129,29 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .fab-fresh:empty{display:none;}
 .fab-fresh::before{content:"";flex-shrink:0;width:8px;height:8px;border-radius:50%;background:var(--fab-orange);box-shadow:0 0 0 0 rgba(238,90,14,.55);animation:fabfreshpulse 2.2s ease-out infinite;}
 @keyframes fabfreshpulse{0%{box-shadow:0 0 0 0 rgba(238,90,14,.5);}70%{box-shadow:0 0 0 7px rgba(238,90,14,0);}100%{box-shadow:0 0 0 0 rgba(238,90,14,0);}}
+/* ── Responsive context bar (Row B) ──
+   ≤620px (phone): the title takes the full width, then each filter control gets
+   its own tidy row — a fixed label column on the left and the control stretching
+   to fill the rest — so selects and date inputs stay tappable and never clip.
+   The consumption cluster wraps into two rows (preset / custom range + Clear)
+   via flex-basis, and the freshness pill sits compactly at the end. NOTE: the
+   cluster/daterange display is JS-inline-driven (inline-flex vs none), so this
+   block only reshapes widths and wrapping — it never touches `display`. */
+@media (max-width:620px){
+  .fab-context{padding:10px 1rem 12px;row-gap:10px;}
+  .fab-context-title{flex:1 1 100%;}
+  .fab-context-title h1{font-size:17px;}
+  .fab-filters{flex:1 1 100%;gap:8px;}
+  .fab-filter-item,.fab-daterange,.fab-cluster{width:100%;min-width:0;flex-wrap:wrap;}
+  .fab-filter-item>.muted,.fab-daterange>.muted,.fab-cluster>.muted:first-child{flex:0 0 74px;white-space:normal;line-height:1.2;}
+  .fab-filter-item>.fab-select{flex:1 1 0;min-width:0;height:38px;}
+  .fab-cluster>.fab-select{flex:1 1 150px;min-width:0;height:38px;}
+  .fab-filters .fab-dr-fields{flex:1 1 0;min-width:0;height:38px;}
+  .fab-cluster .fab-dr-fields{flex:1 1 170px;}
+  .fab-dr-fields input[type=date]{flex:1 1 0;min-width:0;width:auto;font-size:12px;padding:0 2px;}
+  .fab-clear-btn{height:38px;flex-shrink:0;}
+  .fab-fresh{max-width:100%;overflow:hidden;text-overflow:ellipsis;}
+}
 /* Live viewers presence pill — a green "online" dot + count; hovering/clicking
    reveals a small popover list of who is currently viewing this page. */
 .fab-presence{position:relative;display:inline-flex;}
