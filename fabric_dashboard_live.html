@@ -66,6 +66,32 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .nav-item.active svg{opacity:1;}
 .nav-item.active::after{background:var(--fab-orange);}
 .nav-acr{font-size:.84em;letter-spacing:.02em;}
+/* ── Responsive nav ──
+   Step 1 (≤1240px): tighten spacing so the clusters wrap less aggressively.
+   Step 2 (≤1000px): compact icon-only tabs — labels hide (native title tooltips
+   carry them, set from the span text in JS), the ACTIVE tab keeps its label so
+   orientation never gets lost, and the section captions stay visible.
+   Step 3 (≤620px): last resort — one non-wrapping row with horizontal scroll. */
+@media (max-width:1240px){
+  .fab-topnav{gap:12px;padding:9px 14px;}
+  .nav-item{padding:7px 7px;font-size:12.5px;gap:6px;}
+  .nav-cluster{padding:0 3px;}
+}
+@media (max-width:1000px){
+  .nav-item span{display:none;}
+  .nav-item.active span{display:inline;}
+  .nav-item{padding:8px 8px;}
+  .nav-item svg{width:17px;height:17px;}
+  .nav-item::after{left:5px;right:5px;}
+  .nav-group{padding-left:5px;}
+}
+@media (max-width:620px){
+  .fab-topnav{flex-wrap:wrap;row-gap:6px;}
+  .fab-tabs-scroll{order:3;flex-basis:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;}
+  .nav-body{flex-wrap:nowrap;width:max-content;}
+  .nav-cluster-items{flex-wrap:nowrap;}
+  .nav-item.active span{display:none;}
+}
 .rsv-lbl{display:block;font-size:11px;font-weight:600;color:var(--text-sub);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;}
 .resv-dropdown{position:absolute;top:100%;left:0;z-index:30;width:340px;max-height:280px;overflow:auto;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.12);margin-top:4px;}
 .export-menu{position:absolute;top:100%;right:0;z-index:30;min-width:250px;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.12);margin-top:4px;padding:4px;}
@@ -1560,6 +1586,10 @@ const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs s
 const loadedOnce={};
 
 document.querySelectorAll('.nav-item').forEach(el=>{
+  // Native tooltip carries the tab label when the compact (icon-only) nav
+  // breakpoint hides the text — harmless at full width too.
+  const lbl=el.querySelector('span');
+  if(lbl&&!el.title) el.title=lbl.textContent.trim();
   el.addEventListener('click',()=>{
     const page=el.dataset.page;
     document.querySelectorAll('section[id^="page-"]').forEach(p=>p.style.display='none');
