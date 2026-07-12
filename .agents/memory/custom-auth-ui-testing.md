@@ -13,3 +13,7 @@ The BI apps use a custom Postgres session auth (no Clerk), so the testing subage
 4. Always `DELETE FROM user_sessions WHERE session_token = ...` when done.
 
 **Why:** avoids needing SEED_ADMIN_PASSWORD (a secret that must never be printed) and works for any role by picking the right app_users row. Also undo any data mutations the test makes (e.g. archives) so the seeded/board state the user sees is unchanged.
+
+**/fabric specifics:** the static fabric page authenticates with the `session_token` COOKIE (`fetch(..., credentials:'include')`), not localStorage — set `document.cookie="session_token=<tok>; path=/"` then reload.
+
+**Testing client-built CSV downloads:** inject after the final reload — `window.__csvs=[]` + wrap `URL.createObjectURL` to push `blob.text()`, stub `window.alert` into `window.__alerts` (a freshness-guard alert otherwise fails silently as "no CSV"). Record `__csvs.length` BEFORE each export click and poll (45s+) until it grows — capture is async and exports may re-fetch first (~11s custom-window /api/fabric/mix). Set date-input pairs via JS + one handler call, not sequential fills (intermediate change events fire loads with partial windows). If a test reports `cacheParams:null`/`hasCache:false` across the board, check whether a workflow restart killed the API mid-test before suspecting the product.
