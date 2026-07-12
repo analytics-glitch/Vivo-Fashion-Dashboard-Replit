@@ -507,8 +507,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <span id="mix-period-topbar" class="fab-cluster" style="display:none;">
      <span class="muted">Consumption period</span>
      <select id="mix-period-top" class="fab-select" onchange="onMixPresetTop()">
-      <option value="30">30 days (1 mo)</option>
-      <option value="90" selected>90 days (3 mo)</option>
+      <option value="30" selected>30 days (1 mo)</option>
+      <option value="90">90 days (3 mo)</option>
       <option value="180">180 days (6 mo)</option>
       <option value="365">365 days (12 mo)</option>
      </select>
@@ -551,8 +551,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      </div>
      <span class="muted">Consumption period</span>
      <select id="mix-period" onchange="onMixPreset()">
-      <option value="30">30 days (1 mo)</option>
-      <option value="90" selected>90 days (3 mo)</option>
+      <option value="30" selected>30 days (1 mo)</option>
+      <option value="90">90 days (3 mo)</option>
       <option value="180">180 days (6 mo)</option>
       <option value="365">365 days (12 mo)</option>
      </select>
@@ -672,8 +672,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      </div>
      <span class="muted">Consumption period</span>
      <select id="reg-period" onchange="loadRegister(0)" title="Window used for the Covers column — same presets as the Stock Mix page">
-      <option value="30">30 days (1 mo)</option>
-      <option value="90" selected>90 days (3 mo)</option>
+      <option value="30" selected>30 days (1 mo)</option>
+      <option value="90">90 days (3 mo)</option>
       <option value="180">180 days (6 mo)</option>
       <option value="365">365 days (12 mo)</option>
      </select>
@@ -1386,7 +1386,7 @@ const REG_FX={
   team_reserved_metres:'Reserved (m) = buying-team reservations (open), in metres.',
   team_reserved_kg:'Reserved (kg) = buying-team reservations (open), in kg.',
   value_kes:'Value = on-hand kg × standard cost (KES).',
-  weeks_cover:'Weekly Covers = on-hand kg ÷ weekly run-rate, aligned with the Stock Mix page: warehouse-wide net consumption over the last 90 days (effective moves) converted to a weekly rate. Reconciles with the Stock Mix page (monthly covers × ~4.35 ≈ weeks).',
+  weeks_cover:'Weekly Covers = on-hand kg ÷ weekly run-rate, aligned with the Stock Mix page: warehouse-wide net consumption over the selected Consumption period (default 30 days, effective moves) converted to a weekly rate. Reconciles with the Stock Mix page (monthly covers × ~4.35 ≈ weeks).',
   last_move:'Last move = date of the most recent ACTUAL stock movement (Odoo transfers: vendor receipt, issue to production/customer, or internal transfer). Stocktakes / inventory adjustments are excluded.',
   days_since_move:'Days idle = today − date of the last actual stock movement (excludes stocktakes / inventory adjustments).',
 };
@@ -2327,9 +2327,9 @@ function fabSyncMixInputs(){
 function loadFabricMix(){return loadMix(mixMain);}
 // First open of the Stock Mix page: if the user has not touched the top Date
 // range, seed the window from the Consumption-period preset (its advertised
-// 90-day default) instead of silently inheriting the global 30-day seed — that
-// mismatch once made the first load (and its exports) a 30d window while the
-// dropdown read 90. Runs the seeding exactly once; every later call (incl. the
+// 30-day default) instead of silently inheriting the global date-range seed — a
+// mismatch here once made the first load (and its exports) use a different
+// window than the dropdown showed. Runs the seeding exactly once; every later call (incl. the
 // 60s auto-refresh) is a plain reload.
 let _fabRangeTouched=false, _mixDefaultApplied=false;
 function loadFabricMixFirst(){
@@ -2349,7 +2349,7 @@ function mixQueryString(ctx,groupOverride){
   const params=new URLSearchParams({group_by:groupOverride||ctx.group,location:ctx.location()});
   if(ctx.scope==='support')params.set('scope','support');
   if(from&&to){params.set('date_from',from);params.set('date_to',to);}
-  else{params.set('days',(document.getElementById('mix-period')&&document.getElementById('mix-period').value)||90);}
+  else{params.set('days',(document.getElementById('mix-period')&&document.getElementById('mix-period').value)||30);}
   return params.toString();
 }
 // Shared /api/fabric/mix loader for either table (mixMain or mixSupport). The
@@ -2373,7 +2373,7 @@ async function loadMix(ctx){
 // In-page preset → compute concrete from/to (window ends today), write them into
 // the top Date range, then a single reload. Both controls then agree.
 function onMixPreset(){
-  const n=parseInt(document.getElementById('mix-period').value,10)||90;
+  const n=parseInt(document.getElementById('mix-period').value,10)||30;
   const today=new Date();
   const ago=new Date(today.getFullYear(),today.getMonth(),today.getDate()-(n-1));
   document.getElementById('g-since').value=fabIso(ago);
@@ -2390,9 +2390,9 @@ function onMixRange(){
     loadFabricMix();
   }
 }
-// Clear the custom range → fall back to the default 90-day preset.
+// Clear the custom range → fall back to the default 30-day preset.
 function clearMixRange(){
-  document.getElementById('mix-period').value='90';
+  document.getElementById('mix-period').value='30';
   onMixPreset();
 }
 // Top-bar copies of the consumption-period controls. They drive the same top
@@ -2408,7 +2408,7 @@ function onMixRangeTop(){
   onMixRange();
 }
 function clearMixRangeTop(){
-  document.getElementById('mix-period-top').value='90';
+  document.getElementById('mix-period-top').value='30';
   onMixPresetTop();
 }
 // The top-bar consumption-period cluster only belongs on the Fabric Mix page.
@@ -2618,13 +2618,35 @@ function mixCanonTree(d){
 // Derived canonical tree: category rows, each with nested derived sub + product
 // rows, unit/totals applied exactly like the on-screen render.
 function mixDerivedTree(d){return deriveMixRows({...d,rows:mixCanonTree(d)});}
-// Shared CSV writer: cols = [[header, rowFn], …].
-function mixDownloadCsv(cols,rows,filename){
-  const csv=[cols.map(c=>c[0]).join(',')]
+// Shared CSV writer: cols = [[header, rowFn], …]. An optional `meta` string is
+// written as a leading single-cell metadata line (before the header row) so
+// every export self-documents the consumption period it was generated under.
+function mixDownloadCsv(cols,rows,filename,meta){
+  const lines=[];
+  if(meta)lines.push(JSON.stringify(meta));
+  lines.push(cols.map(c=>c[0]).join(','));
+  const csv=lines
     .concat(rows.map(r=>cols.map(c=>JSON.stringify(c[1](r)??'')).join(',')))
     .join('\n');
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
   a.download=filename;a.click();
+}
+// Human-readable consumption-period stamp for the CSV exports, built from the
+// /api/fabric/mix payload the export is rendering: the day count plus the
+// resolved from→to window (the API echoes date_from/date_to whenever the
+// request carried an explicit window; otherwise the trailing-days window is
+// reconstructed locally, ending today).
+function mixPeriodMeta(d){
+  const days=d&&d.days;
+  let from=d&&d.date_from, to=d&&d.date_to;
+  if(!(from&&to)&&days){
+    const t=new Date();
+    const a=new Date(t.getFullYear(),t.getMonth(),t.getDate()-(days-1));
+    from=fabIso(a);to=fabIso(t);
+  }
+  let s='Consumption period: '+(days!=null?days+' days':'—');
+  if(from&&to)s+=' ('+from+' → '+to+')';
+  return s;
 }
 // Covers column header + value follow the on-screen weeks/months toggle.
 function mixCoverHdr(){return mixCoverBasis==='months'?'Monthly covers':'Weeks of Cover';}
@@ -2747,7 +2769,7 @@ function exportFabricMix(d,prefix){
     ['Colors',r=>mixGroupColors(r)],
     ['Verdict',r=>r.verdict.label],
   ];
-  mixDownloadCsv(cols,rows,`${prefix}_category_${d.days}d.csv`);
+  mixDownloadCsv(cols,rows,`${prefix}_category_${d.days}d.csv`,mixPeriodMeta(d));
 }
 // 2) Sub-category summary — one row per sub-category, with its parent category.
 function exportFabricMixSub(d,prefix){
@@ -2774,7 +2796,7 @@ function exportFabricMixSub(d,prefix){
     ['Colors',r=>mixGroupColors(r)],
     ['Verdict',r=>r.verdict.label],
   ];
-  mixDownloadCsv(cols,sorted,`${prefix}_subcategory_${d.days}d.csv`);
+  mixDownloadCsv(cols,sorted,`${prefix}_subcategory_${d.days}d.csv`,mixPeriodMeta(d));
 }
 // 3) All products — one row per individual fabric across the whole warehouse.
 // Derived per-product so % / gap / cover / verdict match the table; SOH metres
@@ -2807,7 +2829,7 @@ function exportFabricMixProducts(d,prefix,supplier){
     [mixCoverHdr(),mixCoverVal],
     ['Verdict',r=>r.verdict.label],
   ];
-  mixDownloadCsv(cols,sorted,`${prefix}_all_products_${d.days}d.csv`);
+  mixDownloadCsv(cols,sorted,`${prefix}_all_products_${d.days}d.csv`,mixPeriodMeta(d));
 }
 // 4) Action items only — PRODUCT-grain: every individual fabric whose verdict is
 // an action (not "hold"), leading with the 12 Odoo identity fields then the
@@ -2834,7 +2856,7 @@ function exportFabricMixActions(d,prefix,supplier){
     ['Cost per Kg KES',mixCostKgVal],
     ['Cost per Metre KES',mixCostMetreVal],
   ];
-  mixDownloadCsv(cols,rows,`${prefix}_actions_${d.days}d.csv`);
+  mixDownloadCsv(cols,rows,`${prefix}_actions_${d.days}d.csv`,mixPeriodMeta(d));
 }
 
 // ── Support Fabrics export ───────────────────────────────────────────────────
@@ -3372,7 +3394,7 @@ function setRegCover(basis){
   document.querySelectorAll('#reg-cover-seg .unit-btn').forEach(b=>b.classList.toggle('active',b.dataset.cov===basis));
   renderRegisterTable();
 }
-function regPeriodDays(){return document.getElementById('reg-period').value||90;}
+function regPeriodDays(){return document.getElementById('reg-period').value||30;}
 async function loadRegister(offset){
   regOffset=offset??regOffset;
   const params=new URLSearchParams({location:loc(),limit:PAGE_SIZE,offset:regOffset,sort:regSort.key,dir:regSort.dir,days:regPeriodDays()});
@@ -4272,10 +4294,13 @@ async function exportRegister(btn){
     const d=await apiFetch('/api/fabric/register?'+params);
     const items=(d&&d.items)||[];
     if(!items.length){alert('No fabrics match these filters — nothing to export.');return;}
-    const csv=[cols.map(c=>c.label).join(',')]
+    // Leading metadata line: the consumption period (Covers window) the export
+    // was generated under — the preset day count + its resolved date window.
+    const regDays=parseInt(regPeriodDays(),10)||30;
+    const csv=[JSON.stringify(mixPeriodMeta({days:regDays})),cols.map(c=>c.label).join(',')]
       .concat(items.map(r=>cols.map(c=>JSON.stringify(r[c.k]??'')).join(',')))
       .join('\n');
-    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='fabric_register.csv';a.click();
+    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=`fabric_register_${regDays}d.csv`;a.click();
   }catch(e){alert('Export failed: '+(e&&e.message?e.message:e));}
   finally{if(btn){btn.disabled=false;btn.textContent=orig;}}
 }
@@ -5843,7 +5868,7 @@ init();
     try{ var l=document.getElementById("location-filter"); if(l&&l.value) c.location=l.value; }catch(e){}
     try{ var f=document.getElementById("g-since"); if(f&&f.value) c.date_from=f.value; }catch(e){}
     try{ var t=document.getElementById("g-until"); if(t&&t.value) c.date_to=t.value; }catch(e){}
-    try{ var mp=document.getElementById("mix-period"); if(mp&&mp.value && !c.date_from) c.days=parseInt(mp.value,10)||90; }catch(e){}
+    try{ var mp=document.getElementById("mix-period"); if(mp&&mp.value && !c.date_from) c.days=parseInt(mp.value,10)||30; }catch(e){}
     try{ var act=document.querySelector(".nav-item.active"); var pg=act&&act.getAttribute("data-page");
          c.scope=(pg==="support")?"support":"main"; }catch(e){}
     return c;
