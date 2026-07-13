@@ -1470,6 +1470,51 @@ def main():
     ensure_heartbeat_table(conn)
     write_heartbeat(conn, "cycle_start")
 
+    # ---- One-time data fix: Kenya pre-cutover Odoo duplicates (prod) ----
+    # Kenya POS moved from Shopify to Odoo on 2026-03-20. Production's all_sales
+    # history was written by pre-cutover logic and still holds Odoo
+    # (store_id='vivofashiongroup') rows dated 2026-03-01..2026-03-19 that
+    # duplicate the Shopify (vivowoman) rows for the same days (~KES 44M
+    # double-counted in March 2026). Dev was corrected by a full rebuild, but
+    # prod NEVER runs the rebuild, so this marker-guarded delete ships the fix.
+    # Idempotent: the delete is a no-op once the rows are gone, and the
+    # app_config marker (written in the SAME transaction) stops it re-running.
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS app_config (
+                key        TEXT PRIMARY KEY,
+                value      JSONB,
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )""")
+        cur.execute(
+            "SELECT 1 FROM app_config WHERE key='data_fix_kenya_precutover_odoo_v1'"
+        )
+        if cur.fetchone() is None:
+            cur.execute("""
+                DELETE FROM all_sales
+                WHERE store_id = 'vivofashiongroup'
+                  AND country = 'Kenya'
+                  AND sale_date < '2026-03-20'
+            """)
+            deleted = cur.rowcount
+            cur.execute("""
+                INSERT INTO app_config (key, value, updated_at)
+                VALUES ('data_fix_kenya_precutover_odoo_v1',
+                        jsonb_build_object('deleted_rows', %s::int,
+                                           'applied_at', now()::text),
+                        now())
+                ON CONFLICT (key) DO NOTHING
+            """, (deleted,))
+            conn.commit()
+            log.info(
+                "Kenya pre-cutover Odoo duplicate fix applied: deleted %s rows",
+                deleted,
+            )
+        conn.commit()
+    except Exception as e:
+        log.error("Kenya pre-cutover fix error: %s", e)
+        conn.rollback()
+
     # Load exchange rates once per sync cycle
     rates = get_exchange_rates(cur)
     log.info("Exchange rates: %s", rates)

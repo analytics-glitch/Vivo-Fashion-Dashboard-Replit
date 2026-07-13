@@ -91,6 +91,21 @@ can't set prod secrets / republish):
 not overlap the sync), but the side effect is a fully frozen prod until a human
 republishes — so the timeout must be generous enough to finish in one boot.
 
+## Lighter alternative: marker-guarded one-time data fix in the sync loop
+When the prod-only damage is a **bounded, precisely-identifiable row set** (e.g.
+Kenya `vivofashiongroup` rows dated before the 2026-03-20 cutover duplicating
+Shopify's `vivowoman` rows → March 2026 double-counted by ~44M), a full
+REBUILD_ON_BOOT is overkill. Instead ship a one-time fix at the top of
+`sync_incremental.py main()`: `app_config` marker key (`data_fix_*_v1`) checked
+first; if absent, run the idempotent DELETE and INSERT the marker **in the same
+transaction**; publish and the next prod sync cycle applies it. In dev the
+delete is a 0-row no-op (dev already rebuilt) and the marker still stamps.
+**Why:** the rebuild gate needs prod secrets + hours of re-extract + operator
+publish choreography; a scoped delete needs none of that and can't corrupt
+other history — but ONLY when the bad rows are exactly expressible in a WHERE
+clause verified against BOTH dev and prod (check the store_id↔country mapping
+first so the predicate can't touch other markets).
+
 ## Same trap for any NEW raw source: it must be wired into the sync loop
 Adding a new Odoo/Shopify extract that writes its own `raw_*` tables (e.g.
 `extract_fabric.py` → `raw_fabric_*` feeding `/fabric`) and running it only by
