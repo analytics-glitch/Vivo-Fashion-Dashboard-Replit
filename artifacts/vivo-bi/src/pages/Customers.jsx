@@ -985,6 +985,31 @@ const Customers = () => {
                     higherIsBetter={false}
                     showDelta={false}
                   />
+                  {/* Retention Rate — the exact complement of Churn Rate over
+                      the SAME assessable base, so the two cards always sum to
+                      100%. Kept client-side (100 − churn_rate) so the pair can
+                      never drift apart. */}
+                  <KPICard
+                    testId="kpi-retention-rate"
+                    label="Retention Rate"
+                    sub={cust.churn_source === "computing" ? "computing…" : "of assessable base · lifetime · 90-day cutoff"}
+                    formula={
+                      `Retention Rate = 100 − Churn Rate = retained ÷ assessable base × 100.\n\n` +
+                      `Global, lifetime figure — independent of the selected date filter.\n\n` +
+                      `Assessable base = customers whose FIRST purchase was more than ` +
+                      `90 days ago (old enough to be judged). A customer is RETAINED when ` +
+                      `they have purchased within the last 90 days (as of today). ` +
+                      `Retention + Churn always sum to 100% of the assessable base.`
+                    }
+                    value={
+                      cust.churn_source === "computing"
+                        ? "…"
+                        : cust.churn_rate == null ? "—" : fmtPct(100 - Number(cust.churn_rate), 2)
+                    }
+                    icon={UserPlus}
+                    higherIsBetter={true}
+                    showDelta={false}
+                  />
                   {/* Reactivation Rate — % of historically-churned customers
                       who came back inside the selected window. Pairs with
                       Churn Rate to give the full retention picture: high
