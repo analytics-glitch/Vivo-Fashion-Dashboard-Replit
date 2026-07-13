@@ -288,14 +288,14 @@ table.data td{padding:.7rem .75rem;border-bottom:1px solid var(--border);font-si
 table.data td.r{text-align:right;font-variant-numeric:tabular-nums;}
 table.data tr:last-child td{border-bottom:none;}
 table.data tbody tr:hover td{background:rgba(26,92,56,.03);}
-.tbl-wrap{overflow:auto;border-radius:var(--radius);}
+.tbl-wrap{overflow:auto;border-radius:var(--radius);max-width:100%;-webkit-overflow-scrolling:touch;}
 /* Fabric drill-down tables: by default fit to content (grow to show every
    collapsed row, no inner vertical scrollbar); the capped max-height + inner
    vertical scroll only kick in once a row is drilled down and `.is-expanded`
    is toggled on during render. Horizontal scroll stays available for wide
    tables. Header + Total stay pinned in both states (rules below). Scoped to
    .mix-scroll so no other Fabric dashboard table is affected. */
-.mix-scroll{overflow:auto;border-radius:var(--radius);}
+.mix-scroll{overflow:auto;border-radius:var(--radius);max-width:100%;-webkit-overflow-scrolling:touch;}
 .mix-scroll.is-expanded{max-height:calc(100vh - 230px);}
 .mix-scroll table.data thead th{position:sticky;top:0;z-index:3;background:var(--bg);box-shadow:inset 0 -1px 0 var(--border-strong);}
 /* Pin the Stock Mix "Total" row to the bottom of the scroll area. Scoped to
@@ -341,6 +341,41 @@ tr.sub-row td{background:var(--bg);font-size:12.5px;}
 .banner-info{background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;}
 .flex{display:flex;gap:9px;flex-wrap:wrap;align-items:center;}
 @media(max-width:760px){.fab-strip-util,.fab-strip-nav,.fab-strip-title{padding-left:1rem;padding-right:1rem;}}
+/* ── Responsive page content (phone, ≤640px) ──
+   The header (tabs + filter bar) already adapts; this block makes the content
+   below it phone-friendly: tighter page/card padding, KPI + figure grids
+   collapse to 1–2 columns, wide tables scroll inside their card (touch
+   scrolling, slim scrollbar) instead of stretching the page sideways, bar
+   charts shrink their fixed label/number columns so the track keeps room,
+   and fixed-width inline inputs/dropdowns are clamped to the viewport. */
+@media(max-width:640px){
+  .content{padding:.9rem .75rem 1.2rem;overflow-x:hidden;}
+  .card{padding:.85rem .8rem;margin-bottom:1rem;}
+  .section-head h3{font-size:14.5px;}
+  .kpi-grid{grid-template-columns:1fr;gap:12px;}
+  .kpi{padding:15px 14px;}
+  .kpi-value{font-size:24px;}
+  .fig-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem;}
+  .fig-card{min-width:0;padding:.55rem .6rem;}
+  .fig-card .fig-value{font-size:.98rem;}
+  table.data{font-size:12px;}
+  table.data th{padding:.55rem .55rem;}
+  table.data td{padding:.55rem .55rem;font-size:12px;}
+  .tbl-wrap,.mix-scroll{scrollbar-width:thin;}
+  .mix-scroll::-webkit-scrollbar{height:8px;width:8px;}
+  .bar-row,.struct-row{gap:8px;}
+  .bar-label{width:96px;font-size:11.5px;}
+  .struct-row .bar-label{width:72px;}
+  .bar-qty{width:68px;font-size:11.5px;}
+  .bar-sub{width:52px;font-size:10px;}
+  .chart-key{gap:6px 12px;padding:8px 10px;}
+  .donut-wrap{gap:12px;justify-content:center;}
+  .donut-legend{min-width:0;flex-basis:100%;}
+  .action-grid{grid-template-columns:1fr;}
+  .content input{max-width:100%;}
+  .resv-dropdown{width:auto;left:0;right:0;max-width:calc(100vw - 2rem);}
+  .modal-overlay{padding:10px;}
+}
 
 .seg{display:inline-flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;}
 .seg .unit-btn{height:36px;padding:0 14px;border:none;background:var(--card);color:var(--text-sub);font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;}
@@ -1005,11 +1040,13 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <button class="btn" onclick="recvAddRoll()">+ Add roll</button>
       </div>
       <div class="card" style="padding:0;max-width:600px;">
+       <div class="tbl-wrap">
        <table class="data">
         <thead><tr><th style="width:120px;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th style="width:42px;"></th></tr></thead>
         <tbody id="recv-rolls-body"></tbody>
         <tfoot><tr style="font-weight:700;"><td>Total</td><td class="r" id="recv-total-kg">—</td><td class="r" id="recv-total-mtrs">—</td><td></td></tr></tfoot>
        </table>
+       </div>
       </div>
       <div class="flex" style="gap:10px;margin-top:12px;align-items:flex-end;flex-wrap:wrap;">
        <div><label class="rsv-lbl">Note (optional)</label><input id="recv-note" placeholder="optional" style="width:260px;"></div>
@@ -3254,7 +3291,7 @@ function renderSupplierCost(rows){
       const badge=(r.incomplete&&mf.length)?`<button type="button" class="pill pill-amber missing-kgm-badge" onclick="toggleSupMissing(${i})" aria-expanded="false" id="sup-mbtn-${i}" style="cursor:pointer;border:0;margin-left:.5rem;">${mf.length} fabric${mf.length>1?'s':''} missing kg/m <span class="caret">&#9656;</span></button>`:'';
       const detail=(r.incomplete&&mf.length)?`<tr class="sup-missing-detail" id="sup-mrow-${i}" style="display:none;"><td colspan="4" style="background:var(--bg2,#f9fafb);padding:.6rem .8rem;">
        <p class="muted" style="margin:0 0 .5rem;">These received fabrics have <b>no kg-per-metre</b> on the Odoo product master, so this supplier can&rsquo;t show an avg cost / metre. Fix each one in Odoo by entering its <b>kg-per-metre</b> (or <b>Width + GSM</b>) on the product; it then drops off this list.</p>
-       <table class="data" style="width:auto;"><thead><tr><th>Fabric</th><th>SKU</th><th style="text-align:right;">Received (kg)</th><th style="text-align:right;">Received value</th></tr></thead><tbody>${mf.map(f=>`<tr><td>${esc(f.name)}</td><td>${esc(f.sku)}</td><td style="text-align:right;"${fx(FX.supMissKg)}>${fmt1(f.qty_kg)}</td><td style="text-align:right;"${fx(FX.supMissValue)}>${fmtKES(f.value_kes)}</td></tr>`).join('')}</tbody></table>
+       <div class="tbl-wrap"><table class="data" style="width:auto;"><thead><tr><th>Fabric</th><th>SKU</th><th style="text-align:right;">Received (kg)</th><th style="text-align:right;">Received value</th></tr></thead><tbody>${mf.map(f=>`<tr><td>${esc(f.name)}</td><td>${esc(f.sku)}</td><td style="text-align:right;"${fx(FX.supMissKg)}>${fmt1(f.qty_kg)}</td><td style="text-align:right;"${fx(FX.supMissValue)}>${fmtKES(f.value_kes)}</td></tr>`).join('')}</tbody></table></div>
       </td></tr>`:'';
       const noFig=r.cost_per_metre==null;
       return `<tr${r.incomplete?' title="Some of this supplier\u2019s fabrics are missing Width/GSM in Odoo and are excluded from the figure below — fix them to fold them in"':''}>
