@@ -10138,10 +10138,10 @@ _EXCESS_ROW_CAP = 4000  # generous safety bound for one response, NOT a ranking
 def _excess_inventory_dataset():
     """Full store-level excess dataset (all POS, all flags), snapshot-cached.
 
-    One row per (store, SKU) with available stock in a PHYSICAL store (store =
-    NOT IN WAREHOUSE_LOCATIONS; the Online location is excluded — the allowance
-    rule is about shop-floor size runs). Flags are computed here so every
-    filtered view and the per-POS summary agree."""
+    One row per (store, SKU) with available stock in a store (store = NOT IN
+    WAREHOUSE_LOCATIONS; the Online location is INCLUDED per business request).
+    Flags are computed here so every filtered view and the per-POS summary
+    agree."""
     ck = "excessinv:" + _inventory_version()
     cached = cache_get(ck)
     if cached is not None:
@@ -10159,7 +10159,6 @@ def _excess_inventory_dataset():
         LEFT JOIN all_products_clean p ON i.sku = p.sku
         WHERE i.available > 0
           AND i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
-          AND i.pos_location_name <> 'Online - Shop Zetu'
         GROUP BY i.pos_location_name, i.sku
     """)
     out = []
