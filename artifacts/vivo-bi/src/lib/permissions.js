@@ -32,6 +32,10 @@ const FABRIC_WAREHOUSE = ["fabric", "inventory", "sops"];
 const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "footfall", "rfm", "sops"];
 const MARKETING = ["marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm", "sops"];
 const HR = ["hr", "sops"];
+// Employee self-service (auto-approved Google sign-ups): NO BI pages — their
+// only surface is the Salary Advance form in the HR app (/hr/salary-advance).
+// The backend employee API fence refuses everything else server-side.
+const EMPLOYEE = [];
 const ADMIN = [...new Set([...LEADERSHIP, "feedback", "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters", "admin-data-health", "admin-thumbnails", "admin-validation-audit"])];
 
 export const ROLE_PAGES = {
@@ -47,6 +51,7 @@ export const ROLE_PAGES = {
   marketing: MARKETING,
   hr: HR,
   admin: ADMIN,
+  employee: EMPLOYEE,
 };
 
 /**
@@ -70,6 +75,7 @@ export const ROLE_OPTIONS = [
   { value: "marketing", label: "Marketing", desc: "Marketing, social, CRM & customers" },
   { value: "hr", label: "HR Team", desc: "HR & attendance only" },
   { value: "admin", label: "Admin", desc: "Full access + user management" },
+  { value: "employee", label: "Employee (Salary Advance)", desc: "Salary-advance self-service only — no dashboards" },
 ];
 
 /** value → human-readable label lookup (falls back to the raw value). */

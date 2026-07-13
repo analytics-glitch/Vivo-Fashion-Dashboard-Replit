@@ -477,9 +477,12 @@ _AUTH_INTERNAL_OR_SESSION_PATHS = {"/api/social/x/sync",
 _DATE_QUERY_PARAMS = ("date_from", "date_to", "compare_from", "compare_to")
 
 # ── App user store: roles + admin approval ────────────────────────────────────
-# Every Clerk-verified, domain-allowed identity gets a row in `app_users` the
-# first time we see it. New sign-ups land as `pending` with a default role and
-# can only reach their own auth/identity endpoints until an admin approves them.
+# Every verified, domain-allowed identity gets a row in `app_users` the first
+# time we see it. Google self-signups are AUTO-APPROVED into the minimal
+# "employee" role (active immediately, salary-advance self-service only — see
+# SELF_SIGNUP_ROLE + the employee fence in clerk_auth_gate); an admin upgrades
+# the group later for anything more. Admin-created users are provisioned active
+# in their assigned group.
 # Roles persist here (NOT in Clerk) so an admin can grant least-privilege access.
 # Business-friendly DEPARTMENT GROUPS (plus admin). Replaces the retired
 # technical tiers (viewer/analyst/exec). See ROLE_PAGES in
@@ -487,7 +490,7 @@ _DATE_QUERY_PARAMS = ("date_from", "date_to", "compare_from", "compare_to")
 VALID_ROLES = (
     "product_development", "retail", "warehouse", "store_manager",
     "leadership", "smt", "production", "fabric_warehouse",
-    "customer_service", "marketing", "hr", "admin",
+    "customer_service", "marketing", "hr", "admin", "employee",
 )
 # Human-readable labels for the built-in groups (mirrors ROLE_OPTIONS in
 # artifacts/vivo-bi/src/lib/permissions.js). Custom admin-created groups carry
@@ -505,11 +508,17 @@ BUILTIN_GROUP_LABELS = {
     "marketing": "Marketing",
     "hr": "HR Team",
     "admin": "Admin",
+    "employee": "Employee (Salary Advance)",
 }
 VALID_STATUSES = ("pending", "active", "rejected", "disabled")
-# Lowest-access department a self-signup lands on while pending; an admin
-# re-assigns the right group at approval time.
+# Lowest-access department used as a generic fallback where a role is missing.
 DEFAULT_NEW_ROLE = "store_manager"
+# Google self-signups on an allowed company domain are AUTO-APPROVED into the
+# minimal "employee" role: active immediately, but the API fence in
+# clerk_auth_gate restricts them to the salary-advance self-service endpoints
+# only (no BI pages, no HR dashboard). An admin upgrades the group later if the
+# person needs dashboard access — upgrading is the approval for anything more.
+SELF_SIGNUP_ROLE = "employee"
 # One-time idempotent migration of retired technical roles onto the new
 # department groups so existing users aren't stranded after the change.
 LEGACY_ROLE_MAP = {
@@ -559,6 +568,11 @@ DEFAULT_ROLE_PAGES = {
     "customer_service": ["customers", "customer-details", "crm", "footfall", "rfm", "sops"],
     "marketing": ["marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm", "sops"],
     "hr": ["hr", "sops"],
+    # Employee self-service (Google auto-approved sign-ups): NO BI pages at all.
+    # Their only surface is the Salary Advance form inside the HR app
+    # (/hr/salary-advance), enforced API-side by the employee fence in
+    # clerk_auth_gate — a Group Access page grant alone can never leak data.
+    "employee": [],
 }
 
 # Admin management page ids (admin- prefix). These are route-guarded as
@@ -797,18 +811,23 @@ def _resolve_app_user_db(sub, email, name, picture=None):
     forced_admin = email.lower() in _admin_bootstrap_emails()
     with _users_tx(lock=True) as cur:
         bootstrap = forced_admin or (_active_admins_excluding(cur) == 0)
-        role = "admin" if bootstrap else DEFAULT_NEW_ROLE
-        status = "active" if bootstrap else "pending"
+        # Non-bootstrap Google self-signups (already domain-checked by the
+        # caller) are auto-approved into the minimal "employee" role: they can
+        # ONLY reach the salary-advance self-service (API fence in
+        # clerk_auth_gate). An admin upgrades the group for dashboard access.
+        role = "admin" if bootstrap else SELF_SIGNUP_ROLE
+        status = "active"
+        approver = "system:bootstrap" if bootstrap else "system:auto-employee"
         cur.execute("""
             INSERT INTO app_users (user_id, email, name, role, status, auth_method,
                                    picture, last_login_at, approved_at, approved_by)
             VALUES (%s, %s, %s, %s, %s, 'google', NULLIF(%s,''), now(),
                     CASE WHEN %s='active' THEN now() ELSE NULL END,
-                    CASE WHEN %s='active' THEN 'system:bootstrap' ELSE NULL END)
+                    CASE WHEN %s='active' THEN %s ELSE NULL END)
             ON CONFLICT (user_id) DO UPDATE SET last_login_at=now(),
                     picture=COALESCE(NULLIF(EXCLUDED.picture,''), app_users.picture)
             RETURNING user_id, email, name, role, status
-        """, (sub, email, name or "", role, status, picture or "", status, status))
+        """, (sub, email, name or "", role, status, picture or "", status, status, approver))
         row = cur.fetchone()
     return dict(row) if row else {
         "user_id": sub, "email": email, "name": name, "role": role, "status": status,
@@ -1049,6 +1068,15 @@ async def clerk_auth_gate(request: Request, call_next):
         return JSONResponse({"detail": "account_disabled"}, status_code=403)
     if status != "active":
         return JSONResponse({"detail": "account_inactive"}, status_code=403)
+
+    # Employee self-service fence: the auto-approved "employee" role exists ONLY
+    # to apply for salary advances. Everything except the salary-advance
+    # endpoints is refused server-side, so no BI/HR/CRM data is reachable no
+    # matter what the client renders. (Auth self-paths — /me, /logout,
+    # /heartbeat — already returned above; public auth paths never reach here.)
+    if user.get("role") == "employee" and not path.startswith("/api/hr/salary-advances"):
+        return JSONResponse(
+            {"detail": "employee_salary_advance_only"}, status_code=403)
 
     # Admin-only endpoints require the admin role.
     if path.startswith("/api/admin") and user.get("role") != "admin":

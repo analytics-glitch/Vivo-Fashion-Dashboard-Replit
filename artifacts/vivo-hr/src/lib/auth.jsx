@@ -15,6 +15,9 @@ export const mapRole = (raw) => {
   const r = String(raw || "").toLowerCase();
   if (EXEC_ROLES.has(r)) return "executive";
   if (HR_ROLES.has(r)) return "hr_manager";
+  // Auto-approved self-service accounts: Salary Advance only (server-enforced
+  // by the employee API fence — this mapping just drives nav/route gating).
+  if (r === "employee") return "employee";
   return "branch_manager";
 };
 
@@ -100,6 +103,6 @@ export const ROLES = {
 };
 
 export const roleLabel = (r) =>
-  ({ executive: "Executive", hr_manager: "HR Manager", branch_manager: "Branch Manager" }[r] || r);
+  ({ executive: "Executive", hr_manager: "HR Manager", branch_manager: "Branch Manager", employee: "Employee" }[r] || r);
 
 export const canWrite = (user) => user && (user.role === "executive" || user.role === "hr_manager");

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { vivoClient } from "../lib/api";
-import { useAuth, canWrite } from "../lib/auth";
+import { useAuth } from "../lib/auth";
 import AppLayout from "../components/AppLayout";
 import { PageHeader, LoadingState, ErrorState, EmptyState } from "../components/UIBits";
 import { Card } from "../components/ui/card";
@@ -20,7 +20,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "../components/ui/table";
 import {
-  HandCoins, ChevronsUpDown, Check, CheckCircle, XCircle, Clock, BadgeCheck,
+  HandCoins, ChevronsUpDown, Check, CheckCircle, XCircle, Clock, BadgeCheck, Link2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -37,7 +37,6 @@ const StatusBadge = ({ status }) => {
 
 export default function SalaryAdvance() {
   const { user } = useAuth();
-  const isReviewer = canWrite(user);
 
   const [employees, setEmployees] = useState([]);
   const [data, setData] = useState({ applications: [], pending_count: 0, can_review: false });
@@ -123,10 +122,24 @@ export default function SalaryAdvance() {
   };
 
   const apps = data.applications || [];
+  // Trust the SERVER's can_review flag (it knows the real backend role) rather
+  // than the client-side role mapping — the mapped role hides leadership/SMT
+  // reviewers the server actually allows.
+  const canReview = !!data.can_review;
   const shown = statusFilter === "all" ? apps : apps.filter((a) => a.status === statusFilter);
-  const myApps = isReviewer
+  const myApps = canReview
     ? apps.filter((a) => String(a.applied_by) === String(user?.user_id || user?.id))
     : apps;
+
+  const employeeLink = `${window.location.origin}${import.meta.env.BASE_URL}salary-advance`;
+  const copyEmployeeLink = async () => {
+    try {
+      await navigator.clipboard.writeText(employeeLink);
+      toast.success("Employee link copied — share it with staff. They sign in with their company Google account.");
+    } catch {
+      toast.error("Could not copy — the link is " + employeeLink);
+    }
+  };
 
   const detailRow = (label, value) => (
     <div>
@@ -281,7 +294,7 @@ export default function SalaryAdvance() {
           </div>
 
           {/* ------------------------ HR review ---------------------------- */}
-          {isReviewer && data.can_review && (
+          {canReview && (
             <Card className="p-5" data-testid="sa-review-card">
               <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-2">
@@ -291,6 +304,12 @@ export default function SalaryAdvance() {
                       {data.pending_count} pending
                     </Badge>
                   )}
+                  <Button
+                    size="sm" variant="outline" className="h-7 px-2.5 text-[11px]"
+                    onClick={copyEmployeeLink} data-testid="sa-copy-link"
+                  >
+                    <Link2 className="h-3 w-3 mr-1" />Copy employee link
+                  </Button>
                 </div>
                 <div className="flex gap-1.5">
                   {["pending", "approved", "rejected", "all"].map((s) => (

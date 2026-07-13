@@ -39,7 +39,7 @@ const NAV = [
   { to: "/hours-lost", label: "Hours Lost", icon: TimerOff, roles: ["executive", "hr_manager", "branch_manager"] },
   { to: "/heatmap", label: "Heatmap", icon: Grid3x3, roles: ["executive", "hr_manager", "branch_manager"] },
   { to: "/reports", label: "Reports", icon: FileBarChart2, roles: ["executive", "hr_manager", "branch_manager"] },
-  { to: "/salary-advance", label: "Salary Advance", icon: HandCoins, roles: ["executive", "hr_manager", "branch_manager"] },
+  { to: "/salary-advance", label: "Salary Advance", icon: HandCoins, roles: ["executive", "hr_manager", "branch_manager", "employee"] },
   { to: "/leave", label: "Leave & Notes", icon: CalendarClock, roles: ["executive", "hr_manager"] },
 ];
 
