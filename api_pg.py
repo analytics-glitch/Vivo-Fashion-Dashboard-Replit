@@ -489,6 +489,23 @@ VALID_ROLES = (
     "leadership", "smt", "production", "fabric_warehouse",
     "customer_service", "marketing", "hr", "admin",
 )
+# Human-readable labels for the built-in groups (mirrors ROLE_OPTIONS in
+# artifacts/vivo-bi/src/lib/permissions.js). Custom admin-created groups carry
+# their own label in app_config key 'custom_groups'.
+BUILTIN_GROUP_LABELS = {
+    "product_development": "Product Development Team",
+    "retail": "Retail Team",
+    "warehouse": "Warehouse Team",
+    "store_manager": "Store Managers",
+    "production": "Production",
+    "fabric_warehouse": "Fabric Warehouse",
+    "leadership": "SLT (Senior Leadership Team)",
+    "smt": "SMT (Senior Management Team)",
+    "customer_service": "Customer Service",
+    "marketing": "Marketing",
+    "hr": "HR Team",
+    "admin": "Admin",
+}
 VALID_STATUSES = ("pending", "active", "rejected", "disabled")
 # Lowest-access department a self-signup lands on while pending; an admin
 # re-assigns the right group at approval time.
@@ -2460,6 +2477,75 @@ def _set_hidden_pages(pages):
     return clean
 
 
+_GROUP_SLUG_RE = re.compile(r"[^a-z0-9]+")
+# Slugs that can never be used by a custom group (built-ins + retired legacy
+# roles that the one-time migration remaps + the frontend's create sentinel).
+_RESERVED_GROUP_SLUGS = set(VALID_ROLES) | set(LEGACY_ROLE_MAP) | {"__create__"}
+
+# Advisory lock serializing every read-modify-write of the app_config group
+# maps ('custom_groups' + 'role_pages'). Both are stored as whole JSON values,
+# so two concurrent admin mutations would otherwise clobber each other
+# (lost update). Taken ONLY at the mutation endpoints — never inside the
+# helpers — so it can never nest (nesting across two pooled connections
+# would deadlock).
+_GROUPS_LOCK_KEY = 0x5669764F  # "VivO" — distinct from _ADMIN_LOCK_KEY
+
+
+@contextlib.contextmanager
+def _groups_lock():
+    """Hold the group-config advisory lock for the duration of the block."""
+    with _users_tx(lock=False) as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_GROUPS_LOCK_KEY,))
+        yield
+
+
+def _custom_groups():
+    """Admin-created groups, stored in app_config key 'custom_groups' as a JSON
+    object {slug: label}. Returns {} when unset. Slugs colliding with built-in
+    groups are ignored defensively."""
+    try:
+        rows = _users_exec(
+            "SELECT value FROM app_config WHERE key='custom_groups'", fetch=True)
+    except Exception:
+        rows = None
+    if not rows:
+        return {}
+    val = rows[0].get("value")
+    if isinstance(val, str):
+        try:
+            val = json.loads(val)
+        except Exception:
+            val = None
+    if not isinstance(val, dict):
+        return {}
+    out = {}
+    for slug, label in val.items():
+        slug = str(slug).strip().lower()
+        if slug and slug not in _RESERVED_GROUP_SLUGS and isinstance(label, str) and label.strip():
+            out[slug] = label.strip()
+    return out
+
+
+def _save_custom_groups(mapping):
+    _users_exec(
+        "INSERT INTO app_config (key, value, updated_at) "
+        "VALUES ('custom_groups', %s::jsonb, now()) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+        (json.dumps(mapping),))
+
+
+def _is_valid_group(role):
+    """True when `role` is a built-in group OR an admin-created custom group."""
+    role = (role or "").strip().lower()
+    return role in VALID_ROLES or role in _custom_groups()
+
+
+def _group_slug_for_label(label):
+    """Derive a slug from a human label: lowercase, non-alphanumerics → _."""
+    slug = _GROUP_SLUG_RE.sub("_", (label or "").strip().lower()).strip("_")
+    return slug
+
+
 def _role_page_overrides():
     """Admin-saved per-group page overrides, stored in app_config key
     'role_pages' as a JSON object {role: [page_ids]}. Returns {} when unset.
@@ -2479,9 +2565,10 @@ def _role_page_overrides():
             val = None
     if not isinstance(val, dict):
         return {}
+    custom = _custom_groups()
     out = {}
     for role, pages in val.items():
-        if role in VALID_ROLES and role != "admin" and isinstance(pages, list):
+        if (role in VALID_ROLES or role in custom) and role != "admin" and isinstance(pages, list):
             out[role] = sorted({
                 str(p).strip() for p in pages
                 if str(p).strip() in ALL_PAGE_IDS and not str(p).strip().startswith("admin-")
@@ -2502,7 +2589,13 @@ def _default_pages_for_role(role):
     if role == "admin":
         # Admin always has full access — every page incl. admin management.
         return sorted(ALL_PAGE_IDS)
-    return list(DEFAULT_ROLE_PAGES.get(role, DEFAULT_ROLE_PAGES[DEFAULT_NEW_ROLE]))
+    if role in DEFAULT_ROLE_PAGES:
+        return list(DEFAULT_ROLE_PAGES[role])
+    if role in _custom_groups():
+        # Custom admin-created groups start with NO pages (least privilege) —
+        # their effective list is whatever the admin ticks in Group Access.
+        return []
+    return list(DEFAULT_ROLE_PAGES[DEFAULT_NEW_ROLE])
 
 
 def _effective_pages_for_role(role):
@@ -2522,7 +2615,7 @@ def _set_role_pages(role, pages):
     """Persist an override for `role`. Strips admin- pages + unknown ids. Admin
     cannot be restricted. Returns the cleaned list that was saved."""
     role = (role or "").lower()
-    if role not in VALID_ROLES:
+    if not _is_valid_group(role):
         raise ValueError("Unknown group")
     if role == "admin":
         raise ValueError("The Admin group always has full access and cannot be restricted")
@@ -2539,7 +2632,7 @@ def _set_role_pages(role, pages):
 def _reset_role_pages(role):
     """Drop a group's override so it reverts to the built-in default."""
     role = (role or "").lower()
-    if role not in VALID_ROLES:
+    if not _is_valid_group(role):
         raise ValueError("Unknown group")
     ov = _role_page_overrides()
     if role in ov:
@@ -6415,15 +6508,20 @@ def admin_group_pages_get(request: Request):
     selectable group, so the admin Group Access screen can render the checklist
     and offer a Reset to default."""
     ov = _role_page_overrides()
+    custom = _custom_groups()
     groups, defaults, overridden = {}, {}, {}
-    for role in VALID_ROLES:
+    for role in list(VALID_ROLES) + sorted(custom):
         groups[role] = _effective_pages_for_role(role)
         defaults[role] = _default_pages_for_role(role)
         overridden[role] = (role != "admin") and (role in ov)
+    labels = dict(BUILTIN_GROUP_LABELS)
+    labels.update(custom)
     return {
         "groups": groups,
         "defaults": defaults,
         "overridden": overridden,
+        "labels": labels,
+        "custom": sorted(custom),
         "page_catalog": sorted(ALL_PAGE_IDS),
     }
 
@@ -6437,23 +6535,95 @@ async def admin_group_pages_put(request: Request):
     except Exception:
         body = {}
     role = (body.get("role") or "").strip().lower()
-    if role not in VALID_ROLES:
+    if not _is_valid_group(role):
         return JSONResponse({"detail": "Unknown group"}, status_code=400)
     if role == "admin":
         return JSONResponse(
             {"detail": "The Admin group always has full access and cannot be restricted"},
             status_code=400)
     try:
-        if body.get("reset"):
-            pages = _reset_role_pages(role)
-        else:
-            raw = body.get("pages")
-            if not isinstance(raw, list):
-                return JSONResponse({"detail": "pages must be a list"}, status_code=400)
-            pages = _set_role_pages(role, raw)
+        with _groups_lock():
+            if body.get("reset"):
+                pages = _reset_role_pages(role)
+            else:
+                raw = body.get("pages")
+                if not isinstance(raw, list):
+                    return JSONResponse({"detail": "pages must be a list"}, status_code=400)
+                pages = _set_role_pages(role, raw)
     except ValueError as e:
         return JSONResponse({"detail": str(e)}, status_code=400)
     return {"ok": True, "role": role, "pages": pages}
+
+
+@app.post("/api/admin/group-pages/groups")
+async def admin_group_create(request: Request):
+    """Create a custom department group. Body: {"label": "<name>", "pages": [...]?}.
+    The slug is derived from the label; the group starts with no pages unless
+    an initial `pages` list is supplied."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    label = str(body.get("label") or "").strip()
+    if len(label) < 2 or len(label) > 40:
+        return JSONResponse(
+            {"detail": "Group name must be 2-40 characters"}, status_code=400)
+    slug = _group_slug_for_label(label)
+    if not slug or not slug[0].isalpha():
+        return JSONResponse(
+            {"detail": "Group name must start with a letter"}, status_code=400)
+    with _groups_lock():
+        custom = _custom_groups()
+        if slug in _RESERVED_GROUP_SLUGS or slug in custom:
+            return JSONResponse(
+                {"detail": f'A group named "{label}" already exists'}, status_code=409)
+        lowered = {v.strip().lower() for v in list(BUILTIN_GROUP_LABELS.values()) + list(custom.values())}
+        if label.lower() in lowered:
+            return JSONResponse(
+                {"detail": f'A group named "{label}" already exists'}, status_code=409)
+        custom[slug] = label
+        _save_custom_groups(custom)
+        pages = []
+        raw = body.get("pages")
+        if isinstance(raw, list) and raw:
+            try:
+                pages = _set_role_pages(slug, raw)
+            except ValueError as e:
+                return JSONResponse({"detail": str(e)}, status_code=400)
+    return {"ok": True, "role": slug, "label": label, "pages": pages}
+
+
+@app.delete("/api/admin/group-pages/groups/{slug}")
+async def admin_group_delete(slug: str, request: Request):
+    """Delete a custom group. Built-in groups can never be deleted, and a
+    custom group with members must be reassigned first (409)."""
+    slug = (slug or "").strip().lower()
+    with _groups_lock():
+        custom = _custom_groups()
+        if slug not in custom:
+            detail = ("Built-in groups cannot be deleted"
+                      if slug in VALID_ROLES else "Unknown group")
+            return JSONResponse({"detail": detail}, status_code=400)
+        rows = _users_exec(
+            "SELECT COUNT(*) AS n FROM app_users WHERE lower(role)=%s", (slug,),
+            fetch=True)
+        n = int(rows[0]["n"]) if rows else 0
+        if n > 0:
+            return JSONResponse(
+                {"detail": f"{n} user{'s' if n != 1 else ''} still assigned to this "
+                           f"group — move them to another group first"},
+                status_code=409)
+        # Drop its saved page override FIRST (while the group still resolves as
+        # valid — _role_page_overrides filters unknown groups on read) so a
+        # future group reusing the slug starts clean instead of inheriting
+        # stale pages.
+        ov = _role_page_overrides()
+        if slug in ov:
+            del ov[slug]
+            _save_role_page_overrides(ov)
+        del custom[slug]
+        _save_custom_groups(custom)
+    return {"ok": True}
 
 
 @app.get("/api/auth/me/status")
@@ -20308,9 +20478,10 @@ async def admin_users_update(user_id: str, request: Request):
 
     new_role = None
     if body.get("role"):
-        if body["role"] not in VALID_ROLES:
+        if not _is_valid_group(body["role"]):
             return JSONResponse({"detail": "Invalid role"}, status_code=400)
-        new_role = body["role"]
+        # Canonicalize: authz checks compare exact lowercase role strings.
+        new_role = str(body["role"]).strip().lower()
 
     new_status = None
     if body.get("status"):
@@ -20395,8 +20566,9 @@ async def admin_users_create(request: Request):
     email = (body.get("email") or "").strip().lower()
     name = (body.get("name") or "").strip()
     password = body.get("password") or ""
-    role = body.get("role") or DEFAULT_NEW_ROLE
-    if role not in VALID_ROLES:
+    # Canonicalize: authz checks compare exact lowercase role strings.
+    role = str(body.get("role") or DEFAULT_NEW_ROLE).strip().lower()
+    if not _is_valid_group(role):
         return JSONResponse({"detail": "Invalid role"}, status_code=400)
     if not email or "@" not in email:
         return JSONResponse({"detail": "A valid email is required"}, status_code=400)

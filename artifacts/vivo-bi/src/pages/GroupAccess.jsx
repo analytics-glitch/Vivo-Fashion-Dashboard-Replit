@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { Loading, ErrorBox } from "@/components/common";
-import { Check, ArrowCounterClockwise, FloppyDisk, LockSimple } from "@phosphor-icons/react";
+import { Check, ArrowCounterClockwise, FloppyDisk, LockSimple, Plus, Trash } from "@phosphor-icons/react";
 import { PRIMARY_NAV, ADMIN_NAV, HOME_GROUP_ORDER } from "@/lib/navItems";
 import { ROLE_OPTIONS, roleLabel } from "@/lib/permissions";
 import { useAuth } from "@/lib/auth";
@@ -27,8 +27,19 @@ const GroupAccess = () => {
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [creatingGroup, setCreatingGroup] = useState(false);
 
   const isAdminGroup = role === "admin";
+  const isCustomGroup = Array.isArray(data?.custom) && data.custom.includes(role);
+
+  // Label for any group — custom labels come from the API, built-ins fall back
+  // to the static map.
+  const gLabel = useCallback(
+    (r) => data?.labels?.[r] || roleLabel(r),
+    [data]
+  );
 
   const load = useCallback(() => {
     setLoading(true);
@@ -86,8 +97,49 @@ const GroupAccess = () => {
     }
   };
 
+  const refetch = async () => {
+    const r = await api.get("/admin/group-pages");
+    setData(r.data || null);
+    return r.data;
+  };
+
+  const createGroup = async (e) => {
+    e?.preventDefault?.();
+    const label = newName.trim();
+    if (!label) return;
+    setCreatingGroup(true);
+    setError(null);
+    try {
+      const r = await api.post("/admin/group-pages/groups", { label });
+      await refetch();
+      setRole(r.data?.role || role);
+      setCreateOpen(false);
+      setNewName("");
+    } catch (err) {
+      setError(err?.response?.data?.detail || err.message);
+    } finally {
+      setCreatingGroup(false);
+    }
+  };
+
+  const deleteGroup = async () => {
+    if (!isCustomGroup) return;
+    if (!confirm(`Delete the "${gLabel(role)}" group? This cannot be undone.`)) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api.delete(`/admin/group-pages/groups/${encodeURIComponent(role)}`);
+      await refetch();
+      setRole("product_development");
+    } catch (e) {
+      setError(e?.response?.data?.detail || e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const reset = async () => {
-    if (!confirm(`Reset ${roleLabel(role)} to the built-in default pages?`)) return;
+    if (!confirm(`Reset ${gLabel(role)} to the ${isCustomGroup ? "empty default (no pages)" : "built-in default pages"}?`)) return;
     setSaving(true);
     setError(null);
     try {
@@ -152,13 +204,36 @@ const GroupAccess = () => {
           id="group-select"
           data-testid="group-select"
           className="px-3 py-2 rounded-lg border border-border text-[13px] bg-white"
-          value={role}
-          onChange={(e) => setRole(e.target.value)}
+          value={createOpen ? "__create__" : role}
+          onChange={(e) => {
+            if (e.target.value === "__create__") {
+              setCreateOpen(true);
+            } else {
+              setCreateOpen(false);
+              setRole(e.target.value);
+            }
+          }}
         >
           {ROLE_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>{o.label}</option>
           ))}
+          {(data?.custom || []).map((slug) => (
+            <option key={slug} value={slug}>{gLabel(slug)}</option>
+          ))}
+          <option value="__create__">＋ Create new group…</option>
         </select>
+        {isCustomGroup && !createOpen && (
+          <button
+            data-testid="delete-group-btn"
+            className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-danger/40 text-danger text-[12px] font-semibold hover:bg-danger/5 disabled:opacity-50"
+            onClick={deleteGroup}
+            disabled={saving}
+            title="Delete this custom group (members must be moved to another group first)"
+          >
+            <Trash size={13} weight="bold" />
+            Delete group
+          </button>
+        )}
         <span className="text-[12px] text-muted">
           {selectedCount} page{selectedCount === 1 ? "" : "s"} visible
           {!isAdminGroup && overridden && (
@@ -169,10 +244,48 @@ const GroupAccess = () => {
         </span>
       </div>
 
+      {createOpen && (
+        <form
+          onSubmit={createGroup}
+          className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-panel px-3 py-2.5"
+          data-testid="create-group-form"
+        >
+          <Plus size={15} weight="bold" className="text-brand shrink-0" />
+          <input
+            autoFocus
+            className="px-3 py-2 rounded-lg border border-border text-[13px] bg-white min-w-[220px]"
+            placeholder="New group name (e.g. Finance Team)"
+            value={newName}
+            maxLength={40}
+            onChange={(e) => setNewName(e.target.value)}
+            data-testid="create-group-name"
+          />
+          <button
+            type="submit"
+            className="px-3 py-2 rounded-lg bg-brand text-white font-semibold text-[13px] hover:bg-brand-deep disabled:opacity-60"
+            disabled={creatingGroup || newName.trim().length < 2}
+            data-testid="create-group-submit"
+          >
+            {creatingGroup ? "Creating…" : "Create group"}
+          </button>
+          <button
+            type="button"
+            className="px-3 py-2 rounded-lg border border-border text-[13px] font-semibold text-foreground/70 hover:bg-white"
+            onClick={() => { setCreateOpen(false); setNewName(""); }}
+            data-testid="create-group-cancel"
+          >
+            Cancel
+          </button>
+          <span className="text-[12px] text-muted">
+            New groups start with no pages — tick the pages after creating, then Save.
+          </span>
+        </form>
+      )}
+
       {error && <ErrorBox message={error} />}
       {savedAt && !error && (
         <div className="text-[12px] text-brand" data-testid="group-saved">
-          Saved · {roleLabel(role)} now sees {selectedCount} page{selectedCount === 1 ? "" : "s"}
+          Saved · {gLabel(role)} now sees {selectedCount} page{selectedCount === 1 ? "" : "s"}
         </div>
       )}
 

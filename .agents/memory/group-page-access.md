@@ -19,4 +19,12 @@ An admin "Group Access" screen lets an admin pick one of the department groups a
 ## Guard rails (enforced server-side, not just UI)
 - Non-admin groups can never be assigned `admin-` prefixed pages — they're stripped on save (admin routes are `adminOnly` anyway). Unknown page ids are also stripped.
 - Reset = `PUT {role, reset:true}` deletes that group's override key so it reverts to the built-in default (future default changes then propagate).
-- The GET returns `{groups, defaults, overridden, page_catalog}` so the screen can render the checklist, show a "Customized" badge, and offer Reset.
+- The GET returns `{groups, defaults, overridden, labels, custom, page_catalog}` so the screen can render the checklist, show a "Customized" badge, and offer Reset.
+
+## Custom groups (admin-created)
+- Admins can create custom groups from the Group Access dropdown ("+ Create new group…"). Stored in `app_config` key `custom_groups` as `{slug: label}`; slug derived from the label, must start with a letter, collisions with built-ins/legacy slugs/labels → 409. Endpoints: `POST /api/admin/group-pages/groups`, `DELETE .../groups/{slug}` (400 for built-ins, 409 while users are still assigned).
+- **Custom groups default to ZERO pages** (least privilege) — their effective list is only what the admin ticks. They flow through the same `allowed_pages` injection, so no client gating change.
+- **Delete must drop the group's `role_pages` override BEFORE removing it from `custom_groups`** — the override reader filters unknown groups, so deleting the group first strands an orphan key that a same-name future group would silently inherit.
+- **All group-config mutations (create/delete/PUT pages) serialize via a dedicated pg advisory lock** (`_groups_lock`, endpoint-level only — never inside helpers, or two pooled connections deadlock). Both app_config maps are whole-JSON read-modify-write, so unlocked concurrent admin edits lose updates.
+- Role validation on user create/update uses `_is_valid_group` and must **store the lowercased role** — authz compares exact lowercase strings, so a stored "Admin" would silently lose privileges.
+- Server-side role gates for data endpoints (crm/finance role lists) intentionally exclude custom groups — a custom group granted such a page sees empty data unless the gate is extended; the Group Access screen warns about this.

@@ -14,6 +14,9 @@ const Users = () => {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ email: "", name: "", password: "", role: "store_manager" });
   const [formErr, setFormErr] = useState(null);
+  // Custom admin-created groups (from Group Access) so they're assignable here
+  // too. { custom: [slug], labels: {slug: label} } — non-fatal if unavailable.
+  const [groupMeta, setGroupMeta] = useState({ custom: [], labels: {} });
 
   const load = useCallback(() => {
     setLoading(true);
@@ -21,9 +24,26 @@ const Users = () => {
       .then((r) => setUsers(r.data || []))
       .catch((e) => setError(e?.response?.data?.detail || e.message))
       .finally(() => setLoading(false));
+    api.get("/admin/group-pages")
+      .then((r) => setGroupMeta({
+        custom: Array.isArray(r.data?.custom) ? r.data.custom : [],
+        labels: r.data?.labels || {},
+      }))
+      .catch(() => {});
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Built-in departments + any custom groups created on the Group Access page.
+  const allRoleOptions = [
+    ...ROLE_OPTIONS,
+    ...groupMeta.custom.map((slug) => ({
+      value: slug,
+      label: groupMeta.labels[slug] || slug,
+      desc: "Custom group",
+    })),
+  ];
+  const anyRoleLabel = (r) => groupMeta.labels[r] || roleLabel(r);
 
   const createUser = async (e) => {
     e.preventDefault();
@@ -99,7 +119,7 @@ const Users = () => {
             value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} data-testid="create-user-password" />
           <select className="px-3 py-2 rounded-lg border border-border text-[13px]" value={form.role}
             onChange={(e) => setForm({ ...form, role: e.target.value })} data-testid="create-user-role">
-            {ROLE_OPTIONS.map((o) => (
+            {allRoleOptions.map((o) => (
               <option key={o.value} value={o.value}>{o.label} — {o.desc}</option>
             ))}
           </select>
@@ -139,7 +159,7 @@ const Users = () => {
                   onChange={(e) => updateRole(u, e.target.value)}
                   data-testid={`pending-role-${u.email}`}
                 >
-                  {ROLE_OPTIONS.map((o) => (
+                  {allRoleOptions.map((o) => (
                     <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
                 </select>
@@ -183,7 +203,7 @@ const Users = () => {
                   const icon = senior ? <ShieldCheck size={11} /> : <Eye size={11} />;
                   return (
                     <span className={`${cls} inline-flex items-center gap-1`}>
-                      {icon}{roleLabel(r.role)}
+                      {icon}{anyRoleLabel(r.role)}
                     </span>
                   );
                 },
@@ -217,7 +237,7 @@ const Users = () => {
                       data-testid={`role-select-${r.user_id}`}
                       disabled={r.user_id === user.user_id}
                     >
-                      {ROLE_OPTIONS.map((o) => (
+                      {allRoleOptions.map((o) => (
                         <option key={o.value} value={o.value}>{o.label}</option>
                       ))}
                     </select>
