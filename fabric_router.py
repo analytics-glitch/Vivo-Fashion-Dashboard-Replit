@@ -4731,6 +4731,37 @@ def _ensure_receiving_tables(conn):
                     "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ")
         cur.execute("ALTER TABLE fabric_receiving_sheets "
                     "ADD COLUMN IF NOT EXISTS updated_by_name TEXT")
+        # Odoo purchase-order link: a sheet may (optionally) point at ONE draft
+        # PO so partial deliveries batch per PO (many sheets share one po_id).
+        # po_name/po_date snapshot the PO header at link time; po_date becomes
+        # the sheet's displayed "Receiving Date" (the true created_at stays
+        # stored untouched). Added idempotently so prod gains the columns on
+        # first touch after publish (prod is a separate DB).
+        cur.execute("ALTER TABLE fabric_receiving_sheets "
+                    "ADD COLUMN IF NOT EXISTS po_id BIGINT")
+        cur.execute("ALTER TABLE fabric_receiving_sheets "
+                    "ADD COLUMN IF NOT EXISTS po_name TEXT")
+        cur.execute("ALTER TABLE fabric_receiving_sheets "
+                    "ADD COLUMN IF NOT EXISTS po_date DATE")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_recv_po "
+                    "ON fabric_receiving_sheets(po_id)")
+        # Audit of every "Upload to Odoo PO" push: who pushed, when, to which
+        # PO, and the full per-product result summary (exactly what the UI was
+        # shown). Failed attempts are recorded too (status='failed') so the
+        # trail is honest about partial writes.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_po_uploads (
+                id               SERIAL PRIMARY KEY,
+                po_id            BIGINT NOT NULL,
+                po_name          TEXT,
+                status           TEXT NOT NULL,
+                summary          JSONB,
+                uploaded_by      TEXT,
+                uploaded_by_name TEXT,
+                uploaded_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+            )""")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_po_uploads_po "
+                    "ON fabric_po_uploads(po_id)")
     conn.commit()
     _RECEIVING_TABLES_READY = True
 
@@ -4849,6 +4880,16 @@ def receiving_create(request: Request, body: dict = Body(...)):
         raise HTTPException(status_code=400, detail="product_id is required")
     note = str(body.get("note") or "").strip() or None
     rolls = _recv_parse_rolls(body)
+    # Optional draft-PO link: the picker sends po_id; the PO is re-validated
+    # LIVE in Odoo (must still exist and still be draft) and its name/creation
+    # date are snapshotted onto the sheet. Ad-hoc sheets simply omit po_id.
+    po_link = None
+    if body.get("po_id") not in (None, "", 0, "0"):
+        try:
+            po_id_in = int(body.get("po_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="po_id must be a number")
+        po_link = _recv_fetch_draft_po(po_id_in)
     uid, name = _fabric_actor(request)
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
@@ -4864,11 +4905,14 @@ def receiving_create(request: Request, body: dict = Body(...)):
                 INSERT INTO fabric_receiving_sheets
                   (product_id, barcode, fabric_name, kg_per_mtr,
                    total_kg, total_mtrs, rolls_count, note,
-                   created_by, created_by_name)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   created_by, created_by_name, po_id, po_name, po_date)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING id
             """, (product_id, prod.get("default_code"), prod.get("name"), kpm,
-                  total_kg, total_mtrs, len(rolls), note, uid, name))
+                  total_kg, total_mtrs, len(rolls), note, uid, name,
+                  po_link["po_id"] if po_link else None,
+                  po_link["name"] if po_link else None,
+                  po_link["date_order"] if po_link else None))
             sheet_id = cur.fetchone()["id"]
             for roll_no, qty_kg in rolls:
                 cur.execute("""
@@ -4895,13 +4939,19 @@ def receiving_list(search: str = Query(default=""),
         _ensure_receiving_tables(conn)
         where, params = "", []
         if term:
-            where = "WHERE (s.fabric_name ILIKE %s OR s.barcode ILIKE %s)"
+            where = ("WHERE (s.fabric_name ILIKE %s OR s.barcode ILIKE %s "
+                     "OR s.po_name ILIKE %s)")
             like = f"%{term}%"
-            params = [like, like]
+            params = [like, like, like]
         rows = q(conn, f"""
             SELECT s.id, s.product_id, s.barcode, s.fabric_name,
                    s.kg_per_mtr, s.total_kg, s.total_mtrs, s.rolls_count,
                    s.note, s.created_by_name,
+                   s.po_id, s.po_name,
+                   to_char(s.po_date, 'DD Mon YYYY') as po_date,
+                   COALESCE(to_char(s.po_date, 'DD Mon YYYY'),
+                            to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
+                                    'DD Mon YYYY')) as receiving_date,
                    to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
                            'DD Mon YYYY, HH24:MI') as created_at,
                    to_char(s.updated_at AT TIME ZONE 'Africa/Nairobi',
@@ -4924,6 +4974,404 @@ def receiving_list(search: str = Query(default=""),
         """, params + [limit])
     return {"items": rows}
 
+# ── Receiving → Odoo draft-PO link & write-back ─────────────────────
+# The receiving flow can tie sheets to a DRAFT Odoo purchase order and later
+# push the summed received quantities back onto that PO's lines. This is the
+# fabric surface's FIRST Odoo WRITE-back, so it is deliberately narrow:
+#   * upload SETS purchase.order.line.product_qty to the summed received total
+#     (idempotent — re-uploading after more sheets arrive just re-sets totals);
+#   * quantities go in the LINE's OWN unit (kg pushed as-is; metre lines
+#     converted via the live kg_per_mtr_eff); anything else is BLOCKED, never
+#     guessed;
+#   * products received but missing from the PO get a NEW line (product's own
+#     purchase unit + default cost price), flagged for review;
+#   * confirming the PO / receipts / pickings / price changes stay in Odoo.
+# Every push (including failures) is audited in fabric_po_uploads.
+
+def _odoo_env():
+    url = (os.environ.get("ODOO_URL") or "").rstrip("/")
+    db = os.environ.get("ODOO_DB")
+    user = os.environ.get("ODOO_USER")
+    pwd = os.environ.get("ODOO_PASSWORD")
+    if not (url and db and user and pwd):
+        raise HTTPException(status_code=503,
+            detail="Odoo credentials are not configured on this server "
+                   "(ODOO_URL / ODOO_DB / ODOO_USER / ODOO_PASSWORD)")
+    return url, db, user, pwd
+
+def _odoo_connect(timeout=40):
+    """Authenticated XML-RPC session (db, uid, pwd, models proxy) with a real
+    socket timeout on every call, so a slow/unreachable Odoo can never hang an
+    API worker. 502 with a clear message on any connection/auth failure."""
+    import xmlrpc.client
+    from urllib.parse import urlparse
+    url, db, user, pwd = _odoo_env()
+    base_cls = (xmlrpc.client.SafeTransport
+                if urlparse(url).scheme == "https" else xmlrpc.client.Transport)
+
+    class _TimeoutTransport(base_cls):
+        def make_connection(self, host):
+            c = base_cls.make_connection(self, host)
+            c.timeout = timeout
+            return c
+
+    try:
+        common = xmlrpc.client.ServerProxy(
+            f"{url}/xmlrpc/2/common", transport=_TimeoutTransport(),
+            allow_none=True)
+        uid = common.authenticate(db, user, pwd, {})
+        if not uid:
+            raise HTTPException(status_code=502,
+                                detail="Odoo authentication failed")
+        models = xmlrpc.client.ServerProxy(
+            f"{url}/xmlrpc/2/object", transport=_TimeoutTransport(),
+            allow_none=True)
+        return db, uid, pwd, models
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502,
+                            detail=f"Could not reach Odoo: {e}")
+
+def _odoo_kw(models, db, uid, pwd, model, method, args, kw=None):
+    """execute_kw that surfaces the ACTUAL Odoo error message verbatim (the
+    last line of the server fault, which is Odoo's human-readable reason)."""
+    import xmlrpc.client
+    try:
+        return models.execute_kw(db, uid, pwd, model, method, args, kw or {})
+    except xmlrpc.client.Fault as f:
+        msg = (f.faultString or "").strip()
+        lines = [ln.strip() for ln in msg.splitlines() if ln.strip()]
+        raise HTTPException(status_code=502,
+            detail="Odoo error: " + (lines[-1] if lines else str(f.faultCode)))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502,
+                            detail=f"Odoo request failed: {e}")
+
+def _recv_read_po(odoo, po_id, require_draft=True):
+    """One PO header, live from Odoo. 404 when it no longer exists; 400 when a
+    draft is required but the PO has moved on (state surfaced verbatim)."""
+    db, uid, pwd, models = odoo
+    rows = _odoo_kw(models, db, uid, pwd, "purchase.order", "search_read",
+                    [[["id", "=", int(po_id)]]],
+                    {"fields": ["name", "state", "date_order", "partner_id"],
+                     "limit": 1})
+    if not rows:
+        raise HTTPException(status_code=404,
+            detail=f"Purchase order {po_id} no longer exists in Odoo")
+    p = rows[0]
+    if require_draft and p.get("state") != "draft":
+        raise HTTPException(status_code=400,
+            detail=f"PO {p.get('name')} is no longer a draft in Odoo "
+                   f"(state: {p.get('state')}) — quantities were NOT uploaded")
+    return {"po_id": p["id"], "name": p.get("name"),
+            "supplier": (p.get("partner_id") or [None, ""])[1] or "",
+            "date_order": (p.get("date_order") or "")[:10] or None,
+            "state": p.get("state")}
+
+def _recv_fetch_draft_po(po_id):
+    """Validate a PO link at save time: connect + require it to still be draft."""
+    return _recv_read_po(_odoo_connect(), po_id, require_draft=True)
+
+def _po_uom_kind(uom_name):
+    """Classify a PO line's unit into 'kg' / 'm' (metres) / None (unsupported).
+    Quantities are always pushed in the line's OWN unit; an unrecognised unit
+    blocks that product from upload rather than guessing a conversion."""
+    n = (uom_name or "").strip().lower()
+    if not n:
+        return None
+    if "kg" in n or "kilo" in n:
+        return "kg"
+    if n in ("m", "mt", "mtr", "mtrs") or "met" in n:
+        return "m"
+    return None
+
+def _recv_po_plan(conn, odoo, po_id):
+    """Build the per-product upload plan for a PO batch: summed sheet totals
+    (kg always; metres via the LIVE kg_per_mtr_eff), the matching PO line and
+    exactly what would be pushed in the line's own unit. Returns (plan,
+    po_lines) where po_lines is the PO's current lines for display."""
+    db, uid, pwd, models = odoo
+    line_rows = _odoo_kw(models, db, uid, pwd, "purchase.order.line",
+                         "search_read", [[["order_id", "=", int(po_id)]]],
+                         {"fields": ["product_id", "product_qty",
+                                     "product_uom", "qty_received"]})
+    po_lines, by_product = [], {}
+    for l in line_rows:
+        pid = (l.get("product_id") or [None])[0]
+        po_lines.append({
+            "line_id": l["id"],
+            "product_id": pid,
+            "product_name": (l.get("product_id") or [None, ""])[1] or "",
+            "qty": l.get("product_qty"),
+            "uom": (l.get("product_uom") or [None, ""])[1] or "",
+            "qty_received": l.get("qty_received"),
+        })
+        if pid is not None:
+            by_product.setdefault(int(pid), []).append(l)
+    totals = q(conn, """
+        SELECT s.product_id,
+               MAX(s.fabric_name)    as fabric_name,
+               MAX(s.barcode)        as barcode,
+               COUNT(*)              as sheets,
+               SUM(s.total_kg)       as total_kg,
+               MAX(p.kg_per_mtr_eff) as kg_per_mtr
+        FROM fabric_receiving_sheets s
+        LEFT JOIN raw_fabric_products p ON p.id = s.product_id
+        WHERE s.po_id=%s
+        GROUP BY s.product_id
+        ORDER BY MAX(s.fabric_name)
+    """, (po_id,))
+    # Products needing a NEW PO line → read their purchase unit + default cost
+    # from Odoo once (active_test False so an archived product still resolves).
+    missing = [int(t["product_id"]) for t in totals
+               if int(t["product_id"]) not in by_product]
+    prod_info = {}
+    if missing:
+        prows = _odoo_kw(models, db, uid, pwd, "product.product",
+                         "search_read", [[["id", "in", missing]]],
+                         {"fields": ["display_name", "uom_po_id", "uom_id",
+                                     "standard_price"],
+                          "context": {"active_test": False}})
+        for pr in prows:
+            uom = pr.get("uom_po_id") or pr.get("uom_id") or [None, ""]
+            prod_info[int(pr["id"])] = {
+                "name": pr.get("display_name") or "",
+                "uom_id": uom[0], "uom": uom[1] or "",
+                "price": pr.get("standard_price") or 0,
+            }
+    plan = []
+    for t in totals:
+        pid = int(t["product_id"])
+        kg = round(float(t["total_kg"] or 0), 3)
+        kpm = t.get("kg_per_mtr")
+        kpm = float(kpm) if kpm not in (None, "") and float(kpm) > 0 else None
+        mtrs = round(kg / kpm, 1) if kpm else None
+        e = {"product_id": pid,
+             "fabric_name": t.get("fabric_name"),
+             "barcode": t.get("barcode"),
+             "sheets": int(t.get("sheets") or 0),
+             "total_kg": kg, "total_mtrs": mtrs,
+             "action": None, "flags": [],
+             "line_id": None, "line_qty": None, "line_uom": None,
+             "push_qty": None, "push_uom": None}
+        matches = by_product.get(pid, [])
+        if matches:
+            l = matches[0]
+            uom = (l.get("product_uom") or [None, ""])[1] or ""
+            e.update({"line_id": l["id"], "line_qty": l.get("product_qty"),
+                      "line_uom": uom, "action": "update"})
+            if len(matches) > 1:
+                e["flags"].append(
+                    f"{len(matches)} PO lines carry this product — only the "
+                    "first is updated; review the PO in Odoo")
+        else:
+            info = prod_info.get(pid)
+            if info is None:
+                e["action"] = "blocked"
+                e["flags"].append("product not found in Odoo")
+                plan.append(e)
+                continue
+            uom = info["uom"]
+            e.update({"action": "create", "line_uom": uom,
+                      "_uom_id": info["uom_id"], "_price": info["price"],
+                      "_odoo_name": info["name"]})
+            e["flags"].append("not on the PO — a new line will be added "
+                              "(review the price in Odoo)")
+        kind = _po_uom_kind(e["line_uom"])
+        if kind == "kg":
+            e["push_qty"], e["push_uom"] = kg, e["line_uom"]
+        elif kind == "m":
+            if mtrs is None:
+                e["action"] = "blocked"
+                e["flags"].append(
+                    "PO line is in metres but this fabric has no usable "
+                    "kg→metre conversion — fix Width/GSM (or a stored kg/m) "
+                    "in Odoo first")
+            else:
+                e["push_qty"], e["push_uom"] = mtrs, e["line_uom"]
+        else:
+            e["action"] = "blocked"
+            e["flags"].append(
+                f"unsupported unit '{e['line_uom'] or '?'}' — only kg / "
+                "metre lines can be uploaded")
+        plan.append(e)
+    return plan, po_lines
+
+@fabric_router.get("/api/fabric/receiving/draft-pos")
+def receiving_draft_pos(q_: str = Query(default="", alias="q"),
+                        limit: int = Query(default=100)):
+    """Draft purchase orders pulled LIVE from Odoo for the receiving PO picker
+    (PO number, supplier, creation date, line count). The search term narrows
+    by PO number or supplier name."""
+    limit = max(1, min(int(limit or 100), 200))
+    term = (q_ or "").strip()
+    domain = [["state", "=", "draft"]]
+    if term:
+        domain = ["&", ["state", "=", "draft"],
+                  "|", ["name", "ilike", term], ["partner_id", "ilike", term]]
+    db, uid, pwd, models = _odoo_connect()
+    pos = _odoo_kw(models, db, uid, pwd, "purchase.order", "search_read",
+                   [domain],
+                   {"fields": ["name", "partner_id", "date_order",
+                               "order_line"],
+                    "order": "date_order desc, id desc", "limit": limit})
+    return {"items": [{
+        "po_id": p["id"],
+        "name": p.get("name"),
+        "supplier": (p.get("partner_id") or [None, ""])[1] or "",
+        "date_order": (p.get("date_order") or "")[:10] or None,
+        "line_count": len(p.get("order_line") or []),
+    } for p in pos]}
+
+@fabric_router.get("/api/fabric/receiving/po-batches")
+def receiving_po_batches():
+    """POs that have at least one linked receiving sheet (Postgres only — no
+    Odoo round-trip), with sheet/product counts, summed kgs and the latest
+    upload attempt, for the batches table on the Receiving tab."""
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        rows = q(conn, """
+            WITH g AS (
+                SELECT s.po_id,
+                       MAX(s.po_name)  as po_name,
+                       MAX(s.po_date)  as po_date,
+                       COUNT(*)        as sheets,
+                       COUNT(DISTINCT s.product_id) as products,
+                       SUM(s.total_kg) as total_kg
+                FROM fabric_receiving_sheets s
+                WHERE s.po_id IS NOT NULL
+                GROUP BY s.po_id
+            )
+            SELECT g.po_id, g.po_name,
+                   to_char(g.po_date, 'DD Mon YYYY') as po_date,
+                   g.sheets, g.products, g.total_kg,
+                   lu.status           as last_upload_status,
+                   lu.uploaded_by_name as last_uploaded_by,
+                   to_char(lu.uploaded_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY, HH24:MI') as last_uploaded_at
+            FROM g
+            LEFT JOIN LATERAL (
+                SELECT status, uploaded_by_name, uploaded_at
+                FROM fabric_po_uploads u
+                WHERE u.po_id = g.po_id
+                ORDER BY u.id DESC LIMIT 1
+            ) lu ON true
+            ORDER BY g.po_date DESC NULLS LAST, g.po_id DESC
+        """)
+    return {"items": rows}
+
+@fabric_router.get("/api/fabric/receiving/po-batch/{po_id}")
+def receiving_po_batch(po_id: int):
+    """One PO batch for the review modal: the live PO header (any state — the
+    UI disables upload when it is no longer draft), the per-product upload
+    plan, the PO's current lines, the linked sheets and the latest upload."""
+    odoo = _odoo_connect()
+    po = _recv_read_po(odoo, po_id, require_draft=False)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        plan, po_lines = _recv_po_plan(conn, odoo, po_id)
+        sheets = q(conn, """
+            SELECT s.id, s.fabric_name, s.barcode, s.rolls_count,
+                   s.total_kg, s.total_mtrs, s.created_by_name,
+                   to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY, HH24:MI') as created_at
+            FROM fabric_receiving_sheets s
+            WHERE s.po_id=%s ORDER BY s.created_at DESC, s.id DESC
+        """, (po_id,))
+        last = q(conn, """
+            SELECT status, uploaded_by_name,
+                   to_char(uploaded_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY, HH24:MI') as uploaded_at
+            FROM fabric_po_uploads WHERE po_id=%s
+            ORDER BY id DESC LIMIT 1
+        """, (po_id,))
+    for e in plan:  # strip create-only internals from the response
+        e.pop("_uom_id", None); e.pop("_price", None); e.pop("_odoo_name", None)
+    return {"po": po, "plan": plan, "lines": po_lines, "sheets": sheets,
+            "last_upload": last[0] if last else None}
+
+@fabric_router.post("/api/fabric/receiving/po-batch/{po_id}/upload")
+def receiving_po_upload(po_id: int, request: Request):
+    """Push the batch's summed received quantities onto the draft PO in Odoo.
+    Idempotent by design: each line's product_qty is SET to the summed total
+    (not incremented), so re-uploading after more sheets arrive is safe. The
+    PO must still be draft. Writes stop at the first Odoo error — what was
+    already written and what was skipped is reported honestly, and every
+    attempt (success or failure) is recorded in fabric_po_uploads."""
+    actor_id, actor_name = _fabric_actor(request)
+    odoo = _odoo_connect()
+    db, ouid, pwd, models = odoo
+    po = _recv_read_po(odoo, po_id, require_draft=True)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        plan, _po_lines = _recv_po_plan(conn, odoo, po_id)
+        if not plan:
+            raise HTTPException(status_code=400,
+                detail="No receiving sheets are linked to this PO yet")
+        results, error = [], None
+        for e in plan:
+            row = {k: e.get(k) for k in (
+                "product_id", "fabric_name", "barcode", "sheets", "total_kg",
+                "total_mtrs", "line_id", "line_qty", "line_uom",
+                "push_qty", "push_uom", "flags")}
+            if error is not None:
+                row["result"] = "skipped"
+                results.append(row)
+                continue
+            if e["action"] == "blocked":
+                row["result"] = "blocked"
+                results.append(row)
+                continue
+            try:
+                if e["action"] == "update":
+                    _odoo_kw(models, db, ouid, pwd, "purchase.order.line",
+                             "write", [[int(e["line_id"])],
+                                       {"product_qty": e["push_qty"]}])
+                    row["result"] = "updated"
+                else:
+                    vals = {"order_id": int(po_id),
+                            "product_id": int(e["product_id"]),
+                            "name": e.get("_odoo_name")
+                                    or e.get("fabric_name") or "",
+                            "product_qty": e["push_qty"],
+                            "price_unit": e.get("_price") or 0,
+                            "date_planned": datetime.datetime.utcnow()
+                                            .strftime("%Y-%m-%d %H:%M:%S")}
+                    if e.get("_uom_id"):
+                        vals["product_uom"] = int(e["_uom_id"])
+                    new_id = _odoo_kw(models, db, ouid, pwd,
+                                      "purchase.order.line", "create", [vals])
+                    row["result"] = "created"
+                    row["line_id"] = new_id
+            except HTTPException as ex:
+                row["result"] = "error"
+                row["error"] = str(ex.detail)
+                error = str(ex.detail)
+            results.append(row)
+        pushed = [r for r in results if r["result"] in ("updated", "created")]
+        status = ("failed" if error
+                  else ("success" if pushed else "nothing_to_push"))
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO fabric_po_uploads
+                  (po_id, po_name, status, summary,
+                   uploaded_by, uploaded_by_name)
+                VALUES (%s,%s,%s,%s,%s,%s)
+            """, (po_id, po.get("name"), status,
+                  psycopg2.extras.Json({"results": results, "error": error}),
+                  actor_id, actor_name))
+        conn.commit()
+    _log_fabric_change("PO upload to Odoo", {
+        "id": po_id, "product": po.get("name"), "style_name": "",
+        "qty": round(sum(float(r.get("push_qty") or 0) for r in pushed), 2),
+        "uom": "PO lines", "note": f"{len(pushed)} lines pushed ({status})",
+        "status": status}, request)
+    return {"ok": error is None, "po": po, "status": status,
+            "error": error, "results": results}
+
 @fabric_router.get("/api/fabric/receiving/{sheet_id}")
 def receiving_fetch(sheet_id: int):
     """One sheet + its rolls + the LIVE product-info block for reprinting.
@@ -4937,6 +5385,11 @@ def receiving_fetch(sheet_id: int):
             SELECT s.id, s.product_id, s.barcode, s.fabric_name,
                    s.kg_per_mtr, s.total_kg, s.total_mtrs, s.rolls_count,
                    s.note, s.created_by_name, s.updated_by_name,
+                   s.po_id, s.po_name,
+                   to_char(s.po_date, 'DD Mon YYYY') as po_date,
+                   COALESCE(to_char(s.po_date, 'DD Mon YYYY'),
+                            to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
+                                    'DD Mon YYYY')) as receiving_date,
                    to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
                            'DD Mon YYYY') as created_date,
                    to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
@@ -5046,6 +5499,17 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
             raise HTTPException(status_code=400,
                 detail=f"status must be one of {', '.join(_RECV_QUALITY_STATUSES)}")
         q_in[rn] = {"status": st, "notes": (str(r.get("notes") or "").strip() or None)}
+    # Optional PO re-link: pass "po_id": <id> to link/relink (re-validated LIVE
+    # in Odoo as a draft) or "po_id": null/"" to unlink. Omitting the key
+    # leaves the current link untouched.
+    po_change = "po_id" in body
+    po_link = None
+    if po_change and body.get("po_id") not in (None, "", 0, "0"):
+        try:
+            po_new = int(body.get("po_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="po_id must be a number")
+        po_link = _recv_fetch_draft_po(po_new)
     _uid, name = _fabric_actor(request)
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
@@ -5095,6 +5559,14 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
                        updated_at=now(), updated_by_name=%s
                  WHERE id=%s
             """, (total_kg, total_mtrs, len(rolls), note, name, sheet_id))
+            if po_change:
+                cur.execute("""
+                    UPDATE fabric_receiving_sheets
+                       SET po_id=%s, po_name=%s, po_date=%s WHERE id=%s
+                """, (po_link["po_id"] if po_link else None,
+                      po_link["name"] if po_link else None,
+                      po_link["date_order"] if po_link else None,
+                      sheet_id))
         conn.commit()
         _log_fabric_change("Receiving sheet edited", {
             "id": sheet_id, "product": srow[0].get("fabric_name"),

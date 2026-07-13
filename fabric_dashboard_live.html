@@ -1031,7 +1031,14 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <div id="recv-fabric-list" class="resv-dropdown" style="display:none;"></div>
       </div>
       <button class="btn" id="recv-clear-btn" style="display:none;" onclick="recvClearSelection()">Clear selection</button>
+      <div style="position:relative;">
+       <label class="rsv-lbl">Purchase Order (optional)</label>
+       <input id="recv-po-search" placeholder="Search draft POs by number or supplier…" autocomplete="off" style="width:280px;" oninput="debouncedRecvPoSearch()" onfocus="debouncedRecvPoSearch()">
+       <div id="recv-po-list" class="resv-dropdown" style="display:none;"></div>
+      </div>
+      <button class="btn" id="recv-po-clear" style="display:none;" onclick="recvClearPO()">Unlink PO</button>
      </div>
+     <div id="recv-po-info" style="margin-top:6px;"></div>
      <div id="recv-product-card" style="margin-top:12px;"></div>
      <div id="recv-rolls-wrap" style="display:none;margin-top:12px;">
       <div class="flex" style="gap:10px;align-items:center;margin-bottom:8px;">
@@ -1057,7 +1064,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     </div>
     <div class="section-head" style="margin-top:1.3rem;"><h3>Saved receiving sheets</h3><span class="muted">reopen &amp; reprint any past delivery</span></div>
     <div class="flex" style="margin-bottom:.9rem;gap:.6rem;align-items:center;">
-     <input id="recv-list-search" placeholder="Filter fabric / barcode…" oninput="debouncedRecvList()" style="width:240px;">
+     <input id="recv-list-search" placeholder="Filter fabric / barcode / PO…" oninput="debouncedRecvList()" style="width:240px;">
      <button class="btn btn-primary" id="recv-print-selected" onclick="printSelectedReceiving()" disabled style="padding:4px 12px;font-size:12px;">🖨 Print selected</button>
      <span class="muted" id="recv-selected-count" style="font-size:12px;"></span>
     </div>
@@ -1066,9 +1073,18 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <table class="data">
        <thead><tr>
         <th style="width:1%;"><input type="checkbox" id="recv-select-all" title="Select all" onclick="toggleAllReceiving(this.checked)"></th>
-        <th>Saved</th><th>Fabric</th><th>Barcode</th><th class="r">Rolls</th><th class="r">Total kgs</th><th class="r">Total mtrs</th><th>Quality</th><th>By</th><th></th>
+        <th>Received</th><th>Fabric</th><th>Barcode</th><th class="r">Rolls</th><th class="r">Total kgs</th><th class="r">Total mtrs</th><th>Quality</th><th>By</th><th></th>
        </tr></thead>
        <tbody id="recv-list-body"><tr><td colspan="10" class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
+    </div>
+    <div class="section-head" style="margin-top:1.3rem;"><h3>Purchase Order batches</h3><span class="muted">sheets grouped by their linked Odoo PO — review the summed totals and upload the received quantities onto the draft PO</span></div>
+    <div class="card" style="padding:0;">
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr><th>PO</th><th>PO date</th><th class="r">Sheets</th><th class="r">Fabrics</th><th class="r">Total kgs</th><th>Last upload</th><th></th></tr></thead>
+       <tbody id="recv-po-body"><tr><td colspan="7" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
     </div>
@@ -1098,11 +1114,42 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <button class="btn" onclick="recvEditAddRoll()">+ Add roll</button>
       <label class="rsv-lbl" style="margin-left:12px;">Sheet note</label>
       <input id="recv-edit-note" placeholder="optional" style="width:240px;">
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+       <label class="rsv-lbl" style="margin:0;">Purchase Order</label>
+       <select id="recv-edit-po" style="min-width:280px;"></select>
+       <span class="muted" style="font-size:11px;">link / unlink this sheet's draft PO (re-validated in Odoo on save)</span>
+      </div>
      </div>
      <div class="flex" style="margin-top:14px;gap:.6rem;justify-content:flex-end;">
       <button class="btn" onclick="closeReceivingEdit()">Cancel</button>
       <button class="btn btn-primary" id="recv-edit-save-quality" onclick="saveReceivingQuality()">Save quality</button>
       <button class="btn btn-primary" id="recv-edit-save-all" style="display:none;" onclick="saveReceivingEdit()">Save roll changes (admin)</button>
+     </div>
+    </div>
+   </div>
+  </div>
+
+  <div id="recv-po-overlay" class="modal-overlay" style="display:none;" onclick="closeRecvPoBatch()">
+   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="recv-po-title" style="max-width:980px;" onclick="event.stopPropagation()">
+    <div class="modal-head">
+     <div><h3 id="recv-po-title" style="margin:0;">Purchase order batch</h3><div class="muted" id="recv-po-sub" style="font-size:12px;margin-top:2px;"></div></div>
+     <button class="modal-close" onclick="closeRecvPoBatch()" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+     <div id="recv-po-err"></div>
+     <div id="recv-po-last" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr><th>Fabric</th><th>Barcode</th><th class="r">Sheets</th><th class="r">Received kgs</th><th class="r">Received mtrs</th><th class="r">On PO now</th><th class="r">Will upload</th><th>Status</th></tr></thead>
+       <tbody id="recv-po-plan-body"></tbody>
+      </table>
+     </div>
+     <div id="recv-po-sheets" class="muted" style="font-size:12px;margin-top:8px;"></div>
+     <div id="recv-po-result" style="margin-top:10px;"></div>
+     <div class="flex" style="margin-top:14px;gap:.6rem;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
+      <span class="muted" id="recv-po-state" style="font-size:12px;margin-right:auto;"></span>
+      <button class="btn" onclick="closeRecvPoBatch()">Close</button>
+      <button class="btn btn-primary" id="recv-po-upload-btn" onclick="uploadRecvPoBatch()">Upload to Odoo PO</button>
      </div>
     </div>
    </div>
@@ -3737,7 +3784,7 @@ body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:12px;}
   if(w.document.readyState==='complete')setTimeout(printWhenReady,50);else w.onload=()=>setTimeout(printWhenReady,50);
 }
 
-document.addEventListener('click',()=>{const b=document.getElementById('recv-fabric-list');if(b)b.style.display='none';});
+document.addEventListener('click',()=>{const b=document.getElementById('recv-fabric-list');if(b)b.style.display='none';const p=document.getElementById('recv-po-list');if(p)p.style.display='none';});
 
 // ── Receiving sheets (roll-by-roll fabric intake) ──
 // recvSel holds the picked fabric's full product-info block (from the receiving
@@ -3745,6 +3792,10 @@ document.addEventListener('click',()=>{const b=document.getElementById('recv-fab
 // Saving posts to Postgres only.
 let recvSel=null, recvRolls=[], recvSearchRows=[];
 let recvPsTimer=null, recvListTimer=null, recvBound=false;
+// recvPO holds the picked draft Odoo PO ({po_id,name,supplier,date_order}).
+// It intentionally SURVIVES a save (recvClearSelection does not touch it) so
+// several sheets from the same delivery can be saved against one PO.
+let recvPO=null, recvPoTimer=null, recvPoRows=[];
 function debouncedRecvProductSearch(){clearTimeout(recvPsTimer);recvPsTimer=setTimeout(runRecvProductSearch,250);}
 function debouncedRecvList(){clearTimeout(recvListTimer);recvListTimer=setTimeout(loadReceivingSheets,300);}
 async function runRecvProductSearch(){
@@ -3762,6 +3813,41 @@ async function runRecvProductSearch(){
     box.style.display='';
   }catch(e){box.innerHTML='<div class="resv-opt muted">Could not search.</div>';box.style.display='';}
 }
+// ── Draft-PO picker (live from Odoo) ──
+function debouncedRecvPoSearch(){clearTimeout(recvPoTimer);recvPoTimer=setTimeout(runRecvPoSearch,250);}
+async function runRecvPoSearch(){
+  const term=document.getElementById('recv-po-search').value.trim();
+  const box=document.getElementById('recv-po-list');
+  try{
+    const d=await apiFetch('/api/fabric/receiving/draft-pos?q='+encodeURIComponent(term));
+    recvPoRows=(d&&d.items)||[];
+    if(!recvPoRows.length){box.innerHTML='<div class="resv-opt muted">No matching draft POs in Odoo.</div>';box.style.display='';return;}
+    box.innerHTML=recvPoRows.map((p,i)=>{
+      const sub=[p.supplier?esc(p.supplier):'',p.date_order?esc(p.date_order):'',(p.line_count!=null)?(fmt(p.line_count)+' line'+(p.line_count===1?'':'s')):''].filter(Boolean).join(' · ');
+      return `<div class="resv-opt" data-i="${i}">${esc(p.name||'—')}<div class="ro-code">${sub}</div></div>`;
+    }).join('');
+    box.style.display='';
+  }catch(e){
+    // Surface the backend detail verbatim (e.g. Odoo creds missing / Odoo down).
+    box.innerHTML='<div class="resv-opt muted">'+esc(e&&e.message?e.message:'Could not search purchase orders.')+'</div>';box.style.display='';
+  }
+}
+function recvSetPO(p){
+  recvPO=p;
+  document.getElementById('recv-po-search').value=p.name||'';
+  document.getElementById('recv-po-clear').style.display='';
+  document.getElementById('recv-po-info').innerHTML=
+    '<span class="muted" style="font-size:12px;">Linked to draft PO <b>'+esc(p.name||('#'+p.po_id))+'</b>'
+    +(p.supplier?(' · '+esc(p.supplier)):'')
+    +(p.date_order?(' · PO date '+esc(p.date_order)):'')
+    +' — the PO date becomes the sheet\u2019s Receiving Date. The link stays selected so you can save several sheets against this delivery.</span>';
+}
+function recvClearPO(){
+  recvPO=null;
+  document.getElementById('recv-po-search').value='';
+  document.getElementById('recv-po-clear').style.display='none';
+  document.getElementById('recv-po-info').innerHTML='';
+}
 function recvBindOnce(){
   if(recvBound)return;recvBound=true;
   document.getElementById('recv-fabric-list').addEventListener('click',e=>{
@@ -3770,6 +3856,13 @@ function recvBindOnce(){
     const r=recvSearchRows[Number(opt.dataset.i)];if(!r)return;
     document.getElementById('recv-fabric-list').style.display='none';
     recvSetFabric(r);
+  });
+  document.getElementById('recv-po-list').addEventListener('click',e=>{
+    e.stopPropagation();
+    const opt=e.target.closest('.resv-opt');if(!opt||opt.dataset.i==null)return;
+    const p=recvPoRows[Number(opt.dataset.i)];if(!p)return;
+    document.getElementById('recv-po-list').style.display='none';
+    recvSetPO(p);
   });
   document.getElementById('recv-rolls-body').addEventListener('input',e=>{
     const el=e.target;const i=Number(el.dataset.row);
@@ -3887,7 +3980,7 @@ async function saveReceivingSheet(alsoPrint){
   if(rolls.length>50){showRecvErr('A sheet holds at most 50 rolls.');return;}
   const note=document.getElementById('recv-note').value.trim();
   try{
-    const r=await fetch('/api/fabric/receiving',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({product_id:Number(recvSel.id),rolls,note})});
+    const r=await fetch('/api/fabric/receiving',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({product_id:Number(recvSel.id),rolls,note,po_id:recvPO?Number(recvPO.po_id):null})});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     const res=await r.json();
     recvClearSelection();
@@ -3903,6 +3996,7 @@ async function loadReceivingSheets(){
     const d=await apiFetch('/api/fabric/receiving?'+params);
     renderReceivingList(d.items||[]);
   }catch(e){rowErr('recv-list-body',8,e);}
+  loadRecvPoBatches();
 }
 function recvQualityCell(s){
   const total=Number(s.rolls_count||0);
@@ -3923,9 +4017,14 @@ function renderReceivingList(items){
   body.innerHTML=items.map(s=>{
     const mtrs=s.total_mtrs!=null?fmt1(s.total_mtrs):'<span style="color:var(--danger);" title="This fabric had no Width/GSM conversion when the sheet was saved">Missing Width/GSM</span>';
     const edited=s.updated_at?`<div class="muted" style="font-size:11px;" title="Last edited">edited ${esc(s.updated_at)}${s.updated_by_name?' · '+esc(s.updated_by_name):''}</div>`:'';
+    // PO-linked sheets show the PO date as the Received date (with the PO
+    // number + actual save time underneath); ad-hoc sheets keep the save time.
+    const received=s.po_id
+      ? `${esc(s.receiving_date||s.created_at||'—')}<div class="muted" style="font-size:11px;" title="Linked Odoo purchase order">${esc(s.po_name||('PO #'+s.po_id))} · saved ${esc(s.created_at||'—')}</div>`
+      : esc(s.created_at||'—');
     return `<tr>
       <td style="width:1%;"><input type="checkbox" class="recv-row-chk" data-id="${esc(String(s.id))}" ${recvSelected.has(String(s.id))?'checked':''}></td>
-      <td style="white-space:nowrap;">${esc(s.created_at||'—')}${edited}</td>
+      <td style="white-space:nowrap;">${received}${edited}</td>
       <td>${esc(s.fabric_name||'—')}${s.note?`<div class="muted" style="font-size:11px;">${esc(s.note)}</div>`:''}</td>
       <td>${esc(s.barcode||'—')}</td>
       <td class="r">${fmt(s.rolls_count)}</td>
@@ -4006,6 +4105,22 @@ async function openReceivingEdit(id){
     document.getElementById('recv-edit-adminnote').textContent=admin
       ? 'You are an admin: you may edit roll numbers and kgs (timestamped). Metres re-derive from this sheet\u2019s saved conversion. Quality is fillable by any fabric user.'
       : 'Record the inspection / testing result for each roll. Roll numbers and quantities can only be changed by an admin.';
+    if(admin){
+      // PO link selector: "__keep" leaves the link untouched; "" unlinks; a
+      // po_id re-links (the backend re-validates it is still a draft in Odoo).
+      const sel=document.getElementById('recv-edit-po');
+      const cur=s.po_id?('currently '+(s.po_name||('PO #'+s.po_id))):'currently no PO (ad-hoc sheet)';
+      sel.innerHTML='<option value="__keep">Keep as is \u2014 '+esc(cur)+'</option><option value="">No PO (ad-hoc sheet)</option>';
+      sel.value='__keep';
+      apiFetch('/api/fabric/receiving/draft-pos?q=').then(dd=>{
+        ((dd&&dd.items)||[]).forEach(p=>{
+          const o=document.createElement('option');
+          o.value=String(p.po_id);
+          o.textContent=(p.name||('PO #'+p.po_id))+(p.supplier?(' \u2014 '+p.supplier):'')+(p.date_order?(' ('+p.date_order+')'):'');
+          sel.appendChild(o);
+        });
+      }).catch(()=>{/* PO list is best-effort; keep/unlink still work */});
+    }
     renderReceivingEditRows();
     document.getElementById('recv-edit-overlay').style.display='flex';
   }catch(e){alert(errHtml(e).replace(/<[^>]*>/g,''));}
@@ -4078,8 +4193,13 @@ async function saveReceivingEdit(){
   // (rolls rewrite + quality write together) — no separate, swallow-able request.
   recvEditState.rolls.forEach((x,i)=>{if(rolls[i]){rolls[i].status=x.quality_status||'';rolls[i].notes=x.quality_notes||'';}});
   const note=document.getElementById('recv-edit-note').value.trim();
+  const payload={rolls,note};
+  const poSel=document.getElementById('recv-edit-po');
+  // Only send po_id when the admin actually changed the selector — the backend
+  // treats the mere presence of the key as a relink/unlink request.
+  if(poSel&&poSel.value!=='__keep')payload.po_id=poSel.value===''?null:Number(poSel.value);
   try{
-    const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(recvEditState.id),{method:'PUT',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({rolls,note})});
+    const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(recvEditState.id),{method:'PUT',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     closeReceivingEdit();loadReceivingSheets();
   }catch(e){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Could not save: '+esc(e.message)+(String(e.message).toLowerCase().indexOf('admin')>=0?' (only an admin can edit rolls/quantities)':'')+'</div>';}
@@ -4165,7 +4285,8 @@ async function buildReceivingSheetBody(d){
     dataCell('Fabric category',clean(f.fabric_category)),
     dataCell('Fabric sub-category',clean(f.fabric_subcategory)),
     dataCell('Fabric composition',clean(f.fiber_content)),
-    dataCell('Date received',clean(s.created_date)),
+    dataCell('Date received',clean(s.receiving_date)||clean(s.created_date)),
+    dataCell('Purchase Order',clean(s.po_name)),
     dataCell('Number of rolls received',String(rolls.length))
   ].join('');
   // Rolls print in side-by-side column groups so a typical sheet fits one page.
@@ -4246,6 +4367,159 @@ async function printReceivingSheets(ids){
   }
   if(!bodies.length){alert('Could not load the selected sheets for printing.');return;}
   openReceivingPrintWindow(bodies,'Fabric Receiving Sheets ('+bodies.length+')');
+}
+
+// ── Purchase Order batches (sheets grouped by their linked Odoo PO) ──
+async function loadRecvPoBatches(){
+  const body=document.getElementById('recv-po-body');
+  try{
+    const d=await apiFetch('/api/fabric/receiving/po-batches');
+    const items=(d&&d.items)||[];
+    if(!items.length){body.innerHTML='<tr><td colspan="7" class="muted" style="padding:1rem;">No sheets are linked to a purchase order yet — pick a draft PO when saving a receiving sheet.</td></tr>';return;}
+    body.innerHTML=items.map(r=>{
+      const lu=r.last_upload_status
+        ? `${r.last_upload_status==='success'
+            ? '<span style="color:#0a7d33;font-weight:700;">Uploaded</span>'
+            : (r.last_upload_status==='failed'
+               ? '<span style="color:var(--danger);font-weight:700;">Failed</span>'
+               : esc(r.last_upload_status))}<div class="muted" style="font-size:11px;">${esc(r.last_uploaded_at||'')}${r.last_uploaded_by?' · '+esc(r.last_uploaded_by):''}</div>`
+        : '<span class="muted">Never uploaded</span>';
+      return `<tr>
+        <td style="font-weight:600;">${esc(r.po_name||('PO #'+r.po_id))}</td>
+        <td style="white-space:nowrap;">${esc(r.po_date||'—')}</td>
+        <td class="r">${fmt(r.sheets)}</td>
+        <td class="r">${fmt(r.products)}</td>
+        <td class="r">${fmt2(r.total_kg)}</td>
+        <td style="white-space:nowrap;">${lu}</td>
+        <td style="white-space:nowrap;"><button class="btn btn-primary" data-po-open="${Number(r.po_id)}" style="padding:4px 10px;font-size:12px;">Review &amp; upload</button></td>
+      </tr>`;
+    }).join('');
+    if(!body.dataset.bound){
+      body.dataset.bound='1';
+      body.addEventListener('click',e=>{
+        const b=e.target.closest('button[data-po-open]');
+        if(b)openRecvPoBatch(Number(b.dataset.poOpen));
+      });
+    }
+  }catch(e){rowErr('recv-po-body',7,e);}
+}
+// ── PO batch review / upload modal ──
+let recvPoBatch=null;
+async function openRecvPoBatch(poId){
+  recvPoBatch=null;
+  document.getElementById('recv-po-err').innerHTML='';
+  document.getElementById('recv-po-result').innerHTML='';
+  document.getElementById('recv-po-last').innerHTML='';
+  document.getElementById('recv-po-sheets').innerHTML='';
+  document.getElementById('recv-po-state').textContent='';
+  document.getElementById('recv-po-title').textContent='Purchase order batch';
+  document.getElementById('recv-po-sub').textContent='';
+  document.getElementById('recv-po-plan-body').innerHTML='<tr><td colspan="8" class="loading">Loading the PO from Odoo…</td></tr>';
+  document.getElementById('recv-po-upload-btn').disabled=true;
+  document.getElementById('recv-po-overlay').style.display='flex';
+  try{
+    const d=await apiFetch('/api/fabric/receiving/po-batch/'+encodeURIComponent(poId));
+    recvPoBatch={po_id:poId,data:d};
+    renderRecvPoBatch();
+  }catch(e){
+    document.getElementById('recv-po-plan-body').innerHTML='<tr><td colspan="8" class="muted" style="padding:1rem;">Could not load this PO batch.</td></tr>';
+    document.getElementById('recv-po-err').innerHTML='<div class="banner banner-err">'+esc(e.message)+'</div>';
+  }
+}
+function closeRecvPoBatch(){document.getElementById('recv-po-overlay').style.display='none';recvPoBatch=null;}
+function recvPoStatusCell(e){
+  let tag;
+  if(e.action==='blocked')tag='<span style="color:var(--danger);font-weight:700;">Blocked</span>';
+  else if(e.action==='create')tag='<span style="color:#b8860b;font-weight:700;">New line</span>';
+  else tag='<span style="color:#0a7d33;font-weight:700;">Update</span>';
+  const flags=(e.flags||[]).map(f=>'<div class="muted" style="font-size:11px;max-width:260px;white-space:normal;">'+esc(f)+'</div>').join('');
+  return tag+flags;
+}
+// Renders the batch modal from recvPoBatch.data. Never touches recv-po-result
+// (so the post-upload report stays visible when the plan is refreshed).
+function renderRecvPoBatch(){
+  const d=recvPoBatch.data,po=d.po||{},plan=d.plan||[];
+  document.getElementById('recv-po-title').textContent='Purchase order batch — '+(po.name||('PO #'+recvPoBatch.po_id));
+  document.getElementById('recv-po-sub').textContent=[
+    po.supplier||'',
+    po.date_order?('PO date '+po.date_order):''
+  ].filter(Boolean).join(' · ');
+  const last=d.last_upload;
+  document.getElementById('recv-po-last').innerHTML=last
+    ? 'Last upload: <b>'+esc(last.status||'')+'</b>'+(last.uploaded_at?(' · '+esc(last.uploaded_at)):'')+(last.uploaded_by_name?(' · '+esc(last.uploaded_by_name)):'')
+    : 'Never uploaded to Odoo yet.';
+  document.getElementById('recv-po-plan-body').innerHTML=plan.length?plan.map(e=>{
+    const mtrs=e.total_mtrs!=null?fmt1(e.total_mtrs):'<span style="color:var(--danger);" title="No usable kg→metre conversion">Missing Width/GSM</span>';
+    const onPo=e.line_id!=null?(fmt2(e.line_qty)+' '+esc(e.line_uom||'')):'<span class="muted">not on PO</span>';
+    const push=e.push_qty!=null?('<b>'+fmt2(e.push_qty)+'</b> '+esc(e.push_uom||'')):'<span class="muted">—</span>';
+    return `<tr>
+      <td>${esc(e.fabric_name||'—')}</td>
+      <td>${esc(e.barcode||'—')}</td>
+      <td class="r">${fmt(e.sheets)}</td>
+      <td class="r">${fmt2(e.total_kg)}</td>
+      <td class="r">${mtrs}</td>
+      <td class="r" style="white-space:nowrap;">${onPo}</td>
+      <td class="r" style="white-space:nowrap;">${push}</td>
+      <td>${recvPoStatusCell(e)}</td>
+    </tr>`;
+  }).join(''):'<tr><td colspan="8" class="muted" style="padding:1rem;">No receiving sheets are linked to this PO yet.</td></tr>';
+  const sheets=d.sheets||[];
+  document.getElementById('recv-po-sheets').innerHTML=sheets.length
+    ? '<b>'+sheets.length+' linked sheet'+(sheets.length===1?'':'s')+':</b> '
+      +sheets.map(s=>esc((s.fabric_name||'—')+' ('+(s.barcode||'')+') — '+fmt2(s.total_kg)+' kg, saved '+(s.created_at||''))).join(' · ')
+    : '';
+  const isDraft=po.state==='draft';
+  const pushable=plan.some(e=>e.action==='update'||e.action==='create');
+  document.getElementById('recv-po-state').innerHTML=isDraft
+    ? 'PO state: <b>draft</b> — upload SETS each line\u2019s quantity to the summed received total (re-uploading is safe).'
+    : 'PO state: <b style="color:var(--danger);">'+esc(po.state||'unknown')+'</b> — quantities can only be uploaded onto a <b>draft</b> PO.';
+  document.getElementById('recv-po-upload-btn').disabled=!(isDraft&&pushable);
+}
+function renderRecvPoUploadResult(res){
+  const box=document.getElementById('recv-po-result');
+  const results=res.results||[];
+  const pushed=results.filter(r=>r.result==='updated'||r.result==='created');
+  const lines=results.map(r=>{
+    const tag={updated:'<span style="color:#0a7d33;font-weight:700;">updated</span>',
+               created:'<span style="color:#0a7d33;font-weight:700;">line added</span>',
+               blocked:'<span style="color:var(--danger);font-weight:700;">blocked</span>',
+               skipped:'<span class="muted">skipped</span>',
+               error:'<span style="color:var(--danger);font-weight:700;">FAILED</span>'}[r.result]||esc(r.result||'');
+    return '<div style="font-size:12px;margin-top:2px;">'+esc(r.fabric_name||r.barcode||'—')+' — '+tag
+      +(r.push_qty!=null?(' ('+fmt2(r.push_qty)+' '+esc(r.push_uom||'')+')'):'')
+      +(r.error?('<div style="color:var(--danger);font-size:11px;white-space:pre-wrap;">'+esc(r.error)+'</div>'):'')
+      +'</div>';
+  }).join('');
+  box.innerHTML=res.ok
+    ? '<div class="banner" style="background:rgba(10,125,51,.08);border:1px solid #0a7d33;padding:.6rem .8rem;border-radius:8px;"><b>Uploaded to Odoo.</b> '+pushed.length+' PO line'+(pushed.length===1?'':'s')+' now carry the received totals.'+lines+'</div>'
+    : '<div class="banner banner-err"><b>Upload stopped on an Odoo error</b> — lines before the failure were written; the rest were skipped. Odoo said:<div style="white-space:pre-wrap;font-size:12px;margin-top:4px;">'+esc(res.error||'unknown error')+'</div>'+lines+'</div>';
+}
+async function uploadRecvPoBatch(){
+  if(!recvPoBatch)return;
+  const d=recvPoBatch.data,po=d.po||{};
+  const n=(d.plan||[]).filter(e=>e.action==='update'||e.action==='create').length;
+  if(!confirm('Upload received totals to draft PO '+(po.name||('#'+recvPoBatch.po_id))+'?\n\nThis SETS '+n+' PO line quantit'+(n===1?'y':'ies')+' in Odoo to the summed received totals (it does not add on top), so re-uploading after more sheets arrive is safe.'))return;
+  const btn=document.getElementById('recv-po-upload-btn');
+  const orig=btn.textContent;
+  btn.disabled=true;btn.textContent='Uploading…';
+  document.getElementById('recv-po-err').innerHTML='';
+  document.getElementById('recv-po-result').innerHTML='';
+  try{
+    const r=await fetch('/api/fabric/receiving/po-batch/'+encodeURIComponent(recvPoBatch.po_id)+'/upload',{method:'POST',credentials:'include'});
+    let res={};try{res=await r.json();}catch(_){}
+    if(!r.ok)throw new Error(res.detail||('http '+r.status));
+    renderRecvPoUploadResult(res);
+    // Refresh the plan (On-PO quantities now reflect the write) + the tables.
+    try{
+      const d2=await apiFetch('/api/fabric/receiving/po-batch/'+encodeURIComponent(recvPoBatch.po_id));
+      if(recvPoBatch){recvPoBatch.data=d2;renderRecvPoBatch();}
+    }catch(_){}
+  }catch(e){
+    document.getElementById('recv-po-err').innerHTML='<div class="banner banner-err">Upload failed: '+esc(e.message)+'</div>';
+  }finally{
+    btn.textContent=orig;
+    loadRecvPoBatches();
+  }
 }
 
 function renderRegisterTable(){
