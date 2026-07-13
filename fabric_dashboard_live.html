@@ -709,13 +709,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <p id="fab-detail-sub" class="muted" style="margin:.25rem 0 0;font-size:12px;"></p>
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
-       <div style="position:relative;">
-        <button type="button" class="btn btn-primary" id="fab-print-btn" aria-haspopup="true" aria-expanded="false" onclick="togglePrintMenu(event)" title="Print a landscape information sheet for this fabric">🖨 Print as PDF ▾</button>
-        <div class="export-menu" id="fab-print-menu" style="display:none;">
-         <button onclick="closePrintMenu();printFabricSheet()">SOH — Buying Fabric Information Sheet</button>
-         <button onclick="closePrintMenu();openReceivingFromDetail()">Receiving — Fabric Receiving Information Sheet</button>
-        </div>
-       </div>
+       <button type="button" class="btn btn-primary" id="fab-print-btn" onclick="printFabricSheet()" title="Print the SOH — Buying Fabric Information Sheet for this fabric">🖨 Print as PDF</button>
        <button class="modal-close" onclick="closeFabricDetail()" aria-label="Close">&times;</button>
       </div>
      </div>
@@ -3706,28 +3700,12 @@ body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:12px;}
   if(w.document.readyState==='complete')setTimeout(printWhenReady,50);else w.onload=()=>setTimeout(printWhenReady,50);
 }
 
-// ── Print chooser on the product popup (SOH sheet vs Receiving sheet) ──
-function togglePrintMenu(e){
-  if(e)e.stopPropagation();
-  const m=document.getElementById('fab-print-menu');
-  const btn=document.getElementById('fab-print-btn');
-  const open=!m||m.style.display==='none';
-  if(m)m.style.display=open?'block':'none';
-  if(btn)btn.setAttribute('aria-expanded',open?'true':'false');
-}
-function closePrintMenu(){
-  const m=document.getElementById('fab-print-menu');
-  const btn=document.getElementById('fab-print-btn');
-  if(m)m.style.display='none';
-  if(btn)btn.setAttribute('aria-expanded','false');
-}
-document.addEventListener('click',()=>{closePrintMenu();const b=document.getElementById('recv-fabric-list');if(b)b.style.display='none';});
+document.addEventListener('click',()=>{const b=document.getElementById('recv-fabric-list');if(b)b.style.display='none';});
 
 // ── Receiving sheets (roll-by-roll fabric intake) ──
 // recvSel holds the picked fabric's full product-info block (from the receiving
-// product-search, or the register-shaped curFabricDetail row when launched from
-// the product popup — both carry the same header fields). Rolls are entered as
-// kgs; metres derive live from kg_per_mtr. Saving posts to Postgres only.
+// product-search). Rolls are entered as kgs; metres derive live from kg_per_mtr.
+// Saving posts to Postgres only.
 let recvSel=null, recvRolls=[], recvSearchRows=[];
 let recvPsTimer=null, recvListTimer=null, recvBound=false;
 function debouncedRecvProductSearch(){clearTimeout(recvPsTimer);recvPsTimer=setTimeout(runRecvProductSearch,250);}
@@ -4068,18 +4046,6 @@ async function saveReceivingEdit(){
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     closeReceivingEdit();loadReceivingSheets();
   }catch(e){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Could not save: '+esc(e.message)+(String(e.message).toLowerCase().indexOf('admin')>=0?' (only an admin can edit rolls/quantities)':'')+'</div>';}
-}
-// Launched from the product popup's Print chooser: jump to the Receiving tab
-// with this fabric pre-selected (curFabricDetail carries the same header fields
-// the receiving product-search returns).
-function openReceivingFromDetail(){
-  const r=curFabricDetail;
-  if(!r){alert('Open a fabric first.');return;}
-  closeFabricDetail();
-  const tab=document.querySelector('.nav-item[data-page="receiving"]');
-  if(tab)tab.click();
-  recvBindOnce();
-  recvSetFabric(r);
 }
 // FABRIC RECEIVING INFORMATION SHEET — same A4-landscape header block as the
 // Buying sheet, but TOTAL RECEIVED MTRS comes from the ENTERED rolls (never
