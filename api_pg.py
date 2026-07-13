@@ -550,13 +550,13 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "excess-inventory", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"],
-    "retail": ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "exports", "sops"],
-    "warehouse": ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"],
-    "store_manager": ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "ibt", "sops"],
+    "retail": ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "exports", "sops"],
+    "warehouse": ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"],
+    "store_manager": ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "sops"],
     "leadership": _LEADERSHIP_PAGES,
     # SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
     # Finance Reports Suite. The /api/finance gate below also excludes "smt".
@@ -10111,6 +10111,136 @@ def analytics_warehouse_return_candidates(
     out = {"mode": m, "min_days": n, "rows": rows}
     cache_set(_wr_ck, out, ttl=600)
     return out
+
+
+# ── Excess Inventory report ───────────────────────────────────────────────────
+# Business rule (provided by merchandising as a per-brand, per-size allowance
+# table): a store should hold AT MOST this many units of any single SKU of the
+# given brand-line + size. Anything above the allowance is EXCESS and the row is
+# flagged "Return" (return the excess to the warehouse); at-or-below allowance,
+# or a size/brand with no rule, is "Keep".
+#   • "VIVO"          = brand 'Vivo' EXCLUDING the Vivo Studio line
+#   • "SAFARI X VIVO" = brands 'Safari' + 'Safari by Vivo'
+#   • "STUDIO"        = the Vivo Studio line (product_name 'Vivo Studio …')
+# Other brands (Zoya, third-party) have no allowance ⇒ always "Keep".
+EXCESS_ALLOWANCE = {
+    "VIVO":          {"S": 2, "M": 3, "L": 3, "1X": 2, "2X": 1, "F": 4,
+                      "XS/S": 2, "M/L": 2, "1X/2X": 1, "S/M": 2, "L/1X": 1},
+    "SAFARI X VIVO": {"S": 2, "M": 3, "L": 2, "1X": 1, "2X": 1, "F": 4,
+                      "XS/S": 2, "M/L": 2, "1X/2X": 1},
+    "STUDIO":        {"XS": 1, "S": 2, "M": 3, "L": 2, "1X": 1, "F": 4,
+                      "XS/S": 2, "M/L": 2, "1X/2X": 1},
+}
+
+_EXCESS_ROW_CAP = 4000  # generous safety bound for one response, NOT a ranking
+
+
+def _excess_inventory_dataset():
+    """Full store-level excess dataset (all POS, all flags), snapshot-cached.
+
+    One row per (store, SKU) with available stock in a PHYSICAL store (store =
+    NOT IN WAREHOUSE_LOCATIONS; the Online location is excluded — the allowance
+    rule is about shop-floor size runs). Flags are computed here so every
+    filtered view and the per-POS summary agree."""
+    ck = "excessinv:" + _inventory_version()
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+    rows = run_query("""
+        SELECT i.pos_location_name AS pos_location,
+            i.sku,
+            COALESCE(NULLIF(MAX(p.product_name), ''), NULLIF(MAX(i.product_name), ''), MAX(p.style_name)) AS product_name,
+            MAX(p.barcode) AS barcode,
+            UPPER(TRIM(COALESCE(MAX(p.size), ''))) AS size,
+            MAX(p.brand) AS brand,
+            BOOL_OR(p.product_name ILIKE 'vivo studio%') AS is_studio,
+            SUM(i.available) AS inventory
+        FROM all_inventory i
+        LEFT JOIN all_products_clean p ON i.sku = p.sku
+        WHERE i.available > 0
+          AND i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+          AND i.pos_location_name <> 'Online - Shop Zetu'
+        GROUP BY i.pos_location_name, i.sku
+    """)
+    out = []
+    for r in rows:
+        brand = (r.get("brand") or "").strip()
+        if r.get("is_studio"):
+            group = "STUDIO"
+        elif brand in ("Safari", "Safari by Vivo"):
+            group = "SAFARI X VIVO"
+        elif brand == "Vivo":
+            group = "VIVO"
+        else:
+            group = "OTHER"
+        allowed = EXCESS_ALLOWANCE.get(group, {}).get(r.get("size") or "")
+        inv = int(r.get("inventory") or 0)
+        excess = max(0, inv - allowed) if allowed is not None else 0
+        out.append({
+            "pos_location": r["pos_location"],
+            "sku": r["sku"],
+            "product_name": r.get("product_name"),
+            "barcode": r.get("barcode"),
+            "size": r.get("size") or None,
+            "brand_group": group,
+            "inventory": inv,
+            "allowed": allowed,
+            "excess": excess,
+            "flag": "Return" if excess > 0 else "Keep",
+        })
+    cache_set(ck, out, ttl=600)
+    return out
+
+
+@app.get("/api/analytics/excess-inventory")
+def analytics_excess_inventory(
+    pos:  str = Query(default=""),
+    flag: str = Query(default=""),
+):
+    """Excess Inventory report: store × SKU rows flagged Keep/Return against the
+    per-brand per-size allowance table, plus a per-POS summary (total inventory
+    and excess inventory = sum of each SKU-size's excess)."""
+    data = _excess_inventory_dataset()
+    pos = (pos or "").strip()
+    flag = (flag or "").strip().capitalize()
+    if flag not in ("Keep", "Return"):
+        flag = ""
+
+    scoped = [r for r in data if r["pos_location"] == pos] if pos else data
+
+    # Per-POS summary (respects the POS filter, ignores the flag filter so the
+    # Keep/Return split always reconciles to the same totals).
+    by_pos = {}
+    for r in scoped:
+        s = by_pos.setdefault(r["pos_location"], {
+            "pos_location": r["pos_location"], "skus": 0,
+            "total_inventory": 0, "excess_inventory": 0, "return_skus": 0})
+        s["skus"] += 1
+        s["total_inventory"] += r["inventory"]
+        s["excess_inventory"] += r["excess"]
+        if r["excess"] > 0:
+            s["return_skus"] += 1
+    summary = sorted(by_pos.values(), key=lambda s: -s["excess_inventory"])
+    totals = {
+        "skus": sum(s["skus"] for s in summary),
+        "total_inventory": sum(s["total_inventory"] for s in summary),
+        "excess_inventory": sum(s["excess_inventory"] for s in summary),
+        "return_skus": sum(s["return_skus"] for s in summary),
+    }
+
+    filtered = [r for r in scoped if r["flag"] == flag] if flag else scoped
+    filtered = sorted(filtered, key=lambda r: (-r["excess"], -r["inventory"]))
+    truncated = len(filtered) > _EXCESS_ROW_CAP
+    return {
+        "rows": filtered[:_EXCESS_ROW_CAP],
+        "row_count": len(filtered),
+        "truncated": truncated,
+        "summary": summary,
+        "totals": totals,
+        "pos_locations": sorted(by_pos.keys()) if not pos else sorted({r["pos_location"] for r in data}),
+        "allowance": EXCESS_ALLOWANCE,
+    }
+
 
 @app.get("/api/inventory/freshness")
 def inventory_freshness():

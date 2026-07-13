@@ -82,6 +82,7 @@ export const PRIMARY_NAV = [
   // Warehouse operations & transfers
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory", group: "Inventory & Replenishment", desc: "Stock on hand, availability and cover by location" },
   { to: "/warehouse-returns", label: "Warehouse Returns", icon: Warehouse, id: "warehouse-returns", group: "Inventory & Replenishment", desc: "Pull aged / retired store stock back to the warehouse" },
+  { to: "/excess-inventory", label: "Excess Inventory", icon: Package, id: "excess-inventory", group: "Inventory & Replenishment", desc: "Store stock above the per-brand size allowance — flagged for return" },
   { to: "/ibt", label: "IBT", icon: Truck, id: "ibt", group: "Inventory & Replenishment", desc: "Inter-branch transfer recommendations" },
   { to: "/allocations", label: "Allocations", icon: Stack, id: "allocations", group: "Inventory & Replenishment", desc: "Allocate incoming stock across stores" },
   { to: "/replenishments", label: "Replenishments", icon: ArrowsClockwise, id: "replenishments", group: "Inventory & Replenishment", desc: "Replenishment suggestions with last-sold dates" },
