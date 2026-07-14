@@ -10256,6 +10256,8 @@ def _ensure_excess_actions_table():
             updated_at   TIMESTAMPTZ DEFAULT now(),
             PRIMARY KEY (pos_location, sku)
         )""")
+    _users_exec("ALTER TABLE excess_inventory_actions "
+                "ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ")
     _excess_actions_ready = True
 
 
@@ -10264,10 +10266,11 @@ def _excess_actions_map():
     are operator-entered values that must reflect immediately."""
     _ensure_excess_actions_table()
     rows = _users_exec(
-        "SELECT pos_location, sku, qty_returned, transfer_ref "
+        "SELECT pos_location, sku, qty_returned, transfer_ref, done_at "
         "FROM excess_inventory_actions", fetch=True) or []
     return {(r["pos_location"], r["sku"]):
-            {"qty_returned": r["qty_returned"], "transfer_ref": r["transfer_ref"]}
+            {"qty_returned": r["qty_returned"], "transfer_ref": r["transfer_ref"],
+             "done": r["done_at"] is not None}
             for r in rows}
 
 
@@ -10345,39 +10348,48 @@ def analytics_excess_inventory(
     scoped = [r for r in data if r["pos_location"] == pos] if pos else data
 
     # Per-POS summary (respects the POS filter, ignores the flag filter so the
-    # Keep/Return split always reconciles to the same totals).
+    # Keep/Return split always reconciles to the same totals). "Done" figures
+    # come from the operator ledger (excess_inventory_actions.done_at).
+    actions = _excess_actions_map()
     by_pos = {}
     for r in scoped:
         s = by_pos.setdefault(r["pos_location"], {
             "pos_location": r["pos_location"], "skus": 0,
-            "total_inventory": 0, "excess_inventory": 0, "return_skus": 0})
+            "total_inventory": 0, "excess_inventory": 0, "return_skus": 0,
+            "done_units": 0, "done_skus": 0})
         s["skus"] += 1
         s["total_inventory"] += r["inventory"]
         s["excess_inventory"] += r["excess"]
         if r["excess"] > 0:
             s["return_skus"] += 1
+            a = actions.get((r["pos_location"], r["sku"]))
+            if a and a.get("done"):
+                s["done_units"] += r["excess"]
+                s["done_skus"] += 1
     summary = sorted(by_pos.values(), key=lambda s: -s["excess_inventory"])
     totals = {
         "skus": sum(s["skus"] for s in summary),
         "total_inventory": sum(s["total_inventory"] for s in summary),
         "excess_inventory": sum(s["excess_inventory"] for s in summary),
         "return_skus": sum(s["return_skus"] for s in summary),
+        "done_units": sum(s["done_units"] for s in summary),
+        "done_skus": sum(s["done_skus"] for s in summary),
     }
 
     filtered = [r for r in scoped if r["flag"] == flag] if flag else scoped
     filtered = sorted(filtered, key=lambda r: (-r["excess"], -r["inventory"]))
     truncated = len(filtered) > _EXCESS_ROW_CAP
 
-    # Merge operator-entered fields (qty returned / transfer no.) into the
-    # visible page only. COPY each cached dict before annotating — the snapshot
-    # cache returns rows by reference and must never be mutated.
-    actions = _excess_actions_map()
+    # Merge operator-entered fields (qty returned / transfer no. / done) into
+    # the visible page only. COPY each cached dict before annotating — the
+    # snapshot cache returns rows by reference and must never be mutated.
     page = []
     for r in filtered[:_EXCESS_ROW_CAP]:
         row = dict(r)
         a = actions.get((r["pos_location"], r["sku"]))
         row["qty_returned"] = a["qty_returned"] if a else None
         row["transfer_ref"] = a["transfer_ref"] if a else None
+        row["done"] = bool(a and a.get("done"))
         page.append(row)
     return {
         "rows": page,
@@ -10416,8 +10428,15 @@ async def analytics_excess_inventory_action(request: Request):
 
     _ensure_excess_actions_table()
     if qty is None and transfer_ref is None:
+        # Clear the fields but PRESERVE a done mark; drop the row only when
+        # nothing is left on it at all.
         _users_exec(
-            "DELETE FROM excess_inventory_actions WHERE pos_location=%s AND sku=%s",
+            "UPDATE excess_inventory_actions SET qty_returned=NULL, transfer_ref=NULL, "
+            "  updated_by=%s, updated_at=now() WHERE pos_location=%s AND sku=%s",
+            (updated_by, pos_location, sku))
+        _users_exec(
+            "DELETE FROM excess_inventory_actions "
+            "WHERE pos_location=%s AND sku=%s AND done_at IS NULL",
             (pos_location, sku))
     else:
         _users_exec(
@@ -10430,6 +10449,47 @@ async def analytics_excess_inventory_action(request: Request):
             (pos_location, sku, qty, transfer_ref, updated_by))
     return {"ok": True, "pos_location": pos_location, "sku": sku,
             "qty_returned": qty, "transfer_ref": transfer_ref}
+
+
+@app.post("/api/analytics/excess-inventory/done")
+async def analytics_excess_inventory_done(request: Request):
+    """Toggle the Done mark for one (store, SKU) excess row. Marking done
+    stamps done_at (the row stays visible in the list); un-marking clears it.
+    Other operator fields (qty returned / transfer no.) are preserved."""
+    from fastapi import HTTPException
+    body = await request.json()
+    pos_location = (body.get("pos_location") or "").strip()
+    sku = (body.get("sku") or "").strip()
+    if not pos_location or not sku:
+        raise HTTPException(status_code=400, detail="pos_location and sku are required")
+    done_raw = body.get("done", True)
+    if isinstance(done_raw, str):
+        done = done_raw.strip().lower() not in ("false", "0", "no", "")
+    else:
+        done = bool(done_raw)
+    user = getattr(request.state, "user", None) or {}
+    updated_by = user.get("email") or user.get("user_id")
+
+    _ensure_excess_actions_table()
+    if done:
+        _users_exec(
+            "INSERT INTO excess_inventory_actions "
+            "  (pos_location, sku, done_at, updated_by, updated_at) "
+            "VALUES (%s,%s,now(),%s,now()) "
+            "ON CONFLICT (pos_location, sku) DO UPDATE SET "
+            "  done_at=now(), updated_by=EXCLUDED.updated_by, updated_at=now()",
+            (pos_location, sku, updated_by))
+    else:
+        _users_exec(
+            "UPDATE excess_inventory_actions SET done_at=NULL, "
+            "  updated_by=%s, updated_at=now() WHERE pos_location=%s AND sku=%s",
+            (updated_by, pos_location, sku))
+        _users_exec(
+            "DELETE FROM excess_inventory_actions "
+            "WHERE pos_location=%s AND sku=%s "
+            "  AND qty_returned IS NULL AND transfer_ref IS NULL AND done_at IS NULL",
+            (pos_location, sku))
+    return {"ok": True, "pos_location": pos_location, "sku": sku, "done": done}
 
 
 @app.get("/api/inventory/freshness")

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { api, fmtNum } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
-import { ArrowsClockwise, DownloadSimple, Storefront, Package, Warning } from "@phosphor-icons/react";
+import { ArrowsClockwise, DownloadSimple, Storefront, Package, Warning, CheckCircle } from "@phosphor-icons/react";
 
 const FLAGS = ["", "Return", "Keep"];
 
@@ -104,8 +104,41 @@ const ExcessInventory = () => {
       });
   };
 
+  const toggleDone = (r) => {
+    const next = !r.done;
+    setSaveErr(null);
+    // Optimistic: flip the row + adjust the per-POS summary counts instantly.
+    const adjust = (prev) => prev ? {
+      ...prev,
+      rows: prev.rows.map((row) =>
+        row.pos_location === r.pos_location && row.sku === r.sku
+          ? { ...row, done: next } : row),
+      summary: (prev.summary || []).map((s) =>
+        s.pos_location === r.pos_location && r.excess > 0
+          ? { ...s,
+              done_units: (s.done_units || 0) + (next ? r.excess : -r.excess),
+              done_skus: (s.done_skus || 0) + (next ? 1 : -1) }
+          : s),
+      totals: prev.totals && r.excess > 0 ? {
+        ...prev.totals,
+        done_units: (prev.totals.done_units || 0) + (next ? r.excess : -r.excess),
+        done_skus: (prev.totals.done_skus || 0) + (next ? 1 : -1),
+      } : prev.totals,
+    } : prev;
+    setData(adjust);
+    api
+      .post("/analytics/excess-inventory/done", {
+        pos_location: r.pos_location, sku: r.sku, done: next,
+      })
+      .catch((e) => {
+        // Roll back by reloading the authoritative server state.
+        load();
+        setSaveErr(e?.response?.data?.detail || e.message || "Failed to update done mark");
+      });
+  };
+
   const exportCsv = () => {
-    const header = ["Store", "Product Title", "SKU", "Barcode", "Size", "Brand Group", "Inventory", "Allowed", "Excess", "Flag", "Quantity Returned", "Transfer Number"];
+    const header = ["Store", "Product Title", "SKU", "Barcode", "Size", "Brand Group", "Inventory", "Allowed", "Excess", "Flag", "Quantity Returned", "Transfer Number", "Done"];
     const esc = (v) => {
       const s = v == null ? "" : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -116,6 +149,7 @@ const ExcessInventory = () => {
         r.pos_location, r.product_name, r.sku, r.barcode, r.size,
         r.brand_group, r.inventory, r.allowed ?? "", r.excess, r.flag,
         fieldVal(r, "qty_returned"), fieldVal(r, "transfer_ref"),
+        r.done ? "Yes" : "",
       ].map(esc).join(","));
     }
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
@@ -275,6 +309,7 @@ const ExcessInventory = () => {
                       <th className="py-2 pr-4">Flag</th>
                       <th className="py-2 pr-4">Qty Returned</th>
                       <th className="py-2 pr-4">Transfer No.</th>
+                      <th className="py-2 pr-4">Done</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -320,6 +355,22 @@ const ExcessInventory = () => {
                             data-testid={`input-transfer-ref-${r.pos_location}-${r.sku}`}
                           />
                         </td>
+                        <td className="py-1.5 pr-4">
+                          <button
+                            className={
+                              "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-semibold " +
+                              (r.done
+                                ? "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                                : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50")
+                            }
+                            onClick={() => toggleDone(r)}
+                            title={r.done ? "Marked done — click to undo" : "Mark this row as done"}
+                            data-testid={`button-done-${r.pos_location}-${r.sku}`}
+                          >
+                            <CheckCircle size={13} weight={r.done ? "fill" : "regular"} />
+                            {r.done ? "Done" : "Mark done"}
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -327,6 +378,51 @@ const ExcessInventory = () => {
               </div>
             )}
           </div>
+
+          {/* Returns progress per POS (below the list, per business request):
+              Expected returns = excess units flagged Return; Done = excess
+              units on rows marked Done. */}
+          {summary.length > 0 && (
+            <div className="card-white p-5">
+              <SectionTitle
+                title="Returns Progress by POS"
+                subtitle="Expected returns (excess units) vs units on rows marked Done"
+              />
+              <div className="mt-3 overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                      <th className="py-2 pr-4">POS Location</th>
+                      <th className="py-2 pr-4 text-right">Expected Returns</th>
+                      <th className="py-2 pr-4 text-right">Done</th>
+                      <th className="py-2 pr-4 text-right">Remaining</th>
+                      <th className="py-2 pr-4 text-right">SKUs Done</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.map((s) => (
+                      <tr key={s.pos_location} className="border-b border-slate-100 hover:bg-slate-50" data-testid={`row-progress-${s.pos_location}`}>
+                        <td className="py-1.5 pr-4 font-medium text-slate-700">{s.pos_location}</td>
+                        <td className={"py-1.5 pr-4 text-right font-semibold " + (s.excess_inventory > 0 ? "text-amber-600" : "text-slate-400")}>{fmtNum(s.excess_inventory)}</td>
+                        <td className={"py-1.5 pr-4 text-right font-semibold " + ((s.done_units || 0) > 0 ? "text-emerald-600" : "text-slate-400")}>{fmtNum(s.done_units || 0)}</td>
+                        <td className="py-1.5 pr-4 text-right">{fmtNum(Math.max(0, s.excess_inventory - (s.done_units || 0)))}</td>
+                        <td className="py-1.5 pr-4 text-right text-slate-500">{fmtNum(s.done_skus || 0)} / {fmtNum(s.return_skus || 0)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t border-slate-300 font-semibold text-slate-800">
+                      <td className="py-2 pr-4">Total</td>
+                      <td className="py-2 pr-4 text-right">{fmtNum(totals.excess_inventory || 0)}</td>
+                      <td className="py-2 pr-4 text-right">{fmtNum(totals.done_units || 0)}</td>
+                      <td className="py-2 pr-4 text-right">{fmtNum(Math.max(0, (totals.excess_inventory || 0) - (totals.done_units || 0)))}</td>
+                      <td className="py-2 pr-4 text-right">{fmtNum(totals.done_skus || 0)} / {fmtNum(totals.return_skus || 0)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>
