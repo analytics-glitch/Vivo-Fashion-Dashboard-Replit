@@ -1062,7 +1062,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </div>
      </div>
     </div>
-    <div class="section-head" style="margin-top:1.3rem;"><h3>Purchase Order batches</h3><span class="muted">every saved sheet lives under its PO — expand a PO to see its fabrics, sheets and rolls, or review &amp; upload the summed totals onto the draft PO</span></div>
+    <div class="section-head" style="margin-top:1.3rem;"><h3>Purchase Order batches</h3><span class="muted">every saved sheet lives under its PO — expand a PO to see its fabrics, sheets and rolls, or review &amp; upload the summed totals onto the draft PO</span><span style="margin-left:auto;"></span><button class="btn" onclick="openLandedCost(null)" title="Attach clearing, duty &amp; freight charges to a confirmed PO's receipt as a draft landed cost in Odoo">💰 Landed cost upload</button></div>
     <div class="card" style="padding:0;">
      <div class="tbl-wrap">
       <table class="data">
@@ -1134,6 +1134,56 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <span class="muted" id="recv-po-state" style="font-size:12px;margin-right:auto;"></span>
       <button class="btn" onclick="closeRecvPoBatch()">Close</button>
       <button class="btn btn-primary" id="recv-po-upload-btn" onclick="uploadRecvPoBatch()">Upload to Odoo PO</button>
+     </div>
+    </div>
+   </div>
+  </div>
+
+  <div id="lc-overlay" class="modal-overlay" style="display:none;" onclick="closeLandedCost()">
+   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="lc-title" style="max-width:900px;" onclick="event.stopPropagation()">
+    <div class="modal-head">
+     <div><h3 id="lc-title" style="margin:0;">Landed Cost Upload</h3><div class="muted" id="lc-sub" style="font-size:12px;margin-top:2px;">Attach clearing, duty &amp; freight charges to a PO&rsquo;s receipt — saved in Odoo as a <b>draft</b> for accounting to review and validate</div></div>
+     <button class="modal-close" onclick="closeLandedCost()" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+     <div id="lc-err"></div>
+     <div class="flex" style="flex-wrap:wrap;gap:12px;align-items:flex-end;">
+      <div style="position:relative;">
+       <label class="rsv-lbl">Purchase Order</label>
+       <input id="lc-po-search" placeholder="Search POs by number or supplier…" autocomplete="off" style="width:300px;" oninput="debouncedLcPoSearch()" onfocus="debouncedLcPoSearch()">
+       <div id="lc-po-list" class="resv-dropdown" style="display:none;"></div>
+      </div>
+      <button class="btn" id="lc-po-clear" style="display:none;" onclick="lcClearPO()">Change PO</button>
+     </div>
+     <div id="lc-po-info" style="margin-top:8px;"></div>
+     <div id="lc-form" style="display:none;margin-top:12px;">
+      <div id="lc-pickings" style="margin-bottom:10px;"></div>
+      <div id="lc-existing" style="margin-bottom:10px;"></div>
+      <div class="flex" style="flex-wrap:wrap;gap:12px;align-items:flex-end;">
+       <div><label class="rsv-lbl">Date</label><input type="date" id="lc-date" style="width:160px;"></div>
+       <div><label class="rsv-lbl">Journal</label><select id="lc-journal" style="min-width:240px;"></select></div>
+       <div><label class="rsv-lbl">Reference / description (optional)</label><input id="lc-desc" placeholder="e.g. shipment ref, BL number…" style="width:280px;"></div>
+      </div>
+      <div class="flex" style="gap:10px;align-items:center;margin:12px 0 6px;">
+       <b>Cost lines</b><span class="muted" style="font-size:12px;">amounts entered in a foreign currency are converted — Odoo always receives the final KES amount</span>
+       <span style="margin-left:auto;"></span>
+       <button class="btn" onclick="lcAddLine()">+ Add cost line</button>
+      </div>
+      <div class="card" style="padding:0;">
+       <div class="tbl-wrap">
+        <table class="data">
+         <thead><tr><th style="min-width:210px;">Cost type</th><th>Description</th><th style="width:1%;">Currency</th><th class="r" style="width:120px;">Amount</th><th class="r" style="width:110px;">Rate → KES</th><th class="r" style="width:130px;">KES amount</th><th style="width:36px;"></th></tr></thead>
+         <tbody id="lc-lines-body"></tbody>
+         <tfoot><tr style="font-weight:700;"><td colspan="5" class="r">Total (KES)</td><td class="r" id="lc-total">—</td><td></td></tr></tfoot>
+        </table>
+       </div>
+      </div>
+      <div id="lc-result" style="margin-top:10px;"></div>
+      <div class="flex" style="margin-top:14px;gap:.6rem;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
+       <label id="lc-force-wrap" class="muted" style="font-size:12px;margin-right:auto;display:none;"><input type="checkbox" id="lc-force"> create anyway (an additional, intentional landed cost)</label>
+       <button class="btn" onclick="closeLandedCost()">Close</button>
+       <button class="btn btn-primary" id="lc-save-btn" onclick="saveLandedCost()">Create draft in Odoo</button>
+      </div>
      </div>
     </div>
    </div>
@@ -4308,7 +4358,7 @@ async function loadRecvPoBatches(){
       const name=isNoPo
         ? 'No PO <span class="muted" style="font-weight:400;font-size:11px;">(legacy sheets saved without a purchase order)</span>'
         : esc(r.po_name||('PO #'+r.po_id));
-      const action=isNoPo?'':`<button class="btn" data-po-print="${esc(key)}" title="Print the full PO receiving sheet (all fabrics &amp; rolls)" style="padding:4px 10px;font-size:12px;">🖨 PO sheet</button> <button class="btn btn-primary" data-po-open="${Number(r.po_id)}" style="padding:4px 10px;font-size:12px;">Review &amp; upload</button>`;
+      const action=isNoPo?'':`<button class="btn" data-po-print="${esc(key)}" title="Print the full PO receiving sheet (all fabrics &amp; rolls)" style="padding:4px 10px;font-size:12px;">🖨 PO sheet</button> <button class="btn btn-primary" data-po-open="${Number(r.po_id)}" style="padding:4px 10px;font-size:12px;">Review &amp; upload</button> <button class="btn" data-po-lc="${Number(r.po_id)}" title="Attach clearing, duty &amp; freight charges to this PO's receipt as a draft landed cost in Odoo" style="padding:4px 10px;font-size:12px;">💰 Landed cost</button>`;
       const main=`<tr>
         <td><button class="btn" data-po-toggle="${esc(key)}" title="${open?'Collapse':'Expand'}" style="padding:2px 9px;font-size:13px;font-weight:700;">${open?'−':'+'}</button></td>
         <td data-po-toggle="${esc(key)}" style="font-weight:600;cursor:pointer;" title="${open?'Collapse':'Expand'}">${name}</td>
@@ -4334,6 +4384,8 @@ async function loadRecvPoBatches(){
         }
         const b=e.target.closest('button[data-po-open]');
         if(b){openRecvPoBatch(Number(b.dataset.poOpen));return;}
+        const lc=e.target.closest('button[data-po-lc]');
+        if(lc){openLandedCost(Number(lc.dataset.poLc));return;}
         const f=e.target.closest('[data-fab-toggle]');
         if(f){
           const fk=f.dataset.fabToggle;
@@ -4438,7 +4490,8 @@ function recvAuditHtml(audit){
   audit=audit||[];
   if(!audit.length)return '';
   const LABELS={rolls_added:'Rolls added',roll_edited:'Roll edited',roll_deleted:'Roll deleted',
-                sheet_edited:'Sheet edited (admin)',sheet_deleted:'Sheet deleted',odoo_upload:'Odoo upload'};
+                sheet_edited:'Sheet edited (admin)',sheet_deleted:'Sheet deleted',odoo_upload:'Odoo upload',
+                landed_cost_created:'Landed cost draft created'};
   const lines=audit.map(a=>{
     const dd=a.details||{};
     let what='';
@@ -4448,6 +4501,7 @@ function recvAuditHtml(audit){
     else if(a.action==='sheet_edited')what=fmt2(dd.old_kg)+' → '+fmt2(dd.new_kg)+' kg';
     else if(a.action==='sheet_deleted')what=fmt(dd.rolls)+' rolls · '+fmt2(dd.total_kg)+' kg';
     else if(a.action==='odoo_upload')what=String(dd.status||'');
+    else if(a.action==='landed_cost_created')what=(dd.lc_name?String(dd.lc_name)+' · ':'')+fmt2(dd.total_kes)+' KES · '+(dd.pickings||[]).join(', ');
     const post=dd.after_upload?' <span style="color:#b8860b;font-weight:700;">(after upload)</span>':'';
     return '<div style="font-size:11.5px;padding:1px 0;">'+esc(a.at_txt||'')+' · <b>'+esc(LABELS[a.action]||a.action||'')+'</b>'
       +(a.fabric_name?' · '+esc(a.fabric_name):'')
@@ -4577,6 +4631,205 @@ async function openRecvPoBatch(poId){
   }
 }
 function closeRecvPoBatch(){document.getElementById('recv-po-overlay').style.display='none';recvPoBatch=null;}
+// ── Landed Cost Upload (draft stock.landed.cost in Odoo) ──
+// Buyer picks a PO (any PO that already has a receipt), sees its receipt
+// picking(s) + any EXISTING landed costs on them (duplicate warning), then
+// builds cost lines (cost type + amount in KES or foreign currency + rate).
+// The record is created in Odoo as a DRAFT only — accounting validates it.
+let lcPO=null,lcOptions=null,lcPoData=null,lcLines=[],lcPoTimer=null,lcSaved=false;
+function debouncedLcPoSearch(){clearTimeout(lcPoTimer);lcPoTimer=setTimeout(lcPoSearch,250);}
+async function lcPoSearch(){
+  const term=document.getElementById('lc-po-search').value.trim();
+  const list=document.getElementById('lc-po-list');
+  try{
+    const d=await apiFetch('/api/fabric/receiving/landed-cost/pos?q='+encodeURIComponent(term));
+    const items=(d&&d.items)||[];
+    if(!items.length){list.innerHTML='<div class="muted" style="padding:.5rem .7rem;font-size:12px;">No purchase orders with a receipt matched.</div>';list.style.display='block';return;}
+    list.innerHTML=items.map((p,i)=>`<div class="resv-opt" data-lc-po="${i}" style="cursor:pointer;">
+      <b>${esc(p.name||('PO #'+p.po_id))}</b> <span class="muted">· ${esc(p.supplier||'—')} · ${esc(p.date_order||'')} · ${esc(p.state||'')} · ${fmt(p.receipts)} receipt${p.receipts===1?'':'s'}</span></div>`).join('');
+    list.style.display='block';
+    list.dataset.items=JSON.stringify(items);
+    if(!list.dataset.bound){
+      list.dataset.bound='1';
+      list.addEventListener('click',e=>{
+        const o=e.target.closest('[data-lc-po]');if(!o)return;
+        const its=JSON.parse(list.dataset.items||'[]');
+        const p=its[Number(o.dataset.lcPo)];
+        if(p)lcPickPO(p.po_id,p);
+      });
+    }
+  }catch(e){list.innerHTML='<div class="banner banner-err" style="font-size:12px;">'+esc(errHtml(e))+'</div>';list.style.display='block';}
+}
+async function lcLoadOptions(){
+  if(lcOptions)return lcOptions;
+  lcOptions=await apiFetch('/api/fabric/receiving/landed-cost/options');
+  return lcOptions;
+}
+async function openLandedCost(poId){
+  lcPO=null;lcPoData=null;lcLines=[];lcSaved=false;
+  document.getElementById('lc-err').innerHTML='';
+  document.getElementById('lc-po-info').innerHTML='';
+  document.getElementById('lc-result').innerHTML='';
+  document.getElementById('lc-form').style.display='none';
+  document.getElementById('lc-po-clear').style.display='none';
+  document.getElementById('lc-po-search').value='';
+  document.getElementById('lc-po-search').style.display='';
+  document.getElementById('lc-po-list').style.display='none';
+  const fw=document.getElementById('lc-force-wrap');fw.style.display='none';
+  document.getElementById('lc-force').checked=false;
+  const btn=document.getElementById('lc-save-btn');btn.disabled=false;btn.textContent='Create draft in Odoo';
+  document.getElementById('lc-overlay').style.display='flex';
+  try{await lcLoadOptions();}catch(e){document.getElementById('lc-err').innerHTML='<div class="banner banner-err">Could not load the landed-cost options from Odoo: '+esc(errHtml(e))+'</div>';}
+  if(poId!=null)lcPickPO(poId,null);
+  else document.getElementById('lc-po-search').focus();
+}
+function closeLandedCost(){document.getElementById('lc-overlay').style.display='none';}
+function lcClearPO(){openLandedCost(null);}
+async function lcPickPO(poId,meta){
+  document.getElementById('lc-po-list').style.display='none';
+  document.getElementById('lc-po-search').style.display='none';
+  document.getElementById('lc-po-clear').style.display='';
+  document.getElementById('lc-po-info').innerHTML='<span class="loading">Loading the PO\u2019s receipts from Odoo…</span>';
+  try{
+    const d=await apiFetch('/api/fabric/receiving/landed-cost/po/'+encodeURIComponent(Number(poId)));
+    lcPO=d.po;lcPoData=d;
+    renderLcPo();
+  }catch(e){
+    document.getElementById('lc-po-info').innerHTML='<div class="banner banner-err">Could not load this PO: '+esc(errHtml(e))+'</div>';
+  }
+}
+function renderLcPo(){
+  const d=lcPoData,po=d.po;
+  document.getElementById('lc-po-info').innerHTML=
+    `<div style="font-size:13px;"><b>${esc(po.name||('PO #'+po.po_id))}</b> · ${esc(po.supplier||'—')} · ordered ${esc((po.date_order||'').slice(0,10)||'—')} · state <b>${esc(po.state||'—')}</b></div>`;
+  const pk=document.getElementById('lc-pickings');
+  const pickings=d.pickings||[];
+  if(!pickings.length){
+    pk.innerHTML='<div class="banner banner-err">This PO has no receipt yet — the receipt is created when the PO is confirmed in Odoo. Confirm the PO first, then come back.</div>';
+    document.getElementById('lc-form').style.display='block';
+    document.getElementById('lc-save-btn').disabled=true;
+    document.getElementById('lc-existing').innerHTML='';
+    return;
+  }
+  const anyUsable=pickings.some(p=>p.usable);
+  pk.innerHTML='<div class="rsv-lbl" style="margin-bottom:3px;">Attach to receipt(s)</div>'+pickings.map(p=>{
+    const dis=!p.usable;
+    return `<label style="display:flex;gap:8px;align-items:center;font-size:13px;padding:2px 0;${dis?'opacity:.55;':''}">
+      <input type="checkbox" class="lc-pick" value="${Number(p.id)}" ${dis?'disabled':(p.usable?'checked':'')}>
+      <b>${esc(p.name||('#'+p.id))}</b><span class="muted">· ${esc(p.type||'')} · state ${esc(p.state||'')}${p.date_done?' · done '+esc(String(p.date_done).slice(0,10)):''}${dis?' · not usable (cancelled/draft)':''}</span>
+    </label>`;
+  }).join('')
+  +(anyUsable?'':'<div class="banner banner-err" style="margin-top:6px;">None of this PO\u2019s receipts is in a usable state.</div>');
+  const ex=document.getElementById('lc-existing');
+  if(d.lc_access===false){
+    ex.innerHTML='<div class="banner banner-err">⚠ '+esc(d.lc_access_error||'The Odoo user cannot access Landed Costs.')+'</div>';
+  }else if((d.existing||[]).length){
+    ex.innerHTML='<div class="banner" style="background:rgba(184,134,11,.08);border:1px solid rgba(184,134,11,.4);padding:.45rem .7rem;border-radius:8px;font-size:12.5px;">⚠ A landed cost already exists on this PO\u2019s receipt(s): '
+      +d.existing.map(x=>`<b>${esc(x.name||('#'+x.id))}</b> (${esc(x.state||'')}, ${esc(x.date||'')}, ${fmt2(x.amount_total)})${x.odoo_url?' <a href="'+esc(x.odoo_url)+'" target="_blank" rel="noopener">open</a>':''}`).join(' · ')
+      +' — only create another one if these are additional, intentional charges.</div>';
+    document.getElementById('lc-force-wrap').style.display='';
+  }else ex.innerHTML='';
+  // Form defaults
+  const dt=document.getElementById('lc-date');
+  if(!dt.value){const n=new Date();dt.value=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0');}
+  const js=document.getElementById('lc-journal');
+  const o=lcOptions||{journals:[],cost_types:[]};
+  js.innerHTML=(o.journals||[]).map(j=>`<option value="${Number(j.id)}" ${j.id===o.default_journal_id?'selected':''}>${esc(j.name)} (${esc(j.code||'')})</option>`).join('');
+  if(!lcLines.length)lcAddLine();else renderLcLines();
+  document.getElementById('lc-form').style.display='block';
+  document.getElementById('lc-save-btn').disabled=!anyUsable||lcSaved;
+}
+function lcAddLine(){lcLines.push({product_id:'',name:'',mode:'kes',amount:'',fx_rate:''});renderLcLines();}
+function lcLineKes(l){
+  const a=parseFloat(l.amount);
+  if(isNaN(a)||a<=0)return null;
+  if(l.mode==='fx'){const r=parseFloat(l.fx_rate);if(isNaN(r)||r<=0)return null;return a*r;}
+  return a;
+}
+function renderLcLines(){
+  const body=document.getElementById('lc-lines-body');
+  const o=lcOptions||{cost_types:[]};
+  body.innerHTML=lcLines.map((l,i)=>{
+    const kes=lcLineKes(l);
+    return `<tr>
+      <td><select class="lc-in" data-li="${i}" data-k="product_id"><option value="">— pick cost type —</option>${(o.cost_types||[]).map(c=>`<option value="${Number(c.id)}" ${String(c.id)===String(l.product_id)?'selected':''}>${esc(c.name)}</option>`).join('')}</select></td>
+      <td><input class="lc-in" data-li="${i}" data-k="name" value="${esc(l.name||'')}" placeholder="defaults to the cost type" style="width:100%;min-width:140px;"></td>
+      <td><select class="lc-in" data-li="${i}" data-k="mode"><option value="kes" ${l.mode==='kes'?'selected':''}>KES</option><option value="fx" ${l.mode==='fx'?'selected':''}>FX</option></select></td>
+      <td class="r"><input class="lc-in r" data-li="${i}" data-k="amount" type="number" min="0" step="any" value="${esc(String(l.amount??''))}" style="width:110px;text-align:right;"></td>
+      <td class="r">${l.mode==='fx'?`<input class="lc-in r" data-li="${i}" data-k="fx_rate" type="number" min="0" step="any" value="${esc(String(l.fx_rate??''))}" placeholder="rate" style="width:95px;text-align:right;">`:'<span class="muted">—</span>'}</td>
+      <td class="r" style="font-weight:600;">${kes!=null?fmt2(kes):'<span class="muted">—</span>'}</td>
+      <td><button class="btn" data-lc-del="${i}" title="Remove line" style="padding:1px 8px;">&times;</button></td>
+    </tr>`;
+  }).join('');
+  const total=lcLines.reduce((s,l)=>{const k=lcLineKes(l);return s+(k||0);},0);
+  document.getElementById('lc-total').textContent=total>0?fmt2(total):'—';
+  if(!body.dataset.bound){
+    body.dataset.bound='1';
+    body.addEventListener('input',lcLineInput);
+    body.addEventListener('change',lcLineInput);
+    body.addEventListener('click',e=>{
+      const b=e.target.closest('[data-lc-del]');if(!b)return;
+      lcLines.splice(Number(b.dataset.lcDel),1);
+      if(!lcLines.length)lcLines.push({product_id:'',name:'',mode:'kes',amount:'',fx_rate:''});
+      renderLcLines();
+    });
+  }
+}
+function lcLineInput(e){
+  const el=e.target.closest('.lc-in');if(!el)return;
+  const l=lcLines[Number(el.dataset.li)];if(!l)return;
+  l[el.dataset.k]=el.value;
+  if(el.dataset.k==='mode'||el.tagName==='SELECT'){renderLcLines();return;}
+  // live-update just the KES cell + total without a full re-render (keeps focus)
+  const tr=el.closest('tr');
+  if(tr){const kes=lcLineKes(l);tr.children[5].innerHTML=kes!=null?fmt2(kes):'<span class="muted">—</span>';}
+  const total=lcLines.reduce((s,x)=>{const k=lcLineKes(x);return s+(k||0);},0);
+  document.getElementById('lc-total').textContent=total>0?fmt2(total):'—';
+}
+function lcShowErr(msg){document.getElementById('lc-result').innerHTML='<div class="banner banner-err">'+esc(msg)+'</div>';}
+async function saveLandedCost(){
+  if(!lcPO){lcShowErr('Pick a purchase order first.');return;}
+  const picks=Array.from(document.querySelectorAll('.lc-pick:checked')).map(c=>Number(c.value));
+  if(!picks.length){lcShowErr('Tick at least one receipt to attach the landed cost to.');return;}
+  const date=document.getElementById('lc-date').value;
+  if(!date){lcShowErr('Enter the landed-cost date.');return;}
+  const lines=[];
+  for(let i=0;i<lcLines.length;i++){
+    const l=lcLines[i];
+    if(!l.product_id){lcShowErr('Line '+(i+1)+': pick a cost type.');return;}
+    const a=parseFloat(l.amount);
+    if(isNaN(a)||a<=0){lcShowErr('Line '+(i+1)+': enter an amount greater than zero.');return;}
+    if(l.mode==='fx'){
+      const r=parseFloat(l.fx_rate);
+      if(isNaN(r)||r<=0){lcShowErr('Line '+(i+1)+': enter the exchange rate to KES.');return;}
+    }
+    lines.push({product_id:Number(l.product_id),name:(l.name||'').trim(),mode:l.mode,amount:a,fx_rate:l.mode==='fx'?parseFloat(l.fx_rate):null});
+  }
+  if(!lines.length){lcShowErr('Add at least one cost line.');return;}
+  const btn=document.getElementById('lc-save-btn');
+  btn.disabled=true;btn.textContent='Creating…';
+  try{
+    const r=await fetch('/api/fabric/receiving/landed-cost',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({po_id:Number(lcPO.po_id),picking_ids:picks,date:date,
+        journal_id:Number(document.getElementById('lc-journal').value),
+        description:document.getElementById('lc-desc').value.trim(),
+        lines:lines,force:document.getElementById('lc-force').checked})});
+    let d={};try{d=await r.json();}catch(_){}
+    if(r.status===409){
+      document.getElementById('lc-force-wrap').style.display='';
+      throw new Error(d.detail||'A landed cost already exists on these receipts.');
+    }
+    if(!r.ok)throw new Error(d.detail||('Request failed ('+r.status+')'));
+    lcSaved=true;
+    document.getElementById('lc-result').innerHTML='<div class="banner" style="background:rgba(10,125,51,.08);border:1px solid rgba(10,125,51,.4);padding:.55rem .8rem;border-radius:8px;">✔ Draft landed cost <b>'+esc(d.name||('#'+d.lc_id))+'</b> created ('+fmt2(d.total_kes)+' KES, '+esc(String(d.state||'draft'))+') — accounting validates it in Odoo.'
+      +(d.odoo_url?' <a href="'+esc(d.odoo_url)+'" target="_blank" rel="noopener"><b>Open in Odoo →</b></a>':'')+'</div>';
+    btn.textContent='Created';
+    loadRecvPoBatches();
+  }catch(e){
+    lcShowErr(e.message||'Could not create the landed cost.');
+    btn.disabled=false;btn.textContent='Create draft in Odoo';
+  }
+}
 function recvPoStatusCell(e){
   let tag;
   if(e.action==='blocked')tag='<span style="color:var(--danger);font-weight:700;">Blocked</span>';

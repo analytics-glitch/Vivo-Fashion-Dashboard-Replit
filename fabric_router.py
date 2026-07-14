@@ -6112,6 +6112,345 @@ def receiving_po_upload(po_id: int, request: Request):
     return {"ok": error is None, "po": po, "status": status,
             "error": error, "results": results}
 
+# ── Landed Cost upload (draft stock.landed.cost in Odoo) ──────────────────
+# Lets a buyer attach a DRAFT landed cost (clearing, duty, freight …) to a
+# PO's receipt picking(s). The record is created in Odoo as a draft only —
+# accounting reviews and validates it inside Odoo. Same auth model as the
+# rest of /api/fabric/* (no extra role gating; the actor is logged).
+
+_LC_PERM_MSG = (
+    "The Odoo connection user is not allowed to access Landed Costs "
+    "(stock.landed.cost) — this needs the 'Inventory / Administrator' "
+    "access right. Ask your Odoo administrator to add that group to the "
+    "API user, then retry. Nothing was created.")
+
+def _lc_kw(odoo, model, method, args, kw=None):
+    """Like _odoo_kw but keeps the FULL Odoo fault text so the landed-cost
+    permission error can be mapped to an actionable message, and other Odoo
+    validation errors surface readably instead of as a bare last line."""
+    import xmlrpc.client as _x
+    db, uid, pwd, models = odoo
+    try:
+        return models.execute_kw(db, uid, pwd, model, method, args, kw or {})
+    except _x.Fault as f:
+        msg = str(f.faultString or "")
+        if "not allowed" in msg and "stock.landed.cost" in msg:
+            raise HTTPException(status_code=403, detail=_LC_PERM_MSG)
+        lines = [ln.strip() for ln in msg.splitlines() if ln.strip()]
+        # Odoo tracebacks end with the human message; plain errors are 1 line.
+        raise HTTPException(status_code=502,
+            detail="Odoo said: " + (lines[-1] if lines else msg or "unknown error"))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Odoo request failed: {e}")
+
+def _lc_record_url(lc_id):
+    base = (os.environ.get("ODOO_URL") or "").rstrip("/")
+    if not base or not lc_id:
+        return None
+    return f"{base}/web#id={int(lc_id)}&model=stock.landed.cost&view_type=form"
+
+def _lc_po_and_pickings(odoo, po_id):
+    """The PO header (any state) + its incoming (receipt) pickings. 404 when
+    the PO does not exist; the caller decides what 'usable' means."""
+    po_rows = _lc_kw(odoo, "purchase.order", "read", [[int(po_id)]],
+                     {"fields": ["name", "partner_id", "state", "date_order",
+                                 "picking_ids", "company_id"]})
+    if not po_rows:
+        raise HTTPException(status_code=404, detail="Purchase order not found in Odoo")
+    po = po_rows[0]
+    pickings = []
+    if po.get("picking_ids"):
+        rows = _lc_kw(odoo, "stock.picking", "search_read",
+                      [[["id", "in", list(po["picking_ids"])]]],
+                      {"fields": ["name", "state", "picking_type_id",
+                                  "scheduled_date", "date_done", "company_id"]})
+        for p in rows:
+            ptype = p.get("picking_type_id") or []
+            pickings.append({
+                "id": p["id"], "name": p.get("name"),
+                "state": p.get("state"),
+                "type": ptype[1] if len(ptype) > 1 else "",
+                "date_done": p.get("date_done") or None,
+                "scheduled_date": p.get("scheduled_date") or None,
+                "company_id": (p.get("company_id") or [None])[0],
+                "usable": p.get("state") not in ("cancel", "draft"),
+            })
+    return {
+        "po_id": int(po_id), "name": po.get("name"),
+        "supplier": (po.get("partner_id") or [None, ""])[1],
+        "state": po.get("state"), "date_order": po.get("date_order"),
+        "company_id": (po.get("company_id") or [None])[0],
+    }, pickings
+
+@fabric_router.get("/api/fabric/receiving/landed-cost/options")
+def landed_cost_options():
+    """Form options: the landed-cost 'cost type' products (live from Odoo,
+    landed_cost_ok=True) and the general journals with a suggested default
+    (Miscellaneous Operations, Odoo's usual landed-cost journal)."""
+    odoo = _odoo_connect()
+    prods = _lc_kw(odoo, "product.product", "search_read",
+                   [[["landed_cost_ok", "=", True]]],
+                   {"fields": ["display_name"], "order": "name",
+                    "context": {"active_test": True}})
+    journals = _lc_kw(odoo, "account.journal", "search_read",
+                      [[["type", "=", "general"]]],
+                      {"fields": ["name", "code"], "order": "name"})
+    default_id = None
+    for j in journals:
+        if (j.get("name") or "").strip().lower() == "miscellaneous operations":
+            default_id = j["id"]
+            break
+    if default_id is None and journals:
+        default_id = journals[0]["id"]
+    return {"cost_types": [{"id": p["id"], "name": p["display_name"]}
+                           for p in prods],
+            "journals": [{"id": j["id"], "name": j["name"], "code": j["code"]}
+                         for j in journals],
+            "default_journal_id": default_id}
+
+@fabric_router.get("/api/fabric/receiving/landed-cost/pos")
+def landed_cost_pos(q_: str = Query(default="", alias="q"),
+                    limit: int = Query(default=20)):
+    """PO picker for the landed-cost form: purchase orders that HAVE at least
+    one picking (a receipt exists only once the PO is confirmed), searchable
+    by number or supplier, newest first."""
+    odoo = _odoo_connect()
+    dom = [["picking_ids", "!=", False]]
+    term = (q_ or "").strip()
+    if term:
+        dom = ["&"] + dom + ["|", ["name", "ilike", term],
+                             ["partner_id", "ilike", term]]
+    rows = _lc_kw(odoo, "purchase.order", "search_read", [dom],
+                  {"fields": ["name", "partner_id", "state", "date_order",
+                              "picking_ids"],
+                   "limit": max(1, min(int(limit or 20), 50)),
+                   "order": "date_order desc, id desc"})
+    return {"items": [{
+        "po_id": r["id"], "name": r.get("name"),
+        "supplier": (r.get("partner_id") or [None, ""])[1],
+        "state": r.get("state"),
+        "date_order": (r.get("date_order") or "")[:10],
+        "receipts": len(r.get("picking_ids") or []),
+    } for r in rows]}
+
+@fabric_router.get("/api/fabric/receiving/landed-cost/po/{po_id}")
+def landed_cost_po(po_id: int):
+    """One PO for the landed-cost form: header, its receipt pickings, and any
+    EXISTING landed costs already referencing those pickings (duplicate
+    warning). When the Odoo user cannot read stock.landed.cost the pickings
+    still load and `lc_access` flags the blocker so the UI can explain it
+    up front instead of failing on submit."""
+    odoo = _odoo_connect()
+    po, pickings = _lc_po_and_pickings(odoo, po_id)
+    existing, lc_access, lc_access_error = [], True, None
+    pids = [p["id"] for p in pickings]
+    if pids:
+        try:
+            rows = _lc_kw(odoo, "stock.landed.cost", "search_read",
+                          [[["picking_ids", "in", pids]]],
+                          {"fields": ["name", "state", "date", "amount_total",
+                                      "picking_ids"]})
+            for r in rows:
+                existing.append({
+                    "id": r["id"], "name": r.get("name"),
+                    "state": r.get("state"), "date": r.get("date"),
+                    "amount_total": r.get("amount_total"),
+                    "picking_ids": [i for i in (r.get("picking_ids") or [])
+                                    if i in pids],
+                    "odoo_url": _lc_record_url(r["id"]),
+                })
+        except HTTPException as ex:
+            if ex.status_code == 403:
+                lc_access, lc_access_error = False, str(ex.detail)
+            else:
+                raise
+    return {"po": po, "pickings": pickings, "existing": existing,
+            "lc_access": lc_access, "lc_access_error": lc_access_error}
+
+@fabric_router.post("/api/fabric/receiving/landed-cost")
+def landed_cost_create(request: Request, body: dict = Body(...)):
+    """Create a DRAFT stock.landed.cost in Odoo attached to the chosen receipt
+    picking(s). Gate ordering: validate the whole payload first (400, nothing
+    written), then re-verify the PO/pickings/options live in Odoo (still
+    nothing written), and only then create. The record is NEVER validated
+    here — accounting posts it in Odoo. If a landed cost already references
+    one of the pickings, a 409 lists it unless `force` is true."""
+    # ── 1. Local payload validation (nothing touches Odoo yet) ──
+    try:
+        po_id = int(body.get("po_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="po_id is required")
+    picking_ids = body.get("picking_ids")
+    if not isinstance(picking_ids, list) or not picking_ids:
+        raise HTTPException(status_code=400,
+            detail="Select at least one receipt to attach the landed cost to")
+    try:
+        picking_ids = sorted({int(p) for p in picking_ids})
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="picking_ids must be numbers")
+    date_s = str(body.get("date") or "").strip()
+    try:
+        datetime.datetime.strptime(date_s, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400,
+                            detail="Enter the landed-cost date (YYYY-MM-DD)")
+    try:
+        journal_id = int(body.get("journal_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Pick an account journal")
+    description = str(body.get("description") or "").strip() or None
+    lines_in = body.get("lines")
+    if not isinstance(lines_in, list) or not lines_in:
+        raise HTTPException(status_code=400, detail="Add at least one cost line")
+    if len(lines_in) > 50:
+        raise HTTPException(status_code=400, detail="At most 50 cost lines")
+    lines = []
+    for i, ln in enumerate(lines_in, start=1):
+        if not isinstance(ln, dict):
+            raise HTTPException(status_code=400, detail=f"Line {i}: invalid entry")
+        try:
+            pid = int(ln.get("product_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                                detail=f"Line {i}: pick a cost type")
+        mode = str(ln.get("mode") or "kes").strip().lower()
+        if mode not in ("kes", "fx"):
+            raise HTTPException(status_code=400,
+                detail=f"Line {i}: amount mode must be KES or foreign currency")
+        try:
+            amount = float(ln.get("amount"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                                detail=f"Line {i}: enter the amount")
+        if not (amount > 0):
+            raise HTTPException(status_code=400,
+                detail=f"Line {i}: the amount must be greater than zero")
+        if mode == "fx":
+            try:
+                rate = float(ln.get("fx_rate"))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400,
+                    detail=f"Line {i}: enter the exchange rate to KES")
+            if not (rate > 0):
+                raise HTTPException(status_code=400,
+                    detail=f"Line {i}: the exchange rate must be greater than zero")
+            kes = round(amount * rate, 2)
+        else:
+            rate = None
+            kes = round(amount, 2)
+        if not (kes > 0):
+            raise HTTPException(status_code=400,
+                detail=f"Line {i}: the KES amount must be greater than zero")
+        lines.append({"product_id": pid,
+                      "name": str(ln.get("name") or "").strip() or None,
+                      "mode": mode, "amount": amount, "fx_rate": rate,
+                      "kes": kes})
+    # ── 2. Live re-verification in Odoo (still nothing written) ──
+    actor_id, actor_name = _fabric_actor(request)
+    odoo = _odoo_connect()
+    po, pickings = _lc_po_and_pickings(odoo, po_id)
+    by_id = {p["id"]: p for p in pickings}
+    usable = [p["id"] for p in pickings if p["usable"]]
+    if not usable:
+        raise HTTPException(status_code=400,
+            detail=f"PO {po.get('name') or po_id} has no usable receipt yet — "
+                   "the receipt is created when the PO is confirmed in Odoo. "
+                   "Confirm the PO (and its receipt) first, then retry.")
+    bad = [str(p) for p in picking_ids if p not in usable]
+    if bad:
+        names = ", ".join((by_id.get(int(b), {}) or {}).get("name") or b
+                          for b in bad)
+        raise HTTPException(status_code=400,
+            detail=f"These receipts cannot take a landed cost (cancelled, "
+                   f"draft or not on this PO): {names}")
+    # Cost-type products must still be landed-cost products in Odoo.
+    prod_ids = sorted({l["product_id"] for l in lines})
+    prods = _lc_kw(odoo, "product.product", "search_read",
+                   [[["id", "in", prod_ids]]],
+                   {"fields": ["display_name", "landed_cost_ok"],
+                    "context": {"active_test": False}})
+    pmap = {p["id"]: p for p in prods}
+    for l in lines:
+        p = pmap.get(l["product_id"])
+        if not p:
+            raise HTTPException(status_code=400,
+                detail=f"Cost type {l['product_id']} no longer exists in Odoo")
+        if not p.get("landed_cost_ok"):
+            raise HTTPException(status_code=400,
+                detail=f"'{p.get('display_name')}' is not flagged as a "
+                       "landed-cost product in Odoo any more")
+        if not l["name"]:
+            l["name"] = p.get("display_name") or ""
+    # The journal must still be a general journal.
+    jrows = _lc_kw(odoo, "account.journal", "search_read",
+                   [[["id", "=", journal_id], ["type", "=", "general"]]],
+                   {"fields": ["name"], "limit": 1})
+    if not jrows:
+        raise HTTPException(status_code=400,
+            detail="The chosen journal is not a general journal in Odoo — "
+                   "pick another one")
+    # ── 3. Duplicate guard (this read also proves LC access) ──
+    dup = _lc_kw(odoo, "stock.landed.cost", "search_read",
+                 [[["picking_ids", "in", picking_ids]]],
+                 {"fields": ["name", "state", "date", "amount_total"]})
+    if dup and not body.get("force"):
+        names = ", ".join(f"{d.get('name')} ({d.get('state')})" for d in dup)
+        raise HTTPException(status_code=409,
+            detail="A landed cost already references the selected receipt(s): "
+                   f"{names}. Tick 'create anyway' if this is an additional, "
+                   "intentional landed cost. Nothing was created.")
+    # ── 4. Create the DRAFT landed cost (never validated from here) ──
+    vals = {
+        "date": date_s,
+        "target_model": "picking",
+        "account_journal_id": journal_id,
+        "picking_ids": [[6, 0, picking_ids]],
+        "cost_lines": [[0, 0, {
+            "product_id": l["product_id"],
+            "name": l["name"],
+            "price_unit": l["kes"],
+            "split_method": "by_current_cost_price",
+        }] for l in lines],
+    }
+    if description:
+        vals["description"] = description
+    company_id = (by_id.get(picking_ids[0], {}) or {}).get("company_id") \
+                 or po.get("company_id")
+    if company_id:
+        vals["company_id"] = int(company_id)
+    lc_id = _lc_kw(odoo, "stock.landed.cost", "create", [vals])
+    lc = (_lc_kw(odoo, "stock.landed.cost", "read", [[int(lc_id)]],
+                 {"fields": ["name", "state", "amount_total"]}) or [{}])[0]
+    total_kes = round(sum(l["kes"] for l in lines), 2)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        with conn.cursor() as cur:
+            _recv_audit(cur, po_id, None, None, "landed_cost_created", {
+                "lc_id": int(lc_id), "lc_name": lc.get("name"),
+                "date": date_s, "journal_id": journal_id,
+                "description": description,
+                "picking_ids": picking_ids,
+                "pickings": [by_id[p]["name"] for p in picking_ids
+                             if p in by_id],
+                "total_kes": total_kes,
+                "lines": [{"product_id": l["product_id"], "name": l["name"],
+                           "mode": l["mode"], "amount": l["amount"],
+                           "fx_rate": l["fx_rate"], "kes": l["kes"]}
+                          for l in lines],
+            }, actor_name)
+        conn.commit()
+    _log_fabric_change("Landed cost draft created", {
+        "id": po_id, "product": po.get("name"), "style_name": "",
+        "qty": total_kes, "uom": "KES",
+        "note": f"{lc.get('name') or lc_id} · {len(lines)} cost lines (draft)",
+        "status": "draft"}, request)
+    return {"ok": True, "lc_id": int(lc_id), "name": lc.get("name"),
+            "state": lc.get("state"), "amount_total": lc.get("amount_total"),
+            "total_kes": total_kes, "odoo_url": _lc_record_url(lc_id),
+            "po": po}
+
 @fabric_router.get("/api/fabric/receiving/{sheet_id}")
 def receiving_fetch(sheet_id: int):
     """One sheet + its rolls + the LIVE product-info block for reprinting.
