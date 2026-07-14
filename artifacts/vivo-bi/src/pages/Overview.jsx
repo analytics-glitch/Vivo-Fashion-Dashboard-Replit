@@ -583,6 +583,14 @@ const Overview = () => {
       retSalesPrev: pick(ctSpendPrev, "returning_sales"),
     };
   }, [ctSpend, ctSpendPrev]);
+  // Share of the Total Sales headline each bucket represents (they sum to 100%).
+  const ctShare = useMemo(() => {
+    const tot = (ctSeg.newSales || 0) + (ctSeg.retSales || 0);
+    if (ctSeg.newSales == null || ctSeg.retSales == null || tot <= 0)
+      return { newPct: null, retPct: null };
+    const newPct = (100 * ctSeg.newSales) / tot;
+    return { newPct, retPct: 100 - newPct };
+  }, [ctSeg]);
   // WS3 — on a single-day range the "last month/year" comparison base is
   // the SAME DAY shifted, not the whole month/year; label it honestly.
   const singleDayRange = dateFrom === dateTo;
@@ -1215,6 +1223,7 @@ const Overview = () => {
             <KPICard testId="kpi-new-customer-revenue" label="New Customer Revenue"
               value={ctSeg.newSales == null ? "\u2014" : kfmt(ctSeg.newSales)}
               valueFull={ctSeg.newSales == null ? "\u2014" : fmtKESLong(ctSeg.newSales)}
+              sub={ctShare.newPct == null ? undefined : `${ctShare.newPct.toFixed(1)}% of Total Sales`}
               icon={UserPlus}
               formula="Money from customers whose first-ever purchase happened in this period, on the same basis as the Total Sales card (returns netted). New + Returning always adds up exactly to Total Sales."
               delta={compareMode !== "none" && ctSeg.newSalesPrev ? pctDelta(ctSeg.newSales, ctSeg.newSalesPrev) : null}
@@ -1226,6 +1235,7 @@ const Overview = () => {
             <KPICard testId="kpi-returning-customer-revenue" label="Returning Customer Revenue"
               value={ctSeg.retSales == null ? "\u2014" : kfmt(ctSeg.retSales)}
               valueFull={ctSeg.retSales == null ? "\u2014" : fmtKESLong(ctSeg.retSales)}
+              sub={ctShare.retPct == null ? undefined : `${ctShare.retPct.toFixed(1)}% of Total Sales`}
               icon={UsersThree}
               formula="All revenue that isn't from brand-new customers: repeat customers plus walk-in (anonymous) sales, on the same basis as the Total Sales card (returns netted). New + Returning always adds up exactly to Total Sales."
               delta={compareMode !== "none" && ctSeg.retSalesPrev ? pctDelta(ctSeg.retSales, ctSeg.retSalesPrev) : null}
