@@ -135,7 +135,7 @@ def run():
         for i in range(0, len(move_ids), 500):
             moves.extend(models.execute_kw(ODOO_DB, uid, ODOO_PW, "stock.move", "read",
                 [move_ids[i:i+500]],
-                {"fields": ["id", "picking_id", "product_id", "product_uom_qty", "quantity_done"]}))
+                {"fields": ["id", "picking_id", "product_id", "product_uom_qty", "quantity"]}))
 
     # 5. Resolve product default_code (SKU) in bulk
     prod_ids = list({m["product_id"][0] for m in moves if m.get("product_id")})
@@ -168,7 +168,7 @@ def run():
             code, store_name, country,
             sku, pname,
             float(m.get("product_uom_qty") or 0),
-            float(m.get("quantity_done") or 0),
+            float(m.get("quantity") or 0),
             m["id"],
             pk.get("scheduled_date") or None,
             pk.get("date_done") or None,
