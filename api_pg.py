@@ -1456,6 +1456,18 @@ _PERF_INDEXES = [
      "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_footfall_location_time ON footfall (pos_location_name, \"time\")"),
     ("idx_sync_health_checked",
      "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sync_health_checked ON sync_health_log (checked_at DESC)"),
+    # Sales-by-Hour (Overview): the Shopify-history side filters
+    # substring(created_at, 1, 10) BETWEEN dates — per-row string parsing over a
+    # full scan of raw_shopify_orders (was 6-10s). substring() is IMMUTABLE, so
+    # an expression index makes the date-range predicate an index scan.
+    ("idx_rso_created_date",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_rso_created_date ON raw_shopify_orders "
+     "(substring(created_at, 1, 10))"),
+    ("idx_shopify_sales_day",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_shopify_sales_day ON shopify_sales (day)"),
+    ("idx_shopify_sales_order",
+     "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_shopify_sales_order ON shopify_sales "
+     "((order_id::text), store_id)"),
 ]
 
 
@@ -13750,13 +13762,28 @@ def _es_customer_windows(span_from, span_to, windows, country):
                    + a + "' AND '" + b + "') AS new_" + k)
         sel.append("COUNT(*) FILTER (WHERE oc_" + k + " > 0 AND a.first_ever < '"
                    + a + "') AS ret_" + k)
-    rows = run_query("""
-        WITH at AS (
+    # First-ever purchase per customer: serve from the hourly-refreshed
+    # rollup_customer_first_purchase when fresh (a 173k-row PK read) instead of
+    # full-scanning all_sales (~1.5M rows, was 17-18s cold — the single biggest
+    # exec-summary cost). Boundary semantics are identical: sale_date is TEXT but
+    # uniformly 'YYYY-MM-DD' (verified min/max length 10), and the rollup's DATE
+    # column compares against the same quoted literals with the same ordering.
+    # The rollup is built from _unified_first_purchase_ctes (Kenya id bridge),
+    # matching the get_customers canon. Fall back to the live scan when stale.
+    if _rollup_fresh("customer_first_purchase"):
+        at_cte = """at AS (
+            SELECT customer_id, first_purchase_date AS first_ever
+            FROM rollup_customer_first_purchase
+        )"""
+    else:
+        at_cte = """at AS (
             SELECT customer_id, MIN(sale_date) AS first_ever
             FROM all_sales
             WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
             GROUP BY customer_id
-        ),
+        )"""
+    rows = run_query("""
+        WITH """ + at_cte + """,
         pc AS (
             SELECT s.customer_id, """ + ",\n".join(pc_cols) + """
             FROM all_sales s

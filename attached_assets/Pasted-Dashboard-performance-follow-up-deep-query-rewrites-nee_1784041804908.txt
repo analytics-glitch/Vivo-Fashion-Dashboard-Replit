@@ -1,0 +1,22 @@
+Dashboard performance follow-up — deep query rewrites needed
+I've done the universal quick wins (ANALYZE across all tables, auto-ANALYZE wired into every TRUNCATE+reload extract in extract_odoo_inventory.py / extract_odoo_products.py / extract_odoo_transfers.py / transform_all_products_clean.py, and 7 targeted indexes on all_products_clean(status, tier, brand, active) and all_sales(customer_id, sale_kind) + (variant_sku, sale_date)). Root cause of the dashboard-wide slowdown was last_analyze = NULL on every critical table — planner running blind and picking full-scan plans on a 1.5M-row all_sales. That's fixed and durable.
+What's left is the deep query rewrites. Slow queries logged to sync_health_log (where action_taken='slow_query') show the actual top offenders. Recent samples:
+DurationQuery patternLikely endpoint17.9s + 16.6sWITH at AS (SELECT customer_id, MIN(sale_date) FROM all_sales GROUP BY customer_id) at api_pg.py line 13754Executive Summary (_es_kpi_block and its helper)13.4sWITH sv AS (...) — style × store × country net_quantity + net_salesRange Mgmt11.2s + 6.1sStyle × subcategory × 28-day rollupRange Mgmt9.5s + 6.7ssubstring(o.created_at, 12, 2)::int full scan of raw Shopify ordersSales-by-Hour chart on Overview8.6s + 7.3s + 6.9sStyle master with mode() WITHIN GROUP + robust price calcRange Mgmt classify7.8s + 7.6sCountry-summary with full-table SUM(total_sales_kes)Overview KPIs5.9s + 5.5s + 5.8sStore SOH aggregationMultiple pages
+Highest-value fix (biggest single win):
+The Exec Summary at CTE at line 13754 scans all 1.5M rows of all_sales to build first-purchase-per-customer — but rollup_customer_first_purchase (172,833 rows, refreshed hourly) already holds that exact answer. There's a _rollup_fresh("customer_first_purchase") gate pattern used at line 4369 (in get_customers) that shows how to route this. Applying the same gate to this CTE should take Exec Summary from ~20s → ~1s.
+The rollup has columns customer_id and first_purchase_date (DATE). Current CTE uses MIN(sale_date) where sale_date is TEXT, and the downstream comparison is a.first_ever BETWEEN '<date>' AND '<date>' (text). Confirm date-vs-text semantics match at boundaries before swapping in.
+Second-priority fixes:
+
+Sales-by-Hour: substring(o.created_at, 12, 2)::int is doing per-row string parsing on the full raw_shopify_orders table. Either extract hour to a generated column, or add an index on the computed expression, or pre-aggregate to a small hourly rollup.
+Range Mgmt style×store CTEs: multiple queries computing 28-day sales windows over full history. Consider pre-aggregating into a rollup_style_store_recent table refreshed by the sync loop.
+Overview country-summary: the sum-by-country query is doing full all_sales scans. If date range is bounded, idx_all_sales_country_date should be used — worth checking EXPLAIN.
+
+Constraints to maintain:
+
+Kenya customer identity must go through _unified_first_purchase_ctes() (bridges the 2026-03-20 Odoo/Shopify id switch — see the code comment at line 5115).
+BASE_FILTERS and the corrected online scope (Online - Shop Zetu only) must apply consistently.
+_VAT_DIV and NET_SALES_CANON are the single canonical net-sales definition.
+
+How to verify improvements:
+SELECT LEFT(notes, 250) FROM sync_health_log WHERE action_taken='slow_query' ORDER BY checked_at DESC LIMIT 20; shows current slow queries. After each fix, hit the relevant page a few times and re-check — the corresponding entries should stop appearing.
+Let me know if you need anything else from the data side.
