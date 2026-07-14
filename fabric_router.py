@@ -5659,7 +5659,9 @@ def _recv_po_plan(conn, odoo, po_id):
                     unit_yuan = yp * kpm
                 elif qu == "m" and kind == "kg":
                     unit_yuan = yp / kpm
-                e["push_price"] = round(unit_yuan * y2u * u2k, 4)
+                # yuan_to_usd is quoted as Yuan PER USD (e.g. 7.9998), so
+                # Yuan → USD is a DIVISION; USD → KES is a multiplication.
+                e["push_price"] = round(unit_yuan / y2u * u2k, 4)
         plan.append(e)
     return plan, po_lines, pricing
 

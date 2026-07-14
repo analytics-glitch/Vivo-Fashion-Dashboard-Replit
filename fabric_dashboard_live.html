@@ -4903,7 +4903,7 @@ function recvPoKesPreview(g,p){
   let u=yp;
   if(qu==='kg'&&kind==='m')u=yp*kpm;
   else if(qu==='m'&&kind==='kg')u=yp/kpm;
-  return'<b>'+fmt2(u*y2u*u2k)+'</b> KES / '+esc(p.line_uom||kind);
+  return'<b>'+fmt2(u/y2u*u2k)+'</b> KES / '+esc(p.line_uom||kind);
 }
 function recvPoRefreshPreviews(){
   if(!recvPoBatch)return;
@@ -4968,8 +4968,8 @@ function renderRecvPoPricing(){
      <span class="muted" id="recv-po-pricing-stamp" style="font-size:11px;">${esc(stamp)}</span>
     </div>
     <div class="flex" style="gap:1rem;margin-top:.6rem;flex-wrap:wrap;align-items:center;">
-     <label style="font-size:12px;">Yuan → USD&nbsp;
-      <input type="number" min="0" step="any" inputmode="decimal" style="${numStyle}" placeholder="e.g. 0.14"
+     <label style="font-size:12px;">Yuan per USD&nbsp;
+      <input type="number" min="0" step="any" inputmode="decimal" style="${numStyle}" placeholder="e.g. 7.99" title="How many Yuan buy 1 USD (Yuan price is divided by this)"
         value="${esc(recvPoBatch.pricingForm.yuan_to_usd)}" oninput="recvPoPricingInput('yuan_to_usd',this.value)"></label>
      <label style="font-size:12px;">USD → KES&nbsp;
       <input type="number" min="0" step="any" inputmode="decimal" style="${numStyle}" placeholder="e.g. 129.5"
