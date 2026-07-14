@@ -333,9 +333,11 @@ const Overview = () => {
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
 
-    // Revenue by customer type (New / Returning cards). Independent of the
-    // bootstrap batch: a failure here leaves the two cards showing "—"
-    // without touching the rest of the page.
+    // Revenue by customer type (New / Returning cards). Uses the dedicated
+    // /kpis/customer-type-split endpoint, which shares /api/kpis' exact
+    // filters + measure so New + Returning === Total Sales by construction.
+    // Independent of the bootstrap batch: a failure here leaves the two
+    // cards showing "—" without touching the rest of the page.
     const ctParams = {
       date_from: dateFrom,
       date_to: dateTo,
@@ -344,13 +346,13 @@ const Overview = () => {
     };
     setCtSpend(null);
     setCtSpendPrev(null);
-    api.get("/customer-type-spend", { params: ctParams })
-      .then((r) => !cancelled && setCtSpend(r.data || []))
-      .catch(() => !cancelled && setCtSpend([]));
+    api.get("/kpis/customer-type-split", { params: ctParams })
+      .then((r) => !cancelled && setCtSpend(r.data || {}))
+      .catch(() => !cancelled && setCtSpend({}));
     if (prev) {
-      api.get("/customer-type-spend", { params: { ...ctParams, date_from: prev.date_from, date_to: prev.date_to } })
-        .then((r) => !cancelled && setCtSpendPrev(r.data || []))
-        .catch(() => !cancelled && setCtSpendPrev([]));
+      api.get("/kpis/customer-type-split", { params: { ...ctParams, date_from: prev.date_from, date_to: prev.date_to } })
+        .then((r) => !cancelled && setCtSpendPrev(r.data || {}))
+        .catch(() => !cancelled && setCtSpendPrev({}));
     }
     return () => { cancelled = true; };
     // eslint-disable-next-line
@@ -568,22 +570,17 @@ const Overview = () => {
   const delta = (k) => (kpis && kpisPrev) ? pctDelta(kpis[k], kpisPrev[k]) : null;
   const prev = (k, formatter) => (kpis && kpisPrev && compareMode !== "none" && kpisPrev[k] != null) ? formatter(kpisPrev[k]) : null;
 
-  // Revenue by customer type — pick the New / Returning rows out of the
-  // /customer-type-spend responses. null = still loading (show "—"),
-  // [] = failed/empty (0). Walk-in is deliberately NOT shown here (it has
-  // its own surface on the Customers page), so the two cards cover the
-  // identified-customer universe only.
+  // Revenue by customer type — from /kpis/customer-type-split, whose two
+  // buckets sum EXACTLY to the Total Sales headline (same filters, same
+  // measure, every row in exactly one bucket; walk-in/anonymous revenue is
+  // part of Returning). null = still loading (show "—"), {} = failed (0).
   const ctSeg = useMemo(() => {
-    const pick = (rows, seg) => {
-      if (rows == null) return null; // loading
-      const r = (rows || []).find((x) => x.customer_segment === seg);
-      return Number(r?.total_sales || 0);
-    };
+    const pick = (d, k) => (d == null ? null : Number(d[k] || 0));
     return {
-      newSales: pick(ctSpend, "New"),
-      retSales: pick(ctSpend, "Returning"),
-      newSalesPrev: pick(ctSpendPrev, "New"),
-      retSalesPrev: pick(ctSpendPrev, "Returning"),
+      newSales: pick(ctSpend, "new_sales"),
+      retSales: pick(ctSpend, "returning_sales"),
+      newSalesPrev: pick(ctSpendPrev, "new_sales"),
+      retSalesPrev: pick(ctSpendPrev, "returning_sales"),
     };
   }, [ctSpend, ctSpendPrev]);
   // WS3 — on a single-day range the "last month/year" comparison base is
@@ -1219,7 +1216,7 @@ const Overview = () => {
               value={ctSeg.newSales == null ? "\u2014" : kfmt(ctSeg.newSales)}
               valueFull={ctSeg.newSales == null ? "\u2014" : fmtKESLong(ctSeg.newSales)}
               icon={UserPlus}
-              formula="Money from customers whose first-ever purchase happened in this period. Same New/Returning rule as the Customers page. Walk-in (anonymous) sales are not included in this card."
+              formula="Money from customers whose first-ever purchase happened in this period, on the same basis as the Total Sales card (returns netted). New + Returning always adds up exactly to Total Sales."
               delta={compareMode !== "none" && ctSeg.newSalesPrev ? pctDelta(ctSeg.newSales, ctSeg.newSalesPrev) : null}
               deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={compareMode !== "none" && ctSeg.newSalesPrev != null ? kfmt(ctSeg.newSalesPrev) : null}
@@ -1230,7 +1227,7 @@ const Overview = () => {
               value={ctSeg.retSales == null ? "\u2014" : kfmt(ctSeg.retSales)}
               valueFull={ctSeg.retSales == null ? "\u2014" : fmtKESLong(ctSeg.retSales)}
               icon={UsersThree}
-              formula="Money from customers who had already bought before this period started. Same New/Returning rule as the Customers page. Walk-in (anonymous) sales are not included in this card."
+              formula="All revenue that isn't from brand-new customers: repeat customers plus walk-in (anonymous) sales, on the same basis as the Total Sales card (returns netted). New + Returning always adds up exactly to Total Sales."
               delta={compareMode !== "none" && ctSeg.retSalesPrev ? pctDelta(ctSeg.retSales, ctSeg.retSalesPrev) : null}
               deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={compareMode !== "none" && ctSeg.retSalesPrev != null ? kfmt(ctSeg.retSalesPrev) : null}

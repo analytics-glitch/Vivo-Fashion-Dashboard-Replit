@@ -5,6 +5,7 @@ import calendar
 import logging
 from collections import deque
 from datetime import date, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from dq_cross_compare import cross_surface_compare
 from odoo_locations import ODOO_LOCATION_MAP
 import psycopg2
@@ -4007,6 +4008,62 @@ def get_kpis(
         FROM all_sales s
         WHERE """ + where, date_to=date_to)
     return rows[0] if rows else {}
+
+@app.get("/api/kpis/customer-type-split")
+def get_kpis_customer_type_split(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+):
+    # Splits the /api/kpis Total Sales headline into New vs Returning customer
+    # revenue such that new_sales + returning_sales == total_sales EXACTLY
+    # (user-mandated identity). Guarantees by construction:
+    #   * same WHERE as /api/kpis (build_filters incl. BASE_FILTERS)
+    #   * same measure per row (sale/order adds total_sales_kes, return
+    #     subtracts returns_kes)
+    #   * every row lands in exactly ONE bucket: "New" = identified customer
+    #     whose first-EVER purchase (unified identity) falls inside the window;
+    #     EVERYTHING else — prior customers, walk-in/anonymous, returns by
+    #     unidentifiable customers — is "Returning" (i.e. not-new revenue).
+    # This intentionally differs from /api/customer-type-spend (Customers
+    # page), which reports gross order rows with a separate Walk-in bucket —
+    # do NOT reuse that endpoint here, its total can't reconcile to /api/kpis.
+    where = build_filters(date_from, date_to, country, channel)
+    rows = run_query("""
+        WITH """ + _unified_first_purchase_ctes() + """
+        SELECT
+            CASE WHEN fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date
+                 THEN 'New' ELSE 'Returning' END AS customer_segment,
+            -- UNROUNDED per bucket: rounding each bucket separately can drift
+            -- ±1 KES from /api/kpis' ROUND(total); Python below rounds ONCE.
+            (SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
+                - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) AS total_sales,
+            COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders
+        FROM all_sales s
+        LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
+        WHERE """ + where + """
+        GROUP BY customer_segment
+        ORDER BY customer_segment
+    """, date_to=date_to)
+    raw = {"New": 0, "Returning": 0}
+    orders = {"New": 0, "Returning": 0}
+    for r in rows or []:
+        raw[r["customer_segment"]] = float(r["total_sales"] or 0)
+        orders[r["customer_segment"]] = r["orders"] or 0
+    # Round the way Postgres ROUND(numeric, 0) does (half-away-from-zero) so
+    # new + returning lands on the SAME rounded figure /api/kpis shows, then
+    # derive Returning as the remainder — the identity is exact by definition.
+    def _pg_round(x):
+        return float(Decimal(str(x)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    total = _pg_round(raw["New"] + raw["Returning"])
+    new = _pg_round(raw["New"])
+    return {
+        "new_sales": new,
+        "returning_sales": total - new,
+        "new_orders": orders["New"],
+        "returning_orders": orders["Returning"],
+    }
 
 @app.get("/api/country-summary")
 def get_country_summary(

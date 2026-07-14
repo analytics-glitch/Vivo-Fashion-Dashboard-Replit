@@ -131,3 +131,4 @@
 - [SWR cache layer](swr-cache-layer.md) — expired cache entries are served within a grace window while a single-flight bypass-key thread recomputes; mutation-adjacent caches must NOT background-refresh.
 - [/api/bootstrap universal lookups](bootstrap-universal-endpoint.md) — one 3600s SWR bundle of filter-independent lookups; NEVER takes a filter param (else it's an overview endpoint); identity stays on /auth/me.
 - [Heavy dashboard cache pre-warmer](heavy-dash-prewarm.md) — 900s TTL + 600s background warm keeps 10-20s whole-history queries always cached; call endpoint fns with explicit kwargs; _cache needs its lock.
+- [Overview New/Returning revenue identity](customer-split-kpis-identity.md) — cards read /kpis/customer-type-split (headline WHERE+measure, exhaustive buckets, round once) so New+Returning == Total Sales exactly; never /customer-type-spend.
