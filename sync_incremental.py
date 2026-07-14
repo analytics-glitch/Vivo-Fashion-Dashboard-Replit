@@ -332,6 +332,10 @@ _LAST_ROLLUP_REFRESH = None
 # the heaviest Odoo pull (full image fetch per template), so a daily cadence is
 # plenty. None on boot so a fresh prod DB bootstraps on the first cycle.
 _LAST_PRODUCT_MASTER_SYNC = None  # nightly: extract_odoo_products + transform_all_products_clean
+# Guards the Odoo stock-transfers extract (extract_odoo_transfers.py — pulls
+# incoming pickings destined for known stores, in-flight plus last 7d done)
+# to once per hour. None on boot so a fresh prod DB populates on the first cycle.
+_LAST_TRANSFERS_SYNC = None
 _LAST_PRODUCT_IMAGES_EXTRACT = None
 # Guards the Shopify product-image GALLERY extract (extract_shopify_images.py —
 # the multi-image scrollable lightbox gallery in product_image_urls, distinct
@@ -1621,6 +1625,27 @@ def main():
             log.info("\u2705 Product master sync complete")
     except Exception as e:
         log.error("Product master sync error: %s", e)
+    # ---- Stock transfers (Odoo incoming pickings -> stock_transfers) ----
+    # Runs hourly. Extract is TRUNCATE+reload (small: ~600 pickings), so nothing
+    # goes stale between runs; the interval alone gates it. Store managers see
+    # "what's on the way" freshened each hour.
+    global _LAST_TRANSFERS_SYNC
+    transfers_due = (
+        _LAST_TRANSFERS_SYNC is None
+        or (now_utc - _LAST_TRANSFERS_SYNC).total_seconds() >= 3600
+    )
+    if transfers_due:
+        _LAST_TRANSFERS_SYNC = now_utc
+        try:
+            import sys as _sys
+            log.info("Running stock transfers sync...")
+            run_subprocess_with_heartbeat(
+                [_sys.executable, "/home/runner/workspace/extract_odoo_transfers.py"],
+                "stock_transfers_extract",
+            )
+            log.info("✅ Stock transfers sync complete")
+        except Exception as e:
+            log.error("Stock transfers sync error: %s", e)
     global _LAST_INVENTORY_SYNC
     inventory_due = (
         _LAST_INVENTORY_SYNC is None
