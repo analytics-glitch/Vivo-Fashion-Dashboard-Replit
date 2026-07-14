@@ -21416,6 +21416,65 @@ async def auth_heartbeat_post(request: Request):
     return {"ok": True}
 
 
+# --- Page-visit analytics ----------------------------------------------------
+# Lightweight per-user per-page daily visit counter, fed by the web app on every
+# route change. Powers the admin-only "which pages are most/least visited"
+# questions in the BI assistant. Writes are best-effort and never fail the app.
+_PAGE_VISITS_READY = False
+
+# Routed pages that are trackable but not part of the grantable page catalog.
+_EXTRA_VISIT_PAGES = {"home", "admin-data-health", "admin-validation-audit",
+                      "admin-thumbnails"}
+
+
+def _ensure_page_visits():
+    global _PAGE_VISITS_READY
+    if _PAGE_VISITS_READY:
+        return
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS page_visits (
+            day     DATE NOT NULL DEFAULT CURRENT_DATE,
+            user_id TEXT NOT NULL,
+            page    TEXT NOT NULL,
+            visits  INT  NOT NULL DEFAULT 0,
+            last_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (day, user_id, page)
+        )""")
+    _PAGE_VISITS_READY = True
+
+
+@app.post("/api/auth/page-visit")
+async def auth_page_visit(request: Request):
+    """Record one page open for the calling user (upsert per user/page/day).
+    Auth-gated by the standard middleware; never raises."""
+    page = ""
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            page = (body.get("page") or "").strip().strip("/").lower()[:64]
+            page = page.replace("/", "-")
+    except Exception:
+        pass
+    # Whitelist to the known page catalog so junk keys can't pollute analytics.
+    # A few routed pages live outside ALL_PAGE_IDS (home + newer admin tools).
+    if page and page not in ALL_PAGE_IDS and page not in _EXTRA_VISIT_PAGES:
+        page = ""
+    user = getattr(request.state, "user", None) or {}
+    uid = str(user.get("user_id") or "")
+    if page and uid:
+        try:
+            _ensure_page_visits()
+            _users_exec(
+                "INSERT INTO page_visits (day, user_id, page, visits) "
+                "VALUES (CURRENT_DATE, %s, %s, 1) "
+                "ON CONFLICT (day, user_id, page) DO UPDATE "
+                "SET visits = page_visits.visits + 1, last_at = now()",
+                (uid, page))
+        except Exception:
+            pass
+    return {"ok": True}
+
+
 # Recency window (seconds) that counts a session as "viewing now". Kept a bit
 # wider than the client's ping interval so a viewer doesn't flicker off between
 # beats but still drops within a few seconds of closing the tab / going idle.
@@ -21721,7 +21780,7 @@ def _chat_context_line(ctx):
 # read-only SQL tool remains as the fallback for the long tail. The model can
 # chain several tool calls in one turn, then composes a plain-text answer that
 # is streamed token-by-token to the widget.
-_CHAT_TOOL_STEPS = 6             # max tool round-trips before forcing an answer
+_CHAT_TOOL_STEPS = 8             # max tool round-trips before forcing an answer
 _CHAT_TOOL_RESULT_CHARS = 6000   # cap each tool result handed back to the model
 _CHAT_TOOL_MAX_ROWS = 40         # cap list rows handed back to the model
 _CHAT_SCHEMA_CACHE = {"ts": 0.0, "doc": ""}
@@ -21852,6 +21911,37 @@ def _t_units(a, ctx, rev):
                                           channel=_chat_arg_str(a.get("channel")))
 
 
+def _t_page_usage(a, ctx, rev):
+    # Admin-only: which dashboard pages users actually open. The role comes from
+    # ctx["_role"], which the /api/chat endpoints set SERVER-SIDE from the
+    # authenticated session (client-sent context can never grant it).
+    if (ctx or {}).get("_role") != "admin":
+        return {"error": "Page-usage analytics are only available to admins. "
+                         "Tell the user this information is admin-only."}
+    try:
+        days = max(1, min(365, int(a.get("days") or 30)))
+    except (TypeError, ValueError):
+        days = 30
+    _ensure_page_visits()
+    rows = _users_exec(
+        "SELECT page, SUM(visits)::int AS visits, "
+        "       COUNT(DISTINCT user_id)::int AS unique_users, "
+        "       MAX(last_at) AS last_visited "
+        "FROM page_visits WHERE day >= CURRENT_DATE - %s "
+        "GROUP BY page ORDER BY SUM(visits) DESC",
+        (days,), fetch=True) or []
+    visited = {r["page"] for r in rows}
+    never = sorted(p for p in ALL_PAGE_IDS if p not in visited)
+    return {
+        "days": days,
+        "note": ("Counts one visit per page open (per user, per day-bucket "
+                 "increments). Tracking starts from the day this feature "
+                 "shipped, so older history is not available."),
+        "pages": rows,
+        "pages_never_visited_in_window": never,
+    }
+
+
 def _t_sql(a, ctx, rev):
     sql = _chat_clean_sql(a.get("sql") or "")
     ok, why = _chat_is_safe_select(sql)
@@ -21896,6 +21986,7 @@ _CHAT_TOOL_DISPATCH = {
     "get_margin": _t_margin,
     "get_units_sold": _t_units,
     "run_readonly_sql": _t_sql,
+    "get_page_usage": _t_page_usage,
 }
 
 _CHAT_TOOL_SPECS = [
@@ -21938,6 +22029,9 @@ _CHAT_TOOL_SPECS = [
     _chat_tool("get_units_sold",
                "Canonical total units sold (gross), the dashboard's single source of truth for unit counts.",
                {**_DATE_PROPS, **_COUNTRY_PROP, **_CHANNEL_PROP}),
+    _chat_tool("get_page_usage",
+               "ADMIN ONLY. Dashboard page-usage analytics: which pages users open most / least, unique users per page, and which pages were never visited in the window. Use for any 'most visited pages', 'least used pages', 'which pages are not being used' question. Returns an error for non-admin users — relay that it is admin-only.",
+               {"days": {"type": "integer", "description": "Lookback window in days (default 30, max 365)."}}),
     _chat_tool("run_readonly_sql",
                "Fallback ONLY for questions no other tool covers. Run ONE read-only PostgreSQL SELECT (or WITH...SELECT). Always add a LIMIT. Follow the schema and rules in the system prompt.",
                {"sql": {"type": "string", "description": "A single read-only SELECT statement."}},
@@ -21960,7 +22054,8 @@ def _chat_schema_doc_full():
             "FROM information_schema.columns "
             "WHERE table_schema = 'public' AND table_name IN "
             "('all_sales','footfall','all_inventory','all_products_clean',"
-            "'all_customers','pos_locations','stores') "
+            "'all_customers','pos_locations','stores','targets_monthly',"
+            "'production_orders','stock_transfers','page_visits') "
             "ORDER BY table_name, ordinal_position")
         by_tbl = {}
         for r in cols:
@@ -22010,6 +22105,33 @@ def _chat_system_prompt(ctx, revealed):
         "short supporting points. Be concise.\n"
         "- If a tool returns no rows / nulls, say no data matched rather than "
         "inventing a number.\n\n"
+        "DASHBOARD KNOWLEDGE (what exists, so you can answer questions about any "
+        "of it):\n"
+        "- Pages: Home, Overview (headline KPIs, projected-today forecast, sales "
+        "by hour), Exec Summary, Locations, Footfall & Conversion, Customers, "
+        "Product Analysis, Range Management, Markdown & Clearance, Style Tracker "
+        "(weekly launch kanban), Catalogue, Gallery, Inventory (velocity & "
+        "weeks-of-cover), Size Health, Excess Inventory, IBT (inter-branch "
+        "transfers), Replenishments, Re-Order, Allocations, Warehouse Returns, "
+        "Store Flow/Clusters, Targets, Quarter Scorecard, Margin, RFM, Finance "
+        "P&L (admin-only), Marketing, Social, CRM, HR Attendance, Production "
+        "board & report, Fabric dashboard, SOPs, Data Quality, Exports, and "
+        "admin pages (Users, Group Access, Activity Logs, Feedback).\n"
+        "- Metric canon (match the dashboard exactly): Total Sales = gross - "
+        "returns, VAT-inclusive. Net Sales = (total - discounts - returns) "
+        "EXCLUDING VAT (divide by 1.16 Kenya / 1.18 Uganda-Rwanda). Headline "
+        "units sold = GROSS ordered units. Churn = no purchase in 90 days "
+        "(the high ~97% rate is correct — largely historical customer base). "
+        "New vs Returning customer revenue always sums exactly to Total Sales; "
+        "walk-in/anonymous revenue counts as Returning. Conversion = orders / "
+        "clean footfall (sensor-gap days excluded).\n"
+        "- Product joins are ALWAYS on SKU/barcode, never style name.\n"
+        "- ADMIN-ONLY tool get_page_usage answers which dashboard pages are "
+        "most/least visited and which are never opened. If a non-admin asks, "
+        "say that information is restricted to admins.\n"
+        "- If no metric tool fits, DO NOT give up — write a careful read-only "
+        "SELECT with run_readonly_sql using the schema below, and if the query "
+        "errors, fix it and retry rather than apologising.\n\n"
         "SQL FALLBACK RULES (only when using run_readonly_sql):\n"
         + _chat_schema_doc_full()
         + (("\n\n" + ctx_line) if ctx_line else "")
@@ -22414,6 +22536,17 @@ def _chat_core(message, session_id, ctx, revealed, attachments=None):
     return "".join(parts).strip() or _CHAT_FALLBACK
 
 
+def _chat_trusted_ctx(request, ctx):
+    """Copy the client-sent chat context and stamp the caller's role from the
+    AUTHENTICATED session (request.state.user). Underscore keys are server-owned:
+    anything the client sent under them is discarded, so a crafted context can
+    never grant admin-only tools like get_page_usage."""
+    out = {k: v for k, v in (ctx or {}).items() if not str(k).startswith("_")}
+    user = getattr(request.state, "user", None) or {}
+    out["_role"] = str(user.get("role") or "").lower()
+    return out
+
+
 @app.post("/api/chat")
 async def chat_post(request: Request):
     try:
@@ -22422,7 +22555,7 @@ async def chat_post(request: Request):
         body = {}
     message = (body.get("message") or "").strip()
     session_id = body.get("session_id") or _chat_uuid.uuid4().hex
-    ctx = body.get("context") or {}
+    ctx = _chat_trusted_ctx(request, body.get("context"))
     attachments = body.get("attachments") or None
 
     if not message and not attachments:
@@ -22449,7 +22582,7 @@ async def chat_stream_post(request: Request):
         body = {}
     message = (body.get("message") or "").strip()
     session_id = body.get("session_id") or _chat_uuid.uuid4().hex
-    ctx = body.get("context") or {}
+    ctx = _chat_trusted_ctx(request, body.get("context"))
     attachments = body.get("attachments") or None
     revealed = pii_revealed(request)
 
@@ -22954,7 +23087,8 @@ async def search_ask_post(request: Request):
     revealed = pii_revealed(request)
     session_id = body.get("session_id") or _chat_uuid.uuid4().hex
     answer = await _chat_run_in_threadpool(
-        _chat_core, query, session_id, body.get("context") or {}, revealed)
+        _chat_core, query, session_id,
+        _chat_trusted_ctx(request, body.get("context")), revealed)
     return {**base, "answer": answer}
 
 

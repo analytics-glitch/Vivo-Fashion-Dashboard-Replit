@@ -1,6 +1,6 @@
 import React, { Suspense, useEffect, useRef } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import TopNav from "@/components/Sidebar";
 import FilterBar from "@/components/FilterBar";
 import { Loading } from "@/components/common";
@@ -65,6 +65,7 @@ import GlobalSearch from "@/components/GlobalSearch";
 import { Toaster } from "@/components/ui/sonner";
 import useHeartbeat from "@/lib/useHeartbeat";
 import { useAuth } from "@/lib/auth";
+import { api } from "@/lib/api";
 import { canAccessPage } from "@/lib/permissions";
 
 // Landing for "/". Renders the Overview cockpit for users who can access it
@@ -134,11 +135,38 @@ const ExternalRedirect = ({ to }) => {
   );
 };
 
+// Fire-and-forget page-visit ping on every route change while signed in.
+// Feeds the admin-only page-usage analytics (page_visits table / assistant
+// get_page_usage tool). Best-effort: errors are swallowed, never blocks UI.
+const PageVisitTracker = () => {
+  const location = useLocation();
+  const { user } = useAuth();
+  const signedIn = Boolean(user);
+  useEffect(() => {
+    if (!signedIn) return;
+    const segs = (location.pathname || "/").split("/").filter(Boolean);
+    // Canonical page id = path segments joined with "-", matching the backend
+    // page-id catalog exactly (e.g. /admin/users -> admin-users). Root renders
+    // Overview or Home depending on access (mirror RootLanding's logic).
+    let page;
+    if (segs.length === 0) {
+      page = canAccessPage(user, "overview") ? "overview" : "home";
+    } else {
+      const first = segs[0].toLowerCase();
+      if (["login", "auth", "sign-in", "sign-up"].includes(first)) return;
+      page = segs.join("-").toLowerCase();
+    }
+    api.post("/auth/page-visit", { page }).catch(() => {});
+  }, [location.pathname, signedIn, user]);
+  return null;
+};
+
 function App() {
   return (
     <div className="App">
       <BrowserRouter>
           <AuthProvider>
+            <PageVisitTracker />
             <FiltersProvider>
               <Routes>
                 {/* Public auth routes — rendered without the app Shell. */}
