@@ -24,6 +24,10 @@ const ExcessInventory = () => {
   const [pos, setPos] = useState("");
   const [flag, setFlag] = useState("");
   const [search, setSearch] = useState("");
+  // Local overrides for the fillable fields, keyed "pos|sku" — lets typing feel
+  // instant while saves happen on blur. savedKeys flashes a subtle confirm.
+  const [edits, setEdits] = useState({});
+  const [saveErr, setSaveErr] = useState(null);
 
   const load = (forceFresh = false) => {
     let cancelled = false;
@@ -62,8 +66,46 @@ const ExcessInventory = () => {
     });
   }, [rows, search]);
 
+  const rowKey = (r) => `${r.pos_location}|${r.sku}`;
+  const fieldVal = (r, field) => {
+    const e = edits[rowKey(r)];
+    if (e && field in e) return e[field];
+    const v = r[field];
+    return v == null ? "" : String(v);
+  };
+  const setField = (r, field, value) => {
+    setEdits((prev) => ({ ...prev, [rowKey(r)]: { ...prev[rowKey(r)], [field]: value } }));
+  };
+  const saveRow = (r) => {
+    const qty = fieldVal(r, "qty_returned").trim();
+    const ref = fieldVal(r, "transfer_ref").trim();
+    const origQty = r.qty_returned == null ? "" : String(r.qty_returned);
+    const origRef = r.transfer_ref == null ? "" : String(r.transfer_ref);
+    if (qty === origQty.trim() && ref === origRef.trim()) return;
+    setSaveErr(null);
+    api
+      .post("/analytics/excess-inventory/action", {
+        pos_location: r.pos_location, sku: r.sku,
+        qty_returned: qty, transfer_ref: ref,
+      })
+      .then(({ data: saved }) => {
+        // Fold the confirmed values back into the loaded rows so a later blur
+        // compares against what the server actually holds.
+        setData((prev) => prev ? {
+          ...prev,
+          rows: prev.rows.map((row) =>
+            row.pos_location === r.pos_location && row.sku === r.sku
+              ? { ...row, qty_returned: saved.qty_returned, transfer_ref: saved.transfer_ref }
+              : row),
+        } : prev);
+      })
+      .catch((e) => {
+        setSaveErr(e?.response?.data?.detail || e.message || "Failed to save");
+      });
+  };
+
   const exportCsv = () => {
-    const header = ["Store", "Product Title", "SKU", "Barcode", "Size", "Brand Group", "Inventory", "Allowed", "Excess", "Flag"];
+    const header = ["Store", "Product Title", "SKU", "Barcode", "Size", "Brand Group", "Inventory", "Allowed", "Excess", "Flag", "Quantity Returned", "Transfer Number"];
     const esc = (v) => {
       const s = v == null ? "" : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -73,6 +115,7 @@ const ExcessInventory = () => {
       lines.push([
         r.pos_location, r.product_name, r.sku, r.barcode, r.size,
         r.brand_group, r.inventory, r.allowed ?? "", r.excess, r.flag,
+        fieldVal(r, "qty_returned"), fieldVal(r, "transfer_ref"),
       ].map(esc).join(","));
     }
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
@@ -147,6 +190,8 @@ const ExcessInventory = () => {
           data-testid="input-search"
         />
       </div>
+
+      {saveErr && <ErrorBox message={`Save failed: ${saveErr}`} />}
 
       {loading ? (
         <Loading label="Computing excess inventory…" />
@@ -228,6 +273,8 @@ const ExcessInventory = () => {
                       <th className="py-2 pr-4 text-right">Allowed</th>
                       <th className="py-2 pr-4 text-right">Excess</th>
                       <th className="py-2 pr-4">Flag</th>
+                      <th className="py-2 pr-4">Qty Returned</th>
+                      <th className="py-2 pr-4">Transfer No.</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -249,6 +296,29 @@ const ExcessInventory = () => {
                           }>
                             {r.flag}
                           </span>
+                        </td>
+                        <td className="py-1.5 pr-4">
+                          <input
+                            type="number"
+                            min="0"
+                            className="w-20 rounded-md border border-slate-300 px-2 py-1 text-sm text-right"
+                            placeholder="—"
+                            value={fieldVal(r, "qty_returned")}
+                            onChange={(e) => setField(r, "qty_returned", e.target.value)}
+                            onBlur={() => saveRow(r)}
+                            data-testid={`input-qty-returned-${r.pos_location}-${r.sku}`}
+                          />
+                        </td>
+                        <td className="py-1.5 pr-4">
+                          <input
+                            type="text"
+                            className="w-32 rounded-md border border-slate-300 px-2 py-1 text-sm"
+                            placeholder="To be filled"
+                            value={fieldVal(r, "transfer_ref")}
+                            onChange={(e) => setField(r, "transfer_ref", e.target.value)}
+                            onBlur={() => saveRow(r)}
+                            data-testid={`input-transfer-ref-${r.pos_location}-${r.sku}`}
+                          />
                         </td>
                       </tr>
                     ))}

@@ -10134,6 +10134,38 @@ EXCESS_ALLOWANCE = {
 
 _EXCESS_ROW_CAP = 4000  # generous safety bound for one response, NOT a ranking
 
+_excess_actions_ready = False
+
+
+def _ensure_excess_actions_table():
+    """Lazy-create the fillable-fields table (fresh prod DB safe)."""
+    global _excess_actions_ready
+    if _excess_actions_ready:
+        return
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS excess_inventory_actions (
+            pos_location TEXT NOT NULL,
+            sku          TEXT NOT NULL,
+            qty_returned INTEGER,
+            transfer_ref TEXT,
+            updated_by   TEXT,
+            updated_at   TIMESTAMPTZ DEFAULT now(),
+            PRIMARY KEY (pos_location, sku)
+        )""")
+    _excess_actions_ready = True
+
+
+def _excess_actions_map():
+    """(pos_location, sku) -> {qty_returned, transfer_ref}. Never cached — these
+    are operator-entered values that must reflect immediately."""
+    _ensure_excess_actions_table()
+    rows = _users_exec(
+        "SELECT pos_location, sku, qty_returned, transfer_ref "
+        "FROM excess_inventory_actions", fetch=True) or []
+    return {(r["pos_location"], r["sku"]):
+            {"qty_returned": r["qty_returned"], "transfer_ref": r["transfer_ref"]}
+            for r in rows}
+
 
 def _excess_inventory_dataset():
     """Full store-level excess dataset (all POS, all flags), snapshot-cached.
@@ -10230,8 +10262,20 @@ def analytics_excess_inventory(
     filtered = [r for r in scoped if r["flag"] == flag] if flag else scoped
     filtered = sorted(filtered, key=lambda r: (-r["excess"], -r["inventory"]))
     truncated = len(filtered) > _EXCESS_ROW_CAP
+
+    # Merge operator-entered fields (qty returned / transfer no.) into the
+    # visible page only. COPY each cached dict before annotating — the snapshot
+    # cache returns rows by reference and must never be mutated.
+    actions = _excess_actions_map()
+    page = []
+    for r in filtered[:_EXCESS_ROW_CAP]:
+        row = dict(r)
+        a = actions.get((r["pos_location"], r["sku"]))
+        row["qty_returned"] = a["qty_returned"] if a else None
+        row["transfer_ref"] = a["transfer_ref"] if a else None
+        page.append(row)
     return {
-        "rows": filtered[:_EXCESS_ROW_CAP],
+        "rows": page,
         "row_count": len(filtered),
         "truncated": truncated,
         "summary": summary,
@@ -10239,6 +10283,48 @@ def analytics_excess_inventory(
         "pos_locations": sorted(by_pos.keys()) if not pos else sorted({r["pos_location"] for r in data}),
         "allowance": EXCESS_ALLOWANCE,
     }
+
+
+@app.post("/api/analytics/excess-inventory/action")
+async def analytics_excess_inventory_action(request: Request):
+    """Save the operator-filled fields for one (store, SKU) row: quantity
+    actually returned and/or the Odoo transfer number. Blank values clear the
+    field; a row with both fields blank is deleted."""
+    from fastapi import HTTPException
+    body = await request.json()
+    pos_location = (body.get("pos_location") or "").strip()
+    sku = (body.get("sku") or "").strip()
+    if not pos_location or not sku:
+        raise HTTPException(status_code=400, detail="pos_location and sku are required")
+    qty_raw = body.get("qty_returned")
+    qty = None
+    if qty_raw is not None and str(qty_raw).strip() != "":
+        try:
+            qty = int(str(qty_raw).strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="qty_returned must be a whole number")
+        if qty < 0:
+            raise HTTPException(status_code=400, detail="qty_returned cannot be negative")
+    transfer_ref = (body.get("transfer_ref") or "").strip() or None
+    user = getattr(request.state, "user", None) or {}
+    updated_by = user.get("email") or user.get("user_id")
+
+    _ensure_excess_actions_table()
+    if qty is None and transfer_ref is None:
+        _users_exec(
+            "DELETE FROM excess_inventory_actions WHERE pos_location=%s AND sku=%s",
+            (pos_location, sku))
+    else:
+        _users_exec(
+            "INSERT INTO excess_inventory_actions "
+            "  (pos_location, sku, qty_returned, transfer_ref, updated_by, updated_at) "
+            "VALUES (%s,%s,%s,%s,%s,now()) "
+            "ON CONFLICT (pos_location, sku) DO UPDATE SET "
+            "  qty_returned=EXCLUDED.qty_returned, transfer_ref=EXCLUDED.transfer_ref, "
+            "  updated_by=EXCLUDED.updated_by, updated_at=now()",
+            (pos_location, sku, qty, transfer_ref, updated_by))
+    return {"ok": True, "pos_location": pos_location, "sku": sku,
+            "qty_returned": qty, "transfer_ref": transfer_ref}
 
 
 @app.get("/api/inventory/freshness")
