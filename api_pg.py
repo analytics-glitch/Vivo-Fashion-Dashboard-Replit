@@ -9354,6 +9354,21 @@ EXCESS_ALLOWANCE = {
                       "XS/S": 2, "M/L": 2, "1X/2X": 1},
 }
 
+# Packs carried per store (business-supplied, July 2026): a store carrying 2
+# packs of a size may hold DOUBLE the per-size allowance (allowed = base × packs).
+# Stores not listed here carry 1 pack (multiplier 1). Names match
+# all_inventory.pos_location_name exactly ("Online" = 'Online - Shop Zetu';
+# 'Safari Sarit' & 'Zoya Sarit' are 1-pack, i.e. the default).
+EXCESS_STORE_PACKS = {
+    "Vivo Mama Ngina St":  2,
+    "Vivo Junction":       2,
+    "Vivo Moi Avenue":     2,
+    "Vivo Sarit":          2,
+    "Online - Shop Zetu":  2,
+    "Vivo Village Market": 2,
+    "Vivo Yaya":           2,
+}
+
 _EXCESS_ROW_CAP = 4000  # generous safety bound for one response, NOT a ranking
 
 # Some Odoo product records (mostly samples, sets and legacy SKUs) genuinely
@@ -9449,6 +9464,9 @@ def _excess_inventory_dataset():
             group = "OTHER"
         size = (r.get("size") or "").strip() or _size_from_sku(r.get("sku"))
         allowed = EXCESS_ALLOWANCE.get(group, {}).get(size or "")
+        packs = EXCESS_STORE_PACKS.get(r["pos_location"], 1)
+        if allowed is not None:
+            allowed = allowed * packs
         inv = int(r.get("inventory") or 0)
         excess = max(0, inv - allowed) if allowed is not None else 0
         out.append({
@@ -9459,6 +9477,7 @@ def _excess_inventory_dataset():
             "size": size or None,
             "brand_group": group,
             "inventory": inv,
+            "packs": packs,
             "allowed": allowed,
             "excess": excess,
             "flag": "Return" if excess > 0 else "Keep",
@@ -9535,6 +9554,7 @@ def analytics_excess_inventory(
         "totals": totals,
         "pos_locations": sorted(by_pos.keys()) if not pos else sorted({r["pos_location"] for r in data}),
         "allowance": EXCESS_ALLOWANCE,
+        "store_packs": EXCESS_STORE_PACKS,
     }
 
 
