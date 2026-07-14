@@ -644,7 +644,7 @@ const Locations = () => {
               deltaLabel={compareLbl}
               prevValue={prevGroupTotals && compareMode !== "none" ? fmtNum(prevGroupTotals.total_units) : null}
               showDelta={compareMode !== "none"}
-              action={{ label: "Top styles", to: "/products" }}
+              action={{ label: "Top styles", to: "/product-analysis" }}
             />
             <KPICard small testId="loc-kpi-abv" label="ABV" sub="Sales ÷ Orders" value={fmtKES(groupTotals.abv)}
               delta={d(groupTotals.abv, prevGroupTotals?.abv)}

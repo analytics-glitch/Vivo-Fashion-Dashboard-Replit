@@ -314,6 +314,24 @@ const RangeManagement = () => {
     // eslint-disable-next-line
   }, [JSON.stringify(countries), JSON.stringify(effectiveChannels), dataVersion, refreshToken]);
 
+  // Store × tier stock mix — same tier map as the classify above (single
+  // source), bucketed onto each store's floor stock server-side.
+  const [tierMix, setTierMix] = useState(null);
+  const [tierMixError, setTierMixError] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    setTierMix(null);
+    setTierMixError(null);
+    const countryCsv = countries.length ? countries.map((c) => c.toLowerCase()).join(",") : undefined;
+    const locationsCsv = effectiveChannels.length ? effectiveChannels.join(",") : undefined;
+    api
+      .get("/range-mgmt/store-tier-mix", { params: { country: countryCsv, channel: locationsCsv } })
+      .then((r) => { if (!cancelled) setTierMix(r.data || null); })
+      .catch((e) => !cancelled && setTierMixError(e?.response?.data?.detail || e.message));
+    return () => { cancelled = true; };
+    // eslint-disable-next-line
+  }, [JSON.stringify(countries), JSON.stringify(effectiveChannels), dataVersion, refreshToken]);
+
   const rows = data?.rows || [];
   const summary = data?.summary;
   const retirement = data?.retirement_pipeline || [];
@@ -1040,6 +1058,101 @@ const RangeManagement = () => {
                 rows={retirement}
               />
             )}
+          </div>
+
+          {/* Store × tier stock mix — where each store's floor stock sits on
+              the range ladder. Tier assignment comes from the SAME classify
+              call this page renders (server bucketizes store-floor stock). */}
+          <div className="card-white p-4 sm:p-5">
+            <SectionTitle
+              title="Store × Tier stock mix"
+              subtitle="Share of each store's floor stock (units) by range tier — warehouses and the production pipeline are excluded. A store heavy on Tier 4 / Retire is holding unproven or end-of-life range."
+              testId="store-tier-mix-section"
+            />
+            {tierMixError ? <ErrorBox message={tierMixError} /> :
+             tierMix === null ? <Loading label="Building store × tier mix…" /> :
+             (() => {
+               const tiers = tierMix.tiers || [];
+               const byStore = new Map();
+               for (const r of tierMix.rows || []) {
+                 const e = byStore.get(r.store) || { store: r.store, country: r.country, total: 0 };
+                 e[r.tier] = (e[r.tier] || 0) + (r.units || 0);
+                 e.total += r.units || 0;
+                 byStore.set(r.store, e);
+               }
+               const mixRows = Array.from(byStore.values()).sort((a, b) => b.total - a.total);
+               if (!mixRows.length) return <Empty label="No store stock for the selected filters." />;
+               return (
+                 <SortableTable
+                   testId="store-tier-mix-table"
+                   pageSize={50}
+                   initialSort={{ key: "total", dir: "desc" }}
+                   exportName="store-tier-mix.csv"
+                   columns={[
+                     { key: "store", label: "Store", align: "left",
+                       render: (r) => <span className="font-medium">{r.store}</span> },
+                     { key: "country", label: "Country", align: "left", render: (r) => r.country || "—" },
+                     { key: "total", label: "Total Units", numeric: true, render: (r) => fmtNum(r.total) },
+                     ...tiers.map((t) => ({
+                       key: t, label: t, numeric: true,
+                       render: (r) => {
+                         const u = r[t] || 0;
+                         const pct = r.total ? Math.round((u * 100) / r.total) : 0;
+                         return u
+                           ? <span className={t === "Retire" && pct >= 20 ? "text-danger font-semibold" : undefined}>
+                               {fmtNum(u)} <span className="text-muted text-[10.5px]">({pct}%)</span>
+                             </span>
+                           : "—";
+                       },
+                       csv: (r) => r[t] || 0,
+                     })),
+                   ]}
+                   rows={mixRows}
+                 />
+               );
+             })()}
+          </div>
+
+          {/* Retired styles still holding stock — the money trapped in
+              end-of-life range. Derived from the classify payload's
+              retired_rows (no extra fetch). */}
+          <div className="card-white p-4 sm:p-5">
+            <SectionTitle
+              title="Retired styles still holding stock"
+              subtitle="Physically-retired styles with units left — split by stores / warehouse / pipeline. Clear via Markdown & Clearance or Warehouse Returns."
+              testId="retired-with-stock-section"
+            />
+            {(() => {
+              const rws = (data?.retired_rows || []).filter((r) => (r.current_stock || 0) > 0);
+              if (!rws.length) return <Empty label="No retired styles are holding stock — the end-of-life range is clean." />;
+              return (
+                <SortableTable
+                  testId="retired-with-stock-table"
+                  pageSize={25}
+                  initialSort={{ key: "current_stock", dir: "desc" }}
+                  exportName="retired-styles-with-stock.csv"
+                  columns={[
+                    { key: "style_name", label: "Style", align: "left",
+                      render: (r) => (
+                        <div className="max-w-[260px]">
+                          <div className="font-medium truncate" title={r.style_name}>{r.style_name}</div>
+                          <div className="text-muted text-[10.5px]">{r.brand} · {r.subcategory}</div>
+                        </div>
+                      ) },
+                    { key: "current_stock", label: "Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
+                    { key: "soh_stores", label: "Stores", numeric: true, render: (r) => fmtNum(r.soh_stores) },
+                    { key: "soh_warehouse", label: "Warehouse", numeric: true, render: (r) => fmtNum(r.soh_warehouse) },
+                    { key: "soh_pipeline", label: "Pipeline", numeric: true,
+                      render: (r) => (r.soh_pipeline ? fmtNum(r.soh_pipeline) : "—") },
+                    { key: "last_sale_days", label: "Last Sale", numeric: true,
+                      render: (r) => (r.last_sale_days == null ? "—" : `${r.last_sale_days}d`) },
+                    { key: "sales_since_launch", label: "Lifetime Revenue", numeric: true,
+                      render: (r) => (r.sales_since_launch == null ? "—" : `KES ${fmtNum(Math.round(r.sales_since_launch))}`) },
+                  ]}
+                  rows={rws}
+                />
+              );
+            })()}
           </div>
         </>
       )}

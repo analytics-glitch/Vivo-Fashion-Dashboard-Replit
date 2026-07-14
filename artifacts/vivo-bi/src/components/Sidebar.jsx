@@ -83,7 +83,7 @@ const prefetchForRoute = (routeId, filters) => {
       api.get("/bootstrap/overview", { params: p }).catch(() => {});
     } else if (routeId === "customers") {
       api.get("/customers", { params: p }).catch(() => {});
-    } else if (routeId === "products") {
+    } else if (routeId === "product-analysis") {
       api.get("/analytics/sor-all-styles", { params: { country: ctry || undefined } }).catch(() => {});
     } else if (routeId === "inventory") {
       api.get("/inventory", { params: { country: ctry || undefined } }).catch(() => {});

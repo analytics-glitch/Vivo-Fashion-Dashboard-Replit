@@ -619,7 +619,7 @@ const Overview = () => {
   // the upstream with speculative work.
   const prefetchByDest = useMemo(() => ({
     "/locations":  [{ url: "/sales-summary", params: prefetchParams }],
-    "/products":   [{ url: "/top-skus", params: { ...prefetchParams, limit: 200 } }],
+    "/product-analysis": [{ url: "/top-skus", params: { ...prefetchParams, limit: 200 } }],
     "/footfall":   [{ url: "/footfall", params: prefetchParams }],
     "/exports":    [{ url: "/sor", params: prefetchParams }],
   }), [prefetchParams]);
@@ -1166,8 +1166,8 @@ const Overview = () => {
             <KPICard testId="kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} valueFull={fmtNum(kpis.total_units)} icon={Package}
               formula="How many individual Vivo merchandise items left the shelves (excludes Accessories, Sale, Other & Third-Party Brands — canonical definition C)."
               delta={delta("total_units")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}
-              action={{ label: "Top styles", to: "/products" }}
-              prefetch={pf("/products")} />
+              action={{ label: "Top styles", to: "/product-analysis" }}
+              prefetch={pf("/product-analysis")} />
             {!isOnlineOnly && (
               <KPICard testId="kpi-footfall" label="Total Footfall" sub="Walk-ins counted at our store sensors" value={loading ? "\u2014" : fmtNum(footfallAgg.total_footfall)} valueFull={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
                 formula={"Formula: sum of door-sensor walk-ins (a01_footfall_in) across stores for the selected period.\n\nRenamed sensor feeds are mapped back to their store before totalling. Stores flagged for sensor data-quality issues (conversion over 50%) are excluded."}

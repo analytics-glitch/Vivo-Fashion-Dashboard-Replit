@@ -299,6 +299,66 @@ def _check_inventory(session, period, out):
         if exc:
             out.append(exc)
 
+    # ---- Canonical weekly-velocity convergence (Inventory/Velocity merge) ----
+    # Both /analytics/velocity (Inventory "Velocity & Cover" tab) and
+    # /analytics/weeks-of-cover (Stock-on-Hand cover table + Stuck tab phantom
+    # list) must compute the SAME recency-weighted weekly rate (28d x2 +
+    # prior-28d over a 12-week-equivalent denominator, BASE_FILTERS applied).
+    # The two universes are NOT contractually equal per style (weeks-of-cover
+    # restricts sales to the merchandise-subcategory whitelist; velocity does
+    # not, and reports MAX(product_type) so mixed-subcat styles are not
+    # detectable from the response) -- so a per-style equality check would
+    # false-positive by design. Instead this is a CONSENSUS formula-drift
+    # detector: if the shared EWMA formula diverges on either side, EVERY
+    # style breaks; universe quirks only break a few. Fail only when the
+    # MEDIAN relative gap across the top comparable styles exceeds tolerance.
+    vel = _get(session, "/analytics/velocity", {})
+    woc = _get(session, "/analytics/weeks-of-cover", {})
+    vel_rows = vel if isinstance(vel, list) else (vel.get("rows") or [])
+    woc_rows = woc if isinstance(woc, list) else (woc.get("rows") or [])
+    vel_by_style = {}
+    for r in vel_rows:
+        s = r.get("style_name")
+        if not s:
+            continue
+        # /analytics/velocity exposes the canonical weekly rate as
+        # `rate_of_sale` (rounded 1dp per row); weeks-of-cover calls the same
+        # number `weekly_units` (2dp). Sub-unit rounding noise only.
+        vel_by_style[s] = vel_by_style.get(s, 0.0) + float(r.get("rate_of_sale") or 0)
+    woc_by_style = {}
+    for r in woc_rows:
+        s = r.get("style_name")
+        if not s:
+            continue
+        woc_by_style[s] = woc_by_style.get(s, 0.0) + float(r.get("weekly_units") or 0)
+    top = sorted(
+        (s for s in woc_by_style if s in vel_by_style and woc_by_style[s] > 1),
+        key=lambda k: -woc_by_style[k])[:20]
+    if len(top) >= 5:
+        gaps = sorted(
+            abs(vel_by_style[s] - woc_by_style[s])
+            / max(abs(vel_by_style[s]), abs(woc_by_style[s]), 1e-9)
+            for s in top)
+        median_gap = gaps[len(gaps) // 2]
+        # Gate BEFORE _cmp: comparing a percentage against an expected 0 makes
+        # _cmp's relative-gap math read 100% for ANY nonzero value, so the
+        # tolerance decision must happen here. CROSS_SURFACE_TOL (0.05%) is too
+        # tight for this pair: rate_of_sale is rounded to 1dp per row, which
+        # alone produces ~0.5% median noise on the top styles (measured), and a
+        # few whitelisted-universe styles carry small by-design gaps. A real
+        # formula drift (wrong window, wrong weights, missing BASE_FILTERS)
+        # shifts EVERY style by far more, so 2% cleanly separates the two.
+        _VELOCITY_CONSENSUS_TOL = 0.02
+        if median_gap > _VELOCITY_CONSENSUS_TOL:
+            exc = _cmp(
+                "inventory", "weekly_velocity",
+                "median per-style gap(velocity.rate_of_sale, weeks-of-cover.weekly_units) "
+                f"across top {len(top)} styles == 0 (shared EWMA formula)",
+                "xsurf_weekly_velocity_consensus",
+                median_gap * 100.0, 0.0, False, period, {})
+            if exc:
+                out.append(exc)
+
 
 def _check_products(session, period, out):
     """Reconcile the product-page style/units/stock totals that MUST tally.

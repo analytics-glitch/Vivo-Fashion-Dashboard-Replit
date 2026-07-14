@@ -12,7 +12,6 @@ const Home = React.lazy(() => import("@/pages/Home"));
 const Overview = React.lazy(() => import("@/pages/Overview"));
 const TrendAnalysis = React.lazy(() => import("@/pages/TrendAnalysis"));
 const Locations = React.lazy(() => import("@/pages/Locations"));
-const Products = React.lazy(() => import("@/pages/Products"));
 const ProductAnalysis = React.lazy(() => import("@/pages/ProductAnalysis"));
 const Inventory = React.lazy(() => import("@/pages/Inventory"));
 const Exports = React.lazy(() => import("@/pages/Exports"));
@@ -46,7 +45,6 @@ const RangeManagement = React.lazy(() => import("@/pages/RangeManagement"));
 const Production = React.lazy(() => import("@/pages/Production"));
 const ProductionReport = React.lazy(() => import("@/pages/ProductionReport"));
 const StyleTracker = React.lazy(() => import("@/pages/StyleTracker"));
-const Velocity = React.lazy(() => import("@/pages/Velocity"));
 const SizeHealth = React.lazy(() => import("@/pages/SizeHealth"));
 const MarkdownClearance = React.lazy(() => import("@/pages/MarkdownClearance"));
 const Margin = React.lazy(() => import("@/pages/Margin"));
@@ -155,9 +153,10 @@ function App() {
                 <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
                 <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
                 <Route path="/locations" element={<ProtectedShell pageId="locations"><Locations /></ProtectedShell>} />
-                <Route path="/products" element={<ProtectedShell pageId="products"><Products /></ProtectedShell>} />
+                {/* Legacy pages merged into tabs — keep old URLs working */}
+                <Route path="/products" element={<Navigate to="/product-analysis" replace />} />
                 <Route path="/inventory" element={<ProtectedShell pageId="inventory"><Inventory /></ProtectedShell>} />
-                <Route path="/velocity" element={<ProtectedShell pageId="velocity"><Velocity /></ProtectedShell>} />
+                <Route path="/velocity" element={<Navigate to="/inventory" replace />} />
                 <Route path="/size-health" element={<ProtectedShell pageId="size-health"><SizeHealth /></ProtectedShell>} />
                 <Route path="/margin" element={<ProtectedShell pageId="margin"><Margin /></ProtectedShell>} />
                 <Route path="/finance" element={<ProtectedShell pageId="finance"><Finance /></ProtectedShell>} />

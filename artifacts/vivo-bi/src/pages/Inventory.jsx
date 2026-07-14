@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useFilters } from "@/lib/filters";
 import { api, fmtKES, fmtNum, fmtDec, fmtPct, fmtAxisKES } from "@/lib/api";
 import CountryDot from "@/components/CountryDot";
@@ -56,7 +57,7 @@ const isPipelineLocation = (loc) =>
     (loc || "").toLowerCase()
   );
 
-const Inventory = () => {
+const Inventory = ({ onSeeAgedStock }) => {
   const { applied, touchLastUpdated } = useFilters();
   const { dateFrom, dateTo, countries, channels, dataVersion } = applied;
 
@@ -945,7 +946,7 @@ const Inventory = () => {
                   icon={Gauge}
                   higherIsBetter={false}
                   showDelta={false}
-                  action={{ label: "See aged stock", onClick: () => document.querySelector('[data-testid="aged-stock-report"]')?.scrollIntoView({ behavior: "smooth" }) }}
+                  action={{ label: "See aged stock", onClick: () => (onSeeAgedStock ? onSeeAgedStock() : null) }}
                 />
               );
             })()}
@@ -1580,14 +1581,286 @@ const Inventory = () => {
             </div>
           )}
 
-          {/* Aged Stock — per-SKU stock that hasn't sold in N+ days,
-              filterable by days-since-last-sale (30/60/90/180 presets
-              plus custom input). Also available on the Re-Order page. */}
-          <AgedStockReport />
+          {/* Aged Stock lives in the "Stuck & Declining" tab now (the
+              consolidated stuck-stock triage); the Overall-WoC KPI's
+              "See aged stock" action switches to that tab. */}
         </>
       )}
     </div>
   );
 };
 
-export default Inventory;
+// ── Stuck & Declining tab ─────────────────────────────────────────────────────
+// "What's stuck and what's dying?" — THE consolidated slow-stock triage:
+//   * Declining styles — last 28d units < 60% of the prior 28d, still holding
+//     store stock (candidates for Markdown & Clearance).
+//   * Phantom / stuck styles — stock ≥ 30 with zero last-28d sales, from the
+//     same /analytics/weeks-of-cover dataset as the aging buckets.
+//   * Excess-allowance flags — per-store summary of the same dataset as the
+//     Excess Inventory page (reconciles 1:1).
+//   * Store overstock ranking — per-store weeks of cover on the canonical
+//     recency-weighted (EWMA 56d) weekly rate, worst first.
+//   * Aged-in-store — the AgedStockReport (SKU-store rows unsold ≥ N days),
+//     the same report Warehouse Returns acts on.
+// Deep links hand off to the operational pages that ACT on the findings
+// (Warehouse Returns, Excess Inventory, Markdown & Clearance).
+const StuckDeclining = () => {
+  const { applied, touchLastUpdated } = useFilters();
+  const { countries, channels, dataVersion } = applied;
+  const params = {
+    ...(countries?.length ? { country: countries.join(",") } : {}),
+    ...(channels?.length ? { channel: channels.join(",") } : {}),
+  };
+
+  const [declining, setDeclining] = useState(null);
+  const [decliningError, setDecliningError] = useState(null);
+  const [overstock, setOverstock] = useState(null);
+  const [overstockError, setOverstockError] = useState(null);
+  // Phantom/stuck styles come from the same canonical /analytics/weeks-of-cover
+  // dataset the Stock-on-Hand aging buckets use (stock ≥ 30, zero last-28d
+  // sales) so the two surfaces always agree on what "phantom" means.
+  const [phantom, setPhantom] = useState(null);
+  const [phantomError, setPhantomError] = useState(null);
+  // Excess-allowance flags: the per-POS summary from the same dataset that
+  // powers the Excess Inventory operational page, so figures reconcile 1:1.
+  const [excess, setExcess] = useState(null);
+  const [excessError, setExcessError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDeclining(null); setDecliningError(null);
+    setOverstock(null); setOverstockError(null);
+    setPhantom(null); setPhantomError(null);
+    setExcess(null); setExcessError(null);
+    api.get("/analytics/declining-styles", { params })
+      .then((r) => { if (!cancelled) { setDeclining(r.data || []); touchLastUpdated(); } })
+      .catch((e) => !cancelled && setDecliningError(e?.response?.data?.detail || e.message));
+    api.get("/analytics/store-overstock", { params })
+      .then((r) => { if (!cancelled) setOverstock(r.data || []); })
+      .catch((e) => !cancelled && setOverstockError(e?.response?.data?.detail || e.message));
+    api.get("/analytics/weeks-of-cover", { params })
+      .then((r) => {
+        if (cancelled) return;
+        const rows = Array.isArray(r.data) ? r.data : (r.data?.rows || []);
+        // Same rule as the Stock-on-Hand aging buckets: heavy stock, zero
+        // last-28-day sales — stock that exists on paper but is not moving.
+        setPhantom(rows.filter(
+          (x) => Number(x.available || 0) >= 30 && Number(x.units_sold_28d || 0) === 0));
+      })
+      .catch((e) => !cancelled && setPhantomError(e?.response?.data?.detail || e.message));
+    api.get("/analytics/excess-inventory")
+      .then((r) => { if (!cancelled) setExcess(r.data || null); })
+      .catch((e) => !cancelled && setExcessError(e?.response?.data?.detail || e.message));
+    return () => { cancelled = true; };
+    // eslint-disable-next-line
+  }, [JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
+
+  const decliningCols = [
+    { key: "style_name", label: "Style", mobilePrimary: true,
+      render: (r) => <span className="font-medium">{r.style_name || "—"}</span> },
+    { key: "brand", label: "Brand", render: (r) => r.brand || "—" },
+    { key: "product_type", label: "Subcategory", render: (r) => r.product_type || "—" },
+    { key: "units_prior_28d", label: "Prior 28d", numeric: true, render: (r) => fmtNum(r.units_prior_28d) },
+    { key: "units_28d", label: "Last 28d", numeric: true, render: (r) => fmtNum(r.units_28d) },
+    { key: "change_pct", label: "Change", numeric: true,
+      render: (r) => (r.change_pct == null ? "—"
+        : <span className="text-danger font-semibold">{fmtDec(r.change_pct, 1)}%</span>) },
+    { key: "store_stock", label: "Store Stock", numeric: true, render: (r) => fmtNum(r.store_stock) },
+    { key: "weeks_of_cover", label: "Weeks Cover", numeric: true,
+      sortValue: (r) => (r.weeks_of_cover == null ? Infinity : Number(r.weeks_of_cover)),
+      render: (r) => (r.weeks_of_cover == null ? "—" : fmtDec(r.weeks_of_cover, 1)) },
+  ];
+
+  const phantomCols = [
+    { key: "style_name", label: "Style", mobilePrimary: true,
+      render: (r) => <span className="font-medium">{r.style_name || "—"}</span> },
+    { key: "subcategory", label: "Subcategory", render: (r) => r.subcategory || "—" },
+    { key: "available", label: "Store Stock", numeric: true, render: (r) => fmtNum(r.available) },
+    { key: "units_sold_28d", label: "Last 28d Units", numeric: true, render: (r) => fmtNum(r.units_sold_28d) },
+    { key: "weekly_units", label: "Rate / wk", numeric: true,
+      headerTitle: "Canonical recency-weighted weekly units (EWMA over trailing 56 days)",
+      render: (r) => fmtDec(r.weekly_units, 1) },
+  ];
+
+  const excessCols = [
+    { key: "pos_location", label: "Store", mobilePrimary: true,
+      render: (r) => <span className="font-medium">{r.pos_location || "—"}</span> },
+    { key: "skus", label: "SKUs", numeric: true, render: (r) => fmtNum(r.skus) },
+    { key: "total_inventory", label: "Total Units", numeric: true, render: (r) => fmtNum(r.total_inventory) },
+    { key: "return_skus", label: "SKUs Flagged Return", numeric: true, render: (r) => fmtNum(r.return_skus) },
+    { key: "excess_inventory", label: "Excess Units", numeric: true,
+      render: (r) => <span className={Number(r.excess_inventory) > 0 ? "text-danger font-semibold" : ""}>{fmtNum(r.excess_inventory)}</span> },
+  ];
+
+  const overstockCols = [
+    { key: "store", label: "Store", mobilePrimary: true,
+      render: (r) => <span className="font-medium">{r.store || "—"}</span> },
+    { key: "country", label: "Country", render: (r) => r.country || "—" },
+    { key: "soh_units", label: "Stock on Hand", numeric: true, render: (r) => fmtNum(r.soh_units) },
+    { key: "skus", label: "SKUs", numeric: true, render: (r) => fmtNum(r.skus) },
+    { key: "weekly_units", label: "Rate / wk", numeric: true,
+      headerTitle: "Recency-weighted weekly units (EWMA over trailing 56 days)",
+      render: (r) => fmtDec(r.weekly_units, 1) },
+    { key: "weeks_of_cover", label: "Weeks Cover", numeric: true,
+      headerTitle: "Stock on hand ÷ weekly rate — high cover = overstocked",
+      sortValue: (r) => (r.weeks_of_cover == null ? Infinity : Number(r.weeks_of_cover)),
+      render: (r) => (r.weeks_of_cover == null
+        ? <span className="text-danger font-semibold">No sales</span>
+        : fmtDec(r.weeks_of_cover, 1)) },
+  ];
+
+  return (
+    <div className="space-y-6" data-testid="stuck-declining-tab">
+      <div className="flex flex-wrap items-center gap-2 text-[12.5px]">
+        <span className="text-muted">Act on findings:</span>
+        <Link to="/warehouse-returns" className="text-brand underline underline-offset-2" data-testid="link-warehouse-returns">Warehouse Returns</Link>
+        <span className="text-muted">·</span>
+        <Link to="/excess-inventory" className="text-brand underline underline-offset-2" data-testid="link-excess-inventory">Excess Inventory</Link>
+        <span className="text-muted">·</span>
+        <Link to="/markdown-clearance" className="text-brand underline underline-offset-2" data-testid="link-markdown-clearance">Markdown &amp; Clearance</Link>
+      </div>
+
+      <div className="card-white p-4 sm:p-5">
+        <SectionTitle
+          title="Declining styles"
+          subtitle="Still holding store stock but decelerating: last-28-day units under 60% of the prior 28 days (prior base ≥ 10 units). Candidates for markdown or return."
+          testId="declining-styles-section"
+        />
+        {decliningError ? <ErrorBox message={decliningError} /> :
+         declining === null ? <Loading label="Finding declining styles…" /> :
+          <SortableTable
+            columns={decliningCols}
+            rows={declining}
+            initialSort={{ key: "change_pct", dir: "asc" }}
+            exportName="declining-styles.csv"
+            testId="declining-styles-table"
+            pageSize={25}
+            mobileCards
+            emptyLabel="No declining styles for the selected filters — nothing is decelerating with stock left."
+          />}
+      </div>
+
+      <div className="card-white p-4 sm:p-5">
+        <SectionTitle
+          title="Phantom / stuck styles"
+          subtitle="Heavy store stock (≥ 30 units) with ZERO sales in the last 28 days — stock that exists on paper but is not moving. Same rule as the Stock-on-Hand aging buckets. Pull back via Warehouse Returns."
+          testId="phantom-styles-section"
+        />
+        {phantomError ? <ErrorBox message={phantomError} /> :
+         phantom === null ? <Loading label="Finding phantom stock…" /> :
+          <SortableTable
+            columns={phantomCols}
+            rows={phantom}
+            initialSort={{ key: "available", dir: "desc" }}
+            exportName="phantom-styles.csv"
+            testId="phantom-styles-table"
+            pageSize={25}
+            mobileCards
+            emptyLabel="No phantom stock — every heavily stocked style sold in the last 28 days."
+          />}
+      </div>
+
+      <div className="card-white p-4 sm:p-5">
+        <SectionTitle
+          title="Excess-allowance flags by store"
+          subtitle="Per-store excess against the per-brand per-size allowance table — the same dataset as the Excess Inventory page, so figures reconcile 1:1. Act on the flagged SKUs on the Excess Inventory page."
+          testId="excess-flags-section"
+        />
+        {excessError ? <ErrorBox message={excessError} /> :
+         excess === null ? <Loading label="Checking excess allowances…" /> :
+          <>
+            <div className="text-[12.5px] text-muted mb-2" data-testid="excess-flags-totals">
+              {fmtNum(excess?.totals?.return_skus || 0)} SKU-store rows flagged Return ·{" "}
+              {fmtNum(excess?.totals?.excess_inventory || 0)} excess units across{" "}
+              {fmtNum((excess?.summary || []).length)} stores —{" "}
+              <Link to="/excess-inventory" className="text-brand underline underline-offset-2">open Excess Inventory to act</Link>
+            </div>
+            <SortableTable
+              columns={excessCols}
+              rows={excess?.summary || []}
+              initialSort={{ key: "excess_inventory", dir: "desc" }}
+              exportName="excess-flags-by-store.csv"
+              testId="excess-flags-table"
+              pageSize={25}
+              mobileCards
+              emptyLabel="No stock above the excess allowances."
+            />
+          </>}
+      </div>
+
+      <div className="card-white p-4 sm:p-5">
+        <SectionTitle
+          title="Store overstock ranking"
+          subtitle="Weeks of cover per store: store-floor stock ÷ recency-weighted weekly rate of sale (warehouses & production pipeline excluded). Worst first."
+          testId="store-overstock-section"
+        />
+        {overstockError ? <ErrorBox message={overstockError} /> :
+         overstock === null ? <Loading label="Ranking store cover…" /> :
+          <SortableTable
+            columns={overstockCols}
+            rows={overstock}
+            initialSort={{ key: "weeks_of_cover", dir: "desc" }}
+            exportName="store-overstock.csv"
+            testId="store-overstock-table"
+            pageSize={25}
+            mobileCards
+            emptyLabel="No store stock for the selected filters."
+          />}
+      </div>
+
+      {/* Aged-in-store: SKU-store rows that haven't sold at that store in N
+          days — the same report Warehouse Returns acts on, surfaced here so
+          "what's stuck" is answerable in one place. */}
+      <AgedStockReport />
+    </div>
+  );
+};
+
+// ── Page wrapper: question-driven tabs ─────────────────────────────────────
+// "How much stock and where?" — the Stock on Hand view above.
+// "How fast is it selling?" — the former standalone Velocity page (canonical
+// EWMA weeks-of-cover), merged here as a tab; the old /velocity URL redirects
+// to /inventory and the "velocity" page id is aliased server-side.
+// "What's stuck and what's dying?" — the consolidated StuckDeclining tab.
+const VelocityTab = React.lazy(() => import("./Velocity"));
+
+const INV_TABS = [
+  { id: "stock", label: "Stock on Hand" },
+  { id: "velocity", label: "Velocity & Cover" },
+  { id: "stuck", label: "Stuck & Declining" },
+];
+
+const InventoryPage = () => {
+  const [tab, setTab] = useState("stock");
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-1.5 border-b border-border" data-testid="inventory-tabs">
+        {INV_TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            data-testid={`inventory-tab-${t.id}`}
+            className={
+              "px-3.5 py-2 text-[13px] font-medium border-b-2 -mb-px transition-colors " +
+              (tab === t.id
+                ? "border-[#1a5c38] text-[#1a5c38]"
+                : "border-transparent text-muted hover:text-foreground")
+            }
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === "stock" ? <Inventory onSeeAgedStock={() => setTab("stuck")} /> : null}
+      {tab === "velocity" ? (
+        <React.Suspense fallback={<Loading label="Loading velocity…" />}>
+          <VelocityTab />
+        </React.Suspense>
+      ) : null}
+      {tab === "stuck" ? <StuckDeclining /> : null}
+    </div>
+  );
+};
+
+export default InventoryPage;

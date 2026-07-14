@@ -1421,4 +1421,50 @@ const ProductAnalysis = () => {
   );
 };
 
-export default ProductAnalysis;
+// ── Page wrapper: question-driven tabs ───────────────────────────────────────
+// "What's selling and what's it worth?" — the canonical Style Cockpit above.
+// "Catalog & SOR" — the former standalone Products page (style & subcategory
+// performance, launch-window report), merged here as a tab. The old /products
+// URL redirects to /product-analysis (see App.js); the "products" page id is
+// aliased to "product-analysis" server-side for stored group grants.
+const ProductsCatalog = React.lazy(() => import("./Products"));
+
+const PA_TABS = [
+  { id: "cockpit", label: "Style Cockpit" },
+  { id: "catalog", label: "Catalog & SOR" },
+];
+
+const ProductAnalysisPage = () => {
+  const [tab, setTab] = useState("cockpit");
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-1.5 border-b border-border" data-testid="pa-tabs">
+        {PA_TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            data-testid={`pa-tab-${t.id}`}
+            className={
+              "px-3.5 py-2 text-[13px] font-medium border-b-2 -mb-px transition-colors " +
+              (tab === t.id
+                ? "border-[#1a5c38] text-[#1a5c38]"
+                : "border-transparent text-muted hover:text-foreground")
+            }
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === "cockpit" ? (
+        <ProductAnalysis />
+      ) : (
+        <React.Suspense fallback={<Loading label="Loading catalog…" />}>
+          <ProductsCatalog />
+        </React.Suspense>
+      )}
+    </div>
+  );
+};
+
+export default ProductAnalysisPage;

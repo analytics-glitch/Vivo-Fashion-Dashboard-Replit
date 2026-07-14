@@ -550,11 +550,11 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "products", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "velocity", "size-health", "inventory", "warehouse-returns", "excess-inventory", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "size-health", "inventory", "warehouse-returns", "excess-inventory", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance"])
 
 DEFAULT_ROLE_PAGES = {
-    "product_development": ["products", "product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "velocity", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"],
-    "retail": ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "products", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "exports", "sops"],
+    "product_development": ["product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"],
+    "retail": ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "exports", "sops"],
     "warehouse": ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"],
     "store_manager": ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "sops"],
     "leadership": _LEADERSHIP_PAGES,
@@ -566,7 +566,7 @@ DEFAULT_ROLE_PAGES = {
     # Fabric Warehouse department — fabric stock + general inventory.
     "fabric_warehouse": ["fabric", "inventory", "sops"],
     "customer_service": ["customers", "customer-details", "crm", "footfall", "rfm", "sops"],
-    "marketing": ["marketing", "social", "crm", "customers", "customer-details", "products", "product-analysis", "footfall", "trend-analysis", "rfm", "sops"],
+    "marketing": ["marketing", "social", "crm", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "rfm", "sops"],
     "hr": ["hr", "sops"],
     # Employee self-service (Google auto-approved sign-ups): NO BI pages at all.
     # Their only surface is the Salary Advance form inside the HR app
@@ -574,6 +574,13 @@ DEFAULT_ROLE_PAGES = {
     # clerk_auth_gate — a Group Access page grant alone can never leak data.
     "employee": [],
 }
+
+# Legacy page ids that were merged into other pages. Stored Group Access
+# overrides may still carry them — _role_page_overrides() rewrites each alias
+# to its new home on read, so no group silently loses access after the merge.
+#   products → merged into Product Analysis (Catalog & SOR tab)
+#   velocity → merged into Inventory (Velocity & Cover tab)
+_LEGACY_PAGE_ALIASES = {"products": "product-analysis", "velocity": "inventory"}
 
 # Admin management page ids (admin- prefix). These are route-guarded as
 # adminOnly anyway and can NEVER be assigned to a non-admin group.
@@ -2598,8 +2605,10 @@ def _role_page_overrides():
     for role, pages in val.items():
         if (role in VALID_ROLES or role in custom) and role != "admin" and isinstance(pages, list):
             out[role] = sorted({
-                str(p).strip() for p in pages
-                if str(p).strip() in ALL_PAGE_IDS and not str(p).strip().startswith("admin-")
+                _LEGACY_PAGE_ALIASES.get(str(p).strip(), str(p).strip())
+                for p in pages
+                if _LEGACY_PAGE_ALIASES.get(str(p).strip(), str(p).strip()) in ALL_PAGE_IDS
+                and not str(p).strip().startswith("admin-")
             })
     return out
 
@@ -4310,7 +4319,8 @@ def get_locations():
 # group tag for the picker UI. Brand/category/subcategory are NOT columns on
 # all_sales — they come from all_products_clean joined on the SKU, exactly like
 # every other product breakdown in this file. "category"/"product_type" mirror
-# the Products page; "store" is the POS location name.
+# the Product Analysis page's Catalog & SOR tab (the former Products page);
+# "store" is the POS location name.
 _REPORT_DIMENSIONS = {
     "country":      {"sales": "s.country",                          "inv": "i.country",            "pjoin": False, "label": "Country",       "group": "Geography"},
     "channel":      {"sales": "s.channel",                          "inv": None,                   "pjoin": False, "label": "Channel",       "group": "Geography"},
@@ -18369,6 +18379,146 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         "recent_movements": [],
         "tier3_graduation_candidates": candidates,
     }
+
+
+@app.get("/api/range-mgmt/store-tier-mix")
+def range_mgmt_store_tier_mix(country: str = Query(default=None), channel: str = Query(default=None)):
+    """Store × range-tier stock mix. Tier assignment comes from the SAME
+    classify call the Range Mgmt page renders (single-source _lifecycle_tier +
+    overrides — never a re-derivation), then per-store store-floor stock
+    (warehouses + production pipeline excluded) is bucketed by each style's
+    tier. Rows: {store, country, tier, styles, units}."""
+    classify = range_mgmt_classify(country=country, channel=channel)
+    tier_by_style = {}
+    for row in classify.get("rows", []):
+        tier_by_style[row["style_name"]] = row.get("tier") or "Tier 4"
+    for row in classify.get("retired_rows", []):
+        tier_by_style[row["style_name"]] = "Retire"
+    icf, ichf = _style_filters(country, channel, "i")
+    stock = run_query("""
+        SELECT i.pos_location_name AS store, MAX(i.country) AS country,
+            COALESCE(m.style_name, i.style_name) AS style_name,
+            SUM(i.available) AS units
+        FROM all_inventory i
+        LEFT JOIN """ + SKU_STYLE_MAP + """ m ON m.sku = i.sku
+        WHERE COALESCE(m.style_name, i.style_name) IS NOT NULL
+          AND i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+          AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)
+          AND i.available > 0""" + icf + ichf + """
+        GROUP BY 1, 3
+    """)
+    agg = {}
+    for r in stock:
+        tier = tier_by_style.get(r["style_name"])
+        if tier is None:
+            continue  # style not in the classify universe (e.g. third-party)
+        key = (r["store"], tier)
+        e = agg.setdefault(key, {
+            "store": r["store"], "country": r["country"], "tier": tier,
+            "styles": 0, "units": 0})
+        e["styles"] += 1
+        e["units"] += int(r["units"] or 0)
+    rows = sorted(agg.values(), key=lambda e: (e["store"], e["tier"]))
+    tiers = ["Tier 1", "Tier 2", "Tier 3", "Tier 4", "Retire"]
+    return {"rows": rows, "tiers": tiers}
+
+
+@app.get("/api/analytics/store-overstock")
+def analytics_store_overstock(country: str = Query(default=None), channel: str = Query(default=None)):
+    """Per-store overstock ranking: store-floor SOH vs the standardized
+    recency-weighted weekly rate of sale (28d double-weighted over a 56-day
+    trailing window / 12 weeks — the same EWMA used by /analytics/velocity and
+    /analytics/weeks-of-cover), giving a weeks-of-cover figure per STORE.
+    Warehouses + production pipeline excluded. Sorted worst (highest cover)
+    first; stores with zero velocity sort to the top with cover = null."""
+    icf, ichf = _style_filters(country, channel, "i")
+    scf, schf = _style_filters(country, channel, "s")
+    rows = run_query("""
+        WITH soh AS (
+            SELECT i.pos_location_name AS store, MAX(i.country) AS country,
+                SUM(i.available) AS units,
+                COUNT(DISTINCT i.sku) AS skus
+            FROM all_inventory i
+            WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+              AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)
+              AND i.available > 0""" + icf + ichf + """
+            GROUP BY 1
+        ),
+        vel AS (
+            SELECT s.pos_location_name AS store,
+                SUM(s.ordered_item_quantity) FILTER (
+                    WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days') AS u28,
+                SUM(s.ordered_item_quantity) AS u56
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
+              AND """ + BASE_FILTERS + scf + schf + """
+            GROUP BY 1
+        )
+        SELECT soh.store, soh.country, soh.units AS soh_units, soh.skus,
+            ROUND(((COALESCE(v.u28,0) * 2)
+                   + GREATEST(COALESCE(v.u56,0) - COALESCE(v.u28,0), 0)) / 12.0, 1) AS weekly_units,
+            ROUND(soh.units / NULLIF(((COALESCE(v.u28,0) * 2)
+                   + GREATEST(COALESCE(v.u56,0) - COALESCE(v.u28,0), 0)) / 12.0, 0), 1) AS weeks_of_cover
+        FROM soh
+        LEFT JOIN vel v ON v.store = soh.store
+        ORDER BY weeks_of_cover DESC NULLS FIRST
+    """)
+    for r in rows:
+        r["velocity_method"] = "ewma_56d"
+    return rows
+
+
+@app.get("/api/analytics/declining-styles")
+def analytics_declining_styles(country: str = Query(default=None), channel: str = Query(default=None)):
+    """"Dying" styles — still holding store stock but decelerating: last-28-day
+    gross units under 60% of the PRIOR 28 days (days 29–56), with a meaningful
+    prior base (>= 10 units). Feeds the Inventory "Stuck & declining" section;
+    candidates link on to Markdown & Clearance for pricing action."""
+    scf, schf = _style_filters(country, channel, "s")
+    icf, _ = _style_filters(country, None, "i")
+    rows = run_query("""
+        WITH sales AS (
+            SELECT p.style_name, MAX(p.brand) AS brand, MAX(p.product_type) AS product_type,
+                SUM(s.ordered_item_quantity) FILTER (
+                    WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days') AS u28,
+                SUM(s.ordered_item_quantity) FILTER (
+                    WHERE s.sale_date::date <  CURRENT_DATE - INTERVAL '28 days'
+                      AND s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days') AS u_prior
+            FROM all_sales s
+            JOIN all_products_clean p ON s.variant_sku = p.sku
+            WHERE s.sale_kind IN ('sale','order') AND p.style_name IS NOT NULL
+              AND s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
+              AND """ + BASE_FILTERS + scf + schf + """
+            GROUP BY p.style_name
+        ),
+        stock AS (
+            SELECT p.style_name, SUM(i.available) AS store_stock
+            FROM all_inventory i
+            JOIN all_products_clean p ON i.sku = p.sku
+            WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+              AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)""" + icf + """
+            GROUP BY p.style_name
+        )
+        SELECT sa.style_name, sa.brand, sa.product_type,
+            COALESCE(sa.u28, 0) AS units_28d,
+            COALESCE(sa.u_prior, 0) AS units_prior_28d,
+            ROUND((COALESCE(sa.u28,0) - COALESCE(sa.u_prior,0)) * 100.0
+                  / NULLIF(sa.u_prior, 0), 1) AS change_pct,
+            st.store_stock,
+            ROUND(st.store_stock / NULLIF(((COALESCE(sa.u28,0) * 2)
+                  + GREATEST(COALESCE(sa.u_prior,0), 0)) / 12.0, 0), 1) AS weeks_of_cover
+        FROM sales sa
+        JOIN stock st ON st.style_name = sa.style_name
+        WHERE COALESCE(sa.u_prior, 0) >= 10
+          AND COALESCE(sa.u28, 0) < 0.6 * COALESCE(sa.u_prior, 0)
+          AND st.store_stock > 0
+        ORDER BY (COALESCE(sa.u28,0) - COALESCE(sa.u_prior,0)) ASC
+        LIMIT 500
+    """)
+    for r in rows:
+        r["velocity_method"] = "ewma_56d"
+    return rows
 
 
 # ───────────────────────────────────────────────────────────────────────────

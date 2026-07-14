@@ -264,7 +264,7 @@ const StoreDeepDive = ({
               title="Top 10 styles"
               subtitle="Best-sellers at this store — protect stock cover on these."
               cta="Open Products"
-              onCta={() => navigate("/products")}
+              onCta={() => navigate("/product-analysis")}
               testId="deepdive-top-styles-cta"
             />
             {loading ? (
@@ -345,7 +345,7 @@ const StoreDeepDive = ({
             <div className="grid grid-cols-2 gap-2">
               <CrossLink label="Footfall" icon={<UsersThree size={14} />} onClick={() => navigate("/footfall")} testId="deepdive-goto-footfall" />
               <CrossLink label="Customers" icon={<UsersThree size={14} />} onClick={() => navigate("/customers")} testId="deepdive-goto-customers" />
-              <CrossLink label="Products" icon={<ShoppingBag size={14} />} onClick={() => navigate("/products")} testId="deepdive-goto-products" />
+              <CrossLink label="Products" icon={<ShoppingBag size={14} />} onClick={() => navigate("/product-analysis")} testId="deepdive-goto-products" />
               <CrossLink label="Export this store's data" icon={<Download size={14} />} onClick={() => navigate("/exports")} testId="deepdive-goto-exports" />
             </div>
             <div className="mt-2 text-[10.5px] text-muted/90">

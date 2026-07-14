@@ -53,17 +53,15 @@ export const PRIMARY_NAV = [
   { to: "/exec-summary", label: "Executive Summary", icon: Briefcase, id: "exec-summary", group: "Performance", desc: "One-screen executive snapshot of the business" },
   { to: "/trend-analysis", label: "Trend Analysis", icon: TrendUp, id: "trend-analysis", group: "Performance", desc: "Trend any KPI over time with per-KPI granularity and AI insight" },
 
-  // Product pages
-  { to: "/product-analysis", label: "Product Analysis", icon: ChartBar, id: "product-analysis", group: "Products & Range", desc: "Canonical style-level sales & stock cockpit with size/colour drill-down" },
-  { to: "/products", label: "Products", icon: Tag, id: "products", group: "Products & Range", desc: "Style and subcategory performance" },
-  { to: "/range-mgmt", label: "Range Mgmt", icon: Stack, id: "range-mgmt", group: "Products & Range", desc: "Range classification and assortment planning" },
+  // Product & inventory ANALYSIS pages — "what's selling, what's it worth,
+  // how much stock and what's stuck". Operational action pages live in the
+  // "Operations & Production" group below.
+  { to: "/product-analysis", label: "Product Analysis", icon: ChartBar, id: "product-analysis", group: "Products & Range", desc: "Canonical style-level sales & stock cockpit — Style Cockpit and Catalog & SOR tabs, with size/colour drill-down" },
+  { to: "/range-mgmt", label: "Range Mgmt", icon: Stack, id: "range-mgmt", group: "Products & Range", desc: "Range classification, store × tier stock mix and retired styles still holding stock" },
+  { to: "/inventory", label: "Inventory", icon: Package, id: "inventory", group: "Products & Range", desc: "Stock on hand, velocity & weeks of cover, and stuck & declining stock" },
   { to: "/margin", label: "Margin & Markdown", icon: Percent, id: "margin", group: "Products & Range", desc: "Discount impact on gross margin, COGS and margin %" },
   { to: "/markdown-clearance", label: "Markdown & Clearance", icon: Percent, id: "markdown-clearance", group: "Products & Range", desc: "Markdown candidates and clearance plan" },
-  { to: "/velocity", label: "Velocity", icon: Gauge, id: "velocity", group: "Products & Range", desc: "Sell-through rate of sale and weeks of cover by style" },
   { to: "/size-health", label: "Size Health", icon: Ruler, id: "size-health", group: "Products & Range", desc: "Broken size-curve detection by style" },
-  { to: "/production", label: "Production Tracker", icon: Factory, id: "production", group: "Products & Range", desc: "Kanban board tracking buying orders through the manufacturing stages" },
-  { to: "/production-report", label: "Production Report", icon: Table, id: "production-report", group: "Products & Range", desc: "Detailed buying-order report: colours, sizes, stage distribution and cross-order roll-ups by order & production type" },
-  { to: "/style-tracker", label: "Weekly Style Tracker", icon: ClockClockwise, id: "style-tracker", group: "Products & Range", desc: "Kanban of styles by launch week: drag between weeks, track status and archive completed weeks" },
   { to: "/fabric", label: "Fabric", icon: ChartBar, id: "fabric", external: true, group: "Products & Range", desc: "Standalone Fabric BI dashboard (opens full-page)" },
 
   // Retail pages
@@ -79,15 +77,17 @@ export const PRIMARY_NAV = [
   { to: "/crm", label: "CRM", icon: AddressBook, id: "crm", group: "Customers & Marketing", desc: "Contacts, tasks, tickets, campaigns, loyalty and Facebook Page management" },
   { to: "/marketing", label: "Marketing", icon: Megaphone, id: "marketing", group: "Customers & Marketing", desc: "Campaign and channel marketing performance" },
 
-  // Warehouse operations & transfers
-  { to: "/inventory", label: "Inventory", icon: Package, id: "inventory", group: "Inventory & Replenishment", desc: "Stock on hand, availability and cover by location" },
-  { to: "/warehouse-returns", label: "Warehouse Returns", icon: Warehouse, id: "warehouse-returns", group: "Inventory & Replenishment", desc: "Pull aged / retired store stock back to the warehouse" },
-  { to: "/excess-inventory", label: "Excess Inventory", icon: Package, id: "excess-inventory", group: "Inventory & Replenishment", desc: "Store stock above the per-brand size allowance — flagged for return" },
-  { to: "/ibt", label: "IBT", icon: Truck, id: "ibt", group: "Inventory & Replenishment", desc: "Inter-branch transfer recommendations" },
-  { to: "/allocations", label: "Allocations", icon: Stack, id: "allocations", group: "Inventory & Replenishment", desc: "Allocate incoming stock across stores" },
-  { to: "/replenishments", label: "Replenishments", icon: ArrowsClockwise, id: "replenishments", group: "Inventory & Replenishment", desc: "Replenishment suggestions with last-sold dates" },
-  { to: "/replenish-by-item", label: "Replenish by Style/SKU", icon: Package, id: "replenish-by-item", group: "Inventory & Replenishment", desc: "Find understocked stores for a style/SKU, or a store's proven demand gaps" },
-  { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order", group: "Inventory & Replenishment", desc: "Styles to re-order based on demand" },
+  // OPERATIONAL pages — actions that move, return or make stock.
+  { to: "/warehouse-returns", label: "Warehouse Returns", icon: Warehouse, id: "warehouse-returns", group: "Operations & Production", desc: "Pull aged / retired store stock back to the warehouse" },
+  { to: "/excess-inventory", label: "Excess Inventory", icon: Package, id: "excess-inventory", group: "Operations & Production", desc: "Store stock above the per-brand size allowance — flagged for return" },
+  { to: "/ibt", label: "IBT", icon: Truck, id: "ibt", group: "Operations & Production", desc: "Inter-branch transfer recommendations" },
+  { to: "/allocations", label: "Allocations", icon: Stack, id: "allocations", group: "Operations & Production", desc: "Allocate incoming stock across stores" },
+  { to: "/replenishments", label: "Replenishments", icon: ArrowsClockwise, id: "replenishments", group: "Operations & Production", desc: "Replenishment suggestions with last-sold dates" },
+  { to: "/replenish-by-item", label: "Replenish by Style/SKU", icon: Package, id: "replenish-by-item", group: "Operations & Production", desc: "Find understocked stores for a style/SKU, or a store's proven demand gaps" },
+  { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order", group: "Operations & Production", desc: "Styles to re-order based on demand" },
+  { to: "/production", label: "Production Tracker", icon: Factory, id: "production", group: "Operations & Production", desc: "Kanban board tracking buying orders through the manufacturing stages" },
+  { to: "/production-report", label: "Production Report", icon: Table, id: "production-report", group: "Operations & Production", desc: "Detailed buying-order report: colours, sizes, stage distribution and cross-order roll-ups by order & production type" },
+  { to: "/style-tracker", label: "Weekly Style Tracker", icon: ClockClockwise, id: "style-tracker", group: "Operations & Production", desc: "Kanban of styles by launch week: drag between weeks, track status and archive completed weeks" },
 
   // Catalogues & others
   { to: "/catalogue", label: "Report Catalogue", icon: BookOpen, id: "catalogue", group: "Tools", desc: "Every report, what page it lives on, and all the calculation & business rules — with an AI finder" },
@@ -121,7 +121,7 @@ export const HOME_GROUP_ORDER = [
   "Products & Range",
   "Retail",
   "Customers & Marketing",
-  "Inventory & Replenishment",
+  "Operations & Production",
   "Tools",
   "Administration",
 ];
