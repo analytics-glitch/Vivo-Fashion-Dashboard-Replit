@@ -11,6 +11,7 @@ import {
   Circle,
   ClockClockwise,
   Plus,
+  Table,
   Trash,
   Warning,
   X,
@@ -53,6 +54,168 @@ const fmtShortDate = (iso) => {
 };
 
 const weekKey = (w) => `${w.iso_year}-${w.iso_week}`;
+
+/** % of a week's UNITS already completed (= delivered to the warehouse). */
+const weekPct = (w) =>
+  w.total_units > 0 ? Math.round((100 * (w.completed_units || 0)) / w.total_units) : null;
+
+const pctTone = (pct) =>
+  pct === null ? "text-muted" : pct >= 100 ? "text-emerald-700" : pct >= 50 ? "text-amber-700" : "text-rose-700";
+
+const barTone = (pct) =>
+  pct >= 100 ? "bg-emerald-500" : pct >= 50 ? "bg-amber-500" : "bg-rose-400";
+
+/** Compact per-week stats strip: qty, styles, % in warehouse + progress bar. */
+function WeekStats({ week, compact = false }) {
+  const pct = weekPct(week);
+  return (
+    <div className={compact ? "" : "mt-1.5"} data-testid={`week-stats-${weekKey(week)}`}>
+      <div className="flex items-center justify-between gap-2 text-[10.5px] font-semibold text-[#0f3d24]">
+        <span>{fmtUnits(week.total_units)} pcs · {week.count} style{week.count === 1 ? "" : "s"}</span>
+        <span className={`font-bold ${pctTone(pct)}`}>
+          {pct === null ? "—" : `${pct}%`} <span className="font-medium text-muted">in WH</span>
+        </span>
+      </div>
+      <div className="mt-1 h-1.5 rounded-full bg-line/70 overflow-hidden" title={`${fmtUnits(week.completed_units || 0)} of ${fmtUnits(week.total_units)} pcs completed (in warehouse) · ${week.completed_count || 0}/${week.count} styles`}>
+        <div
+          className={`h-full rounded-full transition-all ${pct === null ? "bg-line" : barTone(pct)}`}
+          style={{ width: `${Math.min(pct || 0, 100)}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** Table view: one section per week with a stats header row, style rows
+ *  (status + completed editable inline, same handlers as the board), and a
+ *  grand-total footer across all visible weeks. */
+function WeekTable({ weeks, today, statuses, busyIds, onUpdate }) {
+  const totals = weeks.reduce(
+    (t, w) => ({
+      count: t.count + w.count,
+      units: t.units + (w.total_units || 0),
+      cCount: t.cCount + (w.completed_count || 0),
+      cUnits: t.cUnits + (w.completed_units || 0),
+    }),
+    { count: 0, units: 0, cCount: 0, cUnits: 0 }
+  );
+  const totPct = totals.units > 0 ? Math.round((100 * totals.cUnits) / totals.units) : null;
+  const thCls = "px-3 py-2.5 font-bold";
+  return (
+    <div className="rounded-xl border border-line bg-white overflow-x-auto" data-testid="style-tracker-table-view">
+      <table className="w-full text-[12px]">
+        <thead>
+          <tr className="text-left text-[10.5px] uppercase tracking-wide text-muted border-b border-line">
+            <th className={thCls}>Style</th>
+            <th className={thCls}>Brand</th>
+            <th className={thCls}>Category</th>
+            <th className={`${thCls} text-right`}>Qty</th>
+            <th className={thCls}>Status</th>
+            <th className={thCls}>Deliver by</th>
+            <th className={`${thCls} text-center`}>In WH</th>
+          </tr>
+        </thead>
+        <tbody>
+          {weeks.filter((w) => w.count > 0).map((week) => {
+            const wk = weekKey(week);
+            const pct = weekPct(week);
+            return (
+              <React.Fragment key={wk}>
+                <tr className={`border-y border-line ${week.overdue ? "bg-amber-50" : week.is_current ? "bg-brand/5" : "bg-panel/60"}`} data-testid={`table-week-row-${wk}`}>
+                  <td className="px-3 py-2" colSpan={3}>
+                    <span className="font-bold text-[12.5px] text-[#0f3d24]">{week.label}</span>
+                    {week.is_current && <span className="ml-2 text-[9px] font-bold uppercase tracking-wide text-white bg-[#1a5c38] rounded-full px-1.5 py-0.5">This week</span>}
+                    {week.overdue && <span className="ml-2 text-[9px] font-bold uppercase tracking-wide text-amber-800 bg-amber-200/80 border border-amber-300 rounded-full px-1.5 py-0.5">Overdue</span>}
+                    <span className="ml-2 text-[11px] text-muted">{week.count} style{week.count === 1 ? "" : "s"}</span>
+                  </td>
+                  <td className="px-3 py-2 text-right font-bold text-[#0f3d24]">{fmtUnits(week.total_units)}</td>
+                  <td className="px-3 py-2 text-[11px] text-muted" colSpan={2}>
+                    <div className="flex items-center gap-2 min-w-[160px]">
+                      <div className="flex-1 h-1.5 rounded-full bg-line/70 overflow-hidden">
+                        <div className={`h-full rounded-full ${pct === null ? "bg-line" : barTone(pct)}`} style={{ width: `${Math.min(pct || 0, 100)}%` }} />
+                      </div>
+                      <span className="whitespace-nowrap">{fmtUnits(week.completed_units || 0)} pcs in WH</span>
+                    </div>
+                  </td>
+                  <td className={`px-3 py-2 text-center font-bold ${pctTone(pct)}`}>{pct === null ? "—" : `${pct}%`}</td>
+                </tr>
+                {week.styles.map((s) => {
+                  const late = isLateStyle(s, today);
+                  const busy = busyIds.has(s.id);
+                  return (
+                    <tr key={s.id} className={`border-b border-line/60 hover:bg-panel/40 ${late ? "bg-rose-50/50" : ""}`} data-testid={`table-style-row-${s.id}`}>
+                      <td className="px-3 py-2 font-semibold text-[#0f3d24]">
+                        {s.style_name}
+                        {late && (
+                          <span className="ml-2 inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide text-rose-800 bg-rose-100 border border-rose-300 rounded-full px-1.5 py-0.5">
+                            <Warning size={9} weight="fill" /> Late
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className={`text-[9px] font-bold uppercase tracking-wide border rounded-full px-1.5 py-0.5 ${BRAND_BADGE[s.brand] || "bg-panel text-muted border-line"}`}>{s.brand}</span>
+                      </td>
+                      <td className="px-3 py-2 text-muted">{s.category}</td>
+                      <td className="px-3 py-2 text-right font-semibold">{fmtUnits(s.quantity)}</td>
+                      <td className="px-3 py-2">
+                        <select
+                          value={s.status}
+                          onChange={(e) => onUpdate(s, { status: e.target.value })}
+                          disabled={busy}
+                          className="text-[11px] font-medium text-[#0f3d24] bg-white border border-line rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50"
+                          data-testid={`table-style-status-${s.id}`}
+                        >
+                          {statuses.map((st) => <option key={st} value={st}>{st}</option>)}
+                        </select>
+                      </td>
+                      <td className={`px-3 py-2 whitespace-nowrap ${late ? "font-semibold text-rose-700" : "text-muted"}`}>
+                        {s.deliver_by ? fmtShortDate(s.deliver_by) : "—"}
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        <button
+                          type="button"
+                          onClick={() => onUpdate(s, { completed: !s.completed })}
+                          disabled={busy}
+                          title={s.completed ? "Mark as not completed" : "Mark as completed (in warehouse)"}
+                          className="disabled:opacity-50"
+                          data-testid={`table-style-complete-${s.id}`}
+                        >
+                          {s.completed ? (
+                            <CheckCircle size={17} weight="fill" className="text-emerald-600" />
+                          ) : (
+                            <Circle size={17} className="text-muted/60 hover:text-emerald-600" />
+                          )}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </React.Fragment>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr className="border-t-2 border-line bg-panel/70 font-bold text-[#0f3d24]" data-testid="table-grand-total">
+            <td className="px-3 py-2.5" colSpan={3}>
+              All weeks · {totals.count} style{totals.count === 1 ? "" : "s"} ({totals.cCount} in WH)
+            </td>
+            <td className="px-3 py-2.5 text-right">{fmtUnits(totals.units)}</td>
+            <td className="px-3 py-2.5 text-[11px] text-muted font-semibold" colSpan={2}>
+              {fmtUnits(totals.cUnits)} pcs in WH
+            </td>
+            <td className={`px-3 py-2.5 text-center ${pctTone(totPct)}`}>{totPct === null ? "—" : `${totPct}%`}</td>
+          </tr>
+        </tfoot>
+      </table>
+      {weeks.every((w) => w.count === 0) && (
+        <div className="flex flex-col items-center gap-2 py-10 text-muted">
+          <Table size={26} />
+          <div className="text-[12.5px]">No styles on the board yet — add them from the Board view.</div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** True when a style's deliver-by date has passed (vs the board's EAT today)
  *  and it isn't completed yet. Both are YYYY-MM-DD strings, so a plain
@@ -357,6 +520,9 @@ const StyleTracker = () => {
       for (const w of weeks) {
         w.count = w.styles.length;
         w.total_units = w.styles.reduce((a, s) => a + (Number(s.quantity) || 0), 0);
+        w.completed_count = w.styles.filter((s) => s.completed).length;
+        w.completed_units = w.styles.reduce(
+          (a, s) => a + (s.completed ? Number(s.quantity) || 0 : 0), 0);
       }
       return { ...b, weeks };
     });
@@ -491,6 +657,14 @@ const StyleTracker = () => {
               </button>
               <button
                 type="button"
+                onClick={() => setView("table")}
+                className={`text-[11.5px] font-semibold px-3 py-1.5 border-l border-line ${view === "table" ? "bg-[#1a5c38] text-white" : "bg-white text-[#0f3d24] hover:bg-panel"}`}
+                data-testid="style-tracker-view-table"
+              >
+                Table
+              </button>
+              <button
+                type="button"
                 onClick={() => setView("archived")}
                 className={`text-[11.5px] font-semibold px-3 py-1.5 border-l border-line ${view === "archived" ? "bg-[#1a5c38] text-white" : "bg-white text-[#0f3d24] hover:bg-panel"}`}
                 data-testid="style-tracker-view-archived"
@@ -500,7 +674,7 @@ const StyleTracker = () => {
             </div>
             <button
               type="button"
-              onClick={() => (view === "board" ? loadBoard(true) : loadArchived())}
+              onClick={() => (view === "archived" ? loadArchived() : loadBoard(true))}
               className="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#0f3d24] border border-line hover:bg-panel px-2.5 py-1.5 rounded-lg"
               data-testid="style-tracker-refresh"
             >
@@ -566,6 +740,7 @@ const StyleTracker = () => {
                           )}
                         </div>
                       </div>
+                      <WeekStats week={week} />
                       {week.is_past && (
                         <button
                           type="button"
@@ -626,8 +801,8 @@ const StyleTracker = () => {
                     </div>
 
                     <div className={`px-3 py-2 border-t text-[11px] font-semibold text-[#0f3d24] flex items-center justify-between ${week.overdue ? "border-amber-200" : "border-line"}`} data-testid={`style-tracker-footer-${wk}`}>
-                      <span>{week.count} style{week.count === 1 ? "" : "s"}</span>
-                      <span>{fmtUnits(week.total_units)} units</span>
+                      <span>{week.completed_count || 0}/{week.count} in WH</span>
+                      <span>{fmtUnits(week.completed_units || 0)}/{fmtUnits(week.total_units)} pcs</span>
                     </div>
                   </div>
                 );
@@ -635,6 +810,14 @@ const StyleTracker = () => {
             </div>
           </div>
         </>
+      ) : view === "table" ? (
+        <WeekTable
+          weeks={board.weeks}
+          today={board.today}
+          statuses={statuses}
+          busyIds={busyIds}
+          onUpdate={updateStyle}
+        />
       ) : (
         <div className="rounded-xl border border-line bg-white" data-testid="style-tracker-archived-view">
           {archivedLoading ? (

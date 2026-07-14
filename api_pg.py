@@ -30550,6 +30550,10 @@ def style_tracker_board():
             "styles": [_st_row_out(s) for s in styles],
             "count": len(styles),
             "total_units": int(sum(int(s["quantity"] or 0) for s in styles)),
+            # Completed = delivered to the warehouse (the card's checkmark).
+            "completed_count": sum(1 for s in styles if s["completed"]),
+            "completed_units": int(sum(
+                int(s["quantity"] or 0) for s in styles if s["completed"])),
         })
     return {
         "today": today.isoformat(),
