@@ -4902,16 +4902,19 @@ def receiving_create(request: Request, body: dict = Body(...)):
         raise HTTPException(status_code=400, detail="product_id is required")
     note = str(body.get("note") or "").strip() or None
     rolls = _recv_parse_rolls(body)
-    # Optional draft-PO link: the picker sends po_id; the PO is re-validated
-    # LIVE in Odoo (must still exist and still be draft) and its name/creation
-    # date are snapshotted onto the sheet. Ad-hoc sheets simply omit po_id.
-    po_link = None
-    if body.get("po_id") not in (None, "", 0, "0"):
-        try:
-            po_id_in = int(body.get("po_id"))
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="po_id must be a number")
-        po_link = _recv_fetch_draft_po(po_id_in)
+    # MANDATORY draft-PO link: every NEW sheet must be saved against a draft
+    # Odoo purchase order (re-validated LIVE — must still exist and still be
+    # draft); its name/creation date are snapshotted onto the sheet. Legacy
+    # PO-less sheets remain readable/editable, only creation requires a PO.
+    if body.get("po_id") in (None, "", 0, "0"):
+        raise HTTPException(status_code=400,
+            detail="A purchase order is required — pick the draft PO this "
+                   "delivery belongs to before saving the sheet")
+    try:
+        po_id_in = int(body.get("po_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="po_id must be a number")
+    po_link = _recv_fetch_draft_po(po_id_in)
     uid, name = _fabric_actor(request)
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
@@ -5391,7 +5394,116 @@ def receiving_po_batches():
             ) lu ON true
             ORDER BY g.po_date DESC NULLS LAST, g.po_id DESC
         """)
-    return {"items": rows}
+        # Legacy sheets saved before the PO link became mandatory: surface
+        # them as one "No PO" group row so they stay reachable (no upload).
+        nopo = q(conn, """
+            SELECT COUNT(*)                    as sheets,
+                   COUNT(DISTINCT s.product_id) as products,
+                   SUM(s.total_kg)             as total_kg
+            FROM fabric_receiving_sheets s
+            WHERE s.po_id IS NULL
+        """)
+    no_po_group = None
+    if nopo and int(nopo[0].get("sheets") or 0) > 0:
+        no_po_group = {"po_id": None, "po_name": None, "po_date": None,
+                       "sheets": int(nopo[0]["sheets"]),
+                       "products": int(nopo[0]["products"] or 0),
+                       "total_kg": nopo[0]["total_kg"],
+                       "last_upload_status": None, "last_uploaded_by": None,
+                       "last_uploaded_at": None}
+    return {"items": rows, "no_po": no_po_group}
+
+@fabric_router.get("/api/fabric/receiving/po-batch-detail")
+def receiving_po_batch_detail(po_id: str = Query(default="")):
+    """Inline drill-down for one PO group on the Receiving tab (Postgres only —
+    no Odoo round-trip): the PO's fabrics with summed totals, each fabric's
+    sheets, and each sheet's rolls (incl. quality). po_id is the Odoo PO id, or
+    empty/"none" for the legacy "No PO" group (sheets saved without a PO)."""
+    pid = (po_id or "").strip().lower()
+    if pid in ("", "none", "null", "0"):
+        where, params = "s.po_id IS NULL", []
+    else:
+        try:
+            where, params = "s.po_id=%s", [int(pid)]
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="po_id must be a number")
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        sheets = q(conn, f"""
+            SELECT s.id, s.product_id, s.barcode, s.fabric_name,
+                   s.total_kg, s.total_mtrs, s.rolls_count, s.note,
+                   s.created_by_name, s.updated_by_name,
+                   COALESCE(to_char(s.po_date, 'DD Mon YYYY'),
+                            to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
+                                    'DD Mon YYYY')) as receiving_date,
+                   to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY, HH24:MI') as created_at,
+                   to_char(s.updated_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY, HH24:MI') as updated_at,
+                   COALESCE(qc.pass_n,0)    as q_pass,
+                   COALESCE(qc.fail_n,0)    as q_fail,
+                   COALESCE(qc.inspected,0) as q_inspected
+            FROM fabric_receiving_sheets s
+            LEFT JOIN (
+                SELECT sheet_id,
+                       COUNT(*) FILTER (WHERE quality_status='Pass') as pass_n,
+                       COUNT(*) FILTER (WHERE quality_status='Fail') as fail_n,
+                       COUNT(*) FILTER (WHERE quality_status IN ('Pass','Fail')) as inspected
+                FROM fabric_receiving_rolls GROUP BY sheet_id
+            ) qc ON qc.sheet_id = s.id
+            WHERE {where}
+            ORDER BY s.created_at DESC, s.id DESC
+        """, params)
+        rolls = []
+        if sheets:
+            rolls = q(conn, """
+                SELECT r.sheet_id, r.roll_no, r.qty_kg, r.qty_mtrs,
+                       r.quality_status, r.quality_notes
+                FROM fabric_receiving_rolls r
+                WHERE r.sheet_id = ANY(%s)
+                ORDER BY r.sheet_id, r.roll_no, r.id
+            """, ([int(s["id"]) for s in sheets],))
+    rolls_by_sheet = {}
+    for r in rolls:
+        rolls_by_sheet.setdefault(r["sheet_id"], []).append(
+            {k: r[k] for k in ("roll_no", "qty_kg", "qty_mtrs",
+                               "quality_status", "quality_notes")})
+    fabrics, order = {}, []
+    for s in sheets:
+        key = (s["product_id"], s.get("barcode") or "")
+        g = fabrics.get(key)
+        if g is None:
+            g = {"product_id": s["product_id"],
+                 "fabric_name": s.get("fabric_name"),
+                 "barcode": s.get("barcode"),
+                 "sheets_count": 0, "total_kg": 0.0,
+                 "total_mtrs": 0.0, "mtrs_missing": False,
+                 "rolls_count": 0, "q_pass": 0, "q_fail": 0, "q_pending": 0,
+                 "sheets": []}
+            fabrics[key] = g
+            order.append(key)
+        g["sheets_count"] += 1
+        g["rolls_count"] += int(s.get("rolls_count") or 0)
+        g["q_pass"] += int(s.get("q_pass") or 0)
+        g["q_fail"] += int(s.get("q_fail") or 0)
+        g["q_pending"] += max(int(s.get("rolls_count") or 0)
+                              - int(s.get("q_inspected") or 0), 0)
+        g["total_kg"] += float(s.get("total_kg") or 0)
+        if s.get("total_mtrs") is None:
+            g["mtrs_missing"] = True
+        else:
+            g["total_mtrs"] += float(s["total_mtrs"])
+        sd = dict(s)
+        sd["rolls"] = rolls_by_sheet.get(s["id"], [])
+        g["sheets"].append(sd)
+    out = []
+    for key in order:
+        g = fabrics[key]
+        g["total_kg"] = round(g["total_kg"], 3)
+        g["total_mtrs"] = None if g["mtrs_missing"] else round(g["total_mtrs"], 1)
+        out.append(g)
+    out.sort(key=lambda g: (g.get("fabric_name") or "").lower())
+    return {"fabrics": out}
 
 @fabric_router.get("/api/fabric/receiving/po-batch/{po_id}")
 def receiving_po_batch(po_id: int):

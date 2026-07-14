@@ -1032,7 +1032,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </div>
       <button class="btn" id="recv-clear-btn" style="display:none;" onclick="recvClearSelection()">Clear selection</button>
       <div style="position:relative;">
-       <label class="rsv-lbl">Purchase Order (optional)</label>
+       <label class="rsv-lbl">Purchase Order (required)</label>
        <input id="recv-po-search" placeholder="Search draft POs by number or supplier…" autocomplete="off" style="width:280px;" oninput="debouncedRecvPoSearch()" onfocus="debouncedRecvPoSearch()">
        <div id="recv-po-list" class="resv-dropdown" style="display:none;"></div>
       </div>
@@ -1062,29 +1062,12 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </div>
      </div>
     </div>
-    <div class="section-head" style="margin-top:1.3rem;"><h3>Saved receiving sheets</h3><span class="muted">reopen &amp; reprint any past delivery</span></div>
-    <div class="flex" style="margin-bottom:.9rem;gap:.6rem;align-items:center;">
-     <input id="recv-list-search" placeholder="Filter fabric / barcode / PO…" oninput="debouncedRecvList()" style="width:240px;">
-     <button class="btn btn-primary" id="recv-print-selected" onclick="printSelectedReceiving()" disabled style="padding:4px 12px;font-size:12px;">🖨 Print selected</button>
-     <span class="muted" id="recv-selected-count" style="font-size:12px;"></span>
-    </div>
+    <div class="section-head" style="margin-top:1.3rem;"><h3>Purchase Order batches</h3><span class="muted">every saved sheet lives under its PO — expand a PO to see its fabrics, sheets and rolls, or review &amp; upload the summed totals onto the draft PO</span></div>
     <div class="card" style="padding:0;">
      <div class="tbl-wrap">
       <table class="data">
-       <thead><tr>
-        <th style="width:1%;"><input type="checkbox" id="recv-select-all" title="Select all" onclick="toggleAllReceiving(this.checked)"></th>
-        <th>Received</th><th>Fabric</th><th>Barcode</th><th class="r">Rolls</th><th class="r">Total kgs</th><th class="r">Total mtrs</th><th>Quality</th><th>By</th><th></th>
-       </tr></thead>
-       <tbody id="recv-list-body"><tr><td colspan="10" class="loading">Loading…</td></tr></tbody>
-      </table>
-     </div>
-    </div>
-    <div class="section-head" style="margin-top:1.3rem;"><h3>Purchase Order batches</h3><span class="muted">sheets grouped by their linked Odoo PO — review the summed totals and upload the received quantities onto the draft PO</span></div>
-    <div class="card" style="padding:0;">
-     <div class="tbl-wrap">
-      <table class="data">
-       <thead><tr><th>PO</th><th>PO date</th><th class="r">Sheets</th><th class="r">Fabrics</th><th class="r">Total kgs</th><th>Last upload</th><th></th></tr></thead>
-       <tbody id="recv-po-body"><tr><td colspan="7" class="loading">Loading…</td></tr></tbody>
+       <thead><tr><th style="width:1%;"></th><th>PO</th><th>PO date</th><th class="r">Sheets</th><th class="r">Fabrics</th><th class="r">Total kgs</th><th>Last upload</th><th></th></tr></thead>
+       <tbody id="recv-po-body"><tr><td colspan="8" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
     </div>
@@ -1721,7 +1704,7 @@ function renderSupportKpis(d){
 }
 
 // ── Navigation ──
-const LOADERS={dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingSheets};
+const LOADERS={dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches};
 const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Fabric quality control tracking and reporting — coming soon',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet'};
 const loadedOnce={};
 
@@ -3792,13 +3775,12 @@ document.addEventListener('click',()=>{const b=document.getElementById('recv-fab
 // product-search). Rolls are entered as kgs; metres derive live from kg_per_mtr.
 // Saving posts to Postgres only.
 let recvSel=null, recvRolls=[], recvSearchRows=[];
-let recvPsTimer=null, recvListTimer=null, recvBound=false;
+let recvPsTimer=null, recvBound=false;
 // recvPO holds the picked draft Odoo PO ({po_id,name,supplier,date_order}).
 // It intentionally SURVIVES a save (recvClearSelection does not touch it) so
 // several sheets from the same delivery can be saved against one PO.
 let recvPO=null, recvPoTimer=null, recvPoRows=[];
 function debouncedRecvProductSearch(){clearTimeout(recvPsTimer);recvPsTimer=setTimeout(runRecvProductSearch,250);}
-function debouncedRecvList(){clearTimeout(recvListTimer);recvListTimer=setTimeout(loadReceivingSheets,300);}
 async function runRecvProductSearch(){
   const term=document.getElementById('recv-fabric-search').value.trim();
   const box=document.getElementById('recv-fabric-list');
@@ -3880,20 +3862,6 @@ function recvBindOnce(){
     const del=e.target.closest('button[data-del-roll]');
     if(del){recvRolls.splice(Number(del.dataset.delRoll),1);renderRecvRolls();}
   });
-  document.getElementById('recv-list-body').addEventListener('click',e=>{
-    const pr=e.target.closest('button[data-print]');
-    const ed=e.target.closest('button[data-edit]');
-    const del=e.target.closest('button[data-del]');
-    if(pr)reprintReceivingSheet(pr.dataset.print);
-    else if(ed)openReceivingEdit(ed.dataset.edit);
-    else if(del)deleteReceivingSheet(del.dataset.del);
-  });
-  document.getElementById('recv-list-body').addEventListener('change',e=>{
-    const chk=e.target.closest('.recv-row-chk');
-    if(!chk)return;
-    if(chk.checked)recvSelected.add(chk.dataset.id);else recvSelected.delete(chk.dataset.id);
-    syncRecvSelectionUI();
-  });
 }
 function recvKpm(){const k=recvSel&&recvSel.kg_per_mtr;return (k!=null&&k!==''&&Number(k)>0)?Number(k):null;}
 function recvSetFabric(r){
@@ -3969,6 +3937,7 @@ function showRecvErr(msg){document.getElementById('recv-form-err').innerHTML='<d
 async function saveReceivingSheet(alsoPrint){
   document.getElementById('recv-form-err').innerHTML='';
   if(!recvSel){showRecvErr('Pick a fabric from the list first.');return;}
+  if(!recvPO){showRecvErr('Pick the draft purchase order this delivery belongs to — every sheet must be saved against a PO.');return;}
   const rolls=[];
   for(let i=0;i<recvRolls.length;i++){
     const no=parseInt(recvRolls[i].no,10);
@@ -3985,18 +3954,12 @@ async function saveReceivingSheet(alsoPrint){
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     const res=await r.json();
     recvClearSelection();
-    loadReceivingSheets();
+    loadRecvPoBatches();
     if(alsoPrint&&res.id)reprintReceivingSheet(res.id);
   }catch(e){showRecvErr(e.message==='auth'?'Your session has expired. Sign in again.':('Could not save: '+e.message));}
 }
-async function loadReceivingSheets(){
+async function loadReceivingBatches(){
   recvBindOnce();
-  const search=document.getElementById('recv-list-search').value.trim();
-  const params=new URLSearchParams();if(search)params.set('search',search);
-  try{
-    const d=await apiFetch('/api/fabric/receiving?'+params);
-    renderReceivingList(d.items||[]);
-  }catch(e){rowErr('recv-list-body',8,e);}
   loadRecvPoBatches();
 }
 function recvQualityCell(s){
@@ -4011,57 +3974,6 @@ function recvQualityCell(s){
   if(rem>0)bits.push('<span class="muted">'+rem+' pending</span>');
   return bits.join(' · ');
 }
-function renderReceivingList(items){
-  const body=document.getElementById('recv-list-body');
-  recvSheetIds=items.map(s=>String(s.id));
-  if(!items.length){body.innerHTML='<tr><td colspan="10" class="muted" style="padding:1rem;">No receiving sheets saved yet.</td></tr>';recvSelected.clear();syncRecvSelectionUI();return;}
-  body.innerHTML=items.map(s=>{
-    const mtrs=s.total_mtrs!=null?fmt1(s.total_mtrs):'<span style="color:var(--danger);" title="This fabric had no Width/GSM conversion when the sheet was saved">Missing Width/GSM</span>';
-    const edited=s.updated_at?`<div class="muted" style="font-size:11px;" title="Last edited">edited ${esc(s.updated_at)}${s.updated_by_name?' · '+esc(s.updated_by_name):''}</div>`:'';
-    // PO-linked sheets show the PO date as the Received date (with the PO
-    // number + actual save time underneath); ad-hoc sheets keep the save time.
-    const received=s.po_id
-      ? `${esc(s.receiving_date||s.created_at||'—')}<div class="muted" style="font-size:11px;" title="Linked Odoo purchase order">${esc(s.po_name||('PO #'+s.po_id))} · saved ${esc(s.created_at||'—')}</div>`
-      : esc(s.created_at||'—');
-    return `<tr>
-      <td style="width:1%;"><input type="checkbox" class="recv-row-chk" data-id="${esc(String(s.id))}" ${recvSelected.has(String(s.id))?'checked':''}></td>
-      <td style="white-space:nowrap;">${received}${edited}</td>
-      <td>${esc(s.fabric_name||'—')}${s.note?`<div class="muted" style="font-size:11px;">${esc(s.note)}</div>`:''}</td>
-      <td>${esc(s.barcode||'—')}</td>
-      <td class="r">${fmt(s.rolls_count)}</td>
-      <td class="r">${fmt2(s.total_kg)}</td>
-      <td class="r">${mtrs}</td>
-      <td style="white-space:nowrap;">${recvQualityCell(s)}</td>
-      <td>${esc(s.created_by_name||'—')}</td>
-      <td style="white-space:nowrap;"><button class="btn btn-primary" data-print="${s.id}" style="padding:4px 10px;font-size:12px;">🖨 Print</button> <button class="btn" data-edit="${s.id}" style="padding:4px 8px;font-size:12px;">Quality / Edit</button> <button class="btn" data-del="${s.id}" style="padding:4px 8px;font-size:12px;">Delete</button></td>
-    </tr>`;
-  }).join('');
-  syncRecvSelectionUI();
-}
-// ── Batch-print selection state ──
-let recvSheetIds=[], recvSelected=new Set();
-function syncRecvSelectionUI(){
-  // Drop selections for rows no longer present (e.g. after a filter/delete).
-  Array.from(recvSelected).forEach(id=>{if(!recvSheetIds.includes(id))recvSelected.delete(id);});
-  const n=recvSelected.size;
-  const btn=document.getElementById('recv-print-selected');
-  if(btn)btn.disabled=n===0;
-  const lbl=document.getElementById('recv-selected-count');
-  if(lbl)lbl.textContent=n?(n+' selected'):'';
-  const all=document.getElementById('recv-select-all');
-  if(all)all.checked=recvSheetIds.length>0&&n===recvSheetIds.length;
-}
-function toggleAllReceiving(on){
-  recvSelected.clear();
-  if(on)recvSheetIds.forEach(id=>recvSelected.add(id));
-  document.querySelectorAll('.recv-row-chk').forEach(c=>{c.checked=on;});
-  syncRecvSelectionUI();
-}
-function printSelectedReceiving(){
-  const ids=recvSheetIds.filter(id=>recvSelected.has(id));
-  if(!ids.length)return;
-  printReceivingSheets(ids);
-}
 async function reprintReceivingSheet(id){
   try{
     const d=await apiFetch('/api/fabric/receiving/'+encodeURIComponent(id));
@@ -4073,7 +3985,7 @@ async function deleteReceivingSheet(id){
   try{
     const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(id),{method:'DELETE',credentials:'include'});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
-    loadReceivingSheets();
+    loadRecvPoBatches();
   }catch(e){alert('Could not delete: '+e.message);}
 }
 // ── Quality / edit modal ──
@@ -4175,7 +4087,7 @@ async function saveReceivingQuality(){
   try{
     const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(recvEditState.id)+'/quality',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({rolls})});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
-    closeReceivingEdit();loadReceivingSheets();
+    closeReceivingEdit();loadRecvPoBatches();
   }catch(e){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Could not save quality: '+esc(e.message)+'</div>';}
 }
 async function saveReceivingEdit(){
@@ -4202,7 +4114,7 @@ async function saveReceivingEdit(){
   try{
     const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(recvEditState.id),{method:'PUT',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
-    closeReceivingEdit();loadReceivingSheets();
+    closeReceivingEdit();loadRecvPoBatches();
   }catch(e){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Could not save: '+esc(e.message)+(String(e.message).toLowerCase().indexOf('admin')>=0?' (only an admin can edit rolls/quantities)':'')+'</div>';}
 }
 // FABRIC RECEIVING INFORMATION SHEET — same A4-landscape header block as the
@@ -4358,51 +4270,142 @@ async function printReceivingSheet(d){
   const bc=(d.fabric&&d.fabric.default_code)||(d.sheet&&d.sheet.barcode)||'';
   openReceivingPrintWindow([body],'Fabric Receiving Information Sheet'+(bc?' — '+esc(String(bc)):''));
 }
-// Batch print: fetch each selected sheet, build a page per sheet, print together.
-async function printReceivingSheets(ids){
-  if(!ids||!ids.length)return;
-  const bodies=[];
-  for(const id of ids){
-    try{const d=await apiFetch('/api/fabric/receiving/'+encodeURIComponent(id));bodies.push(await buildReceivingSheetBody(d));}
-    catch(_){/* skip a sheet that failed to load rather than abort the batch */}
-  }
-  if(!bodies.length){alert('Could not load the selected sheets for printing.');return;}
-  openReceivingPrintWindow(bodies,'Fabric Receiving Sheets ('+bodies.length+')');
-}
-
-// ── Purchase Order batches (sheets grouped by their linked Odoo PO) ──
+// ── Purchase Order batches — PRIMARY receiving list (accordion) ──
+// Each PO row expands to an inline drill-down: fabrics with summed totals,
+// each fabric expandable to its sheets (Print / Quality-Edit / Delete per
+// sheet) with the rolls listed. Legacy sheets saved without a PO surface as
+// one "No PO" group row (key 'none'). recvPoExpanded / recvFabExpanded keep
+// the open state across reloads (save / edit / delete refreshes).
+let recvPoExpanded=new Set(), recvFabExpanded=new Set();
+function recvPoKey(r){return r.po_id==null?'none':String(Number(r.po_id));}
 async function loadRecvPoBatches(){
   const body=document.getElementById('recv-po-body');
   try{
     const d=await apiFetch('/api/fabric/receiving/po-batches');
-    const items=(d&&d.items)||[];
-    if(!items.length){body.innerHTML='<tr><td colspan="7" class="muted" style="padding:1rem;">No sheets are linked to a purchase order yet — pick a draft PO when saving a receiving sheet.</td></tr>';return;}
+    const items=((d&&d.items)||[]).slice();
+    if(d&&d.no_po)items.push(d.no_po);
+    if(!items.length){body.innerHTML='<tr><td colspan="8" class="muted" style="padding:1rem;">No receiving sheets saved yet — pick a draft PO and record the first delivery above.</td></tr>';return;}
+    // Drop expansion state for groups that no longer exist.
+    const keys=new Set(items.map(recvPoKey));
+    Array.from(recvPoExpanded).forEach(k=>{if(!keys.has(k))recvPoExpanded.delete(k);});
     body.innerHTML=items.map(r=>{
-      const lu=r.last_upload_status
-        ? `${r.last_upload_status==='success'
-            ? '<span style="color:#0a7d33;font-weight:700;">Uploaded</span>'
-            : (r.last_upload_status==='failed'
-               ? '<span style="color:var(--danger);font-weight:700;">Failed</span>'
-               : esc(r.last_upload_status))}<div class="muted" style="font-size:11px;">${esc(r.last_uploaded_at||'')}${r.last_uploaded_by?' · '+esc(r.last_uploaded_by):''}</div>`
-        : '<span class="muted">Never uploaded</span>';
-      return `<tr>
-        <td style="font-weight:600;">${esc(r.po_name||('PO #'+r.po_id))}</td>
+      const key=recvPoKey(r);
+      const isNoPo=r.po_id==null;
+      const open=recvPoExpanded.has(key);
+      const lu=isNoPo
+        ? '<span class="muted">—</span>'
+        : (r.last_upload_status
+          ? `${r.last_upload_status==='success'
+              ? '<span style="color:#0a7d33;font-weight:700;">Uploaded</span>'
+              : (r.last_upload_status==='failed'
+                 ? '<span style="color:var(--danger);font-weight:700;">Failed</span>'
+                 : esc(r.last_upload_status))}<div class="muted" style="font-size:11px;">${esc(r.last_uploaded_at||'')}${r.last_uploaded_by?' · '+esc(r.last_uploaded_by):''}</div>`
+          : '<span class="muted">Never uploaded</span>');
+      const name=isNoPo
+        ? 'No PO <span class="muted" style="font-weight:400;font-size:11px;">(legacy sheets saved without a purchase order)</span>'
+        : esc(r.po_name||('PO #'+r.po_id));
+      const action=isNoPo?'':`<button class="btn btn-primary" data-po-open="${Number(r.po_id)}" style="padding:4px 10px;font-size:12px;">Review &amp; upload</button>`;
+      const main=`<tr>
+        <td><button class="btn" data-po-toggle="${esc(key)}" title="${open?'Collapse':'Expand'}" style="padding:2px 9px;font-size:13px;font-weight:700;">${open?'−':'+'}</button></td>
+        <td data-po-toggle="${esc(key)}" style="font-weight:600;cursor:pointer;" title="${open?'Collapse':'Expand'}">${name}</td>
         <td style="white-space:nowrap;">${esc(r.po_date||'—')}</td>
         <td class="r">${fmt(r.sheets)}</td>
         <td class="r">${fmt(r.products)}</td>
         <td class="r">${fmt2(r.total_kg)}</td>
         <td style="white-space:nowrap;">${lu}</td>
-        <td style="white-space:nowrap;"><button class="btn btn-primary" data-po-open="${Number(r.po_id)}" style="padding:4px 10px;font-size:12px;">Review &amp; upload</button></td>
+        <td style="white-space:nowrap;">${action}</td>
       </tr>`;
+      const detail=open?`<tr class="recv-po-detail-row"><td colspan="8" style="padding:0;background:rgba(0,0,0,.015);"><div class="recv-po-detail" data-po-detail="${esc(key)}" style="padding:.7rem .9rem;"><span class="loading">Loading sheets…</span></div></td></tr>`:'';
+      return main+detail;
     }).join('');
     if(!body.dataset.bound){
       body.dataset.bound='1';
       body.addEventListener('click',e=>{
+        const t=e.target.closest('[data-po-toggle]');
+        if(t){
+          const k=t.dataset.poToggle;
+          if(recvPoExpanded.has(k))recvPoExpanded.delete(k);else recvPoExpanded.add(k);
+          loadRecvPoBatches();
+          return;
+        }
         const b=e.target.closest('button[data-po-open]');
-        if(b)openRecvPoBatch(Number(b.dataset.poOpen));
+        if(b){openRecvPoBatch(Number(b.dataset.poOpen));return;}
+        const f=e.target.closest('[data-fab-toggle]');
+        if(f){
+          const fk=f.dataset.fabToggle;
+          if(recvFabExpanded.has(fk))recvFabExpanded.delete(fk);else recvFabExpanded.add(fk);
+          const box=f.closest('.recv-po-detail');
+          if(box&&box.dataset.cached){renderRecvPoDetail(box,JSON.parse(box.dataset.cached),box.dataset.poDetail);}
+          return;
+        }
+        const pr=e.target.closest('button[data-print]');
+        const ed=e.target.closest('button[data-edit]');
+        const del=e.target.closest('button[data-del]');
+        if(pr)reprintReceivingSheet(pr.dataset.print);
+        else if(ed)openReceivingEdit(ed.dataset.edit);
+        else if(del)deleteReceivingSheet(del.dataset.del);
       });
     }
-  }catch(e){rowErr('recv-po-body',7,e);}
+    // Load every expanded group's drill-down (Postgres-only endpoint).
+    recvPoExpanded.forEach(async k=>{
+      const box=body.querySelector(`[data-po-detail="${CSS.escape(k)}"]`);
+      if(!box)return;
+      try{
+        const det=await apiFetch('/api/fabric/receiving/po-batch-detail?po_id='+encodeURIComponent(k==='none'?'none':k));
+        box.dataset.cached=JSON.stringify(det);
+        renderRecvPoDetail(box,det,k);
+      }catch(e){box.innerHTML='<div class="banner banner-err">Could not load this PO\u2019s sheets: '+esc(e.message)+'</div>';}
+    });
+  }catch(e){rowErr('recv-po-body',8,e);}
+}
+// Renders one PO group's drill-down: fabric rows (summed totals) → sheets
+// with actions → rolls. All ERP-sourced text goes through esc().
+function renderRecvPoDetail(box,det,poKey){
+  const fabrics=(det&&det.fabrics)||[];
+  if(!fabrics.length){box.innerHTML='<div class="muted">No sheets in this group any more.</div>';return;}
+  box.innerHTML=fabrics.map((g,gi)=>{
+    const fk=poKey+'|'+gi;
+    const open=recvFabExpanded.has(fk);
+    const mtrs=g.total_mtrs!=null?fmt1(g.total_mtrs)+' m':'<span style="color:var(--danger);" title="One or more sheets had no Width/GSM conversion">Missing Width/GSM</span>';
+    const head=`<div data-fab-toggle="${esc(fk)}" style="display:flex;gap:.9rem;align-items:center;cursor:pointer;padding:.45rem .55rem;border:1px solid var(--border,#d7d7de);border-radius:8px;background:#fff;${open?'border-bottom-left-radius:0;border-bottom-right-radius:0;':''}">
+      <span style="font-weight:700;width:14px;text-align:center;">${open?'−':'+'}</span>
+      <span style="font-weight:600;">${esc(g.fabric_name||'—')}</span>
+      <span class="muted" style="font-size:12px;">${esc(g.barcode||'')}</span>
+      <span style="margin-left:auto;white-space:nowrap;font-size:12px;">${fmt(g.sheets_count)} sheet${g.sheets_count===1?'':'s'} · ${fmt(g.rolls_count)} roll${g.rolls_count===1?'':'s'} · <b>${fmt2(g.total_kg)} kg</b> · ${mtrs} · ${
+        (g.q_pass||g.q_fail)
+          ? `<span style="color:#0a7d33;font-weight:700;">${fmt(g.q_pass)} pass</span>${g.q_fail?' / <span style="color:var(--danger);font-weight:700;">'+fmt(g.q_fail)+' fail</span>':''}${g.q_pending?' / <span class="muted">'+fmt(g.q_pending)+' pending</span>':''}`
+          : '<span class="muted">quality pending</span>'
+      }</span>
+    </div>`;
+    const sheets=open?`<div style="border:1px solid var(--border,#d7d7de);border-top:none;border-radius:0 0 8px 8px;background:#fff;padding:.55rem .7rem;">${
+      g.sheets.map(s=>{
+        const smtrs=s.total_mtrs!=null?fmt1(s.total_mtrs)+' m':'<span style="color:var(--danger);">Missing Width/GSM</span>';
+        const edited=s.updated_at?`<span class="muted" style="font-size:11px;"> · edited ${esc(s.updated_at)}${s.updated_by_name?' by '+esc(s.updated_by_name):''}</span>`:'';
+        const rollRows=(s.rolls||[]).map(r=>{
+          const q=r.quality_status==='Pass'?'<span style="color:#0a7d33;font-weight:700;">Pass</span>'
+                :(r.quality_status==='Fail'?'<span style="color:var(--danger);font-weight:700;">Fail</span>'
+                :'<span class="muted">'+esc(r.quality_status||'Pending')+'</span>');
+          return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td>${q}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td></tr>`;
+        }).join('');
+        return `<div style="padding:.5rem 0;border-top:1px dashed var(--border,#d7d7de);">
+          <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;">
+            <span style="font-size:12.5px;"><b>Sheet #${esc(String(s.id))}</b> · received ${esc(s.receiving_date||s.created_at||'—')} · saved ${esc(s.created_at||'—')}${s.created_by_name?' by '+esc(s.created_by_name):''}${edited}</span>
+            <span style="margin-left:auto;white-space:nowrap;">
+              <button class="btn btn-primary" data-print="${Number(s.id)}" style="padding:3px 9px;font-size:12px;">🖨 Print</button>
+              <button class="btn" data-edit="${Number(s.id)}" style="padding:3px 8px;font-size:12px;">Quality / Edit</button>
+              <button class="btn" data-del="${Number(s.id)}" style="padding:3px 8px;font-size:12px;">Delete</button>
+            </span>
+          </div>
+          <div class="muted" style="font-size:12px;margin-top:2px;">${fmt(s.rolls_count)} rolls · ${fmt2(s.total_kg)} kg · ${smtrs} · quality: ${recvQualityCell(s)}${s.note?' · note: '+esc(s.note):''}</div>
+          <table class="data" style="margin-top:5px;max-width:560px;">
+            <thead><tr><th style="width:90px;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th>Quality</th></tr></thead>
+            <tbody>${rollRows||'<tr><td colspan="4" class="muted">No rolls recorded.</td></tr>'}</tbody>
+          </table>
+        </div>`;
+      }).join('')
+    }</div>`:'';
+    return `<div style="margin:.25rem 0;">${head}${sheets}</div>`;
+  }).join('');
 }
 // ── PO batch review / upload modal ──
 let recvPoBatch=null;
