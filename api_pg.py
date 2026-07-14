@@ -13,6 +13,7 @@ import os
 import json
 import time
 import hashlib
+import threading
 import unicodedata
 import hmac
 import base64
@@ -151,20 +152,78 @@ def smart_ttl(date_to=None):
     except Exception:
         return 120
 
+# --- Stale-while-revalidate (SWR) -------------------------------------------
+# A cache miss used to make a real user pay the full query cost whenever a TTL
+# lapsed (or the prewarmer didn't cover the filter combo). Instead: an expired
+# entry is kept for a grace window and served IMMEDIATELY while a single-flight
+# background thread recomputes it. Underlying data changes at the sync-loop
+# cadence (hourly-ish), so briefly-stale numbers are invisible to users; the
+# next request gets the fresh copy.
+_SWR_GRACE_MAX = 3600      # never serve anything staler than ttl + 1h
+_SWR_MAX_INFLIGHT = 6      # bound background refresh threads (pool is 20 conns)
+_swr_inflight = set()      # keys being refreshed; guarded by _CACHE_LOCK
+_swr_ctx = threading.local()  # .bypass_key: force a real recompute of ONE key
+
+
+def _swr_grace(ttl):
+    # Grace scales with the TTL (short-lived caches shouldn't linger an hour)
+    # but is capped so heavy-dash entries can't serve ancient data.
+    return min(max(ttl * 2, 120), _SWR_GRACE_MAX)
+
+
 def cache_get(key):
     # _CACHE_LOCK: the cache is hit concurrently by request threads AND the
     # background pre-warmer; unsynchronized delete-while-iterate in the
     # eviction path could otherwise raise intermittently under load.
+    val, fresh = cache_get_swr(key)
+    return val if fresh else None
+
+
+def cache_get_swr(key):
+    """Return (value, fresh). A stale-but-in-grace value is returned with
+    fresh=False so the caller can serve it and kick a background refresh.
+    Inside an SWR refresh thread the key being refreshed always misses, so the
+    re-entrant recompute does real work instead of returning the stale copy."""
+    if getattr(_swr_ctx, "bypass_key", None) == key:
+        return None, False
     with _CACHE_LOCK:
         if key in _cache:
             val, ts, ttl = _cache[key]
-            if time.time() - ts < ttl:
+            age = time.time() - ts
+            if age < ttl:
                 _cache_stats["hits"] += 1
-                return val
+                return val, True
+            if age < ttl + _swr_grace(ttl):
+                _cache_stats["stale_hits"] = _cache_stats.get("stale_hits", 0) + 1
+                return val, False
             del _cache[key]
             _cache_stats["evictions"] += 1
         _cache_stats["misses"] += 1
-        return None
+        return None, False
+
+
+def swr_refresh(key, fn, label=""):
+    """Kick a single-flight daemon thread that recomputes `key` via fn().
+    fn must recompute AND cache_set (endpoint functions already do). No-op if a
+    refresh for this key is already running or too many refreshes are in
+    flight (we just keep serving stale a little longer)."""
+    with _CACHE_LOCK:
+        if key in _swr_inflight or len(_swr_inflight) >= _SWR_MAX_INFLIGHT:
+            return
+        _swr_inflight.add(key)
+
+    def _run():
+        try:
+            _swr_ctx.bypass_key = key
+            fn()
+        except Exception as e:
+            log.warning("SWR refresh failed (%s): %s", label or key[:60], e)
+        finally:
+            _swr_ctx.bypass_key = None
+            with _CACHE_LOCK:
+                _swr_inflight.discard(key)
+
+    threading.Thread(target=_run, daemon=True, name=f"swr-{label or 'refresh'}").start()
 
 def cache_set(key, val, ttl=120):
     with _CACHE_LOCK:
@@ -177,7 +236,6 @@ def cache_set(key, val, ttl=120):
                 del _cache[old_key]
                 _cache_stats["evictions"] += 1
 
-import threading
 _CACHE_LOCK = threading.Lock()
 import contextlib
 from psycopg2 import pool as _pg_pool
@@ -258,8 +316,13 @@ def run_query(query, date_to=None, ttl=None):
     # slow-changing lookups (store lists, store→country maps) that are hammered
     # by topbar/filter-bar polling but only change when a new store opens.
     key = hashlib.md5(query.encode()).hexdigest()
-    cached = cache_get(key)
+    cached, fresh = cache_get_swr(key)
     if cached is not None:
+        if not fresh:
+            # Serve the stale rows instantly; recompute in the background so
+            # the next caller gets fresh data without anyone paying the wait.
+            swr_refresh(key, lambda: run_query(query, date_to=date_to, ttl=ttl),
+                        label="run_query")
         return cached
     pool, conn = _acquire_conn()
     t0 = time.time()
@@ -413,6 +476,15 @@ def _cache_stats_payload():
             "misses": misses,
             "hit_rate_pct": hit_rate,
             "inflight_joins": 0,          # no request-coalescing layer
+            "stale_hits": _cache_stats.get("stale_hits", 0),
+        },
+        "swr": {
+            # Stale-while-revalidate: expired-but-in-grace entries served
+            # instantly while a background thread recomputes.
+            "stale_hits": _cache_stats.get("stale_hits", 0),
+            "refreshes_inflight": len(_swr_inflight),
+            "max_inflight": _SWR_MAX_INFLIGHT,
+            "grace_max_sec": _SWR_GRACE_MAX,
         },
         "miss_analysis": {
             "distinct_keys_missed": 0,    # per-key miss tracking not retained
@@ -5416,8 +5488,12 @@ def get_sor(
     # cache, but pins a longer TTL so wide ranges ending today stay warm — the
     # bare run_query cache would only hold ~120s when date_to >= today).
     _sor_ck = "sor:" + "|".join(str(x) for x in (date_from, date_to, country, channel))
-    _sor_cached = cache_get(_sor_ck)
+    _sor_cached, _sor_fresh = cache_get_swr(_sor_ck)
     if _sor_cached is not None:
+        if not _sor_fresh:
+            swr_refresh(_sor_ck, lambda: get_sor(
+                date_from=date_from, date_to=date_to, country=country,
+                channel=channel), label="sor")
         return _sor_cached
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order','return') AND p.style_name IS NOT NULL")
@@ -7209,8 +7285,16 @@ def analytics_product_analysis(
     _pa_ck = "pa:" + _inventory_version() + ":" + "|".join(str(x) for x in (
         df, dt, country, store, brand, category, subcategory, tier, rev_pct,
         style_status, grain, ",".join(all_sel), vel, int(include_warehouse)))
-    _pa_cached = cache_get(_pa_ck)
+    _pa_cached, _pa_fresh = cache_get_swr(_pa_ck)
     if _pa_cached is not None:
+        if not _pa_fresh:
+            swr_refresh(_pa_ck, lambda: analytics_product_analysis(
+                date_from=date_from, date_to=date_to, country=country,
+                store=store, brand=brand, category=category,
+                subcategory=subcategory, tier=tier, rev_pct=rev_pct,
+                style_status=style_status, grain=grain, dims=dims,
+                velocity_days=velocity_days,
+                include_warehouse=include_warehouse), label="pa")
         return _pa_cached
 
     cf, chf = _style_filters(country, store, "s")   # sales scope (store -> pos_location_name)
@@ -9268,8 +9352,11 @@ def analytics_warehouse_return_candidates(
     # repeat visits are instant. Keyed on the inventory snapshot version like
     # the Product Analysis cache, so a new stock snapshot invalidates it.
     _wr_ck = "wrc:" + _inventory_version() + f":{m}:{n}"
-    _wr_cached = cache_get(_wr_ck)
+    _wr_cached, _wr_fresh = cache_get_swr(_wr_ck)
     if _wr_cached is not None:
+        if not _wr_fresh:
+            swr_refresh(_wr_ck, lambda: analytics_warehouse_return_candidates(
+                mode=mode, min_days=min_days), label="wrc")
         return _wr_cached
     if m == "aged":
         # Aged = not sold AT ITS STORE in >= n days. Make Aged and Retired
@@ -9448,8 +9535,10 @@ def _excess_inventory_dataset():
     Flags are computed here so every filtered view and the per-POS summary
     agree."""
     ck = "excessinv:" + _inventory_version()
-    cached = cache_get(ck)
+    cached, fresh = cache_get_swr(ck)
     if cached is not None:
+        if not fresh:
+            swr_refresh(ck, _excess_inventory_dataset, label="excessinv")
         return cached
     rows = run_query("""
         SELECT i.pos_location_name AS pos_location,
@@ -14135,8 +14224,12 @@ def exec_summary(
     _es_ck = "execsum:%s|%s|%s|%s|%s" % (country or "", window_days or 30,
                                          date_from or "", date_to or "",
                                          style_status or "all")
-    _es_cached = cache_get(_es_ck)
+    _es_cached, _es_fresh = cache_get_swr(_es_ck)
     if _es_cached is not None:
+        if not _es_fresh:
+            swr_refresh(_es_ck, lambda: exec_summary(
+                country=country, window_days=window_days, date_from=date_from,
+                date_to=date_to, style_status=style_status), label="execsum")
         return _es_cached
     # Anchor "as of" to yesterday, but never past the latest sale in the data.
     mx = run_query("SELECT MAX(s.sale_date) AS mx FROM all_sales s WHERE s.sale_kind IN ('sale','order')")
@@ -16818,8 +16911,11 @@ def analytics_replenishment_sor(
     biz_date = (_dt.utcnow() + timedelta(hours=3)).date().isoformat()  # EAT (UTC+3)
     ck = f"replen_sor:{weeks_key}:{int(limit)}:{biz_date}"
     if not nocache:
-        cached = cache_get(ck)
+        cached, fresh = cache_get_swr(ck)
         if cached is not None:
+            # No background refresh here: the key is day-scoped (rolls over at
+            # EAT midnight) and mutations already bypass via nocache=1, so a
+            # stale-in-grace copy is simply served until the TTL path renews it.
             return cached
     result = _compute_replenishment_sor(weeks_key, limit)
     result["run_id"] = _replen_run_id(
