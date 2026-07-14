@@ -60,3 +60,15 @@ id = "Dt90ljqCnilq-IIjG3783"
 uri = "file://exports/retired_no_online_sales_4w_shopzetu.csv"
 type = "table"
 title = "Retired items — no Shop Zetu online sales in 4 weeks"
+
+[[outputs]]
+id = "D9oPYFwl0cTBV1-q2CJ_L"
+uri = "file://retired_styles_odoo_product_names.csv"
+type = "table"
+title = "Retired Styles — Odoo Product Names (12,202 rows)"
+
+[[outputs]]
+id = "mpGG6ag6_lW_dnJGsYxar"
+uri = "file://retired_styles_not_found_in_odoo.csv"
+type = "table"
+title = "47 Styles Not Found in Odoo"
