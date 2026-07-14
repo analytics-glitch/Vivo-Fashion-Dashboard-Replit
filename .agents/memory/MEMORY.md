@@ -127,3 +127,4 @@
 - [Fabric receiving quality + edit](fabric-receiving-quality.md) — per-roll quality by any user, rolls/qty admin-only; roll_no MUST be unique per sheet (carry-over keys on it, app-enforced not DB); admin PUT writes rolls+quality atomically.
 - [Velocity vs WOC consensus check](velocity-woc-consensus-check.md) — velocity calls the weekly rate rate_of_sale (1dp) not weekly_units; universes differ per style, so reconcile by median-gap consensus (2% tol), never per-style equality.
 - [Employee self-signup fence](employee-self-signup-fence.md) — Google self-signups auto-approve to minimal "employee" role; enforcement is a middleware allowlist fence (salary-advances only), client gating is UX only.
+- [Heavy dashboard cache pre-warmer](heavy-dash-prewarm.md) — 900s TTL + 600s background warm keeps 10-20s whole-history queries always cached; call endpoint fns with explicit kwargs; _cache needs its lock.

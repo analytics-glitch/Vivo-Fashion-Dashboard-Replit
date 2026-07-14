@@ -130,6 +130,15 @@ SLOW_QUERY_WARN_SEC = 2.0
 SLOW_QUERY_ERROR_SEC = 5.0
 _slow_queries = deque(maxlen=20)
 
+# Heavy whole-history dashboard queries (weeks-of-cover, range classification,
+# aged stock, store overstock, declining styles, weekly SOR) get a long cache
+# and are kept permanently warm by the background pre-warmer below, so users
+# should never pay their 10-20s cold cost. Underlying data changes at the
+# sync-loop cadence, so 15 minutes of staleness is acceptable for these views.
+HEAVY_DASH_TTL = 900
+HEAVY_DASH_WARM_INTERVAL = 600  # re-warm well before the TTL lapses
+
+
 def smart_ttl(date_to=None):
     if not date_to:
         return 120
@@ -143,27 +152,33 @@ def smart_ttl(date_to=None):
         return 120
 
 def cache_get(key):
-    if key in _cache:
-        val, ts, ttl = _cache[key]
-        if time.time() - ts < ttl:
-            _cache_stats["hits"] += 1
-            return val
-        del _cache[key]
-        _cache_stats["evictions"] += 1
-    _cache_stats["misses"] += 1
-    return None
+    # _CACHE_LOCK: the cache is hit concurrently by request threads AND the
+    # background pre-warmer; unsynchronized delete-while-iterate in the
+    # eviction path could otherwise raise intermittently under load.
+    with _CACHE_LOCK:
+        if key in _cache:
+            val, ts, ttl = _cache[key]
+            if time.time() - ts < ttl:
+                _cache_stats["hits"] += 1
+                return val
+            del _cache[key]
+            _cache_stats["evictions"] += 1
+        _cache_stats["misses"] += 1
+        return None
 
 def cache_set(key, val, ttl=120):
-    _cache[key] = (val, time.time(), ttl)
-    _cache_stats["sets"] += 1
-    # Bound memory: evict the oldest entries once over the soft cap.
-    if len(_cache) > _CACHE_MAX_ENTRIES:
-        overflow = len(_cache) - _CACHE_MAX_ENTRIES
-        for old_key in sorted(_cache, key=lambda k: _cache[k][1])[:overflow]:
-            del _cache[old_key]
-            _cache_stats["evictions"] += 1
+    with _CACHE_LOCK:
+        _cache[key] = (val, time.time(), ttl)
+        _cache_stats["sets"] += 1
+        # Bound memory: evict the oldest entries once over the soft cap.
+        if len(_cache) > _CACHE_MAX_ENTRIES:
+            overflow = len(_cache) - _CACHE_MAX_ENTRIES
+            for old_key in sorted(_cache, key=lambda k: _cache[k][1])[:overflow]:
+                del _cache[old_key]
+                _cache_stats["evictions"] += 1
 
 import threading
+_CACHE_LOCK = threading.Lock()
 import contextlib
 from psycopg2 import pool as _pg_pool
 
@@ -1301,6 +1316,52 @@ def _ensure_perf_indexes():
                     "ON all_sales (loaded_at)")
     except Exception as e:
         log.error("Perf index ensure failed: %s", e)
+
+
+@_deferred_startup
+def _start_cache_prewarmer():
+    # Background pre-warmer for the heavy whole-history dashboards. These
+    # queries take 10-20s cold and are cached HEAVY_DASH_TTL (900s); without
+    # warming, the first user of every cycle eats the full cost. This daemon
+    # re-computes the default (unfiltered) views every HEAVY_DASH_WARM_INTERVAL
+    # (600s) so the cache never lapses. Filtered variants (per-store etc.) still
+    # compute on demand but then stay warm for 15 min themselves.
+    # NOTE: endpoint functions are called with EXPLICIT kwargs — calling a
+    # FastAPI endpoint directly would otherwise pass Query(...) sentinel objects
+    # as values.
+    def _warm_loop():
+        time.sleep(90)  # let boot + first user traffic settle before warming
+        while True:
+            t0 = time.time()
+            targets = [
+                ("weeks-of-cover", lambda: analytics_weeks_of_cover(
+                    date_from=None, date_to=None, country=None)),
+                ("aged-stock", lambda: analytics_aged_stock(
+                    min_days_since_sale=60, days=None)),
+                ("range-classify", lambda: range_mgmt_classify(
+                    country=None, channel=None)),
+                ("store-tier-mix", lambda: range_mgmt_store_tier_mix(
+                    country=None, channel=None)),
+                ("store-overstock", lambda: analytics_store_overstock(
+                    country=None, channel=None)),
+                ("declining-styles", lambda: analytics_declining_styles(
+                    country=None, channel=None)),
+                ("weekly-sor", lambda: range_mgmt_weekly_sor(
+                    country=None, channel=None)),
+                ("excess-inventory", _excess_inventory_dataset),
+                ("store-country-map", _store_country_map),
+            ]
+            for name, fn in targets:
+                try:
+                    fn()
+                except Exception as e:
+                    log.warning("Cache prewarm %s failed: %s", name, e)
+            # print (not log.info) so the line is visible in deployed logs,
+            # matching the "Deferred startup complete" pattern.
+            print("Cache prewarm cycle done in %.1fs" % (time.time() - t0), flush=True)
+            time.sleep(max(30, HEAVY_DASH_WARM_INTERVAL - (time.time() - t0)))
+    threading.Thread(target=_warm_loop, daemon=True,
+                     name="cache-prewarmer").start()
 
 
 @_deferred_startup
@@ -10026,7 +10087,7 @@ def analytics_aged_stock(
         GROUP BY i.pos_location_name, i.sku
         ORDER BY days_since_last_sale DESC, soh DESC
         LIMIT 1000
-    """)
+    """, ttl=HEAVY_DASH_TTL)
     for r in rows:
         r["velocity_method"] = "ewma_56d"
     return rows
@@ -10446,7 +10507,7 @@ def analytics_weeks_of_cover(
         FROM base
         ORDER BY available DESC
         LIMIT 2000
-    """)
+    """, ttl=HEAVY_DASH_TTL)
 
 @app.get("/api/analytics/repeat-customers")
 def analytics_repeat_customers(
@@ -18177,7 +18238,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         LEFT JOIN nos USING (style_name)
         WHERE (COALESCE(st.soh_stores, 0) > 0 OR COALESCE(st.soh_warehouse, 0) > 0)
           AND COALESCE(p.brand, '') NOT ILIKE '%third party%'
-    """)
+    """, ttl=HEAVY_DASH_TTL)
     today = date.today()
     active, retired, pipeline, candidates = [], [], [], []
     for r in raw:
@@ -18421,7 +18482,7 @@ def range_mgmt_store_tier_mix(country: str = Query(default=None), channel: str =
           AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)
           AND i.available > 0""" + icf + ichf + """
         GROUP BY 1, 3
-    """)
+    """, ttl=HEAVY_DASH_TTL)
     agg = {}
     for r in stock:
         tier = tier_by_style.get(r["style_name"])
@@ -18478,7 +18539,7 @@ def analytics_store_overstock(country: str = Query(default=None), channel: str =
         FROM soh
         LEFT JOIN vel v ON v.store = soh.store
         ORDER BY weeks_of_cover DESC NULLS FIRST
-    """)
+    """, ttl=HEAVY_DASH_TTL)
     for r in rows:
         r["velocity_method"] = "ewma_56d"
     return rows
@@ -18530,7 +18591,7 @@ def analytics_declining_styles(country: str = Query(default=None), channel: str 
           AND st.store_stock > 0
         ORDER BY (COALESCE(sa.u28,0) - COALESCE(sa.u_prior,0)) ASC
         LIMIT 500
-    """)
+    """, ttl=HEAVY_DASH_TTL)
     for r in rows:
         r["velocity_method"] = "ewma_56d"
     return rows
@@ -19453,7 +19514,7 @@ def range_mgmt_weekly_sor(country: str = Query(default=None), channel: str = Que
         LEFT JOIN sales sa USING (style_name)
         LEFT JOIN stock st USING (style_name)
         ORDER BY n.style_name
-    """)
+    """, ttl=HEAVY_DASH_TTL)
     today = date.today()
     min_combined = 5
     styles = {}
