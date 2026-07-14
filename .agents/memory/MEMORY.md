@@ -21,7 +21,7 @@
 - [vivowoman is primary Kenya POS](vivowoman-base-filter.md) — never exclude `vivowoman` in BASE_FILTERS; it's 84% of sales and all pre-2022 data, not a rollup.
 - [all_sales id is a per-row surrogate](all-sales-id-surrogate.md) — rebuild transform must give each row a unique id (md5 of grain), NOT line_item_id; reusing it collides sale+return under PK (id,store_id) and drops ~27k rows BQ keeps.
 - [Range Management endpoints](range-mgmt-endpoints.md) — /api/range-mgmt/* shape & filter contract: tier_summary keys need spaces, apply channel to inventory + BASE_FILTERS to sales.
-- [Range tier model](range-tier-model.md) — ONE no-SOR shared model (_lifecycle_tier): Retired=manual/Zoya only; T1=NOOS(≥11 of 12mo), T2=≥39wk & reorders>3, T3=reordered≥1, T4=new; used by Range Mgmt + Product Analysis tier AND life_cycle; SOR-gated chain deleted.
+- [Range tier model](range-tier-model.md) — ONE no-SOR shared model (_lifecycle_tier): Retired=Odoo status only; T1=NOOS(≥11 of 12mo), T2=≥39wk & reorders>3, T3=reordered≥1, T4=new; used by Range Mgmt + Product Analysis tier AND life_cycle; SOR-gated chain deleted.
 - [Expo vector-icon font preload](expo-vector-icon-font-preload.md) — tab icons tofu on Android/Expo Go but fine on web → spread `Feather.font` into the gating `useFonts`.
 - [Expo first-build cold-cache port timeout](expo-cold-cache-port.md) — first Expo workflow start can fail DIDNT_OPEN_A_PORT on cold Metro cache; warm via background dev + /status poll, then restart.
 - [Mobile shares the API auth gate](mobile-shares-api-auth-gate.md) — Expo app hits the same gated /api as web; backend auth changes break mobile too. It sends a Bearer token from AsyncStorage (`vivo_token`).
@@ -43,7 +43,7 @@
 - [Product Analysis endpoint perf](product-analysis-perf.md) — don't scan all_sales twice; current_price = argmax inside the sales CTE (dim-grain when dims selected); 600s response cache keeps it warm.
 - [Notifications surface access requests](notifications-access-requests.md) — the notification bell is the discoverability path for pending app_users (status='pending'); endpoints derive live for admins, not stored.
 - [Per-group page access](group-page-access.md) — admin Group Access screen; effective pages injected as `allowed_pages` on /auth/me+login (no client gating change); backend DEFAULT_ROLE_PAGES must mirror permissions.js ROLE_PAGES.
-- [Manual style retirement](manual-style-retirement.md) — durable code-level list force-retires styles (not DB/overrides/Odoo active flag); ALL active/retired endpoints must honor _is_manually_retired or screens disagree.
+- [Style retirement = Odoo status](manual-style-retirement.md) — Retired comes ONLY from all_products_clean.status (Active wins mixed styles); manual list + Zoya rule removed; ALL active/retired endpoints must share the one predicate/SQL.
 - [Fabric BI full-page routing](fabric-page-routing.md) — /fabric is a static page served by api_pg's catch-all; it must be in api-server artifact.toml paths or the proxy routes it to the vivo-bi SPA (dead handler).
 - [Fabric dashboard innerHTML/XSS](fabric-dashboard-xss.md) — fabric_dashboard_live.html string-templates ERP text into innerHTML; always esc() interpolated fields + badgeClass() class fragments, or stored XSS.
 - [Fabric reservations lazy table](fabric-reservations-lazy-table.md) — fabric_reservations is created lazily; every reader joining it (incl. the register's resv CTE) must call _ensure_fabric_tables(conn) or it 500s on a fresh DB.
