@@ -402,6 +402,10 @@ def main():
               IS DISTINCT FROM style_name
     """)
     log.info("style_name re-derived: %d rows updated", cur.rowcount)
+    conn.commit()
+    cur.execute("ANALYZE all_products_clean")
+    conn.commit()
+    log.info("✅ ANALYZE all_products_clean complete")
 
     # ── Canonicalise style_name to ONE per style_number ──────────────────────
     # Minor name variants within a style_number (casing, "Basic" prefix, colour
