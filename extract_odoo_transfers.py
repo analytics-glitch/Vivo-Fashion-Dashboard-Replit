@@ -13,7 +13,10 @@ Transfer type is derived from the SOURCE location's short code:
   - A supplier partner location        -> 'supplier_to_store'
   - Anything else internal             -> 'other'
 
-Runnable standalone (TRUNCATE + full reload) or from sync_incremental.
+Runnable standalone or from sync_incremental. Load is history-preserving:
+in-flight (non-done) rows are deleted + re-inserted each run, while done rows
+are upserted on move_id so completed transfer history accumulates beyond the
+7-day Odoo fetch window (never TRUNCATE this table).
 """
 import os, sys, xmlrpc.client, psycopg2, logging
 from psycopg2.extras import execute_values
@@ -175,8 +178,14 @@ def run():
             pk.get("origin"),
         ))
 
-    # 7. TRUNCATE + reload (small, hourly cadence)
-    cur.execute("TRUNCATE stock_transfers")
+    # 7. Refresh while PRESERVING done history. The Odoo fetch only covers
+    #    in-flight pickings + done in the last 7 days, but the dashboard's
+    #    "units transferred over a period" needs done rows to accumulate.
+    #    So: drop all stored in-flight rows (the fetch re-supplies the current
+    #    in-flight set, and cancelled pickings disappear), then upsert on
+    #    move_id — an in-flight move that completed flips to done in place,
+    #    and done rows older than the 7-day window are left untouched.
+    cur.execute("DELETE FROM stock_transfers WHERE state != 'done'")
     if rows:
         execute_values(cur, """
             INSERT INTO stock_transfers
@@ -186,6 +195,23 @@ def run():
                sku, product_name, qty_planned, qty_done,
                move_id, scheduled_date, date_done, origin)
             VALUES %s
+            ON CONFLICT (move_id) DO UPDATE SET
+              picking_name = EXCLUDED.picking_name,
+              state = EXCLUDED.state,
+              transfer_type = EXCLUDED.transfer_type,
+              from_location_code = EXCLUDED.from_location_code,
+              from_location_name = EXCLUDED.from_location_name,
+              to_store_code = EXCLUDED.to_store_code,
+              to_store_name = EXCLUDED.to_store_name,
+              to_country = EXCLUDED.to_country,
+              sku = EXCLUDED.sku,
+              product_name = EXCLUDED.product_name,
+              qty_planned = EXCLUDED.qty_planned,
+              qty_done = EXCLUDED.qty_done,
+              scheduled_date = EXCLUDED.scheduled_date,
+              date_done = EXCLUDED.date_done,
+              origin = EXCLUDED.origin,
+              _synced_at = now()
         """, rows, page_size=1000)
     conn.commit()
     log.info("✅ stock_transfers: %d rows (%d pickings, %d unique SKUs)",

@@ -81,6 +81,7 @@ export const PRIMARY_NAV = [
   { to: "/warehouse-returns", label: "Warehouse Returns", icon: Warehouse, id: "warehouse-returns", group: "Operations & Production", desc: "Pull aged / retired store stock back to the warehouse" },
   { to: "/excess-inventory", label: "Excess Inventory", icon: Package, id: "excess-inventory", group: "Operations & Production", desc: "Store stock above the per-brand size allowance — flagged for return" },
   { to: "/ibt", label: "IBT", icon: Truck, id: "ibt", group: "Operations & Production", desc: "Inter-branch transfer recommendations" },
+  { to: "/store-flow", label: "Store Flow", icon: Truck, id: "store-flow", group: "Operations & Production", desc: "Per store over a period: units sold vs units transferred in, in-transit stock and current stock" },
   { to: "/allocations", label: "Allocations", icon: Stack, id: "allocations", group: "Operations & Production", desc: "Allocate incoming stock across stores" },
   { to: "/replenishments", label: "Replenishments", icon: ArrowsClockwise, id: "replenishments", group: "Operations & Production", desc: "Replenishment suggestions with last-sold dates" },
   { to: "/replenish-by-item", label: "Replenish by Style/SKU", icon: Package, id: "replenish-by-item", group: "Operations & Production", desc: "Find understocked stores for a style/SKU, or a store's proven demand gaps" },

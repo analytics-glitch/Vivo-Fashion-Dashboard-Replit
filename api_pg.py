@@ -568,13 +568,13 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "size-health", "inventory", "warehouse-returns", "excess-inventory", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"],
-    "retail": ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "exports", "sops"],
-    "warehouse": ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"],
-    "store_manager": ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "sops"],
+    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "exports", "sops"],
+    "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"],
+    "store_manager": ["store-flow", "locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "sops"],
     "leadership": _LEADERSHIP_PAGES,
     # SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
     # Finance Reports Suite. The /api/finance gate below also excludes "smt".
@@ -10449,6 +10449,96 @@ def inventory_freshness():
         if r.get("hours_since_update") is not None:
             r["hours_since_update"] = float(r["hours_since_update"])
     return rows
+
+@app.get("/api/analytics/store-flow")
+def analytics_store_flow(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+):
+    """Store Flow: per POS location over the selected period — Units Sold
+    (canonical GROSS units, = _UNITS), Units Transferred In (stock_transfers
+    done rows by completion day, EAT), units still in transit toward the
+    store, and Current Stock (all_inventory available, pre-aggregated).
+
+    Transfer history only ACCUMULATES from the first synced done picking
+    onward (the extract keeps a rolling 7-day done window but the table now
+    retains older done rows), so `transfer_history_from` tells the frontend
+    the earliest day with complete transfer data."""
+    where = build_filters(date_from, date_to, country)
+    sales = run_query("""
+        SELECT s.pos_location_name AS pos_location,
+               MAX(s.country) AS country,
+               """ + _UNITS + """ AS units_sold
+        FROM all_sales s
+        WHERE """ + where + """
+        GROUP BY s.pos_location_name
+    """, date_to=date_to)
+
+    ctry_t = " AND t.to_country IN (" + csv_to_sql(country) + ")" if country else ""
+    # date_done is stored UTC; shift +3h so a picking completed at e.g. 21:30
+    # UTC lands on the correct East-Africa business day.
+    transfers = run_query("""
+        SELECT t.to_store_name AS pos_location,
+               MAX(t.to_country) AS country,
+               COALESCE(SUM(t.qty_done) FILTER (
+                   WHERE t.state = 'done'
+                     AND (t.date_done + INTERVAL '3 hours')::date
+                         BETWEEN '""" + date_from + """' AND '""" + date_to + """'), 0) AS units_transferred,
+               COALESCE(SUM(t.qty_planned) FILTER (WHERE t.state != 'done'), 0) AS units_incoming
+        FROM stock_transfers t
+        WHERE t.to_store_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+        """ + ctry_t + """
+        GROUP BY t.to_store_name
+    """, date_to=date_to)
+
+    ctry_i = " AND i.country IN (" + csv_to_sql(country) + ")" if country else ""
+    inventory = run_query("""
+        SELECT i.pos_location_name AS pos_location,
+               MAX(i.country) AS country,
+               COALESCE(SUM(i.available), 0) AS current_stock
+        FROM all_inventory i
+        WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+        """ + ctry_i + """
+        GROUP BY i.pos_location_name
+    """, date_to=date_to)
+
+    by = {}
+    def _slot(name, ctry):
+        r = by.setdefault(name, {
+            "pos_location": name, "country": ctry or None,
+            "units_sold": 0, "units_transferred": 0,
+            "units_incoming": 0, "current_stock": 0})
+        if ctry and not r["country"]:
+            r["country"] = ctry
+        return r
+    for r in sales:
+        _slot(r["pos_location"], r.get("country"))["units_sold"] = int(r["units_sold"] or 0)
+    for r in transfers:
+        s = _slot(r["pos_location"], r.get("country"))
+        s["units_transferred"] = int(r["units_transferred"] or 0)
+        s["units_incoming"] = int(r["units_incoming"] or 0)
+    for r in inventory:
+        _slot(r["pos_location"], r.get("country"))["current_stock"] = int(r["current_stock"] or 0)
+
+    rows = sorted(by.values(), key=lambda r: (-r["units_sold"], -r["units_transferred"]))
+    totals = {
+        "units_sold": sum(r["units_sold"] for r in rows),
+        "units_transferred": sum(r["units_transferred"] for r in rows),
+        "units_incoming": sum(r["units_incoming"] for r in rows),
+        "current_stock": sum(r["current_stock"] for r in rows),
+        "stores": len(rows),
+    }
+    cov = run_query("""
+        SELECT MIN((date_done + INTERVAL '3 hours')::date)::text AS first_done
+        FROM stock_transfers WHERE state = 'done'
+    """, date_to=date_to)
+    return {
+        "rows": rows,
+        "totals": totals,
+        "transfer_history_from": (cov[0]["first_done"] if cov else None),
+    }
+
 
 @app.get("/api/analytics/weeks-of-cover")
 def analytics_weeks_of_cover(

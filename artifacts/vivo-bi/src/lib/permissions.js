@@ -17,13 +17,13 @@
 const VIEWER = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "gallery", "fabric", "sops"];
 
 const PRODUCT_DEVELOPMENT = ["product-analysis", "range-mgmt", "markdown-clearance", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"];
-const RETAIL = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "exports", "sops"];
-const WAREHOUSE = ["inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"];
-const STORE_MANAGER = ["locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "sops"];
+const RETAIL = ["store-flow", "overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "exports", "sops"];
+const WAREHOUSE = ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"];
+const STORE_MANAGER = ["store-flow", "locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "sops"];
 // "finance" (the Finance Reports Suite) is a leadership + admin surface, so it
 // lives in LEADERSHIP (ADMIN spreads LEADERSHIP). The server /api/finance gate
 // independently restricts the underlying API to leadership + admin.
-const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "size-health", "inventory", "warehouse-returns", "excess-inventory", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance"])];
+const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "markdown-clearance", "margin", "rfm", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance"])];
 // SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
 // Finance Reports Suite. The server /api/finance gate also excludes SMT.
 const SMT = LEADERSHIP.filter((p) => p !== "finance");
