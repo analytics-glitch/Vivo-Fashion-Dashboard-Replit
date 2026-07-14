@@ -10134,6 +10134,24 @@ EXCESS_ALLOWANCE = {
 
 _EXCESS_ROW_CAP = 4000  # generous safety bound for one response, NOT a ranking
 
+# Some Odoo product records (mostly samples, sets and legacy SKUs) genuinely
+# have NO size on the master record — but the size is usually encoded at the
+# end of the SKU (e.g. LILI000192GRNS → S, 1021158NABM → M). Conservative
+# fallback: match a known size token at the SKU end, ONLY when preceded by a
+# letter (so hash-like SKUs such as '695cb4d4a788f' don't parse as size F).
+_SKU_SIZE_TOKENS = ["1X/2X", "XS/S", "S/M", "M/L", "L/1X",
+                    "XXS", "XXL", "XS", "XL", "1X", "2X", "3X", "4X",
+                    "S", "M", "L", "F"]
+_SKU_SIZE_RE = re.compile(
+    r"[A-Za-z](" + "|".join(re.escape(t) for t in _SKU_SIZE_TOKENS) + r")$",
+    re.IGNORECASE)
+
+
+def _size_from_sku(sku):
+    """Best-effort size recovery from the SKU suffix; None when not confident."""
+    m = _SKU_SIZE_RE.search((sku or "").strip())
+    return m.group(1).upper() if m else None
+
 _excess_actions_ready = False
 
 
@@ -10204,7 +10222,8 @@ def _excess_inventory_dataset():
             group = "VIVO"
         else:
             group = "OTHER"
-        allowed = EXCESS_ALLOWANCE.get(group, {}).get(r.get("size") or "")
+        size = (r.get("size") or "").strip() or _size_from_sku(r.get("sku"))
+        allowed = EXCESS_ALLOWANCE.get(group, {}).get(size or "")
         inv = int(r.get("inventory") or 0)
         excess = max(0, inv - allowed) if allowed is not None else 0
         out.append({
@@ -10212,7 +10231,7 @@ def _excess_inventory_dataset():
             "sku": r["sku"],
             "product_name": r.get("product_name"),
             "barcode": r.get("barcode"),
-            "size": r.get("size") or None,
+            "size": size or None,
             "brand_group": group,
             "inventory": inv,
             "allowed": allowed,
