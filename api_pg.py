@@ -5813,8 +5813,13 @@ def get_customer_type_spend(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
+    channel:   str = Query(default=None),
 ):
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    # `channel` carries pos_location_name values (filter-bar contract) —
+    # optional so existing callers (Customers page, cross-surface checks)
+    # keep their exact universe when it's absent.
+    channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
     # New vs Returning by FIRST-EVER purchase date, matching /api/customers seg.
     # The stored customer_type can't express new-vs-returning for POS (every
     # counter sale is tagged 'registered', never 'new'), so a customer_type='new'
@@ -5850,7 +5855,7 @@ def get_customer_type_spend(
         LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
         WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
         AND s.sale_kind = 'order'
-        """ + country_filter + """
+        """ + country_filter + " " + channel_filter + """
         GROUP BY customer_segment
         ORDER BY customer_segment
     """, date_to=date_to)

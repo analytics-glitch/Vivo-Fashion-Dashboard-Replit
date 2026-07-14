@@ -42,6 +42,8 @@ import {
   Footprints,
   Target,
   ArrowsLeftRight,
+  UserPlus,
+  UsersThree,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -270,6 +272,12 @@ const Overview = () => {
   const [canonicalUnits, setCanonicalUnits] = useState(null);
   const [canonicalUnitsPrev, setCanonicalUnitsPrev] = useState(null);
 
+  // Revenue by customer type — New vs Returning cards on the headline row.
+  // Segments come from /customer-type-spend (first-ever-purchase rule, same
+  // as the Customers page) so both surfaces agree for the same filters.
+  const [ctSpend, setCtSpend] = useState(null);
+  const [ctSpendPrev, setCtSpendPrev] = useState(null);
+
   // B8 — page-level addition: IBT ROI card.
   const [ibtRoi, setIbtRoi] = useState(null);
   const [hourly, setHourly] = useState(null); // Sales by Hour (bottom chart)
@@ -324,6 +332,26 @@ const Overview = () => {
       })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
+
+    // Revenue by customer type (New / Returning cards). Independent of the
+    // bootstrap batch: a failure here leaves the two cards showing "—"
+    // without touching the rest of the page.
+    const ctParams = {
+      date_from: dateFrom,
+      date_to: dateTo,
+      ...(countries.length ? { country: countries.join(",") } : {}),
+      ...(channels.length ? { channel: channels.join(",") } : {}),
+    };
+    setCtSpend(null);
+    setCtSpendPrev(null);
+    api.get("/customer-type-spend", { params: ctParams })
+      .then((r) => !cancelled && setCtSpend(r.data || []))
+      .catch(() => !cancelled && setCtSpend([]));
+    if (prev) {
+      api.get("/customer-type-spend", { params: { ...ctParams, date_from: prev.date_from, date_to: prev.date_to } })
+        .then((r) => !cancelled && setCtSpendPrev(r.data || []))
+        .catch(() => !cancelled && setCtSpendPrev([]));
+    }
     return () => { cancelled = true; };
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, compareDateFrom, compareDateTo, dataVersion]);
@@ -539,6 +567,25 @@ const Overview = () => {
 
   const delta = (k) => (kpis && kpisPrev) ? pctDelta(kpis[k], kpisPrev[k]) : null;
   const prev = (k, formatter) => (kpis && kpisPrev && compareMode !== "none" && kpisPrev[k] != null) ? formatter(kpisPrev[k]) : null;
+
+  // Revenue by customer type — pick the New / Returning rows out of the
+  // /customer-type-spend responses. null = still loading (show "—"),
+  // [] = failed/empty (0). Walk-in is deliberately NOT shown here (it has
+  // its own surface on the Customers page), so the two cards cover the
+  // identified-customer universe only.
+  const ctSeg = useMemo(() => {
+    const pick = (rows, seg) => {
+      if (rows == null) return null; // loading
+      const r = (rows || []).find((x) => x.customer_segment === seg);
+      return Number(r?.total_sales || 0);
+    };
+    return {
+      newSales: pick(ctSpend, "New"),
+      retSales: pick(ctSpend, "Returning"),
+      newSalesPrev: pick(ctSpendPrev, "New"),
+      retSalesPrev: pick(ctSpendPrev, "Returning"),
+    };
+  }, [ctSpend, ctSpendPrev]);
   // WS3 — on a single-day range the "last month/year" comparison base is
   // the SAME DAY shifted, not the whole month/year; label it honestly.
   const singleDayRange = dateFrom === dateTo;
@@ -1168,6 +1215,28 @@ const Overview = () => {
               delta={delta("total_units")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}
               action={{ label: "Top styles", to: "/product-analysis" }}
               prefetch={pf("/product-analysis")} />
+            <KPICard testId="kpi-new-customer-revenue" label="New Customer Revenue"
+              value={ctSeg.newSales == null ? "\u2014" : kfmt(ctSeg.newSales)}
+              valueFull={ctSeg.newSales == null ? "\u2014" : fmtKESLong(ctSeg.newSales)}
+              icon={UserPlus}
+              formula="Money from customers whose first-ever purchase happened in this period. Same New/Returning rule as the Customers page. Walk-in (anonymous) sales are not included in this card."
+              delta={compareMode !== "none" && ctSeg.newSalesPrev ? pctDelta(ctSeg.newSales, ctSeg.newSalesPrev) : null}
+              deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
+              prevValue={compareMode !== "none" && ctSeg.newSalesPrev != null ? kfmt(ctSeg.newSalesPrev) : null}
+              showDelta={compareMode !== "none"}
+              action={{ label: "Customer breakdown", to: "/customers" }}
+              prefetch={pf("/customers")} />
+            <KPICard testId="kpi-returning-customer-revenue" label="Returning Customer Revenue"
+              value={ctSeg.retSales == null ? "\u2014" : kfmt(ctSeg.retSales)}
+              valueFull={ctSeg.retSales == null ? "\u2014" : fmtKESLong(ctSeg.retSales)}
+              icon={UsersThree}
+              formula="Money from customers who had already bought before this period started. Same New/Returning rule as the Customers page. Walk-in (anonymous) sales are not included in this card."
+              delta={compareMode !== "none" && ctSeg.retSalesPrev ? pctDelta(ctSeg.retSales, ctSeg.retSalesPrev) : null}
+              deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
+              prevValue={compareMode !== "none" && ctSeg.retSalesPrev != null ? kfmt(ctSeg.retSalesPrev) : null}
+              showDelta={compareMode !== "none"}
+              action={{ label: "Customer breakdown", to: "/customers" }}
+              prefetch={pf("/customers")} />
             {!isOnlineOnly && (
               <KPICard testId="kpi-footfall" label="Total Footfall" sub="Walk-ins counted at our store sensors" value={loading ? "\u2014" : fmtNum(footfallAgg.total_footfall)} valueFull={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
                 formula={"Formula: sum of door-sensor walk-ins (a01_footfall_in) across stores for the selected period.\n\nRenamed sensor feeds are mapped back to their store before totalling. Stores flagged for sensor data-quality issues (conversion over 50%) are excluded."}
