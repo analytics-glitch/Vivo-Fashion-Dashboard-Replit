@@ -171,7 +171,7 @@ def main():
             list_price, standard_price, categ_name,
             sub_category, style_name, style_number,
             collection, color, brand, vendor,
-            category, gender, season, active,
+            category, gender, season, status, tier, active,
             write_date
         FROM raw_odoo_products
         WHERE default_code IS NOT NULL
@@ -212,7 +212,7 @@ def main():
         (pid, name, sku, barcode, price, cost, categ_name,
          sub_category, style_name, style_number, collection,
          color, brand, vendor, category, gender, season,
-         active, write_date) = p
+         status, tier, active, write_date) = p
 
         if sku in seen_skus:
             continue
@@ -276,6 +276,7 @@ def main():
             0, 0,
             bool(active), pid,
             s is not None,
+            status, tier,
         ))
 
     # ── SKUs from sales not in Odoo ──────────────────────────────────────────
@@ -313,6 +314,7 @@ def main():
             print_plain, subcat, cat,
             None, None, size, 0, 0,
             None, None, True,
+            None, None,
         ))
         seen_skus.add(sku)
 
@@ -324,7 +326,8 @@ def main():
             brand, vendor, color_print, style_number,
             collection, style_name, print_plain,
             product_type, category, gender, season, size,
-            stock_on_hand, stock_available, active, product_id, ever_sold
+            stock_on_hand, stock_available, active, product_id, ever_sold,
+            status, tier
         ) VALUES %s
         ON CONFLICT (sku) DO UPDATE SET
             product_name    = EXCLUDED.product_name,
@@ -369,6 +372,7 @@ def main():
             print_plain, subcat, cat,
             None, None, size, 0, 0,
             None, None, s is not None,
+            None, None,
         ))
 
     if inv_insert:
@@ -378,7 +382,8 @@ def main():
                 brand, vendor, color_print, style_number,
                 collection, style_name, print_plain,
                 product_type, category, gender, season, size,
-                stock_on_hand, stock_available, active, product_id, ever_sold
+                stock_on_hand, stock_available, active, product_id, ever_sold,
+                status, tier
             ) VALUES %s
             ON CONFLICT (sku) DO NOTHING
         """, inv_insert, page_size=500)
