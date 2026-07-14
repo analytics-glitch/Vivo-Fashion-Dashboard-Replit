@@ -248,6 +248,12 @@ def main():
     conn.commit()
     cur.execute("SELECT COUNT(*) FROM all_inventory")
     log.info("✅ all_inventory: %d rows", cur.fetchone()[0])
+    # Update Postgres stats after TRUNCATE+reload so the query planner uses fresh
+    # row counts / value distributions. Without this, all_inventory can silently
+    # show n_live_tup=0 to the planner and everything joining it does full scans.
+    cur.execute("ANALYZE all_inventory")
+    conn.commit()
+    log.info("✅ ANALYZE all_inventory complete")
     conn.close()
 
 if __name__ == "__main__":

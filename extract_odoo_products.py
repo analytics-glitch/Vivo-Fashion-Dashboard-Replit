@@ -124,6 +124,10 @@ def main():
     conn.commit()
     cur.execute("SELECT COUNT(*) FROM raw_odoo_products")
     log.info("✅ raw_odoo_products: %d rows", cur.fetchone()[0])
+    # Update planner stats after TRUNCATE+reload — see note in extract_odoo_inventory.py
+    cur.execute("ANALYZE raw_odoo_products")
+    conn.commit()
+    log.info("✅ ANALYZE raw_odoo_products complete")
     conn.close()
 
 if __name__ == "__main__":

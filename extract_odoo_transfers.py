@@ -214,6 +214,8 @@ def run():
               _synced_at = now()
         """, rows, page_size=1000)
     conn.commit()
+    cur.execute("ANALYZE stock_transfers")
+    conn.commit()
     log.info("✅ stock_transfers: %d rows (%d pickings, %d unique SKUs)",
              len(rows), len({r[0] for r in rows}), len({r[9] for r in rows if r[9]}))
     conn.close()
