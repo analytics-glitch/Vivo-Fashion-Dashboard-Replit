@@ -13,3 +13,4 @@ Heavy whole-history dashboards (weeks-of-cover, aged-stock, range classify / sto
 - Warm interval must stay well under the TTL (600 vs 900) or the cache lapses between cycles.
 - `_cache` is now guarded by `_CACHE_LOCK` (request threads + warmer race the eviction path otherwise). Keep get/set locked.
 - Use `print(..., flush=True)` for warmer heartbeat lines — `log.info` from api_pg is invisible in deployed logs.
+- Endpoints that compose MANY sub-queries (exec-summary, ~35s cold, biggest CTE ~18s) need a WHOLE-RESPONSE cache (cache_get/cache_set keyed on all params, ttl=HEAVY_DASH_TTL) — per-sub-query TTLs lapse independently, so hits stay slow even when most pieces are warm. Filtered variants stay warm 15 min after first compute; the prewarmer keeps only the default view hot.

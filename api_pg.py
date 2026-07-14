@@ -1348,6 +1348,9 @@ def _start_cache_prewarmer():
                     country=None, channel=None)),
                 ("weekly-sor", lambda: range_mgmt_weekly_sor(
                     country=None, channel=None)),
+                ("exec-summary", lambda: exec_summary(
+                    country=None, window_days=30, date_from=None,
+                    date_to=None, style_status="all")),
                 ("excess-inventory", _excess_inventory_dataset),
                 ("store-country-map", _store_country_map),
             ]
@@ -14097,6 +14100,17 @@ def exec_summary(
     date_to:     str = Query(default=None),
     style_status: str = Query(default="all"),
 ):
+    # Whole-response cache: the page is ~35s cold (a dozen whole-history
+    # aggregations; the customer-windows CTE alone is ~18s) and the per-query
+    # caches lapse on the default smart_ttl, so the first user of every cycle
+    # ate the full cost. HEAVY_DASH_TTL + the prewarmer (default view) keep it
+    # permanently warm; filtered variants stay warm 15 min after first compute.
+    _es_ck = "execsum:%s|%s|%s|%s|%s" % (country or "", window_days or 30,
+                                         date_from or "", date_to or "",
+                                         style_status or "all")
+    _es_cached = cache_get(_es_ck)
+    if _es_cached is not None:
+        return _es_cached
     # Anchor "as of" to yesterday, but never past the latest sale in the data.
     mx = run_query("SELECT MAX(s.sale_date) AS mx FROM all_sales s WHERE s.sale_kind IN ('sale','order')")
     max_date = None
@@ -14156,7 +14170,7 @@ def exec_summary(
         sold_from = (as_of - timedelta(days=wd - 1)).isoformat()
         sold_to = as_of.isoformat()
 
-    return {
+    resp = {
         "as_of": as_of.isoformat(),
         "windows": {
             "ytd": {"current": list(ytd_cur_s), "ly": list(ytd_ly_s)},
@@ -14178,6 +14192,8 @@ def exec_summary(
         "stock_mix": _es_stock_mix(sold_from, sold_to, wd, country),
         "kpis": {"units": ytd_kpis["units"]},
     }
+    cache_set(_es_ck, resp, ttl=HEAVY_DASH_TTL)
+    return resp
 # IBT (Inter-Branch Transfer) endpoints — see PART A region below for the
 # real implementations (ibt_suggestions / ibt_sku_breakdown /
 # ibt_warehouse_to_store). Kept out of the stub block intentionally.
