@@ -129,4 +129,5 @@
 - [Velocity vs WOC consensus check](velocity-woc-consensus-check.md) — velocity calls the weekly rate rate_of_sale (1dp) not weekly_units; universes differ per style, so reconcile by median-gap consensus (2% tol), never per-style equality.
 - [Employee self-signup fence](employee-self-signup-fence.md) — Google self-signups auto-approve to minimal "employee" role; enforcement is a middleware allowlist fence (salary-advances only), client gating is UX only.
 - [SWR cache layer](swr-cache-layer.md) — expired cache entries are served within a grace window while a single-flight bypass-key thread recomputes; mutation-adjacent caches must NOT background-refresh.
+- [/api/bootstrap universal lookups](bootstrap-universal-endpoint.md) — one 3600s SWR bundle of filter-independent lookups; NEVER takes a filter param (else it's an overview endpoint); identity stays on /auth/me.
 - [Heavy dashboard cache pre-warmer](heavy-dash-prewarm.md) — 900s TTL + 600s background warm keeps 10-20s whole-history queries always cached; call endpoint fns with explicit kwargs; _cache needs its lock.

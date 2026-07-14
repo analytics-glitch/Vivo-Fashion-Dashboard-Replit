@@ -3607,6 +3607,58 @@ def get_locations():
         ORDER BY country, location_name
     """)
 
+
+@app.get("/api/bootstrap")
+def get_bootstrap():
+    """ONE-TTL-STORY RULE — this endpoint must NEVER grow a filter parameter.
+
+    /api/bootstrap bundles the truly-UNIVERSAL lookups (identical for every
+    user, every filter state) that the app shell needs at load, so the initial
+    burst of small lookup requests collapses into one long-cached round-trip.
+
+    Acceptance criterion: if a piece of data varies by ANYTHING the filter bar
+    can set (country, channel, dates) or by WHO is asking (role, group,
+    identity), it does NOT belong here. The moment `?country=` becomes
+    tempting, this has stopped being a bootstrap and become an overview
+    endpoint — add a separate endpoint with its own TTL story instead.
+    Identity/permission data stays on /api/auth/me (short-lived, coherent
+    with group edits and logout).
+
+    NOT to be confused with /api/bootstrap/overview — that is a FILTERED
+    overview analytics batch and lives by the opposite rule.
+
+    Known + accepted: an SWR background recompute may read sub-lookups
+    (locations / active-pos) that are themselves stale-in-grace and seal them
+    for another hour. Everything here changes on the store-opens timescale,
+    so worst-case staleness (~2h) is immaterial by design.
+    """
+    ck = "bootstrap:v1"
+    cached, fresh = cache_get_swr(ck)
+    if cached is not None:
+        if not fresh:
+            swr_refresh(ck, get_bootstrap, label="bootstrap")
+        return cached
+    locations = run_query("""
+        SELECT location_name, country, city, store_type, brand
+        FROM pos_locations
+        WHERE active = TRUE
+        ORDER BY country, location_name
+    """, ttl=3600)
+    # Same business rule as /api/analytics/active-pos with its DEFAULTS
+    # (rolling 30d, all countries) — the FilterBar only needs channel + country.
+    active_pos = [{"channel": r["channel"], "country": r["country"]}
+                  for r in analytics_active_pos(n_days=30, country=None)]
+    countries = sorted({r["country"] for r in locations if r.get("country")})
+    payload = {
+        "locations": locations,
+        "active_pos": active_pos,
+        "countries": countries,
+        "allowed_domains": list(clerk_auth.ALLOWED_DOMAINS),
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    cache_set(ck, payload, ttl=3600)
+    return payload
+
 # Custom report builder — a single SAFE, whitelist-driven aggregation endpoint.
 # The user picks dimensions + measures from fixed sets; we never accept raw SQL.
 # Any value outside the whitelist is rejected with 400, and the only free-text

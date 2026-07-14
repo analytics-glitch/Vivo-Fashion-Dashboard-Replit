@@ -125,19 +125,19 @@ export const FiltersProvider = ({ children }) => {
   const [dataVersion, setDataVersion] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(null);
 
-  // Fetch the master list of active POS channels once so we can resolve the
-  // channelGroup toggle (Retail = NOT LIKE '%Online%', Online = LIKE '%Online%').
-  // Re-runs when the user transitions from anonymous → authenticated, since
-  // /analytics/active-pos requires auth (so the initial pre-login fetch
-  // would return 401 and leave retailChannels empty).
+  // Fetch the universal bootstrap bundle once so we can resolve the
+  // channelGroup toggle (Retail = NOT LIKE '%Online%', Online = LIKE '%Online%')
+  // from its active_pos list. Re-runs when the user transitions from
+  // anonymous → authenticated, since /bootstrap requires auth (so the initial
+  // pre-login fetch would return 401 and leave retailChannels empty).
   const { user } = useAuth();
   useEffect(() => {
     if (!user) return; // Wait until the user is logged in.
     let cancelled = false;
-    api.get("/analytics/active-pos")
+    api.get("/bootstrap")
       .then((r) => {
         if (cancelled) return;
-        const all = (r.data || []).map((l) => l.channel).filter(Boolean);
+        const all = (r.data?.active_pos || []).map((l) => l.channel).filter(Boolean);
         // Always include the well-known online channels even if upstream
         // /analytics/active-pos hasn't returned them yet (cold start).
         const ONLINE_FALLBACK = ["Online - Shop Zetu", "Online - Vivo", "Online - Vivo Woman", "Online - Uganda", "Online - Rwanda"];
@@ -165,10 +165,10 @@ export const FiltersProvider = ({ children }) => {
     // No channels in URL → nothing to validate.
     if (!urlParams.ch) { urlValidatedRef.current = true; return; }
 
-    api.get("/analytics/active-pos")
+    api.get("/bootstrap")
       .then((r) => {
         const ONLINE = ["Online - Shop Zetu", "Online - Vivo"];
-        const known = new Set([...ONLINE, ...(r.data || []).map((l) => l.channel)]);
+        const known = new Set([...ONLINE, ...(r.data?.active_pos || []).map((l) => l.channel)]);
         const requested = urlParams.ch.split(",").map((s) => s.trim()).filter(Boolean);
         const valid = requested.filter((c) => known.has(c));
         const dropped = requested.filter((c) => !known.has(c));
