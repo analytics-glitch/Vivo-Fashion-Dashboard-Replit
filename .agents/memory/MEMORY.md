@@ -123,6 +123,7 @@
 - [Daily-trend order attribution](daily-trend-order-attribution.md) — Σ per-day distinct orders > window distinct when orders span sale_dates; attribute each order to its first day, null-safe country join.
 - [Custom-auth UI testing](custom-auth-ui-testing.md) — test gated pages by inserting a temp user_sessions row + localStorage vivo_token in the Playwright plan; delete it and undo test data mutations after.
 - [Fabric PO upload pricing writes](fabric-po-upload-pricing.md) — analytic_distribution keys are strings, taxes cleared via [[5,0,0]]; one extras dict for update AND create; gates run before any line is touched.
+- [Topbar poll endpoints must be cheap](topbar-poll-endpoint-cost.md) — ~60s/user polls × full scans/global solves = constant load; index MAX(loaded_at), run_query ttl= override, single-flight memo for late-count.
 - [Fabric receiving quality + edit](fabric-receiving-quality.md) — per-roll quality by any user, rolls/qty admin-only; roll_no MUST be unique per sheet (carry-over keys on it, app-enforced not DB); admin PUT writes rolls+quality atomically.
 - [Velocity vs WOC consensus check](velocity-woc-consensus-check.md) — velocity calls the weekly rate rate_of_sale (1dp) not weekly_units; universes differ per style, so reconcile by median-gap consensus (2% tol), never per-style equality.
 - [Employee self-signup fence](employee-self-signup-fence.md) — Google self-signups auto-approve to minimal "employee" role; enforcement is a middleware allowlist fence (salary-advances only), client gating is UX only.

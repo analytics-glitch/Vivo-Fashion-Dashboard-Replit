@@ -238,7 +238,10 @@ def _record_slow_query(query, elapsed):
         log.warning("SLOW QUERY %.1fs: %s", elapsed, preview)
 
 
-def run_query(query, date_to=None):
+def run_query(query, date_to=None, ttl=None):
+    # ttl: optional explicit cache TTL (seconds) overriding smart_ttl — use for
+    # slow-changing lookups (store lists, store→country maps) that are hammered
+    # by topbar/filter-bar polling but only change when a new store opens.
     key = hashlib.md5(query.encode()).hexdigest()
     cached = cache_get(key)
     if cached is not None:
@@ -262,7 +265,7 @@ def run_query(query, date_to=None):
         _record_slow_query(query, elapsed)
     global _last_db_success_ts
     _last_db_success_ts = time.time()
-    cache_set(key, rows, ttl=smart_ttl(date_to))
+    cache_set(key, rows, ttl=ttl if ttl is not None else smart_ttl(date_to))
     return rows
 
 
@@ -1286,6 +1289,18 @@ def _seed_admin():
         log.info("Seed admin ensured for %s", email)
     except Exception as e:
         log.error("Seed admin failed: %s", e)
+
+
+@_deferred_startup
+def _ensure_perf_indexes():
+    # idx_all_sales_loaded_at makes the topbar data-freshness poll
+    # (MAX(loaded_at)) an index-tail lookup instead of a full 1.5M-row scan
+    # (measured 5s+ under sync-loop contention). Idempotent.
+    try:
+        _users_exec("CREATE INDEX IF NOT EXISTS idx_all_sales_loaded_at "
+                    "ON all_sales (loaded_at)")
+    except Exception as e:
+        log.error("Perf index ensure failed: %s", e)
 
 
 @_deferred_startup
@@ -7172,7 +7187,7 @@ def analytics_active_pos(
         GROUP BY s.pos_location_name, s.country
         HAVING SUM(s.ordered_item_quantity) >= 1
         ORDER BY total_sales DESC
-    """, date_to=date_to)
+    """, ttl=600)
 
 @app.get("/api/analytics/sell-through-by-location")
 def analytics_sell_through_by_location(
@@ -20087,8 +20102,36 @@ def get_data_freshness():
         }
     except Exception:
         return {"fresh": False, "last_updated": None, "seconds_since_update": None, "last_sale_date": None}
+_late_count_memo = {"val": None, "ts": 0.0}
+_late_count_lock = threading.Lock()
+_LATE_COUNT_TTL = 600  # topbar badge; the global solve is far too heavy to run per poll
+
+
 @app.get("/api/ibt/late-count")
 def ibt_late_count():
+    memo = _late_count_memo
+    if memo["val"] is not None and time.time() - memo["ts"] < _LATE_COUNT_TTL:
+        return memo["val"]
+    # Single-flight: only one thread recomputes per TTL window; the rest either
+    # return the (possibly stale) previous value instantly or, on a truly cold
+    # start, wait for the computing thread and reuse its result.
+    if not _late_count_lock.acquire(blocking=False):
+        if memo["val"] is not None:
+            return memo["val"]
+        with _late_count_lock:
+            pass
+        if memo["val"] is not None:
+            return memo["val"]
+        return {"count": 0}
+    try:
+        if memo["val"] is not None and time.time() - memo["ts"] < _LATE_COUNT_TTL:
+            return memo["val"]
+        return _ibt_late_count_compute(memo)
+    finally:
+        _late_count_lock.release()
+
+
+def _ibt_late_count_compute(memo):
     # Topbar badge: count of open from->to BUNDLES from the Phase-1 global solve
     # (trailing 28-day demand window) that have NOT been fully completed. A
     # bundle is "done" once a completion exists for its (from_store, to_store)
@@ -20101,7 +20144,9 @@ def ibt_late_count():
         res = _ibt_global_solve(df, dt, None, 0.20, 1.50, bundle_limit=1000)
         bundles = res.get("bundles", [])
         if not bundles:
-            return {"count": 0}
+            memo["val"] = {"count": 0}
+            memo["ts"] = time.time()
+            return memo["val"]
         # SKU-level completion: a bundle is "done" only once EVERY SKU line in it
         # has a completion stamped for its (style_name, to_store, sku). Counting
         # at the corridor level undercounts open work when only some lines moved.
@@ -20118,7 +20163,9 @@ def ibt_late_count():
             if any((sk.get("style_name") or "", to_store, sk.get("sku") or "") not in done
                    for sk in skus):
                 n += 1
-        return {"count": int(n)}
+        memo["val"] = {"count": int(n)}
+        memo["ts"] = time.time()
+        return memo["val"]
     except Exception:
         return {"count": 0}
 @app.get("/api/notifications/unread-count")
@@ -24647,7 +24694,8 @@ def _store_cluster_map(country=None):
 def _store_country_map():
     rows = run_query(
         "SELECT pos_location_name AS store, MAX(country) AS country "
-        "FROM all_sales WHERE pos_location_name IS NOT NULL GROUP BY 1") or []
+        "FROM all_sales WHERE pos_location_name IS NOT NULL GROUP BY 1",
+        ttl=3600) or []
     return {r["store"]: r.get("country") for r in rows}
 
 
