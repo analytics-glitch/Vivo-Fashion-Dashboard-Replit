@@ -1022,7 +1022,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    <!-- RECEIVING -->
    <section id="page-receiving" style="display:none;">
     <div class="card">
-     <div class="section-head"><h3>New receiving sheet</h3><span class="muted">record each roll of an arriving delivery, then print the receiving sheet</span></div>
+     <div class="section-head"><h3>Record a delivery</h3><span class="muted">each PO keeps ONE sheet per fabric — rolls you save here append to it, and roll numbers are assigned automatically</span></div>
      <div id="recv-form-err"></div>
      <div class="flex" style="flex-wrap:wrap;gap:12px;align-items:flex-end;">
       <div style="position:relative;">
@@ -1042,14 +1042,14 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div id="recv-product-card" style="margin-top:12px;"></div>
      <div id="recv-rolls-wrap" style="display:none;margin-top:12px;">
       <div class="flex" style="gap:10px;align-items:center;margin-bottom:8px;">
-       <b>Rolls</b><span class="muted" style="font-size:12px;">up to 50 rolls — roll numbers are editable; metres derive from the kg→metre conversion</span>
+       <b>Rolls</b><span class="muted" style="font-size:12px;">up to 50 rolls per save — roll numbers are assigned automatically (continuing this fabric's numbering on the PO across deliveries); metres derive from the kg→metre conversion</span>
        <span style="margin-left:auto;"></span>
        <button class="btn" onclick="recvAddRoll()">+ Add roll</button>
       </div>
       <div class="card" style="padding:0;max-width:600px;">
        <div class="tbl-wrap">
        <table class="data">
-        <thead><tr><th style="width:120px;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th style="width:42px;"></th></tr></thead>
+        <thead><tr><th style="width:120px;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th style="width:42px;"></th></tr></thead><!-- roll numbers auto-assigned on save -->
         <tbody id="recv-rolls-body"></tbody>
         <tfoot><tr style="font-weight:700;"><td>Total</td><td class="r" id="recv-total-kg">—</td><td class="r" id="recv-total-mtrs">—</td><td></td></tr></tfoot>
        </table>
@@ -1057,8 +1057,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </div>
       <div class="flex" style="gap:10px;margin-top:12px;align-items:flex-end;flex-wrap:wrap;">
        <div><label class="rsv-lbl">Note (optional)</label><input id="recv-note" placeholder="optional" style="width:260px;"></div>
-       <button class="btn" onclick="saveReceivingSheet(false)">Save</button>
-       <button class="btn btn-primary" onclick="saveReceivingSheet(true)">Save &amp; Print</button>
+       <button class="btn" onclick="saveReceivingSheet(false)">Save rolls</button>
+       <button class="btn btn-primary" onclick="saveReceivingSheet(true)">Save &amp; Print sheet</button>
       </div>
      </div>
     </div>
@@ -3850,13 +3850,12 @@ function recvBindOnce(){
   document.getElementById('recv-rolls-body').addEventListener('input',e=>{
     const el=e.target;const i=Number(el.dataset.row);
     if(isNaN(i)||!recvRolls[i])return;
-    if(el.dataset.kind==='no')recvRolls[i].no=el.value;
-    else if(el.dataset.kind==='kg'){recvRolls[i].kg=el.value;recvUpdateDerived(i);}
+    if(el.dataset.kind==='kg'){recvRolls[i].kg=el.value;recvUpdateDerived(i);}
   });
   document.getElementById('recv-rolls-body').addEventListener('keydown',e=>{
     if(e.key!=='Enter')return;
     const el=e.target;
-    if(el.dataset.kind==='no'||el.dataset.kind==='kg'){e.preventDefault();recvAddRoll();}
+    if(el.dataset.kind==='kg'){e.preventDefault();recvAddRoll();}
   });
   document.getElementById('recv-rolls-body').addEventListener('click',e=>{
     const del=e.target.closest('button[data-del-roll]');
@@ -3866,7 +3865,7 @@ function recvBindOnce(){
 function recvKpm(){const k=recvSel&&recvSel.kg_per_mtr;return (k!=null&&k!==''&&Number(k)>0)?Number(k):null;}
 function recvSetFabric(r){
   recvSel=r;
-  recvRolls=[{no:'1',kg:''}];
+  recvRolls=[{kg:''}];
   document.getElementById('recv-fabric-search').value=r.name||'';
   document.getElementById('recv-clear-btn').style.display='';
   document.getElementById('recv-form-err').innerHTML='';
@@ -3895,9 +3894,8 @@ function recvClearSelection(){
   document.getElementById('recv-note').value='';
 }
 function recvAddRoll(){
-  if(recvRolls.length>=50){showRecvErr('A sheet holds at most 50 rolls.');return;}
-  const maxNo=recvRolls.reduce((m,r)=>Math.max(m,parseInt(r.no,10)||0),0);
-  recvRolls.push({no:String(maxNo+1),kg:''});
+  if(recvRolls.length>=50){showRecvErr('Add at most 50 rolls at a time.');return;}
+  recvRolls.push({kg:''});
   renderRecvRolls();
   const rows=document.querySelectorAll('#recv-rolls-body input[data-kind="kg"]');
   if(rows.length)rows[rows.length-1].focus();
@@ -3925,7 +3923,7 @@ function renderRecvRolls(){
     const m=recvDerivedM(r.kg);
     const mTxt=m==null?(recvKpm()?'—':'Missing Width/GSM'):fmt1(m);
     return `<tr>
-      <td><input type="number" min="1" step="1" data-row="${i}" data-kind="no" value="${esc(String(r.no))}" style="width:80px;"></td>
+      <td><span class="muted" title="Assigned automatically on save — continues this fabric's numbering on the PO">auto</span></td>
       <td class="r"><input type="number" min="0" step="any" data-row="${i}" data-kind="kg" value="${esc(String(r.kg))}" placeholder="0.0" style="width:110px;text-align:right;"></td>
       <td class="r" id="recv-m-${i}">${mTxt}</td>
       <td><button class="btn" data-del-roll="${i}" title="Remove roll" style="padding:2px 8px;font-size:12px;">&times;</button></td>
@@ -3940,26 +3938,31 @@ async function saveReceivingSheet(alsoPrint){
   if(!recvPO){showRecvErr('Pick the draft purchase order this delivery belongs to — every sheet must be saved against a PO.');return;}
   const rolls=[];
   for(let i=0;i<recvRolls.length;i++){
-    const no=parseInt(recvRolls[i].no,10);
     const kg=parseFloat(recvRolls[i].kg);
-    if(isNaN(no)||no<=0){showRecvErr('Row '+(i+1)+': enter a roll number greater than zero.');return;}
     if(isNaN(kg)||kg<=0){showRecvErr('Row '+(i+1)+': enter the kgs received (greater than zero).');return;}
-    rolls.push({roll_no:no,qty_kg:kg});
+    rolls.push({qty_kg:kg});
   }
   if(!rolls.length){showRecvErr('Add at least one roll.');return;}
-  if(rolls.length>50){showRecvErr('A sheet holds at most 50 rolls.');return;}
+  if(rolls.length>50){showRecvErr('Add at most 50 rolls at a time.');return;}
   const note=document.getElementById('recv-note').value.trim();
   try{
-    const r=await fetch('/api/fabric/receiving',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({product_id:Number(recvSel.id),rolls,note,po_id:recvPO?Number(recvPO.po_id):null})});
+    // One sheet per (PO, fabric): the server appends these rolls to the PO's
+    // sheet for this product (creating it on the first delivery) and assigns
+    // the roll numbers progressively — no client-side numbering.
+    const r=await fetch('/api/fabric/receiving/po-sheet/'+encodeURIComponent(Number(recvPO.po_id))+'/rolls',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({product_id:Number(recvSel.id),rolls,note})});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     const res=await r.json();
     recvClearSelection();
+    const nos=res.roll_nos||[];
+    document.getElementById('recv-form-err').innerHTML='<div class="banner" style="background:rgba(26,92,56,.08);border:1px solid var(--border);padding:.5rem .8rem;border-radius:8px;font-size:12.5px;">Saved — assigned roll number'+(nos.length===1?'':'s')+' <b>'+esc(nos.join(', '))+'</b> on this PO\u2019s sheet.</div>';
     loadRecvPoBatches();
-    if(alsoPrint&&res.id)reprintReceivingSheet(res.id);
+    if(alsoPrint&&res.sheet_id)reprintReceivingSheet(res.sheet_id);
   }catch(e){showRecvErr(e.message==='auth'?'Your session has expired. Sign in again.':('Could not save: '+e.message));}
 }
+let recvIsAdmin=false, recvPoMeta={};
 async function loadReceivingBatches(){
   recvBindOnce();
+  try{const me=await getMe();recvIsAdmin=!!(me&&me.role==='admin');}catch(_){recvIsAdmin=false;}
   loadRecvPoBatches();
 }
 function recvQualityCell(s){
@@ -4291,6 +4294,7 @@ async function loadRecvPoBatches(){
     body.innerHTML=items.map(r=>{
       const key=recvPoKey(r);
       const isNoPo=r.po_id==null;
+      if(!isNoPo)recvPoMeta[key]={name:r.po_name||('PO #'+r.po_id),date:r.po_date||''};
       const open=recvPoExpanded.has(key);
       const lu=isNoPo
         ? '<span class="muted">—</span>'
@@ -4304,7 +4308,7 @@ async function loadRecvPoBatches(){
       const name=isNoPo
         ? 'No PO <span class="muted" style="font-weight:400;font-size:11px;">(legacy sheets saved without a purchase order)</span>'
         : esc(r.po_name||('PO #'+r.po_id));
-      const action=isNoPo?'':`<button class="btn btn-primary" data-po-open="${Number(r.po_id)}" style="padding:4px 10px;font-size:12px;">Review &amp; upload</button>`;
+      const action=isNoPo?'':`<button class="btn" data-po-print="${esc(key)}" title="Print the full PO receiving sheet (all fabrics &amp; rolls)" style="padding:4px 10px;font-size:12px;">🖨 PO sheet</button> <button class="btn btn-primary" data-po-open="${Number(r.po_id)}" style="padding:4px 10px;font-size:12px;">Review &amp; upload</button>`;
       const main=`<tr>
         <td><button class="btn" data-po-toggle="${esc(key)}" title="${open?'Collapse':'Expand'}" style="padding:2px 9px;font-size:13px;font-weight:700;">${open?'−':'+'}</button></td>
         <td data-po-toggle="${esc(key)}" style="font-weight:600;cursor:pointer;" title="${open?'Collapse':'Expand'}">${name}</td>
@@ -4338,6 +4342,14 @@ async function loadRecvPoBatches(){
           if(box&&box.dataset.cached){renderRecvPoDetail(box,JSON.parse(box.dataset.cached),box.dataset.poDetail);}
           return;
         }
+        const pp=e.target.closest('button[data-po-print]');
+        if(pp){printPoFullSheet(pp.dataset.poPrint);return;}
+        const re=e.target.closest('button[data-roll-edit]');
+        if(re){recvRollEditFromBtn(re);return;}
+        const rd=e.target.closest('button[data-roll-del]');
+        if(rd){recvRollDeleteFromBtn(rd);return;}
+        const sl=e.target.closest('button[data-slip]');
+        if(sl){printRollSlipFromBtn(sl);return;}
         const pr=e.target.closest('button[data-print]');
         const ed=e.target.closest('button[data-edit]');
         const del=e.target.closest('button[data-del]');
@@ -4363,7 +4375,14 @@ async function loadRecvPoBatches(){
 function renderRecvPoDetail(box,det,poKey){
   const fabrics=(det&&det.fabrics)||[];
   if(!fabrics.length){box.innerHTML='<div class="muted">No sheets in this group any more.</div>';return;}
-  box.innerHTML=fabrics.map((g,gi)=>{
+  const locked=!!(det&&det.locked);
+  const canEditRolls=!locked||recvIsAdmin;
+  const lockBanner=locked
+    ? '<div class="banner" style="background:rgba(184,134,11,.08);border:1px solid rgba(184,134,11,.4);padding:.45rem .7rem;border-radius:8px;font-size:12px;margin-bottom:.4rem;">🔒 This PO has been <b>uploaded to Odoo</b> — rolls &amp; quantities are locked'
+      +(recvIsAdmin?' (you are an admin: corrections stay possible and every change is logged below)':' to admins')
+      +'. Per-roll <b>quality</b> stays editable by everyone via Quality / Edit.</div>'
+    : '';
+  const fabricsHtml=fabrics.map((g,gi)=>{
     const fk=poKey+'|'+gi;
     const open=recvFabExpanded.has(fk);
     const mtrs=g.total_mtrs!=null?fmt1(g.total_mtrs)+' m':'<span style="color:var(--danger);" title="One or more sheets had no Width/GSM conversion">Missing Width/GSM</span>';
@@ -4385,7 +4404,12 @@ function renderRecvPoDetail(box,det,poKey){
           const q=r.quality_status==='Pass'?'<span style="color:#0a7d33;font-weight:700;">Pass</span>'
                 :(r.quality_status==='Fail'?'<span style="color:var(--danger);font-weight:700;">Fail</span>'
                 :'<span class="muted">'+esc(r.quality_status||'Pending')+'</span>');
-          return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td>${q}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td></tr>`;
+          const acts='<button class="btn" data-slip="'+Number(r.roll_id)+'" title="Print a slip for this roll" style="padding:1px 7px;font-size:11px;">🖨 Slip</button>'
+            +(canEditRolls&&r.roll_id!=null
+              ?' <button class="btn" data-roll-edit="'+Number(r.roll_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-kg="'+esc(String(r.qty_kg==null?'':r.qty_kg))+'" title="Correct this roll\u2019s weight" style="padding:1px 7px;font-size:11px;">✎</button>'
+               +' <button class="btn" data-roll-del="'+Number(r.roll_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" title="Delete this roll" style="padding:1px 7px;font-size:11px;">&times;</button>'
+              :'');
+          return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td>${q}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td><td style="white-space:nowrap;">${acts}</td></tr>`;
         }).join('');
         return `<div style="padding:.5rem 0;border-top:1px dashed var(--border,#d7d7de);">
           <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;">
@@ -4393,19 +4417,140 @@ function renderRecvPoDetail(box,det,poKey){
             <span style="margin-left:auto;white-space:nowrap;">
               <button class="btn btn-primary" data-print="${Number(s.id)}" style="padding:3px 9px;font-size:12px;">🖨 Print</button>
               <button class="btn" data-edit="${Number(s.id)}" style="padding:3px 8px;font-size:12px;">Quality / Edit</button>
-              <button class="btn" data-del="${Number(s.id)}" style="padding:3px 8px;font-size:12px;">Delete</button>
+              ${canEditRolls?`<button class="btn" data-del="${Number(s.id)}" style="padding:3px 8px;font-size:12px;">Delete</button>`:''}
             </span>
           </div>
           <div class="muted" style="font-size:12px;margin-top:2px;">${fmt(s.rolls_count)} rolls · ${fmt2(s.total_kg)} kg · ${smtrs} · quality: ${recvQualityCell(s)}${s.note?' · note: '+esc(s.note):''}</div>
-          <table class="data" style="margin-top:5px;max-width:560px;">
-            <thead><tr><th style="width:90px;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th>Quality</th></tr></thead>
-            <tbody>${rollRows||'<tr><td colspan="4" class="muted">No rolls recorded.</td></tr>'}</tbody>
+          <table class="data" style="margin-top:5px;max-width:680px;">
+            <thead><tr><th style="width:90px;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th>Quality</th><th style="width:150px;"></th></tr></thead>
+            <tbody>${rollRows||'<tr><td colspan="5" class="muted">No rolls recorded.</td></tr>'}</tbody>
           </table>
         </div>`;
       }).join('')
     }</div>`:'';
     return `<div style="margin:.25rem 0;">${head}${sheets}</div>`;
   }).join('');
+  box.innerHTML=lockBanner+fabricsHtml+recvAuditHtml(det&&det.audit);
+}
+// The who/what/when change log shown under a PO's fabrics (roll changes
+// merged with the Odoo upload history, newest first — server-built).
+function recvAuditHtml(audit){
+  audit=audit||[];
+  if(!audit.length)return '';
+  const LABELS={rolls_added:'Rolls added',roll_edited:'Roll edited',roll_deleted:'Roll deleted',
+                sheet_edited:'Sheet edited (admin)',sheet_deleted:'Sheet deleted',odoo_upload:'Odoo upload'};
+  const lines=audit.map(a=>{
+    const dd=a.details||{};
+    let what='';
+    if(a.action==='rolls_added')what='rolls '+(dd.rolls||[]).join(', ')+' · '+fmt2(dd.total_kg)+' kg';
+    else if(a.action==='roll_edited')what='roll '+dd.roll_no+': '+fmt2(dd.old_kg)+' → '+fmt2(dd.new_kg)+' kg';
+    else if(a.action==='roll_deleted')what='roll '+dd.roll_no+' ('+fmt2(dd.old_kg)+' kg)';
+    else if(a.action==='sheet_edited')what=fmt2(dd.old_kg)+' → '+fmt2(dd.new_kg)+' kg';
+    else if(a.action==='sheet_deleted')what=fmt(dd.rolls)+' rolls · '+fmt2(dd.total_kg)+' kg';
+    else if(a.action==='odoo_upload')what=String(dd.status||'');
+    const post=dd.after_upload?' <span style="color:#b8860b;font-weight:700;">(after upload)</span>':'';
+    return '<div style="font-size:11.5px;padding:1px 0;">'+esc(a.at_txt||'')+' · <b>'+esc(LABELS[a.action]||a.action||'')+'</b>'
+      +(a.fabric_name?' · '+esc(a.fabric_name):'')
+      +(what?' · '+esc(what):'')+post
+      +(a.actor_name?' · by '+esc(a.actor_name):'')+'</div>';
+  }).join('');
+  return '<div style="margin-top:.6rem;border-top:1px dashed var(--border,#d7d7de);padding-top:.4rem;">'
+    +'<div class="muted" style="font-size:11.5px;font-weight:700;margin-bottom:2px;">Change log (who / what / when)</div>'
+    +lines+'</div>';
+}
+// ── Per-roll actions from the drill-down ──
+async function recvRollEditFromBtn(btn){
+  const v=prompt('New weight (kg) for roll '+btn.dataset.rollNo+':',btn.dataset.kg||'');
+  if(v==null)return;
+  const kg=parseFloat(v);
+  if(isNaN(kg)||kg<=0){alert('Enter a weight greater than zero.');return;}
+  try{
+    const r=await fetch('/api/fabric/receiving/roll/'+encodeURIComponent(Number(btn.dataset.rollEdit)),{method:'PUT',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({qty_kg:kg})});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
+    loadRecvPoBatches();
+  }catch(e){alert('Could not update the roll: '+e.message);}
+}
+async function recvRollDeleteFromBtn(btn){
+  if(!confirm('Delete roll '+btn.dataset.rollNo+'? This cannot be undone.'))return;
+  try{
+    const r=await fetch('/api/fabric/receiving/roll/'+encodeURIComponent(Number(btn.dataset.rollDel)),{method:'DELETE',credentials:'include'});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
+    loadRecvPoBatches();
+  }catch(e){alert('Could not delete the roll: '+e.message);}
+}
+function printRollSlipFromBtn(btn){
+  const box=btn.closest('.recv-po-detail');
+  if(!box||!box.dataset.cached)return;
+  const det=JSON.parse(box.dataset.cached);
+  const rid=Number(btn.dataset.slip);
+  const meta=recvPoMeta[box.dataset.poDetail]||{};
+  for(const g of (det.fabrics||[]))
+    for(const s of (g.sheets||[]))
+      for(const r of (s.rolls||[]))
+        if(Number(r.roll_id)===rid){printRollSlip(g,s,r,meta);return;}
+  alert('Could not find this roll any more — refresh and try again.');
+}
+// A small printable slip for ONE roll (stuck on the physical roll).
+function printRollSlip(g,s,r,meta){
+  const html='<!doctype html><html><head><meta charset="utf-8"><title>Fabric roll slip</title>'
+    +'<style>body{font-family:Arial,Helvetica,sans-serif;margin:14px;}'
+    +'.slip{border:2px solid #000;border-radius:8px;padding:12px 14px;width:340px;}'
+    +'.slip h2{margin:0 0 4px;font-size:14px;letter-spacing:.4px;}'
+    +'.slip .big{font-size:28px;font-weight:800;text-align:center;margin:6px 0 8px;}'
+    +'.slip .row{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:3px 0;border-bottom:1px dotted #999;}'
+    +'@media print{@page{margin:8mm;}}</style></head><body>'
+    +'<div class="slip"><h2>VIVO — FABRIC ROLL</h2>'
+    +'<div class="big">Roll '+esc(String(r.roll_no))+'</div>'
+    +'<div class="row"><span>Fabric</span><b>'+esc(g.fabric_name||'—')+'</b></div>'
+    +'<div class="row"><span>Barcode</span><b>'+esc(g.barcode||'—')+'</b></div>'
+    +'<div class="row"><span>Purchase order</span><b>'+esc(meta.name||'—')+'</b></div>'
+    +'<div class="row"><span>Received</span><b>'+esc(s.receiving_date||s.created_at||'—')+'</b></div>'
+    +'<div class="row"><span>Weight</span><b>'+fmt2(r.qty_kg)+' kg</b></div>'
+    +'<div class="row"><span>Metres</span><b>'+(r.qty_mtrs!=null?fmt1(r.qty_mtrs)+' m':'Missing Width/GSM')+'</b></div>'
+    +'<div class="row"><span>Quality</span><b>'+esc(r.quality_status||'Pending')+'</b></div>'
+    +'</div><script>window.onload=function(){setTimeout(function(){window.print();},60);};<\/script></body></html>';
+  const w=window.open('','_blank','width=460,height=560');
+  if(!w){alert('Please allow pop-ups to print the roll slip.');return;}
+  w.document.open();w.document.write(html);w.document.close();w.focus();
+}
+// ── Full-PO receiving sheet (all fabrics & rolls on one printout) ──
+async function printPoFullSheet(poKey){
+  try{
+    const det=await apiFetch('/api/fabric/receiving/po-batch-detail?po_id='+encodeURIComponent(poKey));
+    const meta=recvPoMeta[poKey]||{};
+    openReceivingPrintWindow([buildPoSheetBody(det,meta)],'Fabric Receiving — '+(meta.name||('PO '+poKey)));
+  }catch(e){alert('Could not build the PO sheet: '+(e&&e.message||e));}
+}
+function buildPoSheetBody(det,meta){
+  const fabrics=(det&&det.fabrics)||[];
+  let totKg=0,totRolls=0,totM=0,mtrsMissing=false;
+  fabrics.forEach(g=>{
+    totKg+=Number(g.total_kg||0);totRolls+=Number(g.rolls_count||0);
+    if(g.total_mtrs==null)mtrsMissing=true;else totM+=Number(g.total_mtrs);
+  });
+  const secs=fabrics.map(g=>{
+    const rolls=[];
+    (g.sheets||[]).forEach(s=>(s.rolls||[]).forEach(r=>rolls.push(r)));
+    rolls.sort((a,b)=>Number(a.roll_no)-Number(b.roll_no));
+    const rows=rolls.map(r=>'<tr><td>'+esc(String(r.roll_no))+'</td><td class="r">'+fmt2(r.qty_kg)+'</td><td class="r">'
+      +(r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="miss">Missing Width/GSM</span>')+'</td><td>'
+      +esc(r.quality_status||'Pending')+(r.quality_notes?' — '+esc(r.quality_notes):'')+'</td></tr>').join('');
+    return '<div style="margin-top:12px;">'
+      +'<div style="font-weight:700;font-size:12.5px;border-bottom:1.5px solid #000;padding-bottom:2px;">'
+      +esc(g.fabric_name||'—')+(g.barcode?' · '+esc(g.barcode):'')
+      +' — '+fmt(g.rolls_count)+' roll'+(g.rolls_count===1?'':'s')+' · '+fmt2(g.total_kg)+' kg'
+      +(g.total_mtrs!=null?' · '+fmt1(g.total_mtrs)+' m':'')+'</div>'
+      +'<table class="rolls" style="width:100%;margin-top:4px;"><thead><tr><th>Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th>Quality</th></tr></thead><tbody>'
+      +(rows||'<tr><td colspan="4">No rolls.</td></tr>')+'</tbody></table></div>';
+  }).join('');
+  return '<div class="sheet-page"><div class="sheet">'
+    +'<div class="hd"><h1>FABRIC RECEIVING — PURCHASE ORDER SHEET</h1><img class="vivo-logo" src="'+VIVO_LOGO_DATA_URI+'" alt="Vivo"></div>'
+    +'<div style="font-size:12.5px;margin-top:4px;"><b>'+esc(meta.name||'')+'</b>'
+    +(meta.date?' · PO date '+esc(meta.date):'')
+    +' · '+fmt(fabrics.length)+' fabric'+(fabrics.length===1?'':'s')
+    +' · '+fmt(totRolls)+' roll'+(totRolls===1?'':'s')
+    +' · <b>'+fmt2(totKg)+' kg</b>'+(!mtrsMissing?' · '+fmt1(totM)+' m':'')+'</div>'
+    +secs+'</div></div>';
 }
 // ── PO batch review / upload modal ──
 let recvPoBatch=null;

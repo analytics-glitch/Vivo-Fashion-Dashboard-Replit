@@ -5,10 +5,21 @@ description: Rules for the Fabric Receiving sheet's per-roll quality inspection 
 
 # Fabric receiving quality + edit
 
-Per-roll Quality (status Pass/Fail/Pending/none + notes) is fillable by ANY fabric
-user after a sheet is saved; editing rolls/quantities is ADMIN-ONLY (gated in
-api_pg's `clerk_auth_gate` by regex on `PUT ^/api/fabric/receiving/\d+$`, not just
-client-side).
+**One receiving sheet per PO (DB-enforced).** A PO-level sheet row (UNIQUE
+po_id) owns per-product SECTIONS; rolls hang off the sections. ALL write paths
+(including the legacy create endpoint) must go through the shared append flow,
+which serializes the whole PO under a transaction-scoped advisory lock and
+assigns roll numbers server-side (progressive per product per PO, legacy rows
+counted). Never assign roll numbers client-side and never insert a section
+without linking it to the PO sheet, or the one-sheet invariant silently breaks.
+**Why:** a per-fabric-per-delivery model fragmented one PO into many sheets;
+the reviewer-mandated fix is PO-level identity with sections as children.
+
+**Upload locks rolls.** After a successful Odoo upload, roll add/edit/delete
+and sheet edit/delete are ADMIN-ONLY; every mutation is audited (with an
+after-upload flag) and surfaced as a change log merged with upload history.
+Per-roll Quality stays open to everyone at all times. Re-upload is allowed
+only while the Odoo PO is still Draft (server-checked live).
 
 **Invariant: `roll_no` must be unique per sheet.** The admin PUT rewrites all
 rolls (DELETE+INSERT → new roll_ids), so per-roll quality is carried over / matched

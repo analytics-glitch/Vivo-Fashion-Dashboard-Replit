@@ -4745,6 +4745,25 @@ def _ensure_receiving_tables(conn):
                     "ADD COLUMN IF NOT EXISTS po_date DATE")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_recv_po "
                     "ON fabric_receiving_sheets(po_id)")
+        # ONE receiving sheet per PO (enforced): the PO-level sheet is the
+        # unit of receiving. Product rows in fabric_receiving_sheets act as
+        # CHILD SECTIONS of this sheet (linked via po_sheet_id); rolls hang
+        # off the sections. UNIQUE(po_id) makes a second sheet for the same
+        # PO impossible at the database level. Legacy per-fabric sheets
+        # (po_sheet_id NULL) stay readable in their old shape. Safe for prod
+        # publish: brand-new table, so the UNIQUE can't fail on dirty rows.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_receiving_po_sheets (
+                id              SERIAL PRIMARY KEY,
+                po_id           BIGINT NOT NULL UNIQUE,
+                po_name         TEXT,
+                po_date         DATE,
+                created_by      TEXT,
+                created_by_name TEXT,
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+            )""")
+        cur.execute("ALTER TABLE fabric_receiving_sheets "
+                    "ADD COLUMN IF NOT EXISTS po_sheet_id INTEGER")
         # Audit of every "Upload to Odoo PO" push: who pushed, when, to which
         # PO, and the full per-product result summary (exactly what the UI was
         # shown). Failed attempts are recorded too (status='failed') so the
@@ -4784,6 +4803,23 @@ def _ensure_receiving_tables(conn):
                 quote_unit TEXT   NOT NULL DEFAULT 'kg',
                 PRIMARY KEY (po_id, price_key)
             )""")
+        # Who/what/when audit trail for roll & quantity changes on a PO's
+        # receiving sheets (adds, edits, deletes — including post-upload admin
+        # corrections). Shown on the PO sheet drill-down next to the upload
+        # history. details is a small JSON blob describing exactly what changed.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_recv_audit (
+                id          SERIAL PRIMARY KEY,
+                po_id       BIGINT,
+                sheet_id    INTEGER,
+                fabric_name TEXT,
+                action      TEXT NOT NULL,
+                details     JSONB,
+                actor_name  TEXT,
+                at          TIMESTAMPTZ NOT NULL DEFAULT now()
+            )""")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_recv_audit_po "
+                    "ON fabric_recv_audit(po_id)")
     conn.commit()
     _RECEIVING_TABLES_READY = True
 
@@ -4914,45 +4950,339 @@ def receiving_create(request: Request, body: dict = Body(...)):
         po_id_in = int(body.get("po_id"))
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="po_id must be a number")
-    po_link = _recv_fetch_draft_po(po_id_in)
+    # Route through the ONE-sheet-per-PO append path (client-supplied roll
+    # numbers are ignored — the server assigns them). This endpoint can never
+    # create a second sheet for the same PO: it creates/reopens the PO sheet
+    # and appends into the product's section, exactly like the new endpoint.
+    res = receiving_po_sheet_add_rolls(po_id_in, request, {
+        "product_id": product_id,
+        "rolls": [{"qty_kg": kg} for _no, kg in rolls],
+        "note": note,
+    })
+    return {"ok": True, "id": res["sheet_id"],
+            "roll_nos": res.get("roll_nos"),
+            "missing_conversion": res.get("missing_conversion")}
+
+# ── One-sheet-per-PO receiving: auto roll numbers, lock-after-upload, audit ──
+# Each Odoo PO has exactly ONE receiving sheet (fabric_receiving_po_sheets,
+# UNIQUE po_id) holding one SECTION per product (fabric_receiving_sheets rows
+# linked via po_sheet_id): rolls append into their product's section across
+# multi-day deliveries with roll numbers ASSIGNED BY THE SERVER (progressive per
+# product per PO, concurrency-safe via an advisory lock — never duplicated).
+# Once the PO has been SUCCESSFULLY uploaded to Odoo the rolls/quantities lock
+# for non-admins (quality stays open to everyone); admin corrections after the
+# lock are allowed and every add/edit/delete is written to fabric_recv_audit
+# (who / what / when), shown on the PO sheet.
+
+def _recv_is_admin(request):
+    u = getattr(request.state, "user", None) or {}
+    return u.get("role") == "admin"
+
+def _recv_po_locked(conn, po_id):
+    """A PO's rolls/quantities are LOCKED once it has at least one SUCCESSFUL
+    Odoo upload. Failed attempts do not lock."""
+    if po_id is None:
+        return False
+    rows = q(conn, "SELECT 1 FROM fabric_po_uploads "
+                   "WHERE po_id=%s AND status='success' LIMIT 1", (po_id,))
+    return bool(rows)
+
+def _recv_audit(cur, po_id, sheet_id, fabric_name, action, details, actor):
+    cur.execute("""
+        INSERT INTO fabric_recv_audit
+          (po_id, sheet_id, fabric_name, action, details, actor_name)
+        VALUES (%s,%s,%s,%s,%s,%s)
+    """, (po_id, sheet_id, fabric_name, action,
+          psycopg2.extras.Json(details or {}), actor))
+
+def _recv_refresh_sheet_totals(conn, sheet_id, actor_name):
+    """Recompute a sheet's totals from its rolls (using the sheet's SNAPSHOTTED
+    kg->metre conversion) and stamp the edit."""
+    rows = q(conn, """
+        SELECT s.kg_per_mtr,
+               COALESCE(SUM(r.qty_kg),0) as kg, COUNT(r.id) as n
+        FROM fabric_receiving_sheets s
+        LEFT JOIN fabric_receiving_rolls r ON r.sheet_id = s.id
+        WHERE s.id=%s GROUP BY s.kg_per_mtr
+    """, (sheet_id,))
+    if not rows:
+        return
+    kpm = rows[0].get("kg_per_mtr")
+    kpm = float(kpm) if kpm not in (None, "") and float(kpm) > 0 else None
+    total_kg = round(float(rows[0]["kg"] or 0), 3)
+    total_mtrs = round(total_kg / kpm, 1) if kpm else None
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE fabric_receiving_sheets
+               SET total_kg=%s, total_mtrs=%s, rolls_count=%s,
+                   updated_at=now(), updated_by_name=%s
+             WHERE id=%s
+        """, (total_kg, total_mtrs, int(rows[0]["n"] or 0),
+              actor_name, sheet_id))
+
+_RECV_LOCKED_MSG = ("This PO has already been uploaded to Odoo — roll and "
+                    "quantity changes are locked to admins now (quality "
+                    "results stay editable by everyone)")
+
+def _recv_parse_weights(body, key="rolls"):
+    """Validate a rolls payload where roll NUMBERS are server-assigned: a list
+    of 1..50 entries each carrying only qty_kg > 0."""
+    rolls_in = body.get(key)
+    if not isinstance(rolls_in, list) or not rolls_in:
+        raise HTTPException(status_code=400, detail="rolls list is required")
+    if len(rolls_in) > 50:
+        raise HTTPException(status_code=400,
+                            detail="add at most 50 rolls at a time")
+    weights = []
+    for i, r in enumerate(rolls_in, start=1):
+        v = r.get("qty_kg") if isinstance(r, dict) else r
+        try:
+            kg = float(v)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                detail=f"roll {i}: kgs must be a number")
+        if not (kg > 0):
+            raise HTTPException(status_code=400,
+                detail=f"roll {i}: kgs must be greater than zero")
+        weights.append(round(kg, 3))
+    return weights
+
+@fabric_router.post("/api/fabric/receiving/po-sheet/{po_id}/rolls")
+def receiving_po_sheet_add_rolls(po_id: int, request: Request,
+                                 body: dict = Body(...)):
+    """Append rolls of one fabric to a PO's receiving sheet. The PO holds ONE
+    sheet per product; if none exists yet it is created (reopening/appending
+    across multi-day deliveries just adds rolls to the same sheet). Roll
+    numbers are assigned SERVER-SIDE, continuing from the product's highest
+    number on this PO, under a per-(PO,product) advisory lock so two clerks
+    saving at once can never duplicate a number. Body:
+      {"product_id": <odoo id>, "rolls": [{"qty_kg": 12.5}, ...], "note": "…"}
+    After a successful Odoo upload only an admin may add rolls (audited)."""
+    product_id = body.get("product_id")
+    try:
+        product_id = int(product_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="product_id is required")
+    weights = _recv_parse_weights(body)
+    note = str(body.get("note") or "").strip() or None
     uid, name = _fabric_actor(request)
+    admin = _recv_is_admin(request)
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
+        locked = _recv_po_locked(conn, po_id)
+        if locked and not admin:
+            raise HTTPException(status_code=403, detail=_RECV_LOCKED_MSG)
         prod = _recv_product_info(conn, product_id)
         if not prod:
             raise HTTPException(status_code=404, detail="fabric not found")
-        kpm = prod.get("kg_per_mtr")
-        kpm = float(kpm) if kpm not in (None, "") and float(kpm) > 0 else None
-        total_kg = round(sum(kg for _, kg in rolls), 3)
-        total_mtrs = round(total_kg / kpm, 1) if kpm else None
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                INSERT INTO fabric_receiving_sheets
-                  (product_id, barcode, fabric_name, kg_per_mtr,
-                   total_kg, total_mtrs, rolls_count, note,
-                   created_by, created_by_name, po_id, po_name, po_date)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                RETURNING id
-            """, (product_id, prod.get("default_code"), prod.get("name"), kpm,
-                  total_kg, total_mtrs, len(rolls), note, uid, name,
-                  po_link["po_id"] if po_link else None,
-                  po_link["name"] if po_link else None,
-                  po_link["date_order"] if po_link else None))
-            sheet_id = cur.fetchone()["id"]
-            for roll_no, qty_kg in rolls:
+            # Serialize the whole PO: the lock holds until COMMIT, so the
+            # PO-sheet get-or-create, the section get-or-create AND the
+            # MAX(roll_no) read below can never race a concurrent save.
+            cur.execute(
+                "SELECT pg_advisory_xact_lock("
+                "hashtextextended('fabric-recv-po-' || %s, 42))",
+                (str(po_id),))
+            # ONE sheet per PO (UNIQUE po_id): reopen it if it exists,
+            # create it on the PO's very first receiving.
+            cur.execute("SELECT id, po_name, po_date "
+                        "FROM fabric_receiving_po_sheets WHERE po_id=%s",
+                        (po_id,))
+            po_sheet = cur.fetchone()
+            if po_sheet is None:
+                # Snapshot the PO header from a legacy sibling section when
+                # one exists (no Odoo round-trip needed); only a brand-new
+                # PO validates live against Odoo (must exist + be draft).
                 cur.execute("""
-                    INSERT INTO fabric_receiving_rolls (sheet_id, roll_no, qty_kg, qty_mtrs)
+                    SELECT po_name, po_date FROM fabric_receiving_sheets
+                    WHERE po_id=%s AND po_name IS NOT NULL
+                    ORDER BY id LIMIT 1
+                """, (po_id,))
+                sib = cur.fetchone()
+                if sib:
+                    po_name, po_date = sib["po_name"], sib["po_date"]
+                else:
+                    po_link = _recv_fetch_draft_po(po_id)
+                    po_name, po_date = po_link["name"], po_link["date_order"]
+                cur.execute("""
+                    INSERT INTO fabric_receiving_po_sheets
+                      (po_id, po_name, po_date, created_by, created_by_name)
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON CONFLICT (po_id) DO UPDATE SET po_id=EXCLUDED.po_id
+                    RETURNING id, po_name, po_date
+                """, (po_id, po_name, po_date, uid, name))
+                po_sheet = cur.fetchone()
+            po_sheet_id = po_sheet["id"]
+            po_name, po_date = po_sheet["po_name"], po_sheet["po_date"]
+            # Product SECTION of the PO sheet (one per fabric under the PO).
+            cur.execute("""
+                SELECT id, kg_per_mtr, fabric_name, po_sheet_id
+                FROM fabric_receiving_sheets
+                WHERE po_id=%s AND product_id=%s
+                ORDER BY id LIMIT 1
+            """, (po_id, product_id))
+            sheet = cur.fetchone()
+            section_created = sheet is None
+            if sheet is None:
+                kpm = prod.get("kg_per_mtr")
+                kpm = (float(kpm)
+                       if kpm not in (None, "") and float(kpm) > 0 else None)
+                cur.execute("""
+                    INSERT INTO fabric_receiving_sheets
+                      (product_id, barcode, fabric_name, kg_per_mtr,
+                       total_kg, total_mtrs, rolls_count, note,
+                       created_by, created_by_name, po_id, po_name, po_date,
+                       po_sheet_id)
+                    VALUES (%s,%s,%s,%s,0,NULL,0,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING id, kg_per_mtr, fabric_name
+                """, (product_id, prod.get("default_code"), prod.get("name"),
+                      kpm, note, uid, name, po_id, po_name, po_date,
+                      po_sheet_id))
+                sheet = cur.fetchone()
+            elif sheet.get("po_sheet_id") is None:
+                # Legacy section created before the PO-sheet model: adopt it
+                # into the PO's single sheet so appends keep one sheet per PO.
+                cur.execute("UPDATE fabric_receiving_sheets SET po_sheet_id=%s"
+                            " WHERE id=%s", (po_sheet_id, sheet["id"]))
+            if note and not section_created:
+                cur.execute("""
+                    UPDATE fabric_receiving_sheets
+                       SET note = CASE WHEN COALESCE(note,'')='' THEN %s
+                                       ELSE note || ' | ' || %s END
+                     WHERE id=%s
+                """, (note, note, sheet["id"]))
+            sheet_id = sheet["id"]
+            kpm = sheet.get("kg_per_mtr")
+            kpm = (float(kpm)
+                   if kpm not in (None, "") and float(kpm) > 0 else None)
+            # Next roll number continues from this product's highest number
+            # anywhere on this PO (legacy multi-sheet groups included).
+            cur.execute("""
+                SELECT COALESCE(MAX(r.roll_no),0) as mx
+                FROM fabric_receiving_rolls r
+                JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+                WHERE s.po_id=%s AND s.product_id=%s
+            """, (po_id, product_id))
+            next_no = int(cur.fetchone()["mx"]) + 1
+            roll_nos = []
+            for kg in weights:
+                cur.execute("""
+                    INSERT INTO fabric_receiving_rolls
+                      (sheet_id, roll_no, qty_kg, qty_mtrs)
                     VALUES (%s,%s,%s,%s)
-                """, (sheet_id, roll_no, qty_kg,
-                      round(qty_kg / kpm, 2) if kpm else None))
+                """, (sheet_id, next_no, kg,
+                      round(kg / kpm, 2) if kpm else None))
+                roll_nos.append(next_no)
+                next_no += 1
+            _recv_audit(cur, po_id, sheet_id, sheet.get("fabric_name"),
+                        "rolls_added",
+                        {"rolls": roll_nos,
+                         "total_kg": round(sum(weights), 3),
+                         "after_upload": bool(locked)}, name)
+        _recv_refresh_sheet_totals(conn, sheet_id, name)
         conn.commit()
-        _log_fabric_change("Receiving sheet saved", {
-            "id": sheet_id, "product": prod.get("name"),
-            "style_name": "", "qty": total_kg, "uom": "kg",
-            "note": f"{len(rolls)} rolls", "status": "received",
-        }, request)
-        return {"ok": True, "id": sheet_id,
-                "missing_conversion": kpm is None}
+        _log_fabric_change("Receiving rolls added", {
+            "id": sheet_id, "product": sheet.get("fabric_name"),
+            "style_name": "", "qty": round(sum(weights), 3), "uom": "kg",
+            "note": f"rolls {roll_nos[0]}–{roll_nos[-1]} (PO {po_id})",
+            "status": "received"}, request)
+        return {"ok": True, "sheet_id": sheet_id, "roll_nos": roll_nos,
+                "missing_conversion": kpm is None, "locked": locked}
+
+def _recv_roll_ctx(conn, roll_id):
+    """One roll + its sheet's PO context, or 404."""
+    rows = q(conn, """
+        SELECT r.id as roll_id, r.roll_no, r.qty_kg, r.sheet_id,
+               s.po_id, s.fabric_name, s.kg_per_mtr, s.rolls_count
+        FROM fabric_receiving_rolls r
+        JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+        WHERE r.id=%s
+    """, (roll_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="roll not found")
+    return rows[0]
+
+@fabric_router.put("/api/fabric/receiving/roll/{roll_id}")
+def receiving_roll_edit(roll_id: int, request: Request,
+                        body: dict = Body(...)):
+    """Correct ONE roll's weight. Open to any fabric user while the PO is
+    still un-uploaded; after a successful upload only an admin may edit
+    (the change is audited who/what/when either way). Body: {"qty_kg": 12.5}"""
+    try:
+        kg = float(body.get("qty_kg"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="qty_kg must be a number")
+    if not (kg > 0):
+        raise HTTPException(status_code=400,
+                            detail="qty_kg must be greater than zero")
+    kg = round(kg, 3)
+    _uid, name = _fabric_actor(request)
+    admin = _recv_is_admin(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        ctx = _recv_roll_ctx(conn, roll_id)
+        locked = _recv_po_locked(conn, ctx["po_id"])
+        if locked and not admin:
+            raise HTTPException(status_code=403, detail=_RECV_LOCKED_MSG)
+        kpm = ctx.get("kg_per_mtr")
+        kpm = float(kpm) if kpm not in (None, "") and float(kpm) > 0 else None
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE fabric_receiving_rolls SET qty_kg=%s, qty_mtrs=%s
+                WHERE id=%s
+            """, (kg, round(kg / kpm, 2) if kpm else None, roll_id))
+            _recv_audit(cur, ctx["po_id"], ctx["sheet_id"],
+                        ctx.get("fabric_name"), "roll_edited",
+                        {"roll_no": ctx["roll_no"],
+                         "old_kg": float(ctx["qty_kg"] or 0), "new_kg": kg,
+                         "after_upload": bool(locked)}, name)
+        _recv_refresh_sheet_totals(conn, ctx["sheet_id"], name)
+        conn.commit()
+        _log_fabric_change("Receiving roll edited", {
+            "id": ctx["sheet_id"], "product": ctx.get("fabric_name"),
+            "style_name": "", "qty": kg, "uom": "kg",
+            "note": f"roll {ctx['roll_no']} "
+                    f"{float(ctx['qty_kg'] or 0)}→{kg} kg",
+            "status": "edited"}, request)
+    return {"ok": True}
+
+@fabric_router.delete("/api/fabric/receiving/roll/{roll_id}")
+def receiving_roll_delete(roll_id: int, request: Request):
+    """Remove ONE roll (same lock rule as editing: any user pre-upload, admin
+    after — audited either way). Deleting the sheet's last roll removes the
+    now-empty sheet so the PO group stays clean."""
+    _uid, name = _fabric_actor(request)
+    admin = _recv_is_admin(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        ctx = _recv_roll_ctx(conn, roll_id)
+        locked = _recv_po_locked(conn, ctx["po_id"])
+        if locked and not admin:
+            raise HTTPException(status_code=403, detail=_RECV_LOCKED_MSG)
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM fabric_receiving_rolls WHERE id=%s",
+                        (roll_id,))
+            cur.execute("SELECT COUNT(*) FROM fabric_receiving_rolls "
+                        "WHERE sheet_id=%s", (ctx["sheet_id"],))
+            remaining = int(cur.fetchone()[0])
+            _recv_audit(cur, ctx["po_id"], ctx["sheet_id"],
+                        ctx.get("fabric_name"), "roll_deleted",
+                        {"roll_no": ctx["roll_no"],
+                         "old_kg": float(ctx["qty_kg"] or 0),
+                         "after_upload": bool(locked)}, name)
+            if remaining == 0:
+                cur.execute("DELETE FROM fabric_receiving_sheets WHERE id=%s",
+                            (ctx["sheet_id"],))
+        if remaining > 0:
+            _recv_refresh_sheet_totals(conn, ctx["sheet_id"], name)
+        conn.commit()
+        _log_fabric_change("Receiving roll deleted", {
+            "id": ctx["sheet_id"], "product": ctx.get("fabric_name"),
+            "style_name": "", "qty": float(ctx["qty_kg"] or 0), "uom": "kg",
+            "note": f"roll {ctx['roll_no']}"
+                    + (" (sheet emptied & removed)" if remaining == 0 else ""),
+            "status": "deleted"}, request)
+    return {"ok": True, "sheet_removed": remaining == 0}
 
 @fabric_router.get("/api/fabric/receiving")
 def receiving_list(search: str = Query(default=""),
@@ -5457,16 +5787,50 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
         rolls = []
         if sheets:
             rolls = q(conn, """
-                SELECT r.sheet_id, r.roll_no, r.qty_kg, r.qty_mtrs,
+                SELECT r.sheet_id, r.id as roll_id, r.roll_no,
+                       r.qty_kg, r.qty_mtrs,
                        r.quality_status, r.quality_notes
                 FROM fabric_receiving_rolls r
                 WHERE r.sheet_id = ANY(%s)
                 ORDER BY r.sheet_id, r.roll_no, r.id
             """, ([int(s["id"]) for s in sheets],))
+        # Lock state + the who/what/when trail (roll changes merged with the
+        # Odoo upload history, newest first) for this PO group.
+        locked, audit, po_sheet = False, [], None
+        if params:  # a real PO id (not the legacy "No PO" group)
+            ps = q(conn, """
+                SELECT id, po_name,
+                       to_char(po_date, 'DD Mon YYYY') as po_date,
+                       created_by_name,
+                       to_char(created_at AT TIME ZONE 'Africa/Nairobi',
+                               'DD Mon YYYY, HH24:MI') as created_at
+                FROM fabric_receiving_po_sheets WHERE po_id=%s
+            """, (params[0],))
+            po_sheet = ps[0] if ps else None
+            locked = _recv_po_locked(conn, params[0])
+            audit = q(conn, """
+                SELECT * FROM (
+                    SELECT a.at, a.action, a.fabric_name, a.actor_name,
+                           a.details,
+                           to_char(a.at AT TIME ZONE 'Africa/Nairobi',
+                                   'DD Mon YYYY, HH24:MI') as at_txt
+                    FROM fabric_recv_audit a WHERE a.po_id=%s
+                    UNION ALL
+                    SELECT u.uploaded_at as at,
+                           'odoo_upload' as action, NULL as fabric_name,
+                           u.uploaded_by_name as actor_name,
+                           jsonb_build_object('status', u.status) as details,
+                           to_char(u.uploaded_at AT TIME ZONE 'Africa/Nairobi',
+                                   'DD Mon YYYY, HH24:MI') as at_txt
+                    FROM fabric_po_uploads u WHERE u.po_id=%s
+                ) t ORDER BY t.at DESC LIMIT 60
+            """, (params[0], params[0]))
+            for a in audit:
+                a.pop("at", None)
     rolls_by_sheet = {}
     for r in rolls:
         rolls_by_sheet.setdefault(r["sheet_id"], []).append(
-            {k: r[k] for k in ("roll_no", "qty_kg", "qty_mtrs",
+            {k: r[k] for k in ("roll_id", "roll_no", "qty_kg", "qty_mtrs",
                                "quality_status", "quality_notes")})
     fabrics, order = {}, []
     for s in sheets:
@@ -5503,7 +5867,8 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
         g["total_mtrs"] = None if g["mtrs_missing"] else round(g["total_mtrs"], 1)
         out.append(g)
     out.sort(key=lambda g: (g.get("fabric_name") or "").lower())
-    return {"fabrics": out}
+    return {"fabrics": out, "locked": locked, "audit": audit,
+            "po_sheet": po_sheet}
 
 @fabric_router.get("/api/fabric/receiving/po-batch/{po_id}")
 def receiving_po_batch(po_id: int):
@@ -5888,7 +6253,7 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
     _uid, name = _fabric_actor(request)
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
-        srow = q(conn, "SELECT id, kg_per_mtr, fabric_name "
+        srow = q(conn, "SELECT id, kg_per_mtr, fabric_name, po_id, total_kg "
                        "FROM fabric_receiving_sheets WHERE id=%s", (sheet_id,))
         if not srow:
             raise HTTPException(status_code=404, detail="receiving sheet not found")
@@ -5935,13 +6300,38 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
                  WHERE id=%s
             """, (total_kg, total_mtrs, len(rolls), note, name, sheet_id))
             if po_change:
+                new_ps_id = None
+                if po_link:
+                    # Keep the ONE-sheet-per-PO invariant on relink: attach
+                    # the section to the target PO's (get-or-created) sheet.
+                    cur.execute("""
+                        INSERT INTO fabric_receiving_po_sheets
+                          (po_id, po_name, po_date, created_by_name)
+                        VALUES (%s,%s,%s,%s)
+                        ON CONFLICT (po_id) DO UPDATE SET po_id=EXCLUDED.po_id
+                        RETURNING id
+                    """, (po_link["po_id"], po_link["name"],
+                          po_link["date_order"], name))
+                    new_ps_id = cur.fetchone()[0]
                 cur.execute("""
                     UPDATE fabric_receiving_sheets
-                       SET po_id=%s, po_name=%s, po_date=%s WHERE id=%s
+                       SET po_id=%s, po_name=%s, po_date=%s, po_sheet_id=%s
+                     WHERE id=%s
                 """, (po_link["po_id"] if po_link else None,
                       po_link["name"] if po_link else None,
                       po_link["date_order"] if po_link else None,
-                      sheet_id))
+                      new_ps_id, sheet_id))
+            # Audit the admin rewrite on the sheet's (final) PO group.
+            audit_po = (po_link["po_id"] if (po_change and po_link)
+                        else (None if po_change else srow[0].get("po_id")))
+            if audit_po is not None:
+                _recv_audit(cur, audit_po, sheet_id,
+                            srow[0].get("fabric_name"), "sheet_edited",
+                            {"rolls": len(rolls),
+                             "old_kg": float(srow[0].get("total_kg") or 0),
+                             "new_kg": total_kg,
+                             "after_upload": _recv_po_locked(conn, audit_po)},
+                            name)
         conn.commit()
         _log_fabric_change("Receiving sheet edited", {
             "id": sheet_id, "product": srow[0].get("fabric_name"),
@@ -5953,13 +6343,27 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
 
 @fabric_router.delete("/api/fabric/receiving/{sheet_id}")
 def receiving_delete(sheet_id: int, request: Request):
+    _uid, name = _fabric_actor(request)
+    admin = _recv_is_admin(request)
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
-        snap = q(conn, "SELECT id, fabric_name, total_kg, rolls_count "
+        snap = q(conn, "SELECT id, fabric_name, total_kg, rolls_count, po_id "
                        "FROM fabric_receiving_sheets WHERE id=%s", (sheet_id,))
+        # Same lock rule as roll edits: once the PO has a successful Odoo
+        # upload, only an admin may delete a sheet (and it is audited).
+        po_id = snap[0].get("po_id") if snap else None
+        locked = _recv_po_locked(conn, po_id)
+        if locked and not admin:
+            raise HTTPException(status_code=403, detail=_RECV_LOCKED_MSG)
         with conn.cursor() as cur:
             cur.execute("DELETE FROM fabric_receiving_sheets WHERE id=%s", (sheet_id,))
             deleted = cur.rowcount
+            if deleted and po_id is not None:
+                _recv_audit(cur, po_id, sheet_id,
+                            snap[0].get("fabric_name"), "sheet_deleted",
+                            {"rolls": int(snap[0].get("rolls_count") or 0),
+                             "total_kg": float(snap[0].get("total_kg") or 0),
+                             "after_upload": bool(locked)}, name)
         conn.commit()
         if not deleted:
             raise HTTPException(status_code=404, detail="receiving sheet not found")
