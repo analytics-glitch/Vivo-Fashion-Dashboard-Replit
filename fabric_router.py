@@ -4762,6 +4762,28 @@ def _ensure_receiving_tables(conn):
             )""")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_po_uploads_po "
                     "ON fabric_po_uploads(po_id)")
+        # Per-PO Yuan pricing entered by the buying team before an upload:
+        # two FX rates on the PO header row, plus one Yuan price per
+        # Supplier Fabric Code (or per product when the fabric has no code).
+        # price_key is 'code:<supplier fabric code>' or 'product:<odoo id>'.
+        # quote_unit is the unit the Yuan price was quoted in ('kg' | 'm');
+        # the upload converts to the PO line's own unit via kg_per_mtr_eff.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_po_pricing (
+                po_id           BIGINT PRIMARY KEY,
+                yuan_to_usd     NUMERIC,
+                usd_to_kes      NUMERIC,
+                updated_by_name TEXT,
+                updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+            )""")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_po_pricing_items (
+                po_id      BIGINT NOT NULL,
+                price_key  TEXT   NOT NULL,
+                yuan_price NUMERIC,
+                quote_unit TEXT   NOT NULL DEFAULT 'kg',
+                PRIMARY KEY (po_id, price_key)
+            )""")
     conn.commit()
     _RECEIVING_TABLES_READY = True
 
@@ -5088,11 +5110,78 @@ def _po_uom_kind(uom_name):
         return "m"
     return None
 
+_PO_QUOTE_UNITS = ("kg", "m")
+
+def _recv_po_num(v):
+    """Positive float or None (pricing inputs: NULL/0/garbage all mean 'not set')."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
+def _recv_po_pricing(conn, po_id):
+    """The saved Yuan pricing for one PO: the two FX rates + the per-price-key
+    Yuan prices/quote units, normalized (only positive numbers count as set)."""
+    head_rows = q(conn, """
+        SELECT yuan_to_usd, usd_to_kes, updated_by_name,
+               to_char(updated_at AT TIME ZONE 'Africa/Nairobi',
+                       'DD Mon YYYY, HH24:MI') as updated_at
+        FROM fabric_po_pricing WHERE po_id=%s
+    """, (po_id,))
+    item_rows = q(conn, """
+        SELECT price_key, yuan_price, quote_unit
+        FROM fabric_po_pricing_items WHERE po_id=%s
+    """, (po_id,))
+    head = head_rows[0] if head_rows else {}
+    return {
+        "yuan_to_usd": _recv_po_num(head.get("yuan_to_usd")),
+        "usd_to_kes": _recv_po_num(head.get("usd_to_kes")),
+        "updated_by_name": head.get("updated_by_name"),
+        "updated_at": head.get("updated_at"),
+        "items": {r["price_key"]: {
+                      "yuan_price": _recv_po_num(r["yuan_price"]),
+                      "quote_unit": (r["quote_unit"]
+                                     if r["quote_unit"] in _PO_QUOTE_UNITS
+                                     else "kg")}
+                  for r in item_rows},
+    }
+
+def _recv_pricing_groups(plan):
+    """Group the plan's products by price key for the pricing form: products
+    sharing a Supplier Fabric Code share one Yuan price row; code-less fabrics
+    get their own row keyed by product."""
+    groups, order = {}, []
+    for e in plan:
+        key = e.get("price_key")
+        if not key:
+            continue
+        g = groups.get(key)
+        if g is None:
+            g = {"price_key": key,
+                 "code": e.get("supplier_fabric_code"),
+                 "yuan_price": e.get("yuan_price"),
+                 "quote_unit": e.get("quote_unit") or "kg",
+                 "products": []}
+            groups[key] = g
+            order.append(key)
+        g["products"].append({
+            "product_id": e.get("product_id"),
+            "fabric_name": e.get("fabric_name"),
+            "barcode": e.get("barcode"),
+            "line_uom": e.get("line_uom"),
+            "line_kind": _po_uom_kind(e.get("line_uom")),
+            "kg_per_mtr": e.get("kg_per_mtr"),
+            "action": e.get("action"),
+        })
+    return [groups[k] for k in order]
+
 def _recv_po_plan(conn, odoo, po_id):
     """Build the per-product upload plan for a PO batch: summed sheet totals
-    (kg always; metres via the LIVE kg_per_mtr_eff), the matching PO line and
-    exactly what would be pushed in the line's own unit. Returns (plan,
-    po_lines) where po_lines is the PO's current lines for display."""
+    (kg always; metres via the LIVE kg_per_mtr_eff), the matching PO line,
+    exactly what would be pushed in the line's own unit AND the KES unit price
+    computed from the saved per-PO Yuan pricing. Returns (plan, po_lines,
+    pricing) where po_lines is the PO's current lines for display."""
     db, uid, pwd, models = odoo
     line_rows = _odoo_kw(models, db, uid, pwd, "purchase.order.line",
                          "search_read", [[["order_id", "=", int(po_id)]]],
@@ -5117,13 +5206,16 @@ def _recv_po_plan(conn, odoo, po_id):
                MAX(s.barcode)        as barcode,
                COUNT(*)              as sheets,
                SUM(s.total_kg)       as total_kg,
-               MAX(p.kg_per_mtr_eff) as kg_per_mtr
+               MAX(p.kg_per_mtr_eff) as kg_per_mtr,
+               MAX(NULLIF(BTRIM(p.supplier_fabric_code),''))
+                                     as supplier_fabric_code
         FROM fabric_receiving_sheets s
         LEFT JOIN raw_fabric_products p ON p.id = s.product_id
         WHERE s.po_id=%s
         GROUP BY s.product_id
         ORDER BY MAX(s.fabric_name)
     """, (po_id,))
+    pricing = _recv_po_pricing(conn, po_id)
     # Products needing a NEW PO line → read their purchase unit + default cost
     # from Odoo once (active_test False so an archived product still resolves).
     missing = [int(t["product_id"]) for t in totals
@@ -5149,14 +5241,23 @@ def _recv_po_plan(conn, odoo, po_id):
         kpm = t.get("kg_per_mtr")
         kpm = float(kpm) if kpm not in (None, "") and float(kpm) > 0 else None
         mtrs = round(kg / kpm, 1) if kpm else None
+        sfc = t.get("supplier_fabric_code") or None
         e = {"product_id": pid,
              "fabric_name": t.get("fabric_name"),
              "barcode": t.get("barcode"),
              "sheets": int(t.get("sheets") or 0),
              "total_kg": kg, "total_mtrs": mtrs,
+             "kg_per_mtr": kpm,
+             "supplier_fabric_code": sfc,
+             "price_key": f"code:{sfc}" if sfc else f"product:{pid}",
+             "yuan_price": None, "quote_unit": "kg",
+             "push_price": None, "price_missing": False,
              "action": None, "flags": [],
              "line_id": None, "line_qty": None, "line_uom": None,
              "push_qty": None, "push_uom": None}
+        it = pricing["items"].get(e["price_key"]) or {}
+        e["yuan_price"] = it.get("yuan_price")
+        e["quote_unit"] = it.get("quote_unit") or "kg"
         matches = by_product.get(pid, [])
         if matches:
             l = matches[0]
@@ -5197,8 +5298,37 @@ def _recv_po_plan(conn, odoo, po_id):
             e["flags"].append(
                 f"unsupported unit '{e['line_uom'] or '?'}' — only kg / "
                 "metre lines can be uploaded")
+        # Price: Yuan quote → the PO line's OWN unit → KES via the two rates.
+        # A cross-unit quote (per-kg on a metre line or per-metre on a kg
+        # line) needs the fabric's live kg/m factor; without one the product
+        # is BLOCKED (same pattern as the quantity block) — never guessed.
+        # Missing rates / missing Yuan price do not block per-product; they
+        # block the WHOLE upload (the pricing form must be completed first).
+        if e["action"] in ("update", "create"):
+            y2u, u2k = pricing["yuan_to_usd"], pricing["usd_to_kes"]
+            yp, qu = e["yuan_price"], e["quote_unit"]
+            if qu != kind and not kpm:
+                e["action"] = "blocked"
+                e["flags"].append(
+                    f"price is quoted per {'metre' if qu == 'm' else 'kg'} "
+                    f"but the PO line is in "
+                    f"{'metres' if kind == 'm' else 'kg'} and this fabric "
+                    "has no usable kg→metre conversion — fix Width/GSM "
+                    "(or a stored kg/m) in Odoo first")
+            elif yp is None or y2u is None or u2k is None:
+                e["price_missing"] = True
+                e["flags"].append(
+                    "Yuan price / FX rates not entered yet — complete the "
+                    "pricing form before uploading")
+            else:
+                unit_yuan = yp
+                if qu == "kg" and kind == "m":
+                    unit_yuan = yp * kpm
+                elif qu == "m" and kind == "kg":
+                    unit_yuan = yp / kpm
+                e["push_price"] = round(unit_yuan * y2u * u2k, 4)
         plan.append(e)
-    return plan, po_lines
+    return plan, po_lines, pricing
 
 @fabric_router.get("/api/fabric/receiving/draft-pos")
 def receiving_draft_pos(q_: str = Query(default="", alias="q"),
@@ -5272,7 +5402,7 @@ def receiving_po_batch(po_id: int):
     po = _recv_read_po(odoo, po_id, require_draft=False)
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
-        plan, po_lines = _recv_po_plan(conn, odoo, po_id)
+        plan, po_lines, pricing = _recv_po_plan(conn, odoo, po_id)
         sheets = q(conn, """
             SELECT s.id, s.fabric_name, s.barcode, s.rolls_count,
                    s.total_kg, s.total_mtrs, s.created_by_name,
@@ -5290,8 +5420,104 @@ def receiving_po_batch(po_id: int):
         """, (po_id,))
     for e in plan:  # strip create-only internals from the response
         e.pop("_uom_id", None); e.pop("_price", None); e.pop("_odoo_name", None)
+    pricing["groups"] = _recv_pricing_groups(plan)
+    pricing.pop("items", None)  # the groups carry the saved values
     return {"po": po, "plan": plan, "lines": po_lines, "sheets": sheets,
-            "last_upload": last[0] if last else None}
+            "pricing": pricing, "last_upload": last[0] if last else None}
+
+@fabric_router.post("/api/fabric/receiving/po-batch/{po_id}/pricing")
+def receiving_po_pricing_save(po_id: int, request: Request,
+                              body: dict = Body(...)):
+    """Save the per-PO Yuan pricing form: the two FX rates (Yuan→USD and
+    USD→KES) plus one Yuan price + quote unit per price key. Values persist
+    per PO (survive reload, reused on re-upload) and stay editable until the
+    upload. Empty/zero inputs are stored as NULL ('not set yet')."""
+    def _rate(name):
+        v = body.get(name)
+        if v in (None, ""):
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                                detail=f"{name} must be a number")
+        if not (f > 0):
+            raise HTTPException(status_code=400,
+                                detail=f"{name} must be greater than zero")
+        return f
+    y2u, u2k = _rate("yuan_to_usd"), _rate("usd_to_kes")
+    items_in = body.get("items")
+    if not isinstance(items_in, list):
+        items_in = []
+    items = []
+    for i, it in enumerate(items_in, start=1):
+        if not isinstance(it, dict):
+            raise HTTPException(status_code=400,
+                                detail=f"pricing row {i}: invalid entry")
+        key = str(it.get("price_key") or "").strip()
+        if not (key.startswith("code:") or key.startswith("product:")):
+            raise HTTPException(status_code=400,
+                                detail=f"pricing row {i}: bad price key")
+        qu = str(it.get("quote_unit") or "kg").strip().lower()
+        if qu not in _PO_QUOTE_UNITS:
+            raise HTTPException(status_code=400,
+                detail=f"pricing row {i}: unit must be per kg or per metre")
+        yp = it.get("yuan_price")
+        if yp in (None, ""):
+            yp = None
+        else:
+            try:
+                yp = float(yp)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400,
+                    detail=f"pricing row {i}: Yuan price must be a number")
+            if not (yp > 0):
+                raise HTTPException(status_code=400,
+                    detail=f"pricing row {i}: Yuan price must be greater "
+                           "than zero")
+        items.append((key, yp, qu))
+    _uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO fabric_po_pricing
+                  (po_id, yuan_to_usd, usd_to_kes, updated_by_name, updated_at)
+                VALUES (%s,%s,%s,%s,now())
+                ON CONFLICT (po_id) DO UPDATE SET
+                  yuan_to_usd=EXCLUDED.yuan_to_usd,
+                  usd_to_kes=EXCLUDED.usd_to_kes,
+                  updated_by_name=EXCLUDED.updated_by_name,
+                  updated_at=now()
+            """, (po_id, y2u, u2k, name))
+            # The form always posts the FULL set of rows for this PO, so a
+            # delete + reinsert keeps the stored keys in lockstep with the
+            # products actually on the batch (no stale leftovers).
+            cur.execute("DELETE FROM fabric_po_pricing_items WHERE po_id=%s",
+                        (po_id,))
+            for key, yp, qu in items:
+                cur.execute("""
+                    INSERT INTO fabric_po_pricing_items
+                      (po_id, price_key, yuan_price, quote_unit)
+                    VALUES (%s,%s,%s,%s)
+                """, (po_id, key, yp, qu))
+        conn.commit()
+    return {"ok": True}
+
+def _recv_hq_analytic_id(odoo):
+    """Resolve the 'HQ' analytic account in Odoo by name (case-insensitive
+    exact match), once per upload. Fails loudly when it cannot be found so
+    lines are never written without their analytic distribution."""
+    db, uid, pwd, models = odoo
+    rows = _odoo_kw(models, db, uid, pwd, "account.analytic.account",
+                    "search_read", [[["name", "=ilike", "hq"]]],
+                    {"fields": ["name"], "limit": 1})
+    if not rows:
+        raise HTTPException(status_code=502,
+            detail='The "HQ" analytic account was not found in Odoo — '
+                   "nothing was uploaded. Create (or rename) it under "
+                   "Accounting → Analytic Accounts, then retry.")
+    return int(rows[0]["id"])
 
 @fabric_router.post("/api/fabric/receiving/po-batch/{po_id}/upload")
 def receiving_po_upload(po_id: int, request: Request):
@@ -5307,16 +5533,48 @@ def receiving_po_upload(po_id: int, request: Request):
     po = _recv_read_po(odoo, po_id, require_draft=True)
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
-        plan, _po_lines = _recv_po_plan(conn, odoo, po_id)
+        plan, _po_lines, pricing = _recv_po_plan(conn, odoo, po_id)
         if not plan:
             raise HTTPException(status_code=400,
                 detail="No receiving sheets are linked to this PO yet")
+        # Pricing gate: BOTH FX rates and a Yuan price for every product that
+        # would actually be pushed must be in place before anything is
+        # written. Blocked products (quantity or conversion blocks) are
+        # excluded — they never reach Odoo anyway.
+        missing_bits = []
+        if pricing["yuan_to_usd"] is None or pricing["usd_to_kes"] is None:
+            missing_bits.append("both FX rates (Yuan→USD and USD→KES)")
+        unpriced = sorted({(e.get("fabric_name") or e.get("barcode")
+                            or f"product {e['product_id']}")
+                           for e in plan
+                           if e["action"] in ("update", "create")
+                           and e.get("push_price") is None})
+        if unpriced:
+            missing_bits.append("a Yuan price for: " + ", ".join(unpriced))
+        if missing_bits:
+            raise HTTPException(status_code=400,
+                detail="Pricing is incomplete — enter "
+                       + " and ".join(missing_bits)
+                       + " in the pricing form, then upload again. "
+                       "Nothing was uploaded.")
+        # Resolve the HQ analytic account ONCE per upload; a missing account
+        # aborts before any line is touched (lines are never written without
+        # their 100% HQ analytic distribution).
+        hq_id = _recv_hq_analytic_id(odoo)
+        # Every touched line gets the computed KES price, an explicitly
+        # EMPTY tax set (command 5 = clear all, so the Taxes column stays
+        # blank even when Odoo auto-applied a default) and 100% HQ.
+        def _line_extras(e):
+            return {"price_unit": e["push_price"],
+                    "taxes_id": [[5, 0, 0]],
+                    "analytic_distribution": {str(hq_id): 100}}
         results, error = [], None
         for e in plan:
             row = {k: e.get(k) for k in (
                 "product_id", "fabric_name", "barcode", "sheets", "total_kg",
                 "total_mtrs", "line_id", "line_qty", "line_uom",
-                "push_qty", "push_uom", "flags")}
+                "push_qty", "push_uom", "push_price", "yuan_price",
+                "quote_unit", "flags")}
             if error is not None:
                 row["result"] = "skipped"
                 results.append(row)
@@ -5327,9 +5585,10 @@ def receiving_po_upload(po_id: int, request: Request):
                 continue
             try:
                 if e["action"] == "update":
+                    vals = {"product_qty": e["push_qty"]}
+                    vals.update(_line_extras(e))
                     _odoo_kw(models, db, ouid, pwd, "purchase.order.line",
-                             "write", [[int(e["line_id"])],
-                                       {"product_qty": e["push_qty"]}])
+                             "write", [[int(e["line_id"])], vals])
                     row["result"] = "updated"
                 else:
                     vals = {"order_id": int(po_id),
@@ -5337,9 +5596,9 @@ def receiving_po_upload(po_id: int, request: Request):
                             "name": e.get("_odoo_name")
                                     or e.get("fabric_name") or "",
                             "product_qty": e["push_qty"],
-                            "price_unit": e.get("_price") or 0,
                             "date_planned": datetime.datetime.utcnow()
                                             .strftime("%Y-%m-%d %H:%M:%S")}
+                    vals.update(_line_extras(e))
                     if e.get("_uom_id"):
                         vals["product_uom"] = int(e["_uom_id"])
                     new_id = _odoo_kw(models, db, ouid, pwd,
@@ -5361,7 +5620,11 @@ def receiving_po_upload(po_id: int, request: Request):
                    uploaded_by, uploaded_by_name)
                 VALUES (%s,%s,%s,%s,%s,%s)
             """, (po_id, po.get("name"), status,
-                  psycopg2.extras.Json({"results": results, "error": error}),
+                  psycopg2.extras.Json({
+                      "results": results, "error": error,
+                      "pricing": {"yuan_to_usd": pricing["yuan_to_usd"],
+                                  "usd_to_kes": pricing["usd_to_kes"],
+                                  "hq_analytic_id": hq_id}}),
                   actor_id, actor_name))
         conn.commit()
     _log_fabric_change("PO upload to Odoo", {

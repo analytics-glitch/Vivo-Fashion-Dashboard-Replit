@@ -1140,10 +1140,11 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div id="recv-po-last" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
      <div class="tbl-wrap">
       <table class="data">
-       <thead><tr><th>Fabric</th><th>Barcode</th><th class="r">Sheets</th><th class="r">Received kgs</th><th class="r">Received mtrs</th><th class="r">On PO now</th><th class="r">Will upload</th><th>Status</th></tr></thead>
+       <thead><tr><th>Fabric</th><th>Barcode</th><th class="r">Sheets</th><th class="r">Received kgs</th><th class="r">Received mtrs</th><th class="r">On PO now</th><th class="r">Will upload</th><th class="r">Unit price (KES)</th><th>Status</th></tr></thead>
        <tbody id="recv-po-plan-body"></tbody>
       </table>
      </div>
+     <div id="recv-po-pricing" style="margin-top:12px;"></div>
      <div id="recv-po-sheets" class="muted" style="font-size:12px;margin-top:8px;"></div>
      <div id="recv-po-result" style="margin-top:10px;"></div>
      <div class="flex" style="margin-top:14px;gap:.6rem;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
@@ -4414,7 +4415,8 @@ async function openRecvPoBatch(poId){
   document.getElementById('recv-po-state').textContent='';
   document.getElementById('recv-po-title').textContent='Purchase order batch';
   document.getElementById('recv-po-sub').textContent='';
-  document.getElementById('recv-po-plan-body').innerHTML='<tr><td colspan="8" class="loading">Loading the PO from Odoo…</td></tr>';
+  document.getElementById('recv-po-pricing').innerHTML='';
+  document.getElementById('recv-po-plan-body').innerHTML='<tr><td colspan="9" class="loading">Loading the PO from Odoo…</td></tr>';
   document.getElementById('recv-po-upload-btn').disabled=true;
   document.getElementById('recv-po-overlay').style.display='flex';
   try{
@@ -4422,7 +4424,7 @@ async function openRecvPoBatch(poId){
     recvPoBatch={po_id:poId,data:d};
     renderRecvPoBatch();
   }catch(e){
-    document.getElementById('recv-po-plan-body').innerHTML='<tr><td colspan="8" class="muted" style="padding:1rem;">Could not load this PO batch.</td></tr>';
+    document.getElementById('recv-po-plan-body').innerHTML='<tr><td colspan="9" class="muted" style="padding:1rem;">Could not load this PO batch.</td></tr>';
     document.getElementById('recv-po-err').innerHTML='<div class="banner banner-err">'+esc(e.message)+'</div>';
   }
 }
@@ -4452,6 +4454,9 @@ function renderRecvPoBatch(){
     const mtrs=e.total_mtrs!=null?fmt1(e.total_mtrs):'<span style="color:var(--danger);" title="No usable kg→metre conversion">Missing Width/GSM</span>';
     const onPo=e.line_id!=null?(fmt2(e.line_qty)+' '+esc(e.line_uom||'')):'<span class="muted">not on PO</span>';
     const push=e.push_qty!=null?('<b>'+fmt2(e.push_qty)+'</b> '+esc(e.push_uom||'')):'<span class="muted">—</span>';
+    const price=e.push_price!=null
+      ?('<b>'+fmt2(e.push_price)+'</b>'+(e.line_uom?('<span class="muted" style="font-size:11px;"> /'+esc(e.line_uom)+'</span>'):''))
+      :(e.price_missing?'<span style="color:#b8860b;font-weight:700;" title="Enter the Yuan price + FX rates below">needs pricing</span>':'<span class="muted">—</span>');
     return `<tr>
       <td>${esc(e.fabric_name||'—')}</td>
       <td>${esc(e.barcode||'—')}</td>
@@ -4460,9 +4465,11 @@ function renderRecvPoBatch(){
       <td class="r">${mtrs}</td>
       <td class="r" style="white-space:nowrap;">${onPo}</td>
       <td class="r" style="white-space:nowrap;">${push}</td>
+      <td class="r" style="white-space:nowrap;">${price}</td>
       <td>${recvPoStatusCell(e)}</td>
     </tr>`;
-  }).join(''):'<tr><td colspan="8" class="muted" style="padding:1rem;">No receiving sheets are linked to this PO yet.</td></tr>';
+  }).join(''):'<tr><td colspan="9" class="muted" style="padding:1rem;">No receiving sheets are linked to this PO yet.</td></tr>';
+  renderRecvPoPricing();
   const sheets=d.sheets||[];
   document.getElementById('recv-po-sheets').innerHTML=sheets.length
     ? '<b>'+sheets.length+' linked sheet'+(sheets.length===1?'':'s')+':</b> '
@@ -4474,6 +4481,139 @@ function renderRecvPoBatch(){
     ? 'PO state: <b>draft</b> — upload SETS each line\u2019s quantity to the summed received total (re-uploading is safe).'
     : 'PO state: <b style="color:var(--danger);">'+esc(po.state||'unknown')+'</b> — quantities can only be uploaded onto a <b>draft</b> PO.';
   document.getElementById('recv-po-upload-btn').disabled=!(isDraft&&pushable);
+}
+// ── Per-PO Yuan → KES pricing form ──
+// The form state lives in recvPoBatch.pricingForm and is rebuilt from the
+// server payload on every renderRecvPoBatch (open / after save / after
+// upload). Typing only updates the state + the live KES previews; Save
+// pricing persists it and refetches the batch so the plan table shows the
+// server-computed prices (client math mirrors the server exactly).
+function recvPoNum(v){const f=parseFloat(v);return (isFinite(f)&&f>0)?f:null;}
+function recvPoKesPreview(g,p){
+  const f=recvPoBatch&&recvPoBatch.pricingForm;if(!f)return'—';
+  const it=f.items[g.price_key]||{};
+  const yp=recvPoNum(it.yuan_price),qu=it.quote_unit==='m'?'m':'kg';
+  const y2u=recvPoNum(f.yuan_to_usd),u2k=recvPoNum(f.usd_to_kes);
+  if(p.action==='blocked')return'<span class="muted">blocked</span>';
+  const kind=p.line_kind,kpm=recvPoNum(p.kg_per_mtr);
+  if(!kind)return'<span class="muted">—</span>';
+  if(qu!==kind&&!kpm)return'<span style="color:var(--danger);font-weight:700;" title="Cross-unit price needs a kg→metre conversion — fix Width/GSM in Odoo">needs kg/m</span>';
+  if(yp==null||y2u==null||u2k==null)return'<span class="muted">—</span>';
+  let u=yp;
+  if(qu==='kg'&&kind==='m')u=yp*kpm;
+  else if(qu==='m'&&kind==='kg')u=yp/kpm;
+  return'<b>'+fmt2(u*y2u*u2k)+'</b> KES / '+esc(p.line_uom||kind);
+}
+function recvPoRefreshPreviews(){
+  if(!recvPoBatch)return;
+  const groups=(recvPoBatch.data.pricing&&recvPoBatch.data.pricing.groups)||[];
+  document.querySelectorAll('#recv-po-pricing [data-rpp-prev]').forEach(el=>{
+    const gi=Number(el.dataset.gi),pi=Number(el.dataset.pi);
+    const g=groups[gi];if(!g)return;
+    const p=(g.products||[])[pi];if(!p)return;
+    el.innerHTML=recvPoKesPreview(g,p);
+  });
+}
+function recvPoPricingInput(field,value,key){
+  if(!recvPoBatch||!recvPoBatch.pricingForm)return;
+  const f=recvPoBatch.pricingForm;
+  if(key){f.items[key]=f.items[key]||{};f.items[key][field]=value;}
+  else f[field]=value;
+  recvPoRefreshPreviews();
+}
+function renderRecvPoPricing(){
+  const box=document.getElementById('recv-po-pricing');
+  if(!recvPoBatch){box.innerHTML='';return;}
+  const pr=recvPoBatch.data.pricing||{},groups=pr.groups||[];
+  if(!groups.length){box.innerHTML='';return;}
+  // Rebuild the editable state from the server payload.
+  recvPoBatch.pricingForm={
+    yuan_to_usd:pr.yuan_to_usd!=null?String(pr.yuan_to_usd):'',
+    usd_to_kes:pr.usd_to_kes!=null?String(pr.usd_to_kes):'',
+    items:{}
+  };
+  groups.forEach(g=>{recvPoBatch.pricingForm.items[g.price_key]={
+    yuan_price:g.yuan_price!=null?String(g.yuan_price):'',
+    quote_unit:g.quote_unit==='m'?'m':'kg'};});
+  const stamp=pr.updated_at?('Saved '+pr.updated_at+(pr.updated_by_name?(' by '+pr.updated_by_name):'')):'Not saved yet';
+  const numStyle='width:110px;padding:.3rem .45rem;border:1px solid var(--border,#d7d7de);border-radius:6px;font-size:13px;';
+  const rows=groups.map((g,gi)=>{
+    const it=recvPoBatch.pricingForm.items[g.price_key];
+    const label=g.code
+      ?('<b>'+esc(g.code)+'</b><div class="muted" style="font-size:11px;">Supplier fabric code · '+g.products.length+' fabric'+(g.products.length===1?'':'s')+'</div>')
+      :('<b>'+esc((g.products[0]&&g.products[0].fabric_name)||'—')+'</b><div class="muted" style="font-size:11px;">no supplier code — priced per product</div>');
+    const prods=g.products.map((p,pi)=>
+      '<div style="font-size:12px;margin-top:2px;display:flex;gap:.6rem;justify-content:space-between;">'
+      +'<span>'+esc(p.fabric_name||p.barcode||'—')+(p.line_uom?(' <span class="muted">('+esc(p.line_uom)+' line)</span>'):'')+'</span>'
+      +'<span data-rpp-prev data-gi="'+gi+'" data-pi="'+pi+'" style="white-space:nowrap;">'+recvPoKesPreview(g,p)+'</span></div>').join('');
+    return `<tr>
+      <td style="vertical-align:top;">${label}</td>
+      <td style="vertical-align:top;white-space:nowrap;">
+        <input type="number" min="0" step="any" inputmode="decimal" style="${numStyle}" placeholder="¥ price"
+          value="${esc(it.yuan_price)}" oninput="recvPoPricingInput('yuan_price',this.value,'${esc(g.price_key)}')">
+        <select style="padding:.3rem .35rem;border:1px solid var(--border,#d7d7de);border-radius:6px;font-size:13px;"
+          onchange="recvPoPricingInput('quote_unit',this.value,'${esc(g.price_key)}')">
+          <option value="kg"${it.quote_unit==='kg'?' selected':''}>per kg</option>
+          <option value="m"${it.quote_unit==='m'?' selected':''}>per metre</option>
+        </select>
+      </td>
+      <td style="vertical-align:top;">${prods}</td>
+    </tr>`;
+  }).join('');
+  box.innerHTML=`
+   <div style="border:1px solid var(--border,#d7d7de);border-radius:10px;padding:.8rem .9rem;background:rgba(0,0,0,.015);">
+    <div class="flex" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;">
+     <div><b>Pricing (Yuan → KES)</b><div class="muted" style="font-size:11px;">Upload is blocked until both FX rates and every Yuan price are entered. Prices are written to the PO lines in KES, taxes cleared, analytic 100% HQ.</div></div>
+     <span class="muted" id="recv-po-pricing-stamp" style="font-size:11px;">${esc(stamp)}</span>
+    </div>
+    <div class="flex" style="gap:1rem;margin-top:.6rem;flex-wrap:wrap;align-items:center;">
+     <label style="font-size:12px;">Yuan → USD&nbsp;
+      <input type="number" min="0" step="any" inputmode="decimal" style="${numStyle}" placeholder="e.g. 0.14"
+        value="${esc(recvPoBatch.pricingForm.yuan_to_usd)}" oninput="recvPoPricingInput('yuan_to_usd',this.value)"></label>
+     <label style="font-size:12px;">USD → KES&nbsp;
+      <input type="number" min="0" step="any" inputmode="decimal" style="${numStyle}" placeholder="e.g. 129.5"
+        value="${esc(recvPoBatch.pricingForm.usd_to_kes)}" oninput="recvPoPricingInput('usd_to_kes',this.value)"></label>
+    </div>
+    <div class="tbl-wrap" style="margin-top:.6rem;">
+     <table class="data">
+      <thead><tr><th style="width:220px;">Supplier fabric code</th><th style="width:230px;">Yuan price</th><th>Fabrics · live KES preview (in each PO line's unit)</th></tr></thead>
+      <tbody>${rows}</tbody>
+     </table>
+    </div>
+    <div class="flex" style="margin-top:.6rem;justify-content:flex-end;">
+     <button class="btn" id="recv-po-pricing-save" onclick="saveRecvPoPricing(true)">Save pricing</button>
+    </div>
+   </div>`;
+}
+async function saveRecvPoPricing(refresh){
+  if(!recvPoBatch||!recvPoBatch.pricingForm)return false;
+  const f=recvPoBatch.pricingForm;
+  const body={
+    yuan_to_usd:f.yuan_to_usd===''?null:f.yuan_to_usd,
+    usd_to_kes:f.usd_to_kes===''?null:f.usd_to_kes,
+    items:Object.keys(f.items).map(k=>({price_key:k,
+      yuan_price:f.items[k].yuan_price===''?null:f.items[k].yuan_price,
+      quote_unit:f.items[k].quote_unit==='m'?'m':'kg'}))
+  };
+  const btn=document.getElementById('recv-po-pricing-save');
+  if(btn){btn.disabled=true;btn.textContent='Saving…';}
+  try{
+    const r=await fetch('/api/fabric/receiving/po-batch/'+encodeURIComponent(recvPoBatch.po_id)+'/pricing',
+      {method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    let res={};try{res=await r.json();}catch(_){}
+    if(!r.ok)throw new Error(res.detail||('http '+r.status));
+    if(refresh){
+      const d2=await apiFetch('/api/fabric/receiving/po-batch/'+encodeURIComponent(recvPoBatch.po_id));
+      if(recvPoBatch){recvPoBatch.data=d2;renderRecvPoBatch();}
+    }
+    return true;
+  }catch(e){
+    document.getElementById('recv-po-err').innerHTML='<div class="banner banner-err">Could not save pricing: '+esc(e.message)+'</div>';
+    return false;
+  }finally{
+    const b=document.getElementById('recv-po-pricing-save');
+    if(b){b.disabled=false;b.textContent='Save pricing';}
+  }
 }
 function renderRecvPoUploadResult(res){
   const box=document.getElementById('recv-po-result');
@@ -4487,6 +4627,7 @@ function renderRecvPoUploadResult(res){
                error:'<span style="color:var(--danger);font-weight:700;">FAILED</span>'}[r.result]||esc(r.result||'');
     return '<div style="font-size:12px;margin-top:2px;">'+esc(r.fabric_name||r.barcode||'—')+' — '+tag
       +(r.push_qty!=null?(' ('+fmt2(r.push_qty)+' '+esc(r.push_uom||'')+')'):'')
+      +(r.push_price!=null?(' @ '+fmt2(r.push_price)+' KES'+(r.push_uom?('/'+esc(r.push_uom)):'')):'')
       +(r.error?('<div style="color:var(--danger);font-size:11px;white-space:pre-wrap;">'+esc(r.error)+'</div>'):'')
       +'</div>';
   }).join('');
@@ -4498,12 +4639,18 @@ async function uploadRecvPoBatch(){
   if(!recvPoBatch)return;
   const d=recvPoBatch.data,po=d.po||{};
   const n=(d.plan||[]).filter(e=>e.action==='update'||e.action==='create').length;
-  if(!confirm('Upload received totals to draft PO '+(po.name||('#'+recvPoBatch.po_id))+'?\n\nThis SETS '+n+' PO line quantit'+(n===1?'y':'ies')+' in Odoo to the summed received totals (it does not add on top), so re-uploading after more sheets arrive is safe.'))return;
+  if(!confirm('Upload received totals to draft PO '+(po.name||('#'+recvPoBatch.po_id))+'?\n\nThis SETS '+n+' PO line quantit'+(n===1?'y':'ies')+' in Odoo to the summed received totals (it does not add on top) and writes the KES unit price, clears taxes and sets the analytic to 100% HQ on every touched line. Re-uploading after more sheets arrive is safe.'))return;
   const btn=document.getElementById('recv-po-upload-btn');
   const orig=btn.textContent;
   btn.disabled=true;btn.textContent='Uploading…';
   document.getElementById('recv-po-err').innerHTML='';
   document.getElementById('recv-po-result').innerHTML='';
+  // Persist whatever is currently typed in the pricing form first, so the
+  // upload always prices from what the user sees (no stale saved values).
+  if(recvPoBatch.pricingForm){
+    const ok=await saveRecvPoPricing(false);
+    if(!ok){btn.disabled=false;btn.textContent=orig;return;}
+  }
   try{
     const r=await fetch('/api/fabric/receiving/po-batch/'+encodeURIComponent(recvPoBatch.po_id)+'/upload',{method:'POST',credentials:'include'});
     let res={};try{res=await r.json();}catch(_){}
