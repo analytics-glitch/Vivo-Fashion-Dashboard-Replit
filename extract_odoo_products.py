@@ -36,6 +36,8 @@ def main():
         "x_vivo_attr_22",   # Brand
         "x_vivo_attr_83",   # Gender
         "x_vivo_attr_92",   # Season
+        "x_vivo_attr_97",   # Status  (Active / Retired)
+        "x_vivo_attr_99",   # Tier    (Core Performer / New / NOOS / Recent Performer / N/A / Retired)
         "x_vivo_collection",
         "x_vivo_color",
         "x_vivo_categories",
@@ -87,6 +89,8 @@ def main():
                 get_m2o_name(r.get("x_vivo_categories")),# category
                 get_m2o_name(r.get("x_vivo_attr_83")),  # gender
                 get_m2o_name(r.get("x_vivo_attr_92")),  # season
+                get_m2o_name(r.get("x_vivo_attr_97")),  # status
+                get_m2o_name(r.get("x_vivo_attr_99")),  # tier
                 bool(r.get("active")),
                 r.get("write_date"),
                 now,
@@ -98,7 +102,7 @@ def main():
                 list_price, standard_price, categ_name,
                 sub_category, style_name, style_number,
                 collection, color, brand, vendor,
-                category, gender, season, active,
+                category, gender, season, status, tier, active,
                 write_date, _synced_at
             ) VALUES %s
             ON CONFLICT (id) DO UPDATE SET
