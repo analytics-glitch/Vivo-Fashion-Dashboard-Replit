@@ -852,7 +852,7 @@ const RangeManagement = () => {
                         {r.flagged_for_retirement && (
                           <span
                             className="inline-block px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 text-rose-800"
-                            title="Flagged for retirement — failed an SOP performance gate but kept in the active range for the markdown rail."
+                            title={`Flagged for retirement (advisory — retirement itself is Odoo-only).\n${r.flag_reason || ""}`}
                             data-testid={`tier-flagged-badge-${r.style_name}`}
                           >
                             FLAGGED
@@ -948,6 +948,15 @@ const RangeManagement = () => {
                         {r.recommended_action}
                       </span>
                     ),
+                  },
+                  {
+                    key: "flag_reason", label: "Retirement Flag Reason", align: "left",
+                    render: (r) => r.flag_reason ? (
+                      <span className="text-[11.5px] text-rose-700 max-w-[300px] inline-block" title={r.flag_reason} data-testid={`flag-reason-${r.style_name}`}>
+                        {r.flag_reason}
+                      </span>
+                    ) : <span className="text-muted">—</span>,
+                    csv: (r) => r.flag_reason || "",
                   },
                 ]}
                 rows={filtered}

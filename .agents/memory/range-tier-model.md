@@ -7,9 +7,19 @@ description: The ONE dashboard-wide, no-SOR style lifecycle tier model (_lifecyc
 
 The user's rule: tier classification is ONE shared model dashboard-wide and must
 NOT use SOR (sell-through/rate). The old SOP-2026 SOR-gated chain
-(`_gated_range_tier` / `_passed_week8_gate` / `_passed_week12_backstop`) and the
-`flagged_for_retirement` overlay it produced are **deleted**. Do not reintroduce
-SOR into tier classification.
+(`_gated_range_tier` / `_passed_week8_gate` / `_passed_week12_backstop`) is
+**deleted** — never reintroduce SOR into TIER classification.
+
+BUT (July 2026, user rule): the SOP gates live on as an ADVISORY
+`flagged_for_retirement` overlay via `_retirement_flag_reason` in
+`range_mgmt_classify` — flagged styles keep their real Tier 1..4 and a
+`flag_reason` string (shown as a Range Mgmt column + FLAGGED badge tooltip +
+retirement pipeline reason). Hard retirement stays Odoo-status ONLY; the flag
+just shows the team what is due for retirement. Boundaries follow the ORIGINAL
+SOP verbatim: read window ≤12wk never flagged, ~9mo = 36wk (NOT the tier
+model's 39), 24mo = 96wk; Week-8 = SOR>60 + sale ≤7d + WoC≤8 (missing WoC
+skipped); Week-12 backstop SOR≥80; 24mo+ hero-core = ≥5 reorders + sale ≤30d +
+6m SOR>75 + ≥300 units/6m. Manual tier override clears the flag.
 
 **The definition (module-level `_lifecycle_tier(style_name, brand, age_weeks,
 reorder_count, months_active_12)`), evaluated top-down:**
@@ -34,8 +44,8 @@ Active [Tier 1..4] + Retired == Total; sum(Tier 1..4 counts) == Active.
 - **Range Management** `/api/range-mgmt/classify` (`range_mgmt_classify`): `tier` =
   `_lifecycle_tier`; only hard-retired (manual/Zoya) styles go to `retired[]`;
   `_RANGE_OVERRIDES` (Tier 1..4 only) re-buckets within Active and records
-  `auto_tier`. `flagged_for_retirement` is always False now (kept in the payload
-  only for frontend compatibility). NOTE: the row still ALSO carries display-only
+  `auto_tier`. `flagged_for_retirement` + `flag_reason` = the advisory overlay
+  above (real values again). NOTE: the row still ALSO carries display-only
   SOR columns (`sor_since_launch`, `sor_6m`, `woc`, `status` = On Track / At Risk /
   Overdue / Retire) — those drive the operational **status/action text**, NOT the
   tier. That is allowed; just never let SOR back into `tier`.

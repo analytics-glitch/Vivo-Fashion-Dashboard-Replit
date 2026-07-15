@@ -3051,6 +3051,76 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
         return "Tier 3"
     return "Tier 4"
 
+
+def _retirement_flag_reason(age_weeks, *, lifetime_sor, last_sale_days, woc,
+                            reorder_count, recent_sor=None, recent_units=None):
+    """2026 Range Strategy (SOP) retirement-flag overlay.
+
+    Returns a human-readable reason string when a still-trading style FAILS its
+    age-stage performance gate (i.e. it is "flagged for retirement"), else None.
+    This is an ADVISORY overlay only — it shows the team what is due for
+    retirement. Hard retirement remains Odoo-status ONLY (_lifecycle_tier /
+    _odoo_retired_styles); this function never retires anything.
+
+    Gates (age sets the stage, performance decides):
+      Week-8 read  — lifetime SOR > 60% AND a sale in the last 7 days AND
+                     weeks-of-cover <= 8. Missing SOR / last-sale data fails
+                     the gate closed; missing WoC is skipped (a style with no
+                     stock has no cover to gate on).
+      Boundaries follow the ORIGINAL 2026 SOP rule verbatim: read window ends
+      at week 12 inclusive (never flagged), ~9 months = 36 weeks, 24 months =
+      96 weeks. (The display tier model's 39-week Tier-2 gate is a different,
+      unrelated cutoff.)
+      Week-12 backstop — lifetime SOR >= 80% rescues a missed Week-8 read.
+      12wk-9mo  — must have passed Week-8 or the backstop, else flagged.
+      9-24mo    — needs >= 3 reorders AND lifetime SOR > 60%, else flagged.
+      24mo+     — "hero core" bar: >= 5 reorders, sold within 30 days,
+                  recent 6-month SOR > 75% and >= 300 units in the last
+                  6 months, else flagged.
+    """
+    if age_weeks is None or age_weeks <= 12:
+        return None  # too new to judge (pre Week-8 read / read window)
+
+    def _fmt_sor(v):
+        return "no sales data" if v is None else "%.1f%% lifetime SOR" % v
+
+    w8 = (lifetime_sor is not None and lifetime_sor > 60
+          and last_sale_days is not None and last_sale_days <= 7
+          and (woc is None or woc <= 8))
+    w12 = lifetime_sor is not None and lifetime_sor >= 80
+
+    if age_weeks < 36:
+        if w8 or w12:
+            return None
+        return ("Missed Week-8 read and Week-12 backstop — %s (needs >60%% plus a "
+                "sale in the last 7 days, or >=80%% to backstop)." % _fmt_sor(lifetime_sor))
+    if age_weeks < 96:
+        if (reorder_count or 0) >= 3 and (lifetime_sor or 0) > 60:
+            return None
+        if (reorder_count or 0) < 3:
+            return ("9-24 months old with only %d reorder cycle%s (needs >=3 and "
+                    ">60%% lifetime SOR)." % (reorder_count or 0,
+                                              "" if (reorder_count or 0) == 1 else "s"))
+        return ("9-24 months old with %s (needs >60%% alongside its %d reorders)."
+                % (_fmt_sor(lifetime_sor), reorder_count or 0))
+    # 24+ months — hero-core bar
+    if ((reorder_count or 0) >= 5 and last_sale_days is not None and last_sale_days <= 30
+            and (recent_sor or 0) > 75 and (recent_units or 0) >= 300):
+        return None
+    misses = []
+    if (reorder_count or 0) < 5:
+        misses.append("%d reorders (needs >=5)" % (reorder_count or 0))
+    if last_sale_days is None or last_sale_days > 30:
+        misses.append("last sale %s (needs within 30 days)" % (
+            "unknown" if last_sale_days is None else "%dd ago" % last_sale_days))
+    if (recent_sor or 0) <= 75:
+        misses.append("6-month SOR %s (needs >75%%)" % (
+            "n/a" if recent_sor is None else "%.1f%%" % recent_sor))
+    if (recent_units or 0) < 300:
+        misses.append("%d units in 6 months (needs >=300)" % int(recent_units or 0))
+    return "24+ months old, misses the hero-core bar: " + "; ".join(misses) + "."
+
+
 def csv_to_sql(val):
     # Escape embedded single quotes (double them) so comma-separated filter
     # values (country / channel / location) cannot break out of the SQL string
@@ -17854,8 +17924,9 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         #   Tier 3  = reordered at least once.
         #   Tier 4  = everything else (newest / unproven).
         # Every live style carries a real Tier 1..4, so the per-tier counts add up to
-        # the Active total. Retirement is a hard bucket only (no "flagged" overlay in
-        # this model — flagged_for_retirement is always False now).
+        # the Active total. Retirement is a hard bucket (Odoo status only); on top of
+        # it, an ADVISORY "flagged for retirement" overlay (_retirement_flag_reason)
+        # marks still-trading styles that fail their SOP age-stage gate, with a reason.
         life_tier = _lifecycle_tier(
             r["style_name"], r["brand"], age_weeks, reorder_count, months_active_12)
         is_retired = (life_tier == "Retired")
@@ -17917,33 +17988,54 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         # --- Range tier classification (2026 Range Strategy / SOP): every style in
         # the live range carries a real displayed Tier 1..4 (from _lifecycle_tier)
         # so the per-tier counts add up to the Active total. ONLY hard/physical
-        # retirement (manual styles list / Zoya) moves a style into `retired`. A
-        # manual tier override (_RANGE_OVERRIDES, Tier 1..4 only) re-buckets within
-        # the live range; `auto_tier` records the un-overridden tier so the
-        # frontend's "override · auto-tier was X" hint stays useful. The unified
-        # model has no "flagged for retirement" overlay — flagged_for_retirement is
-        # always False (kept in the payload for frontend compatibility).
+        # retirement (Odoo status) moves a style into `retired`. A manual tier
+        # override (_RANGE_OVERRIDES, Tier 1..4 only) re-buckets within the live
+        # range AND clears the retirement flag; `auto_tier` records the
+        # un-overridden tier so the frontend's "override · auto-tier was X" hint
+        # stays useful.
+        #
+        # "Flagged for retirement" is an ADVISORY overlay (user rule, July 2026):
+        # a still-trading style that fails its SOP age-stage performance gate
+        # (_retirement_flag_reason) is flagged with a reason so the team can see
+        # what is due for retirement — it stays in Active with its real tier and
+        # is NEVER auto-retired. Hard retirement remains Odoo-status only.
         effective_tier = life_tier
 
         if is_retired:
             row["tier"] = row["auto_tier"] = "Retire"
             row["flagged_for_retirement"] = False
+            row["flag_reason"] = None
             retired.append(row)
             continue
+
+        flag_reason = _retirement_flag_reason(
+            age_weeks, lifetime_sor=sor_life, last_sale_days=last_sale_days,
+            woc=woc, reorder_count=reorder_count,
+            recent_sor=sor_6m, recent_units=units_6m)
 
         ov = _RANGE_OVERRIDES.get(r["style_name"])
         ov_tier = ov["tier"] if (ov and ov.get("tier") in
                                   ("Tier 1", "Tier 2", "Tier 3", "Tier 4")) else None
         if ov_tier:
             row["tier"], row["auto_tier"], row["override_reason"] = ov_tier, effective_tier, ov.get("reason")
+            # A manual override is an explicit "keep in the range" decision — it
+            # clears the advisory retirement flag.
+            flag_reason = None
         else:
             row["tier"], row["auto_tier"], row["override_reason"] = effective_tier, effective_tier, None
-        row["flagged_for_retirement"] = False
+        row["flagged_for_retirement"] = bool(flag_reason)
+        row["flag_reason"] = flag_reason
         active.append(row)
 
-        # The unified lifecycle model has no "flagged for retirement" overlay, so
-        # the actionable retirement pipeline (markdown rail) stays empty here — hard
-        # retirement moves a style straight into `retired` instead.
+        # Actionable retirement pipeline (markdown rail): flagged styles that
+        # still hold stock to clear. An overlay on Active, not a separate bucket.
+        if flag_reason and current_stock > 0:
+            rec = today + timedelta(days=14)
+            pipeline.append({**row,
+                "recommended_retirement_date": str(rec),
+                "outlet_discount_date": str(rec + timedelta(days=28)),
+                "reason": flag_reason,
+            })
 
         if (age_band == "Tier 3" and age_weeks is not None and 0 <= (39 - age_weeks) <= 6
                 and reorder_count >= 3 and sor_life is not None and sor_life > 60):
