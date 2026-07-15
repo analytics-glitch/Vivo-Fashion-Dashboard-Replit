@@ -181,7 +181,7 @@ function App() {
                 <Route path="/range-mgmt" element={<Navigate to="/product-analysis?tab=range" replace />} />
                 <Route path="/footfall" element={<ProtectedShell pageId="footfall"><Footfall /></ProtectedShell>} />
                 <Route path="/trend-analysis" element={<ProtectedShell pageId="trend-analysis"><TrendAnalysis /></ProtectedShell>} />
-                <Route path="/product-analysis" element={<ProtectedShell anyOfPageIds={["product-analysis", "production", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "exports"]}><ProductAnalysis /></ProtectedShell>} />
+                <Route path="/product-analysis" element={<ProtectedShell anyOfPageIds={["product-analysis", "production", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "exports", "store-flow"]}><ProductAnalysis /></ProtectedShell>} />
                 <Route path="/targets" element={<ProtectedShell anyOfPageIds={["targets", "quarter-scorecard"]}><TargetsHub /></ProtectedShell>} />
                 <Route path="/quarter-scorecard" element={<Navigate to="/targets?tab=quarter" replace />} />
                 <Route path="/re-order" element={<Navigate to="/product-analysis?tab=reorder" replace />} />
@@ -189,7 +189,7 @@ function App() {
                 <Route path="/excess-inventory" element={<Navigate to="/retail?tab=excess-inventory" replace />} />
                 <Route path="/store-flow" element={<Navigate to="/inventory?tab=store-flow" replace />} />
                 <Route path="/ibt" element={<Navigate to="/retail?tab=ibt" replace />} />
-                <Route path="/production" element={<ProtectedShell anyOfPageIds={["production", "production-report"]}><Production /></ProtectedShell>} />
+                <Route path="/production" element={<ProtectedShell anyOfPageIds={["production", "production-report", "style-tracker"]}><Production /></ProtectedShell>} />
                 <Route path="/production-report" element={<Navigate to="/production?tab=report" replace />} />
                 <Route path="/style-tracker" element={<Navigate to="/product-analysis?tab=tracker" replace />} />
                 <Route path="/data-quality" element={<ProtectedShell pageId="data-quality"><DataQuality /></ProtectedShell>} />

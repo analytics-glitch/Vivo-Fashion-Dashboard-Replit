@@ -287,7 +287,7 @@ const StoreFlow = () => {
       { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 14 },
     ];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Store Flow");
+    XLSX.utils.book_append_sheet(wb, ws, "Stock Movement");
     // WOC sheet
     const wocWs = XLSX.utils.json_to_sheet(_buildWocRows());
     wocWs["!cols"] = [{ wch: 28 }, { wch: 10 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 14 }];
@@ -325,7 +325,7 @@ const StoreFlow = () => {
       {/* ── Header ── */}
       <div className="flex flex-wrap items-end gap-3 justify-between">
         <SectionTitle
-          title="Store Flow"
+          title="Stock Movement"
           subtitle="Per store: previous week sales vs daily transfers. Target: total transferred within ±10% of the previous week's sales."
         />
         <div className="flex items-center gap-2">

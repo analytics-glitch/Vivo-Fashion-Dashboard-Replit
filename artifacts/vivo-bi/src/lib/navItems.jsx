@@ -54,8 +54,8 @@ export const PRIMARY_NAV = [
   // Product & inventory ANALYSIS pages — "what's selling, what's it worth,
   // how much stock and what's stuck". Operational action pages live in the
   // "Operations & Production" group below.
-  { to: "/product-analysis", label: "Product Development", icon: ChartBar, id: "product-analysis", group: "Products & Range", desc: "Product development hub — Style Cockpit, Catalog & SOR, Range Management, Allocations, Re-Order, Weekly Style Tracker, Gallery and SOR Report tabs" },
-  { to: "/inventory", label: "Inventory Management", icon: Package, id: "inventory", anyOfPageIds: ["inventory", "replenishments", "replenish-by-item", "store-flow", "size-health"], group: "Products & Range", desc: "Stock on hand, velocity & cover, stuck stock, replenishments, store flow and size health" },
+  { to: "/product-analysis", label: "Product Development", icon: ChartBar, id: "product-analysis", group: "Products & Range", desc: "Product development hub — Style Cockpit, Range Management, Weekly Style Tracker, Catalog & SOR, SOR Report, Allocations, Re-Order, Gallery and Stock Movement tabs" },
+  { to: "/inventory", label: "Inventory Management", icon: Package, id: "inventory", anyOfPageIds: ["inventory", "replenishments", "replenish-by-item", "store-flow", "size-health"], group: "Products & Range", desc: "Stock on hand, velocity & cover, stuck stock, replenishments, stock movement and size health" },
   { to: "/fabric", label: "Fabric", icon: ChartBar, id: "fabric", external: true, group: "Products & Range", desc: "Standalone Fabric BI dashboard (opens full-page)" },
 
   // Retail pages
@@ -68,7 +68,7 @@ export const PRIMARY_NAV = [
   { to: "/marketing", label: "Marketing", icon: Megaphone, id: "marketing", group: "Customers & Marketing", desc: "Campaign and channel marketing performance" },
 
   // OPERATIONAL pages — actions that move, return or make stock.
-  { to: "/production", label: "Production Pipeline", icon: Factory, id: "production", anyOfPageIds: ["production", "production-report"], group: "Operations & Production", desc: "Kanban tracker of buying orders through the manufacturing stages, plus the detailed production report" },
+  { to: "/production", label: "Production Pipeline", icon: Factory, id: "production", anyOfPageIds: ["production", "production-report", "style-tracker"], group: "Operations & Production", desc: "Kanban tracker of buying orders through the manufacturing stages, plus the detailed production report and weekly style tracker" },
 
   // Catalogues & others
   { to: "/catalogue", label: "Report Catalogue", icon: BookOpen, id: "catalogue", group: "Tools", desc: "Every report, what page it lives on, and all the calculation & business rules — with an AI finder" },

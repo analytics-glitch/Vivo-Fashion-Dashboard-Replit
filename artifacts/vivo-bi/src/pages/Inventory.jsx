@@ -1838,7 +1838,7 @@ const INV_TABS = [
   { id: "stuck", label: "Stuck & Declining", pageId: "inventory", el: null },
   { id: "replenishments", label: "Replenishments", pageId: "replenishments", el: ReplenishmentsTab },
   { id: "replenish-by-sku", label: "Replenish by Style/SKU", pageId: "replenish-by-item", el: ReplenishByItemTab },
-  { id: "store-flow", label: "Store Flow", pageId: "store-flow", el: StoreFlowTab },
+  { id: "store-flow", label: "Stock Movement", pageId: "store-flow", el: StoreFlowTab },
   { id: "size-health", label: "Size Health", pageId: "size-health", el: SizeHealthTab },
 ];
 

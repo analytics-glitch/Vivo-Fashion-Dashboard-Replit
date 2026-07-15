@@ -27,7 +27,7 @@ const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-s
 // SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
 // Finance Reports Suite. The server /api/finance gate also excludes SMT.
 const SMT = LEADERSHIP.filter((p) => p !== "finance");
-const PRODUCTION = ["production", "production-report", "fabric", "sops"];
+const PRODUCTION = ["production", "production-report", "style-tracker", "fabric", "sops"];
 const FABRIC_WAREHOUSE = ["fabric", "inventory", "sops"];
 const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "footfall", "sops"];
 const MARKETING = ["marketing", "social", "crm", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops"];

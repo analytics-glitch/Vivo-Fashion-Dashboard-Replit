@@ -554,11 +554,13 @@ function Production() {
 // can access ANY tab, and /production-report redirects here with ?tab=report.
 const ProductionReportTab = React.lazy(() => import("./ProductionReport"));
 const ProductionOverviewTab = React.lazy(() => import("./ProductionOverview"));
+const StyleTrackerTab = React.lazy(() => import("./StyleTracker"));
 
 const PROD_TABS = [
   { id: "overview", label: "Overview", pageId: "production", el: ProductionOverviewTab },
   { id: "tracker", label: "Production Tracker", pageId: "production", el: null },
   { id: "report", label: "Production Report", pageId: "production-report", el: ProductionReportTab },
+  { id: "style-tracker", label: "Weekly Style Tracker", pageId: "style-tracker", el: StyleTrackerTab },
 ];
 
 const ProductionPipelinePage = () => {
