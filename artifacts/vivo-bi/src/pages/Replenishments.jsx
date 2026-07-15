@@ -59,6 +59,8 @@ const HELD_REASON = {
   markdown: { label: "Markdown / clearance", cls: "bg-rose-100 text-rose-900 border-rose-300" },
   overstock: { label: "Overstock (WoC > 16)", cls: "bg-amber-100 text-amber-900 border-amber-300" },
   broken_curve: { label: "Broken-curve orphan", cls: "bg-violet-100 text-violet-900 border-violet-300" },
+  slow_mover: { label: "Slow mover (>30d sale gap)", cls: "bg-orange-100 text-orange-900 border-orange-300" },
+  cover_ok: { label: "Cover ≥ 4 wks (last-4-wk sales)", cls: "bg-sky-100 text-sky-900 border-sky-300" },
 };
 
 const Replenishments = () => {

@@ -10526,9 +10526,10 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
 
     Builds the donor/recipient qualification used by BOTH the legacy pair-level
     SQL and the Phase-1 sku-grain edge SQL. Emits CTEs through `scored` (the set
-    of eligible (style, from_store, to_store) pairs that pass dead-stock, 21-day
-    newness, cluster-adjacency, demonstrated-demand and >=3-projected-SKU
-    minimum-range guards). The canonical SOR formula is never used or changed
+    of eligible (style, from_store, to_store) pairs that pass dead-stock,
+    per-size-pack donor/receiver unit thresholds (with a lower donor bar for
+    styles <= 21 days old — regular rules start at 22 days), cluster-adjacency,
+    demonstrated-demand and >=3-projected-SKU minimum-range guards). The canonical SOR formula is never used or changed
     here — this only chooses WHICH pairs are eligible to move stock."""
     c_sales = ("AND s.country = '" + _sql_str(country) + "'") if country else ""
     c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
@@ -10638,13 +10639,12 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
              / NULLIF(COALESCE(sa.u56, 0) + iv.avail, 0) < 0.05
              OR (COALESCE(sa.u56, 0) + iv.avail) = 0)
     ),
-    -- "Too new to transfer" guard: never recommend moving a style that has only
-    -- recently entered the range. Retail inventory carries no per-store received
-    -- date, so the catalogue launch date is the reliable proxy for how long the
-    -- item has been in the stores. Styles launched within the last 3 weeks are
-    -- held back on BOTH the donor (source) and recipient (receiving) side so
-    -- freshly-introduced product gets time to sell before it can be flagged for
-    -- a transfer. A missing/unparseable launch date is NOT excluded (so the
+    -- Style age: regular IBT rules start once a style reaches 22 days of age.
+    -- Retail inventory carries no per-store received date, so the catalogue
+    -- launch date is the reliable proxy for how long the item has been in the
+    -- stores. Styles <= 21 days old use the LOWER "If New style" donor
+    -- threshold (they can still be redistributed when clearly overstocked).
+    -- A missing/unparseable launch date is treated as established (so the
     -- guard never silently drops legitimate, established styles).
     style_age AS (
       SELECT style_name AS style,
@@ -10656,9 +10656,49 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
       GROUP BY 1
     ),
     too_new AS (
+      -- "New style" = launched within the last 21 days (regular IBT rules start
+      -- at 22 days of age). New styles are NOT excluded outright: they may still
+      -- DONATE under the lower per-size-pack "If New style" donor threshold.
       SELECT style FROM style_age
       WHERE launch IS NOT NULL
-        AND launch > (CURRENT_DATE - INTERVAL '21 days')
+        AND launch >= (CURRENT_DATE - INTERVAL '21 days')
+    ),
+    -- ── Size-pack thresholds (user rule table) ─────────────────────────────
+    -- Classify each style's size structure from its master SKU size labels and
+    -- pick the donor/receiver style-level unit thresholds accordingly:
+    --   pack                        receiver<=  donor>=  new-style donor>=
+    --   S,M,L,1X,2X (regular)            4         6            5
+    --   F / free size                    2         4            3
+    --   S/M,L/1X   (2 combined sizes)    1         3            2
+    --   XS/S,M/L,1X/2X (3+ combined)     2         4            3
+    -- Combined sizes embed a slash (e.g. "M/L", "1X/2X"); free size = single
+    -- size or an F/OS/Free-Size label. Unknown/missing → regular thresholds.
+    style_pack AS (
+      SELECT style_name AS style,
+             COUNT(DISTINCT NULLIF(size,'')) AS n_sizes,
+             BOOL_OR(COALESCE(size,'') LIKE '%/%') AS combined,
+             BOOL_OR(TRIM(COALESCE(size,'')) ~* '^(f|os|free ?size|one ?size)$') AS freesize
+      FROM all_products_clean
+      WHERE COALESCE(style_name,'') <> ''
+      GROUP BY 1
+    ),
+    pack_rules AS (
+      -- Only an EXPLICIT free-size label maps to the free-size thresholds;
+      -- unknown/ambiguous size structures fall back to REGULAR thresholds.
+      SELECT style,
+        CASE WHEN freesize THEN 2
+             WHEN combined AND n_sizes <= 2 THEN 1
+             WHEN combined THEN 2
+             ELSE 4 END AS recv_max,
+        CASE WHEN freesize THEN 4
+             WHEN combined AND n_sizes <= 2 THEN 3
+             WHEN combined THEN 4
+             ELSE 6 END AS donor_min,
+        CASE WHEN freesize THEN 3
+             WHEN combined AND n_sizes <= 2 THEN 2
+             WHEN combined THEN 3
+             ELSE 5 END AS new_donor_min
+      FROM style_pack
     ),
     froms AS (
       SELECT c.style, c.store, c.country, c.available, c.units_sold,
@@ -10666,9 +10706,12 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
       FROM combined c
       JOIN stats st ON st.style = c.style
       LEFT JOIN store_tier stt ON stt.store = c.store AND stt.country = c.country
-      WHERE c.available >= 3
+      LEFT JOIN pack_rules pk ON pk.style = c.style
+      WHERE c.available >= CASE
+              WHEN EXISTS (SELECT 1 FROM too_new tn WHERE tn.style = c.style)
+                THEN COALESCE(pk.new_donor_min, 5)
+              ELSE COALESCE(pk.donor_min, 6) END
         AND NOT EXISTS (SELECT 1 FROM dead d WHERE d.style = c.style)
-        AND NOT EXISTS (SELECT 1 FROM too_new tn WHERE tn.style = c.style)
     ),
     tos AS (
       SELECT c.style, c.store, c.country, c.available, c.units_sold,
@@ -10676,14 +10719,16 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
       FROM combined c
       JOIN stats st ON st.style = c.style
       LEFT JOIN store_tier stt ON stt.store = c.store AND stt.country = c.country
-      WHERE c.available <= 2
+      LEFT JOIN pack_rules pk ON pk.style = c.style
+      WHERE c.available <= COALESCE(pk.recv_max, 4)
+        -- New styles (<=21 days) may only DONATE — never receive.
+        AND NOT EXISTS (SELECT 1 FROM too_new tn WHERE tn.style = c.style)
         -- WS5: a receiver must be covered by the stock feed. Stores with ZERO
         -- rows in all_inventory (UG/RW/Online) look like "available = 0" but
         -- their true stock is unknown — never ship into a blind store.
         AND EXISTS (SELECT 1 FROM all_inventory sfl
                     WHERE sfl.pos_location_name = c.store)
         AND NOT EXISTS (SELECT 1 FROM dead d WHERE d.style = c.style)
-        AND NOT EXISTS (SELECT 1 FROM too_new tn WHERE tn.style = c.style)
     ),
     pairs AS (
       SELECT f.style,
@@ -16576,6 +16621,24 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
                 WHERE s.sale_date >= (CURRENT_DATE - INTERVAL '""" + str(days) + """ days')::text
             ) > 0
         ),
+        -- Last two DISTINCT sale days per store-SKU over a longer 120-day
+        -- window (slow-mover guard: gap between last and second-to-last sale).
+        -- sale_date is ISO text so lexicographic DESC ordering is date order.
+        last2 AS (
+            SELECT s.pos_location_name, s.variant_sku,
+                (array_agg(DISTINCT s.sale_date ORDER BY s.sale_date DESC))[1] AS d1,
+                (array_agg(DISTINCT s.sale_date ORDER BY s.sale_date DESC))[2] AS d2
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date >= (CURRENT_DATE - INTERVAL '120 days')::text
+              AND """ + BASE_FILTERS + """
+              AND s.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+              AND (s.pos_location_name NOT ILIKE '%online%'
+                   OR s.pos_location_name = '""" + ONLINE_SHOP_ZETU + """')
+              AND s.variant_sku IS NOT NULL AND s.variant_sku <> ''
+              AND s.net_quantity > 0
+            GROUP BY s.pos_location_name, s.variant_sku
+        ),
         store_soh AS (
             SELECT i.pos_location_name, i.sku,
                 SUM(i.available) AS soh_store, MAX(i.location_name) AS bin
@@ -16593,12 +16656,14 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
             COALESCE(NULLIF(p.product_name, ''), sold.product_name) AS product_name,
             sold.variant_sku AS sku, sold.units_sold,
             sold.u28, sold.u56, sold.last_sale,
+            l2.d1 AS last_sale_120, l2.d2 AS prev_sale_120,
             p.size AS size, p.barcode, p.style_name AS style_name,
             COALESCE(p.color_print, '') AS color_print,
             COALESCE(ss.soh_store, 0) AS soh_store,
             COALESCE(NULLIF(wb.bin, ''), '') AS bin,
             COALESCE(w.soh_wh, 0) AS soh_wh
         FROM sold
+        LEFT JOIN last2 l2 ON l2.pos_location_name = sold.pos_location_name AND l2.variant_sku = sold.variant_sku
         LEFT JOIN store_soh ss ON ss.pos_location_name = sold.pos_location_name AND ss.sku = sold.variant_sku
         LEFT JOIN wh_soh w ON w.sku = sold.variant_sku
         LEFT JOIN all_products_clean p ON p.sku = sold.variant_sku
@@ -16728,6 +16793,25 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
                 days_lapsed = (today - date.fromisoformat(str(r["last_sale"])[:10])).days
             except ValueError:
                 days_lapsed = 0
+        # Slow-mover guard inputs: gap (days) between the last sale day and the
+        # second-to-last sale day at THIS store (120-day lookback). None when
+        # only one sale day exists in the window.
+        sale_gap_days = None
+        try:
+            if r.get("last_sale_120") and r.get("prev_sale_120"):
+                sale_gap_days = (date.fromisoformat(str(r["last_sale_120"])[:10])
+                                 - date.fromisoformat(str(r["prev_sale_120"])[:10])).days
+        except ValueError:
+            sale_gap_days = None
+        # Weeks-of-cover on a plain last-4-weeks-sales basis (user rule: only
+        # replenish when this is under 4 weeks). Zero shelf stock = 0 cover.
+        u28_raw = float(r.get("u28") or 0)
+        if soh_store <= 0:
+            woc4 = 0.0
+        elif u28_raw > 0:
+            woc4 = soh_store / (u28_raw / 4.0)
+        else:
+            woc4 = 999.0
         mark = (marks_all.get((pos, "sku", sku))
                 or marks_all.get((pos, "barcode", r.get("barcode")))
                 or {})
@@ -16743,6 +16827,17 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
                 reason = "markdown"
             elif soh_store > 0 and woc > overstock_woc:
                 reason = "overstock"
+            # Slow-mover guard (user rule): if the gap between the last sale and
+            # the second-to-last sale at this store exceeds 30 days, don't
+            # replenish. A single sale day in 120d only counts as slow when that
+            # sale is itself already >30 days old (first-sale benefit of doubt).
+            elif ((sale_gap_days is not None and sale_gap_days > 30)
+                  or (sale_gap_days is None and days_lapsed > 30)):
+                reason = "slow_mover"
+            # Cover gate (user rule): only replenish when weeks of cover on a
+            # plain last-4-weeks-sales basis is under 4 weeks.
+            elif soh_store > 0 and woc4 >= 4.0:
+                reason = "cover_ok"
             elif (instock_sizes.get((pos, style), 9) <= 1
                   and curve_sizes.get(style, 0) >= 3 and soh_store > 0):
                 reason = "broken_curve"
@@ -16760,6 +16855,8 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
             "censored": censored, "censored_corrected": censored_corrected,
             "deploy_now": deploy_now,
             "days_lapsed": days_lapsed,
+            "sale_gap_days": sale_gap_days,
+            "woc_4wk": round(min(woc4, 999.0), 1),
             "in_stock_sizes": instock_sizes.get((pos, style), 0),
             "curve_sizes": curve_sizes.get(style, 0),
             "replenished": bool(mark.get("replenished", False)),
