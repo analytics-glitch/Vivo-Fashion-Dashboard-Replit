@@ -3840,7 +3840,7 @@ _NET = (f"SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes:
         f"WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric / {_VAT_DIV} ELSE 0 END)")
 NET_SALES_CANON = _NET
 _REPORT_MEASURES = {
-    "revenue":      {"sql": "ROUND(SUM(s.total_sales_kes::numeric), 0)",                                                       "label": "Revenue (KES)",        "group": "Sales"},
+    "revenue":      {"sql": "ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0)",                                                       "label": "Revenue (KES)",        "group": "Sales"},
     "net_revenue":  {"sql": f"ROUND({_NET}, 0)",                                                                               "label": "Net Revenue (KES)",    "group": "Sales"},
     "gross_revenue":{"sql": "ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0)", "label": "Gross Revenue (KES)", "group": "Sales"},
     "returns":      {"sql": "ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0)",          "label": "Returns (KES)",        "group": "Sales"},
@@ -3848,8 +3848,8 @@ _REPORT_MEASURES = {
     "units":        {"sql": f"COALESCE({_UNITS}, 0)",                                                                          "label": "Units Sold",           "group": "Sales"},
     "orders":       {"sql": _ORDERS,                                                                                           "label": "Orders",               "group": "Sales"},
     "customers":    {"sql": "COUNT(DISTINCT s.customer_id)",                                                                   "label": "Customers",            "group": "Customers"},
-    "aov":          {"sql": f"ROUND(SUM(s.total_sales_kes::numeric) / NULLIF({_ORDERS}, 0), 0)",                              "label": "Avg Order Value (KES)","group": "Sales"},
-    "asp":          {"sql": f"ROUND(SUM(s.total_sales_kes::numeric) / NULLIF({_UNITS}, 0), 0)",                               "label": "Avg Selling Price (KES)","group": "Sales"},
+    "aov":          {"sql": f"ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) / NULLIF({_ORDERS}, 0), 0)",                              "label": "Avg Order Value (KES)","group": "Sales"},
+    "asp":          {"sql": f"ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) / NULLIF({_UNITS}, 0), 0)",                               "label": "Avg Selling Price (KES)","group": "Sales"},
     "price_min":    {"sql": "ROUND(MIN(CASE WHEN s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 THEN s.total_sales_kes::numeric / s.ordered_item_quantity END), 0)", "label": "Lowest Selling Price (KES)",  "group": "Sales"},
     "price_max":    {"sql": "ROUND(MAX(CASE WHEN s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 THEN s.total_sales_kes::numeric / s.ordered_item_quantity END), 0)", "label": "Highest Selling Price (KES)", "group": "Sales"},
 }
@@ -4107,7 +4107,7 @@ def get_kpis(
     where = build_filters(date_from, date_to, country, channel)
     rows = run_query("""
         SELECT
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END), 0) AS total_discounts,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_returns,
@@ -4122,8 +4122,8 @@ def get_kpis(
             -- units and made the per-country Σ drift from this headline by the
             -- return volume (recon "country units sum eq kpis" failure).
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS total_units,
-            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size,
-            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END), 0), 0) AS avg_selling_price,
+            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size,
+            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END), 0), 0) AS avg_selling_price,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)
                 / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) * 100, 2) AS return_rate
         FROM all_sales s
@@ -4158,7 +4158,7 @@ def get_kpis_customer_type_split(
                  THEN 'New' ELSE 'Returning' END AS customer_segment,
             -- UNROUNDED per bucket: rounding each bucket separately can drift
             -- ±1 KES from /api/kpis' ROUND(total); Python below rounds ONCE.
-            (SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
+            (SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END)
                 - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) AS total_sales,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders
         FROM all_sales s
@@ -4196,11 +4196,11 @@ def get_country_summary(
         SELECT s.country,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END), 0) AS discounts,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS returns,
-            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size
+            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size
         FROM all_sales s
         WHERE """ + where + """
         GROUP BY s.country
@@ -4219,11 +4219,11 @@ def get_sales_summary(
         SELECT s.pos_location_name AS channel, s.country,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END), 0) AS discounts,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS returns,
-            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size
+            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size
         FROM all_sales s
         WHERE """ + where + """
         GROUP BY s.pos_location_name, s.country
@@ -4250,14 +4250,14 @@ def get_daily_trend(
     return run_query("""
         WITH base AS (
             SELECT s.sale_date, s.country, s.order_id, s.sale_kind,
-                   s.ordered_item_quantity, s.total_sales_kes, s.gross_sales_kes, s.returns_kes
+                   s.ordered_item_quantity, s.total_sales_kes, s.discounts_kes, s.gross_sales_kes, s.returns_kes
             FROM all_sales s
             WHERE """ + where + """
         ),
         day_agg AS (
             SELECT sale_date AS day, country,
                 SUM(CASE WHEN sale_kind IN ('sale','order') THEN ordered_item_quantity ELSE 0 END) AS units,
-                ROUND(SUM(CASE WHEN sale_kind IN ('sale','order') THEN total_sales_kes::numeric ELSE 0 END)
+                ROUND(SUM(CASE WHEN sale_kind IN ('sale','order') THEN total_sales_kes::numeric - COALESCE(discounts_kes, 0)::numeric ELSE 0 END)
                     - SUM(CASE WHEN sale_kind = 'return' THEN returns_kes::numeric ELSE 0 END), 0) AS total_sales,
                 ROUND(SUM(CASE WHEN sale_kind IN ('sale','order') THEN gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales
             FROM base
@@ -4458,7 +4458,7 @@ def get_footfall(
             SELECT s.pos_location_name AS loc,
                 s.sale_date::date AS d,
                 COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
-                ROUND(SUM(s.total_sales_kes::numeric), 0) AS sales
+                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS sales
             FROM all_sales s
             WHERE """ + sales_where + """
             GROUP BY 1, 2
@@ -4730,7 +4730,7 @@ def get_customers(
         period_customers AS (
             SELECT s.customer_id,
                 COUNT(DISTINCT s.order_id) AS order_count,
-                ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_spend
+                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_spend
             FROM all_sales s
             WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
             AND s.sale_kind IN ('sale','order')
@@ -4846,15 +4846,15 @@ def get_top_customers(
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND " + _not_walkin_pseudo_sql())
     rows = run_query("""
         SELECT
-            ROW_NUMBER() OVER (ORDER BY SUM(s.total_sales_kes::numeric) DESC) AS rank,
+            ROW_NUMBER() OVER (ORDER BY SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) DESC) AS rank,
             s.customer_id,
             CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,'')) AS customer_name,
             COALESCE(c.phone,'') AS phone,
             c.email, c.city, c.country AS customer_country,
             COUNT(DISTINCT s.order_id) AS total_orders,
             SUM(s.ordered_item_quantity) AS total_units,
-            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
-            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_basket,
+            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales,
+            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_basket,
             MAX(s.sale_date) AS last_purchase_date,
             MIN(s.sale_date) AS first_purchase_date
         FROM all_sales s
@@ -4881,8 +4881,8 @@ def get_customer_search(
             SELECT s.customer_id,
                 COUNT(DISTINCT s.order_id) AS total_orders,
                 SUM(s.ordered_item_quantity) AS total_units,
-                ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
-                ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_basket,
+                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales,
+                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_basket,
                 MAX(s.sale_date) AS last_purchase_date,
                 MIN(s.sale_date) AS first_purchase_date
             FROM all_sales s
@@ -5506,7 +5506,7 @@ def get_customer_products(customer_id: str = Query(default="")):
     return run_query("""
         SELECT p.style_name, p.product_type AS subcategory, p.brand,
             SUM(s.ordered_item_quantity) AS units_bought,
-            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_spend,
+            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_spend,
             MAX(s.sale_date) AS last_bought
         FROM all_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
@@ -5603,7 +5603,7 @@ def get_churned_customers(
                 MAX(s.sale_date::date) AS last_purchase_date,
                 MIN(s.sale_date::date) AS first_purchase_date,
                 COUNT(DISTINCT s.order_id) AS total_orders,
-                ROUND(SUM(s.total_sales_kes::numeric), 0) AS lifetime_spend
+                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS lifetime_spend
             FROM all_sales s
             WHERE s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL
             AND s.customer_id NOT IN ('None','null','')
@@ -5657,7 +5657,7 @@ def analytics_customer_details(
             c.city, c.country AS customer_country,
             COUNT(DISTINCT s.order_id) AS total_orders,
             SUM(s.ordered_item_quantity) AS total_units,
-            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
+            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales,
             MIN(s.sale_date) AS first_order_date,
             MAX(s.sale_date) AS last_order_date,
             COUNT(*) OVER() AS total_customer_count
@@ -5689,8 +5689,8 @@ def get_new_customer_products(
         )
         SELECT p.style_name, p.product_type AS subcategory, p.brand,
             SUM(s.ordered_item_quantity) AS units_sold,
-            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
-            ROUND(SUM(s.total_sales_kes::numeric) * 100.0 / NULLIF(SUM(SUM(s.total_sales_kes::numeric)) OVER(), 0), 1) AS pct_of_new_customer_sales
+            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales,
+            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) * 100.0 / NULLIF(SUM(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric))) OVER(), 0), 1) AS pct_of_new_customer_sales
         FROM all_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
         WHERE """ + where + """
@@ -5779,7 +5779,7 @@ def get_subcategory_stock_sales(
             SELECT p.product_type AS subcategory,
                 SUM(s.ordered_item_quantity) AS units_sold,
                 COUNT(DISTINCT s.order_id) AS orders,
-                ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales
+                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales
             FROM all_sales s
             LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
             WHERE """ + where + """
@@ -5937,7 +5937,7 @@ def get_stock_to_sales(
         WITH sales AS (
             SELECT s.pos_location_name, s.country,
                 SUM(s.ordered_item_quantity) AS units_sold,
-                ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales
+                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales
             FROM all_sales s
             WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
             AND s.sale_kind IN ('sale','order')
@@ -6026,9 +6026,9 @@ def get_customer_type_spend(
             END AS customer_segment,
             COUNT(DISTINCT s.customer_id) AS customers,
             COUNT(DISTINCT s.order_id) AS orders,
-            ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales,
-            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT s.customer_id), 0), 0) AS spend_per_customer,
-            ROUND(SUM(s.total_sales_kes::numeric) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_basket_value
+            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales,
+            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) / NULLIF(COUNT(DISTINCT s.customer_id), 0), 0) AS spend_per_customer,
+            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_basket_value
         FROM all_sales s
         LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
         WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
@@ -6415,11 +6415,11 @@ def _country_summary_q(date_from, date_to, country=None, channel=None):
         SELECT s.country,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END), 0) AS discounts,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS returns,
-            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size
+            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size
         FROM all_sales s
         WHERE """ + where + """
         GROUP BY s.country
@@ -6437,7 +6437,7 @@ def _daily_by_country_q(date_from, date_to, country=None, channel=None):
         SELECT s.sale_date AS day, s.country,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END)
                 - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales
         FROM all_sales s
         WHERE """ + where + """
@@ -6669,7 +6669,7 @@ def analytics_total_sales_summary(
     where = build_filters(date_from, date_to, country, channel)
     rows = run_query("""
         SELECT
-            COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0), 0) AS total_sales,
+            COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0), 0) AS total_sales,
             -- Canonical Net Sales (NET_SALES_CANON): (total − discounts − returns)
             -- ex-VAT — must stay identical to /api/kpis net_sales (the
             -- validation agent reconciles the two to the shilling).
@@ -6706,7 +6706,7 @@ def analytics_active_pos(
     return run_query("""
         SELECT s.pos_location_name AS channel, s.country,
             COUNT(DISTINCT s.order_id) AS orders,
-            COALESCE(ROUND(SUM(s.total_sales_kes::numeric), 0), 0) AS total_sales,
+            COALESCE(ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0), 0) AS total_sales,
             COALESCE(SUM(s.ordered_item_quantity), 0) AS units_sold
         FROM all_sales s
         WHERE """ + where + """
@@ -6735,7 +6735,7 @@ def analytics_sell_through_by_location(
         WITH sales AS (
             SELECT s.pos_location_name AS location, s.country,
                 SUM(s.ordered_item_quantity) AS units_sold,
-                ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales
+                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales
             FROM all_sales s
             WHERE """ + sales_where + """
             GROUP BY s.pos_location_name, s.country
@@ -8505,7 +8505,7 @@ def analytics_sts_by_category(
             SELECT p.category AS category,
                 SUM(s.ordered_item_quantity) AS units_sold,
                 COUNT(DISTINCT s.order_id) AS orders,
-                ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales
+                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales
             FROM all_sales s
             LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
             WHERE """ + where + """
@@ -8597,7 +8597,7 @@ def analytics_velocity(
         WITH sales AS (
             SELECT p.style_name, MAX(p.brand) AS brand, MAX(p.product_type) AS product_type,
                 SUM(s.ordered_item_quantity) AS units_sold,
-                ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_sales
+                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales
             FROM all_sales s
             JOIN all_products_clean p ON s.variant_sku = p.sku
             WHERE """ + where + """
@@ -10188,7 +10188,7 @@ def analytics_repeat_customers(
         WITH cust AS (
             SELECT s.customer_id,
                 COUNT(DISTINCT s.order_id) AS order_count,
-                ROUND(SUM(s.total_sales_kes::numeric), 0) AS total_spend_kes,
+                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_spend_kes,
                 MIN(s.sale_date) AS first_order_date,
                 MAX(s.sale_date) AS last_order_date,
                 SUM(s.ordered_item_quantity) AS total_units
@@ -10358,8 +10358,8 @@ def customers_walk_ins(
         SELECT
             COUNT(DISTINCT s.order_id) AS total_orders,
             COUNT(DISTINCT s.order_id) FILTER (WHERE """ + anon_expr + """) AS walk_in_orders,
-            COALESCE(ROUND(SUM(s.total_sales_kes::numeric), 0), 0) AS total_sales,
-            COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + anon_expr + """), 0), 0) AS walk_in_sales
+            COALESCE(ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0), 0) AS total_sales,
+            COALESCE(ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) FILTER (WHERE """ + anon_expr + """), 0), 0) AS walk_in_sales
         FROM all_sales s
         LEFT JOIN pseudo ps ON ps.customer_id = s.customer_id
         WHERE """ + where
@@ -10375,8 +10375,8 @@ def customers_walk_ins(
             SELECT s.country AS country,
                 COUNT(DISTINCT s.order_id) AS total_orders,
                 COUNT(DISTINCT s.order_id) FILTER (WHERE """ + anon_expr + """) AS walk_in_orders,
-                COALESCE(ROUND(SUM(s.total_sales_kes::numeric), 0), 0) AS total_sales,
-                COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + anon_expr + """), 0), 0) AS walk_in_sales
+                COALESCE(ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0), 0) AS total_sales,
+                COALESCE(ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) FILTER (WHERE """ + anon_expr + """), 0), 0) AS walk_in_sales
             FROM all_sales s
             LEFT JOIN pseudo ps ON ps.customer_id = s.customer_id
             WHERE """ + where + """ AND COALESCE(s.country,'') <> ''
@@ -10390,8 +10390,8 @@ def customers_walk_ins(
             SELECT s.pos_location_name AS channel, MAX(s.country) AS country,
                 COUNT(DISTINCT s.order_id) AS total_orders,
                 COUNT(DISTINCT s.order_id) FILTER (WHERE """ + anon_expr + """) AS walk_in_orders,
-                COALESCE(ROUND(SUM(s.total_sales_kes::numeric), 0), 0) AS total_sales,
-                COALESCE(ROUND(SUM(s.total_sales_kes::numeric) FILTER (WHERE """ + anon_expr + """), 0), 0) AS walk_in_sales
+                COALESCE(ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0), 0) AS total_sales,
+                COALESCE(ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) FILTER (WHERE """ + anon_expr + """), 0), 0) AS walk_in_sales
             FROM all_sales s
             LEFT JOIN pseudo ps ON ps.customer_id = s.customer_id
             WHERE """ + where + """ AND COALESCE(s.pos_location_name,'') <> ''
@@ -12702,12 +12702,13 @@ _ACTUAL_BUCKET_CASE = (
 )
 
 # Achievement is measured on the SAME canonical revenue basis as the headline
-# KPIs (total_sales_kes net of returns) — NOT net_sales_kes, which is net of
-# discounts and reads ~12-14% low (e.g. Kenya YTD 370M vs the real 422M). Any
+# KPIs: Total Sales = total_sales_kes − discounts_kes − returns (VAT-incl) —
+# NOT stored net_sales_kes (ex-VAT, reads low). The discount subtraction is
+# required now that Odoo loyalty/reward lines land as discounts_kes. Any
 # query using this expression must include 'return' rows in its WHERE clause
 # (sale_kind IN ('sale','order','return')) so the returns subtraction applies.
 _TARGET_REVENUE = (
-    "SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) "
+    "SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END) "
     "- SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)"
 )
 
@@ -14375,7 +14376,7 @@ def _es_stock_mix(sold_from, sold_to, window_days, country):
     sales = run_query("""
         SELECT p.product_type AS subcategory,
             SUM(s.ordered_item_quantity) AS sold_units,
-            ROUND(SUM(s.total_sales_kes::numeric), 0) AS sold_rev
+            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS sold_rev
         FROM all_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
         WHERE s.sale_date BETWEEN '""" + sold_from + """' AND '""" + sold_to + """'
@@ -18347,7 +18348,7 @@ def _x_store_sales(df, dt):
     rows = run_query(
         """
         SELECT s.pos_location_name AS loc,
-            ROUND(SUM(s.total_sales_kes::numeric)) AS sales,
+            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric))) AS sales,
             COALESCE(SUM(s.net_quantity), 0) AS units,
             COUNT(DISTINCT s.order_id) AS tx
         FROM all_sales s
@@ -18603,7 +18604,7 @@ def analytics_products_plan(
         WITH sales AS (
             SELECT p.category, p.product_type AS subcategory,
                 SUM(s.ordered_item_quantity) AS qty_sold,
-                ROUND(SUM(s.total_sales_kes::numeric)) AS total_sales
+                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric))) AS total_sales
             FROM all_sales s
             JOIN all_products_clean p ON s.variant_sku = p.sku
             WHERE """ + where + """
@@ -18678,7 +18679,7 @@ def analytics_category_country_matrix(
     rows = run_query(
         """
         SELECT p.product_type AS subcategory, s.country,
-            ROUND(SUM(s.total_sales_kes::numeric)) AS sales_kes
+            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric))) AS sales_kes
         FROM all_sales s
         JOIN all_products_clean p ON s.variant_sku = p.sku
         WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
@@ -18825,7 +18826,7 @@ def footfall_daily_calendar(
         sa AS (
             SELECT s.sale_date::date AS d,
                 COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
-                ROUND(SUM(s.total_sales_kes::numeric)) AS total_sales
+                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric))) AS total_sales
             FROM all_sales s
             WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
               AND """ + BASE_FILTERS + sa_country + """
@@ -20133,7 +20134,7 @@ def _restatement_month_figures():
     and channels), limited to the trailing window."""
     return run_query("""
         SELECT date_trunc('month', s.sale_date::date)::date AS month,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END)
                 - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
             ROUND(""" + NET_SALES_CANON + """, 0) AS net_sales,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
@@ -20281,11 +20282,11 @@ def get_kpi_trend(
     rows = run_query("""
         SELECT
             date_trunc('""" + bucket + """', s.sale_date::date)::date AS bucket_date,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
             ROUND(""" + NET_SALES_CANON + """, 0) AS net_sales,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
-            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size,
+            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END), 0) AS discount,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS returns
         FROM all_sales s
@@ -20329,15 +20330,15 @@ def get_trend_series(
     sales_rows = run_query("""
         SELECT
             date_trunc('""" + bucket + """', s.sale_date::date)::date AS bucket_date,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
+            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END)
                 - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
             ROUND(""" + NET_SALES_CANON + """, 0) AS net_sales,
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units_sold,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
-            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
+            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END)
                 - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END))
                 / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size,
-            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END)
+            ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END)
                 - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END))
                 / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END), 0), 0) AS avg_selling_price
         FROM all_sales s
@@ -26317,7 +26318,7 @@ def _member_expire_inactive_points(customer_id, cfg=None):
 
 def _crm_rolling_spend(customer_id):
     rows = _users_exec(
-        "SELECT COALESCE(SUM(s.total_sales_kes::numeric),0) AS spend "
+        "SELECT COALESCE(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)),0) AS spend "
         "FROM all_sales s WHERE s.customer_id = %s "
         "AND s.sale_kind IN ('sale','order') "
         "AND s.sale_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' "
@@ -26787,7 +26788,7 @@ def crm_customer_detail(customer_id: str, request: Request):
     txns = _users_exec(
         "SELECT s.order_id, MAX(s.sale_date) AS sale_date, MAX(s.pos_location_name) AS pos_location, "
         "MAX(s.channel) AS channel, MAX(s.country) AS country, "
-        "ROUND(SUM(s.total_sales_kes::numeric),0) AS amount_kes, "
+        "ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)),0) AS amount_kes, "
         "SUM(COALESCE(s.ordered_item_quantity,0)) AS units "
         "FROM all_sales s WHERE s.customer_id=%s "
         "AND s.pos_location_name NOT IN ('Staff purchases','Manual Order','Online - vivo-uganda') "
