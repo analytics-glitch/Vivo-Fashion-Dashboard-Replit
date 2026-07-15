@@ -4009,7 +4009,13 @@ async function saveReceivingSheet(alsoPrint){
     const r=await fetch('/api/fabric/receiving/po-sheet/'+encodeURIComponent(Number(recvPO.po_id))+'/rolls',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({product_id:Number(recvSel.id),rolls,note})});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     const res=await r.json();
-    recvClearSelection();
+    // Keep the fabric + PO selected so back-to-back sheets of the same product
+    // don't need a re-search; just start a fresh empty roll sheet.
+    recvRolls=[{kg:''}];
+    document.getElementById('recv-note').value='';
+    renderRecvRolls();
+    const kgInput=document.querySelector('#recv-rolls-body input[data-kind="kg"]');
+    if(kgInput)kgInput.focus();
     const nos=res.roll_nos||[];
     document.getElementById('recv-form-err').innerHTML='<div class="banner" style="background:rgba(26,92,56,.08);border:1px solid var(--border);padding:.5rem .8rem;border-radius:8px;font-size:12.5px;">Saved — assigned roll number'+(nos.length===1?'':'s')+' <b>'+esc(nos.join(', '))+'</b> on this PO\u2019s sheet.</div>';
     loadRecvPoBatches();
