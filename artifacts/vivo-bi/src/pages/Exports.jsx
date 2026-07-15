@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { Navigate } from "react-router-dom";
 import { useFilters } from "@/lib/filters";
 import { useAuth } from "@/lib/auth";
 import { api, fmtNum, fmtKES, fmtDate } from "@/lib/api";
@@ -8,7 +9,6 @@ import SortableTable from "@/components/SortableTable";
 import { categoryFor, isMerchandise } from "@/lib/productCategory";
 import { DownloadSimple, MagnifyingGlass, Warning } from "@phosphor-icons/react";
 // import ReplenishmentReport from "@/components/ReplenishmentReport"; // moved to /replenishments page
-import SORReportExport from "@/components/SORReportExport";
 import StyleStatusToggle from "@/components/StyleStatusToggle";
 import {
   StoreKpisExport,
@@ -790,6 +790,10 @@ const SalesExport = () => {
 // Parent wrapper with Sales / Inventory tab switcher.
 const Exports = () => {
   const { user } = useAuth();
+  // Legacy deep link: the SOR Report tab moved to the Product Development hub.
+  if (new URLSearchParams(window.location.search).get("tab") === "sor") {
+    return <Navigate to="/product-analysis?tab=sor-report" replace />;
+  }
   // Inventory-only roles see ONLY the Inventory tab. store_manager and
   // warehouse both fall in this bucket — store managers don't have
   // sales-side permission scope; warehouse staff don't need it for
@@ -853,16 +857,6 @@ const Exports = () => {
         >
           Stock Rebalancing
         </button>
-        <button
-          type="button"
-          onClick={() => setTab("sor")}
-          data-testid="exports-tab-sor"
-          className={`px-4 py-1.5 rounded-lg text-[13px] font-semibold transition-colors ${
-            tab === "sor" ? "bg-brand text-white" : "text-foreground/70 hover:bg-white"
-          }`}
-        >
-          SOR Report
-        </button>
         </>
         )}
       </div>
@@ -871,7 +865,7 @@ const Exports = () => {
       {!isInventoryOnly && tab === "kpis" && <StoreKpisExport />}
       {!isInventoryOnly && tab === "period" && <PeriodPerformanceExport />}
       {!isInventoryOnly && tab === "stock" && <StockRebalancingExport />}
-      {!isInventoryOnly && tab === "sor" && <SORReportExport />}
+      {/* SOR Report moved to the Product Development page (SOR Report tab). */}
     </div>
   );
 };

@@ -56,8 +56,7 @@ export const PRIMARY_NAV = [
   // Product & inventory ANALYSIS pages — "what's selling, what's it worth,
   // how much stock and what's stuck". Operational action pages live in the
   // "Operations & Production" group below.
-  { to: "/product-analysis", label: "Product Analysis", icon: ChartBar, id: "product-analysis", group: "Products & Range", desc: "Canonical style-level sales & stock cockpit — Style Cockpit and Catalog & SOR tabs, with size/colour drill-down" },
-  { to: "/range-mgmt", label: "Range Mgmt", icon: Stack, id: "range-mgmt", group: "Products & Range", desc: "Range classification, store × tier stock mix and retired styles still holding stock" },
+  { to: "/product-analysis", label: "Product Development", icon: ChartBar, id: "product-analysis", group: "Products & Range", desc: "Product development hub — Style Cockpit, Catalog & SOR, Range Management, Allocations, Re-Order, Weekly Style Tracker, Gallery and SOR Report tabs" },
   { to: "/inventory", label: "Inventory", icon: Package, id: "inventory", group: "Products & Range", desc: "Stock on hand, velocity & weeks of cover, and stuck & declining stock" },
   { to: "/margin", label: "Margin & Markdown", icon: Percent, id: "margin", group: "Products & Range", desc: "Discount impact on gross margin, COGS and margin %" },
   { to: "/markdown-clearance", label: "Markdown & Clearance", icon: Percent, id: "markdown-clearance", group: "Products & Range", desc: "Markdown candidates and clearance plan" },
@@ -82,17 +81,13 @@ export const PRIMARY_NAV = [
   { to: "/excess-inventory", label: "Excess Inventory", icon: Package, id: "excess-inventory", group: "Operations & Production", desc: "Store stock above the per-brand size allowance — flagged for return" },
   { to: "/ibt", label: "IBT", icon: Truck, id: "ibt", group: "Operations & Production", desc: "Inter-branch transfer recommendations" },
   { to: "/store-flow", label: "Store Flow", icon: Truck, id: "store-flow", group: "Operations & Production", desc: "Per store over a period: units sold vs units transferred in, in-transit stock and current stock" },
-  { to: "/allocations", label: "Allocations", icon: Stack, id: "allocations", group: "Operations & Production", desc: "Allocate incoming stock across stores" },
   { to: "/replenishments", label: "Replenishments", icon: ArrowsClockwise, id: "replenishments", group: "Operations & Production", desc: "Replenishment suggestions with last-sold dates" },
   { to: "/replenish-by-item", label: "Replenish by Style/SKU", icon: Package, id: "replenish-by-item", group: "Operations & Production", desc: "Find understocked stores for a style/SKU, or a store's proven demand gaps" },
-  { to: "/re-order", label: "Re-Order", icon: ArrowsClockwise, id: "re-order", group: "Operations & Production", desc: "Styles to re-order based on demand" },
   { to: "/production", label: "Production Tracker", icon: Factory, id: "production", group: "Operations & Production", desc: "Kanban board tracking buying orders through the manufacturing stages" },
   { to: "/production-report", label: "Production Report", icon: Table, id: "production-report", group: "Operations & Production", desc: "Detailed buying-order report: colours, sizes, stage distribution and cross-order roll-ups by order & production type" },
-  { to: "/style-tracker", label: "Weekly Style Tracker", icon: ClockClockwise, id: "style-tracker", group: "Operations & Production", desc: "Kanban of styles by launch week: drag between weeks, track status and archive completed weeks" },
 
   // Catalogues & others
   { to: "/catalogue", label: "Report Catalogue", icon: BookOpen, id: "catalogue", group: "Tools", desc: "Every report, what page it lives on, and all the calculation & business rules — with an AI finder" },
-  { to: "/gallery", label: "Gallery", icon: ImageSquare, id: "gallery", group: "Tools", desc: "Visual product lookup — search photos by style name, SKU or barcode" },
   { to: "/custom-report", label: "Custom Report", icon: Table, id: "custom-report", group: "Tools", desc: "Build your own breakdown by dimensions & measures, export CSV" },
   { to: "/exports", label: "Exports (Sales, Inventory)", icon: DownloadSimple, id: "exports", group: "Tools", desc: "Download sales and inventory data as CSV" },
   { to: "/hr/", label: "HR & Attendance", icon: UsersThree, id: "hr", external: true, group: "Tools", desc: "Staff attendance, department performance and training (opens the HR dashboard)" },

@@ -10,6 +10,8 @@ import ProductImage from "@/components/ProductImage";
 import { odooImageUrl } from "@/lib/useProductImages";
 import MultiSelect from "@/components/MultiSelect";
 import { Loading, ErrorBox, Empty } from "@/components/common";
+import { useAuth } from "@/lib/auth";
+import { canAccessPage } from "@/lib/permissions";
 import {
   Tag, Storefront, MagnifyingGlass, Sparkle, X as XIcon,
   Package, Cube, Percent, ChartBar, Warehouse,
@@ -1421,33 +1423,61 @@ const ProductAnalysis = () => {
   );
 };
 
-// ── Page wrapper: question-driven tabs ───────────────────────────────────────
+// ── Page wrapper: Product Development hub — question-driven tabs ─────────────
 // "What's selling and what's it worth?" — the canonical Style Cockpit above.
-// "Catalog & SOR" — the former standalone Products page (style & subcategory
-// performance, launch-window report), merged here as a tab. The old /products
-// URL redirects to /product-analysis (see App.js); the "products" page id is
-// aliased to "product-analysis" server-side for stored group grants.
+// The former standalone pages Range Management, Allocations, Re-Order,
+// Weekly Style Tracker, Gallery and the SOR Report (from Exports) are merged
+// here as tabs (same pattern as the earlier Products → "Catalog & SOR" merge).
+// Old URLs redirect here with ?tab=… (see App.js). Each tab keeps its ORIGINAL
+// page id for permissions, so existing role/group grants keep working — the
+// route lets a user in when they can access ANY tab, and only their allowed
+// tabs render.
 const ProductsCatalog = React.lazy(() => import("./Products"));
+const RangeManagementTab = React.lazy(() => import("./RangeManagement"));
+const AllocationsTab = React.lazy(() => import("./Allocations"));
+const ReOrderTab = React.lazy(() => import("./ReOrder"));
+const StyleTrackerTab = React.lazy(() => import("./StyleTracker"));
+const GalleryTab = React.lazy(() => import("./Gallery"));
+const SORReportTab = React.lazy(() => import("@/components/SORReportExport"));
+
+export const PA_TAB_PAGE_IDS = [
+  "product-analysis", "range-mgmt", "allocations", "re-order",
+  "style-tracker", "gallery", "exports",
+];
 
 const PA_TABS = [
-  { id: "cockpit", label: "Style Cockpit" },
-  { id: "catalog", label: "Catalog & SOR" },
+  { id: "cockpit", label: "Style Cockpit", pageId: "product-analysis", el: null },
+  { id: "catalog", label: "Catalog & SOR", pageId: "product-analysis", el: ProductsCatalog },
+  { id: "range", label: "Range Management", pageId: "range-mgmt", el: RangeManagementTab },
+  { id: "allocations", label: "Allocations", pageId: "allocations", el: AllocationsTab },
+  { id: "reorder", label: "Re-Order", pageId: "re-order", el: ReOrderTab },
+  { id: "tracker", label: "Weekly Style Tracker", pageId: "style-tracker", el: StyleTrackerTab },
+  { id: "gallery", label: "Gallery", pageId: "gallery", el: GalleryTab },
+  { id: "sor-report", label: "SOR Report", pageId: "exports", el: SORReportTab },
 ];
 
 const ProductAnalysisPage = () => {
-  const [tab, setTab] = useState("cockpit");
+  const { user } = useAuth();
+  const visibleTabs = PA_TABS.filter((t) => canAccessPage(user, t.pageId));
+  const initialTab = (() => {
+    const wanted = new URLSearchParams(window.location.search).get("tab");
+    return visibleTabs.some((t) => t.id === wanted) ? wanted : (visibleTabs[0]?.id || "cockpit");
+  })();
+  const [tab, setTab] = useState(initialTab);
+  const active = visibleTabs.find((t) => t.id === tab) || visibleTabs[0];
+  const ActiveEl = active?.el;
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-1.5 border-b border-border" data-testid="pa-tabs">
-        {PA_TABS.map((t) => (
+      <div className="flex items-center gap-1.5 border-b border-border overflow-x-auto" data-testid="pa-tabs">
+        {visibleTabs.map((t) => (
           <button
             key={t.id}
             type="button"
             onClick={() => setTab(t.id)}
             data-testid={`pa-tab-${t.id}`}
             className={
-              "px-3.5 py-2 text-[13px] font-medium border-b-2 -mb-px transition-colors " +
-              (tab === t.id
+              "px-3.5 py-2 text-[13px] font-medium border-b-2 -mb-px transition-colors whitespace-nowrap " +
+              (t.id === active?.id
                 ? "border-[#1a5c38] text-[#1a5c38]"
                 : "border-transparent text-muted hover:text-foreground")
             }
@@ -1456,13 +1486,13 @@ const ProductAnalysisPage = () => {
           </button>
         ))}
       </div>
-      {tab === "cockpit" ? (
+      {active?.id === "cockpit" ? (
         <ProductAnalysis />
-      ) : (
-        <React.Suspense fallback={<Loading label="Loading catalog…" />}>
-          <ProductsCatalog />
+      ) : ActiveEl ? (
+        <React.Suspense fallback={<Loading label="Loading…" />}>
+          <ActiveEl />
         </React.Suspense>
-      )}
+      ) : null}
     </div>
   );
 };

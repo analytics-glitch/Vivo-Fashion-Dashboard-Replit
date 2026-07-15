@@ -15,7 +15,7 @@ import AwaitingApproval from "@/pages/AwaitingApproval";
  * - `adminOnly` route but non-admin -> bounce home.
  * - `pageId` not in the user's allowed pages -> bounce home.
  */
-export const ProtectedRoute = ({ children, adminOnly = false, pageId }) => {
+export const ProtectedRoute = ({ children, adminOnly = false, pageId, anyOfPageIds }) => {
   const { user, loading } = useAuth();
 
   if (loading) {
@@ -38,6 +38,13 @@ export const ProtectedRoute = ({ children, adminOnly = false, pageId }) => {
   }
 
   if (pageId && !canAccessPage(user, pageId)) {
+    return <Navigate to="/" replace />;
+  }
+
+  // Multi-tab pages: allow through when the user can access ANY of the member
+  // tab page ids (each tab still self-gates inside the page).
+  if (Array.isArray(anyOfPageIds) && anyOfPageIds.length &&
+      !anyOfPageIds.some((id) => canAccessPage(user, id))) {
     return <Navigate to="/" replace />;
   }
 
