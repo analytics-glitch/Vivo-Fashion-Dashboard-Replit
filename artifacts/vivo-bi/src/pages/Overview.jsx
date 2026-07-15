@@ -1210,16 +1210,6 @@ const Overview = () => {
               formula={`Canonical Net Sales = (Total Sales − Returns − Discounts) excluding VAT (16% Kenya & Online, 18% Uganda/Rwanda).\n\nBridge for this period: Total Sales ${fmtKESLong(kpis.total_sales)} (returns of ${fmtKESLong(kpis.total_returns)} already netted out) − discounts ${fmtKESLong(kpis.total_discounts)}, then VAT stripped = Net Sales ${fmtKESLong(kpis.net_sales)}.\n\nThis is the ONE Net Sales figure — Margin ‘Net Revenue’, Product Analysis and the Sales Export summary all show this same number for the same filters. Total Sales stays VAT-inclusive, so the gap between the two cards is mostly the VAT share (~14%).`}
               delta={delta("net_sales")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("net_sales", kfmt)} showDelta={compareMode !== "none"}
               action={{ label: "Drill into returns", to: "/exec-summary#returns" }} />
-            <KPICard testId="kpi-orders" label="Transactions" value={fmtNum(kpis.total_orders)} valueFull={fmtNum(kpis.total_orders)} icon={ShoppingCart}
-              formula="How many separate purchases were made."
-              delta={delta("total_orders")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_orders", fmtNum)} showDelta={compareMode !== "none"}
-              action={{ label: "Order-level export", to: "/exports" }}
-              prefetch={pf("/exports")} />
-            <KPICard testId="kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} valueFull={fmtNum(kpis.total_units)} icon={Package}
-              formula="How many individual Vivo merchandise items left the shelves (excludes Accessories, Sale, Other & Third-Party Brands — canonical definition C)."
-              delta={delta("total_units")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}
-              action={{ label: "Top styles", to: "/product-analysis" }}
-              prefetch={pf("/product-analysis")} />
             <KPICard testId="kpi-new-customer-revenue" label="New Customer Revenue"
               value={ctSeg.newSales == null ? "\u2014" : kfmt(ctSeg.newSales)}
               valueFull={ctSeg.newSales == null ? "\u2014" : fmtKESLong(ctSeg.newSales)}
@@ -1244,6 +1234,16 @@ const Overview = () => {
               showDelta={compareMode !== "none"}
               action={{ label: "Customer breakdown", to: "/customers" }}
               prefetch={pf("/customers")} />
+            <KPICard testId="kpi-orders" label="Transactions" value={fmtNum(kpis.total_orders)} valueFull={fmtNum(kpis.total_orders)} icon={ShoppingCart}
+              formula="How many separate purchases were made."
+              delta={delta("total_orders")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_orders", fmtNum)} showDelta={compareMode !== "none"}
+              action={{ label: "Order-level export", to: "/exports" }}
+              prefetch={pf("/exports")} />
+            <KPICard testId="kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} valueFull={fmtNum(kpis.total_units)} icon={Package}
+              formula="How many individual Vivo merchandise items left the shelves (excludes Accessories, Sale, Other & Third-Party Brands — canonical definition C)."
+              delta={delta("total_units")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}
+              action={{ label: "Top styles", to: "/product-analysis" }}
+              prefetch={pf("/product-analysis")} />
             {!isOnlineOnly && (
               <KPICard testId="kpi-footfall" label="Total Footfall" sub="Walk-ins counted at our store sensors" value={loading ? "\u2014" : fmtNum(footfallAgg.total_footfall)} valueFull={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
                 formula={"Formula: sum of door-sensor walk-ins (a01_footfall_in) across stores for the selected period.\n\nRenamed sensor feeds are mapped back to their store before totalling. Stores flagged for sensor data-quality issues (conversion over 50%) are excluded."}
