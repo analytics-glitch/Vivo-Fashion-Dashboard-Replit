@@ -602,6 +602,42 @@ BUILTIN_GROUP_LABELS = {
     "employee": "Employee (Salary Advance)",
 }
 VALID_STATUSES = ("pending", "active", "rejected", "disabled")
+
+# CRM-admin email allowlist: these accounts get FULL CRM visibility (every CRM
+# tab including Config, loyalty adjustments/tier recalc, the clienteling app's
+# manager pages and the CRM social inbox) WITHOUT being platform admins — no
+# user management, finance or extra BI pages. Enforced server-side in
+# clerk_auth_gate (CRM/social gates + employee fence) and in _crm_is_admin;
+# surfaced to clients as `crm_admin` on /auth/me so the web CRM and the
+# standalone clienteling app unlock their admin-only UI.
+CRM_ADMIN_EMAILS = {
+    "isabelle@vivofashiongroup.com",
+    "julie@vivofashiongroup.com",
+    "immaculate@vivofashiongroup.com",
+    "customercare@vivofashiongroup.com",
+}
+
+
+def _is_crm_admin_user(u):
+    return bool(u) and (u.get("email") or "").strip().lower() in CRM_ADMIN_EMAILS
+
+
+# The ONLY path prefixes a CRM-admin allowlisted account with the minimal
+# "employee" role may reach (besides its salary-advance self-service). Covers
+# the in-app CRM tab (/api/crm), the CRM social inbox (/api/social) and every
+# prefix the standalone clienteling app (crm_clienteling.py) registers. All
+# other BI/ops endpoints stay behind the employee fence — the allowlist is
+# CRM-only, not a general BI grant.
+CRM_ADMIN_EMPLOYEE_PREFIXES = (
+    "/api/crm", "/api/social", "/api/dashboard", "/api/insights",
+    "/api/customers", "/api/loyalty", "/api/training", "/api/bi/",
+    "/api/templates", "/api/tasks", "/api/notes", "/api/consent",
+    "/api/segments", "/api/preferences", "/api/messages", "/api/lookbooks",
+    "/api/campaigns", "/api/my-customers", "/api/manager", "/api/dropoff",
+    "/api/audit", "/api/bootstrap",
+)
+
+
 # Lowest-access department used as a generic fallback where a role is missing.
 DEFAULT_NEW_ROLE = "store_manager"
 # Google self-signups on an allowed company domain are AUTO-APPROVED into the
@@ -1172,7 +1208,9 @@ async def clerk_auth_gate(request: Request, call_next):
     # endpoints is refused server-side, so no BI/HR/CRM data is reachable no
     # matter what the client renders. (Auth self-paths — /me, /logout,
     # /heartbeat — already returned above; public auth paths never reach here.)
-    if user.get("role") == "employee" and not path.startswith("/api/hr/salary-advances"):
+    if user.get("role") == "employee" and not path.startswith("/api/hr/salary-advances") \
+            and not (_is_crm_admin_user(user)
+                     and path.startswith(CRM_ADMIN_EMPLOYEE_PREFIXES)):
         return JSONResponse(
             {"detail": "employee_salary_advance_only"}, status_code=403)
 
@@ -1220,14 +1258,14 @@ async def clerk_auth_gate(request: Request, call_next):
     # via _crm_is_admin).
     if path.startswith("/api/crm") and user.get("role") not in (
         "customer_service", "marketing", "leadership", "smt", "admin"
-    ):
+    ) and not _is_crm_admin_user(user):
         return JSONResponse({"detail": "CRM access requires a customer service, marketing, leadership or admin role"}, status_code=403)
 
     # Social (Facebook Page) management is a marketing action: publishing offers
     # and replying to customers. Marketing + leadership + admin only.
     if path.startswith("/api/social") and user.get("role") not in (
         "marketing", "leadership", "smt", "admin"
-    ):
+    ) and not _is_crm_admin_user(user):
         return JSONResponse({"detail": "Social access requires a marketing, leadership or admin role"}, status_code=403)
 
     # Production Tracker (/api/production/*) is a work-in-progress board for the
@@ -2812,6 +2850,24 @@ def _effective_pages_for_role(role):
     if role in ov:
         return ov[role]
     return _default_pages_for_role(role)
+
+
+def _apply_crm_admin_grants(u):
+    """For CRM-admin allowlisted accounts (CRM_ADMIN_EMAILS): mark the payload
+    with `crm_admin` (unlocks admin-only CRM UI in the web CRM tab and the
+    standalone clienteling app) and union the CRM-related page ids into
+    allowed_pages so nav shows the CRM surfaces regardless of the account's
+    department group. Server enforcement lives in clerk_auth_gate +
+    _crm_is_admin; this only shapes the client payload."""
+    if not _is_crm_admin_user(u):
+        return u
+    u["crm_admin"] = True
+    pages = list(u.get("allowed_pages") or [])
+    for p in ("crm", "customers", "customer-details", "rfm", "social"):
+        if p not in pages:
+            pages.append(p)
+    u["allowed_pages"] = pages
+    return u
 
 
 def _set_role_pages(role, pages):
@@ -6001,6 +6057,7 @@ def auth_me(request: Request):
         u = dict(u)
         u["hidden_pages"] = _hidden_pages()
         u["allowed_pages"] = _effective_pages_for_role(u.get("role"))
+        _apply_crm_admin_grants(u)
     return u
 
 
@@ -6152,6 +6209,7 @@ def auth_me_status(request: Request):
     if u:
         u = dict(u)
         u["allowed_pages"] = _effective_pages_for_role(u.get("role"))
+        _apply_crm_admin_grants(u)
     return {"status": u.get("status", "active"), "role": u.get("role"), "user": u}
 
 
@@ -6184,6 +6242,7 @@ async def auth_login(request: Request):
     user = _user_dict(rec)
     user["hidden_pages"] = _hidden_pages()
     user["allowed_pages"] = _effective_pages_for_role(user.get("role"))
+    _apply_crm_admin_grants(user)
     resp = JSONResponse({"token": token, "user": user})
     resp.set_cookie("session_token", token, **_login_cookie_kwargs())
     return resp
@@ -26127,6 +26186,9 @@ def _crm_actor(request):
 
 
 def _crm_is_admin(request):
+    u = getattr(request.state, "user", None) or {}
+    if _is_crm_admin_user(u):
+        return True
     _, _, role = _crm_actor(request)
     return role == "admin"
 

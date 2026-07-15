@@ -22,7 +22,7 @@ function normalizeUser(u) {
   return {
     ...u,
     backend_role: u.role,
-    role: MANAGER_ROLES.has(raw) ? "manager" : "associate",
+    role: MANAGER_ROLES.has(raw) || u.crm_admin ? "manager" : "associate",
     name: u.name || u.email,
   };
 }

@@ -2159,7 +2159,7 @@ const TABS = [
 
 const CRM = () => {
   const { user } = useAuth();
-  const isAdmin = (user?.role || "").toLowerCase() === "admin";
+  const isAdmin = (user?.role || "").toLowerCase() === "admin" || !!user?.crm_admin;
   const initialTab = (() => {
     if (typeof window === "undefined") return "contacts";
     const requested = new URLSearchParams(window.location.search).get("tab");

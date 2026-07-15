@@ -420,7 +420,12 @@ def transform_odoo(cur, conn, rates):
         AND o.state IN ('done', 'paid', 'invoiced')
         AND LOWER(COALESCE(l.full_product_name, '')) NOT LIKE '%%shopping bag%%'
         AND o.id::text != '16547'
-        AND l.is_reward_line = FALSE
+        -- Reward/loyalty lines (is_reward_line = TRUE) are INCLUDED but
+        -- treated as pure discount rows: their negative price_subtotal_incl
+        -- becomes discounts_kes while total_sales_kes is zeroed out, so that
+        -- total_sales - discounts_kes = what the customer actually paid (matching
+        -- Odoo's order total). Previously dropped entirely, which overstated both
+        -- Total Sales and Net Sales by the full reward amount on promo orders.
     """)
     rows = cur.fetchall()
     log.info("Odoo raw rows: %d", len(rows))
@@ -478,11 +483,22 @@ def transform_odoo(cur, conn, rates):
         # double-subtracted discounts. (The old disc = incl − excl was the VAT
         # amount, not the discount.) Mirrors sync_incremental's Odoo path.
         raw_gross = price * qty
-        disc = max(round(raw_gross - subtotal_i, 2), 0.0) if qty >= 0 else 0.0
-        gross = (subtotal_i + disc) if qty >= 0 else 0.0
-        ret = abs(subtotal_i) if qty < 0 else 0.0
-        total = (subtotal_i + disc) if qty >= 0 else -abs(subtotal_i)
-        net = subtotal if qty >= 0 else -abs(subtotal)
+        # Reward/loyalty lines: qty > 0 but price_unit and subtotal_incl are
+        # negative (the whole discount in one line). Route to disc, zero total.
+        is_reward = (qty > 0 and subtotal_i < 0)
+        if is_reward:
+            disc = abs(subtotal_i)
+            gross = 0.0
+            ret = 0.0
+            total = 0.0
+            net = 0.0
+            units_qty = 0.0
+        else:
+            disc = max(round(raw_gross - subtotal_i, 2), 0.0) if qty >= 0 else 0.0
+            gross = (subtotal_i + disc) if qty >= 0 else 0.0
+            ret = abs(subtotal_i) if qty < 0 else 0.0
+            total = (subtotal_i + disc) if qty >= 0 else -abs(subtotal_i)
+            net = subtotal if qty >= 0 else -abs(subtotal)
 
         mapped = ODOO_LOCATION_MAP.get(pos_location_name, pos_location_name)
         country = get_country(mapped)

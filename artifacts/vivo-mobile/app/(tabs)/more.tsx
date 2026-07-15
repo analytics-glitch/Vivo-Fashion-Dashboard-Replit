@@ -86,7 +86,7 @@ export default function MoreScreen() {
       </View>
 
       {GROUPS.filter(
-        (g) => !g.roles || g.roles.includes(user?.role ?? ""),
+        (g) => !g.roles || g.roles.includes(user?.role ?? "") || (user as any)?.crm_admin,
       ).map((g) => (
         <View key={g.title} style={styles.group}>
           <Text style={[styles.groupTitle, { color: c.mutedForeground }]}>{g.title}</Text>
