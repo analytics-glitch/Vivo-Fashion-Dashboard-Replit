@@ -4418,6 +4418,8 @@ async function loadRecvPoBatches(){
         }
         const pp=e.target.closest('button[data-po-print]');
         if(pp){printPoFullSheet(pp.dataset.poPrint);return;}
+        const rq=e.target.closest('button[data-roll-q]');
+        if(rq){recvRollQualityFromBtn(rq);return;}
         const re=e.target.closest('button[data-roll-edit]');
         if(re){recvRollEditFromBtn(re);return;}
         const rd=e.target.closest('button[data-roll-del]');
@@ -4489,13 +4491,16 @@ function renderRecvPoDetail(box,det,poKey){
     let body='';
     if(open){
       const allRolls=[];
-      (g.sheets||[]).forEach(s=>(s.rolls||[]).forEach(r=>allRolls.push(r)));
+      (g.sheets||[]).forEach(s=>(s.rolls||[]).forEach(r=>allRolls.push(Object.assign({__sheet_id:s.id},r))));
       allRolls.sort((a,b)=>Number(a.roll_no)-Number(b.roll_no));
       const rollRows=allRolls.map(r=>{
         const q=r.quality_status==='Pass'?'<span style="color:#0a7d33;font-weight:700;">Pass</span>'
               :(r.quality_status==='Fail'?'<span style="color:var(--danger);font-weight:700;">Fail</span>'
               :'<span class="muted">'+esc(r.quality_status||'Pending')+'</span>');
         const racts='<button class="btn" data-slip="'+Number(r.roll_id)+'" title="Print a slip for this roll" style="padding:1px 7px;font-size:11px;">🖨 Slip</button>'
+          +(r.roll_id!=null
+            ?' <button class="btn" data-roll-q="'+Number(r.roll_id)+'" data-q-sheet="'+Number(r.__sheet_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-q-status="'+esc(r.quality_status||'')+'" data-q-notes="'+esc(r.quality_notes||'')+'" title="Record this roll\u2019s quality (Pass / Fail / Pending + notes)" style="padding:1px 7px;font-size:11px;">Quality</button>'
+            :'')
           +(canEditRolls&&r.roll_id!=null
             ?' <button class="btn" data-roll-edit="'+Number(r.roll_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-kg="'+esc(String(r.qty_kg==null?'':r.qty_kg))+'" title="Correct this roll\u2019s weight" style="padding:1px 7px;font-size:11px;">✎</button>'
              +' <button class="btn" data-roll-del="'+Number(r.roll_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" title="Delete this roll" style="padding:1px 7px;font-size:11px;">&times;</button>'
@@ -4525,7 +4530,7 @@ function recvAuditHtml(audit){
   if(!audit.length)return '';
   const LABELS={rolls_added:'Rolls added',roll_edited:'Roll edited',roll_deleted:'Roll deleted',
                 sheet_edited:'Sheet edited (admin)',sheet_deleted:'Sheet deleted',odoo_upload:'Odoo upload',
-                landed_cost_created:'Landed cost draft created'};
+                landed_cost_created:'Landed cost draft created',quality_updated:'Quality updated'};
   const lines=audit.map(a=>{
     const dd=a.details||{};
     let what='';
@@ -4536,6 +4541,11 @@ function recvAuditHtml(audit){
     else if(a.action==='sheet_deleted')what=fmt(dd.rolls)+' rolls · '+fmt2(dd.total_kg)+' kg';
     else if(a.action==='odoo_upload')what=String(dd.status||'');
     else if(a.action==='landed_cost_created')what=(dd.lc_name?String(dd.lc_name)+' · ':'')+fmt2(dd.total_kes)+' KES · '+(dd.pickings||[]).join(', ');
+    else if(a.action==='quality_updated'){
+      what='roll '+dd.roll_no+': '+(dd.old_status||'Pending')+' → '+(dd.new_status||'Pending');
+      if((dd.new_notes||'')!==(dd.old_notes||''))what+=' · notes: '+(dd.new_notes||'(cleared)');
+      else if(dd.new_notes)what+=' · notes: '+dd.new_notes;
+    }
     const post=dd.after_upload?' <span style="color:#b8860b;font-weight:700;">(after upload)</span>':'';
     return '<div style="font-size:11.5px;padding:1px 0;">'+esc(a.at_txt||'')+' · <b>'+esc(LABELS[a.action]||a.action||'')+'</b>'
       +(a.fabric_name?' · '+esc(a.fabric_name):'')
@@ -4565,6 +4575,65 @@ async function recvRollDeleteFromBtn(btn){
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     loadRecvPoBatches();
   }catch(e){alert('Could not delete the roll: '+e.message);}
+}
+// Compact per-roll QUALITY editor (status + notes only — weight stays behind
+// the ✎ button). Open to every signed-in user, even after the Odoo upload.
+function recvRollQualityFromBtn(btn){
+  const box=btn.closest('.recv-po-detail');
+  const rollId=Number(btn.dataset.rollQ);
+  const sheetId=Number(btn.dataset.qSheet);
+  const rollNo=btn.dataset.rollNo||'';
+  const cur=btn.dataset.qStatus||'';
+  const curNotes=btn.dataset.qNotes||'';
+  document.querySelectorAll('.roll-q-pop').forEach(el=>el.remove());
+  const pop=document.createElement('div');
+  pop.className='roll-q-pop';
+  pop.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  const opts=['Pending','Pass','Fail'].map(o=>{
+    const sel=(cur||'Pending')===o?' selected':'';
+    return '<option value="'+(o==='Pending'&&!cur?'':o)+'"'+sel+'>'+o+'</option>';
+  }).join('');
+  pop.innerHTML='<div style="background:#fff;border-radius:10px;padding:1rem 1.1rem;width:340px;max-width:92vw;box-shadow:0 8px 30px rgba(0,0,0,.25);" onclick="event.stopPropagation()">'
+    +'<div style="font-weight:700;font-size:14px;margin-bottom:.5rem;">Quality — roll '+esc(rollNo)+'</div>'
+    +'<label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;">Status</label>'
+    +'<select class="roll-q-status" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;">'+opts+'</select>'
+    +'<label style="font-size:12px;font-weight:600;display:block;margin:.55rem 0 2px;">Notes</label>'
+    +'<textarea class="roll-q-notes" rows="3" placeholder="Inspection notes (optional)" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;resize:vertical;"></textarea>'
+    +'<div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:.7rem;">'
+    +'<button class="btn roll-q-cancel" style="padding:4px 12px;font-size:12.5px;">Cancel</button>'
+    +'<button class="btn btn-primary roll-q-save" style="padding:4px 12px;font-size:12.5px;">Save</button>'
+    +'</div></div>';
+  document.body.appendChild(pop);
+  pop.querySelector('.roll-q-notes').value=curNotes;
+  const close=()=>pop.remove();
+  pop.addEventListener('click',close);
+  pop.querySelector('.roll-q-cancel').addEventListener('click',close);
+  pop.querySelector('.roll-q-save').addEventListener('click',async ev=>{
+    const saveBtn=ev.currentTarget;
+    saveBtn.disabled=true;saveBtn.textContent='Saving…';
+    const status=pop.querySelector('.roll-q-status').value;
+    const notes=pop.querySelector('.roll-q-notes').value.trim();
+    try{
+      const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(sheetId)+'/quality',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({rolls:[{roll_id:rollId,roll_no:rollNo,status:status,notes:notes}]})});
+      if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
+      close();
+      await refreshRecvPoDetail(box);
+    }catch(e){
+      saveBtn.disabled=false;saveBtn.textContent='Save';
+      alert('Could not save the quality result: '+e.message);
+    }
+  });
+}
+// Re-pull ONE expanded PO's drill-down (rolls + header rollups + change log)
+// without reloading the whole batches table.
+async function refreshRecvPoDetail(box){
+  if(!box||!box.dataset.poDetail){loadRecvPoBatches();return;}
+  const k=box.dataset.poDetail;
+  try{
+    const det=await apiFetch('/api/fabric/receiving/po-batch-detail?po_id='+encodeURIComponent(k==='none'?'none':k));
+    box.dataset.cached=JSON.stringify(det);
+    renderRecvPoDetail(box,det,k);
+  }catch(_){loadRecvPoBatches();}
 }
 function printRollSlipFromBtn(btn){
   const box=btn.closest('.recv-po-detail');

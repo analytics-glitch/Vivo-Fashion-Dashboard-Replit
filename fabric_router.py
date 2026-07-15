@@ -6645,10 +6645,12 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
     _uid, name = _fabric_actor(request)
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
-        exists = q(conn, "SELECT id, fabric_name FROM fabric_receiving_sheets "
-                         "WHERE id=%s", (sheet_id,))
+        exists = q(conn, "SELECT id, fabric_name, po_id "
+                         "FROM fabric_receiving_sheets WHERE id=%s", (sheet_id,))
         if not exists:
             raise HTTPException(status_code=404, detail="receiving sheet not found")
+        po_id = exists[0].get("po_id")
+        after_upload = _recv_po_locked(conn, po_id)
         updated = 0
         with conn.cursor() as cur:
             for it in items:
@@ -6661,24 +6663,43 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                 notes = (str(it.get("notes") or "").strip() or None)
                 roll_id = it.get("roll_id")
                 roll_no = it.get("roll_no")
+                # Look up the current values first so we can (a) skip no-op
+                # writes and (b) audit the old -> new change.
                 if roll_id not in (None, ""):
-                    cur.execute("""
-                        UPDATE fabric_receiving_rolls
-                           SET quality_status=%s, quality_notes=%s,
-                               quality_updated_at=now(), quality_updated_by=%s
-                         WHERE id=%s AND sheet_id=%s
-                    """, (status, notes, name, roll_id, sheet_id))
+                    old = q(conn, "SELECT id, roll_no, quality_status, quality_notes "
+                                  "FROM fabric_receiving_rolls "
+                                  "WHERE id=%s AND sheet_id=%s",
+                            (roll_id, sheet_id))
                 elif roll_no not in (None, ""):
-                    cur.execute("""
-                        UPDATE fabric_receiving_rolls
-                           SET quality_status=%s, quality_notes=%s,
-                               quality_updated_at=now(), quality_updated_by=%s
-                         WHERE sheet_id=%s AND roll_no=%s
-                    """, (status, notes, name, sheet_id, int(roll_no)))
+                    old = q(conn, "SELECT id, roll_no, quality_status, quality_notes "
+                                  "FROM fabric_receiving_rolls "
+                                  "WHERE sheet_id=%s AND roll_no=%s",
+                            (sheet_id, int(roll_no)))
                 else:
                     raise HTTPException(status_code=400,
                         detail="each roll needs a roll_id or roll_no")
+                if not old:
+                    continue
+                o = old[0]
+                if (o.get("quality_status") or None) == status and \
+                   (o.get("quality_notes") or None) == notes:
+                    continue  # no actual change: no write, no audit row
+                cur.execute("""
+                    UPDATE fabric_receiving_rolls
+                       SET quality_status=%s, quality_notes=%s,
+                           quality_updated_at=now(), quality_updated_by=%s
+                     WHERE id=%s AND sheet_id=%s
+                """, (status, notes, name, o["id"], sheet_id))
                 updated += cur.rowcount
+                if po_id is not None:
+                    _recv_audit(cur, po_id, sheet_id,
+                                exists[0].get("fabric_name"), "quality_updated",
+                                {"roll_no": o.get("roll_no"),
+                                 "old_status": o.get("quality_status"),
+                                 "new_status": status,
+                                 "old_notes": o.get("quality_notes"),
+                                 "new_notes": notes,
+                                 "after_upload": bool(after_upload)}, name)
         conn.commit()
         _log_fabric_change("Receiving quality updated", {
             "id": sheet_id, "product": exists[0].get("fabric_name"),
@@ -6742,6 +6763,7 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
         qmap = {r["roll_no"]: r for r in prev}
         total_kg = round(sum(kg for _, kg in rolls), 3)
         total_mtrs = round(total_kg / kpm, 1) if kpm else None
+        quality_changes = []  # (roll_no, old_status, new_status, old_notes, new_notes)
         with conn.cursor() as cur:
             cur.execute("DELETE FROM fabric_receiving_rolls WHERE sheet_id=%s",
                         (sheet_id,))
@@ -6752,6 +6774,11 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
                     # Explicit quality edit in this request wins; stamp the editor.
                     q_status, q_notes = edit["status"], edit["notes"]
                     q_by, q_at = name, None  # None → SQL now() below
+                    old_status = (pq.get("quality_status") if pq else None) or None
+                    old_notes = (pq.get("quality_notes") if pq else None) or None
+                    if old_status != q_status or old_notes != q_notes:
+                        quality_changes.append(
+                            (roll_no, old_status, q_status, old_notes, q_notes))
                 else:
                     q_status = pq.get("quality_status") if pq else None
                     q_notes = pq.get("quality_notes") if pq else None
@@ -6800,13 +6827,21 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
             audit_po = (po_link["po_id"] if (po_change and po_link)
                         else (None if po_change else srow[0].get("po_id")))
             if audit_po is not None:
+                after_upload = _recv_po_locked(conn, audit_po)
                 _recv_audit(cur, audit_po, sheet_id,
                             srow[0].get("fabric_name"), "sheet_edited",
                             {"rolls": len(rolls),
                              "old_kg": float(srow[0].get("total_kg") or 0),
                              "new_kg": total_kg,
-                             "after_upload": _recv_po_locked(conn, audit_po)},
+                             "after_upload": after_upload},
                             name)
+                for rn, o_st, n_st, o_nt, n_nt in quality_changes:
+                    _recv_audit(cur, audit_po, sheet_id,
+                                srow[0].get("fabric_name"), "quality_updated",
+                                {"roll_no": rn,
+                                 "old_status": o_st, "new_status": n_st,
+                                 "old_notes": o_nt, "new_notes": n_nt,
+                                 "after_upload": bool(after_upload)}, name)
         conn.commit()
         _log_fabric_change("Receiving sheet edited", {
             "id": sheet_id, "product": srow[0].get("fabric_name"),

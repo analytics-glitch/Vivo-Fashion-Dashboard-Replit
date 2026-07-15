@@ -41,5 +41,10 @@ The standalone `POST .../quality` (non-admin path) keys by `roll_id` (stable, ro
 not rewritten) with a roll_no fallback that is only safe because of the uniqueness
 invariant above.
 
+**Quality changes are audited** (`quality_updated` rows in fabric_recv_audit with
+roll_no, old→new status/notes, after_upload flag) on BOTH the standalone POST and
+the admin PUT's inline quality edits — but ONLY when something actually changed
+(no-op saves must not write audit rows or bump who/when).
+
 All interpolated fields in the modal/print HTML go through `esc()` (see
 `fabric-dashboard-xss.md`).
