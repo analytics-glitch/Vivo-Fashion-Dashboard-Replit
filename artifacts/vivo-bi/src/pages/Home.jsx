@@ -52,7 +52,7 @@ export default function Home() {
 
   const groups = useMemo(() => {
     const accessible = [
-      ...PRIMARY_NAV.filter((t) => canAccessPage(user, t.id)),
+      ...PRIMARY_NAV.filter((t) => (t.anyOfPageIds ? t.anyOfPageIds.some((p) => canAccessPage(user, p)) : canAccessPage(user, t.id))),
       // Admin tiles still go through canAccessPage so visibility matches the
       // route-level gate exactly (admin routes require both adminOnly + pageId,
       // and allowed_pages overrides can narrow what an admin actually sees).

@@ -3,6 +3,8 @@ import { api } from "@/lib/api";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
 import ProductionOrderModal from "@/components/ProductionOrderModal";
 import { ArrowsClockwise, Factory, MagnifyingGlass, X, CloudCheck, Warning } from "@phosphor-icons/react";
+import { useAuth } from "@/lib/auth";
+import { canAccessPage } from "@/lib/permissions";
 
 /**
  * Production Tracker — a kanban board of every buying order's work-in-progress
@@ -155,7 +157,7 @@ function ColumnBulkBar({ stageKey, allowed, count, busy, onMove, onClear }) {
   );
 }
 
-export default function Production() {
+function Production() {
   const [stages, setStages] = useState([]);
   const [cards, setCards] = useState([]);
   const [syncStatus, setSyncStatus] = useState(null);
@@ -544,3 +546,58 @@ export default function Production() {
     </div>
   );
 }
+
+// ── Page wrapper: Production Pipeline hub ────────────────────────────────────
+// Merges the former standalone Production Tracker and Production Report pages
+// as tabs (same pattern as the Product Development hub). Each tab keeps its
+// ORIGINAL page id for permissions; the /production route admits a user who
+// can access ANY tab, and /production-report redirects here with ?tab=report.
+const ProductionReportTab = React.lazy(() => import("./ProductionReport"));
+
+const PROD_TABS = [
+  { id: "tracker", label: "Production Tracker", pageId: "production", el: null },
+  { id: "report", label: "Production Report", pageId: "production-report", el: ProductionReportTab },
+];
+
+const ProductionPipelinePage = () => {
+  const { user } = useAuth();
+  const visibleTabs = PROD_TABS.filter((t) => canAccessPage(user, t.pageId));
+  const initialTab = (() => {
+    const wanted = new URLSearchParams(window.location.search).get("tab");
+    return visibleTabs.some((t) => t.id === wanted) ? wanted : (visibleTabs[0]?.id || "tracker");
+  })();
+  const [tab, setTab] = useState(initialTab);
+  const active = visibleTabs.find((t) => t.id === tab) || visibleTabs[0];
+  const ActiveEl = active?.el;
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-1.5 border-b border-border overflow-x-auto" data-testid="prod-tabs">
+        {visibleTabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            data-testid={`prod-tab-${t.id}`}
+            className={
+              "px-3.5 py-2 text-[13px] font-medium border-b-2 -mb-px transition-colors whitespace-nowrap " +
+              (t.id === active?.id
+                ? "border-[#1a5c38] text-[#1a5c38]"
+                : "border-transparent text-muted hover:text-foreground")
+            }
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {active?.id === "tracker" ? (
+        <Production />
+      ) : ActiveEl ? (
+        <React.Suspense fallback={<Loading label="Loading…" />}>
+          <ActiveEl />
+        </React.Suspense>
+      ) : null}
+    </div>
+  );
+};
+
+export default ProductionPipelinePage;

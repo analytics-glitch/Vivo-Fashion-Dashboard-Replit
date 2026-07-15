@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { useAuth } from "@/lib/auth";
+import { canAccessPage } from "@/lib/permissions";
 import { useFilters } from "@/lib/filters";
 import { api, fmtKES, fmtNum, fmtDec, fmtPct, fmtAxisKES } from "@/lib/api";
 import CountryDot from "@/components/CountryDot";
@@ -1716,8 +1718,6 @@ const StuckDeclining = () => {
         <Link to="/warehouse-returns" className="text-brand underline underline-offset-2" data-testid="link-warehouse-returns">Warehouse Returns</Link>
         <span className="text-muted">·</span>
         <Link to="/excess-inventory" className="text-brand underline underline-offset-2" data-testid="link-excess-inventory">Excess Inventory</Link>
-        <span className="text-muted">·</span>
-        <Link to="/markdown-clearance" className="text-brand underline underline-offset-2" data-testid="link-markdown-clearance">Markdown &amp; Clearance</Link>
       </div>
 
       <div className="card-white p-4 sm:p-5">
@@ -1823,27 +1823,45 @@ const StuckDeclining = () => {
 // to /inventory and the "velocity" page id is aliased server-side.
 // "What's stuck and what's dying?" — the consolidated StuckDeclining tab.
 const VelocityTab = React.lazy(() => import("./Velocity"));
+// Former standalone operational pages, merged here as tabs (same pattern as
+// the Product Development hub). Each keeps its ORIGINAL page id for
+// permissions; the /inventory route admits a user who can access ANY tab and
+// the old URLs redirect here with ?tab=… (see App.js).
+const ReplenishmentsTab = React.lazy(() => import("./Replenishments"));
+const ReplenishByItemTab = React.lazy(() => import("./ReplenishByItem"));
+const StoreFlowTab = React.lazy(() => import("./StoreFlow"));
 
 const INV_TABS = [
-  { id: "stock", label: "Stock on Hand" },
-  { id: "velocity", label: "Velocity & Cover" },
-  { id: "stuck", label: "Stuck & Declining" },
+  { id: "stock", label: "Stock on Hand", pageId: "inventory", el: null },
+  { id: "velocity", label: "Velocity & Cover", pageId: "inventory", el: null },
+  { id: "stuck", label: "Stuck & Declining", pageId: "inventory", el: null },
+  { id: "replenishments", label: "Replenishments", pageId: "replenishments", el: ReplenishmentsTab },
+  { id: "replenish-by-sku", label: "Replenish by Style/SKU", pageId: "replenish-by-item", el: ReplenishByItemTab },
+  { id: "store-flow", label: "Store Flow", pageId: "store-flow", el: StoreFlowTab },
 ];
 
 const InventoryPage = () => {
-  const [tab, setTab] = useState("stock");
+  const { user } = useAuth();
+  const visibleTabs = INV_TABS.filter((t) => canAccessPage(user, t.pageId));
+  const initialTab = (() => {
+    const wanted = new URLSearchParams(window.location.search).get("tab");
+    return visibleTabs.some((t) => t.id === wanted) ? wanted : (visibleTabs[0]?.id || "stock");
+  })();
+  const [tab, setTab] = useState(initialTab);
+  const active = visibleTabs.find((t) => t.id === tab) || visibleTabs[0];
+  const ActiveEl = active?.el;
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-1.5 border-b border-border" data-testid="inventory-tabs">
-        {INV_TABS.map((t) => (
+      <div className="flex items-center gap-1.5 border-b border-border overflow-x-auto" data-testid="inventory-tabs">
+        {visibleTabs.map((t) => (
           <button
             key={t.id}
             type="button"
             onClick={() => setTab(t.id)}
             data-testid={`inventory-tab-${t.id}`}
             className={
-              "px-3.5 py-2 text-[13px] font-medium border-b-2 -mb-px transition-colors " +
-              (tab === t.id
+              "px-3.5 py-2 text-[13px] font-medium border-b-2 -mb-px transition-colors whitespace-nowrap " +
+              (t.id === active?.id
                 ? "border-[#1a5c38] text-[#1a5c38]"
                 : "border-transparent text-muted hover:text-foreground")
             }
@@ -1852,13 +1870,18 @@ const InventoryPage = () => {
           </button>
         ))}
       </div>
-      {tab === "stock" ? <Inventory onSeeAgedStock={() => setTab("stuck")} /> : null}
-      {tab === "velocity" ? (
+      {active?.id === "stock" ? <Inventory onSeeAgedStock={() => setTab("stuck")} /> : null}
+      {active?.id === "velocity" ? (
         <React.Suspense fallback={<Loading label="Loading velocity…" />}>
           <VelocityTab />
         </React.Suspense>
       ) : null}
-      {tab === "stuck" ? <StuckDeclining /> : null}
+      {active?.id === "stuck" ? <StuckDeclining /> : null}
+      {ActiveEl ? (
+        <React.Suspense fallback={<Loading label="Loading…" />}>
+          <ActiveEl />
+        </React.Suspense>
+      ) : null}
     </div>
   );
 };

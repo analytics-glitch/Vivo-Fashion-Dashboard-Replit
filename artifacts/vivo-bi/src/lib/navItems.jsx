@@ -10,7 +10,6 @@ import {
   Package,
   Warehouse,
   TrendUp,
-  ArrowsClockwise,
   Truck,
   Target,
   Warning,
@@ -22,7 +21,6 @@ import {
   Table,
   Gauge,
   Ruler,
-  Percent,
   UsersThree,
   AddressBook,
   ChartBar,
@@ -57,9 +55,7 @@ export const PRIMARY_NAV = [
   // how much stock and what's stuck". Operational action pages live in the
   // "Operations & Production" group below.
   { to: "/product-analysis", label: "Product Development", icon: ChartBar, id: "product-analysis", group: "Products & Range", desc: "Product development hub — Style Cockpit, Catalog & SOR, Range Management, Allocations, Re-Order, Weekly Style Tracker, Gallery and SOR Report tabs" },
-  { to: "/inventory", label: "Inventory", icon: Package, id: "inventory", group: "Products & Range", desc: "Stock on hand, velocity & weeks of cover, and stuck & declining stock" },
-  { to: "/margin", label: "Margin & Markdown", icon: Percent, id: "margin", group: "Products & Range", desc: "Discount impact on gross margin, COGS and margin %" },
-  { to: "/markdown-clearance", label: "Markdown & Clearance", icon: Percent, id: "markdown-clearance", group: "Products & Range", desc: "Markdown candidates and clearance plan" },
+  { to: "/inventory", label: "Inventory Management", icon: Package, id: "inventory", anyOfPageIds: ["inventory", "replenishments", "replenish-by-item", "store-flow"], group: "Products & Range", desc: "Stock on hand, velocity & cover, stuck stock, replenishments and store flow" },
   { to: "/size-health", label: "Size Health", icon: Ruler, id: "size-health", group: "Products & Range", desc: "Broken size-curve detection by style" },
   { to: "/fabric", label: "Fabric", icon: ChartBar, id: "fabric", external: true, group: "Products & Range", desc: "Standalone Fabric BI dashboard (opens full-page)" },
 
@@ -72,7 +68,6 @@ export const PRIMARY_NAV = [
   // Customer pages & marketing
   { to: "/customers", label: "Customers", icon: Users, id: "customers", group: "Customers & Marketing", desc: "New vs repeat customers, spend and churn" },
   { to: "/customer-details", label: "Customer Details", icon: Users, id: "customer-details", group: "Customers & Marketing", desc: "Look up a single customer's purchase history" },
-  { to: "/rfm", label: "RFM Segments", icon: UsersThree, id: "rfm", group: "Customers & Marketing", desc: "Recency / frequency / monetary customer segments" },
   { to: "/crm", label: "CRM", icon: AddressBook, id: "crm", group: "Customers & Marketing", desc: "Contacts, tasks, tickets, campaigns, loyalty and Facebook Page management" },
   { to: "/marketing", label: "Marketing", icon: Megaphone, id: "marketing", group: "Customers & Marketing", desc: "Campaign and channel marketing performance" },
 
@@ -80,11 +75,7 @@ export const PRIMARY_NAV = [
   { to: "/warehouse-returns", label: "Warehouse Returns", icon: Warehouse, id: "warehouse-returns", group: "Operations & Production", desc: "Pull aged / retired store stock back to the warehouse" },
   { to: "/excess-inventory", label: "Excess Inventory", icon: Package, id: "excess-inventory", group: "Operations & Production", desc: "Store stock above the per-brand size allowance — flagged for return" },
   { to: "/ibt", label: "IBT", icon: Truck, id: "ibt", group: "Operations & Production", desc: "Inter-branch transfer recommendations" },
-  { to: "/store-flow", label: "Store Flow", icon: Truck, id: "store-flow", group: "Operations & Production", desc: "Per store over a period: units sold vs units transferred in, in-transit stock and current stock" },
-  { to: "/replenishments", label: "Replenishments", icon: ArrowsClockwise, id: "replenishments", group: "Operations & Production", desc: "Replenishment suggestions with last-sold dates" },
-  { to: "/replenish-by-item", label: "Replenish by Style/SKU", icon: Package, id: "replenish-by-item", group: "Operations & Production", desc: "Find understocked stores for a style/SKU, or a store's proven demand gaps" },
-  { to: "/production", label: "Production Tracker", icon: Factory, id: "production", group: "Operations & Production", desc: "Kanban board tracking buying orders through the manufacturing stages" },
-  { to: "/production-report", label: "Production Report", icon: Table, id: "production-report", group: "Operations & Production", desc: "Detailed buying-order report: colours, sizes, stage distribution and cross-order roll-ups by order & production type" },
+  { to: "/production", label: "Production Pipeline", icon: Factory, id: "production", anyOfPageIds: ["production", "production-report"], group: "Operations & Production", desc: "Kanban tracker of buying orders through the manufacturing stages, plus the detailed production report" },
 
   // Catalogues & others
   { to: "/catalogue", label: "Report Catalogue", icon: BookOpen, id: "catalogue", group: "Tools", desc: "Every report, what page it lives on, and all the calculation & business rules — with an AI finder" },

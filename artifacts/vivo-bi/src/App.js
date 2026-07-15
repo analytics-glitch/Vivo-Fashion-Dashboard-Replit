@@ -22,7 +22,6 @@ const TargetsTracker = React.lazy(() => import("@/pages/TargetsTracker"));
 const QuarterScorecard = React.lazy(() => import("@/pages/QuarterScorecard"));
 const WarehouseReturns = React.lazy(() => import("@/pages/WarehouseReturns"));
 const ExcessInventory = React.lazy(() => import("@/pages/ExcessInventory"));
-const StoreFlow = React.lazy(() => import("@/pages/StoreFlow"));
 const IBT = React.lazy(() => import("@/pages/IBT"));
 const DataQuality = React.lazy(() => import("@/pages/DataQuality"));
 const Users = React.lazy(() => import("@/pages/Users"));
@@ -34,19 +33,13 @@ const ValidationAudit = React.lazy(() => import("@/pages/ValidationAudit"));
 const ThumbnailManager = React.lazy(() => import("@/pages/ThumbnailManager"));
 const Feedback = React.lazy(() => import("@/pages/Feedback"));
 const AdminFeedback = React.lazy(() => import("@/pages/AdminFeedback"));
-const Replenishments = React.lazy(() => import("@/pages/Replenishments"));
-const ReplenishByItem = React.lazy(() => import("@/pages/ReplenishByItem"));
 const StoreClusters = React.lazy(() => import("@/pages/StoreClusters"));
 const ExecutiveSummary = React.lazy(() => import("@/pages/ExecutiveSummary"));
 const Marketing = React.lazy(() => import("@/pages/Marketing"));
 const CustomReport = React.lazy(() => import("@/pages/CustomReport"));
 const Production = React.lazy(() => import("@/pages/Production"));
-const ProductionReport = React.lazy(() => import("@/pages/ProductionReport"));
 const SizeHealth = React.lazy(() => import("@/pages/SizeHealth"));
-const MarkdownClearance = React.lazy(() => import("@/pages/MarkdownClearance"));
-const Margin = React.lazy(() => import("@/pages/Margin"));
 const Finance = React.lazy(() => import("@/pages/Finance"));
-const RFM = React.lazy(() => import("@/pages/RFM"));
 const Catalogue = React.lazy(() => import("@/pages/Catalogue"));
 const SOPs = React.lazy(() => import("@/pages/SOPs"));
 const Login = React.lazy(() => import("@/pages/Login"));
@@ -179,12 +172,10 @@ function App() {
                 <Route path="/locations" element={<ProtectedShell pageId="locations"><Locations /></ProtectedShell>} />
                 {/* Legacy pages merged into tabs — keep old URLs working */}
                 <Route path="/products" element={<Navigate to="/product-analysis" replace />} />
-                <Route path="/inventory" element={<ProtectedShell pageId="inventory"><Inventory /></ProtectedShell>} />
+                <Route path="/inventory" element={<ProtectedShell anyOfPageIds={["inventory", "replenishments", "replenish-by-item", "store-flow"]}><Inventory /></ProtectedShell>} />
                 <Route path="/velocity" element={<Navigate to="/inventory" replace />} />
                 <Route path="/size-health" element={<ProtectedShell pageId="size-health"><SizeHealth /></ProtectedShell>} />
-                <Route path="/margin" element={<ProtectedShell pageId="margin"><Margin /></ProtectedShell>} />
                 <Route path="/finance" element={<ProtectedShell pageId="finance"><Finance /></ProtectedShell>} />
-                <Route path="/rfm" element={<ProtectedShell pageId="rfm"><RFM /></ProtectedShell>} />
                 <Route path="/crm" element={<ExternalRedirect to="/crm/" />} />
                 <Route path="/social" element={<ExternalRedirect to="/crm/inbox" />} />
                 <Route path="/exports" element={<ProtectedShell pageId="exports"><Exports /></ProtectedShell>} />
@@ -193,7 +184,6 @@ function App() {
                 <Route path="/marketing" element={<ProtectedShell pageId="marketing"><Marketing /></ProtectedShell>} />
                 <Route path="/custom-report" element={<ProtectedShell pageId="custom-report"><CustomReport /></ProtectedShell>} />
                 <Route path="/range-mgmt" element={<Navigate to="/product-analysis?tab=range" replace />} />
-                <Route path="/markdown-clearance" element={<ProtectedShell pageId="markdown-clearance"><MarkdownClearance /></ProtectedShell>} />
                 <Route path="/footfall" element={<ProtectedShell pageId="footfall"><Footfall /></ProtectedShell>} />
                 <Route path="/trend-analysis" element={<ProtectedShell pageId="trend-analysis"><TrendAnalysis /></ProtectedShell>} />
                 <Route path="/product-analysis" element={<ProtectedShell anyOfPageIds={["product-analysis", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "exports"]}><ProductAnalysis /></ProtectedShell>} />
@@ -202,16 +192,16 @@ function App() {
                 <Route path="/re-order" element={<Navigate to="/product-analysis?tab=reorder" replace />} />
                 <Route path="/warehouse-returns" element={<ProtectedShell pageId="warehouse-returns"><WarehouseReturns /></ProtectedShell>} />
                 <Route path="/excess-inventory" element={<ProtectedShell pageId="excess-inventory"><ExcessInventory /></ProtectedShell>} />
-                <Route path="/store-flow" element={<ProtectedShell pageId="store-flow"><StoreFlow /></ProtectedShell>} />
+                <Route path="/store-flow" element={<Navigate to="/inventory?tab=store-flow" replace />} />
                 <Route path="/ibt" element={<ProtectedShell pageId="ibt"><IBT /></ProtectedShell>} />
-                <Route path="/production" element={<ProtectedShell pageId="production"><Production /></ProtectedShell>} />
-                <Route path="/production-report" element={<ProtectedShell pageId="production-report"><ProductionReport /></ProtectedShell>} />
+                <Route path="/production" element={<ProtectedShell anyOfPageIds={["production", "production-report"]}><Production /></ProtectedShell>} />
+                <Route path="/production-report" element={<Navigate to="/production?tab=report" replace />} />
                 <Route path="/style-tracker" element={<Navigate to="/product-analysis?tab=tracker" replace />} />
                 <Route path="/data-quality" element={<ProtectedShell pageId="data-quality"><DataQuality /></ProtectedShell>} />
                 <Route path="/feedback" element={<ProtectedShell pageId="feedback"><Feedback /></ProtectedShell>} />
                 <Route path="/allocations" element={<Navigate to="/product-analysis?tab=allocations" replace />} />
-                <Route path="/replenishments" element={<ProtectedShell pageId="replenishments"><Replenishments /></ProtectedShell>} />
-                <Route path="/replenish-by-item" element={<ProtectedShell pageId="replenish-by-item"><ReplenishByItem /></ProtectedShell>} />
+                <Route path="/replenishments" element={<Navigate to="/inventory?tab=replenishments" replace />} />
+                <Route path="/replenish-by-item" element={<Navigate to="/inventory?tab=replenish-by-sku" replace />} />
                 <Route path="/admin/users" element={<ProtectedShell adminOnly pageId="admin-users"><Users /></ProtectedShell>} />
                 <Route path="/admin/activity-logs" element={<ProtectedShell adminOnly pageId="admin-activity-logs"><ActivityLogs /></ProtectedShell>} />
                 <Route path="/admin/feedback" element={<ProtectedShell adminOnly pageId="admin-feedback"><AdminFeedback /></ProtectedShell>} />

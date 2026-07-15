@@ -236,7 +236,7 @@ const TopNav = () => {
     // actually find on the page.
     const inventoryOnly = role === "store_manager" || role === "warehouse";
     return tabs
-      .filter((t) => canAccessPage(user, t.id))
+      .filter((t) => (t.anyOfPageIds ? t.anyOfPageIds.some((p) => canAccessPage(user, p)) : canAccessPage(user, t.id)))
       .map((t) =>
         t.id === "exports" && inventoryOnly
           ? { ...t, label: "Exports (Inventory)" }

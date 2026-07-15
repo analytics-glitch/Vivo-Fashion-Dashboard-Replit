@@ -45,24 +45,18 @@ const PAGES = [
     purpose: "Look up one customer's history.", reports: ["Single-customer purchase history & profile"] },
   { group: "Customers & Marketing", route: "/marketing", label: "Marketing",
     purpose: "Campaign & channel marketing performance.", reports: ["Campaign performance", "Channel marketing breakdown"] },
-  { group: "Customers & Marketing", route: "/rfm", label: "RFM Segments",
-    purpose: "Recency / frequency / monetary segments.", reports: ["Champions, Loyal, At-Risk, Hibernating counts & spend"] },
   { group: "Customers & Marketing", route: "/crm", label: "CRM",
     purpose: "Contacts, tasks, tickets, campaigns, loyalty & Facebook Page.", reports: ["Customer 360", "Tasks & tickets (SLA)", "Campaigns", "Loyalty earn / redeem / report", "Member messages", "Facebook Page (Social tab)"] },
 
   // Products & Range
   { group: "Products & Range", route: "/product-analysis", label: "Product Analysis",
     purpose: "Canonical style-level cockpit — Style Cockpit + Catalog & SOR tabs.", reports: ["Style-level sales & stock (reconciled)", "Size / colour / POS drill-down", "Catalog & SOR tab: units sold & current stock, sell-through, top style, sales by subcategory, units-sold vs stock"] },
-  { group: "Products & Range", route: "/margin", label: "Margin & Markdown",
-    purpose: "Discount impact on gross margin.", reports: ["Gross margin & margin %", "COGS", "Discount impact"] },
   { group: "Products & Range", route: "/range-mgmt", label: "Range Mgmt",
     purpose: "Range classification & assortment planning.", reports: ["Lifecycle tier (T1–T4) classification", "SOR-since-launch", "Retirement pipeline", "Store × tier stock mix", "Retired styles still holding stock"] },
-  { group: "Products & Range", route: "/markdown-clearance", label: "Markdown & Clearance",
-    purpose: "Clearance candidates & clearance plan.", reports: ["Clearance candidates (style-level: WoC, sell-through, rec. markdown %, est. revenue)", "Clearance plan grouped IMMEDIATE vs PLANNED"] },
 
   // Inventory & Replenishment
-  { group: "Inventory & Replenishment", route: "/inventory", label: "Inventory",
-    purpose: "Stock on hand, velocity & cover, and stuck & declining stock (tabbed).", reports: ["Available vs on-hand units", "SKUs & locations", "Stock value & freshness", "Stock-to-sales by subcategory", "Available stock by location", "Velocity & Cover tab: weekly velocity (recency-weighted), weeks of cover (WOC), sell-through rate of sale", "Stuck & Declining tab: declining styles, store overstock ranking"] },
+  { group: "Inventory & Replenishment", route: "/inventory", label: "Inventory Management",
+    purpose: "Stock on hand, velocity & cover, stuck & declining stock, replenishments and store flow (tabbed).", reports: ["Available vs on-hand units", "SKUs & locations", "Stock value & freshness", "Stock-to-sales by subcategory", "Available stock by location", "Velocity & Cover tab: weekly velocity (recency-weighted), weeks of cover (WOC), sell-through rate of sale", "Stuck & Declining tab: declining styles, store overstock ranking"] },
   { group: "Inventory & Replenishment", route: "/size-health", label: "Size Health",
     purpose: "Broken size-curve detection by style.", reports: ["Stock on hand by size", "Broken size-curve flags", "Broken size %"] },
   { group: "Inventory & Replenishment", route: "/re-order", label: "Re-Order",
@@ -102,7 +96,7 @@ const RULES = [
     formula: "WOC = current_stock ÷ weekly_velocity",
     notes: ["How many weeks current stock lasts at the recent rate of sale.", "Re-order point = weekly_velocity × REORDER_COVER_WEEKS.", "The Inventory stock-cover table's \"Weeks of Cover\" column uses the standard last-4-week velocity basis (current_stock ÷ (units sold in last 28 days ÷ 4)), independent of the table's selected date window."],
     thresholds: ["LEAD_TIME_WEEKS = 4.0", "SAFETY_WEEKS = 1.0", "REORDER_COVER_WEEKS = 5.0"],
-    used: ["/inventory", "/re-order", "/replenishments", "/markdown-clearance"] },
+    used: ["/inventory", "/re-order", "/replenishments"] },
   { id: "sor", title: "Sell-Out Rate (SOR) & SOR-since-launch", category: "Products",
     formula: "SOR % = units_sold × 100 ÷ (units_sold + current_stock)",
     notes: ["Share of total available units that have already sold.", "SOR-since-launch uses lifetime units sold.", "Warehouse locations are excluded from the stock denominator.", "The measurement window is intentionally different by tool — always read the window shown on each page: Marketing / Product Analysis / Range Mgmt report SOR over the style's lifetime (or since launch); Inventory & Markdown sell-through is measured over a trailing window (e.g. 8 weeks); IBT uses a ≤20%-of-style-average sale rule rather than a raw SOR; the Re-Order list ranks by launch-to-date (since-launch) SOR. Same formula, different period — not a discrepancy.", "\"Sell-through\" is an alias for this same metric — identical formula. SOR is the canonical name (machine field sor_percent); pages that read better in plain English (Products, Velocity) label it \"Sell-through\", while Product Analysis / Range Mgmt label it \"SOR\". See the Sell-through entry below."],
@@ -156,11 +150,6 @@ const RULES = [
     formula: "No. of Reorders = ⌊ weeks_since_launch ÷ 12 ⌋",
     notes: ["An estimate of how many reorder cycles a style has likely been through, derived purely from its catalogue age — one cycle per ~12 weeks (a quarter) since launch.", "It is a proxy, not a count of actual purchase orders: a style launched 30 weeks ago shows 2 reorders. New styles (< 12 weeks) show 0.", "Feeds the Range tier rule of thumb that Tier 2 Core Performers are 9+ months old with 3+ reorders."],
     used: ["/product-analysis"] },
-  { id: "markdown", title: "Markdown candidate & clearance urgency", category: "Products",
-    formula: "Candidate when WOC > 16 AND 8-wk sell-through < 20% AND trend ∈ {DECLINING, DYING} AND age > 84 days",
-    notes: ["Urgency tiers drive the recommended discount."],
-    thresholds: ["IMMEDIATE: WOC > 26 → recommend 40–50% off", "PLANNED: 16 < WOC ≤ 26 → recommend 30% off"],
-    used: ["/markdown-clearance"] },
   { id: "ibt", title: "IBT (inter-branch transfer) rules", category: "Inventory",
     formula: "Warehouse-deploy-first, then a global network solve moves each SKU from a Low Seller (donor) to a High Seller (receiver) of the same style — ranked by size-curve completion, then net cash-conversion-days × value — and consolidates every move into one bundle per from → to store pair. Each bundle is then dispatched through a two-sided scan-out → scan-in lifecycle. A move that does not pay forks to a markdown recommendation.",
     notes: [
@@ -233,7 +222,7 @@ const RULES = [
       "\"Sample & Sale Items\" is a clearance / non-core bucket — present on sell-through and velocity views, excluded from core-range planning.",
       "Treat the category column as page-scoped; reconcile category totals across pages only within the same scope.",
     ],
-    used: ["/overview", "/exec-summary", "/product-analysis", "/margin", "/inventory", "/size-health", "/allocations"] },
+    used: ["/overview", "/exec-summary", "/product-analysis", "/inventory", "/size-health", "/allocations"] },
   { id: "style-universe", title: "Style-universe size (why “number of styles” differs by page)", category: "Products",
     formula: "There is no single \"number of styles\" — each page counts the universe relevant to its job, so the figures are expected to differ.",
     notes: [
@@ -255,7 +244,7 @@ const RULES = [
       "Sales, inventory and clearance pages that report everything sold or held DO include those brands.",
       "A brand showing on one page and not another is therefore an intentional scope difference, not a missing dimension.",
     ],
-    used: ["/product-analysis", "/inventory", "/markdown-clearance", "/range-mgmt"] },
+    used: ["/product-analysis", "/inventory", "/range-mgmt"] },
   { id: "segment-vocabulary", title: "Customer segment vocabularies (RFM vs CRM vs Loyalty)", category: "Loyalty",
     formula: "The suite runs several distinct customer-grouping systems; their labels are not interchangeable.",
     notes: [
@@ -265,7 +254,7 @@ const RULES = [
       "Loyalty tiers: spend-based membership tiers — Bronze / Silver / Gold / VIP (see the Loyalty earn entry).",
       "When comparing \"segments\" across pages, confirm you are looking at the same system first: one shopper can be an RFM \"Champion\", a Gold loyalty member and a \"Returning\" customer at the same time.",
     ],
-    used: ["/rfm", "/crm", "/customers"] },
+    used: ["/crm", "/customers"] },
   { id: "period-scope", title: "Active period per page (why the global date filter doesn't drive everything)", category: "Performance",
     formula: "The global date filter bar drives the trading pages; several analytical pages intentionally use their OWN fixed window and ignore the bar.",
     notes: [
@@ -273,7 +262,7 @@ const RULES = [
       "Fixed / own window regardless of the bar: Product Analysis uses a trailing 30-day run-rate; Range Mgmt and the \"Since Launch\" measures use a style's whole lifetime; Inventory / Size Health / Warehouse Returns are a current stock snapshot; Markdown & Clearance use their own trailing windows.",
       "So when two pages disagree on a number it is almost always a period difference — confirm each page's active window before treating it as an inconsistency.",
     ],
-    used: ["/overview", "/product-analysis", "/inventory", "/range-mgmt", "/markdown-clearance", "/custom-report"] },
+    used: ["/overview", "/product-analysis", "/inventory", "/range-mgmt", "/custom-report"] },
   { id: "store-naming", title: "Store / location names (why labels vary slightly across pages)", category: "Quality",
     formula: "Location names arrive from several source systems (POS, the footfall sensor feed, Odoo) and are canonicalised at the data-join layer, not relabelled per page.",
     notes: [
