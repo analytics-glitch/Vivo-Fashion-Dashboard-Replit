@@ -1448,8 +1448,8 @@ export const PA_TAB_PAGE_IDS = [
 const ProductionOverviewTab = React.lazy(() => import("./ProductionOverview"));
 
 const PA_TABS = [
+  { id: "production-overview", label: "Overview", pageId: "production", el: ProductionOverviewTab },
   { id: "cockpit", label: "Style Cockpit", pageId: "product-analysis", el: null },
-  { id: "production-overview", label: "Production Overview", pageId: "production", el: ProductionOverviewTab },
   { id: "catalog", label: "Catalog & SOR", pageId: "product-analysis", el: ProductsCatalog },
   { id: "range", label: "Range Management", pageId: "range-mgmt", el: RangeManagementTab },
   { id: "allocations", label: "Allocations", pageId: "allocations", el: AllocationsTab },
@@ -1464,7 +1464,7 @@ const ProductAnalysisPage = () => {
   const visibleTabs = PA_TABS.filter((t) => canAccessPage(user, t.pageId));
   const initialTab = (() => {
     const wanted = new URLSearchParams(window.location.search).get("tab");
-    return visibleTabs.some((t) => t.id === wanted) ? wanted : (visibleTabs[0]?.id || "cockpit");
+    return visibleTabs.some((t) => t.id === wanted) ? wanted : (visibleTabs[0]?.id ?? "");
   })();
   const [tab, setTab] = useState(initialTab);
   const active = visibleTabs.find((t) => t.id === tab) || visibleTabs[0];
