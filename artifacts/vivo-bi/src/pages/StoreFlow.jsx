@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 import { api, fmtNum } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { ArrowsClockwise, DownloadSimple, Storefront, Basket, Truck, Package, CalendarCheck } from "@phosphor-icons/react";
@@ -133,32 +134,73 @@ const StoreFlow = () => {
     { label: "90d", apply: () => { setDateFrom(isoDaysAgo(90)); setDateTo(isoDaysAgo(0)); } },
   ];
 
-  const exportCsv = () => {
-    const header = [
-      "POS Location", "Country",
-      "Prev Week Sales", "Avg Weekly (4W)",
-      "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun",
-      "Total Transferred", "vs Prev Week %",
-      "Current Stock",
-    ];
-    const esc = (v) => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-    const lines = [header.join(",")];
-    for (const r of filtered) {
+  const _buildReportRows = () =>
+    filtered.map((r) => {
       const dt = r.daily_transfers || {};
-      const pct = r.prev_week_sold > 0 ? ((r.units_transferred / r.prev_week_sold) * 100).toFixed(1) + "%" : "—";
-      lines.push([
-        r.pos_location, r.country,
-        r.prev_week_sold, Math.round((r.units_4w || 0) / 4),
-        dt[1] || 0, dt[2] || 0, dt[3] || 0, dt[4] || 0, dt[5] || 0, dt[6] || 0, dt[7] || 0,
-        r.units_transferred, pct,
-        r.current_stock,
-      ].map(esc).join(","));
-    }
+      const pctVal = r.prev_week_sold > 0 ? +((r.units_transferred / r.prev_week_sold) * 100).toFixed(1) : null;
+      return {
+        "POS Location": r.pos_location,
+        "Country": r.country || "",
+        "Prev Week Sales": r.prev_week_sold,
+        "Avg Weekly (4W)": Math.round((r.units_4w || 0) / 4),
+        "Mon": dt[1] || 0,
+        "Tue": dt[2] || 0,
+        "Wed": dt[3] || 0,
+        "Thu": dt[4] || 0,
+        "Fri": dt[5] || 0,
+        "Sat": dt[6] || 0,
+        "Sun": dt[7] || 0,
+        "Total Transferred": r.units_transferred,
+        "vs Prev Week %": pctVal != null ? pctVal / 100 : null,
+        "Status": pctVal == null ? "—" : pctVal > 110 ? "Over" : pctVal < 90 ? "Under" : "On track",
+        "Current Stock": r.current_stock,
+      };
+    });
+
+  const exportCsv = () => {
+    const rows = _buildReportRows();
+    if (!rows.length) return;
+    const header = Object.keys(rows[0]);
+    const esc = (v) => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const lines = [header.join(","), ...rows.map((r) => header.map((h) => esc(r[h])).join(","))];
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = `store-flow-${dateFrom}-to-${dateTo}.csv`; a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const exportExcel = () => {
+    const rows = _buildReportRows();
+    if (!rows.length) return;
+    const ws = XLSX.utils.json_to_sheet(rows);
+    // Format "vs Prev Week %" column as percentage
+    const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
+    const pctColIdx = Object.keys(rows[0]).indexOf("vs Prev Week %");
+    for (let rowIdx = range.s.r + 1; rowIdx <= range.e.r; rowIdx++) {
+      const cell = ws[XLSX.utils.encode_cell({ r: rowIdx, c: pctColIdx })];
+      if (cell && cell.v != null) cell.z = "0.0%";
+    }
+    // Column widths
+    ws["!cols"] = [
+      { wch: 28 }, { wch: 10 }, { wch: 16 }, { wch: 16 },
+      { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 },
+      { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 14 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Store Flow");
+    // Second sheet: metadata
+    const meta = [
+      { Field: "Period (transfers)", Value: `${dateFrom} → ${dateTo}` },
+      { Field: "Prev Week Sales", Value: prevWeekLabel || "" },
+      { Field: "Stores", Value: filtered.length },
+      { Field: "Total Prev Week Sales", Value: filtered.reduce((a, r) => a + (r.prev_week_sold || 0), 0) },
+      { Field: "Total Avg Weekly (4W)", Value: Math.round(filtered.reduce((a, r) => a + (r.units_4w || 0), 0) / 4) },
+      { Field: "Total Transferred", Value: filtered.reduce((a, r) => a + r.units_transferred, 0) },
+      { Field: "Total Current Stock", Value: filtered.reduce((a, r) => a + r.current_stock, 0) },
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(meta), "Summary");
+    XLSX.writeFile(wb, `store-flow-${dateFrom}-to-${dateTo}.xlsx`);
   };
 
   // Totals for the daily footer
@@ -194,6 +236,14 @@ const StoreFlow = () => {
             data-testid="button-export-csv"
           >
             <DownloadSimple size={15} /> Export CSV
+          </button>
+          <button
+            className="inline-flex items-center gap-1.5 rounded-md border border-[#1a5c38] bg-[#1a5c38] text-white px-3 py-1.5 text-sm font-medium hover:bg-[#0f3d24] disabled:opacity-40"
+            onClick={exportExcel}
+            disabled={!filtered.length}
+            data-testid="button-export-excel"
+          >
+            <DownloadSimple size={15} /> Export Excel
           </button>
         </div>
       </div>
