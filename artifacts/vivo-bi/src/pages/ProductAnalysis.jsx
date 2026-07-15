@@ -1441,12 +1441,15 @@ const GalleryTab = React.lazy(() => import("./Gallery"));
 const SORReportTab = React.lazy(() => import("@/components/SORReportExport"));
 
 export const PA_TAB_PAGE_IDS = [
-  "product-analysis", "range-mgmt", "allocations", "re-order",
+  "product-analysis", "production", "range-mgmt", "allocations", "re-order",
   "style-tracker", "gallery", "exports",
 ];
 
+const ProductionOverviewTab = React.lazy(() => import("./ProductionOverview"));
+
 const PA_TABS = [
   { id: "cockpit", label: "Style Cockpit", pageId: "product-analysis", el: null },
+  { id: "production-overview", label: "Production Overview", pageId: "production", el: ProductionOverviewTab },
   { id: "catalog", label: "Catalog & SOR", pageId: "product-analysis", el: ProductsCatalog },
   { id: "range", label: "Range Management", pageId: "range-mgmt", el: RangeManagementTab },
   { id: "allocations", label: "Allocations", pageId: "allocations", el: AllocationsTab },

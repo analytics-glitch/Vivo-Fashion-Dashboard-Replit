@@ -55,26 +55,19 @@ export const PRIMARY_NAV = [
   // how much stock and what's stuck". Operational action pages live in the
   // "Operations & Production" group below.
   { to: "/product-analysis", label: "Product Development", icon: ChartBar, id: "product-analysis", group: "Products & Range", desc: "Product development hub — Style Cockpit, Catalog & SOR, Range Management, Allocations, Re-Order, Weekly Style Tracker, Gallery and SOR Report tabs" },
-  { to: "/inventory", label: "Inventory Management", icon: Package, id: "inventory", anyOfPageIds: ["inventory", "replenishments", "replenish-by-item", "store-flow"], group: "Products & Range", desc: "Stock on hand, velocity & cover, stuck stock, replenishments and store flow" },
-  { to: "/size-health", label: "Size Health", icon: Ruler, id: "size-health", group: "Products & Range", desc: "Broken size-curve detection by style" },
+  { to: "/inventory", label: "Inventory Management", icon: Package, id: "inventory", anyOfPageIds: ["inventory", "replenishments", "replenish-by-item", "store-flow", "size-health"], group: "Products & Range", desc: "Stock on hand, velocity & cover, stuck stock, replenishments, store flow and size health" },
   { to: "/fabric", label: "Fabric", icon: ChartBar, id: "fabric", external: true, group: "Products & Range", desc: "Standalone Fabric BI dashboard (opens full-page)" },
 
   // Retail pages
-  { to: "/locations", label: "Locations", icon: MapPin, id: "locations", group: "Retail", desc: "Net sales, orders and active selling points by market" },
+  { to: "/retail", label: "Retail", icon: MapPin, id: "retail", anyOfPageIds: ["locations", "warehouse-returns", "excess-inventory", "ibt"], group: "Retail", desc: "Retail hub — Locations, Warehouse Returns, Excess Inventory and IBT tabs" },
   { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall", group: "Retail", desc: "Footfall, turn-in and conversion by store" },
-  { to: "/targets", label: "Targets", icon: Target, id: "targets", group: "Retail", desc: "Track sales against targets" },
-  { to: "/quarter-scorecard", label: "Q3 Targets", icon: Target, id: "quarter-scorecard", group: "Retail", desc: "Quarterly target scorecard with per-store goals (leadership)" },
+  { to: "/targets", label: "Targets", icon: Target, id: "targets", anyOfPageIds: ["targets", "quarter-scorecard"], group: "Retail", desc: "Track sales against targets, plus the quarterly target scorecard" },
 
   // Customer pages & marketing
-  { to: "/customers", label: "Customers", icon: Users, id: "customers", group: "Customers & Marketing", desc: "New vs repeat customers, spend and churn" },
-  { to: "/customer-details", label: "Customer Details", icon: Users, id: "customer-details", group: "Customers & Marketing", desc: "Look up a single customer's purchase history" },
-  { to: "/crm", label: "CRM", icon: AddressBook, id: "crm", group: "Customers & Marketing", desc: "Contacts, tasks, tickets, campaigns, loyalty and Facebook Page management" },
+  { to: "/customers", label: "Customers", icon: Users, id: "customers", anyOfPageIds: ["customers", "customer-details", "crm"], group: "Customers & Marketing", desc: "Customers hub — analytics, single-customer lookup and the CRM" },
   { to: "/marketing", label: "Marketing", icon: Megaphone, id: "marketing", group: "Customers & Marketing", desc: "Campaign and channel marketing performance" },
 
   // OPERATIONAL pages — actions that move, return or make stock.
-  { to: "/warehouse-returns", label: "Warehouse Returns", icon: Warehouse, id: "warehouse-returns", group: "Operations & Production", desc: "Pull aged / retired store stock back to the warehouse" },
-  { to: "/excess-inventory", label: "Excess Inventory", icon: Package, id: "excess-inventory", group: "Operations & Production", desc: "Store stock above the per-brand size allowance — flagged for return" },
-  { to: "/ibt", label: "IBT", icon: Truck, id: "ibt", group: "Operations & Production", desc: "Inter-branch transfer recommendations" },
   { to: "/production", label: "Production Pipeline", icon: Factory, id: "production", anyOfPageIds: ["production", "production-report"], group: "Operations & Production", desc: "Kanban tracker of buying orders through the manufacturing stages, plus the detailed production report" },
 
   // Catalogues & others

@@ -1830,6 +1830,7 @@ const VelocityTab = React.lazy(() => import("./Velocity"));
 const ReplenishmentsTab = React.lazy(() => import("./Replenishments"));
 const ReplenishByItemTab = React.lazy(() => import("./ReplenishByItem"));
 const StoreFlowTab = React.lazy(() => import("./StoreFlow"));
+const SizeHealthTab = React.lazy(() => import("./SizeHealth"));
 
 const INV_TABS = [
   { id: "stock", label: "Stock on Hand", pageId: "inventory", el: null },
@@ -1838,6 +1839,7 @@ const INV_TABS = [
   { id: "replenishments", label: "Replenishments", pageId: "replenishments", el: ReplenishmentsTab },
   { id: "replenish-by-sku", label: "Replenish by Style/SKU", pageId: "replenish-by-item", el: ReplenishByItemTab },
   { id: "store-flow", label: "Store Flow", pageId: "store-flow", el: StoreFlowTab },
+  { id: "size-health", label: "Size Health", pageId: "size-health", el: SizeHealthTab },
 ];
 
 const InventoryPage = () => {
