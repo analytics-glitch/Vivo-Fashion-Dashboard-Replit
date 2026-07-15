@@ -207,6 +207,29 @@ const StoreFlow = () => {
     URL.revokeObjectURL(url);
   };
 
+  const _buildWocRows = () =>
+    wocRows.map((r) => ({
+      "POS Location": r.pos_location,
+      "SOH": r.current_stock,
+      "Units Sold (4W)": r.units_4w || 0,
+      "Weekly Rate": r.units_4w ? Math.round(r.units_4w / 4) : null,
+      "WOC (weeks)": r.woc != null ? +r.woc.toFixed(1) : null,
+      "Action": r.woc == null ? "—" : r.woc < WOC_LO ? "Replenish" : r.woc > WOC_HI ? "Reduce stock" : "On target",
+    }));
+
+  const exportWocCsv = () => {
+    const rows = _buildWocRows();
+    if (!rows.length) return;
+    const header = Object.keys(rows[0]);
+    const esc = (v) => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const lines = [header.join(","), ...rows.map((r) => header.map((h) => esc(r[h])).join(","))];
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `store-flow-woc-${dateFrom}-to-${dateTo}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const exportExcel = () => {
     const rows = _buildReportRows();
     if (!rows.length) return;
@@ -218,15 +241,18 @@ const StoreFlow = () => {
       const cell = ws[XLSX.utils.encode_cell({ r: rowIdx, c: pctColIdx })];
       if (cell && cell.v != null) cell.z = "0.0%";
     }
-    // Column widths
     ws["!cols"] = [
-      { wch: 28 }, { wch: 10 }, { wch: 16 }, { wch: 16 },
+      { wch: 28 }, { wch: 16 }, { wch: 16 },
       { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 },
       { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 14 },
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Store Flow");
-    // Second sheet: metadata
+    // WOC sheet
+    const wocWs = XLSX.utils.json_to_sheet(_buildWocRows());
+    wocWs["!cols"] = [{ wch: 28 }, { wch: 10 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 14 }];
+    XLSX.utils.book_append_sheet(wb, wocWs, "Stock Cover (WOC)");
+    // Summary sheet
     const meta = [
       { Field: "Period (transfers)", Value: `${dateFrom} → ${dateTo}` },
       { Field: "Prev Week Sales", Value: prevWeekLabel || "" },
@@ -235,6 +261,10 @@ const StoreFlow = () => {
       { Field: "Total Avg Weekly (4W)", Value: Math.round(filtered.reduce((a, r) => a + (r.units_4w || 0), 0) / 4) },
       { Field: "Total Transferred", Value: filtered.reduce((a, r) => a + r.units_transferred, 0) },
       { Field: "Total Current Stock", Value: filtered.reduce((a, r) => a + r.current_stock, 0) },
+      { Field: "WOC — Stores under target", Value: wocSummary.under },
+      { Field: "WOC — Stores on target", Value: wocSummary.ok },
+      { Field: "WOC — Stores over target", Value: wocSummary.over },
+      { Field: "Network WOC", Value: totalWoc != null ? +totalWoc.toFixed(1) : null },
     ];
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(meta), "Summary");
     XLSX.writeFile(wb, `store-flow-${dateFrom}-to-${dateTo}.xlsx`);
@@ -472,10 +502,30 @@ const StoreFlow = () => {
 
           {/* ── Stock Cover (WOC) table ── */}
           <div className="card-white p-5">
-            <SectionTitle
-              title="Stock Cover (WOC)"
-              subtitle={`Per store: stock on hand vs weeks of cover, using average weekly sales over the last 4 weeks. Target = ${WOC_TARGET}w ±1 (${WOC_LO}–${WOC_HI}w). Below ${WOC_LO}w = under-stocked → replenish. Above ${WOC_HI}w = over-stocked → redistribute or return.`}
-            />
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <SectionTitle
+                title="Stock Cover (WOC)"
+                subtitle={`Per store: stock on hand vs weeks of cover, using average weekly sales over the last 4 weeks. Target = ${WOC_TARGET}w ±1 (${WOC_LO}–${WOC_HI}w). Below ${WOC_LO}w = under-stocked → replenish. Above ${WOC_HI}w = over-stocked → redistribute or return.`}
+              />
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                  onClick={exportWocCsv}
+                  disabled={!wocRows.length}
+                  data-testid="button-export-woc-csv"
+                >
+                  <DownloadSimple size={15} /> Export CSV
+                </button>
+                <button
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[#1a5c38] bg-[#1a5c38] text-white px-3 py-1.5 text-sm font-medium hover:bg-[#0f3d24] disabled:opacity-40"
+                  onClick={exportExcel}
+                  disabled={!wocRows.length}
+                  data-testid="button-export-woc-excel"
+                >
+                  <DownloadSimple size={15} /> Export Excel
+                </button>
+              </div>
+            </div>
             {!filtered.length ? (
               <Empty label="No stores match the selected filters." />
             ) : (
