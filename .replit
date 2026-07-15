@@ -146,3 +146,6 @@ FABRIC_IMAGES_DRIVE_FOLDER_ID = "1gEAnT_RHY1neybTk8IEL1Vze2slrETk-"
 
 [userenv.development]
 TIKTOK_USE_SANDBOX = "1"
+
+[objectStorage]
+defaultBucketID = "replit-objstore-6afd6244-d8b1-4255-80b1-e103c2c6a982"

@@ -222,6 +222,19 @@ def _connector_access_token(connector="google-sheet"):
     r.raise_for_status()
     items = (r.json() or {}).get("items") or []
     if not items:
+        # The proxy's connector_names filter has been observed returning [] even
+        # when the connection exists & is healthy. Fall back to the unfiltered
+        # list and match by name client-side.
+        r = requests.get(
+            f"https://{hostname}/api/v2/connection",
+            params={"include_secrets": "true"},
+            headers={"Accept": "application/json", "X_REPLIT_TOKEN": xtok},
+            timeout=20,
+        )
+        r.raise_for_status()
+        items = [i for i in ((r.json() or {}).get("items") or [])
+                 if (i.get("connector_name") or i.get("connectorName")) == connector]
+    if not items:
         raise RuntimeError(f"no '{connector}' connection configured")
     s = items[0].get("settings") or {}
     tok = (s.get("access_token")
