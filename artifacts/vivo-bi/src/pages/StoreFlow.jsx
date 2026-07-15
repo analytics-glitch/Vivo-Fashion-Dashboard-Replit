@@ -42,6 +42,23 @@ function transferPacing(transferred, prevWeekSold) {
   return { status: "on_track", pct };
 }
 
+function SortTh({ sk, cur, dir, onSort, className = "", title, children }) {
+  const active = cur === sk;
+  const arrow = active ? (dir === "asc" ? " ▲" : " ▼") : " ⇅";
+  return (
+    <th
+      className={`${className} cursor-pointer select-none hover:text-slate-700`}
+      title={title}
+      onClick={() => onSort(sk)}
+    >
+      <span className="inline-flex items-center gap-0.5 whitespace-nowrap">
+        {children}
+        <span className={`text-[9px] ${active ? "text-slate-700" : "text-slate-300"}`}>{arrow}</span>
+      </span>
+    </th>
+  );
+}
+
 function PacingBadge({ transferred, prevWeekSold }) {
   const { status, pct } = transferPacing(transferred, prevWeekSold);
   if (status === "none") return <span className="text-slate-300">—</span>;
@@ -61,6 +78,13 @@ const StoreFlow = () => {
   const [dateTo, setDateTo] = useState(() => getLastWeekRange().to);
   const [country, setCountry] = useState("");
   const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState("pos_location");
+  const [sortDir, setSortDir] = useState("asc");
+
+  const handleSort = (key) => {
+    setSortKey(key);
+    setSortDir((d) => (sortKey === key ? (d === "asc" ? "desc" : "asc") : "desc"));
+  };
 
   const load = (forceFresh = false) => {
     let cancelled = false;
@@ -92,9 +116,23 @@ const StoreFlow = () => {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter((r) => (r.pos_location || "").toLowerCase().includes(q));
-  }, [rows, search]);
+    const base = q ? rows.filter((r) => (r.pos_location || "").toLowerCase().includes(q)) : rows;
+    return [...base].sort((a, b) => {
+      let av, bv;
+      if (sortKey === "pos_location") { av = a.pos_location || ""; bv = b.pos_location || ""; }
+      else if (sortKey === "avg_4w")  { av = Math.round((a.units_4w || 0) / 4); bv = Math.round((b.units_4w || 0) / 4); }
+      else if (sortKey === "prev_week_sold") { av = a.prev_week_sold || 0; bv = b.prev_week_sold || 0; }
+      else if (sortKey === "units_transferred") { av = a.units_transferred || 0; bv = b.units_transferred || 0; }
+      else if (sortKey === "pacing_pct") {
+        av = a.prev_week_sold > 0 ? a.units_transferred / a.prev_week_sold : -1;
+        bv = b.prev_week_sold > 0 ? b.units_transferred / b.prev_week_sold : -1;
+      }
+      else if (sortKey === "current_stock") { av = a.current_stock || 0; bv = b.current_stock || 0; }
+      else { av = 0; bv = 0; }
+      if (typeof av === "string") return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+      return sortDir === "asc" ? av - bv : bv - av;
+    });
+  }, [rows, search, sortKey, sortDir]);
 
   // WOC rows sorted by SOH desc
   const wocRows = useMemo(() => [...filtered].sort((a, b) => b.current_stock - a.current_stock), [filtered]);
@@ -140,9 +178,8 @@ const StoreFlow = () => {
       const pctVal = r.prev_week_sold > 0 ? +((r.units_transferred / r.prev_week_sold) * 100).toFixed(1) : null;
       return {
         "POS Location": r.pos_location,
-        "Country": r.country || "",
-        "Prev Week Sales": r.prev_week_sold,
         "Avg Weekly (4W)": Math.round((r.units_4w || 0) / 4),
+        "Prev Week Sales": r.prev_week_sold,
         "Mon": dt[1] || 0,
         "Tue": dt[2] || 0,
         "Wed": dt[3] || 0,
@@ -343,28 +380,39 @@ const StoreFlow = () => {
                 <table className="min-w-full text-sm">
                   <thead>
                     <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-200">
-                      <th className="py-2 pr-3 sticky left-0 bg-white z-10">
+                      <SortTh sk="pos_location" cur={sortKey} dir={sortDir} onSort={handleSort}
+                        className="py-2 pr-3 sticky left-0 bg-white z-10">
                         <span className="inline-flex items-center gap-1"><Storefront size={13} /> POS Location</span>
-                      </th>
-                      <th className="py-2 pr-3">Country</th>
-                      {/* Benchmark columns */}
-                      <th className="py-2 pr-3 text-right text-indigo-600 whitespace-nowrap"
-                          title={prevWeekLabel ? `Sales ${prevWeekLabel}` : "Previous Mon–Sun sales"}>
-                        Prev Week Sales ⓘ
-                      </th>
-                      <th className="py-2 pr-3 text-right text-indigo-600 whitespace-nowrap" title="Average weekly units sold over the last 4 weeks">
+                      </SortTh>
+                      {/* Benchmark columns — Avg 4W first */}
+                      <SortTh sk="avg_4w" cur={sortKey} dir={sortDir} onSort={handleSort}
+                        className="py-2 pr-3 text-right text-indigo-600 whitespace-nowrap"
+                        title="Average weekly units sold over the last 4 weeks">
                         Avg 4W ⓘ
-                      </th>
-                      {/* Daily transfer columns Mon–Sun */}
+                      </SortTh>
+                      <SortTh sk="prev_week_sold" cur={sortKey} dir={sortDir} onSort={handleSort}
+                        className="py-2 pr-3 text-right text-indigo-600 whitespace-nowrap"
+                        title={prevWeekLabel ? `Sales ${prevWeekLabel}` : "Previous Mon–Sun sales"}>
+                        Prev Week Sales ⓘ
+                      </SortTh>
+                      {/* Daily transfer columns Mon–Sun (not individually sortable) */}
                       {DOW_LABELS.map((d) => (
                         <th key={d} className="py-2 pr-2 text-right text-slate-400 font-medium text-[11px]">{d}</th>
                       ))}
                       {/* Totals + pacing */}
-                      <th className="py-2 pr-3 text-right font-semibold">Total Transferred</th>
-                      <th className="py-2 pr-3 text-right whitespace-nowrap" title="Total transferred vs previous week sales. On track = ±10%. Over = >10% above. Under = >10% below.">
+                      <SortTh sk="units_transferred" cur={sortKey} dir={sortDir} onSort={handleSort}
+                        className="py-2 pr-3 text-right font-semibold">
+                        Total Transferred
+                      </SortTh>
+                      <SortTh sk="pacing_pct" cur={sortKey} dir={sortDir} onSort={handleSort}
+                        className="py-2 pr-3 text-right whitespace-nowrap"
+                        title="Total transferred vs previous week sales. On track = ±10%. Over = >10% above. Under = >10% below.">
                         vs Prev Week ⓘ
-                      </th>
-                      <th className="py-2 pr-3 text-right">Current Stock</th>
+                      </SortTh>
+                      <SortTh sk="current_stock" cur={sortKey} dir={sortDir} onSort={handleSort}
+                        className="py-2 pr-3 text-right">
+                        Current Stock
+                      </SortTh>
                     </tr>
                   </thead>
                   <tbody>
@@ -373,9 +421,8 @@ const StoreFlow = () => {
                       return (
                         <tr key={r.pos_location} className="border-b border-slate-100 hover:bg-slate-50" data-testid={`row-store-${r.pos_location}`}>
                           <td className="py-1.5 pr-3 font-medium text-slate-700 whitespace-nowrap sticky left-0 bg-white">{r.pos_location}</td>
-                          <td className="py-1.5 pr-3 text-slate-500">{r.country || "—"}</td>
-                          <td className="py-1.5 pr-3 text-right tabular-nums text-indigo-700 font-medium">{fmtNum(r.prev_week_sold)}</td>
                           <td className="py-1.5 pr-3 text-right tabular-nums text-indigo-500">{r.units_4w ? fmtNum(Math.round(r.units_4w / 4)) : "—"}</td>
+                          <td className="py-1.5 pr-3 text-right tabular-nums text-indigo-700 font-medium">{fmtNum(r.prev_week_sold)}</td>
                           {[1, 2, 3, 4, 5, 6, 7].map((dow) => (
                             <td key={dow} className={"py-1.5 pr-2 text-right tabular-nums text-[12px] " + (dt[dow] ? "text-slate-700" : "text-slate-300")}>
                               {dt[dow] ? fmtNum(dt[dow]) : "—"}
@@ -393,12 +440,11 @@ const StoreFlow = () => {
                   <tfoot>
                     <tr className="border-t border-slate-300 font-semibold text-slate-800">
                       <td className="py-2 pr-3 sticky left-0 bg-white">Total</td>
-                      <td className="py-2 pr-3" />
-                      <td className="py-2 pr-3 text-right tabular-nums text-indigo-700">
-                        {fmtNum(filtered.reduce((a, r) => a + (r.prev_week_sold || 0), 0))}
-                      </td>
                       <td className="py-2 pr-3 text-right tabular-nums text-indigo-500">
                         {fmtNum(Math.round(filtered.reduce((a, r) => a + (r.units_4w || 0), 0) / 4))}
+                      </td>
+                      <td className="py-2 pr-3 text-right tabular-nums text-indigo-700">
+                        {fmtNum(filtered.reduce((a, r) => a + (r.prev_week_sold || 0), 0))}
                       </td>
                       {[1, 2, 3, 4, 5, 6, 7].map((dow) => (
                         <td key={dow} className={"py-2 pr-2 text-right tabular-nums text-[12px] " + (dailyTotals[dow] ? "text-slate-700" : "text-slate-300")}>
