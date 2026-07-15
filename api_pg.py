@@ -1665,7 +1665,18 @@ BASE_FILTERS = """
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%gift card%'
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%gift voucher%'
     AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%voucher%'
-    AND LOWER(COALESCE(s.product_title,'')) NOT LIKE '%on specific products%'
+    AND (
+        -- Loyalty/reward discount-carrier lines ("15% on specific products"):
+        -- zero revenue, zero units, discount only. They MUST stay in the
+        -- reporting universe so Total Sales = total − discounts − returns
+        -- picks up the loyalty discount (they can't distort units/revenue —
+        -- both are 0). Gift card/voucher redemptions stay excluded above:
+        -- redeeming a voucher is a payment method, not a discount.
+        LOWER(COALESCE(s.product_title,'')) NOT LIKE '%on specific products%'
+        OR (COALESCE(s.total_sales_kes,0)::numeric = 0
+            AND COALESCE(s.ordered_item_quantity,0) = 0
+            AND COALESCE(s.discounts_kes,0)::numeric <> 0)
+    )
     AND LOWER(COALESCE(s.variant_sku,'')) NOT LIKE '%vb00%'
 """
 
