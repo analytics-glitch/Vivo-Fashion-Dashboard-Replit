@@ -3062,50 +3062,46 @@ def _retirement_flag_reason(age_weeks, *, lifetime_sor, last_sale_days, woc,
     retirement. Hard retirement remains Odoo-status ONLY (_lifecycle_tier /
     _odoo_retired_styles); this function never retires anything.
 
-    Gates (age sets the stage, performance decides):
-      Week-8 read  — lifetime SOR > 60% AND a sale in the last 7 days AND
-                     weeks-of-cover <= 8. Missing SOR / last-sale data fails
-                     the gate closed; missing WoC is skipped (a style with no
-                     stock has no cover to gate on).
-      Boundaries follow the ORIGINAL 2026 SOP rule verbatim: read window ends
-      at week 12 inclusive (never flagged), ~9 months = 36 weeks, 24 months =
-      96 weeks. (The display tier model's 39-week Tier-2 gate is a different,
-      unrelated cutoff.)
-      Week-12 backstop — lifetime SOR >= 80% rescues a missed Week-8 read.
-      12wk-9mo  — must have passed Week-8 or the backstop, else flagged.
-      9-24mo    — needs >= 3 reorders AND lifetime SOR > 60%, else flagged.
-      24mo+     — "hero core" bar: >= 5 reorders, sold within 30 days,
-                  recent 6-month SOR > 75% and >= 300 units in the last
-                  6 months, else flagged.
+    Gates (age sets the stage, performance decides). SOR (sell-out rate) is
+    deliberately NOT part of any gate (user rule, July 2026): SOR punishes
+    deep-stocked NOOS bestsellers — e.g. a core style holding heavy stock can
+    never look like a clearance-mode style on units/(units+stock) — so the
+    gates run on recency, reorders and volume only.
+      Week-8 read  — a sale in the last 7 days AND weeks-of-cover <= 8.
+                     Missing last-sale data fails the gate closed; missing WoC
+                     is skipped (a style with no stock has no cover to gate on).
+      12wk-9mo  — must pass the Week-8 read, else flagged.
+      9-24mo    — needs >= 3 reorders, else flagged.
+      24mo+     — "hero core" bar: >= 5 reorders, sold within 30 days, and
+                  >= 300 units in the last 6 months, else flagged.
+    Boundaries follow the ORIGINAL 2026 SOP rule verbatim: read window ends
+    at week 12 inclusive (never flagged), ~9 months = 36 weeks, 24 months =
+    96 weeks. (The display tier model's 39-week Tier-2 gate is a different,
+    unrelated cutoff.)
     """
     if age_weeks is None or age_weeks <= 12:
         return None  # too new to judge (pre Week-8 read / read window)
 
-    def _fmt_sor(v):
-        return "no sales data" if v is None else "%.1f%% lifetime SOR" % v
-
-    w8 = (lifetime_sor is not None and lifetime_sor > 60
-          and last_sale_days is not None and last_sale_days <= 7
-          and (woc is None or woc <= 8))
-    w12 = lifetime_sor is not None and lifetime_sor >= 80
-
     if age_weeks < 36:
-        if w8 or w12:
+        w8 = (last_sale_days is not None and last_sale_days <= 7
+              and (woc is None or woc <= 8))
+        if w8:
             return None
-        return ("Missed Week-8 read and Week-12 backstop — %s (needs >60%% plus a "
-                "sale in the last 7 days, or >=80%% to backstop)." % _fmt_sor(lifetime_sor))
+        misses = []
+        if last_sale_days is None or last_sale_days > 7:
+            misses.append("last sale %s (needs within 7 days)" % (
+                "unknown" if last_sale_days is None else "%dd ago" % last_sale_days))
+        if woc is not None and woc > 8:
+            misses.append("%.1f weeks of cover (needs <=8)" % woc)
+        return "Missed the Week-8 read: " + "; ".join(misses) + "."
     if age_weeks < 96:
-        if (reorder_count or 0) >= 3 and (lifetime_sor or 0) > 60:
+        if (reorder_count or 0) >= 3:
             return None
-        if (reorder_count or 0) < 3:
-            return ("9-24 months old with only %d reorder cycle%s (needs >=3 and "
-                    ">60%% lifetime SOR)." % (reorder_count or 0,
-                                              "" if (reorder_count or 0) == 1 else "s"))
-        return ("9-24 months old with %s (needs >60%% alongside its %d reorders)."
-                % (_fmt_sor(lifetime_sor), reorder_count or 0))
+        return ("9-24 months old with only %d reorder cycle%s (needs >=3)."
+                % (reorder_count or 0, "" if (reorder_count or 0) == 1 else "s"))
     # 24+ months — hero-core bar
     if ((reorder_count or 0) >= 5 and last_sale_days is not None and last_sale_days <= 30
-            and (recent_sor or 0) > 75 and (recent_units or 0) >= 300):
+            and (recent_units or 0) >= 300):
         return None
     misses = []
     if (reorder_count or 0) < 5:
@@ -3113,9 +3109,6 @@ def _retirement_flag_reason(age_weeks, *, lifetime_sor, last_sale_days, woc,
     if last_sale_days is None or last_sale_days > 30:
         misses.append("last sale %s (needs within 30 days)" % (
             "unknown" if last_sale_days is None else "%dd ago" % last_sale_days))
-    if (recent_sor or 0) <= 75:
-        misses.append("6-month SOR %s (needs >75%%)" % (
-            "n/a" if recent_sor is None else "%.1f%%" % recent_sor))
     if (recent_units or 0) < 300:
         misses.append("%d units in 6 months (needs >=300)" % int(recent_units or 0))
     return "24+ months old, misses the hero-core bar: " + "; ".join(misses) + "."

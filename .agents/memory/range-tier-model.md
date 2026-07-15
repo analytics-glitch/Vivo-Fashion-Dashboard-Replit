@@ -15,11 +15,14 @@ BUT (July 2026, user rule): the SOP gates live on as an ADVISORY
 `range_mgmt_classify` — flagged styles keep their real Tier 1..4 and a
 `flag_reason` string (shown as a Range Mgmt column + FLAGGED badge tooltip +
 retirement pipeline reason). Hard retirement stays Odoo-status ONLY; the flag
-just shows the team what is due for retirement. Boundaries follow the ORIGINAL
-SOP verbatim: read window ≤12wk never flagged, ~9mo = 36wk (NOT the tier
-model's 39), 24mo = 96wk; Week-8 = SOR>60 + sale ≤7d + WoC≤8 (missing WoC
-skipped); Week-12 backstop SOR≥80; 24mo+ hero-core = ≥5 reorders + sale ≤30d +
-6m SOR>75 + ≥300 units/6m. Manual tier override clears the flag.
+just shows the team what is due for retirement. SOR was REMOVED from the flag
+gates too (user, July 2026 — it punished deep-stocked NOOS bestsellers like
+Vivo Basic Bodycon: heavy stock caps units/(units+stock) regardless of volume).
+Gates = recency/reorders/volume only. Boundaries follow the ORIGINAL SOP:
+read window ≤12wk never flagged, ~9mo = 36wk (NOT the tier model's 39), 24mo =
+96wk; Week-8 = sale ≤7d + WoC≤8 (missing WoC skipped); 9-24mo = ≥3 reorders;
+24mo+ hero-core = ≥5 reorders + sale ≤30d + ≥300 units/6m. Manual tier
+override clears the flag.
 
 **The definition (module-level `_lifecycle_tier(style_name, brand, age_weeks,
 reorder_count, months_active_12)`), evaluated top-down:**
