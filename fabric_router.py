@@ -4820,8 +4820,120 @@ def _ensure_receiving_tables(conn):
             )""")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_recv_audit_po "
                     "ON fabric_recv_audit(po_id)")
+        # One-time markers for receiving data migrations (idempotent — prod is
+        # a separate DB and picks these up on first touch after publish).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_recv_migrations (
+                key TEXT PRIMARY KEY,
+                at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            )""")
     conn.commit()
+    _migrate_recv_one_sheet_per_po(conn)
     _RECEIVING_TABLES_READY = True
+
+def _migrate_recv_one_sheet_per_po(conn):
+    """One-time legacy migration guaranteeing 1 PO = 1 Sheet#:
+      * every PO-linked receiving section gets a fabric_receiving_po_sheets
+        parent row (the PO's single Sheet#) and po_sheet_id set;
+      * legacy POs whose fabric was split across several sections (the old
+        per-delivery model) are MERGED into one section per (po, fabric) —
+        rolls (quality travels ON the roll rows) and audit refs move to the
+        kept section, notes are concatenated, totals recomputed;
+      * all PO-linked rolls are RENUMBERED 1..n per (po, fabric) in original
+        receipt order (roll id order = insertion order across days).
+    Runs ONCE (marker row), whole thing in one transaction under an advisory
+    lock so concurrent workers can't interleave. Idempotent by construction."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM fabric_recv_migrations WHERE key=%s",
+                    ("one_sheet_per_po_v1",))
+        if cur.fetchone():
+            return
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext('fabric_recv_migrate'))")
+        cur.execute("SELECT 1 FROM fabric_recv_migrations WHERE key=%s",
+                    ("one_sheet_per_po_v1",))
+        if cur.fetchone():  # another worker won the race
+            conn.commit()
+            return
+        # 1) Merge duplicate sections per (po, fabric): keep the OLDEST
+        #    (lowest id) section, move rolls + audit refs onto it, merge notes.
+        cur.execute("""
+            SELECT po_id, product_id,
+                   (array_agg(id ORDER BY id))[1]  as keep_id,
+                   array_agg(id ORDER BY id)       as all_ids,
+                   string_agg(NULLIF(BTRIM(note), ''), ' | ' ORDER BY id) as notes
+            FROM fabric_receiving_sheets
+            WHERE po_id IS NOT NULL
+            GROUP BY po_id, product_id
+            HAVING COUNT(*) > 1
+        """)
+        merged_pos = set()
+        merged_sheet_ids = []
+        for po_id, _product_id, keep_id, all_ids, notes in cur.fetchall():
+            dupes = [i for i in all_ids if i != keep_id]
+            cur.execute("UPDATE fabric_receiving_rolls SET sheet_id=%s "
+                        "WHERE sheet_id = ANY(%s)", (keep_id, dupes))
+            cur.execute("UPDATE fabric_recv_audit SET sheet_id=%s "
+                        "WHERE sheet_id = ANY(%s)", (keep_id, dupes))
+            cur.execute("UPDATE fabric_receiving_sheets SET note=%s "
+                        "WHERE id=%s", (notes, keep_id))
+            cur.execute("DELETE FROM fabric_receiving_sheets "
+                        "WHERE id = ANY(%s)", (dupes,))
+            merged_pos.add(po_id)
+            merged_sheet_ids.append(keep_id)
+        # 2) Ensure every PO with sections has its single PO sheet row, and
+        #    link every PO-linked section to it.
+        cur.execute("""
+            INSERT INTO fabric_receiving_po_sheets
+                   (po_id, po_name, po_date, created_by_name, created_at)
+            SELECT s.po_id, MAX(s.po_name), MAX(s.po_date),
+                   MAX(s.created_by_name), MIN(s.created_at)
+            FROM fabric_receiving_sheets s
+            WHERE s.po_id IS NOT NULL
+            GROUP BY s.po_id
+            ON CONFLICT (po_id) DO NOTHING
+        """)
+        cur.execute("""
+            UPDATE fabric_receiving_sheets s
+               SET po_sheet_id = ps.id
+              FROM fabric_receiving_po_sheets ps
+             WHERE ps.po_id = s.po_id
+               AND s.po_id IS NOT NULL
+               AND (s.po_sheet_id IS DISTINCT FROM ps.id)
+        """)
+        # 3) Renumber ALL PO-linked rolls 1..n per (po, fabric) in receipt
+        #    order. Quality lives on these same rows, so it carries over —
+        #    nothing is rewritten, only roll_no updates in place.
+        cur.execute("""
+            WITH nn AS (
+                SELECT r.id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY s.po_id, s.product_id
+                           ORDER BY r.id) as rn
+                FROM fabric_receiving_rolls r
+                JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+                WHERE s.po_id IS NOT NULL
+            )
+            UPDATE fabric_receiving_rolls r
+               SET roll_no = nn.rn
+              FROM nn
+             WHERE r.id = nn.id AND r.roll_no <> nn.rn
+        """)
+        renumbered = cur.rowcount
+        # Audit the migration on each merged PO (who/what/when trail).
+        for po_id in sorted(merged_pos):
+            _recv_audit(cur, po_id, None, None, "sheets_merged",
+                        {"note": "legacy multi-sheet PO merged into one "
+                                 "PO sheet; rolls renumbered per fabric"},
+                        "system (migration)")
+        cur.execute("INSERT INTO fabric_recv_migrations (key) VALUES (%s) "
+                    "ON CONFLICT (key) DO NOTHING", ("one_sheet_per_po_v1",))
+    conn.commit()
+    # Recompute totals on the merged (kept) sections outside the tx above —
+    # helper commits per sheet via the same connection.
+    for sid in merged_sheet_ids:
+        _recv_refresh_sheet_totals(conn, sid, "system (migration)")
+    if merged_sheet_ids or renumbered:
+        conn.commit()
 
 # Allowed per-roll quality statuses (NULL/'' = not yet inspected → treated as
 # Pending in the UI). Kept small + explicit; validated server-side.
@@ -4974,9 +5086,29 @@ def receiving_create(request: Request, body: dict = Body(...)):
 # lock are allowed and every add/edit/delete is written to fabric_recv_audit
 # (who / what / when), shown on the PO sheet.
 
+# Users with FULL fabric receiving admin rights (post-upload edit/delete):
+# the admin ROLE plus an explicit per-email allowance for the fabric team
+# leads. Mirrors the roster-editor email-allowlist pattern used elsewhere.
+_FABRIC_ADMIN_EMAILS = {"admin@vivofashiongroup.com",
+                        "bedan@vivofashiongroup.com"}
+
+def _fabric_full_admin(user):
+    """True when this user dict has full fabric-receiving admin rights."""
+    u = user or {}
+    if u.get("role") == "admin":
+        return True
+    return (u.get("email") or "").strip().lower() in _FABRIC_ADMIN_EMAILS
+
 def _recv_is_admin(request):
-    u = getattr(request.state, "user", None) or {}
-    return u.get("role") == "admin"
+    return _fabric_full_admin(getattr(request.state, "user", None))
+
+@fabric_router.get("/api/fabric/receiving/rights")
+def receiving_rights(request: Request):
+    """Whether the signed-in user has full fabric-receiving admin rights
+    (role admin OR the explicit fabric-admin email allowance). The dashboard
+    uses this instead of checking role==='admin' client-side so the email
+    allowance shows the same controls the server actually permits."""
+    return {"admin": _recv_is_admin(request)}
 
 def _recv_po_locked(conn, po_id):
     """A PO's rolls/quantities are LOCKED once it has at least one SUCCESSFUL
@@ -5713,11 +5845,13 @@ def receiving_po_batches():
             SELECT g.po_id, g.po_name,
                    to_char(g.po_date, 'DD Mon YYYY') as po_date,
                    g.sheets, g.products, g.total_kg,
+                   ps.id as sheet_no,
                    lu.status           as last_upload_status,
                    lu.uploaded_by_name as last_uploaded_by,
                    to_char(lu.uploaded_at AT TIME ZONE 'Africa/Nairobi',
                            'DD Mon YYYY, HH24:MI') as last_uploaded_at
             FROM g
+            LEFT JOIN fabric_receiving_po_sheets ps ON ps.po_id = g.po_id
             LEFT JOIN LATERAL (
                 SELECT status, uploaded_by_name, uploaded_at
                 FROM fabric_po_uploads u

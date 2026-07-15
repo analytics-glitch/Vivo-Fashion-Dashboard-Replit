@@ -1066,7 +1066,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div class="card" style="padding:0;">
      <div class="tbl-wrap">
       <table class="data">
-       <thead><tr><th style="width:1%;"></th><th>PO</th><th>PO date</th><th class="r">Sheets</th><th class="r">Fabrics</th><th class="r">Total kgs</th><th>Last upload</th><th></th></tr></thead>
+       <thead><tr><th style="width:1%;"></th><th>PO</th><th>PO date</th><th class="r">Sheet#</th><th class="r">Fabrics</th><th class="r">Total kgs</th><th>Last upload</th><th></th></tr></thead>
        <tbody id="recv-po-body"><tr><td colspan="8" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
@@ -4019,7 +4019,7 @@ async function saveReceivingSheet(alsoPrint){
 let recvIsAdmin=false, recvPoMeta={};
 async function loadReceivingBatches(){
   recvBindOnce();
-  try{const me=await getMe();recvIsAdmin=!!(me&&me.role==='admin');}catch(_){recvIsAdmin=false;}
+  try{const rt=await apiFetch('/api/fabric/receiving/rights');recvIsAdmin=!!(rt&&rt.admin);}catch(_){recvIsAdmin=false;}
   loadRecvPoBatches();
 }
 function recvQualityCell(s){
@@ -4048,6 +4048,21 @@ async function deleteReceivingSheet(id){
     loadRecvPoBatches();
   }catch(e){alert('Could not delete: '+e.message);}
 }
+// Per-fabric mini print: the fabric's section sheet already carries the PO
+// header (Purchase Order + date received) and ALL of this fabric's rolls
+// (numbered 1..n within the PO), so the classic single-sheet layout IS the
+// per-fabric sheet — reuse it.
+function printFabricMiniSheet(btn){reprintReceivingSheet(btn.dataset.fabPrint);}
+async function deleteFabricSection(btn){
+  const name=btn.dataset.fabName||'this fabric';
+  const n=Number(btn.dataset.fabRolls||0);
+  if(!confirm('Delete '+name+' from this PO — including all '+n+' roll'+(n===1?'':'s')+' and their quality records? This cannot be undone.'))return;
+  try{
+    const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(btn.dataset.fabDel),{method:'DELETE',credentials:'include',headers:vivoAuthHeaders()});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
+    loadRecvPoBatches();
+  }catch(e){alert('Could not delete: '+e.message);}
+}
 // ── Quality / edit modal ──
 // Any signed-in fabric user records per-roll QUALITY (status + notes); editing
 // the rolls/quantities themselves is admin-only (also enforced server-side).
@@ -4055,13 +4070,13 @@ let recvEditState={id:null,rolls:[],kpm:null,isAdmin:false};
 const RECV_Q_OPTS=['','Pass','Fail','Pending'];
 async function openReceivingEdit(id){
   try{
-    const [d,me]=await Promise.all([
+    const [d,rt]=await Promise.all([
       apiFetch('/api/fabric/receiving/'+encodeURIComponent(id)),
-      getMe()
+      apiFetch('/api/fabric/receiving/rights').catch(()=>null)
     ]);
     const s=d.sheet||{}, kpm=(s.kg_per_mtr!=null&&s.kg_per_mtr!==''&&Number(s.kg_per_mtr)>0)?Number(s.kg_per_mtr):null;
     recvEditState={
-      id:id, kpm:kpm, isAdmin:!!(me&&me.role==='admin'),
+      id:id, kpm:kpm, isAdmin:!!(rt&&rt.admin),
       rolls:(d.rolls||[]).map(r=>({
         roll_id:r.roll_id, roll_no:r.roll_no, qty_kg:r.qty_kg, qty_mtrs:r.qty_mtrs,
         quality_status:r.quality_status||'', quality_notes:r.quality_notes||''
@@ -4370,7 +4385,7 @@ async function loadRecvPoBatches(){
         <td><button class="btn" data-po-toggle="${esc(key)}" title="${open?'Collapse':'Expand'}" style="padding:2px 9px;font-size:13px;font-weight:700;">${open?'−':'+'}</button></td>
         <td data-po-toggle="${esc(key)}" style="font-weight:600;cursor:pointer;" title="${open?'Collapse':'Expand'}">${name}</td>
         <td style="white-space:nowrap;">${esc(r.po_date||'—')}</td>
-        <td class="r">${fmt(r.sheets)}</td>
+        <td class="r">${isNoPo?'<span class="muted">—</span>':(r.sheet_no!=null?('#'+esc(String(r.sheet_no))):'<span class="muted">—</span>')}</td>
         <td class="r">${fmt(r.products)}</td>
         <td class="r">${fmt2(r.total_kg)}</td>
         <td style="white-space:nowrap;">${lu}</td>
@@ -4409,6 +4424,10 @@ async function loadRecvPoBatches(){
         if(rd){recvRollDeleteFromBtn(rd);return;}
         const sl=e.target.closest('button[data-slip]');
         if(sl){printRollSlipFromBtn(sl);return;}
+        const fp=e.target.closest('button[data-fab-print]');
+        if(fp){printFabricMiniSheet(fp);return;}
+        const fd=e.target.closest('button[data-fab-del]');
+        if(fd){deleteFabricSection(fd);return;}
         const pr=e.target.closest('button[data-print]');
         const ed=e.target.closest('button[data-edit]');
         const del=e.target.closest('button[data-del]');
@@ -4441,53 +4460,61 @@ function renderRecvPoDetail(box,det,poKey){
       +(recvIsAdmin?' (you are an admin: corrections stay possible and every change is logged below)':' to admins')
       +'. Per-roll <b>quality</b> stays editable by everyone via Quality / Edit.</div>'
     : '';
+  // One row per fabric/barcode: the migration + append flow guarantee ONE
+  // section (sheet row) per (PO, fabric), so the fabric row IS the actionable
+  // unit — Print (mini sheet), Quality / Edit and Delete act on its section.
   const fabricsHtml=fabrics.map((g,gi)=>{
     const fk=poKey+'|'+gi;
     const open=recvFabExpanded.has(fk);
-    const mtrs=g.total_mtrs!=null?fmt1(g.total_mtrs)+' m':'<span style="color:var(--danger);" title="One or more sheets had no Width/GSM conversion">Missing Width/GSM</span>';
+    const s0=(g.sheets&&g.sheets[0])||null;
+    const mtrs=g.total_mtrs!=null?fmt1(g.total_mtrs)+' m':'<span style="color:var(--danger);" title="This fabric has no Width/GSM conversion">Missing Width/GSM</span>';
+    const acts=s0?`<span style="white-space:nowrap;" onclick="event.stopPropagation()">
+        <button class="btn btn-primary" data-fab-print="${Number(s0.id)}" title="Print this fabric\u2019s receiving sheet (PO header + its rolls)" style="padding:3px 9px;font-size:12px;">🖨 Print</button>
+        <button class="btn" data-edit="${Number(s0.id)}" style="padding:3px 8px;font-size:12px;">Quality / Edit</button>
+        ${canEditRolls?`<button class="btn" data-fab-del="${Number(s0.id)}" data-fab-name="${esc(g.fabric_name||'')}" data-fab-rolls="${Number(g.rolls_count||0)}" style="padding:3px 8px;font-size:12px;">Delete</button>`:''}
+      </span>`:'';
     const head=`<div data-fab-toggle="${esc(fk)}" style="display:flex;gap:.9rem;align-items:center;cursor:pointer;padding:.45rem .55rem;border:1px solid var(--border,#d7d7de);border-radius:8px;background:#fff;${open?'border-bottom-left-radius:0;border-bottom-right-radius:0;':''}">
       <span style="font-weight:700;width:14px;text-align:center;">${open?'−':'+'}</span>
       <span style="font-weight:600;">${esc(g.fabric_name||'—')}</span>
       <span class="muted" style="font-size:12px;">${esc(g.barcode||'')}</span>
-      <span style="margin-left:auto;white-space:nowrap;font-size:12px;">${fmt(g.sheets_count)} sheet${g.sheets_count===1?'':'s'} · ${fmt(g.rolls_count)} roll${g.rolls_count===1?'':'s'} · <b>${fmt2(g.total_kg)} kg</b> · ${mtrs} · ${
+      <span style="margin-left:auto;white-space:nowrap;font-size:12px;">${fmt(g.rolls_count)} roll${g.rolls_count===1?'':'s'} · <b>${fmt2(g.total_kg)} kg</b> · ${mtrs} · ${
         (g.q_pass||g.q_fail)
           ? `<span style="color:#0a7d33;font-weight:700;">${fmt(g.q_pass)} pass</span>${g.q_fail?' / <span style="color:var(--danger);font-weight:700;">'+fmt(g.q_fail)+' fail</span>':''}${g.q_pending?' / <span class="muted">'+fmt(g.q_pending)+' pending</span>':''}`
           : '<span class="muted">quality pending</span>'
       }</span>
+      ${acts}
     </div>`;
-    const sheets=open?`<div style="border:1px solid var(--border,#d7d7de);border-top:none;border-radius:0 0 8px 8px;background:#fff;padding:.55rem .7rem;">${
-      g.sheets.map(s=>{
-        const smtrs=s.total_mtrs!=null?fmt1(s.total_mtrs)+' m':'<span style="color:var(--danger);">Missing Width/GSM</span>';
-        const edited=s.updated_at?`<span class="muted" style="font-size:11px;"> · edited ${esc(s.updated_at)}${s.updated_by_name?' by '+esc(s.updated_by_name):''}</span>`:'';
-        const rollRows=(s.rolls||[]).map(r=>{
-          const q=r.quality_status==='Pass'?'<span style="color:#0a7d33;font-weight:700;">Pass</span>'
-                :(r.quality_status==='Fail'?'<span style="color:var(--danger);font-weight:700;">Fail</span>'
-                :'<span class="muted">'+esc(r.quality_status||'Pending')+'</span>');
-          const acts='<button class="btn" data-slip="'+Number(r.roll_id)+'" title="Print a slip for this roll" style="padding:1px 7px;font-size:11px;">🖨 Slip</button>'
-            +(canEditRolls&&r.roll_id!=null
-              ?' <button class="btn" data-roll-edit="'+Number(r.roll_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-kg="'+esc(String(r.qty_kg==null?'':r.qty_kg))+'" title="Correct this roll\u2019s weight" style="padding:1px 7px;font-size:11px;">✎</button>'
-               +' <button class="btn" data-roll-del="'+Number(r.roll_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" title="Delete this roll" style="padding:1px 7px;font-size:11px;">&times;</button>'
-              :'');
-          return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td>${q}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td><td style="white-space:nowrap;">${acts}</td></tr>`;
-        }).join('');
-        return `<div style="padding:.5rem 0;border-top:1px dashed var(--border,#d7d7de);">
-          <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;">
-            <span style="font-size:12.5px;"><b>Sheet #${esc(String(s.id))}</b> · received ${esc(s.receiving_date||s.created_at||'—')} · saved ${esc(s.created_at||'—')}${s.created_by_name?' by '+esc(s.created_by_name):''}${edited}</span>
-            <span style="margin-left:auto;white-space:nowrap;">
-              <button class="btn btn-primary" data-print="${Number(s.id)}" style="padding:3px 9px;font-size:12px;">🖨 Print</button>
-              <button class="btn" data-edit="${Number(s.id)}" style="padding:3px 8px;font-size:12px;">Quality / Edit</button>
-              ${canEditRolls?`<button class="btn" data-del="${Number(s.id)}" style="padding:3px 8px;font-size:12px;">Delete</button>`:''}
-            </span>
-          </div>
-          <div class="muted" style="font-size:12px;margin-top:2px;">${fmt(s.rolls_count)} rolls · ${fmt2(s.total_kg)} kg · ${smtrs} · quality: ${recvQualityCell(s)}${s.note?' · note: '+esc(s.note):''}</div>
-          <table class="data" style="margin-top:5px;max-width:680px;">
-            <thead><tr><th style="width:90px;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th>Quality</th><th style="width:150px;"></th></tr></thead>
-            <tbody>${rollRows||'<tr><td colspan="5" class="muted">No rolls recorded.</td></tr>'}</tbody>
-          </table>
-        </div>`;
-      }).join('')
-    }</div>`:'';
-    return `<div style="margin:.25rem 0;">${head}${sheets}</div>`;
+    // Expanded: one merged rolls table for the fabric (rolls are numbered
+    // 1..n per fabric within the PO, in receipt order).
+    let body='';
+    if(open){
+      const allRolls=[];
+      (g.sheets||[]).forEach(s=>(s.rolls||[]).forEach(r=>allRolls.push(r)));
+      allRolls.sort((a,b)=>Number(a.roll_no)-Number(b.roll_no));
+      const rollRows=allRolls.map(r=>{
+        const q=r.quality_status==='Pass'?'<span style="color:#0a7d33;font-weight:700;">Pass</span>'
+              :(r.quality_status==='Fail'?'<span style="color:var(--danger);font-weight:700;">Fail</span>'
+              :'<span class="muted">'+esc(r.quality_status||'Pending')+'</span>');
+        const racts='<button class="btn" data-slip="'+Number(r.roll_id)+'" title="Print a slip for this roll" style="padding:1px 7px;font-size:11px;">🖨 Slip</button>'
+          +(canEditRolls&&r.roll_id!=null
+            ?' <button class="btn" data-roll-edit="'+Number(r.roll_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-kg="'+esc(String(r.qty_kg==null?'':r.qty_kg))+'" title="Correct this roll\u2019s weight" style="padding:1px 7px;font-size:11px;">✎</button>'
+             +' <button class="btn" data-roll-del="'+Number(r.roll_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" title="Delete this roll" style="padding:1px 7px;font-size:11px;">&times;</button>'
+            :'');
+        return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td>${q}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td><td style="white-space:nowrap;">${racts}</td></tr>`;
+      }).join('');
+      const metaBits=(g.sheets||[]).map(s=>{
+        const edited=s.updated_at?` · edited ${esc(s.updated_at)}${s.updated_by_name?' by '+esc(s.updated_by_name):''}`:'';
+        return `received ${esc(s.receiving_date||s.created_at||'—')} · saved ${esc(s.created_at||'—')}${s.created_by_name?' by '+esc(s.created_by_name):''}${edited}${s.note?' · note: '+esc(s.note):''}`;
+      }).join(' · ');
+      body=`<div style="border:1px solid var(--border,#d7d7de);border-top:none;border-radius:0 0 8px 8px;background:#fff;padding:.55rem .7rem;">
+        <div class="muted" style="font-size:12px;">${metaBits}</div>
+        <table class="data" style="margin-top:5px;max-width:680px;">
+          <thead><tr><th style="width:90px;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th>Quality</th><th style="width:150px;"></th></tr></thead>
+          <tbody>${rollRows||'<tr><td colspan="5" class="muted">No rolls recorded.</td></tr>'}</tbody>
+        </table>
+      </div>`;
+    }
+    return `<div style="margin:.25rem 0;">${head}${body}</div>`;
   }).join('');
   box.innerHTML=lockBanner+fabricsHtml+recvAuditHtml(det&&det.audit);
 }

@@ -1200,8 +1200,10 @@ async def clerk_auth_gate(request: Request, call_next):
     # Gate the bare PUT-to-a-sheet path server-side so hiding the admin edit
     # controls in the dashboard cannot be bypassed via a direct API call.
     if re.match(r"^/api/fabric/receiving/\d+$", path) \
-            and request.method == "PUT" and user.get("role") != "admin":
-        return JSONResponse({"detail": "Admin access required"}, status_code=403)
+            and request.method == "PUT":
+        from fabric_router import _fabric_full_admin
+        if not _fabric_full_admin(user):
+            return JSONResponse({"detail": "Admin access required"}, status_code=403)
 
     # Support-scope overrides: viewing the rule list is broadly accessible (the
     # Support tab surfaces the active rules), but ADDING/REMOVING a rule is
