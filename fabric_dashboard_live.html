@@ -4441,14 +4441,6 @@ async function loadRecvPoBatches(){
         if(b){openRecvPoBatch(Number(b.dataset.poOpen));return;}
         const lc=e.target.closest('button[data-po-lc]');
         if(lc){openLandedCost(Number(lc.dataset.poLc));return;}
-        const f=e.target.closest('[data-fab-toggle]');
-        if(f){
-          const fk=f.dataset.fabToggle;
-          if(recvFabExpanded.has(fk))recvFabExpanded.delete(fk);else recvFabExpanded.add(fk);
-          const box=f.closest('.recv-po-detail');
-          if(box&&box.dataset.cached){renderRecvPoDetail(box,JSON.parse(box.dataset.cached),box.dataset.poDetail);}
-          return;
-        }
         const pp=e.target.closest('button[data-po-print]');
         if(pp){printPoFullSheet(pp.dataset.poPrint);return;}
         const rq=e.target.closest('button[data-roll-q]');
@@ -4464,11 +4456,19 @@ async function loadRecvPoBatches(){
         const fd=e.target.closest('button[data-fab-del]');
         if(fd){deleteFabricSection(fd);return;}
         const pr=e.target.closest('button[data-print]');
+        if(pr){reprintReceivingSheet(pr.dataset.print);return;}
         const ed=e.target.closest('button[data-edit]');
+        if(ed){openReceivingEdit(ed.dataset.edit);return;}
         const del=e.target.closest('button[data-del]');
-        if(pr)reprintReceivingSheet(pr.dataset.print);
-        else if(ed)openReceivingEdit(ed.dataset.edit);
-        else if(del)deleteReceivingSheet(del.dataset.del);
+        if(del){deleteReceivingSheet(del.dataset.del);return;}
+        const f=e.target.closest('[data-fab-toggle]');
+        if(f){
+          const fk=f.dataset.fabToggle;
+          if(recvFabExpanded.has(fk))recvFabExpanded.delete(fk);else recvFabExpanded.add(fk);
+          const box=f.closest('.recv-po-detail');
+          if(box&&box.dataset.cached){renderRecvPoDetail(box,JSON.parse(box.dataset.cached),box.dataset.poDetail);}
+          return;
+        }
       });
     }
     // Load every expanded group's drill-down (Postgres-only endpoint).
@@ -4503,7 +4503,7 @@ function renderRecvPoDetail(box,det,poKey){
     const open=recvFabExpanded.has(fk);
     const s0=(g.sheets&&g.sheets[0])||null;
     const mtrs=g.total_mtrs!=null?fmt1(g.total_mtrs)+' m':'<span style="color:var(--danger);" title="This fabric has no Width/GSM conversion">Missing Width/GSM</span>';
-    const acts=s0?`<span style="white-space:nowrap;" onclick="event.stopPropagation()">
+    const acts=s0?`<span style="white-space:nowrap;">
         <button class="btn btn-primary" data-fab-print="${Number(s0.id)}" title="Print this fabric\u2019s receiving sheet (PO header + its rolls)" style="padding:3px 9px;font-size:12px;">🖨 Print</button>
         <button class="btn" data-edit="${Number(s0.id)}" style="padding:3px 8px;font-size:12px;">Quality / Edit</button>
         ${canEditRolls?`<button class="btn" data-fab-del="${Number(s0.id)}" data-fab-name="${esc(g.fabric_name||'')}" data-fab-rolls="${Number(g.rolls_count||0)}" style="padding:3px 8px;font-size:12px;">Delete</button>`:''}
@@ -4698,6 +4698,7 @@ function printRollSlip(g,s,r,meta){
     +'<div class="row"><span>Weight</span><b>'+fmt2(r.qty_kg)+' kg</b></div>'
     +'<div class="row"><span>Metres</span><b>'+(r.qty_mtrs!=null?fmt1(r.qty_mtrs)+' m':'Missing Width/GSM')+'</b></div>'
     +'<div class="row"><span>Quality</span><b>'+esc(r.quality_status||'Pending')+'</b></div>'
+    +'<div class="row"><span>Quality Notes</span><b>'+esc(r.quality_notes||'\u2014')+'</b></div>'
     +'</div><script>window.onload=function(){setTimeout(function(){window.print();},60);};<\/script></body></html>';
   const w=window.open('','_blank','width=460,height=560');
   if(!w){alert('Please allow pop-ups to print the roll slip.');return;}
