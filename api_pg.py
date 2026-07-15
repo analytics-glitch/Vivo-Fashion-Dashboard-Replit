@@ -688,8 +688,8 @@ DEFAULT_ROLE_PAGES = {
     # SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
     # Finance Reports Suite. The /api/finance gate below also excludes "smt".
     "smt": [p for p in _LEADERSHIP_PAGES if p != "finance"],
-    # Production department — manufacturing board + report, fabric warehouse view.
-    "production": ["production", "production-report", "fabric", "sops"],
+    # Production department — manufacturing board + report, style tracker, fabric warehouse view.
+    "production": ["production", "production-report", "style-tracker", "fabric", "sops"],
     # Fabric Warehouse department — fabric stock + general inventory.
     "fabric_warehouse": ["fabric", "inventory", "sops"],
     "customer_service": ["customers", "customer-details", "crm", "footfall", "sops"],
@@ -5535,8 +5535,11 @@ def get_customer_frequency(
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
 ):
+    # customer_type filter aligns this endpoint's identified universe with
+    # /api/customers (which gates on 'new'/'returning'/'registered'), so the
+    # frequency-bucket customer counts reconcile with the headline total_customers.
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND " + _not_walkin_pseudo_sql())
+        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND LOWER(s.customer_type) IN ('new','returning','registered') AND " + _not_walkin_pseudo_sql())
     return run_query("""
         WITH order_counts AS (
             SELECT customer_id, COUNT(DISTINCT order_id) AS order_count
@@ -5658,9 +5661,12 @@ def analytics_customer_details(
         type_join = "LEFT JOIN all_products_clean p ON s.variant_sku = p.sku"
         types_sql = "'" + "','".join(t.replace("'", "''") for t in types) + "'"
         type_filter = "AND p.product_type IN (" + types_sql + ")"
+    # customer_type filter aligns this endpoint's universe with /api/customers
+    # (which gates on 'new'/'returning'/'registered'), so the detail-table count
+    # reconciles with the headline total_customers KPI.
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL "
-              "AND s.customer_id NOT IN ('None','null','') AND " + _not_walkin_pseudo_sql() + " " + type_filter)
+              "AND s.customer_id NOT IN ('None','null','') AND LOWER(s.customer_type) IN ('new','returning','registered') AND " + _not_walkin_pseudo_sql() + " " + type_filter)
     rows = run_query("""
         SELECT s.customer_id,
             c.first_name, c.last_name, c.email,
@@ -7652,8 +7658,12 @@ def analytics_product_analysis(
                      " LEFT JOIN stock st" + join_keys)
         pos_out = " st.store_locations AS pos_location,"
         # Only styles that currently hold inventory (stores or warehouse) are in scope.
-        activity_where = (" WHERE (COALESCE(st.soh_current,0) > 0"
-                          " OR COALESCE(st.soh_warehouse,0) > 0 OR COALESCE(st.soh_stores,0) > 0)")
+        # Match RM's universe: styles with stock in stores OR warehouse only.
+        # soh_current can include pipeline locations; using soh_stores/soh_warehouse
+        # directly excludes pipeline-only styles, aligning the PA style count
+        # with the Range Management total (xsurf_pa_vs_rm_total invariant).
+        activity_where = (" WHERE (COALESCE(st.soh_stores,0) > 0"
+                          " OR COALESCE(st.soh_warehouse,0) > 0)")
 
     # months_active_12 = the count of DISTINCT calendar months (trailing 365d) in
     # which the style recorded a sale/order. Drives the unified Tier-1 ("NOOS",

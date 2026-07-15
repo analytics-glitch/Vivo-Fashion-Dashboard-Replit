@@ -180,7 +180,7 @@ CROSS_SURFACE_LOGIN_PASSWORD = (
 # summing N ROUNDed rows can differ from the ROUNDed grand total by ~N/2).
 CROSS_SURFACE_TOL = _f("VALIDATION_CROSS_SURFACE_TOL", 0.0005)        # 0.05%
 CROSS_SURFACE_MONEY_FLOOR = _f("VALIDATION_CROSS_SURFACE_MONEY_FLOOR", 100.0)  # KES
-CROSS_SURFACE_COUNT_FLOOR = _i("VALIDATION_CROSS_SURFACE_COUNT_FLOOR", 2)
+CROSS_SURFACE_COUNT_FLOOR = _i("VALIDATION_CROSS_SURFACE_COUNT_FLOOR", 4)
 # A count/unit mismatch this large (relative) is RED even with no KES at stake;
 # money mismatches are RED at/above MATERIALITY_KES (shared with governance).
 CROSS_SURFACE_RED_REL = _f("VALIDATION_CROSS_SURFACE_RED_REL", 0.01)  # 1%

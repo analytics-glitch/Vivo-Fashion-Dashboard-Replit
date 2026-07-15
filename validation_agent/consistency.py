@@ -76,18 +76,25 @@ def check_row(m: dict) -> list[dict]:
                               recon * (1 - tol), recon * (1 + tol),
                               abs(total - recon)))
 
-    if net > total * (1 + tol) and total > 0:
-        fails.append(_exc("net_le_total", "net_sales <= total_sales", net,
-                          None, total, abs(net - total)))
+    # Re-add return_amount to recover the gross total before return rows' negative
+    # total_sales_kes are subtracted.  Return rows have net_sales_kes=0 so `net`
+    # reflects order rows only, while `total` is already depleted by returns.
+    # On a return-heavy day total can drop well below net/1.16, triggering both
+    # checks spuriously.  The correct invariant uses gross_total = total + ret.
+    gross_total = total + ret
 
-    if total > config.MIN_SALES_KES:
+    if gross_total > 0 and net > gross_total * (1 + tol):
+        fails.append(_exc("net_le_total", "net_sales <= total_sales + return_amount",
+                          net, None, gross_total, abs(net - gross_total)))
+
+    if gross_total > config.MIN_SALES_KES:
         expected_total = net * (1 + config.VAT_RATE)
-        if _rel(total, expected_total) > mtol:
+        if _rel(gross_total, expected_total) > mtol:
             fails.append(_exc("vat_reconciliation",
-                              f"total_sales = net_sales * (1 + {config.VAT_RATE})",
-                              total, expected_total * (1 - mtol),
+                              f"total_sales + return_amount = net_sales * (1 + {config.VAT_RATE})",
+                              gross_total, expected_total * (1 - mtol),
                               expected_total * (1 + mtol),
-                              abs(total - expected_total)))
+                              abs(gross_total - expected_total)))
         # net_sales must reconcile with the (gross - discounts - returns)
         # composition. all_sales carries TWO VAT conventions that no column cleanly
         # keys (some rows record gross VAT-EXCLUSIVE, others VAT-INCLUSIVE), so the
