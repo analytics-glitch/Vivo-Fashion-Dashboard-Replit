@@ -44,6 +44,7 @@ import {
   ArrowsLeftRight,
   UserPlus,
   UsersThree,
+  Door,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -939,6 +940,8 @@ const Overview = () => {
   const aggFootfall = (rows) => {
     let fVisits = 0;
     let fOrders = 0;
+    let outsideTraffic = 0;
+    let footfallWithOutside = 0;
     for (const r of rows || []) {
       if (r.location === "Vivo Junction" && (r.conversion_rate || 0) > 50) continue; // data-quality rule (Vivo Junction sensor only)
       // Apply country filter if active
@@ -950,9 +953,17 @@ const Overview = () => {
       if (channels.length && !channels.includes(r.location)) continue;
       fVisits += r.total_footfall || 0;
       fOrders += r.orders || 0;
+      // Turn-in: only include stores where outside_traffic sensor is coherent
+      // (inside footfall <= outside) — same gate as the Footfall page.
+      const ot = Number(r.outside_traffic || 0);
+      if (ot > 0 && Number(r.total_footfall || 0) <= ot) {
+        outsideTraffic += ot;
+        footfallWithOutside += Number(r.total_footfall || 0);
+      }
     }
     const conv = fVisits > 0 ? (fOrders / fVisits) * 100 : 0;
-    return { total_footfall: fVisits, orders: fOrders, conversion_rate: conv };
+    const turnIn = outsideTraffic > 0 ? (footfallWithOutside / outsideTraffic) * 100 : null;
+    return { total_footfall: fVisits, orders: fOrders, conversion_rate: conv, turnIn };
   };
 
   const footfallAgg = useMemo(() => aggFootfall(footfall), [footfall, countries, channels, channelCountryMap]);
@@ -1279,8 +1290,12 @@ const Overview = () => {
               delta={delta("total_units")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}
               action={{ label: "Top styles", to: "/product-analysis" }}
               prefetch={pf("/product-analysis")} />
+          </div>
+
+          {/* Secondary KPI row — footfall metrics + basket/return metrics in one unified row */}
+          <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3" data-testid="sub-kpi-row">
             {!isOnlineOnly && (
-              <KPICard testId="kpi-footfall" label="Total Footfall" sub="Walk-ins counted at our store sensors" value={loading ? "\u2014" : fmtNum(footfallAgg.total_footfall)} valueFull={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
+              <KPICard small testId="kpi-footfall" label="Total Footfall" sub="Walk-ins at store sensors" value={loading ? "\u2014" : fmtNum(footfallAgg.total_footfall)} valueFull={fmtNum(footfallAgg.total_footfall)} icon={Footprints}
                 formula={"Formula: sum of door-sensor walk-ins (a01_footfall_in) across stores for the selected period.\n\nRenamed sensor feeds are mapped back to their store before totalling. Stores flagged for sensor data-quality issues (conversion over 50%) are excluded."}
                 delta={compareMode !== "none" && footfallAggPrev.total_footfall ? pctDelta(footfallAgg.total_footfall, footfallAggPrev.total_footfall) : null}
                 deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} showDelta={compareMode !== "none"}
@@ -1288,20 +1303,24 @@ const Overview = () => {
                 prefetch={pf("/footfall")} />
             )}
             {!isOnlineOnly && (
-              <KPICard testId="kpi-conversion" label="Conversion Rate" sub="Store orders ÷ store footfall (pooled)" value={loading ? "\u2014" : fmtPct(footfallAgg.conversion_rate, 2)} valueFull={`${Number(footfallAgg.conversion_rate || 0).toFixed(4)}%`} icon={Target}
+              <KPICard small testId="kpi-conversion" label="Conversion Rate" sub="Store orders ÷ footfall" value={loading ? "\u2014" : fmtPct(footfallAgg.conversion_rate, 2)} valueFull={`${Number(footfallAgg.conversion_rate || 0).toFixed(4)}%`} icon={Target}
                 formula={"Formula: (total transactions ÷ total walk-ins) × 100, pooled across stores.\n\nTransactions and footfall are matched per store, so the renamed sensor feeds (from 2026-06-07) are mapped back to their sales name before dividing. Stores with sensor data-quality issues (conversion over 50%) are excluded."}
                 delta={compareMode !== "none" && footfallAggPrev.conversion_rate ? pctDelta(footfallAgg.conversion_rate, footfallAggPrev.conversion_rate) : null}
                 deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} showDelta={compareMode !== "none"}
                 action={{ label: "Which stores dropped?", to: "/footfall" }}
                 prefetch={pf("/footfall")} />
             )}
-          </div>
-
-          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3" data-testid="sub-kpi-row">
-            {/* Iter 87 — ABV and ASP now show the FULL shilling figure
-                inline (not compacted). User explicitly asked for the
-                exact value to avoid rounding ambiguity when comparing
-                across days. */}
+            {!isOnlineOnly && (
+              <KPICard small testId="kpi-turn-in" label="Turn-In Rate" sub="Footfall ÷ pavement traffic"
+                formula={"How many people walking past the store actually walked in.\n\nFormula: Σ footfall ÷ Σ outside (pavement) traffic, pooled across stores that report a pavement counter. Stores where inside > outside (sensor fault) are excluded from both numerator and denominator."}
+                value={loading ? "\u2014" : footfallAgg.turnIn != null ? fmtPct(footfallAgg.turnIn, 1) : "\u2014"}
+                valueFull={footfallAgg.turnIn != null ? `${footfallAgg.turnIn.toFixed(2)}%` : "—"}
+                icon={Door}
+                delta={compareMode !== "none" && footfallAgg.turnIn != null && footfallAggPrev.turnIn != null ? pctDelta(footfallAgg.turnIn, footfallAggPrev.turnIn) : null}
+                deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} showDelta={compareMode !== "none"}
+                action={{ label: "Footfall detail", to: "/footfall" }}
+                prefetch={pf("/footfall")} />
+            )}
             <KPICard small testId="kpi-abv" label="ABV" sub="Gross Total Sales ÷ transactions"
               formula="What a typical customer spends per visit — Total Sales ÷ transactions, on gross (VAT-inclusive) sales, the same basis as the Total Sales headline (not net of discounts/returns). Higher means people are buying more in one go."
               value={fmtKESLong(kpis.total_orders ? kpis.total_sales / kpis.total_orders : 0)}
