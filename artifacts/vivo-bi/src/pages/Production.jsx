@@ -553,8 +553,10 @@ function Production() {
 // ORIGINAL page id for permissions; the /production route admits a user who
 // can access ANY tab, and /production-report redirects here with ?tab=report.
 const ProductionReportTab = React.lazy(() => import("./ProductionReport"));
+const ProductionOverviewTab = React.lazy(() => import("./ProductionOverview"));
 
 const PROD_TABS = [
+  { id: "overview", label: "Overview", pageId: "production", el: ProductionOverviewTab },
   { id: "tracker", label: "Production Tracker", pageId: "production", el: null },
   { id: "report", label: "Production Report", pageId: "production-report", el: ProductionReportTab },
 ];
@@ -593,7 +595,13 @@ const ProductionPipelinePage = () => {
         <Production />
       ) : ActiveEl ? (
         <React.Suspense fallback={<Loading label="Loading…" />}>
-          <ActiveEl />
+          <ActiveEl
+            onOpenReport={
+              visibleTabs.some((t) => t.id === "report")
+                ? () => setTab("report")
+                : null
+            }
+          />
         </React.Suspense>
       ) : null}
     </div>
