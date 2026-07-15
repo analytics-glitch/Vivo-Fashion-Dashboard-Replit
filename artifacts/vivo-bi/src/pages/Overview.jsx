@@ -239,6 +239,10 @@ const Overview = () => {
   // Snapshot mode — toggled via the "Mobile snapshot" button in the header.
   // Renders a stripped-down 2-col KPI grid sized for one mobile screenshot.
   const [snapshot, setSnapshot] = useState(false);
+  // Retail-only KPIs for the snapshot — fetched separately when snapshot opens
+  // so the numbers always exclude Online regardless of the active filter.
+  const [snapshotKpis, setSnapshotKpis] = useState(null);
+  const [snapshotKpisPrev, setSnapshotKpisPrev] = useState(null);
   // On mobile, switch every KPI-tile currency value to a compact 2-decimal
   // form (e.g. "KES 354.99M" instead of "KES 354,985,308") so headline
   // figures fit on a phone screen without wrapping. Charts/tables keep the
@@ -451,6 +455,28 @@ const Overview = () => {
     // eslint-disable-next-line
   }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
+
+  // When snapshot opens fetch retail-only KPIs (Kenya / Uganda / Rwanda — no Online).
+  // Reset when snapshot closes or filters change so stale numbers never linger.
+  useEffect(() => {
+    if (!snapshot) { setSnapshotKpis(null); setSnapshotKpisPrev(null); return; }
+    const retailCc = countries.length ? countries.filter((c) => c !== "Online") : ["Kenya", "Uganda", "Rwanda"];
+    if (!retailCc.length) return; // was Online-only — keep null (snapshot will show 0s)
+    const retailParams = {
+      date_from: dateFrom, date_to: dateTo,
+      country: retailCc.join(","),
+      ...(channels.length ? { channel: channels.join(",") } : {}),
+    };
+    const prev = comparePeriod(dateFrom, dateTo, compareMode, { date_from: compareDateFrom, date_to: compareDateTo });
+    Promise.all([
+      api.get("/kpis", { params: retailParams }),
+      prev ? api.get("/kpis", { params: { ...retailParams, date_from: prev.date_from, date_to: prev.date_to } }) : Promise.resolve(null),
+    ]).then(([cr, pr]) => {
+      setSnapshotKpis(cr.data);
+      setSnapshotKpisPrev(pr?.data ?? null);
+    }).catch(() => { /* fall back to main kpis on error */ });
+    // eslint-disable-next-line
+  }, [snapshot, dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, compareDateFrom, compareDateTo]);
 
   const pairedBars = useMemo(() => {
     if (!pairedDays) return [];
@@ -886,6 +912,14 @@ const Overview = () => {
     return [...sales].sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0))[0];
   }, [sales]);
 
+  // Retail-only top channel for the snapshot (exclude Online POS locations).
+  const snapshotTopChannel = useMemo(() => {
+    if (!sales.length) return null;
+    const onlineRe = /online|shop.?zetu/i;
+    const retailSales = sales.filter((s) => !onlineRe.test(s.channel || ""));
+    return retailSales.sort((a, b) => (b.total_sales || 0) - (a.total_sales || 0))[0] || null;
+  }, [sales]);
+
   const bestConversionStore = useMemo(() => {
     // exclude Vivo Junction if >50% conversion
     const filtered = footfall.filter((r) => !(r.location === "Vivo Junction" && (r.conversion_rate || 0) > 50));
@@ -1074,19 +1108,20 @@ const Overview = () => {
 
   return (
     <div className="space-y-6" data-testid="overview-page">
-      {snapshot && kpis && (
+      {snapshot && (snapshotKpis || kpis) && (
         <OverviewSnapshot
           dateFrom={dateFrom}
           dateTo={dateTo}
           compareLbl={compareMode !== "none" ? compareLbl : null}
-          kpis={kpis}
-          kpisPrev={kpisPrev}
+          kpis={snapshotKpis || kpis}
+          kpisPrev={snapshotKpisPrev}
           footfallAgg={footfallAgg}
           footfallAggPrev={footfallAggPrev}
           subcatTop={subcatTop}
-          topChannel={topChannel}
+          topChannel={snapshotTopChannel}
           bestConversionStore={bestConversionStore}
-          isOnlineOnly={isOnlineOnly}
+          isOnlineOnly={false}
+          retailOnly={true}
           onClose={() => setSnapshot(false)}
         />
       )}

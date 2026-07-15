@@ -66,6 +66,7 @@ const OverviewSnapshot = ({
   footfallAgg, footfallAggPrev,
   subcatTop, topChannel, bestConversionStore,
   isOnlineOnly,
+  retailOnly = false,
   onClose,
 }) => {
   const k = kpis || {};
@@ -123,6 +124,9 @@ const OverviewSnapshot = ({
             {fmtDate(dateFrom)} → {fmtDate(dateTo)}
             {compareLbl && (
               <span className="ml-1.5 pill-neutral text-[9.5px]">{compareLbl}</span>
+            )}
+            {retailOnly && (
+              <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-[#1a5c38]/10 text-[#1a5c38] text-[9px] font-semibold uppercase tracking-wide">Retail only</span>
             )}
           </p>
         </div>
