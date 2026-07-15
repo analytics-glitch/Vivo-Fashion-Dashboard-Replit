@@ -1249,7 +1249,7 @@ function consumptionSourcesLink(scope){
 async function downloadConsumptionSources(scope){
   try{
     const s=(scope==='support')?'support':'main';
-    const r=await fetch('/api/fabric/consumption-sources.csv?scope='+s,{credentials:'include'});
+    const r=await fetch('/api/fabric/consumption-sources.csv?scope='+s,{credentials:'include',headers:vivoAuthHeaders()});
     if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
     if(!r.ok)throw new Error('http '+r.status);
     const blob=await r.blob();
@@ -1269,7 +1269,7 @@ async function downloadAcpmExcluded(figure){
   try{
     const fig=(figure==='purchases')?'purchases':'stock';
     const params=new URLSearchParams({figure:fig,scope:'main',location:loc()});
-    const r=await fetch('/api/fabric/acpm-excluded?'+params.toString(),{credentials:'include'});
+    const r=await fetch('/api/fabric/acpm-excluded?'+params.toString(),{credentials:'include',headers:vivoAuthHeaders()});
     if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
     if(!r.ok)throw new Error('http '+r.status);
     const data=await r.json();
@@ -1565,8 +1565,15 @@ function donut(slices){
   return `<div class="donut-wrap"><svg viewBox="0 0 120 120" width="120" height="120" aria-hidden="true">${segs}<text x="60" y="64" text-anchor="middle" font-size="11" font-weight="800" fill="var(--text)">${center}</text></svg><div class="donut-legend">${legend}</div></div>`;
 }
 
+function vivoTok(){ try{ return localStorage.getItem('vivo_token'); }catch(e){ return null; } }
+function vivoAuthHeaders(extra){
+  const h=Object.assign({},extra||{});
+  const t=vivoTok();
+  if(t) h['Authorization']='Bearer '+t;
+  return h;
+}
 async function apiFetch(path){
-  const r=await fetch(path,{credentials:'include'});
+  const r=await fetch(path,{credentials:'include',headers:vivoAuthHeaders()});
   if(r.status===401||r.status===403) throw new Error('auth');
   if(!r.ok) throw new Error('http '+r.status);
   return r.json();
@@ -1727,7 +1734,7 @@ async function supOvrAdd(){
   const btn=document.getElementById('supovr-add-btn');btn.disabled=true;
   try{
     const r=await fetch('/api/fabric/support-overrides',{method:'POST',credentials:'include',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify({name_prefix:p})});
+      headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name_prefix:p})});
     const d=await r.json().catch(()=>({}));
     if(!r.ok)throw new Error(d.detail||('http '+r.status));
     inp.value='';if(pv)pv.textContent=`Added — matches ${d.matched_products} product${d.matched_products===1?'':'s'}.`;
@@ -1738,7 +1745,7 @@ async function supOvrAdd(){
 async function supOvrDelete(id,prefix){
   if(!confirm('Remove override rule "'+prefix+'"? Matching products will fall back to their Odoo category scope.'))return;
   try{
-    const r=await fetch('/api/fabric/support-overrides/'+encodeURIComponent(id),{method:'DELETE',credentials:'include'});
+    const r=await fetch('/api/fabric/support-overrides/'+encodeURIComponent(id),{method:'DELETE',credentials:'include',headers:vivoAuthHeaders()});
     if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||('http '+r.status));}
     loadSupportOverrides();loadSupport();
   }catch(e){alert('Remove failed: '+e.message);}
@@ -3056,7 +3063,7 @@ function renderOverviewCached(){
 // auth is honoured and we can surface an error instead of a blank tab.
 async function downloadMpgXlsx(){
   try{
-    const r=await fetch('/api/fabric/metres-per-garment.xlsx?days=30',{credentials:'include'});
+    const r=await fetch('/api/fabric/metres-per-garment.xlsx?days=30',{credentials:'include',headers:vivoAuthHeaders()});
     if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
     if(!r.ok)throw new Error('http '+r.status);
     const blob=await r.blob();
@@ -3072,7 +3079,7 @@ async function downloadMpgXlsx(){
 // curated set the KPI card uses, so a fresh download always reconciles to it.
 async function downloadBasicCoverXlsx(){
   try{
-    const r=await fetch('/api/fabric/basic-fabrics-cover.xlsx',{credentials:'include'});
+    const r=await fetch('/api/fabric/basic-fabrics-cover.xlsx',{credentials:'include',headers:vivoAuthHeaders()});
     if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
     if(!r.ok)throw new Error('http '+r.status);
     const blob=await r.blob();
@@ -3089,7 +3096,7 @@ async function downloadBasicCoverXlsx(){
 // instead of a blank tab, matching the other download helpers.
 async function downloadMonthsCoverXlsx(){
   try{
-    const r=await fetch('/api/fabric/months-of-cover.xlsx',{credentials:'include'});
+    const r=await fetch('/api/fabric/months-of-cover.xlsx',{credentials:'include',headers:vivoAuthHeaders()});
     if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
     if(!r.ok)throw new Error('http '+r.status);
     const blob=await r.blob();
@@ -3105,7 +3112,7 @@ async function downloadMonthsCoverXlsx(){
 // more-reactive cover figure. Same credentialed-blob pattern as the 6-month one.
 async function downloadMonthsCoverPrevMonthXlsx(){
   try{
-    const r=await fetch('/api/fabric/months-of-cover-prev-month.xlsx',{credentials:'include'});
+    const r=await fetch('/api/fabric/months-of-cover-prev-month.xlsx',{credentials:'include',headers:vivoAuthHeaders()});
     if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
     if(!r.ok)throw new Error('http '+r.status);
     const blob=await r.blob();
@@ -3126,7 +3133,7 @@ async function downloadPrintSplitXlsx(){
     // #location-filter). The overview's attribute-split call passes no scope, so
     // the donut is always main-scope — match that here so the workbook reconciles.
     const qs='?location='+encodeURIComponent(loc())+'&scope=main';
-    const r=await fetch('/api/fabric/solid-vs-print.xlsx'+qs,{credentials:'include'});
+    const r=await fetch('/api/fabric/solid-vs-print.xlsx'+qs,{credentials:'include',headers:vivoAuthHeaders()});
     if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
     if(!r.ok)throw new Error('http '+r.status);
     const blob=await r.blob();
@@ -3486,7 +3493,7 @@ let fabImgIndex=null,fabImgIndexLoading=null;
 function loadFabImgIndex(){
   if(fabImgIndex)return Promise.resolve(fabImgIndex);
   if(!fabImgIndexLoading){
-    fabImgIndexLoading=fetch('/api/fabric/images-index',{credentials:'include'})
+    fabImgIndexLoading=fetch('/api/fabric/images-index',{credentials:'include',headers:vivoAuthHeaders()})
       .then(r=>r.ok?r.json():{barcodes:{}})
       .then(d=>{fabImgIndex=(d&&d.barcodes)||{};return fabImgIndex;})
       .catch(()=>{fabImgIndex={};return fabImgIndex;})
@@ -3637,7 +3644,7 @@ function loadFabricImages(barcode){
   fabImgState={list:[],idx:0,barcode:bc};
   if(!bc||bc.toLowerCase()==='false'){renderFabImgPanel();return;}
   panel.innerHTML='<div class="fab-img-stage"><div class="fab-img-empty"><span class="ic">🖼️</span><span>Loading photos…</span></div></div>';
-  fetch('/api/fabric/images/'+encodeURIComponent(bc),{credentials:'include'})
+  fetch('/api/fabric/images/'+encodeURIComponent(bc),{credentials:'include',headers:vivoAuthHeaders()})
     .then(r=>r.ok?r.json():{images:[]})
     .then(d=>{ if(fabImgState.barcode!==bc)return; fabImgState.list=(d&&d.images)||[]; fabImgState.idx=0; renderFabImgPanel(); })
     .catch(()=>{ if(fabImgState.barcode!==bc)return; fabImgState.list=[]; renderFabImgPanel(); });
@@ -3999,7 +4006,7 @@ async function saveReceivingSheet(alsoPrint){
     // One sheet per (PO, fabric): the server appends these rolls to the PO's
     // sheet for this product (creating it on the first delivery) and assigns
     // the roll numbers progressively — no client-side numbering.
-    const r=await fetch('/api/fabric/receiving/po-sheet/'+encodeURIComponent(Number(recvPO.po_id))+'/rolls',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({product_id:Number(recvSel.id),rolls,note})});
+    const r=await fetch('/api/fabric/receiving/po-sheet/'+encodeURIComponent(Number(recvPO.po_id))+'/rolls',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({product_id:Number(recvSel.id),rolls,note})});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     const res=await r.json();
     recvClearSelection();
@@ -4036,7 +4043,7 @@ async function reprintReceivingSheet(id){
 async function deleteReceivingSheet(id){
   if(!confirm('Delete this receiving sheet? This cannot be undone.'))return;
   try{
-    const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(id),{method:'DELETE',credentials:'include'});
+    const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(id),{method:'DELETE',credentials:'include',headers:vivoAuthHeaders()});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     loadRecvPoBatches();
   }catch(e){alert('Could not delete: '+e.message);}
@@ -4138,7 +4145,7 @@ async function saveReceivingQuality(){
     .map(r=>({roll_id:r.roll_id,status:r.quality_status||'',notes:r.quality_notes||''}));
   if(!rolls.length){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Nothing to save — save roll changes first for newly added rolls.</div>';return;}
   try{
-    const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(recvEditState.id)+'/quality',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({rolls})});
+    const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(recvEditState.id)+'/quality',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({rolls})});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     closeReceivingEdit();loadRecvPoBatches();
   }catch(e){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Could not save quality: '+esc(e.message)+'</div>';}
@@ -4165,7 +4172,7 @@ async function saveReceivingEdit(){
   // treats the mere presence of the key as a relink/unlink request.
   if(poSel&&poSel.value!=='__keep')payload.po_id=poSel.value===''?null:Number(poSel.value);
   try{
-    const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(recvEditState.id),{method:'PUT',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(recvEditState.id),{method:'PUT',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(payload)});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     closeReceivingEdit();loadRecvPoBatches();
   }catch(e){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Could not save: '+esc(e.message)+(String(e.message).toLowerCase().indexOf('admin')>=0?' (only an admin can edit rolls/quantities)':'')+'</div>';}
@@ -4519,7 +4526,7 @@ async function recvRollEditFromBtn(btn){
   const kg=parseFloat(v);
   if(isNaN(kg)||kg<=0){alert('Enter a weight greater than zero.');return;}
   try{
-    const r=await fetch('/api/fabric/receiving/roll/'+encodeURIComponent(Number(btn.dataset.rollEdit)),{method:'PUT',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({qty_kg:kg})});
+    const r=await fetch('/api/fabric/receiving/roll/'+encodeURIComponent(Number(btn.dataset.rollEdit)),{method:'PUT',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({qty_kg:kg})});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     loadRecvPoBatches();
   }catch(e){alert('Could not update the roll: '+e.message);}
@@ -4527,7 +4534,7 @@ async function recvRollEditFromBtn(btn){
 async function recvRollDeleteFromBtn(btn){
   if(!confirm('Delete roll '+btn.dataset.rollNo+'? This cannot be undone.'))return;
   try{
-    const r=await fetch('/api/fabric/receiving/roll/'+encodeURIComponent(Number(btn.dataset.rollDel)),{method:'DELETE',credentials:'include'});
+    const r=await fetch('/api/fabric/receiving/roll/'+encodeURIComponent(Number(btn.dataset.rollDel)),{method:'DELETE',credentials:'include',headers:vivoAuthHeaders()});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     loadRecvPoBatches();
   }catch(e){alert('Could not delete the roll: '+e.message);}
@@ -4809,7 +4816,7 @@ async function saveLandedCost(){
   const btn=document.getElementById('lc-save-btn');
   btn.disabled=true;btn.textContent='Creating…';
   try{
-    const r=await fetch('/api/fabric/receiving/landed-cost',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+    const r=await fetch('/api/fabric/receiving/landed-cost',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),
       body:JSON.stringify({po_id:Number(lcPO.po_id),picking_ids:picks,date:date,
         journal_id:Number(document.getElementById('lc-journal').value),
         description:document.getElementById('lc-desc').value.trim(),
@@ -5000,7 +5007,7 @@ async function saveRecvPoPricing(refresh){
   if(btn){btn.disabled=true;btn.textContent='Saving…';}
   try{
     const r=await fetch('/api/fabric/receiving/po-batch/'+encodeURIComponent(recvPoBatch.po_id)+'/pricing',
-      {method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      {method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
     let res={};try{res=await r.json();}catch(_){}
     if(!r.ok)throw new Error(res.detail||('http '+r.status));
     if(refresh){
@@ -5053,7 +5060,7 @@ async function uploadRecvPoBatch(){
     if(!ok){btn.disabled=false;btn.textContent=orig;return;}
   }
   try{
-    const r=await fetch('/api/fabric/receiving/po-batch/'+encodeURIComponent(recvPoBatch.po_id)+'/upload',{method:'POST',credentials:'include'});
+    const r=await fetch('/api/fabric/receiving/po-batch/'+encodeURIComponent(recvPoBatch.po_id)+'/upload',{method:'POST',credentials:'include',headers:vivoAuthHeaders()});
     let res={};try{res=await r.json();}catch(_){}
     if(!r.ok)throw new Error(res.detail||('http '+r.status));
     renderRecvPoUploadResult(res);
@@ -5955,7 +5962,7 @@ async function createReservation(){
   if(!(qty>0)){errEl.innerHTML='<div class="banner banner-err">Enter a quantity greater than zero.</div>';return;}
   if(!style){errEl.innerHTML='<div class="banner banner-err">Enter the style name this fabric is reserved for.</div>';return;}
   try{
-    const r=await fetch('/api/fabric/reservations',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({product_id:Number(pid),qty,uom,style_name:style,note})});
+    const r=await fetch('/api/fabric/reservations',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({product_id:Number(pid),qty,uom,style_name:style,note})});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     // reset form
     document.getElementById('resv-product-id').value='';
@@ -6015,7 +6022,7 @@ function renderReservations(items){
 }
 async function markReservationUsed(id){
   try{
-    const r=await fetch('/api/fabric/reservations/'+encodeURIComponent(id)+'/use',{method:'POST',credentials:'include'});
+    const r=await fetch('/api/fabric/reservations/'+encodeURIComponent(id)+'/use',{method:'POST',credentials:'include',headers:vivoAuthHeaders()});
     if(!r.ok)throw new Error('http '+r.status);
     loadedOnce.register=false;loadReservations();
   }catch(e){alert('Could not mark used.');}
@@ -6023,7 +6030,7 @@ async function markReservationUsed(id){
 async function deleteReservation(id){
   if(!confirm('Delete this reservation?'))return;
   try{
-    const r=await fetch('/api/fabric/reservations/'+encodeURIComponent(id),{method:'DELETE',credentials:'include'});
+    const r=await fetch('/api/fabric/reservations/'+encodeURIComponent(id),{method:'DELETE',credentials:'include',headers:vivoAuthHeaders()});
     if(!r.ok)throw new Error('http '+r.status);
     loadedOnce.register=false;loadReservations();
   }catch(e){alert('Could not delete.');}
@@ -6115,7 +6122,7 @@ async function saveRoll(btn){
   }
   const prev=btn.textContent; btn.disabled=true; btn.textContent='Saving…';
   try{
-    const r=await fetch('/api/fabric/rolls',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({product_id:Number(pid),location:loc,rolls})});
+    const r=await fetch('/api/fabric/rolls',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({product_id:Number(pid),location:loc,rolls})});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     const data=await r.json();
     if(input)input.value=data.rolls;
