@@ -10140,10 +10140,28 @@ def analytics_store_flow(
             daily_map[loc] = {}
         daily_map[loc][int(r["dow"])] = int(r["units"] or 0)
 
+    # Units sold in weeks 5–8 ago (days 29–56) for WOC trend
+    d56_from = str(date.today() - timedelta(days=56))
+    d56_to   = str(date.today() - timedelta(days=29))
+    where_p4w = build_filters(d56_from, d56_to, country)
+    sales_p4w = run_query("""
+        SELECT s.pos_location_name AS pos_location,
+               """ + _UNITS + """ AS units_prev_4w
+        FROM all_sales s
+        WHERE """ + where_p4w + """
+        GROUP BY s.pos_location_name
+    """, date_to=d56_to)
+    up4w = {r["pos_location"]: int(r["units_prev_4w"] or 0) for r in sales_p4w}
+
     for name, r in by.items():
         r["units_4w"] = u4w.get(name, 0)
         weekly = r["units_4w"] / 4.0
         r["woc"] = round(r["current_stock"] / weekly, 1) if weekly > 0 else None
+        # WOC 4 weeks ago: approximate SOH 4w ago = current_stock + units_4w (what sold since)
+        r["units_prev_4w"] = up4w.get(name, 0)
+        prev_weekly = r["units_prev_4w"] / 4.0
+        soh_4w_ago = r["current_stock"] + r["units_4w"]
+        r["woc_4w_ago"] = round(soh_4w_ago / prev_weekly, 1) if prev_weekly > 0 else None
         r["prev_week_sold"] = pw_map.get(name, 0)
         r["daily_transfers"] = daily_map.get(name, {})
 

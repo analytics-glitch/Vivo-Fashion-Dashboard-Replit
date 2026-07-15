@@ -59,6 +59,16 @@ function SortTh({ sk, cur, dir, onSort, className = "", title, children }) {
   );
 }
 
+function WocDelta({ delta }) {
+  if (delta == null) return <span className="text-slate-300">—</span>;
+  const abs = Math.abs(delta).toFixed(1);
+  if (delta > 0.2)
+    return <span className="inline-flex items-center gap-0.5 text-[12px] font-medium text-amber-600" title="Cover increasing — slower sales or more stock">↑ {abs}w</span>;
+  if (delta < -0.2)
+    return <span className="inline-flex items-center gap-0.5 text-[12px] font-medium text-emerald-600" title="Cover decreasing — faster sales">↓ {abs}w</span>;
+  return <span className="text-[12px] text-slate-400">→ stable</span>;
+}
+
 function PacingBadge({ transferred, prevWeekSold }) {
   const { status, pct } = transferPacing(transferred, prevWeekSold);
   if (status === "none") return <span className="text-slate-300">—</span>;
@@ -134,9 +144,34 @@ const StoreFlow = () => {
     });
   }, [rows, search, sortKey, sortDir]);
 
-  // WOC rows sorted by SOH desc
-  const wocRows = useMemo(() => [...filtered].sort((a, b) => b.current_stock - a.current_stock), [filtered]);
+  const [wocSortKey, setWocSortKey] = useState("current_stock");
+  const [wocSortDir, setWocSortDir] = useState("desc");
+  const handleWocSort = (key) => {
+    setWocSortKey(key);
+    setWocSortDir((d) => (wocSortKey === key ? (d === "asc" ? "desc" : "asc") : "desc"));
+  };
+
   const WOC_TARGET = 8, WOC_LO = 7, WOC_HI = 9;
+
+  // WOC rows — sortable
+  const wocRows = useMemo(() => {
+    return [...filtered].sort((a, b) => {
+      let av, bv;
+      if (wocSortKey === "pos_location")   { av = a.pos_location || ""; bv = b.pos_location || ""; }
+      else if (wocSortKey === "current_stock") { av = a.current_stock || 0; bv = b.current_stock || 0; }
+      else if (wocSortKey === "units_4w")  { av = a.units_4w || 0; bv = b.units_4w || 0; }
+      else if (wocSortKey === "weekly_rate") { av = a.units_4w ? a.units_4w / 4 : 0; bv = b.units_4w ? b.units_4w / 4 : 0; }
+      else if (wocSortKey === "woc")       { av = a.woc ?? -1; bv = b.woc ?? -1; }
+      else if (wocSortKey === "woc_4w_ago") { av = a.woc_4w_ago ?? -1; bv = b.woc_4w_ago ?? -1; }
+      else if (wocSortKey === "woc_delta") {
+        av = (a.woc != null && a.woc_4w_ago != null) ? a.woc - a.woc_4w_ago : -999;
+        bv = (b.woc != null && b.woc_4w_ago != null) ? b.woc - b.woc_4w_ago : -999;
+      }
+      else { av = 0; bv = 0; }
+      if (typeof av === "string") return wocSortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+      return wocSortDir === "asc" ? av - bv : bv - av;
+    });
+  }, [filtered, wocSortKey, wocSortDir]);
   const wocBand = (w) => w == null ? "none" : w < WOC_LO ? "under" : w > WOC_HI ? "over" : "ok";
   const wocColor = (w) => {
     const b = wocBand(w);
@@ -208,14 +243,19 @@ const StoreFlow = () => {
   };
 
   const _buildWocRows = () =>
-    wocRows.map((r) => ({
-      "POS Location": r.pos_location,
-      "SOH": r.current_stock,
-      "Units Sold (4W)": r.units_4w || 0,
-      "Weekly Rate": r.units_4w ? Math.round(r.units_4w / 4) : null,
-      "WOC (weeks)": r.woc != null ? +r.woc.toFixed(1) : null,
-      "Action": r.woc == null ? "—" : r.woc < WOC_LO ? "Replenish" : r.woc > WOC_HI ? "Reduce stock" : "On target",
-    }));
+    wocRows.map((r) => {
+      const delta = r.woc != null && r.woc_4w_ago != null ? +(r.woc - r.woc_4w_ago).toFixed(1) : null;
+      return {
+        "POS Location": r.pos_location,
+        "SOH": r.current_stock,
+        "Units Sold (4W)": r.units_4w || 0,
+        "Weekly Rate": r.units_4w ? Math.round(r.units_4w / 4) : null,
+        "WOC Now (weeks)": r.woc != null ? +r.woc.toFixed(1) : null,
+        "WOC 4W Ago (weeks)": r.woc_4w_ago != null ? +r.woc_4w_ago.toFixed(1) : null,
+        "Trend (Δ weeks)": delta,
+        "Action": r.woc == null ? "—" : r.woc < WOC_LO ? "Replenish" : r.woc > WOC_HI ? "Reduce stock" : "On target",
+      };
+    });
 
   const exportWocCsv = () => {
     const rows = _buildWocRows();
@@ -557,27 +597,52 @@ const StoreFlow = () => {
                   <table className="min-w-full text-sm">
                     <thead>
                       <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-200">
-                        <th className="py-2 pr-4"><span className="inline-flex items-center gap-1"><Storefront size={13} /> POS Location</span></th>
-                        <th className="py-2 pr-4">Country</th>
-                        <th className="py-2 pr-4 text-right">SOH</th>
-                        <th className="py-2 pr-4 text-right">Units Sold (4W)</th>
-                        <th className="py-2 pr-4 text-right">Weekly Rate</th>
-                        <th className="py-2 pr-4 text-right" title={`Target ${WOC_TARGET}w ±1. Red <${WOC_LO}w, Green ${WOC_LO}–${WOC_HI}w, Amber >${WOC_HI}w.`}>WOC ⓘ</th>
+                        <SortTh sk="pos_location" cur={wocSortKey} dir={wocSortDir} onSort={handleWocSort}
+                          className="py-2 pr-4">
+                          <span className="inline-flex items-center gap-1"><Storefront size={13} /> POS Location</span>
+                        </SortTh>
+                        <SortTh sk="current_stock" cur={wocSortKey} dir={wocSortDir} onSort={handleWocSort}
+                          className="py-2 pr-4 text-right">SOH</SortTh>
+                        <SortTh sk="units_4w" cur={wocSortKey} dir={wocSortDir} onSort={handleWocSort}
+                          className="py-2 pr-4 text-right">Units Sold (4W)</SortTh>
+                        <SortTh sk="weekly_rate" cur={wocSortKey} dir={wocSortDir} onSort={handleWocSort}
+                          className="py-2 pr-4 text-right">Weekly Rate</SortTh>
+                        <SortTh sk="woc" cur={wocSortKey} dir={wocSortDir} onSort={handleWocSort}
+                          className="py-2 pr-4 text-right"
+                          title={`Current WOC. Target ${WOC_TARGET}w ±1. Red <${WOC_LO}w, Green ${WOC_LO}–${WOC_HI}w, Amber >${WOC_HI}w.`}>
+                          WOC Now ⓘ
+                        </SortTh>
+                        <SortTh sk="woc_4w_ago" cur={wocSortKey} dir={wocSortDir} onSort={handleWocSort}
+                          className="py-2 pr-4 text-right"
+                          title="Estimated WOC 4 weeks ago, based on SOH + units sold since then, at the prior 4-week sell rate.">
+                          WOC 4W Ago ⓘ
+                        </SortTh>
+                        <SortTh sk="woc_delta" cur={wocSortKey} dir={wocSortDir} onSort={handleWocSort}
+                          className="py-2 pr-4 text-right"
+                          title="Change in weeks of cover vs 4 weeks ago. Positive = cover increased (slower sales or more stock). Negative = cover decreased (faster sales or less stock).">
+                          Trend ⓘ
+                        </SortTh>
                         <th className="py-2 pr-4 text-right">Action</th>
                       </tr>
                     </thead>
                     <tbody>
                       {wocRows.map((r) => {
                         const cta = wocCta(r.woc);
+                        const delta = r.woc != null && r.woc_4w_ago != null ? +(r.woc - r.woc_4w_ago).toFixed(1) : null;
                         return (
                           <tr key={r.pos_location} className="border-b border-slate-100 hover:bg-slate-50" data-testid={`row-woc-${r.pos_location}`}>
                             <td className="py-1.5 pr-4 font-medium text-slate-700 whitespace-nowrap">{r.pos_location}</td>
-                            <td className="py-1.5 pr-4 text-slate-500">{r.country || "—"}</td>
-                            <td className="py-1.5 pr-4 text-right">{fmtNum(r.current_stock)}</td>
-                            <td className="py-1.5 pr-4 text-right">{fmtNum(r.units_4w || 0)}</td>
-                            <td className="py-1.5 pr-4 text-right">{r.units_4w ? fmtNum(Math.round(r.units_4w / 4)) : "—"}</td>
-                            <td className={"py-1.5 pr-4 text-right " + wocColor(r.woc)}>
+                            <td className="py-1.5 pr-4 text-right tabular-nums">{fmtNum(r.current_stock)}</td>
+                            <td className="py-1.5 pr-4 text-right tabular-nums">{fmtNum(r.units_4w || 0)}</td>
+                            <td className="py-1.5 pr-4 text-right tabular-nums">{r.units_4w ? fmtNum(Math.round(r.units_4w / 4)) : "—"}</td>
+                            <td className={"py-1.5 pr-4 text-right tabular-nums font-semibold " + wocColor(r.woc)}>
                               {r.woc == null ? "—" : r.woc.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                            </td>
+                            <td className={"py-1.5 pr-4 text-right tabular-nums " + wocColor(r.woc_4w_ago)}>
+                              {r.woc_4w_ago == null ? "—" : r.woc_4w_ago.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                            </td>
+                            <td className="py-1.5 pr-4 text-right tabular-nums">
+                              <WocDelta delta={delta} />
                             </td>
                             <td className="py-1.5 pr-4 text-right">
                               {cta ? <span className={cta.cls}>{cta.label}</span> : <span className="text-slate-300">—</span>}
@@ -589,13 +654,14 @@ const StoreFlow = () => {
                     <tfoot>
                       <tr className="border-t border-slate-300 font-semibold text-slate-800">
                         <td className="py-2 pr-4">Total</td>
-                        <td className="py-2 pr-4" />
-                        <td className="py-2 pr-4 text-right">{fmtNum(wocRows.reduce((a, r) => a + r.current_stock, 0))}</td>
-                        <td className="py-2 pr-4 text-right">{fmtNum(wocRows.reduce((a, r) => a + (r.units_4w || 0), 0))}</td>
-                        <td className="py-2 pr-4 text-right">{fmtNum(Math.round(wocRows.reduce((a, r) => a + (r.units_4w || 0), 0) / 4))}</td>
-                        <td className={"py-2 pr-4 text-right " + wocColor(totalWoc)}>
+                        <td className="py-2 pr-4 text-right tabular-nums">{fmtNum(wocRows.reduce((a, r) => a + r.current_stock, 0))}</td>
+                        <td className="py-2 pr-4 text-right tabular-nums">{fmtNum(wocRows.reduce((a, r) => a + (r.units_4w || 0), 0))}</td>
+                        <td className="py-2 pr-4 text-right tabular-nums">{fmtNum(Math.round(wocRows.reduce((a, r) => a + (r.units_4w || 0), 0) / 4))}</td>
+                        <td className={"py-2 pr-4 text-right tabular-nums " + wocColor(totalWoc)}>
                           {totalWoc == null ? "—" : totalWoc.toLocaleString(undefined, { maximumFractionDigits: 1 })}
                         </td>
+                        <td className="py-2 pr-4" />
+                        <td className="py-2 pr-4" />
                         <td className="py-2 pr-4 text-right">
                           {(() => { const cta = wocCta(totalWoc); return cta ? <span className={cta.cls}>{cta.label}</span> : null; })()}
                         </td>
