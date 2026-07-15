@@ -4275,6 +4275,10 @@ body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:12px;}
 .quality .qsum .fail{color:#b00020;}
 .quality .qbody{min-height:70px;padding:8px 10px;}
 .quality .qlines{min-height:56px;background:repeating-linear-gradient(#fff,#fff 22px,#bbb 23px);}
+.quality .qnotes{margin:0 0 6px;font-size:12px;line-height:1.7;}
+.quality .qnotes .qn-roll{font-weight:800;}
+.qwavy{color:#b00020;font-weight:700;text-decoration:underline wavy #b00020;text-decoration-thickness:1.5px;text-underline-offset:3px;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+.roll-fail{color:#b00020;font-weight:800;text-decoration:underline wavy #b00020;text-decoration-thickness:1.5px;text-underline-offset:2px;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
 `;
 // Build the printable body (one .sheet-page) for a single receiving sheet.
 // `d` is the /api/fabric/receiving/{id} payload (sheet, rolls, fabric,
@@ -4318,12 +4322,16 @@ async function buildReceivingSheetBody(d){
   const groups=[];
   for(let i=0;i<rolls.length;i+=perCol)groups.push(rolls.slice(i,i+perCol));
   const rollsCols=groups.map(g=>`<table class="rolls"><thead><tr><th>Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th></tr></thead><tbody>${
-    g.map(r=>`<tr><td>${esc(String(r.roll_no))}</td><td class="r">${esc(numv(r.qty_kg,2))}</td><td class="r">${r.qty_mtrs!=null?esc(numv(r.qty_mtrs,1)):'<span class="miss">Missing Width/GSM</span>'}</td></tr>`).join('')
+    g.map(r=>`<tr><td>${r.quality_status==='Fail'?`<span class="roll-fail">${esc(String(r.roll_no))}</span>`:esc(String(r.roll_no))}</td><td class="r">${esc(numv(r.qty_kg,2))}</td><td class="r">${r.qty_mtrs!=null?esc(numv(r.qty_mtrs,1)):'<span class="miss">Missing Width/GSM</span>'}</td></tr>`).join('')
   }</tbody></table>`).join('');
   // Photo <img> uses a shared class (multiple sheets in one batch document).
   const photoInner=photo?`<img class="fab-sheet-photo" src="${esc(photo)}" alt="Fabric photo">`:'Photo to be added';
-  // Quality box: a SUMMARY per barcode/product (NOT per-roll) plus a larger
-  // bordered space for the written inspection / testing results.
+  // Quality box: a SUMMARY per barcode/product (NOT per-roll) plus the
+  // recorded per-roll quality notes (red wavy emphasis) and ruled lines for
+  // any further handwritten inspection / testing results.
+  const noted=rolls.filter(r=>clean(r.quality_notes));
+  const qNotes=noted.length?`<div class="qnotes">${noted.map(r=>`<div><span class="qn-roll">Roll ${esc(String(r.roll_no))}</span> — ${esc(clean(r.quality_status)||'Pending')}: <span class="qwavy">${esc(clean(r.quality_notes))}</span></div>`).join('')}</div>`:'';
+  const qLinesStyle=noted.length?' style="min-height:23px;"':'';
   const qualityBox=`<div class="quality">
    <div class="qh">Quality — inspection / testing results</div>
    <div class="qsum">
@@ -4333,7 +4341,7 @@ async function buildReceivingSheetBody(d){
      <span><b>Pending:</b> ${esc(String(qs.pending||0))}</span>
      <span><b>Inspected:</b> ${esc(String(qs.inspected||0))} / ${esc(String(qs.rolls||0))}</span>
    </div>
-   <div class="qbody"><div class="qlines"></div></div>
+   <div class="qbody">${qNotes}<div class="qlines"${qLinesStyle}></div></div>
   </div>`;
   return `<div class="sheet-page"><div class="sheet">
  <div class="hd"><h1>FABRIC RECEIVING INFORMATION SHEET</h1><img class="vivo-logo" src="${VIVO_LOGO_DATA_URI}" alt="Vivo"></div>
@@ -4723,9 +4731,9 @@ function buildPoSheetBody(det,meta){
     const rolls=[];
     (g.sheets||[]).forEach(s=>(s.rolls||[]).forEach(r=>rolls.push(r)));
     rolls.sort((a,b)=>Number(a.roll_no)-Number(b.roll_no));
-    const rows=rolls.map(r=>'<tr><td>'+esc(String(r.roll_no))+'</td><td class="r">'+fmt2(r.qty_kg)+'</td><td class="r">'
+    const rows=rolls.map(r=>'<tr><td>'+(r.quality_status==='Fail'?'<span class="roll-fail">'+esc(String(r.roll_no))+'</span>':esc(String(r.roll_no)))+'</td><td class="r">'+fmt2(r.qty_kg)+'</td><td class="r">'
       +(r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="miss">Missing Width/GSM</span>')+'</td><td>'
-      +esc(r.quality_status||'Pending')+(r.quality_notes?' — '+esc(r.quality_notes):'')+'</td></tr>').join('');
+      +esc(r.quality_status||'Pending')+(r.quality_notes?' — <span class="qwavy">'+esc(r.quality_notes)+'</span>':'')+'</td></tr>').join('');
     return '<div style="margin-top:12px;">'
       +'<div style="font-weight:700;font-size:12.5px;border-bottom:1.5px solid #000;padding-bottom:2px;">'
       +esc(g.fabric_name||'—')+(g.barcode?' · '+esc(g.barcode):'')
