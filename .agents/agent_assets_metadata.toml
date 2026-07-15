@@ -72,3 +72,9 @@ id = "mpGG6ag6_lW_dnJGsYxar"
 uri = "file://retired_styles_not_found_in_odoo.csv"
 type = "table"
 title = "47 Styles Not Found in Odoo"
+
+[[outputs]]
+id = "fIwVLqeA7NMTBe_px-Mno"
+uri = "file://exports/Tier_and_Retirement_Rules.docx"
+type = "word_document"
+title = "Tier & Retirement Rules — Current Application"
