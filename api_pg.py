@@ -10103,17 +10103,57 @@ def analytics_store_flow(
         GROUP BY s.pos_location_name
     """, date_to=d28_to)
     u4w = {r["pos_location"]: int(r["units_4w"] or 0) for r in sales_4w}
+
+    # Previous week (last Mon–Sun) sales per store — used as the transfer
+    # pacing benchmark: target ±10% of prev-week sold.
+    today_d = date.today()
+    _pw_mon = today_d - timedelta(days=today_d.weekday() + 7)
+    _pw_sun = _pw_mon + timedelta(days=6)
+    where_pw = build_filters(str(_pw_mon), str(_pw_sun), country)
+    sales_pw = run_query("""
+        SELECT s.pos_location_name AS pos_location,
+               """ + _UNITS + """ AS prev_week_sold
+        FROM all_sales s
+        WHERE """ + where_pw + """
+        GROUP BY s.pos_location_name
+    """, date_to=str(_pw_sun))
+    pw_map = {r["pos_location"]: int(r["prev_week_sold"] or 0) for r in sales_pw}
+
+    # Daily transfer breakdown by ISODOW (1=Mon … 7=Sun, EAT) for the
+    # selected period so the UI can show a Mon–Sun column view.
+    daily_xfr = run_query("""
+        SELECT t.to_store_name AS pos_location,
+               EXTRACT(ISODOW FROM (t.date_done + INTERVAL '3 hours')::date)::int AS dow,
+               SUM(t.qty_done) AS units
+        FROM stock_transfers t
+        WHERE t.state = 'done'
+          AND (t.date_done + INTERVAL '3 hours')::date
+              BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+          AND t.to_store_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+        """ + ctry_t + """
+        GROUP BY t.to_store_name, dow
+    """, date_to=date_to)
+    daily_map = {}
+    for r in daily_xfr:
+        loc = r["pos_location"]
+        if loc not in daily_map:
+            daily_map[loc] = {}
+        daily_map[loc][int(r["dow"])] = int(r["units"] or 0)
+
     for name, r in by.items():
         r["units_4w"] = u4w.get(name, 0)
         weekly = r["units_4w"] / 4.0
         r["woc"] = round(r["current_stock"] / weekly, 1) if weekly > 0 else None
+        r["prev_week_sold"] = pw_map.get(name, 0)
+        r["daily_transfers"] = daily_map.get(name, {})
 
-    rows = sorted(by.values(), key=lambda r: (-r["units_sold"], -r["units_transferred"]))
+    rows = sorted(by.values(), key=lambda r: (-r["prev_week_sold"], -r["units_transferred"]))
     totals = {
         "units_sold": sum(r["units_sold"] for r in rows),
         "units_transferred": sum(r["units_transferred"] for r in rows),
         "units_incoming": sum(r["units_incoming"] for r in rows),
         "current_stock": sum(r["current_stock"] for r in rows),
+        "prev_week_sold": sum(r["prev_week_sold"] for r in rows),
         "stores": len(rows),
     }
     cov = run_query("""
@@ -10124,6 +10164,7 @@ def analytics_store_flow(
         "rows": rows,
         "totals": totals,
         "transfer_history_from": (cov[0]["first_done"] if cov else None),
+        "prev_week_label": f"{_pw_mon} → {_pw_sun}",
     }
 
 
