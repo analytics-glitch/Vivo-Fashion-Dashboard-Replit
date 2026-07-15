@@ -10079,6 +10079,24 @@ def analytics_store_flow(
     for r in inventory:
         _slot(r["pos_location"], r.get("country"))["current_stock"] = int(r["current_stock"] or 0)
 
+    # WOC support: last-4-weeks sales per store (independent of the page's
+    # selected period) so WOC = SOH / (units_4w / 4) stays a stable read.
+    d28_from = str(date.today() - timedelta(days=28))
+    d28_to = str(date.today())
+    where_4w = build_filters(d28_from, d28_to, country)
+    sales_4w = run_query("""
+        SELECT s.pos_location_name AS pos_location,
+               """ + _UNITS + """ AS units_4w
+        FROM all_sales s
+        WHERE """ + where_4w + """
+        GROUP BY s.pos_location_name
+    """, date_to=d28_to)
+    u4w = {r["pos_location"]: int(r["units_4w"] or 0) for r in sales_4w}
+    for name, r in by.items():
+        r["units_4w"] = u4w.get(name, 0)
+        weekly = r["units_4w"] / 4.0
+        r["woc"] = round(r["current_stock"] / weekly, 1) if weekly > 0 else None
+
     rows = sorted(by.values(), key=lambda r: (-r["units_sold"], -r["units_transferred"]))
     totals = {
         "units_sold": sum(r["units_sold"] for r in rows),

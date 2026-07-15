@@ -60,6 +60,20 @@ const StoreFlow = () => {
     return rows.filter((r) => (r.pos_location || "").toLowerCase().includes(q));
   }, [rows, search]);
 
+  // WOC table: SOH descending; WOC uses the last 4 weeks' sales regardless
+  // of the selected period (weekly rate = units_4w / 4).
+  const wocRows = useMemo(
+    () => [...filtered].sort((a, b) => b.current_stock - a.current_stock),
+    [filtered],
+  );
+  const wocColor = (w) =>
+    w == null ? "text-slate-400" : w < 4 ? "text-red-600" : w > 16 ? "text-amber-600" : "text-slate-800";
+  const totalWoc = useMemo(() => {
+    const soh = wocRows.reduce((a, r) => a + r.current_stock, 0);
+    const weekly = wocRows.reduce((a, r) => a + (r.units_4w || 0), 0) / 4;
+    return weekly > 0 ? Math.round((soh / weekly) * 10) / 10 : null;
+  }, [wocRows]);
+
   const setPreset = (days) => {
     setDateFrom(isoDaysAgo(days));
     setDateTo(isoDaysAgo(0));
@@ -242,6 +256,55 @@ const StoreFlow = () => {
                       <td className="py-2 pr-4 text-right">{fmtNum(filtered.reduce((a, r) => a + r.units_transferred, 0))}</td>
                       <td className="py-2 pr-4 text-right">{fmtNum(filtered.reduce((a, r) => a + r.units_incoming, 0))}</td>
                       <td className="py-2 pr-4 text-right">{fmtNum(filtered.reduce((a, r) => a + r.current_stock, 0))}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
+          </div>
+          {/* SOH & WOC table */}
+          <div className="card-white p-5">
+            <SectionTitle
+              title="Stock Cover (WOC)"
+              subtitle="Per store: stock on hand vs weeks of cover, using average weekly sales over the last 4 weeks"
+            />
+            {!filtered.length ? (
+              <Empty label="No stores match the selected filters." />
+            ) : (
+              <div className="mt-3 overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                      <th className="py-2 pr-4"><span className="inline-flex items-center gap-1"><Storefront size={13} /> POS Location</span></th>
+                      <th className="py-2 pr-4">Country</th>
+                      <th className="py-2 pr-4 text-right">SOH</th>
+                      <th className="py-2 pr-4 text-right">Units Sold (4W)</th>
+                      <th className="py-2 pr-4 text-right">Weekly Rate</th>
+                      <th className="py-2 pr-4 text-right">WOC</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {wocRows.map((r) => (
+                      <tr key={r.pos_location} className="border-b border-slate-100 hover:bg-slate-50" data-testid={`row-woc-${r.pos_location}`}>
+                        <td className="py-1.5 pr-4 font-medium text-slate-700 whitespace-nowrap">{r.pos_location}</td>
+                        <td className="py-1.5 pr-4 text-slate-500">{r.country || "—"}</td>
+                        <td className="py-1.5 pr-4 text-right">{fmtNum(r.current_stock)}</td>
+                        <td className="py-1.5 pr-4 text-right">{fmtNum(r.units_4w || 0)}</td>
+                        <td className="py-1.5 pr-4 text-right">{r.units_4w ? fmtNum(Math.round(r.units_4w / 4)) : "—"}</td>
+                        <td className={"py-1.5 pr-4 text-right font-medium " + wocColor(r.woc)}>
+                          {r.woc == null ? "—" : r.woc.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t border-slate-300 font-semibold text-slate-800">
+                      <td className="py-2 pr-4">Total</td>
+                      <td className="py-2 pr-4" />
+                      <td className="py-2 pr-4 text-right">{fmtNum(wocRows.reduce((a, r) => a + r.current_stock, 0))}</td>
+                      <td className="py-2 pr-4 text-right">{fmtNum(wocRows.reduce((a, r) => a + (r.units_4w || 0), 0))}</td>
+                      <td className="py-2 pr-4 text-right">{fmtNum(Math.round(wocRows.reduce((a, r) => a + (r.units_4w || 0), 0) / 4))}</td>
+                      <td className="py-2 pr-4 text-right">{totalWoc == null ? "—" : totalWoc.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
                     </tr>
                   </tfoot>
                 </table>
