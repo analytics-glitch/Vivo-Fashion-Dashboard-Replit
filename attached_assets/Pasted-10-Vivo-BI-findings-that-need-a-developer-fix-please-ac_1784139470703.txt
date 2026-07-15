@@ -1,0 +1,128 @@
+10 Vivo BI findings that need a developer fix (please action them in order, one issue at a time):
+
+--- Finding 1 of 10 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: net_le_total
+• Entity: store:Vivo Acacia
+• Period: 2026-07-14
+• Observed: 159,328.08   Expected: —–50,412.45
+• Diagnosis: The broken identity "net_sales <= total_sales" is violated because net_sales_kes (159,328.08 KES) exceeds the expected_high (146,941.80 KES), but this is entirely consistent with an exceptionally busy trading day at Vivo Acacia — not a data error. Every sample row individually satisfies the per-line invariant (net_sales_kes < total_sales_kes, i.e., VAT-exclusive < VAT-inclusive), and the sample includes at least two large multi-item bulk orders (order 12088238080366 with 9+ distinct SKUs and order 12088283857262 with 7+ distinct SKUs), which plausibly pushed the day's aggregate net sales above the historical upper bound.
+• Broken identity: net_sales <= total_sales
+
+Desired outcome: "the metric" for store:Vivo Acacia should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 2 of 10 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: xsurf_pa_vs_rm_total
+• Entity: cross_surface:products
+• Metric: style_count
+• Period: 2026-07-14
+• Observed: 1,211   Expected: 1,201.4–1,202.6
+• Diagnosis: product-analysis.summary.styles == range-mgmt rows+retired_rows: observed 1,211.00 vs expected 1,510.00 (19.801% gap) under filters date_from= date_to= country=ALL channel=ALL
+• Broken identity: product-analysis.summary.styles == range-mgmt rows+retired_rows
+
+Desired outcome: "style_count" for cross_surface:products should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 3 of 10 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: vat_reconciliation
+• Entity: store:Vivo Acacia
+• Period: 2026-07-14
+• Observed: 146,941.8   Expected: 88,128.77–91,725.86
+• Diagnosis: The broken identity `total_sales = net_sales × 1.16` is violated at the day level: the observed total_sales_kes (146,941.80) is well below the expected range (181,124–188,517) derived from net_sales, yet every individual sample row shows `total_sales_kes ≈ net_sales_kes × 1.16` correctly (e.g. 6,610.76 × 1.16 ≈ 7,668.48 vs. 7,800.70 — within rounding). This pattern strongly suggests that a subset of order rows for 2026-07-14 at Vivo Acacia were loaded with `total_sales_kes` set to zero or null (or were omitted entirely), causing the day-level aggregate to under-report total_sales while net_sales remains intact — a classic partial-load / ETL truncation fault on the VAT-inclusive column.
+• Broken identity: total_sales = net_sales * (1 + 0.16)
+
+Desired outcome: "the metric" for store:Vivo Acacia should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 4 of 10 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: vat_reconciliation
+• Entity: group:__GROUP__
+• Period: 2026-07-14
+• Observed: 1,593,227.55   Expected: 592,416.37–616,596.63
+• Diagnosis: The broken identity "total_sales = net_sales × 1.16" is violated because a subset of line items — most visibly the Online order (order_id 7289842073819, SKU S0824067PR34X) — carry a total_sales_kes of 8,950.00 while net_sales_kes is only 7,715.51, implying an effective VAT rate of ~16.0% on some lines and a different rate (or a pre-existing discount baked into the net figure) on others, causing the day-level ratio between total and net to fall outside the expected 1.16 band. The observed total_sales_kes of 1,593,227.55 is below the expected low of 1,598,383.75, consistent with the day having a higher-than-average mix of returns and/or VAT-exempt or discounted items that depress the gross total without a proportional drop in net, rather than any data corruption — all sample rows are internally coherent, distinct by (order_id, variant_sku), and returns are correctly represented as separate sale_kind='return' rows with matching returns_kes values.
+• Broken identity: total_sales = net_sales * (1 + 0.16)
+
+Desired outcome: "the metric" for group:__GROUP__ should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 5 of 10 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: xsurf_pa_vs_rm_total
+• Entity: cross_surface:products
+• Metric: style_count
+• Period: 2026-07-15
+• Observed: 1,212   Expected: 1,201.4–1,202.6
+• Diagnosis: product-analysis.summary.styles == range-mgmt rows+retired_rows: observed 1,212.00 vs expected 1,203.00 (0.743% gap) under filters date_from= date_to= country=ALL channel=ALL
+• Broken identity: product-analysis.summary.styles == range-mgmt rows+retired_rows
+
+Desired outcome: "style_count" for cross_surface:products should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 6 of 10 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Zoya Sarit
+• Metric: transactions
+• Period: 2026-07-12
+• Observed: 1   Expected: 1.58–13.84
+• Diagnosis: Only one distinct order (order_id 44314) is visible in the sample, which is consistent with the observed transaction count of 1 — but the sample may not represent the full day's data. The second line on the same order has a blank variant_sku, which is unusual and may indicate a miscategorised or partially recorded line item, but there is not enough information to confirm whether additional transactions were simply excluded by the dashboard filters or were never recorded.
+• Broken identity: outside p1-p99 (with margin); PoP -86% vs same weekday
+
+Desired outcome: "transactions" for store:Zoya Sarit should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 7 of 10 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: xsurf_cust_total_vs_details
+• Entity: cross_surface:customers
+• Metric: customer_count
+• Period: 2026-07-10
+• Observed: 8,377   Expected: 8,154.92–8,163.08
+• Diagnosis: customers.total_customers == customer-details.total_customer_count: observed 8,377.00 vs expected 8,392.00 (0.179% gap) under filters date_from=2026-06-11 date_to=2026-07-10 country=ALL channel=ALL
+• Broken identity: customers.total_customers == customer-details.total_customer_count
+
+Desired outcome: "customer_count" for cross_surface:customers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 8 of 10 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: xsurf_cust_total_vs_freq
+• Entity: cross_surface:customers
+• Metric: customer_count
+• Period: 2026-07-10
+• Observed: 8,377   Expected: 8,154.92–8,163.08
+• Diagnosis: customers.total_customers == Σ customer-frequency buckets: observed 8,377.00 vs expected 8,392.00 (0.179% gap) under filters date_from=2026-06-11 date_to=2026-07-10 country=ALL channel=ALL
+• Broken identity: customers.total_customers == Σ customer-frequency buckets
+
+Desired outcome: "customer_count" for cross_surface:customers should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 9 of 10 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: xsurf_kpis_vs_daily_trend
+• Entity: cross_surface:30d_online
+• Metric: total_orders
+• Period: 2026-07-10
+• Observed: 1,344   Expected: 1,307.35–1,308.65
+• Diagnosis: kpis.total_orders == Σ daily-trend.orders: observed 1,344.00 vs expected 1,347.00 (0.223% gap) under filters date_from=2026-06-11 date_to=2026-07-10 country=Online channel=ALL
+• Broken identity: kpis.total_orders == Σ daily-trend.orders
+
+Desired outcome: "total_orders" for cross_surface:30d_online should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
+
+--- Finding 10 of 10 ---
+Fix this Vivo BI data-validation finding so the check passes:
+
+• Check: learned_range
+• Entity: store:Vivo Meru
+• Metric: return_rate
+• Period: 2026-07-09
+• Observed: 0.34   Expected: 0–0.11
+• Diagnosis: The return_rate of ~33.8% is well above the expected ceiling of ~10.7%, but the three sample return rows alone cannot confirm whether this is a genuine spike or a data error — we can see the return items but not the full set of order (sale_kind='order') rows for the same day and store that form the denominator of the rate. Specifically, two distinct orders (43177 and 43188) are being returned, with order 43177 itself containing two distinct SKUs (V0523165BLAM and V0126017DBRS), which looks structurally clean, but we cannot rule out a suppressed or missing sales volume on the day that artificially inflates the rate.
+• Broken identity: z=14.3; outside p1-p99 (with margin)
+
+Desired outcome: "return_rate" for store:Vivo Meru should fall within the expected range under identical filters and reconcile across every page that reports it. Please align the underlying calculation/definition in code (do not just patch the data) so this check no longer fires, then confirm the figures match.
