@@ -1,0 +1,43 @@
+import xmlrpc.client, os, uuid
+URL=os.environ["ODOO_URL"]; DB=os.environ["ODOO_DB"]
+USER=os.environ["ODOO_USER"]; PW=os.environ["ODOO_PASSWORD"]
+common=xmlrpc.client.ServerProxy(f"{URL}/xmlrpc/2/common"); uid=common.authenticate(DB,USER,PW,{})
+models=xmlrpc.client.ServerProxy(f"{URL}/xmlrpc/2/object")
+
+# Fetch the exact order and its lines as the sync would
+order = models.execute_kw(DB,uid,PW,"pos.order","search_read",
+    [[["name","=","Junction/1453"]]],
+    {"fields":["id","name","date_order","lines","config_id"]})
+o = order[0]
+line_ids = o["lines"]
+print(f"Order has {len(line_ids)} line IDs: {line_ids}")
+
+lines = models.execute_kw(DB,uid,PW,"pos.order.line","search_read",
+    [[["id","in",line_ids]]],
+    {"fields":["order_id","product_id","qty","price_unit",
+               "price_subtotal_incl","discount"]})
+print(f"\nLines returned by sync fetch: {len(lines)}")
+for l in lines:
+    prod = l.get("product_id")
+    name = prod[1] if prod else "NO PRODUCT"
+    print(f"  id={l['id']:>7}  qty={l['qty']:>5}  price={l['price_unit']:>10.2f}  "
+          f"total={l['price_subtotal_incl']:>10.2f}  name={name[:50]}")
+PYEOF
+Order has 14 line IDs: [64852, 64853, 64854, 64855, 64856, 64857, 64858, 64859, 64860, 64861, 64862, 64863, 64864, 64865]
+
+Lines returned by sync fetch: 14
+  id=  64852  qty=  1.0  price=   2900.00  total=   2900.00  name=[V1221043PR51S] Vivo Basic Cap Sleeve Top in Satin
+  id=  64853  qty=  1.0  price=   5500.00  total=   5500.00  name=[V0126028PR1F] Vivo Knee Length Kaftan in Satin - 
+  id=  64854  qty=  1.0  price=   6900.00  total=   6900.00  name=[V0625050PR5S] Vivo Iyana Shirred Waist Jumpsuit i
+  id=  64855  qty=  1.0  price=   5500.00  total=   5500.00  name=[V0624004LBLUS] Vivo Nasinka A-Line Knee Length Dr
+  id=  64856  qty=  1.0  price=   4900.00  total=   4900.00  name=[V0725022WHIS] Vivo Essi Wide Leg Pants - White (S
+  id=  64857  qty=  1.0  price=   4900.00  total=   4900.00  name=[V0226040DGRM] Vivo Liora Tiered Maxi Skirt in Cre
+  id=  64858  qty=  1.0  price=   6200.00  total=   6200.00  name=[V0226038PR3S] Vivo Off Shoulder Maxi Dress in Cot
+  id=  64859  qty=  1.0  price=   3500.00  total=   3500.00  name=[V0524179PR1S] Vivo Basic Bishop Sleeve Top In Chi
+  id=  64860  qty=  1.0  price=   5500.00  total=   5500.00  name=[V0725018PR3F] Vivo Essi Scalloped Maxi Top in Sat
+  id=  64861  qty=  1.0  price=   4900.00  total=   4900.00  name=[V0126017PR32X] Vivo Wide Leg Pants in Textured Sa
+  id=  64862  qty=  1.0  price=   5500.00  total=   5500.00  name=[V0725016WHIF] Vivo Essi Front Slit Maxi Top In Sa
+  id=  64863  qty=  1.0  price=   4900.00  total=   4900.00  name=[V0126011PR5F] Vivo Ruched Maxi Top in Textured Sa
+  id=  64864  qty=  1.0  price=      1.00  total=      1.00  name=[VB001L] Vivo shopping bags (L)
+  id=  64865  qty=  1.0  price=  -9165.15  total=  -9165.15  name=15% on specific products
+~/workspace$ 
