@@ -1475,6 +1475,13 @@ def _start_cache_prewarmer():
                     date_to=None, style_status="all")),
                 ("excess-inventory", _excess_inventory_dataset),
                 ("store-country-map", _store_country_map),
+                ("top-customers", lambda: _top_customers_data(
+                    date_from=str(date.today().replace(day=1)),
+                    date_to=str(date.today()),
+                    country=None, channel=None, limit=20)),
+                ("ibt-suggestions", lambda: ibt_suggestions(
+                    country=None, demand_days=28, limit=300,
+                    low_pct=20, high_pct=150, use_clustering=True)),
             ]
             for name, fn in targets:
                 try:
@@ -4852,19 +4859,11 @@ def get_customers(
     """, date_to=date_to)
     return rows[0] if rows else {}
 
-@app.get("/api/top-customers")
-def get_top_customers(
-    request:   Request,
-    date_from: str = Query(default=str(date.today().replace(day=1))),
-    date_to:   str = Query(default=str(date.today())),
-    country:   str = Query(default=None),
-    channel:   str = Query(default=None),
-    limit:     int = Query(default=20),
-    reveal:    bool = Query(default=False),
-):
+def _top_customers_data(date_from: str, date_to: str, country=None, channel=None, limit: int = 20):
+    """Raw top-customers rows (no PII masking). Used by the endpoint and the cache prewarmer."""
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND " + _not_walkin_pseudo_sql())
-    rows = run_query("""
+    return run_query("""
         SELECT
             ROW_NUMBER() OVER (ORDER BY SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) DESC) AS rank,
             s.customer_id,
@@ -4883,6 +4882,19 @@ def get_top_customers(
         GROUP BY s.customer_id, c.first_name, c.last_name, c.phone, c.email, c.city, c.country
         ORDER BY total_sales DESC
         LIMIT """ + str(limit), date_to=date_to)
+
+
+@app.get("/api/top-customers")
+def get_top_customers(
+    request:   Request,
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=None),
+    channel:   str = Query(default=None),
+    limit:     int = Query(default=20),
+    reveal:    bool = Query(default=False),
+):
+    rows = _top_customers_data(date_from, date_to, country, channel, limit)
     return mask_pii_rows(rows, request)
 
 @app.get("/api/customer-search")
