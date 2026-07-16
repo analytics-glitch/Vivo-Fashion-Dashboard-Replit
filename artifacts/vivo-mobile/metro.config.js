@@ -21,6 +21,6 @@ config.resolver.nodeModulesPaths = [
 // process with an uncaught ENOENT when such a dir is deleted mid-crawl. Exclude
 // those churny/non-source dirs from the crawl+watch so a Python dependency install
 // can never take the mobile bundler down.
-config.resolver.blockList = /[\\/]\.(cache|git|local)[\\/].*/;
+config.resolver.blockList = /[\\/]\.(cache|git|local)[\\/].*|[\\/]loyalty-app[\\/]the-loyalty-app[\\/]build[\\/].*/;
 
 module.exports = config;
