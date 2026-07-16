@@ -677,7 +677,7 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance", "margin", "l10"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance", "margin", "l10", "rota"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"],
@@ -694,7 +694,7 @@ DEFAULT_ROLE_PAGES = {
     "fabric_warehouse": ["fabric", "inventory", "sops"],
     "customer_service": ["customers", "customer-details", "crm", "footfall", "sops"],
     "marketing": ["marketing", "social", "crm", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops"],
-    "hr": ["hr", "sops"],
+    "hr": ["hr", "sops", "rota"],
     # Employee self-service (Google auto-approved sign-ups): NO BI pages at all.
     # Their only surface is the Salary Advance form inside the HR app
     # (/hr/salary-advance), enforced API-side by the employee fence in
@@ -1295,6 +1295,11 @@ async def clerk_auth_gate(request: Request, call_next):
         )
     ):
         return JSONResponse({"detail": "HR dashboard access requires a staff role"}, status_code=403)
+
+    # Staff Rota (/api/rota/*) is a HR + leadership + admin surface.
+    # Enforced server-side so hidden web nav / direct API can't be bypassed.
+    if path.startswith("/api/rota") and user.get("role") not in ("admin", "leadership", "hr"):
+        return JSONResponse({"detail": "Rota access requires a leadership, HR or admin role"}, status_code=403)
 
     # Finance Reports Suite (/api/finance/*) is a leadership + admin surface.
     # Enforced server-side so hidden web nav / direct API can't be bypassed by a
@@ -31266,6 +31271,19 @@ crm_clienteling.register_clienteling_routes(app)
 # Sources data from this project's live vivo_attendance Postgres table.
 import hr_attendance
 hr_attendance.register_hr_routes(app)
+
+# Staff Rota endpoints (/api/rota/*). Same placement rationale as the HR module.
+# Gated in clerk_auth_gate to leadership + hr + admin.
+import rota_router
+rota_router.register_rota_routes(app)
+
+
+@_deferred_startup
+def _init_rota_tables():
+    try:
+        rota_router.ensure_rota_tables()
+    except Exception as e:
+        log.error("rota table init failed: %s", e)
 
 # Odoo Reconciliation Agent endpoints (/api/recon/*). Same placement rationale.
 # Gated in clerk_auth_gate to leadership + admin; write-back is approval-gated

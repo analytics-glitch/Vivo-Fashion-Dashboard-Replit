@@ -23,7 +23,7 @@ const STORE_MANAGER = ["store-flow", "locations", "footfall", "replenishments", 
 // "finance" (the Finance Reports Suite) is a leadership + admin surface, so it
 // lives in LEADERSHIP (ADMIN spreads LEADERSHIP). The server /api/finance gate
 // independently restricts the underlying API to leadership + admin.
-const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance", "margin", "l10"])];
+const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance", "margin", "l10", "rota"])];
 // SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
 // Finance Reports Suite. The server /api/finance gate also excludes SMT.
 const SMT = LEADERSHIP.filter((p) => p !== "finance" && p !== "margin");
@@ -31,7 +31,7 @@ const PRODUCTION = ["production", "production-report", "style-tracker", "fabric"
 const FABRIC_WAREHOUSE = ["fabric", "inventory", "sops"];
 const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "footfall", "sops"];
 const MARKETING = ["marketing", "social", "crm", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops"];
-const HR = ["hr", "sops"];
+const HR = ["hr", "sops", "rota"];
 // Employee self-service (auto-approved Google sign-ups): NO BI pages — their
 // only surface is the Salary Advance form in the HR app (/hr/salary-advance).
 // The backend employee API fence refuses everything else server-side.
