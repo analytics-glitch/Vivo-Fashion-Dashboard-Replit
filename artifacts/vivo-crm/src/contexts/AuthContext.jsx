@@ -13,7 +13,7 @@ const AuthContext = createContext({
 // Map the elevated backend roles onto the reference's "manager" role and the
 // rest onto "associate" so the ported pages keep working unchanged. The
 // original backend role is preserved as `backend_role`.
-const MANAGER_ROLES = new Set(["admin", "exec", "manager"]);
+const MANAGER_ROLES = new Set(["admin", "exec", "manager", "customer_service"]);
 function normalizeUser(u) {
   if (!u || !u.user_id) return null;
   // Only fully-active accounts are treated as signed in.
