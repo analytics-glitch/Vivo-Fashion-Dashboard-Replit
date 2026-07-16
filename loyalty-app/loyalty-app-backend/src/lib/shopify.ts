@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { env, shopifyEnabled, storefrontEnabled } from "../config/env.js";
+import { env, isProd, shopifyEnabled, storefrontEnabled } from "../config/env.js";
 
 /**
  * Thin Shopify Admin API client (REST + GraphQL) for the loyalty backend.
@@ -581,6 +581,14 @@ export async function ensureShopifyWebhooks(log?: {
   const say = log ?? { info: console.log, warn: console.warn };
   if (!shopifyEnabled || !env.SHOPIFY_WEBHOOK_SECRET) {
     say.info("Shopify webhooks: not configured yet (secrets missing) — skipping registration.");
+    return;
+  }
+
+  if (!isProd && !env.WEB_BASE_URL) {
+    say.info(
+      "Shopify webhooks: skipping webhook registration in non-production environment " +
+        "(set LOYALTY_APP_WEB_BASE_URL to enable in dev).",
+    );
     return;
   }
 
