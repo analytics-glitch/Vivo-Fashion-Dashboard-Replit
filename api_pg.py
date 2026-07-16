@@ -31690,6 +31690,26 @@ def l10_delete_member(member_id: int, request: Request):
 
 # ── Check-In ──────────────────────────────────────────────────────────────────
 
+@app.get("/api/l10/checkin/history")
+def l10_checkin_history(request: Request, exclude_meeting_id: int = Query(None)):
+    _ensure_l10_tables()
+    if exclude_meeting_id:
+        rows = _users_exec(
+            "SELECT c.meeting_id, m.week_label, m.meeting_date::text, "
+            "c.member_name, c.personal_news, c.professional_news "
+            "FROM l10_checkin c JOIN l10_meetings m ON m.id=c.meeting_id "
+            "WHERE c.meeting_id != %s ORDER BY m.meeting_date DESC, c.member_name",
+            (exclude_meeting_id,), fetch=True) or []
+    else:
+        rows = _users_exec(
+            "SELECT c.meeting_id, m.week_label, m.meeting_date::text, "
+            "c.member_name, c.personal_news, c.professional_news "
+            "FROM l10_checkin c JOIN l10_meetings m ON m.id=c.meeting_id "
+            "ORDER BY m.meeting_date DESC, c.member_name",
+            fetch=True) or []
+    return rows
+
+
 @app.get("/api/l10/checkin/{meeting_id}")
 def l10_get_checkin(meeting_id: int, request: Request):
     _ensure_l10_tables()
@@ -31717,26 +31737,6 @@ async def l10_upsert_checkin(meeting_id: int, request: Request):
             "professional_news=EXCLUDED.professional_news, updated_at=now()",
             (meeting_id, name, row.get("personal_news"), row.get("professional_news")))
     return {"ok": True}
-
-
-@app.get("/api/l10/checkin/history")
-def l10_checkin_history(request: Request, exclude_meeting_id: int = Query(None)):
-    _ensure_l10_tables()
-    if exclude_meeting_id:
-        rows = _users_exec(
-            "SELECT c.meeting_id, m.week_label, m.meeting_date::text, "
-            "c.member_name, c.personal_news, c.professional_news "
-            "FROM l10_checkin c JOIN l10_meetings m ON m.id=c.meeting_id "
-            "WHERE c.meeting_id != %s ORDER BY m.meeting_date DESC, c.member_name",
-            (exclude_meeting_id,), fetch=True) or []
-    else:
-        rows = _users_exec(
-            "SELECT c.meeting_id, m.week_label, m.meeting_date::text, "
-            "c.member_name, c.personal_news, c.professional_news "
-            "FROM l10_checkin c JOIN l10_meetings m ON m.id=c.meeting_id "
-            "ORDER BY m.meeting_date DESC, c.member_name",
-            fetch=True) or []
-    return rows
 
 
 # ── Scorecard Metrics ─────────────────────────────────────────────────────────
@@ -31907,6 +31907,26 @@ def l10_archive_rock(rock_id: int, request: Request):
 
 # ── Headlines ─────────────────────────────────────────────────────────────────
 
+@app.get("/api/l10/headlines/history")
+def l10_headlines_history(request: Request, exclude_meeting_id: int = Query(None)):
+    _ensure_l10_tables()
+    if exclude_meeting_id:
+        rows = _users_exec(
+            "SELECT h.id, h.meeting_id, m.week_label, m.meeting_date::text, "
+            "h.headline, h.date, h.added_by, h.link, h.moved_to_ids "
+            "FROM l10_headlines h JOIN l10_meetings m ON m.id=h.meeting_id "
+            "WHERE h.meeting_id != %s ORDER BY m.meeting_date DESC, h.sort_order",
+            (exclude_meeting_id,), fetch=True) or []
+    else:
+        rows = _users_exec(
+            "SELECT h.id, h.meeting_id, m.week_label, m.meeting_date::text, "
+            "h.headline, h.date, h.added_by, h.link, h.moved_to_ids "
+            "FROM l10_headlines h JOIN l10_meetings m ON m.id=h.meeting_id "
+            "ORDER BY m.meeting_date DESC, h.sort_order",
+            fetch=True) or []
+    return rows
+
+
 @app.get("/api/l10/headlines/{meeting_id}")
 def l10_get_headlines(meeting_id: int, request: Request):
     _ensure_l10_tables()
@@ -31933,26 +31953,6 @@ async def l10_upsert_headlines(meeting_id: int, request: Request):
             (meeting_id, headline, row.get("date"), row.get("added_by"),
              row.get("link"), i, bool(row.get("moved_to_ids", False))))
     return {"ok": True}
-
-
-@app.get("/api/l10/headlines/history")
-def l10_headlines_history(request: Request, exclude_meeting_id: int = Query(None)):
-    _ensure_l10_tables()
-    if exclude_meeting_id:
-        rows = _users_exec(
-            "SELECT h.id, h.meeting_id, m.week_label, m.meeting_date::text, "
-            "h.headline, h.date, h.added_by, h.link, h.moved_to_ids "
-            "FROM l10_headlines h JOIN l10_meetings m ON m.id=h.meeting_id "
-            "WHERE h.meeting_id != %s ORDER BY m.meeting_date DESC, h.sort_order",
-            (exclude_meeting_id,), fetch=True) or []
-    else:
-        rows = _users_exec(
-            "SELECT h.id, h.meeting_id, m.week_label, m.meeting_date::text, "
-            "h.headline, h.date, h.added_by, h.link, h.moved_to_ids "
-            "FROM l10_headlines h JOIN l10_meetings m ON m.id=h.meeting_id "
-            "ORDER BY m.meeting_date DESC, h.sort_order",
-            fetch=True) or []
-    return rows
 
 
 # ── To-Dos ────────────────────────────────────────────────────────────────────
@@ -32014,6 +32014,28 @@ def l10_delete_todo(todo_id: int, request: Request):
 
 # ── IDS Issues ────────────────────────────────────────────────────────────────
 
+@app.get("/api/l10/ids/history")
+def l10_ids_history(request: Request, exclude_meeting_id: int = Query(None)):
+    _ensure_l10_tables()
+    if exclude_meeting_id:
+        rows = _users_exec(
+            "SELECT i.id, i.meeting_id, m.week_label, m.meeting_date::text, "
+            "i.issue, i.raised_by, i.status "
+            "FROM l10_ids_issues i JOIN l10_meetings m ON m.id=i.meeting_id "
+            "WHERE i.meeting_id != %s AND i.status != 'open' "
+            "ORDER BY m.meeting_date DESC, i.sort_order",
+            (exclude_meeting_id,), fetch=True) or []
+    else:
+        rows = _users_exec(
+            "SELECT i.id, i.meeting_id, m.week_label, m.meeting_date::text, "
+            "i.issue, i.raised_by, i.status "
+            "FROM l10_ids_issues i JOIN l10_meetings m ON m.id=i.meeting_id "
+            "WHERE i.status != 'open' "
+            "ORDER BY m.meeting_date DESC, i.sort_order",
+            fetch=True) or []
+    return rows
+
+
 @app.get("/api/l10/ids/{meeting_id}")
 def l10_get_ids(meeting_id: int, request: Request):
     _ensure_l10_tables()
@@ -32039,28 +32061,6 @@ async def l10_upsert_ids(meeting_id: int, request: Request):
             (meeting_id, issue, row.get("raised_by"), i,
              row.get("status") or "open"))
     return {"ok": True}
-
-
-@app.get("/api/l10/ids/history")
-def l10_ids_history(request: Request, exclude_meeting_id: int = Query(None)):
-    _ensure_l10_tables()
-    if exclude_meeting_id:
-        rows = _users_exec(
-            "SELECT i.id, i.meeting_id, m.week_label, m.meeting_date::text, "
-            "i.issue, i.raised_by, i.status "
-            "FROM l10_ids_issues i JOIN l10_meetings m ON m.id=i.meeting_id "
-            "WHERE i.meeting_id != %s AND i.status != 'open' "
-            "ORDER BY m.meeting_date DESC, i.sort_order",
-            (exclude_meeting_id,), fetch=True) or []
-    else:
-        rows = _users_exec(
-            "SELECT i.id, i.meeting_id, m.week_label, m.meeting_date::text, "
-            "i.issue, i.raised_by, i.status "
-            "FROM l10_ids_issues i JOIN l10_meetings m ON m.id=i.meeting_id "
-            "WHERE i.status != 'open' "
-            "ORDER BY m.meeting_date DESC, i.sort_order",
-            fetch=True) or []
-    return rows
 
 
 # ── Conclude ──────────────────────────────────────────────────────────────────
