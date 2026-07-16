@@ -30394,10 +30394,21 @@ def production_summary():
             FROM stage_movements
             WHERE to_stage = 'sewing' AND sewing_line IS NOT NULL
             GROUP BY order_ref
+        ),
+        cat AS (
+            SELECT DISTINCT ON (style_name) style_name,
+                   category, product_type
+            FROM all_products_clean
+            WHERE style_name IS NOT NULL
+            ORDER BY style_name, sku
         )
         SELECT po.order_ref, po.style_number, po.style_name, po.product_name,
                po.buyer, po.order_qty, po.date_ordered, po.expected_delivery_date,
-               po.production_type, po.lifecycle_type, po.bo_state,
+               po.production_type,
+               po.lifecycle_type                          AS lifecycle,
+               po.bo_state                               AS state,
+               COALESCE(cat.category,     'Unspecified') AS category,
+               COALESCE(cat.product_type, 'Unspecified') AS product_type,
                COALESCE(lr.colours, 0)  AS colours,
                COALESCE(vr.sizes, 0)    AS sizes,
                COALESCE(vr.variants, 0) AS variants,
@@ -30409,6 +30420,7 @@ def production_summary():
         LEFT JOIN var_rollup  vr ON vr.order_ref = po.order_ref
         LEFT JOIN bal            ON bal.order_ref = po.order_ref
         LEFT JOIN sew            ON sew.order_ref = po.order_ref
+        LEFT JOIN cat            ON cat.style_name = po.style_name
         ORDER BY po.date_ordered DESC NULLS LAST, po.order_ref DESC""", fetch=True)
 
     # Load now sitting in the Sewing stage, split by the line each piece ran on
@@ -30475,7 +30487,7 @@ def production_summary():
         # Buying Orders is a draft-only display stage: a planned BO is already
         # in production planning, so its buying_order balance is hidden from
         # the report (mirrors the board/stage counts).
-        if (o.get("bo_state") or "") != "draft":
+        if (o.get("state") or "") != "draft":
             sq.pop("buying_order", None)
         for stage, q in (dorder.get(o["order_ref"]) or {}).items():
             sq[stage] = round(q, 2)
@@ -30489,11 +30501,39 @@ def production_summary():
                                key=lambda kv: (kv[0] == "Unspecified", kv[0]))
     ]
 
+    _cat_join = """
+        FROM production_orders po
+        LEFT JOIN LATERAL (
+            SELECT category, product_type
+            FROM all_products_clean
+            WHERE style_name = po.style_name
+            LIMIT 1
+        ) cat ON TRUE"""
+
+    by_category = _users_exec(f"""
+        SELECT COALESCE(cat.category, 'Unspecified')     AS label,
+               COUNT(*)                                  AS orders,
+               COALESCE(SUM(po.order_qty), 0)            AS units
+        {_cat_join}
+        GROUP BY 1
+        ORDER BY units DESC""", fetch=True)
+
+    by_product_type = _users_exec(f"""
+        SELECT COALESCE(cat.product_type, 'Unspecified') AS label,
+               COUNT(*)                                  AS orders,
+               COALESCE(SUM(po.order_qty), 0)            AS units
+        {_cat_join}
+        GROUP BY 1
+        ORDER BY units DESC
+        LIMIT 20""", fetch=True)
+
     return {
         "totals": (totals[0] if totals else {"orders": 0, "units": 0, "styles": 0}),
         "by_lifecycle": _grouped("lifecycle_type"),
         "by_production_type": _grouped("production_type"),
         "by_state": _grouped("bo_state"),
+        "by_category": by_category,
+        "by_product_type": by_product_type,
         "by_stage": by_stage,
         "by_buyer": by_buyer,
         "by_sewing_line": by_sewing_line,

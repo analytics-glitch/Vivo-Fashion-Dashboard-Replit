@@ -55,6 +55,21 @@ const STATE_COLORS = {
   bom_pending: "bg-rose-400",
 };
 
+const CAT_PALETTE = [
+  "bg-sky-500", "bg-violet-500", "bg-amber-500", "bg-rose-400",
+  "bg-teal-500", "bg-orange-400", "bg-indigo-400", "bg-pink-400",
+  "bg-lime-500", "bg-cyan-500", "bg-fuchsia-400", "bg-yellow-400",
+];
+let _catIdx = 0;
+const _catMap = {};
+function catColorFor(label) {
+  if (!_catMap[label]) {
+    _catMap[label] = CAT_PALETTE[_catIdx % CAT_PALETTE.length];
+    _catIdx++;
+  }
+  return _catMap[label];
+}
+
 /** Segmented bar with legend */
 function SegmentBar({ title, rows, colorFor, unitLabel = "orders", metric = "orders", testId }) {
   const data = (rows || []).filter((r) => Number(r[metric]) > 0);
@@ -406,13 +421,16 @@ export default function ProductionOverview({ onOpenReport }) {
     [byLifecycle]
   );
   const share = useCallback(
-    (n) => (totals.orders > 0 ? `${((Number(n) / totals.orders) * 100).toFixed(0)}% of orders` : undefined),
+    (n, denom) => {
+      const d = denom ?? totals.orders;
+      return d > 0 ? `${((Number(n) / d) * 100).toFixed(0)}% of orders` : undefined;
+    },
     [totals.orders]
   );
 
   // Range-window stats shown in KPI cards
   const rangeTotals = useMemo(() => {
-    const byLc = {};
+    const byLc = {}, byCategory = {}, byProductType = {};
     let units = 0;
     for (const o of rangeOrders) {
       units += Number(o.order_qty) || 0;
@@ -420,8 +438,19 @@ export default function ProductionOverview({ onOpenReport }) {
       if (!byLc[lbl]) byLc[lbl] = { orders: 0, units: 0 };
       byLc[lbl].orders += 1;
       byLc[lbl].units += Number(o.order_qty) || 0;
+      const cat = o.category || "Unspecified";
+      if (!byCategory[cat]) byCategory[cat] = { orders: 0, units: 0 };
+      byCategory[cat].orders += 1;
+      byCategory[cat].units += Number(o.order_qty) || 0;
+      const pt = o.product_type || "Unspecified";
+      if (!byProductType[pt]) byProductType[pt] = { orders: 0, units: 0 };
+      byProductType[pt].orders += 1;
+      byProductType[pt].units += Number(o.order_qty) || 0;
     }
-    return { orders: rangeOrders.length, units, byLc, styles: new Set(rangeOrders.map((o) => o.style_name).filter(Boolean)).size };
+    return {
+      orders: rangeOrders.length, units, byLc, byCategory, byProductType,
+      styles: new Set(rangeOrders.map((o) => o.style_name).filter(Boolean)).size,
+    };
   }, [rangeOrders]);
 
   // Date window label for subtitle/modal
@@ -432,6 +461,8 @@ export default function ProductionOverview({ onOpenReport }) {
     { key: "order_ref", label: "Order Ref", render: (r) => <span className="font-semibold">{r.order_ref || "—"}</span> },
     { key: "style_name", label: "Style", render: (r) => r.style_name || r.product_name || r.style_number || "—" },
     { key: "lifecycle", label: "Type", render: (r) => r.lifecycle || "—" },
+    { key: "category", label: "Category" },
+    { key: "product_type", label: "Product Type" },
     { key: "order_qty", label: "Qty", numeric: true, render: (r) => fmtQty(r.order_qty), csv: (r) => r.order_qty },
     { key: "date_ordered", label: "Date Ordered", render: (r) => fmtDate(r.date_ordered), csv: (r) => r.date_ordered || "" },
     { key: "expected_delivery_date", label: "Expected Delivery", render: (r) => fmtDate(r.expected_delivery_date), csv: (r) => r.expected_delivery_date || "" },
@@ -575,9 +606,9 @@ export default function ProductionOverview({ onOpenReport }) {
           <KPICard
             testId="prod-ov-kpi-new"
             label="New Styles"
-            value={fmtQty(rangeTotals.byLc["New"]?.orders ?? lcNew.orders)}
+            value={fmtQty(rangeTotals.byLc["New"]?.orders || 0)}
             icon={Sparkle}
-            sub={`${fmtQty(rangeTotals.byLc["New"]?.units ?? lcNew.units)} units · ${share(rangeTotals.byLc["New"]?.orders ?? lcNew.orders) || "—"}`}
+            sub={`${fmtQty(rangeTotals.byLc["New"]?.units || 0)} units · ${share(rangeTotals.byLc["New"]?.orders || 0, rangeTotals.orders) || "—"}`}
             formula="Buying orders introducing a NEW style to the range."
             showDelta={false}
           />
@@ -586,9 +617,9 @@ export default function ProductionOverview({ onOpenReport }) {
           <KPICard
             testId="prod-ov-kpi-replen"
             label="Replenishments"
-            value={fmtQty(rangeTotals.byLc["Replenishment"]?.orders ?? lcRep.orders)}
+            value={fmtQty(rangeTotals.byLc["Replenishment"]?.orders || 0)}
             icon={ArrowsClockwise}
-            sub={`${fmtQty(rangeTotals.byLc["Replenishment"]?.units ?? lcRep.units)} units · ${share(rangeTotals.byLc["Replenishment"]?.orders ?? lcRep.orders) || "—"}`}
+            sub={`${fmtQty(rangeTotals.byLc["Replenishment"]?.units || 0)} units · ${share(rangeTotals.byLc["Replenishment"]?.orders || 0, rangeTotals.orders) || "—"}`}
             formula="Buying orders topping up styles already selling."
             showDelta={false}
           />
@@ -597,9 +628,9 @@ export default function ProductionOverview({ onOpenReport }) {
           <KPICard
             testId="prod-ov-kpi-reorder"
             label="Re-orders"
-            value={fmtQty(rangeTotals.byLc["Re-order"]?.orders ?? lcReo.orders)}
+            value={fmtQty(rangeTotals.byLc["Re-order"]?.orders || 0)}
             icon={Repeat}
-            sub={`${fmtQty(rangeTotals.byLc["Re-order"]?.units ?? lcReo.units)} units · ${share(rangeTotals.byLc["Re-order"]?.orders ?? lcReo.orders) || "—"}`}
+            sub={`${fmtQty(rangeTotals.byLc["Re-order"]?.units || 0)} units · ${share(rangeTotals.byLc["Re-order"]?.orders || 0, rangeTotals.orders) || "—"}`}
             formula="Repeat buying orders of proven styles."
             showDelta={false}
           />
@@ -639,6 +670,26 @@ export default function ProductionOverview({ onOpenReport }) {
           unitLabel="orders"
           colorFor={(label) => STATE_COLORS[label] || "bg-gray-400"}
           testId="prod-ov-state-mix"
+        />
+      </div>
+
+      {/* Category & product-type breakdown */}
+      <div className="grid gap-3 grid-cols-1 md:grid-cols-2">
+        <SegmentBar
+          title="Category breakdown (by units)"
+          rows={data?.by_category}
+          metric="units"
+          unitLabel="units"
+          colorFor={catColorFor}
+          testId="prod-ov-category-mix"
+        />
+        <SegmentBar
+          title="Product type breakdown (by units)"
+          rows={data?.by_product_type}
+          metric="units"
+          unitLabel="units"
+          colorFor={catColorFor}
+          testId="prod-ov-product-type-mix"
         />
       </div>
 
