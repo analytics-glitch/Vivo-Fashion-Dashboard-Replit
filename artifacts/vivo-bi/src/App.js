@@ -34,6 +34,7 @@ const Marketing = React.lazy(() => import("@/pages/Marketing"));
 const CustomReport = React.lazy(() => import("@/pages/CustomReport"));
 const Production = React.lazy(() => import("@/pages/Production"));
 const Finance = React.lazy(() => import("@/pages/Finance"));
+const Margin = React.lazy(() => import("@/pages/Margin"));
 const Catalogue = React.lazy(() => import("@/pages/Catalogue"));
 const SOPs = React.lazy(() => import("@/pages/SOPs"));
 const L10 = React.lazy(() => import("@/pages/L10"));
@@ -173,6 +174,7 @@ function App() {
                 <Route path="/velocity" element={<Navigate to="/inventory" replace />} />
                 <Route path="/size-health" element={<Navigate to="/inventory?tab=size-health" replace />} />
                 <Route path="/finance" element={<ProtectedShell pageId="finance"><Finance /></ProtectedShell>} />
+                <Route path="/margin" element={<ProtectedShell pageId="margin"><Margin /></ProtectedShell>} />
                 <Route path="/crm" element={<ExternalRedirect to="/crm/" />} />
                 <Route path="/social" element={<ExternalRedirect to="/crm/inbox" />} />
                 <Route path="/exports" element={<ProtectedShell pageId="exports"><Exports /></ProtectedShell>} />

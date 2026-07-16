@@ -24,6 +24,7 @@ import {
   UsersThree,
   AddressBook,
   ChartBar,
+  ChartLine,
   BookOpen,
   Eye,
   Factory,
@@ -83,6 +84,7 @@ export const PRIMARY_NAV = [
 
   // Finance Reports Suite — leadership + admin (server-gated via /api/finance)
   { to: "/finance", label: "Finance", icon: Coins, id: "finance", group: "Performance", desc: "Finance reports suite — P&L statement, revenue, cost of revenue, opex, payroll, vendor spend and P&L trend & KPIs (KES)" },
+  { to: "/margin", label: "Margin Analysis", icon: ChartLine, id: "margin", group: "Performance", desc: "Gross margin, discount rate and cost coverage by category, subcategory, brand, store or month (KES)" },
 ];
 
 export const ADMIN_NAV = [
