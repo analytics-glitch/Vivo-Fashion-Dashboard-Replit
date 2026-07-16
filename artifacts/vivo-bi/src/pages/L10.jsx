@@ -512,11 +512,12 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
   );
 };
 
-const ScorecardCell = ({ value, onTrack, onSave }) => {
+const ScorecardCell = ({ value, trafficLight, onSave }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value || "");
   const inputRef = useRef(null);
   useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
+  useEffect(() => { setDraft(value || ""); }, [value]);
   const commit = () => { setEditing(false); onSave(draft); };
   if (editing) {
     return (
@@ -531,13 +532,11 @@ const ScorecardCell = ({ value, onTrack, onSave }) => {
       />
     );
   }
-  const bg = onTrack === true ? "bg-emerald-100 text-emerald-800" :
-             onTrack === false ? "bg-red-100 text-red-700" : "bg-muted/40";
   return (
     <button
       type="button"
       onClick={() => setEditing(true)}
-      className={`rounded px-2 py-0.5 text-xs font-mono cursor-pointer hover:opacity-80 min-w-[48px] ${bg}`}
+      className={`rounded px-2 py-0.5 text-xs font-mono cursor-pointer hover:opacity-80 min-w-[48px] ${trafficLightCls(trafficLight)}`}
     >
       {value ?? "—"}
     </button>
@@ -850,13 +849,19 @@ const TodosTab = ({ meetingId, members, folderId = 1 }) => {
 
   const TodoRow = ({ todo }) => (
     <tr className="border-b last:border-0 hover:bg-muted/20">
-      <td className="py-2 px-3">
-        <button type="button" onClick={() => toggle(todo)}
-          className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${
-            todo.status === "done" ? "bg-emerald-500 border-emerald-500 text-white" : "border-border"
-          }`}>
-          {todo.status === "done" && <Check size={10} weight="bold" />}
-        </button>
+      <td className="py-2 px-3 w-32">
+        <select
+          value={todo.status === "done" ? "done" : "open"}
+          onChange={(e) => toggle({ ...todo, status: e.target.value === "done" ? "open" : "done" })}
+          className={`border rounded px-1.5 py-0.5 text-xs w-full font-medium ${
+            todo.status === "done"
+              ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+              : "border-amber-300 bg-amber-50 text-amber-800"
+          }`}
+        >
+          <option value="open">Not Done</option>
+          <option value="done">Done</option>
+        </select>
       </td>
       <td className={`py-2 px-3 text-sm ${todo.status === "done" ? "line-through text-muted-foreground" : ""}`}>
         {todo.description}
@@ -947,7 +952,7 @@ const TodosTab = ({ meetingId, members, folderId = 1 }) => {
 };
 
 // ─── IDS Tab ─────────────────────────────────────────────────────────────────
-const IDSTab = ({ meetingId, members, folderId = 1 }) => {
+const IDSTab = ({ meetingId, members, folderId = 1, redMetrics = [] }) => {
   const [rows, setRows] = useState([{ issue: "", raised_by: "", status: "open" }]);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -985,6 +990,17 @@ const IDSTab = ({ meetingId, members, folderId = 1 }) => {
     return next;
   });
 
+  const addRedKpiAsIssue = (kpi) => {
+    setRows((prev) => {
+      const issue = `[Scorecard red] ${kpi.measurable}${kpi.who ? ` (${kpi.who})` : ""} — actual: ${kpi.value}, goal: ${kpi.goal}`;
+      const alreadyAdded = prev.some((r) => r.issue === issue);
+      if (alreadyAdded) return prev;
+      const next = [...prev.filter((r) => r.issue !== ""), { issue, raised_by: "", status: "open" }];
+      save(next);
+      return next;
+    });
+  };
+
   if (loading) return <Loading label="Loading IDS…" />;
 
   const memberNames = members.filter((m) => m.active).map((m) => m.name);
@@ -996,6 +1012,39 @@ const IDSTab = ({ meetingId, members, folderId = 1 }) => {
 
   return (
     <div className="space-y-4">
+      {redMetrics.length > 0 && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold text-red-800">
+              {redMetrics.length} Red KPI{redMetrics.length > 1 ? "s" : ""} from Scorecard
+            </h3>
+            <span className="text-xs text-red-600">Below 80% of target — add to issues list</span>
+          </div>
+          <div className="space-y-1.5">
+            {redMetrics.map((kpi) => {
+              const issue = `[Scorecard red] ${kpi.measurable}${kpi.who ? ` (${kpi.who})` : ""} — actual: ${kpi.value}, goal: ${kpi.goal}`;
+              const alreadyAdded = rows.some((r) => r.issue === issue);
+              return (
+                <div key={kpi.id} className="flex items-center gap-2">
+                  <span className="flex-1 text-sm text-red-900">
+                    <span className="font-medium">{kpi.measurable}</span>
+                    {kpi.who && <span className="text-xs text-red-700 ml-1">({kpi.who})</span>}
+                    <span className="text-xs text-red-600 ml-1.5">— actual: {kpi.value}, goal: {kpi.goal}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => addRedKpiAsIssue(kpi)}
+                    disabled={alreadyAdded}
+                    className="text-xs px-2.5 py-1 rounded-lg bg-red-700 text-white hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {alreadyAdded ? "Added" : "Add to Issues"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       <div className="rounded-xl border bg-card overflow-hidden">
         <div className="px-4 py-3 border-b bg-muted/20 flex items-center justify-between">
           <h2 className="text-sm font-semibold">Issues List — Identify, Discuss, Solve</h2>
@@ -1480,12 +1529,33 @@ const FOLDER_COLORS = [
 ];
 
 const MeetingHistoryTable = ({ meetings, meetingId, onSelect }) => {
+  const [collapsedQuarters, setCollapsedQuarters] = useState(new Set());
+
   if (!meetings || meetings.length === 0) return null;
+
+  // Group meetings by quarter (newest first)
+  const currentQuarter = meetings[0] ? getQuarterLabel(meetings[0].meeting_date) : null;
+  const byQuarter = [];
+  const quarterMap = {};
+  meetings.forEach((m) => {
+    const q = getQuarterLabel(m.meeting_date);
+    if (!quarterMap[q]) { quarterMap[q] = []; byQuarter.push(q); }
+    quarterMap[q].push(m);
+  });
+
+  const toggleQuarter = (q) => setCollapsedQuarters((prev) => {
+    const next = new Set(prev);
+    if (next.has(q)) next.delete(q); else next.add(q);
+    return next;
+  });
+
   return (
     <div className="rounded-xl border bg-card overflow-hidden">
       <div className="px-4 py-3 border-b bg-muted/20">
-        <h2 className="text-sm font-semibold">Previous Meetings</h2>
-        <p className="text-xs text-muted-foreground mt-0.5">Click any row to view that week's meeting</p>
+        <h2 className="text-sm font-semibold">Meeting History</h2>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {byQuarter.length} quarter{byQuarter.length !== 1 ? "s" : ""} — click any row to view that week&apos;s meeting
+        </p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -1494,47 +1564,63 @@ const MeetingHistoryTable = ({ meetings, meetingId, onSelect }) => {
               <th className="py-2 px-4 font-medium">Week</th>
               <th className="py-2 px-4 font-medium">Date</th>
               <th className="py-2 px-4 font-medium">Day</th>
-              <th className="py-2 px-4 font-medium w-24"></th>
+              <th className="py-2 px-4 font-medium w-24" />
             </tr>
           </thead>
           <tbody>
-            {meetings.map((m) => {
-              const isCurrent = m.id === meetingId;
-              let dayName = "";
-              try {
-                dayName = new Date(m.meeting_date + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long" });
-              } catch {}
+            {byQuarter.map((q) => {
+              const qMeetings = quarterMap[q];
+              const isCurrentQ = q === currentQuarter;
+              const isCollapsed = collapsedQuarters.has(q);
               return (
-                <tr
-                  key={m.id}
-                  onClick={() => onSelect(m.id)}
-                  className={`border-b last:border-0 cursor-pointer transition-colors ${
-                    isCurrent
-                      ? "bg-emerald-50/60 hover:bg-emerald-50"
-                      : "hover:bg-muted/30"
-                  }`}
-                >
-                  <td className="py-2.5 px-4 font-medium">{m.week_label}</td>
-                  <td className="py-2.5 px-4 text-muted-foreground">
-                    {(() => {
-                      try {
-                        return new Date(m.meeting_date + "T00:00:00").toLocaleDateString("en-GB", {
-                          day: "numeric", month: "short", year: "numeric"
-                        });
-                      } catch { return m.meeting_date; }
-                    })()}
-                  </td>
-                  <td className="py-2.5 px-4 text-muted-foreground text-xs">{dayName}</td>
-                  <td className="py-2.5 px-4 text-right">
-                    {isCurrent ? (
-                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
-                        Viewing
+                <React.Fragment key={q}>
+                  <tr
+                    className={`border-b cursor-pointer select-none ${
+                      isCurrentQ ? "bg-emerald-50/40 hover:bg-emerald-50/60" : "bg-muted/20 hover:bg-muted/30"
+                    }`}
+                    onClick={() => toggleQuarter(q)}
+                  >
+                    <td colSpan={4} className="py-2 px-4">
+                      <span className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                        {isCollapsed ? <CaretDown size={12} /> : <CaretUp size={12} />}
+                        {q}
+                        <span className="font-normal normal-case">({qMeetings.length} meeting{qMeetings.length !== 1 ? "s" : ""})</span>
+                        {isCurrentQ && (
+                          <span className="ml-1 px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold uppercase tracking-wide normal-case">
+                            Current
+                          </span>
+                        )}
                       </span>
-                    ) : (
-                      <span className="text-xs text-primary hover:underline">View</span>
-                    )}
-                  </td>
-                </tr>
+                    </td>
+                  </tr>
+                  {!isCollapsed && qMeetings.map((m) => {
+                    const isCurrent = m.id === meetingId;
+                    let dayName = "";
+                    try { dayName = new Date(m.meeting_date + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long" }); } catch {}
+                    return (
+                      <tr
+                        key={m.id}
+                        onClick={() => onSelect(m.id)}
+                        className={`border-b last:border-0 cursor-pointer transition-colors ${
+                          isCurrent ? "bg-emerald-50/60 hover:bg-emerald-50" : "hover:bg-muted/30"
+                        }`}
+                      >
+                        <td className="py-2.5 px-4 font-medium pl-8">{m.week_label}</td>
+                        <td className="py-2.5 px-4 text-muted-foreground">
+                          {(() => { try { return new Date(m.meeting_date + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }); } catch { return m.meeting_date; } })()}
+                        </td>
+                        <td className="py-2.5 px-4 text-muted-foreground text-xs">{dayName}</td>
+                        <td className="py-2.5 px-4 text-right">
+                          {isCurrent ? (
+                            <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">Viewing</span>
+                          ) : (
+                            <span className="text-xs text-primary hover:underline">View</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </React.Fragment>
               );
             })}
           </tbody>
@@ -1556,6 +1642,7 @@ const L10 = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [creating, setCreating] = useState(false);
+  const [redMetrics, setRedMetrics] = useState([]);
 
   const currentMeeting = meetings.find((m) => m.id === meetingId);
 
@@ -1658,11 +1745,24 @@ const L10 = () => {
               onChange={(e) => setMeetingId(Number(e.target.value))}
               className="border border-border rounded-lg px-3 py-1.5 text-sm bg-white"
             >
-              {meetings.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.week_label} — {fmtDate(m.meeting_date)}
-                </option>
-              ))}
+              {(() => {
+                const byQ = [];
+                const qMap = {};
+                meetings.forEach((m) => {
+                  const q = getQuarterLabel(m.meeting_date);
+                  if (!qMap[q]) { qMap[q] = []; byQ.push(q); }
+                  qMap[q].push(m);
+                });
+                return byQ.map((q) => (
+                  <optgroup key={q} label={q}>
+                    {qMap[q].map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.week_label} — {fmtDate(m.meeting_date)}
+                      </option>
+                    ))}
+                  </optgroup>
+                ));
+              })()}
             </select>
           )}
           <button
@@ -1756,11 +1856,11 @@ const L10 = () => {
           <div className="mt-0">
             {tab === "agenda" && <AgendaTab meeting={currentMeeting} settings={settings} />}
             {tab === "checkin" && <CheckInTab meetingId={meetingId} members={members} folderId={folderId} />}
-            {tab === "scorecard" && <ScorecardTab meetingId={meetingId} folderId={folderId} />}
+            {tab === "scorecard" && <ScorecardTab meetingId={meetingId} folderId={folderId} onRedMetrics={setRedMetrics} />}
             {tab === "rocks" && <RocksTab members={members} folderId={folderId} />}
             {tab === "headlines" && <HeadlinesTab meetingId={meetingId} members={members} folderId={folderId} />}
             {tab === "todos" && <TodosTab meetingId={meetingId} members={members} folderId={folderId} />}
-            {tab === "ids" && <IDSTab meetingId={meetingId} members={members} folderId={folderId} />}
+            {tab === "ids" && <IDSTab meetingId={meetingId} members={members} folderId={folderId} redMetrics={redMetrics} />}
             {tab === "conclude" && <ConcludeTab meetingId={meetingId} members={members} folderId={folderId} />}
             {tab === "admin" && (
               <AdminTab
