@@ -33,6 +33,7 @@ import {
   CalendarBlank,
   Sparkle,
   RocketLaunch,
+  Storefront,
 } from "@phosphor-icons/react";
 
 /**
@@ -150,6 +151,8 @@ export const PRIMARY_NAV = [
 
   // Growth Model — leadership + admin (server-gated via /api/growth)
   { to: "/growth", label: "Growth Model", icon: RocketLaunch, id: "growth", group: "Performance", desc: "KES 5 Billion north-star trajectory — revenue bridge, compound growth path, store contribution splits and editable levers" },
+  // Retail Desk — leadership + admin (server-gated via /api/retail-desk)
+  { to: "/retail-desk", label: "Retail Desk", icon: Storefront, id: "retail-desk", group: "Performance", desc: "Per-store growth path tracking, AI coaching notes, consecutive-weeks-behind alerts and issue register" },
   // Finance Reports Suite — leadership + admin (server-gated via /api/finance)
   { to: "/finance", label: "Finance", icon: Coins, id: "finance", group: "Performance", desc: "Finance reports suite — P&L statement, revenue, cost of revenue, opex, payroll, vendor spend and P&L trend & KPIs (KES)" },
   { to: "/margin", label: "Margin Analysis", icon: ChartLine, id: "margin", group: "Performance", desc: "Gross margin, discount rate and cost coverage by category, subcategory, brand, store or month (KES)" },

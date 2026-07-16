@@ -677,7 +677,7 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance", "margin", "l10", "rota", "growth"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance", "margin", "l10", "rota", "growth", "retail-desk"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"],
@@ -1310,6 +1310,10 @@ async def clerk_auth_gate(request: Request, call_next):
     # Growth Model (/api/growth/*) is a leadership + admin surface.
     if path.startswith("/api/growth") and user.get("role") not in ("admin", "leadership"):
         return JSONResponse({"detail": "Growth Model access requires a leadership or admin role"}, status_code=403)
+
+    # Retail Desk (/api/retail-desk/*) is a leadership + admin surface.
+    if path.startswith("/api/retail-desk") and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "Retail Desk access requires a leadership or admin role"}, status_code=403)
 
     # L10 Meeting Tracker — leadership + admin surface.
     if path.startswith("/api/l10") and user.get("role") not in ("admin", "leadership"):
@@ -31320,6 +31324,16 @@ def _init_ai_tables():
 # leadership + admin. Seeded with a default 60/25/15 assumption on first boot.
 import growth_router
 growth_router.register_growth_routes(app, _sys.modules[__name__])
+import retail_desk_router
+retail_desk_router.register_retail_desk_routes(app, _sys.modules[__name__])
+
+
+@_deferred_startup
+def _init_retail_desk_tables():
+    try:
+        retail_desk_router.ensure_retail_desk_tables()
+    except Exception as e:
+        log.error("Retail desk table init failed: %s", e)
 
 
 @_deferred_startup

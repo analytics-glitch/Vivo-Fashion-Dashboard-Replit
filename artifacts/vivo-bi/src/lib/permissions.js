@@ -23,7 +23,7 @@ const STORE_MANAGER = ["store-flow", "locations", "footfall", "replenishments", 
 // "finance" (the Finance Reports Suite) is a leadership + admin surface, so it
 // lives in LEADERSHIP (ADMIN spreads LEADERSHIP). The server /api/finance gate
 // independently restricts the underlying API to leadership + admin.
-const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance", "margin", "l10", "rota", "growth"])];
+const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance", "margin", "l10", "rota", "growth", "retail-desk"])];
 // SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
 // Finance Reports Suite. The server /api/finance gate also excludes SMT.
 const SMT = LEADERSHIP.filter((p) => p !== "finance" && p !== "margin");
