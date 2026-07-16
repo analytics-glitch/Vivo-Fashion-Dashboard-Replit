@@ -169,6 +169,7 @@ LOYALTY_APP_SMTP_USER = "support@shopzetu.com"
 LOYALTY_APP_STOREFRONT_BASE_URL = "https://www.shopzetu.com"
 NODE_ENV = "development"
 PORT = "4001"
+LOYALTY_APP_SERVE_FRONTEND = "true"
 
 [userenv.development]
 TIKTOK_USE_SANDBOX = "1"
