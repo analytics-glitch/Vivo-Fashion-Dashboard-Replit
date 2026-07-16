@@ -50,7 +50,7 @@ PORT = "8090"
 LOYALTY_APP_SERVE_FRONTEND = "true"
 
 [services.development]
-run = "sh -c 'cd /home/runner/workspace/loyalty-app/loyalty-app-backend && npm ci && npx tsx src/server.ts'"
+run = "sh -c 'cd /home/runner/workspace/loyalty-app/the-loyalty-app && npm ci && npm run build && cd /home/runner/workspace/loyalty-app/loyalty-app-backend && npm ci && npx tsx src/server.ts'"
 
 [services.production]
 
