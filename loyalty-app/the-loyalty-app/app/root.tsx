@@ -18,11 +18,16 @@ import { ToastProvider } from "./components/toast";
 // After a deploy, a still-open tab may reference an old JS chunk that no longer
 // exists → its dynamic import fails. Vite fires `vite:preloadError`; reload once
 // (fresh index → fresh chunks) instead of hanging on the splash.
+// Key is timestamped to the current minute so retries are allowed after 60 s.
 if (typeof window !== "undefined") {
-  window.addEventListener("vite:preloadError", () => {
-    if (!sessionStorage.getItem("vivo_chunk_reload")) {
-      sessionStorage.setItem("vivo_chunk_reload", "1");
+  window.addEventListener("vite:preloadError", (event) => {
+    console.warn("[vivo] vite:preloadError caught:", (event as CustomEvent).detail);
+    const key = `vivo_chunk_reload_${Math.floor(Date.now() / 60_000)}`;
+    if (!sessionStorage.getItem(key)) {
+      sessionStorage.setItem(key, "1");
       window.location.reload();
+    } else {
+      console.error("[vivo] chunk reload already attempted this minute — not looping");
     }
   });
 }

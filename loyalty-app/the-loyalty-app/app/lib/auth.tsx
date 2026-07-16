@@ -23,14 +23,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
+    const controller = new AbortController();
+    // Guard against a hung fetch leaving the app on the splash screen forever.
+    const timer = setTimeout(() => controller.abort(), 10_000);
     try {
-      const { user } = await auth.me();
+      const { user } = await auth.me(controller.signal);
       setUser(user);
       return user;
-    } catch {
+    } catch (e) {
+      if (e instanceof Error && e.name !== "AbortError") {
+        console.error("[auth] refresh failed:", e.message);
+      }
       setUser(null);
       return null;
     } finally {
+      clearTimeout(timer);
       setLoading(false);
     }
   }, []);

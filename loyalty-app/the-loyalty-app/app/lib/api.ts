@@ -22,9 +22,10 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
+    signal: signal ?? init.signal,
     credentials: "include",
     headers: {
       ...(init.body ? { "Content-Type": "application/json" } : {}),
@@ -44,7 +45,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
+  get: <T>(path: string, signal?: AbortSignal) => request<T>(path, {}, signal),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
   patch: <T>(path: string, body?: unknown) =>
@@ -179,7 +180,7 @@ export interface ReferralOverview {
 // ── Endpoints ────────────────────────────────────────────────
 
 export const auth = {
-  me: () => api.get<{ user: User }>("/api/auth/me"),
+  me: (signal?: AbortSignal) => api.get<{ user: User }>("/api/auth/me", signal),
   status: () => api.get<{ google: boolean; otp: boolean }>("/api/auth/status"),
   requestOtp: (email: string, referralCode?: string) =>
     api.post<{ ok: boolean; ttlMinutes: number }>("/api/auth/otp/request", { email, referralCode }),

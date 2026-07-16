@@ -35,14 +35,13 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(sensible);
   await app.register(prismaPlugin);
   await app.register(rateLimit, { max: 100, timeWindow: "1 minute" });
-  // Single-origin behind the shared proxy: CORS is only needed when a separate
-  // web origin is explicitly configured.
-  if (env.WEB_BASE_URL) {
-    await app.register(cors, {
-      origin: [env.WEB_BASE_URL],
-      credentials: true,
-    });
-  }
+  // CORS: reflect the request origin so the PWA works from any Replit preview
+  // domain (worf / spock / replit.app) without requiring WEB_BASE_URL to be set.
+  // When WEB_BASE_URL is set we scope to that origin only (production lockdown).
+  await app.register(cors, {
+    origin: env.WEB_BASE_URL ? [env.WEB_BASE_URL] : true,
+    credentials: true,
+  });
   await app.register(authPlugin);
 
   // Uniform error shape (esp. Zod validation errors).
