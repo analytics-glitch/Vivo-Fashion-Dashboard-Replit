@@ -121,8 +121,26 @@ export type Env = typeof env;
 
 export const isProd = env.NODE_ENV === "production";
 export const googleEnabled = Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
-export const smtpEnabled = Boolean(env.SMTP_HOST && env.SMTP_USER);
+export const smtpEnabled = Boolean(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS);
 export const shopifyEnabled = Boolean(env.SHOPIFY_STORE_DOMAIN && env.SHOPIFY_ADMIN_TOKEN);
 export const storefrontEnabled = Boolean(
   env.SHOPIFY_STORE_DOMAIN && env.SHOPIFY_STOREFRONT_ACCESS_TOKEN,
 );
+
+// When MAIL_FROM is the default placeholder but SMTP_USER is set, derive a
+// sensible sender address from the SMTP username so emails don't come from
+// the fictional rewards@example.com address.
+if (
+  smtpEnabled &&
+  env.MAIL_FROM === "Vivo Loyalty <rewards@example.com>" &&
+  env.SMTP_USER
+) {
+  (env as Record<string, unknown>).MAIL_FROM = `Vivo Loyalty <${env.SMTP_USER}>`;
+}
+
+if (env.ADMIN_EMAILS.length === 0) {
+  console.warn(
+    "⚠️  LOYALTY_APP_ADMIN_EMAILS is not set. No one will have admin access to the " +
+      "loyalty dashboard. Set it to a comma-separated list of admin email addresses.",
+  );
+}

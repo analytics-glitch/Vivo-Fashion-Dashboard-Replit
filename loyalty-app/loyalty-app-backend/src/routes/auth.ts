@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { OAuth2Client } from "google-auth-library";
 import { z } from "zod";
-import { env, googleEnabled } from "../config/env.js";
+import { env, googleEnabled, smtpEnabled } from "../config/env.js";
 import { createOtp, verifyOtp } from "../lib/otp.js";
 import { sendMail, otpEmail } from "../lib/email.js";
 import { findOrCreateCustomer, serializeCustomer, recordLogin } from "../lib/customers.js";
@@ -59,9 +59,15 @@ export default async function authRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Reports which sign-in methods are available so the frontend can show or
+  // hide options accordingly. `otp` is true only when SMTP is fully configured
+  // (host + user + pass all set); `google` requires client ID + secret.
   app.get("/status", async () => ({
     google: googleEnabled,
-    otp: true,
+    otp: smtpEnabled,
+    // Explicit callback path for documentation — must be registered in the
+    // Google Console: https://<domain>/loyalty-app/api/auth/google/callback
+    googleCallbackPath: googleEnabled ? `${env.BASE_PATH}/api/auth/google/callback` : undefined,
   }));
 
   // ── Google OAuth (redirect flow) ───────────────────────────

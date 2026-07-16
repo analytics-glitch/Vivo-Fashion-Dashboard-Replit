@@ -16,6 +16,25 @@ function getTransporter(): Transporter | null {
   return transporter;
 }
 
+/**
+ * Probes the SMTP connection at startup. Resolves to an object describing
+ * whether SMTP is configured and, if so, whether the connection succeeded.
+ * Never throws — failures are returned as { ok: false, error }.
+ */
+export async function verifySmtp(): Promise<{ configured: boolean; ok: boolean; error?: string }> {
+  if (!smtpEnabled) {
+    return { configured: false, ok: false };
+  }
+  try {
+    const tx = getTransporter()!;
+    await tx.verify();
+    return { configured: true, ok: true };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { configured: true, ok: false, error: msg };
+  }
+}
+
 interface SendArgs {
   to: string;
   subject: string;
