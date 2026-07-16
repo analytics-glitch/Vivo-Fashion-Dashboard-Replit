@@ -21,6 +21,11 @@ description: Standalone Shopify loyalty PWA vendored AS-IS at repo-root loyalty-
 - Google/SMTP/Shopify features are flag-gated (`googleEnabled` etc.) and simply stay off until `LOYALTY_APP_*` secrets exist. WEB_BASE_URL defaults to "" → relative redirects (same-origin).
 - All its env vars are `LOYALTY_APP_*`-prefixed to avoid clashing with the BI platform's GOOGLE_/SMTP_/SHOPIFY_ vars.
 
+## Publish gotchas
+
+- The production build runs `npm ci` for BOTH `loyalty-app-backend` and `the-loyalty-app`; if either `package-lock.json` drifts from its `package.json` (e.g. a dep added without regenerating the lock), the WHOLE api-server artifact fails to publish. After any dependency change run `npm install` then verify `npm ci` passes in both dirs.
+- Prod verification: `https://<domain>/loyalty-app/health` must return `{"status":"ok",...}` JSON. If it returns the BI SPA's HTML instead, the live deployment predates the second `[[services]]` block (its `/loyalty-app` path isn't registered, traffic falls through to `/`) — the fix is a republish, not code. Same tell: prod DB has no `loyalty_app` tables, deploy logs show only 2 artifact processes.
+
 ## Distinct from existing surfaces
 
 - The pre-existing `/loyalty/` artifact (vivo-loyalty member card) and `clerk_auth_gate` are untouched; `/loyalty-app` traffic never passes through `api_pg.py`.
