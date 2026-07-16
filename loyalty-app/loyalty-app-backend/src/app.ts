@@ -97,9 +97,12 @@ export async function buildApp(): Promise<FastifyInstance> {
   // for client-side routes. API + webhooks are registered above, so they win.
   if (env.SERVE_FRONTEND) {
     const dist = resolve(process.cwd(), env.FRONTEND_DIST);
-    if (!existsSync(resolve(dist, "index.html"))) {
-      app.log.warn(
-        `SERVE_FRONTEND is on but no build found at ${dist}. Run "npm run build" in the-loyalty-app.`,
+    const spaReady = existsSync(resolve(dist, "index.html"));
+    if (!spaReady) {
+      app.log.error(
+        `SERVE_FRONTEND is on but no build found at ${dist}. ` +
+        `Run "npm run build" in the-loyalty-app. ` +
+        `Client-side routes will return 503 until the build is present.`,
       );
     }
     await app.register(fastifyStatic, {
@@ -131,10 +134,18 @@ export async function buildApp(): Promise<FastifyInstance> {
       if (url.startsWith(`${env.BASE_PATH}/assets/`) || /\.[a-z0-9]+$/i.test(url)) {
         return reply.status(404).send({ error: "NotFound" });
       }
+      // SPA build missing → return a clear 503 instead of crashing with a
+      // missing-file error (which Fastify-static surfaces as a 500).
+      if (!spaReady) {
+        return reply.status(503).send({
+          error: "ServiceUnavailable",
+          message: "App is still building, please wait and reload in a moment.",
+        });
+      }
       // Client routes → SPA shell.
       return reply.sendFile("index.html");
     });
-    app.log.info(`🖥️  Serving frontend from ${dist}`);
+    app.log.info(`Serving frontend from ${dist}`);
   }
 
   return app;
