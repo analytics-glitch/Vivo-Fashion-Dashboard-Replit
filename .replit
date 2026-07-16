@@ -167,12 +167,14 @@ LOYALTY_APP_SMTP_PORT = "587"
 LOYALTY_APP_SMTP_SECURE = "false"
 LOYALTY_APP_SMTP_USER = "support@shopzetu.com"
 LOYALTY_APP_STOREFRONT_BASE_URL = "https://www.shopzetu.com"
-LOYALTY_APP_WEB_BASE_URL = "https://6d550dd0-f08b-4726-931a-8e99e4d8778a-00-cwv9k6ojod1k.spock.replit.dev"
 NODE_ENV = "development"
 PORT = "4001"
 
 [userenv.development]
 TIKTOK_USE_SANDBOX = "1"
+
+[userenv.production]
+LOYALTY_APP_WEB_BASE_URL = "https://vivofashionbrands.com"
 
 [objectStorage]
 defaultBucketID = "replit-objstore-6afd6244-d8b1-4255-80b1-e103c2c6a982"
