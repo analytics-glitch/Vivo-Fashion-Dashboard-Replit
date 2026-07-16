@@ -94,6 +94,18 @@ body {
     -webkit-tap-highlight-color: transparent;
     user-select: none;
   }
+  .input {
+    width: 100%;
+    border-radius: 0.75rem;
+    border: 1px solid var(--card-border);
+    background: var(--bg);
+    padding: 0.625rem 0.875rem;
+    font-size: 0.875rem;
+    outline: none;
+  }
+  .input:focus {
+    border-color: var(--accent);
+  }
   .fade-in {
     animation: fadeIn 0.4s ease both;
   }

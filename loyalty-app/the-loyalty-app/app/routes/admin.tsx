@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, Link } from "react-router";
 import { useAuth } from "../lib/auth";
 import { admin, type AdminOverview, type AdminUser } from "../lib/api";
 import { formatEAT, formatPoints, initials } from "../lib/format";
 import { Card, Skeleton, Badge, EmptyState } from "../components/ui";
-import { UsersIcon } from "../components/icons";
+import { UsersIcon, GiftIcon } from "../components/icons";
 
 export function meta() {
   return [{ title: "Admin · Vivo Loyalty" }];
@@ -50,6 +50,22 @@ export default function AdminPage() {
         <p className="text-sm text-muted">
           Users, activity & app installs{data?.build ? ` · build ${data.build.slice(0, 7)}` : ""}
         </p>
+      </div>
+
+      {/* Admin quick links */}
+      <div className="grid grid-cols-2 gap-3">
+        <Link
+          to="/admin/rewards"
+          className="tap flex items-center gap-3 rounded-2xl border border-[var(--card-border)] bg-[var(--card)] p-4"
+        >
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/10 text-[var(--accent)]">
+            <GiftIcon className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold">Rewards</p>
+            <p className="text-xs text-muted">Manage catalog</p>
+          </div>
+        </Link>
       </div>
 
       {error ? (

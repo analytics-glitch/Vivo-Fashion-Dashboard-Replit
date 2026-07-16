@@ -50,6 +50,7 @@ export const api = {
     request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "PATCH", body: body ? JSON.stringify(body) : undefined }),
+  del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 
 // ── Domain types ─────────────────────────────────────────────
@@ -314,8 +315,44 @@ export interface AdminOverview {
   users: AdminUser[];
 }
 
+export interface AdminReward {
+  id: string;
+  title: string;
+  description: string;
+  pointsCost: number;
+  type: "PERCENT_DISCOUNT" | "FIXED_DISCOUNT" | "FREE_SHIPPING" | "FREE_PRODUCT";
+  value: number;
+  imageUrl: string | null;
+  active: boolean;
+  stock: number | null;
+  minTierId: string | null;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type RewardInput = {
+  title: string;
+  description: string;
+  pointsCost: number;
+  type: AdminReward["type"];
+  value: number;
+  imageUrl?: string | null;
+  stock?: number | null;
+  minTierId?: string | null;
+  sortOrder?: number;
+  active?: boolean;
+};
+
 export const admin = {
   overview: () => api.get<AdminOverview>("/api/admin/overview"),
+  rewards: {
+    list: () => api.get<{ rewards: AdminReward[] }>("/api/admin/rewards"),
+    create: (data: RewardInput) => api.post<{ reward: AdminReward }>("/api/admin/rewards", data),
+    update: (id: string, data: Partial<RewardInput>) =>
+      api.patch<{ reward: AdminReward }>(`/api/admin/rewards/${id}`, data),
+    delete: (id: string) => api.del<{ ok: boolean }>(`/api/admin/rewards/${id}`),
+  },
 };
 
 export const shop = {

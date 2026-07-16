@@ -15,5 +15,6 @@ export default [
     route("referrals", "routes/referrals.tsx"),
     route("profile", "routes/profile.tsx"),
     route("admin", "routes/admin.tsx"),
+    route("admin/rewards", "routes/admin-rewards.tsx"),
   ]),
 ] satisfies RouteConfig;
