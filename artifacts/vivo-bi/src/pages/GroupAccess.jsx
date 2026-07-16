@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { Loading, ErrorBox } from "@/components/common";
-import { Check, ArrowCounterClockwise, FloppyDisk, LockSimple, Plus, Trash } from "@phosphor-icons/react";
+import { Check, ArrowCounterClockwise, FloppyDisk, LockSimple, Plus, Trash, Minus, CaretDown } from "@phosphor-icons/react";
 import { PRIMARY_NAV, ADMIN_NAV, HOME_GROUP_ORDER } from "@/lib/navItems";
 import { ROLE_OPTIONS, roleLabel } from "@/lib/permissions";
 import { useAuth } from "@/lib/auth";
@@ -17,6 +17,9 @@ import { useAuth } from "@/lib/auth";
  * Guard rails: the Admin group always resolves to full access (cannot be locked
  * out — checkboxes shown ticked + disabled), and admin management pages are
  * never assignable to non-admin groups (enforced server-side too).
+ *
+ * Hub pages (Inventory, Retail, Production, etc.) expand to show per-report
+ * checkboxes — each sub-report maps to the page ID that gates that tab.
  */
 const GroupAccess = () => {
   const { checkAuth } = useAuth();
@@ -30,12 +33,11 @@ const GroupAccess = () => {
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [creatingGroup, setCreatingGroup] = useState(false);
+  const [expanded, setExpanded] = useState(new Set());
 
   const isAdminGroup = role === "admin";
   const isCustomGroup = Array.isArray(data?.custom) && data.custom.includes(role);
 
-  // Label for any group — custom labels come from the API, built-ins fall back
-  // to the static map.
   const gLabel = useCallback(
     (r) => data?.labels?.[r] || roleLabel(r),
     [data]
@@ -51,40 +53,98 @@ const GroupAccess = () => {
 
   useEffect(() => { load(); }, [load]);
 
-  // When the selected group (or freshly-loaded data) changes, seed the ticked
-  // set from that group's currently-effective pages.
   useEffect(() => {
     if (!data) return;
     setSelected(Array.isArray(data.groups?.[role]) ? data.groups[role] : []);
     setSavedAt(null);
   }, [role, data]);
 
-  // Page catalog grouped by section. Admin group sees the Administration group
-  // too; non-admin groups never get admin- pages assigned.
-  const grouped = useMemo(() => {
-    const items = isAdminGroup ? [...PRIMARY_NAV, ...ADMIN_NAV] : PRIMARY_NAV;
-    const by = {};
-    items.forEach((t) => {
-      const g = t.group || "Other";
-      (by[g] = by[g] || []).push(t);
+  // Build a map of hub page id -> deduplicated sub-report list.
+  // Sub-reports correspond to actual tab pageIds within that hub page.
+  const PAGE_SUB_REPORTS = useMemo(() => {
+    const m = {};
+    [...PRIMARY_NAV, ...ADMIN_NAV].forEach((t) => {
+      if (!t.subReports?.length) return;
+      const seen = new Set();
+      m[t.id] = t.subReports.filter((s) => {
+        if (seen.has(s.pageId)) return false;
+        seen.add(s.pageId);
+        return true;
+      });
     });
-    const order = HOME_GROUP_ORDER.filter((g) => by[g]);
-    Object.keys(by).forEach((g) => { if (!order.includes(g)) order.push(g); });
-    return order.map((g) => [g, by[g]]);
-  }, [isAdminGroup]);
+    return m;
+  }, []);
 
-  const isOn = (id) => isAdminGroup || selected.includes(id);
-  const toggle = (id) => {
-    if (isAdminGroup) return; // admin always full — not editable
-    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
-  };
+  const getSubIds = useCallback(
+    (id) => {
+      const subs = PAGE_SUB_REPORTS[id];
+      return subs ? subs.map((s) => s.pageId) : null;
+    },
+    [PAGE_SUB_REPORTS]
+  );
+
+  const isOn = useCallback(
+    (id) => {
+      if (isAdminGroup) return true;
+      const subIds = getSubIds(id);
+      if (subIds) return subIds.every((sid) => selected.includes(sid));
+      return selected.includes(id);
+    },
+    [isAdminGroup, selected, getSubIds]
+  );
+
+  const isPartial = useCallback(
+    (id) => {
+      if (isAdminGroup) return false;
+      const subIds = getSubIds(id);
+      if (!subIds) return false;
+      const onCount = subIds.filter((sid) => selected.includes(sid)).length;
+      return onCount > 0 && onCount < subIds.length;
+    },
+    [isAdminGroup, selected, getSubIds]
+  );
+
+  // Toggle a page. For hub pages, adds/removes all sub-report IDs at once.
+  const toggle = useCallback(
+    (id) => {
+      if (isAdminGroup) return;
+      const subIds = getSubIds(id);
+      if (subIds) {
+        const anyOn = subIds.some((sid) => selected.includes(sid));
+        if (anyOn) {
+          setSelected((s) => s.filter((x) => !subIds.includes(x)));
+        } else {
+          setSelected((s) => [...new Set([...s, ...subIds])]);
+        }
+      } else {
+        setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+      }
+    },
+    [isAdminGroup, selected, getSubIds]
+  );
+
+  // Toggle an individual sub-report within a hub page.
+  const toggleSubReport = useCallback(
+    (pageId) => {
+      if (isAdminGroup) return;
+      setSelected((s) => (s.includes(pageId) ? s.filter((x) => x !== pageId) : [...s, pageId]));
+    },
+    [isAdminGroup]
+  );
+
+  const toggleExpand = useCallback((id) => {
+    setExpanded((e) => {
+      const n = new Set(e);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  }, []);
 
   const save = async () => {
     setSaving(true);
     setError(null);
     try {
       const r = await api.put("/admin/group-pages", { role, pages: selected });
-      // Reflect the cleaned, server-canonical list back into our cache + state.
       const pages = Array.isArray(r.data?.pages) ? r.data.pages : selected;
       setData((d) => (d ? { ...d, groups: { ...d.groups, [role]: pages }, overridden: { ...d.overridden, [role]: true } } : d));
       setSelected(pages);
@@ -161,6 +221,19 @@ const GroupAccess = () => {
   const overridden = Boolean(data?.overridden?.[role]);
   const selectedCount = isAdminGroup ? (data?.page_catalog?.length || 0) : selected.length;
 
+  // Page catalog grouped by section.
+  const grouped = useMemo(() => {
+    const items = isAdminGroup ? [...PRIMARY_NAV, ...ADMIN_NAV] : PRIMARY_NAV;
+    const by = {};
+    items.forEach((t) => {
+      const g = t.group || "Other";
+      (by[g] = by[g] || []).push(t);
+    });
+    const order = HOME_GROUP_ORDER.filter((g) => by[g]);
+    Object.keys(by).forEach((g) => { if (!order.includes(g)) order.push(g); });
+    return order.map((g) => [g, by[g]]);
+  }, [isAdminGroup]);
+
   return (
     <div className="space-y-6" data-testid="group-access">
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
@@ -235,7 +308,7 @@ const GroupAccess = () => {
           </button>
         )}
         <span className="text-[12px] text-muted">
-          {selectedCount} page{selectedCount === 1 ? "" : "s"} visible
+          {selectedCount} permission{selectedCount === 1 ? "" : "s"} granted
           {!isAdminGroup && overridden && (
             <span className="ml-2 inline-flex items-center rounded-full bg-amber-100 text-amber-900 px-2 py-0.5 text-[10.5px] font-semibold uppercase tracking-wide">
               Customized
@@ -285,7 +358,7 @@ const GroupAccess = () => {
       {error && <ErrorBox message={error} />}
       {savedAt && !error && (
         <div className="text-[12px] text-brand" data-testid="group-saved">
-          Saved · {gLabel(role)} now sees {selectedCount} page{selectedCount === 1 ? "" : "s"}
+          Saved · {gLabel(role)} now has {selectedCount} permission{selectedCount === 1 ? "" : "s"}
         </div>
       )}
 
@@ -305,7 +378,112 @@ const GroupAccess = () => {
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
               {items.map((t) => {
+                const subIds = getSubIds(t.id);
+                const hasSubReports = !isAdminGroup && subIds && subIds.length > 0;
                 const on = isOn(t.id);
+                const partial = isPartial(t.id);
+                const isExpandedCard = expanded.has(t.id);
+                const subOnCount = hasSubReports ? subIds.filter((sid) => selected.includes(sid)).length : 0;
+
+                if (hasSubReports) {
+                  // Hub page with expandable sub-reports
+                  return (
+                    <div
+                      key={t.id}
+                      data-testid={`page-${t.id}`}
+                      className={`rounded-lg border flex flex-col ${
+                        on || partial
+                          ? "border-brand/40 bg-brand/5"
+                          : "border-border bg-muted/20"
+                      }`}
+                    >
+                      {/* Header row: toggles all sub-reports */}
+                      <button
+                        type="button"
+                        onClick={() => toggle(t.id)}
+                        className={`flex items-center justify-between gap-3 px-3 py-2.5 text-left w-full transition ${
+                          on || partial ? "text-foreground" : "text-muted"
+                        }`}
+                      >
+                        <span className="min-w-0">
+                          <span className="block text-[13px] font-medium truncate">{t.label}</span>
+                          {t.desc && (
+                            <span className="block text-[11px] text-muted truncate">{t.desc}</span>
+                          )}
+                        </span>
+                        <span
+                          className={`shrink-0 grid place-items-center w-5 h-5 rounded-md border transition ${
+                            on
+                              ? "bg-brand border-brand text-white"
+                              : partial
+                              ? "bg-brand/15 border-brand text-brand"
+                              : "border-border bg-white text-transparent"
+                          }`}
+                        >
+                          {partial ? (
+                            <Minus size={11} weight="bold" />
+                          ) : (
+                            <Check size={13} weight="bold" />
+                          )}
+                        </span>
+                      </button>
+
+                      {/* Expand/collapse toggle */}
+                      <button
+                        type="button"
+                        onClick={() => toggleExpand(t.id)}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 border-t text-[11px] font-medium transition ${
+                          on || partial
+                            ? "border-brand/20 text-brand/70 hover:text-brand hover:bg-brand/5"
+                            : "border-border/60 text-muted hover:text-foreground/60 hover:bg-muted/30"
+                        }`}
+                      >
+                        <CaretDown
+                          size={9}
+                          weight="bold"
+                          className={`transition-transform duration-150 ${isExpandedCard ? "rotate-180" : ""}`}
+                        />
+                        {isExpandedCard ? "Hide" : "Choose"} reports
+                        <span className={`ml-auto tabular-nums ${on || partial ? "text-brand" : "text-muted"}`}>
+                          {subOnCount}/{subIds.length}
+                        </span>
+                      </button>
+
+                      {/* Sub-report list */}
+                      {isExpandedCard && (
+                        <div className="px-2 pb-2 pt-1 border-t border-border/30 space-y-0.5">
+                          {PAGE_SUB_REPORTS[t.id].map((sr) => {
+                            const srOn = selected.includes(sr.pageId);
+                            return (
+                              <button
+                                key={sr.pageId}
+                                type="button"
+                                onClick={() => toggleSubReport(sr.pageId)}
+                                data-testid={`sub-${sr.pageId}`}
+                                className={`flex items-center gap-2 w-full text-left px-2 py-1.5 rounded-md transition text-[12px] ${
+                                  srOn
+                                    ? "text-foreground bg-brand/8 hover:bg-brand/12"
+                                    : "text-muted hover:bg-muted/40 hover:text-foreground/70"
+                                }`}
+                              >
+                                <span
+                                  className={`shrink-0 grid place-items-center w-4 h-4 rounded border transition ${
+                                    srOn ? "bg-brand border-brand text-white" : "border-border bg-white text-transparent"
+                                  }`}
+                                >
+                                  <Check size={9} weight="bold" />
+                                </span>
+                                <span>{sr.label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                // Standard standalone page card (no sub-reports)
                 return (
                   <button
                     key={t.id}

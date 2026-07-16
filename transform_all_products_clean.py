@@ -231,7 +231,7 @@ def main():
             clr = clr.title()
 
         # Product name
-        product_name = f"{sname} - {clr}" if sname and clr else (sname or name)
+        product_name = name  # use Odoo name directly — reconstruction from sname+clr introduced wrong colors
 
         # Brand
         br   = brand or guess_brand(name)

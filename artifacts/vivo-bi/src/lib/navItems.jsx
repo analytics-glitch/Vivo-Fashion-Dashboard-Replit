@@ -56,21 +56,83 @@ export const PRIMARY_NAV = [
   // Product & inventory ANALYSIS pages — "what's selling, what's it worth,
   // how much stock and what's stuck". Operational action pages live in the
   // "Operations & Production" group below.
-  { to: "/product-analysis", label: "Product Development", icon: ChartBar, id: "product-analysis", group: "Products & Range", desc: "Product development hub — Style Cockpit, Range Management, Weekly Style Tracker, Catalog & SOR, SOR Report, Allocations, Re-Order, Gallery and Stock Movement tabs" },
-  { to: "/inventory", label: "Inventory Management", icon: Package, id: "inventory", anyOfPageIds: ["inventory", "replenishments", "replenish-by-item", "store-flow", "size-health"], group: "Products & Range", desc: "Stock on hand, velocity & cover, stuck stock, replenishments, stock movement and size health" },
+  {
+    to: "/product-analysis", label: "Product Development", icon: ChartBar, id: "product-analysis",
+    anyOfPageIds: ["product-analysis", "production", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "exports", "store-flow"],
+    group: "Products & Range", desc: "Product development hub — Style Cockpit, Range Management, Weekly Style Tracker, Catalog & SOR, SOR Report, Allocations, Re-Order, Gallery and Stock Movement tabs",
+    subReports: [
+      { pageId: "product-analysis", label: "Style Cockpit & Catalog" },
+      { pageId: "range-mgmt",       label: "Range Management" },
+      { pageId: "style-tracker",    label: "Weekly Style Tracker" },
+      { pageId: "production",       label: "Production Overview" },
+      { pageId: "allocations",      label: "Allocations" },
+      { pageId: "re-order",         label: "Re-Order" },
+      { pageId: "gallery",          label: "Gallery" },
+      { pageId: "exports",          label: "SOR Report" },
+      { pageId: "store-flow",       label: "Stock Movement" },
+    ],
+  },
+  {
+    to: "/inventory", label: "Inventory Management", icon: Package, id: "inventory",
+    anyOfPageIds: ["inventory", "replenishments", "replenish-by-item", "store-flow", "size-health"],
+    group: "Products & Range", desc: "Stock on hand, velocity & cover, stuck stock, replenishments, stock movement and size health",
+    subReports: [
+      { pageId: "inventory",         label: "Stock, Velocity & Stuck Stock" },
+      { pageId: "replenishments",    label: "Replenishments" },
+      { pageId: "replenish-by-item", label: "Replenish by Style/SKU" },
+      { pageId: "store-flow",        label: "Stock Movement" },
+      { pageId: "size-health",       label: "Size Health" },
+    ],
+  },
   { to: "/fabric", label: "Fabric", icon: ChartBar, id: "fabric", external: true, group: "Products & Range", desc: "Standalone Fabric BI dashboard (opens full-page)" },
 
   // Retail pages
-  { to: "/retail", label: "Retail", icon: MapPin, id: "retail", anyOfPageIds: ["locations", "warehouse-returns", "excess-inventory", "ibt"], group: "Retail", desc: "Retail hub — Locations, Warehouse Returns, Excess Inventory and IBT tabs" },
+  {
+    to: "/retail", label: "Retail", icon: MapPin, id: "retail",
+    anyOfPageIds: ["locations", "warehouse-returns", "excess-inventory", "ibt"],
+    group: "Retail", desc: "Retail hub — Locations, Warehouse Returns, Excess Inventory and IBT tabs",
+    subReports: [
+      { pageId: "locations",         label: "Locations" },
+      { pageId: "warehouse-returns", label: "Warehouse Returns" },
+      { pageId: "excess-inventory",  label: "Excess Inventory" },
+      { pageId: "ibt",               label: "IBT" },
+    ],
+  },
   { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall", group: "Retail", desc: "Footfall, turn-in and conversion by store" },
-  { to: "/targets", label: "Targets", icon: Target, id: "targets", anyOfPageIds: ["targets", "quarter-scorecard"], group: "Retail", desc: "Track sales against targets, plus the quarterly target scorecard" },
+  {
+    to: "/targets", label: "Targets", icon: Target, id: "targets",
+    anyOfPageIds: ["targets", "quarter-scorecard"],
+    group: "Retail", desc: "Track sales against targets, plus the quarterly target scorecard",
+    subReports: [
+      { pageId: "targets",            label: "Targets" },
+      { pageId: "quarter-scorecard",  label: "Quarterly Scorecard" },
+    ],
+  },
 
   // Customer pages & marketing
-  { to: "/customers", label: "Customers", icon: Users, id: "customers", anyOfPageIds: ["customers", "customer-details", "crm"], group: "Customers & Marketing", desc: "Customers hub — analytics, single-customer lookup and the CRM" },
+  {
+    to: "/customers", label: "Customers", icon: Users, id: "customers",
+    anyOfPageIds: ["customers", "customer-details", "crm"],
+    group: "Customers & Marketing", desc: "Customers hub — analytics, single-customer lookup and the CRM",
+    subReports: [
+      { pageId: "customers",        label: "Customer Analytics" },
+      { pageId: "customer-details", label: "Customer Details" },
+      { pageId: "crm",              label: "CRM" },
+    ],
+  },
   { to: "/marketing", label: "Marketing", icon: Megaphone, id: "marketing", group: "Customers & Marketing", desc: "Campaign and channel marketing performance" },
 
   // OPERATIONAL pages — actions that move, return or make stock.
-  { to: "/production", label: "Production Pipeline", icon: Factory, id: "production", anyOfPageIds: ["production", "production-report", "style-tracker"], group: "Operations & Production", desc: "Kanban tracker of buying orders through the manufacturing stages, plus the detailed production report and weekly style tracker" },
+  {
+    to: "/production", label: "Production Pipeline", icon: Factory, id: "production",
+    anyOfPageIds: ["production", "production-report", "style-tracker"],
+    group: "Operations & Production", desc: "Kanban tracker of buying orders through the manufacturing stages, plus the detailed production report and weekly style tracker",
+    subReports: [
+      { pageId: "production",        label: "Overview & Tracker" },
+      { pageId: "production-report", label: "Production Report" },
+      { pageId: "style-tracker",     label: "Weekly Style Tracker" },
+    ],
+  },
 
   // Catalogues & others
   { to: "/catalogue", label: "Report Catalogue", icon: BookOpen, id: "catalogue", group: "Tools", desc: "Every report, what page it lives on, and all the calculation & business rules — with an AI finder" },
