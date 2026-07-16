@@ -355,7 +355,7 @@ def _get_overview(request: Request):
 
     # 8-week leave trend
     leave_trend = _rows(
-        """SELECT date_trunc('week', generate_series)::date AS week_start,
+        """SELECT date_trunc('week', gs)::date AS week_start,
                   COUNT(rl.id) AS n
            FROM generate_series(%s::date - INTERVAL '7 weeks', %s::date, INTERVAL '1 week') gs
            LEFT JOIN rota_leave rl
