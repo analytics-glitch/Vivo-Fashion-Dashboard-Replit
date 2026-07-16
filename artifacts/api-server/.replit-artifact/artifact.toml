@@ -54,11 +54,17 @@ run = "sh -c 'cd /home/runner/workspace/loyalty-app/the-loyalty-app && npm ci &&
 
 [services.production]
 
+# Build step: install deps, generate Prisma client, run DB migrations, build SPA.
+# The resulting node_modules + generated client + dist/ persist to the run step.
 [services.production.build]
 args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app && (cd loyalty-app-backend && npm ci && npx prisma generate && node scripts/db-env.mjs npx prisma migrate deploy) && (cd the-loyalty-app && npm ci && npm run build)"]
 
+# Run step: node_modules and prisma client are already present from the build
+# step — no npm ci here so the server binds in <5s instead of 40-60s.
+# A slow run step means the liveness probe times out mid-npm-install → restart
+# loop → cascades to the main BI API going offline.
 [services.production.run]
-args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app/loyalty-app-backend && npm ci && npx prisma generate && npx tsx src/server.ts"]
+args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app/loyalty-app-backend && npx tsx src/server.ts"]
 
 [services.production.run.env]
 PORT = "8090"
