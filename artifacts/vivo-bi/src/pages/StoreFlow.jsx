@@ -84,8 +84,8 @@ const StoreFlow = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [dateFrom, setDateFrom] = useState(() => getLastWeekRange().from);
-  const [dateTo, setDateTo] = useState(() => getLastWeekRange().to);
+  const [dateFrom, setDateFrom] = useState(() => getThisWeekRange().from);
+  const [dateTo, setDateTo] = useState(() => getThisWeekRange().to);
   const [country, setCountry] = useState("");
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("pos_location");
