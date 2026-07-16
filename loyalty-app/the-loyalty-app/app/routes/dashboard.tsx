@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import { useAuth } from "../lib/auth";
 import { loyalty, type PointsTxn } from "../lib/api";
@@ -28,9 +28,32 @@ export default function Dashboard() {
   const toast = useToast();
   const [activity, setActivity] = useState<PointsTxn[] | null>(null);
 
-  useEffect(() => {
+  const fetchActivity = useCallback(() => {
     loyalty.history().then((r) => setActivity(r.items)).catch(() => setActivity([]));
   }, []);
+
+  useEffect(() => {
+    fetchActivity();
+  }, [fetchActivity]);
+
+  useEffect(() => {
+    const handleVisible = () => {
+      if (document.visibilityState === "visible") {
+        refresh();
+        fetchActivity();
+      }
+    };
+    const handleFocus = () => {
+      refresh();
+      fetchActivity();
+    };
+    document.addEventListener("visibilitychange", handleVisible);
+    window.addEventListener("focus", handleFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisible);
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, [refresh, fetchActivity]);
 
   if (!user) return null;
   const tier = user.tier;
