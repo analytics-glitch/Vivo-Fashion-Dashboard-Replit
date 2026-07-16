@@ -35,3 +35,34 @@ WATCHDOG_MANAGE_API = "1"
 # serve. /api/healthz (DB-free liveness) stays available for plain up/down checks.
 [services.production.health.startup]
 path = "/api/readyz"
+
+# ── Vivo Loyalty PWA (standalone Shopify-connected loyalty app) ──────────────
+# Vendored AS-IS at repo-root loyalty-app/ (npm, Fastify + Prisma + React Router
+# SPA). Own process, own port, own Postgres schema (loyalty_app). Served under
+# the /loyalty-app base path — SPA, API, and Shopify webhooks are all same-origin.
+[[services]]
+localPort = 8090
+name = "Vivo Loyalty PWA"
+paths = ["/loyalty-app"]
+
+[services.env]
+PORT = "8090"
+LOYALTY_APP_SERVE_FRONTEND = "true"
+
+[services.development]
+run = "sh -c 'cd /home/runner/workspace/loyalty-app/loyalty-app-backend && npx tsx src/server.ts'"
+
+[services.production]
+
+[services.production.build]
+args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app && (cd loyalty-app-backend && npm ci && npx prisma generate && node scripts/db-env.mjs npx prisma migrate deploy) && (cd the-loyalty-app && npm ci && npm run build)"]
+
+[services.production.run]
+args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app/loyalty-app-backend && npx tsx src/server.ts"]
+
+[services.production.run.env]
+PORT = "8090"
+LOYALTY_APP_SERVE_FRONTEND = "true"
+
+[services.production.health.startup]
+path = "/loyalty-app/health"

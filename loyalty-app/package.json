@@ -1,0 +1,30 @@
+{
+  "name": "vivo-loyalty",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vivo Loyalty — Shopify-connected loyalty PWA (React Router 7 SPA + Fastify + Prisma/Postgres). Single-origin: the API also serves the built SPA.",
+  "engines": {
+    "node": ">=22.22"
+  },
+  "scripts": {
+    "install:all": "npm --prefix the-loyalty-app install && npm --prefix loyalty-app-backend install",
+
+    "build:web": "cd the-loyalty-app && VITE_API_URL_LOYALTY_APP= npm run build",
+    "build:api": "cd loyalty-app-backend && npx prisma generate && npm run build",
+    "build": "npm run build:web && npm run build:api",
+
+    "db:deploy": "cd loyalty-app-backend && npx prisma migrate deploy",
+    "db:seed": "cd loyalty-app-backend && npm run db:seed",
+    "db:studio": "cd loyalty-app-backend && npx prisma studio",
+
+    "setup": "npm run install:all && npm run build && npm run db:deploy",
+
+    "start": "cd loyalty-app-backend && node dist/server.js",
+    "dev": "concurrently -n api,web -c magenta,cyan \"npm --prefix loyalty-app-backend run dev\" \"npm --prefix the-loyalty-app run dev\"",
+
+    "typecheck": "npm --prefix loyalty-app-backend run typecheck && npm --prefix the-loyalty-app run typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
