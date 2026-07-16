@@ -153,6 +153,14 @@ export const PRIMARY_NAV = [
   { to: "/growth", label: "Growth Model", icon: RocketLaunch, id: "growth", group: "Performance", desc: "KES 5 Billion north-star trajectory — revenue bridge, compound growth path, store contribution splits and editable levers" },
   // Retail Desk — leadership + admin (server-gated via /api/retail-desk)
   { to: "/retail-desk", label: "Retail Desk", icon: Storefront, id: "retail-desk", group: "Performance", desc: "Per-store growth path tracking, AI coaching notes, consecutive-weeks-behind alerts and issue register" },
+  // AI Desks — Phases 4-10, leadership + admin
+  { to: "/product-desk", label: "Product Desk", icon: Tag, id: "product-desk", group: "AI Desks", desc: "Markdown risk board, WOC, velocity decline, dead stock value — daily AI coaching note" },
+  { to: "/workforce-desk", label: "Workforce Desk", icon: UsersThree, id: "workforce-desk", group: "AI Desks", desc: "Branch attendance rates, avg hours, revenue per labour hour — daily AI coaching note" },
+  { to: "/customer-desk", label: "Customer Desk", icon: Users, id: "customer-desk", group: "AI Desks", desc: "Cohort retention, CLV distribution, reactivation, loyalty health — daily AI coaching note" },
+  { to: "/marketing-desk", label: "Marketing Desk", icon: Megaphone, id: "marketing-desk", group: "AI Desks", desc: "Social inbox health, loyalty programme summary, data gap register — daily AI coaching note" },
+  { to: "/supply-chain-desk", label: "Supply Chain Desk", icon: Truck, id: "supply-chain-desk", group: "AI Desks", desc: "Fabric PO performance, supplier on-time, overdue orders — daily AI coaching note" },
+  { to: "/production-desk", label: "Production Desk", icon: Factory, id: "production-desk", group: "AI Desks", desc: "Buying order pipeline, overdue orders, by-buyer accountability — daily AI coaching note" },
+  { to: "/the-chair", label: "The Chair", icon: Target, id: "the-chair", group: "AI Desks", desc: "Weekly strategic synthesis across all AI Desks — open questions register for Stephen" },
   // Finance Reports Suite — leadership + admin (server-gated via /api/finance)
   { to: "/finance", label: "Finance", icon: Coins, id: "finance", group: "Performance", desc: "Finance reports suite — P&L statement, revenue, cost of revenue, opex, payroll, vendor spend and P&L trend & KPIs (KES)" },
   { to: "/margin", label: "Margin Analysis", icon: ChartLine, id: "margin", group: "Performance", desc: "Gross margin, discount rate and cost coverage by category, subcategory, brand, store or month (KES)" },
@@ -173,6 +181,7 @@ export const ADMIN_NAV = [
 // Group display order for the Home landing page.
 export const HOME_GROUP_ORDER = [
   "Performance",
+  "AI Desks",
   "Products & Range",
   "Retail",
   "Customers & Marketing",

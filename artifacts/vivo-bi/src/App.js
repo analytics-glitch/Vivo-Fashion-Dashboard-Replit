@@ -42,6 +42,13 @@ const Rota = React.lazy(() => import("@/pages/Rota"));
 const AskDashboard = React.lazy(() => import("@/pages/AskDashboard"));
 const GrowthModel  = React.lazy(() => import("@/pages/GrowthModel"));
 const RetailDesk   = React.lazy(() => import("@/pages/RetailDesk"));
+const ProductDesk      = React.lazy(() => import("@/pages/ProductDesk"));
+const WorkforceDesk    = React.lazy(() => import("@/pages/WorkforceDesk"));
+const CustomerDesk     = React.lazy(() => import("@/pages/CustomerDesk"));
+const MarketingDesk    = React.lazy(() => import("@/pages/MarketingDesk"));
+const SupplyChainDesk  = React.lazy(() => import("@/pages/SupplyChainDesk"));
+const ProductionDesk   = React.lazy(() => import("@/pages/ProductionDesk"));
+const TheChair         = React.lazy(() => import("@/pages/TheChair"));
 const Login = React.lazy(() => import("@/pages/Login"));
 const AuthCallback = React.lazy(() => import("@/pages/AuthCallback"));
 
@@ -171,6 +178,13 @@ function App() {
                 <Route path="/ask" element={<ProtectedShell pageId="ask"><AskDashboard /></ProtectedShell>} />
                 <Route path="/growth" element={<ProtectedShell pageId="growth"><GrowthModel /></ProtectedShell>} />
                 <Route path="/retail-desk" element={<ProtectedShell pageId="retail-desk"><RetailDesk /></ProtectedShell>} />
+                <Route path="/product-desk" element={<ProtectedShell pageId="product-desk"><ProductDesk /></ProtectedShell>} />
+                <Route path="/workforce-desk" element={<ProtectedShell pageId="workforce-desk"><WorkforceDesk /></ProtectedShell>} />
+                <Route path="/customer-desk" element={<ProtectedShell pageId="customer-desk"><CustomerDesk /></ProtectedShell>} />
+                <Route path="/marketing-desk" element={<ProtectedShell pageId="marketing-desk"><MarketingDesk /></ProtectedShell>} />
+                <Route path="/supply-chain-desk" element={<ProtectedShell pageId="supply-chain-desk"><SupplyChainDesk /></ProtectedShell>} />
+                <Route path="/production-desk" element={<ProtectedShell pageId="production-desk"><ProductionDesk /></ProtectedShell>} />
+                <Route path="/the-chair" element={<ProtectedShell pageId="the-chair"><TheChair /></ProtectedShell>} />
                 <Route path="/gallery" element={<Navigate to="/product-analysis?tab=gallery" replace />} />
                 <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
                 <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />

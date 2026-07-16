@@ -677,7 +677,7 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance", "margin", "l10", "rota", "growth", "retail-desk"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"],
@@ -1314,6 +1314,22 @@ async def clerk_auth_gate(request: Request, call_next):
     # Retail Desk (/api/retail-desk/*) is a leadership + admin surface.
     if path.startswith("/api/retail-desk") and user.get("role") not in ("admin", "leadership"):
         return JSONResponse({"detail": "Retail Desk access requires a leadership or admin role"}, status_code=403)
+
+    # AI Desks (Phases 4-10) — leadership + admin surfaces.
+    if path.startswith("/api/product-desk") and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "Product Desk access requires a leadership or admin role"}, status_code=403)
+    if path.startswith("/api/workforce-desk") and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "Workforce Desk access requires a leadership or admin role"}, status_code=403)
+    if path.startswith("/api/customer-desk") and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "Customer Desk access requires a leadership or admin role"}, status_code=403)
+    if path.startswith("/api/marketing-desk") and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "Marketing Desk access requires a leadership or admin role"}, status_code=403)
+    if path.startswith("/api/supply-chain-desk") and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "Supply Chain Desk access requires a leadership or admin role"}, status_code=403)
+    if path.startswith("/api/production-desk") and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "Production Desk access requires a leadership or admin role"}, status_code=403)
+    if path.startswith("/api/chair") and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "The Chair access requires a leadership or admin role"}, status_code=403)
 
     # L10 Meeting Tracker — leadership + admin surface.
     if path.startswith("/api/l10") and user.get("role") not in ("admin", "leadership"):
@@ -31327,6 +31343,21 @@ growth_router.register_growth_routes(app, _sys.modules[__name__])
 import retail_desk_router
 retail_desk_router.register_retail_desk_routes(app, _sys.modules[__name__])
 
+import product_desk_router
+product_desk_router.register_product_desk_routes(app, _sys.modules[__name__])
+import workforce_desk_router
+workforce_desk_router.register_workforce_desk_routes(app, _sys.modules[__name__])
+import customer_desk_router
+customer_desk_router.register_customer_desk_routes(app, _sys.modules[__name__])
+import marketing_desk_router
+marketing_desk_router.register_marketing_desk_routes(app, _sys.modules[__name__])
+import supply_chain_desk_router
+supply_chain_desk_router.register_supply_chain_desk_routes(app, _sys.modules[__name__])
+import production_desk_router
+production_desk_router.register_production_desk_routes(app, _sys.modules[__name__])
+import chair_router
+chair_router.register_chair_routes(app, _sys.modules[__name__])
+
 
 @_deferred_startup
 def _init_retail_desk_tables():
@@ -31334,6 +31365,55 @@ def _init_retail_desk_tables():
         retail_desk_router.ensure_retail_desk_tables()
     except Exception as e:
         log.error("Retail desk table init failed: %s", e)
+
+@_deferred_startup
+def _init_product_desk_tables():
+    try:
+        product_desk_router.ensure_product_desk_tables()
+    except Exception as e:
+        log.error("Product desk table init failed: %s", e)
+
+@_deferred_startup
+def _init_workforce_desk_tables():
+    try:
+        workforce_desk_router.ensure_workforce_desk_tables()
+    except Exception as e:
+        log.error("Workforce desk table init failed: %s", e)
+
+@_deferred_startup
+def _init_customer_desk_tables():
+    try:
+        customer_desk_router.ensure_customer_desk_tables()
+    except Exception as e:
+        log.error("Customer desk table init failed: %s", e)
+
+@_deferred_startup
+def _init_marketing_desk_tables():
+    try:
+        marketing_desk_router.ensure_marketing_desk_tables()
+    except Exception as e:
+        log.error("Marketing desk table init failed: %s", e)
+
+@_deferred_startup
+def _init_supply_chain_desk_tables():
+    try:
+        supply_chain_desk_router.ensure_supply_chain_desk_tables()
+    except Exception as e:
+        log.error("Supply chain desk table init failed: %s", e)
+
+@_deferred_startup
+def _init_production_desk_tables():
+    try:
+        production_desk_router.ensure_production_desk_tables()
+    except Exception as e:
+        log.error("Production desk table init failed: %s", e)
+
+@_deferred_startup
+def _init_chair_tables():
+    try:
+        chair_router.ensure_chair_tables()
+    except Exception as e:
+        log.error("Chair table init failed: %s", e)
 
 
 @_deferred_startup
