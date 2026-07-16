@@ -561,6 +561,80 @@ export async function createDiscountCode(args: CreateDiscountArgs): Promise<Disc
   };
 }
 
+// ── Webhook registration (idempotent, run at boot) ──────────
+
+/**
+ * Ensures the orders/paid and refunds/create webhooks exist in Shopify,
+ * pointing at this instance's public URL. Idempotent: creates only what is
+ * missing, and NEVER touches webhooks that point at other hosts (the original
+ * production instance may have its own — deleting or re-pointing those would
+ * break it / double-award points).
+ *
+ * The public base URL is resolved from WEB_BASE_URL, else the first entry of
+ * REPLIT_DOMAINS (the published domain). Localhost/dev URLs are refused —
+ * Shopify can't reach them anyway.
+ */
+export async function ensureShopifyWebhooks(log?: {
+  info: (msg: string) => void;
+  warn: (msg: string) => void;
+}): Promise<void> {
+  const say = log ?? { info: console.log, warn: console.warn };
+  if (!shopifyEnabled || !env.SHOPIFY_WEBHOOK_SECRET) {
+    say.info("Shopify webhooks: not configured yet (secrets missing) — skipping registration.");
+    return;
+  }
+
+  const publicBase =
+    env.WEB_BASE_URL ||
+    (process.env.REPLIT_DOMAINS ? `https://${process.env.REPLIT_DOMAINS.split(",")[0].trim()}` : "");
+  if (!publicBase || !publicBase.startsWith("https://") || publicBase.includes("localhost")) {
+    say.warn(
+      "Shopify webhooks: no public https base URL (WEB_BASE_URL / REPLIT_DOMAINS) — skipping registration.",
+    );
+    return;
+  }
+
+  const wanted: Array<{ topic: string; address: string }> = [
+    { topic: "orders/paid", address: `${publicBase}${env.BASE_PATH}/webhooks/shopify/orders-paid` },
+    { topic: "refunds/create", address: `${publicBase}${env.BASE_PATH}/webhooks/shopify/refunds-create` },
+  ];
+
+  const existing = await rest<{ webhooks: Array<{ id: number; topic: string; address: string }> }>(
+    `/webhooks.json?limit=250`,
+  );
+  const have = existing.webhooks ?? [];
+
+  for (const w of wanted) {
+    if (have.some((h) => h.topic === w.topic && h.address === w.address)) {
+      say.info(`Shopify webhook ok: ${w.topic} → ${w.address}`);
+      continue;
+    }
+    // Re-point only a stale hook for the SAME host (e.g. base path change);
+    // hooks on other hosts belong to other instances and are left alone.
+    const ourHost = new URL(publicBase).host;
+    const stale = have.find((h) => {
+      try {
+        return h.topic === w.topic && new URL(h.address).host === ourHost;
+      } catch {
+        return false;
+      }
+    });
+    if (stale) {
+      await rest(`/webhooks/${stale.id}.json`, {
+        method: "PUT",
+        body: JSON.stringify({ webhook: { id: stale.id, address: w.address } }),
+      });
+      say.info(`Shopify webhook re-pointed: ${w.topic} → ${w.address}`);
+    } else {
+      await rest(`/webhooks.json`, {
+        method: "POST",
+        body: JSON.stringify({ webhook: { topic: w.topic, address: w.address, format: "json" } }),
+      });
+      say.info(`Shopify webhook created: ${w.topic} → ${w.address}`);
+    }
+  }
+}
+
 // ── Webhook HMAC verification ────────────────────────────────
 
 export function verifyWebhookHmac(rawBody: Buffer, hmacHeader: string | undefined): boolean {

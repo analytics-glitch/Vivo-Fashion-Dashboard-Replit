@@ -7,6 +7,15 @@ const app = await buildApp();
 try {
   await app.listen({ port: env.PORT, host: env.HOST });
   app.log.info(`🚀 Vivo Loyalty API on ${env.API_BASE_URL}`);
+  // Register Shopify webhooks in the background — never blocks or kills boot.
+  void (async () => {
+    try {
+      const { ensureShopifyWebhooks } = await import("./lib/shopify.js");
+      await ensureShopifyWebhooks(app.log);
+    } catch (err) {
+      app.log.warn(`Shopify webhook registration failed: ${(err as Error).message}`);
+    }
+  })();
 } catch (err) {
   app.log.error(err);
   process.exit(1);
