@@ -1,0 +1,9 @@
+kind = "web"
+previewPath = "/loyalty-app"
+title = "Vivo Loyalty PWA"
+version = "1.0.0"
+id = "artifacts/loyalty-pwa"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
