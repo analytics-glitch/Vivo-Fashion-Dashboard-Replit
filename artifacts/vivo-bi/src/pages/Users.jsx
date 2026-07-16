@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { api, fmtDate } from "@/lib/api";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
-import { UserPlus, Trash, ShieldCheck, Eye, X } from "@phosphor-icons/react";
+import { UserPlus, Trash, ShieldCheck, Eye, X, FolderSimple, Plus } from "@phosphor-icons/react";
 import SortableTable from "@/components/SortableTable";
 import { useAuth } from "@/lib/auth";
 import { ROLE_OPTIONS, roleLabel } from "@/lib/permissions";
@@ -263,6 +263,157 @@ const Users = () => {
             ]}
             rows={users}
           />
+        </div>
+      )}
+
+      {user?.role === "admin" && <L10FoldersAdmin />}
+    </div>
+  );
+};
+
+// ─── L10 Departments ─────────────────────────────────────────────────────────
+const FOLDER_PRESET_COLORS = [
+  "#1a5c38","#7c3aed","#d97706","#0ea5e9","#e11d48","#64748b","#0d9488","#9333ea",
+];
+
+const L10FoldersAdmin = () => {
+  const [folders, setFolders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({ name: "", description: "", color: "#7c3aed" });
+  const [err, setErr] = useState(null);
+
+  const reload = useCallback(() => {
+    setLoading(true);
+    api.get("/l10/folders", { forceFresh: true })
+      .then((r) => setFolders(r.data || []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { reload(); }, [reload]);
+
+  const createFolder = async () => {
+    if (!form.name.trim()) { setErr("Name is required."); return; }
+    setErr(null);
+    try {
+      await api.post("/l10/folders", form);
+      setForm({ name: "", description: "", color: "#7c3aed" });
+      setCreating(false);
+      reload();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Failed to create folder.");
+    }
+  };
+
+  const deleteFolder = async (id) => {
+    if (!window.confirm("Delete this department folder? Meetings and data inside it will remain in the database but this folder will no longer appear.")) return;
+    try {
+      await api.delete(`/l10/folders/${id}`);
+      reload();
+    } catch (e) {
+      alert(e?.response?.data?.detail || "Could not delete folder.");
+    }
+  };
+
+  return (
+    <div className="rounded-xl border bg-card">
+      <div className="px-4 py-3 border-b bg-muted/20 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <FolderSimple size={16} className="text-muted-foreground" />
+          <h2 className="text-sm font-semibold">L10 Department Folders</h2>
+        </div>
+        <button
+          type="button"
+          onClick={() => setCreating((v) => !v)}
+          className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg bg-primary text-primary-foreground hover:opacity-90"
+        >
+          <Plus size={12} />
+          {creating ? "Cancel" : "Add folder"}
+        </button>
+      </div>
+
+      {creating && (
+        <div className="px-4 py-3 border-b bg-muted/10 space-y-2">
+          <div className="flex flex-wrap gap-2">
+            <input
+              placeholder="Department name *"
+              value={form.name}
+              onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+              className="border border-border rounded px-2.5 py-1.5 text-sm flex-1 min-w-[160px]"
+            />
+            <input
+              placeholder="Description (optional)"
+              value={form.description}
+              onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))}
+              className="border border-border rounded px-2.5 py-1.5 text-sm flex-1 min-w-[200px]"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Color:</span>
+            {FOLDER_PRESET_COLORS.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setForm((p) => ({ ...p, color: c }))}
+                className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${
+                  form.color === c ? "border-foreground scale-110" : "border-transparent"
+                }`}
+                style={{ backgroundColor: c }}
+              />
+            ))}
+            <input
+              type="color"
+              value={form.color}
+              onChange={(e) => setForm((p) => ({ ...p, color: e.target.value }))}
+              className="w-6 h-6 rounded border-0 cursor-pointer"
+              title="Custom color"
+            />
+          </div>
+          {err && <p className="text-xs text-red-600">{err}</p>}
+          <button
+            type="button"
+            onClick={createFolder}
+            className="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-sm hover:opacity-90"
+          >
+            Create folder
+          </button>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="px-4 py-6 text-center text-sm text-muted-foreground">Loading…</div>
+      ) : (
+        <div className="divide-y">
+          {folders.map((f) => (
+            <div key={f.id} className="flex items-center gap-3 px-4 py-3">
+              <span
+                className="w-3 h-3 rounded-full shrink-0"
+                style={{ backgroundColor: f.color || "#1a5c38" }}
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium">{f.name}</div>
+                {f.description && (
+                  <div className="text-xs text-muted-foreground">{f.description}</div>
+                )}
+              </div>
+              {f.id === 1 ? (
+                <span className="text-xs text-muted-foreground px-2 py-0.5 rounded bg-muted/60">Default</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => deleteFolder(f.id)}
+                  className="p-1.5 rounded hover:bg-red-50 text-muted-foreground hover:text-red-500"
+                  title="Delete folder"
+                >
+                  <Trash size={13} />
+                </button>
+              )}
+            </div>
+          ))}
+          {folders.length === 0 && (
+            <div className="px-4 py-6 text-center text-sm text-muted-foreground">No folders yet.</div>
+          )}
         </div>
       )}
     </div>

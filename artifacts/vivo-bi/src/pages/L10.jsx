@@ -231,7 +231,7 @@ const AgendaTab = ({ meeting, settings }) => {
 };
 
 // ─── Check-In Tab ────────────────────────────────────────────────────────────
-const CheckInTab = ({ meetingId, members }) => {
+const CheckInTab = ({ meetingId, members, folderId = 1 }) => {
   const [rows, setRows] = useState([]);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -241,7 +241,7 @@ const CheckInTab = ({ meetingId, members }) => {
     setLoading(true);
     Promise.all([
       api.get(`/l10/checkin/${meetingId}`, { forceFresh: true }),
-      api.get(`/l10/checkin/history`, { params: { exclude_meeting_id: meetingId }, forceFresh: true }),
+      api.get(`/l10/checkin/history`, { params: { exclude_meeting_id: meetingId, folder_id: folderId }, forceFresh: true }),
     ]).then(([c, h]) => {
       const existing = {};
       (c.data || []).forEach((r) => { existing[r.member_name] = r; });
@@ -359,13 +359,13 @@ const CheckInTab = ({ meetingId, members }) => {
 };
 
 // ─── Scorecard Tab ───────────────────────────────────────────────────────────
-const ScorecardTab = ({ meetingId }) => {
+const ScorecardTab = ({ meetingId, folderId = 1 }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const reload = useCallback(() => {
     setLoading(true);
-    api.get("/l10/scorecard", { params: { meetings: 8 }, forceFresh: true })
+    api.get("/l10/scorecard", { params: { meetings: 8, folder_id: folderId }, forceFresh: true })
       .then((r) => setData(r.data))
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -495,13 +495,13 @@ const ScorecardCell = ({ value, onTrack, onSave }) => {
 };
 
 // ─── Rocks Tab ───────────────────────────────────────────────────────────────
-const RocksTab = ({ members }) => {
+const RocksTab = ({ members, folderId = 1 }) => {
   const [rocks, setRocks] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const reload = useCallback(() => {
     setLoading(true);
-    api.get("/l10/rocks", { forceFresh: true })
+    api.get("/l10/rocks", { params: { folder_id: folderId }, forceFresh: true })
       .then((r) => setRocks(r.data || []))
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -623,7 +623,7 @@ const RocksTab = ({ members }) => {
 };
 
 // ─── Headlines Tab ───────────────────────────────────────────────────────────
-const HeadlinesTab = ({ meetingId, members }) => {
+const HeadlinesTab = ({ meetingId, members, folderId = 1 }) => {
   const [rows, setRows] = useState([{ headline: "", date: new Date().toISOString().slice(0, 10), added_by: "", link: "" }]);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -633,7 +633,7 @@ const HeadlinesTab = ({ meetingId, members }) => {
     setLoading(true);
     Promise.all([
       api.get(`/l10/headlines/${meetingId}`, { forceFresh: true }),
-      api.get("/l10/headlines/history", { params: { exclude_meeting_id: meetingId }, forceFresh: true }),
+      api.get("/l10/headlines/history", { params: { exclude_meeting_id: meetingId, folder_id: folderId }, forceFresh: true }),
     ]).then(([c, h]) => {
       const cur = c.data || [];
       setRows(cur.length ? cur : [{ headline: "", date: new Date().toISOString().slice(0, 10), added_by: "", link: "" }]);
@@ -756,7 +756,7 @@ const HeadlinesTab = ({ meetingId, members }) => {
 };
 
 // ─── To-Dos Tab ──────────────────────────────────────────────────────────────
-const TodosTab = ({ meetingId, members }) => {
+const TodosTab = ({ meetingId, members, folderId = 1 }) => {
   const [todos, setTodos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
@@ -764,7 +764,7 @@ const TodosTab = ({ meetingId, members }) => {
 
   const reload = useCallback(() => {
     setLoading(true);
-    api.get("/l10/todos", { forceFresh: true })
+    api.get("/l10/todos", { params: { folder_id: folderId }, forceFresh: true })
       .then((r) => setTodos(r.data || []))
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -782,7 +782,7 @@ const TodosTab = ({ meetingId, members }) => {
 
   const addTodo = () => {
     if (!newTodo.description.trim()) return;
-    api.post("/l10/todos", { ...newTodo, opened_meeting_id: meetingId })
+    api.post("/l10/todos", { ...newTodo, opened_meeting_id: meetingId, folder_id: folderId })
       .then(() => { setAdding(false); setNewTodo({ description: "", owner: "", open_date: new Date().toISOString().slice(0, 10) }); reload(); })
       .catch(() => {});
   };
@@ -897,7 +897,7 @@ const TodosTab = ({ meetingId, members }) => {
 };
 
 // ─── IDS Tab ─────────────────────────────────────────────────────────────────
-const IDSTab = ({ meetingId, members }) => {
+const IDSTab = ({ meetingId, members, folderId = 1 }) => {
   const [rows, setRows] = useState([{ issue: "", raised_by: "", status: "open" }]);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -907,7 +907,7 @@ const IDSTab = ({ meetingId, members }) => {
     setLoading(true);
     Promise.all([
       api.get(`/l10/ids/${meetingId}`, { forceFresh: true }),
-      api.get("/l10/ids/history", { params: { exclude_meeting_id: meetingId }, forceFresh: true }),
+      api.get("/l10/ids/history", { params: { exclude_meeting_id: meetingId, folder_id: folderId }, forceFresh: true }),
     ]).then(([c, h]) => {
       const cur = c.data || [];
       setRows(cur.length ? cur : [{ issue: "", raised_by: "", status: "open" }]);
@@ -1040,7 +1040,7 @@ const IDSTab = ({ meetingId, members }) => {
 };
 
 // ─── Conclude Tab ─────────────────────────────────────────────────────────────
-const ConcludeTab = ({ meetingId, members }) => {
+const ConcludeTab = ({ meetingId, members, folderId = 1 }) => {
   const [cascading, setCascading] = useState("");
   const [ratingsData, setRatingsData] = useState({ meetings: [], ratings_by_key: [] });
   const [ratings, setRatings] = useState({});
@@ -1052,7 +1052,7 @@ const ConcludeTab = ({ meetingId, members }) => {
     setLoading(true);
     Promise.all([
       api.get(`/l10/conclude/${meetingId}`, { forceFresh: true }),
-      api.get("/l10/ratings/history", { params: { limit: 8 }, forceFresh: true }),
+      api.get("/l10/ratings/history", { params: { limit: 8, folder_id: folderId }, forceFresh: true }),
     ]).then(([c, h]) => {
       setCascading(c.data?.cascading_messages || "");
       const curRatings = {};
@@ -1187,7 +1187,7 @@ const ConcludeTab = ({ meetingId, members }) => {
 };
 
 // ─── Admin Tab ────────────────────────────────────────────────────────────────
-const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged }) => {
+const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, folderId = 1 }) => {
   const [metrics, setMetrics] = useState([]);
   const [rocks, setRocks] = useState([]);
   const [loadingMetrics, setLoadingMetrics] = useState(true);
@@ -1200,7 +1200,7 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged }) =>
 
   const reloadMetrics = useCallback(() => {
     setLoadingMetrics(true);
-    api.get("/l10/scorecard-metrics", { params: { include_inactive: true }, forceFresh: true })
+    api.get("/l10/scorecard-metrics", { params: { include_inactive: true, folder_id: folderId }, forceFresh: true })
       .then((r) => setMetrics(r.data || []))
       .catch(() => {})
       .finally(() => setLoadingMetrics(false));
@@ -1208,7 +1208,7 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged }) =>
 
   const reloadRocks = useCallback(() => {
     setLoadingRocks(true);
-    api.get("/l10/rocks", { params: { include_archived: true }, forceFresh: true })
+    api.get("/l10/rocks", { params: { include_archived: true, folder_id: folderId }, forceFresh: true })
       .then((r) => setRocks(r.data || []))
       .catch(() => {})
       .finally(() => setLoadingRocks(false));
@@ -1218,7 +1218,7 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged }) =>
 
   const addMember = () => {
     if (!newMember.trim()) return;
-    api.post("/l10/members", { name: newMember.trim() }).then(() => { setNewMember(""); onMembersChanged(); }).catch(() => {});
+    api.post("/l10/members", { name: newMember.trim(), folder_id: folderId }).then(() => { setNewMember(""); onMembersChanged(); }).catch(() => {});
   };
 
   const moveMember = (id, dir, idx) => {
@@ -1235,7 +1235,7 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged }) =>
 
   const addMetric = () => {
     if (!newMetric.measurable.trim()) return;
-    api.post("/l10/scorecard-metrics", newMetric).then(() => {
+    api.post("/l10/scorecard-metrics", { ...newMetric, folder_id: folderId }).then(() => {
       setNewMetric({ who: "", measurable: "", goal: "", uom: "", goal_direction: "up" });
       reloadMetrics();
     }).catch(() => {});
@@ -1247,7 +1247,7 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged }) =>
 
   const addRock = () => {
     if (!newRock.description.trim()) return;
-    api.post("/l10/rocks", newRock).then(() => {
+    api.post("/l10/rocks", { ...newRock, folder_id: folderId }).then(() => {
       setNewRock({ description: "", rock_type: "Company", owner: "", quarter_label: "" });
       reloadRocks();
     }).catch(() => {});
@@ -1423,9 +1423,82 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged }) =>
 };
 
 // ─── Main L10 Component ───────────────────────────────────────────────────────
+
+// Color dot for folder picker
+const FOLDER_COLORS = [
+  "#1a5c38","#7c3aed","#d97706","#0ea5e9","#e11d48","#64748b","#0d9488","#9333ea",
+];
+
+const MeetingHistoryTable = ({ meetings, meetingId, onSelect }) => {
+  if (!meetings || meetings.length === 0) return null;
+  return (
+    <div className="rounded-xl border bg-card overflow-hidden">
+      <div className="px-4 py-3 border-b bg-muted/20">
+        <h2 className="text-sm font-semibold">Previous Meetings</h2>
+        <p className="text-xs text-muted-foreground mt-0.5">Click any row to view that week's meeting</p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground bg-muted/10 text-left">
+              <th className="py-2 px-4 font-medium">Week</th>
+              <th className="py-2 px-4 font-medium">Date</th>
+              <th className="py-2 px-4 font-medium">Day</th>
+              <th className="py-2 px-4 font-medium w-24"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {meetings.map((m) => {
+              const isCurrent = m.id === meetingId;
+              let dayName = "";
+              try {
+                dayName = new Date(m.meeting_date + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long" });
+              } catch {}
+              return (
+                <tr
+                  key={m.id}
+                  onClick={() => onSelect(m.id)}
+                  className={`border-b last:border-0 cursor-pointer transition-colors ${
+                    isCurrent
+                      ? "bg-emerald-50/60 hover:bg-emerald-50"
+                      : "hover:bg-muted/30"
+                  }`}
+                >
+                  <td className="py-2.5 px-4 font-medium">{m.week_label}</td>
+                  <td className="py-2.5 px-4 text-muted-foreground">
+                    {(() => {
+                      try {
+                        return new Date(m.meeting_date + "T00:00:00").toLocaleDateString("en-GB", {
+                          day: "numeric", month: "short", year: "numeric"
+                        });
+                      } catch { return m.meeting_date; }
+                    })()}
+                  </td>
+                  <td className="py-2.5 px-4 text-muted-foreground text-xs">{dayName}</td>
+                  <td className="py-2.5 px-4 text-right">
+                    {isCurrent ? (
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                        Viewing
+                      </span>
+                    ) : (
+                      <span className="text-xs text-primary hover:underline">View</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
 const L10 = () => {
   const { user } = useAuth();
   const [tab, setTab] = useState("agenda");
+  const [folders, setFolders] = useState([]);
+  const [folderId, setFolderId] = useState(1);
   const [meetings, setMeetings] = useState([]);
   const [meetingId, setMeetingId] = useState(null);
   const [members, setMembers] = useState([]);
@@ -1436,23 +1509,33 @@ const L10 = () => {
 
   const currentMeeting = meetings.find((m) => m.id === meetingId);
 
-  const reloadMeetings = useCallback(() => {
-    api.get("/l10/meetings", { forceFresh: true })
+  // Load folders once
+  useEffect(() => {
+    api.get("/l10/folders", { forceFresh: true })
+      .then((r) => setFolders(r.data || []))
+      .catch(() => {});
+  }, []);
+
+  const reloadMeetings = useCallback((folderIdOverride) => {
+    const fid = folderIdOverride ?? folderId;
+    api.get("/l10/meetings", { params: { folder_id: fid }, forceFresh: true })
       .then((r) => {
         const list = r.data || [];
         setMeetings(list);
-        if (list.length > 0 && !meetingId) {
+        if (list.length > 0) {
           setMeetingId(list[0].id);
+        } else {
+          setMeetingId(null);
         }
       })
       .catch((e) => setError(e?.response?.data?.detail || e.message));
-  }, [meetingId]);
+  }, [folderId]);
 
   const reloadMembers = useCallback(() => {
-    api.get("/l10/members", { forceFresh: true })
+    api.get("/l10/members", { params: { folder_id: folderId }, forceFresh: true })
       .then((r) => setMembers(r.data || []))
       .catch(() => {});
-  }, []);
+  }, [folderId]);
 
   const reloadSettings = useCallback(() => {
     api.get("/l10/settings", { forceFresh: true })
@@ -1460,11 +1543,12 @@ const L10 = () => {
       .catch(() => {});
   }, []);
 
+  // Initial load
   useEffect(() => {
     setLoading(true);
     Promise.all([
-      api.get("/l10/meetings", { forceFresh: true }),
-      api.get("/l10/members", { forceFresh: true }),
+      api.get("/l10/meetings", { params: { folder_id: folderId }, forceFresh: true }),
+      api.get("/l10/members", { params: { folder_id: folderId }, forceFresh: true }),
       api.get("/l10/settings", { forceFresh: true }),
     ]).then(([m, mem, s]) => {
       const list = m.data || [];
@@ -1476,12 +1560,21 @@ const L10 = () => {
     }).catch((e) => {
       setError(e?.response?.data?.detail || e.message);
     }).finally(() => setLoading(false));
-  }, []);
+  }, [folderId]);
+
+  const switchFolder = (id) => {
+    if (id === folderId) return;
+    setFolderId(id);
+    setMeetingId(null);
+    setMeetings([]);
+    setMembers([]);
+  };
 
   const createMeeting = async () => {
     setCreating(true);
     try {
       const res = await api.post("/l10/meetings", {
+        folder_id: folderId,
         start_time: settings.default_start_time || "08:00",
       });
       await reloadMeetings();
@@ -1495,6 +1588,8 @@ const L10 = () => {
 
   if (loading) return <Loading label="Loading L10 Meeting Tracker…" />;
   if (error) return <ErrorBox message={error} />;
+
+  const currentFolder = folders.find((f) => f.id === folderId) || { id: 1, name: "SLT", color: "#1a5c38" };
 
   return (
     <div className="space-y-4" data-testid="l10-page">
@@ -1532,10 +1627,38 @@ const L10 = () => {
         </div>
       </div>
 
+      {/* Folder picker */}
+      {folders.length > 1 && (
+        <div className="flex flex-wrap gap-2 items-center">
+          <span className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Department:</span>
+          {folders.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => switchFolder(f.id)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border transition-colors ${
+                folderId === f.id
+                  ? "text-white border-transparent shadow-sm"
+                  : "bg-white text-muted-foreground border-border hover:border-primary/50 hover:text-foreground"
+              }`}
+              style={folderId === f.id ? { backgroundColor: f.color || "#1a5c38", borderColor: f.color || "#1a5c38" } : {}}
+            >
+              <span
+                className="w-2 h-2 rounded-full shrink-0"
+                style={{ backgroundColor: folderId === f.id ? "rgba(255,255,255,0.7)" : (f.color || "#1a5c38") }}
+              />
+              {f.name}
+            </button>
+          ))}
+        </div>
+      )}
+
       {meetings.length === 0 && (
         <div className="rounded-xl border bg-card p-10 text-center">
           <CalendarBlank size={40} className="mx-auto mb-3 text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">No meetings yet. Click "New Meeting" to get started.</p>
+          <p className="text-sm text-muted-foreground">
+            No meetings yet for <strong>{currentFolder.name}</strong>. Click "New Meeting" to get started.
+          </p>
         </div>
       )}
 
@@ -1547,6 +1670,17 @@ const L10 = () => {
             <span>{fmtDate(currentMeeting.meeting_date)}</span>
             <span>·</span>
             <span>Starts {fmtTime(currentMeeting.start_time)}</span>
+            {folders.length > 0 && (
+              <>
+                <span>·</span>
+                <span
+                  className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full text-white"
+                  style={{ backgroundColor: currentFolder.color || "#1a5c38" }}
+                >
+                  {currentFolder.name}
+                </span>
+              </>
+            )}
           </div>
 
           {/* Tab bar */}
@@ -1571,22 +1705,32 @@ const L10 = () => {
           {/* Tab content */}
           <div className="mt-0">
             {tab === "agenda" && <AgendaTab meeting={currentMeeting} settings={settings} />}
-            {tab === "checkin" && <CheckInTab meetingId={meetingId} members={members} />}
-            {tab === "scorecard" && <ScorecardTab meetingId={meetingId} />}
-            {tab === "rocks" && <RocksTab members={members} />}
-            {tab === "headlines" && <HeadlinesTab meetingId={meetingId} members={members} />}
-            {tab === "todos" && <TodosTab meetingId={meetingId} members={members} />}
-            {tab === "ids" && <IDSTab meetingId={meetingId} members={members} />}
-            {tab === "conclude" && <ConcludeTab meetingId={meetingId} members={members} />}
+            {tab === "checkin" && <CheckInTab meetingId={meetingId} members={members} folderId={folderId} />}
+            {tab === "scorecard" && <ScorecardTab meetingId={meetingId} folderId={folderId} />}
+            {tab === "rocks" && <RocksTab members={members} folderId={folderId} />}
+            {tab === "headlines" && <HeadlinesTab meetingId={meetingId} members={members} folderId={folderId} />}
+            {tab === "todos" && <TodosTab meetingId={meetingId} members={members} folderId={folderId} />}
+            {tab === "ids" && <IDSTab meetingId={meetingId} members={members} folderId={folderId} />}
+            {tab === "conclude" && <ConcludeTab meetingId={meetingId} members={members} folderId={folderId} />}
             {tab === "admin" && (
               <AdminTab
                 members={members}
                 onMembersChanged={reloadMembers}
                 settings={settings}
                 onSettingsChanged={reloadSettings}
+                folderId={folderId}
               />
             )}
           </div>
+
+          {/* Previous Meetings history table */}
+          {meetings.length > 1 && (
+            <MeetingHistoryTable
+              meetings={meetings}
+              meetingId={meetingId}
+              onSelect={(id) => setMeetingId(id)}
+            />
+          )}
         </>
       )}
     </div>
