@@ -36,7 +36,7 @@ AUTH_ME_URL = f"{PROXY_BASE}/loyalty-app/api/auth/me"
 # How long to wait for the service to become available (seconds).
 # The loyalty PWA workflow may still be initialising immediately after a
 # publish; a short retry window makes this test robust to that.
-WAIT_TIMEOUT_S = int(os.environ.get("LOYALTY_SMOKE_TIMEOUT", "30"))
+WAIT_TIMEOUT_S = int(os.environ.get("LOYALTY_SMOKE_TIMEOUT", "90"))
 POLL_INTERVAL_S = 2
 
 
