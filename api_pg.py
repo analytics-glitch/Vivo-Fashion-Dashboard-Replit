@@ -31359,70 +31359,6 @@ async def serve_tiktok_domain_verification_2():
     return resp
 
 
-# Serve React build as static files
-build_dir = pathlib.Path(__file__).parent / "dashboard" / "build"
-if build_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(build_dir / "static")), name="static")
-
-    @app.get("/{full_path:path}")
-    async def serve_react(full_path: str):
-        from fastapi.responses import HTMLResponse, JSONResponse
-        # Never serve the SPA for API routes
-        if full_path.startswith("api/"):
-            return JSONResponse({"detail": "Not found"}, status_code=404)
-        # Standalone Fabric BI dashboard — a self-contained static HTML page served
-        # full-page (outside the React SPA) at /fabric. Auth is the general /api gate
-        # (cookie session sent on the full-page navigation), and /api/fabric/* is
-        # readable by any active user.
-        if full_path == "fabric" or full_path.startswith("fabric/"):
-            # Prefer the git-tracked source at the repo root so the page reliably
-            # ships on deploy — dashboard/build is gitignored CRA output and is not
-            # guaranteed to be present in a fresh build. Fall back to the build copy.
-            fabric = pathlib.Path(__file__).parent / "fabric_dashboard_live.html"
-            if not fabric.exists():
-                fabric = build_dir / "fabric.html"
-            if fabric.exists():
-                # In-memory HTMLResponse, not FileResponse: a FileResponse under
-                # GZipMiddleware can emit the ASGI `http.response.pathsend` zero-copy
-                # extension that GZipMiddleware raises on mid-stream (500 in prod,
-                # fine in dev). A plain body compresses cleanly everywhere.
-                fr = HTMLResponse(content=fabric.read_text(encoding="utf-8"))
-                fr.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-                fr.headers["Pragma"] = "no-cache"
-                fr.headers["Expires"] = "0"
-                return fr
-        # Standalone CRM · Clienteling cockpit — a self-contained static HTML page
-        # served full-page (outside the React SPA) at /clienteling, the same way as
-        # /fabric. It calls the existing gated /api/crm/* endpoints (cookie session
-        # sent on the full-page navigation). Served at /clienteling, not /crm, to
-        # avoid colliding with the React SPA's /crm route.
-        if full_path == "clienteling" or full_path.startswith("clienteling/"):
-            crm = build_dir / "crm.html"
-            if crm.exists():
-                cr = HTMLResponse(content=crm.read_text(encoding="utf-8"))
-                cr.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-                cr.headers["Pragma"] = "no-cache"
-                cr.headers["Expires"] = "0"
-                return cr
-        index = build_dir / "index.html"
-        # Never serve an absent file: a missing index.html surfaces as an opaque
-        # 500 (this was the original /fabric + /clienteling prod failure). Return a
-        # clean 404 instead. Serve as an in-memory HTMLResponse rather than a
-        # FileResponse so GZipMiddleware never hits the `http.response.pathsend`
-        # extension (which raised mid-stream → 500 in prod, fine in dev).
-        if not index.exists():
-            return JSONResponse({"detail": "Not found"}, status_code=404)
-        response = HTMLResponse(content=index.read_text(encoding="utf-8"))
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-        return response
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
-
-
 # ── L10 Meeting Tracker ────────────────────────────────────────────────────────
 # EOS Level 10 weekly meeting tracker. Tables live in the app_users DB so they
 # share the same Postgres instance and advisory-lock infrastructure. Access is
@@ -32151,3 +32087,68 @@ async def l10_update_settings(request: Request):
         "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()",
         (json.dumps(settings),))
     return settings
+
+# Serve React build as static files
+build_dir = pathlib.Path(__file__).parent / "dashboard" / "build"
+if build_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(build_dir / "static")), name="static")
+
+    @app.get("/{full_path:path}")
+    async def serve_react(full_path: str):
+        from fastapi.responses import HTMLResponse, JSONResponse
+        # Never serve the SPA for API routes
+        if full_path.startswith("api/"):
+            return JSONResponse({"detail": "Not found"}, status_code=404)
+        # Standalone Fabric BI dashboard — a self-contained static HTML page served
+        # full-page (outside the React SPA) at /fabric. Auth is the general /api gate
+        # (cookie session sent on the full-page navigation), and /api/fabric/* is
+        # readable by any active user.
+        if full_path == "fabric" or full_path.startswith("fabric/"):
+            # Prefer the git-tracked source at the repo root so the page reliably
+            # ships on deploy — dashboard/build is gitignored CRA output and is not
+            # guaranteed to be present in a fresh build. Fall back to the build copy.
+            fabric = pathlib.Path(__file__).parent / "fabric_dashboard_live.html"
+            if not fabric.exists():
+                fabric = build_dir / "fabric.html"
+            if fabric.exists():
+                # In-memory HTMLResponse, not FileResponse: a FileResponse under
+                # GZipMiddleware can emit the ASGI `http.response.pathsend` zero-copy
+                # extension that GZipMiddleware raises on mid-stream (500 in prod,
+                # fine in dev). A plain body compresses cleanly everywhere.
+                fr = HTMLResponse(content=fabric.read_text(encoding="utf-8"))
+                fr.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                fr.headers["Pragma"] = "no-cache"
+                fr.headers["Expires"] = "0"
+                return fr
+        # Standalone CRM · Clienteling cockpit — a self-contained static HTML page
+        # served full-page (outside the React SPA) at /clienteling, the same way as
+        # /fabric. It calls the existing gated /api/crm/* endpoints (cookie session
+        # sent on the full-page navigation). Served at /clienteling, not /crm, to
+        # avoid colliding with the React SPA's /crm route.
+        if full_path == "clienteling" or full_path.startswith("clienteling/"):
+            crm = build_dir / "crm.html"
+            if crm.exists():
+                cr = HTMLResponse(content=crm.read_text(encoding="utf-8"))
+                cr.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                cr.headers["Pragma"] = "no-cache"
+                cr.headers["Expires"] = "0"
+                return cr
+        index = build_dir / "index.html"
+        # Never serve an absent file: a missing index.html surfaces as an opaque
+        # 500 (this was the original /fabric + /clienteling prod failure). Return a
+        # clean 404 instead. Serve as an in-memory HTMLResponse rather than a
+        # FileResponse so GZipMiddleware never hits the `http.response.pathsend`
+        # extension (which raised mid-stream → 500 in prod, fine in dev).
+        if not index.exists():
+            return JSONResponse({"detail": "Not found"}, status_code=404)
+        response = HTMLResponse(content=index.read_text(encoding="utf-8"))
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
+
