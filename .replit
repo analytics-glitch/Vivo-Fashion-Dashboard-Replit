@@ -32,6 +32,10 @@ args = "compile"
 task = "workflow.run"
 args = "test"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "loyalty-smoke"
+
 [[workflows.workflow]]
 name = "Sync Watchdog"
 author = "agent"
@@ -75,6 +79,17 @@ isValidation = true
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python -m unittest validation_agent.test_cross_surface validation_agent.test_governance validation_agent.test_learned_range test_ibt_nightly_reconcile validation_agent.test_ibt_calibration test_sync_loop_idempotency validation_agent.test_replen_calibration test_fabric_worker_loop test_production_intake_prune test_replen_item_history test_page_access_parity"
+
+[[workflows.workflow]]
+name = "loyalty-smoke"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python3 check_loyalty_smoke.py"
+
+[workflows.workflow.metadata]
+isValidation = true
 
 [agent]
 stack = "PNPM_WORKSPACE"
