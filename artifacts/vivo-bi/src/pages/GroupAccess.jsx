@@ -216,12 +216,7 @@ const GroupAccess = () => {
     }
   };
 
-  if (loading) return <Loading label="Loading group access…" />;
-
-  const overridden = Boolean(data?.overridden?.[role]);
-  const selectedCount = isAdminGroup ? (data?.page_catalog?.length || 0) : selected.length;
-
-  // Page catalog grouped by section.
+  // Page catalog grouped by section — must be before any early return (Rules of Hooks).
   const grouped = useMemo(() => {
     const items = isAdminGroup ? [...PRIMARY_NAV, ...ADMIN_NAV] : PRIMARY_NAV;
     const by = {};
@@ -233,6 +228,11 @@ const GroupAccess = () => {
     Object.keys(by).forEach((g) => { if (!order.includes(g)) order.push(g); });
     return order.map((g) => [g, by[g]]);
   }, [isAdminGroup]);
+
+  if (loading) return <Loading label="Loading group access…" />;
+
+  const overridden = Boolean(data?.overridden?.[role]);
+  const selectedCount = isAdminGroup ? (data?.page_catalog?.length || 0) : selected.length;
 
   return (
     <div className="space-y-6" data-testid="group-access">

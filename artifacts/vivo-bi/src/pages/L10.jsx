@@ -71,6 +71,37 @@ function fmtDate(iso) {
   } catch { return iso; }
 }
 
+function getQuarterLabel(isoDate) {
+  if (!isoDate) return "Unknown";
+  try {
+    const d = new Date(isoDate + "T00:00:00");
+    return `Q${Math.ceil((d.getMonth() + 1) / 3)} ${d.getFullYear()}`;
+  } catch { return "Unknown"; }
+}
+
+function scorecardTrafficLight(value, goal, direction) {
+  if (value === null || value === undefined || value === "") return null;
+  const v = parseFloat(value);
+  const g = parseFloat(goal);
+  if (isNaN(v) || isNaN(g) || g === 0) return null;
+  if (direction === "down") {
+    if (v <= g) return "green";
+    if (v <= g * 1.25) return "yellow";
+    return "red";
+  }
+  const pct = (v / g) * 100;
+  if (pct >= 100) return "green";
+  if (pct >= 80) return "yellow";
+  return "red";
+}
+
+function trafficLightCls(tl, base = "") {
+  if (tl === "green") return `${base} bg-emerald-100 text-emerald-800`;
+  if (tl === "yellow") return `${base} bg-amber-100 text-amber-800`;
+  if (tl === "red") return `${base} bg-red-100 text-red-700`;
+  return `${base} bg-muted/40 text-foreground`;
+}
+
 function isoWeekLabel() {
   const d = new Date();
   const jan4 = new Date(d.getFullYear(), 0, 4);
@@ -359,17 +390,32 @@ const CheckInTab = ({ meetingId, members, folderId = 1 }) => {
 };
 
 // ─── Scorecard Tab ───────────────────────────────────────────────────────────
-const ScorecardTab = ({ meetingId, folderId = 1 }) => {
+const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  const notifyRedMetrics = useCallback((metrics, meetings, currentMeetingId) => {
+    if (!onRedMetrics) return;
+    const red = [];
+    metrics.forEach((metric) => {
+      const cell = metric.values?.[currentMeetingId];
+      if (!cell || cell.value === null || cell.value === "") return;
+      const tl = scorecardTrafficLight(cell.value, metric.goal, metric.goal_direction);
+      if (tl === "red") red.push({ id: metric.id, measurable: metric.measurable, who: metric.who, value: cell.value, goal: metric.goal });
+    });
+    onRedMetrics(red);
+  }, [onRedMetrics]);
 
   const reload = useCallback(() => {
     setLoading(true);
     api.get("/l10/scorecard", { params: { meetings: 8, folder_id: folderId }, forceFresh: true })
-      .then((r) => setData(r.data))
+      .then((r) => {
+        setData(r.data);
+        if (r.data && meetingId) notifyRedMetrics(r.data.metrics || [], r.data.meetings || [], meetingId);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }, [folderId, meetingId, notifyRedMetrics]);
 
   useEffect(() => { reload(); }, [reload]);
 
@@ -393,6 +439,11 @@ const ScorecardTab = ({ meetingId, folderId = 1 }) => {
 
   return (
     <div className="space-y-4">
+      <div className="flex items-center gap-4 text-xs text-muted-foreground">
+        <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-100 border border-emerald-300" /> ≥ 100% of target</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300" /> 80–99%</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-red-100 border border-red-300" /> &lt; 80% (auto-added to IDS)</span>
+      </div>
       <div className="rounded-xl border bg-card overflow-hidden">
         <div className="px-4 py-3 border-b bg-muted/20 flex items-center justify-between">
           <h2 className="text-sm font-semibold">Weekly Scorecard</h2>
@@ -427,20 +478,19 @@ const ScorecardTab = ({ meetingId, folderId = 1 }) => {
                   </td>
                   <td className="py-2 px-3 text-xs text-muted-foreground">{metric.uom || "—"}</td>
                   {meetings.map((m) => {
-                    const cell = metric.values?.[m.id] || { value: null, on_track: null };
+                    const cell = metric.values?.[m.id] || { value: null };
                     const isCurrent = m.id === meetingId;
-                    const bg = cell.on_track === true ? "bg-emerald-50 text-emerald-800" :
-                               cell.on_track === false ? "bg-red-50 text-red-700" : "";
+                    const tl = scorecardTrafficLight(cell.value, metric.goal, metric.goal_direction);
                     return (
-                      <td key={m.id} className={`py-1.5 px-2 text-center ${isCurrent ? "bg-emerald-50/30" : ""}`}>
+                      <td key={m.id} className={`py-1.5 px-2 text-center ${isCurrent ? "bg-emerald-50/20" : ""}`}>
                         {isCurrent ? (
                           <ScorecardCell
                             value={cell.value}
-                            onTrack={cell.on_track}
+                            trafficLight={tl}
                             onSave={(v) => saveValue(metric.id, v, metric.goal_direction, metric.goal)}
                           />
                         ) : (
-                          <span className={`rounded px-1.5 py-0.5 text-xs font-mono ${bg}`}>
+                          <span className={`rounded px-1.5 py-0.5 text-xs font-mono ${trafficLightCls(tl)}`}>
                             {cell.value ?? "—"}
                           </span>
                         )}
