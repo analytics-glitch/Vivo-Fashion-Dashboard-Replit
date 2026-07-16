@@ -50,7 +50,7 @@ PORT = "8090"
 LOYALTY_APP_SERVE_FRONTEND = "true"
 
 [services.development]
-run = "sh -c 'cd /home/runner/workspace/loyalty-app/loyalty-app-backend && npx tsx src/server.ts'"
+run = "sh -c 'cd /home/runner/workspace/loyalty-app/loyalty-app-backend && npm ci && npx tsx src/server.ts'"
 
 [services.production]
 
@@ -58,7 +58,7 @@ run = "sh -c 'cd /home/runner/workspace/loyalty-app/loyalty-app-backend && npx t
 args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app && (cd loyalty-app-backend && npm ci && npx prisma generate && node scripts/db-env.mjs npx prisma migrate deploy) && (cd the-loyalty-app && npm ci && npm run build)"]
 
 [services.production.run]
-args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app/loyalty-app-backend && npx tsx src/server.ts"]
+args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app/loyalty-app-backend && npm ci && npx tsx src/server.ts"]
 
 [services.production.run.env]
 PORT = "8090"
