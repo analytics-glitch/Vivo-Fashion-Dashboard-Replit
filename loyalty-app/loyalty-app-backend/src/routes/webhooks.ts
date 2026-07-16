@@ -69,13 +69,23 @@ export default async function webhookRoutes(app: FastifyInstance) {
     const points = pointsForOrder(total, tier?.multiplier ?? 1);
 
     if (points > 0) {
-      await awardPoints(app.prisma, {
-        customerId: customer.id,
-        points,
-        type: "EARN",
-        description: `Order ${order.name ?? order.id}`,
-        shopifyOrderId: String(order.id),
-      });
+      try {
+        await awardPoints(app.prisma, {
+          customerId: customer.id,
+          points,
+          type: "EARN",
+          description: `Order ${order.name ?? order.id}`,
+          shopifyOrderId: String(order.id),
+        });
+      } catch (err: any) {
+        // P2002 = unique constraint violation on the partial index
+        // pts_txn_earn_order_unique — a concurrent delivery already awarded
+        // points for this order; treat as idempotent success.
+        if (err?.code === "P2002") {
+          return reply.send({ ok: true, skipped: "already awarded (concurrent)" });
+        }
+        throw err;
+      }
     }
 
     // Complete a pending referral (first qualifying order by the referee).
