@@ -672,7 +672,7 @@ def _dedup(seq):
     return out
 
 
-_VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "gallery", "fabric", "sops"]
+_VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "gallery", "fabric", "sops", "ask"]
 # NOTE: "finance" (the Finance Reports Suite) is a leadership + admin surface, so
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
@@ -681,7 +681,7 @@ _LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"],
-    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "exports", "sops"],
+    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "exports", "sops", "ask"],
     "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"],
     "store_manager": ["store-flow", "locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "sops"],
     "leadership": _LEADERSHIP_PAGES,
@@ -693,7 +693,7 @@ DEFAULT_ROLE_PAGES = {
     # Fabric Warehouse department — fabric stock + general inventory.
     "fabric_warehouse": ["fabric", "inventory", "sops"],
     "customer_service": ["customers", "customer-details", "crm", "footfall", "sops"],
-    "marketing": ["marketing", "social", "crm", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops"],
+    "marketing": ["marketing", "social", "crm", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask"],
     "hr": ["hr", "sops", "rota"],
     # Employee self-service (Google auto-approved sign-ups): NO BI pages at all.
     # Their only surface is the Salary Advance form inside the HR app
@@ -31296,6 +31296,21 @@ def _init_rota_tables():
         rota_router.ensure_rota_tables()
     except Exception as e:
         log.error("rota table init failed: %s", e)
+
+# AI Insights endpoints (/api/ai/*). Gated by clerk_auth_gate (all authed users).
+# Digest: claude-haiku-3-5. Ask: claude-sonnet-4-5. Degrades gracefully
+# when ANTHROPIC_API_KEY is absent (GET /api/ai/readyz returns configured=false).
+import ai_insights_router
+import sys as _sys
+ai_insights_router.register_ai_routes(app, _sys.modules[__name__])
+
+
+@_deferred_startup
+def _init_ai_tables():
+    try:
+        ai_insights_router.ensure_ai_tables()
+    except Exception as e:
+        log.error("AI insight table init failed: %s", e)
 
 # Odoo Reconciliation Agent endpoints (/api/recon/*). Same placement rationale.
 # Gated in clerk_auth_gate to leadership + admin; write-back is approval-gated

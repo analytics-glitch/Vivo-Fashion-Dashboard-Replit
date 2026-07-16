@@ -23,6 +23,7 @@ import SortableTable from "@/components/SortableTable";
 // SalesProjection moved to /targets (Targets Tracker page).
 import StoreOfTheWeek from "@/components/StoreOfTheWeek";
 import WinsThisWeekCard from "@/components/WinsThisWeekCard";
+import DailyDigest from "@/components/ai/DailyDigest";
 import OverviewSnapshot from "@/components/OverviewSnapshot";
 // Q2TargetsCard + AnnualTargetsCard moved to /targets (Targets Tracker page).
 import { useLocationBadges, useLeaderboardStreaks } from "@/components/LocationLeaderboard";
@@ -1860,6 +1861,7 @@ const Overview = () => {
           <div className="pt-2 border-t border-border/60" data-testid="insights-section">
             <div className="eyebrow mb-3 text-muted">Insights & Projections</div>
             <div className="space-y-6">
+              <DailyDigest />
               <WinsThisWeekCard />
               {!isOnlineOnly && <StoreOfTheWeek />}
             </div>

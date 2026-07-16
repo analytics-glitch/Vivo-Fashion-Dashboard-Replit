@@ -2630,6 +2630,36 @@ def main():
         log.error("Presence sweep error: %s", e)
         conn.rollback()
 
+    # AI nightly: compute baselines + generate digest (01:00–04:59 EAT, once per day).
+    # ai_insights_router runs in standalone mode (DATABASE_URL) — no api_pg import needed.
+    _eat_now = datetime.now(timezone.utc) + timedelta(hours=3)
+    if 1 <= _eat_now.hour <= 4:
+        try:
+            _ai_date_str   = str(_eat_now.date())
+            _ai_skip       = False
+            try:
+                with conn.cursor() as _ai_c:
+                    _ai_c.execute("SELECT to_regclass('public.ai_daily_insights')")
+                    if _ai_c.fetchone()[0] is not None:
+                        _ai_c.execute(
+                            "SELECT COUNT(*) FROM ai_daily_insights WHERE date=%s",
+                            (_ai_date_str,),
+                        )
+                        _ai_skip = _ai_c.fetchone()[0] > 0
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            if not _ai_skip:
+                log.info("AI nightly: starting for %s", _ai_date_str)
+                write_heartbeat(conn, "ok")  # pulse before long LLM calls
+                import ai_insights_router as _air
+                _air.nightly_run()
+        except Exception as _ai_err:
+            log.error("AI nightly error: %s", _ai_err)
+
     write_heartbeat(conn, "ok")
     conn.close()
     log.info("=== Sync complete ===")

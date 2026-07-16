@@ -14,10 +14,10 @@
  */
 
 // Base analytical set shared by the broadest groups.
-const VIEWER = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "gallery", "fabric", "sops"];
+const VIEWER = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "gallery", "fabric", "sops", "ask"];
 
 const PRODUCT_DEVELOPMENT = ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"];
-const RETAIL = ["store-flow", "overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "exports", "sops"];
+const RETAIL = ["store-flow", "overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "exports", "sops", "ask"];
 const WAREHOUSE = ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"];
 const STORE_MANAGER = ["store-flow", "locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "sops"];
 // "finance" (the Finance Reports Suite) is a leadership + admin surface, so it
@@ -30,7 +30,7 @@ const SMT = LEADERSHIP.filter((p) => p !== "finance" && p !== "margin");
 const PRODUCTION = ["production", "production-report", "style-tracker", "fabric", "sops"];
 const FABRIC_WAREHOUSE = ["fabric", "inventory", "sops"];
 const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "footfall", "sops"];
-const MARKETING = ["marketing", "social", "crm", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops"];
+const MARKETING = ["marketing", "social", "crm", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask"];
 const HR = ["hr", "sops", "rota"];
 // Employee self-service (auto-approved Google sign-ups): NO BI pages — their
 // only surface is the Salary Advance form in the HR app (/hr/salary-advance).
