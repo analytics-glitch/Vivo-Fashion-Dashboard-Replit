@@ -48,64 +48,79 @@ const LIFECYCLE_META = {
   "Re-order": { icon: Repeat, color: "#7c3aed", bg: "bg-violet-500" },
 };
 
-const STATE_COLORS = {
-  fully_planned: "bg-emerald-500",
-  partially_planned: "bg-amber-500",
-  draft: "bg-gray-400",
-  bom_pending: "bg-rose-400",
-};
 
-const CAT_PALETTE = [
-  "bg-sky-500", "bg-violet-500", "bg-amber-500", "bg-rose-400",
-  "bg-teal-500", "bg-orange-400", "bg-indigo-400", "bg-pink-400",
-  "bg-lime-500", "bg-cyan-500", "bg-fuchsia-400", "bg-yellow-400",
+const CAT_PALETTE_HEX = [
+  "#0ea5e9", "#7c3aed", "#f59e0b", "#fb7185",
+  "#14b8a6", "#f97316", "#818cf8", "#f472b6",
+  "#84cc16", "#06b6d4", "#e879f9", "#eab308",
 ];
-let _catIdx = 0;
-const _catMap = {};
-function catColorFor(label) {
-  if (!_catMap[label]) {
-    _catMap[label] = CAT_PALETTE[_catIdx % CAT_PALETTE.length];
-    _catIdx++;
+const _catHexMap = {};
+let _catHexIdx = 0;
+function catHexFor(label) {
+  if (!_catHexMap[label]) {
+    _catHexMap[label] = CAT_PALETTE_HEX[_catHexIdx % CAT_PALETTE_HEX.length];
+    _catHexIdx++;
   }
-  return _catMap[label];
+  return _catHexMap[label];
 }
 
-/** Segmented bar with legend */
-function SegmentBar({ title, rows, colorFor, unitLabel = "orders", metric = "orders", testId }) {
-  const data = (rows || []).filter((r) => Number(r[metric]) > 0);
+const LIFECYCLE_HEX = {
+  New: "#059669",
+  Replenishment: "#0284c7",
+  "Re-order": "#7c3aed",
+  Unspecified: "#9ca3af",
+};
+
+const STATE_HEX = {
+  fully_planned: "#10b981",
+  partially_planned: "#f59e0b",
+  draft: "#9ca3af",
+  bom_pending: "#fb7185",
+};
+
+/** Horizontal bar chart — one bar per row, sorted desc */
+function BreakdownBar({ title, rows, colorFor, metric = "orders", unitLabel = "units", maxRows = 10, testId }) {
+  const data = (rows || [])
+    .filter((r) => Number(r[metric]) > 0)
+    .sort((a, b) => Number(b[metric]) - Number(a[metric]));
   const total = data.reduce((s, r) => s + (Number(r[metric]) || 0), 0);
+  const visible = data.slice(0, maxRows);
+  const maxVal = visible.length > 0 ? Number(visible[0][metric]) : 1;
+
   return (
     <div className="card-white p-4" data-testid={testId}>
       <div className="eyebrow mb-3">{title}</div>
       {total === 0 ? (
         <div className="text-[12px] text-muted italic">No data.</div>
       ) : (
-        <>
-          <div className="flex h-3 rounded-full overflow-hidden bg-panel/70">
-            {data.map((r) => (
-              <div
-                key={r.label}
-                className={colorFor(r.label)}
-                style={{ width: `${(Number(r[metric]) / total) * 100}%` }}
-                title={`${titleize(r.label)}: ${fmtQty(r[metric])} ${unitLabel}`}
-              />
-            ))}
-          </div>
-          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
-            {data.map((r) => {
-              const pct = (Number(r[metric]) / total) * 100;
-              return (
-                <div key={r.label} className="flex items-center gap-1.5 text-[12px]">
-                  <span className={`inline-block w-2.5 h-2.5 rounded-full ${colorFor(r.label)}`} />
-                  <span className="font-semibold text-[#0f3d24]">{titleize(r.label)}</span>
-                  <span className="text-muted tabular-nums">
-                    {fmtQty(r[metric])} · {pct.toFixed(0)}%
-                  </span>
+        <div className="space-y-1.5">
+          {visible.map((r) => {
+            const val = Number(r[metric]);
+            const pct = (val / total) * 100;
+            const barW = maxVal > 0 ? (val / maxVal) * 100 : 0;
+            return (
+              <div key={r.label} className="flex items-center gap-2 text-[12px]">
+                <div className="w-[120px] shrink-0 truncate text-right font-medium text-[#0f3d24]" title={titleize(r.label)}>
+                  {titleize(r.label)}
                 </div>
-              );
-            })}
-          </div>
-        </>
+                <div className="flex-1 h-3.5 bg-[#f5f0eb] rounded-sm overflow-hidden">
+                  <div
+                    className="h-full rounded-sm transition-all"
+                    style={{ width: `${barW}%`, backgroundColor: colorFor(r.label) }}
+                  />
+                </div>
+                <div className="w-[72px] shrink-0 text-right tabular-nums text-muted">
+                  {fmtQty(val)} · {pct.toFixed(0)}%
+                </div>
+              </div>
+            );
+          })}
+          {data.length > maxRows && (
+            <div className="text-[11px] text-muted italic pl-[128px]">
+              +{data.length - maxRows} more
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -655,40 +670,41 @@ export default function ProductionOverview({ onOpenReport }) {
 
       {/* Mix bars */}
       <div className="grid gap-3 grid-cols-1 md:grid-cols-2">
-        <SegmentBar
+        <BreakdownBar
           title="Order type mix (by units)"
           rows={byLifecycle}
           metric="units"
           unitLabel="units"
-          colorFor={(label) => LIFECYCLE_META[label]?.bg || "bg-gray-400"}
+          colorFor={(label) => LIFECYCLE_HEX[label] || "#9ca3af"}
           testId="prod-ov-lifecycle-mix"
         />
-        <SegmentBar
+        <BreakdownBar
           title="Buying-order state (by orders)"
           rows={data?.by_state}
           metric="orders"
           unitLabel="orders"
-          colorFor={(label) => STATE_COLORS[label] || "bg-gray-400"}
+          colorFor={(label) => STATE_HEX[label] || "#9ca3af"}
           testId="prod-ov-state-mix"
         />
       </div>
 
       {/* Category & product-type breakdown */}
       <div className="grid gap-3 grid-cols-1 md:grid-cols-2">
-        <SegmentBar
+        <BreakdownBar
           title="Category breakdown (by units)"
           rows={data?.by_category}
           metric="units"
           unitLabel="units"
-          colorFor={catColorFor}
+          colorFor={catHexFor}
           testId="prod-ov-category-mix"
         />
-        <SegmentBar
+        <BreakdownBar
           title="Product type breakdown (by units)"
           rows={data?.by_product_type}
           metric="units"
           unitLabel="units"
-          colorFor={catColorFor}
+          colorFor={catHexFor}
+          maxRows={12}
           testId="prod-ov-product-type-mix"
         />
       </div>
