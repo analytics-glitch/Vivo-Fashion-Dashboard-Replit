@@ -29,6 +29,7 @@ import {
   Factory,
   Coins,
   ImageSquare,
+  CalendarBlank,
 } from "@phosphor-icons/react";
 
 /**
@@ -76,6 +77,7 @@ export const PRIMARY_NAV = [
   { to: "/exports", label: "Exports (Sales, Inventory)", icon: DownloadSimple, id: "exports", group: "Tools", desc: "Download sales and inventory data as CSV" },
   { to: "/hr/", label: "HR & Attendance", icon: UsersThree, id: "hr", external: true, group: "Tools", desc: "Staff attendance, department performance and training (opens the HR dashboard)" },
   { to: "/sops", label: "SOPs", icon: BookOpen, id: "sops", group: "Tools", desc: "Standard Operating Procedures — browse and download department SOP documents" },
+  { to: "/l10", label: "L10 Meeting", icon: CalendarBlank, id: "l10", group: "Tools", desc: "EOS Level 10 weekly meeting tracker — agenda, scorecard, rocks, headlines, to-dos, IDS and conclude" },
   { to: "/data-quality", label: "Data Quality", icon: Warning, id: "data-quality", group: "Tools", desc: "Data completeness and quality checks" },
   { to: "/feedback", label: "Feedback", icon: ChatCircleDots, id: "feedback", group: "Tools", desc: "Send feedback to the BI team" },
 

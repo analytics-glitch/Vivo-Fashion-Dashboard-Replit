@@ -677,7 +677,7 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance", "l10"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"],
@@ -1301,6 +1301,10 @@ async def clerk_auth_gate(request: Request, call_next):
     # non-leadership role.
     if path.startswith("/api/finance") and user.get("role") not in ("admin", "leadership"):
         return JSONResponse({"detail": "Finance access requires a leadership or admin role"}, status_code=403)
+
+    # L10 Meeting Tracker — leadership + admin surface.
+    if path.startswith("/api/l10") and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "L10 access requires a leadership or admin role"}, status_code=403)
 
     # Odoo Reconciliation Agent (/api/recon/*) is the same finance-grade surface
     # (approve/reject + staging write-back) — leadership + admin only.
@@ -31417,3 +31421,733 @@ if build_dir.exists():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
+
+# ── L10 Meeting Tracker ────────────────────────────────────────────────────────
+# EOS Level 10 weekly meeting tracker. Tables live in the app_users DB so they
+# share the same Postgres instance and advisory-lock infrastructure. Access is
+# gated to leadership + admin (server-side in clerk_auth_gate).
+
+def _ensure_l10_tables():
+    stmts = [
+        """
+        CREATE TABLE IF NOT EXISTS l10_meetings (
+            id           SERIAL PRIMARY KEY,
+            week_label   TEXT NOT NULL,
+            meeting_date DATE NOT NULL,
+            start_time   TEXT NOT NULL DEFAULT '08:00',
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        "CREATE UNIQUE INDEX IF NOT EXISTS l10_meetings_week_uidx ON l10_meetings(week_label)",
+        """
+        CREATE TABLE IF NOT EXISTS l10_members (
+            id         SERIAL PRIMARY KEY,
+            name       TEXT NOT NULL,
+            sort_order INT  NOT NULL DEFAULT 0,
+            active     BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS l10_checkin (
+            id                  SERIAL PRIMARY KEY,
+            meeting_id          INT NOT NULL REFERENCES l10_meetings(id) ON DELETE CASCADE,
+            member_name         TEXT NOT NULL,
+            personal_news       TEXT,
+            professional_news   TEXT,
+            updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE(meeting_id, member_name)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS l10_scorecard_metrics (
+            id             SERIAL PRIMARY KEY,
+            who            TEXT,
+            measurable     TEXT NOT NULL,
+            goal           TEXT,
+            uom            TEXT,
+            goal_direction TEXT NOT NULL DEFAULT 'up',
+            sort_order     INT  NOT NULL DEFAULT 0,
+            active         BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS l10_scorecard_values (
+            id         SERIAL PRIMARY KEY,
+            metric_id  INT  NOT NULL REFERENCES l10_scorecard_metrics(id) ON DELETE CASCADE,
+            meeting_id INT  NOT NULL REFERENCES l10_meetings(id) ON DELETE CASCADE,
+            value      TEXT,
+            on_track   BOOLEAN,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE(metric_id, meeting_id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS l10_rocks (
+            id           SERIAL PRIMARY KEY,
+            description  TEXT NOT NULL,
+            rock_type    TEXT NOT NULL DEFAULT 'Company',
+            owner        TEXT,
+            on_track     BOOLEAN NOT NULL DEFAULT TRUE,
+            done         BOOLEAN NOT NULL DEFAULT FALSE,
+            results      TEXT,
+            link         TEXT,
+            quarter_label TEXT,
+            sort_order   INT NOT NULL DEFAULT 0,
+            active       BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS l10_headlines (
+            id         SERIAL PRIMARY KEY,
+            meeting_id INT  NOT NULL REFERENCES l10_meetings(id) ON DELETE CASCADE,
+            headline   TEXT NOT NULL,
+            date       TEXT,
+            added_by   TEXT,
+            link       TEXT,
+            sort_order INT NOT NULL DEFAULT 0,
+            moved_to_ids BOOLEAN NOT NULL DEFAULT FALSE,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS l10_todos (
+            id                SERIAL PRIMARY KEY,
+            description       TEXT NOT NULL,
+            open_date         TEXT,
+            owner             TEXT,
+            status            TEXT NOT NULL DEFAULT 'open',
+            link              TEXT,
+            opened_meeting_id INT REFERENCES l10_meetings(id),
+            closed_meeting_id INT REFERENCES l10_meetings(id),
+            created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS l10_ids_issues (
+            id         SERIAL PRIMARY KEY,
+            meeting_id INT  NOT NULL REFERENCES l10_meetings(id) ON DELETE CASCADE,
+            issue      TEXT NOT NULL,
+            raised_by  TEXT,
+            sort_order INT NOT NULL DEFAULT 0,
+            status     TEXT NOT NULL DEFAULT 'open',
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS l10_conclude (
+            id                  SERIAL PRIMARY KEY,
+            meeting_id          INT NOT NULL REFERENCES l10_meetings(id) ON DELETE CASCADE UNIQUE,
+            cascading_messages  TEXT,
+            updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS l10_ratings (
+            id          SERIAL PRIMARY KEY,
+            meeting_id  INT  NOT NULL REFERENCES l10_meetings(id) ON DELETE CASCADE,
+            member_name TEXT NOT NULL,
+            rating      INT,
+            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE(meeting_id, member_name)
+        )
+        """,
+    ]
+    for stmt in stmts:
+        try:
+            _users_exec(stmt)
+        except Exception as e:
+            log.error("l10 DDL failed: %s — %s", stmt[:60], e)
+
+
+@_deferred_startup
+def _init_l10_tables():
+    try:
+        _ensure_l10_tables()
+    except Exception as e:
+        log.error("L10 table init failed: %s", e)
+
+
+def _l10_iso_week(d):
+    """ISO week label like '2026-W29' for a date."""
+    iso = d.isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
+# ── Meetings ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/l10/meetings")
+def l10_list_meetings(request: Request):
+    _ensure_l10_tables()
+    rows = _users_exec(
+        "SELECT id, week_label, meeting_date::text, start_time, created_at "
+        "FROM l10_meetings ORDER BY meeting_date DESC",
+        fetch=True) or []
+    for r in rows:
+        if r.get("created_at"):
+            r["created_at"] = r["created_at"].isoformat()
+    return rows
+
+
+@app.post("/api/l10/meetings")
+async def l10_create_meeting(request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    # Default: next Monday; accept override from body.
+    today = date.today()
+    days_ahead = (7 - today.weekday()) % 7 or 7  # days until next Monday
+    default_date = today + timedelta(days=days_ahead)
+    meeting_date_str = body.get("meeting_date") or default_date.isoformat()
+    try:
+        meeting_date = date.fromisoformat(meeting_date_str[:10])
+    except ValueError:
+        meeting_date = default_date
+    week_label = body.get("week_label") or _l10_iso_week(meeting_date)
+    start_time = body.get("start_time") or "08:00"
+    # Check for duplicate week_label
+    existing = _users_exec(
+        "SELECT id FROM l10_meetings WHERE week_label=%s",
+        (week_label,), fetch=True)
+    if existing:
+        return {"id": existing[0]["id"], "week_label": week_label,
+                "meeting_date": meeting_date.isoformat(),
+                "start_time": start_time, "created": False}
+    rows = _users_exec(
+        "INSERT INTO l10_meetings (week_label, meeting_date, start_time) "
+        "VALUES (%s, %s, %s) RETURNING id",
+        (week_label, meeting_date.isoformat(), start_time), fetch=True)
+    new_id = rows[0]["id"] if rows else None
+    return {"id": new_id, "week_label": week_label,
+            "meeting_date": meeting_date.isoformat(),
+            "start_time": start_time, "created": True}
+
+
+@app.get("/api/l10/meetings/{meeting_id}")
+def l10_get_meeting(meeting_id: int, request: Request):
+    _ensure_l10_tables()
+    mtg = _users_exec(
+        "SELECT id, week_label, meeting_date::text, start_time FROM l10_meetings WHERE id=%s",
+        (meeting_id,), fetch=True)
+    if not mtg:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    return mtg[0]
+
+
+# ── Members ───────────────────────────────────────────────────────────────────
+
+@app.get("/api/l10/members")
+def l10_list_members(request: Request):
+    _ensure_l10_tables()
+    return _users_exec(
+        "SELECT id, name, sort_order, active FROM l10_members ORDER BY sort_order, id",
+        fetch=True) or []
+
+
+@app.post("/api/l10/members")
+async def l10_add_member(request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    max_ord = _users_exec("SELECT COALESCE(MAX(sort_order),0) AS m FROM l10_members", fetch=True)
+    nxt = int((max_ord or [{"m": 0}])[0]["m"]) + 1
+    rows = _users_exec(
+        "INSERT INTO l10_members (name, sort_order) VALUES (%s, %s) RETURNING id, name, sort_order, active",
+        (name, nxt), fetch=True)
+    return rows[0] if rows else {}
+
+
+@app.put("/api/l10/members/{member_id}")
+async def l10_update_member(member_id: int, request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    if "name" in body:
+        _users_exec("UPDATE l10_members SET name=%s WHERE id=%s",
+                    ((body["name"] or "").strip(), member_id))
+    if "sort_order" in body:
+        _users_exec("UPDATE l10_members SET sort_order=%s WHERE id=%s",
+                    (int(body["sort_order"]), member_id))
+    if "active" in body:
+        _users_exec("UPDATE l10_members SET active=%s WHERE id=%s",
+                    (bool(body["active"]), member_id))
+    rows = _users_exec(
+        "SELECT id, name, sort_order, active FROM l10_members WHERE id=%s",
+        (member_id,), fetch=True)
+    return rows[0] if rows else {}
+
+
+@app.delete("/api/l10/members/{member_id}")
+def l10_delete_member(member_id: int, request: Request):
+    _ensure_l10_tables()
+    _users_exec("UPDATE l10_members SET active=FALSE WHERE id=%s", (member_id,))
+    return {"ok": True}
+
+
+# ── Check-In ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/l10/checkin/{meeting_id}")
+def l10_get_checkin(meeting_id: int, request: Request):
+    _ensure_l10_tables()
+    rows = _users_exec(
+        "SELECT member_name, personal_news, professional_news "
+        "FROM l10_checkin WHERE meeting_id=%s ORDER BY member_name",
+        (meeting_id,), fetch=True) or []
+    return rows
+
+
+@app.put("/api/l10/checkin/{meeting_id}")
+async def l10_upsert_checkin(meeting_id: int, request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    rows = body.get("rows", [])
+    for row in rows:
+        name = (row.get("member_name") or "").strip()
+        if not name:
+            continue
+        _users_exec(
+            "INSERT INTO l10_checkin (meeting_id, member_name, personal_news, professional_news, updated_at) "
+            "VALUES (%s, %s, %s, %s, now()) "
+            "ON CONFLICT (meeting_id, member_name) DO UPDATE "
+            "SET personal_news=EXCLUDED.personal_news, "
+            "professional_news=EXCLUDED.professional_news, updated_at=now()",
+            (meeting_id, name, row.get("personal_news"), row.get("professional_news")))
+    return {"ok": True}
+
+
+@app.get("/api/l10/checkin/history")
+def l10_checkin_history(request: Request, exclude_meeting_id: int = Query(None)):
+    _ensure_l10_tables()
+    if exclude_meeting_id:
+        rows = _users_exec(
+            "SELECT c.meeting_id, m.week_label, m.meeting_date::text, "
+            "c.member_name, c.personal_news, c.professional_news "
+            "FROM l10_checkin c JOIN l10_meetings m ON m.id=c.meeting_id "
+            "WHERE c.meeting_id != %s ORDER BY m.meeting_date DESC, c.member_name",
+            (exclude_meeting_id,), fetch=True) or []
+    else:
+        rows = _users_exec(
+            "SELECT c.meeting_id, m.week_label, m.meeting_date::text, "
+            "c.member_name, c.personal_news, c.professional_news "
+            "FROM l10_checkin c JOIN l10_meetings m ON m.id=c.meeting_id "
+            "ORDER BY m.meeting_date DESC, c.member_name",
+            fetch=True) or []
+    return rows
+
+
+# ── Scorecard Metrics ─────────────────────────────────────────────────────────
+
+@app.get("/api/l10/scorecard-metrics")
+def l10_list_scorecard_metrics(request: Request):
+    _ensure_l10_tables()
+    return _users_exec(
+        "SELECT id, who, measurable, goal, uom, goal_direction, sort_order, active "
+        "FROM l10_scorecard_metrics ORDER BY sort_order, id",
+        fetch=True) or []
+
+
+@app.post("/api/l10/scorecard-metrics")
+async def l10_add_scorecard_metric(request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    measurable = (body.get("measurable") or "").strip()
+    if not measurable:
+        raise HTTPException(status_code=400, detail="measurable is required")
+    max_ord = _users_exec("SELECT COALESCE(MAX(sort_order),0) AS m FROM l10_scorecard_metrics", fetch=True)
+    nxt = int((max_ord or [{"m": 0}])[0]["m"]) + 1
+    rows = _users_exec(
+        "INSERT INTO l10_scorecard_metrics (who, measurable, goal, uom, goal_direction, sort_order) "
+        "VALUES (%s, %s, %s, %s, %s, %s) "
+        "RETURNING id, who, measurable, goal, uom, goal_direction, sort_order, active",
+        (body.get("who"), measurable, body.get("goal"), body.get("uom"),
+         body.get("goal_direction") or "up", nxt), fetch=True)
+    return rows[0] if rows else {}
+
+
+@app.put("/api/l10/scorecard-metrics/{metric_id}")
+async def l10_update_scorecard_metric(metric_id: int, request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    fields = ["who", "measurable", "goal", "uom", "goal_direction", "sort_order", "active"]
+    updates = {k: body[k] for k in fields if k in body}
+    for col, val in updates.items():
+        _users_exec(f"UPDATE l10_scorecard_metrics SET {col}=%s WHERE id=%s", (val, metric_id))
+    rows = _users_exec(
+        "SELECT id, who, measurable, goal, uom, goal_direction, sort_order, active "
+        "FROM l10_scorecard_metrics WHERE id=%s", (metric_id,), fetch=True)
+    return rows[0] if rows else {}
+
+
+@app.delete("/api/l10/scorecard-metrics/{metric_id}")
+def l10_delete_scorecard_metric(metric_id: int, request: Request):
+    _ensure_l10_tables()
+    _users_exec("UPDATE l10_scorecard_metrics SET active=FALSE WHERE id=%s", (metric_id,))
+    return {"ok": True}
+
+
+# ── Scorecard Values ──────────────────────────────────────────────────────────
+
+@app.get("/api/l10/scorecard")
+def l10_get_scorecard(request: Request, meetings: int = Query(8)):
+    """Return the rolling scorecard: all active metrics + values for the last N meetings."""
+    _ensure_l10_tables()
+    metrics = _users_exec(
+        "SELECT id, who, measurable, goal, uom, goal_direction "
+        "FROM l10_scorecard_metrics WHERE active ORDER BY sort_order, id",
+        fetch=True) or []
+    mtgs = _users_exec(
+        "SELECT id, week_label, meeting_date::text FROM l10_meetings "
+        "ORDER BY meeting_date DESC LIMIT %s", (meetings,), fetch=True) or []
+    mtgs = list(reversed(mtgs))
+    mtg_ids = [m["id"] for m in mtgs]
+    values = {}
+    if mtg_ids:
+        placeholders = ",".join(["%s"] * len(mtg_ids))
+        vals = _users_exec(
+            f"SELECT metric_id, meeting_id, value, on_track FROM l10_scorecard_values "
+            f"WHERE meeting_id IN ({placeholders})",
+            tuple(mtg_ids), fetch=True) or []
+        for v in vals:
+            values[(v["metric_id"], v["meeting_id"])] = {
+                "value": v["value"], "on_track": v["on_track"]}
+    for m in metrics:
+        m["values"] = {
+            mtg["id"]: values.get((m["id"], mtg["id"]), {"value": None, "on_track": None})
+            for mtg in mtgs
+        }
+    return {"meetings": mtgs, "metrics": metrics}
+
+
+@app.put("/api/l10/scorecard/{meeting_id}")
+async def l10_upsert_scorecard_values(meeting_id: int, request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    rows = body.get("values", [])
+    for row in rows:
+        metric_id = row.get("metric_id")
+        if not metric_id:
+            continue
+        value = row.get("value")
+        on_track = row.get("on_track")
+        _users_exec(
+            "INSERT INTO l10_scorecard_values (metric_id, meeting_id, value, on_track, updated_at) "
+            "VALUES (%s, %s, %s, %s, now()) "
+            "ON CONFLICT (metric_id, meeting_id) DO UPDATE "
+            "SET value=EXCLUDED.value, on_track=EXCLUDED.on_track, updated_at=now()",
+            (metric_id, meeting_id, value, on_track))
+    return {"ok": True}
+
+
+# ── Rocks ─────────────────────────────────────────────────────────────────────
+
+@app.get("/api/l10/rocks")
+def l10_list_rocks(request: Request, include_archived: bool = Query(False)):
+    _ensure_l10_tables()
+    if include_archived:
+        return _users_exec(
+            "SELECT id, description, rock_type, owner, on_track, done, results, link, "
+            "quarter_label, sort_order, active, created_at "
+            "FROM l10_rocks ORDER BY sort_order, id",
+            fetch=True) or []
+    return _users_exec(
+        "SELECT id, description, rock_type, owner, on_track, done, results, link, "
+        "quarter_label, sort_order, active, created_at "
+        "FROM l10_rocks WHERE active ORDER BY sort_order, id",
+        fetch=True) or []
+
+
+@app.post("/api/l10/rocks")
+async def l10_add_rock(request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    desc = (body.get("description") or "").strip()
+    if not desc:
+        raise HTTPException(status_code=400, detail="description is required")
+    max_ord = _users_exec("SELECT COALESCE(MAX(sort_order),0) AS m FROM l10_rocks", fetch=True)
+    nxt = int((max_ord or [{"m": 0}])[0]["m"]) + 1
+    today = date.today()
+    quarter_label = body.get("quarter_label") or f"Q{(today.month - 1) // 3 + 1} {today.year}"
+    rows = _users_exec(
+        "INSERT INTO l10_rocks (description, rock_type, owner, on_track, done, results, link, quarter_label, sort_order) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+        "RETURNING id, description, rock_type, owner, on_track, done, results, link, quarter_label, sort_order, active",
+        (desc, body.get("rock_type") or "Company", body.get("owner"),
+         bool(body.get("on_track", True)), bool(body.get("done", False)),
+         body.get("results"), body.get("link"), quarter_label, nxt), fetch=True)
+    return rows[0] if rows else {}
+
+
+@app.put("/api/l10/rocks/{rock_id}")
+async def l10_update_rock(rock_id: int, request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    fields = ["description", "rock_type", "owner", "on_track", "done",
+              "results", "link", "quarter_label", "sort_order", "active"]
+    for col in fields:
+        if col in body:
+            _users_exec(f"UPDATE l10_rocks SET {col}=%s WHERE id=%s",
+                        (body[col], rock_id))
+    rows = _users_exec(
+        "SELECT id, description, rock_type, owner, on_track, done, results, link, "
+        "quarter_label, sort_order, active FROM l10_rocks WHERE id=%s",
+        (rock_id,), fetch=True)
+    return rows[0] if rows else {}
+
+
+@app.delete("/api/l10/rocks/{rock_id}")
+def l10_archive_rock(rock_id: int, request: Request):
+    _ensure_l10_tables()
+    _users_exec("UPDATE l10_rocks SET active=FALSE WHERE id=%s", (rock_id,))
+    return {"ok": True}
+
+
+# ── Headlines ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/l10/headlines/{meeting_id}")
+def l10_get_headlines(meeting_id: int, request: Request):
+    _ensure_l10_tables()
+    return _users_exec(
+        "SELECT id, headline, date, added_by, link, sort_order, moved_to_ids "
+        "FROM l10_headlines WHERE meeting_id=%s ORDER BY sort_order, id",
+        (meeting_id,), fetch=True) or []
+
+
+@app.put("/api/l10/headlines/{meeting_id}")
+async def l10_upsert_headlines(meeting_id: int, request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    rows = body.get("rows", [])
+    # Delete existing and re-insert (simpler than diffing by id)
+    _users_exec("DELETE FROM l10_headlines WHERE meeting_id=%s", (meeting_id,))
+    for i, row in enumerate(rows):
+        headline = (row.get("headline") or "").strip()
+        if not headline:
+            continue
+        _users_exec(
+            "INSERT INTO l10_headlines (meeting_id, headline, date, added_by, link, sort_order, moved_to_ids) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (meeting_id, headline, row.get("date"), row.get("added_by"),
+             row.get("link"), i, bool(row.get("moved_to_ids", False))))
+    return {"ok": True}
+
+
+@app.get("/api/l10/headlines/history")
+def l10_headlines_history(request: Request, exclude_meeting_id: int = Query(None)):
+    _ensure_l10_tables()
+    if exclude_meeting_id:
+        rows = _users_exec(
+            "SELECT h.id, h.meeting_id, m.week_label, m.meeting_date::text, "
+            "h.headline, h.date, h.added_by, h.link, h.moved_to_ids "
+            "FROM l10_headlines h JOIN l10_meetings m ON m.id=h.meeting_id "
+            "WHERE h.meeting_id != %s ORDER BY m.meeting_date DESC, h.sort_order",
+            (exclude_meeting_id,), fetch=True) or []
+    else:
+        rows = _users_exec(
+            "SELECT h.id, h.meeting_id, m.week_label, m.meeting_date::text, "
+            "h.headline, h.date, h.added_by, h.link, h.moved_to_ids "
+            "FROM l10_headlines h JOIN l10_meetings m ON m.id=h.meeting_id "
+            "ORDER BY m.meeting_date DESC, h.sort_order",
+            fetch=True) or []
+    return rows
+
+
+# ── To-Dos ────────────────────────────────────────────────────────────────────
+
+@app.get("/api/l10/todos")
+def l10_list_todos(request: Request):
+    _ensure_l10_tables()
+    return _users_exec(
+        "SELECT t.id, t.description, t.open_date, t.owner, t.status, t.link, "
+        "t.opened_meeting_id, t.closed_meeting_id, "
+        "om.week_label AS opened_week, cm.week_label AS closed_week "
+        "FROM l10_todos t "
+        "LEFT JOIN l10_meetings om ON om.id=t.opened_meeting_id "
+        "LEFT JOIN l10_meetings cm ON cm.id=t.closed_meeting_id "
+        "ORDER BY t.status, t.created_at DESC",
+        fetch=True) or []
+
+
+@app.post("/api/l10/todos")
+async def l10_add_todo(request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    desc = (body.get("description") or "").strip()
+    if not desc:
+        raise HTTPException(status_code=400, detail="description is required")
+    rows = _users_exec(
+        "INSERT INTO l10_todos (description, open_date, owner, status, link, opened_meeting_id) "
+        "VALUES (%s, %s, %s, %s, %s, %s) "
+        "RETURNING id, description, open_date, owner, status, link, opened_meeting_id",
+        (desc, body.get("open_date") or date.today().isoformat(),
+         body.get("owner"), body.get("status") or "open",
+         body.get("link"), body.get("opened_meeting_id")), fetch=True)
+    return rows[0] if rows else {}
+
+
+@app.put("/api/l10/todos/{todo_id}")
+async def l10_update_todo(todo_id: int, request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    fields = ["description", "open_date", "owner", "status", "link",
+              "opened_meeting_id", "closed_meeting_id"]
+    for col in fields:
+        if col in body:
+            _users_exec(f"UPDATE l10_todos SET {col}=%s, updated_at=now() WHERE id=%s",
+                        (body[col], todo_id))
+    rows = _users_exec(
+        "SELECT id, description, open_date, owner, status, link, "
+        "opened_meeting_id, closed_meeting_id FROM l10_todos WHERE id=%s",
+        (todo_id,), fetch=True)
+    return rows[0] if rows else {}
+
+
+@app.delete("/api/l10/todos/{todo_id}")
+def l10_delete_todo(todo_id: int, request: Request):
+    _ensure_l10_tables()
+    _users_exec("DELETE FROM l10_todos WHERE id=%s", (todo_id,))
+    return {"ok": True}
+
+
+# ── IDS Issues ────────────────────────────────────────────────────────────────
+
+@app.get("/api/l10/ids/{meeting_id}")
+def l10_get_ids(meeting_id: int, request: Request):
+    _ensure_l10_tables()
+    return _users_exec(
+        "SELECT id, issue, raised_by, sort_order, status "
+        "FROM l10_ids_issues WHERE meeting_id=%s ORDER BY sort_order, id",
+        (meeting_id,), fetch=True) or []
+
+
+@app.put("/api/l10/ids/{meeting_id}")
+async def l10_upsert_ids(meeting_id: int, request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    rows = body.get("rows", [])
+    _users_exec("DELETE FROM l10_ids_issues WHERE meeting_id=%s", (meeting_id,))
+    for i, row in enumerate(rows):
+        issue = (row.get("issue") or "").strip()
+        if not issue:
+            continue
+        _users_exec(
+            "INSERT INTO l10_ids_issues (meeting_id, issue, raised_by, sort_order, status) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (meeting_id, issue, row.get("raised_by"), i,
+             row.get("status") or "open"))
+    return {"ok": True}
+
+
+@app.get("/api/l10/ids/history")
+def l10_ids_history(request: Request, exclude_meeting_id: int = Query(None)):
+    _ensure_l10_tables()
+    if exclude_meeting_id:
+        rows = _users_exec(
+            "SELECT i.id, i.meeting_id, m.week_label, m.meeting_date::text, "
+            "i.issue, i.raised_by, i.status "
+            "FROM l10_ids_issues i JOIN l10_meetings m ON m.id=i.meeting_id "
+            "WHERE i.meeting_id != %s AND i.status != 'open' "
+            "ORDER BY m.meeting_date DESC, i.sort_order",
+            (exclude_meeting_id,), fetch=True) or []
+    else:
+        rows = _users_exec(
+            "SELECT i.id, i.meeting_id, m.week_label, m.meeting_date::text, "
+            "i.issue, i.raised_by, i.status "
+            "FROM l10_ids_issues i JOIN l10_meetings m ON m.id=i.meeting_id "
+            "WHERE i.status != 'open' "
+            "ORDER BY m.meeting_date DESC, i.sort_order",
+            fetch=True) or []
+    return rows
+
+
+# ── Conclude ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/l10/conclude/{meeting_id}")
+def l10_get_conclude(meeting_id: int, request: Request):
+    _ensure_l10_tables()
+    conclude = _users_exec(
+        "SELECT cascading_messages FROM l10_conclude WHERE meeting_id=%s",
+        (meeting_id,), fetch=True)
+    cascading = conclude[0]["cascading_messages"] if conclude else None
+    ratings = _users_exec(
+        "SELECT member_name, rating FROM l10_ratings WHERE meeting_id=%s ORDER BY member_name",
+        (meeting_id,), fetch=True) or []
+    return {"cascading_messages": cascading, "ratings": ratings}
+
+
+@app.put("/api/l10/conclude/{meeting_id}")
+async def l10_upsert_conclude(meeting_id: int, request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    if "cascading_messages" in body:
+        _users_exec(
+            "INSERT INTO l10_conclude (meeting_id, cascading_messages, updated_at) "
+            "VALUES (%s, %s, now()) ON CONFLICT (meeting_id) DO UPDATE "
+            "SET cascading_messages=EXCLUDED.cascading_messages, updated_at=now()",
+            (meeting_id, body["cascading_messages"]))
+    if "ratings" in body:
+        for row in body["ratings"]:
+            name = (row.get("member_name") or "").strip()
+            if not name:
+                continue
+            rating = row.get("rating")
+            _users_exec(
+                "INSERT INTO l10_ratings (meeting_id, member_name, rating, updated_at) "
+                "VALUES (%s, %s, %s, now()) "
+                "ON CONFLICT (meeting_id, member_name) DO UPDATE "
+                "SET rating=EXCLUDED.rating, updated_at=now()",
+                (meeting_id, name, rating))
+    return {"ok": True}
+
+
+@app.get("/api/l10/ratings/history")
+def l10_ratings_history(request: Request, limit: int = Query(8)):
+    _ensure_l10_tables()
+    mtgs = _users_exec(
+        "SELECT id, week_label, meeting_date::text FROM l10_meetings "
+        "ORDER BY meeting_date DESC LIMIT %s", (limit,), fetch=True) or []
+    mtgs = list(reversed(mtgs))
+    mtg_ids = [m["id"] for m in mtgs]
+    ratings = {}
+    if mtg_ids:
+        placeholders = ",".join(["%s"] * len(mtg_ids))
+        rows = _users_exec(
+            f"SELECT meeting_id, member_name, rating FROM l10_ratings "
+            f"WHERE meeting_id IN ({placeholders})",
+            tuple(mtg_ids), fetch=True) or []
+        for r in rows:
+            ratings[(r["meeting_id"], r["member_name"])] = r["rating"]
+    return {"meetings": mtgs, "ratings_by_key": [
+        {"meeting_id": k[0], "member_name": k[1], "rating": v}
+        for k, v in ratings.items()
+    ]}
+
+
+# ── Settings (meeting start time default) ─────────────────────────────────────
+
+@app.get("/api/l10/settings")
+def l10_get_settings(request: Request):
+    _ensure_l10_tables()
+    try:
+        row = _users_exec(
+            "SELECT value FROM app_config WHERE key='l10_settings'", fetch=True)
+        if row:
+            return json.loads(row[0]["value"])
+    except Exception:
+        pass
+    return {"default_start_time": "08:00"}
+
+
+@app.put("/api/l10/settings")
+async def l10_update_settings(request: Request):
+    _ensure_l10_tables()
+    body = await request.json()
+    settings = {"default_start_time": body.get("default_start_time", "08:00")}
+    _users_exec(
+        "INSERT INTO app_config (key, value, updated_at) VALUES ('l10_settings', %s, now()) "
+        "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()",
+        (json.dumps(settings),))
+    return settings
