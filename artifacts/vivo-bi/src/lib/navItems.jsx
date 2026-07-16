@@ -32,6 +32,7 @@ import {
   ImageSquare,
   CalendarBlank,
   Sparkle,
+  RocketLaunch,
 } from "@phosphor-icons/react";
 
 /**
@@ -147,6 +148,8 @@ export const PRIMARY_NAV = [
   { to: "/data-quality", label: "Data Quality", icon: Warning, id: "data-quality", group: "Tools", desc: "Data completeness and quality checks" },
   { to: "/feedback", label: "Feedback", icon: ChatCircleDots, id: "feedback", group: "Tools", desc: "Send feedback to the BI team" },
 
+  // Growth Model — leadership + admin (server-gated via /api/growth)
+  { to: "/growth", label: "Growth Model", icon: RocketLaunch, id: "growth", group: "Performance", desc: "KES 5 Billion north-star trajectory — revenue bridge, compound growth path, store contribution splits and editable levers" },
   // Finance Reports Suite — leadership + admin (server-gated via /api/finance)
   { to: "/finance", label: "Finance", icon: Coins, id: "finance", group: "Performance", desc: "Finance reports suite — P&L statement, revenue, cost of revenue, opex, payroll, vendor spend and P&L trend & KPIs (KES)" },
   { to: "/margin", label: "Margin Analysis", icon: ChartLine, id: "margin", group: "Performance", desc: "Gross margin, discount rate and cost coverage by category, subcategory, brand, store or month (KES)" },

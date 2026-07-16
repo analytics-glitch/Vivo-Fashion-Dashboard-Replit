@@ -677,7 +677,7 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance", "margin", "l10", "rota"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance", "margin", "l10", "rota", "growth"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"],
@@ -1306,6 +1306,10 @@ async def clerk_auth_gate(request: Request, call_next):
     # non-leadership role.
     if path.startswith("/api/finance") and user.get("role") not in ("admin", "leadership"):
         return JSONResponse({"detail": "Finance access requires a leadership or admin role"}, status_code=403)
+
+    # Growth Model (/api/growth/*) is a leadership + admin surface.
+    if path.startswith("/api/growth") and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "Growth Model access requires a leadership or admin role"}, status_code=403)
 
     # L10 Meeting Tracker — leadership + admin surface.
     if path.startswith("/api/l10") and user.get("role") not in ("admin", "leadership"):
@@ -31311,6 +31315,19 @@ def _init_ai_tables():
         ai_insights_router.ensure_ai_tables()
     except Exception as e:
         log.error("AI insight table init failed: %s", e)
+
+# Growth Model endpoints (/api/growth/*). Gated in clerk_auth_gate to
+# leadership + admin. Seeded with a default 60/25/15 assumption on first boot.
+import growth_router
+growth_router.register_growth_routes(app, _sys.modules[__name__])
+
+
+@_deferred_startup
+def _init_growth_tables():
+    try:
+        growth_router.ensure_growth_tables()
+    except Exception as e:
+        log.error("Growth model table init failed: %s", e)
 
 # Odoo Reconciliation Agent endpoints (/api/recon/*). Same placement rationale.
 # Gated in clerk_auth_gate to leadership + admin; write-back is approval-gated
