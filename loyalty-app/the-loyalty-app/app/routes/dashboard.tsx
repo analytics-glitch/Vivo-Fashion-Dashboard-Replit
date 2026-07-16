@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useAuth } from "../lib/auth";
 import { loyalty, type PointsTxn } from "../lib/api";
@@ -28,6 +28,12 @@ export default function Dashboard() {
   const toast = useToast();
   const [activity, setActivity] = useState<PointsTxn[] | null>(null);
 
+  // Keep a ref to the latest user so event-handler closures always see the current balance
+  const userRef = useRef(user);
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
+
   const fetchActivity = useCallback(() => {
     loyalty.history().then((r) => setActivity(r.items)).catch(() => setActivity([]));
   }, []);
@@ -36,15 +42,28 @@ export default function Dashboard() {
     fetchActivity();
   }, [fetchActivity]);
 
+  const refreshAndNotify = useCallback(async () => {
+    const prevBalance = userRef.current?.pointsBalance;
+    const updated = await refresh();
+    if (
+      updated &&
+      prevBalance !== undefined &&
+      updated.pointsBalance > prevBalance
+    ) {
+      const delta = updated.pointsBalance - prevBalance;
+      toast(`🎉 +${formatPoints(delta)} points added!`, "success");
+    }
+  }, [refresh, toast]);
+
   useEffect(() => {
     const handleVisible = () => {
       if (document.visibilityState === "visible") {
-        refresh();
+        refreshAndNotify();
         fetchActivity();
       }
     };
     const handleFocus = () => {
-      refresh();
+      refreshAndNotify();
       fetchActivity();
     };
     document.addEventListener("visibilitychange", handleVisible);
@@ -53,7 +72,7 @@ export default function Dashboard() {
       document.removeEventListener("visibilitychange", handleVisible);
       window.removeEventListener("focus", handleFocus);
     };
-  }, [refresh, fetchActivity]);
+  }, [refreshAndNotify, fetchActivity]);
 
   if (!user) return null;
   const tier = user.tier;
