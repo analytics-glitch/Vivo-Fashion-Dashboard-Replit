@@ -11,6 +11,7 @@ declare module "fastify" {
 
 const CONNECT_ATTEMPTS = 3;
 const CONNECT_BASE_DELAY_MS = 1000;
+const RECONNECT_INTERVAL_MS = 10_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,6 +41,21 @@ async function connectWithRetry(prisma: PrismaClient, log: FastifyInstance["log"
   return false;
 }
 
+function startReconnectLoop(app: FastifyInstance): void {
+  const timer = setInterval(async () => {
+    try {
+      await app.prisma.$connect();
+      app.dbReady = true;
+      clearInterval(timer);
+      app.log.info("prismaPlugin: DB reconnected — degraded mode lifted, normal routing resumed");
+    } catch (err) {
+      app.log.warn({ err }, "prismaPlugin: DB reconnect attempt failed, will retry");
+    }
+  }, RECONNECT_INTERVAL_MS);
+
+  timer.unref();
+}
+
 export default fp(async function prismaPlugin(app: FastifyInstance) {
   const prisma = new PrismaClient({
     log: app.config.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
@@ -52,15 +68,20 @@ export default fp(async function prismaPlugin(app: FastifyInstance) {
 
   if (!connected) {
     const apiPrefix = `${app.config.BASE_PATH}/api`;
+
     app.addHook("onRequest", async (req, reply) => {
-      const url = req.url.split("?")[0];
-      if (url.startsWith(apiPrefix)) {
-        return reply.status(503).send({
-          error: "ServiceUnavailable",
-          message: "Database is temporarily unreachable. Please try again shortly.",
-        });
+      if (!app.dbReady) {
+        const url = req.url.split("?")[0];
+        if (url.startsWith(apiPrefix)) {
+          return reply.status(503).send({
+            error: "ServiceUnavailable",
+            message: "Database is temporarily unreachable. Please try again shortly.",
+          });
+        }
       }
     });
+
+    startReconnectLoop(app);
   }
 
   app.addHook("onClose", async (instance) => {
