@@ -156,6 +156,16 @@ def ensure_rota_tables():
     _ex("ALTER TABLE rota_shifts ADD COLUMN IF NOT EXISTS is_leave BOOLEAN NOT NULL DEFAULT FALSE")
     _ex("ALTER TABLE rota_shifts ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT TRUE")
 
+    # Race-safe duplicate prevention for staff import: expression index on
+    # normalised (name, department) so ON CONFLICT DO NOTHING is atomic.
+    _ex("""
+        CREATE UNIQUE INDEX IF NOT EXISTS rota_staff_name_dept_uix
+        ON rota_staff (
+            LOWER(TRIM(name)),
+            LOWER(TRIM(COALESCE(department, '')))
+        )
+    """)
+
     # Seed default shifts (idempotent: ON CONFLICT DO NOTHING on the UNIQUE name)
     for s in _DEFAULT_SHIFTS:
         is_leave = s["name"] in ("Annual Leave", "Sick Leave")
@@ -949,6 +959,84 @@ def _get_report(request: Request):
     return JSONResponse({"detail": f"Unknown report type: {report_type}"}, status_code=400)
 
 
+def _post_import_staff(request: Request):
+    """Import staff from hr_training_staff (synced from the HR Google Sheet's
+    'List of Staff' tab, TRAINING_SHEET_ID). If the table is empty, triggers a
+    training sync first as a best-effort fallback.
+
+    Store resolution: LEFT JOIN to hr_employees on normalised name to derive
+    the entity (business unit: "Vivo Kenya", "Shop Zetu", etc.) as the store
+    value. Falls back to NULL when no roster match is found.
+
+    Duplicate prevention: DB-level UNIQUE INDEX on
+    (LOWER(TRIM(name)), LOWER(TRIM(COALESCE(department,'')))) + ON CONFLICT
+    DO NOTHING — atomic and race-safe under concurrent imports.
+    """
+    _SOURCE_SQL = """
+        SELECT
+            TRIM(ts.name)                                            AS name,
+            NULLIF(TRIM(COALESCE(ts.department, '')), '')            AS department,
+            NULLIF(TRIM(COALESCE(ts.designation, '')), '')           AS role,
+            NULLIF(TRIM(COALESCE(e.entity, '')), '')                 AS store
+        FROM hr_training_staff ts
+        LEFT JOIN hr_employees e
+            ON LOWER(REGEXP_REPLACE(TRIM(e.name), '\\s+', ' ', 'g'))
+               = LOWER(REGEXP_REPLACE(TRIM(ts.name), '\\s+', ' ', 'g'))
+        WHERE TRIM(COALESCE(ts.name, '')) <> ''
+        ORDER BY ts.department, ts.name
+    """
+
+    source = _rows(_SOURCE_SQL)
+
+    if not source:
+        try:
+            import hr_attendance as _hr
+            _hr._training_autosync()
+            source = _rows(_SOURCE_SQL)
+        except Exception as exc:
+            log.warning("import-staff sheet fallback failed: %s", exc)
+
+    if not source:
+        return JSONResponse(
+            {"detail": "No staff found in HR roster. Sync the HR Training data first (Admin > Training tab)."},
+            status_code=404,
+        )
+
+    no_store = sum(1 for r in source if not r["store"])
+    inserted = 0
+    skipped = 0
+    for r in source:
+        name = r["name"] or ""
+        if not name:
+            skipped += 1
+            continue
+        dept = r["department"]
+        role = r["role"]
+        store = r["store"]
+        # RETURNING id: returns one row if the insert landed, empty if skipped by conflict
+        returned = _rows(
+            """INSERT INTO rota_staff (name, department, role, store, status)
+               VALUES (%s, %s, %s, %s, 'active')
+               ON CONFLICT (
+                   LOWER(TRIM(name)),
+                   LOWER(TRIM(COALESCE(department, '')))
+               ) DO NOTHING
+               RETURNING id""",
+            (name, dept, role, store),
+        )
+        if returned:
+            inserted += 1
+        else:
+            skipped += 1
+
+    return _ok({
+        "inserted": inserted,
+        "skipped": skipped,
+        "total_source": len(source),
+        "missing_store": no_store,
+    })
+
+
 def _get_staff(request: Request):
     rows = _rows("SELECT * FROM rota_staff WHERE status='active' ORDER BY department, name")
     return _ok([{
@@ -1110,6 +1198,14 @@ def register_rota_routes(app):
             return _get_staff(request)
         except Exception as e:
             log.error("rota get staff error: %s", e)
+            return JSONResponse({"detail": str(e)}, status_code=500)
+
+    @app.post("/api/rota/import-staff")
+    async def rota_import_staff(request: Request):
+        try:
+            return _post_import_staff(request)
+        except Exception as e:
+            log.error("rota import-staff error: %s", e)
             return JSONResponse({"detail": str(e)}, status_code=500)
 
     @app.post("/api/rota/staff")

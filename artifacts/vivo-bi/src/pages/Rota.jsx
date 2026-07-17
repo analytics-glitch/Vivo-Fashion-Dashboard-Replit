@@ -314,6 +314,8 @@ function WeeklyRotaTab() {
   const [saving, setSaving] = useState(false);
   const [addStaffOpen, setAddStaffOpen] = useState(false);
   const [newStaff, setNewStaff] = useState({ name: "", department: "", role: "", store: "" });
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null); // {inserted, skipped} or {error}
 
   const load = useCallback((ws) => {
     setLoading(true);
@@ -375,6 +377,22 @@ function WeeklyRotaTab() {
     } catch (e) {}
   };
 
+  const handleImportStaff = async () => {
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const resp = await api.post("/rota/import-staff", {});
+      const { inserted, skipped, total_source } = resp?.data || {};
+      setImportResult({ inserted: inserted ?? 0, skipped: skipped ?? 0, total_source: total_source ?? 0 });
+      if (inserted > 0) load(weekStart);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || "Import failed";
+      setImportResult({ error: msg });
+    } finally {
+      setImporting(false);
+    }
+  };
+
   if (loading) return <div className="py-10"><Loading label="Loading rota…" /></div>;
   if (error) return <ErrorBox message={error} />;
   if (!data) return null;
@@ -425,13 +443,37 @@ function WeeklyRotaTab() {
           </button>
         )}
 
-        <button
-          onClick={() => setAddStaffOpen(true)}
-          className="flex items-center gap-1.5 text-sm px-3 py-1.5 border border-gray-200 rounded-lg bg-white hover:bg-gray-50 transition-colors ml-auto"
-        >
-          <UserPlus size={14} /> Add staff
-        </button>
+        <div className="flex items-center gap-2 ml-auto">
+          <button
+            onClick={handleImportStaff}
+            disabled={importing}
+            className="flex items-center gap-1.5 text-sm px-3 py-1.5 border border-[#1a5c38] text-[#1a5c38] rounded-lg bg-white hover:bg-green-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <ArrowsClockwise size={14} className={importing ? "animate-spin" : ""} />
+            {importing ? "Importing…" : "Import from HR roster"}
+          </button>
+          <button
+            onClick={() => setAddStaffOpen(true)}
+            className="flex items-center gap-1.5 text-sm px-3 py-1.5 border border-gray-200 rounded-lg bg-white hover:bg-gray-50 transition-colors"
+          >
+            <UserPlus size={14} /> Add staff
+          </button>
+        </div>
       </div>
+
+      {/* Import result banner */}
+      {importResult && (
+        <div className={`flex items-center justify-between gap-3 rounded-lg border px-4 py-2.5 text-sm ${importResult.error ? "bg-red-50 border-red-200 text-red-700" : importResult.inserted === 0 ? "bg-gray-50 border-gray-200 text-gray-600" : "bg-green-50 border-green-200 text-green-700"}`}>
+          <span>
+            {importResult.error
+              ? importResult.error
+              : importResult.inserted === 0
+                ? `All ${importResult.skipped} staff already in the rota — nothing new to import.`
+                : `Imported ${importResult.inserted} staff member${importResult.inserted !== 1 ? "s" : ""} from the HR roster${importResult.skipped > 0 ? ` (${importResult.skipped} already present, skipped)` : ""}.`}
+          </span>
+          <button onClick={() => setImportResult(null)} className="flex-shrink-0 opacity-60 hover:opacity-100 transition-opacity"><X size={14} /></button>
+        </div>
+      )}
 
       {/* Add staff modal */}
       {addStaffOpen && (
