@@ -70,11 +70,12 @@ export async function buildApp(): Promise<FastifyInstance> {
   // Base-path health check (the shared proxy only routes /loyalty-app/*).
   app.get(`${env.BASE_PATH}/health`, async () => ({ status: "ok", ts: new Date().toISOString() }));
 
-  // Exact base-path hit (no trailing slash): the Replit production orchestrator
-  // probes GET /loyalty-app as the liveness check. Without this route Fastify
-  // falls through to a 404/500 → orchestrator restarts the whole api-server
-  // group → main API offline → 502 cascade for every surface.
-  app.get(`${env.BASE_PATH}`, async () => ({ status: "ok", ts: new Date().toISOString() }));
+  // Exact base-path hit (no trailing slash): redirect browsers to the SPA root.
+  // The orchestrator liveness probe uses /loyalty-app/health (above), so this
+  // route no longer needs to return health JSON.
+  app.get(`${env.BASE_PATH}`, async (request, reply) => {
+    reply.redirect(`${env.BASE_PATH}/`, 301);
+  });
 
   // API routes — served under the /loyalty-app base path behind the shared proxy.
   await app.register(
