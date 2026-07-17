@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { api, fmtDate } from "@/lib/api";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
-import { UserPlus, Trash, ShieldCheck, Eye, X, FolderSimple, Plus } from "@phosphor-icons/react";
+import { UserPlus, Trash, ShieldCheck, Eye, X, FolderSimple, Plus, Headset } from "@phosphor-icons/react";
 import SortableTable from "@/components/SortableTable";
 import { useAuth } from "@/lib/auth";
 import { ROLE_OPTIONS, roleLabel } from "@/lib/permissions";
@@ -83,6 +83,13 @@ const Users = () => {
   const setStatus = async (u, status) => {
     try {
       await api.patch(`/admin/users/${u.user_id}`, { status });
+      load();
+    } catch (e) { alert(e?.response?.data?.detail || e.message); }
+  };
+
+  const toggleCrmAdmin = async (u) => {
+    try {
+      await api.patch(`/admin/users/${u.user_id}`, { crm_admin: !u.crm_admin });
       load();
     } catch (e) { alert(e?.response?.data?.detail || e.message); }
   };
@@ -202,8 +209,15 @@ const Users = () => {
                   const cls = senior ? "pill-green" : "pill-amber";
                   const icon = senior ? <ShieldCheck size={11} /> : <Eye size={11} />;
                   return (
-                    <span className={`${cls} inline-flex items-center gap-1`}>
-                      {icon}{anyRoleLabel(r.role)}
+                    <span className="inline-flex items-center gap-1.5 flex-wrap">
+                      <span className={`${cls} inline-flex items-center gap-1`}>
+                        {icon}{anyRoleLabel(r.role)}
+                      </span>
+                      {r.crm_admin && (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-purple-100 text-purple-700 border border-purple-200">
+                          <Headset size={9} />CRM
+                        </span>
+                      )}
                     </span>
                   );
                 },
@@ -229,7 +243,7 @@ const Users = () => {
                 align: "right",
                 sortable: false,
                 render: (r) => (
-                  <div className="flex justify-end gap-1">
+                  <div className="flex justify-end gap-1 flex-wrap">
                     <select
                       className="text-[11px] px-1.5 py-1 rounded border border-border"
                       value={r.role}
@@ -241,6 +255,20 @@ const Users = () => {
                         <option key={o.value} value={o.value}>{o.label}</option>
                       ))}
                     </select>
+                    <button
+                      title={r.crm_admin ? "Remove CRM manager access" : "Grant CRM manager access"}
+                      className={`text-[11px] px-1.5 py-1 rounded border inline-flex items-center gap-0.5 ${
+                        r.crm_admin
+                          ? "border-purple-400 text-purple-700 bg-purple-50"
+                          : "border-border text-muted"
+                      }`}
+                      onClick={() => toggleCrmAdmin(r)}
+                      disabled={r.user_id === user.user_id}
+                      data-testid={`toggle-crm-${r.user_id}`}
+                    >
+                      <Headset size={11} />
+                      {r.crm_admin ? "CRM" : "CRM"}
+                    </button>
                     <button
                       className={`text-[11px] px-1.5 py-1 rounded border ${r.active ? "border-amber text-amber" : "border-brand text-brand"}`}
                       onClick={() => toggleActive(r)}
