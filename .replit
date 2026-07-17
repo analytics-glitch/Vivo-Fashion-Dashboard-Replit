@@ -158,8 +158,6 @@ VALIDATION_ALERT_WHATSAPP = "+254713402009,+254716590505"
 SMTP_FROM = "alerts@vivofashiongroup.com"
 FACEBOOK_PAGE_ACCESS_TOKEN = "EAAT1ZCdsdNXYBR1224zdXxuZAttP6nGHwZAVRZAUHCDroMIgN2IefF5r9fs1t3LGbkTrGVUmyja6QPLufyjzWmvZAPD8ZCiZAouKJD8x9BPn1jrAZAfsciHCAJRb6rFgAB9czFIZCMviuIB5tK4QgVzZBCQwOOHStAtRmNjNUbssjJ9aneLEjGIjYo3azLzNElOwZDZD"
 FABRIC_IMAGES_DRIVE_FOLDER_ID = "1gEAnT_RHY1neybTk8IEL1Vze2slrETk-"
-LOYALTY_APP_API_BASE_URL = "https://a2104183-e22b-4aee-99f6-fc604d080eee-00-1xc3l0p2xuk1q.worf.replit.dev"
-LOYALTY_APP_GOOGLE_REDIRECT_URI = "https://a2104183-e22b-4aee-99f6-fc604d080eee-00-1xc3l0p2xuk1q.worf.replit.dev/loyalty-app/api/auth/google/callback"
 LOYALTY_APP_BIRTHDAY_BONUS_POINTS = "500"
 LOYALTY_APP_COOKIE_SECURE = "false"
 LOYALTY_APP_FRONTEND_DIST = "../the-loyalty-app/build/client"
@@ -188,9 +186,14 @@ LOYALTY_APP_SERVE_FRONTEND = "true"
 
 [userenv.development]
 TIKTOK_USE_SANDBOX = "1"
+LOYALTY_APP_API_BASE_URL = "https://a2104183-e22b-4aee-99f6-fc604d080eee-00-1xc3l0p2xuk1q.worf.replit.dev"
+LOYALTY_APP_GOOGLE_REDIRECT_URI = "https://a2104183-e22b-4aee-99f6-fc604d080eee-00-1xc3l0p2xuk1q.worf.replit.dev/loyalty-app/api/auth/google/callback"
 
 [userenv.production]
-LOYALTY_APP_WEB_BASE_URL = "https://vivofashionbrands.com"
+LOYALTY_APP_API_BASE_URL = "https://vivofashionbrands.com/loyalty-app"
+LOYALTY_APP_WEB_BASE_URL = "https://vivofashionbrands.com/loyalty-app"
+LOYALTY_APP_GOOGLE_REDIRECT_URI = "https://vivofashionbrands.com/loyalty-app/api/auth/google/callback"
+LOYALTY_APP_NODE_ENV = "production"
 
 [objectStorage]
 defaultBucketID = "replit-objstore-6afd6244-d8b1-4255-80b1-e103c2c6a982"

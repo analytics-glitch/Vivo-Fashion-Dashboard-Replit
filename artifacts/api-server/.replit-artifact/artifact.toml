@@ -61,10 +61,10 @@ args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app && (cd loyalty-app-ba
 
 # Run step: node_modules and prisma client are already present from the build
 # step — no npm ci here so the server binds in <5s instead of 40-60s.
-# A slow run step means the liveness probe times out mid-npm-install → restart
-# loop → cascades to the main BI API going offline.
+# Uses db-env.mjs to derive LOYALTY_APP_DATABASE_URL from DATABASE_URL with the
+# loyalty_app schema — the same pattern the build step uses for migrations.
 [services.production.run]
-args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app/loyalty-app-backend && npx tsx src/server.ts"]
+args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app/loyalty-app-backend && node scripts/db-env.mjs npx tsx src/server.ts"]
 
 [services.production.run.env]
 PORT = "8090"
