@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef, useMemo } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Loading, ErrorBox } from "@/components/common";
@@ -19,6 +19,8 @@ import {
   ArrowsClockwise,
   UserPlus,
   Sliders,
+  MapPin,
+  Buildings,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -75,6 +77,21 @@ function csvDownload(filename, columns, rows) {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ---------------------------------------------------------------------------
+// Staff colour — deterministic palette colour keyed on staff name
+// ---------------------------------------------------------------------------
+const _STAFF_PALETTE = [
+  "#1a5c38", "#2563eb", "#7c3aed", "#dc2626", "#d97706",
+  "#0891b2", "#be185d", "#16a34a", "#9333ea", "#0369a1",
+  "#b45309", "#0f766e", "#1d4ed8", "#92400e", "#6d28d9",
+  "#047857", "#b91c1c", "#0e7490", "#c2410c", "#4338ca",
+];
+function staffColor(name = "") {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (Math.imul(31, h) + name.charCodeAt(i)) | 0;
+  return _STAFF_PALETTE[Math.abs(h) % _STAFF_PALETTE.length];
 }
 
 // ---------------------------------------------------------------------------
@@ -153,8 +170,8 @@ function OverviewTab() {
         <KpiCard label="Open Shifts Today" value={kpis.open_shifts} />
         <KpiCard label="Weekly Hours Scheduled" value={`${kpis.weekly_hours?.toFixed(0)} h`} />
         <KpiCard label="Coverage" value={`${kpis.coverage_pct}%`} />
-        <KpiCard label="Staff Approaching OT" value={kpis.overtime_staff} sub="approaching 48h this week" />
-        <KpiCard label="Overtime Hours" value={`${kpis.overtime_hours?.toFixed(1)} h`} sub="hours over 48h/week" />
+        <KpiCard label="Staff Exceeding 45h" value={kpis.overtime_staff} sub="over 45h/week limit" />
+        <KpiCard label="Excess Hours" value={`${kpis.overtime_hours?.toFixed(1)} h`} sub="hours over 45h/week" />
       </div>
 
       {/* Charts row */}
@@ -201,7 +218,7 @@ function OverviewTab() {
           </ResponsiveContainer>
         </div>
         <div className="bg-white rounded-lg border border-gray-100 p-4">
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">Staff Approaching Overtime — 8-Week Trend</h3>
+          <h3 className="text-sm font-semibold text-gray-700 mb-3">Staff Exceeding 45h/week — 8-Week Trend</h3>
           <ResponsiveContainer width="100%" height={160}>
             <LineChart data={ot_trend}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
@@ -246,7 +263,7 @@ function ShiftPicker({ shifts, onSelect, onClose }) {
   );
 }
 
-function RotaCell({ day, isPublished, shift, warnings, shifts, onSave }) {
+function RotaCell({ day, isPublished, shift, warnings, shifts, onSave, color }) {
   const [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const ref = useRef(null);
@@ -290,7 +307,7 @@ function RotaCell({ day, isPublished, shift, warnings, shifts, onSave }) {
         {day.shift_name ? (
           <span
             className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium text-white w-full"
-            style={{ background: day.shift_colour || "#6b7280" }}
+            style={{ background: color || "#6b7280" }}
           >
             {warnings?.length > 0 && (
               <Warning size={11} className="flex-shrink-0" title={warnings.join("\n")} />
@@ -315,7 +332,9 @@ function WeeklyRotaTab() {
   const [addStaffOpen, setAddStaffOpen] = useState(false);
   const [newStaff, setNewStaff] = useState({ name: "", department: "", role: "", store: "" });
   const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState(null); // {inserted, skipped} or {error}
+  const [importResult, setImportResult] = useState(null);
+  const [deptFilter, setDeptFilter] = useState("All");
+  const [storeViewOpen, setStoreViewOpen] = useState(false);
 
   const load = useCallback((ws) => {
     setLoading(true);
@@ -397,8 +416,35 @@ function WeeklyRotaTab() {
   if (error) return <ErrorBox message={error} />;
   if (!data) return null;
 
-  const { rows, shifts, is_published } = data;
+  const { rows, shifts, is_published, departments: allDepts = [], max_weekly_hours = 45, max_weekly_days = 5 } = data;
   const dates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+
+  // Department filter
+  const filteredRows = deptFilter === "All" ? rows : rows.filter(r => (r.department || "Unassigned") === deptFilter);
+
+  // Store view: group scheduled staff by store × day
+  const storesByDay = useMemo(() => {
+    const result = {};
+    dates.forEach(date => {
+      const byStore = {};
+      rows.forEach(staff => {
+        const store = staff.store;
+        if (!store) return;
+        const day = staff.days.find(d => d.date === date);
+        if (day?.shift_hours > 0) {
+          if (!byStore[store]) byStore[store] = [];
+          byStore[store].push({ name: staff.name, shift: day.shift_name, color: staffColor(staff.name) });
+        }
+      });
+      result[date] = byStore;
+    });
+    return result;
+  }, [rows, dates]);
+
+  const allStores = useMemo(() => {
+    const s = new Set(rows.map(r => r.store).filter(Boolean));
+    return [...s].sort();
+  }, [rows]);
 
   return (
     <div className="space-y-4">
@@ -419,6 +465,16 @@ function WeeklyRotaTab() {
             <LockOpen size={12} /> Draft
           </span>
         )}
+
+        {/* Department filter */}
+        <select
+          value={deptFilter}
+          onChange={e => setDeptFilter(e.target.value)}
+          className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-[#1a5c38]"
+        >
+          <option value="All">All departments</option>
+          {allDepts.map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
 
         <button
           onClick={handleCopyWeek}
@@ -444,6 +500,12 @@ function WeeklyRotaTab() {
         )}
 
         <div className="flex items-center gap-2 ml-auto">
+          <button
+            onClick={() => setStoreViewOpen(o => !o)}
+            className={`flex items-center gap-1.5 text-sm px-3 py-1.5 border rounded-lg transition-colors ${storeViewOpen ? "bg-[#1a5c38] text-white border-[#1a5c38]" : "border-gray-200 bg-white hover:bg-gray-50"}`}
+          >
+            <Buildings size={14} /> Store view
+          </button>
           <button
             onClick={handleImportStaff}
             disabled={importing}
@@ -506,12 +568,25 @@ function WeeklyRotaTab() {
         </div>
       )}
 
-      {/* Legend */}
-      <div className="flex flex-wrap gap-2">
-        {shifts.map(s => (
-          <span key={s.id} className="flex items-center gap-1.5 text-xs text-gray-600">
+      {/* Shift reference */}
+      <div className="flex flex-wrap gap-3">
+        {shifts.filter(s => s.hours > 0 && !s.is_leave).map(s => (
+          <span key={s.id} className="flex items-center gap-1.5 text-xs text-gray-600 bg-white border border-gray-100 rounded px-2 py-1">
             <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: s.colour }} />
-            {s.name} {s.start_time ? `(${s.start_time})` : ""}
+            <strong>{s.name}</strong>
+            {s.start_time && s.end_time && <span className="text-gray-400">{s.start_time}–{s.end_time}</span>}
+            <span className="text-gray-400">({s.hours}h)</span>
+          </span>
+        ))}
+        <span className="text-xs text-gray-400 self-center">Max: {max_weekly_hours}h / {max_weekly_days} days per week</span>
+      </div>
+
+      {/* Staff colour legend */}
+      <div className="flex flex-wrap gap-2">
+        {filteredRows.map(s => (
+          <span key={s.staff_id} className="flex items-center gap-1.5 text-xs text-gray-600">
+            <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: staffColor(s.name) }} />
+            {s.name}
           </span>
         ))}
       </div>
@@ -529,24 +604,43 @@ function WeeklyRotaTab() {
                 <th className="sticky left-0 bg-gray-50 z-10 text-left px-3 py-2 font-semibold text-gray-700 min-w-[160px] border-r border-gray-200">
                   Staff
                 </th>
+                <th className="px-2 py-2 text-left font-medium text-gray-600 min-w-[100px] border-r border-gray-100">
+                  <MapPin size={13} className="inline mr-1" />Store
+                </th>
                 {dates.map((d, i) => (
                   <th key={d} className="px-1 py-2 text-center font-medium text-gray-600 min-w-[88px]">
                     <div>{DAYS[i]}</div>
                     <div className="text-xs text-gray-400 font-normal">{d.slice(5).replace("-", "/")}</div>
                   </th>
                 ))}
-                <th className="px-3 py-2 text-right font-medium text-gray-600 min-w-[64px]">Hrs</th>
+                <th className="px-3 py-2 text-right font-medium text-gray-600 min-w-[64px]">Hrs / Days</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map(staff => {
+              {filteredRows.map(staff => {
                 const totalHrs = staff.days.reduce((sum, d) => sum + (d.shift_hours || 0), 0);
-                const overLimit = totalHrs > staff.max_hours;
+                const workingDays = staff.days.filter(d => d.shift_hours > 0).length;
+                const overHours = totalHrs > max_weekly_hours;
+                const overDays = workingDays > max_weekly_days;
+                const color = staffColor(staff.name);
                 return (
                   <tr key={staff.staff_id} className="border-b border-gray-100 hover:bg-gray-50/50 transition-colors">
                     <td className="sticky left-0 bg-white z-10 px-3 py-2 border-r border-gray-100">
-                      <div className="font-medium text-gray-800 leading-tight">{staff.name}</div>
-                      {staff.department && <div className="text-xs text-gray-400">{staff.department}</div>}
+                      <div className="flex items-center gap-1.5">
+                        <span className="inline-block w-2 h-2 rounded-full flex-shrink-0" style={{ background: color }} />
+                        <span className="font-medium text-gray-800 leading-tight">{staff.name}</span>
+                      </div>
+                      {staff.department && <div className="text-xs text-gray-400 ml-3.5">{staff.department}</div>}
+                      {staff.carryover_hours > 0 && (
+                        <div className="ml-3.5 mt-0.5">
+                          <span className="inline-block text-xs bg-orange-100 text-orange-700 border border-orange-200 rounded px-1 py-0.5">
+                            carry-in: −{staff.carryover_hours.toFixed(1)}h
+                          </span>
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-2 py-2 text-xs text-gray-500 border-r border-gray-100">
+                      {staff.store || <span className="text-gray-300">—</span>}
                     </td>
                     {staff.days.map(day => {
                       const wKey = `${staff.staff_id}-${day.date}`;
@@ -560,18 +654,83 @@ function WeeklyRotaTab() {
                           warnings={dayWarnings}
                           shifts={shifts}
                           onSave={(date, shiftId, pub) => handleSave(staff.staff_id, date, shiftId, pub)}
+                          color={color}
                         />
                       );
                     })}
-                    <td className={`px-3 py-2 text-right text-sm font-medium ${overLimit ? "text-red-600" : "text-gray-700"}`}>
-                      {totalHrs > 0 ? `${totalHrs}h` : "—"}
-                      {overLimit && <Warning size={12} className="inline ml-1 text-red-500" />}
+                    <td className={`px-3 py-2 text-right text-xs font-medium ${overHours || overDays ? "text-red-600" : "text-gray-700"}`}>
+                      <div className={overHours ? "text-red-600" : ""}>
+                        {totalHrs > 0 ? `${totalHrs.toFixed(1)}h` : "—"}
+                        {overHours && <Warning size={11} className="inline ml-1 text-red-500" />}
+                      </div>
+                      <div className={`text-xs ${overDays ? "text-red-600" : "text-gray-400"}`}>
+                        {workingDays > 0 ? `${workingDays}d` : ""}
+                        {overDays && <Warning size={11} className="inline ml-0.5 text-red-500" />}
+                      </div>
                     </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Store View panel */}
+      {storeViewOpen && allStores.length > 0 && (
+        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+          <div className="bg-gray-50 border-b border-gray-200 px-4 py-2.5 flex items-center gap-2">
+            <Buildings size={15} className="text-[#1a5c38]" />
+            <h3 className="text-sm font-semibold text-gray-700">Staff by Store — {fmtWeek(weekStart)}</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 bg-gray-50/50">
+                  <th className="px-4 py-2 text-left font-medium text-gray-600 min-w-[120px]">Store</th>
+                  {dates.map((d, i) => (
+                    <th key={d} className="px-2 py-2 text-center font-medium text-gray-500 text-xs min-w-[110px]">
+                      <div>{DAYS[i]}</div>
+                      <div className="text-gray-400 font-normal">{d.slice(5).replace("-", "/")}</div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {allStores.map(store => (
+                  <tr key={store} className="border-b border-gray-100">
+                    <td className="px-4 py-2 font-medium text-gray-800 whitespace-nowrap">
+                      <MapPin size={12} className="inline mr-1 text-gray-400" />{store}
+                    </td>
+                    {dates.map(date => {
+                      const staffHere = storesByDay[date]?.[store] || [];
+                      return (
+                        <td key={date} className="px-2 py-2 align-top">
+                          {staffHere.length === 0 ? (
+                            <span className="text-gray-200 text-xs">—</span>
+                          ) : (
+                            <div className="flex flex-col gap-0.5">
+                              {staffHere.map((s, idx) => (
+                                <span key={idx} className="inline-flex items-center gap-1 text-xs text-white rounded px-1.5 py-0.5 whitespace-nowrap" style={{ background: s.color }}>
+                                  {s.name}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {storeViewOpen && allStores.length === 0 && (
+        <div className="bg-white rounded-lg border border-gray-200 p-4 text-center text-gray-400 text-sm">
+          No store assignments found. Assign stores to staff members to see this view.
         </div>
       )}
 
@@ -777,17 +936,11 @@ function LeaveTab() {
 }
 
 // ---------------------------------------------------------------------------
-// Coverage tab
+// Coverage tab — per-day headcount
 // ---------------------------------------------------------------------------
-const BAND_LABEL = { morning: "Morning (Early)", afternoon: "Afternoon (Middle)", evening: "Evening (Late)" };
 const STATUS_DOT = { green: "bg-green-500", amber: "bg-amber-400", red: "bg-red-500" };
 const STATUS_TEXT = { green: "text-green-700", amber: "text-amber-700", red: "text-red-600" };
-
-const DEFAULT_THRESHOLDS = {
-  morning:   { min: 2, ideal: 4 },
-  afternoon: { min: 2, ideal: 4 },
-  evening:   { min: 1, ideal: 3 },
-};
+const STATUS_BG   = { green: "bg-green-50",  amber: "bg-amber-50",  red: "bg-red-50"  };
 
 function CoverageTab() {
   const [weekStart, setWeekStart] = useState(isoMonday(new Date()));
@@ -795,9 +948,10 @@ function CoverageTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [thresholdOpen, setThresholdOpen] = useState(false);
-  const [thresholds, setThresholds] = useState(DEFAULT_THRESHOLDS);
+  const [threshold, setThreshold] = useState({ min: 2, ideal: 4 });
   const [thresholdSaving, setThresholdSaving] = useState(false);
   const [thresholdSaved, setThresholdSaved] = useState(false);
+  const [expandedDay, setExpandedDay] = useState(null);
 
   const load = useCallback((ws) => {
     setLoading(true);
@@ -807,7 +961,7 @@ function CoverageTab() {
     ])
       .then(([cr, tr]) => {
         setData(cr.data);
-        if (tr.data && typeof tr.data === "object") setThresholds(tr.data);
+        if (tr.data && typeof tr.data === "object") setThreshold(tr.data);
         setLoading(false);
       })
       .catch(e => { setError(e.message || "Failed to load"); setLoading(false); });
@@ -815,18 +969,10 @@ function CoverageTab() {
 
   React.useEffect(() => { load(weekStart); }, [weekStart, load]);
 
-  const handleThresholdChange = (band, field, val) => {
-    const v = Math.max(0, parseInt(val, 10) || 0);
-    setThresholds(prev => ({
-      ...prev,
-      [band]: { ...prev[band], [field]: v },
-    }));
-  };
-
   const saveThresholds = async () => {
     setThresholdSaving(true);
     try {
-      await api.put("/rota/coverage/thresholds", thresholds);
+      await api.put("/rota/coverage/thresholds", threshold);
       setThresholdSaved(true);
       setTimeout(() => setThresholdSaved(false), 2000);
       load(weekStart);
@@ -860,31 +1006,26 @@ function CoverageTab() {
       {/* Threshold admin panel */}
       {thresholdOpen && (
         <div className="bg-white border border-gray-200 rounded-lg p-4">
-          <h3 className="text-sm font-semibold text-gray-800 mb-3">Staffing Thresholds — Min / Ideal headcount per shift band</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {(["morning", "afternoon", "evening"]).map(band => (
-              <div key={band} className="space-y-2">
-                <p className="text-xs font-semibold text-gray-600">{BAND_LABEL[band]}</p>
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-500 w-10 flex-shrink-0">Min</label>
-                  <input
-                    type="number" min={0} max={20}
-                    value={thresholds[band]?.min ?? 0}
-                    onChange={e => handleThresholdChange(band, "min", e.target.value)}
-                    className="w-16 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-[#1a5c38]"
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-500 w-10 flex-shrink-0">Ideal</label>
-                  <input
-                    type="number" min={0} max={20}
-                    value={thresholds[band]?.ideal ?? 0}
-                    onChange={e => handleThresholdChange(band, "ideal", e.target.value)}
-                    className="w-16 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-[#1a5c38]"
-                  />
-                </div>
-              </div>
-            ))}
+          <h3 className="text-sm font-semibold text-gray-800 mb-3">Daily Staffing Thresholds — Min / Ideal headcount per day</h3>
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-medium text-gray-600 w-16">Min / day</label>
+              <input
+                type="number" min={0} max={20}
+                value={threshold.min ?? 2}
+                onChange={e => setThreshold(p => ({ ...p, min: Math.max(0, parseInt(e.target.value, 10) || 0) }))}
+                className="w-16 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-[#1a5c38]"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-medium text-gray-600 w-16">Ideal / day</label>
+              <input
+                type="number" min={0} max={20}
+                value={threshold.ideal ?? 4}
+                onChange={e => setThreshold(p => ({ ...p, ideal: Math.max(0, parseInt(e.target.value, 10) || 0) }))}
+                className="w-16 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-[#1a5c38]"
+              />
+            </div>
           </div>
           <div className="flex items-center gap-3 mt-4">
             <button
@@ -899,37 +1040,64 @@ function CoverageTab() {
         </div>
       )}
 
-      {/* Per-shift band grid */}
+      {/* Per-day coverage grid */}
       <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50 border-b border-gray-200">
-              <th className="px-4 py-2.5 text-left font-semibold text-gray-700">Shift Band</th>
-              {days.map(d => (
-                <th key={d.date} className="px-2 py-2.5 text-center font-medium text-gray-600 min-w-[80px]">
-                  <div>{d.label}</div>
-                  <div className="text-xs text-gray-400 font-normal">{d.date.slice(5).replace("-", "/")}</div>
-                </th>
-              ))}
+              <th className="px-4 py-2.5 text-left font-semibold text-gray-700 w-32">Day</th>
+              <th className="px-4 py-2.5 text-center font-semibold text-gray-700 w-24">Staff</th>
+              <th className="px-4 py-2.5 text-center font-semibold text-gray-700 w-24">Status</th>
+              <th className="px-4 py-2.5 text-left font-semibold text-gray-700">Scheduled</th>
             </tr>
           </thead>
           <tbody>
-            {["morning", "afternoon", "evening"].map(band => (
-              <tr key={band} className="border-b border-gray-100">
-                <td className="px-4 py-2.5 font-medium text-gray-700">{BAND_LABEL[band]}</td>
-                {days.map(d => {
-                  const b = d.bands[band];
-                  return (
-                    <td key={d.date} className="px-2 py-2.5 text-center">
-                      <div className="flex flex-col items-center gap-1">
-                        <span className={`inline-block w-3 h-3 rounded-full ${STATUS_DOT[b.status]}`} />
-                        <span className={`text-xs font-medium ${STATUS_TEXT[b.status]}`}>{b.count}/{b.ideal}</span>
-                      </div>
+            {days.map(d => {
+              const expanded = expandedDay === d.date;
+              return (
+                <React.Fragment key={d.date}>
+                  <tr
+                    className={`border-b border-gray-100 cursor-pointer hover:bg-gray-50/50 ${STATUS_BG[d.status] ? "" : ""}`}
+                    onClick={() => setExpandedDay(expanded ? null : d.date)}
+                  >
+                    <td className="px-4 py-3 font-medium text-gray-800">
+                      {d.label}
+                      <span className="text-xs text-gray-400 ml-1.5">{d.date.slice(5).replace("-", "/")}</span>
                     </td>
-                  );
-                })}
-              </tr>
-            ))}
+                    <td className="px-4 py-3 text-center">
+                      <span className={`text-sm font-semibold ${STATUS_TEXT[d.status]}`}>{d.count}</span>
+                      <span className="text-xs text-gray-400"> / {d.ideal}</span>
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full border ${
+                        d.status === "green" ? "bg-green-50 text-green-700 border-green-200" :
+                        d.status === "amber" ? "bg-amber-50 text-amber-700 border-amber-200" :
+                        "bg-red-50 text-red-600 border-red-200"
+                      }`}>
+                        <span className={`inline-block w-1.5 h-1.5 rounded-full ${STATUS_DOT[d.status]}`} />
+                        {d.status === "green" ? "Fully staffed" : d.status === "amber" ? "Slightly under" : "Critical"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      {d.staff?.length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {d.staff.slice(0, expanded ? undefined : 4).map((s, i) => (
+                            <span key={i} className="inline-block text-xs bg-gray-100 text-gray-600 rounded px-1.5 py-0.5">
+                              {s.name}
+                            </span>
+                          ))}
+                          {!expanded && d.staff.length > 4 && (
+                            <span className="text-xs text-gray-400 self-center">+{d.staff.length - 4} more</span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-gray-300 text-xs">No staff scheduled</span>
+                      )}
+                    </td>
+                  </tr>
+                </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -939,6 +1107,7 @@ function CoverageTab() {
         <span className="flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-full bg-green-500" /> Fully staffed (≥ ideal)</span>
         <span className="flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-400" /> Slightly under (≥ min)</span>
         <span className="flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-full bg-red-500" /> Critical (below min)</span>
+        <span className="text-gray-400">Click a row to expand staff list.</span>
       </div>
 
       {/* Department table */}
@@ -1043,47 +1212,41 @@ function ReportsTab() {
           <input type="month" value={month} onChange={e => setMonth(e.target.value)}
             className="border border-gray-200 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-[#1a5c38]" />
         )}
-        <button onClick={load} className="flex items-center gap-1.5 text-sm px-3 py-1.5 border border-gray-200 rounded-lg bg-white hover:bg-gray-50 transition-colors">
-          <ArrowsClockwise size={14} /> Refresh
-        </button>
         {data && (
-          <button onClick={handleExport} className="flex items-center gap-1.5 text-sm px-3 py-1.5 bg-[#1a5c38] text-white rounded-lg hover:bg-[#154a2d] transition-colors ml-auto">
+          <button
+            onClick={handleExport}
+            className="flex items-center gap-1.5 text-sm px-3 py-1.5 border border-gray-200 rounded-lg bg-white hover:bg-gray-50 transition-colors ml-auto"
+          >
             <Download size={14} /> Export CSV
           </button>
         )}
       </div>
 
-      {loading && <div className="py-6"><Loading label="Loading report…" /></div>}
+      {loading && <div className="py-10"><Loading label="Loading report…" /></div>}
       {error && <ErrorBox message={error} />}
 
-      {data && !loading && (
+      {!loading && data && (
         <div className="overflow-x-auto rounded-lg border border-gray-200">
           <table className="w-full text-sm bg-white">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200 text-left">
-                {data.columns.map(col => (
-                  <th key={col} className="px-4 py-2.5 font-semibold text-gray-700">{col}</th>
+                {data.columns.map(c => (
+                  <th key={c} className="px-4 py-2.5 font-semibold text-gray-700">{c}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {data.rows.length === 0 ? (
-                <tr>
-                  <td colSpan={data.columns.length} className="px-4 py-8 text-center text-gray-400">No data for this period.</td>
-                </tr>
-              ) : data.rows.map((row, i) => {
-                const vals = Object.values(row);
-                const isAlert = reportType === "overtime" && parseFloat(vals[3]) >= parseFloat(vals[4]) * 0.95;
-                return (
-                  <tr key={i} className={`border-b border-gray-100 hover:bg-gray-50/50 ${isAlert ? "bg-red-50/40" : ""}`}>
-                    {vals.map((v, j) => (
-                      <td key={j} className={`px-4 py-2 ${isAlert && j === 3 ? "text-red-600 font-medium" : "text-gray-700"}`}>
-                        {typeof v === "number" ? (Number.isInteger(v) ? v : v.toFixed(1)) : v ?? "—"}
-                      </td>
+                <tr><td colSpan={data.columns.length} className="px-4 py-8 text-center text-gray-400">No data for this period.</td></tr>
+              ) : (
+                data.rows.map((r, i) => (
+                  <tr key={i} className="border-b border-gray-100 hover:bg-gray-50/50">
+                    {Object.values(r).map((v, j) => (
+                      <td key={j} className="px-4 py-2.5 text-gray-700">{v ?? "—"}</td>
                     ))}
                   </tr>
-                );
-              })}
+                ))
+              )}
             </tbody>
           </table>
         </div>
@@ -1093,28 +1256,28 @@ function ReportsTab() {
 }
 
 // ---------------------------------------------------------------------------
-// Main page
+// Main Rota page
 // ---------------------------------------------------------------------------
 export default function Rota() {
   const { user } = useAuth();
   const [tab, setTab] = useState("overview");
 
+  if (!user) return null;
+
   return (
-    <div>
-      <div className="mb-5">
+    <div className="p-6 max-w-[1600px] mx-auto">
+      <div className="mb-6">
         <h1 className="text-xl font-semibold text-gray-900">Staff Rota</h1>
-        <p className="text-sm text-gray-500 mt-0.5">
-          Weekly scheduling, leave management, shift coverage and hour reports
-        </p>
+        <p className="text-sm text-gray-500 mt-0.5">Schedule, leave management, and coverage tracking</p>
       </div>
 
       <TabStrip active={tab} onChange={setTab} />
 
-      {tab === "overview" && <OverviewTab />}
-      {tab === "rota" && <WeeklyRotaTab />}
-      {tab === "leave" && <LeaveTab />}
-      {tab === "coverage" && <CoverageTab />}
-      {tab === "reports" && <ReportsTab />}
+      {tab === "overview"  && <OverviewTab />}
+      {tab === "rota"      && <WeeklyRotaTab />}
+      {tab === "leave"     && <LeaveTab />}
+      {tab === "coverage"  && <CoverageTab />}
+      {tab === "reports"   && <ReportsTab />}
     </div>
   );
 }

@@ -38,14 +38,18 @@ _DEFAULT_COVERAGE_THRESHOLDS = {
 }
 
 _DEFAULT_SHIFTS = [
-    {"name": "Early",        "start_time": "07:00", "end_time": "15:00", "colour": "#16a34a", "hours": 8.0},
-    {"name": "Middle",       "start_time": "09:00", "end_time": "17:00", "colour": "#2563eb", "hours": 8.0},
-    {"name": "Late",         "start_time": "14:00", "end_time": "22:00", "colour": "#7c3aed", "hours": 8.0},
+    {"name": "Morning 1",    "start_time": "09:00", "end_time": "21:00", "colour": "#0891b2", "hours": 12.0},
+    {"name": "Morning 2",    "start_time": "09:30", "end_time": "20:00", "colour": "#2563eb", "hours": 10.5},
+    {"name": "Mid Shift",    "start_time": "11:30", "end_time": "20:00", "colour": "#7c3aed", "hours": 8.5},
+    {"name": "Late Shift",   "start_time": "14:00", "end_time": "21:00", "colour": "#ea580c", "hours": 7.0},
     {"name": "Off",          "start_time": None,    "end_time": None,    "colour": "#6b7280", "hours": 0.0},
     {"name": "Annual Leave", "start_time": None,    "end_time": None,    "colour": "#f59e0b", "hours": 0.0},
     {"name": "Sick Leave",   "start_time": None,    "end_time": None,    "colour": "#ef4444", "hours": 0.0},
     {"name": "Training",     "start_time": None,    "end_time": None,    "colour": "#06b6d4", "hours": 8.0},
 ]
+
+_MAX_WEEKLY_HOURS = 45.0
+_MAX_WEEKLY_DAYS = 5
 
 
 # ---------------------------------------------------------------------------
@@ -166,13 +170,18 @@ def ensure_rota_tables():
         )
     """)
 
-    # Seed default shifts (idempotent: ON CONFLICT DO NOTHING on the UNIQUE name)
+    # Seed default shifts — DO UPDATE so renames/hour changes propagate on restart
     for s in _DEFAULT_SHIFTS:
         is_leave = s["name"] in ("Annual Leave", "Sick Leave")
         _ex(
             """INSERT INTO rota_shifts (name, start_time, end_time, colour, hours, is_leave, is_system)
                VALUES (%s, %s, %s, %s, %s, %s, TRUE)
-               ON CONFLICT (name) DO NOTHING""",
+               ON CONFLICT (name) DO UPDATE SET
+                 start_time=EXCLUDED.start_time,
+                 end_time=EXCLUDED.end_time,
+                 colour=EXCLUDED.colour,
+                 hours=EXCLUDED.hours,
+                 is_leave=EXCLUDED.is_leave""",
             (s["name"], s["start_time"], s["end_time"], s["colour"], s["hours"], is_leave),
         )
 
@@ -205,7 +214,7 @@ def _check_entry_warnings(staff_id: int, entry_date: date, shift_id: int | None)
     if leave_clash:
         warnings.append("Scheduling on approved leave")
 
-    # 2. Weekly hours >48
+    # 2. Weekly hours > 45
     week_start = _monday(entry_date)
     week_end = week_start + timedelta(days=6)
     hours_data = _rows(
@@ -219,35 +228,24 @@ def _check_entry_warnings(staff_id: int, entry_date: date, shift_id: int | None)
     )
     existing_hours = float(hours_data[0]["total_hours"]) if hours_data else 0.0
     new_total = existing_hours + float(shift["hours"] or 0)
-    if new_total > 48:
-        warnings.append(f"Weekly hours would exceed 48 h (total: {new_total:.1f} h)")
+    if new_total > _MAX_WEEKLY_HOURS:
+        warnings.append(f"Weekly hours would exceed {_MAX_WEEKLY_HOURS:.0f} h (total: {new_total:.1f} h)")
 
-    # 3. >6 consecutive working days
-    # Count working days in a 13-day window centred on entry_date
-    window_start = entry_date - timedelta(days=6)
-    window_end = entry_date + timedelta(days=6)
-    worked_days = _rows(
-        """SELECT entry_date
-           FROM rota_entries re
-           JOIN rota_shifts rs ON rs.id = re.shift_id
-           WHERE re.staff_id=%s AND re.entry_date BETWEEN %s AND %s
-             AND rs.hours > 0 AND re.entry_date <> %s
-           ORDER BY entry_date""",
-        (staff_id, window_start, window_end, entry_date),
-    )
-    all_dates = sorted(
-        [r["entry_date"] for r in worked_days] + ([entry_date] if float(shift["hours"] or 0) > 0 else [])
-    )
-    max_run = 1
-    run = 1
-    for i in range(1, len(all_dates)):
-        if (all_dates[i] - all_dates[i - 1]).days == 1:
-            run += 1
-            max_run = max(max_run, run)
-        else:
-            run = 1
-    if max_run > 6:
-        warnings.append("More than 6 consecutive working days")
+    # 3. More than 5 working days in this week
+    if float(shift["hours"] or 0) > 0:
+        week_days_data = _rows(
+            """SELECT COUNT(DISTINCT re.entry_date) AS n
+               FROM rota_entries re
+               JOIN rota_shifts rs ON rs.id = re.shift_id
+               WHERE re.staff_id=%s
+                 AND re.entry_date BETWEEN %s AND %s
+                 AND re.entry_date <> %s
+                 AND rs.hours > 0""",
+            (staff_id, week_start, week_end, entry_date),
+        )
+        existing_days = int(week_days_data[0]["n"]) if week_days_data else 0
+        if existing_days >= _MAX_WEEKLY_DAYS:
+            warnings.append(f"Would exceed {_MAX_WEEKLY_DAYS} working days this week")
 
     # 4. <11h rest between shifts
     prev_rows = _rows(
@@ -317,11 +315,11 @@ def _get_overview(request: Request):
            JOIN rota_shifts rs ON rs.id=re.shift_id
            WHERE re.entry_date BETWEEN %s AND %s
            GROUP BY re.staff_id
-           HAVING SUM(rs.hours) > 48""",
-        (week_start, week_end),
+           HAVING SUM(rs.hours) > %s""",
+        (week_start, week_end, _MAX_WEEKLY_HOURS),
     )
     overtime_hours = _rows(
-        """SELECT COALESCE(SUM(GREATEST(weekly.total-48,0)),0) AS h
+        """SELECT COALESCE(SUM(GREATEST(weekly.total-%s,0)),0) AS h
            FROM (
              SELECT re.staff_id, SUM(rs.hours) AS total
              FROM rota_entries re
@@ -329,7 +327,7 @@ def _get_overview(request: Request):
              WHERE re.entry_date BETWEEN %s AND %s
              GROUP BY re.staff_id
            ) weekly""",
-        (week_start, week_end),
+        (_MAX_WEEKLY_HOURS, week_start, week_end),
     )
 
     ts = int(total_staff[0]["n"]) if total_staff else 0
@@ -420,7 +418,23 @@ def _get_week(request: Request):
     ws = _monday(ws)  # normalise to Monday
     we = ws + timedelta(days=6)
 
-    staff = _rows("SELECT * FROM rota_staff WHERE status='active' ORDER BY department, name")
+    dept_filter = (request.query_params.get("department") or "").strip()
+
+    staff_sql = "SELECT * FROM rota_staff WHERE status='active'"
+    staff_params: list = []
+    if dept_filter and dept_filter.lower() != "all":
+        staff_sql += " AND LOWER(TRIM(COALESCE(department,'')))=%s"
+        staff_params.append(dept_filter.lower().strip())
+    staff_sql += " ORDER BY department, name"
+
+    staff = _rows(staff_sql, staff_params or None)
+
+    # All departments (unfiltered) for the frontend dropdown
+    all_dept_rows = _rows(
+        "SELECT DISTINCT COALESCE(department,'Unassigned') AS dept FROM rota_staff WHERE status='active' ORDER BY dept"
+    )
+    all_departments = [r["dept"] for r in all_dept_rows]
+
     shifts = _rows("SELECT * FROM rota_shifts ORDER BY id")
     entries = _rows(
         """SELECT re.*, rs.name AS shift_name, rs.colour AS shift_colour, rs.hours AS shift_hours, rs.is_leave AS shift_is_leave
@@ -429,6 +443,30 @@ def _get_week(request: Request):
            WHERE re.entry_date BETWEEN %s AND %s""",
         (ws, we),
     )
+
+    # Carryover: excess hours from the previous week per staff member
+    prev_ws = ws - timedelta(days=7)
+    prev_we = prev_ws + timedelta(days=6)
+    prev_hrs_rows = _rows(
+        """SELECT re.staff_id, COALESCE(SUM(rs.hours), 0) AS total
+           FROM rota_entries re
+           JOIN rota_shifts rs ON rs.id=re.shift_id
+           WHERE re.entry_date BETWEEN %s AND %s
+           GROUP BY re.staff_id""",
+        (prev_ws, prev_we),
+    )
+    prev_hrs_map = {r["staff_id"]: float(r["total"] or 0) for r in prev_hrs_rows}
+
+    # Working-days count this week per staff (for the "days" badge in the frontend)
+    days_worked_rows = _rows(
+        """SELECT re.staff_id, COUNT(DISTINCT re.entry_date) AS n
+           FROM rota_entries re
+           JOIN rota_shifts rs ON rs.id=re.shift_id
+           WHERE re.entry_date BETWEEN %s AND %s AND rs.hours > 0
+           GROUP BY re.staff_id""",
+        (ws, we),
+    )
+    days_worked_map = {r["staff_id"]: int(r["n"]) for r in days_worked_rows}
 
     # Approved leave that overlaps this week (for display)
     leave = _rows(
@@ -495,6 +533,8 @@ def _get_week(request: Request):
                     "published": False,
                     "notes": None,
                 })
+        prev_hrs = prev_hrs_map.get(sid, 0.0)
+        carryover = max(0.0, prev_hrs - _MAX_WEEKLY_HOURS)
         rows_out.append({
             "staff_id": sid,
             "name": s["name"],
@@ -502,7 +542,9 @@ def _get_week(request: Request):
             "role": s["role"],
             "store": s["store"],
             "contract_hours": float(s["contract_hours"] or 40),
-            "max_hours": float(s["max_hours"] or 48),
+            "max_hours": _MAX_WEEKLY_HOURS,
+            "carryover_hours": round(carryover, 1),
+            "days_worked": days_worked_map.get(sid, 0),
             "leave": leave_by_staff.get(sid, []),
             "days": days,
         })
@@ -511,6 +553,9 @@ def _get_week(request: Request):
         "week_start": ws.isoformat(),
         "week_end": we.isoformat(),
         "is_published": is_published,
+        "departments": all_departments,
+        "max_weekly_hours": _MAX_WEEKLY_HOURS,
+        "max_weekly_days": _MAX_WEEKLY_DAYS,
         "shifts": [{"id": s["id"], "name": s["name"], "colour": s["colour"], "hours": float(s["hours"] or 0), "start_time": s["start_time"], "end_time": s["end_time"], "is_leave": s["is_leave"]} for s in shifts],
         "rows": rows_out,
     })
@@ -693,57 +738,46 @@ def _put_leave(request: Request, leave_id: int, body: dict):
     return _ok({"status": status})
 
 
-_THRESHOLD_CONFIG_KEY = "rota_coverage_thresholds"
+_DAY_THRESHOLD_CONFIG_KEY = "rota_coverage_day_threshold"
+_DEFAULT_DAY_THRESHOLD = {"min": 2, "ideal": 4}
 
 
-def _load_coverage_thresholds() -> dict:
-    """Read persisted thresholds from app_config; fall back to defaults."""
+def _load_day_threshold() -> dict:
+    """Read persisted per-day threshold from app_config; fall back to defaults."""
     try:
-        rows = _rows(
-            "SELECT value FROM app_config WHERE key=%s",
-            (_THRESHOLD_CONFIG_KEY,),
-        )
+        rows = _rows("SELECT value FROM app_config WHERE key=%s", (_DAY_THRESHOLD_CONFIG_KEY,))
         if rows:
             import json as _json
             stored = _json.loads(rows[0]["value"])
-            merged = {}
-            for band in ("morning", "afternoon", "evening"):
-                defaults = _DEFAULT_COVERAGE_THRESHOLDS[band]
-                entry = stored.get(band, {})
-                merged[band] = {
-                    "min":   int(entry.get("min",   defaults["min"])),
-                    "ideal": int(entry.get("ideal", defaults["ideal"])),
-                }
-            return merged
+            min_v = max(0, int(stored.get("min", _DEFAULT_DAY_THRESHOLD["min"])))
+            ideal_v = max(min_v, int(stored.get("ideal", _DEFAULT_DAY_THRESHOLD["ideal"])))
+            return {"min": min_v, "ideal": ideal_v}
     except Exception:
         pass
-    return _DEFAULT_COVERAGE_THRESHOLDS.copy()
+    return dict(_DEFAULT_DAY_THRESHOLD)
 
 
-def _save_coverage_thresholds(data: dict) -> dict:
-    """Persist threshold dict into app_config."""
+def _save_day_threshold(data: dict) -> dict:
+    """Persist day threshold into app_config."""
     import json as _json
-    validated = {}
-    for band in ("morning", "afternoon", "evening"):
-        entry = data.get(band, {})
-        min_v = max(0, int(entry.get("min", _DEFAULT_COVERAGE_THRESHOLDS[band]["min"])))
-        ideal_v = max(min_v, int(entry.get("ideal", _DEFAULT_COVERAGE_THRESHOLDS[band]["ideal"])))
-        validated[band] = {"min": min_v, "ideal": ideal_v}
+    min_v = max(0, int(data.get("min", _DEFAULT_DAY_THRESHOLD["min"])))
+    ideal_v = max(min_v, int(data.get("ideal", _DEFAULT_DAY_THRESHOLD["ideal"])))
+    validated = {"min": min_v, "ideal": ideal_v}
     _ex(
         """INSERT INTO app_config (key, value, updated_at)
            VALUES (%s,%s,now())
            ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()""",
-        (_THRESHOLD_CONFIG_KEY, _json.dumps(validated)),
+        (_DAY_THRESHOLD_CONFIG_KEY, _json.dumps(validated)),
     )
     return validated
 
 
 def _get_coverage_thresholds(request: Request):
-    return _ok(_load_coverage_thresholds())
+    return _ok(_load_day_threshold())
 
 
 def _put_coverage_thresholds(request: Request, body: dict):
-    saved = _save_coverage_thresholds(body)
+    saved = _save_day_threshold(body)
     return _ok(saved)
 
 
@@ -755,41 +789,63 @@ def _get_coverage(request: Request):
     ws = _monday(ws)
     we = ws + timedelta(days=6)
 
-    thresholds = _load_coverage_thresholds()
+    threshold = _load_day_threshold()
+    min_h = threshold["min"]
+    ideal = threshold["ideal"]
 
-    # For each day compute morning/afternoon/evening headcount
-    # Morning = Early shift; Afternoon = Middle; Evening = Late
-    shift_bands = {
-        "morning":   "Early",
-        "afternoon": "Middle",
-        "evening":   "Late",
-    }
+    # Staff count per day (any shift with hours > 0)
+    count_rows = _rows(
+        """SELECT re.entry_date AS d, COUNT(DISTINCT re.staff_id) AS n
+           FROM rota_entries re
+           JOIN rota_shifts rs ON rs.id=re.shift_id
+           WHERE re.entry_date BETWEEN %s AND %s AND rs.hours > 0
+           GROUP BY re.entry_date""",
+        (ws, we),
+    )
+    count_map = {}
+    for r in count_rows:
+        diso = r["d"].isoformat() if hasattr(r["d"], "isoformat") else str(r["d"])
+        count_map[diso] = int(r["n"])
+
+    # Per-day staff list (name + shift) for the detail panel
+    staff_detail_rows = _rows(
+        """SELECT re.entry_date AS d, rst.name, rsh.name AS shift_name
+           FROM rota_entries re
+           JOIN rota_shifts rsh ON rsh.id=re.shift_id
+           JOIN rota_staff rst ON rst.id=re.staff_id
+           WHERE re.entry_date BETWEEN %s AND %s AND rsh.hours > 0
+           ORDER BY re.entry_date, rst.name""",
+        (ws, we),
+    )
+    staff_by_day: dict = {}
+    for r in staff_detail_rows:
+        diso = r["d"].isoformat() if hasattr(r["d"], "isoformat") else str(r["d"])
+        if diso not in staff_by_day:
+            staff_by_day[diso] = []
+        staff_by_day[diso].append({"name": r["name"], "shift": r["shift_name"]})
+
     days_out = []
     for i in range(7):
         d = ws + timedelta(days=i)
         diso = d.isoformat()
-        bands = {}
-        for band, shift_name in shift_bands.items():
-            count_rows = _rows(
-                """SELECT COUNT(DISTINCT re.staff_id) AS n
-                   FROM rota_entries re
-                   JOIN rota_shifts rs ON rs.id=re.shift_id
-                   WHERE re.entry_date=%s AND rs.name=%s""",
-                (d, shift_name),
-            )
-            count = int(count_rows[0]["n"]) if count_rows else 0
-            ideal = thresholds[band]["ideal"]
-            min_h = thresholds[band]["min"]
-            if count >= ideal:
-                status = "green"
-            elif count >= min_h:
-                status = "amber"
-            else:
-                status = "red"
-            bands[band] = {"count": count, "ideal": ideal, "min": min_h, "status": status}
-        days_out.append({"date": diso, "label": d.strftime("%a"), "bands": bands})
+        count = count_map.get(diso, 0)
+        if count >= ideal:
+            status = "green"
+        elif count >= min_h:
+            status = "amber"
+        else:
+            status = "red"
+        days_out.append({
+            "date": diso,
+            "label": d.strftime("%a"),
+            "count": count,
+            "ideal": ideal,
+            "min": min_h,
+            "status": status,
+            "staff": staff_by_day.get(diso, []),
+        })
 
-    # Department coverage
+    # Department coverage summary
     dept_rows = _rows(
         """SELECT rs_staff.department,
                   COUNT(DISTINCT re.staff_id) AS staff_scheduled,
@@ -806,7 +862,7 @@ def _get_coverage(request: Request):
     return _ok({
         "week_start": ws.isoformat(),
         "week_end": we.isoformat(),
-        "thresholds": thresholds,
+        "threshold": threshold,
         "days": days_out,
         "departments": [
             {
@@ -936,9 +992,9 @@ def _get_report(request: Request):
                LEFT JOIN rota_shifts rs_sh ON rs_sh.id=re.shift_id
                WHERE rs_staff.status='active'
                GROUP BY rs_staff.id, rs_staff.name, rs_staff.department, rs_staff.store, rs_staff.max_hours
-               HAVING COALESCE(SUM(rs_sh.hours),0) > rs_staff.max_hours * 0.9
+               HAVING COALESCE(SUM(rs_sh.hours),0) > %s * 0.9
                ORDER BY hours_scheduled DESC""",
-            (ws, we),
+            (ws, we, _MAX_WEEKLY_HOURS),
         )
         return _ok({
             "type": "overtime",
@@ -950,7 +1006,7 @@ def _get_report(request: Request):
                     "name": r["name"], "department": r["department"],
                     "store": r["store"],
                     "hours_scheduled": float(r["hours_scheduled"] or 0),
-                    "max_hours": float(r["max_hours"] or 48),
+                    "max_hours": _MAX_WEEKLY_HOURS,
                 }
                 for r in rows
             ],

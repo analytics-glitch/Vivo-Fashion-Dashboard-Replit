@@ -30573,8 +30573,18 @@ def production_summary():
         LEFT JOIN LATERAL (
             SELECT category, product_type
             FROM all_products_clean
-            WHERE style_number = po.style_number
-              AND style_number IS NOT NULL
+            WHERE (
+                -- 1. exact style_number match
+                (po.style_number IS NOT NULL AND style_number = po.style_number)
+                -- 2. style_name match (BO style_name = product style_name before color)
+                OR (po.style_name IS NOT NULL AND style_name = po.style_name)
+                -- 3. style_number prefix match (strip color suffix from BO style_number)
+                OR (po.style_number IS NOT NULL AND style_number = regexp_replace(regexp_replace(po.style_number, '/.*$', ''), '[A-Z]{1,}[0-9]*$', ''))
+            )
+            ORDER BY
+                CASE WHEN style_number = po.style_number THEN 1
+                     WHEN style_name = po.style_name THEN 2
+                     ELSE 3 END
             LIMIT 1
         ) cat ON TRUE"""
 
