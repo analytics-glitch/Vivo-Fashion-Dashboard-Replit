@@ -31527,7 +31527,7 @@ async def serve_recon_subpath(sub_path: str):
     return _serve_recon_page()
 
 
-# ── Loyalty PWA — full-page iframe redirect to loyalty.shopzetu.com ───────────
+# ── Loyalty PWA — full-page iframe redirect to loyalty.vivofashionbrands.com ──
 # No separate process or port — the API server owns /loyalty-app/* directly.
 # The page embeds the live external app in a full-screen iframe; a meta-refresh
 # fallback fires if the browser blocks the iframe (X-Frame-Options).
@@ -31536,7 +31536,7 @@ _LOYALTY_IFRAME_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="3; url=https://loyalty.shopzetu.com">
+  <meta http-equiv="refresh" content="3; url=https://loyalty.vivofashionbrands.com">
   <title>Vivo Loyalty</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -31549,14 +31549,14 @@ _LOYALTY_IFRAME_HTML = """<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <iframe src="https://loyalty.shopzetu.com"
+  <iframe src="https://loyalty.vivofashionbrands.com"
           title="Vivo Loyalty"
           allow="forms"
           onerror="this.classList.add('blocked')"></iframe>
   <div class="fallback">
     <p>Opening Vivo Loyalty&hellip;</p>
-    <a href="https://loyalty.shopzetu.com" target="_blank"
-       style="color:#1a5c38">loyalty.shopzetu.com</a>
+    <a href="https://loyalty.vivofashionbrands.com" target="_blank"
+       style="color:#1a5c38">loyalty.vivofashionbrands.com</a>
   </div>
 </body>
 </html>"""

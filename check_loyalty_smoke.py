@@ -3,12 +3,12 @@
 Loyalty-app smoke test.
 
 The vendored Fastify + Prisma PWA was removed.  /loyalty-app/* is now served
-by the main FastAPI process in api_pg.py, which embeds loyalty.shopzetu.com
+by the main FastAPI process in api_pg.py, which embeds loyalty.vivofashionbrands.com
 in a full-screen iframe (with a meta-refresh fallback).
 
 Endpoints tested:
   GET /loyalty-app       → 301 redirect to /loyalty-app/
-  GET /loyalty-app/      → 200 HTML containing loyalty.shopzetu.com reference
+  GET /loyalty-app/      → 200 HTML containing loyalty.vivofashionbrands.com reference
   GET /loyalty-app/health → 200 JSON {"status": "ok"}
 
 Usage:
@@ -25,7 +25,7 @@ PROXY_BASE = os.environ.get("PROXY_BASE", "http://localhost:80").rstrip("/")
 BASE_URL   = f"{PROXY_BASE}/loyalty-app"
 SLASH_URL  = f"{PROXY_BASE}/loyalty-app/"
 HEALTH_URL = f"{PROXY_BASE}/loyalty-app/health"
-EXPECTED_HOST = "loyalty.shopzetu.com"
+EXPECTED_HOST = "loyalty.vivofashionbrands.com"
 
 
 def fetch(url: str) -> tuple[int, str, dict]:
@@ -79,7 +79,7 @@ def main() -> None:
         sys.exit(1)
     print(f"  OK  {BASE_URL} → {status} → {location}")
 
-    # ── Check 2: GET /loyalty-app/ → 200 HTML with loyalty.shopzetu.com ──────
+    # ── Check 2: GET /loyalty-app/ → 200 HTML with loyalty.vivofashionbrands.com
     status, body, headers = fetch(SLASH_URL)
     if status != 200:
         print(
