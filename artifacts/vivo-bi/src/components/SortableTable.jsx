@@ -639,13 +639,13 @@ export const SortableTable = ({
                   <th
                     key={c.key}
                     data-colkey={c.key}
-                    className={`group ${c.align === "right" || c.numeric ? "text-right" : "text-left"} ${c.sortable === false ? "" : "cursor-pointer hover:text-brand"} select-none ${isFrozen ? "sticky z-30 bg-white" : ""} ${resizable ? "relative" : ""}`}
+                    className={`group ${c.align === "right" || c.numeric ? "text-right" : "text-left"} ${c.sortable === false ? "" : "cursor-pointer hover:text-brand"} select-none ${isFrozen ? "sticky z-30" : ""} ${resizable ? "relative" : ""}`}
                     onClick={() => toggleSort(c.key)}
                     style={{
                       ...(resizable && colWidths[c.key]
                         ? { width: colWidths[c.key] }
                         : c.width ? { width: c.width } : {}),
-                      ...(isFrozen ? { left: frozenOffsets[ci] ?? 0 } : {}),
+                      ...(isFrozen ? { left: frozenOffsets[ci] ?? 0, background: "#fff" } : {}),
                       ...(isLastFrozen ? { boxShadow: "2px 0 5px -1px rgba(0,0,0,0.08)" } : {}),
                     }}
                     title={c.headerTitle || undefined}
@@ -724,12 +724,15 @@ export const SortableTable = ({
                       return (
                         <td
                           key={c.key}
-                          className={`${c.align === "right" || c.numeric ? "text-right num" : "text-left"} ${c.className || ""} ${expandedCols.has(c.key) ? "col-expanded" : ""} ${isFrozen ? "sticky z-10 bg-white" : ""}`}
+                          className={`${c.align === "right" || c.numeric ? "text-right num" : "text-left"} ${c.className || ""} ${expandedCols.has(c.key) ? "col-expanded" : ""} ${isFrozen ? "sticky z-10" : ""}`}
                           style={{
                             ...(resizable && colWidths[c.key]
                               ? { width: colWidths[c.key], overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
                               : {}),
-                            ...(isFrozen ? { left: frozenOffsets[ci] ?? 0 } : {}),
+                            // Inline background beats the `table.data tr:hover td` CSS
+                            // rule (which uses alpha and would make the frozen cell
+                            // see-through while the cursor is over the row during scroll).
+                            ...(isFrozen ? { left: frozenOffsets[ci] ?? 0, background: "var(--bg, #fff)" } : {}),
                             ...(isLastFrozen ? { boxShadow: "2px 0 5px -1px rgba(0,0,0,0.08)" } : {}),
                           }}
                         >
