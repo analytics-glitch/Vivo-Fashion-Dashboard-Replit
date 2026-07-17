@@ -30643,22 +30643,28 @@ def production_summary():
         ) cat ON TRUE
         WHERE po.order_qty > 0"""
 
-    by_category = _users_exec(f"""
-        SELECT COALESCE(cat.category, 'Unspecified')     AS label,
+    # The fuzzy category LATERAL costs ~28s against all_products_clean, so run
+    # it ONCE grouped by (category, product_type) and derive both breakdowns
+    # from the same pass instead of paying it twice.
+    cat_rows = _users_exec(f"""
+        SELECT COALESCE(cat.category, 'Unspecified')     AS category,
+               COALESCE(cat.product_type, 'Unspecified') AS product_type,
                COUNT(*)                                  AS orders,
                COALESCE(SUM(po.order_qty), 0)            AS units
         {_cat_join}
-        GROUP BY 1
-        ORDER BY units DESC""", fetch=True)
+        GROUP BY 1, 2""", fetch=True)
 
-    by_product_type = _users_exec(f"""
-        SELECT COALESCE(cat.product_type, 'Unspecified') AS label,
-               COUNT(*)                                  AS orders,
-               COALESCE(SUM(po.order_qty), 0)            AS units
-        {_cat_join}
-        GROUP BY 1
-        ORDER BY units DESC
-        LIMIT 20""", fetch=True)
+    def _rollup(rows, key, limit=None):
+        agg = {}
+        for r in rows:
+            a = agg.setdefault(r[key], {"label": r[key], "orders": 0, "units": 0})
+            a["orders"] += int(r["orders"] or 0)
+            a["units"] += float(r["units"] or 0)
+        out = sorted(agg.values(), key=lambda a: -a["units"])
+        return out[:limit] if limit else out
+
+    by_category = _rollup(cat_rows, "category")
+    by_product_type = _rollup(cat_rows, "product_type", limit=20)
 
     result = {
         "totals": (totals[0] if totals else {"orders": 0, "units": 0, "styles": 0}),
