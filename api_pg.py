@@ -31527,6 +31527,69 @@ async def serve_recon_subpath(sub_path: str):
     return _serve_recon_page()
 
 
+# ── Loyalty PWA — full-page iframe redirect to loyalty.shopzetu.com ───────────
+# No separate process or port — the API server owns /loyalty-app/* directly.
+# The page embeds the live external app in a full-screen iframe; a meta-refresh
+# fallback fires if the browser blocks the iframe (X-Frame-Options).
+_LOYALTY_IFRAME_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="3; url=https://loyalty.shopzetu.com">
+  <title>Vivo Loyalty</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; }
+    iframe { display: block; width: 100%; height: 100%; border: none; }
+    .fallback { display: none; position: fixed; inset: 0; align-items: center;
+      justify-content: center; font-family: sans-serif; font-size: 14px;
+      color: #555; background: #faf7f4; text-align: center; }
+    iframe.blocked + .fallback { display: flex; flex-direction: column; gap: 8px; }
+  </style>
+</head>
+<body>
+  <iframe src="https://loyalty.shopzetu.com"
+          title="Vivo Loyalty"
+          allow="forms"
+          onerror="this.classList.add('blocked')"></iframe>
+  <div class="fallback">
+    <p>Opening Vivo Loyalty&hellip;</p>
+    <a href="https://loyalty.shopzetu.com" target="_blank"
+       style="color:#1a5c38">loyalty.shopzetu.com</a>
+  </div>
+</body>
+</html>"""
+
+
+def _serve_loyalty_page():
+    from fastapi.responses import HTMLResponse
+    resp = HTMLResponse(content=_LOYALTY_IFRAME_HTML)
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
+
+
+@app.get("/loyalty-app/health")
+async def loyalty_health():
+    return {"status": "ok"}
+
+
+@app.get("/loyalty-app")
+async def loyalty_redirect():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/loyalty-app/", status_code=301)
+
+
+@app.get("/loyalty-app/")
+async def serve_loyalty_root():
+    return _serve_loyalty_page()
+
+
+@app.get("/loyalty-app/{sub_path:path}")
+async def serve_loyalty_subpath(sub_path: str):
+    return _serve_loyalty_page()
+
+
 # TikTok developer domain verification. In production the platform proxy routes
 # unclaimed root paths to the vivo-bi static host, whose SPA fallback returns
 # index.html for unknown files — so the git-tracked copy under

@@ -7,7 +7,7 @@ id = "3B4_FFSkEVBkAeYMFRJ2e"
 [[services]]
 localPort = 8080
 name = "API Server"
-paths = ["/api", "/fabric", "/clienteling", "/reconcile", "/tiktokecdOdOLGOstI9a9rEZzScUsE7H5MF9fz.txt", "/tiktokk6FXJJjsKxj6c7S5DGT00YAaX5CstwWr.txt"]
+paths = ["/api", "/fabric", "/clienteling", "/reconcile", "/loyalty-app", "/tiktokecdOdOLGOstI9a9rEZzScUsE7H5MF9fz.txt", "/tiktokk6FXJJjsKxj6c7S5DGT00YAaX5CstwWr.txt"]
 
 [services.env]
 PORT = "8080"
@@ -35,42 +35,3 @@ WATCHDOG_MANAGE_API = "1"
 # serve. /api/healthz (DB-free liveness) stays available for plain up/down checks.
 [services.production.health.startup]
 path = "/api/readyz"
-
-# ── Vivo Loyalty PWA (standalone Shopify-connected loyalty app) ──────────────
-# Vendored AS-IS at repo-root loyalty-app/ (npm, Fastify + Prisma + React Router
-# SPA). Own process, own port, own Postgres schema (loyalty_app). Served under
-# the /loyalty-app base path — SPA, API, and Shopify webhooks are all same-origin.
-[[services]]
-localPort = 8090
-name = "Vivo Loyalty PWA"
-paths = ["/loyalty-app"]
-
-[services.env]
-PORT = "8090"
-LOYALTY_APP_SERVE_FRONTEND = "true"
-
-[services.development]
-run = "sh -c 'cd /home/runner/workspace/loyalty-app/the-loyalty-app && npm ci && npm run build && cd /home/runner/workspace/loyalty-app/loyalty-app-backend && npm ci && npx tsx src/server.ts'"
-
-[services.production]
-
-# Build step: install deps, generate Prisma client, run DB migrations, build SPA.
-# The resulting node_modules + generated client + dist/ persist to the run step.
-[services.production.build]
-args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app && (cd loyalty-app-backend && npm ci && npx prisma generate && node scripts/db-env.mjs npx prisma migrate deploy) && (cd the-loyalty-app && npm ci && npm run build)"]
-
-# Run step: node_modules and prisma client are already present from the build
-# step — no npm ci here so the server binds in <5s instead of 40-60s.
-# Uses db-env.mjs to derive LOYALTY_APP_DATABASE_URL from DATABASE_URL with the
-# loyalty_app schema — the same pattern the build step uses for migrations.
-# NODE_ENV=production activates production mode in the Fastify app.
-[services.production.run]
-args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app/loyalty-app-backend && node scripts/db-env.mjs npx tsx src/server.ts"]
-
-[services.production.run.env]
-PORT = "8090"
-LOYALTY_APP_SERVE_FRONTEND = "true"
-NODE_ENV = "production"
-
-[services.production.health.startup]
-path = "/loyalty-app/health"
