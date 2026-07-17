@@ -29,3 +29,12 @@ turning a 50 ms warm query into a 2-3 s cold one.
 - `_warm_loop` in `_start_cache_prewarmer()` (api_pg.py ~line 1501)
 - `smart_ttl` at api_pg.py ~line 144
 - The prewarm delay is 90 s (let boot traffic settle first)
+
+## Fuzzy-join lesson (production summary, Jul 2026)
+- A per-row fuzzy `LEFT JOIN LATERAL` (exact + ILIKE-prefix conditions) against
+  a large dim table took ~28s per pass — and even a plain
+  `LEFT JOIN (DISTINCT ON ...) cat ON cat.style_name = po.style_name` timed out
+  (>100s) because the planner re-executed the DISTINCT ON subquery per outer row.
+- **Rule:** for small fact tables (~hundreds of rows) needing fuzzy dim lookups,
+  fetch the dim ONCE and match in Python (exact → stripped → prefix). Sub-second
+  vs. minutes, and coverage improved (151→3 unmatched orders).

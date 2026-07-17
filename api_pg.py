@@ -30511,21 +30511,12 @@ def production_summary():
             FROM stage_movements
             WHERE to_stage = 'sewing' AND sewing_line IS NOT NULL
             GROUP BY order_ref
-        ),
-        cat AS (
-            SELECT DISTINCT ON (style_name) style_name,
-                   category, product_type
-            FROM all_products_clean
-            WHERE style_name IS NOT NULL
-            ORDER BY style_name, sku
         )
         SELECT po.order_ref, po.style_number, po.style_name, po.product_name,
                po.buyer, po.order_qty, po.date_ordered, po.expected_delivery_date,
                po.production_type,
                po.lifecycle_type                          AS lifecycle,
                po.bo_state                               AS state,
-               COALESCE(cat.category,     'Unspecified') AS category,
-               COALESCE(cat.product_type, 'Unspecified') AS product_type,
                COALESCE(lr.colours, 0)  AS colours,
                COALESCE(vr.sizes, 0)    AS sizes,
                COALESCE(vr.variants, 0) AS variants,
@@ -30537,7 +30528,6 @@ def production_summary():
         LEFT JOIN var_rollup  vr ON vr.order_ref = po.order_ref
         LEFT JOIN bal            ON bal.order_ref = po.order_ref
         LEFT JOIN sew            ON sew.order_ref = po.order_ref
-        LEFT JOIN cat            ON cat.style_name = po.style_name
         ORDER BY po.date_ordered DESC NULLS LAST, po.order_ref DESC""", fetch=True)
 
     # Load now sitting in the Sewing stage, split by the line each piece ran on
@@ -30618,53 +30608,65 @@ def production_summary():
                                key=lambda kv: (kv[0] == "Unspecified", kv[0]))
     ]
 
-    _cat_join = """
-        FROM production_orders po
-        LEFT JOIN LATERAL (
-            SELECT category, product_type
-            FROM all_products_clean
-            WHERE (
-                -- 1. exact style_number match
-                (po.style_number IS NOT NULL AND style_number = po.style_number)
-                -- 2. exact style_name match
-                OR (po.style_name IS NOT NULL AND style_name = po.style_name)
-                -- 3. style_number prefix match (strip color suffix from BO style_number)
-                OR (po.style_number IS NOT NULL AND style_number = regexp_replace(regexp_replace(po.style_number, '/.*$', ''), '[A-Z]{1,}[0-9]*$', ''))
-                -- 4. fuzzy: BO style_name starts with product style_name
-                OR (po.style_name IS NOT NULL AND po.style_name ILIKE style_name || '%')
-                -- 5. fuzzy: product style_name starts with BO style_name
-                OR (po.style_name IS NOT NULL AND style_name ILIKE po.style_name || '%')
-            )
-            ORDER BY
-                CASE WHEN style_number = po.style_number THEN 1
-                     WHEN style_name = po.style_name THEN 2
-                     ELSE 3 END
-            LIMIT 1
-        ) cat ON TRUE
-        WHERE po.order_qty > 0"""
+    # The fuzzy category match used to be a per-order LATERAL against
+    # all_products_clean (~28s+, ran twice). Do it in Python instead: fetch the
+    # product dim once, match each order in memory (exact style_number → exact
+    # style_name → stripped style_number → prefix either way), then aggregate.
+    import re as _re
+    po_rows = _users_exec(
+        "SELECT style_number, style_name, order_qty FROM production_orders "
+        "WHERE order_qty > 0", fetch=True)
+    dim_rows = _users_exec("""
+        SELECT DISTINCT ON (style_name) style_name, style_number,
+               category, product_type
+        FROM all_products_clean
+        WHERE style_name IS NOT NULL
+        ORDER BY style_name, sku""", fetch=True)
+    by_num, by_name = {}, {}
+    for d in dim_rows:
+        if d["style_number"] and d["style_number"] not in by_num:
+            by_num[d["style_number"]] = d
+        by_name.setdefault(d["style_name"], d)
+    _names_lower = [(n.lower(), d) for n, d in by_name.items()]
 
-    # The fuzzy category LATERAL costs ~28s against all_products_clean, so run
-    # it ONCE grouped by (category, product_type) and derive both breakdowns
-    # from the same pass instead of paying it twice.
-    cat_rows = _users_exec(f"""
-        SELECT COALESCE(cat.category, 'Unspecified')     AS category,
-               COALESCE(cat.product_type, 'Unspecified') AS product_type,
-               COUNT(*)                                  AS orders,
-               COALESCE(SUM(po.order_qty), 0)            AS units
-        {_cat_join}
-        GROUP BY 1, 2""", fetch=True)
+    def _match(po):
+        sn, sname = po["style_number"], po["style_name"]
+        if sn and sn in by_num:
+            return by_num[sn]
+        if sname and sname in by_name:
+            return by_name[sname]
+        if sn:
+            stripped = _re.sub(r'[A-Z]+[0-9]*$', '', _re.sub(r'/.*$', '', sn))
+            if stripped in by_num:
+                return by_num[stripped]
+        if sname:
+            low = sname.lower()
+            for nl, d in _names_lower:
+                if low.startswith(nl) or nl.startswith(low):
+                    return d
+        return None
 
-    def _rollup(rows, key, limit=None):
-        agg = {}
-        for r in rows:
-            a = agg.setdefault(r[key], {"label": r[key], "orders": 0, "units": 0})
-            a["orders"] += int(r["orders"] or 0)
-            a["units"] += float(r["units"] or 0)
-        out = sorted(agg.values(), key=lambda a: -a["units"])
-        return out[:limit] if limit else out
+    # Backfill category/product_type onto the orders rows via the same fuzzy
+    # matcher (the old SQL cat join was exact-style_name only AND pathological
+    # for the planner; matching in memory is both faster and more complete).
+    for o in orders:
+        m = _match(o) or {}
+        o["category"] = m.get("category") or "Unspecified"
+        o["product_type"] = m.get("product_type") or "Unspecified"
 
-    by_category = _rollup(cat_rows, "category")
-    by_product_type = _rollup(cat_rows, "product_type", limit=20)
+    cat_agg, ptype_agg = {}, {}
+    for po in po_rows:
+        m = _match(po) or {}
+        cat = m.get("category") or "Unspecified"
+        pt = m.get("product_type") or "Unspecified"
+        qty = float(po["order_qty"] or 0)
+        for agg, label in ((cat_agg, cat), (ptype_agg, pt)):
+            a = agg.setdefault(label, {"label": label, "orders": 0, "units": 0})
+            a["orders"] += 1
+            a["units"] += qty
+
+    by_category = sorted(cat_agg.values(), key=lambda a: -a["units"])
+    by_product_type = sorted(ptype_agg.values(), key=lambda a: -a["units"])[:20]
 
     result = {
         "totals": (totals[0] if totals else {"orders": 0, "units": 0, "styles": 0}),
