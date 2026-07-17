@@ -30576,17 +30576,22 @@ def production_summary():
             WHERE (
                 -- 1. exact style_number match
                 (po.style_number IS NOT NULL AND style_number = po.style_number)
-                -- 2. style_name match (BO style_name = product style_name before color)
+                -- 2. exact style_name match
                 OR (po.style_name IS NOT NULL AND style_name = po.style_name)
                 -- 3. style_number prefix match (strip color suffix from BO style_number)
                 OR (po.style_number IS NOT NULL AND style_number = regexp_replace(regexp_replace(po.style_number, '/.*$', ''), '[A-Z]{1,}[0-9]*$', ''))
+                -- 4. fuzzy: BO style_name starts with product style_name
+                OR (po.style_name IS NOT NULL AND po.style_name ILIKE style_name || '%')
+                -- 5. fuzzy: product style_name starts with BO style_name
+                OR (po.style_name IS NOT NULL AND style_name ILIKE po.style_name || '%')
             )
             ORDER BY
                 CASE WHEN style_number = po.style_number THEN 1
                      WHEN style_name = po.style_name THEN 2
                      ELSE 3 END
             LIMIT 1
-        ) cat ON TRUE"""
+        ) cat ON TRUE
+        WHERE po.order_qty > 0"""
 
     by_category = _users_exec(f"""
         SELECT COALESCE(cat.category, 'Unspecified')     AS label,
