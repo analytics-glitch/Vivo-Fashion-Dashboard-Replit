@@ -50,6 +50,8 @@ export const api = {
     request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "PATCH", body: body ? JSON.stringify(body) : undefined }),
+  put: <T>(path: string, body?: unknown) =>
+    request<T>(path, { method: "PUT", body: body ? JSON.stringify(body) : undefined }),
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 
@@ -351,6 +353,8 @@ export const admin = {
     create: (data: RewardInput) => api.post<{ reward: AdminReward }>("/api/admin/rewards", data),
     update: (id: string, data: Partial<RewardInput>) =>
       api.patch<{ reward: AdminReward }>(`/api/admin/rewards/${id}`, data),
+    reorder: (ids: string[]) =>
+      api.put<{ rewards: AdminReward[] }>("/api/admin/rewards/reorder", { ids }),
     delete: (id: string) => api.del<{ ok: boolean }>(`/api/admin/rewards/${id}`),
   },
 };

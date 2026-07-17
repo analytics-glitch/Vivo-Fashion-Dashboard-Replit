@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router";
 import { useAuth } from "../lib/auth";
 import { admin, type AdminReward, type RewardInput } from "../lib/api";
@@ -52,6 +52,8 @@ export default function AdminRewardsPage() {
 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  const [reorderError, setReorderError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!loading && (!user || user.role !== "ADMIN")) navigate("/dashboard", { replace: true });
@@ -145,6 +147,19 @@ export default function AdminRewardsPage() {
     }
   }
 
+  async function handleReorder(newOrder: AdminReward[]) {
+    setRewards(newOrder);
+    setReorderError(null);
+    try {
+      const { rewards: updated } = await admin.rewards.reorder(newOrder.map((r) => r.id));
+      setRewards(updated);
+    } catch (e: unknown) {
+      const err = e as { message?: string };
+      setReorderError(err?.message ?? "Reorder failed. Please try again.");
+      load();
+    }
+  }
+
   function set<K extends keyof RewardInput>(k: K, v: RewardInput[K]) {
     setForm((f) => ({ ...f, [k]: v }));
   }
@@ -187,17 +202,20 @@ export default function AdminRewardsPage() {
           subtitle="Add your first reward to get started."
         />
       ) : (
-        <div className="space-y-3">
-          {rewards.map((r) => (
-            <RewardCard
-              key={r.id}
-              reward={r}
-              onEdit={() => openEdit(r)}
-              onToggle={() => toggleActive(r)}
-              onDelete={() => setConfirmDelete(r.id)}
-            />
-          ))}
-        </div>
+        <>
+          <p className="text-xs text-muted">Drag the handle to reorder rewards in the catalog.</p>
+          <DraggableRewardList
+            rewards={rewards}
+            onEdit={openEdit}
+            onToggle={toggleActive}
+            onDelete={(r) => setConfirmDelete(r.id)}
+            onReorder={handleReorder}
+          />
+        </>
+      )}
+
+      {reorderError && (
+        <p className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-600">{reorderError}</p>
       )}
 
       {saveError && !showForm && (
@@ -229,6 +247,83 @@ export default function AdminRewardsPage() {
   );
 }
 
+function DraggableRewardList({
+  rewards,
+  onEdit,
+  onToggle,
+  onDelete,
+  onReorder,
+}: {
+  rewards: AdminReward[];
+  onEdit: (r: AdminReward) => void;
+  onToggle: (r: AdminReward) => void;
+  onDelete: (r: AdminReward) => void;
+  onReorder: (newOrder: AdminReward[]) => void;
+}) {
+  const dragIndexRef = useRef<number | null>(null);
+  const [dragOver, setDragOver] = useState<number | null>(null);
+
+  function handleDragStart(index: number) {
+    dragIndexRef.current = index;
+  }
+
+  function handleDragOver(e: React.DragEvent, index: number) {
+    e.preventDefault();
+    setDragOver(index);
+  }
+
+  function handleDragLeave() {
+    setDragOver(null);
+  }
+
+  function handleDrop(e: React.DragEvent, dropIndex: number) {
+    e.preventDefault();
+    setDragOver(null);
+    const from = dragIndexRef.current;
+    dragIndexRef.current = null;
+    if (from === null || from === dropIndex) return;
+    const next = [...rewards];
+    const [moved] = next.splice(from, 1);
+    next.splice(dropIndex, 0, moved);
+    onReorder(next);
+  }
+
+  function handleDragEnd() {
+    dragIndexRef.current = null;
+    setDragOver(null);
+  }
+
+  return (
+    <div className="space-y-3">
+      {rewards.map((r, index) => (
+        <div
+          key={r.id}
+          draggable
+          onDragStart={() => handleDragStart(index)}
+          onDragOver={(e) => handleDragOver(e, index)}
+          onDragLeave={handleDragLeave}
+          onDrop={(e) => handleDrop(e, index)}
+          onDragEnd={handleDragEnd}
+          className={`rounded-2xl transition-all duration-150 ${
+            dragOver === index
+              ? "scale-[1.01] ring-2 ring-[var(--accent)] ring-offset-2"
+              : dragIndexRef.current === index
+                ? "opacity-50"
+                : ""
+          }`}
+        >
+          <RewardCard
+            reward={r}
+            onEdit={() => onEdit(r)}
+            onToggle={() => onToggle(r)}
+            onDelete={() => onDelete(r)}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RewardCard({
   reward,
   onEdit,
@@ -243,6 +338,12 @@ function RewardCard({
   return (
     <Card className="!p-4">
       <div className="flex items-start gap-3">
+        <div
+          className="mt-0.5 cursor-grab shrink-0 text-muted active:cursor-grabbing"
+          title="Drag to reorder"
+        >
+          <DragHandleIcon />
+        </div>
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)]/10 text-[var(--accent)]">
           <GiftIcon className="h-5 w-5" />
         </div>
@@ -277,10 +378,6 @@ function RewardCard({
                 <span className="font-medium text-[var(--fg)]">{reward.stock}</span>
               </span>
             )}
-            <span>
-              Order:{" "}
-              <span className="font-medium text-[var(--fg)]">{reward.sortOrder}</span>
-            </span>
           </div>
         </div>
       </div>
@@ -305,6 +402,26 @@ function RewardCard({
         </button>
       </div>
     </Card>
+  );
+}
+
+function DragHandleIcon() {
+  return (
+    <svg
+      width="16"
+      height="20"
+      viewBox="0 0 16 20"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      <circle cx="5" cy="4" r="1.5" fill="currentColor" />
+      <circle cx="11" cy="4" r="1.5" fill="currentColor" />
+      <circle cx="5" cy="10" r="1.5" fill="currentColor" />
+      <circle cx="11" cy="10" r="1.5" fill="currentColor" />
+      <circle cx="5" cy="16" r="1.5" fill="currentColor" />
+      <circle cx="11" cy="16" r="1.5" fill="currentColor" />
+    </svg>
   );
 }
 
@@ -357,27 +474,16 @@ function RewardFormSheet({
             />
           </Field>
 
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Points cost">
-              <input
-                required
-                type="number"
-                min={1}
-                value={form.pointsCost}
-                onChange={(e) => onChange("pointsCost", parseInt(e.target.value, 10) || 0)}
-                className="input"
-              />
-            </Field>
-            <Field label="Sort order">
-              <input
-                type="number"
-                min={0}
-                value={form.sortOrder ?? 0}
-                onChange={(e) => onChange("sortOrder", parseInt(e.target.value, 10) || 0)}
-                className="input"
-              />
-            </Field>
-          </div>
+          <Field label="Points cost">
+            <input
+              required
+              type="number"
+              min={1}
+              value={form.pointsCost}
+              onChange={(e) => onChange("pointsCost", parseInt(e.target.value, 10) || 0)}
+              className="input"
+            />
+          </Field>
 
           <Field label="Type">
             <select

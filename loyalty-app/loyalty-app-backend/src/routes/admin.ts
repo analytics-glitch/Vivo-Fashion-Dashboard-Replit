@@ -139,6 +139,23 @@ export default async function adminRoutes(app: FastifyInstance) {
     return { reward };
   });
 
+  // Bulk reorder: accepts an ordered array of reward IDs and assigns
+  // sortOrder 0, 1, 2, … based on position.
+  app.put("/rewards/reorder", async (req, reply) => {
+    const { ids } = z.object({ ids: z.array(z.string()).min(1) }).parse(req.body);
+
+    await app.prisma.$transaction(
+      ids.map((id, index) =>
+        app.prisma.reward.update({ where: { id }, data: { sortOrder: index } }),
+      ),
+    );
+
+    const rewards = await app.prisma.reward.findMany({
+      orderBy: [{ sortOrder: "asc" }, { pointsCost: "asc" }],
+    });
+    return { rewards };
+  });
+
   // Delete a reward (only if it has no redemptions attached).
   app.delete("/rewards/:id", async (req, reply) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
