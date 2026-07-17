@@ -336,6 +336,36 @@ function WeeklyRotaTab() {
   const [deptFilter, setDeptFilter] = useState("All");
   const [storeViewOpen, setStoreViewOpen] = useState(false);
 
+  // Hooks must be called unconditionally — before any early returns.
+  // Guard for null data inside the memo bodies.
+  const storesByDay = useMemo(() => {
+    if (!data) return {};
+    const rows = data.rows || [];
+    const dates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+    const result = {};
+    dates.forEach(date => {
+      const byStore = {};
+      rows.forEach(staff => {
+        const store = staff.store;
+        if (!store) return;
+        const day = (staff.days || []).find(d => d.date === date);
+        if (day?.shift_hours > 0) {
+          if (!byStore[store]) byStore[store] = [];
+          byStore[store].push({ name: staff.name, shift: day.shift_name, color: staffColor(staff.name) });
+        }
+      });
+      result[date] = byStore;
+    });
+    return result;
+  }, [data, weekStart]);
+
+  const allStores = useMemo(() => {
+    if (!data) return [];
+    const rows = data.rows || [];
+    const s = new Set(rows.map(r => r.store).filter(Boolean));
+    return [...s].sort();
+  }, [data]);
+
   const load = useCallback((ws) => {
     setLoading(true);
     setError(null);
@@ -421,30 +451,6 @@ function WeeklyRotaTab() {
 
   // Department filter
   const filteredRows = deptFilter === "All" ? rows : rows.filter(r => (r.department || "Unassigned") === deptFilter);
-
-  // Store view: group scheduled staff by store × day
-  const storesByDay = useMemo(() => {
-    const result = {};
-    dates.forEach(date => {
-      const byStore = {};
-      rows.forEach(staff => {
-        const store = staff.store;
-        if (!store) return;
-        const day = staff.days.find(d => d.date === date);
-        if (day?.shift_hours > 0) {
-          if (!byStore[store]) byStore[store] = [];
-          byStore[store].push({ name: staff.name, shift: day.shift_name, color: staffColor(staff.name) });
-        }
-      });
-      result[date] = byStore;
-    });
-    return result;
-  }, [rows, dates]);
-
-  const allStores = useMemo(() => {
-    const s = new Set(rows.map(r => r.store).filter(Boolean));
-    return [...s].sort();
-  }, [rows]);
 
   return (
     <div className="space-y-4">
