@@ -190,8 +190,8 @@ LOYALTY_APP_API_BASE_URL = "https://a2104183-e22b-4aee-99f6-fc604d080eee-00-1xc3
 LOYALTY_APP_GOOGLE_REDIRECT_URI = "https://a2104183-e22b-4aee-99f6-fc604d080eee-00-1xc3l0p2xuk1q.worf.replit.dev/loyalty-app/api/auth/google/callback"
 
 [userenv.production]
-LOYALTY_APP_API_BASE_URL = "https://vivofashionbrands.com/loyalty-app"
-LOYALTY_APP_WEB_BASE_URL = "https://vivofashionbrands.com/loyalty-app"
+LOYALTY_APP_API_BASE_URL = "https://vivofashionbrands.com"
+LOYALTY_APP_WEB_BASE_URL = "https://vivofashionbrands.com"
 LOYALTY_APP_GOOGLE_REDIRECT_URI = "https://vivofashionbrands.com/loyalty-app/api/auth/google/callback"
 
 [objectStorage]
