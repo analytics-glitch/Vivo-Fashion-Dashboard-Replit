@@ -619,7 +619,14 @@ CRM_ADMIN_EMAILS = {
 
 
 def _is_crm_admin_user(u):
-    return bool(u) and (u.get("email") or "").strip().lower() in CRM_ADMIN_EMAILS
+    if not u:
+        return False
+    # Primary: DB-stored flag (set/cleared via the Users admin panel).
+    if u.get("crm_admin"):
+        return True
+    # Fallback: hardcoded set covers rows that existed before the crm_admin
+    # column was added (they'll be seeded on next startup, but we stay safe).
+    return (u.get("email") or "").strip().lower() in CRM_ADMIN_EMAILS
 
 
 # The ONLY path prefixes a CRM-admin allowlisted account with the minimal
@@ -867,6 +874,19 @@ def _ensure_users_table():
     # at sign-in. Nullable: password-only accounts and pre-existing Google users
     # (until their next Google sign-in) leave it NULL and fall back to initials.
     _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS picture TEXT")
+    # CRM admin flag: grants manager-level access in the standalone CRM UI without
+    # elevating to platform admin. Managed via the Users admin panel.
+    _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS crm_admin BOOLEAN NOT NULL DEFAULT FALSE")
+    # One-time seed: promote any existing hardcoded CRM_ADMIN_EMAILS entries into
+    # the DB flag so the column immediately reflects the intended state.
+    try:
+        _users_exec(
+            "UPDATE app_users SET crm_admin = TRUE "
+            "WHERE lower(email) = ANY(%s) AND crm_admin = FALSE",
+            ([e.lower() for e in CRM_ADMIN_EMAILS],)
+        )
+    except Exception:
+        pass
     # Opaque server-side sessions. The token is the bearer/cookie value; we never
     # store anything derivable back to a password here.
     _users_exec("""
@@ -901,7 +921,7 @@ def _ensure_users_table():
 
 def _resolve_app_user_db(sub, email, name, picture=None):
     rows = _users_exec(
-        "SELECT user_id, email, name, role, status FROM app_users WHERE user_id=%s",
+        "SELECT user_id, email, name, role, status, crm_admin FROM app_users WHERE user_id=%s",
         (sub,), fetch=True)
     if rows:
         rec = rows[0]
@@ -924,7 +944,7 @@ def _resolve_app_user_db(sub, email, name, picture=None):
     # account instead of creating a duplicate. (A blind insert would also violate
     # the email UNIQUE constraint and error, since ON CONFLICT only covers user_id.)
     erows = _users_exec(
-        "SELECT user_id, email, name, role, status FROM app_users WHERE email=%s",
+        "SELECT user_id, email, name, role, status, crm_admin FROM app_users WHERE email=%s",
         (email,), fetch=True) if email else None
     if erows:
         rec = erows[0]
@@ -12212,7 +12232,7 @@ def admin_store_clusters(forceFresh: bool = Query(default=False)):
 @app.get("/api/admin/users")
 def admin_users_list():
     rows = _users_exec(
-        "SELECT user_id, email, name, role, status, auth_method, "
+        "SELECT user_id, email, name, role, status, auth_method, crm_admin, "
         "created_at, approved_at, approved_by, last_login_at, "
         "(status='active') AS active "
         "FROM app_users ORDER BY created_at DESC", fetch=True) or []
@@ -20957,6 +20977,10 @@ async def admin_users_update(user_id: str, request: Request):
     elif "active" in body:
         new_status = "active" if body["active"] else "disabled"
 
+    new_crm_admin = None
+    if "crm_admin" in body:
+        new_crm_admin = bool(body["crm_admin"])
+
     # Guard + write run in one advisory-locked transaction so two concurrent
     # demotions/deletions cannot both pass the last-admin check and leave zero
     # active admins (TOCTOU).
@@ -20988,6 +21012,8 @@ async def admin_users_update(user_id: str, request: Request):
                     sets.append("approved_at=now()")
                     sets.append("approved_by=%s")
                     params.append(acting.get("email") or acting.get("id"))
+            if new_crm_admin is not None:
+                sets.append("crm_admin=%s"); params.append(new_crm_admin)
             if not sets:
                 return {"ok": True}
             params.append(user_id)
