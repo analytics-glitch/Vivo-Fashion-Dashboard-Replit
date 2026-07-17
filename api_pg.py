@@ -1558,6 +1558,8 @@ def _start_cache_prewarmer():
                     date_from=str(date.today() - timedelta(days=30)),
                     date_to=str(date.today()),
                     country=None, channel=None)),
+                ("production-flow",    lambda: production_flow()),
+                ("production-summary", lambda: production_summary()),
             ]
             for name, fn in targets:
                 try:
@@ -30324,11 +30326,22 @@ def _production_flow_stages():
     return rows, total
 
 
+_PROD_FLOW_CK = "production:flow"
+_PROD_SUMMARY_CK = "production:summary"
+_PROD_CACHE_TTL = 300  # 5 min; production data changes via sync (hourly)
+
 @app.get("/api/production/flow")
 def production_flow():
     """Overall stage flow for the flow-chart visualization."""
+    cached, fresh = cache_get_swr(_PROD_FLOW_CK)
+    if cached is not None:
+        if not fresh:
+            swr_refresh(_PROD_FLOW_CK, production_flow, label="prod-flow")
+        return cached
     rows, total = _production_flow_stages()
-    return {"stages": rows, "total_units": total}
+    result = {"stages": rows, "total_units": total}
+    cache_set(_PROD_FLOW_CK, result, ttl=_PROD_CACHE_TTL)
+    return result
 
 
 @app.get("/api/production/expected-drops")
@@ -30420,6 +30433,11 @@ def production_summary():
     type, buying-order state, current WIP stage, and buyer. Plus a flat row per
     buying order (with its colour/size/variant counts and per-stage unit split)
     so the report can list every order and export it without N detail calls."""
+    cached, fresh = cache_get_swr(_PROD_SUMMARY_CK)
+    if cached is not None:
+        if not fresh:
+            swr_refresh(_PROD_SUMMARY_CK, production_summary, label="prod-summary")
+        return cached
     totals = _users_exec("""
         SELECT COUNT(*)                         AS orders,
                COALESCE(SUM(order_qty), 0)      AS units,
@@ -30642,7 +30660,7 @@ def production_summary():
         ORDER BY units DESC
         LIMIT 20""", fetch=True)
 
-    return {
+    result = {
         "totals": (totals[0] if totals else {"orders": 0, "units": 0, "styles": 0}),
         "by_lifecycle": _grouped("lifecycle_type"),
         "by_production_type": _grouped("production_type"),
@@ -30654,6 +30672,8 @@ def production_summary():
         "by_sewing_line": by_sewing_line,
         "orders": orders,
     }
+    cache_set(_PROD_SUMMARY_CK, result, ttl=_PROD_CACHE_TTL)
+    return result
 
 
 @app.get("/api/production/orders/{order_ref}")
