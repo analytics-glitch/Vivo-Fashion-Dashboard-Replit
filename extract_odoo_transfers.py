@@ -91,16 +91,47 @@ def run():
     ensure_table(conn)
     cur = conn.cursor()
 
-    # 1. Find every "<CODE>/Stock" internal location whose parent code is in our
-    #    store map — these are the destinations we care about.
-    store_dest_ids = {}  # loc_id -> (code, store_name, country)
-    for code, (store_name, country) in LOCATION_COUNTRY_MAP.items():
-        locs = models.execute_kw(ODOO_DB, uid, ODOO_PW, "stock.location", "search_read",
-            [[["complete_name", "=", f"{code}/Stock"], ["usage", "=", "internal"]]],
-            {"fields": ["id"]})
-        for l in locs:
-            store_dest_ids[l["id"]] = (code, store_name, country)
-    log.info("Resolved %d store destination locations", len(store_dest_ids))
+    # 1. Hardcoded location ID map — verified directly against Odoo on 2026-07-17.
+    #    Key = Odoo location ID, Value = (short_code, store_name, country)
+    #    This avoids the fragile "<CODE>/Stock" string-matching approach which
+    #    missed HUB, TMALL, SARIT, ACHO, KIGAL, OASIS, SZONL.
+    store_dest_ids = {
+        # Kenya stores — IDs verified against Odoo 2026-07-17
+        988:  ("CAPIT",  "Vivo Capital Centre",      "Kenya"),
+        996:  ("CITYM",  "Vivo City Mall",            "Kenya"),
+        1004: ("ELDOR",  "Vivo Eldoret",              "Kenya"),
+        1012: ("GALLE",  "Vivo Galleria",             "Kenya"),
+        1020: ("GCITY",  "Vivo Garden City",          "Kenya"),
+        1028: ("GRENS",  "Vivo Greenspan",            "Kenya"),
+        1036: ("HUB",    "Vivo Hub",                  "Kenya"),
+        1044: ("IMAAR",  "Vivo Imaara",               "Kenya"),
+        1052: ("JUNCT",  "Vivo Junction",             "Kenya"),
+        1060: ("KILEL",  "Vivo Kileleshwa",           "Kenya"),
+        1068: ("KISM",   "Vivo Kisumu",               "Kenya"),
+        1076: ("MNS",    "Vivo Mama Ngina St",        "Kenya"),
+        1084: ("MERU",   "Vivo Meru",                 "Kenya"),
+        1092: ("MOIAV",  "Vivo Moi Avenue",           "Kenya"),
+        1100: ("MSACB",  "Vivo MSA Digo Road",        "Kenya"),
+        1108: ("NAKUR",  "Vivo Nakuru",               "Kenya"),
+        1124: ("RUNDA",  "Vivo Runda",                "Kenya"),
+        1132: ("SARIT",  "Vivo Sarit",                "Kenya"),
+        1140: ("SIGNA",  "Vivo Signature Mall",       "Kenya"),
+        1148: ("TMALL",  "Vivo T- Mall",              "Kenya"),
+        1196: ("SAFAR",  "Safari Sarit",              "Kenya"),
+        1204: ("ZOYA",   "Zoya Sarit",                "Kenya"),
+        1156: ("TWORV",  "Vivo Two Rivers",           "Kenya"),
+        1164: ("VMKT",   "Vivo Village Market",       "Kenya"),
+        1180: ("YAYA",   "Vivo Yaya",                 "Kenya"),
+        1386: ("TRM",    "Vivo TRM",                  "Kenya"),
+        # Uganda stores
+        1594: ("ACHO",   "Vivo Acacia",               "Uganda"),
+        1610: ("OASIS",  "The Oasis Mall",            "Uganda"),
+        # Rwanda stores
+        1602: ("KIGAL",  "Vivo Kigali Heights",       "Rwanda"),
+        # Online
+        1585: ("SZONL",  "Online - Shop Zetu",        "Online"),
+    }
+    log.info("Using %d hardcoded store destination locations", len(store_dest_ids))
     if not store_dest_ids:
         log.warning("No store destinations found — aborting")
         return 0
