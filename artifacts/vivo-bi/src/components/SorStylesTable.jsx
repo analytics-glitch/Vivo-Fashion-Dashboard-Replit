@@ -398,6 +398,7 @@ const SorStylesTable = ({
           initialSort={initialSort}
           columns={baseColumns}
           rows={tableRows}
+          frozenCols={(showColor || showSize) ? 3 : 1}
         />
       )}
     </>

@@ -339,6 +339,11 @@ export const SortableTable = ({
    * horizontal scroll). Defaults to true. The header row is always sticky
    * vertically against the page scroll. */
   stickyFirstCol = true,
+  /** Number of columns to freeze from the left (overrides stickyFirstCol when
+   * provided). Each frozen column gets position:sticky with its measured left
+   * offset so the entire group scrolls together. The last frozen column gets a
+   * subtle right shadow to visually separate it from the scrollable area. */
+  frozenCols = null,
   /** Optional max-height for the scroll container (e.g. "60vh" or 480).
    * Defaults to "70vh" so very long tables become inner-scrollable with a
    * sticky thead + frozen first column. Short tables don't reach the cap
@@ -376,6 +381,31 @@ export const SortableTable = ({
   // in index.css). Toggled from the small arrows icon in each column header.
   const [expandedCols, setExpandedCols] = useState(() => new Set());
   const [limit, setLimit] = useState(pageSize || null);
+
+  // --- Multi-column freeze support ---
+  // effectiveFrozen: how many left columns are sticky.
+  // frozenOffsets[i]: the measured pixel left offset for frozen column i.
+  const effectiveFrozen = frozenCols != null ? frozenCols : (stickyFirstCol ? 1 : 0);
+  const [frozenOffsets, setFrozenOffsets] = useState(() => Array.from({ length: effectiveFrozen }, () => 0));
+  useLayoutEffect(() => {
+    if (effectiveFrozen <= 0) { setFrozenOffsets([]); return; }
+    if (effectiveFrozen === 1) { setFrozenOffsets([0]); return; }
+    const table = tableRef.current;
+    if (!table) return;
+    const ths = table.querySelectorAll("thead tr th");
+    const domStart = renderExpanded ? 1 : 0;
+    const offsets = [];
+    let left = 0;
+    for (let i = 0; i < effectiveFrozen; i++) {
+      offsets.push(left);
+      const th = ths[domStart + i];
+      if (th) left += Math.round(th.getBoundingClientRect().width);
+    }
+    setFrozenOffsets(offsets);
+  // Re-measure whenever the frozen count or columns change (e.g. color toggle).
+  // rows.length is included so a fresh load after a column toggle re-measures.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveFrozen, renderExpanded, columns, rows.length]);
   // When the table has product-photo columns, the export embeds one image per
   // row (slow). This checkbox lets the user opt out for a fast photoless CSV.
   const hasImageCol = columns.some((c) => typeof c.image === "function");
@@ -595,18 +625,21 @@ export const SortableTable = ({
             <tr>
               {renderExpanded && <th className="w-7" />}
               {columns.map((c, ci) => {
-                const isFirst = ci === 0 && stickyFirstCol && !renderExpanded;
+                const isFrozen = effectiveFrozen > 0 && ci < effectiveFrozen && !renderExpanded;
+                const isLastFrozen = isFrozen && ci === effectiveFrozen - 1;
                 return (
                   <th
                     key={c.key}
                     data-colkey={c.key}
-                    className={`group ${c.align === "right" || c.numeric ? "text-right" : "text-left"} ${c.sortable === false ? "" : "cursor-pointer hover:text-brand"} select-none ${isFirst ? "sticky left-0 z-30 bg-white" : ""} ${resizable ? "relative" : ""}`}
+                    className={`group ${c.align === "right" || c.numeric ? "text-right" : "text-left"} ${c.sortable === false ? "" : "cursor-pointer hover:text-brand"} select-none ${isFrozen ? "sticky z-30 bg-white" : ""} ${resizable ? "relative" : ""}`}
                     onClick={() => toggleSort(c.key)}
-                    style={
-                      resizable && colWidths[c.key]
+                    style={{
+                      ...(resizable && colWidths[c.key]
                         ? { width: colWidths[c.key] }
-                        : c.width ? { width: c.width } : undefined
-                    }
+                        : c.width ? { width: c.width } : {}),
+                      ...(isFrozen ? { left: frozenOffsets[ci] ?? 0 } : {}),
+                      ...(isLastFrozen ? { boxShadow: "2px 0 5px -1px rgba(0,0,0,0.08)" } : {}),
+                    }}
                     title={c.headerTitle || undefined}
                   >
                     <span className="inline-flex items-center gap-1">
@@ -678,16 +711,19 @@ export const SortableTable = ({
                       </td>
                     )}
                     {columns.map((c, ci) => {
-                      const isFirst = ci === 0 && stickyFirstCol && !renderExpanded;
+                      const isFrozen = effectiveFrozen > 0 && ci < effectiveFrozen && !renderExpanded;
+                      const isLastFrozen = isFrozen && ci === effectiveFrozen - 1;
                       return (
                         <td
                           key={c.key}
-                          className={`${c.align === "right" || c.numeric ? "text-right num" : "text-left"} ${c.className || ""} ${expandedCols.has(c.key) ? "col-expanded" : ""} ${isFirst ? "sticky left-0 z-10 bg-white" : ""}`}
-                          style={
-                            resizable && colWidths[c.key]
+                          className={`${c.align === "right" || c.numeric ? "text-right num" : "text-left"} ${c.className || ""} ${expandedCols.has(c.key) ? "col-expanded" : ""} ${isFrozen ? "sticky z-10 bg-white" : ""}`}
+                          style={{
+                            ...(resizable && colWidths[c.key]
                               ? { width: colWidths[c.key], overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
-                              : undefined
-                          }
+                              : {}),
+                            ...(isFrozen ? { left: frozenOffsets[ci] ?? 0 } : {}),
+                            ...(isLastFrozen ? { boxShadow: "2px 0 5px -1px rgba(0,0,0,0.08)" } : {}),
+                          }}
                         >
                           {c.render ? c.render(r, i) : r[c.key]}
                         </td>
