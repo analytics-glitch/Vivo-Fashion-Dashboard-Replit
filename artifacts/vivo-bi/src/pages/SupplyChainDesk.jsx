@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useApi } from "@/lib/useApi";
 import { KpiCard, DeskCoachingPanel, DeskIssuePanel, DeskGapPanel } from "@/components/bi/DeskShared";
 
-const API = "/api/supply-chain-desk";
+const API = "/supply-chain-desk";
 const fmtKES = n => n == null ? "—" : "KES " + Number(n).toLocaleString();
 const fmtN = n => n == null ? "—" : Number(n).toLocaleString();
 const pct = v => v == null ? "—" : v + "%";
@@ -111,7 +111,7 @@ export default function SupplyChainDesk() {
       </div>
 
       {/* Issues */}
-      <DeskIssuePanel issues={data?.issues || []} desk="supply_chain" apiBase={API}
+      <DeskIssuePanel issues={data?.issues || []} desk="supply_chain" apiBase={"/api" + API}
         onRefresh={() => qc.invalidateQueries([API + "/overview"])} />
     </div>
   );

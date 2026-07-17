@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useApi } from "@/lib/useApi";
 import { KpiCard, DeskCoachingPanel, DeskIssuePanel, DeskGapPanel } from "@/components/bi/DeskShared";
 
-const API = "/api/production-desk";
+const API = "/production-desk";
 const fmtN = n => n == null ? "—" : Number(n).toLocaleString();
 
 const STATE_COLOR = {
@@ -145,7 +145,7 @@ export default function ProductionDesk() {
       </div>
 
       {/* Issues */}
-      <DeskIssuePanel issues={data?.issues || []} desk="production" apiBase={API}
+      <DeskIssuePanel issues={data?.issues || []} desk="production" apiBase={"/api" + API}
         onRefresh={() => qc.invalidateQueries([API + "/overview"])} />
     </div>
   );

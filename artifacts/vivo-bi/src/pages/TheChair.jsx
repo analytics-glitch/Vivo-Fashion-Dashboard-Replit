@@ -2,7 +2,8 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useApi } from "@/lib/useApi";
 
-const API = "/api/chair";
+const API = "/chair";          // axios baseURL already adds /api
+const API_FETCH = "/api/chair"; // native fetch uses full path
 
 const PRIORITY_COLOR = { critical: "#dc2626", high: "#d97706", medium: "#1a5c38", low: "#6b7280" };
 const DESK_LABEL = {
@@ -32,7 +33,7 @@ function QuestionCard({ q, onAnswer, onRefresh }) {
     if (!answer.trim()) return;
     setLoading(true);
     try {
-      await fetch(`${API}/questions/${q.id}/answer`, {
+      await fetch(`${API_FETCH}/questions/${q.id}/answer`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + token() },
         body: JSON.stringify({ answer, answered_by: answeredBy() }),
@@ -122,7 +123,7 @@ export default function TheChair() {
     setRunning(true);
     setRunResult(null);
     try {
-      const resp = await fetch(API + "/run", {
+      const resp = await fetch(API_FETCH + "/run", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + token() },
         body: JSON.stringify({}),

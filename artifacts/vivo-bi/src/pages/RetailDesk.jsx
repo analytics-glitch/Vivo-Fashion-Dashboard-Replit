@@ -165,7 +165,7 @@ function NewIssueForm({ store, onSaved }) {
 
 function StoreDrawer({ store, onClose }) {
   const enc  = encodeURIComponent(store);
-  const { data, isLoading, error, refetch } = useApi(`/api/retail-desk/store/${enc}`, {}, { staleTime: 120_000 });
+  const { data, isLoading, error, refetch } = useApi(`/retail-desk/store/${enc}`, {}, { staleTime: 120_000 });
   const [showNewIssue, setShowNewIssue] = useState(false);
 
   const closeIssue = async (id) => {
@@ -391,7 +391,7 @@ export default function RetailDesk() {
   const [search, setSearch]               = useState("");
 
   const { data, isLoading, error, refetch } = useApi(
-    "/api/retail-desk/overview", {}, { staleTime: 120_000, refetchInterval: 180_000 }
+    "/retail-desk/overview", {}, { staleTime: 120_000, refetchInterval: 180_000 }
   );
 
   const fleet = data?.fleet_summary;

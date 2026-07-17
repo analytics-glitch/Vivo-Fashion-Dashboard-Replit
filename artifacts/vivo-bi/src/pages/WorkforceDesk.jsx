@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useApi } from "@/lib/useApi";
 import { KpiCard, DeskCoachingPanel, DeskIssuePanel, DeskGapPanel } from "@/components/bi/DeskShared";
 
-const API = "/api/workforce-desk";
+const API = "/workforce-desk";
 
 const pct = v => v == null ? "—" : v + "%";
 const fmtKES = n => n == null ? "—" : "KES " + Number(n).toLocaleString();
@@ -97,7 +97,7 @@ export default function WorkforceDesk() {
       </div>
 
       {/* Issues */}
-      <DeskIssuePanel issues={data?.issues || []} desk="workforce" apiBase={API}
+      <DeskIssuePanel issues={data?.issues || []} desk="workforce" apiBase={"/api" + API}
         onRefresh={() => qc.invalidateQueries([API + "/overview"])} />
     </div>
   );

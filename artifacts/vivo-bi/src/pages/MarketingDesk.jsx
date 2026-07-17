@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useApi } from "@/lib/useApi";
 import { KpiCard, DeskCoachingPanel, DeskIssuePanel, DeskGapPanel } from "@/components/bi/DeskShared";
 
-const API = "/api/marketing-desk";
+const API = "/marketing-desk";
 const fmtN = n => n == null ? "—" : Number(n).toLocaleString();
 
 const PLATFORM_COLOR = { instagram: "#e1306c", facebook: "#1877f2", x: "#14171a", google: "#4285f4" };
@@ -90,7 +90,7 @@ export default function MarketingDesk() {
       </div>
 
       {/* Issues */}
-      <DeskIssuePanel issues={data?.issues || []} desk="marketing" apiBase={API}
+      <DeskIssuePanel issues={data?.issues || []} desk="marketing" apiBase={"/api" + API}
         onRefresh={() => qc.invalidateQueries([API + "/overview"])} />
     </div>
   );

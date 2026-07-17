@@ -19,8 +19,7 @@ SELECT platform,
        COUNT(*) FILTER (WHERE sentiment = 'positive')             AS positive,
        COUNT(*) FILTER (WHERE sentiment = 'negative')             AS negative,
        COUNT(*) FILTER (WHERE sentiment = 'neutral')              AS neutral,
-       COUNT(*) FILTER (WHERE needs_reply = TRUE AND replied_at IS NULL)
-                                                                   AS needs_reply,
+       COUNT(*) FILTER (WHERE replied_at IS NULL)                   AS needs_reply,
        COUNT(*) FILTER (WHERE replied_at IS NOT NULL)             AS replied
 FROM crm_social_feedback
 GROUP BY platform
