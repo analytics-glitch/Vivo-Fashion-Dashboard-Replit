@@ -389,13 +389,21 @@ export const SortableTable = ({
   const [frozenOffsets, setFrozenOffsets] = useState(() => Array.from({ length: effectiveFrozen }, () => 0));
   useLayoutEffect(() => {
     if (effectiveFrozen <= 0) { setFrozenOffsets([]); return; }
-    if (effectiveFrozen === 1) { setFrozenOffsets([0]); return; }
     const table = tableRef.current;
-    if (!table) return;
+    // When renderExpanded is set there is a leading chevron <th>/<td> before
+    // the data columns, so every frozen data column must shift right by the
+    // chevron's width.  Measure it from the DOM; fall back to w-7 (28px).
+    let chevronW = 0;
+    if (renderExpanded && table) {
+      const chevTh = table.querySelector("thead tr th");
+      chevronW = chevTh ? Math.round(chevTh.getBoundingClientRect().width) : 28;
+    }
+    if (effectiveFrozen === 1) { setFrozenOffsets([chevronW]); return; }
+    if (!table) { setFrozenOffsets(Array.from({ length: effectiveFrozen }, () => chevronW)); return; }
     const ths = table.querySelectorAll("thead tr th");
     const domStart = renderExpanded ? 1 : 0;
     const offsets = [];
-    let left = 0;
+    let left = chevronW;
     for (let i = 0; i < effectiveFrozen; i++) {
       offsets.push(left);
       const th = ths[domStart + i];
@@ -625,7 +633,7 @@ export const SortableTable = ({
             <tr>
               {renderExpanded && <th className="w-7" />}
               {columns.map((c, ci) => {
-                const isFrozen = effectiveFrozen > 0 && ci < effectiveFrozen && !renderExpanded;
+                const isFrozen = effectiveFrozen > 0 && ci < effectiveFrozen;
                 const isLastFrozen = isFrozen && ci === effectiveFrozen - 1;
                 return (
                   <th
@@ -711,7 +719,7 @@ export const SortableTable = ({
                       </td>
                     )}
                     {columns.map((c, ci) => {
-                      const isFrozen = effectiveFrozen > 0 && ci < effectiveFrozen && !renderExpanded;
+                      const isFrozen = effectiveFrozen > 0 && ci < effectiveFrozen;
                       const isLastFrozen = isFrozen && ci === effectiveFrozen - 1;
                       return (
                         <td
