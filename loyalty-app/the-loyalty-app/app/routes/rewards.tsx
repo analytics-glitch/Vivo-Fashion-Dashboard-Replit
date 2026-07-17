@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../lib/auth";
-import { rewards as rewardsApi, type Reward, type Redemption, ApiError } from "../lib/api";
+import { rewards as rewardsApi, type Reward, type Redemption, type Tier, ApiError } from "../lib/api";
 import { formatPoints } from "../lib/format";
 import { useToast } from "../components/toast";
 import { Card, Button, Skeleton, EmptyState, Badge } from "../components/ui";
-import { GiftIcon, SparkIcon, CopyIcon, CheckIcon } from "../components/icons";
+import { GiftIcon, SparkIcon, CopyIcon, CheckIcon, StarIcon } from "../components/icons";
 
 export function meta() {
   return [{ title: "Rewards · Vivo Loyalty" }];
@@ -42,6 +42,7 @@ export default function RewardsPage() {
   };
 
   const balance = user?.pointsBalance ?? 0;
+  const tiers: Tier[] = user?.tiers ?? [];
 
   return (
     <div className="space-y-4">
@@ -52,6 +53,51 @@ export default function RewardsPage() {
           {formatPoints(balance)} points available
         </p>
       </div>
+
+      {/* Tiers ladder */}
+      {tiers.length > 0 && (
+        <section aria-label="Tiers">
+          <div className="mb-2 flex items-center gap-2 px-1">
+            <StarIcon className="h-4 w-4 text-brand-500" />
+            <h2 className="text-sm font-semibold">Tiers</h2>
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {tiers.map((t) => {
+              const isCurrent = user?.tier?.id === t.id;
+              return (
+                <div
+                  key={t.id}
+                  aria-label={t.name}
+                  className={`flex flex-col items-center gap-1 rounded-2xl p-2 text-center transition-all ${
+                    isCurrent
+                      ? "ring-2 shadow-sm"
+                      : "bg-[var(--card)] ring-1 ring-[var(--card-border)]"
+                  }`}
+                  style={
+                    isCurrent
+                      ? {
+                          background: t.color + "18",
+                          boxShadow: `0 0 0 2px ${t.color}`,
+                        }
+                      : {}
+                  }
+                >
+                  <span className="text-xl">{t.icon}</span>
+                  <span
+                    className="text-xs font-semibold leading-tight"
+                    style={{ color: isCurrent ? t.color : undefined }}
+                  >
+                    {t.name}
+                  </span>
+                  <span className="text-[10px] text-muted leading-tight">
+                    {t.minPoints === 0 ? "Start" : `${formatPoints(t.minPoints)} pts`}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1 rounded-2xl bg-[var(--card-border)]/50 p-1">
