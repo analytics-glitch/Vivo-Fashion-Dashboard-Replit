@@ -147,7 +147,7 @@ def smart_ttl(date_to=None):
     try:
         today = date.today().isoformat()
         yesterday = (date.today() - timedelta(days=1)).isoformat()
-        if date_to >= today:       return 120
+        if date_to >= today:       return 300
         elif date_to >= yesterday: return 600
         else:                      return 3600
     except Exception:
@@ -1499,6 +1499,20 @@ def _start_cache_prewarmer():
         time.sleep(90)  # let boot + first user traffic settle before warming
         while True:
             t0 = time.time()
+            # Warm Postgres shared_buffers so cold-start queries hit RAM not disk.
+            # all_sales is 962 MB; loading the recent 90-day slice (~150 MB) covers
+            # every default filter (7D/30D/90D) and keeps buffer-pool hit rate high.
+            try:
+                run_query(
+                    "SELECT COUNT(*), MAX(sale_date), "
+                    "ROUND(SUM(total_sales_kes::numeric)) AS rev "
+                    "FROM all_sales WHERE sale_date >= "
+                    "to_char(CURRENT_DATE - INTERVAL '90 days', 'YYYY-MM-DD')",
+                    ttl=60)
+                run_query("SELECT COUNT(*) FROM all_inventory", ttl=60)
+                run_query("SELECT COUNT(*) FROM all_products_clean", ttl=60)
+            except Exception as _warm_e:
+                log.warning("PG buffer warmup failed (non-fatal): %s", _warm_e)
             targets = [
                 ("weeks-of-cover", lambda: analytics_weeks_of_cover(
                     date_from=None, date_to=None, country=None)),
@@ -1526,6 +1540,24 @@ def _start_cache_prewarmer():
                 ("ibt-suggestions", lambda: ibt_suggestions(
                     country=None, demand_days=28, limit=300,
                     low_pct=20, high_pct=150, use_clustering=True)),
+                # KPI endpoint: warm the four most-used date presets so
+                # navigating the filter bar after a restart is instant.
+                ("kpis-today", lambda: get_kpis(
+                    date_from=str(date.today()),
+                    date_to=str(date.today()),
+                    country=None, channel=None)),
+                ("kpis-mtd", lambda: get_kpis(
+                    date_from=str(date.today().replace(day=1)),
+                    date_to=str(date.today()),
+                    country=None, channel=None)),
+                ("kpis-7d", lambda: get_kpis(
+                    date_from=str(date.today() - timedelta(days=7)),
+                    date_to=str(date.today()),
+                    country=None, channel=None)),
+                ("kpis-30d", lambda: get_kpis(
+                    date_from=str(date.today() - timedelta(days=30)),
+                    date_to=str(date.today()),
+                    country=None, channel=None)),
             ]
             for name, fn in targets:
                 try:

@@ -128,6 +128,7 @@
 - [Daily-trend order attribution](daily-trend-order-attribution.md) — Σ per-day distinct orders > window distinct when orders span sale_dates; attribute each order to its first day, null-safe country join.
 - [Custom-auth UI testing](custom-auth-ui-testing.md) — test gated pages by inserting a temp user_sessions row + localStorage vivo_token in the Playwright plan; delete it and undo test data mutations after.
 - [Fabric PO upload pricing writes](fabric-po-upload-pricing.md) — analytic_distribution keys are strings, taxes cleared via [[5,0,0]]; one extras dict for update AND create; gates run before any line is touched.
+- [Cold-start query latency](cold-start-latency.md) — after restart both app SWR cache + PG shared_buffers go cold; fix = PG warmup queries + KPI prewarm targets + smart_ttl 300s today.
 - [Topbar poll endpoints must be cheap](topbar-poll-endpoint-cost.md) — ~60s/user polls × full scans/global solves = constant load; index MAX(loaded_at), run_query ttl= override, single-flight memo for late-count.
 - [stock_transfers history retention](stock-transfers-history-retention.md) — never TRUNCATE stock_transfers; done rows accumulate (upsert on move_id), in-flight rows refresh; source window is only ~7 days.
 - [Fabric receiving quality + edit](fabric-receiving-quality.md) — per-roll quality by any user, rolls/qty admin-only; roll_no MUST be unique per sheet (carry-over keys on it, app-enforced not DB); admin PUT writes rolls+quality atomically.
