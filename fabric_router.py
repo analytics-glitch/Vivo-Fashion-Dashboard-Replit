@@ -4820,6 +4820,30 @@ def _ensure_receiving_tables(conn):
             )""")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_recv_audit_po "
                     "ON fabric_recv_audit(po_id)")
+        # Soft-delete (Recovery Bin): deleted sheets/rolls keep their rows with
+        # deleted_at/deleted_by stamped; every reader excludes them. Restore /
+        # permanent purge is gated to full fabric admins; rows older than 90
+        # days are lazily hard-purged when the bin is opened. Idempotent adds
+        # so prod gains the columns on first touch after publish.
+        cur.execute("ALTER TABLE fabric_receiving_sheets "
+                    "ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ")
+        cur.execute("ALTER TABLE fabric_receiving_sheets "
+                    "ADD COLUMN IF NOT EXISTS deleted_by TEXT")
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ")
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS deleted_by TEXT")
+        # Structured per-roll quality measurements (alongside the Pass/Fail/
+        # Pending status + free-text notes): length in yards, shrinkage in
+        # inches, bleeding test result, measured width in metres.
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS length_yards NUMERIC")
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS shrinkage_inches NUMERIC")
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS bleeding_test TEXT")
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS width_measured_m NUMERIC")
         # One-time markers for receiving data migrations (idempotent — prod is
         # a separate DB and picks these up on first touch after publish).
         cur.execute("""
@@ -4938,6 +4962,44 @@ def _migrate_recv_one_sheet_per_po(conn):
 # Allowed per-roll quality statuses (NULL/'' = not yet inspected → treated as
 # Pending in the UI). Kept small + explicit; validated server-side.
 _RECV_QUALITY_STATUSES = ("Pass", "Fail", "Pending")
+
+# Structured per-roll quality measurement fields (task: replace free-text-only
+# quality with structured numbers + the existing status/notes).
+_RECV_MEAS_NUM = ("length_yards", "shrinkage_inches", "width_measured_m")
+
+def _recv_parse_measurements(it):
+    """Validate the 4 structured quality fields out of one rolls[] entry.
+    Numbers must be >= 0 (blank/None clears); bleeding_test is short text."""
+    meas = {}
+    for k in _RECV_MEAS_NUM:
+        v = it.get(k)
+        if v in (None, ""):
+            meas[k] = None
+            continue
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                                detail=f"{k} must be a number")
+        if f < 0:
+            raise HTTPException(status_code=400,
+                                detail=f"{k} cannot be negative")
+        meas[k] = round(f, 3)
+    bt = str(it.get("bleeding_test") or "").strip() or None
+    if bt is not None and len(bt) > 120:
+        raise HTTPException(status_code=400,
+                            detail="bleeding_test must be 120 characters or fewer")
+    meas["bleeding_test"] = bt
+    return meas
+
+def _recv_meas_changed(old_row, meas):
+    """True when any structured measurement differs from the stored row."""
+    for k in _RECV_MEAS_NUM:
+        ov = old_row.get(k)
+        ov = round(float(ov), 3) if ov not in (None, "") else None
+        if ov != meas.get(k):
+            return True
+    return (old_row.get("bleeding_test") or None) != meas.get("bleeding_test")
 
 def _recv_quality_summary(rolls):
     """Roll up the per-roll quality of a sheet into counts for the printed
@@ -5102,13 +5164,36 @@ def _fabric_full_admin(user):
 def _recv_is_admin(request):
     return _fabric_full_admin(getattr(request.state, "user", None))
 
+# Users restricted to QUALITY-ONLY on receiving: they may record per-roll
+# quality results but may NOT add/edit/delete rolls or sheets. Enforced
+# server-side in every receiving write endpoint; the UI hides the controls.
+_RECV_QUALITY_ONLY_EMAILS = {"costing@vivofashiongroup.com"}
+
+def _recv_quality_only(request):
+    """True when this user is restricted to quality-only receiving edits.
+    A full fabric admin is never quality-only (admin wins)."""
+    u = getattr(request.state, "user", None) or {}
+    if _fabric_full_admin(u):
+        return False
+    return (u.get("email") or "").strip().lower() in _RECV_QUALITY_ONLY_EMAILS
+
+def _recv_block_quality_only(request):
+    """403 any roll/sheet write from a quality-only user."""
+    if _recv_quality_only(request):
+        raise HTTPException(status_code=403,
+            detail="Your account is limited to recording QUALITY results on "
+                   "receiving sheets — adding, editing or deleting rolls and "
+                   "sheets is not allowed")
+
 @fabric_router.get("/api/fabric/receiving/rights")
 def receiving_rights(request: Request):
     """Whether the signed-in user has full fabric-receiving admin rights
     (role admin OR the explicit fabric-admin email allowance). The dashboard
     uses this instead of checking role==='admin' client-side so the email
-    allowance shows the same controls the server actually permits."""
-    return {"admin": _recv_is_admin(request)}
+    allowance shows the same controls the server actually permits.
+    quality_only marks users who may ONLY record quality results."""
+    return {"admin": _recv_is_admin(request),
+            "quality_only": _recv_quality_only(request)}
 
 def _recv_po_locked(conn, po_id):
     """A PO's rolls/quantities are LOCKED once it has at least one SUCCESSFUL
@@ -5134,7 +5219,8 @@ def _recv_refresh_sheet_totals(conn, sheet_id, actor_name):
         SELECT s.kg_per_mtr,
                COALESCE(SUM(r.qty_kg),0) as kg, COUNT(r.id) as n
         FROM fabric_receiving_sheets s
-        LEFT JOIN fabric_receiving_rolls r ON r.sheet_id = s.id
+        LEFT JOIN fabric_receiving_rolls r
+               ON r.sheet_id = s.id AND r.deleted_at IS NULL
         WHERE s.id=%s GROUP BY s.kg_per_mtr
     """, (sheet_id,))
     if not rows:
@@ -5195,6 +5281,7 @@ def receiving_po_sheet_add_rolls(po_id: int, request: Request,
         product_id = int(product_id)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="product_id is required")
+    _recv_block_quality_only(request)
     weights = _recv_parse_weights(body)
     note = str(body.get("note") or "").strip() or None
     uid, name = _fabric_actor(request)
@@ -5250,7 +5337,7 @@ def receiving_po_sheet_add_rolls(po_id: int, request: Request,
             cur.execute("""
                 SELECT id, kg_per_mtr, fabric_name, po_sheet_id
                 FROM fabric_receiving_sheets
-                WHERE po_id=%s AND product_id=%s
+                WHERE po_id=%s AND product_id=%s AND deleted_at IS NULL
                 ORDER BY id LIMIT 1
             """, (po_id, product_id))
             sheet = cur.fetchone()
@@ -5328,7 +5415,7 @@ def _recv_roll_ctx(conn, roll_id):
                s.po_id, s.fabric_name, s.kg_per_mtr, s.rolls_count
         FROM fabric_receiving_rolls r
         JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
-        WHERE r.id=%s
+        WHERE r.id=%s AND r.deleted_at IS NULL AND s.deleted_at IS NULL
     """, (roll_id,))
     if not rows:
         raise HTTPException(status_code=404, detail="roll not found")
@@ -5348,6 +5435,7 @@ def receiving_roll_edit(roll_id: int, request: Request,
         raise HTTPException(status_code=400,
                             detail="qty_kg must be greater than zero")
     kg = round(kg, 3)
+    _recv_block_quality_only(request)
     _uid, name = _fabric_actor(request)
     admin = _recv_is_admin(request)
     with _get_conn() as conn:
@@ -5381,8 +5469,10 @@ def receiving_roll_edit(roll_id: int, request: Request,
 @fabric_router.delete("/api/fabric/receiving/roll/{roll_id}")
 def receiving_roll_delete(roll_id: int, request: Request):
     """Remove ONE roll (same lock rule as editing: any user pre-upload, admin
-    after — audited either way). Deleting the sheet's last roll removes the
-    now-empty sheet so the PO group stays clean."""
+    after — audited either way). SOFT delete: the roll goes to the Recovery
+    Bin (90 days) instead of being destroyed. Deleting the sheet's last roll
+    soft-deletes the now-empty sheet so the PO group stays clean."""
+    _recv_block_quality_only(request)
     _uid, name = _fabric_actor(request)
     admin = _recv_is_admin(request)
     with _get_conn() as conn:
@@ -5392,10 +5482,12 @@ def receiving_roll_delete(roll_id: int, request: Request):
         if locked and not admin:
             raise HTTPException(status_code=403, detail=_RECV_LOCKED_MSG)
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM fabric_receiving_rolls WHERE id=%s",
-                        (roll_id,))
+            cur.execute("UPDATE fabric_receiving_rolls "
+                        "SET deleted_at=now(), deleted_by=%s WHERE id=%s",
+                        (name, roll_id))
             cur.execute("SELECT COUNT(*) FROM fabric_receiving_rolls "
-                        "WHERE sheet_id=%s", (ctx["sheet_id"],))
+                        "WHERE sheet_id=%s AND deleted_at IS NULL",
+                        (ctx["sheet_id"],))
             remaining = int(cur.fetchone()[0])
             _recv_audit(cur, ctx["po_id"], ctx["sheet_id"],
                         ctx.get("fabric_name"), "roll_deleted",
@@ -5403,8 +5495,9 @@ def receiving_roll_delete(roll_id: int, request: Request):
                          "old_kg": float(ctx["qty_kg"] or 0),
                          "after_upload": bool(locked)}, name)
             if remaining == 0:
-                cur.execute("DELETE FROM fabric_receiving_sheets WHERE id=%s",
-                            (ctx["sheet_id"],))
+                cur.execute("UPDATE fabric_receiving_sheets "
+                            "SET deleted_at=now(), deleted_by=%s WHERE id=%s",
+                            (name, ctx["sheet_id"]))
         if remaining > 0:
             _recv_refresh_sheet_totals(conn, ctx["sheet_id"], name)
         conn.commit()
@@ -5424,10 +5517,10 @@ def receiving_list(search: str = Query(default=""),
     term = (search or "").strip()
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
-        where, params = "", []
+        where, params = "WHERE s.deleted_at IS NULL", []
         if term:
-            where = ("WHERE (s.fabric_name ILIKE %s OR s.barcode ILIKE %s "
-                     "OR s.po_name ILIKE %s)")
+            where += (" AND (s.fabric_name ILIKE %s OR s.barcode ILIKE %s "
+                      "OR s.po_name ILIKE %s)")
             like = f"%{term}%"
             params = [like, like, like]
         rows = q(conn, f"""
@@ -5453,13 +5546,365 @@ def receiving_list(search: str = Query(default=""),
                        COUNT(*) FILTER (WHERE quality_status='Pass') as pass_n,
                        COUNT(*) FILTER (WHERE quality_status='Fail') as fail_n,
                        COUNT(*) FILTER (WHERE quality_status IN ('Pass','Fail')) as inspected
-                FROM fabric_receiving_rolls GROUP BY sheet_id
+                FROM fabric_receiving_rolls WHERE deleted_at IS NULL
+                GROUP BY sheet_id
             ) qc ON qc.sheet_id = s.id
             {where}
             ORDER BY s.created_at DESC, s.id DESC
             LIMIT %s
         """, params + [limit])
     return {"items": rows}
+
+# ── Receiving Recovery Bin (soft-deleted sheets & rolls, 90-day hold) ──
+# Deleted sheets/rolls are only FLAGGED (deleted_at/deleted_by); a full
+# fabric admin can restore or permanently purge them here. Anything older
+# than 90 days is lazily purged whenever the bin is opened (no cron).
+
+_RECV_BIN_DAYS = 90
+
+def _recv_bin_lazy_purge(conn):
+    """Hard-delete bin items past the 90-day hold. Rolls of purged sheets go
+    with their sheet; individually-deleted rolls purge on their own clock."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            DELETE FROM fabric_receiving_rolls
+             WHERE sheet_id IN (SELECT id FROM fabric_receiving_sheets
+                                WHERE deleted_at IS NOT NULL
+                                  AND deleted_at < now() - interval '%s days')
+        """ % _RECV_BIN_DAYS)
+        cur.execute("""
+            DELETE FROM fabric_receiving_sheets
+             WHERE deleted_at IS NOT NULL
+               AND deleted_at < now() - interval '%s days'
+        """ % _RECV_BIN_DAYS)
+        cur.execute("""
+            DELETE FROM fabric_receiving_rolls
+             WHERE deleted_at IS NOT NULL
+               AND deleted_at < now() - interval '%s days'
+        """ % _RECV_BIN_DAYS)
+    conn.commit()
+
+def _recv_require_full_admin(request):
+    if not _recv_is_admin(request):
+        raise HTTPException(status_code=403,
+            detail="Recovery Bin is restricted to fabric admins")
+
+@fabric_router.get("/api/fabric/receiving/recovery-bin")
+def receiving_recovery_bin(request: Request):
+    """List soft-deleted receiving sheets and individually deleted rolls
+    (whose sheet is still live). Any signed-in receiving viewer may LOOK at
+    the bin; restore/purge stay gated to full fabric admins."""
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        _recv_bin_lazy_purge(conn)
+        sheets = q(conn, """
+            SELECT s.id, s.fabric_name, s.barcode, s.po_id, s.po_name,
+                   s.total_kg, s.rolls_count, s.deleted_by,
+                   to_char(s.deleted_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY, HH24:MI') as deleted_at,
+                   GREATEST(0, %s - EXTRACT(day FROM now() - s.deleted_at)::int)
+                     as days_left
+            FROM fabric_receiving_sheets s
+            WHERE s.deleted_at IS NOT NULL
+            ORDER BY s.deleted_at DESC
+        """, (_RECV_BIN_DAYS,))
+        rolls = q(conn, """
+            SELECT r.id, r.roll_no, r.qty_kg, r.deleted_by,
+                   s.id as sheet_id, s.fabric_name, s.po_id, s.po_name,
+                   to_char(r.deleted_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY, HH24:MI') as deleted_at,
+                   GREATEST(0, %s - EXTRACT(day FROM now() - r.deleted_at)::int)
+                     as days_left
+            FROM fabric_receiving_rolls r
+            JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+            WHERE r.deleted_at IS NOT NULL AND s.deleted_at IS NULL
+            ORDER BY r.deleted_at DESC
+        """, (_RECV_BIN_DAYS,))
+    return {"sheets": sheets, "rolls": rolls, "hold_days": _RECV_BIN_DAYS}
+
+@fabric_router.post("/api/fabric/receiving/recovery-bin/restore")
+def receiving_recovery_restore(request: Request, body: dict = Body(...)):
+    """Restore a soft-deleted sheet or roll. Body: {"kind":"sheet"|"roll","id":n}"""
+    _recv_require_full_admin(request)
+    kind = str(body.get("kind") or "")
+    try:
+        item_id = int(body.get("id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="id is required")
+    if kind not in ("sheet", "roll"):
+        raise HTTPException(status_code=400, detail="kind must be sheet or roll")
+    _uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if kind == "sheet":
+                cur.execute("""
+                    UPDATE fabric_receiving_sheets
+                       SET deleted_at=NULL, deleted_by=NULL,
+                           updated_at=now(), updated_by_name=%s
+                     WHERE id=%s AND deleted_at IS NOT NULL
+                    RETURNING id, po_id, fabric_name
+                """, (name, item_id))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404,
+                                        detail="sheet not found in the bin")
+                if row["po_id"] is not None:
+                    _recv_audit(cur, row["po_id"], row["id"],
+                                row.get("fabric_name"), "sheet_restored",
+                                {}, name)
+                sheet_id = row["id"]
+            else:
+                cur.execute("""
+                    UPDATE fabric_receiving_rolls r
+                       SET deleted_at=NULL, deleted_by=NULL
+                      FROM fabric_receiving_sheets s
+                     WHERE r.id=%s AND r.deleted_at IS NOT NULL
+                       AND s.id = r.sheet_id
+                    RETURNING r.id, r.roll_no, r.sheet_id,
+                              s.po_id, s.fabric_name, s.deleted_at as s_deleted
+                """, (item_id,))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404,
+                                        detail="roll not found in the bin")
+                if row.get("s_deleted") is not None:
+                    # Bring the parent sheet back too, or the roll stays invisible.
+                    cur.execute("UPDATE fabric_receiving_sheets "
+                                "SET deleted_at=NULL, deleted_by=NULL "
+                                "WHERE id=%s", (row["sheet_id"],))
+                if row["po_id"] is not None:
+                    _recv_audit(cur, row["po_id"], row["sheet_id"],
+                                row.get("fabric_name"), "roll_restored",
+                                {"roll_no": row.get("roll_no")}, name)
+                sheet_id = row["sheet_id"]
+        _recv_refresh_sheet_totals(conn, sheet_id, name)
+        conn.commit()
+    return {"ok": True}
+
+@fabric_router.post("/api/fabric/receiving/recovery-bin/purge")
+def receiving_recovery_purge(request: Request, body: dict = Body(...)):
+    """PERMANENTLY delete a binned sheet (with its rolls) or roll.
+    Body: {"kind":"sheet"|"roll","id":n}"""
+    _recv_require_full_admin(request)
+    kind = str(body.get("kind") or "")
+    try:
+        item_id = int(body.get("id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="id is required")
+    if kind not in ("sheet", "roll"):
+        raise HTTPException(status_code=400, detail="kind must be sheet or roll")
+    _uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if kind == "sheet":
+                cur.execute("SELECT id, po_id, fabric_name, rolls_count "
+                            "FROM fabric_receiving_sheets "
+                            "WHERE id=%s AND deleted_at IS NOT NULL", (item_id,))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404,
+                                        detail="sheet not found in the bin")
+                cur.execute("DELETE FROM fabric_receiving_rolls "
+                            "WHERE sheet_id=%s", (item_id,))
+                cur.execute("DELETE FROM fabric_receiving_sheets "
+                            "WHERE id=%s", (item_id,))
+                if row["po_id"] is not None:
+                    _recv_audit(cur, row["po_id"], item_id,
+                                row.get("fabric_name"), "sheet_purged",
+                                {"rolls": int(row.get("rolls_count") or 0)},
+                                name)
+            else:
+                cur.execute("""
+                    SELECT r.id, r.roll_no, r.sheet_id, s.po_id, s.fabric_name
+                    FROM fabric_receiving_rolls r
+                    JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+                    WHERE r.id=%s AND r.deleted_at IS NOT NULL
+                """, (item_id,))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404,
+                                        detail="roll not found in the bin")
+                cur.execute("DELETE FROM fabric_receiving_rolls WHERE id=%s",
+                            (item_id,))
+                if row["po_id"] is not None:
+                    _recv_audit(cur, row["po_id"], row["sheet_id"],
+                                row.get("fabric_name"), "roll_purged",
+                                {"roll_no": row.get("roll_no")}, name)
+        conn.commit()
+    return {"ok": True}
+
+# ── Receiving sheet downloads (PDF / Excel per PO batch) ─────────────
+
+def _recv_download_data(conn, po_id):
+    """All live sheets + rolls of one PO, ordered for the printable sheet."""
+    sheets = q(conn, """
+        SELECT s.id, s.fabric_name, s.barcode, s.kg_per_mtr,
+               s.total_kg, s.total_mtrs, s.rolls_count, s.note,
+               s.po_id, s.po_name,
+               to_char(s.po_date, 'DD Mon YYYY') as po_date,
+               s.created_by_name,
+               to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
+                       'DD Mon YYYY, HH24:MI') as created_at
+        FROM fabric_receiving_sheets s
+        WHERE s.po_id=%s AND s.deleted_at IS NULL
+        ORDER BY s.fabric_name, s.id
+    """, (po_id,))
+    if not sheets:
+        raise HTTPException(status_code=404,
+                            detail="no receiving sheets for this PO")
+    rolls = q(conn, """
+        SELECT r.sheet_id, r.roll_no, r.qty_kg, r.qty_mtrs,
+               r.quality_status, r.quality_notes,
+               r.length_yards, r.shrinkage_inches,
+               r.bleeding_test, r.width_measured_m
+        FROM fabric_receiving_rolls r
+        WHERE r.sheet_id = ANY(%s) AND r.deleted_at IS NULL
+        ORDER BY r.sheet_id, r.roll_no, r.id
+    """, ([int(s["id"]) for s in sheets],))
+    by_sheet = {}
+    for r in rolls:
+        by_sheet.setdefault(r["sheet_id"], []).append(r)
+    return sheets, by_sheet
+
+_RECV_DL_HEADERS = ["Roll #", "Kgs", "Metres", "Length (yds)",
+                    "Shrinkage (in)", "Bleeding test", "Width (m)",
+                    "Quality", "Notes"]
+
+def _recv_dl_row(r):
+    def _n(v):
+        return float(v) if v not in (None, "") else None
+    return [int(r["roll_no"]), _n(r["qty_kg"]), _n(r["qty_mtrs"]),
+            _n(r.get("length_yards")), _n(r.get("shrinkage_inches")),
+            (r.get("bleeding_test") or ""), _n(r.get("width_measured_m")),
+            (r.get("quality_status") or "Pending"),
+            (r.get("quality_notes") or "")]
+
+def _recv_build_xlsx(sheets, by_sheet):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Receiving Sheet"
+    bold = Font(bold=True)
+    po_name = sheets[0].get("po_name") or f"PO {sheets[0].get('po_id')}"
+    ws.append([f"Fabric Receiving Sheet — {po_name}"])
+    ws["A1"].font = Font(bold=True, size=14)
+    ws.append([f"PO date: {sheets[0].get('po_date') or '—'}"])
+    ws.append([])
+    for s in sheets:
+        ws.append([f"{s.get('fabric_name') or ''}"
+                   + (f"  [{s.get('barcode')}]" if s.get("barcode") else "")])
+        ws.cell(row=ws.max_row, column=1).font = bold
+        ws.append([f"Received by {s.get('created_by_name') or '—'} "
+                   f"on {s.get('created_at') or '—'}"
+                   + (f" — note: {s.get('note')}" if s.get("note") else "")])
+        ws.append(_RECV_DL_HEADERS)
+        for c in range(1, len(_RECV_DL_HEADERS) + 1):
+            ws.cell(row=ws.max_row, column=c).font = bold
+        total_kg = 0.0
+        for r in by_sheet.get(s["id"], []):
+            ws.append(_recv_dl_row(r))
+            total_kg += float(r["qty_kg"] or 0)
+        ws.append(["Total", round(total_kg, 3),
+                   float(s["total_mtrs"]) if s.get("total_mtrs") not in (None, "") else None])
+        ws.cell(row=ws.max_row, column=1).font = bold
+        ws.cell(row=ws.max_row, column=2).font = bold
+        ws.append([])
+    widths = [8, 10, 10, 13, 14, 16, 10, 10, 30]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    import io
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+def _recv_build_pdf(sheets, by_sheet):
+    import io
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
+                                    Paragraph, Spacer)
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                            leftMargin=12*mm, rightMargin=12*mm,
+                            topMargin=12*mm, bottomMargin=12*mm)
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontSize=14,
+                        textColor=colors.HexColor("#1a5c38"))
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], fontSize=11)
+    small = ParagraphStyle("small", parent=styles["Normal"], fontSize=8,
+                           textColor=colors.HexColor("#555555"))
+    cell = ParagraphStyle("cell", parent=styles["Normal"], fontSize=8)
+    po_name = sheets[0].get("po_name") or f"PO {sheets[0].get('po_id')}"
+    story = [Paragraph(f"Fabric Receiving Sheet — {po_name}", h1),
+             Paragraph(f"PO date: {sheets[0].get('po_date') or '—'}", small),
+             Spacer(1, 4*mm)]
+    for s in sheets:
+        title = (s.get("fabric_name") or "") + \
+                (f"  [{s.get('barcode')}]" if s.get("barcode") else "")
+        story.append(Paragraph(title, h2))
+        story.append(Paragraph(
+            f"Received by {s.get('created_by_name') or '—'} on "
+            f"{s.get('created_at') or '—'}"
+            + (f" — note: {s.get('note')}" if s.get("note") else ""), small))
+        data = [_RECV_DL_HEADERS]
+        total_kg = 0.0
+        for r in by_sheet.get(s["id"], []):
+            row = _recv_dl_row(r)
+            row[-1] = Paragraph(str(row[-1]), cell)
+            data.append(["" if v is None else v for v in row])
+            total_kg += float(r["qty_kg"] or 0)
+        tm = s.get("total_mtrs")
+        data.append(["Total", round(total_kg, 3),
+                     "" if tm in (None, "") else float(tm),
+                     "", "", "", "", "", ""])
+        t = Table(data, repeatRows=1,
+                  colWidths=[16*mm, 18*mm, 18*mm, 24*mm, 26*mm, 34*mm,
+                             18*mm, 20*mm, 90*mm])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a5c38")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cccccc")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -2),
+             [colors.white, colors.HexColor("#f6f4ef")]),
+            ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        story.append(t)
+        story.append(Spacer(1, 6*mm))
+    doc.build(story)
+    return buf.getvalue()
+
+@fabric_router.get("/api/fabric/receiving/po-batch-download")
+def receiving_po_batch_download(po_id: int = Query(...),
+                                fmt: str = Query(default="pdf")):
+    """Download the FULL receiving sheet of one PO as a PDF or Excel file."""
+    fmt = (fmt or "pdf").lower()
+    if fmt not in ("pdf", "xlsx"):
+        raise HTTPException(status_code=400, detail="fmt must be pdf or xlsx")
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        sheets, by_sheet = _recv_download_data(conn, po_id)
+    po_name = (sheets[0].get("po_name") or f"PO-{po_id}").replace("/", "-")
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", po_name)
+    if fmt == "xlsx":
+        payload = _recv_build_xlsx(sheets, by_sheet)
+        media = ("application/vnd.openxmlformats-officedocument"
+                 ".spreadsheetml.sheet")
+        fname = f"receiving_{safe}.xlsx"
+    else:
+        payload = _recv_build_pdf(sheets, by_sheet)
+        media = "application/pdf"
+        fname = f"receiving_{safe}.pdf"
+    from fastapi import Response
+    return Response(content=payload, media_type=media, headers={
+        "Content-Disposition": f'attachment; filename="{fname}"'})
 
 # ── Receiving → Odoo draft-PO link & write-back ─────────────────────
 # The receiving flow can tie sheets to a DRAFT Odoo purchase order and later
@@ -5676,7 +6121,7 @@ def _recv_po_plan(conn, odoo, po_id):
                                      as supplier_fabric_code
         FROM fabric_receiving_sheets s
         LEFT JOIN raw_fabric_products p ON p.id = s.product_id
-        WHERE s.po_id=%s
+        WHERE s.po_id=%s AND s.deleted_at IS NULL
         GROUP BY s.product_id
         ORDER BY MAX(s.fabric_name)
     """, (po_id,))
@@ -5839,7 +6284,7 @@ def receiving_po_batches():
                        COUNT(DISTINCT s.product_id) as products,
                        SUM(s.total_kg) as total_kg
                 FROM fabric_receiving_sheets s
-                WHERE s.po_id IS NOT NULL
+                WHERE s.po_id IS NOT NULL AND s.deleted_at IS NULL
                 GROUP BY s.po_id
             )
             SELECT g.po_id, g.po_name,
@@ -5867,7 +6312,7 @@ def receiving_po_batches():
                    COUNT(DISTINCT s.product_id) as products,
                    SUM(s.total_kg)             as total_kg
             FROM fabric_receiving_sheets s
-            WHERE s.po_id IS NULL
+            WHERE s.po_id IS NULL AND s.deleted_at IS NULL
         """)
     no_po_group = None
     if nopo and int(nopo[0].get("sheets") or 0) > 0:
@@ -5915,9 +6360,10 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
                        COUNT(*) FILTER (WHERE quality_status='Pass') as pass_n,
                        COUNT(*) FILTER (WHERE quality_status='Fail') as fail_n,
                        COUNT(*) FILTER (WHERE quality_status IN ('Pass','Fail')) as inspected
-                FROM fabric_receiving_rolls GROUP BY sheet_id
+                FROM fabric_receiving_rolls WHERE deleted_at IS NULL
+                GROUP BY sheet_id
             ) qc ON qc.sheet_id = s.id
-            WHERE {where}
+            WHERE {where} AND s.deleted_at IS NULL
             ORDER BY s.created_at DESC, s.id DESC
         """, params)
         rolls = []
@@ -5925,9 +6371,11 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
             rolls = q(conn, """
                 SELECT r.sheet_id, r.id as roll_id, r.roll_no,
                        r.qty_kg, r.qty_mtrs,
-                       r.quality_status, r.quality_notes
+                       r.quality_status, r.quality_notes,
+                       r.length_yards, r.shrinkage_inches,
+                       r.bleeding_test, r.width_measured_m
                 FROM fabric_receiving_rolls r
-                WHERE r.sheet_id = ANY(%s)
+                WHERE r.sheet_id = ANY(%s) AND r.deleted_at IS NULL
                 ORDER BY r.sheet_id, r.roll_no, r.id
             """, ([int(s["id"]) for s in sheets],))
         # Lock state + the who/what/when trail (roll changes merged with the
@@ -5967,7 +6415,9 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
     for r in rolls:
         rolls_by_sheet.setdefault(r["sheet_id"], []).append(
             {k: r[k] for k in ("roll_id", "roll_no", "qty_kg", "qty_mtrs",
-                               "quality_status", "quality_notes")})
+                               "quality_status", "quality_notes",
+                               "length_yards", "shrinkage_inches",
+                               "bleeding_test", "width_measured_m")})
     fabrics, order = {}, []
     for s in sheets:
         key = (s["product_id"], s.get("barcode") or "")
@@ -6022,7 +6472,8 @@ def receiving_po_batch(po_id: int):
                    to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
                            'DD Mon YYYY, HH24:MI') as created_at
             FROM fabric_receiving_sheets s
-            WHERE s.po_id=%s ORDER BY s.created_at DESC, s.id DESC
+            WHERE s.po_id=%s AND s.deleted_at IS NULL
+            ORDER BY s.created_at DESC, s.id DESC
         """, (po_id,))
         last = q(conn, """
             SELECT status, uploaded_by_name,
@@ -6045,6 +6496,7 @@ def receiving_po_pricing_save(po_id: int, request: Request,
     USD→KES) plus one Yuan price + quote unit per price key. Values persist
     per PO (survive reload, reused on re-upload) and stay editable until the
     upload. Empty/zero inputs are stored as NULL ('not set yet')."""
+    _recv_block_quality_only(request)
     def _rate(name):
         v = body.get(name)
         if v in (None, ""):
@@ -6140,6 +6592,7 @@ def receiving_po_upload(po_id: int, request: Request):
     PO must still be draft. Writes stop at the first Odoo error — what was
     already written and what was skipped is reported honestly, and every
     attempt (success or failure) is recorded in fabric_po_uploads."""
+    _recv_block_quality_only(request)
     actor_id, actor_name = _fabric_actor(request)
     odoo = _odoo_connect()
     db, ouid, pwd, models = odoo
@@ -6413,6 +6866,7 @@ def landed_cost_create(request: Request, body: dict = Body(...)):
     nothing written), and only then create. The record is NEVER validated
     here — accounting posts it in Odoo. If a landed cost already references
     one of the pickings, a 409 lists it unless `force` is true."""
+    _recv_block_quality_only(request)
     # ── 1. Local payload validation (nothing touches Odoo yet) ──
     try:
         po_id = int(body.get("po_id"))
@@ -6611,7 +7065,8 @@ def receiving_fetch(sheet_id: int):
                            'DD Mon YYYY, HH24:MI') as created_at,
                    to_char(s.updated_at AT TIME ZONE 'Africa/Nairobi',
                            'DD Mon YYYY, HH24:MI') as updated_at
-            FROM fabric_receiving_sheets s WHERE s.id=%s
+            FROM fabric_receiving_sheets s
+            WHERE s.id=%s AND s.deleted_at IS NULL
         """, (sheet_id,))
         if not sheets:
             raise HTTPException(status_code=404, detail="receiving sheet not found")
@@ -6619,9 +7074,12 @@ def receiving_fetch(sheet_id: int):
         rolls = q(conn, """
             SELECT id as roll_id, roll_no, qty_kg, qty_mtrs,
                    quality_status, quality_notes, quality_updated_by,
+                   length_yards, shrinkage_inches,
+                   bleeding_test, width_measured_m,
                    to_char(quality_updated_at AT TIME ZONE 'Africa/Nairobi',
                            'DD Mon YYYY, HH24:MI') as quality_updated_at
-            FROM fabric_receiving_rolls WHERE sheet_id=%s
+            FROM fabric_receiving_rolls
+            WHERE sheet_id=%s AND deleted_at IS NULL
             ORDER BY roll_no, id
         """, (sheet_id,))
         prod = _recv_product_info(conn, sheet["product_id"]) or {
@@ -6637,7 +7095,9 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
     """Record per-roll quality inspection / testing results on a SAVED sheet.
     This is fillable by any signed-in fabric user AFTER the sheet exists (the
     rolls/quantities themselves stay locked to admins). Body:
-      {"rolls":[{"roll_id":<id>, "status":"Pass|Fail|Pending"|"", "notes":"…"}]}
+      {"rolls":[{"roll_id":<id>, "status":"Pass|Fail|Pending"|"", "notes":"…",
+                 "length_yards":n, "shrinkage_inches":n,
+                 "bleeding_test":"…", "width_measured_m":n}]}
     (roll_no accepted as a fallback key). Each changed roll stamps who/when."""
     items = body.get("rolls")
     if not isinstance(items, list) or not items:
@@ -6646,7 +7106,8 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
         exists = q(conn, "SELECT id, fabric_name, po_id "
-                         "FROM fabric_receiving_sheets WHERE id=%s", (sheet_id,))
+                         "FROM fabric_receiving_sheets "
+                         "WHERE id=%s AND deleted_at IS NULL", (sheet_id,))
         if not exists:
             raise HTTPException(status_code=404, detail="receiving sheet not found")
         po_id = exists[0].get("po_id")
@@ -6661,19 +7122,25 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                     raise HTTPException(status_code=400,
                         detail=f"status must be one of {', '.join(_RECV_QUALITY_STATUSES)}")
                 notes = (str(it.get("notes") or "").strip() or None)
+                meas = _recv_parse_measurements(it)
                 roll_id = it.get("roll_id")
                 roll_no = it.get("roll_no")
                 # Look up the current values first so we can (a) skip no-op
                 # writes and (b) audit the old -> new change.
+                _q_cols = ("id, roll_no, quality_status, quality_notes, "
+                           "length_yards, shrinkage_inches, bleeding_test, "
+                           "width_measured_m")
                 if roll_id not in (None, ""):
-                    old = q(conn, "SELECT id, roll_no, quality_status, quality_notes "
+                    old = q(conn, f"SELECT {_q_cols} "
                                   "FROM fabric_receiving_rolls "
-                                  "WHERE id=%s AND sheet_id=%s",
+                                  "WHERE id=%s AND sheet_id=%s "
+                                  "AND deleted_at IS NULL",
                             (roll_id, sheet_id))
                 elif roll_no not in (None, ""):
-                    old = q(conn, "SELECT id, roll_no, quality_status, quality_notes "
+                    old = q(conn, f"SELECT {_q_cols} "
                                   "FROM fabric_receiving_rolls "
-                                  "WHERE sheet_id=%s AND roll_no=%s",
+                                  "WHERE sheet_id=%s AND roll_no=%s "
+                                  "AND deleted_at IS NULL",
                             (sheet_id, int(roll_no)))
                 else:
                     raise HTTPException(status_code=400,
@@ -6682,14 +7149,20 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                     continue
                 o = old[0]
                 if (o.get("quality_status") or None) == status and \
-                   (o.get("quality_notes") or None) == notes:
+                   (o.get("quality_notes") or None) == notes and \
+                   not _recv_meas_changed(o, meas):
                     continue  # no actual change: no write, no audit row
                 cur.execute("""
                     UPDATE fabric_receiving_rolls
                        SET quality_status=%s, quality_notes=%s,
+                           length_yards=%s, shrinkage_inches=%s,
+                           bleeding_test=%s, width_measured_m=%s,
                            quality_updated_at=now(), quality_updated_by=%s
                      WHERE id=%s AND sheet_id=%s
-                """, (status, notes, name, o["id"], sheet_id))
+                """, (status, notes,
+                      meas["length_yards"], meas["shrinkage_inches"],
+                      meas["bleeding_test"], meas["width_measured_m"],
+                      name, o["id"], sheet_id))
                 updated += cur.rowcount
                 if po_id is not None:
                     _recv_audit(cur, po_id, sheet_id,
@@ -6699,6 +7172,8 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                                  "new_status": status,
                                  "old_notes": o.get("quality_notes"),
                                  "new_notes": notes,
+                                 "measurements": {k: (float(v) if isinstance(v, (int, float)) else v)
+                                                  for k, v in meas.items()},
                                  "after_upload": bool(after_upload)}, name)
         conn.commit()
         _log_fabric_change("Receiving quality updated", {
@@ -6724,7 +7199,8 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
     for r in (body.get("rolls") or []):
         if not isinstance(r, dict) or "roll_no" not in r:
             continue
-        if "status" not in r and "notes" not in r:
+        if "status" not in r and "notes" not in r and \
+           not any(k in r for k in _RECV_MEAS_NUM) and "bleeding_test" not in r:
             continue  # roll carries no explicit quality edit → fall back to prev
         try:
             rn = int(r.get("roll_no"))
@@ -6734,7 +7210,9 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
         if st is not None and st not in _RECV_QUALITY_STATUSES:
             raise HTTPException(status_code=400,
                 detail=f"status must be one of {', '.join(_RECV_QUALITY_STATUSES)}")
-        q_in[rn] = {"status": st, "notes": (str(r.get("notes") or "").strip() or None)}
+        q_in[rn] = {"status": st,
+                    "notes": (str(r.get("notes") or "").strip() or None),
+                    "meas": _recv_parse_measurements(r)}
     # Optional PO re-link: pass "po_id": <id> to link/relink (re-validated LIVE
     # in Odoo as a draft) or "po_id": null/"" to unlink. Omitting the key
     # leaves the current link untouched.
@@ -6750,7 +7228,8 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
         srow = q(conn, "SELECT id, kg_per_mtr, fabric_name, po_id, total_kg "
-                       "FROM fabric_receiving_sheets WHERE id=%s", (sheet_id,))
+                       "FROM fabric_receiving_sheets "
+                       "WHERE id=%s AND deleted_at IS NULL", (sheet_id,))
         if not srow:
             raise HTTPException(status_code=404, detail="receiving sheet not found")
         kpm = srow[0].get("kg_per_mtr")
@@ -6758,14 +7237,20 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
         # Preserve existing per-roll quality across the rolls rewrite, keyed by
         # roll number (the stable, user-facing identifier).
         prev = q(conn, "SELECT roll_no, quality_status, quality_notes, "
-                       "quality_updated_by, quality_updated_at "
-                       "FROM fabric_receiving_rolls WHERE sheet_id=%s", (sheet_id,))
+                       "quality_updated_by, quality_updated_at, "
+                       "length_yards, shrinkage_inches, bleeding_test, "
+                       "width_measured_m "
+                       "FROM fabric_receiving_rolls "
+                       "WHERE sheet_id=%s AND deleted_at IS NULL", (sheet_id,))
         qmap = {r["roll_no"]: r for r in prev}
         total_kg = round(sum(kg for _, kg in rolls), 3)
         total_mtrs = round(total_kg / kpm, 1) if kpm else None
         quality_changes = []  # (roll_no, old_status, new_status, old_notes, new_notes)
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM fabric_receiving_rolls WHERE sheet_id=%s",
+            # Soft-deleted rolls stay put for the Recovery Bin — only rewrite
+            # the LIVE rolls of this sheet.
+            cur.execute("DELETE FROM fabric_receiving_rolls "
+                        "WHERE sheet_id=%s AND deleted_at IS NULL",
                         (sheet_id,))
             for roll_no, qty_kg in rolls:
                 pq = qmap.get(roll_no)
@@ -6773,28 +7258,39 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
                 if edit is not None:
                     # Explicit quality edit in this request wins; stamp the editor.
                     q_status, q_notes = edit["status"], edit["notes"]
+                    q_meas = edit["meas"]
                     q_by, q_at = name, None  # None → SQL now() below
                     old_status = (pq.get("quality_status") if pq else None) or None
                     old_notes = (pq.get("quality_notes") if pq else None) or None
-                    if old_status != q_status or old_notes != q_notes:
+                    if old_status != q_status or old_notes != q_notes or \
+                       (pq is not None and _recv_meas_changed(pq, q_meas)) or \
+                       (pq is None and any(v is not None for v in q_meas.values())):
                         quality_changes.append(
                             (roll_no, old_status, q_status, old_notes, q_notes))
                 else:
                     q_status = pq.get("quality_status") if pq else None
                     q_notes = pq.get("quality_notes") if pq else None
+                    q_meas = {"length_yards": pq.get("length_yards") if pq else None,
+                              "shrinkage_inches": pq.get("shrinkage_inches") if pq else None,
+                              "bleeding_test": pq.get("bleeding_test") if pq else None,
+                              "width_measured_m": pq.get("width_measured_m") if pq else None}
                     q_by = pq.get("quality_updated_by") if pq else None
                     q_at = pq.get("quality_updated_at") if pq else None
                 cur.execute("""
                     INSERT INTO fabric_receiving_rolls
                       (sheet_id, roll_no, qty_kg, qty_mtrs,
                        quality_status, quality_notes,
+                       length_yards, shrinkage_inches,
+                       bleeding_test, width_measured_m,
                        quality_updated_by, quality_updated_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                             COALESCE(%s, CASE WHEN %s THEN now() ELSE NULL END))
                 """, (sheet_id, roll_no, qty_kg,
                       round(qty_kg / kpm, 2) if kpm else None,
-                      q_status, q_notes, q_by,
-                      q_at, edit is not None))
+                      q_status, q_notes,
+                      q_meas["length_yards"], q_meas["shrinkage_inches"],
+                      q_meas["bleeding_test"], q_meas["width_measured_m"],
+                      q_by, q_at, edit is not None))
             cur.execute("""
                 UPDATE fabric_receiving_sheets
                    SET total_kg=%s, total_mtrs=%s, rolls_count=%s, note=%s,
@@ -6853,12 +7349,17 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
 
 @fabric_router.delete("/api/fabric/receiving/{sheet_id}")
 def receiving_delete(sheet_id: int, request: Request):
+    """SOFT-delete a receiving sheet: it moves to the Recovery Bin where a
+    full fabric admin can restore or permanently purge it (auto-purged after
+    90 days). Same lock rule as roll edits."""
+    _recv_block_quality_only(request)
     _uid, name = _fabric_actor(request)
     admin = _recv_is_admin(request)
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
         snap = q(conn, "SELECT id, fabric_name, total_kg, rolls_count, po_id "
-                       "FROM fabric_receiving_sheets WHERE id=%s", (sheet_id,))
+                       "FROM fabric_receiving_sheets "
+                       "WHERE id=%s AND deleted_at IS NULL", (sheet_id,))
         # Same lock rule as roll edits: once the PO has a successful Odoo
         # upload, only an admin may delete a sheet (and it is audited).
         po_id = snap[0].get("po_id") if snap else None
@@ -6866,7 +7367,10 @@ def receiving_delete(sheet_id: int, request: Request):
         if locked and not admin:
             raise HTTPException(status_code=403, detail=_RECV_LOCKED_MSG)
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM fabric_receiving_sheets WHERE id=%s", (sheet_id,))
+            cur.execute("UPDATE fabric_receiving_sheets "
+                        "SET deleted_at=now(), deleted_by=%s "
+                        "WHERE id=%s AND deleted_at IS NULL",
+                        (name, sheet_id))
             deleted = cur.rowcount
             if deleted and po_id is not None:
                 _recv_audit(cur, po_id, sheet_id,

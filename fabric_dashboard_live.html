@@ -1045,7 +1045,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
 
    <!-- RECEIVING -->
    <section id="page-receiving" style="display:none;">
-    <div class="card">
+    <div class="card" id="recv-entry-card">
      <div class="section-head"><h3>Record a delivery</h3><span class="muted">each PO keeps ONE sheet per fabric — rolls you save here append to it, and roll numbers are assigned automatically</span></div>
      <div id="recv-form-err"></div>
      <div class="flex" style="flex-wrap:wrap;gap:12px;align-items:flex-end;">
@@ -1086,7 +1086,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </div>
      </div>
     </div>
-    <div class="section-head" style="margin-top:1.3rem;"><h3>Purchase Order batches</h3><span class="muted">every saved sheet lives under its PO — expand a PO to see its fabrics, sheets and rolls, or review &amp; upload the summed totals onto the draft PO</span><span style="margin-left:auto;"></span><button class="btn" onclick="openLandedCost(null)" title="Attach clearing, duty &amp; freight charges to a confirmed PO's receipt as a draft landed cost in Odoo">💰 Landed cost upload</button></div>
+    <div class="section-head" style="margin-top:1.3rem;"><h3>Purchase Order batches</h3><span class="muted">every saved sheet lives under its PO — expand a PO to see its fabrics, sheets and rolls, or review &amp; upload the summed totals onto the draft PO</span><span style="margin-left:auto;"></span><button class="btn" id="recv-bin-btn" style="display:none;" onclick="openRecvRecoveryBin()" title="Deleted receiving sheets &amp; rolls are kept here for 90 days — restore or permanently remove them (admin only)">🗑 Recovery Bin</button> <button class="btn" id="recv-lc-btn" onclick="openLandedCost(null)" title="Attach clearing, duty &amp; freight charges to a confirmed PO's receipt as a draft landed cost in Odoo">💰 Landed cost upload</button></div>
     <div class="card" style="padding:0;">
      <div class="tbl-wrap">
       <table class="data">
@@ -1100,7 +1100,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
   </div>
 
   <div id="recv-edit-overlay" class="modal-overlay" style="display:none;" onclick="closeReceivingEdit()">
-   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="recv-edit-title" style="max-width:760px;" onclick="event.stopPropagation()">
+   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="recv-edit-title" style="max-width:1100px;" onclick="event.stopPropagation()">
     <div class="modal-head">
      <div><h3 id="recv-edit-title" style="margin:0;">Quality &amp; edit</h3><div class="muted" id="recv-edit-sub" style="font-size:12px;margin-top:2px;"></div></div>
      <button class="modal-close" onclick="closeReceivingEdit()" aria-label="Close">&times;</button>
@@ -1112,6 +1112,10 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <table class="data" id="recv-edit-table">
        <thead><tr>
         <th style="width:1%;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th>
+        <th class="r" title="Measured roll length in yards">Length (yds)</th>
+        <th class="r" title="Shrinkage test result in inches">Shrinkage (in)</th>
+        <th title="Bleeding / colour-fastness test result">Bleeding test</th>
+        <th class="r" title="Measured fabric width in metres">Width (m)</th>
         <th style="width:1%;">Quality</th><th>Quality notes</th><th id="recv-edit-remove-h" style="width:1%;"></th>
        </tr></thead>
        <tbody id="recv-edit-body"></tbody>
@@ -4049,10 +4053,22 @@ async function saveReceivingSheet(alsoPrint){
     if(alsoPrint&&res.sheet_id)reprintReceivingSheet(res.sheet_id);
   }catch(e){showRecvErr(e.message==='auth'?'Your session has expired. Sign in again.':('Could not save: '+e.message));}
 }
-let recvIsAdmin=false, recvPoMeta={};
+let recvIsAdmin=false, recvQualityOnly=false, recvPoMeta={};
 async function loadReceivingBatches(){
   recvBindOnce();
-  try{const rt=await apiFetch('/api/fabric/receiving/rights');recvIsAdmin=!!(rt&&rt.admin);}catch(_){recvIsAdmin=false;}
+  try{
+    const rt=await apiFetch('/api/fabric/receiving/rights');
+    recvIsAdmin=!!(rt&&rt.admin);
+    recvQualityOnly=!!(rt&&rt.quality_only);
+  }catch(_){recvIsAdmin=false;recvQualityOnly=false;}
+  const binBtn=document.getElementById('recv-bin-btn');
+  if(binBtn)binBtn.style.display='';
+  // Quality-only users (costing) record inspection results but cannot add
+  // new rolls — hide the entry form (also enforced server-side).
+  const entry=document.getElementById('recv-entry-card');
+  if(entry)entry.style.display=recvQualityOnly?'none':'';
+  const lcBtn=document.getElementById('recv-lc-btn');
+  if(lcBtn)lcBtn.style.display=recvQualityOnly?'none':'';
   loadRecvPoBatches();
 }
 function recvQualityCell(s){
@@ -4074,7 +4090,7 @@ async function reprintReceivingSheet(id){
   }catch(e){alert(errHtml(e).replace(/<[^>]*>/g,''));}
 }
 async function deleteReceivingSheet(id){
-  if(!confirm('Delete this receiving sheet? This cannot be undone.'))return;
+  if(!confirm('Delete this receiving sheet? It moves to the Recovery Bin, where an admin can restore it for 90 days.'))return;
   try{
     const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(id),{method:'DELETE',credentials:'include',headers:vivoAuthHeaders()});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
@@ -4089,7 +4105,7 @@ function printFabricMiniSheet(btn){reprintReceivingSheet(btn.dataset.fabPrint);}
 async function deleteFabricSection(btn){
   const name=btn.dataset.fabName||'this fabric';
   const n=Number(btn.dataset.fabRolls||0);
-  if(!confirm('Delete '+name+' from this PO — including all '+n+' roll'+(n===1?'':'s')+' and their quality records? This cannot be undone.'))return;
+  if(!confirm('Delete '+name+' from this PO — including all '+n+' roll'+(n===1?'':'s')+' and their quality records? It moves to the Recovery Bin, where an admin can restore it for 90 days.'))return;
   try{
     const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(btn.dataset.fabDel),{method:'DELETE',credentials:'include',headers:vivoAuthHeaders()});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
@@ -4112,7 +4128,11 @@ async function openReceivingEdit(id){
       id:id, kpm:kpm, isAdmin:!!(rt&&rt.admin),
       rolls:(d.rolls||[]).map(r=>({
         roll_id:r.roll_id, roll_no:r.roll_no, qty_kg:r.qty_kg, qty_mtrs:r.qty_mtrs,
-        quality_status:r.quality_status||'', quality_notes:r.quality_notes||''
+        quality_status:r.quality_status||'', quality_notes:r.quality_notes||'',
+        length_yards:r.length_yards==null?'':r.length_yards,
+        shrinkage_inches:r.shrinkage_inches==null?'':r.shrinkage_inches,
+        bleeding_test:r.bleeding_test||'',
+        width_measured_m:r.width_measured_m==null?'':r.width_measured_m
       }))
     };
     document.getElementById('recv-edit-err').innerHTML='';
@@ -4163,8 +4183,12 @@ function renderReceivingEditRows(){
       <td>${noCell}</td>
       <td class="r">${kgCell}</td>
       <td class="r" id="recv-edit-m-${i}">${m}</td>
+      <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="len" value="${esc(String(r.length_yards??''))}" placeholder="yds" style="width:72px;text-align:right;"></td>
+      <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="shr" value="${esc(String(r.shrinkage_inches??''))}" placeholder="in" style="width:64px;text-align:right;"></td>
+      <td><input type="text" data-ei="${i}" data-ek="bld" value="${esc(String(r.bleeding_test||''))}" placeholder="e.g. No bleed" style="width:110px;"></td>
+      <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="wid" value="${esc(String(r.width_measured_m??''))}" placeholder="m" style="width:64px;text-align:right;"></td>
       <td><select data-ei="${i}" data-ek="status" style="width:110px;">${opts}</select></td>
-      <td><input type="text" data-ei="${i}" data-ek="notes" value="${esc(String(r.quality_notes||''))}" placeholder="optional" style="width:100%;min-width:180px;"></td>
+      <td><input type="text" data-ei="${i}" data-ek="notes" value="${esc(String(r.quality_notes||''))}" placeholder="optional" style="width:100%;min-width:140px;"></td>
       ${admin?`<td><button class="btn" data-ei="${i}" data-ek="del" title="Remove roll" style="padding:2px 8px;font-size:12px;">&times;</button></td>`:''}
     </tr>`;
   }).join('');
@@ -4175,6 +4199,10 @@ function renderReceivingEditRows(){
     if(k==='no')r.roll_no=el.value;
     else if(k==='kg'){r.qty_kg=el.value;r.qty_mtrs=recvEditDerived(el.value);const c=document.getElementById('recv-edit-m-'+i);if(c)c.innerHTML=r.qty_mtrs!=null?fmt1(r.qty_mtrs):(recvEditState.kpm?'—':'<span style="color:var(--danger);">Missing Width/GSM</span>');}
     else if(k==='notes')r.quality_notes=el.value;
+    else if(k==='len')r.length_yards=el.value;
+    else if(k==='shr')r.shrinkage_inches=el.value;
+    else if(k==='bld')r.bleeding_test=el.value;
+    else if(k==='wid')r.width_measured_m=el.value;
   };
   body.onchange=e=>{const el=e.target.closest('[data-ek="status"]');if(!el)return;const i=Number(el.dataset.ei);if(recvEditState.rolls[i])recvEditState.rolls[i].quality_status=el.value;};
   body.onclick=e=>{const el=e.target.closest('[data-ek="del"]');if(!el)return;recvEditState.rolls.splice(Number(el.dataset.ei),1);renderReceivingEditRows();};
@@ -4183,14 +4211,18 @@ function recvEditAddRoll(){
   if(!recvEditState.isAdmin)return;
   if(recvEditState.rolls.length>=50){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">A sheet holds at most 50 rolls.</div>';return;}
   const maxNo=recvEditState.rolls.reduce((m,r)=>Math.max(m,parseInt(r.roll_no,10)||0),0);
-  recvEditState.rolls.push({roll_id:null,roll_no:String(maxNo+1),qty_kg:'',qty_mtrs:null,quality_status:'',quality_notes:''});
+  recvEditState.rolls.push({roll_id:null,roll_no:String(maxNo+1),qty_kg:'',qty_mtrs:null,quality_status:'',quality_notes:'',length_yards:'',shrinkage_inches:'',bleeding_test:'',width_measured_m:''});
   renderReceivingEditRows();
 }
 async function saveReceivingQuality(){
   document.getElementById('recv-edit-err').innerHTML='';
   const rolls=recvEditState.rolls
     .filter(r=>r.roll_id!=null)
-    .map(r=>({roll_id:r.roll_id,status:r.quality_status||'',notes:r.quality_notes||''}));
+    .map(r=>({roll_id:r.roll_id,status:r.quality_status||'',notes:r.quality_notes||'',
+              length_yards:r.length_yards===''?null:r.length_yards,
+              shrinkage_inches:r.shrinkage_inches===''?null:r.shrinkage_inches,
+              bleeding_test:r.bleeding_test||'',
+              width_measured_m:r.width_measured_m===''?null:r.width_measured_m}));
   if(!rolls.length){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Nothing to save — save roll changes first for newly added rolls.</div>';return;}
   try{
     const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(recvEditState.id)+'/quality',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({rolls})});
@@ -4212,7 +4244,13 @@ async function saveReceivingEdit(){
   if(!rolls.length){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">A sheet needs at least one roll.</div>';return;}
   // Fold quality into the SAME roll payload so the admin edit is one atomic call
   // (rolls rewrite + quality write together) — no separate, swallow-able request.
-  recvEditState.rolls.forEach((x,i)=>{if(rolls[i]){rolls[i].status=x.quality_status||'';rolls[i].notes=x.quality_notes||'';}});
+  recvEditState.rolls.forEach((x,i)=>{if(rolls[i]){
+    rolls[i].status=x.quality_status||'';rolls[i].notes=x.quality_notes||'';
+    rolls[i].length_yards=x.length_yards===''?null:x.length_yards;
+    rolls[i].shrinkage_inches=x.shrinkage_inches===''?null:x.shrinkage_inches;
+    rolls[i].bleeding_test=x.bleeding_test||'';
+    rolls[i].width_measured_m=x.width_measured_m===''?null:x.width_measured_m;
+  }});
   const note=document.getElementById('recv-edit-note').value.trim();
   const payload={rolls,note};
   const poSel=document.getElementById('recv-edit-po');
@@ -4329,8 +4367,16 @@ async function buildReceivingSheetBody(d){
   // Quality box: a SUMMARY per barcode/product (NOT per-roll) plus the
   // recorded per-roll quality notes (red wavy emphasis) and ruled lines for
   // any further handwritten inspection / testing results.
-  const noted=rolls.filter(r=>clean(r.quality_notes));
-  const qNotes=noted.length?`<div class="qnotes">${noted.map(r=>`<div><span class="qn-roll">Roll ${esc(String(r.roll_no))}</span> — ${esc(clean(r.quality_status)||'Pending')}: <span class="qwavy">${esc(clean(r.quality_notes))}</span></div>`).join('')}</div>`:'';
+  const measTxt=r=>{
+    const bits=[];
+    if(r.length_yards!=null&&String(r.length_yards)!=='')bits.push(numv(r.length_yards,2)+' yds');
+    if(r.shrinkage_inches!=null&&String(r.shrinkage_inches)!=='')bits.push('shrink '+numv(r.shrinkage_inches,2)+' in');
+    if(clean(r.bleeding_test))bits.push('bleed: '+clean(r.bleeding_test));
+    if(r.width_measured_m!=null&&String(r.width_measured_m)!=='')bits.push('width '+numv(r.width_measured_m,2)+' m');
+    return bits.join(' · ');
+  };
+  const noted=rolls.filter(r=>clean(r.quality_notes)||measTxt(r));
+  const qNotes=noted.length?`<div class="qnotes">${noted.map(r=>`<div><span class="qn-roll">Roll ${esc(String(r.roll_no))}</span> — ${esc(clean(r.quality_status)||'Pending')}${measTxt(r)?': '+esc(measTxt(r)):''}${clean(r.quality_notes)?`${measTxt(r)?' —':':'} <span class="qwavy">${esc(clean(r.quality_notes))}</span>`:''}</div>`).join('')}</div>`:'';
   const qLinesStyle=noted.length?' style="min-height:23px;"':'';
   const qualityBox=`<div class="quality">
    <div class="qh">Quality — inspection / testing results</div>
@@ -4421,7 +4467,7 @@ async function loadRecvPoBatches(){
       const name=isNoPo
         ? 'No PO <span class="muted" style="font-weight:400;font-size:11px;">(legacy sheets saved without a purchase order)</span>'
         : esc(r.po_name||('PO #'+r.po_id));
-      const action=isNoPo?'':`<button class="btn" data-po-print="${esc(key)}" title="Print the full PO receiving sheet (all fabrics &amp; rolls)" style="padding:4px 10px;font-size:12px;">🖨 PO sheet</button> <button class="btn btn-primary" data-po-open="${Number(r.po_id)}" style="padding:4px 10px;font-size:12px;">Review &amp; upload</button> <button class="btn" data-po-lc="${Number(r.po_id)}" title="Attach clearing, duty &amp; freight charges to this PO's receipt as a draft landed cost in Odoo" style="padding:4px 10px;font-size:12px;">💰 Landed cost</button>`;
+      const action=isNoPo?'':`<button class="btn" data-po-print="${esc(key)}" title="Print the full PO receiving sheet (all fabrics &amp; rolls)" style="padding:4px 10px;font-size:12px;">🖨 PO sheet</button> <button class="btn" data-po-dl="${Number(r.po_id)}" data-dl-fmt="pdf" title="Download this PO's full receiving sheet as a PDF" style="padding:4px 10px;font-size:12px;">⬇ PDF</button> <button class="btn" data-po-dl="${Number(r.po_id)}" data-dl-fmt="xlsx" title="Download this PO's full receiving sheet as an Excel workbook" style="padding:4px 10px;font-size:12px;">⬇ Excel</button>${recvQualityOnly?'':` <button class="btn btn-primary" data-po-open="${Number(r.po_id)}" style="padding:4px 10px;font-size:12px;">Review &amp; upload</button> <button class="btn" data-po-lc="${Number(r.po_id)}" title="Attach clearing, duty &amp; freight charges to this PO's receipt as a draft landed cost in Odoo" style="padding:4px 10px;font-size:12px;">💰 Landed cost</button>`}`;
       const main=`<tr>
         <td><button class="btn" data-po-toggle="${esc(key)}" title="${open?'Collapse':'Expand'}" style="padding:2px 9px;font-size:13px;font-weight:700;">${open?'−':'+'}</button></td>
         <td data-po-toggle="${esc(key)}" style="font-weight:600;cursor:pointer;" title="${open?'Collapse':'Expand'}">${name}</td>
@@ -4451,6 +4497,8 @@ async function loadRecvPoBatches(){
         if(lc){openLandedCost(Number(lc.dataset.poLc));return;}
         const pp=e.target.closest('button[data-po-print]');
         if(pp){printPoFullSheet(pp.dataset.poPrint);return;}
+        const dl=e.target.closest('button[data-po-dl]');
+        if(dl){downloadPoSheet(dl);return;}
         const rq=e.target.closest('button[data-roll-q]');
         if(rq){recvRollQualityFromBtn(rq);return;}
         const re=e.target.closest('button[data-roll-edit]');
@@ -4497,7 +4545,7 @@ function renderRecvPoDetail(box,det,poKey){
   const fabrics=(det&&det.fabrics)||[];
   if(!fabrics.length){box.innerHTML='<div class="muted">No sheets in this group any more.</div>';return;}
   const locked=!!(det&&det.locked);
-  const canEditRolls=!locked||recvIsAdmin;
+  const canEditRolls=(!locked||recvIsAdmin)&&!recvQualityOnly;
   const lockBanner=locked
     ? '<div class="banner" style="background:rgba(184,134,11,.08);border:1px solid rgba(184,134,11,.4);padding:.45rem .7rem;border-radius:8px;font-size:12px;margin-bottom:.4rem;">🔒 This PO has been <b>uploaded to Odoo</b> — rolls &amp; quantities are locked'
       +(recvIsAdmin?' (you are an admin: corrections stay possible and every change is logged below)':' to admins')
@@ -4540,13 +4588,19 @@ function renderRecvPoDetail(box,det,poKey){
               :'<span class="muted">'+esc(r.quality_status||'Pending')+'</span>');
         const racts='<button class="btn" data-slip="'+Number(r.roll_id)+'" title="Print a slip for this roll" style="padding:1px 7px;font-size:11px;">🖨 Slip</button>'
           +(r.roll_id!=null
-            ?' <button class="btn" data-roll-q="'+Number(r.roll_id)+'" data-q-sheet="'+Number(r.__sheet_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-q-status="'+esc(r.quality_status||'')+'" data-q-notes="'+esc(r.quality_notes||'')+'" title="Record this roll\u2019s quality (Pass / Fail / Pending + notes)" style="padding:1px 7px;font-size:11px;">Quality</button>'
+            ?' <button class="btn" data-roll-q="'+Number(r.roll_id)+'" data-q-sheet="'+Number(r.__sheet_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-q-status="'+esc(r.quality_status||'')+'" data-q-notes="'+esc(r.quality_notes||'')+'" data-q-len="'+esc(String(r.length_yards==null?'':r.length_yards))+'" data-q-shr="'+esc(String(r.shrinkage_inches==null?'':r.shrinkage_inches))+'" data-q-bld="'+esc(r.bleeding_test||'')+'" data-q-wid="'+esc(String(r.width_measured_m==null?'':r.width_measured_m))+'" title="Record this roll\u2019s quality (measurements + Pass / Fail / Pending + notes)" style="padding:1px 7px;font-size:11px;">Quality</button>'
             :'')
           +(canEditRolls&&r.roll_id!=null
             ?' <button class="btn" data-roll-edit="'+Number(r.roll_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-kg="'+esc(String(r.qty_kg==null?'':r.qty_kg))+'" title="Correct this roll\u2019s weight" style="padding:1px 7px;font-size:11px;">✎</button>'
              +' <button class="btn" data-roll-del="'+Number(r.roll_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" title="Delete this roll" style="padding:1px 7px;font-size:11px;">&times;</button>'
             :'');
-        return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td>${q}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td><td style="white-space:nowrap;">${racts}</td></tr>`;
+        const measBits=[];
+        if(r.length_yards!=null&&r.length_yards!=='')measBits.push(fmt2(r.length_yards)+' yds');
+        if(r.shrinkage_inches!=null&&r.shrinkage_inches!=='')measBits.push('shrink '+fmt2(r.shrinkage_inches)+'\u2033');
+        if(r.bleeding_test)measBits.push('bleed: '+esc(r.bleeding_test));
+        if(r.width_measured_m!=null&&r.width_measured_m!=='')measBits.push('width '+fmt2(r.width_measured_m)+' m');
+        const measHtml=measBits.length?'<div class="muted" style="font-size:11px;">'+measBits.join(' · ')+'</div>':'';
+        return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td>${q}${measHtml}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td><td style="white-space:nowrap;">${racts}</td></tr>`;
       }).join('');
       const metaBits=(g.sheets||[]).map(s=>{
         const edited=s.updated_at?` · edited ${esc(s.updated_at)}${s.updated_by_name?' by '+esc(s.updated_by_name):''}`:'';
@@ -4610,7 +4664,7 @@ async function recvRollEditFromBtn(btn){
   }catch(e){alert('Could not update the roll: '+e.message);}
 }
 async function recvRollDeleteFromBtn(btn){
-  if(!confirm('Delete roll '+btn.dataset.rollNo+'? This cannot be undone.'))return;
+  if(!confirm('Delete roll '+btn.dataset.rollNo+'? It moves to the Recovery Bin, where an admin can restore it for 90 days.'))return;
   try{
     const r=await fetch('/api/fabric/receiving/roll/'+encodeURIComponent(Number(btn.dataset.rollDel)),{method:'DELETE',credentials:'include',headers:vivoAuthHeaders()});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
@@ -4626,6 +4680,7 @@ function recvRollQualityFromBtn(btn){
   const rollNo=btn.dataset.rollNo||'';
   const cur=btn.dataset.qStatus||'';
   const curNotes=btn.dataset.qNotes||'';
+  const curLen=btn.dataset.qLen||'', curShr=btn.dataset.qShr||'', curBld=btn.dataset.qBld||'', curWid=btn.dataset.qWid||'';
   document.querySelectorAll('.roll-q-pop').forEach(el=>el.remove());
   const pop=document.createElement('div');
   pop.className='roll-q-pop';
@@ -4636,7 +4691,17 @@ function recvRollQualityFromBtn(btn){
   }).join('');
   pop.innerHTML='<div style="background:#fff;border-radius:10px;padding:1rem 1.1rem;width:340px;max-width:92vw;box-shadow:0 8px 30px rgba(0,0,0,.25);" onclick="event.stopPropagation()">'
     +'<div style="font-weight:700;font-size:14px;margin-bottom:.5rem;">Quality — roll '+esc(rollNo)+'</div>'
-    +'<label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;">Status</label>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;">'
+    +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;">Length (yds)</label>'
+    +'<input type="number" min="0" step="any" class="roll-q-len" placeholder="yards" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;"></div>'
+    +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;">Shrinkage (in)</label>'
+    +'<input type="number" min="0" step="any" class="roll-q-shr" placeholder="inches" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;"></div>'
+    +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;">Bleeding test</label>'
+    +'<input type="text" class="roll-q-bld" placeholder="e.g. No bleed" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;"></div>'
+    +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;">Width (m)</label>'
+    +'<input type="number" min="0" step="any" class="roll-q-wid" placeholder="metres" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;"></div>'
+    +'</div>'
+    +'<label style="font-size:12px;font-weight:600;display:block;margin:.55rem 0 2px;">Status</label>'
     +'<select class="roll-q-status" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;">'+opts+'</select>'
     +'<label style="font-size:12px;font-weight:600;display:block;margin:.55rem 0 2px;">Notes</label>'
     +'<textarea class="roll-q-notes" rows="3" placeholder="Inspection notes (optional)" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;resize:vertical;"></textarea>'
@@ -4646,6 +4711,10 @@ function recvRollQualityFromBtn(btn){
     +'</div></div>';
   document.body.appendChild(pop);
   pop.querySelector('.roll-q-notes').value=curNotes;
+  pop.querySelector('.roll-q-len').value=curLen;
+  pop.querySelector('.roll-q-shr').value=curShr;
+  pop.querySelector('.roll-q-bld').value=curBld;
+  pop.querySelector('.roll-q-wid').value=curWid;
   const close=()=>pop.remove();
   pop.addEventListener('click',close);
   pop.querySelector('.roll-q-cancel').addEventListener('click',close);
@@ -4654,8 +4723,9 @@ function recvRollQualityFromBtn(btn){
     saveBtn.disabled=true;saveBtn.textContent='Saving…';
     const status=pop.querySelector('.roll-q-status').value;
     const notes=pop.querySelector('.roll-q-notes').value.trim();
+    const gv=c=>{const v=pop.querySelector(c).value.trim();return v===''?null:v;};
     try{
-      const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(sheetId)+'/quality',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({rolls:[{roll_id:rollId,roll_no:rollNo,status:status,notes:notes}]})});
+      const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(sheetId)+'/quality',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({rolls:[{roll_id:rollId,roll_no:rollNo,status:status,notes:notes,length_yards:gv('.roll-q-len'),shrinkage_inches:gv('.roll-q-shr'),bleeding_test:gv('.roll-q-bld')||'',width_measured_m:gv('.roll-q-wid')}]})});
       if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
       close();
       await refreshRecvPoDetail(box);
@@ -4705,12 +4775,98 @@ function printRollSlip(g,s,r,meta){
     +'<div class="row"><span>Received</span><b>'+esc(s.receiving_date||s.created_at||'—')+'</b></div>'
     +'<div class="row"><span>Weight</span><b>'+fmt2(r.qty_kg)+' kg</b></div>'
     +'<div class="row"><span>Metres</span><b>'+(r.qty_mtrs!=null?fmt1(r.qty_mtrs)+' m':'Missing Width/GSM')+'</b></div>'
+    +'<div class="row"><span>Length</span><b>'+(r.length_yards!=null&&r.length_yards!==''?fmt2(r.length_yards)+' yds':'\u2014')+'</b></div>'
+    +'<div class="row"><span>Shrinkage</span><b>'+(r.shrinkage_inches!=null&&r.shrinkage_inches!==''?fmt2(r.shrinkage_inches)+' in':'\u2014')+'</b></div>'
+    +'<div class="row"><span>Bleeding test</span><b>'+esc(r.bleeding_test||'\u2014')+'</b></div>'
+    +'<div class="row"><span>Width</span><b>'+(r.width_measured_m!=null&&r.width_measured_m!==''?fmt2(r.width_measured_m)+' m':'\u2014')+'</b></div>'
     +'<div class="row"><span>Quality</span><b>'+esc(r.quality_status||'Pending')+'</b></div>'
     +'<div class="row"><span>Quality Notes</span><b>'+esc(r.quality_notes||'\u2014')+'</b></div>'
     +'</div><script>window.onload=function(){setTimeout(function(){window.print();},60);};<\/script></body></html>';
   const w=window.open('','_blank','width=460,height=560');
   if(!w){alert('Please allow pop-ups to print the roll slip.');return;}
   w.document.open();w.document.write(html);w.document.close();w.focus();
+}
+// ── Per-PO receiving-sheet downloads (server-built PDF / Excel) ──
+async function downloadPoSheet(btn){
+  const poId=Number(btn.dataset.poDl), fmt=btn.dataset.dlFmt==='xlsx'?'xlsx':'pdf';
+  const old=btn.textContent;
+  btn.disabled=true;btn.textContent='…';
+  try{
+    const r=await fetch('/api/fabric/receiving/po-batch-download?po_id='+encodeURIComponent(poId)+'&fmt='+fmt,{credentials:'include',headers:vivoAuthHeaders()});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
+    const blob=await r.blob();
+    const cd=r.headers.get('Content-Disposition')||'';
+    const m=cd.match(/filename="?([^";]+)"?/);
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=(m&&m[1])||('receiving_po_'+poId+'.'+fmt);
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+  }catch(e){alert('Could not download the sheet: '+(e&&e.message||e));}
+  btn.disabled=false;btn.textContent=old;
+}
+// ── Recovery Bin (admin) — deleted sheets & rolls, restorable for 90 days ──
+async function openRecvRecoveryBin(){
+  document.querySelectorAll('.recv-bin-pop').forEach(el=>el.remove());
+  const pop=document.createElement('div');
+  pop.className='recv-bin-pop';
+  pop.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  pop.innerHTML='<div style="background:#fff;border-radius:10px;padding:1rem 1.1rem;width:860px;max-width:94vw;max-height:86vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.25);" onclick="event.stopPropagation()">'
+    +'<div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.4rem;"><div style="font-weight:700;font-size:15px;">Recovery Bin</div>'
+    +'<span class="muted" style="font-size:12px;">deleted receiving sheets &amp; rolls stay restorable for 90 days, then purge automatically</span>'
+    +'<button class="btn recv-bin-close" style="margin-left:auto;padding:3px 10px;">Close</button></div>'
+    +'<div class="recv-bin-body"><span class="loading">Loading…</span></div></div>';
+  document.body.appendChild(pop);
+  const close=()=>pop.remove();
+  pop.addEventListener('click',close);
+  pop.querySelector('.recv-bin-close').addEventListener('click',close);
+  const bodyEl=pop.querySelector('.recv-bin-body');
+  async function render(){
+    try{
+      const d=await apiFetch('/api/fabric/receiving/recovery-bin');
+      const sheets=(d&&d.sheets)||[], rolls=(d&&d.rolls)||[];
+      if(!sheets.length&&!rolls.length){bodyEl.innerHTML='<div class="muted" style="padding:.6rem 0;">The bin is empty — nothing has been deleted in the last 90 days.</div>';return;}
+      const act=(kind,id)=>recvIsAdmin
+        ?(' <button class="btn" data-bin-restore="'+kind+':'+Number(id)+'" style="padding:2px 9px;font-size:12px;">Restore</button>'
+          +' <button class="btn" data-bin-purge="'+kind+':'+Number(id)+'" style="padding:2px 9px;font-size:12px;color:var(--danger);">Purge now</button>')
+        :'<span class="muted" style="font-size:11px;">admin only</span>';
+      let html='';
+      if(sheets.length){
+        html+='<div style="font-weight:700;font-size:13px;margin:.4rem 0 .2rem;">Deleted sheets (fabric sections — restoring brings back all their rolls)</div>'
+          +'<table class="data"><thead><tr><th>Fabric</th><th>PO</th><th class="r">Rolls</th><th class="r">Total kg</th><th>Deleted</th><th>By</th><th></th></tr></thead><tbody>'
+          +sheets.map(s=>'<tr><td>'+esc(s.fabric_name||'—')+(s.barcode?' <span class="muted" style="font-size:11px;">'+esc(s.barcode)+'</span>':'')+'</td>'
+            +'<td>'+esc(s.po_name||'—')+'</td><td class="r">'+fmt(s.rolls_count)+'</td><td class="r">'+fmt2(s.total_kg)+'</td>'
+            +'<td style="white-space:nowrap;">'+esc(s.deleted_at||'—')+(s.days_left!=null?' <span class="muted" style="font-size:11px;">('+fmt(s.days_left)+'d left)</span>':'')+'</td>'
+            +'<td>'+esc(s.deleted_by||'—')+'</td><td style="white-space:nowrap;">'+act('sheet',s.id)+'</td></tr>').join('')
+          +'</tbody></table>';
+      }
+      if(rolls.length){
+        html+='<div style="font-weight:700;font-size:13px;margin:.7rem 0 .2rem;">Deleted rolls</div>'
+          +'<table class="data"><thead><tr><th>Roll No.</th><th>Fabric</th><th>PO</th><th class="r">Kgs</th><th>Deleted</th><th>By</th><th></th></tr></thead><tbody>'
+          +rolls.map(r=>'<tr><td>'+esc(String(r.roll_no??'—'))+'</td><td>'+esc(r.fabric_name||'—')+'</td><td>'+esc(r.po_name||'—')+'</td>'
+            +'<td class="r">'+fmt2(r.qty_kg)+'</td>'
+            +'<td style="white-space:nowrap;">'+esc(r.deleted_at||'—')+(r.days_left!=null?' <span class="muted" style="font-size:11px;">('+fmt(r.days_left)+'d left)</span>':'')+'</td>'
+            +'<td>'+esc(r.deleted_by||'—')+'</td><td style="white-space:nowrap;">'+act('roll',r.id)+'</td></tr>').join('')
+          +'</tbody></table>';
+      }
+      bodyEl.innerHTML=html;
+    }catch(e){bodyEl.innerHTML='<div class="banner banner-err">Could not load the Recovery Bin: '+esc(e&&e.message||String(e))+'</div>';}
+  }
+  bodyEl.addEventListener('click',async e=>{
+    const rb=e.target.closest('button[data-bin-restore]');
+    const pb=e.target.closest('button[data-bin-purge]');
+    const t=rb||pb;if(!t)return;
+    const [kind,id]=(rb?rb.dataset.binRestore:pb.dataset.binPurge).split(':');
+    if(pb&&!confirm('Permanently remove this deleted '+kind+'? This really cannot be undone.'))return;
+    t.disabled=true;
+    try{
+      const r=await fetch('/api/fabric/receiving/recovery-bin/'+(rb?'restore':'purge'),{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({kind:kind,id:Number(id)})});
+      if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
+      await render();
+      loadRecvPoBatches();
+    }catch(err){t.disabled=false;alert('Could not '+(rb?'restore':'purge')+': '+(err&&err.message||err));}
+  });
+  render();
 }
 // ── Full-PO receiving sheet (all fabrics & rolls on one printout) ──
 async function printPoFullSheet(poKey){
@@ -4732,15 +4888,19 @@ function buildPoSheetBody(det,meta){
     (g.sheets||[]).forEach(s=>(s.rolls||[]).forEach(r=>rolls.push(r)));
     rolls.sort((a,b)=>Number(a.roll_no)-Number(b.roll_no));
     const rows=rolls.map(r=>'<tr><td>'+(r.quality_status==='Fail'?'<span class="roll-fail">'+esc(String(r.roll_no))+'</span>':esc(String(r.roll_no)))+'</td><td class="r">'+fmt2(r.qty_kg)+'</td><td class="r">'
-      +(r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="miss">Missing Width/GSM</span>')+'</td><td>'
-      +esc(r.quality_status||'Pending')+(r.quality_notes?' — <span class="qwavy">'+esc(r.quality_notes)+'</span>':'')+'</td></tr>').join('');
+      +(r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="miss">Missing Width/GSM</span>')+'</td>'
+      +'<td class="r">'+(r.length_yards!=null&&r.length_yards!==''?fmt2(r.length_yards):'—')+'</td>'
+      +'<td class="r">'+(r.shrinkage_inches!=null&&r.shrinkage_inches!==''?fmt2(r.shrinkage_inches):'—')+'</td>'
+      +'<td>'+esc(r.bleeding_test||'—')+'</td>'
+      +'<td class="r">'+(r.width_measured_m!=null&&r.width_measured_m!==''?fmt2(r.width_measured_m):'—')+'</td>'
+      +'<td>'+esc(r.quality_status||'Pending')+(r.quality_notes?' — <span class="qwavy">'+esc(r.quality_notes)+'</span>':'')+'</td></tr>').join('');
     return '<div style="margin-top:12px;">'
       +'<div style="font-weight:700;font-size:12.5px;border-bottom:1.5px solid #000;padding-bottom:2px;">'
       +esc(g.fabric_name||'—')+(g.barcode?' · '+esc(g.barcode):'')
       +' — '+fmt(g.rolls_count)+' roll'+(g.rolls_count===1?'':'s')+' · '+fmt2(g.total_kg)+' kg'
       +(g.total_mtrs!=null?' · '+fmt1(g.total_mtrs)+' m':'')+'</div>'
-      +'<table class="rolls" style="width:100%;margin-top:4px;"><thead><tr><th>Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th>Quality</th></tr></thead><tbody>'
-      +(rows||'<tr><td colspan="4">No rolls.</td></tr>')+'</tbody></table></div>';
+      +'<table class="rolls" style="width:100%;margin-top:4px;"><thead><tr><th>Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th class="r">Length (yds)</th><th class="r">Shrink (in)</th><th>Bleeding</th><th class="r">Width (m)</th><th>Quality</th></tr></thead><tbody>'
+      +(rows||'<tr><td colspan="8">No rolls.</td></tr>')+'</tbody></table></div>';
   }).join('');
   return '<div class="sheet-page"><div class="sheet">'
     +'<div class="hd"><h1>FABRIC RECEIVING — PURCHASE ORDER SHEET</h1><img class="vivo-logo" src="'+VIVO_LOGO_DATA_URI+'" alt="Vivo"></div>'
