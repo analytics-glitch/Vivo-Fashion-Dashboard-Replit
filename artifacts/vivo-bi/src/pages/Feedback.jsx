@@ -58,6 +58,7 @@ const Feedback = () => {
   return (
     <div className="space-y-6" data-testid="feedback-page">
       <div>
+        <h1 className="text-2xl font-semibold text-primary">Feedback</h1>
         <p className="text-muted text-[13px] mt-1 max-w-2xl">
           Spotted a bug, a missing feature, or a data discrepancy? Drop us a
           note. The team gets every submission and will mark it resolved
