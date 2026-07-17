@@ -100,6 +100,9 @@ export default function Loyalty() {
         <Link to="/loyalty/app-preview" className="inline-flex items-center gap-2 h-10 px-4 rounded-md border border-[var(--vivo-gold)] bg-[var(--vivo-bg-soft)] text-sm font-semibold text-[var(--vivo-navy)] hover:bg-[var(--vivo-bg)] press-effect" data-testid="open-app-preview">
           📱 Preview member app
         </Link>
+        <a href="https://loyalty.vivofashionbrands.com/" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 h-10 px-4 rounded-md border border-[var(--vivo-gold)] bg-[var(--vivo-bg-soft)] text-sm font-semibold text-[var(--vivo-navy)] hover:bg-[var(--vivo-bg)] press-effect" data-testid="open-loyalty-site">
+          Open loyalty site
+        </a>
       </div>
 
       {loading || !distribution ? (
