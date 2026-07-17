@@ -30547,7 +30547,8 @@ def production_summary():
         LEFT JOIN LATERAL (
             SELECT category, product_type
             FROM all_products_clean
-            WHERE style_name = po.style_name
+            WHERE style_number = po.style_number
+              AND style_number IS NOT NULL
             LIMIT 1
         ) cat ON TRUE"""
 
