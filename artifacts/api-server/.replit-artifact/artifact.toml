@@ -63,12 +63,14 @@ args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app && (cd loyalty-app-ba
 # step — no npm ci here so the server binds in <5s instead of 40-60s.
 # Uses db-env.mjs to derive LOYALTY_APP_DATABASE_URL from DATABASE_URL with the
 # loyalty_app schema — the same pattern the build step uses for migrations.
+# NODE_ENV=production activates production mode in the Fastify app.
 [services.production.run]
 args = ["sh", "-c", "cd /home/runner/workspace/loyalty-app/loyalty-app-backend && node scripts/db-env.mjs npx tsx src/server.ts"]
 
 [services.production.run.env]
 PORT = "8090"
 LOYALTY_APP_SERVE_FRONTEND = "true"
+NODE_ENV = "production"
 
 [services.production.health.startup]
 path = "/loyalty-app/health"

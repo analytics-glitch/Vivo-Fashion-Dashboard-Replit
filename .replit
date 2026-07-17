@@ -193,7 +193,6 @@ LOYALTY_APP_GOOGLE_REDIRECT_URI = "https://a2104183-e22b-4aee-99f6-fc604d080eee-
 LOYALTY_APP_API_BASE_URL = "https://vivofashionbrands.com/loyalty-app"
 LOYALTY_APP_WEB_BASE_URL = "https://vivofashionbrands.com/loyalty-app"
 LOYALTY_APP_GOOGLE_REDIRECT_URI = "https://vivofashionbrands.com/loyalty-app/api/auth/google/callback"
-LOYALTY_APP_NODE_ENV = "production"
 
 [objectStorage]
 defaultBucketID = "replit-objstore-6afd6244-d8b1-4255-80b1-e103c2c6a982"
