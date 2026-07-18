@@ -538,7 +538,8 @@ import clerk_auth
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 # Exact /api paths reachable without a session (health probes + proxy prefix).
-_AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/readyz", "/api/sync-status"}
+_AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/readyz", "/api/sync-status",
+                      "/api/environment"}
 
 # Endpoints that internal sync jobs (no staff session) may write to, authenticated
 # by the shared SESSION_SECRET via the X-Internal-Token header (validated in the
@@ -3639,6 +3640,18 @@ def healthz():
     # stays green even if Postgres is briefly saturated, and is whitelisted in
     # _AUTH_PUBLIC_EXACT so the platform probe never gets a 401.
     return {"status": "ok"}
+
+
+@app.get("/api/environment")
+def environment_signal():
+    # Public, DB-free environment signal consumed by every staff web surface to
+    # decide whether to show the development-preview banner. Server-side
+    # detection: Replit sets REPLIT_DEPLOYMENT only in published deployments
+    # (same check crm_clienteling.py uses to hard-exclude deployments), so this
+    # never relies on hostname sniffing. Whitelisted in _AUTH_PUBLIC_EXACT so
+    # login pages can read it before a session exists.
+    is_prod = bool((os.environ.get("REPLIT_DEPLOYMENT") or "").strip())
+    return {"environment": "production" if is_prod else "development"}
 
 
 @app.get("/api/readyz")

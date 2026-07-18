@@ -7373,5 +7373,63 @@ init();
   if(document.readyState!=="loading"){ initComposer(); }
 })();
 </script>
+<script>
+/* Development-preview indicator. Asks the backend (/api/environment, public,
+   server-side REPLIT_DEPLOYMENT detection) whether this is a published
+   deployment; on the dev preview it prepends a high-visibility amber banner.
+   XSS-safe: all text set via textContent. Collapsible per session only. */
+(function () {
+  "use strict";
+  var KEY = "vivo_dev_banner_collapsed";
+  function collapsed() { try { return sessionStorage.getItem(KEY) === "1"; } catch (e) { return false; } }
+  function setCollapsed(v) { try { sessionStorage.setItem(KEY, v ? "1" : "0"); } catch (e) {} }
+  function insertBanner() {
+    if (document.getElementById("dev-preview-banner")) return;
+    var bar = document.createElement("div");
+    bar.id = "dev-preview-banner";
+    bar.setAttribute("role", "status");
+    bar.style.cssText = "background:#d97706;color:#fff;padding:8px 16px;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;text-align:center;font-size:13px;font-weight:700;letter-spacing:.02em;line-height:1.35;";
+    var msg = document.createElement("span");
+    msg.textContent = "DEVELOPMENT PREVIEW \u2014 data entered here will NOT appear on the live site.";
+    var link = document.createElement("a");
+    link.href = "https://vivofashionbrands.com";
+    link.textContent = "Go to the live site";
+    link.style.cssText = "color:#fff;text-decoration:underline;font-weight:700;";
+    var hide = document.createElement("button");
+    hide.type = "button";
+    hide.textContent = "Hide";
+    hide.style.cssText = "background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.55);color:#fff;border-radius:6px;font-size:11px;font-weight:700;padding:2px 9px;cursor:pointer;";
+    var strip = document.createElement("button");
+    strip.id = "dev-preview-strip";
+    strip.type = "button";
+    strip.title = "Development preview \u2014 click to expand";
+    strip.setAttribute("aria-label", "Development preview \u2014 click to expand");
+    strip.style.cssText = "display:none;width:100%;height:10px;background:#d97706;border:none;cursor:pointer;padding:0;";
+    function apply() {
+      var c = collapsed();
+      bar.style.display = c ? "none" : "flex";
+      strip.style.display = c ? "block" : "none";
+    }
+    hide.onclick = function () { setCollapsed(true); apply(); };
+    strip.onclick = function () { setCollapsed(false); apply(); };
+    bar.appendChild(msg); bar.appendChild(link); bar.appendChild(hide);
+    document.body.insertBefore(strip, document.body.firstChild);
+    document.body.insertBefore(bar, strip);
+    apply();
+  }
+  function isDevHostname() {
+    var h = window.location.hostname;
+    return h === "localhost" || h === "127.0.0.1" || /\.replit\.dev$/.test(h) || /\.repl\.co$/.test(h) || /\.repl\.dev$/.test(h);
+  }
+  fetch("/api/environment", { headers: { "Accept": "application/json" } }).then(function (r) {
+    if (!r.ok) throw new Error("bad status");
+    return r.json();
+  }).then(function (d) {
+    if (d && d.environment === "development") insertBanner();
+  }).catch(function () {
+    if (isDevHostname()) insertBanner();
+  });
+})();
+</script>
 </body>
 </html>

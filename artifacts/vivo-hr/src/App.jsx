@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "./lib/auth";
 import { Toaster } from "./components/ui/sonner";
 import ProtectedRoute from "./components/ProtectedRoute";
+import DevPreviewBanner from "./components/DevPreviewBanner";
 
 import LoginPage from "./pages/Login";
 import AuthCallback from "./pages/AuthCallback";
@@ -28,6 +29,7 @@ const BASENAME = import.meta.env.BASE_URL.replace(/\/$/, "");
 function App() {
   return (
     <div className="App">
+      <DevPreviewBanner />
       <BrowserRouter basename={BASENAME}>
         <AuthProvider>
           <Routes>

@@ -56,6 +56,7 @@ import { FiltersProvider } from "@/lib/filters";
 import { AuthProvider } from "@/lib/auth";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import ChatWidget from "@/components/ChatWidget";
+import DevPreviewBanner from "@/components/DevPreviewBanner";
 import GlobalSearch from "@/components/GlobalSearch";
 import { Toaster } from "@/components/ui/sonner";
 import useHeartbeat from "@/lib/useHeartbeat";
@@ -159,6 +160,7 @@ const PageVisitTracker = () => {
 function App() {
   return (
     <div className="App">
+      <DevPreviewBanner />
       <BrowserRouter>
           <AuthProvider>
             <PageVisitTracker />

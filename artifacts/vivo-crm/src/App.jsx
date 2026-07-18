@@ -7,6 +7,7 @@ import { DateRangeProvider } from "@/contexts/DateRangeContext";
 import AuthCallback from "@/pages/AuthCallback";
 import Login from "@/pages/Login";
 import AppShell from "@/components/AppShell";
+import DevPreviewBanner from "@/components/DevPreviewBanner";
 import Dashboard from "@/pages/Dashboard";
 import CustomerSearch from "@/pages/CustomerSearch";
 import CustomerDatabase from "@/pages/CustomerDatabase";
@@ -85,6 +86,7 @@ const basename = import.meta.env.BASE_URL.replace(/\/$/, "");
 function App() {
   return (
     <div className="App">
+      <DevPreviewBanner />
       <BrowserRouter basename={basename}>
         <AuthProvider>
           <DateRangeProvider>
