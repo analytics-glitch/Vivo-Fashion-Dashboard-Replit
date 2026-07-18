@@ -1090,7 +1090,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div class="card" style="padding:0;">
      <div class="tbl-wrap">
       <table class="data">
-       <thead><tr><th style="width:1%;"></th><th>PO</th><th>PO date</th><th class="r">Sheet#</th><th class="r">Fabrics</th><th class="r">Total kgs</th><th>Last upload</th><th></th></tr></thead>
+       <thead><tr><th style="width:1%;"></th><th>PO</th><th>PO date</th><th class="r">Sheet#</th><th class="r">SKUs/Barcodes</th><th class="r">Total kgs</th><th>Last upload</th><th></th></tr></thead>
        <tbody id="recv-po-body"><tr><td colspan="8" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
@@ -4906,7 +4906,7 @@ function buildPoSheetBody(det,meta){
     +'<div class="hd"><h1>FABRIC RECEIVING — PURCHASE ORDER SHEET</h1><img class="vivo-logo" src="'+VIVO_LOGO_DATA_URI+'" alt="Vivo"></div>'
     +'<div style="font-size:12.5px;margin-top:4px;"><b>'+esc(meta.name||'')+'</b>'
     +(meta.date?' · PO date '+esc(meta.date):'')
-    +' · '+fmt(fabrics.length)+' fabric'+(fabrics.length===1?'':'s')
+    +' · '+fmt(fabrics.length)+' SKU'+(fabrics.length===1?'':'s')+'/Barcode'+(fabrics.length===1?'':'s')
     +' · '+fmt(totRolls)+' roll'+(totRolls===1?'':'s')
     +' · <b>'+fmt2(totKg)+' kg</b>'+(!mtrsMissing?' · '+fmt1(totM)+' m':'')+'</div>'
     +secs+'</div></div>';
