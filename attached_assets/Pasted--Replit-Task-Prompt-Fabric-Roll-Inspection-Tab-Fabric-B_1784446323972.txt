@@ -1,0 +1,91 @@
+# Replit Task Prompt: Fabric Roll Inspection Tab (Fabric BI → Receiving)
+
+Copy everything below the line into Replit Agent as the task description.
+
+---
+
+## Context
+
+We have an internal app called **Fabric BI**. It has a **Receiving** tab that contains a **PO Receiving Sheet**. Each row/record in that sheet represents a **Fabric Roll** received against a PO, and already stores roll-level and order-level data (supplier, PO number, style, construction, color, lot, roll number, weight, width, buyer, etc.).
+
+We want to add a **"Inspection" tab/panel that opens per Fabric Roll record** (i.e., clicking a roll in the Receiving sheet opens its detail view, and Inspection is one of the tabs inside that detail view — alongside whatever tabs already exist, e.g. "Details", "Photos", etc.).
+
+This Inspection tab is a digital version of our **4-Point (American) fabric quality inspection ticket**. Right now inspectors fill out a standalone paper/HTML form for every roll, re-typing information that already exists in the Receiving record. We want the ticket to **auto-prefill from the roll's existing data** and leave **only the fields that can't be known until inspection time** open for input.
+
+## Objective
+
+1. Add an **Inspection tab** to the Fabric Roll detail view in Receiving.
+2. On open, **auto-populate** all fields that already exist on the roll/PO record (read-only, pulled live from the record — not copy-pasted/duplicated data).
+3. Present **only the inspection-time fields** as fillable inputs.
+4. Auto-calculate the 4-point score and pass/fail grade as the inspector enters defects.
+5. Save the completed ticket back to the roll record (one ticket per roll, with support for re-inspection/versioning — see Data Model below).
+
+## Step 0 — Before building
+
+**Inspect the existing Fabric BI codebase and database schema first.** Do not assume field names — find the actual schema for the PO Receiving Sheet / Fabric Roll record and:
+- Map every field listed under "Prefilled Fields" below to its real column/field name in the existing schema.
+- Flag any field listed below that does **not** currently exist in the roll/PO record, so we can decide whether to add it upstream (in Receiving) instead of duplicating it in the inspection form.
+- Match the existing UI framework, component library, and styling/theme already used elsewhere in Fabric BI rather than introducing a new design system.
+
+## Data Model
+
+- **Relationship:** One Fabric Roll → one primary Inspection Ticket. Support re-inspection by allowing multiple ticket versions per roll (e.g. `inspection_tickets` table with `roll_id` foreign key, `version` or `created_at`, and a `status` — Draft / Submitted). The Receiving sheet should show the **latest submitted** ticket's grade as a column/badge (e.g. Pass / Reject / Pending).
+- **Prefilled fields are read-only in the Inspection tab.** If a value is wrong, the inspector should be directed to correct it at the source (the Receiving record), not override it silently inside the ticket. Optionally include a small "Flag discrepancy" note field if a prefilled value looks wrong during inspection.
+
+### Prefilled fields (pulled from the existing Roll / PO Receiving record — read-only)
+
+| Field | Source |
+|---|---|
+| Supplier / Mill | PO Receiving record |
+| PO / Order No. | PO Receiving record |
+| Style / Article No. | PO Receiving record |
+| Fabric Construction | PO Receiving record |
+| Color / Colorway | PO Receiving record |
+| Lot / Batch No. | PO Receiving record |
+| Roll No. | Fabric Roll record |
+| Roll Weight (kg) | Fabric Roll record |
+| Fabric Width (inches) | Fabric Roll record (if captured at receiving; else leave fillable — see Step 0) |
+| Total Roll Yardage | Fabric Roll record |
+| Buyer / Brand | PO Receiving record |
+| Ticket No. | Auto-generated from Roll ID (e.g. `INS-{roll_id}` or `INS-{roll_id}-v{version}`) |
+
+### Remaining fillable fields (inspection-time only)
+
+| Field | Notes |
+|---|---|
+| Total Yards Inspected | Defaults to Total Roll Yardage above, but editable — inspector may only inspect part of a roll |
+| Inspection Machine / Table | Free text or dropdown of known inspection stations |
+| Shift | Dropdown (A / B / C) |
+| Inspector Name | Default to the logged-in user; editable if entering on someone's behalf |
+| Inspection Date | Default to today; editable |
+| Face / Back Inspected | Dropdown: Face / Back / Both |
+| Defect Log | Repeatable row: Location (yd), Defect Type (dropdown), Length/Size, Side (Face/Back), Points Basis (dropdown: ≤3in=1pt, 3–6in=2pt, 6–9in=3pt, >9in or hole=4pt, capped at 4pt/defect) |
+| Acceptable Limit (pts/100 sq.yd) | Pull a company-wide default (e.g. 40) from settings if one exists; editable per ticket |
+| Remarks | Free text |
+| Inspector Sign-off | Name/timestamp captured on submit (electronic signature, not a blank line) |
+| QC Supervisor Sign-off | Separate approval step/status, ideally a second logged-in-user action rather than a text field |
+
+## Business Logic
+
+- **Points per 100 sq. yd** = `(Total Defect Points × 3600) ÷ (Fabric Width in inches × Total Yards Inspected)`
+- **Grade:** if Points/100sq.yd ≤ Acceptable Limit → **Pass**; else → **Reject**. Show this live as the inspector adds defect rows, not only after submit.
+- Recalculate on every defect row add/edit/delete and on any change to Width or Total Yards Inspected.
+
+## UI/UX Requirements
+
+- Tab should feel native to the existing Fabric Roll detail view (same nav pattern, spacing, typography as the rest of Fabric BI — do not introduce a mismatched visual style).
+- Prefilled section should be visually distinct from the fillable section (e.g. muted/read-only styling vs. active input styling) so inspectors immediately see what's already known vs. what they need to enter.
+- Defect Log needs add-row / delete-row controls.
+- Live-updating grade indicator (Pass/Reject) visible while filling the form, not just on save.
+- "Submit" should lock the ticket (move from Draft to Submitted) and update the Receiving sheet's grade column for that roll.
+- Mobile-friendly, since inspectors may fill this out on a tablet on the inspection floor.
+
+## Acceptance Criteria
+
+- [ ] Opening a Fabric Roll's Inspection tab shows all prefilled fields correctly pulled from that roll's actual Receiving record (no manual re-entry, no stale/duplicated copies of the data).
+- [ ] Only the fields listed as "fillable" above are editable; all prefilled fields are read-only in this tab.
+- [ ] Defect Log supports add/remove rows and auto-assigns points per the 4-point rule.
+- [ ] Points/100 sq.yd and Pass/Reject grade recalculate live as data is entered.
+- [ ] Submitting the ticket updates the roll's status/grade visible from the Receiving sheet.
+- [ ] Re-inspecting a roll creates a new ticket version without destroying the prior submitted record.
+- [ ] Matches existing Fabric BI design system (verify against at least one existing tab/component before finalizing styles).
