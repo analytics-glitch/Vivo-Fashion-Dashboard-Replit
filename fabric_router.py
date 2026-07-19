@@ -4844,6 +4844,15 @@ def _ensure_receiving_tables(conn):
                     "ADD COLUMN IF NOT EXISTS bleeding_test TEXT")
         cur.execute("ALTER TABLE fabric_receiving_rolls "
                     "ADD COLUMN IF NOT EXISTS width_measured_m NUMERIC")
+        # Structured shrinkage: the QC team re-measures a 35cm x 35cm gauge
+        # square after wash and records the resulting size in cm along the
+        # Width and along the Length. We persist the RAW entered cm (e.g.
+        # 33.5) so inches / percent can always be re-derived; the legacy
+        # single shrinkage_inches stays readable for historical rolls.
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS after_wash_width_cm NUMERIC")
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS after_wash_length_cm NUMERIC")
         # One-time markers for receiving data migrations (idempotent — prod is
         # a separate DB and picks these up on first touch after publish).
         cur.execute("""
@@ -4965,7 +4974,25 @@ _RECV_QUALITY_STATUSES = ("Pass", "Fail", "Pending")
 
 # Structured per-roll quality measurement fields (task: replace free-text-only
 # quality with structured numbers + the existing status/notes).
-_RECV_MEAS_NUM = ("length_yards", "shrinkage_inches", "width_measured_m")
+_RECV_MEAS_NUM = ("length_yards", "shrinkage_inches", "width_measured_m",
+                  "after_wash_width_cm", "after_wash_length_cm")
+
+# The QC shrinkage gauge square is fixed at 35cm x 35cm (task-mandated, no
+# configuration UI). shrink_cm = 35 - entered_cm; negative = fabric grew.
+_RECV_SHRINK_GAUGE_CM = 35.0
+
+def _recv_shrink_txt(after_wash_cm):
+    """'0.59 in (4.3%)' derived from a raw after-wash cm measurement, or None.
+    Negative values (fabric grew) render with their sign."""
+    if after_wash_cm in (None, ""):
+        return None
+    try:
+        cm = _RECV_SHRINK_GAUGE_CM - float(after_wash_cm)
+    except (TypeError, ValueError):
+        return None
+    inches = cm / 2.54
+    pct = cm / _RECV_SHRINK_GAUGE_CM * 100.0
+    return f"{inches:.2f} in ({pct:.1f}%)"
 
 def _recv_parse_measurements(it):
     """Validate the 4 structured quality fields out of one rolls[] entry.
@@ -5758,7 +5785,8 @@ def _recv_download_data(conn, po_id):
         SELECT r.sheet_id, r.roll_no, r.qty_kg, r.qty_mtrs,
                r.quality_status, r.quality_notes,
                r.length_yards, r.shrinkage_inches,
-               r.bleeding_test, r.width_measured_m
+               r.bleeding_test, r.width_measured_m,
+               r.after_wash_width_cm, r.after_wash_length_cm
         FROM fabric_receiving_rolls r
         WHERE r.sheet_id = ANY(%s) AND r.deleted_at IS NULL
         ORDER BY r.sheet_id, r.roll_no, r.id
@@ -5769,14 +5797,28 @@ def _recv_download_data(conn, po_id):
     return sheets, by_sheet
 
 _RECV_DL_HEADERS = ["Roll #", "Kgs", "Metres", "Length (yds)",
-                    "Shrinkage (in)", "Bleeding test", "Width (m)",
+                    "Shrink W", "Shrink L", "Bleeding test", "Width (m)",
                     "Quality", "Notes"]
+
+def _recv_dl_shrink_cells(r):
+    """(W, L) shrinkage export cells: inches + percent derived from the raw
+    after-wash cm; falls back to the legacy single measurement when the new
+    fields are empty (labelled as legacy, shown in the W cell)."""
+    w = _recv_shrink_txt(r.get("after_wash_width_cm"))
+    l = _recv_shrink_txt(r.get("after_wash_length_cm"))
+    if w is None and l is None:
+        legacy = r.get("shrinkage_inches")
+        if legacy not in (None, ""):
+            return (f"{float(legacy):.2f} in (legacy)", "")
+        return ("", "")
+    return (w or "", l or "")
 
 def _recv_dl_row(r):
     def _n(v):
         return float(v) if v not in (None, "") else None
+    sw, sl = _recv_dl_shrink_cells(r)
     return [int(r["roll_no"]), _n(r["qty_kg"]), _n(r["qty_mtrs"]),
-            _n(r.get("length_yards")), _n(r.get("shrinkage_inches")),
+            _n(r.get("length_yards")), sw, sl,
             (r.get("bleeding_test") or ""), _n(r.get("width_measured_m")),
             (r.get("quality_status") or "Pending"),
             (r.get("quality_notes") or "")]
@@ -5813,7 +5855,7 @@ def _recv_build_xlsx(sheets, by_sheet):
         ws.cell(row=ws.max_row, column=1).font = bold
         ws.cell(row=ws.max_row, column=2).font = bold
         ws.append([])
-    widths = [8, 10, 10, 13, 14, 16, 10, 10, 30]
+    widths = [8, 10, 10, 13, 16, 16, 16, 10, 10, 30]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
     import io
@@ -5862,10 +5904,10 @@ def _recv_build_pdf(sheets, by_sheet):
         tm = s.get("total_mtrs")
         data.append(["Total", round(total_kg, 3),
                      "" if tm in (None, "") else float(tm),
-                     "", "", "", "", "", ""])
+                     "", "", "", "", "", "", ""])
         t = Table(data, repeatRows=1,
-                  colWidths=[16*mm, 18*mm, 18*mm, 24*mm, 26*mm, 34*mm,
-                             18*mm, 20*mm, 90*mm])
+                  colWidths=[15*mm, 17*mm, 17*mm, 21*mm, 27*mm, 27*mm,
+                             30*mm, 17*mm, 19*mm, 78*mm])
         t.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a5c38")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -6401,7 +6443,8 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
                        r.qty_kg, r.qty_mtrs,
                        r.quality_status, r.quality_notes,
                        r.length_yards, r.shrinkage_inches,
-                       r.bleeding_test, r.width_measured_m
+                       r.bleeding_test, r.width_measured_m,
+                       r.after_wash_width_cm, r.after_wash_length_cm
                 FROM fabric_receiving_rolls r
                 WHERE r.sheet_id = ANY(%s) AND r.deleted_at IS NULL
                 ORDER BY r.sheet_id, r.roll_no, r.id
@@ -6445,7 +6488,8 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
             {k: r[k] for k in ("roll_id", "roll_no", "qty_kg", "qty_mtrs",
                                "quality_status", "quality_notes",
                                "length_yards", "shrinkage_inches",
-                               "bleeding_test", "width_measured_m")})
+                               "bleeding_test", "width_measured_m",
+                               "after_wash_width_cm", "after_wash_length_cm")})
     fabrics, order = {}, []
     for s in sheets:
         key = (s["product_id"], s.get("barcode") or "")
@@ -7104,6 +7148,7 @@ def receiving_fetch(sheet_id: int):
                    quality_status, quality_notes, quality_updated_by,
                    length_yards, shrinkage_inches,
                    bleeding_test, width_measured_m,
+                   after_wash_width_cm, after_wash_length_cm,
                    to_char(quality_updated_at AT TIME ZONE 'Africa/Nairobi',
                            'DD Mon YYYY, HH24:MI') as quality_updated_at
             FROM fabric_receiving_rolls
@@ -7157,7 +7202,8 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                 # writes and (b) audit the old -> new change.
                 _q_cols = ("id, roll_no, quality_status, quality_notes, "
                            "length_yards, shrinkage_inches, bleeding_test, "
-                           "width_measured_m")
+                           "width_measured_m, after_wash_width_cm, "
+                           "after_wash_length_cm")
                 if roll_id not in (None, ""):
                     old = q(conn, f"SELECT {_q_cols} "
                                   "FROM fabric_receiving_rolls "
@@ -7185,11 +7231,13 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                        SET quality_status=%s, quality_notes=%s,
                            length_yards=%s, shrinkage_inches=%s,
                            bleeding_test=%s, width_measured_m=%s,
+                           after_wash_width_cm=%s, after_wash_length_cm=%s,
                            quality_updated_at=now(), quality_updated_by=%s
                      WHERE id=%s AND sheet_id=%s
                 """, (status, notes,
                       meas["length_yards"], meas["shrinkage_inches"],
                       meas["bleeding_test"], meas["width_measured_m"],
+                      meas["after_wash_width_cm"], meas["after_wash_length_cm"],
                       name, o["id"], sheet_id))
                 updated += cur.rowcount
                 if po_id is not None:
@@ -7267,7 +7315,8 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
         prev = q(conn, "SELECT roll_no, quality_status, quality_notes, "
                        "quality_updated_by, quality_updated_at, "
                        "length_yards, shrinkage_inches, bleeding_test, "
-                       "width_measured_m "
+                       "width_measured_m, after_wash_width_cm, "
+                       "after_wash_length_cm "
                        "FROM fabric_receiving_rolls "
                        "WHERE sheet_id=%s AND deleted_at IS NULL", (sheet_id,))
         qmap = {r["roll_no"]: r for r in prev}
@@ -7301,7 +7350,9 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
                     q_meas = {"length_yards": pq.get("length_yards") if pq else None,
                               "shrinkage_inches": pq.get("shrinkage_inches") if pq else None,
                               "bleeding_test": pq.get("bleeding_test") if pq else None,
-                              "width_measured_m": pq.get("width_measured_m") if pq else None}
+                              "width_measured_m": pq.get("width_measured_m") if pq else None,
+                              "after_wash_width_cm": pq.get("after_wash_width_cm") if pq else None,
+                              "after_wash_length_cm": pq.get("after_wash_length_cm") if pq else None}
                     q_by = pq.get("quality_updated_by") if pq else None
                     q_at = pq.get("quality_updated_at") if pq else None
                 cur.execute("""
@@ -7310,14 +7361,16 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
                        quality_status, quality_notes,
                        length_yards, shrinkage_inches,
                        bleeding_test, width_measured_m,
+                       after_wash_width_cm, after_wash_length_cm,
                        quality_updated_by, quality_updated_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                             COALESCE(%s, CASE WHEN %s THEN now() ELSE NULL END))
                 """, (sheet_id, roll_no, qty_kg,
                       round(qty_kg / kpm, 2) if kpm else None,
                       q_status, q_notes,
                       q_meas["length_yards"], q_meas["shrinkage_inches"],
                       q_meas["bleeding_test"], q_meas["width_measured_m"],
+                      q_meas["after_wash_width_cm"], q_meas["after_wash_length_cm"],
                       q_by, q_at, edit is not None))
             cur.execute("""
                 UPDATE fabric_receiving_sheets

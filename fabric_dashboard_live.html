@@ -1113,7 +1113,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <thead><tr>
         <th style="width:1%;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th>
         <th class="r" title="Measured roll length in yards">Length (yds)</th>
-        <th class="r" title="Shrinkage test result in inches">Shrinkage (in)</th>
+        <th class="r" title="Re-measured size of the 35cm gauge square after wash, along the WIDTH (in cm)">After-wash W (cm)</th>
+        <th class="r" title="Re-measured size of the 35cm gauge square after wash, along the LENGTH (in cm)">After-wash L (cm)</th>
         <th title="Bleeding / colour-fastness test result">Bleeding test</th>
         <th class="r" title="Measured fabric width in metres">Width (m)</th>
         <th style="width:1%;">Quality</th><th>Quality notes</th><th id="recv-edit-remove-h" style="width:1%;"></th>
@@ -4117,6 +4118,23 @@ async function deleteFabricSection(btn){
 // the rolls/quantities themselves is admin-only (also enforced server-side).
 let recvEditState={id:null,rolls:[],kpm:null,isAdmin:false};
 const RECV_Q_OPTS=['','Pass','Fail','Pending'];
+// ── Structured shrinkage (fixed 35cm gauge square, re-measured after wash) ──
+// shrink_cm = 35 − entered_cm; inches = shrink_cm / 2.54; pct = shrink_cm/35×100.
+// Negative values (fabric grew) are allowed and shown as such.
+const SHRINK_GAUGE_CM=35;
+function shrinkCalc(cm){if(cm==null||cm==='')return null;const c=parseFloat(cm);if(isNaN(c))return null;const s=SHRINK_GAUGE_CM-c;return{cm:s,inches:s/2.54,pct:s/SHRINK_GAUGE_CM*100};}
+function shrinkPct1(p){return (Math.round(p*10)/10)+'%';}
+function shrinkTxt(cm){const d=shrinkCalc(cm);if(!d)return null;return fmt2(d.inches)+'\u2033 ('+shrinkPct1(d.pct)+')';}
+function shrinkHigh(cm){const d=shrinkCalc(cm);return !!d&&d.inches>=2;}
+// Informational ≥2-inch flag (does NOT force Pass/Fail): either axis, or the
+// legacy single measurement, at 2 inches or more.
+function shrinkRollHigh(r){return shrinkHigh(r.after_wash_width_cm)||shrinkHigh(r.after_wash_length_cm)||(r.shrinkage_inches!=null&&r.shrinkage_inches!==''&&parseFloat(r.shrinkage_inches)>=2);}
+// Display text: "W 0.59″ (4.3%) / L 0.98″ (7.1%)", falling back to the legacy
+// single measurement for historical rolls. Returns null when nothing recorded.
+function shrinkRollTxt(r){const w=shrinkTxt(r.after_wash_width_cm),l=shrinkTxt(r.after_wash_length_cm);if(w||l)return 'W '+(w||'\u2014')+' / L '+(l||'\u2014');if(r.shrinkage_inches!=null&&r.shrinkage_inches!=='')return fmt2(r.shrinkage_inches)+'\u2033 (legacy single)';return null;}
+// Live preview under a cm input: "1.5 cm shrink = 0.59″ (4.3%)".
+function shrinkPreviewTxt(cm){const d=shrinkCalc(cm);if(!d)return '';const scm=Math.round(Math.abs(d.cm)*100)/100;return scm+' cm '+(d.cm<0?'grew':'shrink')+' = '+fmt2(d.inches)+'\u2033 ('+shrinkPct1(d.pct)+')';}
+function shrinkWarnBadge(){return ' <span title="Shrinkage of 2 inches or more (informational flag)" style="color:#b45309;font-weight:800;font-size:10px;border:1px solid #b45309;border-radius:4px;padding:0 3px;white-space:nowrap;">&ge;2&Prime; SHRINK</span>';}
 async function openReceivingEdit(id){
   try{
     const [d,rt]=await Promise.all([
@@ -4131,6 +4149,8 @@ async function openReceivingEdit(id){
         quality_status:r.quality_status||'', quality_notes:r.quality_notes||'',
         length_yards:r.length_yards==null?'':r.length_yards,
         shrinkage_inches:r.shrinkage_inches==null?'':r.shrinkage_inches,
+        after_wash_width_cm:r.after_wash_width_cm==null?'':r.after_wash_width_cm,
+        after_wash_length_cm:r.after_wash_length_cm==null?'':r.after_wash_length_cm,
         bleeding_test:r.bleeding_test||'',
         width_measured_m:r.width_measured_m==null?'':r.width_measured_m
       }))
@@ -4184,7 +4204,8 @@ function renderReceivingEditRows(){
       <td class="r">${kgCell}</td>
       <td class="r" id="recv-edit-m-${i}">${m}</td>
       <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="len" value="${esc(String(r.length_yards??''))}" placeholder="yds" style="width:72px;text-align:right;"></td>
-      <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="shr" value="${esc(String(r.shrinkage_inches??''))}" placeholder="in" style="width:64px;text-align:right;"></td>
+      <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="shw" value="${esc(String(r.after_wash_width_cm??''))}" placeholder="cm" title="After-wash width of the 35cm gauge square" style="width:64px;text-align:right;"><div class="muted" id="recv-edit-shw-${i}" style="font-size:10px;white-space:nowrap;${shrinkHigh(r.after_wash_width_cm)?'color:#b45309;font-weight:700;':''}">${esc(shrinkPreviewTxt(r.after_wash_width_cm))}${(r.after_wash_width_cm===''&&r.after_wash_length_cm===''&&r.shrinkage_inches!=='')?'legacy '+esc(fmt2(r.shrinkage_inches))+'\u2033':''}</div></td>
+      <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="shl" value="${esc(String(r.after_wash_length_cm??''))}" placeholder="cm" title="After-wash length of the 35cm gauge square" style="width:64px;text-align:right;"><div class="muted" id="recv-edit-shl-${i}" style="font-size:10px;white-space:nowrap;${shrinkHigh(r.after_wash_length_cm)?'color:#b45309;font-weight:700;':''}">${esc(shrinkPreviewTxt(r.after_wash_length_cm))}</div></td>
       <td><input type="text" data-ei="${i}" data-ek="bld" value="${esc(String(r.bleeding_test||''))}" placeholder="e.g. No bleed" style="width:110px;"></td>
       <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="wid" value="${esc(String(r.width_measured_m??''))}" placeholder="m" style="width:64px;text-align:right;"></td>
       <td><select data-ei="${i}" data-ek="status" style="width:110px;">${opts}</select></td>
@@ -4200,7 +4221,11 @@ function renderReceivingEditRows(){
     else if(k==='kg'){r.qty_kg=el.value;r.qty_mtrs=recvEditDerived(el.value);const c=document.getElementById('recv-edit-m-'+i);if(c)c.innerHTML=r.qty_mtrs!=null?fmt1(r.qty_mtrs):(recvEditState.kpm?'—':'<span style="color:var(--danger);">Missing Width/GSM</span>');}
     else if(k==='notes')r.quality_notes=el.value;
     else if(k==='len')r.length_yards=el.value;
-    else if(k==='shr')r.shrinkage_inches=el.value;
+    else if(k==='shw'||k==='shl'){
+      if(k==='shw')r.after_wash_width_cm=el.value;else r.after_wash_length_cm=el.value;
+      const p=document.getElementById('recv-edit-'+k+'-'+i);
+      if(p){const cm=k==='shw'?r.after_wash_width_cm:r.after_wash_length_cm;p.textContent=shrinkPreviewTxt(cm);p.style.color=shrinkHigh(cm)?'#b45309':'';p.style.fontWeight=shrinkHigh(cm)?'700':'';}
+    }
     else if(k==='bld')r.bleeding_test=el.value;
     else if(k==='wid')r.width_measured_m=el.value;
   };
@@ -4211,7 +4236,7 @@ function recvEditAddRoll(){
   if(!recvEditState.isAdmin)return;
   if(recvEditState.rolls.length>=50){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">A sheet holds at most 50 rolls.</div>';return;}
   const maxNo=recvEditState.rolls.reduce((m,r)=>Math.max(m,parseInt(r.roll_no,10)||0),0);
-  recvEditState.rolls.push({roll_id:null,roll_no:String(maxNo+1),qty_kg:'',qty_mtrs:null,quality_status:'',quality_notes:'',length_yards:'',shrinkage_inches:'',bleeding_test:'',width_measured_m:''});
+  recvEditState.rolls.push({roll_id:null,roll_no:String(maxNo+1),qty_kg:'',qty_mtrs:null,quality_status:'',quality_notes:'',length_yards:'',shrinkage_inches:'',after_wash_width_cm:'',after_wash_length_cm:'',bleeding_test:'',width_measured_m:''});
   renderReceivingEditRows();
 }
 async function saveReceivingQuality(){
@@ -4221,6 +4246,8 @@ async function saveReceivingQuality(){
     .map(r=>({roll_id:r.roll_id,status:r.quality_status||'',notes:r.quality_notes||'',
               length_yards:r.length_yards===''?null:r.length_yards,
               shrinkage_inches:r.shrinkage_inches===''?null:r.shrinkage_inches,
+              after_wash_width_cm:r.after_wash_width_cm===''?null:r.after_wash_width_cm,
+              after_wash_length_cm:r.after_wash_length_cm===''?null:r.after_wash_length_cm,
               bleeding_test:r.bleeding_test||'',
               width_measured_m:r.width_measured_m===''?null:r.width_measured_m}));
   if(!rolls.length){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Nothing to save — save roll changes first for newly added rolls.</div>';return;}
@@ -4248,6 +4275,8 @@ async function saveReceivingEdit(){
     rolls[i].status=x.quality_status||'';rolls[i].notes=x.quality_notes||'';
     rolls[i].length_yards=x.length_yards===''?null:x.length_yards;
     rolls[i].shrinkage_inches=x.shrinkage_inches===''?null:x.shrinkage_inches;
+    rolls[i].after_wash_width_cm=x.after_wash_width_cm===''?null:x.after_wash_width_cm;
+    rolls[i].after_wash_length_cm=x.after_wash_length_cm===''?null:x.after_wash_length_cm;
     rolls[i].bleeding_test=x.bleeding_test||'';
     rolls[i].width_measured_m=x.width_measured_m===''?null:x.width_measured_m;
   }});
@@ -4370,7 +4399,8 @@ async function buildReceivingSheetBody(d){
   const measTxt=r=>{
     const bits=[];
     if(r.length_yards!=null&&String(r.length_yards)!=='')bits.push(numv(r.length_yards,2)+' yds');
-    if(r.shrinkage_inches!=null&&String(r.shrinkage_inches)!=='')bits.push('shrink '+numv(r.shrinkage_inches,2)+' in');
+    const st=shrinkRollTxt(r);
+    if(st)bits.push('shrink '+st+(shrinkRollHigh(r)?' [\u22652 in]':''));
     if(clean(r.bleeding_test))bits.push('bleed: '+clean(r.bleeding_test));
     if(r.width_measured_m!=null&&String(r.width_measured_m)!=='')bits.push('width '+numv(r.width_measured_m,2)+' m');
     return bits.join(' · ');
@@ -4386,6 +4416,7 @@ async function buildReceivingSheetBody(d){
      <span class="fail"><b>Failed:</b> ${esc(String(qs.fail||0))}</span>
      <span><b>Pending:</b> ${esc(String(qs.pending||0))}</span>
      <span><b>Inspected:</b> ${esc(String(qs.inspected||0))} / ${esc(String(qs.rolls||0))}</span>
+     ${(()=>{const n=rolls.filter(shrinkRollHigh).length;return n?`<span style="color:#b45309;"><b>&ge;2&Prime; shrink:</b> ${esc(String(n))}</span>`:'';})()}
    </div>
    <div class="qbody">${qNotes}<div class="qlines"${qLinesStyle}></div></div>
   </div>`;
@@ -4589,7 +4620,7 @@ function renderRecvPoDetail(box,det,poKey){
               :'<span class="muted">'+esc(r.quality_status||'Pending')+'</span>');
         const racts='<button class="btn" data-slip="'+Number(r.roll_id)+'" title="Print a slip for this roll" style="padding:1px 7px;font-size:11px;">🖨 Slip</button>'
           +(r.roll_id!=null
-            ?' <button class="btn" data-roll-q="'+Number(r.roll_id)+'" data-q-sheet="'+Number(r.__sheet_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-q-status="'+esc(r.quality_status||'')+'" data-q-notes="'+esc(r.quality_notes||'')+'" data-q-len="'+esc(String(r.length_yards==null?'':r.length_yards))+'" data-q-shr="'+esc(String(r.shrinkage_inches==null?'':r.shrinkage_inches))+'" data-q-bld="'+esc(r.bleeding_test||'')+'" data-q-wid="'+esc(String(r.width_measured_m==null?'':r.width_measured_m))+'" title="Record this roll\u2019s quality (measurements + Pass / Fail / Pending + notes)" style="padding:1px 7px;font-size:11px;">Quality</button>'
+            ?' <button class="btn" data-roll-q="'+Number(r.roll_id)+'" data-q-sheet="'+Number(r.__sheet_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-q-status="'+esc(r.quality_status||'')+'" data-q-notes="'+esc(r.quality_notes||'')+'" data-q-len="'+esc(String(r.length_yards==null?'':r.length_yards))+'" data-q-shr="'+esc(String(r.shrinkage_inches==null?'':r.shrinkage_inches))+'" data-q-shw="'+esc(String(r.after_wash_width_cm==null?'':r.after_wash_width_cm))+'" data-q-shl="'+esc(String(r.after_wash_length_cm==null?'':r.after_wash_length_cm))+'" data-q-bld="'+esc(r.bleeding_test||'')+'" data-q-wid="'+esc(String(r.width_measured_m==null?'':r.width_measured_m))+'" title="Record this roll\u2019s quality (measurements + Pass / Fail / Pending + notes)" style="padding:1px 7px;font-size:11px;">Quality</button>'
             :'')
           +(canEditRolls&&r.roll_id!=null
             ?' <button class="btn" data-roll-edit="'+Number(r.roll_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-kg="'+esc(String(r.qty_kg==null?'':r.qty_kg))+'" title="Correct this roll\u2019s weight" style="padding:1px 7px;font-size:11px;">✎</button>'
@@ -4597,7 +4628,8 @@ function renderRecvPoDetail(box,det,poKey){
             :'');
         const measBits=[];
         if(r.length_yards!=null&&r.length_yards!=='')measBits.push(fmt2(r.length_yards)+' yds');
-        if(r.shrinkage_inches!=null&&r.shrinkage_inches!=='')measBits.push('shrink '+fmt2(r.shrinkage_inches)+'\u2033');
+        const shTxt=shrinkRollTxt(r);
+        if(shTxt)measBits.push('shrink '+esc(shTxt)+(shrinkRollHigh(r)?shrinkWarnBadge():''));
         if(r.bleeding_test)measBits.push('bleed: '+esc(r.bleeding_test));
         if(r.width_measured_m!=null&&r.width_measured_m!=='')measBits.push('width '+fmt2(r.width_measured_m)+' m');
         const measHtml=measBits.length?'<div class="muted" style="font-size:11px;">'+measBits.join(' · ')+'</div>':'';
@@ -4682,6 +4714,7 @@ function recvRollQualityFromBtn(btn){
   const cur=btn.dataset.qStatus||'';
   const curNotes=btn.dataset.qNotes||'';
   const curLen=btn.dataset.qLen||'', curShr=btn.dataset.qShr||'', curBld=btn.dataset.qBld||'', curWid=btn.dataset.qWid||'';
+  const curShw=btn.dataset.qShw||'', curShl=btn.dataset.qShl||'';
   document.querySelectorAll('.roll-q-pop').forEach(el=>el.remove());
   const pop=document.createElement('div');
   pop.className='roll-q-pop';
@@ -4695,8 +4728,13 @@ function recvRollQualityFromBtn(btn){
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;">'
     +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;">Length (yds)</label>'
     +'<input type="number" min="0" step="any" class="roll-q-len" placeholder="yards" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;"></div>'
-    +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;">Shrinkage (in)</label>'
-    +'<input type="number" min="0" step="any" class="roll-q-shr" placeholder="inches" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;"></div>'
+    +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;" title="Re-measured size of the 35cm gauge square after wash, along the WIDTH">After-wash W (cm)</label>'
+    +'<input type="number" min="0" step="any" class="roll-q-shw" placeholder="cm (gauge 35)" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;">'
+    +'<div class="roll-q-shw-p muted" style="font-size:10.5px;min-height:13px;white-space:nowrap;"></div></div>'
+    +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;" title="Re-measured size of the 35cm gauge square after wash, along the LENGTH">After-wash L (cm)</label>'
+    +'<input type="number" min="0" step="any" class="roll-q-shl" placeholder="cm (gauge 35)" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;">'
+    +'<div class="roll-q-shl-p muted" style="font-size:10.5px;min-height:13px;white-space:nowrap;"></div></div>'
+    +(curShr!==''?'<div class="muted" style="grid-column:1 / -1;font-size:11px;">Legacy single shrinkage: '+esc(fmt2(curShr))+' in</div>':'')
     +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;">Bleeding test</label>'
     +'<input type="text" class="roll-q-bld" placeholder="e.g. No bleed" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;"></div>'
     +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;">Width (m)</label>'
@@ -4713,7 +4751,11 @@ function recvRollQualityFromBtn(btn){
   document.body.appendChild(pop);
   pop.querySelector('.roll-q-notes').value=curNotes;
   pop.querySelector('.roll-q-len').value=curLen;
-  pop.querySelector('.roll-q-shr').value=curShr;
+  pop.querySelector('.roll-q-shw').value=curShw;
+  pop.querySelector('.roll-q-shl').value=curShl;
+  const wireShrink=(inp,prev)=>{const el=pop.querySelector(inp),p=pop.querySelector(prev);const upd=()=>{const v=el.value.trim();p.textContent=shrinkPreviewTxt(v);const hi=shrinkHigh(v);p.style.color=hi?'#b45309':'';p.style.fontWeight=hi?'700':'';};el.addEventListener('input',upd);upd();};
+  wireShrink('.roll-q-shw','.roll-q-shw-p');
+  wireShrink('.roll-q-shl','.roll-q-shl-p');
   pop.querySelector('.roll-q-bld').value=curBld;
   pop.querySelector('.roll-q-wid').value=curWid;
   const close=()=>pop.remove();
@@ -4726,7 +4768,7 @@ function recvRollQualityFromBtn(btn){
     const notes=pop.querySelector('.roll-q-notes').value.trim();
     const gv=c=>{const v=pop.querySelector(c).value.trim();return v===''?null:v;};
     try{
-      const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(sheetId)+'/quality',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({rolls:[{roll_id:rollId,roll_no:rollNo,status:status,notes:notes,length_yards:gv('.roll-q-len'),shrinkage_inches:gv('.roll-q-shr'),bleeding_test:gv('.roll-q-bld')||'',width_measured_m:gv('.roll-q-wid')}]})});
+      const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(sheetId)+'/quality',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({rolls:[{roll_id:rollId,roll_no:rollNo,status:status,notes:notes,length_yards:gv('.roll-q-len'),shrinkage_inches:curShr===''?null:curShr,after_wash_width_cm:gv('.roll-q-shw'),after_wash_length_cm:gv('.roll-q-shl'),bleeding_test:gv('.roll-q-bld')||'',width_measured_m:gv('.roll-q-wid')}]})});
       if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
       close();
       await refreshRecvPoDetail(box);
@@ -4777,7 +4819,9 @@ function printRollSlip(g,s,r,meta){
     +'<div class="row"><span>Weight</span><b>'+fmt2(r.qty_kg)+' kg</b></div>'
     +'<div class="row"><span>Metres</span><b>'+(r.qty_mtrs!=null?fmt1(r.qty_mtrs)+' m':'Missing Width/GSM')+'</b></div>'
     +'<div class="row"><span>Length</span><b>'+(r.length_yards!=null&&r.length_yards!==''?fmt2(r.length_yards)+' yds':'\u2014')+'</b></div>'
-    +'<div class="row"><span>Shrinkage</span><b>'+(r.shrinkage_inches!=null&&r.shrinkage_inches!==''?fmt2(r.shrinkage_inches)+' in':'\u2014')+'</b></div>'
+    +'<div class="row"><span>Shrinkage W</span><b>'+(shrinkTxt(r.after_wash_width_cm)||'\u2014')+'</b></div>'
+    +'<div class="row"><span>Shrinkage L</span><b>'+(shrinkTxt(r.after_wash_length_cm)||'\u2014')+'</b></div>'
+    +((r.after_wash_width_cm==null||r.after_wash_width_cm==='')&&(r.after_wash_length_cm==null||r.after_wash_length_cm==='')&&r.shrinkage_inches!=null&&r.shrinkage_inches!==''?'<div class="row"><span>Shrinkage (legacy)</span><b>'+fmt2(r.shrinkage_inches)+' in</b></div>':'')
     +'<div class="row"><span>Bleeding test</span><b>'+esc(r.bleeding_test||'\u2014')+'</b></div>'
     +'<div class="row"><span>Width</span><b>'+(r.width_measured_m!=null&&r.width_measured_m!==''?fmt2(r.width_measured_m)+' m':'\u2014')+'</b></div>'
     +'<div class="row"><span>Quality</span><b>'+esc(r.quality_status||'Pending')+'</b></div>'
@@ -4891,7 +4935,7 @@ function buildPoSheetBody(det,meta){
     const rows=rolls.map(r=>'<tr><td>'+(r.quality_status==='Fail'?'<span class="roll-fail">'+esc(String(r.roll_no))+'</span>':esc(String(r.roll_no)))+'</td><td class="r">'+fmt2(r.qty_kg)+'</td><td class="r">'
       +(r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="miss">Missing Width/GSM</span>')+'</td>'
       +'<td class="r">'+(r.length_yards!=null&&r.length_yards!==''?fmt2(r.length_yards):'—')+'</td>'
-      +'<td class="r">'+(r.shrinkage_inches!=null&&r.shrinkage_inches!==''?fmt2(r.shrinkage_inches):'—')+'</td>'
+      +'<td class="r">'+(shrinkRollTxt(r)?(shrinkRollHigh(r)?'<span style="color:#b45309;font-weight:700;">'+esc(shrinkRollTxt(r))+'</span>':esc(shrinkRollTxt(r))):'—')+'</td>'
       +'<td>'+esc(r.bleeding_test||'—')+'</td>'
       +'<td class="r">'+(r.width_measured_m!=null&&r.width_measured_m!==''?fmt2(r.width_measured_m):'—')+'</td>'
       +'<td>'+esc(r.quality_status||'Pending')+(r.quality_notes?' — <span class="qwavy">'+esc(r.quality_notes)+'</span>':'')+'</td></tr>').join('');
@@ -4900,7 +4944,7 @@ function buildPoSheetBody(det,meta){
       +esc(g.fabric_name||'—')+(g.barcode?' · '+esc(g.barcode):'')
       +' — '+fmt(g.rolls_count)+' roll'+(g.rolls_count===1?'':'s')+' · '+fmt2(g.total_kg)+' kg'
       +(g.total_mtrs!=null?' · '+fmt1(g.total_mtrs)+' m':'')+'</div>'
-      +'<table class="rolls" style="width:100%;margin-top:4px;"><thead><tr><th>Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th class="r">Length (yds)</th><th class="r">Shrink (in)</th><th>Bleeding</th><th class="r">Width (m)</th><th>Quality</th></tr></thead><tbody>'
+      +'<table class="rolls" style="width:100%;margin-top:4px;"><thead><tr><th>Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th class="r">Length (yds)</th><th class="r">Shrink W / L</th><th>Bleeding</th><th class="r">Width (m)</th><th>Quality</th></tr></thead><tbody>'
       +(rows||'<tr><td colspan="8">No rolls.</td></tr>')+'</tbody></table></div>';
   }).join('');
   return '<div class="sheet-page"><div class="sheet">'
