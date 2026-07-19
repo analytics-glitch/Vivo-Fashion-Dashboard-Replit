@@ -5383,6 +5383,8 @@ def _insp_roll_ctx(conn, roll_id):
     rows = q(conn, """
         SELECT r.id as roll_id, r.sheet_id, r.roll_no, r.qty_kg,
                r.length_yards, r.width_measured_m, r.quality_status,
+               r.quality_notes, r.shrinkage_inches, r.bleeding_test,
+               r.after_wash_width_cm, r.after_wash_length_cm,
                s.po_id, s.po_name, s.product_id, s.fabric_name, s.barcode
         FROM fabric_receiving_rolls r
         JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
@@ -5445,6 +5447,7 @@ def inspection_context(request: Request, roll_id: int = Query(...)):
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
         ctx = _insp_roll_ctx(conn, roll_id)
+        locked = _recv_po_locked(conn, ctx.get("po_id"))
         prod = _recv_product_info(conn, ctx["product_id"]) or {}
         tickets = q(conn, """
             SELECT * FROM fabric_inspection_tickets
@@ -5478,7 +5481,17 @@ def inspection_context(request: Request, roll_id: int = Query(...)):
         "roll": {"roll_id": ctx["roll_id"], "sheet_id": ctx["sheet_id"],
                  "roll_no": ctx["roll_no"], "qty_kg": kg,
                  "length_yards": yards, "width_inches": width_in,
-                 "quality_status": ctx.get("quality_status")},
+                 "quality_status": ctx.get("quality_status"),
+                 "quality_notes": ctx.get("quality_notes"),
+                 "shrinkage_inches": (float(ctx["shrinkage_inches"])
+                                      if ctx.get("shrinkage_inches") not in (None, "") else None),
+                 "bleeding_test": ctx.get("bleeding_test"),
+                 "width_measured_m": (float(ctx["width_measured_m"])
+                                      if ctx.get("width_measured_m") not in (None, "") else None),
+                 "after_wash_width_cm": (float(ctx["after_wash_width_cm"])
+                                         if ctx.get("after_wash_width_cm") not in (None, "") else None),
+                 "after_wash_length_cm": (float(ctx["after_wash_length_cm"])
+                                          if ctx.get("after_wash_length_cm") not in (None, "") else None)},
         "po": {"po_id": ctx.get("po_id"), "po_name": ctx.get("po_name")},
         "fabric": {"name": ctx.get("fabric_name"), "barcode": ctx.get("barcode")},
         "prefill": {"supplier": supplier, "supplier_source": supplier_src,
@@ -5494,8 +5507,53 @@ def inspection_context(request: Request, roll_id: int = Query(...)):
                      "inspection_date": datetime.datetime.now(
                          ZoneInfo("Africa/Nairobi")).strftime("%Y-%m-%d")},
         "can_approve": _insp_can_approve(request),
+        "can_edit_rolls": bool(
+            (not locked or _fabric_full_admin(u)) and not _recv_quality_only(request)),
         "tickets": [_insp_ticket_row(t) for t in tickets],
     }
+
+_INSP_MEAS_KEYS = _RECV_MEAS_NUM + ("bleeding_test",)
+
+def _insp_apply_measurements(conn, ctx, body, actor):
+    """Persist the ticket's Measurements section onto the roll itself (same
+    columns the old standalone Quality dialog wrote), so the merged form stays
+    the single source. Only fires when the payload carries measurement keys;
+    no-op writes are skipped, changes audit as quality_updated. Mutates ctx so
+    the ticket's width prefill uses the fresh width_measured_m."""
+    if not any(k in body for k in _INSP_MEAS_KEYS + ("quality_notes",)):
+        return
+    meas = _recv_parse_measurements(body)
+    notes = str(body.get("quality_notes") or "").strip() or None \
+        if "quality_notes" in body else (ctx.get("quality_notes") or None)
+    if not _recv_meas_changed(ctx, meas) and \
+       (ctx.get("quality_notes") or None) == notes:
+        return
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE fabric_receiving_rolls
+               SET length_yards=%s, shrinkage_inches=%s, width_measured_m=%s,
+                   after_wash_width_cm=%s, after_wash_length_cm=%s,
+                   bleeding_test=%s, quality_notes=%s,
+                   quality_updated_at=now(), quality_updated_by=%s
+             WHERE id=%s AND deleted_at IS NULL
+        """, (meas["length_yards"], meas["shrinkage_inches"],
+              meas["width_measured_m"], meas["after_wash_width_cm"],
+              meas["after_wash_length_cm"], meas["bleeding_test"], notes,
+              actor, ctx["roll_id"]))
+        if cur.rowcount:
+            _recv_audit(cur, ctx.get("po_id"), ctx["sheet_id"],
+                        ctx.get("fabric_name"), "quality_updated",
+                        {"roll_no": ctx.get("roll_no"),
+                         "old_status": ctx.get("quality_status"),
+                         "new_status": ctx.get("quality_status"),
+                         "old_notes": ctx.get("quality_notes"),
+                         "new_notes": notes,
+                         "via": "inspection_ticket",
+                         "measurements": {k: (float(v) if isinstance(v, (int, float)) else v)
+                                          for k, v in meas.items()}}, actor)
+    for k in _INSP_MEAS_KEYS:
+        ctx[k] = meas[k]
+    ctx["quality_notes"] = notes
 
 def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
                        submit, request):
@@ -5611,6 +5669,7 @@ def inspection_save(request: Request, body: dict = Body(...)):
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
         ctx = _insp_roll_ctx(conn, roll_id)
+        _insp_apply_measurements(conn, ctx, body, name)
         fields = _insp_enforce_source_width(ctx, fields)
         ticket = _insp_upsert_draft(conn, ctx, fields, defects, total_points,
                                     name, submit=False, request=request)
@@ -5633,6 +5692,7 @@ def inspection_submit(request: Request, body: dict = Body(...)):
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
         ctx = _insp_roll_ctx(conn, roll_id)
+        _insp_apply_measurements(conn, ctx, body, name)
         fields = _insp_enforce_source_width(ctx, fields)
         ticket = _insp_upsert_draft(conn, ctx, fields, defects, total_points,
                                     name, submit=True, request=request)
@@ -7696,6 +7756,25 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                    (o.get("quality_notes") or None) == notes and \
                    not _recv_meas_changed(o, meas):
                     continue  # no actual change: no write, no audit row
+                # Changing the status of a roll that already has a SUBMITTED
+                # 4-Point inspection ticket OVERRIDES the ticket's auto-set
+                # grade — supervisor/admin only, always audited (with an
+                # optional comment).
+                override_tk = None
+                if (o.get("quality_status") or None) != status:
+                    override_tk = q(conn, """
+                        SELECT ticket_no, version, grade
+                        FROM fabric_inspection_tickets
+                        WHERE sheet_id=%s AND roll_no=%s
+                          AND status='Submitted'
+                        ORDER BY version DESC, id DESC LIMIT 1
+                    """, (sheet_id, o.get("roll_no")))
+                    if override_tk and not _insp_can_approve(request):
+                        raise HTTPException(status_code=403,
+                            detail="This roll's Pass/Fail was set by a "
+                                   "submitted 4-Point inspection ticket — "
+                                   "only the QC supervisor or a fabric admin "
+                                   "may override it")
                 cur.execute("""
                     UPDATE fabric_receiving_rolls
                        SET quality_status=%s, quality_notes=%s,
@@ -7721,19 +7800,15 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                                "after_upload": bool(after_upload)}
                     # A manual status change on a roll that already has a
                     # SUBMITTED 4-Point inspection ticket is an OVERRIDE of
-                    # the ticket's auto-filled grade — flag it in the trail.
-                    if (o.get("quality_status") or None) != status:
-                        tk = q(conn, """
-                            SELECT ticket_no, version, grade
-                            FROM fabric_inspection_tickets
-                            WHERE sheet_id=%s AND roll_no=%s
-                              AND status='Submitted'
-                            ORDER BY version DESC, id DESC LIMIT 1
-                        """, (sheet_id, o.get("roll_no")))
-                        if tk:
-                            details["inspection_override"] = True
-                            details["ticket_no"] = tk[0].get("ticket_no")
-                            details["ticket_grade"] = tk[0].get("grade")
+                    # the ticket's auto-filled grade — flag it in the trail
+                    # (fenced to supervisor/admin above).
+                    if override_tk:
+                        details["inspection_override"] = True
+                        details["ticket_no"] = override_tk[0].get("ticket_no")
+                        details["ticket_grade"] = override_tk[0].get("grade")
+                        oc = str(it.get("override_comment") or "").strip()
+                        if oc:
+                            details["override_comment"] = oc[:500]
                     _recv_audit(cur, po_id, sheet_id,
                                 exists[0].get("fabric_name"), "quality_updated",
                                 details, name)

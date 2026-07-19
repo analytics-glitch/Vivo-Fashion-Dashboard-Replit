@@ -4744,8 +4744,6 @@ async function loadRecvPoBatches(){
         if(pp){printPoFullSheet(pp.dataset.poPrint);return;}
         const dl=e.target.closest('button[data-po-dl]');
         if(dl){downloadPoSheet(dl);return;}
-        const rq=e.target.closest('button[data-roll-q]');
-        if(rq){recvRollQualityFromBtn(rq);return;}
         const ri=e.target.closest('button[data-roll-insp]');
         if(ri){openInspectionTicket(ri);return;}
         const re=e.target.closest('button[data-roll-edit]');
@@ -4840,12 +4838,7 @@ function renderRecvPoDetail(box,det,poKey){
           : '';
         const racts='<button class="btn" data-slip="'+Number(r.roll_id)+'" title="Print a slip for this roll" style="padding:1px 7px;font-size:11px;">🖨 Slip</button>'
           +(r.roll_id!=null
-            ?' <button class="btn" data-roll-q="'+Number(r.roll_id)+'" data-q-sheet="'+Number(r.__sheet_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-q-status="'+esc(r.quality_status||'')+'" data-q-notes="'+esc(r.quality_notes||'')+'" data-q-len="'+esc(String(r.length_yards==null?'':r.length_yards))+'" data-q-shr="'+esc(String(r.shrinkage_inches==null?'':r.shrinkage_inches))+'" data-q-shw="'+esc(String(r.after_wash_width_cm==null?'':r.after_wash_width_cm))+'" data-q-shl="'+esc(String(r.after_wash_length_cm==null?'':r.after_wash_length_cm))+'" data-q-bld="'+esc(r.bleeding_test||'')+'" data-q-wid="'+esc(String(r.width_measured_m==null?'':r.width_measured_m))+'" title="Record this roll\u2019s quality (measurements + Pass / Fail / Pending + notes)" style="padding:1px 7px;font-size:11px;">Quality</button>'
-             +' <button class="btn" data-roll-insp="'+Number(r.roll_id)+'" title="Open this roll\u2019s digital 4-Point inspection ticket" style="padding:1px 7px;font-size:11px;">4-Point</button>'
-            :'')
-          +(canEditRolls&&r.roll_id!=null
-            ?' <button class="btn" data-roll-edit="'+Number(r.roll_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-kg="'+esc(String(r.qty_kg==null?'':r.qty_kg))+'" title="Correct this roll\u2019s weight" style="padding:1px 7px;font-size:11px;">✎</button>'
-             +' <button class="btn" data-roll-del="'+Number(r.roll_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" title="Delete this roll" style="padding:1px 7px;font-size:11px;">&times;</button>'
+            ?' <button class="btn" data-roll-insp="'+Number(r.roll_id)+'" title="Open this roll\u2019s inspection \u2014 measurements &amp; wash tests, the digital 4-Point defect log, status and roll corrections" style="padding:1px 7px;font-size:11px;">Inspect</button>'
             :'');
         const measBits=[];
         if(r.length_yards!=null&&r.length_yards!=='')measBits.push(fmt2(r.length_yards)+' yds');
@@ -4924,80 +4917,6 @@ async function recvRollDeleteFromBtn(btn){
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
     loadRecvPoBatches();
   }catch(e){alert('Could not delete the roll: '+e.message);}
-}
-// Compact per-roll QUALITY editor (status + notes only — weight stays behind
-// the ✎ button). Open to every signed-in user, even after the Odoo upload.
-function recvRollQualityFromBtn(btn){
-  const box=btn.closest('.recv-po-detail');
-  const rollId=Number(btn.dataset.rollQ);
-  const sheetId=Number(btn.dataset.qSheet);
-  const rollNo=btn.dataset.rollNo||'';
-  const cur=btn.dataset.qStatus||'';
-  const curNotes=btn.dataset.qNotes||'';
-  const curLen=btn.dataset.qLen||'', curShr=btn.dataset.qShr||'', curBld=btn.dataset.qBld||'', curWid=btn.dataset.qWid||'';
-  const curShw=btn.dataset.qShw||'', curShl=btn.dataset.qShl||'';
-  document.querySelectorAll('.roll-q-pop').forEach(el=>el.remove());
-  const pop=document.createElement('div');
-  pop.className='roll-q-pop';
-  pop.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:9999;display:flex;align-items:center;justify-content:center;';
-  const opts=['Pending','Pass','Fail'].map(o=>{
-    const sel=(cur||'Pending')===o?' selected':'';
-    return '<option value="'+(o==='Pending'&&!cur?'':o)+'"'+sel+'>'+o+'</option>';
-  }).join('');
-  pop.innerHTML='<div style="background:#fff;border-radius:10px;padding:1rem 1.1rem;width:340px;max-width:92vw;box-shadow:0 8px 30px rgba(0,0,0,.25);" onclick="event.stopPropagation()">'
-    +'<div style="font-weight:700;font-size:14px;margin-bottom:.5rem;">Quality — roll '+esc(rollNo)+'</div>'
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;">'
-    +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;">Length (yds)</label>'
-    +'<input type="number" min="0" step="any" class="roll-q-len" placeholder="yards" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;"></div>'
-    +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;" title="Re-measured size of the 35cm gauge square after wash, along the WIDTH">After-wash W (cm)</label>'
-    +'<input type="number" min="0" step="any" class="roll-q-shw" placeholder="cm (gauge 35)" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;">'
-    +'<div class="roll-q-shw-p muted" style="font-size:10.5px;min-height:13px;white-space:nowrap;"></div></div>'
-    +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;" title="Re-measured size of the 35cm gauge square after wash, along the LENGTH">After-wash L (cm)</label>'
-    +'<input type="number" min="0" step="any" class="roll-q-shl" placeholder="cm (gauge 35)" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;">'
-    +'<div class="roll-q-shl-p muted" style="font-size:10.5px;min-height:13px;white-space:nowrap;"></div></div>'
-    +(curShr!==''?'<div class="muted" style="grid-column:1 / -1;font-size:11px;">Legacy single shrinkage: '+esc(fmt2(curShr))+' in</div>':'')
-    +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;">Bleeding test</label>'
-    +'<input type="text" class="roll-q-bld" placeholder="e.g. No bleed" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;"></div>'
-    +'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;">Width (m)</label>'
-    +'<input type="number" min="0" step="any" class="roll-q-wid" placeholder="metres" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;"></div>'
-    +'</div>'
-    +'<label style="font-size:12px;font-weight:600;display:block;margin:.55rem 0 2px;">Status</label>'
-    +'<select class="roll-q-status" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;">'+opts+'</select>'
-    +'<label style="font-size:12px;font-weight:600;display:block;margin:.55rem 0 2px;">Notes</label>'
-    +'<textarea class="roll-q-notes" rows="3" placeholder="Inspection notes (optional)" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;resize:vertical;"></textarea>'
-    +'<div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:.7rem;">'
-    +'<button class="btn roll-q-cancel" style="padding:4px 12px;font-size:12.5px;">Cancel</button>'
-    +'<button class="btn btn-primary roll-q-save" style="padding:4px 12px;font-size:12.5px;">Save</button>'
-    +'</div></div>';
-  document.body.appendChild(pop);
-  pop.querySelector('.roll-q-notes').value=curNotes;
-  pop.querySelector('.roll-q-len').value=curLen;
-  pop.querySelector('.roll-q-shw').value=curShw;
-  pop.querySelector('.roll-q-shl').value=curShl;
-  const wireShrink=(inp,prev)=>{const el=pop.querySelector(inp),p=pop.querySelector(prev);const upd=()=>{const v=el.value.trim();p.textContent=shrinkPreviewTxt(v);const hi=shrinkHigh(v);p.style.color=hi?'#b45309':'';p.style.fontWeight=hi?'700':'';};el.addEventListener('input',upd);upd();};
-  wireShrink('.roll-q-shw','.roll-q-shw-p');
-  wireShrink('.roll-q-shl','.roll-q-shl-p');
-  pop.querySelector('.roll-q-bld').value=curBld;
-  pop.querySelector('.roll-q-wid').value=curWid;
-  const close=()=>pop.remove();
-  pop.addEventListener('click',close);
-  pop.querySelector('.roll-q-cancel').addEventListener('click',close);
-  pop.querySelector('.roll-q-save').addEventListener('click',async ev=>{
-    const saveBtn=ev.currentTarget;
-    saveBtn.disabled=true;saveBtn.textContent='Saving…';
-    const status=pop.querySelector('.roll-q-status').value;
-    const notes=pop.querySelector('.roll-q-notes').value.trim();
-    const gv=c=>{const v=pop.querySelector(c).value.trim();return v===''?null:v;};
-    try{
-      const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(sheetId)+'/quality',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({rolls:[{roll_id:rollId,roll_no:rollNo,status:status,notes:notes,length_yards:gv('.roll-q-len'),shrinkage_inches:curShr===''?null:curShr,after_wash_width_cm:gv('.roll-q-shw'),after_wash_length_cm:gv('.roll-q-shl'),bleeding_test:gv('.roll-q-bld')||'',width_measured_m:gv('.roll-q-wid')}]})});
-      if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
-      close();
-      await refreshRecvPoDetail(box);
-    }catch(e){
-      saveBtn.disabled=false;saveBtn.textContent='Save';
-      alert('Could not save the quality result: '+e.message);
-    }
-  });
 }
 // ── 4-Point inspection ticket (digital, per roll) ──
 // Full-screen mobile-friendly modal: read-only prefilled header (roll / PO /
@@ -5093,6 +5012,18 @@ function renderInspTicket(pop,ctx,box,rollId){
     +'<div>'+lbl('Side inspected')+'<select class="insp-face" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;">'+['Face','Back','Both'].map(o=>'<option'+(fb===o?' selected':'')+'>'+o+'</option>').join('')+'</select></div>'
     +'<div>'+lbl('Acceptable limit (pts/100 sq.yd)')+num('insp-limit',V(seed.acceptable_limit,null,dft.acceptable_limit||40),'40')+'</div>'
     +'</div>'
+    +'<div style="margin-top:.7rem;"><div style="font-weight:700;font-size:12.5px;">Measurements &amp; wash tests</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.5rem;margin-top:4px;">'
+    +'<div>'+lbl('Roll length (yds)')+num('insp-m-len',roll.length_yards==null?'':roll.length_yards,'yards')+'</div>'
+    +'<div>'+lbl('After-wash W (cm) <span class="muted" style="font-weight:400;" title="Re-measured size of the 35cm gauge square after wash, along the WIDTH">(gauge 35)</span>')+num('insp-m-shw',roll.after_wash_width_cm==null?'':roll.after_wash_width_cm,'cm')+'<div class="insp-m-shw-p muted" style="font-size:10.5px;min-height:13px;white-space:nowrap;"></div></div>'
+    +'<div>'+lbl('After-wash L (cm) <span class="muted" style="font-weight:400;" title="Re-measured size of the 35cm gauge square after wash, along the LENGTH">(gauge 35)</span>')+num('insp-m-shl',roll.after_wash_length_cm==null?'':roll.after_wash_length_cm,'cm')+'<div class="insp-m-shl-p muted" style="font-size:10.5px;min-height:13px;white-space:nowrap;"></div></div>'
+    +'<div>'+lbl('Bleeding test')+inp('insp-m-bld',roll.bleeding_test||'','e.g. No bleed')+'</div>'
+    +'<div>'+lbl('Width (m)')+num('insp-m-wid',roll.width_measured_m==null?'':roll.width_measured_m,'metres')+'</div>'
+    +'</div>'
+    +(roll.shrinkage_inches!=null?'<div class="muted" style="font-size:11px;margin-top:2px;">Legacy single shrinkage: '+esc(fmt2(roll.shrinkage_inches))+' in</div>':'')
+    +'<div style="margin-top:.4rem;">'+lbl('Quality notes')+'<textarea class="insp-m-notes" rows="2" placeholder="Inspection notes (optional)" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;resize:vertical;">'+esc(roll.quality_notes||'')+'</textarea></div>'
+    +'<div class="muted" style="font-size:11px;margin-top:2px;">Saved onto the roll together with the ticket (Save draft or Submit).</div>'
+    +'</div>'
     +'<div style="margin-top:.7rem;"><div style="display:flex;align-items:center;gap:.6rem;"><div style="font-weight:700;font-size:12.5px;">Defect log <span class="muted" style="font-weight:400;">(4-point rule: \u22643in=1 · 3\u20136=2 · 6\u20139=3 · &gt;9in or hole=4)</span></div>'
     +'<button class="btn insp-add-defect" style="margin-left:auto;padding:2px 10px;font-size:12px;">+ Add defect</button></div>'
     +'<div style="overflow-x:auto;"><table class="data" style="margin-top:4px;width:100%;min-width:480px;"><thead><tr><th style="width:80px;">At (yd)</th><th>Defect</th><th style="width:90px;">Size (in)</th><th style="width:80px;">Side</th><th style="width:52px;" class="r">Pts</th><th style="width:36px;"></th></tr></thead>'
@@ -5107,6 +5038,31 @@ function renderInspTicket(pop,ctx,box,rollId){
     +'<button class="btn insp-save" style="padding:5px 14px;font-size:13px;">Save draft</button>'
     +'<button class="btn btn-primary insp-submit" style="padding:5px 14px;font-size:13px;" title="Locks the ticket and auto-fills the roll\u2019s quality status">Submit &amp; sign off</button>'
     +'</div>'
+    +(function(){
+      const hasSubmitted=tickets.some(t=>t.status==='Submitted');
+      const st=roll.quality_status?('<span style="font-weight:700;color:'+(roll.quality_status==='Pass'?'#0a7d33':(roll.quality_status==='Fail'?'var(--danger)':'#555'))+';">'+esc(roll.quality_status)+'</span>'):'<span class="muted">Pending</span>';
+      let h='<div style="margin-top:.8rem;padding:.55rem .7rem;border:1px solid var(--border,#d7d7de);border-radius:8px;">'
+        +'<div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;font-size:12.5px;"><span style="font-weight:700;">Roll status:</span> '+st
+        +(hasSubmitted?' <span class="muted">— auto-set by the submitted 4-Point grade</span>':'')+'</div>';
+      if(!hasSubmitted||ctx.can_approve){
+        h+='<div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.45rem;">'
+          +'<select class="insp-ovr-status" style="padding:4px 7px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:6px;">'
+          +['Pending','Pass','Fail'].map(o=>'<option value="'+(o==='Pending'?'':o)+'"'+((roll.quality_status||'Pending')===o?' selected':'')+'>'+o+'</option>').join('')+'</select>'
+          +'<input type="text" class="insp-ovr-comment" placeholder="'+(hasSubmitted?'Override comment (optional, logged)':'Comment (optional, logged)')+'" style="flex:1;min-width:160px;padding:4px 7px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:6px;">'
+          +'<button class="btn insp-ovr-apply" style="padding:4px 12px;font-size:12px;">'+(hasSubmitted?'Override status':'Set status')+'</button></div>'
+          +(hasSubmitted?'<div class="muted" style="font-size:11px;margin-top:2px;">Overriding the auto-set grade is logged with a timestamp and your name.</div>':'');
+      }else if(hasSubmitted){
+        h+='<div class="muted" style="font-size:11px;margin-top:2px;">Only the QC supervisor or a fabric admin can override the auto-set status.</div>';
+      }
+      h+='</div>';
+      if(ctx.can_edit_rolls){
+        h+='<div style="display:flex;gap:.5rem;align-items:center;margin-top:.55rem;">'
+          +'<span class="muted" style="font-size:11.5px;">Roll corrections:</span>'
+          +'<button class="btn insp-roll-edit" style="padding:2px 10px;font-size:12px;">\u270e Edit weight</button>'
+          +'<button class="btn insp-roll-del" style="padding:2px 10px;font-size:12px;">&times; Delete roll</button></div>';
+      }
+      return h;
+    })()
     +histHtml
     +'</div>';
   const closer=()=>pop.remove();
@@ -5179,6 +5135,13 @@ function renderInspTicket(pop,ctx,box,rollId){
       remarks:gv('.insp-remarks'),
       discrepancy_note:gv('.insp-disc'),
       defects:collectDefects(),
+      length_yards:gv('.insp-m-len')||null,
+      shrinkage_inches:roll.shrinkage_inches==null?null:roll.shrinkage_inches,
+      after_wash_width_cm:gv('.insp-m-shw')||null,
+      after_wash_length_cm:gv('.insp-m-shl')||null,
+      bleeding_test:gv('.insp-m-bld')||'',
+      width_measured_m:gv('.insp-m-wid')||null,
+      quality_notes:gv('.insp-m-notes'),
     };
   }
   async function post(path,body_){
@@ -5200,6 +5163,36 @@ function renderInspTicket(pop,ctx,box,rollId){
     const b=ev.currentTarget;b.disabled=true;b.textContent='Submitting\u2026';
     try{await post('/api/fabric/receiving/inspection/submit',payload());await reload();}
     catch(e){b.disabled=false;b.innerHTML='Submit &amp; sign off';alert('Could not submit the ticket: '+e.message);}
+  });
+  const wireShrinkPrev=(inpSel,prevSel)=>{const el=pop.querySelector(inpSel),p=pop.querySelector(prevSel);if(!el||!p)return;const upd=()=>{const v=el.value.trim();p.textContent=shrinkPreviewTxt(v);const hi=shrinkHigh(v);p.style.color=hi?'#b45309':'';p.style.fontWeight=hi?'700':'';};el.addEventListener('input',upd);upd();};
+  wireShrinkPrev('.insp-m-shw','.insp-m-shw-p');
+  wireShrinkPrev('.insp-m-shl','.insp-m-shl-p');
+  const ovrBtn=pop.querySelector('.insp-ovr-apply');
+  if(ovrBtn)ovrBtn.addEventListener('click',async ()=>{
+    ovrBtn.disabled=true;ovrBtn.textContent='Saving\u2026';
+    try{
+      const p=payload();
+      await post('/api/fabric/receiving/'+encodeURIComponent(roll.sheet_id)+'/quality',{rolls:[{
+        roll_id:rollId,roll_no:roll.roll_no,
+        status:gv('.insp-ovr-status'),
+        notes:p.quality_notes,
+        override_comment:gv('.insp-ovr-comment'),
+        length_yards:p.length_yards,shrinkage_inches:p.shrinkage_inches,
+        after_wash_width_cm:p.after_wash_width_cm,after_wash_length_cm:p.after_wash_length_cm,
+        bleeding_test:p.bleeding_test,width_measured_m:p.width_measured_m,
+      }]});
+      await reload();
+    }catch(e){ovrBtn.disabled=false;ovrBtn.textContent='Set status';alert('Could not update the roll status: '+e.message);}
+  });
+  const rEdit=pop.querySelector('.insp-roll-edit');
+  if(rEdit)rEdit.addEventListener('click',async ()=>{
+    await recvRollEditFromBtn({dataset:{rollNo:String(roll.roll_no==null?'':roll.roll_no),kg:roll.qty_kg==null?'':String(roll.qty_kg),rollEdit:String(rollId)}});
+    await reload();
+  });
+  const rDel=pop.querySelector('.insp-roll-del');
+  if(rDel)rDel.addEventListener('click',async ()=>{
+    await recvRollDeleteFromBtn({dataset:{rollNo:String(roll.roll_no==null?'':roll.roll_no),rollDel:String(rollId)}});
+    await reload();
   });
   pop.querySelectorAll('.insp-approve').forEach(ab=>ab.addEventListener('click',async ()=>{
     if(!confirm('Approve this submitted inspection ticket as QC supervisor?'))return;
