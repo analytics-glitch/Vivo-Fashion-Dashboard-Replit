@@ -5893,15 +5893,28 @@ def receiving_po_batch_download(po_id: int = Query(...),
         sheets, by_sheet = _recv_download_data(conn, po_id)
     po_name = (sheets[0].get("po_name") or f"PO-{po_id}").replace("/", "-")
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", po_name)
-    if fmt == "xlsx":
-        payload = _recv_build_xlsx(sheets, by_sheet)
-        media = ("application/vnd.openxmlformats-officedocument"
-                 ".spreadsheetml.sheet")
-        fname = f"receiving_{safe}.xlsx"
-    else:
-        payload = _recv_build_pdf(sheets, by_sheet)
-        media = "application/pdf"
-        fname = f"receiving_{safe}.pdf"
+    try:
+        if fmt == "xlsx":
+            payload = _recv_build_xlsx(sheets, by_sheet)
+            media = ("application/vnd.openxmlformats-officedocument"
+                     ".spreadsheetml.sheet")
+            fname = f"receiving_{safe}.xlsx"
+        else:
+            payload = _recv_build_pdf(sheets, by_sheet)
+            media = "application/pdf"
+            fname = f"receiving_{safe}.pdf"
+    except ModuleNotFoundError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(f"{'PDF' if fmt == 'pdf' else 'Excel'} library "
+                    f"unavailable on server ({e.name}); contact admin."))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(f"Could not build the "
+                    f"{'PDF' if fmt == 'pdf' else 'Excel'} sheet: {e}"))
     from fastapi import Response
     return Response(content=payload, media_type=media, headers={
         "Content-Disposition": f'attachment; filename="{fname}"'})
