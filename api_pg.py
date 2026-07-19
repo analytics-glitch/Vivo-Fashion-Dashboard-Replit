@@ -1418,6 +1418,36 @@ def _launch_deferred_startup():
 
 
 @_deferred_startup
+def _check_report_libraries():
+    # Surface missing optional report/export libraries at boot instead of at
+    # request time. These are lazily imported inside download endpoints
+    # (Excel/PDF builds), so a missing wheel in .pythonlibs otherwise goes
+    # unnoticed until a user clicks a download button and gets a 500.
+    # DB-free and fast; never raises, never blocks port bind (runs in the
+    # deferred-startup background thread).
+    import importlib
+    optional_libs = {
+        "openpyxl": "Excel exports (fabric register, replenishments, reports)",
+        "reportlab": "PDF downloads (fabric receiving PDF)",
+        "pypdf": "PDF merge/processing",
+    }
+    missing = []
+    for mod, used_for in optional_libs.items():
+        try:
+            importlib.import_module(mod)
+        except Exception as e:
+            missing.append(f"{mod} ({used_for}): {e}")
+    if missing:
+        log.error(
+            "MISSING REPORT LIBRARIES — the following download/export "
+            "endpoints will 500 until these are installed via "
+            "`uv pip install --target .pythonlibs/lib/python3.11/site-packages`:\n  - "
+            + "\n  - ".join(missing))
+    else:
+        log.warning("Report libraries OK: %s", ", ".join(optional_libs))
+
+
+@_deferred_startup
 def _init_user_store():
     # Idempotently create the app_users table so role/approval state has a home.
     try:
