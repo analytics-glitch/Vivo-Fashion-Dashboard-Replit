@@ -4746,6 +4746,8 @@ async function loadRecvPoBatches(){
         if(dl){downloadPoSheet(dl);return;}
         const rq=e.target.closest('button[data-roll-q]');
         if(rq){recvRollQualityFromBtn(rq);return;}
+        const ri=e.target.closest('button[data-roll-insp]');
+        if(ri){openInspectionTicket(ri);return;}
         const re=e.target.closest('button[data-roll-edit]');
         if(re){recvRollEditFromBtn(re);return;}
         const rd=e.target.closest('button[data-roll-del]');
@@ -4831,9 +4833,15 @@ function renderRecvPoDetail(box,det,poKey){
         const q=r.quality_status==='Pass'?'<span style="color:#0a7d33;font-weight:700;">Pass</span>'
               :(r.quality_status==='Fail'?'<span style="color:var(--danger);font-weight:700;">Fail</span>'
               :'<span class="muted">'+esc(r.quality_status||'Pending')+'</span>');
+        // Latest SUBMITTED 4-Point inspection ticket grade, shown as a badge
+        // next to the simple quality status (server-computed, per roll_no).
+        const inspBadge=r.insp_grade
+          ? ' <span title="Latest 4-Point inspection: '+esc(String(r.insp_points==null?'':fmt2(r.insp_points)))+' pts/100 sq.yd (v'+esc(String(r.insp_version||1))+')'+(r.insp_approved?' \u2014 supervisor approved':'')+'" style="display:inline-block;padding:0 6px;border-radius:9px;font-size:10.5px;font-weight:700;border:1px solid '+(r.insp_grade==='Pass'?'rgba(10,125,51,.45);color:#0a7d33;background:rgba(10,125,51,.07)':'rgba(200,50,50,.45);color:var(--danger);background:rgba(200,50,50,.06)')+';">4-Pt '+esc(r.insp_grade)+(r.insp_approved?' \u2713':'')+'</span>'
+          : '';
         const racts='<button class="btn" data-slip="'+Number(r.roll_id)+'" title="Print a slip for this roll" style="padding:1px 7px;font-size:11px;">🖨 Slip</button>'
           +(r.roll_id!=null
             ?' <button class="btn" data-roll-q="'+Number(r.roll_id)+'" data-q-sheet="'+Number(r.__sheet_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-q-status="'+esc(r.quality_status||'')+'" data-q-notes="'+esc(r.quality_notes||'')+'" data-q-len="'+esc(String(r.length_yards==null?'':r.length_yards))+'" data-q-shr="'+esc(String(r.shrinkage_inches==null?'':r.shrinkage_inches))+'" data-q-shw="'+esc(String(r.after_wash_width_cm==null?'':r.after_wash_width_cm))+'" data-q-shl="'+esc(String(r.after_wash_length_cm==null?'':r.after_wash_length_cm))+'" data-q-bld="'+esc(r.bleeding_test||'')+'" data-q-wid="'+esc(String(r.width_measured_m==null?'':r.width_measured_m))+'" title="Record this roll\u2019s quality (measurements + Pass / Fail / Pending + notes)" style="padding:1px 7px;font-size:11px;">Quality</button>'
+             +' <button class="btn" data-roll-insp="'+Number(r.roll_id)+'" title="Open this roll\u2019s digital 4-Point inspection ticket" style="padding:1px 7px;font-size:11px;">4-Point</button>'
             :'')
           +(canEditRolls&&r.roll_id!=null
             ?' <button class="btn" data-roll-edit="'+Number(r.roll_id)+'" data-roll-no="'+esc(String(r.roll_no))+'" data-kg="'+esc(String(r.qty_kg==null?'':r.qty_kg))+'" title="Correct this roll\u2019s weight" style="padding:1px 7px;font-size:11px;">✎</button>'
@@ -4846,7 +4854,7 @@ function renderRecvPoDetail(box,det,poKey){
         if(r.bleeding_test)measBits.push('bleed: '+esc(r.bleeding_test));
         if(r.width_measured_m!=null&&r.width_measured_m!=='')measBits.push('width '+fmt2(r.width_measured_m)+' m');
         const measHtml=measBits.length?'<div class="muted" style="font-size:11px;">'+measBits.join(' · ')+'</div>':'';
-        return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td>${q}${measHtml}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td><td style="white-space:nowrap;">${racts}</td></tr>`;
+        return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td>${q}${inspBadge}${measHtml}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td><td style="white-space:nowrap;">${racts}</td></tr>`;
       }).join('');
       const metaBits=(g.sheets||[]).map(s=>{
         const edited=s.updated_at?` · edited ${esc(s.updated_at)}${s.updated_by_name?' by '+esc(s.updated_by_name):''}`:'';
@@ -4990,6 +4998,215 @@ function recvRollQualityFromBtn(btn){
       alert('Could not save the quality result: '+e.message);
     }
   });
+}
+// ── 4-Point inspection ticket (digital, per roll) ──
+// Full-screen mobile-friendly modal: read-only prefilled header (roll / PO /
+// supplier / product attrs), fillable inspection fields, a repeatable defect
+// log with automatic 4-point rule points, a LIVE points-per-100-sq.yd score
+// + Pass/Reject indicator, draft save, submit (locks + auto-fills the roll's
+// quality status) and supervisor approval. All interpolated text → esc().
+const INSP_DEFECT_TYPES=['Hole','Slub','Stain','Shade variation','Misweave','Broken pick','Knot','Barre','Crease','Dye spot','Selvage defect','Snag','Other'];
+function inspDefectPoints(sizeIn,type){
+  if(String(type||'').toLowerCase()==='hole')return 4;
+  const s=parseFloat(sizeIn);
+  if(isNaN(s))return 1;
+  if(s>9)return 4;
+  if(s>6)return 3;
+  if(s>3)return 2;
+  return 1;
+}
+async function openInspectionTicket(btn){
+  const box=btn.closest('.recv-po-detail');
+  const rollId=Number(btn.dataset.rollInsp);
+  document.querySelectorAll('.insp-pop').forEach(el=>el.remove());
+  let ctx;
+  try{ctx=await apiFetch('/api/fabric/receiving/inspection/context?roll_id='+encodeURIComponent(rollId));}
+  catch(e){alert('Could not load the inspection ticket: '+e.message);return;}
+  const pop=document.createElement('div');
+  pop.className='insp-pop';
+  pop.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:2.5vh 8px;';
+  document.body.appendChild(pop);
+  renderInspTicket(pop,ctx,box,rollId);
+}
+function renderInspTicket(pop,ctx,box,rollId){
+  const roll=ctx.roll||{},po=ctx.po||{},fab=ctx.fabric||{},pre=ctx.prefill||{},res=ctx.resolved||{},dft=ctx.defaults||{};
+  const tickets=ctx.tickets||[];
+  const latest=tickets[0]||null;
+  // Editable basis: the latest DRAFT if one exists, else a fresh ticket
+  // (submitting later creates the next version — history stays intact).
+  const draft=(latest&&latest.status==='Draft')?latest:null;
+  const seed=draft||{};
+  const nextVer=latest?(latest.status==='Draft'?latest.version:latest.version+1):1;
+  const ticketNo='INS-'+rollId+'-v'+nextVer;
+  const V=(seedV,preV,defV)=>{const v=seedV!=null&&seedV!==''?seedV:(preV!=null&&preV!==''?preV:defV);return v==null?'':String(v);};
+  const inp=(cls,val,ph,extra)=>'<input type="text" class="'+cls+'" value="'+esc(String(val==null?'':val))+'" placeholder="'+esc(ph||'')+'" '+(extra||'')+' style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;">';
+  const num=(cls,val,ph)=>'<input type="number" min="0" step="any" class="'+cls+'" value="'+esc(String(val==null?'':val))+'" placeholder="'+esc(ph||'')+'" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;">';
+  const lbl=t=>'<label style="font-size:11.5px;font-weight:600;display:block;margin-bottom:2px;color:#555;">'+t+'</label>';
+  const ro=v=>'<div style="padding:5px 7px;font-size:13px;background:rgba(0,0,0,.035);border:1px solid var(--border,#e2e2e8);border-radius:6px;min-height:29px;">'+(v!=null&&v!==''?esc(String(v)):'<span class="muted">—</span>')+'</div>';
+  // Prefill-vs-fillable: resolved attributes render read-only, unresolved
+  // ones render as inputs on the ticket (no new upstream columns).
+  const attr=(key,label,cls)=>'<div>'+lbl(label+(res[key]?'':' <span class="muted" style="font-weight:400;">(fill in)</span>'))+(res[key]?ro(pre[key]):inp(cls,seed[key]||'',label))+'</div>';
+  const widthIn=V(seed.width_inches,roll.width_inches,'');
+  const yards=V(seed.yards_inspected,roll.length_yards,'');
+  const defects=Array.isArray(seed.defects)?seed.defects:[];
+  const fb=seed.face_back||'Both';
+  const readOnly=false;
+  const histHtml=tickets.length?('<div style="margin-top:.8rem;"><div style="font-weight:700;font-size:12.5px;margin-bottom:3px;">Ticket history</div>'
+    +tickets.map(t=>{
+      const g=t.grade==='Pass'?'<span style="color:#0a7d33;font-weight:700;">Pass</span>':(t.grade==='Reject'?'<span style="color:var(--danger);font-weight:700;">Reject</span>':'<span class="muted">—</span>');
+      const appr=t.approved_at?' · approved by '+esc(t.approved_by||'')+' '+esc(t.approved_at||''):'';
+      const sub=t.status==='Submitted'?('submitted by '+esc(t.submitted_by||'')+' '+esc(t.submitted_at||'')):'draft';
+      const apBtn=(t.status==='Submitted'&&!t.approved_at&&ctx.can_approve)?' <button class="btn insp-approve" data-ticket="'+Number(t.id)+'" style="padding:1px 8px;font-size:11px;">Approve</button>':'';
+      return '<div style="font-size:11.5px;padding:3px 0;border-top:1px solid rgba(0,0,0,.06);">'+esc(t.ticket_no||('v'+t.version))+' · '+g+(t.points_per_100!=null?' · '+fmt2(t.points_per_100)+' pts/100 sq.yd':'')+' · '+sub+appr+apBtn+'</div>';
+    }).join('')+'</div>'):'';
+  pop.innerHTML='<div class="insp-card" style="background:#fff;border-radius:12px;padding:1rem 1.1rem 1.1rem;width:720px;max-width:96vw;box-shadow:0 8px 30px rgba(0,0,0,.3);margin:auto 0;" onclick="event.stopPropagation()">'
+    +'<div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;">'
+    +'<div style="font-weight:800;font-size:15px;">4-Point Inspection Ticket</div>'
+    +'<span class="muted" style="font-size:12px;">'+esc(ticketNo)+'</span>'
+    +'<button class="btn insp-close" style="margin-left:auto;padding:2px 10px;font-size:13px;">&times;</button>'
+    +'</div>'
+    +(draft?'<div class="muted" style="font-size:11.5px;margin-top:2px;">Editing saved draft v'+esc(String(draft.version))+'</div>':(latest?'<div class="muted" style="font-size:11.5px;margin-top:2px;">Re-inspection — will create version '+esc(String(nextVer))+'</div>':''))
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.5rem;margin-top:.6rem;background:rgba(26,92,56,.04);border:1px solid rgba(26,92,56,.15);border-radius:8px;padding:.55rem .6rem;">'
+    +'<div>'+lbl('Supplier / Mill')+ro(pre.supplier)+'</div>'
+    +'<div>'+lbl('PO number')+ro(po.po_name||(po.po_id?('PO #'+po.po_id):null))+'</div>'
+    +'<div>'+lbl('Fabric')+ro(fab.name)+'</div>'
+    +'<div>'+lbl('Barcode')+ro(fab.barcode)+'</div>'
+    +'<div>'+lbl('Roll no.')+ro(roll.roll_no)+'</div>'
+    +'<div>'+lbl('Roll weight (kg)')+ro(roll.qty_kg!=null?fmt2(roll.qty_kg):null)+'</div>'
+    +'<div>'+lbl('Roll yardage (yds)')+ro(roll.length_yards!=null?fmt2(roll.length_yards):null)+'</div>'
+    +'<div>'+lbl('Width (in)'+(res.width?'':' <span class="muted" style="font-weight:400;">(fill in)</span>'))+(res.width?ro(roll.width_inches):num('insp-width',widthIn,'inches'))+'</div>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.5rem;margin-top:.55rem;">'
+    +attr('style_article','Style / Article','insp-style')
+    +attr('construction','Construction','insp-constr')
+    +attr('color','Color','insp-color')
+    +attr('lot_batch','Lot / Batch','insp-lot')
+    +attr('buyer','Buyer / Brand','insp-buyer')
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.5rem;margin-top:.55rem;">'
+    +'<div>'+lbl('Yards inspected')+num('insp-yards',yards,'yards')+'</div>'
+    // When the roll's measured width exists it is a READ-ONLY prefill (shown
+    // in the header grid); a hidden input feeds the live score calculation.
+    +(res.width?'<input type="hidden" class="insp-width" value="'+esc(String(roll.width_inches==null?'':roll.width_inches))+'">':'')
+    +'<div>'+lbl('Inspector')+inp('insp-inspector',V(seed.inspector_name,null,dft.inspector_name),'name')+'</div>'
+    +'<div>'+lbl('Date')+'<input type="date" class="insp-date" value="'+esc(V(seed.inspection_date,null,dft.inspection_date))+'" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;"></div>'
+    +'<div>'+lbl('Side inspected')+'<select class="insp-face" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;">'+['Face','Back','Both'].map(o=>'<option'+(fb===o?' selected':'')+'>'+o+'</option>').join('')+'</select></div>'
+    +'<div>'+lbl('Acceptable limit (pts/100 sq.yd)')+num('insp-limit',V(seed.acceptable_limit,null,dft.acceptable_limit||40),'40')+'</div>'
+    +'</div>'
+    +'<div style="margin-top:.7rem;"><div style="display:flex;align-items:center;gap:.6rem;"><div style="font-weight:700;font-size:12.5px;">Defect log <span class="muted" style="font-weight:400;">(4-point rule: \u22643in=1 · 3\u20136=2 · 6\u20139=3 · &gt;9in or hole=4)</span></div>'
+    +'<button class="btn insp-add-defect" style="margin-left:auto;padding:2px 10px;font-size:12px;">+ Add defect</button></div>'
+    +'<div style="overflow-x:auto;"><table class="data" style="margin-top:4px;width:100%;min-width:480px;"><thead><tr><th style="width:80px;">At (yd)</th><th>Defect</th><th style="width:90px;">Size (in)</th><th style="width:80px;">Side</th><th style="width:52px;" class="r">Pts</th><th style="width:36px;"></th></tr></thead>'
+    +'<tbody class="insp-defects"></tbody></table></div></div>'
+    +'<div class="insp-score" style="margin-top:.6rem;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border,#d7d7de);display:flex;gap:1rem;flex-wrap:wrap;align-items:center;font-size:13px;"></div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.5rem;margin-top:.55rem;">'
+    +'<div>'+lbl('Remarks')+'<textarea class="insp-remarks" rows="2" placeholder="Remarks (optional)" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;resize:vertical;">'+esc(seed.remarks||'')+'</textarea></div>'
+    +'<div>'+lbl('Flag discrepancy <span class="muted" style="font-weight:400;">(wrong-looking prefilled values)</span>')+'<textarea class="insp-disc" rows="2" placeholder="e.g. PO shows the wrong supplier" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;resize:vertical;">'+esc(seed.discrepancy_note||'')+'</textarea></div>'
+    +'</div>'
+    +'<div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:.8rem;flex-wrap:wrap;">'
+    +'<button class="btn insp-cancel" style="padding:5px 14px;font-size:13px;">Close</button>'
+    +'<button class="btn insp-save" style="padding:5px 14px;font-size:13px;">Save draft</button>'
+    +'<button class="btn btn-primary insp-submit" style="padding:5px 14px;font-size:13px;" title="Locks the ticket and auto-fills the roll\u2019s quality status">Submit &amp; sign off</button>'
+    +'</div>'
+    +histHtml
+    +'</div>';
+  const closer=()=>pop.remove();
+  pop.addEventListener('click',e=>{if(e.target===pop)closer();});
+  pop.querySelector('.insp-close').addEventListener('click',closer);
+  pop.querySelector('.insp-cancel').addEventListener('click',closer);
+  const tb=pop.querySelector('.insp-defects');
+  const gv=sel=>{const el=pop.querySelector(sel);return el?el.value.trim():'';};
+  function addDefectRow(d){
+    d=d||{};
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td><input type="number" min="0" step="any" class="d-loc" value="'+esc(String(d.location_yd==null?'':d.location_yd))+'" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;"></td>'
+      +'<td><select class="d-type" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;">'+INSP_DEFECT_TYPES.map(t=>'<option'+((d.defect_type||'Slub')===t?' selected':'')+'>'+t+'</option>').join('')+'</select></td>'
+      +'<td><input type="number" min="0" step="any" class="d-size" value="'+esc(String(d.size_in==null?'':d.size_in))+'" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;"></td>'
+      +'<td><select class="d-side" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;"><option value=""></option><option'+(d.side==='Face'?' selected':'')+'>Face</option><option'+(d.side==='Back'?' selected':'')+'>Back</option></select></td>'
+      +'<td class="r d-pts" style="font-weight:700;"></td>'
+      +'<td><button class="btn d-del" title="Remove this defect row" style="padding:1px 7px;font-size:11px;">&times;</button></td>';
+    tr.querySelector('.d-del').addEventListener('click',()=>{tr.remove();recalc();});
+    tr.querySelectorAll('input,select').forEach(el=>el.addEventListener('input',recalc));
+    tb.appendChild(tr);
+  }
+  function collectDefects(){
+    return Array.from(tb.querySelectorAll('tr')).map(tr=>({
+      location_yd:tr.querySelector('.d-loc').value.trim()||null,
+      defect_type:tr.querySelector('.d-type').value,
+      size_in:tr.querySelector('.d-size').value.trim()||null,
+      side:tr.querySelector('.d-side').value,
+    }));
+  }
+  function recalc(){
+    let total=0;
+    tb.querySelectorAll('tr').forEach(tr=>{
+      const pts=inspDefectPoints(tr.querySelector('.d-size').value,tr.querySelector('.d-type').value);
+      tr.querySelector('.d-pts').textContent=String(pts);
+      total+=pts;
+    });
+    const w=parseFloat(gv('.insp-width')),y=parseFloat(gv('.insp-yards')),lim=parseFloat(gv('.insp-limit'))||40;
+    const sc=pop.querySelector('.insp-score');
+    let scoreTxt,badge='';
+    if(!isNaN(w)&&w>0&&!isNaN(y)&&y>0){
+      const pp=total*3600/(w*y);
+      const pass=pp<=lim;
+      scoreTxt='<b>'+fmt2(pp)+'</b> pts / 100 sq.yd <span class="muted">(= '+total+' pts \u00d7 3600 \u00f7 ('+fmt2(w)+' in \u00d7 '+fmt2(y)+' yd))</span>';
+      badge='<span style="padding:2px 12px;border-radius:11px;font-weight:800;font-size:13px;'+(pass?'color:#0a7d33;background:rgba(10,125,51,.1);border:1px solid rgba(10,125,51,.4);':'color:var(--danger);background:rgba(200,50,50,.08);border:1px solid rgba(200,50,50,.4);')+'">'+(pass?'PASS':'REJECT')+'</span>';
+      sc.style.borderColor=pass?'rgba(10,125,51,.4)':'rgba(200,50,50,.4)';
+    }else{
+      scoreTxt='<span class="muted">Enter width (in) and yards inspected to compute the score.</span> Total points so far: <b>'+total+'</b>';
+      sc.style.borderColor='';
+    }
+    sc.innerHTML='<span>'+scoreTxt+'</span><span style="margin-left:auto;">limit '+fmt2(lim)+' '+badge+'</span>';
+  }
+  (defects.length?defects:[]).forEach(addDefectRow);
+  pop.querySelector('.insp-add-defect').addEventListener('click',()=>{addDefectRow();recalc();});
+  ['.insp-width','.insp-yards','.insp-limit'].forEach(sel=>{const el=pop.querySelector(sel);if(el)el.addEventListener('input',recalc);});
+  recalc();
+  function payload(){
+    return {
+      roll_id:rollId,
+      style_article:res.style_article?'':gv('.insp-style'),
+      construction:res.construction?'':gv('.insp-constr'),
+      color:res.color?'':gv('.insp-color'),
+      lot_batch:gv('.insp-lot'),
+      buyer:gv('.insp-buyer'),
+      yards_inspected:gv('.insp-yards')||null,
+      width_inches:gv('.insp-width')||null,
+      inspector_name:gv('.insp-inspector'),
+      inspection_date:gv('.insp-date'),
+      face_back:gv('.insp-face'),
+      acceptable_limit:gv('.insp-limit')||null,
+      remarks:gv('.insp-remarks'),
+      discrepancy_note:gv('.insp-disc'),
+      defects:collectDefects(),
+    };
+  }
+  async function post(path,body_){
+    const r=await fetch(path,{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body_)});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
+    return r.json();
+  }
+  async function reload(){
+    try{const fresh=await apiFetch('/api/fabric/receiving/inspection/context?roll_id='+encodeURIComponent(rollId));renderInspTicket(pop,fresh,box,rollId);}catch(_){closer();}
+    refreshRecvPoDetail(box);
+  }
+  pop.querySelector('.insp-save').addEventListener('click',async ev=>{
+    const b=ev.currentTarget;b.disabled=true;b.textContent='Saving\u2026';
+    try{await post('/api/fabric/receiving/inspection/save',payload());await reload();}
+    catch(e){b.disabled=false;b.textContent='Save draft';alert('Could not save the draft: '+e.message);}
+  });
+  pop.querySelector('.insp-submit').addEventListener('click',async ev=>{
+    if(!confirm('Submit this inspection ticket? It locks (re-inspection creates a new version) and the roll\u2019s quality status is auto-filled from the grade.'))return;
+    const b=ev.currentTarget;b.disabled=true;b.textContent='Submitting\u2026';
+    try{await post('/api/fabric/receiving/inspection/submit',payload());await reload();}
+    catch(e){b.disabled=false;b.innerHTML='Submit &amp; sign off';alert('Could not submit the ticket: '+e.message);}
+  });
+  pop.querySelectorAll('.insp-approve').forEach(ab=>ab.addEventListener('click',async ()=>{
+    if(!confirm('Approve this submitted inspection ticket as QC supervisor?'))return;
+    ab.disabled=true;ab.textContent='Approving\u2026';
+    try{await post('/api/fabric/receiving/inspection/approve',{ticket_id:Number(ab.dataset.ticket)});await reload();}
+    catch(e){ab.disabled=false;ab.textContent='Approve';alert('Could not approve: '+e.message);}
+  }));
 }
 // Re-pull ONE expanded PO's drill-down (rolls + header rollups + change log)
 // without reloading the whole batches table.

@@ -48,3 +48,6 @@ the admin PUT's inline quality edits — but ONLY when something actually change
 
 All interpolated fields in the modal/print HTML go through `esc()` (see
 `fabric-dashboard-xss.md`).
+
+## 4-Point inspection tickets
+`fabric_inspection_tickets` is keyed (sheet_id, roll_no) — NOT roll_id — so tickets survive the admin sheet rewrite (which recreates rolls with new ids). roll_id is only snapshotted for the ticket number INS-{roll_id}-v{n}. Points/score/grade are ALWAYS recomputed server-side (4-point rule; score = pts×3600÷(width_in×yards)); submit locks the ticket and auto-fills roll quality_status (Reject→Fail); a later manual quality change audits with inspection_override. Approval is fenced to fabric admins + an explicit supervisor email allow-list (_INSPECTION_SUPERVISOR_EMAILS).

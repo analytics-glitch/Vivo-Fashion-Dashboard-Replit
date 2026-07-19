@@ -5,6 +5,7 @@ Run: uvicorn fabric_api:app --port 8081
 """
 import base64
 import datetime
+from zoneinfo import ZoneInfo
 import os
 import re
 from urllib.parse import quote
@@ -4853,6 +4854,50 @@ def _ensure_receiving_tables(conn):
                     "ADD COLUMN IF NOT EXISTS after_wash_width_cm NUMERIC")
         cur.execute("ALTER TABLE fabric_receiving_rolls "
                     "ADD COLUMN IF NOT EXISTS after_wash_length_cm NUMERIC")
+        # 4-Point (American system) inspection tickets, one or more VERSIONS
+        # per roll. Keyed by (sheet_id, roll_no) — NOT roll_id — because the
+        # admin sheet PUT deletes + reinserts rolls (new ids); roll_no is the
+        # stable user-facing identity within a sheet, exactly like the quality
+        # carry-over. roll_id is a snapshot used only for the ticket number.
+        # defects is a JSONB list of rows; points/grade are recomputed
+        # SERVER-SIDE on save/submit (client values are display-only).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_inspection_tickets (
+                id               SERIAL PRIMARY KEY,
+                sheet_id         INTEGER NOT NULL,
+                po_id            BIGINT,
+                roll_no          INTEGER NOT NULL,
+                roll_id          INTEGER,
+                version          INTEGER NOT NULL DEFAULT 1,
+                ticket_no        TEXT,
+                status           TEXT NOT NULL DEFAULT 'Draft',
+                style_article    TEXT,
+                construction     TEXT,
+                color            TEXT,
+                lot_batch        TEXT,
+                buyer            TEXT,
+                yards_inspected  NUMERIC,
+                width_inches     NUMERIC,
+                inspector_name   TEXT,
+                inspection_date  DATE,
+                face_back        TEXT,
+                defects          JSONB,
+                acceptable_limit NUMERIC NOT NULL DEFAULT 40,
+                remarks          TEXT,
+                discrepancy_note TEXT,
+                total_points     NUMERIC,
+                points_per_100   NUMERIC,
+                grade            TEXT,
+                submitted_by     TEXT,
+                submitted_at     TIMESTAMPTZ,
+                approved_by      TEXT,
+                approved_at      TIMESTAMPTZ,
+                created_by       TEXT,
+                created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at       TIMESTAMPTZ
+            )""")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_insp_sheet_roll "
+                    "ON fabric_inspection_tickets(sheet_id, roll_no)")
         # One-time markers for receiving data migrations (idempotent — prod is
         # a separate DB and picks these up on first touch after publish).
         cur.execute("""
@@ -5221,6 +5266,419 @@ def receiving_rights(request: Request):
     quality_only marks users who may ONLY record quality results."""
     return {"admin": _recv_is_admin(request),
             "quality_only": _recv_quality_only(request)}
+
+# ── 4-Point fabric inspection tickets ───────────────────────────────────────
+# Digital 4-Point (American system) inspection ticket per receiving roll.
+# Anyone signed in may inspect (it is quality work — quality-only users
+# included). Supervisor APPROVAL is restricted server-side to full fabric
+# admins plus an explicit allow-list. Tickets are keyed by (sheet_id,
+# roll_no) so they survive the admin sheet rewrite (new roll ids).
+
+_INSPECTION_SUPERVISOR_EMAILS = {"marywamuyu@vivofashiongroup.com"}
+
+def _insp_can_approve(request):
+    u = getattr(request.state, "user", None) or {}
+    if _fabric_full_admin(u):
+        return True
+    return (u.get("email") or "").strip().lower() in _INSPECTION_SUPERVISOR_EMAILS
+
+# 4-point rule: points per defect from its measured length in inches.
+# <= 3in = 1pt, 3–6 = 2, 6–9 = 3, > 9in OR any hole = 4. Max 4 pts/defect.
+def _insp_defect_points(size_in, is_hole):
+    if is_hole:
+        return 4
+    try:
+        s = float(size_in)
+    except (TypeError, ValueError):
+        s = 0.0
+    if s > 9:
+        return 4
+    if s > 6:
+        return 3
+    if s > 3:
+        return 2
+    return 1
+
+_INSP_DEFECT_TYPES = {"Hole", "Slub", "Stain", "Shade variation", "Misweave",
+                      "Broken pick", "Knot", "Barre", "Crease", "Dye spot",
+                      "Selvage defect", "Snag", "Other"}
+
+def _insp_parse_defects(body):
+    """Validate + normalize the defects payload; points are ALWAYS recomputed
+    server-side from size + hole flag (4-point caps enforced here)."""
+    rows_in = body.get("defects")
+    if rows_in in (None, ""):
+        rows_in = []
+    if not isinstance(rows_in, list):
+        raise HTTPException(status_code=400, detail="defects must be a list")
+    if len(rows_in) > 200:
+        raise HTTPException(status_code=400,
+                            detail="at most 200 defect rows per ticket")
+    out, total = [], 0
+    for i, r in enumerate(rows_in, start=1):
+        if not isinstance(r, dict):
+            raise HTTPException(status_code=400,
+                                detail=f"defect {i}: invalid entry")
+        dtype = str(r.get("defect_type") or "").strip()[:60] or "Other"
+        side = str(r.get("side") or "").strip()[:10]
+        if side not in ("", "Face", "Back"):
+            side = ""
+        try:
+            loc = float(r.get("location_yd")) if r.get("location_yd") not in (None, "") else None
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                detail=f"defect {i}: location (yd) must be a number")
+        size_v = r.get("size_in")
+        if size_v in (None, ""):
+            size = None
+        else:
+            try:
+                size = float(size_v)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400,
+                    detail=f"defect {i}: size (inches) must be a number")
+            if size < 0:
+                raise HTTPException(status_code=400,
+                    detail=f"defect {i}: size cannot be negative")
+        is_hole = dtype.lower() == "hole" or bool(r.get("is_hole"))
+        pts = _insp_defect_points(size, is_hole)
+        total += pts
+        out.append({"location_yd": loc, "defect_type": dtype,
+                    "size_in": size, "side": side, "points": pts})
+    return out, total
+
+def _insp_num(v, name, required=False):
+    if v in (None, ""):
+        if required:
+            raise HTTPException(status_code=400, detail=f"{name} is required")
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{name} must be a number")
+    if f < 0:
+        raise HTTPException(status_code=400, detail=f"{name} cannot be negative")
+    return f
+
+def _insp_score(total_points, width_in, yards):
+    """Points per 100 sq.yd = points × 3600 ÷ (width_in × yards). None when
+    width/yards are missing or zero (score not computable yet)."""
+    if not width_in or not yards or width_in <= 0 or yards <= 0:
+        return None
+    return round(float(total_points) * 3600.0 / (float(width_in) * float(yards)), 2)
+
+def _insp_enforce_source_width(ctx, fields):
+    """When the roll has a measured width at source, the ticket's width is a
+    READ-ONLY prefill: ignore any client-sent value and use the source width
+    (width_measured_m × 39.37 in). Width stays fillable only when absent."""
+    w_m = ctx.get("width_measured_m")
+    if w_m not in (None, ""):
+        try:
+            fields["width_inches"] = round(float(w_m) * 39.37, 1)
+        except (TypeError, ValueError):
+            pass
+    return fields
+
+def _insp_roll_ctx(conn, roll_id):
+    rows = q(conn, """
+        SELECT r.id as roll_id, r.sheet_id, r.roll_no, r.qty_kg,
+               r.length_yards, r.width_measured_m, r.quality_status,
+               s.po_id, s.po_name, s.product_id, s.fabric_name, s.barcode
+        FROM fabric_receiving_rolls r
+        JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+        WHERE r.id=%s AND r.deleted_at IS NULL AND s.deleted_at IS NULL
+    """, (roll_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="roll not found")
+    return rows[0]
+
+_INSP_TEXT_FIELDS = ("style_article", "construction", "color", "lot_batch",
+                     "buyer", "inspector_name", "face_back", "remarks",
+                     "discrepancy_note")
+
+def _insp_collect_fields(body):
+    """The fillable ticket fields out of a save/submit payload, validated."""
+    f = {}
+    for k in _INSP_TEXT_FIELDS:
+        v = str(body.get(k) or "").strip()
+        if len(v) > (2000 if k in ("remarks", "discrepancy_note") else 200):
+            raise HTTPException(status_code=400, detail=f"{k} is too long")
+        f[k] = v or None
+    if f["face_back"] not in (None, "Face", "Back", "Both"):
+        raise HTTPException(status_code=400,
+                            detail="face_back must be Face, Back or Both")
+    f["yards_inspected"] = _insp_num(body.get("yards_inspected"), "yards inspected")
+    f["width_inches"] = _insp_num(body.get("width_inches"), "width (inches)")
+    lim = _insp_num(body.get("acceptable_limit"), "acceptable limit")
+    f["acceptable_limit"] = lim if lim and lim > 0 else 40
+    d = str(body.get("inspection_date") or "").strip()
+    if d:
+        try:
+            datetime.datetime.strptime(d, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400,
+                                detail="inspection_date must be YYYY-MM-DD")
+    f["inspection_date"] = d or None
+    return f
+
+def _insp_ticket_row(t):
+    """One ticket dict for the API (dates → text, defects already JSON)."""
+    out = dict(t)
+    for k in ("submitted_at", "approved_at", "created_at", "updated_at"):
+        v = out.get(k)
+        out[k] = v.astimezone().strftime("%d %b %Y, %H:%M") if v is not None else None
+    v = out.get("inspection_date")
+    out["inspection_date"] = v.strftime("%Y-%m-%d") if v is not None else None
+    for k in ("yards_inspected", "width_inches", "acceptable_limit",
+              "total_points", "points_per_100"):
+        if out.get(k) is not None:
+            out[k] = float(out[k])
+    return out
+
+@fabric_router.get("/api/fabric/receiving/inspection/context")
+def inspection_context(request: Request, roll_id: int = Query(...)):
+    """Everything the inspection ticket UI needs for one roll: the prefilled
+    read-only header (roll + sheet + PO supplier + best-effort Odoo product
+    attributes, with a `resolved` map saying which prefills the server could
+    fill — unresolved ones stay fillable), the latest ticket (any status) and
+    the full version history."""
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        ctx = _insp_roll_ctx(conn, roll_id)
+        prod = _recv_product_info(conn, ctx["product_id"]) or {}
+        tickets = q(conn, """
+            SELECT * FROM fabric_inspection_tickets
+            WHERE sheet_id=%s AND roll_no=%s
+            ORDER BY version DESC, id DESC
+        """, (ctx["sheet_id"], ctx["roll_no"]))
+    # Supplier: live from the Odoo PO header (best-effort — Odoo being down
+    # must never block an inspection); fallback to the product master's
+    # supplier name.
+    supplier, supplier_src = None, None
+    if ctx.get("po_id"):
+        try:
+            po = _recv_read_po(_odoo_connect(), ctx["po_id"], require_draft=False)
+            supplier, supplier_src = (po.get("supplier") or None), "odoo_po"
+        except Exception:
+            supplier = None
+    if not supplier and prod.get("fabric_supplier_name"):
+        supplier, supplier_src = prod["fabric_supplier_name"], "product_master"
+    # Best-effort product attributes: color and construction (fiber content /
+    # subcategory) resolve from the product master when present; Style,
+    # Lot/Batch and Buyer have no upstream source — always fillable.
+    color = prod.get("odoo_fabric_color") or None
+    construction = (prod.get("fiber_content") or
+                    prod.get("fabric_subcategory") or None)
+    width_m = ctx.get("width_measured_m")
+    width_in = round(float(width_m) * 39.37, 1) if width_m not in (None, "") else None
+    kg = float(ctx["qty_kg"]) if ctx.get("qty_kg") is not None else None
+    yards = float(ctx["length_yards"]) if ctx.get("length_yards") not in (None, "") else None
+    u = getattr(request.state, "user", None) or {}
+    return {
+        "roll": {"roll_id": ctx["roll_id"], "sheet_id": ctx["sheet_id"],
+                 "roll_no": ctx["roll_no"], "qty_kg": kg,
+                 "length_yards": yards, "width_inches": width_in,
+                 "quality_status": ctx.get("quality_status")},
+        "po": {"po_id": ctx.get("po_id"), "po_name": ctx.get("po_name")},
+        "fabric": {"name": ctx.get("fabric_name"), "barcode": ctx.get("barcode")},
+        "prefill": {"supplier": supplier, "supplier_source": supplier_src,
+                    "color": color, "construction": construction,
+                    "style_article": None, "lot_batch": None, "buyer": None},
+        "resolved": {"supplier": bool(supplier), "color": bool(color),
+                     "construction": bool(construction),
+                     "style_article": False, "lot_batch": False,
+                     "buyer": False, "width": width_in is not None,
+                     "yards": yards is not None},
+        "defaults": {"inspector_name": u.get("name") or u.get("email") or "",
+                     "acceptable_limit": 40,
+                     "inspection_date": datetime.datetime.now(
+                         ZoneInfo("Africa/Nairobi")).strftime("%Y-%m-%d")},
+        "can_approve": _insp_can_approve(request),
+        "tickets": [_insp_ticket_row(t) for t in tickets],
+    }
+
+def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
+                       submit, request):
+    """Create-or-update the CURRENT draft for a roll (latest version if it is
+    a Draft; otherwise a NEW version). Returns the fresh ticket row. When
+    submit=True the ticket locks, the roll's quality_status is auto-filled and
+    the change is audited."""
+    pp100 = _insp_score(total_points, fields.get("width_inches"),
+                        fields.get("yards_inspected"))
+    limit = fields.get("acceptable_limit") or 40
+    grade = None
+    if pp100 is not None:
+        grade = "Pass" if pp100 <= limit else "Reject"
+    if submit:
+        if fields.get("yards_inspected") in (None, 0):
+            raise HTTPException(status_code=400,
+                detail="Total yards inspected is required to submit")
+        if fields.get("width_inches") in (None, 0):
+            raise HTTPException(status_code=400,
+                detail="Fabric width (inches) is required to submit")
+        if not fields.get("inspector_name"):
+            raise HTTPException(status_code=400,
+                detail="Inspector name is required to submit")
+        if grade is None:
+            raise HTTPException(status_code=400,
+                detail="Score could not be computed — check width and yardage")
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT * FROM fabric_inspection_tickets
+            WHERE sheet_id=%s AND roll_no=%s
+            ORDER BY version DESC, id DESC LIMIT 1
+            FOR UPDATE
+        """, (ctx["sheet_id"], ctx["roll_no"]))
+        latest = cur.fetchone()
+        common = (fields["style_article"], fields["construction"],
+                  fields["color"], fields["lot_batch"], fields["buyer"],
+                  fields["yards_inspected"], fields["width_inches"],
+                  fields["inspector_name"], fields["inspection_date"],
+                  fields["face_back"],
+                  psycopg2.extras.Json(defects), limit,
+                  fields["remarks"], fields["discrepancy_note"],
+                  total_points, pp100, grade)
+        if latest and latest["status"] == "Draft":
+            cur.execute("""
+                UPDATE fabric_inspection_tickets SET
+                    style_article=%s, construction=%s, color=%s,
+                    lot_batch=%s, buyer=%s, yards_inspected=%s,
+                    width_inches=%s, inspector_name=%s, inspection_date=%s,
+                    face_back=%s, defects=%s, acceptable_limit=%s,
+                    remarks=%s, discrepancy_note=%s, total_points=%s,
+                    points_per_100=%s, grade=%s, updated_at=now()
+                WHERE id=%s RETURNING *
+            """, common + (latest["id"],))
+        else:
+            version = (int(latest["version"]) + 1) if latest else 1
+            ticket_no = f"INS-{ctx['roll_id']}-v{version}"
+            cur.execute("""
+                INSERT INTO fabric_inspection_tickets
+                    (sheet_id, po_id, roll_no, roll_id, version, ticket_no,
+                     status, style_article, construction, color, lot_batch,
+                     buyer, yards_inspected, width_inches, inspector_name,
+                     inspection_date, face_back, defects, acceptable_limit,
+                     remarks, discrepancy_note, total_points, points_per_100,
+                     grade, created_by)
+                VALUES (%s,%s,%s,%s,%s,%s,'Draft',
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING *
+            """, (ctx["sheet_id"], ctx.get("po_id"), ctx["roll_no"],
+                  ctx["roll_id"], version, ticket_no) + common + (actor,))
+        ticket = cur.fetchone()
+        if submit:
+            cur.execute("""
+                UPDATE fabric_inspection_tickets
+                SET status='Submitted', submitted_by=%s, submitted_at=now(),
+                    updated_at=now()
+                WHERE id=%s RETURNING *
+            """, (actor, ticket["id"]))
+            ticket = cur.fetchone()
+            # Auto-fill the roll's existing quality flow: Pass stays Pass,
+            # Reject maps to Fail. Manual overrides stay possible afterwards
+            # (they audit with an override flag in the quality endpoint).
+            new_q = "Pass" if grade == "Pass" else "Fail"
+            cur.execute("""
+                UPDATE fabric_receiving_rolls
+                SET quality_status=%s, quality_updated_at=now(),
+                    quality_updated_by=%s
+                WHERE id=%s AND deleted_at IS NULL
+            """, (new_q, actor, ctx["roll_id"]))
+            _recv_audit(cur, ctx.get("po_id"), ctx["sheet_id"],
+                        ctx.get("fabric_name"), "inspection_submitted",
+                        {"roll_no": ctx["roll_no"],
+                         "ticket_no": ticket.get("ticket_no"),
+                         "version": ticket.get("version"),
+                         "points_per_100": float(pp100),
+                         "acceptable_limit": float(limit),
+                         "grade": grade, "quality_status": new_q}, actor)
+    conn.commit()
+    return ticket
+
+@fabric_router.post("/api/fabric/receiving/inspection/save")
+def inspection_save(request: Request, body: dict = Body(...)):
+    """Save the roll's inspection ticket as a DRAFT (create the next version
+    when the latest ticket is already Submitted). Points + score + grade are
+    recomputed server-side."""
+    roll_id = body.get("roll_id")
+    try:
+        roll_id = int(roll_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="roll_id is required")
+    fields = _insp_collect_fields(body)
+    defects, total_points = _insp_parse_defects(body)
+    _uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        ctx = _insp_roll_ctx(conn, roll_id)
+        fields = _insp_enforce_source_width(ctx, fields)
+        ticket = _insp_upsert_draft(conn, ctx, fields, defects, total_points,
+                                    name, submit=False, request=request)
+    return {"ok": True, "ticket": _insp_ticket_row(ticket)}
+
+@fabric_router.post("/api/fabric/receiving/inspection/submit")
+def inspection_submit(request: Request, body: dict = Body(...)):
+    """Submit the roll's inspection ticket: saves the payload, validates the
+    required fields, locks the ticket (Draft → Submitted), stamps the
+    inspector sign-off, auto-fills the roll's quality_status (Pass / Fail)
+    and writes the audit row. Re-inspection later creates a NEW version."""
+    roll_id = body.get("roll_id")
+    try:
+        roll_id = int(roll_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="roll_id is required")
+    fields = _insp_collect_fields(body)
+    defects, total_points = _insp_parse_defects(body)
+    _uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        ctx = _insp_roll_ctx(conn, roll_id)
+        fields = _insp_enforce_source_width(ctx, fields)
+        ticket = _insp_upsert_draft(conn, ctx, fields, defects, total_points,
+                                    name, submit=True, request=request)
+    return {"ok": True, "ticket": _insp_ticket_row(ticket)}
+
+@fabric_router.post("/api/fabric/receiving/inspection/approve")
+def inspection_approve(request: Request, body: dict = Body(...)):
+    """QC Supervisor approval of a SUBMITTED ticket. Server-enforced
+    allow-list: full fabric admins + the explicit supervisor emails."""
+    if not _insp_can_approve(request):
+        raise HTTPException(status_code=403,
+            detail="Only the QC supervisor or a fabric admin may approve "
+                   "inspection tickets")
+    ticket_id = body.get("ticket_id")
+    try:
+        ticket_id = int(ticket_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="ticket_id is required")
+    _uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM fabric_inspection_tickets WHERE id=%s "
+                        "FOR UPDATE", (ticket_id,))
+            t = cur.fetchone()
+            if not t:
+                raise HTTPException(status_code=404, detail="ticket not found")
+            if t["status"] != "Submitted":
+                raise HTTPException(status_code=400,
+                    detail="Only a submitted ticket can be approved")
+            if t.get("approved_at") is not None:
+                raise HTTPException(status_code=400,
+                    detail="This ticket is already approved")
+            cur.execute("""
+                UPDATE fabric_inspection_tickets
+                SET approved_by=%s, approved_at=now(), updated_at=now()
+                WHERE id=%s RETURNING *
+            """, (name, ticket_id))
+            t = cur.fetchone()
+            _recv_audit(cur, t.get("po_id"), t["sheet_id"], None,
+                        "inspection_approved",
+                        {"roll_no": t["roll_no"], "ticket_no": t.get("ticket_no"),
+                         "version": t.get("version"), "grade": t.get("grade")},
+                        name)
+        conn.commit()
+    return {"ok": True, "ticket": _insp_ticket_row(t)}
 
 def _recv_po_locked(conn, po_id):
     """A PO's rolls/quantities are LOCKED once it has at least one SUCCESSFUL
@@ -6444,8 +6902,18 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
                        r.quality_status, r.quality_notes,
                        r.length_yards, r.shrinkage_inches,
                        r.bleeding_test, r.width_measured_m,
-                       r.after_wash_width_cm, r.after_wash_length_cm
+                       r.after_wash_width_cm, r.after_wash_length_cm,
+                       t.grade as insp_grade, t.version as insp_version,
+                       t.points_per_100 as insp_points,
+                       (t.approved_at IS NOT NULL) as insp_approved
                 FROM fabric_receiving_rolls r
+                LEFT JOIN LATERAL (
+                    SELECT grade, version, points_per_100, approved_at
+                    FROM fabric_inspection_tickets t
+                    WHERE t.sheet_id = r.sheet_id AND t.roll_no = r.roll_no
+                      AND t.status = 'Submitted'
+                    ORDER BY t.version DESC, t.id DESC LIMIT 1
+                ) t ON TRUE
                 WHERE r.sheet_id = ANY(%s) AND r.deleted_at IS NULL
                 ORDER BY r.sheet_id, r.roll_no, r.id
             """, ([int(s["id"]) for s in sheets],))
@@ -6489,7 +6957,9 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
                                "quality_status", "quality_notes",
                                "length_yards", "shrinkage_inches",
                                "bleeding_test", "width_measured_m",
-                               "after_wash_width_cm", "after_wash_length_cm")})
+                               "after_wash_width_cm", "after_wash_length_cm",
+                               "insp_grade", "insp_version", "insp_points",
+                               "insp_approved")})
     fabrics, order = {}, []
     for s in sheets:
         key = (s["product_id"], s.get("barcode") or "")
@@ -7241,16 +7711,32 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                       name, o["id"], sheet_id))
                 updated += cur.rowcount
                 if po_id is not None:
+                    details = {"roll_no": o.get("roll_no"),
+                               "old_status": o.get("quality_status"),
+                               "new_status": status,
+                               "old_notes": o.get("quality_notes"),
+                               "new_notes": notes,
+                               "measurements": {k: (float(v) if isinstance(v, (int, float)) else v)
+                                                for k, v in meas.items()},
+                               "after_upload": bool(after_upload)}
+                    # A manual status change on a roll that already has a
+                    # SUBMITTED 4-Point inspection ticket is an OVERRIDE of
+                    # the ticket's auto-filled grade — flag it in the trail.
+                    if (o.get("quality_status") or None) != status:
+                        tk = q(conn, """
+                            SELECT ticket_no, version, grade
+                            FROM fabric_inspection_tickets
+                            WHERE sheet_id=%s AND roll_no=%s
+                              AND status='Submitted'
+                            ORDER BY version DESC, id DESC LIMIT 1
+                        """, (sheet_id, o.get("roll_no")))
+                        if tk:
+                            details["inspection_override"] = True
+                            details["ticket_no"] = tk[0].get("ticket_no")
+                            details["ticket_grade"] = tk[0].get("grade")
                     _recv_audit(cur, po_id, sheet_id,
                                 exists[0].get("fabric_name"), "quality_updated",
-                                {"roll_no": o.get("roll_no"),
-                                 "old_status": o.get("quality_status"),
-                                 "new_status": status,
-                                 "old_notes": o.get("quality_notes"),
-                                 "new_notes": notes,
-                                 "measurements": {k: (float(v) if isinstance(v, (int, float)) else v)
-                                                  for k, v in meas.items()},
-                                 "after_upload": bool(after_upload)}, name)
+                                details, name)
         conn.commit()
         _log_fabric_change("Receiving quality updated", {
             "id": sheet_id, "product": exists[0].get("fabric_name"),
