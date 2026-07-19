@@ -6299,16 +6299,26 @@ def receiving_po_batches():
                 FROM fabric_receiving_sheets s
                 WHERE s.po_id IS NOT NULL AND s.deleted_at IS NULL
                 GROUP BY s.po_id
+            ),
+            rc AS (
+                SELECT s.po_id, COUNT(r.id) as rolls
+                FROM fabric_receiving_sheets s
+                JOIN fabric_receiving_rolls r
+                     ON r.sheet_id = s.id AND r.deleted_at IS NULL
+                WHERE s.po_id IS NOT NULL AND s.deleted_at IS NULL
+                GROUP BY s.po_id
             )
             SELECT g.po_id, g.po_name,
                    to_char(g.po_date, 'DD Mon YYYY') as po_date,
                    g.sheets, g.products, g.total_kg,
+                   COALESCE(rc.rolls, 0) as rolls,
                    ps.id as sheet_no,
                    lu.status           as last_upload_status,
                    lu.uploaded_by_name as last_uploaded_by,
                    to_char(lu.uploaded_at AT TIME ZONE 'Africa/Nairobi',
                            'DD Mon YYYY, HH24:MI') as last_uploaded_at
             FROM g
+            LEFT JOIN rc ON rc.po_id = g.po_id
             LEFT JOIN fabric_receiving_po_sheets ps ON ps.po_id = g.po_id
             LEFT JOIN LATERAL (
                 SELECT status, uploaded_by_name, uploaded_at
@@ -6323,7 +6333,11 @@ def receiving_po_batches():
         nopo = q(conn, """
             SELECT COUNT(*)                    as sheets,
                    COUNT(DISTINCT s.product_id) as products,
-                   SUM(s.total_kg)             as total_kg
+                   SUM(s.total_kg)             as total_kg,
+                   (SELECT COUNT(*) FROM fabric_receiving_rolls r
+                    JOIN fabric_receiving_sheets s2 ON s2.id = r.sheet_id
+                    WHERE s2.po_id IS NULL AND s2.deleted_at IS NULL
+                      AND r.deleted_at IS NULL) as rolls
             FROM fabric_receiving_sheets s
             WHERE s.po_id IS NULL AND s.deleted_at IS NULL
         """)
@@ -6333,6 +6347,7 @@ def receiving_po_batches():
                        "sheets": int(nopo[0]["sheets"]),
                        "products": int(nopo[0]["products"] or 0),
                        "total_kg": nopo[0]["total_kg"],
+                       "rolls": int(nopo[0].get("rolls") or 0),
                        "last_upload_status": None, "last_uploaded_by": None,
                        "last_uploaded_at": None}
     return {"items": rows, "no_po": no_po_group}

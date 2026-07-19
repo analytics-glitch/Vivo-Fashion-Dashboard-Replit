@@ -1090,8 +1090,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div class="card" style="padding:0;">
      <div class="tbl-wrap">
       <table class="data">
-       <thead><tr><th style="width:1%;"></th><th>PO</th><th>PO date</th><th class="r">Sheet#</th><th class="r">SKUs/Barcodes</th><th class="r">Total kgs</th><th>Last upload</th><th></th></tr></thead>
-       <tbody id="recv-po-body"><tr><td colspan="8" class="loading">Loading…</td></tr></tbody>
+       <thead><tr><th style="width:1%;"></th><th>PO</th><th>PO date</th><th class="r">Sheet#</th><th class="r">SKUs/Barcodes</th><th class="r">Rolls Received#</th><th class="r">Total kgs</th><th>Last upload</th><th></th></tr></thead>
+       <tbody id="recv-po-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
     </div>
@@ -4446,7 +4446,7 @@ async function loadRecvPoBatches(){
     const d=await apiFetch('/api/fabric/receiving/po-batches');
     const items=((d&&d.items)||[]).slice();
     if(d&&d.no_po)items.push(d.no_po);
-    if(!items.length){body.innerHTML='<tr><td colspan="8" class="muted" style="padding:1rem;">No receiving sheets saved yet — pick a draft PO and record the first delivery above.</td></tr>';return;}
+    if(!items.length){body.innerHTML='<tr><td colspan="9" class="muted" style="padding:1rem;">No receiving sheets saved yet — pick a draft PO and record the first delivery above.</td></tr>';return;}
     // Drop expansion state for groups that no longer exist.
     const keys=new Set(items.map(recvPoKey));
     Array.from(recvPoExpanded).forEach(k=>{if(!keys.has(k))recvPoExpanded.delete(k);});
@@ -4474,11 +4474,12 @@ async function loadRecvPoBatches(){
         <td style="white-space:nowrap;">${esc(r.po_date||'—')}</td>
         <td class="r">${isNoPo?'<span class="muted">—</span>':(r.sheet_no!=null?('#'+esc(String(r.sheet_no))):'<span class="muted">—</span>')}</td>
         <td class="r">${fmt(r.products)}</td>
+        <td class="r">${fmt(r.rolls)}</td>
         <td class="r">${fmt2(r.total_kg)}</td>
         <td style="white-space:nowrap;">${lu}</td>
         <td style="white-space:nowrap;">${action}</td>
       </tr>`;
-      const detail=open?`<tr class="recv-po-detail-row"><td colspan="8" style="padding:0;background:rgba(0,0,0,.015);"><div class="recv-po-detail" data-po-detail="${esc(key)}" style="padding:.7rem .9rem;"><span class="loading">Loading sheets…</span></div></td></tr>`:'';
+      const detail=open?`<tr class="recv-po-detail-row"><td colspan="9" style="padding:0;background:rgba(0,0,0,.015);"><div class="recv-po-detail" data-po-detail="${esc(key)}" style="padding:.7rem .9rem;"><span class="loading">Loading sheets…</span></div></td></tr>`:'';
       return main+detail;
     }).join('');
     if(!body.dataset.bound){
@@ -4537,7 +4538,7 @@ async function loadRecvPoBatches(){
         renderRecvPoDetail(box,det,k);
       }catch(e){box.innerHTML='<div class="banner banner-err">Could not load this PO\u2019s sheets: '+esc(e.message)+'</div>';}
     });
-  }catch(e){rowErr('recv-po-body',8,e);}
+  }catch(e){rowErr('recv-po-body',9,e);}
 }
 // Renders one PO group's drill-down: fabric rows (summed totals) → sheets
 // with actions → rolls. All ERP-sourced text goes through esc().
