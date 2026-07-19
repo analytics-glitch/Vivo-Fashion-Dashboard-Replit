@@ -805,9 +805,54 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
 
    <!-- FABRIC QC -->
    <section id="page-defects" style="display:none;">
-    <div class="card" style="text-align:center;padding:48px 24px;">
-     <h3 style="margin:0 0 8px;">Fabric QC — coming soon</h3>
-     <p class="muted" style="margin:0;">Fabric quality control tracking and reporting will appear here.</p>
+    <div class="flex" style="margin-bottom:1.1rem;gap:.6rem;align-items:center;flex-wrap:wrap;">
+     <label class="muted" style="font-size:12px;">From <input type="date" id="qc-from" class="btn" onchange="loadFabricQC()"></label>
+     <label class="muted" style="font-size:12px;">To <input type="date" id="qc-to" class="btn" onchange="loadFabricQC()"></label>
+     <select id="qc-supplier" class="btn" onchange="loadFabricQC()" title="Filter by supplier"><option value="">All suppliers</option></select>
+     <input type="text" id="qc-fabric" class="btn" placeholder="Fabric name or barcode…" style="min-width:200px;" onchange="loadFabricQC()">
+     <select id="qc-status" class="btn" onchange="loadFabricQC()" title="Filter by inspection status">
+      <option value="">All statuses</option>
+      <option value="Pass">Pass</option>
+      <option value="Fail">Fail</option>
+      <option value="Pending">Pending / uninspected</option>
+     </select>
+     <button class="btn" onclick="qcResetFilters()">Reset</button>
+     <span style="flex:1;"></span>
+     <button class="btn" onclick="qcExportScorecard()">Scorecard CSV</button>
+     <button class="btn" onclick="qcExportDetail()">Roll detail CSV</button>
+    </div>
+    <div id="qc-kpis" class="kpi-grid" style="margin-bottom:1.1rem;"><div class="loading">Loading…</div></div>
+    <div class="card" style="margin-bottom:1.1rem;">
+     <p class="muted" style="margin:0;" id="qc-rule-note">Loading…</p>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:1.1rem;margin-bottom:1.1rem;">
+     <div class="card"><h3 style="margin:0 0 .6rem;">Fails by supplier</h3><div id="qc-sup-bars"><p class="muted">Loading…</p></div></div>
+     <div class="card"><h3 style="margin:0 0 .6rem;">Fails by fabric</h3><div id="qc-fab-bars"><p class="muted">Loading…</p></div></div>
+     <div class="card"><h3 style="margin:0 0 .6rem;">Monthly pass rate</h3><div id="qc-month-bars"><p class="muted">Loading…</p></div></div>
+     <div class="card"><h3 style="margin:0 0 .6rem;">Shrinkage distribution <span class="muted" id="qc-shrink-sub" style="font-weight:400;font-size:11px;"></span></h3><div id="qc-shrink-bars"><p class="muted">Loading…</p></div></div>
+     <div class="card"><h3 style="margin:0 0 .6rem;">Bleeding test outcomes</h3><div id="qc-bleed-bars"><p class="muted">Loading…</p></div></div>
+    </div>
+    <h3 style="margin:1.6rem 0 .5rem;">Supplier scorecard</h3>
+    <div class="card" style="padding:0;margin-bottom:1.1rem;">
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead id="qc-score-head"></thead>
+       <tbody id="qc-score-body"><tr><td class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
+    </div>
+    <h3 style="margin:1.6rem 0 .5rem;">Roll detail <span class="muted" id="qc-detail-sub" style="font-weight:400;font-size:12px;"></span></h3>
+    <div class="card" style="padding:0;">
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr>
+        <th>Date</th><th>PO</th><th>Supplier</th><th>Fabric</th><th class="r">Roll</th>
+        <th>Status</th><th class="r">Kg</th><th class="r">Width (m)</th><th class="r">Shrink</th>
+        <th>Bleeding</th><th>Notes</th><th>Inspected by</th><th></th>
+       </tr></thead>
+       <tbody id="qc-detail-body"><tr><td colspan="13" class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
     </div>
    </section>
 
@@ -1792,9 +1837,177 @@ function renderSupportKpis(d){
    ${KpiCard({label:'Dead stock',prefix:'KES',value:fmtKESval(d.dead_stock_value),valueClass:'danger',valueAttrs:fx(FX.supfDead),footnote:'support fabrics'})}`;
 }
 
+// ── Fabric QC report ──
+// Aggregated QC over the per-roll inspection data captured on the Receiving
+// tab. One API call returns KPIs + all breakdowns + the roll detail; every
+// figure respects ALL the filters above the cards (including status) so the
+// tables always reconcile with the KPI cards. XSS: every interpolated field
+// goes through esc(); row actions use data-* + one delegated listener.
+let qcData=null, qcSort={key:'fail',dir:-1}, qcBound=false;
+function qcParams(){
+  const p=new URLSearchParams();
+  const f=document.getElementById('qc-from').value, t=document.getElementById('qc-to').value;
+  if(f)p.set('date_from',f); if(t)p.set('date_to',t);
+  const s=document.getElementById('qc-supplier').value; if(s)p.set('supplier',s);
+  const fb=document.getElementById('qc-fabric').value.trim(); if(fb)p.set('fabric',fb);
+  const st=document.getElementById('qc-status').value; if(st)p.set('status',st);
+  return p.toString();
+}
+function qcResetFilters(){
+  ['qc-from','qc-to','qc-fabric'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('qc-supplier').value='';
+  document.getElementById('qc-status').value='';
+  loadFabricQC();
+}
+function qcShowPending(){
+  document.getElementById('qc-status').value='Pending';
+  loadFabricQC();
+  const el=document.getElementById('qc-detail-body');
+  if(el)el.scrollIntoView({behavior:'smooth',block:'start'});
+}
+async function loadFabricQC(){
+  qcBindOnce();
+  try{
+    const qs=qcParams();
+    const d=await apiFetch('/api/fabric/qc/report'+(qs?('?'+qs):''));
+    qcData=d;
+    // Repopulate the supplier dropdown from the unfiltered universe, keeping
+    // the current selection.
+    const sel=document.getElementById('qc-supplier');
+    const cur=sel.value;
+    sel.innerHTML='<option value="">All suppliers</option>'+
+      ((d.options&&d.options.suppliers)||[]).map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
+    sel.value=cur;
+    renderQcKpis(d);
+    renderQcRule(d);
+    renderQcBars(d);
+    renderQcScore();
+    renderQcDetail(d);
+  }catch(e){showErr('qc-kpis',e);}
+}
+function renderQcKpis(d){
+  const k=d.kpis||{};
+  const pendBtn=k.pending?`<button class="btn" onclick="qcShowPending()" style="font-size:11px;">View backlog</button>`:'';
+  document.getElementById('qc-kpis').innerHTML=
+   KpiCard({label:'Rolls received',value:fmt(k.rolls),footnote:'in the filtered window',valueAttrs:fx('Rolls received = every roll on a non-deleted receiving sheet matching the filters. Date = PO date, falling back to the day the sheet was saved.')})
+   +KpiCard({label:'Inspected',value:fmt(k.inspected),footnote:(k.coverage_pct!=null?k.coverage_pct+'% coverage':'no rolls'),valueAttrs:fx('Inspected = rolls with a recorded Pass or Fail. Coverage = inspected ÷ rolls received.')})
+   +KpiCard({label:'Pass rate',value:k.pass_pct==null?'—':k.pass_pct+'%',valueClass:k.pass_pct!=null&&k.pass_pct<90?'danger':'',footnote:fmt(k.pass)+' pass · '+fmt(k.fail)+' fail',valueAttrs:fx('Pass rate = Pass ÷ (Pass + Fail). Pending rolls are excluded from the rate.')})
+   +KpiCard({label:'Pending inspection',value:fmt(k.pending),valueClass:k.pending?'danger':'',footnote:'not yet inspected',action:pendBtn,valueAttrs:fx('Pending = rolls with no recorded result yet (blank or explicitly Pending).')})
+   +KpiCard({label:'Avg shrinkage',value:k.avg_shrink_pct==null?'—':k.avg_shrink_pct+'%',footnote:fmt(k.shrink_measured)+' rolls measured · '+fmt(k.high_shrink)+' over '+d.high_shrink_pct+'%',valueAttrs:fx('Shrinkage % = worst axis of the after-wash '+d.shrink_gauge_cm+' cm gauge re-measurement ((35 − measured cm) ÷ 35). Legacy single-inch entries are converted. Average over measured rolls only.')})
+   +KpiCard({label:'Bleeding fails',value:fmt(k.bleed_fail),valueClass:k.bleed_fail?'danger':'',footnote:fmt(k.bleed_tested)+' rolls tested',valueAttrs:fx('Bleeding outcome is read from the free-text test note: negation answers (no / none / negative / pass) count as pass; bleed/fail language counts as fail; anything else shows as "other".')})
+   +KpiCard({label:'Width mismatches',value:fmt(k.width_mismatch),valueClass:k.width_mismatch?'danger':'',footnote:fmt(k.width_measured)+' measured · beyond ±'+d.width_tol_cm+' cm'+(k.avg_width_diff_cm!=null?' · avg diff '+k.avg_width_diff_cm+' cm':''),valueAttrs:fx('Measured roll width vs the product master width in Odoo. A roll counts as a mismatch when the difference exceeds ±'+d.width_tol_cm+' cm.')})
+   +KpiCard({label:'Avg days to inspect',value:k.avg_inspect_lag_days==null?'—':fmt1(k.avg_inspect_lag_days),footnote:fmt(k.month_inspected)+' of '+fmt(k.month_rolls)+' this month\u2019s rolls inspected',valueAttrs:fx('Average days between the receiving date and the inspection result being recorded (inspected rolls only, 0–365 day sanity bound).')});
+}
+function renderQcRule(d){
+  document.getElementById('qc-rule-note').innerHTML=
+    'Quality results are recorded per roll on the <b>Receiving</b> tab. <b>High shrinkage</b> here = worst-axis shrinkage of <b>more than '+esc(d.high_shrink_pct)+'%</b> of the '+esc(d.shrink_gauge_cm)+' cm gauge square (the Receiving tab\u2019s informational flag stays at \u22652\u2033). <b>Width mismatch</b> = measured width differing from the Odoo product master by more than \u00b1'+esc(d.width_tol_cm)+' cm. Pending = no result recorded yet. All cards, charts and tables respect the filters above \u2014 including the status filter.';
+  document.getElementById('qc-shrink-sub').textContent='· '+fmt(d.shrink_not_measured)+' rolls not measured';
+}
+function renderQcBars(d){
+  const supRows=(d.by_supplier||[]).filter(r=>r.fail>0).slice(0,12).map(r=>({label:r.supplier,v:r.fail,_qty:fmt(r.fail)+' fail',pp:r.pass_pct}));
+  bars('qc-sup-bars',supRows,'label','v',r=>r.pp==null?'':r.pp+'% pass',false,'Rolls that failed inspection, per supplier (top 12), under the current filters.');
+  const fabRows=(d.by_fabric||[]).filter(r=>r.fail>0).slice(0,12).map(r=>({label:r.fabric,v:r.fail,_qty:fmt(r.fail)+' fail',pp:r.pass_pct}));
+  bars('qc-fab-bars',fabRows,'label','v',r=>r.pp==null?'':r.pp+'% pass',false,'Rolls that failed inspection, per fabric (top 12), under the current filters.');
+  const monRows=(d.by_month||[]).slice(-12).map(r=>({label:r.month==='unknown'?'Unknown':r.month,v:r.pass_pct==null?0:r.pass_pct,_qty:r.pass_pct==null?'—':r.pass_pct+'%',sub:fmt(r.pass+r.fail)+' insp / '+fmt(r.rolls)}));
+  bars('qc-month-bars',monRows,'label','v',r=>r.sub,false,'Monthly pass rate = Pass ÷ (Pass + Fail) among rolls received that month (last 12 months shown).');
+  const skRows=(d.shrink_buckets||[]).map(r=>({label:r.label,v:r.n,_qty:fmt(r.n)}));
+  bars('qc-shrink-bars',skRows,'label','v',null,false,'Distribution of worst-axis shrinkage % across measured rolls. Gauge square = '+d.shrink_gauge_cm+' cm; the report\u2019s high-shrinkage rule is >'+d.high_shrink_pct+'%.');
+  const bl=d.bleeding||{};
+  const blRows=[['No bleeding','pass'],['Bleeding / failed','fail'],['Other / unclear','other'],['Not tested','not_tested']]
+    .map(([label,k])=>({label,v:bl[k]||0,_qty:fmt(bl[k]||0)}));
+  bars('qc-bleed-bars',blRows,'label','v',null,false,'Bleeding-test outcomes read from the free-text note on each roll.');
+}
+const QC_SCORE_COLS=[
+  ['supplier','Supplier'],['rolls','Rolls'],['pass','Pass'],['fail','Fail'],
+  ['pending','Pending'],['pass_pct','Pass %'],['avg_shrink_pct','Avg shrink %'],
+  ['high_shrink','High shrink'],['bleed_fail','Bleed fails']];
+function renderQcScore(){
+  const d=qcData; if(!d)return;
+  const rows=(d.by_supplier||[]).slice();
+  const {key,dir}=qcSort;
+  rows.sort((a,b)=>{
+    const av=a[key],bv=b[key];
+    if(av==null&&bv==null)return 0; if(av==null)return 1; if(bv==null)return -1;
+    if(typeof av==='string')return av.localeCompare(bv)*dir;
+    return (av-bv)*dir;
+  });
+  document.getElementById('qc-score-head').innerHTML='<tr>'+QC_SCORE_COLS.map(([k,l])=>
+    `<th class="${k==='supplier'?'':'r'}" data-qc-sort="${k}" style="cursor:pointer;" title="Click to sort">${esc(l)}${qcSort.key===k?(qcSort.dir<0?' \u25be':' \u25b4'):''}</th>`).join('')+'</tr>';
+  document.getElementById('qc-score-body').innerHTML=rows.length?rows.map(r=>
+    `<tr><td>${esc(r.supplier)}</td><td class="r">${fmt(r.rolls)}</td>`+
+    `<td class="r" style="color:#0a7d33;">${fmt(r.pass)}</td>`+
+    `<td class="r"${r.fail?' style="color:var(--danger);font-weight:700;"':''}>${fmt(r.fail)}</td>`+
+    `<td class="r">${fmt(r.pending)}</td>`+
+    `<td class="r">${r.pass_pct==null?'—':r.pass_pct+'%'}</td>`+
+    `<td class="r">${r.avg_shrink_pct==null?'—':r.avg_shrink_pct+'%'}</td>`+
+    `<td class="r"${r.high_shrink?' style="color:#b45309;font-weight:700;"':''}>${fmt(r.high_shrink)}</td>`+
+    `<td class="r"${r.bleed_fail?' style="color:var(--danger);font-weight:700;"':''}>${fmt(r.bleed_fail)}</td></tr>`).join('')
+   :'<tr><td colspan="9" class="muted" style="text-align:center;padding:14px;">No rolls match the current filters.</td></tr>';
+}
+function qcStatusPill(s){
+  if(s==='Pass')return '<span style="color:#0a7d33;font-weight:700;">Pass</span>';
+  if(s==='Fail')return '<span style="color:var(--danger);font-weight:700;">Fail</span>';
+  return '<span class="muted">Pending</span>';
+}
+function renderQcDetail(d){
+  const rows=d.detail||[];
+  document.getElementById('qc-detail-sub').textContent='· '+fmt(rows.length)+' rolls'+(d.detail_truncated?' (showing first 1,000 — narrow the filters or use the CSV export)':'');
+  document.getElementById('qc-detail-body').innerHTML=rows.length?rows.map(r=>{
+    const w=(r.width_measured_m!=null?fmt2(r.width_measured_m):'—')+(r.width_diff_cm!=null?` <span class="${Math.abs(r.width_diff_cm)>d.width_tol_cm?'':'muted'}"${Math.abs(r.width_diff_cm)>d.width_tol_cm?' style="color:var(--danger);font-weight:700;"':''}>(${r.width_diff_cm>0?'+':''}${esc(r.width_diff_cm)} cm)</span>`:'');
+    const sk=r.shrink_pct==null?'<span class="muted">—</span>':`<span${r.high_shrink?' style="color:#b45309;font-weight:700;"':''}>${esc(r.shrink_pct)}%${r.high_shrink?' \u26a0':''}</span>`;
+    const bo=r.bleeding_outcome==='fail'?' style="color:var(--danger);font-weight:700;"':'';
+    return `<tr><td>${esc(r.recv_date||'')}</td><td>${esc(r.po_name||'—')}</td><td>${esc(r.supplier||'')}</td>`+
+      `<td title="${esc(r.barcode||'')}">${esc(r.fabric_name||'')}</td><td class="r">${esc(r.roll_no)}</td>`+
+      `<td>${qcStatusPill(r.status)}</td><td class="r">${r.qty_kg==null?'—':fmt1(r.qty_kg)}</td>`+
+      `<td class="r">${w}</td><td class="r">${sk}</td>`+
+      `<td${bo} title="${esc(r.bleeding_test||'')}">${esc(r.bleeding_test||'—')}</td>`+
+      `<td title="${esc(r.notes||'')}">${esc((r.notes||'—').length>40?(r.notes||'').slice(0,40)+'…':(r.notes||'—'))}</td>`+
+      `<td>${esc(r.inspected_by||'—')}${r.inspected_at?`<div class="muted" style="font-size:10px;">${esc(r.inspected_at)}</div>`:''}</td>`+
+      `<td><button class="btn" style="font-size:11px;" data-qc-open="${esc(r.sheet_id)}" title="Open this roll\u2019s receiving sheet (quality &amp; edit)">Open sheet</button></td></tr>`;
+  }).join(''):'<tr><td colspan="13" class="muted" style="text-align:center;padding:14px;">No rolls match the current filters.</td></tr>';
+}
+function qcBindOnce(){
+  if(qcBound)return; qcBound=true;
+  document.getElementById('page-defects').addEventListener('click',e=>{
+    const open=e.target.closest('[data-qc-open]');
+    if(open){openReceivingEdit(Number(open.dataset.qcOpen));return;}
+    const srt=e.target.closest('[data-qc-sort]');
+    if(srt){
+      const k=srt.dataset.qcSort;
+      if(qcSort.key===k)qcSort.dir*=-1; else qcSort={key:k,dir:k==='supplier'?1:-1};
+      renderQcScore();
+    }
+  });
+}
+function qcMeta(){
+  const bits=['Fabric QC report'];
+  const f=document.getElementById('qc-from').value,t=document.getElementById('qc-to').value;
+  if(f||t)bits.push('window '+(f||'…')+' \u2192 '+(t||'…'));
+  const s=document.getElementById('qc-supplier').value; if(s)bits.push('supplier '+s);
+  const fb=document.getElementById('qc-fabric').value.trim(); if(fb)bits.push('fabric "'+fb+'"');
+  const st=document.getElementById('qc-status').value; if(st)bits.push('status '+st);
+  return bits.join(' · ');
+}
+function qcExportScorecard(){
+  if(!qcData){alert('Open the Fabric QC tab first.');return;}
+  mixDownloadCsv(QC_SCORE_COLS.map(([k,l])=>[l,r=>r[k]]),qcData.by_supplier||[],'fabric-qc-supplier-scorecard.csv',qcMeta());
+}
+function qcExportDetail(){
+  if(!qcData){alert('Open the Fabric QC tab first.');return;}
+  const cols=[['Date',r=>r.recv_date],['PO',r=>r.po_name],['Supplier',r=>r.supplier],
+    ['Fabric',r=>r.fabric_name],['Barcode',r=>r.barcode],['Roll',r=>r.roll_no],
+    ['Status',r=>r.status],['Kg',r=>r.qty_kg],['Length (yd)',r=>r.length_yards],
+    ['Width measured (m)',r=>r.width_measured_m],['Width expected (m)',r=>r.expected_width_m],
+    ['Width diff (cm)',r=>r.width_diff_cm],['Shrink %',r=>r.shrink_pct],
+    ['High shrink',r=>r.high_shrink?'yes':''],['Bleeding test',r=>r.bleeding_test],
+    ['Bleeding outcome',r=>r.bleeding_outcome],['Notes',r=>r.notes],
+    ['Inspected by',r=>r.inspected_by],['Inspected at',r=>r.inspected_at]];
+  mixDownloadCsv(cols,qcData.detail||[],'fabric-qc-roll-detail.csv',qcMeta());
+}
+
 // ── Navigation ──
-const LOADERS={dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches};
-const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Fabric quality control tracking and reporting — coming soon',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet'};
+const LOADERS={dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,defects:loadFabricQC,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches};
+const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Roll-level quality results from the Receiving tab — pass rates, shrinkage, bleeding and width checks by supplier, fabric and month',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet'};
 const loadedOnce={};
 
 // Bind ONLY real page tabs ([data-page]) — the "More ▾" trigger is also a

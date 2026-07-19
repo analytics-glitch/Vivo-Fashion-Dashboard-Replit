@@ -7471,6 +7471,293 @@ def receiving_delete(sheet_id: int, request: Request):
         return {"ok": True}
 
 
+# ── Fabric QC report ────────────────────────────────────────
+# Aggregated quality-control reporting over the per-roll inspection data
+# recorded on the Receiving tab (fabric_receiving_rolls / _sheets). One
+# endpoint returns KPIs, breakdowns (supplier / fabric / month), shrinkage
+# distribution, bleeding outcomes, width-discrepancy summary and a capped
+# roll-level detail list. All figures respect ALL applied filters (including
+# the status filter) so the on-screen tables always reconcile with the cards.
+# No extra role gate: any signed-in fabric user (page-level gate only).
+
+# High-shrinkage threshold for the QC report (percent of the 35 cm gauge).
+# The Receiving tab's informational flag stays at ≥2 inches; this report uses
+# a percent threshold so it is comparable across axes — echoed in the payload
+# so the UI always displays the active rule.
+_QC_HIGH_SHRINK_PCT = 5.0
+# Width discrepancy tolerance (cm) between the measured roll width and the
+# product master width before a roll counts as a width mismatch.
+_QC_WIDTH_TOL_CM = 2.0
+
+def _qc_shrink_pct(r):
+    """Worst-axis shrinkage percent for one roll: structured after-wash cm
+    measurements against the fixed 35 cm gauge first (either axis), legacy
+    single-inches fallback. None when nothing was measured. Negative = grew."""
+    pcts = []
+    for k in ("after_wash_width_cm", "after_wash_length_cm"):
+        v = r.get(k)
+        if v is None or v == "":
+            continue
+        try:
+            c = float(v)
+        except (TypeError, ValueError):
+            continue
+        pcts.append((_RECV_SHRINK_GAUGE_CM - c) / _RECV_SHRINK_GAUGE_CM * 100.0)
+    if pcts:
+        return max(pcts)
+    v = r.get("shrinkage_inches")
+    if v is None or v == "":
+        return None
+    try:
+        inches = float(v)
+    except (TypeError, ValueError):
+        return None
+    return inches * 2.54 / _RECV_SHRINK_GAUGE_CM * 100.0
+
+def _qc_bleed_outcome(txt):
+    """Classify the free-text bleeding_test field. 'not_tested' when blank;
+    negation-style answers = pass; bleed/fail language = fail; anything else
+    'other' (shown, never guessed)."""
+    t = (txt or "").strip().lower()
+    if not t:
+        return "not_tested"
+    if re.match(r"^(no\b|none\b|nil\b|negative\b|pass(ed)?\b|ok(ay)?\b|"
+                r"n/?a\b|not\b|doesn|didn)", t):
+        return "pass"
+    if re.search(r"fail|yes\b|bleed|positive|colou?r\s*(run|loss)|runs\b", t):
+        return "fail"
+    return "other"
+
+@fabric_router.get("/api/fabric/qc/report")
+def fabric_qc_report(date_from: str = Query(default=""),
+                     date_to: str = Query(default=""),
+                     supplier: str = Query(default=""),
+                     fabric: str = Query(default=""),
+                     status: str = Query(default="")):
+    """Fabric QC report over per-roll inspection data. Filters: receiving date
+    window (PO date, falling back to the sheet's EAT save date), supplier
+    (derived from the PO's supplier in raw_fabric_purchase_orders via po_name),
+    fabric search (name or barcode) and inspection status (Pass / Fail /
+    Pending — Pending includes never-inspected NULL/blank rolls)."""
+    date_re = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    df = date_from.strip() if date_from and date_re.match(date_from.strip()) else None
+    dt_ = date_to.strip() if date_to and date_re.match(date_to.strip()) else None
+    sup = (supplier or "").strip()
+    fab = (fabric or "").strip()
+    st = (status or "").strip().title()
+    if st not in ("Pass", "Fail", "Pending"):
+        st = ""
+    where, params = [], []
+    if df:
+        where.append("COALESCE(s.po_date, (s.created_at AT TIME ZONE 'Africa/Nairobi')::date) >= %s::date")
+        params.append(df)
+    if dt_:
+        where.append("COALESCE(s.po_date, (s.created_at AT TIME ZONE 'Africa/Nairobi')::date) <= %s::date")
+        params.append(dt_)
+    if fab:
+        where.append("(s.fabric_name ILIKE %s OR s.barcode ILIKE %s)")
+        params.extend([f"%{fab}%", f"%{fab}%"])
+    if st == "Pending":
+        where.append("(r.quality_status IS NULL OR r.quality_status = '' OR r.quality_status = 'Pending')")
+    elif st:
+        where.append("r.quality_status = %s")
+        params.append(st)
+    extra = (" AND " + " AND ".join(where)) if where else ""
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        rows = q(conn, f"""
+            SELECT r.roll_no, r.qty_kg, r.quality_status, r.quality_notes,
+                   r.quality_updated_by, r.quality_updated_at,
+                   r.length_yards, r.shrinkage_inches, r.bleeding_test,
+                   r.width_measured_m, r.after_wash_width_cm, r.after_wash_length_cm,
+                   s.id as sheet_id, s.fabric_name, s.barcode, s.po_name,
+                   COALESCE(s.po_date, (s.created_at AT TIME ZONE 'Africa/Nairobi')::date) as recv_date,
+                   p.width_m as expected_width_m,
+                   COALESCE(
+                     (SELECT MAX(NULLIF(po.supplier,''))
+                        FROM raw_fabric_purchase_orders po
+                       WHERE po.po_name = s.po_name AND s.po_name IS NOT NULL),
+                     'No PO / unknown') as supplier
+            FROM fabric_receiving_rolls r
+            JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+            LEFT JOIN raw_fabric_products p ON p.id = s.product_id
+            WHERE r.deleted_at IS NULL AND s.deleted_at IS NULL{extra}
+            ORDER BY recv_date DESC, s.id DESC, r.roll_no
+        """, tuple(params) if params else None)
+        # Filter dropdown options come from the UNFILTERED universe so picking
+        # one supplier never empties the other dropdowns.
+        opts = q(conn, """
+            SELECT DISTINCT
+                   COALESCE(
+                     (SELECT MAX(NULLIF(po.supplier,''))
+                        FROM raw_fabric_purchase_orders po
+                       WHERE po.po_name = s.po_name AND s.po_name IS NOT NULL),
+                     'No PO / unknown') as supplier,
+                   s.fabric_name
+            FROM fabric_receiving_sheets s
+            WHERE s.deleted_at IS NULL
+        """)
+    if sup:
+        rows = [r for r in rows if (r.get("supplier") or "") == sup]
+
+    def _norm_status(r):
+        v = (r.get("quality_status") or "").strip()
+        return v if v in ("Pass", "Fail") else "Pending"
+
+    today = datetime.datetime.now(
+        datetime.timezone(datetime.timedelta(hours=3))).date()
+    cur_month = today.strftime("%Y-%m")
+    n = len(rows)
+    pass_n = fail_n = pending_n = 0
+    shrink_vals, high_shrink_n = [], 0
+    bleed = {"pass": 0, "fail": 0, "other": 0, "not_tested": 0}
+    width_meas_n = width_bad_n = 0
+    width_diffs = []
+    insp_lag_days = []
+    month_rolls = month_inspected = 0
+    by_sup, by_fab, by_mon = {}, {}, {}
+    detail = []
+    for r in rows:
+        stt = _norm_status(r)
+        if stt == "Pass":
+            pass_n += 1
+        elif stt == "Fail":
+            fail_n += 1
+        else:
+            pending_n += 1
+        sp = _qc_shrink_pct(r)
+        if sp is not None:
+            shrink_vals.append(sp)
+            if sp >= _QC_HIGH_SHRINK_PCT:
+                high_shrink_n += 1
+        bo = _qc_bleed_outcome(r.get("bleeding_test"))
+        bleed[bo] += 1
+        wdiff = None
+        wm, we = r.get("width_measured_m"), r.get("expected_width_m")
+        try:
+            if wm not in (None, "") and we not in (None, "") and float(we) > 0:
+                wdiff = (float(wm) - float(we)) * 100.0  # cm
+                width_meas_n += 1
+                width_diffs.append(wdiff)
+                if abs(wdiff) > _QC_WIDTH_TOL_CM:
+                    width_bad_n += 1
+        except (TypeError, ValueError):
+            wdiff = None
+        rd = r.get("recv_date")
+        rd_iso = rd.isoformat() if hasattr(rd, "isoformat") else (str(rd)[:10] if rd else None)
+        mon = rd_iso[:7] if rd_iso else "unknown"
+        if mon == cur_month:
+            month_rolls += 1
+            if stt != "Pending":
+                month_inspected += 1
+        qat = r.get("quality_updated_at")
+        if stt != "Pending" and qat is not None and rd is not None:
+            try:
+                lag = (qat.date() - rd).days
+                if 0 <= lag <= 365:
+                    insp_lag_days.append(lag)
+            except (TypeError, AttributeError):
+                pass
+        for key, bucket in ((r.get("supplier") or "No PO / unknown", by_sup),
+                            (r.get("fabric_name") or "Unknown fabric", by_fab),
+                            (mon, by_mon)):
+            g = bucket.setdefault(key, {
+                "rolls": 0, "pass": 0, "fail": 0, "pending": 0,
+                "high_shrink": 0, "bleed_fail": 0, "shrinks": []})
+            g["rolls"] += 1
+            g["pass" if stt == "Pass" else ("fail" if stt == "Fail" else "pending")] += 1
+            if sp is not None:
+                g["shrinks"].append(sp)
+                if sp >= _QC_HIGH_SHRINK_PCT:
+                    g["high_shrink"] += 1
+            if bo == "fail":
+                g["bleed_fail"] += 1
+        if len(detail) < 1000:
+            detail.append({
+                "sheet_id": r.get("sheet_id"),
+                "po_name": r.get("po_name"),
+                "supplier": r.get("supplier"),
+                "fabric_name": r.get("fabric_name"),
+                "barcode": r.get("barcode"),
+                "roll_no": r.get("roll_no"),
+                "recv_date": rd_iso,
+                "status": stt,
+                "qty_kg": float(r["qty_kg"]) if r.get("qty_kg") is not None else None,
+                "length_yards": float(r["length_yards"]) if r.get("length_yards") not in (None, "") else None,
+                "width_measured_m": float(wm) if wm not in (None, "") else None,
+                "expected_width_m": float(we) if we not in (None, "") else None,
+                "width_diff_cm": round(wdiff, 1) if wdiff is not None else None,
+                "shrink_pct": round(sp, 1) if sp is not None else None,
+                "high_shrink": bool(sp is not None and sp >= _QC_HIGH_SHRINK_PCT),
+                "bleeding_test": r.get("bleeding_test") or None,
+                "bleeding_outcome": bo,
+                "notes": r.get("quality_notes") or None,
+                "inspected_by": r.get("quality_updated_by") or None,
+                "inspected_at": (r["quality_updated_at"].strftime("%Y-%m-%d %H:%M")
+                                 if r.get("quality_updated_at") is not None else None),
+            })
+
+    def _grp_out(bucket, label_key):
+        out = []
+        for k, g in bucket.items():
+            insp = g["pass"] + g["fail"]
+            out.append({
+                label_key: k, "rolls": g["rolls"], "pass": g["pass"],
+                "fail": g["fail"], "pending": g["pending"],
+                "pass_pct": round(g["pass"] / insp * 100.0, 1) if insp else None,
+                "avg_shrink_pct": round(sum(g["shrinks"]) / len(g["shrinks"]), 1) if g["shrinks"] else None,
+                "high_shrink": g["high_shrink"], "bleed_fail": g["bleed_fail"],
+            })
+        return out
+
+    inspected = pass_n + fail_n
+    shrink_buckets = [
+        {"label": "None / grew (≤0%)", "n": sum(1 for v in shrink_vals if v <= 0)},
+        {"label": "0–2%", "n": sum(1 for v in shrink_vals if 0 < v <= 2)},
+        {"label": "2–5%", "n": sum(1 for v in shrink_vals if 2 < v <= 5)},
+        {"label": "5–8%", "n": sum(1 for v in shrink_vals if 5 < v <= 8)},
+        {"label": ">8%", "n": sum(1 for v in shrink_vals if v > 8)},
+    ]
+    by_month = sorted(_grp_out(by_mon, "month"), key=lambda x: x["month"])
+    return {
+        "high_shrink_pct": _QC_HIGH_SHRINK_PCT,
+        "width_tol_cm": _QC_WIDTH_TOL_CM,
+        "shrink_gauge_cm": _RECV_SHRINK_GAUGE_CM,
+        "kpis": {
+            "rolls": n, "inspected": inspected,
+            "pass": pass_n, "fail": fail_n, "pending": pending_n,
+            "pass_pct": round(pass_n / inspected * 100.0, 1) if inspected else None,
+            "fail_pct": round(fail_n / inspected * 100.0, 1) if inspected else None,
+            "coverage_pct": round(inspected / n * 100.0, 1) if n else None,
+            "avg_shrink_pct": round(sum(shrink_vals) / len(shrink_vals), 1) if shrink_vals else None,
+            "shrink_measured": len(shrink_vals),
+            "high_shrink": high_shrink_n,
+            "bleed_tested": n - bleed["not_tested"],
+            "bleed_fail": bleed["fail"],
+            "width_measured": width_meas_n,
+            "width_mismatch": width_bad_n,
+            "avg_width_diff_cm": round(sum(width_diffs) / len(width_diffs), 1) if width_diffs else None,
+            "month_rolls": month_rolls,
+            "month_inspected": month_inspected,
+            "avg_inspect_lag_days": round(sum(insp_lag_days) / len(insp_lag_days), 1) if insp_lag_days else None,
+        },
+        "by_supplier": sorted(_grp_out(by_sup, "supplier"),
+                              key=lambda x: (-x["fail"], -x["rolls"])),
+        "by_fabric": sorted(_grp_out(by_fab, "fabric"),
+                            key=lambda x: (-x["fail"], -x["rolls"]))[:100],
+        "by_month": by_month,
+        "shrink_buckets": shrink_buckets,
+        "shrink_not_measured": n - len(shrink_vals),
+        "bleeding": bleed,
+        "detail": detail,
+        "detail_truncated": n > 1000,
+        "options": {
+            "suppliers": sorted({o["supplier"] for o in opts if o.get("supplier")}),
+            "fabrics": sorted({o["fabric_name"] for o in opts if o.get("fabric_name")}),
+        },
+    }
+
+
 if __name__ == "__main__":
     # Standalone one-time backfill of the Months-of-Cover daily snapshot. The
     # writer is idempotent (upserts on today's EAT capture date), so this is safe
