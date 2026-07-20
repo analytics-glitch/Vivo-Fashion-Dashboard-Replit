@@ -16,6 +16,7 @@ Registered via register_retail_desk_routes(app, api_pg_module) from api_pg.py.
 Desk coaching uses claude-haiku-3-5 (daily, fast). Chair uses sonnet (weekly).
 """
 
+import asyncio
 import json
 import logging
 import math
@@ -38,7 +39,7 @@ _ai_inst = None
 _FC_LOCK = threading.Lock()
 _FC: dict = {}  # key -> {"data": ..., "at": float}
 
-HAIKU  = "claude-haiku-3-5"
+HAIKU  = "claude-haiku-4-5"
 SONNET = "claude-sonnet-4-5"
 
 
@@ -158,6 +159,35 @@ _DDL = [
         created_at  TIMESTAMPTZ DEFAULT now(),
         UNIQUE (store, run_date)
     )""",
+    "ALTER TABLE IF EXISTS retail_desk_coaching_log ADD COLUMN IF NOT EXISTS analysis JSONB",
+    """CREATE TABLE IF NOT EXISTS retail_desk_predictions (
+        id                  BIGSERIAL PRIMARY KEY,
+        store               TEXT NOT NULL,
+        run_date            DATE NOT NULL DEFAULT CURRENT_DATE,
+        metric_name         TEXT,
+        prediction_text     TEXT NOT NULL,
+        current_value       TEXT,
+        predicted_value     TEXT,
+        time_horizon        TEXT,
+        confidence          TEXT DEFAULT 'medium',
+        rationale           TEXT,
+        status              TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending','accurate','inaccurate','partial')),
+        actual_value        TEXT,
+        actual_recorded_at  TIMESTAMPTZ,
+        recorded_by         TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS rdp_store_date ON retail_desk_predictions (store, run_date DESC)",
+    """CREATE TABLE IF NOT EXISTS retail_desk_corrections (
+        id              BIGSERIAL PRIMARY KEY,
+        store           TEXT NOT NULL,
+        analysis_date   DATE NOT NULL DEFAULT CURRENT_DATE,
+        correction_text TEXT NOT NULL,
+        submitted_by    TEXT,
+        submitted_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+        applied         BOOLEAN DEFAULT FALSE
+    )""",
+    "CREATE INDEX IF NOT EXISTS rdc_store ON retail_desk_corrections (store, analysis_date DESC)",
 ]
 
 # ── Consecutive-weeks-behind tracker (inline, no extra table) ─────────────────
@@ -396,32 +426,123 @@ def _store_path_query():
         return {}
 
 
-# ── LLM coaching ─────────────────────────────────────────────────────────────
+# ── AI Retail Analyst ─────────────────────────────────────────────────────────
 
-_COACHING_SYSTEM = """You are the Vivo Retail Desk — an expert retail operations advisor for Vivo Fashion Group, a vertically-integrated fashion retailer across East Africa.
+_STORE_ANALYST_SYSTEM = """You are an autonomous AI Retail Analyst embedded in the Vivo BI dashboard.
+Vivo Fashion Group is a vertically-integrated fashion retailer across East Africa (Kenya ~84%% of POS revenue, Uganda, Rwanda, Online). All amounts in KES.
 
-Your job is to analyse one store's performance data and produce a concise, actionable daily coaching note.
+FLEET BENCHMARKS (apply as reference — do not override with provided actuals):
+• Discount depth: 11%% fleet avg; >18%% = margin risk; >22%% = critical
+• Returns rate (transactions): 8%% avg; >14%% = product/fit/ops issue
+• Units per transaction (UPT): 2.2 avg; <1.8 = cross-sell miss; >2.8 = strong attach
+• Returning customer %%: >30%% healthy; <20%% = retention risk
+• Dead stock %%: <10%% healthy; 10-15%% elevated; >15%% = cash trap
+• Conversion (footfall sensor): typical 20-30%%; <15%% = floor execution issue; >35%% = strong
+• MoM growth: >=0%% on trend; -10%% or worse = structural concern
 
-RULES:
-- Be direct and specific. Name the numbers. Use KES throughout.
-- Do NOT make up data that isn't in the provided context.
-- If a metric is missing, say "data unavailable" — never fabricate.
-- Maximum 4 bullet points. Each bullet: one observation + one specific recommended action.
-- If the store is ahead of path: one bullet on sustaining it, one on what's driving it.
-- If behind: identify the likely root cause, recommend the single most impactful lever.
-- Flag if a consecutive-weeks-behind count is ≥ 3 — this needs escalation language.
-- Flag if there are open issues that haven't moved in >7 days.
-- Never output HTML. Plain text bullets only (use • as bullet character).
-- End with a confidence qualifier: LOW (missing >2 key metrics) / MEDIUM / HIGH.
-"""
+STANDING RULES — apply every analysis, no exceptions:
+1. Lead with the verdict: one of "performing", "underperforming", or "mixed" — and state the single most important action.
+2. Show both sides: report what is working AND what is misbehaving. A winning store has a leak; a losing store has a strength.
+3. Name the metric, not the mood: every claim must have metric + actual value + benchmark + variance + driver.
+4. Separate signal from noise: flag which movements are real/actionable vs seasonal, one-off, or low-confidence.
+5. Trace to root cause, not symptom: falling revenue is a symptom — is it footfall, conversion, basket, stock depth, or pricing?
+6. Surface the opportunity: always quantify the biggest upside in KES. If you can't quantify exactly, estimate a range.
+7. Prescribe, don't describe: every misbehaving metric must end in a concrete action with an owner and deadline.
+8. Never guess: if data is missing, say so and name what it would have told you.
+9. Justify each metric you select: one line explaining why this metric matters for this store.
+10. Rank by impact, not by convenience: lead with the biggest lever, not the easiest one to spot.
+11. Escalate consecutive-weeks-behind: if weeks_behind >= 3, the top_action must name escalation + a specific manager intervention.
+12. Stale issues are a system failure: if open issues are unflagged >7 days, call this out explicitly in misbehaving or actions.
+13. Only report actuals from the data provided — never fabricate or extrapolate values not given.
+14. Keep predictions falsifiable: every prediction must state the metric, the predicted value, the time horizon, and the rationale.
+15. Corrections are binding: if prior corrections are provided, do NOT repeat flagged mistakes — apply them immediately.
+16. Limit output: max 3 items each in what_working, what_misbehaving, signal_vs_noise, actions; max 2 predictions.
 
-def _run_coaching(store: str, store_data: dict, path_data: dict, issues: list, categories: list) -> str:
+OUTPUT: Return valid JSON only. No markdown fences. No commentary outside the JSON object.
+
+JSON SCHEMA (follow exactly — output fields in this order):
+{
+  "verdict": "performing|underperforming|mixed",
+  "top_action": "single most important action — specific, named owner, actionable today",
+  "what_working": [
+    {
+      "metric": "string",
+      "value": "string with unit",
+      "benchmark": "string with unit",
+      "variance": "string e.g. +9%% or +7pp",
+      "driver": "one specific cause",
+      "why_chosen": "why this metric matters for this store"
+    }
+  ],
+  "what_misbehaving": [
+    {
+      "metric": "string",
+      "value": "string with unit",
+      "benchmark": "string with unit",
+      "variance": "string e.g. -12%% or +7pp",
+      "root_cause": "specific root cause, not a symptom",
+      "action": "concrete prescriptive action",
+      "owner": "specific role or person",
+      "expected_impact": "quantified where possible",
+      "why_chosen": "why this metric matters for this store"
+    }
+  ],
+  "signal_vs_noise": [
+    {
+      "type": "signal|noise",
+      "item": "what the pattern is",
+      "reason": "why it is signal or noise"
+    }
+  ],
+  "opportunity": {
+    "description": "string",
+    "kes_upside": 0,
+    "lever": "string",
+    "how": "string — concrete steps"
+  },
+  "actions": [
+    {
+      "action": "string",
+      "owner": "string",
+      "deadline": "string e.g. this week / by Friday",
+      "expected_impact": "string",
+      "kes_impact": null
+    }
+  ],
+  "predictions": [
+    {
+      "metric": "string",
+      "current_value": "string with unit",
+      "predicted_value": "string with unit",
+      "time_horizon": "4 weeks",
+      "rationale": "string",
+      "confidence": "high|medium|low"
+    }
+  ],
+  "metric_map": {
+    "available": ["list of metrics you can actually compute from the data provided"],
+    "absent": [{"metric": "name", "would_have_told_you": "what this gap hides"}]
+  },
+  "data_gaps": "string — what additional data would most improve this analysis"
+}"""
+
+
+def _run_store_analysis(
+    store: str,
+    store_data: dict,
+    path_data: dict,
+    issues: list,
+    categories: list,
+) -> dict:
+    """Full 6-part structured analysis. Returns parsed dict (may be empty on failure)."""
     if not _ai_configured():
-        return ""
+        return {}
+    import json as _json
+
     try:
-        weeks_behind = _weeks_behind_count(store)
-        open_issues  = [i for i in issues if i.get("status") == "open"]
-        stale_issues = [
+        weeks_behind  = _weeks_behind_count(store)
+        open_issues   = [i for i in issues if i.get("status") == "open"]
+        stale_issues  = [
             i for i in open_issues
             if i.get("opened_at") and
                (datetime.now(timezone.utc) - (
@@ -430,42 +551,158 @@ def _run_coaching(store: str, store_data: dict, path_data: dict, issues: list, c
                )).days > 7
         ]
 
-        pd = path_data.get(store, {})
+        pd_store   = path_data.get(store, {})
+        ext        = _get_store_extended_metrics(store)
+        ff         = _get_store_footfall_l28d(store)
+        stock      = _get_store_stock_metrics(store)
+        bench      = _get_network_benchmarks()
+        corrections = _get_store_corrections(store)
+
+        def _fmt(v, default="unavailable"):
+            if v is None:
+                return default
+            if isinstance(v, float):
+                return f"{v:,.1f}"
+            if isinstance(v, int):
+                return f"{v:,}"
+            return str(v)
+
+        corrections_block = "None"
+        if corrections:
+            corrections_block = "\n".join(
+                f"  [{c['date']}] {c['text']}" for c in corrections
+            )
+
+        weekly_rows = store_data.get("weekly", []) or []
+        weekly_block = "  No data"
+        if weekly_rows:
+            weekly_block = "\n".join(
+                f"  {w.get('week_start','?')}: KES {float(w.get('net_sales',0)):,.0f}"
+                for w in weekly_rows[-8:]
+            )
+
+        ff_block = "  Footfall sensor: not available for this store"
+        if ff.get("available"):
+            ff_block = (
+                f"  Visitors L28D: {_fmt(ff.get('visitors_l28d'))}\n"
+                f"  Avg conversion: {_fmt(ff.get('avg_conversion_pct'))}%%"
+            )
+
+        stock_block = "  Stock data: not available"
+        if stock.get("available"):
+            stock_block = (
+                f"  Store SOH (units): {_fmt(stock.get('total_soh'))}\n"
+                f"  Active SKUs with stock: {_fmt(stock.get('sku_count'))}\n"
+                f"  Dead stock (no sale L90D): {_fmt(stock.get('dead_soh'))} units "
+                f"({_fmt(stock.get('dead_pct'))}%% of SOH)"
+            )
+
         context = f"""STORE: {store}
 COUNTRY: {store_data.get('country','?')}
-DATE: {date.today().isoformat()}
+ANALYSIS DATE: {date.today().isoformat()}
+CONSECUTIVE WEEKS BEHIND MILESTONE: {weeks_behind}
 
-GROWTH PATH (current month):
-  Monthly target (store share): KES {pd.get('monthly_req', 0):,.0f}
-  MTD required (prorated to today): KES {pd.get('mtd_req', 0):,.0f}
-  MTD actual: KES {store_data.get('mtd_net', 0):,.0f}
-  Gap vs path: KES {pd.get('gap_kes', 0):,.0f}  ({pd.get('gap_pct', 0):+.1f}%)
-  Path status: {pd.get('status','unknown').upper()}
-  Consecutive weeks behind milestone: {weeks_behind}
+=== GROWTH PATH (current month) ===
+Monthly target: KES {pd_store.get('monthly_req', 0):,.0f}
+MTD required (prorated): KES {pd_store.get('mtd_req', 0):,.0f}
+MTD actual: KES {store_data.get('mtd_net', 0):,.0f}
+Gap vs path: KES {pd_store.get('gap_kes', 0):,.0f} ({pd_store.get('gap_pct', 0):+.1f}%%)
+Path status: {pd_store.get('status','unknown').upper()}
+Store share of retail fleet: {pd_store.get('share_pct', 0):.1f}%%
 
-RECENT PERFORMANCE (L28D vs prior 28D):
-  L28D net sales: KES {store_data.get('l28d_net', 0):,.0f}
-  Prior 28D net sales: KES {store_data.get('prev28d_net', 0):,.0f}
-  MTD transactions: {store_data.get('mtd_transactions', 0):,}
-  MTD avg basket: KES {store_data.get('mtd_avg_basket', 0):,.0f}
+=== SALES PERFORMANCE ===
+L28D net sales: KES {store_data.get('l28d_net', 0):,.0f}
+Prior 28D net sales: KES {store_data.get('prev28d_net', 0):,.0f}
+MoM change: {store_data.get('mom_pct', 0):+.1f}%%
+T12M net sales: KES {store_data.get('t12m_net', 0):,.0f}
+MTD transactions: {store_data.get('mtd_transactions', 0):,}
+MTD avg basket: KES {store_data.get('mtd_avg_basket', 0):,.0f}
+Fleet avg basket: KES {bench.get('avg_basket', 0):,.0f}
 
-TOP CATEGORIES (L28D by net sales):
-{chr(10).join(f"  {c['category']}: KES {c['net_sales']:,.0f}" for c in categories) or "  No category data"}
+=== 8-WEEK WEEKLY TREND ===
+{weekly_block}
 
-OPEN ISSUES ({len(open_issues)} total, {len(stale_issues)} stale >7d):
+=== OPERATIONAL METRICS (L28D, this store) ===
+Discount depth: {_fmt(ext.get('discount_depth_pct'))}%% (fleet avg {bench.get('avg_disc_depth_pct', 11.0):.1f}%%)
+Returns rate (transaction %%): {_fmt(ext.get('returns_rate_pct'))}%% (fleet avg {bench.get('avg_returns_rate_pct', 8.0):.1f}%%)
+Returns (KES %% of gross): {_fmt(ext.get('returns_kes_pct'))}%%
+Units per transaction (UPT): {_fmt(ext.get('upt'))} (fleet avg {bench.get('avg_upt', 2.2):.2f})
+Returning customer %%: {_fmt(ext.get('returning_pct'))}%% (fleet avg {bench.get('avg_returning_pct', 25.0):.1f}%%)
+New customer %%: {_fmt(ext.get('new_pct'))}%%
+
+=== FOOTFALL & CONVERSION ===
+{ff_block}
+
+=== STOCK ===
+{stock_block}
+
+=== TOP CATEGORIES (L28D by net sales) ===
+{chr(10).join(f"  {c['category']}: KES {c['net_sales']:,.0f}" for c in categories[:5]) or "  No category data"}
+
+=== OPEN ISSUES ({len(open_issues)} total, {len(stale_issues)} stale >7d) ===
 {chr(10).join(f"  [{i.get('severity','?').upper()}] {i.get('title','?')} — opened {str(i.get('opened_at','?'))[:10]}" for i in open_issues[:5]) or "  None"}
+
+=== PRIOR CORRECTIONS (apply immediately — do not repeat flagged mistakes) ===
+{corrections_block}
 """
+
         client = _ai_client()
-        resp   = client.messages.create(
+        resp = client.messages.create(
             model=HAIKU,
-            max_tokens=400,
-            system=_COACHING_SYSTEM,
+            max_tokens=4096,
+            system=_STORE_ANALYST_SYSTEM,
             messages=[{"role": "user", "content": context}],
         )
-        return resp.content[0].text.strip() if resp.content else ""
+        raw = resp.content[0].text.strip() if resp.content else ""
+
+        # Strip accidental markdown fences
+        if raw.startswith("```"):
+            raw = raw.split("```", 2)[-1 if raw.count("```") == 1 else 1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.rstrip("`").strip()
+
+        try:
+            analysis = _json.loads(raw)
+        except Exception:
+            log.warning("Analyst JSON parse failed for %s — raw: %s", store, raw[:200])
+            return {}
+
+        # Persist structured analysis in coaching log
+        verdict    = analysis.get("verdict", "unknown")
+        top_action = analysis.get("top_action", "")
+        summary    = f"{verdict.upper()} — {top_action}"
+        try:
+            _db_exec(
+                """INSERT INTO retail_desk_coaching_log (store, run_date, summary, analysis, model)
+                   VALUES (%s, CURRENT_DATE, %s, %s, %s)
+                   ON CONFLICT (store, run_date) DO UPDATE
+                     SET summary = EXCLUDED.summary,
+                         analysis = EXCLUDED.analysis,
+                         model = EXCLUDED.model""",
+                (store, summary, _json.dumps(analysis), HAIKU),
+                fetch=False,
+            )
+        except Exception as e:
+            log.warning("Analyst log save error for %s: %s", store, e)
+
+        # Persist predictions in the learning loop table
+        _save_predictions(store, analysis.get("predictions", []))
+
+        # Mark corrections as applied
+        try:
+            _db_exec(
+                "UPDATE retail_desk_corrections SET applied = TRUE WHERE store = %s AND applied = FALSE",
+                (store,), fetch=False
+            )
+        except Exception:
+            pass
+
+        return analysis
+
     except Exception as e:
-        log.warning("Retail desk coaching error for %s: %s", store, e)
-        return ""
+        log.warning("Store analyst error for %s: %s", store, e)
+        return {}
 
 
 def _run_fleet_coaching(api_key: str, cards: list, fleet: dict, conn) -> dict:
@@ -610,6 +847,236 @@ def ensure_retail_desk_tables():
     log.info("Retail desk tables: OK")
 
 
+# ── Extended per-store metric functions ───────────────────────────────────────
+
+def _get_store_extended_metrics(store: str) -> dict:
+    """Discount depth, returns rate, UPT, customer mix for L28D."""
+    bf = _base_filters().replace("%", "%%")
+    sql = f"""
+        SELECT
+            COUNT(*) FILTER (WHERE s.sale_kind IN ('sale','order'))         AS sale_txns,
+            COUNT(*) FILTER (WHERE s.sale_kind = 'return')                  AS return_txns,
+            COALESCE(SUM(s.ordered_item_quantity) FILTER (
+                WHERE s.sale_kind IN ('sale','order')), 0)                   AS units_sold,
+            COALESCE(SUM(s.total_sales_kes::numeric) FILTER (
+                WHERE s.sale_kind IN ('sale','order')), 0)                   AS total_gross,
+            COALESCE(SUM(s.discounts_kes::numeric), 0)                      AS total_disc,
+            COALESCE(SUM(s.returns_kes::numeric)  FILTER (
+                WHERE s.sale_kind = 'return'), 0)                            AS total_ret,
+            COUNT(*) FILTER (WHERE LOWER(COALESCE(s.customer_type,'')) = 'returning') AS ret_txns,
+            COUNT(*) FILTER (WHERE LOWER(COALESCE(s.customer_type,'')) = 'new')       AS new_txns
+        FROM all_sales s
+        WHERE s.sale_date::date >= CURRENT_DATE - 28
+          AND s.pos_location_name = %s
+          AND {_IS_RETAIL}
+          AND {bf}
+    """
+    rows = _db_exec(sql, (store,), fetch=True) or []
+    if not rows:
+        return {}
+    r = rows[0]
+    sale_txns   = int(r.get("sale_txns") or 0)
+    return_txns = int(r.get("return_txns") or 0)
+    units_sold  = float(r.get("units_sold") or 0)
+    total_gross = float(r.get("total_gross") or 0)
+    total_disc  = float(r.get("total_disc") or 0)
+    total_ret   = float(r.get("total_ret") or 0)
+    ret_cust    = int(r.get("ret_txns") or 0)
+    new_cust    = int(r.get("new_txns") or 0)
+    total_txns  = sale_txns + return_txns
+    ident_txns  = ret_cust + new_cust
+    return {
+        "discount_depth_pct": round(total_disc / total_gross * 100, 1) if total_gross > 0 else None,
+        "returns_rate_pct":   round(return_txns / total_txns * 100, 1) if total_txns > 0 else None,
+        "returns_kes_pct":    round(total_ret / total_gross * 100, 1) if total_gross > 0 else None,
+        "upt":                round(units_sold / sale_txns, 2) if sale_txns > 0 else None,
+        "returning_pct":      round(ret_cust / ident_txns * 100, 1) if ident_txns > 0 else None,
+        "new_pct":            round(new_cust / ident_txns * 100, 1) if ident_txns > 0 else None,
+    }
+
+
+def _get_store_footfall_l28d(store: str) -> dict:
+    """L28D footfall visitors and avg sensor-reported conversion % for the store."""
+    try:
+        rows = _db_exec(
+            """
+            SELECT
+                COALESCE(SUM(a01_footfall_in), 0)          AS visitors,
+                ROUND(AVG(b06_sales_conversion)::numeric, 1) AS avg_conversion_pct
+            FROM footfall
+            WHERE pos_location_name = %s
+              AND time::date >= CURRENT_DATE - 28
+              AND time::date < CURRENT_DATE
+              AND a01_footfall_in > 0
+            """,
+            (store,), fetch=True
+        ) or []
+        if not rows or not rows[0].get("visitors"):
+            return {"available": False}
+        r = rows[0]
+        return {
+            "available":          True,
+            "visitors_l28d":      int(r["visitors"] or 0),
+            "avg_conversion_pct": float(r["avg_conversion_pct"] or 0),
+        }
+    except Exception as e:
+        log.debug("Footfall query error for %s: %s", store, e)
+        return {"available": False}
+
+
+def _get_store_stock_metrics(store: str) -> dict:
+    """Store-level SOH, SKU count, dead-stock units (no sale in L90D)."""
+    try:
+        rows = _db_exec(
+            """
+            WITH store_inv AS (
+                SELECT
+                    i.sku,
+                    COALESCE(i.available, 0) AS soh,
+                    MAX(s.sale_date) AS last_sold
+                FROM all_inventory i
+                LEFT JOIN all_sales s
+                    ON s.variant_sku = i.sku
+                    AND s.pos_location_name = %s
+                    AND s.sale_date::date >= CURRENT_DATE - 90
+                    AND s.sale_kind IN ('sale','order')
+                WHERE i.pos_location_name = %s
+                  AND COALESCE(i.available, 0) > 0
+                GROUP BY i.sku, i.available
+            )
+            SELECT
+                COUNT(sku)                                          AS sku_count,
+                SUM(soh)                                           AS total_soh,
+                COUNT(*) FILTER (WHERE last_sold IS NULL)          AS dead_sku_count,
+                COALESCE(SUM(soh) FILTER (WHERE last_sold IS NULL), 0) AS dead_soh
+            FROM store_inv
+            """,
+            (store, store), fetch=True
+        ) or []
+        if not rows:
+            return {"available": False}
+        r = rows[0]
+        total_soh  = int(r.get("total_soh") or 0)
+        dead_soh   = int(r.get("dead_soh") or 0)
+        return {
+            "available":      True,
+            "sku_count":      int(r.get("sku_count") or 0),
+            "total_soh":      total_soh,
+            "dead_sku_count": int(r.get("dead_sku_count") or 0),
+            "dead_soh":       dead_soh,
+            "dead_pct":       round(dead_soh / total_soh * 100, 1) if total_soh > 0 else 0,
+        }
+    except Exception as e:
+        log.debug("Stock metrics error for %s: %s", store, e)
+        return {"available": False}
+
+
+_BENCH_LOCK = threading.Lock()
+_BENCH_CACHE: dict = {}
+
+def _get_network_benchmarks() -> dict:
+    """Cached 30-min fleet-wide averages: basket, discount depth, returns, UPT, returning%."""
+    key = "benchmarks"
+    now = time.time()
+    with _BENCH_LOCK:
+        e = _BENCH_CACHE.get(key)
+        if e and now - e["at"] < 1800:
+            return e["data"]
+    bf = _base_filters()
+    try:
+        rows = _db_exec(
+            f"""
+            SELECT
+                ROUND(AVG(basket_per_store)::numeric, 0)           AS avg_basket,
+                ROUND(AVG(disc_depth)::numeric, 1)                 AS avg_disc_depth,
+                ROUND(AVG(ret_rate)::numeric, 1)                   AS avg_returns_rate,
+                ROUND(AVG(upt)::numeric, 2)                        AS avg_upt,
+                ROUND(AVG(ret_pct)::numeric, 1)                    AS avg_returning_pct
+            FROM (
+                SELECT
+                    pos_location_name,
+                    SUM(total_sales_kes::numeric - COALESCE(discounts_kes,0)::numeric)
+                        / NULLIF(COUNT(*) FILTER (WHERE sale_kind IN ('sale','order')), 0) AS basket_per_store,
+                    SUM(COALESCE(discounts_kes,0)::numeric)
+                        / NULLIF(SUM(total_sales_kes::numeric) FILTER (WHERE sale_kind IN ('sale','order')), 0) * 100 AS disc_depth,
+                    COUNT(*) FILTER (WHERE sale_kind = 'return')::float
+                        / NULLIF(COUNT(*)::float, 0) * 100          AS ret_rate,
+                    SUM(ordered_item_quantity) FILTER (WHERE sale_kind IN ('sale','order'))::float
+                        / NULLIF(COUNT(*) FILTER (WHERE sale_kind IN ('sale','order'))::float, 0) AS upt,
+                    COUNT(*) FILTER (WHERE LOWER(COALESCE(customer_type,'')) = 'returning')::float
+                        / NULLIF((COUNT(*) FILTER (WHERE LOWER(COALESCE(customer_type,'')) IN ('returning','new')))::float, 0) * 100 AS ret_pct
+                FROM all_sales s
+                WHERE s.sale_date::date >= CURRENT_DATE - 28
+                  AND s.country IN ('Kenya','Uganda','Rwanda')
+                  AND {bf}
+                GROUP BY s.pos_location_name
+                HAVING COUNT(*) > 10
+            ) bench_agg
+            """, fetch=True
+        ) or []
+        data = {}
+        if rows:
+            r = rows[0]
+            data = {
+                "avg_basket":        float(r.get("avg_basket") or 0),
+                "avg_disc_depth_pct": float(r.get("avg_disc_depth") or 11.0),
+                "avg_returns_rate_pct": float(r.get("avg_returns_rate") or 8.0),
+                "avg_upt":           float(r.get("avg_upt") or 2.2),
+                "avg_returning_pct": float(r.get("avg_returning_pct") or 25.0),
+            }
+    except Exception as e:
+        log.warning("Benchmarks error: %s", e)
+        data = {
+            "avg_basket": 0, "avg_disc_depth_pct": 11.0,
+            "avg_returns_rate_pct": 8.0, "avg_upt": 2.2, "avg_returning_pct": 25.0,
+        }
+    with _BENCH_LOCK:
+        _BENCH_CACHE[key] = {"data": data, "at": time.time()}
+    return data
+
+
+def _get_store_corrections(store: str) -> list:
+    """Return the last 5 applied corrections for this store, formatted for LLM injection."""
+    try:
+        rows = _db_exec(
+            """SELECT correction_text, submitted_at::date AS corr_date
+               FROM retail_desk_corrections
+               WHERE store = %s
+               ORDER BY submitted_at DESC LIMIT 5""",
+            (store,), fetch=True
+        ) or []
+        return [{"date": str(r.get("corr_date", "")), "text": r.get("correction_text", "")}
+                for r in rows]
+    except Exception as e:
+        log.debug("Corrections fetch error for %s: %s", store, e)
+        return []
+
+
+def _save_predictions(store: str, predictions: list):
+    """Persist predictions from the structured analysis to retail_desk_predictions."""
+    if not predictions:
+        return
+    for p in predictions[:3]:
+        try:
+            _db_exec(
+                """INSERT INTO retail_desk_predictions
+                       (store, metric_name, prediction_text, current_value,
+                        predicted_value, time_horizon, confidence, rationale)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (store,
+                 p.get("metric"),
+                 p.get("metric", "?") + ": " + str(p.get("predicted_value", "?")),
+                 p.get("current_value"),
+                 p.get("predicted_value"),
+                 p.get("time_horizon", "4 weeks"),
+                 p.get("confidence", "medium"),
+                 p.get("rationale")),
+                fetch=False
+            )
+        except Exception as e:
+            log.debug("Prediction save error: %s", e)
+
+
 # ── Route registration ────────────────────────────────────────────────────────
 
 def register_retail_desk_routes(app, api_pg_module):
@@ -736,26 +1203,52 @@ def register_retail_desk_routes(app, api_pg_module):
         issues       = _get_open_issues(store)
         pd           = path_data.get(store, {})
 
-        # Coaching — serve from cache if today's run exists
+        # Analysis — serve from today's cache if it has the full structured analysis
+        analysis    = {}
         coaching_text = ""
+        import json as _json
         cached = _db_exec(
-            "SELECT summary FROM retail_desk_coaching_log WHERE store=%s AND run_date=CURRENT_DATE LIMIT 1",
+            """SELECT summary, analysis FROM retail_desk_coaching_log
+               WHERE store=%s AND run_date=CURRENT_DATE LIMIT 1""",
             (store,), fetch=True
         )
-        if cached and cached[0].get("summary"):
+        if cached and cached[0].get("analysis"):
+            try:
+                a = cached[0]["analysis"]
+                analysis = a if isinstance(a, dict) else _json.loads(a)
+                coaching_text = cached[0].get("summary", "")
+            except Exception:
+                pass
+
+        if not analysis and _ai_configured():
+            analysis = await asyncio.to_thread(
+                _run_store_analysis, store, sd, path_data, issues, categories
+            )
+            if analysis:
+                coaching_text = f"{analysis.get('verdict','').upper()} — {analysis.get('top_action','')}"
+
+        # Backwards-compat: fall back to old summary if no structured analysis
+        if not analysis and cached and cached[0].get("summary"):
             coaching_text = cached[0]["summary"]
-        elif _ai_configured():
-            coaching_text = _run_coaching(store, sd, path_data, issues, categories)
-            if coaching_text:
-                try:
-                    _db_exec(
-                        """INSERT INTO retail_desk_coaching_log (store, run_date, summary, model)
-                           VALUES (%s, CURRENT_DATE, %s, %s)
-                           ON CONFLICT (store, run_date) DO UPDATE SET summary=EXCLUDED.summary""",
-                        (store, coaching_text, HAIKU), fetch=False
-                    )
-                except Exception as e:
-                    log.warning("Coaching log insert error: %s", e)
+
+        # Fetch predictions for this store
+        preds = _db_exec(
+            """SELECT id, metric_name, prediction_text, current_value, predicted_value,
+                      time_horizon, confidence, rationale, status, actual_value,
+                      actual_recorded_at::date AS recorded_date, run_date::text AS run_date
+               FROM retail_desk_predictions
+               WHERE store = %s
+               ORDER BY run_date DESC, id DESC LIMIT 10""",
+            (store,), fetch=True
+        ) or []
+
+        # Fetch recent corrections for this store
+        corrections = _db_exec(
+            """SELECT id, correction_text, submitted_at::date AS corr_date, applied
+               FROM retail_desk_corrections
+               WHERE store = %s ORDER BY submitted_at DESC LIMIT 10""",
+            (store,), fetch=True
+        ) or []
 
         return JSONResponse({
             "store":        store,
@@ -778,6 +1271,9 @@ def register_retail_desk_routes(app, api_pg_module):
             "issues":       issues,
             "coaching":     coaching_text,
             "coaching_ai":  _ai_configured(),
+            "analysis":     analysis,
+            "predictions":  [dict(r) for r in preds],
+            "corrections":  [dict(r) for r in corrections],
         })
 
     @app.get("/api/retail-desk/issues")
@@ -825,6 +1321,80 @@ def register_retail_desk_routes(app, api_pg_module):
         )
         issue_id = rows[0]["id"] if rows else None
         return JSONResponse({"ok": True, "id": issue_id}, status_code=201)
+
+    @app.post("/api/retail-desk/store/{store:path}/correction")
+    async def retail_desk_submit_correction(store: str, request: Request):
+        """Submit a correction to the AI analysis for a store."""
+        body = await request.json()
+        text = (body.get("correction_text") or body.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="correction_text is required")
+        user_email = getattr(request.state, "user_email", None)
+        _db_exec(
+            """INSERT INTO retail_desk_corrections
+                   (store, analysis_date, correction_text, submitted_by)
+               VALUES (%s, CURRENT_DATE, %s, %s)""",
+            (store, text, user_email), fetch=False
+        )
+        # Invalidate today's cached analysis so next load re-runs with correction applied
+        _db_exec(
+            """UPDATE retail_desk_coaching_log
+               SET analysis = NULL, summary = NULL
+               WHERE store = %s AND run_date = CURRENT_DATE""",
+            (store,), fetch=False
+        )
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/retail-desk/predictions/{pred_id}/outcome")
+    async def retail_desk_record_outcome(pred_id: int, request: Request):
+        """Record the actual outcome for a prediction (learning loop)."""
+        body = await request.json()
+        status = body.get("status", "accurate")
+        if status not in ("accurate", "inaccurate", "partial"):
+            raise HTTPException(status_code=400, detail="status must be accurate|inaccurate|partial")
+        actual_value = (body.get("actual_value") or "").strip() or None
+        user_email   = getattr(request.state, "user_email", None)
+        rows = _db_exec(
+            """UPDATE retail_desk_predictions
+               SET status = %s,
+                   actual_value = %s,
+                   actual_recorded_at = now(),
+                   recorded_by = %s
+               WHERE id = %s
+               RETURNING id""",
+            (status, actual_value, user_email, pred_id), fetch=True
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="Prediction not found")
+        return JSONResponse({"ok": True})
+
+    @app.get("/api/retail-desk/predictions")
+    async def retail_desk_predictions_list(
+        request: Request,
+        store: str = None,
+        status: str = "pending",
+    ):
+        """List predictions across all stores (or one store), filtered by status."""
+        where_parts = ["1=1"]
+        params = []
+        if store:
+            where_parts.append("store = %s")
+            params.append(store)
+        if status and status != "all":
+            where_parts.append("status = %s")
+            params.append(status)
+        where = "WHERE " + " AND ".join(where_parts)
+        rows = _db_exec(
+            f"""SELECT id, store, run_date::text, metric_name, prediction_text,
+                       current_value, predicted_value, time_horizon, confidence, rationale,
+                       status, actual_value, actual_recorded_at::date AS recorded_date,
+                       recorded_by
+                FROM retail_desk_predictions
+                {where}
+                ORDER BY run_date DESC, id DESC LIMIT 200""",
+            params or None, fetch=True
+        ) or []
+        return JSONResponse({"predictions": [dict(r) for r in rows], "total": len(rows)})
 
     @app.get("/api/retail-desk/report/latest")
     async def retail_desk_report_latest():

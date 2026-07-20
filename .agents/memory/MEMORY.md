@@ -142,3 +142,4 @@
 - [Validator consistency return-heavy days](validator-consistency-returns.md) — net_le_total and vat_reconciliation must compare against gross_total = total + ret; return rows have net=0 but negative total, so aggregate net > aggregate total on high-return days.
 - [PA vs RM style universe parity](pa-rm-style-universe.md) — PA activity_where must use soh_stores > 0 OR soh_warehouse > 0 (not soh_current) to match RM's universe and exclude pipeline-only styles.
 - [Customer endpoint universe alignment](customer-endpoint-universe.md) — /customer-frequency and /customer-details must add LOWER(s.customer_type) IN ('new','returning','registered') to match /customers' identified-customer gate, or cross-surface checks fire with a ~15-customer gap.
+- [Retail Desk AI analyst bugs](retail-desk-ai-analyst-bugs.md) — 5 bugs blocked first run: wrong model id, BASE_FILTERS s. alias missing, async event-loop block, JSON schema field order, max_tokens too low.
