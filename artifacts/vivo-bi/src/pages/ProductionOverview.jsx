@@ -698,14 +698,10 @@ export default function ProductionOverview({ onOpenReport }) {
     { key: "order_ref", label: "Order Ref", render: (r) => <span className="font-semibold">{r.order_ref || "—"}</span> },
     {
       key: "style_name", label: "Style",
-      render: (r) => (
-        <span>
-          <span className="font-medium">{r.style_name || r.product_name || "—"}</span>
-          {r.style_number && <span className="ml-1.5 text-muted text-[11.5px]">{r.style_number}</span>}
-        </span>
-      ),
-      csv: (r) => [r.style_name, r.style_number].filter(Boolean).join(" / "),
+      render: (r) => <span className="font-medium">{r.style_name || r.product_name || "—"}</span>,
+      csv: (r) => r.style_name || r.product_name || "",
     },
+    { key: "style_number", label: "Style No.", render: (r) => <span className="font-mono text-[12px] text-muted">{r.style_number || "—"}</span>, csv: (r) => r.style_number || "" },
     { key: "lifecycle", label: "Type", render: (r) => r.lifecycle || "—" },
     { key: "category", label: "Category" },
     { key: "product_type", label: "Subcategory" },
@@ -719,14 +715,10 @@ export default function ProductionOverview({ onOpenReport }) {
     { key: "order_ref", label: "Order Ref", render: (r) => <span className="font-semibold">{r.order_ref || "—"}</span> },
     {
       key: "style_name", label: "Style",
-      render: (r) => (
-        <span>
-          <span className="font-medium">{r.style_name || r.product_name || "—"}</span>
-          {r.style_number && <span className="ml-1.5 text-muted text-[11.5px]">{r.style_number}</span>}
-        </span>
-      ),
-      csv: (r) => [r.style_name, r.style_number].filter(Boolean).join(" / "),
+      render: (r) => <span className="font-medium">{r.style_name || r.product_name || "—"}</span>,
+      csv: (r) => r.style_name || r.product_name || "",
     },
+    { key: "style_number", label: "Style No.", render: (r) => <span className="font-mono text-[12px] text-muted">{r.style_number || "—"}</span>, csv: (r) => r.style_number || "" },
     { key: "lifecycle", label: "Type", render: (r) => r.lifecycle || "—" },
     { key: "order_qty", label: "Qty", numeric: true, render: (r) => fmtQty(r.order_qty), csv: (r) => r.order_qty },
     {
