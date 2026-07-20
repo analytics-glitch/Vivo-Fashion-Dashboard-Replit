@@ -125,44 +125,44 @@ const AddStyleDialog = ({ onClose, onSaved }) => {
         <input className="w-full px-3 py-2 rounded-lg border border-border text-[13px]" placeholder="Style name *" required
           value={form.style_name} onChange={(e) => set("style_name", e.target.value)} data-testid="pd-add-name" />
 
-        <input className="w-full px-3 py-2 rounded-lg border border-border text-[13px] font-mono" placeholder="Style number"
+        <input className="w-full px-3 py-2 rounded-lg border border-border text-[13px] font-mono" placeholder="Style number *" required
           value={form.style_number} onChange={(e) => set("style_number", e.target.value)} />
 
-        <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]"
+        <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]" required
           value={form.brand} onChange={(e) => set("brand", e.target.value)} data-testid="pd-add-brand">
-          <option value="">Brand (optional)</option>
+          <option value="">Brand *</option>
           {BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
         </select>
 
-        <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]"
+        <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]" required
           value={form.category} onChange={(e) => set("category", e.target.value)}>
-          <option value="">Category (optional)</option>
+          <option value="">Category *</option>
           {Object.keys(CATEGORY_SUBCATS).map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
 
         {form.category && (
-          <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]"
+          <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]" required
             value={form.sub_category} onChange={(e) => set("sub_category", e.target.value)}>
-            <option value="">Sub-category (optional)</option>
+            <option value="">Sub-category *</option>
             {subcats.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         )}
 
-        <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]"
+        <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]" required
           value={form.lifecycle_type} onChange={(e) => set("lifecycle_type", e.target.value)}>
-          <option value="">Type — New / Reorder / Replenishment (optional)</option>
+          <option value="">Type — New / Reorder / Replenishment *</option>
           {LIFECYCLE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
 
-        <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]"
+        <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]" required
           value={form.assignee_name} onChange={(e) => set("assignee_name", e.target.value)}
           data-testid="pd-add-assignee">
-          <option value="">Assignee (optional)</option>
+          <option value="">Assignee *</option>
           {PD_ASSIGNEES.map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
 
-        <textarea className="w-full px-3 py-2 rounded-lg border border-border text-[13px]" rows={3}
-          placeholder="Adoption decisions made…"
+        <textarea className="w-full px-3 py-2 rounded-lg border border-border text-[13px]" rows={3} required
+          placeholder="Adoption decisions made… *"
           value={form.decisions} onChange={(e) => set("decisions", e.target.value)} data-testid="pd-add-decisions" />
 
         {err && <div className="text-danger text-[12px]">{err}</div>}
