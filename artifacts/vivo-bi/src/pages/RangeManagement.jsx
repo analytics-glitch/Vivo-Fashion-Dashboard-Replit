@@ -647,7 +647,7 @@ const RangeManagement = () => {
             >
               <strong>Note on age &amp; tier model:</strong> Style age is computed from the persisted
               first-sale date (refreshed nightly, 5-year Kenya history). Tier assignments follow the
-              July 2026 Range Strategy — <strong>Tier 1 · NOOS</strong> (≥24 months, sold in ≥11 of
+              July 2026 Range Strategy — <strong>Tier 1 · NOOS</strong> (≥24 months, sold in all 12 of
               last 12 months; target &lt;50 styles), <strong>Tier 2 · Core</strong> (≥4 reorders),{" "}
               <strong>Tier 3 · Recent Performer</strong> (≥1 reorder),{" "}
               <strong>Tier 4 · New Styles</strong> (not yet reordered). Reorder count is a
@@ -655,8 +655,58 @@ const RangeManagement = () => {
             </p>
           </div>
 
-          {/* Vivo Range Management — live recreation of the June 2026 report.
-              Surfaced near the top so it is easy to find. */}
+          {/* Section 2 — Retirement pipeline (moved to top — primary action surface) */}
+          <div className="card-white p-5" data-testid="range-retirement-pipeline">
+            <SectionTitle
+              title={`Styles to Retire · ${fmtNum(retirement.length)} of ${fmtNum(summary.flagged_for_retirement)} flagged`}
+              subtitle="Styles that failed their SOP performance gate and still hold stock to clear. Retire in Odoo once markdown is complete. Outlet discount date follows the 4-week gap rule from the SOP."
+            />
+            {retirement.length === 0 ? (
+              <Empty label="No flagged styles with remaining stock to clear — range is clean." />
+            ) : (
+              <SortableTable
+                testId="retirement-pipeline-table"
+                initialSort={{ key: "style_age_weeks", dir: "desc" }}
+                pageSize={50}
+                columns={[
+                  {
+                    key: "style_name", label: "Style", align: "left",
+                    render: (r) => (
+                      <div className="max-w-[240px]">
+                        <div className="font-medium truncate" title={r.style_name}>{r.style_name}</div>
+                        <div className="text-muted text-[10.5px]">{r.brand} · {r.subcategory}</div>
+                      </div>
+                    ),
+                  },
+                  { key: "style_age_weeks", label: "Age (wks)", numeric: true, render: (r) => fmtNum(r.style_age_weeks) },
+                  {
+                    key: "lifetime_sor_pct", label: "Lifetime SOR %", numeric: true,
+                    render: (r) => r.lifetime_sor_pct == null ? "—" : `${r.lifetime_sor_pct.toFixed(1)}%`,
+                  },
+                  { key: "current_stock", label: "Remaining Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
+                  {
+                    key: "last_sale_days", label: "Last Sale", numeric: true,
+                    render: (r) => r.last_sale_days == null ? "—" : `${r.last_sale_days}d`,
+                  },
+                  {
+                    key: "recommended_retirement_date", label: "Recommended Retire", align: "left",
+                    render: (r) => <span className="num text-rose-700 font-semibold">{r.recommended_retirement_date}</span>,
+                  },
+                  {
+                    key: "outlet_discount_date", label: "Outlet Discount Date", align: "left",
+                    render: (r) => <span className="num text-amber-700">{r.outlet_discount_date}</span>,
+                  },
+                  {
+                    key: "reason", label: "Reason", align: "left",
+                    render: (r) => <span className="text-muted text-[11.5px] max-w-[280px] inline-block" title={r.reason}>{r.reason}</span>,
+                  },
+                ]}
+                rows={retirement}
+              />
+            )}
+          </div>
+
+          {/* Vivo Range Management — live recreation of the June 2026 report. */}
           <div className="pt-2 border-t border-default">
             <VivoRangeManagement channelsOverride={posFilter} />
           </div>
@@ -1302,57 +1352,6 @@ const RangeManagement = () => {
 
           {/* Iter 91q — Weekly SOR heatmap for new styles (< 14 wks) */}
           <WeeklySORHeatmap countries={countries} channels={effectiveChannels} refreshToken={refreshToken} />
-
-          {/* Section 4 — Retirement pipeline */}
-          <div className="card-white p-5" data-testid="range-retirement-pipeline">
-            <SectionTitle
-              title={`Retirement Pipeline · ${fmtNum(retirement.length)} of ${fmtNum(summary.flagged_for_retirement)} flagged`}
-              subtitle="The actionable subset of the flagged-for-retirement styles that still hold stock to clear (the markdown rail); flagged styles already sold out are omitted here. These missed their Week 8/12 gate or aged out without Tier 1 criteria. Outlet discount date follows the 4-week gap rule from the SOP."
-            />
-            {retirement.length === 0 ? (
-              <Empty label="No flagged styles with remaining stock to clear." />
-            ) : (
-              <SortableTable
-                testId="retirement-pipeline-table"
-                initialSort={{ key: "style_age_weeks", dir: "desc" }}
-                pageSize={50}
-                columns={[
-                  {
-                    key: "style_name", label: "Style", align: "left",
-                    render: (r) => (
-                      <div className="max-w-[240px]">
-                        <div className="font-medium truncate" title={r.style_name}>{r.style_name}</div>
-                        <div className="text-muted text-[10.5px]">{r.brand} · {r.subcategory}</div>
-                      </div>
-                    ),
-                  },
-                  { key: "style_age_weeks", label: "Age (wks)", numeric: true, render: (r) => fmtNum(r.style_age_weeks) },
-                  {
-                    key: "lifetime_sor_pct", label: "Lifetime SOR %", numeric: true,
-                    render: (r) => r.lifetime_sor_pct == null ? "—" : `${r.lifetime_sor_pct.toFixed(1)}%`,
-                  },
-                  { key: "current_stock", label: "Remaining Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
-                  {
-                    key: "last_sale_days", label: "Last Sale", numeric: true,
-                    render: (r) => r.last_sale_days == null ? "—" : `${r.last_sale_days}d`,
-                  },
-                  {
-                    key: "recommended_retirement_date", label: "Recommended Retire", align: "left",
-                    render: (r) => <span className="num text-rose-700 font-semibold">{r.recommended_retirement_date}</span>,
-                  },
-                  {
-                    key: "outlet_discount_date", label: "Outlet Discount Date", align: "left",
-                    render: (r) => <span className="num text-amber-700">{r.outlet_discount_date}</span>,
-                  },
-                  {
-                    key: "reason", label: "Reason", align: "left",
-                    render: (r) => <span className="text-muted text-[11.5px] max-w-[280px] inline-block" title={r.reason}>{r.reason}</span>,
-                  },
-                ]}
-                rows={retirement}
-              />
-            )}
-          </div>
 
           {/* Store × tier stock mix — where each store's floor stock sits on
               the range ladder. Tier assignment comes from the SAME classify

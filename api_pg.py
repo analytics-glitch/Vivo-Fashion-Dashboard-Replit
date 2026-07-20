@@ -3255,9 +3255,10 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
     Active [Tier 1..4] + Retired == the total style universe):
       Retired              — hard retirement ONLY: the Odoo product status field
                              marks the style Retired (see _odoo_retired_styles).
-      Tier 1 / NOOS        — ≥24 months old AND sold in ≥11 of the trailing 12
-                             calendar months. Target: < 50 styles — the true
-                             never-out-of-stock core.
+      Tier 1 / NOOS        — ≥24 months old AND sold in ALL 12 of the trailing
+                             12 calendar months. Target: < 50 styles — the true
+                             never-out-of-stock core (strict: must have sold
+                             every single month for a full year).
       Tier 2 / Core        — reordered ≥4 times (a proven, established style).
       Tier 3 / Recent Performer — reordered ≥1 time (has at least one repeat
                              purchase order, gaining traction).
@@ -3266,8 +3267,8 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
     """
     if _is_manually_retired(style_name):
         return "Retired"
-    # Tier 1 — NOOS: must be ≥24 months old AND consistently stocked (11/12 months)
-    if (age_weeks or 0) >= 104 and (months_active_12 or 0) >= 11:
+    # Tier 1 — NOOS: must be ≥24 months old AND sold in ALL 12 trailing months
+    if (age_weeks or 0) >= 104 and (months_active_12 or 0) >= 12:
         return "Tier 1"
     # Tier 2 — Core: ≥4 reorder cycles — proven, established demand
     if (reorder_count or 0) >= 4:
