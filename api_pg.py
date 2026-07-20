@@ -31401,9 +31401,10 @@ def _style_warehouse_pct(style_name, quantity):
         return 0.0, 0
     try:
         rows = _users_exec(
-            "SELECT COALESCE(SUM(GREATEST(available, 0)), 0)::int AS wh_units "
-            "FROM all_inventory "
-            "WHERE style_name = %s AND pos_location_name = 'Warehouse Finished Goods'",
+            "SELECT COALESCE(SUM(GREATEST(i.available, 0)), 0)::int AS wh_units "
+            "FROM all_inventory i "
+            "JOIN all_products_clean p ON i.sku = p.sku "
+            "WHERE p.style_name = %s AND i.pos_location_name = 'Warehouse Finished Goods'",
             (style_name,), fetch=True)
         wh = int((rows or [{}])[0].get("wh_units") or 0)
         pct = min(wh / int(quantity) * 100, 100.0)
@@ -32053,15 +32054,16 @@ def style_tracker_fulfillment(style_id: int):
     )
     inv_rows = _users_exec(
         f"""
-        SELECT pos_location_name,
-               COALESCE(color_print, '') AS colour,
-               COALESCE(size, '')       AS size,
-               COALESCE(SUM(GREATEST(available, 0)), 0)::int AS units
-        FROM all_inventory
-        WHERE style_name = %s
-          AND pos_location_name IN ({prod_locs})
+        SELECT i.pos_location_name,
+               COALESCE(i.color_print, '') AS colour,
+               COALESCE(i.size, '')        AS size,
+               COALESCE(SUM(GREATEST(i.available, 0)), 0)::int AS units
+        FROM all_inventory i
+        JOIN all_products_clean p ON i.sku = p.sku
+        WHERE p.style_name = %s
+          AND i.pos_location_name IN ({prod_locs})
         GROUP BY 1, 2, 3
-        HAVING COALESCE(SUM(GREATEST(available, 0)), 0) > 0
+        HAVING COALESCE(SUM(GREATEST(i.available, 0)), 0) > 0
         """,
         (style_name,), fetch=True) or []
 
