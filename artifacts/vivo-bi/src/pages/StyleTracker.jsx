@@ -1,5 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
 import {
@@ -7,9 +9,13 @@ import {
   Archive,
   ArrowCounterClockwise,
   CalendarBlank,
+  CaretDown,
+  CaretUp,
+  ChatText,
   CheckCircle,
   Circle,
   ClockClockwise,
+  PencilSimple,
   Plus,
   Table,
   Trash,
@@ -18,14 +24,19 @@ import {
 } from "@phosphor-icons/react";
 
 /**
- * Weekly Style Tracker — a manually-maintained kanban of production styles by
- * launch ISO week. Always shows the current week + the next 4; older weeks
- * that still hold not-completed styles surface on the left as amber "Overdue"
- * columns. Cards drag between week columns (HTML5 DnD) with optimistic
- * persistence; status is edited inline; past weeks archive their COMPLETED
- * styles; an Archived view lists + restores archived styles.
- * Reads GET /api/style-tracker/board + /archived; writes via
- * POST /api/style-tracker/*. No Odoo/Production-Tracker linkage by design.
+ * Weekly Style Tracker — manually-maintained kanban of production styles by
+ * launch ISO week. Current week + next 4; older weeks with incomplete styles
+ * surface as "Overdue". Cards drag between week columns (HTML5 DnD).
+ *
+ * Enhancements in this version:
+ * - Order Type badge (New / Re-Order / Replenishment), editable in form
+ * - Per-style Notes panel (collapsible, append-only comments)
+ * - Add / Delete gated to privileged users only
+ * - Finishing-status options managed from DB (privileged users can add/rename)
+ * - Auto deliver-by = order date + 14 days
+ * - Warehouse transfer gate: status→Warehouse blocked unless ≥90% transferred
+ * - Mark Done only enabled when status = Warehouse
+ * - Clickable style name → fulfillment drill-down drawer
  */
 
 const BRAND_BADGE = {
@@ -37,6 +48,12 @@ const BRAND_BADGE = {
 const CATEGORY_BADGE = {
   WOVEN: "bg-sky-50 text-sky-700 border-sky-200",
   KNIT: "bg-pink-50 text-pink-700 border-pink-200",
+};
+
+const ORDER_TYPE_BADGE = {
+  "New":          "bg-blue-100 text-blue-800 border-blue-200",
+  "Re-Order":     "bg-amber-100 text-amber-800 border-amber-200",
+  "Replenishment":"bg-teal-100 text-teal-800 border-teal-200",
 };
 
 const fmtUnits = (n) => (Number(n) || 0).toLocaleString();
@@ -53,9 +70,20 @@ const fmtShortDate = (iso) => {
   }
 };
 
+const fmtRelTime = (iso) => {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    const diff = (Date.now() - d.getTime()) / 1000;
+    if (diff < 60)   return "just now";
+    if (diff < 3600) return `${Math.round(diff / 60)}m ago`;
+    if (diff < 86400)return `${Math.round(diff / 3600)}h ago`;
+    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  } catch { return iso; }
+};
+
 const weekKey = (w) => `${w.iso_year}-${w.iso_week}`;
 
-/** % of a week's UNITS already completed (= delivered to the warehouse). */
 const weekPct = (w) =>
   w.total_units > 0 ? Math.round((100 * (w.completed_units || 0)) / w.total_units) : null;
 
@@ -65,7 +93,22 @@ const pctTone = (pct) =>
 const barTone = (pct) =>
   pct >= 100 ? "bg-emerald-500" : pct >= 50 ? "bg-amber-500" : "bg-rose-400";
 
-/** Compact per-week stats strip: qty, styles, % in warehouse + progress bar. */
+const fulfillTone = (pct) => {
+  if (pct === null || pct === undefined) return "text-muted";
+  if (pct >= 90) return "text-emerald-700 font-semibold";
+  if (pct >= 75) return "text-amber-700 font-semibold";
+  return "text-rose-700 font-semibold";
+};
+const fulfillCellBg = (pct) => {
+  if (pct === null || pct === undefined) return "";
+  if (pct >= 90) return "bg-emerald-50";
+  if (pct >= 75) return "bg-amber-50";
+  return "bg-rose-50";
+};
+
+const isLateStyle = (style, today) =>
+  !!(style?.deliver_by && today && !style.completed && style.deliver_by < today);
+
 function WeekStats({ week, compact = false }) {
   const pct = weekPct(week);
   return (
@@ -76,7 +119,7 @@ function WeekStats({ week, compact = false }) {
           {pct === null ? "—" : `${pct}%`} <span className="font-medium text-muted">in WH</span>
         </span>
       </div>
-      <div className="mt-1 h-1.5 rounded-full bg-line/70 overflow-hidden" title={`${fmtUnits(week.completed_units || 0)} of ${fmtUnits(week.total_units)} pcs completed (in warehouse) · ${week.completed_count || 0}/${week.count} styles`}>
+      <div className="mt-1 h-1.5 rounded-full bg-line/70 overflow-hidden">
         <div
           className={`h-full rounded-full transition-all ${pct === null ? "bg-line" : barTone(pct)}`}
           style={{ width: `${Math.min(pct || 0, 100)}%` }}
@@ -86,10 +129,9 @@ function WeekStats({ week, compact = false }) {
   );
 }
 
-/** Table view: one section per week with a stats header row, style rows
- *  (status + completed editable inline, same handlers as the board), and a
- *  grand-total footer across all visible weeks. */
-function WeekTable({ weeks, today, statuses, busyIds, onUpdate }) {
+/** Table view */
+function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivileged }) {
+  const statuses = finishingOptions.map((f) => f.label);
   const totals = weeks.reduce(
     (t, w) => ({
       count: t.count + w.count,
@@ -108,7 +150,7 @@ function WeekTable({ weeks, today, statuses, busyIds, onUpdate }) {
           <tr className="text-left text-[10.5px] uppercase tracking-wide text-muted border-b border-line">
             <th className={thCls}>Style</th>
             <th className={thCls}>Brand</th>
-            <th className={thCls}>Category</th>
+            <th className={thCls}>Type</th>
             <th className={`${thCls} text-right`}>Qty</th>
             <th className={thCls}>Status</th>
             <th className={thCls}>Deliver by</th>
@@ -121,7 +163,7 @@ function WeekTable({ weeks, today, statuses, busyIds, onUpdate }) {
             const pct = weekPct(week);
             return (
               <React.Fragment key={wk}>
-                <tr className={`border-y border-line ${week.overdue ? "bg-amber-50" : week.is_current ? "bg-brand/5" : "bg-panel/60"}`} data-testid={`table-week-row-${wk}`}>
+                <tr className={`border-y border-line ${week.overdue ? "bg-amber-50" : week.is_current ? "bg-brand/5" : "bg-panel/60"}`}>
                   <td className="px-3 py-2" colSpan={3}>
                     <span className="font-bold text-[12.5px] text-[#0f3d24]">{week.label}</span>
                     {week.is_current && <span className="ml-2 text-[9px] font-bold uppercase tracking-wide text-white bg-[#1a5c38] rounded-full px-1.5 py-0.5">This week</span>}
@@ -142,31 +184,22 @@ function WeekTable({ weeks, today, statuses, busyIds, onUpdate }) {
                 {week.styles.map((s) => {
                   const late = isLateStyle(s, today);
                   const busy = busyIds.has(s.id);
+                  const canDone = s.status === "Warehouse";
                   return (
-                    <tr key={s.id} className={`border-b border-line/60 hover:bg-panel/40 ${late ? "bg-rose-50/50" : ""}`} data-testid={`table-style-row-${s.id}`}>
+                    <tr key={s.id} className={`border-b border-line/60 hover:bg-panel/40 ${late ? "bg-rose-50/50" : ""}`}>
                       <td className="px-3 py-2 font-semibold text-[#0f3d24]">
                         {s.style_name}
-                        {late && (
-                          <span className="ml-2 inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide text-rose-800 bg-rose-100 border border-rose-300 rounded-full px-1.5 py-0.5">
-                            <Warning size={9} weight="fill" /> Late
-                          </span>
-                        )}
+                        {late && <span className="ml-2 inline-flex items-center gap-0.5 text-[9px] font-bold uppercase text-rose-800 bg-rose-100 border border-rose-300 rounded-full px-1.5 py-0.5"><Warning size={9} weight="fill" /> Late</span>}
                       </td>
                       <td className="px-3 py-2">
                         <span className={`text-[9px] font-bold uppercase tracking-wide border rounded-full px-1.5 py-0.5 ${BRAND_BADGE[s.brand] || "bg-panel text-muted border-line"}`}>{s.brand}</span>
                       </td>
-                      <td className="px-3 py-2 text-muted">{s.category}</td>
+                      <td className="px-3 py-2">
+                        {s.order_type && <span className={`text-[9px] font-bold uppercase tracking-wide border rounded-full px-1.5 py-0.5 ${ORDER_TYPE_BADGE[s.order_type] || "bg-panel text-muted border-line"}`}>{s.order_type}</span>}
+                      </td>
                       <td className="px-3 py-2 text-right font-semibold">{fmtUnits(s.quantity)}</td>
                       <td className="px-3 py-2">
-                        <select
-                          value={s.status}
-                          onChange={(e) => onUpdate(s, { status: e.target.value })}
-                          disabled={busy}
-                          className="text-[11px] font-medium text-[#0f3d24] bg-white border border-line rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50"
-                          data-testid={`table-style-status-${s.id}`}
-                        >
-                          {statuses.map((st) => <option key={st} value={st}>{st}</option>)}
-                        </select>
+                        <StatusSelect style={s} statuses={statuses} busy={busy} onUpdate={onUpdate} />
                       </td>
                       <td className={`px-3 py-2 whitespace-nowrap ${late ? "font-semibold text-rose-700" : "text-muted"}`}>
                         {s.deliver_by ? fmtShortDate(s.deliver_by) : "—"}
@@ -174,17 +207,12 @@ function WeekTable({ weeks, today, statuses, busyIds, onUpdate }) {
                       <td className="px-3 py-2 text-center">
                         <button
                           type="button"
-                          onClick={() => onUpdate(s, { completed: !s.completed })}
-                          disabled={busy}
-                          title={s.completed ? "Mark as not completed" : "Mark as completed (in warehouse)"}
-                          className="disabled:opacity-50"
-                          data-testid={`table-style-complete-${s.id}`}
+                          onClick={() => canDone && onUpdate(s, { completed: !s.completed })}
+                          disabled={busy || (!s.completed && !canDone)}
+                          title={!canDone && !s.completed ? "Style must be in Warehouse status before marking as done" : s.completed ? "Mark as not completed" : "Mark as completed"}
+                          className="disabled:opacity-40"
                         >
-                          {s.completed ? (
-                            <CheckCircle size={17} weight="fill" className="text-emerald-600" />
-                          ) : (
-                            <Circle size={17} className="text-muted/60 hover:text-emerald-600" />
-                          )}
+                          {s.completed ? <CheckCircle size={17} weight="fill" className="text-emerald-600" /> : <Circle size={17} className={`${canDone ? "text-muted/60 hover:text-emerald-600" : "text-muted/30"}`} />}
                         </button>
                       </td>
                     </tr>
@@ -195,14 +223,10 @@ function WeekTable({ weeks, today, statuses, busyIds, onUpdate }) {
           })}
         </tbody>
         <tfoot>
-          <tr className="border-t-2 border-line bg-panel/70 font-bold text-[#0f3d24]" data-testid="table-grand-total">
-            <td className="px-3 py-2.5" colSpan={3}>
-              All weeks · {totals.count} style{totals.count === 1 ? "" : "s"} ({totals.cCount} in WH)
-            </td>
+          <tr className="border-t-2 border-line bg-panel/70 font-bold text-[#0f3d24]">
+            <td className="px-3 py-2.5" colSpan={3}>All weeks · {totals.count} style{totals.count === 1 ? "" : "s"} ({totals.cCount} in WH)</td>
             <td className="px-3 py-2.5 text-right">{fmtUnits(totals.units)}</td>
-            <td className="px-3 py-2.5 text-[11px] text-muted font-semibold" colSpan={2}>
-              {fmtUnits(totals.cUnits)} pcs in WH
-            </td>
+            <td className="px-3 py-2.5 text-[11px] text-muted font-semibold" colSpan={2}>{fmtUnits(totals.cUnits)} pcs in WH</td>
             <td className={`px-3 py-2.5 text-center ${pctTone(totPct)}`}>{totPct === null ? "—" : `${totPct}%`}</td>
           </tr>
         </tfoot>
@@ -217,16 +241,398 @@ function WeekTable({ weeks, today, statuses, busyIds, onUpdate }) {
   );
 }
 
-/** True when a style's deliver-by date has passed (vs the board's EAT today)
- *  and it isn't completed yet. Both are YYYY-MM-DD strings, so a plain
- *  lexicographic compare is a correct date compare. */
-const isLateStyle = (style, today) =>
-  !!(style?.deliver_by && today && !style.completed && style.deliver_by < today);
+/** Inline status select with warehouse-pct gate */
+function StatusSelect({ style, statuses, busy, onUpdate, className = "" }) {
+  const [checking, setChecking] = useState(false);
+  const [whErr, setWhErr] = useState(null);
 
-/** One draggable style card. */
-function StyleCard({ style, statuses, busy, late, onUpdate, onDelete, onDragStart, onDragEnd }) {
+  const handleChange = async (e) => {
+    const newStatus = e.target.value;
+    setWhErr(null);
+    if (newStatus === "Warehouse" && style.status !== "Warehouse") {
+      setChecking(true);
+      try {
+        const { data } = await api.get(`/style-tracker/styles/${style.id}/warehouse-pct`, { forceFresh: true });
+        if (!data.meets_threshold) {
+          setWhErr(`Only ${data.pct}% transferred — need ≥90% to move to Warehouse`);
+          setChecking(false);
+          return;
+        }
+      } catch {
+        // If check fails, let the server gate it
+      }
+      setChecking(false);
+    }
+    onUpdate(style, { status: newStatus });
+  };
+
+  return (
+    <div>
+      <select
+        value={style.status}
+        onChange={handleChange}
+        disabled={busy || checking}
+        className={`text-[11px] font-medium text-[#0f3d24] bg-white border border-line rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50 ${className}`}
+      >
+        {statuses.map((s) => <option key={s} value={s}>{s}</option>)}
+      </select>
+      {whErr && <div className="mt-1 text-[10px] text-rose-700">{whErr}</div>}
+    </div>
+  );
+}
+
+/** Finishing-options dropdown for privileged users: add + rename inline */
+function FinishingOptionsSelect({ style, finishingOptions, busy, onUpdate, isPrivileged, onOptionsChange }) {
+  const statuses = finishingOptions.map((f) => f.label);
+  const [showAdd, setShowAdd] = useState(false);
+  const [addLabel, setAddLabel] = useState("");
+  const [addSaving, setAddSaving] = useState(false);
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameLabel, setRenameLabel] = useState("");
+  const [renameSaving, setRenameSaving] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [whErr, setWhErr] = useState(null);
+
+  const handleChange = async (e) => {
+    const newStatus = e.target.value;
+    setWhErr(null);
+    if (newStatus === "Warehouse" && style.status !== "Warehouse") {
+      setChecking(true);
+      try {
+        const { data } = await api.get(`/style-tracker/styles/${style.id}/warehouse-pct`, { forceFresh: true });
+        if (!data.meets_threshold) {
+          setWhErr(`Only ${data.pct}% transferred to warehouse — need ≥90% to move to Warehouse`);
+          setChecking(false);
+          return;
+        }
+      } catch { /* fall through — server will gate it */ }
+      setChecking(false);
+    }
+    onUpdate(style, { status: newStatus });
+  };
+
+  const addOption = async () => {
+    const lbl = addLabel.trim();
+    if (!lbl) return;
+    setAddSaving(true);
+    try {
+      await api.post("/style-tracker/finishing-options", { label: lbl });
+      setAddLabel("");
+      setShowAdd(false);
+      onOptionsChange();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to add option");
+    } finally {
+      setAddSaving(false);
+    }
+  };
+
+  const startRename = (opt) => { setRenamingId(opt.id); setRenameLabel(opt.label); };
+
+  const saveRename = async () => {
+    const lbl = renameLabel.trim();
+    if (!lbl || !renamingId) return;
+    setRenameSaving(true);
+    try {
+      await api.post(`/style-tracker/finishing-options/${renamingId}`, { label: lbl });
+      setRenamingId(null);
+      onOptionsChange();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to rename option");
+    } finally {
+      setRenameSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-start gap-1">
+        <select
+          value={style.status}
+          onChange={handleChange}
+          disabled={busy || checking}
+          className="flex-1 min-w-0 text-[11px] font-medium text-[#0f3d24] bg-white border border-line rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50"
+        >
+          {statuses.map((s) => <option key={s} value={s}>{s}</option>)}
+          {!statuses.includes(style.status) && (
+            <option value={style.status}>{style.status}</option>
+          )}
+        </select>
+        {isPrivileged && (
+          <button
+            type="button"
+            onClick={() => setShowAdd((v) => !v)}
+            title="Add a new finishing option"
+            className="shrink-0 text-muted/50 hover:text-brand p-1 rounded"
+          >
+            <Plus size={13} weight="bold" />
+          </button>
+        )}
+      </div>
+      {whErr && <div className="text-[10px] text-rose-700">{whErr}</div>}
+      {isPrivileged && showAdd && (
+        <div className="flex items-center gap-1">
+          <input
+            autoFocus
+            value={addLabel}
+            onChange={(e) => setAddLabel(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addOption(); if (e.key === "Escape") setShowAdd(false); }}
+            placeholder="New option label"
+            className="flex-1 text-[11px] border border-line rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40"
+          />
+          <button type="button" disabled={addSaving} onClick={addOption} className="text-[10px] font-semibold text-white bg-brand rounded px-1.5 py-1 disabled:opacity-50">Add</button>
+          <button type="button" onClick={() => setShowAdd(false)} className="text-muted hover:text-danger"><X size={12} /></button>
+        </div>
+      )}
+      {isPrivileged && renamingId !== null && (
+        <div className="flex items-center gap-1">
+          <input
+            autoFocus
+            value={renameLabel}
+            onChange={(e) => setRenameLabel(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") saveRename(); if (e.key === "Escape") setRenamingId(null); }}
+            className="flex-1 text-[11px] border border-line rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40"
+          />
+          <button type="button" disabled={renameSaving} onClick={saveRename} className="text-[10px] font-semibold text-white bg-brand rounded px-1.5 py-1 disabled:opacity-50">Save</button>
+          <button type="button" onClick={() => setRenamingId(null)} className="text-muted hover:text-danger"><X size={12} /></button>
+        </div>
+      )}
+      {isPrivileged && !showAdd && renamingId === null && finishingOptions.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {finishingOptions.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => startRename(opt)}
+              title={`Rename "${opt.label}"`}
+              className="flex items-center gap-0.5 text-[9px] text-muted/60 hover:text-brand border border-transparent hover:border-line rounded px-1 py-0.5"
+            >
+              <PencilSimple size={9} /> {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Notes panel for a style card */
+function NotesPanel({ style, onNoteAdded }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const notes = style.notes || [];
+  const count = notes.length;
+
+  const submit = async () => {
+    const t = text.trim();
+    if (!t) return;
+    setSaving(true);
+    try {
+      const { data } = await api.post(`/style-tracker/styles/${style.id}/notes`, { text: t });
+      setText("");
+      onNoteAdded(style.id, data.note);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to add note");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-2 border-t border-line/60 pt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 text-[10.5px] font-semibold text-muted hover:text-[#0f3d24] w-full"
+      >
+        <ChatText size={13} className="shrink-0" />
+        <span>Notes {count > 0 && <span className="inline-block min-w-[16px] text-center text-[9px] font-bold text-white bg-[#1a5c38] rounded-full px-1">{count}</span>}</span>
+        {open ? <CaretUp size={10} className="ml-auto" /> : <CaretDown size={10} className="ml-auto" />}
+      </button>
+      {open && (
+        <div className="mt-1.5 space-y-1.5">
+          {notes.length === 0 ? (
+            <div className="text-[10.5px] text-muted/70 italic">No notes yet.</div>
+          ) : (
+            <div className="max-h-[120px] overflow-y-auto space-y-1.5 pr-0.5">
+              {notes.map((n, i) => (
+                <div key={i} className="text-[10.5px] text-[#0f3d24] leading-snug">
+                  <span className="font-semibold">{n.author_email?.split("@")[0]}</span>
+                  <span className="text-muted"> · {fmtRelTime(n.created_at)}</span>
+                  <div className="mt-0.5 text-[10.5px]">{n.body}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex items-start gap-1">
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submit(); }}
+              placeholder="Add a note… (Ctrl+Enter to save)"
+              rows={2}
+              className="flex-1 text-[11px] bg-white border border-line rounded-md px-1.5 py-1 resize-none focus:outline-none focus:ring-1 focus:ring-brand/40"
+            />
+            <button
+              type="button"
+              onClick={submit}
+              disabled={saving || !text.trim()}
+              className="text-[10px] font-semibold text-white bg-brand hover:bg-[#0f3d24] rounded-md px-2 py-1 disabled:opacity-50 shrink-0"
+            >
+              {saving ? "…" : "Add"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Fulfillment drill-down drawer (portal) */
+function FulfillmentDrawer({ styleId, styleName, onClose }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    setLoading(true);
+    setErr(null);
+    api.get(`/style-tracker/styles/${styleId}/fulfillment`, { forceFresh: true })
+      .then(({ data: d }) => setData(d))
+      .catch((e) => setErr(e?.response?.data?.detail || e.message || "Failed to load fulfillment data"))
+      .finally(() => setLoading(false));
+  }, [styleId]);
+
+  const thCls = "px-2 py-1.5 text-[10.5px] font-bold uppercase tracking-wide text-muted text-left";
+  const STAGE_ORDER = ["cutting","waiting_sewing","sewing","finishing","warehouse"];
+
+  const content = (
+    <div
+      className="fixed inset-0 z-50 flex"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="flex-1 bg-black/30" onClick={onClose} />
+      <div className="w-full max-w-[640px] bg-white h-full shadow-2xl flex flex-col">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-line shrink-0">
+          <div>
+            <div className="font-bold text-[14px] text-[#0f3d24]">Fulfillment Drill-Down</div>
+            <div className="text-[12px] text-muted mt-0.5">{styleName}</div>
+          </div>
+          <button type="button" onClick={onClose} className="text-muted hover:text-danger p-1"><X size={18} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-5">
+          {loading ? (
+            <Loading label="Loading fulfillment data…" />
+          ) : err ? (
+            <ErrorBox message={err} />
+          ) : !data?.has_data ? (
+            <div className="flex flex-col items-center gap-2 py-12 text-muted">
+              <div className="text-[13px]">No production data found for this style.</div>
+            </div>
+          ) : (
+            <>
+              {/* Stage journey */}
+              <div>
+                <div className="text-[11.5px] font-bold text-[#0f3d24] uppercase tracking-wide mb-2">Journey Across the Line</div>
+                <div className="flex flex-wrap gap-2">
+                  {STAGE_ORDER.map((sk) => {
+                    const stage = data.stages.find((s) => s.stage === sk);
+                    if (!stage) return null;
+                    return (
+                      <div key={sk} className="flex flex-col items-center gap-0.5 rounded-lg border border-line bg-panel/50 px-3 py-2 min-w-[90px] text-center">
+                        <div className="text-[10px] font-bold uppercase tracking-wide text-muted">{stage.stage_name}</div>
+                        <div className="text-[16px] font-bold text-[#0f3d24]">{fmtUnits(stage.units)}</div>
+                        <div className="text-[9px] text-muted">units</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Colour × size matrix */}
+              {data.matrix?.length > 0 && (
+                <div>
+                  <div className="text-[11.5px] font-bold text-[#0f3d24] uppercase tracking-wide mb-2">Size / Colour Fulfillment</div>
+                  <div className="overflow-x-auto rounded-lg border border-line">
+                    <table className="w-full text-[11.5px]">
+                      <thead>
+                        <tr className="bg-panel/60 border-b border-line">
+                          <th className={thCls}>Colour</th>
+                          <th className={thCls}>Size</th>
+                          <th className={`${thCls} text-right`}>Cutting</th>
+                          <th className={`${thCls} text-right`}>Waiting Sewing</th>
+                          <th className={`${thCls} text-right`}>Sewing</th>
+                          <th className={`${thCls} text-right`}>Finishing</th>
+                          <th className={`${thCls} text-right`}>In WH</th>
+                          <th className={`${thCls} text-right`}>Fulfillment</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.matrix.map((row, i) => (
+                          <tr key={i} className={`border-b border-line/50 ${fulfillCellBg(row.fulfillment_pct)}`}>
+                            <td className="px-2 py-1.5">{row.colour || "—"}</td>
+                            <td className="px-2 py-1.5 font-medium">{row.size || "—"}</td>
+                            <td className="px-2 py-1.5 text-right">{fmtUnits(row.cutting_qty)}</td>
+                            <td className="px-2 py-1.5 text-right text-muted">{row.waiting_sewing_qty > 0 ? fmtUnits(row.waiting_sewing_qty) : "—"}</td>
+                            <td className="px-2 py-1.5 text-right text-muted">{row.sewing_qty > 0 ? fmtUnits(row.sewing_qty) : "—"}</td>
+                            <td className="px-2 py-1.5 text-right text-muted">{row.finishing_qty > 0 ? fmtUnits(row.finishing_qty) : "—"}</td>
+                            <td className="px-2 py-1.5 text-right">{fmtUnits(row.current_qty)}</td>
+                            <td className={`px-2 py-1.5 text-right ${fulfillTone(row.fulfillment_pct)}`}>
+                              {row.fulfillment_pct === null ? "—" : `${row.fulfillment_pct}%`}
+                            </td>
+                          </tr>
+                        ))}
+                        {/* Totals row */}
+                        {data.totals && (
+                          <tr className="border-t-2 border-line bg-panel/70 font-bold text-[#0f3d24]">
+                            <td className="px-2 py-2" colSpan={2}>TOTAL</td>
+                            <td className="px-2 py-2 text-right">{fmtUnits(data.totals.cutting_qty)}</td>
+                            <td className="px-2 py-2 text-right text-muted">{data.totals.waiting_sewing_qty > 0 ? fmtUnits(data.totals.waiting_sewing_qty) : "—"}</td>
+                            <td className="px-2 py-2 text-right text-muted">{data.totals.sewing_qty > 0 ? fmtUnits(data.totals.sewing_qty) : "—"}</td>
+                            <td className="px-2 py-2 text-right text-muted">{data.totals.finishing_qty > 0 ? fmtUnits(data.totals.finishing_qty) : "—"}</td>
+                            <td className="px-2 py-2 text-right">{fmtUnits(data.totals.current_qty)}</td>
+                            <td className={`px-2 py-2 text-right ${fulfillTone(data.totals.fulfillment_pct)}`}>
+                              {data.totals.fulfillment_pct === null ? "—" : `${data.totals.fulfillment_pct}%`}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="mt-2 flex items-center gap-3 text-[10px] text-muted">
+                    <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded bg-emerald-100 border border-emerald-300" /> ≥90%</span>
+                    <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded bg-amber-50 border border-amber-200" /> 75–89%</span>
+                    <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded bg-rose-50 border border-rose-200" /> &lt;75%</span>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  return createPortal(content, document.body);
+}
+
+/** One draggable style card */
+function StyleCard({
+  style, finishingOptions, busy, late, onUpdate, onDelete,
+  onDragStart, onDragEnd, isPrivileged, onNoteAdded, onOpenFulfillment,
+  onOptionsChange,
+}) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const done = !!style.completed;
+  const canDone = style.status === "Warehouse";
+  const statuses = finishingOptions.map((f) => f.label);
+
+  const handleComplete = () => {
+    if (!canDone && !done) return;
+    onUpdate(style, { completed: !done });
+  };
+
   return (
     <div
       draggable={!busy}
@@ -238,21 +644,30 @@ function StyleCard({ style, statuses, busy, late, onUpdate, onDelete, onDragStar
       data-testid={`style-card-${style.id}`}
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="font-semibold text-[12.5px] text-[#0f3d24] leading-snug min-w-0">
-          {style.style_name}
-        </div>
         <button
           type="button"
-          onClick={() => onUpdate(style, { completed: !done })}
-          disabled={busy}
-          title={done ? "Mark as not completed" : "Mark as completed"}
-          className="shrink-0 mt-[1px] disabled:opacity-50"
+          onClick={() => onOpenFulfillment(style)}
+          className="font-semibold text-[12.5px] text-[#0f3d24] leading-snug text-left hover:underline underline-offset-2 min-w-0"
+          title="Click to view fulfillment drill-down"
+        >
+          {style.style_name}
+        </button>
+        <button
+          type="button"
+          onClick={handleComplete}
+          disabled={busy || (!done && !canDone)}
+          title={
+            !canDone && !done
+              ? "Style must be in Warehouse status before marking as done"
+              : done ? "Mark as not completed" : "Mark as completed"
+          }
+          className="shrink-0 mt-[1px] disabled:opacity-40"
           data-testid={`style-card-complete-${style.id}`}
         >
           {done ? (
             <CheckCircle size={18} weight="fill" className="text-emerald-600" />
           ) : (
-            <Circle size={18} className="text-muted/60 hover:text-emerald-600" />
+            <Circle size={18} className={canDone ? "text-muted/60 hover:text-emerald-600" : "text-muted/25"} />
           )}
         </button>
       </div>
@@ -261,74 +676,69 @@ function StyleCard({ style, statuses, busy, late, onUpdate, onDelete, onDragStar
         <span className={`text-[9px] font-bold uppercase tracking-wide border rounded-full px-1.5 py-0.5 ${BRAND_BADGE[style.brand] || "bg-panel text-muted border-line"}`}>
           {style.brand}
         </span>
-        <span className={`text-[9px] font-bold uppercase tracking-wide border rounded-full px-1.5 py-0.5 ${CATEGORY_BADGE[style.category] || "bg-panel text-muted border-line"}`}>
-          {style.category}
-        </span>
+        {style.order_type && (
+          <span className={`text-[9px] font-bold uppercase tracking-wide border rounded-full px-1.5 py-0.5 ${ORDER_TYPE_BADGE[style.order_type] || "bg-panel text-muted border-line"}`}>
+            {style.order_type}
+          </span>
+        )}
         <span className="text-[10.5px] font-semibold text-[#0f3d24] bg-panel border border-line rounded-full px-1.5 py-0.5">
           {fmtUnits(style.quantity)} pcs
         </span>
         {late && (
-          <span
-            className="flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide text-rose-800 bg-rose-100 border border-rose-300 rounded-full px-1.5 py-0.5"
-            title="Deliver-by date has passed and this style isn't completed"
-            data-testid={`style-card-late-${style.id}`}
-          >
+          <span className="flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide text-rose-800 bg-rose-100 border border-rose-300 rounded-full px-1.5 py-0.5">
             <Warning size={9} weight="fill" /> Late
           </span>
         )}
       </div>
 
-      <div className="flex items-center gap-1.5 mt-2">
-        <select
-          value={style.status}
-          onChange={(e) => onUpdate(style, { status: e.target.value })}
-          disabled={busy}
-          className="flex-1 min-w-0 text-[11px] font-medium text-[#0f3d24] bg-white border border-line rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50"
-          data-testid={`style-card-status-${style.id}`}
-        >
-          {statuses.map((s) => (
-            <option key={s} value={s}>{s}</option>
-          ))}
-        </select>
-        {confirmDelete ? (
-          <span className="flex items-center gap-1 shrink-0">
-            <button
-              type="button"
-              onClick={() => { setConfirmDelete(false); onDelete(style); }}
-              disabled={busy}
-              className="text-[10px] font-bold text-white bg-rose-600 hover:bg-rose-700 rounded px-1.5 py-1 disabled:opacity-50"
-              data-testid={`style-card-delete-confirm-${style.id}`}
-            >
-              Delete
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirmDelete(false)}
-              className="text-muted hover:text-[#0f3d24]"
-              aria-label="Cancel delete"
-            >
-              <X size={13} />
-            </button>
-          </span>
+      {/* Status select with finishing-options management */}
+      <div className="mt-2">
+        {isPrivileged ? (
+          <FinishingOptionsSelect
+            style={style}
+            finishingOptions={finishingOptions}
+            busy={busy}
+            onUpdate={onUpdate}
+            isPrivileged={isPrivileged}
+            onOptionsChange={onOptionsChange}
+          />
         ) : (
-          <button
-            type="button"
-            onClick={() => setConfirmDelete(true)}
-            disabled={busy}
-            title="Delete style"
-            className="shrink-0 text-muted/50 hover:text-rose-600 disabled:opacity-50"
-            data-testid={`style-card-delete-${style.id}`}
-          >
-            <Trash size={14} />
-          </button>
+          <StatusSelect style={style} statuses={statuses} busy={busy} onUpdate={onUpdate} className="w-full" />
         )}
       </div>
+
+      {/* Delete (privileged only) */}
+      {isPrivileged && (
+        <div className="flex items-center justify-end mt-1.5">
+          {confirmDelete ? (
+            <span className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => { setConfirmDelete(false); onDelete(style); }}
+                disabled={busy}
+                className="text-[10px] font-bold text-white bg-rose-600 hover:bg-rose-700 rounded px-1.5 py-1 disabled:opacity-50"
+              >Delete</button>
+              <button type="button" onClick={() => setConfirmDelete(false)} className="text-muted hover:text-[#0f3d24]"><X size={13} /></button>
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+              disabled={busy}
+              title="Delete style"
+              className="text-muted/50 hover:text-rose-600 disabled:opacity-50"
+            >
+              <Trash size={13} />
+            </button>
+          )}
+        </div>
+      )}
 
       <div className={`flex items-center gap-1 mt-1.5 text-[10.5px] ${late ? "text-rose-700" : "text-muted"}`}>
         <CalendarBlank size={12} className="shrink-0" />
         {style.deliver_by ? (
           <span>
-            Deliver to WH/FIN by{" "}
+            Deliver by{" "}
             <span className={`font-semibold ${late ? "text-rose-700" : "text-[#0f3d24]"}`}>{fmtShortDate(style.deliver_by)}</span>
             {late && <span className="font-bold"> — past due</span>}
           </span>
@@ -336,24 +746,46 @@ function StyleCard({ style, statuses, busy, late, onUpdate, onDelete, onDragStar
           <span>No deliver-by date</span>
         )}
       </div>
+
+      {/* Notes panel */}
+      <NotesPanel style={style} onNoteAdded={onNoteAdded} />
     </div>
   );
 }
 
-/** Inline "+ Add style" form for one week column. */
-function AddStyleForm({ week, statuses, brands, categories, onCreate, onCancel }) {
+/** Inline "+ Add style" form */
+function AddStyleForm({ week, finishingOptions, brands, categories, orderTypes, onCreate, onCancel }) {
+  const statuses = finishingOptions.map((f) => f.label);
   const [form, setForm] = useState({
     style_name: "",
     brand: brands[0] || "VIVO",
     category: categories[0] || "WOVEN",
     quantity: "",
+    order_type: orderTypes[0] || "New",
     order_date: "",
     status: statuses[0] || "Cutting",
     deliver_by: "",
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const set = (k) => (e) => {
+    const val = e.target.value;
+    setForm((f) => {
+      const next = { ...f, [k]: val };
+      // Auto-fill deliver_by when order_date is set and deliver_by is not manually overridden
+      if (k === "order_date" && val && !f._deliver_by_manual) {
+        const od = new Date(`${val}T00:00:00`);
+        if (!isNaN(od.getTime())) {
+          od.setDate(od.getDate() + 14);
+          const dd = od.toISOString().slice(0, 10);
+          next.deliver_by = dd;
+        }
+      }
+      if (k === "deliver_by") next._deliver_by_manual = true;
+      return next;
+    });
+  };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -366,6 +798,7 @@ function AddStyleForm({ week, statuses, brands, categories, onCreate, onCancel }
         brand: form.brand,
         category: form.category,
         quantity: Number(form.quantity) || 0,
+        order_type: form.order_type || null,
         order_date: form.order_date || null,
         status: form.status,
         deliver_by: form.deliver_by || null,
@@ -375,9 +808,7 @@ function AddStyleForm({ week, statuses, brands, categories, onCreate, onCancel }
     } catch (e2) {
       setErr(e2?.response?.data?.detail || e2.message || "Failed to add style");
       setSaving(false);
-      return;
     }
-    setSaving(false);
   };
 
   const inputCls = "w-full text-[11.5px] text-[#0f3d24] bg-white border border-line rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand/40";
@@ -388,18 +819,18 @@ function AddStyleForm({ week, statuses, brands, categories, onCreate, onCancel }
       <div className="text-[11px] font-bold text-[#0f3d24]">New style — WK {week.iso_week}</div>
       <div>
         <label className={labelCls}>Style name</label>
-        <input className={inputCls} value={form.style_name} onChange={set("style_name")} placeholder="e.g. Vivo Wrap Dress in Satin" autoFocus data-testid="add-style-name" />
+        <input className={inputCls} value={form.style_name} onChange={set("style_name")} placeholder="e.g. Vivo Wrap Dress in Satin" autoFocus />
       </div>
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label className={labelCls}>Brand</label>
-          <select className={inputCls} value={form.brand} onChange={set("brand")} data-testid="add-style-brand">
+          <select className={inputCls} value={form.brand} onChange={set("brand")}>
             {brands.map((b) => <option key={b} value={b}>{b}</option>)}
           </select>
         </div>
         <div>
           <label className={labelCls}>Category</label>
-          <select className={inputCls} value={form.category} onChange={set("category")} data-testid="add-style-category">
+          <select className={inputCls} value={form.category} onChange={set("category")}>
             {categories.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
@@ -407,41 +838,37 @@ function AddStyleForm({ week, statuses, brands, categories, onCreate, onCancel }
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label className={labelCls}>Quantity</label>
-          <input className={inputCls} type="number" min="0" value={form.quantity} onChange={set("quantity")} placeholder="0" data-testid="add-style-qty" />
+          <input className={inputCls} type="number" min="0" value={form.quantity} onChange={set("quantity")} placeholder="0" />
         </div>
         <div>
-          <label className={labelCls}>Status</label>
-          <select className={inputCls} value={form.status} onChange={set("status")} data-testid="add-style-status">
-            {statuses.map((s) => <option key={s} value={s}>{s}</option>)}
+          <label className={labelCls}>Order Type</label>
+          <select className={inputCls} value={form.order_type} onChange={set("order_type")}>
+            {orderTypes.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
+      </div>
+      <div>
+        <label className={labelCls}>Status</label>
+        <select className={inputCls} value={form.status} onChange={set("status")}>
+          {statuses.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
       </div>
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label className={labelCls}>Order date</label>
-          <input className={inputCls} type="date" value={form.order_date} onChange={set("order_date")} data-testid="add-style-order-date" />
+          <input className={inputCls} type="date" value={form.order_date} onChange={set("order_date")} />
         </div>
         <div>
           <label className={labelCls}>Deliver by</label>
-          <input className={inputCls} type="date" value={form.deliver_by} onChange={set("deliver_by")} data-testid="add-style-deliver-by" />
+          <input className={inputCls} type="date" value={form.deliver_by} onChange={set("deliver_by")} />
         </div>
       </div>
       {err && <div className="text-[11px] text-rose-700">{err}</div>}
       <div className="flex items-center gap-1.5">
-        <button
-          type="submit"
-          disabled={saving}
-          className="text-[11px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-2.5 py-1.5 rounded-md disabled:opacity-50"
-          data-testid="add-style-submit"
-        >
+        <button type="submit" disabled={saving} className="text-[11px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-2.5 py-1.5 rounded-md disabled:opacity-50">
           {saving ? "Adding…" : "Add style"}
         </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={saving}
-          className="text-[11px] font-semibold text-[#0f3d24] border border-line hover:bg-white px-2.5 py-1.5 rounded-md disabled:opacity-50"
-        >
+        <button type="button" onClick={onCancel} disabled={saving} className="text-[11px] font-semibold text-[#0f3d24] border border-line hover:bg-white px-2.5 py-1.5 rounded-md disabled:opacity-50">
           Cancel
         </button>
       </div>
@@ -450,26 +877,36 @@ function AddStyleForm({ week, statuses, brands, categories, onCreate, onCancel }
 }
 
 const StyleTracker = () => {
+  const { user } = useAuth();
   const [board, setBoard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [view, setView] = useState("board"); // board | archived
+  const [view, setView] = useState("board");
   const [archived, setArchived] = useState(null);
   const [archivedLoading, setArchivedLoading] = useState(false);
-  const [addingWeek, setAddingWeek] = useState(null); // weekKey being added to
+  const [addingWeek, setAddingWeek] = useState(null);
   const [busyIds, setBusyIds] = useState(() => new Set());
   const [archivingWeek, setArchivingWeek] = useState(null);
   const [dragOverWeek, setDragOverWeek] = useState(null);
+  const [fulfillmentStyle, setFulfillmentStyle] = useState(null); // {id, style_name}
   const dragStyleRef = useRef(null);
 
-  const loadBoard = (forceFresh = false, silent = false) => {
+  // Check if current user is privileged (admin or specific emails)
+  const PRIVILEGED_EMAILS = ["marynyambura@vivofashiongroup.com", "maryann@vivofashiongroup.com"];
+  const isPrivileged = useMemo(() => {
+    if (!user) return false;
+    if (user.role === "admin") return true;
+    return PRIVILEGED_EMAILS.includes((user.email || "").toLowerCase());
+  }, [user]);
+
+  const loadBoard = useCallback((forceFresh = false, silent = false) => {
     if (!silent) { setLoading(true); setError(null); }
     return api
       .get("/style-tracker/board", { forceFresh })
       .then(({ data }) => setBoard(data))
       .catch((e) => setError(e?.response?.data?.detail || e.message || "Failed to load board"))
       .finally(() => { if (!silent) setLoading(false); });
-  };
+  }, []);
 
   const loadArchived = (forceFresh = true) => {
     setArchivedLoading(true);
@@ -480,12 +917,14 @@ const StyleTracker = () => {
       .finally(() => setArchivedLoading(false));
   };
 
-  useEffect(() => { loadBoard(); }, []);
+  useEffect(() => { loadBoard(); }, [loadBoard]);
   useEffect(() => { if (view === "archived") loadArchived(); }, [view]);
 
+  const finishingOptions = board?.finishing_options || [];
   const statuses = board?.statuses || [];
   const brands = board?.brands || ["VIVO", "SBV", "STUDIO"];
   const categories = board?.categories || ["WOVEN", "KNIT"];
+  const orderTypes = board?.order_types || ["New", "Re-Order", "Replenishment"];
 
   const markBusy = (id, on) =>
     setBusyIds((prev) => {
@@ -494,7 +933,6 @@ const StyleTracker = () => {
       return next;
     });
 
-  /** Optimistically patch one style in the board state. */
   const patchLocal = (styleId, patch, moveTo = null) => {
     setBoard((b) => {
       if (!b) return b;
@@ -521,8 +959,7 @@ const StyleTracker = () => {
         w.count = w.styles.length;
         w.total_units = w.styles.reduce((a, s) => a + (Number(s.quantity) || 0), 0);
         w.completed_count = w.styles.filter((s) => s.completed).length;
-        w.completed_units = w.styles.reduce(
-          (a, s) => a + (s.completed ? Number(s.quantity) || 0 : 0), 0);
+        w.completed_units = w.styles.reduce((a, s) => a + (s.completed ? Number(s.quantity) || 0 : 0), 0);
       }
       return { ...b, weeks };
     });
@@ -533,11 +970,11 @@ const StyleTracker = () => {
     patchLocal(style.id, patch, moveTo);
     try {
       await api.post(`/style-tracker/styles/${style.id}`, { ...patch, ...(moveTo || {}) });
-      // Silent refresh keeps overdue-column visibility + footers server-true.
       await loadBoard(true, true);
     } catch (e) {
-      toast.error(e?.response?.data?.detail || e.message || "Failed to save change");
-      await loadBoard(true, true); // roll back optimistic state
+      const msg = e?.response?.data?.detail || e.message || "Failed to save change";
+      toast.error(msg);
+      await loadBoard(true, true);
     } finally {
       markBusy(style.id, false);
     }
@@ -562,6 +999,24 @@ const StyleTracker = () => {
     setAddingWeek(null);
     await loadBoard(true, true);
   };
+
+  // Add a note optimistically to local state
+  const handleNoteAdded = useCallback((styleId, note) => {
+    setBoard((b) => {
+      if (!b) return b;
+      return {
+        ...b,
+        weeks: b.weeks.map((w) => ({
+          ...w,
+          styles: w.styles.map((s) =>
+            s.id === styleId
+              ? { ...s, notes: [...(s.notes || []), note] }
+              : s
+          ),
+        })),
+      };
+    });
+  }, []);
 
   const archiveWeek = async (week) => {
     const wk = weekKey(week);
@@ -598,7 +1053,6 @@ const StyleTracker = () => {
     }
   };
 
-  // ── Drag & drop between week columns ────────────────────────────────────
   const onCardDragStart = (e, style) => {
     dragStyleRef.current = style;
     e.dataTransfer.effectAllowed = "move";
@@ -627,11 +1081,10 @@ const StyleTracker = () => {
   );
 
   const lateCount = useMemo(
-    () =>
-      (board?.weeks || []).reduce(
-        (n, w) => n + w.styles.filter((s) => isLateStyle(s, board?.today)).length,
-        0
-      ),
+    () => (board?.weeks || []).reduce(
+      (n, w) => n + w.styles.filter((s) => isLateStyle(s, board?.today)).length,
+      0
+    ),
     [board]
   );
 
@@ -641,43 +1094,27 @@ const StyleTracker = () => {
 
   return (
     <div className="space-y-4" data-testid="style-tracker-page">
+      {fulfillmentStyle && (
+        <FulfillmentDrawer
+          styleId={fulfillmentStyle.id}
+          styleName={fulfillmentStyle.style_name}
+          onClose={() => setFulfillmentStyle(null)}
+        />
+      )}
+
       <SectionTitle
         title="Weekly Style Tracker"
         subtitle={`Styles by launch week — drag cards between weeks to re-plan. Today: ${fmtShortDate(board.today)} (WK ${board.current?.iso_week})`}
         action={
           <div className="flex items-center gap-2">
             <div className="flex rounded-lg border border-line overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setView("board")}
-                className={`text-[11.5px] font-semibold px-3 py-1.5 ${view === "board" ? "bg-[#1a5c38] text-white" : "bg-white text-[#0f3d24] hover:bg-panel"}`}
-                data-testid="style-tracker-view-board"
-              >
-                Board
-              </button>
-              <button
-                type="button"
-                onClick={() => setView("table")}
-                className={`text-[11.5px] font-semibold px-3 py-1.5 border-l border-line ${view === "table" ? "bg-[#1a5c38] text-white" : "bg-white text-[#0f3d24] hover:bg-panel"}`}
-                data-testid="style-tracker-view-table"
-              >
-                Table
-              </button>
-              <button
-                type="button"
-                onClick={() => setView("archived")}
-                className={`text-[11.5px] font-semibold px-3 py-1.5 border-l border-line ${view === "archived" ? "bg-[#1a5c38] text-white" : "bg-white text-[#0f3d24] hover:bg-panel"}`}
-                data-testid="style-tracker-view-archived"
-              >
+              <button type="button" onClick={() => setView("board")} className={`text-[11.5px] font-semibold px-3 py-1.5 ${view === "board" ? "bg-[#1a5c38] text-white" : "bg-white text-[#0f3d24] hover:bg-panel"}`} data-testid="style-tracker-view-board">Board</button>
+              <button type="button" onClick={() => setView("table")} className={`text-[11.5px] font-semibold px-3 py-1.5 border-l border-line ${view === "table" ? "bg-[#1a5c38] text-white" : "bg-white text-[#0f3d24] hover:bg-panel"}`} data-testid="style-tracker-view-table">Table</button>
+              <button type="button" onClick={() => setView("archived")} className={`text-[11.5px] font-semibold px-3 py-1.5 border-l border-line ${view === "archived" ? "bg-[#1a5c38] text-white" : "bg-white text-[#0f3d24] hover:bg-panel"}`} data-testid="style-tracker-view-archived">
                 Archived{archived ? ` (${archived.count})` : ""}
               </button>
             </div>
-            <button
-              type="button"
-              onClick={() => (view === "archived" ? loadArchived() : loadBoard(true))}
-              className="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#0f3d24] border border-line hover:bg-panel px-2.5 py-1.5 rounded-lg"
-              data-testid="style-tracker-refresh"
-            >
+            <button type="button" onClick={() => (view === "archived" ? loadArchived() : loadBoard(true))} className="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#0f3d24] border border-line hover:bg-panel px-2.5 py-1.5 rounded-lg" data-testid="style-tracker-refresh">
               <ArrowsClockwise size={13} /> Refresh
             </button>
           </div>
@@ -687,20 +1124,15 @@ const StyleTracker = () => {
       {view === "board" ? (
         <>
           {overdueCount > 0 && (
-            <div className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-900" data-testid="style-tracker-overdue-banner">
+            <div className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
               <Warning size={15} weight="fill" className="shrink-0 text-amber-600" />
-              <span>
-                <span className="font-bold">{overdueCount} overdue week{overdueCount === 1 ? "" : "s"}</span> with incomplete styles — complete or re-plan them, then archive the week.
-              </span>
+              <span><span className="font-bold">{overdueCount} overdue week{overdueCount === 1 ? "" : "s"}</span> with incomplete styles — complete or re-plan them, then archive the week.</span>
             </div>
           )}
-
           {lateCount > 0 && (
-            <div className="flex items-center gap-2 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-[12px] text-rose-900" data-testid="style-tracker-late-banner">
+            <div className="flex items-center gap-2 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-[12px] text-rose-900">
               <Warning size={15} weight="fill" className="shrink-0 text-rose-600" />
-              <span>
-                <span className="font-bold">{lateCount} late style{lateCount === 1 ? "" : "s"}</span> past the deliver-by date and not completed — look for the red <span className="font-bold">Late</span> cards.
-              </span>
+              <span><span className="font-bold">{lateCount} late style{lateCount === 1 ? "" : "s"}</span> past the deliver-by date and not completed — look for the red <span className="font-bold">Late</span> cards.</span>
             </div>
           )}
 
@@ -715,12 +1147,10 @@ const StyleTracker = () => {
                     onDragOver={(e) => onColDragOver(e, week)}
                     onDragLeave={() => setDragOverWeek((c) => (c === wk ? null : c))}
                     onDrop={(e) => onColDrop(e, week)}
-                    className={`w-[262px] shrink-0 rounded-xl border flex flex-col transition ${
-                      week.overdue
-                        ? "bg-amber-50/70 border-amber-300"
-                        : week.is_current
-                          ? "bg-brand/5 border-brand/40"
-                          : "bg-panel/50 border-line"
+                    className={`w-[270px] shrink-0 rounded-xl border flex flex-col transition ${
+                      week.overdue ? "bg-amber-50/70 border-amber-300"
+                        : week.is_current ? "bg-brand/5 border-brand/40"
+                        : "bg-panel/50 border-line"
                     } ${isDragTarget ? "ring-2 ring-brand/60" : ""}`}
                     data-testid={`style-tracker-col-${wk}`}
                   >
@@ -728,16 +1158,8 @@ const StyleTracker = () => {
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-1.5 min-w-0">
                           <div className="font-bold text-[13px] text-[#0f3d24] truncate">{week.label}</div>
-                          {week.overdue && (
-                            <span className="text-[9px] font-bold uppercase tracking-wide text-amber-800 bg-amber-200/80 border border-amber-300 rounded-full px-1.5 py-0.5 shrink-0">
-                              Overdue
-                            </span>
-                          )}
-                          {week.is_current && (
-                            <span className="text-[9px] font-bold uppercase tracking-wide text-white bg-[#1a5c38] rounded-full px-1.5 py-0.5 shrink-0">
-                              This week
-                            </span>
-                          )}
+                          {week.overdue && <span className="text-[9px] font-bold uppercase tracking-wide text-amber-800 bg-amber-200/80 border border-amber-300 rounded-full px-1.5 py-0.5 shrink-0">Overdue</span>}
+                          {week.is_current && <span className="text-[9px] font-bold uppercase tracking-wide text-white bg-[#1a5c38] rounded-full px-1.5 py-0.5 shrink-0">This week</span>}
                         </div>
                       </div>
                       <WeekStats week={week} />
@@ -746,13 +1168,7 @@ const StyleTracker = () => {
                           type="button"
                           onClick={() => archiveWeek(week)}
                           disabled={archivingWeek === wk || !week.styles.some((s) => s.completed)}
-                          title={
-                            week.styles.some((s) => s.completed)
-                              ? "Archive all COMPLETED styles in this week — incomplete styles stay visible as overdue"
-                              : "No completed styles to archive in this week"
-                          }
                           className="mt-1.5 flex items-center gap-1 text-[10.5px] font-semibold text-amber-900 bg-white border border-amber-300 hover:bg-amber-100 rounded-md px-2 py-1 disabled:opacity-45 disabled:cursor-not-allowed"
-                          data-testid={`style-tracker-archive-week-${wk}`}
                         >
                           <Archive size={12} />
                           {archivingWeek === wk ? "Archiving…" : "Archive week"}
@@ -770,25 +1186,30 @@ const StyleTracker = () => {
                         <StyleCard
                           key={s.id}
                           style={s}
-                          statuses={statuses}
+                          finishingOptions={finishingOptions}
                           busy={busyIds.has(s.id)}
                           late={isLateStyle(s, board.today)}
                           onUpdate={updateStyle}
                           onDelete={deleteStyle}
                           onDragStart={onCardDragStart}
                           onDragEnd={onCardDragEnd}
+                          isPrivileged={isPrivileged}
+                          onNoteAdded={handleNoteAdded}
+                          onOpenFulfillment={(style) => setFulfillmentStyle({ id: style.id, style_name: style.style_name })}
+                          onOptionsChange={() => loadBoard(true, true)}
                         />
                       ))}
                       {addingWeek === wk ? (
                         <AddStyleForm
                           week={week}
-                          statuses={statuses}
+                          finishingOptions={finishingOptions}
                           brands={brands}
                           categories={categories}
+                          orderTypes={orderTypes}
                           onCreate={createStyle}
                           onCancel={() => setAddingWeek(null)}
                         />
-                      ) : (
+                      ) : isPrivileged ? (
                         <button
                           type="button"
                           onClick={() => setAddingWeek(wk)}
@@ -797,10 +1218,10 @@ const StyleTracker = () => {
                         >
                           <Plus size={13} weight="bold" /> Add style
                         </button>
-                      )}
+                      ) : null}
                     </div>
 
-                    <div className={`px-3 py-2 border-t text-[11px] font-semibold text-[#0f3d24] flex items-center justify-between ${week.overdue ? "border-amber-200" : "border-line"}`} data-testid={`style-tracker-footer-${wk}`}>
+                    <div className={`px-3 py-2 border-t text-[11px] font-semibold text-[#0f3d24] flex items-center justify-between ${week.overdue ? "border-amber-200" : "border-line"}`}>
                       <span>{week.completed_count || 0}/{week.count} in WH</span>
                       <span>{fmtUnits(week.completed_units || 0)}/{fmtUnits(week.total_units)} pcs</span>
                     </div>
@@ -814,9 +1235,10 @@ const StyleTracker = () => {
         <WeekTable
           weeks={board.weeks}
           today={board.today}
-          statuses={statuses}
+          finishingOptions={finishingOptions}
           busyIds={busyIds}
           onUpdate={updateStyle}
+          isPrivileged={isPrivileged}
         />
       ) : (
         <div className="rounded-xl border border-line bg-white" data-testid="style-tracker-archived-view">
@@ -834,7 +1256,7 @@ const StyleTracker = () => {
                   <tr className="text-left text-[10.5px] uppercase tracking-wide text-muted border-b border-line">
                     <th className="px-3 py-2.5 font-bold">Style</th>
                     <th className="px-3 py-2.5 font-bold">Brand</th>
-                    <th className="px-3 py-2.5 font-bold">Category</th>
+                    <th className="px-3 py-2.5 font-bold">Type</th>
                     <th className="px-3 py-2.5 font-bold text-right">Qty</th>
                     <th className="px-3 py-2.5 font-bold">Week</th>
                     <th className="px-3 py-2.5 font-bold">Status</th>
@@ -844,12 +1266,14 @@ const StyleTracker = () => {
                 </thead>
                 <tbody>
                   {archived.styles.map((s) => (
-                    <tr key={s.id} className="border-b border-line/60 last:border-0 hover:bg-panel/40" data-testid={`archived-row-${s.id}`}>
+                    <tr key={s.id} className="border-b border-line/60 last:border-0 hover:bg-panel/40">
                       <td className="px-3 py-2 font-semibold text-[#0f3d24]">{s.style_name}</td>
                       <td className="px-3 py-2">
                         <span className={`text-[9px] font-bold uppercase tracking-wide border rounded-full px-1.5 py-0.5 ${BRAND_BADGE[s.brand] || "bg-panel text-muted border-line"}`}>{s.brand}</span>
                       </td>
-                      <td className="px-3 py-2 text-muted">{s.category}</td>
+                      <td className="px-3 py-2">
+                        {s.order_type && <span className={`text-[9px] font-bold uppercase tracking-wide border rounded-full px-1.5 py-0.5 ${ORDER_TYPE_BADGE[s.order_type] || "bg-panel text-muted border-line"}`}>{s.order_type}</span>}
+                      </td>
                       <td className="px-3 py-2 text-right font-semibold">{fmtUnits(s.quantity)}</td>
                       <td className="px-3 py-2 text-muted whitespace-nowrap">{s.week_label}</td>
                       <td className="px-3 py-2 text-muted">{s.status}</td>
@@ -862,7 +1286,6 @@ const StyleTracker = () => {
                           onClick={() => restoreStyle(s)}
                           disabled={busyIds.has(s.id)}
                           className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#1a5c38] border border-[#1a5c38]/30 hover:bg-brand/5 rounded-md px-2 py-1 disabled:opacity-50"
-                          data-testid={`archived-restore-${s.id}`}
                         >
                           <ArrowCounterClockwise size={12} /> Restore
                         </button>

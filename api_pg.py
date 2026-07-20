@@ -31245,6 +31245,53 @@ _STYLE_TRACKER_STATUSES = [
 _STYLE_TRACKER_BRANDS = ["VIVO", "SBV", "STUDIO"]
 _STYLE_TRACKER_CATEGORIES = ["WOVEN", "KNIT"]
 _STYLE_TRACKER_WINDOW = 5  # current week + next 4
+_STYLE_TRACKER_ORDER_TYPES = ["New", "Re-Order", "Replenishment"]
+# Privileged emails that can create/delete styles (admin role is always privileged)
+_STYLE_TRACKER_PRIVILEGED_EMAILS = {
+    "marynyambura@vivofashiongroup.com",
+    "maryann@vivofashiongroup.com",
+}
+
+
+def _st_is_privileged(request):
+    """True if user is admin OR in the hard-coded privileged email set."""
+    u = getattr(request.state, "user", None) or {}
+    if u.get("role") == "admin":
+        return True
+    return (u.get("email") or "").lower() in {
+        e.lower() for e in _STYLE_TRACKER_PRIVILEGED_EMAILS
+    }
+
+
+def _style_warehouse_pct(style_name, quantity):
+    """Fraction (0–100) of the style's order qty in Warehouse Finished Goods.
+    Returns (pct_float, wh_units). Best-effort — returns (0.0, 0) on failure."""
+    if not style_name or not quantity or int(quantity or 0) <= 0:
+        return 0.0, 0
+    try:
+        rows = _users_exec(
+            "SELECT COALESCE(SUM(GREATEST(available, 0)), 0)::int AS wh_units "
+            "FROM all_inventory "
+            "WHERE style_name = %s AND pos_location_name = 'Warehouse Finished Goods'",
+            (style_name,), fetch=True)
+        wh = int((rows or [{}])[0].get("wh_units") or 0)
+        pct = min(wh / int(quantity) * 100, 100.0)
+        return pct, wh
+    except Exception:
+        return 0.0, 0
+
+
+def _st_get_finishing_options():
+    """Return current finishing options from DB as a list of label strings.
+    Falls back to the hard-coded list on any DB error."""
+    try:
+        rows = _users_exec(
+            "SELECT label FROM style_tracker_finishing_options "
+            "ORDER BY sort_order, id", fetch=True) or []
+        lbls = [r["label"] for r in rows if r.get("label")]
+        return lbls if lbls else list(_STYLE_TRACKER_STATUSES)
+    except Exception:
+        return list(_STYLE_TRACKER_STATUSES)
 
 
 def _ensure_style_tracker_tables():
@@ -31270,6 +31317,42 @@ def _ensure_style_tracker_tables():
     _users_exec(
         "CREATE INDEX IF NOT EXISTS idx_style_tracker_week "
         "ON style_tracker_styles(iso_year, iso_week) WHERE NOT archived")
+    # New columns (idempotent ALTER TABLE — safe on existing DBs)
+    _users_exec("""
+        ALTER TABLE style_tracker_styles
+            ADD COLUMN IF NOT EXISTS order_type     TEXT,
+            ADD COLUMN IF NOT EXISTS deliver_by_auto DATE
+    """)
+    # Notes table: append-only, one comment per (style, author, time)
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS style_tracker_notes (
+            id           BIGSERIAL PRIMARY KEY,
+            style_id     BIGINT NOT NULL REFERENCES style_tracker_styles(id) ON DELETE CASCADE,
+            author_email TEXT NOT NULL,
+            body         TEXT NOT NULL,
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    _users_exec(
+        "CREATE INDEX IF NOT EXISTS idx_st_notes_style "
+        "ON style_tracker_notes(style_id)")
+    # Finishing options table: user-managed status list
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS style_tracker_finishing_options (
+            id         SERIAL PRIMARY KEY,
+            label      TEXT UNIQUE NOT NULL,
+            sort_order INT NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    # Seed finishing options ONLY when the table is empty (first boot).
+    # Never reseed on subsequent calls — that would undo any renames by privileged users.
+    _fo_count = _users_exec(
+        "SELECT COUNT(*) AS cnt FROM style_tracker_finishing_options", fetch=True)
+    if int((_fo_count or [{}])[0].get("cnt") or 0) == 0:
+        for _i, _lbl in enumerate(_STYLE_TRACKER_STATUSES):
+            _users_exec(
+                "INSERT INTO style_tracker_finishing_options (label, sort_order) "
+                "VALUES (%s, %s) ON CONFLICT (label) DO NOTHING",
+                (_lbl, _i))
     # Seed-marker home. app_config already exists on every long-lived DB; the
     # IF NOT EXISTS covers a brand-new (prod) database bootstrapping itself.
     _users_exec("""
@@ -31416,12 +31499,14 @@ def _st_parse_date(val, field):
 
 def _st_row_out(r):
     out = dict(r)
-    for k in ("order_date", "deliver_by"):
+    for k in ("order_date", "deliver_by", "deliver_by_auto"):
         if out.get(k) is not None:
             out[k] = out[k].isoformat()
     for k in ("created_at", "updated_at", "archived_at"):
         if out.get(k) is not None:
             out[k] = out[k].isoformat()
+    # Ensure notes key always present (populated by board endpoint, not DB fetch)
+    out.setdefault("notes", [])
     return out
 
 
@@ -31441,6 +31526,31 @@ def style_tracker_board():
     rows = _users_exec(
         "SELECT * FROM style_tracker_styles WHERE NOT archived "
         "ORDER BY completed, id", fetch=True) or []
+
+    # Fetch notes for all non-archived styles in one query
+    notes_raw = _users_exec("""
+        SELECT n.style_id, n.author_email, n.body, n.created_at
+        FROM style_tracker_notes n
+        JOIN style_tracker_styles s ON s.id = n.style_id
+        WHERE NOT s.archived
+        ORDER BY n.created_at ASC
+    """, fetch=True) or []
+    notes_by_style = {}
+    for n in notes_raw:
+        sid = n["style_id"]
+        notes_by_style.setdefault(sid, []).append({
+            "author_email": n["author_email"],
+            "body": n["body"],
+            "created_at": n["created_at"].isoformat() if n.get("created_at") else None,
+        })
+
+    # Fetch finishing options for the board response
+    fo_rows = _users_exec(
+        "SELECT id, label, sort_order FROM style_tracker_finishing_options "
+        "ORDER BY sort_order, id", fetch=True) or []
+    finishing_options = [{"id": r["id"], "label": r["label"]} for r in fo_rows]
+    statuses = [r["label"] for r in fo_rows] or list(_STYLE_TRACKER_STATUSES)
+
     by_week = {}
     for r in rows:
         by_week.setdefault((r["iso_year"], r["iso_week"]), []).append(r)
@@ -31466,6 +31576,11 @@ def style_tracker_board():
     for key in overdue_keys + window + beyond_keys:
         y, w = key
         styles = by_week.get(key, [])
+        style_rows = []
+        for s in styles:
+            sr = _st_row_out(s)
+            sr["notes"] = notes_by_style.get(s["id"], [])
+            style_rows.append(sr)
         weeks.append({
             "iso_year": y,
             "iso_week": w,
@@ -31473,7 +31588,7 @@ def style_tracker_board():
             "is_current": key == cur_key,
             "is_past": key < cur_key,
             "overdue": key in set(overdue_keys),
-            "styles": [_st_row_out(s) for s in styles],
+            "styles": style_rows,
             "count": len(styles),
             "total_units": int(sum(int(s["quantity"] or 0) for s in styles)),
             # Completed = delivered to the warehouse (the card's checkmark).
@@ -31484,14 +31599,16 @@ def style_tracker_board():
     return {
         "today": today.isoformat(),
         "current": {"iso_year": cur_y, "iso_week": cur_w},
-        "statuses": _STYLE_TRACKER_STATUSES,
+        "statuses": statuses,
+        "finishing_options": finishing_options,
         "brands": _STYLE_TRACKER_BRANDS,
         "categories": _STYLE_TRACKER_CATEGORIES,
+        "order_types": _STYLE_TRACKER_ORDER_TYPES,
         "weeks": weeks,
     }
 
 
-def _st_validate_payload(body, partial=False, current=None):
+def _st_validate_payload(body, partial=False, current=None, valid_statuses=None):
     """Validate/normalize a create (partial=False) or update (partial=True)
     payload. Returns (fields dict, error string | None)."""
     fields = {}
@@ -31522,9 +31639,19 @@ def _st_validate_payload(body, partial=False, current=None):
         fields["quantity"] = qty
     if "status" in body or not partial:
         status = str(body.get("status") or ("Cutting" if not partial else "")).strip()
-        if status not in _STYLE_TRACKER_STATUSES:
-            return None, f"status must be one of: {', '.join(_STYLE_TRACKER_STATUSES)}"
+        valid_statuses = valid_statuses or _st_get_finishing_options() or _STYLE_TRACKER_STATUSES
+        if status not in valid_statuses:
+            return None, f"status must be one of: {', '.join(valid_statuses)}"
         fields["status"] = status
+    if "order_type" in body:
+        ot = body.get("order_type")
+        if ot is not None and ot != "":
+            ot = str(ot).strip()
+            if ot not in _STYLE_TRACKER_ORDER_TYPES:
+                return None, f"order_type must be one of: {', '.join(_STYLE_TRACKER_ORDER_TYPES)}"
+            fields["order_type"] = ot
+        else:
+            fields["order_type"] = None
     for key in ("order_date", "deliver_by"):
         if key in body:
             try:
@@ -31546,8 +31673,12 @@ def _st_validate_payload(body, partial=False, current=None):
 
 @app.post("/api/style-tracker/styles")
 async def style_tracker_create(request: Request):
-    """Create a style card in a given launch week."""
+    """Create a style card in a given launch week. Privileged users only."""
     _ensure_style_tracker_tables()
+    if not _st_is_privileged(request):
+        return JSONResponse(
+            {"detail": "Only admins and designated team leads can add styles"},
+            status_code=403)
     try:
         body = await request.json()
     except Exception:
@@ -31555,16 +31686,20 @@ async def style_tracker_create(request: Request):
     fields, err = _st_validate_payload(body, partial=False)
     if err:
         return JSONResponse({"detail": err}, status_code=400)
+    # Auto-fill deliver_by = order_date + 14 days when not explicitly set
+    if fields.get("order_date") and "deliver_by" not in body:
+        fields.setdefault("deliver_by", fields["order_date"] + timedelta(days=14))
     u = getattr(request.state, "user", None) or {}
     created_by = u.get("email") or u.get("name") or "unknown"
     rows = _users_exec(
         "INSERT INTO style_tracker_styles "
-        "(style_name, brand, category, quantity, order_date, status, "
+        "(style_name, brand, category, quantity, order_date, order_type, status, "
         " deliver_by, iso_year, iso_week, completed, created_by) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
         (fields["style_name"], fields["brand"], fields["category"],
-         fields["quantity"], fields.get("order_date"), fields["status"],
-         fields.get("deliver_by"), fields["iso_year"], fields["iso_week"],
+         fields["quantity"], fields.get("order_date"), fields.get("order_type"),
+         fields["status"], fields.get("deliver_by"),
+         fields["iso_year"], fields["iso_week"],
          fields.get("completed", False), created_by),
         fetch=True)
     return {"ok": True, "style": _st_row_out(rows[0])}
@@ -31583,11 +31718,35 @@ async def style_tracker_update(style_id: int, request: Request):
         fetch=True)
     if not existing:
         return JSONResponse({"detail": "Style not found"}, status_code=404)
-    fields, err = _st_validate_payload(body, partial=True, current=existing[0])
+    ex = existing[0]
+    fields, err = _st_validate_payload(body, partial=True, current=ex)
     if err:
         return JSONResponse({"detail": err}, status_code=400)
     if not fields:
         return JSONResponse({"detail": "Nothing to update"}, status_code=400)
+    # Auto-fill deliver_by when order_date changes and deliver_by not in body
+    if "order_date" in fields and fields["order_date"] and "deliver_by" not in body:
+        fields.setdefault("deliver_by", fields["order_date"] + timedelta(days=14))
+    # Warehouse gate: must have ≥90% of order qty transferred to warehouse
+    new_status = fields.get("status")
+    if new_status == "Warehouse" and ex.get("status") != "Warehouse":
+        pct, wh_units = _style_warehouse_pct(ex["style_name"], ex["quantity"])
+        if pct < 90.0:
+            return JSONResponse({
+                "detail": (
+                    f"Only {pct:.0f}% transferred to warehouse "
+                    f"({wh_units} of {ex['quantity']} units) — need ≥90% to move to Warehouse"
+                ),
+                "warehouse_pct": round(pct, 1),
+                "wh_units": wh_units,
+            }, status_code=422)
+    # Done gate: can only mark complete when status is Warehouse
+    if fields.get("completed") and not ex.get("completed"):
+        current_status = fields.get("status", ex.get("status", ""))
+        if current_status != "Warehouse":
+            return JSONResponse(
+                {"detail": "A style must reach Warehouse status before it can be marked as done"},
+                status_code=422)
     sets = ", ".join(f"{k} = %s" for k in fields)
     params = list(fields.values()) + [style_id]
     rows = _users_exec(
@@ -31598,12 +31757,269 @@ async def style_tracker_update(style_id: int, request: Request):
 
 @app.post("/api/style-tracker/styles/{style_id}/delete")
 async def style_tracker_delete(style_id: int, request: Request):
+    """Delete a style. Privileged users only."""
+    if not _st_is_privileged(request):
+        return JSONResponse(
+            {"detail": "Only admins and designated team leads can delete styles"},
+            status_code=403)
     rows = _users_exec(
         "DELETE FROM style_tracker_styles WHERE id = %s RETURNING id",
         (style_id,), fetch=True)
     if not rows:
         return JSONResponse({"detail": "Style not found"}, status_code=404)
     return {"ok": True, "deleted_id": style_id}
+
+
+@app.post("/api/style-tracker/styles/{style_id}/notes")
+async def style_tracker_add_note(style_id: int, request: Request):
+    """Append a timestamped comment to a style. Any authenticated user may comment."""
+    _ensure_style_tracker_tables()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    text = str(body.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"detail": "Note text is required"}, status_code=400)
+    if len(text) > 2000:
+        return JSONResponse({"detail": "Note is too long (max 2000 chars)"}, status_code=400)
+    style = _users_exec(
+        "SELECT id FROM style_tracker_styles WHERE id = %s AND NOT archived",
+        (style_id,), fetch=True)
+    if not style:
+        return JSONResponse({"detail": "Style not found"}, status_code=404)
+    u = getattr(request.state, "user", None) or {}
+    author = u.get("email") or u.get("name") or "unknown"
+    note = _users_exec(
+        "INSERT INTO style_tracker_notes (style_id, author_email, body) "
+        "VALUES (%s, %s, %s) RETURNING id, author_email, body, created_at",
+        (style_id, author, text), fetch=True)[0]
+    return {
+        "ok": True,
+        "note": {
+            "id": note["id"],
+            "author_email": note["author_email"],
+            "body": note["body"],
+            "created_at": note["created_at"].isoformat() if note.get("created_at") else None,
+        },
+    }
+
+
+@app.get("/api/style-tracker/finishing-options")
+def style_tracker_finishing_options_list():
+    """Public: return the current sorted finishing-status option list."""
+    _ensure_style_tracker_tables()
+    rows = _users_exec(
+        "SELECT id, label, sort_order FROM style_tracker_finishing_options "
+        "ORDER BY sort_order, id", fetch=True) or []
+    return {"options": [{"id": r["id"], "label": r["label"]} for r in rows]}
+
+
+@app.post("/api/style-tracker/finishing-options")
+async def style_tracker_finishing_options_add(request: Request):
+    """Privileged: add a new finishing-status option."""
+    _ensure_style_tracker_tables()
+    if not _st_is_privileged(request):
+        return JSONResponse(
+            {"detail": "Only admins and designated team leads can add finishing options"},
+            status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    label = str(body.get("label") or "").strip()
+    if not label:
+        return JSONResponse({"detail": "label is required"}, status_code=400)
+    if len(label) > 100:
+        return JSONResponse({"detail": "label is too long (max 100 chars)"}, status_code=400)
+    # sort_order = max existing + 1
+    max_row = _users_exec(
+        "SELECT COALESCE(MAX(sort_order), -1) AS mx FROM style_tracker_finishing_options",
+        fetch=True)
+    next_order = int((max_row or [{}])[0].get("mx") or -1) + 1
+    try:
+        row = _users_exec(
+            "INSERT INTO style_tracker_finishing_options (label, sort_order) "
+            "VALUES (%s, %s) RETURNING id, label, sort_order",
+            (label, next_order), fetch=True)[0]
+    except Exception as e:
+        if "unique" in str(e).lower():
+            return JSONResponse(
+                {"detail": f"A finishing option called '{label}' already exists"},
+                status_code=409)
+        raise
+    return {"ok": True, "option": {"id": row["id"], "label": row["label"]}}
+
+
+@app.post("/api/style-tracker/finishing-options/{option_id}")
+async def style_tracker_finishing_options_rename(option_id: int, request: Request):
+    """Privileged: rename an existing finishing-status option."""
+    _ensure_style_tracker_tables()
+    if not _st_is_privileged(request):
+        return JSONResponse(
+            {"detail": "Only admins and designated team leads can rename finishing options"},
+            status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    label = str(body.get("label") or "").strip()
+    if not label:
+        return JSONResponse({"detail": "label is required"}, status_code=400)
+    try:
+        rows = _users_exec(
+            "UPDATE style_tracker_finishing_options SET label = %s "
+            "WHERE id = %s RETURNING id, label",
+            (label, option_id), fetch=True)
+    except Exception as e:
+        if "unique" in str(e).lower():
+            return JSONResponse(
+                {"detail": f"A finishing option called '{label}' already exists"},
+                status_code=409)
+        raise
+    if not rows:
+        return JSONResponse({"detail": "Option not found"}, status_code=404)
+    return {"ok": True, "option": {"id": rows[0]["id"], "label": rows[0]["label"]}}
+
+
+@app.get("/api/style-tracker/styles/{style_id}/warehouse-pct")
+def style_tracker_warehouse_pct_endpoint(style_id: int):
+    """Live warehouse transfer percentage for a style (vs its order quantity)."""
+    _ensure_style_tracker_tables()
+    style = _users_exec(
+        "SELECT id, style_name, quantity FROM style_tracker_styles WHERE id = %s",
+        (style_id,), fetch=True)
+    if not style:
+        raise HTTPException(status_code=404, detail="Style not found")
+    s = style[0]
+    pct, wh_units = _style_warehouse_pct(s["style_name"], s["quantity"])
+    return {
+        "style_id": style_id,
+        "pct": round(pct, 1),
+        "wh_units": wh_units,
+        "quantity": s["quantity"],
+        "meets_threshold": pct >= 90.0,
+    }
+
+
+@app.get("/api/style-tracker/styles/{style_id}/fulfillment")
+def style_tracker_fulfillment(style_id: int):
+    """Size/colour fulfillment drill-down for a style.
+    Returns a stage journey and a colour × size matrix with fulfillment rates."""
+    _ensure_style_tracker_tables()
+    style = _users_exec(
+        "SELECT id, style_name, quantity FROM style_tracker_styles WHERE id = %s",
+        (style_id,), fetch=True)
+    if not style:
+        raise HTTPException(status_code=404, detail="Style not found")
+    style_name = style[0]["style_name"]
+
+    # All production-stage locations we care about
+    prod_locs = (
+        "'Cutting - Spreading','Fabric Trimming',"
+        "'Sew/Stock/A','Sew/Stock/B','Sew/Stock/C','Sew/Stock/D','Sew/Stock/E',"
+        "'Finished Goods Production','Warehouse Finished Goods'"
+    )
+    inv_rows = _users_exec(
+        f"""
+        SELECT pos_location_name,
+               COALESCE(color_print, '') AS colour,
+               COALESCE(size, '')       AS size,
+               COALESCE(SUM(GREATEST(available, 0)), 0)::int AS units
+        FROM all_inventory
+        WHERE style_name = %s
+          AND pos_location_name IN ({prod_locs})
+        GROUP BY 1, 2, 3
+        HAVING COALESCE(SUM(GREATEST(available, 0)), 0) > 0
+        """,
+        (style_name,), fetch=True) or []
+
+    def _loc_stage(loc):
+        if loc == "Cutting - Spreading":      return "cutting"
+        if loc == "Fabric Trimming":          return "waiting_sewing"
+        if loc.startswith("Sew/Stock/"):      return "sewing"
+        if loc == "Finished Goods Production": return "finishing"
+        if loc == "Warehouse Finished Goods": return "warehouse"
+        return "other"
+
+    _stage_names = {
+        "cutting":       "Cutting & Bundling",
+        "waiting_sewing":"Waiting Sewing",
+        "sewing":        "Sewing",
+        "finishing":     "Finishing",
+        "warehouse":     "Warehouse",
+    }
+    _stage_order = ["cutting", "waiting_sewing", "sewing", "finishing", "warehouse"]
+
+    # Collect totals per stage and per-stage breakdown per (colour, size)
+    stage_totals = {}
+    stage_by_cs = {}  # {(colour, size): {stage_key: units}}
+    for row in inv_rows:
+        stage = _loc_stage(row["pos_location_name"])
+        if stage == "other":
+            continue
+        units = int(row["units"] or 0)
+        stage_totals[stage] = stage_totals.get(stage, 0) + units
+        cs = (row.get("colour") or "", row.get("size") or "")
+        stage_by_cs.setdefault(cs, {})[stage] = stage_by_cs.get(cs, {}).get(stage, 0) + units
+
+    # Stage journey — arrived_date is not tracked in all_inventory (batch-loaded nightly),
+    # so we return None; it is present in the contract for future enrichment.
+    stages = [
+        {
+            "stage": sk,
+            "stage_name": _stage_names[sk],
+            "units": stage_totals[sk],
+            "arrived_date": None,
+        }
+        for sk in _stage_order if sk in stage_totals
+    ]
+
+    # Colour × size matrix — one row per (colour, size) seen at any stage.
+    # Fulfillment rate = warehouse units / cutting units for each colour/size.
+    all_cs = sorted(stage_by_cs)
+    matrix = []
+    for cs in all_cs:
+        colour, size = cs
+        s = stage_by_cs[cs]
+        cut = s.get("cutting", 0)
+        ws  = s.get("waiting_sewing", 0)
+        sew = s.get("sewing", 0)
+        fin = s.get("finishing", 0)
+        wh  = s.get("warehouse", 0)
+        pct = round(wh / cut * 100) if cut > 0 else None
+        matrix.append({
+            "colour": colour, "size": size,
+            "cutting_qty": cut,
+            "waiting_sewing_qty": ws,
+            "sewing_qty": sew,
+            "finishing_qty": fin,
+            "current_qty": wh,
+            "fulfillment_pct": pct,
+        })
+
+    # Totals row across all colour/size combinations
+    total_row = {
+        "colour": "TOTAL", "size": "",
+        "cutting_qty":       sum(r["cutting_qty"]       for r in matrix),
+        "waiting_sewing_qty":sum(r["waiting_sewing_qty"] for r in matrix),
+        "sewing_qty":        sum(r["sewing_qty"]        for r in matrix),
+        "finishing_qty":     sum(r["finishing_qty"]     for r in matrix),
+        "current_qty":       sum(r["current_qty"]       for r in matrix),
+        "fulfillment_pct":   None,
+    }
+    if total_row["cutting_qty"] > 0:
+        total_row["fulfillment_pct"] = round(
+            total_row["current_qty"] / total_row["cutting_qty"] * 100)
+
+    return {
+        "style_id": style_id,
+        "style_name": style_name,
+        "stages": stages,
+        "matrix": matrix,
+        "totals": total_row,
+        "has_data": bool(stages or matrix),
+    }
 
 
 @app.post("/api/style-tracker/archive-week")
