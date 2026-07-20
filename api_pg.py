@@ -30667,7 +30667,11 @@ def production_summary():
                category, product_type
         FROM all_products_clean
         WHERE style_name IS NOT NULL
-        ORDER BY style_name, sku""", fetch=True)
+        ORDER BY style_name,
+            -- prefer clean variants: non-Accessories, no embedded size/code in name
+            CASE WHEN category = 'Accessories' THEN 1 ELSE 0 END,
+            CASE WHEN product_name ~ ' / [A-Z0-9]+ / ' THEN 1 ELSE 0 END,
+            sku""", fetch=True)
     by_num, by_name = {}, {}
     for d in dim_rows:
         if d["style_number"] and d["style_number"] not in by_num:
