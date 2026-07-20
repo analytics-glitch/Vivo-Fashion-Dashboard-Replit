@@ -98,7 +98,7 @@ function TargetCard({ label, value, targetLabel, status, detail }) {
         <span className="text-[12.5px] font-semibold text-[#0f3d24] leading-tight">{label}</span>
         <span className={`shrink-0 mt-0.5 w-2.5 h-2.5 rounded-full ${c.dot}`} title={c.label} />
       </div>
-      <div className={`text-[24px] font-extrabold tabular-nums leading-none ${c.text}`}>{value}</div>
+      <div className={`text-[24px] font-extrabold tabular-nums leading-none ${status === "green" ? "text-emerald-700" : "text-red-600"}`}>{value}</div>
       <div className="text-[11px] text-muted">Target: {targetLabel}</div>
       {detail && <div className="text-[11px] text-slate-500">{detail}</div>}
     </div>
