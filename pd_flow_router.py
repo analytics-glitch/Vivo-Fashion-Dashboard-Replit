@@ -332,7 +332,10 @@ def register_pd_routes(app, api_pg_module):
             if not decisions:
                 raise HTTPException(status_code=400, detail="A reason is required when sending a style back")
 
-        aid, aname = _resolve_assignee(body.get("assignee_user_id"))
+        if body.get("assignee_user_id"):
+            aid, aname = _resolve_assignee(body.get("assignee_user_id"))
+        else:
+            aid, aname = None, (body.get("assignee_name") or "").strip() or None
         _db("""
             UPDATE pd_styles SET current_stage=%s, stage_entered_at=now(),
                    assignee_user_id=%s, assignee_name=%s

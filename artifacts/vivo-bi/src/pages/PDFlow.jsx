@@ -177,7 +177,7 @@ const AddStyleDialog = ({ onClose, onSaved }) => {
 };
 
 // ── Move dialog (forward / send back / approve / reject) ────────────────────
-const MoveDialog = ({ card, stages, users, onClose, onSaved }) => {
+const MoveDialog = ({ card, stages, onClose, onSaved }) => {
   const idx = stages.findIndex((s) => s.stage_key === card.current_stage);
   const nextStage = stages[idx + 1];
   const isFinal = card.current_stage === "final_review";
@@ -198,7 +198,7 @@ const MoveDialog = ({ card, stages, users, onClose, onSaved }) => {
       await api.post(`/pd/styles/${card.id}/move`, {
         action,
         to_stage: action === "forward" ? nextStage?.stage_key : toStage,
-        assignee_user_id: assignee || null,
+        assignee_name: assignee || null,
         decisions,
       });
       onSaved();
@@ -260,8 +260,8 @@ const MoveDialog = ({ card, stages, users, onClose, onSaved }) => {
           <div>
             <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]"
               value={assignee} onChange={(e) => setAssignee(e.target.value)} data-testid="pd-move-assignee">
-              <option value="">{targetStage ? `Assignee for ${targetStage.stage_name}` : "Assignee"} (optional)</option>
-              {users.map((u) => <option key={u.user_id} value={u.user_id}>{u.name}</option>)}
+              <option value="">{targetStage ? `Assignee for ${targetStage.stage_name}` : "Assignee"}</option>
+              {PD_ASSIGNEES.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
             {targetStage?.default_role && (
               <div className="mt-1 text-[10.5px] text-muted">Default owner role: {targetStage.default_role}</div>
@@ -665,7 +665,6 @@ const PDFlow = () => {
   const isAdmin = (user?.role || "").toLowerCase() === "admin";
   const [tab, setTab] = useState("board");
   const [board, setBoard] = useState(null);
-  const [users, setUsers] = useState([]);
   const [err, setErr] = useState(null);
   const [adding, setAdding] = useState(false);
   const [moving, setMoving] = useState(null);   // card being moved
@@ -678,7 +677,6 @@ const PDFlow = () => {
     api.get("/pd/board", { forceFresh: true })
       .then((r) => { setBoard(r.data); setErr(null); })
       .catch((e) => setErr(e?.response?.data?.detail || e.message));
-    api.get("/pd/assignees").then((r) => setUsers(r.data.users || [])).catch(() => {});
   }, []);
   useEffect(() => { load(); }, [load, refreshKey]);
 
@@ -813,7 +811,7 @@ const PDFlow = () => {
 
       {adding && <AddStyleDialog onClose={() => setAdding(false)} onSaved={refresh} />}
       {moving && board && (
-        <MoveDialog card={moving} stages={board.stages} users={users}
+        <MoveDialog card={moving} stages={board.stages}
           onClose={() => setMoving(null)} onSaved={() => { refresh(); setDetail(null); }} />
       )}
       {detail != null && (
