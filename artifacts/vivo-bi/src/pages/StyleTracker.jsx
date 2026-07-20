@@ -1468,7 +1468,7 @@ const StyleTracker = () => {
                 onDragOver={(e) => onColDragOver(e, week)}
                 onDragLeave={() => setDragOverWeek((c) => (c === wk ? null : c))}
                 onDrop={(e) => onColDrop(e, week)}
-                className={`rounded-xl border flex flex-col transition max-w-[560px] ${
+                className={`rounded-xl border flex flex-col transition ${
                   week.overdue ? "bg-amber-50/70 border-amber-300"
                     : week.is_current ? "bg-brand/5 border-brand/40"
                     : "bg-panel/50 border-line"
@@ -1501,7 +1501,7 @@ const StyleTracker = () => {
                       No styles this week — add one below
                     </div>
                   )}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
                     {week.styles.map((s) => (
                       <StyleCard
                         key={s.id}
