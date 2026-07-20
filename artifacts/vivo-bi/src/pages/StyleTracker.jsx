@@ -291,6 +291,98 @@ function WeekPicker({ weeks, selectedKey, onSelect }) {
   );
 }
 
+/** Board-level summary panel — compact chips for every week */
+function WeekSummaryPanel({ weeks, selectedKey, onSelect }) {
+  const [collapsed, setCollapsed] = useState(false);
+
+  const nonEmptyWeeks = weeks.filter((w) => w.count > 0 || w.is_current);
+
+  const allUnits = weeks.reduce((s, w) => s + (w.total_units || 0), 0);
+  const allCompleted = weeks.reduce((s, w) => s + (w.completed_units || 0), 0);
+  const allCount = weeks.reduce((s, w) => s + (w.count || 0), 0);
+  const allPct = allUnits > 0 ? Math.round((100 * allCompleted) / allUnits) : null;
+
+  return (
+    <div className="rounded-xl border border-line bg-white overflow-hidden" data-testid="week-summary-panel">
+      <button
+        type="button"
+        onClick={() => setCollapsed((c) => !c)}
+        className="w-full flex items-center justify-between px-3 py-2 text-[11.5px] font-semibold text-[#0f3d24] hover:bg-panel/50 transition-colors"
+        data-testid="week-summary-toggle"
+      >
+        <span className="flex items-center gap-2">
+          <CalendarBlank size={13} weight="bold" />
+          All-weeks overview
+          <span className="font-normal text-muted">
+            {allCount} style{allCount === 1 ? "" : "s"} · {fmtUnits(allUnits)} pcs · {allPct === null ? "—" : `${allPct}%`} in WH
+          </span>
+        </span>
+        {collapsed ? <CaretDown size={12} weight="bold" /> : <CaretUp size={12} weight="bold" />}
+      </button>
+
+      {!collapsed && (
+        <div className="border-t border-line px-3 py-2.5">
+          {nonEmptyWeeks.length === 0 ? (
+            <p className="text-[11.5px] text-muted italic">No styles on the board yet.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2" data-testid="week-summary-chips">
+              {weeks.map((w) => {
+                const wk = weekKey(w);
+                const pct = weekPct(w);
+                const isSelected = wk === selectedKey;
+                const isEmpty = w.count === 0;
+
+                let chipBg = "bg-panel/60 border-line";
+                if (isSelected) chipBg = "bg-[#1a5c38] border-[#1a5c38]";
+                else if (w.overdue) chipBg = "bg-amber-50 border-amber-300";
+                else if (w.is_current) chipBg = "bg-brand/5 border-brand/40";
+
+                const labelColor = isSelected ? "text-white" : "text-[#0f3d24]";
+                const mutedColor = isSelected ? "text-white/70" : "text-muted";
+
+                let barColor = "bg-line/60";
+                if (!isEmpty && pct !== null) barColor = barTone(pct);
+
+                const pctLabel = isEmpty ? "—" : pct === null ? "—" : `${pct}%`;
+
+                return (
+                  <button
+                    key={wk}
+                    type="button"
+                    onClick={() => onSelect(wk)}
+                    title={`${w.label}${w.overdue ? " — Overdue" : w.is_current ? " — This week" : ""}`}
+                    className={`flex flex-col items-start rounded-lg border px-2.5 py-1.5 min-w-[108px] transition-all hover:shadow-sm ${chipBg} ${isSelected ? "shadow-sm" : ""} ${isEmpty ? "opacity-50" : ""}`}
+                    data-testid={`week-chip-${wk}`}
+                  >
+                    <div className={`flex items-center gap-1.5 text-[11px] font-bold leading-tight ${labelColor}`}>
+                      {w.label}
+                      {w.is_current && !isSelected && (
+                        <span className="text-[8px] font-bold uppercase tracking-wide text-white bg-[#1a5c38] rounded-full px-1 py-0.5 leading-none">Now</span>
+                      )}
+                      {w.overdue && !isSelected && (
+                        <span className="text-[8px] font-bold uppercase tracking-wide text-amber-800 bg-amber-200 rounded-full px-1 py-0.5 leading-none">Late</span>
+                      )}
+                    </div>
+                    <div className={`text-[10px] mt-0.5 ${mutedColor}`}>
+                      {w.count} style{w.count === 1 ? "" : "s"} · {pctLabel} <span className={isSelected ? "text-white/60" : "text-muted/70"}>WH</span>
+                    </div>
+                    <div className="mt-1.5 w-full h-1 rounded-full bg-black/10 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${isSelected ? "bg-white/80" : barColor}`}
+                        style={{ width: `${Math.min(pct || 0, 100)}%` }}
+                      />
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Inline Order Type select on the style card */
 function OrderTypeSelect({ style, orderTypes, busy, onUpdate }) {
   const handleChange = (e) => {
@@ -1229,6 +1321,13 @@ const StyleTracker = () => {
               <span><span className="font-bold">{lateCount} late style{lateCount === 1 ? "" : "s"}</span> past the deliver-by date and not completed — look for the red <span className="font-bold">Late</span> cards.</span>
             </div>
           )}
+
+          {/* Board-level summary panel */}
+          <WeekSummaryPanel
+            weeks={board.weeks}
+            selectedKey={selectedWeekKey}
+            onSelect={setSelectedWeekKey}
+          />
 
           {/* Week picker */}
           <div className="flex items-center gap-3">
