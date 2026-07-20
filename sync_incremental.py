@@ -387,7 +387,8 @@ _LAST_INVENTORY_SYNC = None
 INVENTORY_SYNC_INTERVAL_SEC = int(os.environ.get("INVENTORY_SYNC_INTERVAL_SEC", "300"))
 # ── Attendance Sync ───────────────────────────────────────────────────────────
 ATTENDANCE_API_URL = os.environ.get(
-    "ATTENDANCE_API_URL", "https://workforce-rss-classical-nj.trycloudflare.com"
+    "ATTENDANCE_API_URL",
+    "https://474df8515921d6d2-197-248-176-58.serveousercontent.com",
 )
 
 
@@ -437,7 +438,10 @@ def get_attendance_cursor(cur):
 def sync_attendance(cur):
     since = get_attendance_cursor(cur)
     log.info("Syncing attendance since %s", since)
-    headers = {"ngrok-skip-browser-warning": "true"}
+    headers = {
+        "ngrok-skip-browser-warning": "true",
+        "User-Agent": "python-requests/2.31.0",
+    }
 
     # Retry up to 3 times on SSL/connection errors
     for attempt in range(3):

@@ -6725,35 +6725,30 @@ def analytics_sales_by_hour(
 
     # ── Shopify retail history (created_at hour is already store-local) ──
     # raw_shopify_orders.total_price was never populated by the historical
-    # extract (all 0.0), so order VALUE comes from the line-level
-    # shopify_sales table (order_id join, 100% coverage; total_sales is in
-    # the STORE's local currency → convert UGX/RWF to KES via currency_rates).
-    # shopify_sales also carries pos_location_name, so the channel filter
+    # extract (all 0.0), so order VALUE comes from joining line-level
+    # all_sales on order_id (~100% coverage, total_sales_kes already KES).
+    # NOTE: do NOT join shopify_sales here — that table is only populated by
+    # the one-time shopify_full_extract (frozen at its target_end, e.g.
+    # 2026-06-13 for Uganda/Rwanda), so recent days silently vanish.
+    # all_sales is kept fresh by sync_incremental for these stores.
+    # all_sales also carries pos_location_name, so the channel filter
     # applies to this side too.
     stores = [s for s, c in _HOURLY_SHOPIFY_STORE_COUNTRY.items()
               if (not countries) or (c in countries)]
     if stores:
-        rates = {r["country"]: float(r["rate"] or 1) or 1.0 for r in run_query(
-            "SELECT DISTINCT ON (country) country, rate FROM currency_rates ORDER BY country, month DESC"
-        )}
-        ug = rates.get("Uganda", 1.0)
-        rw = rates.get("Rwanda", 1.0)
         shop_chan_filter = ""
         if channels:
             shop_chan_filter = "AND l.pos_location_name IN (" + csv_to_sql(",".join(channels)) + ")"
         shop_rows = run_query(f"""
             SELECT substring(o.created_at, 12, 2)::int AS hour,
                    COUNT(DISTINCT o.id) AS orders,
-                   SUM(l.total_sales / CASE o.store_id
-                         WHEN 'vivo-uganda' THEN {ug}
-                         WHEN 'vivo-rwanda' THEN {rw}
-                         ELSE 1 END) AS total_sales
+                   SUM(l.total_sales_kes) AS total_sales
             FROM raw_shopify_orders o
-            JOIN shopify_sales l
-              ON l.order_id::text = o.id AND l.store_id = o.store_id
+            JOIN all_sales l
+              ON l.order_id = o.id AND l.store_id = o.store_id
             WHERE length(o.created_at) >= 13
               AND substring(o.created_at, 1, 10) BETWEEN '{date_from}' AND '{date_to}'
-              AND l.day BETWEEN '{date_from}' AND '{date_to}'
+              AND l.sale_date BETWEEN '{date_from}' AND '{date_to}'
               AND l.sale_kind = 'order'
               AND o.store_id IN ({csv_to_sql(",".join(stores))})
               AND (o.store_id <> 'vivowoman' OR substring(o.created_at, 1, 10) < '{_KENYA_POS_CUTOVER}')
