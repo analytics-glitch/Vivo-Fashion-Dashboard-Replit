@@ -68,8 +68,9 @@ def write_heartbeat(conn, status, table="sync_heartbeat"):
             pass
 
 
-def run_subprocess_with_heartbeat(cmd, status, interval=60, timeout=None,
-                                  heartbeat_table="sync_heartbeat"):
+def run_subprocess_with_heartbeat(
+    cmd, status, interval=60, timeout=None, heartbeat_table="sync_heartbeat"
+):
     """Run a blocking subprocess while keeping the sync heartbeat fresh.
 
     The heavy image extracts (Odoo base64 + the Shopify gallery crawl) sit in a
@@ -331,7 +332,9 @@ _LAST_ROLLUP_REFRESH = None
 # even though main() runs every 60s. Product photos change rarely and this is
 # the heaviest Odoo pull (full image fetch per template), so a daily cadence is
 # plenty. None on boot so a fresh prod DB bootstraps on the first cycle.
-_LAST_PRODUCT_MASTER_SYNC = None  # nightly: extract_odoo_products + transform_all_products_clean
+_LAST_PRODUCT_MASTER_SYNC = (
+    None  # nightly: extract_odoo_products + transform_all_products_clean
+)
 # Guards the Odoo stock-transfers extract (extract_odoo_transfers.py — pulls
 # incoming pickings destined for known stores, in-flight plus last 7d done)
 # to once per hour. None on boot so a fresh prod DB populates on the first cycle.
@@ -381,12 +384,10 @@ _LAST_GREVIEWS_SYNC = None
 # override with INVENTORY_SYNC_INTERVAL_SEC) so all_inventory is near-live. None
 # on boot so the first cycle after a (re)start refreshes immediately.
 _LAST_INVENTORY_SYNC = None
-INVENTORY_SYNC_INTERVAL_SEC = int(
-    os.environ.get("INVENTORY_SYNC_INTERVAL_SEC", "300")
-)
+INVENTORY_SYNC_INTERVAL_SEC = int(os.environ.get("INVENTORY_SYNC_INTERVAL_SEC", "300"))
 # ── Attendance Sync ───────────────────────────────────────────────────────────
 ATTENDANCE_API_URL = os.environ.get(
-    "ATTENDANCE_API_URL", "https://beverly-noncontending-bertram.ngrok-free.dev"
+    "ATTENDANCE_API_URL", "https://workforce-rss-classical-nj.trycloudflare.com"
 )
 
 
@@ -434,75 +435,73 @@ def get_attendance_cursor(cur):
 
 
 def sync_attendance(cur):
-        since = get_attendance_cursor(cur)
-        log.info("Syncing attendance since %s", since)
-        headers = {"ngrok-skip-browser-warning": "true"}
+    since = get_attendance_cursor(cur)
+    log.info("Syncing attendance since %s", since)
+    headers = {"ngrok-skip-browser-warning": "true"}
 
-        # Retry up to 3 times on SSL/connection errors
-        for attempt in range(3):
-            try:
-                resp = requests.get(
-                    f"{ATTENDANCE_API_URL}/attendance",
-                    params={"since": since},
-                    headers=headers,
-                    timeout=120,
-                    verify=False,  # skip SSL verification for ngrok
-                )
-                resp.raise_for_status()
-                break
-            except Exception as e:
-                log.warning("Attendance fetch attempt %d failed: %s", attempt + 1, e)
-                if attempt == 2:
-                    raise
-                time.sleep(10)
-
-        data = resp.json()
-        rows = data.get("rows", [])
-        if not rows:
-            log.info("Attendance — no new records")
-            return 0
-
-        # Deduplicate
-        seen = set()
-        deduped = []
-        for r in rows:
-            key = (r["user_id"], r["branch_name"], r["attendance_date"])
-            if key not in seen:
-                seen.add(key)
-                deduped.append(r)
-        log.info(
-            "Attendance — %d records after dedup (from %d)", len(deduped), len(rows)
-        )
-
-        values = [
-            (
-                r["user_id"],
-                r["employee_name"],
-                r["privilege_level"],
-                r["branch_name"],
-                r["branch_country"],
-                r["location"],
-                r["device_type"],
-                r["device_ip"],
-                r["device_port"],
-                r["device_status"],
-                r["device_fail_count"],
-                r["device_last_seen"],
-                r["attendance_date"],
-                r["check_in_time"],
-                r["check_out_time"],
-                r["hours_worked"],
-                r["is_complete"],
-                r["punch_count"],
-                r["attendance_status"],
-                r["synced_at"],
-                r["pushed_at"],
+    # Retry up to 3 times on SSL/connection errors
+    for attempt in range(3):
+        try:
+            resp = requests.get(
+                f"{ATTENDANCE_API_URL}/attendance",
+                params={"since": since},
+                headers=headers,
+                timeout=120,
+                verify=False,  # skip SSL verification for ngrok
             )
-            for r in deduped
-        ]
-        execute_values(
-            cur,
-            """
+            resp.raise_for_status()
+            break
+        except Exception as e:
+            log.warning("Attendance fetch attempt %d failed: %s", attempt + 1, e)
+            if attempt == 2:
+                raise
+            time.sleep(10)
+
+    data = resp.json()
+    rows = data.get("rows", [])
+    if not rows:
+        log.info("Attendance — no new records")
+        return 0
+
+    # Deduplicate
+    seen = set()
+    deduped = []
+    for r in rows:
+        key = (r["user_id"], r["branch_name"], r["attendance_date"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
+    log.info("Attendance — %d records after dedup (from %d)", len(deduped), len(rows))
+
+    values = [
+        (
+            r["user_id"],
+            r["employee_name"],
+            r["privilege_level"],
+            r["branch_name"],
+            r["branch_country"],
+            r["location"],
+            r["device_type"],
+            r["device_ip"],
+            r["device_port"],
+            r["device_status"],
+            r["device_fail_count"],
+            r["device_last_seen"],
+            r["attendance_date"],
+            r["check_in_time"],
+            r["check_out_time"],
+            r["hours_worked"],
+            r["is_complete"],
+            r["punch_count"],
+            r["attendance_status"],
+            r["synced_at"],
+            r["pushed_at"],
+        )
+        for r in deduped
+    ]
+    execute_values(
+        cur,
+        """
             INSERT INTO vivo_attendance (
                 user_id, employee_name, privilege_level,
                 branch_name, branch_country, location,
@@ -526,11 +525,11 @@ def sync_attendance(cur):
                 synced_at         = EXCLUDED.synced_at,
                 pushed_at         = EXCLUDED.pushed_at
         """,
-            values,
-            page_size=500,
-        )
-        log.info("✅ Attendance — %d records upserted", len(rows))
-        return len(rows)
+        values,
+        page_size=500,
+    )
+    log.info("✅ Attendance — %d records upserted", len(rows))
+    return len(rows)
 
 
 def get_last_sync(cur, store_id):
@@ -654,18 +653,32 @@ def process_shopify_store(store, cur, now, rates):
         billing = o.get("billing_address") or {}
         shipping = o.get("shipping_address") or {}
         cust_id = cust.get("id")
-        hdr_rows.append((
-            str(o["id"]), store_id, o.get("name", ""),
-            o.get("created_at", ""), o.get("updated_at", ""),
-            str(cust_id) if cust_id else None, cust.get("email"),
-            cust.get("first_name"), cust.get("last_name"),
-            float(o.get("total_price") or 0), o.get("financial_status", ""),
-            o.get("fulfillment_status"), o.get("source_name"),
-            billing.get("city"), billing.get("country"),
-            shipping.get("city"), shipping.get("country"), now,
-        ))
+        hdr_rows.append(
+            (
+                str(o["id"]),
+                store_id,
+                o.get("name", ""),
+                o.get("created_at", ""),
+                o.get("updated_at", ""),
+                str(cust_id) if cust_id else None,
+                cust.get("email"),
+                cust.get("first_name"),
+                cust.get("last_name"),
+                float(o.get("total_price") or 0),
+                o.get("financial_status", ""),
+                o.get("fulfillment_status"),
+                o.get("source_name"),
+                billing.get("city"),
+                billing.get("country"),
+                shipping.get("city"),
+                shipping.get("country"),
+                now,
+            )
+        )
     if hdr_rows:
-        execute_values(cur, """
+        execute_values(
+            cur,
+            """
             INSERT INTO raw_shopify_orders (
                 id, store_id, name, created_at, updated_at,
                 customer_id, customer_email, customer_first_name,
@@ -679,7 +692,9 @@ def process_shopify_store(store, cur, now, rates):
                 financial_status   = EXCLUDED.financial_status,
                 fulfillment_status = EXCLUDED.fulfillment_status,
                 _loaded_at         = EXCLUDED._loaded_at
-        """, hdr_rows)
+        """,
+            hdr_rows,
+        )
 
     rows = []
 
@@ -839,7 +854,9 @@ def sync_odoo(cur, now, rates):
             f"ODOO_SYNC_UNTIL ({until}) must be after the sync window start ({since})"
         )
 
-    log.info("Odoo sync since %s%s", since[:10], f" until {until[:10]}" if until else "")
+    log.info(
+        "Odoo sync since %s%s", since[:10], f" until {until[:10]}" if until else ""
+    )
 
     common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
     uid = common.authenticate(ODOO_DB, ODOO_USER, ODOO_PASS, {})
@@ -966,25 +983,32 @@ def sync_odoo(cur, now, rates):
     # is written; ON CONFLICT leaves the extractor's richer fields untouched.
     hdr_rows = []
     for o in orders:
-        hdr_rows.append((
-            int(o["id"]), o.get("name", ""), o.get("date_order", ""),
-            int(o["config_id"][0]) if o.get("config_id") else None,
-            configs.get(o["config_id"][0], "") if o.get("config_id") else "",
-            int(o["session_id"][0]) if o.get("session_id") else None,
-            int(o["partner_id"][0]) if o.get("partner_id") else None,
-            o["partner_id"][1] if o.get("partner_id") else None,
-            float(o.get("amount_total") or 0),
-            float(o.get("amount_tax") or 0),
-            # state MUST be written: transform_odoo filters
-            # o.state IN ('done','paid','invoiced'), so a NULL-state header
-            # written here makes a scoped/full re-transform silently drop
-            # every order first seen by the sync (recent-day sales vanish).
-            # The fetch domain already restricts to valid states.
-            o.get("state") or "done",
-            o.get("write_date", ""), now,
-        ))
+        hdr_rows.append(
+            (
+                int(o["id"]),
+                o.get("name", ""),
+                o.get("date_order", ""),
+                int(o["config_id"][0]) if o.get("config_id") else None,
+                configs.get(o["config_id"][0], "") if o.get("config_id") else "",
+                int(o["session_id"][0]) if o.get("session_id") else None,
+                int(o["partner_id"][0]) if o.get("partner_id") else None,
+                o["partner_id"][1] if o.get("partner_id") else None,
+                float(o.get("amount_total") or 0),
+                float(o.get("amount_tax") or 0),
+                # state MUST be written: transform_odoo filters
+                # o.state IN ('done','paid','invoiced'), so a NULL-state header
+                # written here makes a scoped/full re-transform silently drop
+                # every order first seen by the sync (recent-day sales vanish).
+                # The fetch domain already restricts to valid states.
+                o.get("state") or "done",
+                o.get("write_date", ""),
+                now,
+            )
+        )
     if hdr_rows:
-        execute_values(cur, """
+        execute_values(
+            cur,
+            """
             INSERT INTO raw_odoo_pos_orders (
                 id, name, date_order, config_id, config_name, session_id,
                 partner_id, partner_name, amount_total, amount_tax,
@@ -996,7 +1020,9 @@ def sync_odoo(cur, now, rates):
                 state        = EXCLUDED.state,
                 write_date   = EXCLUDED.write_date,
                 _synced_at   = EXCLUDED._synced_at
-        """, hdr_rows)
+        """,
+            hdr_rows,
+        )
 
     kenya_rate = rates.get("Kenya", 1.0)
 
@@ -1074,7 +1100,9 @@ def sync_odoo(cur, now, rates):
             discounts_kes = round(discounts / rate, 2)
             returns_kes = round(returns / rate, 2)
             # Ex-VAT net stays on the POST-discount amount (unchanged basis)
-            net_sales_kes = round((total_incl if not is_return else 0.0) / vat / rate, 2)
+            net_sales_kes = round(
+                (total_incl if not is_return else 0.0) / vat / rate, 2
+            )
             product_price_kes = round(price_unit / rate, 2)
 
             sku = sku_map.get(product[0], "") if product else ""
@@ -1379,11 +1407,18 @@ def fabric_worker_loop(stop_event=None):
                 _LAST_FABRIC_EXTRACT = now_utc
                 fast_mode = "full" if fabric_empty else "fast"
                 try:
-                    log.info("Running fabric (Odoo) extract mode=%s (bootstrap=%s)...",
-                             fast_mode, fabric_empty)
+                    log.info(
+                        "Running fabric (Odoo) extract mode=%s (bootstrap=%s)...",
+                        fast_mode,
+                        fabric_empty,
+                    )
                     run_subprocess_with_heartbeat(
-                        [sys.executable, "/home/runner/workspace/extract_fabric.py",
-                         "--mode", fast_mode],
+                        [
+                            sys.executable,
+                            "/home/runner/workspace/extract_fabric.py",
+                            "--mode",
+                            fast_mode,
+                        ],
                         "fabric",
                         timeout=FABRIC_EXTRACT_TIMEOUT_SEC,
                         heartbeat_table="fabric_heartbeat",
@@ -1423,8 +1458,10 @@ def fabric_worker_loop(stop_event=None):
                     and (now_utc - _FABRIC_HEAVY_STARTED_AT).total_seconds()
                     > FABRIC_HEAVY_TIMEOUT_SEC
                 ):
-                    log.error("Fabric heavy extract exceeded %ss — killing it.",
-                              FABRIC_HEAVY_TIMEOUT_SEC)
+                    log.error(
+                        "Fabric heavy extract exceeded %ss — killing it.",
+                        FABRIC_HEAVY_TIMEOUT_SEC,
+                    )
                     try:
                         _FABRIC_HEAVY_PROC.kill()
                         _FABRIC_HEAVY_PROC.wait(timeout=10)
@@ -1438,10 +1475,16 @@ def fabric_worker_loop(stop_event=None):
             if heavy_due and not fabric_empty and not heavy_running:
                 _LAST_FABRIC_HEAVY_EXTRACT = now_utc
                 try:
-                    log.info("Launching fabric (Odoo) HEAVY extract (boms/moves/pos) in background...")
+                    log.info(
+                        "Launching fabric (Odoo) HEAVY extract (boms/moves/pos) in background..."
+                    )
                     _FABRIC_HEAVY_PROC = _subprocess.Popen(
-                        [sys.executable, "/home/runner/workspace/extract_fabric.py",
-                         "--mode", "heavy"],
+                        [
+                            sys.executable,
+                            "/home/runner/workspace/extract_fabric.py",
+                            "--mode",
+                            "heavy",
+                        ],
                     )
                     _FABRIC_HEAVY_STARTED_AT = now_utc
                 except Exception as e:
@@ -1501,14 +1544,17 @@ def main():
                   AND sale_date < '2026-03-20'
             """)
             deleted = cur.rowcount
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO app_config (key, value, updated_at)
                 VALUES ('data_fix_kenya_precutover_odoo_v1',
                         jsonb_build_object('deleted_rows', %s::int,
                                            'applied_at', now()::text),
                         now())
                 ON CONFLICT (key) DO NOTHING
-            """, (deleted,))
+            """,
+                (deleted,),
+            )
             conn.commit()
             log.info(
                 "Kenya pre-cutover Odoo duplicate fix applied: deleted %s rows",
@@ -1596,15 +1642,20 @@ def main():
     global _LAST_PRODUCT_MASTER_SYNC
     try:
         import sys as _sys
+
         pm_conn = psycopg2.connect(DATABASE_URL)
         pm_stale = True
         try:
             with pm_conn.cursor() as _c:
                 _c.execute("SELECT to_regclass('public.raw_odoo_products')")
                 if _c.fetchone()[0]:
-                    _c.execute("SELECT MAX(write_date::timestamp) FROM raw_odoo_products")
+                    _c.execute(
+                        "SELECT MAX(write_date::timestamp) FROM raw_odoo_products"
+                    )
                     mx = _c.fetchone()[0]
-                    pm_stale = (mx is None) or ((now_utc.replace(tzinfo=None) - mx).total_seconds() > 129600)  # >36h
+                    pm_stale = (mx is None) or (
+                        (now_utc.replace(tzinfo=None) - mx).total_seconds() > 129600
+                    )  # >36h
         finally:
             pm_conn.close()
         pm_due = (
@@ -1613,13 +1664,18 @@ def main():
         )
         if pm_stale or pm_due:
             _LAST_PRODUCT_MASTER_SYNC = now_utc
-            log.info("Running product master sync (stale=%s, due=%s)...", pm_stale, pm_due)
+            log.info(
+                "Running product master sync (stale=%s, due=%s)...", pm_stale, pm_due
+            )
             run_subprocess_with_heartbeat(
                 [_sys.executable, "/home/runner/workspace/extract_odoo_products.py"],
                 "product_master_extract",
             )
             run_subprocess_with_heartbeat(
-                [_sys.executable, "/home/runner/workspace/transform_all_products_clean.py"],
+                [
+                    _sys.executable,
+                    "/home/runner/workspace/transform_all_products_clean.py",
+                ],
                 "product_master_transform",
             )
             log.info("\u2705 Product master sync complete")
@@ -1638,6 +1694,7 @@ def main():
         _LAST_TRANSFERS_SYNC = now_utc
         try:
             import sys as _sys
+
             log.info("Running stock transfers sync...")
             run_subprocess_with_heartbeat(
                 [_sys.executable, "/home/runner/workspace/extract_odoo_transfers.py"],
@@ -1935,7 +1992,10 @@ def main():
                 "Running MO fabric-consumption extract (bootstrap=%s)...", mo_fab_empty
             )
             subprocess.run(
-                [sys.executable, "/home/runner/workspace/extract_mo_fabric_consumption.py"],
+                [
+                    sys.executable,
+                    "/home/runner/workspace/extract_mo_fabric_consumption.py",
+                ],
                 check=True,
             )
             log.info("✅ MO fabric-consumption extract complete")
@@ -1984,7 +2044,8 @@ def main():
             snap = fabric_router.write_cover_snapshot(conn)
             log.info(
                 "✅ Fabric Months-of-Cover snapshot written (cover=%s, basic_cover=%s)",
-                snap.get("months_of_cover"), snap.get("basic_months_of_cover"),
+                snap.get("months_of_cover"),
+                snap.get("basic_months_of_cover"),
             )
         except Exception as e:
             log.error("Fabric cover snapshot error: %s", e)
@@ -2085,9 +2146,12 @@ def main():
     shopify_creds_ok = all(
         os.environ.get(k)
         for k in (
-            "SHOPIFY_KENYA_STORE", "SHOPIFY_KENYA_TOKEN",
-            "SHOPIFY_UGANDA_STORE", "SHOPIFY_UGANDA_TOKEN",
-            "SHOPIFY_RWANDA_STORE", "SHOPIFY_RWANDA_TOKEN",
+            "SHOPIFY_KENYA_STORE",
+            "SHOPIFY_KENYA_TOKEN",
+            "SHOPIFY_UGANDA_STORE",
+            "SHOPIFY_UGANDA_TOKEN",
+            "SHOPIFY_RWANDA_STORE",
+            "SHOPIFY_RWANDA_TOKEN",
         )
     )
     if shopify_creds_ok and (piu_empty or piu_due):
@@ -2143,8 +2207,10 @@ def main():
         or (now_utc - _LAST_FABRIC_IMAGES_EXTRACT).total_seconds() >= 86400
     )
     fab_img_creds_ok = bool(
-        os.environ.get("ODOO_URL") and os.environ.get("ODOO_DB")
-        and os.environ.get("ODOO_USER") and os.environ.get("ODOO_PASSWORD")
+        os.environ.get("ODOO_URL")
+        and os.environ.get("ODOO_DB")
+        and os.environ.get("ODOO_USER")
+        and os.environ.get("ODOO_PASSWORD")
     )
     if fab_img_creds_ok and (fab_img_empty or fab_img_due):
         # Stamp the attempt time up front so a transient failure waits 24h before
@@ -2241,7 +2307,8 @@ def main():
                     try:
                         log.info(
                             "Running %s CRM sync (bootstrap=%s)...",
-                            _label, social_empty,
+                            _label,
+                            social_empty,
                         )
                         resp = requests.post(
                             _url,
@@ -2250,7 +2317,9 @@ def main():
                         )
                         log.info(
                             "%s CRM sync — HTTP %s %s",
-                            _label, resp.status_code, resp.text[:200],
+                            _label,
+                            resp.status_code,
+                            resp.text[:200],
                         )
                     except Exception as e:
                         log.error("%s CRM sync error: %s", _label, e)
@@ -2411,7 +2480,9 @@ def main():
                     timeout=180,
                 )
                 log.info(
-                    "Cross-page reconcile — HTTP %s %s", resp.status_code, resp.text[:200]
+                    "Cross-page reconcile — HTTP %s %s",
+                    resp.status_code,
+                    resp.text[:200],
                 )
             else:
                 log.warning("Cross-page reconcile skipped — SESSION_SECRET unset")
@@ -2453,7 +2524,9 @@ def main():
                     timeout=180,
                 )
                 log.info(
-                    "Replen SOR snapshot — HTTP %s %s", resp.status_code, resp.text[:200]
+                    "Replen SOR snapshot — HTTP %s %s",
+                    resp.status_code,
+                    resp.text[:200],
                 )
             else:
                 log.warning("Replen SOR snapshot skipped — SESSION_SECRET unset")
@@ -2478,7 +2551,8 @@ def main():
                 )
                 log.info(
                     "IBT nightly reconcile — HTTP %s %s",
-                    resp.status_code, resp.text[:200]
+                    resp.status_code,
+                    resp.text[:200],
                 )
             else:
                 log.warning("IBT nightly reconcile skipped — SESSION_SECRET unset")
@@ -2496,10 +2570,7 @@ def main():
     # runs when X is configured on the server (a 400 "not configured" is expected
     # + harmless). A 409 means a run is already in flight — benign, log quietly.
     global _LAST_X_SYNC
-    x_sync_due = (
-        _LAST_X_SYNC is None
-        or (now - _LAST_X_SYNC).total_seconds() >= 3600
-    )
+    x_sync_due = _LAST_X_SYNC is None or (now - _LAST_X_SYNC).total_seconds() >= 3600
     if x_sync_due:
         try:
             _secret = os.environ.get("SESSION_SECRET")
@@ -2521,8 +2592,7 @@ def main():
                 else:
                     _LAST_X_SYNC = now
                     log.info(
-                        "X CRM sync — HTTP %s %s",
-                        resp.status_code, resp.text[:200]
+                        "X CRM sync — HTTP %s %s", resp.status_code, resp.text[:200]
                     )
             else:
                 log.warning("X sync skipped — SESSION_SECRET unset")
@@ -2537,8 +2607,7 @@ def main():
     # in flight — benign, log quietly.
     global _LAST_TIKTOK_SYNC
     tiktok_sync_due = (
-        _LAST_TIKTOK_SYNC is None
-        or (now - _LAST_TIKTOK_SYNC).total_seconds() >= 3600
+        _LAST_TIKTOK_SYNC is None or (now - _LAST_TIKTOK_SYNC).total_seconds() >= 3600
     )
     if tiktok_sync_due:
         try:
@@ -2562,7 +2631,8 @@ def main():
                     _LAST_TIKTOK_SYNC = now
                     log.info(
                         "TikTok CRM sync — HTTP %s %s",
-                        resp.status_code, resp.text[:200]
+                        resp.status_code,
+                        resp.text[:200],
                     )
             else:
                 log.warning("TikTok sync skipped — SESSION_SECRET unset")
@@ -2600,7 +2670,8 @@ def main():
                     _LAST_GREVIEWS_SYNC = now
                     log.info(
                         "Google Reviews CRM sync — HTTP %s %s",
-                        resp.status_code, resp.text[:200]
+                        resp.status_code,
+                        resp.text[:200],
                     )
             else:
                 log.warning("Google Reviews sync skipped — SESSION_SECRET unset")
@@ -2624,7 +2695,9 @@ def main():
                 "WHERE last_active_at IS NOT NULL "
                 "  AND last_active_at < now() - interval '1 hour'"
             )
-            log.info("Presence sweep — cleared %d stale presence stamp(s)", cur.rowcount)
+            log.info(
+                "Presence sweep — cleared %d stale presence stamp(s)", cur.rowcount
+            )
             conn.commit()
     except Exception as e:
         log.error("Presence sweep error: %s", e)
@@ -2635,8 +2708,8 @@ def main():
     _eat_now = datetime.now(timezone.utc) + timedelta(hours=3)
     if 1 <= _eat_now.hour <= 4:
         try:
-            _ai_date_str   = str(_eat_now.date())
-            _ai_skip       = False
+            _ai_date_str = str(_eat_now.date())
+            _ai_skip = False
             try:
                 with conn.cursor() as _ai_c:
                     _ai_c.execute("SELECT to_regclass('public.ai_daily_insights')")
@@ -2656,6 +2729,7 @@ def main():
                 log.info("AI nightly: starting for %s", _ai_date_str)
                 write_heartbeat(conn, "ok")  # pulse before long LLM calls
                 import ai_insights_router as _air
+
                 _air.nightly_run()
         except Exception as _ai_err:
             log.error("AI nightly error: %s", _ai_err)
