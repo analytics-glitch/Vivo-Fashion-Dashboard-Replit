@@ -150,48 +150,41 @@ def _db_exec(A, sql, params=None):
     return rows
 
 
-def _run_coaching(A, kpi: dict, top_risk: list) -> dict:
-    api_key = os.environ.get("ANTHROPIC_API_KEY","")
-    if not api_key:
-        return {"note": "AI coaching not configured (ANTHROPIC_API_KEY missing).",
-                "model": None, "generated_for": date.today().isoformat()}
-    snippet = "\n".join(
-        f"- {r['style_name']}: WOC={r['woc']}, decline={r['vel_decline_pct']}%,"
-        f" SOH={r['soh']}, stock_value=KES {r['stock_value']:,}"
-        for r in top_risk[:10]
+def _run_coaching(api_key: str, kpi: dict, top_risk: list, conn) -> dict:
+    dead_stock_value = kpi.get("dead_stock_value") or 0
+    zero_sales = kpi.get("zero_sales_28d") or 0
+    styles_with_stock = kpi.get("styles_with_stock") or 0
+    zero_pct = round(zero_sales / styles_with_stock * 100, 1) if styles_with_stock else 0
+
+    # Split risk board into high/medium
+    critical_risk = [r for r in top_risk if r.get("woc", 0) > 26 and r.get("vel_decline_pct", 0) > 40]
+    high_risk     = [r for r in top_risk if r not in critical_risk and r.get("woc", 0) > 20]
+
+    risk_rows = "\n".join(
+        f"  {'[CRITICAL]' if r in critical_risk else '[HIGH]'} {r.get('style_name','?')}: "
+        f"WOC={r.get('woc')}w, velocity decline={r.get('vel_decline_pct')}%%, "
+        f"SOH={r.get('soh')} units, stock value KES {r.get('stock_value',0):,.0f}, "
+        f"last sold: {str(r.get('last_sale_date','?'))[:10]}"
+        for r in top_risk[:12]
     )
-    prompt = (
-        f"You are a product performance analyst for Vivo Fashion Group, East Africa.\n"
-        f"Date: {date.today().isoformat()}\n\n"
-        f"Fleet KPIs:\n"
-        f"- Styles with stock: {kpi.get('styles_with_stock')}\n"
-        f"- Zero sales in 28d: {kpi.get('zero_sales_28d')}\n"
-        f"- Avg WOC fleet: {kpi.get('avg_woc')}\n"
-        f"- Dead stock value: KES {kpi.get('dead_stock_value','0'):,}\n\n"
-        f"Top markdown-risk styles:\n{snippet}\n\n"
-        "Write a concise (3–5 sentences) coaching note for the leadership team. "
-        "Focus on the highest risks, root cause, and one prioritised action. "
-        "Plain text only, no markdown."
+    context = (
+        f"PRODUCT DESK INTELLIGENCE — {date.today().isoformat()}\n\n"
+        f"FLEET KPIs:\n"
+        f"  Styles with active stock: {styles_with_stock:,}\n"
+        f"  Zero sales in last 28d: {zero_sales:,} ({zero_pct}%% of portfolio — "
+        f"{'CRITICAL — >40%% dead' if zero_pct > 40 else 'HIGH — >25%% dead' if zero_pct > 25 else 'normal'})\n"
+        f"  Fleet avg weeks-of-cover: {kpi.get('avg_woc')}w\n"
+        f"  Dead stock value (0 sales 90d+): KES {dead_stock_value:,.0f}\n"
+        f"  Styles flagged for retirement: {kpi.get('flagged_retirement', 0)}\n\n"
+        f"MARKDOWN/EXCESS RISK BOARD (sorted by risk score):\n"
+        f"{risk_rows or '  No high-risk styles detected'}\n\n"
+        f"Analyse product portfolio health. Identify: styles at highest markdown risk "
+        f"(long WOC + declining velocity + high stock value), portfolio dead-stock concentration, "
+        f"and velocity decay patterns by category if inferable. "
+        f"Propose specific actions: which styles to promote/discount/IBT, "
+        f"what review the buying team should conduct, and how much capital is at risk."
     )
-    try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": "claude-haiku-4-5", "max_tokens": 300,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=30,
-        )
-        data = resp.json()
-        note = data.get("content", [{}])[0].get("text", "Coaching unavailable.")
-        usage = data.get("usage", {})
-        return {"note": note, "model": "claude-haiku-4-5",
-                "generated_for": date.today().isoformat(),
-                "tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0)}
-    except Exception as e:
-        log.warning("product-desk coaching error: %s", e)
-        return {"note": "Coaching temporarily unavailable.", "model": None,
-                "generated_for": date.today().isoformat()}
+    return du.call_llm_structured(api_key, context, DESK, "overview", conn)
 
 
 def ensure_product_desk_tables():
@@ -243,10 +236,12 @@ def register_product_desk_routes(app, A):
             # Coaching (cached daily)
             coaching = du.get_coaching(conn, DESK)
             if not coaching:
-                coaching = _run_coaching(_A, kpi, board)
-                if coaching.get("note"):
-                    du.save_coaching(conn, DESK, coaching["note"],
-                                     model=coaching.get("model",""),
+                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                coaching = _run_coaching(api_key, kpi, board, conn)
+                if coaching.get("note") or coaching.get("structured"):
+                    du.save_coaching(conn, DESK, coaching.get("note", ""),
+                                     structured=coaching.get("structured"),
+                                     model=coaching.get("model", ""),
                                      tokens_used=coaching.get("tokens"))
 
             issues = du.list_issues(conn, DESK)

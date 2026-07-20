@@ -82,47 +82,38 @@ def _db_exec(A, sql, params=None):
     return rows
 
 
-def _run_coaching(social: list, loyalty: dict, gaps: list) -> dict:
-    api_key = os.environ.get("ANTHROPIC_API_KEY","")
-    if not api_key:
-        return {"note": "AI coaching not configured.", "model": None,
-                "generated_for": date.today().isoformat()}
-    social_summary = "\n".join(
-        f"- {r['platform']}: {r.get('total_items')} items, "
-        f"{r.get('positive')} positive, {r.get('negative')} negative, "
-        f"{r.get('needs_reply')} needing reply"
+def _run_coaching(api_key: str, social: list, loyalty: dict, gaps: list, conn) -> dict:
+    social_rows = "\n".join(
+        f"  {r.get('platform','?')}: {r.get('total_items',0)} items total, "
+        f"{r.get('positive',0)} positive / {r.get('negative',0)} negative / "
+        f"{r.get('neutral',0)} neutral, {r.get('needs_reply',0)} needing reply, "
+        f"sentiment score: {r.get('sentiment_score','n/a')}"
         for r in social
     )
-    gap_list = ", ".join(g["gap_name"] for g in gaps)
-    prompt = (
-        f"You are a marketing analyst for Vivo Fashion Group, East Africa.\n"
-        f"Date: {date.today().isoformat()}\n\n"
-        f"Social inbox (all time):\n{social_summary or '  No data'}\n\n"
-        f"Loyalty programme: {loyalty.get('total_members')} members, "
-        f"{loyalty.get('active_30d')} active last 30d, "
-        f"{loyalty.get('new_30d')} new last 30d\n\n"
-        f"Major data gaps: {gap_list}\n\n"
-        "Write a concise (3–5 sentences) coaching note for leadership. "
-        "Assess social health, loyalty growth, and name the highest-priority data gap to close. "
-        "Plain text only."
+    total_backlog = sum(r.get("needs_reply", 0) or 0 for r in social)
+    negative_total = sum(r.get("negative", 0) or 0 for r in social)
+    top_gaps = [g["gap_name"].replace("_", " ") for g in gaps[:3]]
+    loyalty_eng_rate = round(
+        (loyalty.get("active_30d") or 0) / (loyalty.get("total_members") or 1) * 100, 1
     )
-    try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": "claude-haiku-4-5", "max_tokens": 300,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=30,
-        )
-        data = resp.json()
-        note = data.get("content",[{}])[0].get("text","Coaching unavailable.")
-        return {"note": note, "model": "claude-haiku-4-5",
-                "generated_for": date.today().isoformat()}
-    except Exception as e:
-        log.warning("marketing coaching: %s", e)
-        return {"note": "Coaching temporarily unavailable.", "model": None,
-                "generated_for": date.today().isoformat()}
+    context = (
+        f"MARKETING DESK INTELLIGENCE — {date.today().isoformat()}\n\n"
+        f"SOCIAL INBOX (all-time accumulation):\n{social_rows or '  No social data'}\n\n"
+        f"SOCIAL FLAGS:\n"
+        f"  Total unanswered backlog: {total_backlog} (SLA risk if >48h)\n"
+        f"  Total negative items: {negative_total} (reputation risk if unaddressed)\n\n"
+        f"LOYALTY PROGRAMME:\n"
+        f"  Total enrolled members: {loyalty.get('total_members', 0):,}\n"
+        f"  Active last 30d: {loyalty.get('active_30d', 0):,} ({loyalty_eng_rate}%% engagement)\n"
+        f"  New enrolments last 30d: {loyalty.get('new_30d', 0):,}\n"
+        f"  (Target: >=30%% monthly engagement rate, >=5%% growth in enrolments)\n\n"
+        f"KEY DATA GAPS: {', '.join(top_gaps) if top_gaps else 'None flagged'}\n\n"
+        f"Analyse this marketing data. Identify reputation risks from the social backlog, "
+        f"loyalty engagement risks (if engagement <30%%), and opportunities to grow the programme. "
+        f"Propose concrete actions: who should reply to what, what campaign could drive loyalty sign-ups, "
+        f"which data gap blocks the most valuable insight."
+    )
+    return du.call_llm_structured(api_key, context, DESK, "overview", conn)
 
 
 def ensure_marketing_desk_tables():
@@ -170,10 +161,12 @@ def register_marketing_desk_routes(app, A):
 
             coaching = du.get_coaching(conn, DESK)
             if not coaching:
-                coaching = _run_coaching(social, loyalty, gaps)
-                if coaching.get("note"):
-                    du.save_coaching(conn, DESK, coaching["note"],
-                                     model=coaching.get("model",""))
+                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                coaching = _run_coaching(api_key, social, loyalty, gaps, conn)
+                if coaching.get("note") or coaching.get("structured"):
+                    du.save_coaching(conn, DESK, coaching.get("note", ""),
+                                     structured=coaching.get("structured"),
+                                     model=coaching.get("model", ""))
 
             issues = du.list_issues(conn, DESK)
             return {"as_of": date.today().isoformat(),

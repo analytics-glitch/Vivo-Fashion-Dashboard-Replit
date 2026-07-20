@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { useApi } from "@/lib/useApi";
+import { DeskCoachingPanel } from "@/components/bi/DeskShared";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -476,6 +477,11 @@ export default function RetailDesk() {
             color={fleet.open_issues > 0 ? "#d97706" : "#6b7280"}
           />
         </div>
+      )}
+
+      {/* Fleet Intelligence Panel */}
+      {data?.fleet_coaching && (
+        <DeskCoachingPanel coaching={data.fleet_coaching} desk="Retail Fleet" />
       )}
 
       {/* Filters */}

@@ -95,49 +95,38 @@ def _db_exec(A, sql, params=None):
     return rows
 
 
-def _run_coaching(kpi: dict, branches: list) -> dict:
-    api_key = os.environ.get("ANTHROPIC_API_KEY","")
-    if not api_key:
-        return {"note": "AI coaching not configured.", "model": None,
-                "generated_for": date.today().isoformat()}
-    flagged = [b for b in branches if (b.get("attendance_rate") or 100) < 75
-               or (b.get("avg_hours") or 8) < 5]
-    snippet = "\n".join(
-        f"- {b['branch_name']} ({b.get('branch_country','')}): "
-        f"headcount={b.get('headcount')}, avg_hours={b.get('avg_hours')}, "
-        f"attendance={b.get('attendance_rate')}%"
-        for b in flagged[:8]
+def _run_coaching(api_key: str, kpi: dict, branches: list, conn) -> dict:
+    branches_sorted = sorted(branches, key=lambda b: b.get("attendance_rate") or 100)
+    low_att = [b for b in branches if (b.get("attendance_rate") or 100) < 75]
+    low_hrs = [b for b in branches if (b.get("avg_hours") or 8) < 5]
+    branch_rows = "\n".join(
+        f"  - {b.get('branch_name')} ({b.get('branch_country','')}): "
+        f"headcount={b.get('headcount')}, avg_hours/day={b.get('avg_hours')}, "
+        f"attendance={b.get('attendance_rate')}%, "
+        f"rev_L28D=KES {b.get('net_sales_l28d',0):,.0f}, "
+        f"rev/staff-hr={b.get('rev_per_staff_hr') or 'n/a'}"
+        for b in branches_sorted[:12]
     )
-    prompt = (
-        f"You are a workforce analytics consultant for Vivo Fashion Group, East Africa.\n"
-        f"Date: {date.today().isoformat()}\n\n"
-        f"Fleet KPIs (last 28 days):\n"
-        f"- Branches tracked: {kpi.get('branches_tracked')}\n"
-        f"- Fleet attendance rate: {kpi.get('fleet_attendance_rate')}%\n"
-        f"- Avg hours/staff/day: {kpi.get('avg_hours_per_day')}\n"
-        f"- Total staff tracked: {kpi.get('total_staff_tracked')}\n\n"
-        f"Flagged branches (low attendance or hours):\n{snippet or '  None flagged'}\n\n"
-        "Write a concise (3–5 sentences) coaching note for leadership. "
-        "Focus on coverage risks, patterns, and one clear action. "
-        "Note data limitations (no rota data). Plain text only."
+    context = (
+        f"WORKFORCE DESK INTELLIGENCE — {date.today().isoformat()}\n"
+        f"Data window: last 28 days\n\n"
+        f"FLEET KPIs:\n"
+        f"  Branches tracked: {kpi.get('branches_tracked')}\n"
+        f"  Fleet attendance rate: {kpi.get('fleet_attendance_rate')}% "
+        f"(threshold: 85% healthy, <75% critical)\n"
+        f"  Avg hours per staff per day: {kpi.get('avg_hours_per_day')} "
+        f"(normal retail = 7–9h)\n"
+        f"  Total staff tracked: {kpi.get('total_staff_tracked')}\n\n"
+        f"BRANCHES (sorted by attendance, worst first):\n{branch_rows or '  No branch data'}\n\n"
+        f"FLAGS:\n"
+        f"  Below 75%% attendance: {len(low_att)} branches — {', '.join(b['branch_name'] for b in low_att[:5])}\n"
+        f"  Below 5h avg/day: {len(low_hrs)} branches — {', '.join(b['branch_name'] for b in low_hrs[:5])}\n\n"
+        f"DATA LIMITATIONS: No rota/schedule data. Rev/staff-hr is approximate (fuzzy name matching).\n\n"
+        f"Analyse this workforce data. Identify attendance risks, staffing efficiency gaps, "
+        f"and revenue-per-hour outliers (both high potential and underperformers). "
+        f"Propose concrete actions for leadership."
     )
-    try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": "claude-haiku-4-5", "max_tokens": 300,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=30,
-        )
-        data = resp.json()
-        note = data.get("content",[{}])[0].get("text","Coaching unavailable.")
-        return {"note": note, "model": "claude-haiku-4-5",
-                "generated_for": date.today().isoformat()}
-    except Exception as e:
-        log.warning("workforce coaching: %s", e)
-        return {"note": "Coaching temporarily unavailable.", "model": None,
-                "generated_for": date.today().isoformat()}
+    return du.call_llm_structured(api_key, context, DESK, "overview", conn)
 
 
 def ensure_workforce_desk_tables():
@@ -181,10 +170,12 @@ def register_workforce_desk_routes(app, A):
 
             coaching = du.get_coaching(conn, DESK)
             if not coaching:
-                coaching = _run_coaching(kpi, branches)
-                if coaching.get("note"):
-                    du.save_coaching(conn, DESK, coaching["note"],
-                                     model=coaching.get("model",""))
+                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                coaching = _run_coaching(api_key, kpi, branches, conn)
+                if coaching.get("note") or coaching.get("structured"):
+                    du.save_coaching(conn, DESK, coaching.get("note", ""),
+                                     structured=coaching.get("structured"),
+                                     model=coaching.get("model", ""))
 
             issues = du.list_issues(conn, DESK)
             gaps = [{"domain": g[0], "gap_name": g[1], "details": g[2],

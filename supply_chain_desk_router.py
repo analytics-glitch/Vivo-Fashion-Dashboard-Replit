@@ -107,50 +107,45 @@ def _db_exec(A, sql, params=None):
     return rows
 
 
-def _run_coaching(kpi: dict, overdue: list, gaps: list) -> dict:
-    api_key = os.environ.get("ANTHROPIC_API_KEY","")
-    if not api_key:
-        return {"note": "AI coaching not configured.", "model": None,
-                "generated_for": date.today().isoformat()}
-    worst = overdue[:5]
-    ov_str = "\n".join(
-        f"- {r.get('po_name')} / {r.get('supplier')}: {r.get('days_overdue')} days overdue,"
-        f" KES {r.get('total_value','0'):,}"
-        for r in worst
+def _run_coaching(api_key: str, kpi: dict, overdue: list, gaps: list,
+                   suppliers_raw: list, conn) -> dict:
+    overdue_sorted = sorted(overdue, key=lambda r: r.get("days_overdue") or 0, reverse=True)
+    ov_rows = "\n".join(
+        f"  - {r.get('po_name','?')} / {r.get('supplier','?')}: "
+        f"{r.get('days_overdue')} days overdue, value KES {r.get('total_value',0):,.0f}, "
+        f"fabric: {r.get('fabric_name','?')}, status: {r.get('status','?')}"
+        for r in overdue_sorted[:8]
     )
-    gap_list = ", ".join(g["gap_name"] for g in gaps[:3])
-    prompt = (
-        f"You are a supply chain analyst for Vivo Fashion Group, East Africa.\n"
-        f"Date: {date.today().isoformat()}\n\n"
-        f"Fabric PO fleet KPIs:\n"
-        f"- Total POs: {kpi.get('total_pos')}, Suppliers: {kpi.get('total_suppliers')}\n"
-        f"- Total value: KES {kpi.get('total_value_kes','0'):,}\n"
-        f"- Open PO value: KES {kpi.get('open_po_value','0'):,}\n"
-        f"- Overdue POs: {kpi.get('overdue_pos')}\n"
-        f"- Receipt fill rate: {kpi.get('receipt_fill_rate')}%%\n\n"
-        f"Top overdue POs:\n{ov_str or '  None overdue'}\n\n"
-        f"Key data gaps: {gap_list}\n\n"
-        "Write a concise (3–5 sentences) coaching note for leadership. "
-        "Highlight supply risk, suggest one procurement action, and name the most urgent data gap. "
-        "Plain text only."
+    supplier_rows = "\n".join(
+        f"  - {s.get('supplier','?')}: {s.get('total_pos',0)} POs, "
+        f"KES {s.get('total_value',0):,.0f} value, "
+        f"overdue: {s.get('overdue_pos',0)}, fill rate: {s.get('fill_rate','n/a')}%%"
+        for s in (suppliers_raw or [])[:6]
     )
-    try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": "claude-haiku-4-5", "max_tokens": 300,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=30,
-        )
-        data = resp.json()
-        note = data.get("content",[{}])[0].get("text","Coaching unavailable.")
-        return {"note": note, "model": "claude-haiku-4-5",
-                "generated_for": date.today().isoformat()}
-    except Exception as e:
-        log.warning("supply-chain coaching: %s", e)
-        return {"note": "Coaching temporarily unavailable.", "model": None,
-                "generated_for": date.today().isoformat()}
+    overdue_count = kpi.get("overdue_pos") or len(overdue)
+    fill_rate = kpi.get("receipt_fill_rate") or 0
+    open_value = kpi.get("open_po_value") or 0
+    top_gaps = [g["gap_name"].replace("_", " ") for g in gaps[:3]]
+    context = (
+        f"SUPPLY CHAIN DESK INTELLIGENCE — {date.today().isoformat()}\n\n"
+        f"FABRIC PO FLEET KPIs:\n"
+        f"  Total POs tracked: {kpi.get('total_pos',0)}\n"
+        f"  Total suppliers: {kpi.get('total_suppliers',0)}\n"
+        f"  Total PO value: KES {kpi.get('total_value_kes',0):,.0f}\n"
+        f"  Open PO value: KES {open_value:,.0f}\n"
+        f"  Overdue POs: {overdue_count} "
+        f"({'CRITICAL — >15 overdue' if overdue_count > 15 else 'HIGH — >5 overdue' if overdue_count > 5 else 'normal'})\n"
+        f"  Receipt fill rate: {fill_rate}%% "
+        f"({'LOW — production risk' if fill_rate < 70 else 'acceptable' if fill_rate < 90 else 'healthy'})\n\n"
+        f"TOP OVERDUE POs (by days overdue):\n{ov_rows or '  None overdue — all POs on schedule'}\n\n"
+        f"SUPPLIER PERFORMANCE:\n{supplier_rows or '  No supplier breakdown available'}\n\n"
+        f"KEY DATA GAPS: {', '.join(top_gaps) if top_gaps else 'None'}\n\n"
+        f"Analyse supply chain risk comprehensively. Identify: fabric delivery risks threatening "
+        f"production deadlines, supplier concentration risks, fill rate deterioration. "
+        f"Propose specific escalation actions with named suppliers and timelines. "
+        f"Flag if any single supplier accounts for >30%% of open value."
+    )
+    return du.call_llm_structured(api_key, context, DESK, "overview", conn)
 
 
 def ensure_supply_chain_desk_tables():
@@ -204,10 +199,13 @@ def register_supply_chain_desk_routes(app, A):
 
             coaching = du.get_coaching(conn, DESK)
             if not coaching:
-                coaching = _run_coaching(kpi, overdue, gaps)
-                if coaching.get("note"):
-                    du.save_coaching(conn, DESK, coaching["note"],
-                                     model=coaching.get("model",""))
+                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                coaching = _run_coaching(api_key, kpi, overdue, gaps,
+                                         _c(supplier_raw), conn)
+                if coaching.get("note") or coaching.get("structured"):
+                    du.save_coaching(conn, DESK, coaching.get("note", ""),
+                                     structured=coaching.get("structured"),
+                                     model=coaching.get("model", ""))
 
             issues = du.list_issues(conn, DESK)
             return {"as_of": date.today().isoformat(), "kpis": kpi,

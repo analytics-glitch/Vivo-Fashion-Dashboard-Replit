@@ -113,43 +113,48 @@ def _db_exec(A, sql, params=None):
     return rows
 
 
-def _run_coaching(kpi: dict) -> dict:
-    api_key = os.environ.get("ANTHROPIC_API_KEY","")
-    if not api_key:
-        return {"note": "AI coaching not configured.", "model": None,
-                "generated_for": date.today().isoformat()}
-    prompt = (
-        f"You are a customer analytics expert for Vivo Fashion Group, East Africa.\n"
-        f"Date: {date.today().isoformat()}\n\n"
-        f"Customer base KPIs:\n"
-        f"- Total identified customers: {kpi.get('total_customers')}\n"
-        f"- Repeat rate (≥2 orders): {kpi.get('repeat_rate')}%\n"
-        f"- Avg CLV: KES {kpi.get('avg_clv','0'):,}\n"
-        f"- Median CLV: KES {kpi.get('median_clv','0'):,}\n"
-        f"- Churned (no purchase 90d+): {kpi.get('churned_90d')}\n"
-        f"- Reactivated last 30d: {kpi.get('reactivated_30d')}\n"
-        f"- New customers last 30d: {kpi.get('new_30d')}\n\n"
-        "Write a concise (3–5 sentences) coaching note for leadership. "
-        "Focus on retention health, CLV growth opportunities, and one clear action. "
-        "Plain text only, no markdown."
+def _run_coaching(api_key: str, kpi: dict, cohort: list, bands: list,
+                   by_country: list, loyalty: dict, conn) -> dict:
+    churn_rate = kpi.get("churn_rate_90d") or kpi.get("churned_90d", 0)
+    repeat_rate = kpi.get("repeat_rate", 0)
+    cohort_rows = "\n".join(
+        f"  {c.get('cohort_month', '?')}: {c.get('customers_acquired')} acquired, "
+        f"{c.get('repeat_rate_pct')}% repeat, avg CLV KES {c.get('avg_clv', 0):,.0f}"
+        for c in (cohort or [])[:6]
     )
-    try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": "claude-haiku-4-5", "max_tokens": 300,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=30,
-        )
-        data = resp.json()
-        note = data.get("content",[{}])[0].get("text","Coaching unavailable.")
-        return {"note": note, "model": "claude-haiku-4-5",
-                "generated_for": date.today().isoformat()}
-    except Exception as e:
-        log.warning("customer coaching: %s", e)
-        return {"note": "Coaching temporarily unavailable.", "model": None,
-                "generated_for": date.today().isoformat()}
+    band_rows = "\n".join(
+        f"  {b.get('band', '?')}: {b.get('customer_count')} customers "
+        f"({b.get('pct_of_total')}% of base), avg CLV KES {b.get('avg_clv', 0):,.0f}"
+        for b in (bands or [])
+    )
+    country_rows = "\n".join(
+        f"  {c.get('country', '?')}: {c.get('customers')} customers, "
+        f"repeat rate {c.get('repeat_rate')}%, avg CLV KES {c.get('avg_clv', 0):,.0f}"
+        for c in (by_country or [])
+    )
+    context = (
+        f"CUSTOMER DESK INTELLIGENCE — {date.today().isoformat()}\n\n"
+        f"FLEET KPIs (all-time base, 30d window for recency):\n"
+        f"  Total identified customers: {kpi.get('total_customers'):,}\n"
+        f"  Repeat rate (>=2 orders): {repeat_rate}% "
+        f"(industry benchmark: 25-40% healthy)\n"
+        f"  Avg CLV: KES {kpi.get('avg_clv', 0):,.0f} | Median CLV: KES {kpi.get('median_clv', 0):,.0f}\n"
+        f"  Churned (no purchase 90d+): {kpi.get('churned_90d', 0):,} customers\n"
+        f"  Reactivated last 30d: {kpi.get('reactivated_30d', 0):,}\n"
+        f"  New customers last 30d: {kpi.get('new_30d', 0):,}\n\n"
+        f"COHORT RETENTION (last 6 months):\n{cohort_rows or '  No cohort data'}\n\n"
+        f"CLV BANDS:\n{band_rows or '  No band data'}\n\n"
+        f"BY COUNTRY:\n{country_rows or '  No country data'}\n\n"
+        f"LOYALTY PROGRAMME:\n"
+        f"  Total members: {loyalty.get('total_members', 0):,} | "
+        f"Active last 30d: {loyalty.get('active_30d', 0):,} | "
+        f"New last 30d: {loyalty.get('new_30d', 0):,}\n\n"
+        f"Analyse customer health deeply. Identify retention risks (cohort decay, churn rate), "
+        f"CLV growth opportunities (upsell bands, reactivation), and loyalty programme gaps. "
+        f"Note: ~97%% churn rate is historical artifact of a largely one-time buyer dataset — "
+        f"focus on the direction of change in cohort retention rates."
+    )
+    return du.call_llm_structured(api_key, context, DESK, "overview", conn)
 
 
 def ensure_customer_desk_tables():
@@ -203,10 +208,14 @@ def register_customer_desk_routes(app, A):
 
             coaching = du.get_coaching(conn, DESK)
             if not coaching:
-                coaching = _run_coaching(kpi)
-                if coaching.get("note"):
-                    du.save_coaching(conn, DESK, coaching["note"],
-                                     model=coaching.get("model",""))
+                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                coaching = _run_coaching(api_key, kpi,
+                                         _coerce(cohort_raw), _coerce(bands_raw),
+                                         _coerce(country_raw), loyalty, conn)
+                if coaching.get("note") or coaching.get("structured"):
+                    du.save_coaching(conn, DESK, coaching.get("note", ""),
+                                     structured=coaching.get("structured"),
+                                     model=coaching.get("model", ""))
 
             issues = du.list_issues(conn, DESK)
             gaps = [{"domain": g[0], "gap_name": g[1], "details": g[2],

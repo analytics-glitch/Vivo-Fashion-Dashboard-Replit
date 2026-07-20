@@ -22,6 +22,7 @@ import math
 import os
 import threading
 from datetime import date, datetime, timedelta, timezone
+import desk_utils as du
 
 log = logging.getLogger("retail_desk")
 
@@ -439,6 +440,46 @@ OPEN ISSUES ({len(open_issues)} total, {len(stale_issues)} stale >7d):
         return ""
 
 
+def _run_fleet_coaching(api_key: str, cards: list, fleet: dict, conn) -> dict:
+    """Fleet-level structured intelligence for the retail overview page."""
+    behind_stores = [c for c in cards if c["status"] == "behind"]
+    at_risk_stores = [c for c in cards if c["status"] == "at_risk"]
+    ahead_stores = [c for c in cards if c["status"] == "ahead"]
+
+    def _store_line(c):
+        return (f"  {c['store']} ({c.get('country','?')}): "
+                f"MTD KES {c.get('mtd_net',0):,.0f} vs req KES {c.get('mtd_req',0):,.0f} "
+                f"({c.get('gap_pct',0):+.1f}%%), MoM {c.get('mom_pct') or 0:+.1f}%%, "
+                f"issues={c.get('open_issues',0)}")
+
+    behind_rows = "\n".join(_store_line(c) for c in behind_stores[:8])
+    at_risk_rows = "\n".join(_store_line(c) for c in at_risk_stores[:5])
+    ahead_rows = "\n".join(_store_line(c) for c in ahead_stores[:4])
+
+    context = (
+        f"RETAIL FLEET INTELLIGENCE — {date.today().isoformat()}\n\n"
+        f"FLEET STATUS (MTD vs prorated growth-path target):\n"
+        f"  Total stores: {fleet['total_stores']}\n"
+        f"  Behind path: {fleet['behind']} stores "
+        f"({'CRITICAL — majority behind' if fleet['behind'] > fleet['total_stores'] // 2 else 'HIGH — >3 behind' if fleet['behind'] > 3 else 'manageable'})\n"
+        f"  At risk:     {fleet['at_risk']} stores\n"
+        f"  Ahead:       {fleet['ahead']} stores\n"
+        f"  Fleet MTD: KES {fleet['total_mtd']:,.0f} vs target KES {fleet['total_mtd_req']:,.0f} "
+        f"(gap: KES {fleet['total_gap_kes']:,.0f} / {fleet['total_gap_pct']:+.1f}%%)\n"
+        f"  Open issues across fleet: {fleet['open_issues']}\n\n"
+        f"BEHIND STORES:\n{behind_rows or '  None'}\n\n"
+        f"AT-RISK STORES:\n{at_risk_rows or '  None'}\n\n"
+        f"AHEAD STORES:\n{ahead_rows or '  None'}\n\n"
+        f"Analyse the retail fleet performance vs monthly growth path. "
+        f"Identify: which stores are at highest risk of missing the month "
+        f"(gap size × days remaining × trend), any country-level pattern "
+        f"(e.g. all Kenya stores behind), and which stores are pulling the fleet forward. "
+        f"Propose: which 2-3 stores need immediate management attention and what specific "
+        f"intervention — do NOT give generic advice. Be precise about KES gaps and store names."
+    )
+    return du.call_llm_structured(api_key, context, "retail", "fleet_overview", conn)
+
+
 # ── Auto-issue creation (consecutive weeks behind) ────────────────────────────
 
 def _auto_flag_issues(stores_data: list, path_data: dict):
@@ -559,6 +600,32 @@ def register_retail_desk_routes(app, api_pg_module):
         total_mtd      = sum(c["mtd_net"] for c in cards)
         total_mtd_req  = sum(c["mtd_req"] for c in cards)
         total_issues   = sum(c["open_issues"] for c in cards)
+        total_gap_pct  = round(total_gap_kes / total_mtd_req * 100, 1) if total_mtd_req else 0
+
+        # Fleet-level AI intelligence (cached daily per desk, scope "fleet_overview")
+        import psycopg2 as _pg2
+        _conn = _pg2.connect(os.environ["DATABASE_URL"])
+        fleet_coaching = None
+        try:
+            fleet_coaching = du.get_coaching(_conn, "retail", "fleet_overview")
+            if not fleet_coaching:
+                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                fleet_coaching = _run_fleet_coaching(api_key, cards, {
+                    "total_stores": total_stores,
+                    "behind": behind_count, "at_risk": at_risk_count, "ahead": ahead_count,
+                    "total_gap_kes": total_gap_kes, "total_gap_pct": total_gap_pct,
+                    "total_mtd": total_mtd, "total_mtd_req": total_mtd_req,
+                    "open_issues": total_issues,
+                }, _conn)
+                if fleet_coaching and (fleet_coaching.get("note") or fleet_coaching.get("structured")):
+                    du.save_coaching(_conn, "retail", fleet_coaching.get("note", ""),
+                                     structured=fleet_coaching.get("structured"),
+                                     scope_key="fleet_overview",
+                                     model=fleet_coaching.get("model", ""))
+        except Exception as _e:
+            log.warning("fleet coaching error: %s", _e)
+        finally:
+            _conn.close()
 
         return JSONResponse({
             "stores":        cards,
@@ -570,9 +637,10 @@ def register_retail_desk_routes(app, api_pg_module):
                 "total_gap_kes": round(total_gap_kes, 0),
                 "total_mtd":     round(total_mtd, 0),
                 "total_mtd_req": round(total_mtd_req, 0),
-                "total_gap_pct": round(total_gap_kes / total_mtd_req * 100, 1) if total_mtd_req else 0,
+                "total_gap_pct": total_gap_pct,
                 "open_issues":   total_issues,
             },
+            "fleet_coaching": fleet_coaching,
         })
 
     @app.get("/api/retail-desk/store/{store:path}")

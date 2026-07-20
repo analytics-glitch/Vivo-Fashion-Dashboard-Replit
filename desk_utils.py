@@ -7,7 +7,7 @@ Tables created here (all desks share them, keyed by desk name):
   desk_coaching_log  — daily AI coaching cache (all desks)
   chair_questions    — The Chair's weekly strategic questions
 """
-import os, sys, logging
+import os, sys, logging, json as _json
 from datetime import date, datetime
 
 log = logging.getLogger(__name__)
@@ -82,6 +82,8 @@ _DDL = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_chair_questions_date ON chair_questions (run_date DESC)",
+    # Add structured column to coaching log (safe, idempotent)
+    "ALTER TABLE IF EXISTS desk_coaching_log ADD COLUMN IF NOT EXISTS structured JSONB",
 ]
 
 
@@ -155,6 +157,90 @@ def close_issue(conn, issue_id: int, closed_by: str) -> bool:
     return ok
 
 
+def _strip_json(text: str) -> str:
+    """Strip markdown code fences that LLMs sometimes wrap JSON in."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text[text.find("\n") + 1:]
+    if text.endswith("```"):
+        text = text.rsplit("```", 1)[0]
+    return text.strip()
+
+
+_INTEL_SYSTEM = """You are an elite strategy analyst for Vivo Fashion Group — a vertically-integrated multi-brand fashion retailer operating across East Africa (Kenya, Uganda, Rwanda) and Online. All amounts are in KES.
+
+Analyse the data rigorously. Respond ONLY with valid JSON (no markdown fences, no commentary outside the JSON) in this exact schema:
+{
+  "risks": [{"title": "...", "evidence": "...", "severity": "critical|high|medium|low", "action": "..."}],
+  "opportunities": [{"title": "...", "evidence": "...", "action": "..."}],
+  "proposals": [{"text": "...", "priority": "high|medium|low", "timeframe": "immediate|this week|this month"}],
+  "summary": "..."
+}
+
+Rules:
+- Max 3 risks, 2 opportunities, 3 proposals. Summary: 1-2 sentences, plain text.
+- Rank risks by severity (highest first). "critical" means immediate material financial or operational impact.
+- Be specific: name numbers, stores, percentages, time periods. Never be vague or generic.
+- Proposals must be concrete next actions (not observations). Name who should do what.
+- Opportunities: only surface where evidence points to a clearly realizable upside.
+- If data is insufficient for a section, return an empty array for that section.
+- Do NOT fabricate metrics or infer data not provided."""
+
+
+def call_llm_structured(api_key: str, context_text: str, desk: str,
+                         scope_key: str = "overview", conn=None) -> dict:
+    """
+    Call Claude haiku with structured JSON intelligence request.
+    Returns: {note, structured: {risks, opportunities, proposals, summary}, model, generated_for}
+    Auto-flags critical/high risks as issues when conn is provided.
+    """
+    if not api_key:
+        return {"note": "AI not configured.", "structured": None,
+                "model": None, "generated_for": date.today().isoformat()}
+    try:
+        import requests as _req
+        resp = _req.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": "claude-haiku-4-5", "max_tokens": 900,
+                  "system": _INTEL_SYSTEM,
+                  "messages": [{"role": "user", "content": context_text}]},
+            timeout=45,
+        )
+        raw = resp.json().get("content", [{}])[0].get("text", "")
+        structured = _json.loads(_strip_json(raw))
+        note = structured.get("summary", "")
+
+        # Auto-flag critical/high risks as issues immediately
+        if conn is not None:
+            for r in structured.get("risks", []):
+                if r.get("severity") in ("critical", "high"):
+                    auto_flag_issue(
+                        conn, desk=desk, scope_key=scope_key,
+                        title=r.get("title", "Auto-detected risk"),
+                        body=(f"{r.get('evidence', '')} — "
+                              f"Recommended action: {r.get('action', '')}"),
+                        severity=r["severity"],
+                        dedup_window_days=7,
+                    )
+
+        return {"note": note, "structured": structured,
+                "model": "claude-haiku-4-5",
+                "generated_for": date.today().isoformat()}
+
+    except _json.JSONDecodeError as e:
+        log.warning("call_llm_structured [%s/%s] JSON parse error: %s", desk, scope_key, e)
+        # Fall back to plain-text note so something is shown
+        return {"note": raw[:600] if "raw" in dir() and raw else "Coaching unavailable.",
+                "structured": None, "model": "claude-haiku-4-5",
+                "generated_for": date.today().isoformat()}
+    except Exception as e:
+        log.warning("call_llm_structured [%s/%s]: %s", desk, scope_key, e)
+        return {"note": "Coaching temporarily unavailable.", "structured": None,
+                "model": None, "generated_for": date.today().isoformat()}
+
+
 def auto_flag_issue(conn, desk: str, scope_key: str, title: str,
                     body: str, severity: str = "medium",
                     dedup_window_days: int = 14) -> bool:
@@ -178,28 +264,32 @@ def auto_flag_issue(conn, desk: str, scope_key: str, title: str,
 def get_coaching(conn, desk: str, scope_key: str = "overview") -> dict | None:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT summary,model,created_at FROM desk_coaching_log "
+            "SELECT summary, structured, model, created_at FROM desk_coaching_log "
             "WHERE desk=%s AND scope_key=%s AND run_date=CURRENT_DATE",
             (desk, scope_key),
         )
         row = cur.fetchone()
     if not row:
         return None
-    return {"note": row[0], "model": row[1],
-            "generated_for": date.today().isoformat(),
-            "cached_at": row[2].isoformat() if row[2] else None}
+    return {"note": row[0], "structured": row[1],  # row[1] = JSONB, parsed by psycopg2
+            "model": row[2], "generated_for": date.today().isoformat(),
+            "cached_at": row[3].isoformat() if row[3] else None}
 
 
-def save_coaching(conn, desk: str, summary: str,
+def save_coaching(conn, desk: str, summary: str, structured=None,
                   scope_key: str = "overview", model: str = "unknown",
                   tokens_used: int = None):
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO desk_coaching_log (desk,scope_key,run_date,summary,model,tokens_used) "
-            "VALUES (%s,%s,CURRENT_DATE,%s,%s,%s) "
-            "ON CONFLICT (desk,scope_key,run_date) DO UPDATE SET summary=EXCLUDED.summary,"
-            "model=EXCLUDED.model,tokens_used=EXCLUDED.tokens_used,created_at=now()",
-            (desk, scope_key, summary, model, tokens_used),
+            "INSERT INTO desk_coaching_log "
+            "(desk, scope_key, run_date, summary, structured, model, tokens_used) "
+            "VALUES (%s,%s,CURRENT_DATE,%s,%s,%s,%s) "
+            "ON CONFLICT (desk,scope_key,run_date) DO UPDATE SET "
+            "summary=EXCLUDED.summary, structured=EXCLUDED.structured, "
+            "model=EXCLUDED.model, tokens_used=EXCLUDED.tokens_used, created_at=now()",
+            (desk, scope_key, summary,
+             _json.dumps(structured) if structured else None,
+             model, tokens_used),
         )
         conn.commit()
 

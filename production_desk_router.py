@@ -116,50 +116,49 @@ def _db_exec(A, sql, params=None):
     return rows
 
 
-def _run_coaching(kpi: dict, overdue: list, gaps: list) -> dict:
-    api_key = os.environ.get("ANTHROPIC_API_KEY","")
-    if not api_key:
-        return {"note": "AI coaching not configured.", "model": None,
-                "generated_for": date.today().isoformat()}
-    worst = overdue[:5]
-    ov_str = "\n".join(
-        f"- {r.get('style_name') or r.get('order_ref')}: "
-        f"{r.get('days_overdue')} days overdue, {r.get('order_qty')} units, buyer={r.get('buyer')}"
-        for r in worst
+def _run_coaching(api_key: str, kpi: dict, overdue: list, upcoming: list,
+                   by_buyer: list, gaps: list, conn) -> dict:
+    overdue_sorted = sorted(overdue, key=lambda r: r.get("days_overdue") or 0, reverse=True)
+    ov_rows = "\n".join(
+        f"  - {r.get('style_name') or r.get('order_ref','?')}: "
+        f"{r.get('days_overdue')} days overdue, {r.get('order_qty',0)} units, "
+        f"buyer={r.get('buyer','?')}, stage={r.get('stage','?')}"
+        for r in overdue_sorted[:8]
     )
-    gap_list = ", ".join(g["gap_name"] for g in gaps[:3])
-    prompt = (
-        f"You are a garment production analyst for Vivo Fashion Group, East Africa.\n"
-        f"Date: {date.today().isoformat()}\n\n"
-        f"Production order pipeline:\n"
-        f"- Total orders (18m): {kpi.get('total_orders')}\n"
-        f"- Active (due future): {kpi.get('active_orders')}\n"
-        f"- Overdue: {kpi.get('overdue_orders')} ({kpi.get('overdue_units')} units)\n"
-        f"- Due next 30d: {kpi.get('due_next_30d')}\n"
-        f"- Buyers tracked: {kpi.get('buyers')}\n\n"
-        f"Top overdue orders:\n{ov_str or '  None overdue'}\n\n"
-        f"Key data gaps: {gap_list}\n\n"
-        "Write a concise (3–5 sentences) coaching note for leadership. "
-        "Focus on production risk, buyer accountability, and one data gap to close. "
-        "Plain text only."
+    upcoming_rows = "\n".join(
+        f"  - {r.get('style_name') or r.get('order_ref','?')}: "
+        f"due {str(r.get('due_date','?'))[:10]}, {r.get('order_qty',0)} units, "
+        f"buyer={r.get('buyer','?')}"
+        for r in (upcoming or [])[:6]
     )
-    try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": "claude-haiku-4-5", "max_tokens": 300,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=30,
-        )
-        data = resp.json()
-        note = data.get("content",[{}])[0].get("text","Coaching unavailable.")
-        return {"note": note, "model": "claude-haiku-4-5",
-                "generated_for": date.today().isoformat()}
-    except Exception as e:
-        log.warning("production coaching: %s", e)
-        return {"note": "Coaching temporarily unavailable.", "model": None,
-                "generated_for": date.today().isoformat()}
+    buyer_rows = "\n".join(
+        f"  {b.get('buyer','?')}: {b.get('total_orders',0)} orders, "
+        f"{b.get('overdue_orders',0)} overdue, {b.get('overdue_units',0)} overdue units, "
+        f"{b.get('due_next_30d',0)} due within 30d"
+        for b in (by_buyer or [])[:6]
+    )
+    overdue_count = kpi.get("overdue_orders") or len(overdue)
+    overdue_units = kpi.get("overdue_units") or 0
+    top_gaps = [g["gap_name"].replace("_", " ") for g in gaps[:3]]
+    context = (
+        f"PRODUCTION DESK INTELLIGENCE — {date.today().isoformat()}\n\n"
+        f"PIPELINE KPIs (18-month window):\n"
+        f"  Total production orders: {kpi.get('total_orders',0)}\n"
+        f"  Active (future due date): {kpi.get('active_orders',0)}\n"
+        f"  Overdue: {overdue_count} orders / {overdue_units:,} units "
+        f"({'CRITICAL — immediate review' if overdue_count > 20 else 'HIGH — >5 overdue' if overdue_count > 5 else 'normal'})\n"
+        f"  Due within next 30 days: {kpi.get('due_next_30d',0)} orders\n"
+        f"  Buyers tracked: {kpi.get('buyers',0)}\n\n"
+        f"OVERDUE ORDERS (worst first):\n{ov_rows or '  None overdue — pipeline on schedule'}\n\n"
+        f"UPCOMING DUE (next 30d):\n{upcoming_rows or '  No orders due within 30 days'}\n\n"
+        f"BY BUYER:\n{buyer_rows or '  No buyer breakdown available'}\n\n"
+        f"KEY DATA GAPS: {', '.join(top_gaps) if top_gaps else 'None'}\n\n"
+        f"Analyse production pipeline risk. Identify: orders at highest lateness risk (aging + units), "
+        f"buyer accountability issues (who has the most overdue by unit volume), "
+        f"capacity crunch risk in the next 30 days. "
+        f"Propose escalation actions with specific order refs, buyers, and deadlines."
+    )
+    return du.call_llm_structured(api_key, context, DESK, "overview", conn)
 
 
 def ensure_production_desk_tables():
@@ -215,10 +214,14 @@ def register_production_desk_routes(app, A):
 
             coaching = du.get_coaching(conn, DESK)
             if not coaching:
-                coaching = _run_coaching(kpi, overdue, gaps)
-                if coaching.get("note"):
-                    du.save_coaching(conn, DESK, coaching["note"],
-                                     model=coaching.get("model",""))
+                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                coaching = _run_coaching(api_key, kpi, overdue,
+                                         _c(upcoming_raw), _c(buyer_raw),
+                                         gaps, conn)
+                if coaching.get("note") or coaching.get("structured"):
+                    du.save_coaching(conn, DESK, coaching.get("note", ""),
+                                     structured=coaching.get("structured"),
+                                     model=coaching.get("model", ""))
 
             issues = du.list_issues(conn, DESK)
             return {"as_of": date.today().isoformat(), "kpis": kpi,

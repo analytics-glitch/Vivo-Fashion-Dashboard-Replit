@@ -53,30 +53,179 @@ export function KpiCard({ label, value, sub, color }) {
   );
 }
 
+const SEV_BORDER  = { critical: "#dc2626", high: "#d97706", medium: "#9ca3af", low: "#d1d5db" };
+const SEV_BG      = { critical: "#fef2f2", high: "#fffbeb", medium: "#f9fafb", low: "#f9fafb" };
+const SEV_BORDER2 = { critical: "#fca5a5", high: "#fde68a", medium: "#e5e7eb", low: "#e5e7eb" };
+const PRIO_COLOR  = { high: "#dc2626", medium: "#d97706", low: "#6b7280" };
+
 export function DeskCoachingPanel({ coaching, desk }) {
-  if (!coaching || !coaching.note) return null;
-  const isPlaceholder = coaching.note.includes("not configured") || coaching.note.includes("unavailable");
+  const [expanded, setExpanded] = useState(true);
+  const structured = coaching?.structured;
+  const risks = structured?.risks || [];
+  const opportunities = structured?.opportunities || [];
+  const proposals = structured?.proposals || [];
+  const criticalRisks = risks.filter(r => r.severity === "critical");
+  const highRisks = risks.filter(r => r.severity === "high");
+  const hasStructured = risks.length > 0 || opportunities.length > 0 || proposals.length > 0;
+  const isPlaceholder = !coaching?.note || coaching.note.includes("not configured") || coaching.note.includes("unavailable");
+
+  if (!coaching) return null;
+  if (!hasStructured && isPlaceholder) return null;
+
   return (
-    <div style={{
-      background: isPlaceholder ? "#f9fafb" : "#f0fdf4",
-      border: `1px solid ${isPlaceholder ? "#e5e7eb" : "#bbf7d0"}`,
-      borderRadius: 10,
-      padding: "16px 20px",
-      marginBottom: 20,
-    }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: isPlaceholder ? "#9ca3af" : "#1a5c38", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-          AI Coaching — {desk} Desk
+    <div style={{ marginBottom: 20 }}>
+      {/* Escalation banner — shown even when collapsed */}
+      {(criticalRisks.length > 0 || highRisks.length > 0) && (
+        <div style={{
+          background: criticalRisks.length > 0 ? "#fef2f2" : "#fffbeb",
+          border: `1.5px solid ${criticalRisks.length > 0 ? "#fca5a5" : "#fde68a"}`,
+          borderRadius: 8, padding: "9px 14px", marginBottom: 10,
+          display: "flex", gap: 10, alignItems: "center",
+        }}>
+          <span style={{
+            width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
+            background: criticalRisks.length > 0 ? "#dc2626" : "#d97706",
+          }} />
+          <span style={{
+            fontSize: 12, fontWeight: 700,
+            color: criticalRisks.length > 0 ? "#991b1b" : "#92400e",
+          }}>
+            {criticalRisks.length > 0
+              ? `ESCALATION — ${criticalRisks.length} critical risk${criticalRisks.length > 1 ? "s" : ""} require immediate attention`
+              : `${highRisks.length} high-severity risk${highRisks.length > 1 ? "s" : ""} flagged — review proposals below`}
+          </span>
+        </div>
+      )}
+
+      {/* Panel header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: expanded ? 12 : 0 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "#1a5c38", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+          AI Intelligence — {desk} Desk
         </span>
         {coaching.model && (
-          <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: "auto" }}>
+          <span style={{ fontSize: 10, color: "#9ca3af", marginLeft: "auto" }}>
             {coaching.model} · {coaching.generated_for}
           </span>
         )}
+        <button
+          onClick={() => setExpanded(e => !e)}
+          style={{ fontSize: 11, color: "#6b7280", background: "none", border: "none", cursor: "pointer", padding: "2px 6px" }}
+        >
+          {expanded ? "hide" : "show"}
+        </button>
       </div>
-      <p style={{ margin: 0, fontSize: 14, color: "#374151", lineHeight: 1.6 }}>
-        {coaching.note}
-      </p>
+
+      {expanded && (
+        <>
+          {/* Risks + Opportunities — two-column grid */}
+          {(risks.length > 0 || opportunities.length > 0) && (
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: risks.length > 0 && opportunities.length > 0 ? "1fr 1fr" : "1fr",
+              gap: 12, marginBottom: proposals.length > 0 || coaching.note ? 12 : 0,
+            }}>
+              {risks.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: "#dc2626", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>
+                    Risks ({risks.length})
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {risks.map((r, i) => (
+                      <div key={i} style={{
+                        background: SEV_BG[r.severity] || "#f9fafb",
+                        border: `1px solid ${SEV_BORDER2[r.severity] || "#e5e7eb"}`,
+                        borderLeft: `3px solid ${SEV_BORDER[r.severity] || "#9ca3af"}`,
+                        borderRadius: 6, padding: "8px 10px",
+                      }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                          <span style={{
+                            fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em",
+                            color: SEV_BORDER[r.severity] || "#6b7280",
+                          }}>{r.severity}</span>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: "#111827" }}>{r.title}</span>
+                        </div>
+                        {r.evidence && (
+                          <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 4, lineHeight: 1.4 }}>{r.evidence}</div>
+                        )}
+                        {r.action && (
+                          <div style={{ fontSize: 11, color: "#1a5c38", fontWeight: 500 }}>Action: {r.action}</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {opportunities.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: "#1a5c38", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>
+                    Opportunities ({opportunities.length})
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {opportunities.map((o, i) => (
+                      <div key={i} style={{
+                        background: "#f0fdf4", border: "1px solid #bbf7d0",
+                        borderLeft: "3px solid #1a5c38", borderRadius: 6, padding: "8px 10px",
+                      }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: "#111827", marginBottom: 3 }}>{o.title}</div>
+                        {o.evidence && (
+                          <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 4, lineHeight: 1.4 }}>{o.evidence}</div>
+                        )}
+                        {o.action && (
+                          <div style={{ fontSize: 11, color: "#1a5c38", fontWeight: 500 }}>Action: {o.action}</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Proposals */}
+          {proposals.length > 0 && (
+            <div style={{
+              background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8,
+              padding: "12px 14px", marginBottom: coaching.note ? 10 : 0,
+            }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>
+                Proposals
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                {proposals.map((p, i) => (
+                  <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                    <span style={{
+                      fontSize: 9, fontWeight: 800, textTransform: "uppercase", whiteSpace: "nowrap",
+                      marginTop: 2, color: PRIO_COLOR[p.priority] || "#6b7280",
+                      minWidth: 40,
+                    }}>{p.priority}</span>
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontSize: 12, color: "#111827" }}>{p.text}</span>
+                      {p.timeframe && (
+                        <span style={{ fontSize: 10, color: "#9ca3af", marginLeft: 8 }}>{p.timeframe}</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Summary / plain note */}
+          {coaching.note && !isPlaceholder && (
+            <div style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.6, fontStyle: "italic" }}>
+              {coaching.note}
+            </div>
+          )}
+
+          {/* Plain text fallback when no structured data */}
+          {!hasStructured && coaching.note && !isPlaceholder && (
+            <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "12px 14px" }}>
+              <p style={{ margin: 0, fontSize: 13, color: "#374151", lineHeight: 1.6 }}>{coaching.note}</p>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
