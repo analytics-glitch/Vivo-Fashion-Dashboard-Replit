@@ -786,11 +786,52 @@ function FulfillmentDrawer({ styleId, styleName, onClose }) {
   return createPortal(content, document.body);
 }
 
+/** "Move to week" dropdown — lists every week except the one the card already lives in */
+function MoveToWeekMenu({ style, weeks, busy, onUpdate }) {
+  const [value, setValue] = useState("");
+
+  const otherWeeks = weeks.filter(
+    (w) => !(w.iso_year === style.iso_year && w.iso_week === style.iso_week)
+  );
+
+  if (otherWeeks.length === 0) return null;
+
+  const handleChange = (e) => {
+    const chosen = e.target.value;
+    if (!chosen) return;
+    setValue("");
+    const [yr, wk] = chosen.split("-").map(Number);
+    onUpdate(style, {}, { iso_year: yr, iso_week: wk });
+  };
+
+  return (
+    <select
+      value={value}
+      onChange={handleChange}
+      disabled={busy}
+      title="Move this style to a different week"
+      className="text-[11px] font-medium text-muted bg-white border border-line rounded-md px-1.5 py-1 w-full focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50"
+      data-testid={`move-to-week-${style.id}`}
+    >
+      <option value="">Move to week…</option>
+      {otherWeeks.map((w) => {
+        const wk = weekKey(w);
+        const suffix = w.overdue ? " — Overdue" : w.is_current ? " — This week" : "";
+        return (
+          <option key={wk} value={wk}>
+            {w.label}{suffix}
+          </option>
+        );
+      })}
+    </select>
+  );
+}
+
 /** One draggable style card */
 function StyleCard({
   style, finishingOptions, orderTypes, busy, late, onUpdate, onDelete,
   onDragStart, onDragEnd, isPrivileged, onNoteAdded, onOpenFulfillment,
-  onOptionsChange,
+  onOptionsChange, weeks,
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const done = !!style.completed;
@@ -920,6 +961,13 @@ function StyleCard({
           <span>No deliver-by date</span>
         )}
       </div>
+
+      {/* Move to week */}
+      {weeks && weeks.length > 1 && (
+        <div className="mt-1.5">
+          <MoveToWeekMenu style={style} weeks={weeks} busy={busy} onUpdate={onUpdate} />
+        </div>
+      )}
 
       {/* Notes panel */}
       <NotesPanel style={style} onNoteAdded={onNoteAdded} />
@@ -1295,7 +1343,7 @@ const StyleTracker = () => {
 
       <SectionTitle
         title="Weekly Style Tracker"
-        subtitle={`Styles by launch week — drag cards between weeks to re-plan. Today: ${fmtShortDate(board.today)} (WK ${board.current?.iso_week})`}
+        subtitle={`Styles by launch week — use "Move to week" on a card to re-plan. Today: ${fmtShortDate(board.today)} (WK ${board.current?.iso_week})`}
         action={
           <div className="flex items-center gap-2">
             <div className="flex rounded-lg border border-line overflow-hidden">
@@ -1413,6 +1461,7 @@ const StyleTracker = () => {
                         onNoteAdded={handleNoteAdded}
                         onOpenFulfillment={(style) => setFulfillmentStyle({ id: style.id, style_name: style.style_name })}
                         onOptionsChange={() => loadBoard(true, true)}
+                        weeks={board.weeks}
                       />
                     ))}
                   </div>
