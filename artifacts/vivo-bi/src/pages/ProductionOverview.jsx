@@ -915,7 +915,7 @@ export default function ProductionOverview({ onOpenReport }) {
           colorFor={(r) => LIFECYCLE_HEX[r.label] || "#9ca3af"}
           testId="prod-ov-lifecycle-mix"
         />
-        <BreakdownBar
+        <PieMix
           title="Buying-order state (by orders)"
           rows={rt.byState}
           metric="orders"
