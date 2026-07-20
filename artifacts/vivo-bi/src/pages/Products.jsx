@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import PDFlow from "@/pages/PDFlow";
 import { useFilters } from "@/lib/filters";
 import { fetchKpis } from "@/lib/useKpis";
 import { isMerchandise, categoryFor, MERCH_CATEGORIES, subcategoriesFor } from "@/lib/productCategory";
@@ -303,7 +305,8 @@ const Products = () => {
 
   // Sub-tab — keeps the existing Products view intact and adds the
   // L-10 launch-window report alongside.
-  const [tab, setTab] = useState("catalog");
+  const [searchParams] = useSearchParams();
+  const [tab, setTab] = useState(() => searchParams.get("tab") === "pd-flow" ? "pd-flow" : "catalog");
   const brandCsv = brands.length ? brands.join(",") : "";
 
   return (
@@ -438,8 +441,19 @@ const Products = () => {
         >
           Products Plan
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "pd-flow"}
+          onClick={() => setTab("pd-flow")}
+          className={`px-4 py-2 text-[12.5px] font-medium border-l border-border ${tab === "pd-flow" ? "bg-brand text-white" : "bg-white hover:bg-panel"}`}
+          data-testid="subtab-pd-flow"
+        >
+          PD Flow
+        </button>
       </div>
 
+      {tab === "pd-flow" && <PDFlow />}
       {tab === "l10" && <SorNewStylesL10 brand={brandCsv} styleStatus={styleStatus} />}
       {tab === "all-styles" && <SorAllStyles brand={brandCsv} styleStatus={styleStatus} />}
       {tab === "sales-curve" && <NewStylesSalesCurve />}

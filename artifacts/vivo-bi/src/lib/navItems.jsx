@@ -62,12 +62,13 @@ export const PRIMARY_NAV = [
   // "Operations & Production" group below.
   {
     to: "/product-analysis", label: "Product Development", icon: ChartBar, id: "product-analysis",
-    anyOfPageIds: ["product-analysis", "production", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "exports", "store-flow"],
-    group: "Products & Range", desc: "Product development hub — Style Cockpit, Range Management, Weekly Style Tracker, Catalog & SOR, SOR Report, Allocations, Re-Order, Gallery and Stock Movement tabs",
+    anyOfPageIds: ["product-analysis", "production", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "exports", "store-flow", "pd-flow"],
+    group: "Products & Range", desc: "Product development hub — Style Cockpit, Range Management, Weekly Style Tracker, PD Flow, Catalog & SOR, SOR Report, Allocations, Re-Order, Gallery and Stock Movement tabs",
     subReports: [
       { pageId: "product-analysis", label: "Style Cockpit & Catalog" },
       { pageId: "range-mgmt",       label: "Range Management" },
       { pageId: "style-tracker",    label: "Weekly Style Tracker" },
+      { pageId: "pd-flow",          label: "PD Flow" },
       { pageId: "production",       label: "Production Overview" },
       { pageId: "allocations",      label: "Allocations" },
       { pageId: "re-order",         label: "Re-Order" },
@@ -137,7 +138,6 @@ export const PRIMARY_NAV = [
       { pageId: "style-tracker",     label: "Weekly Style Tracker" },
     ],
   },
-  { to: "/pd-flow", label: "Product Development Flow", icon: Kanban, id: "pd-flow", group: "Operations & Production", desc: "Pre-production style kanban — track every adopted style from Adopted to Final Review with assignees, stage aging and bottleneck analytics" },
 
   // Catalogues & others
   { to: "/ask", label: "Ask the Dashboard", icon: Sparkle, id: "ask", group: "Tools", desc: "Ask questions about today's sales, footfall, and performance — answered from live business data by AI" },

@@ -220,7 +220,7 @@ function App() {
                 <Route path="/ibt" element={<Navigate to="/retail?tab=ibt" replace />} />
                 <Route path="/production" element={<ProtectedShell anyOfPageIds={["production", "production-report", "style-tracker"]}><Production /></ProtectedShell>} />
                 <Route path="/production-report" element={<Navigate to="/production?tab=report" replace />} />
-                <Route path="/pd-flow" element={<ProtectedShell pageId="pd-flow"><PDFlow /></ProtectedShell>} />
+                <Route path="/pd-flow" element={<Navigate to="/product-analysis?tab=pd-flow" replace />} />
                 <Route path="/style-tracker" element={<Navigate to="/product-analysis?tab=tracker" replace />} />
                 <Route path="/data-quality" element={<ProtectedShell pageId="data-quality"><DataQuality /></ProtectedShell>} />
                 <Route path="/feedback" element={<ProtectedShell pageId="feedback"><Feedback /></ProtectedShell>} />
