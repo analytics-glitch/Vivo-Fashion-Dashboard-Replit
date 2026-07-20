@@ -191,7 +191,7 @@ function App() {
                 <Route path="/gallery" element={<Navigate to="/product-analysis?tab=gallery" replace />} />
                 <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
                 <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
-                <Route path="/retail" element={<ProtectedShell anyOfPageIds={["locations", "warehouse-returns", "excess-inventory", "ibt"]}><Retail /></ProtectedShell>} />
+                <Route path="/retail" element={<ProtectedShell anyOfPageIds={["locations", "warehouse-returns", "excess-inventory", "ibt", "rebalancing"]}><Retail /></ProtectedShell>} />
                 <Route path="/locations" element={<Navigate to="/retail?tab=locations" replace />} />
                 {/* Legacy pages merged into tabs — keep old URLs working */}
                 <Route path="/products" element={<Navigate to="/product-analysis" replace />} />

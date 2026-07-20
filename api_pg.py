@@ -685,13 +685,13 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "sops"],
-    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "exports", "sops", "ask"],
-    "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"],
-    "store_manager": ["store-flow", "locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "sops"],
+    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "sops", "ask"],
+    "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops"],
+    "store_manager": ["store-flow", "locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops"],
     "leadership": _LEADERSHIP_PAGES,
     # SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
     # Finance Reports Suite. The /api/finance gate below also excludes "smt".
@@ -10315,6 +10315,136 @@ async def analytics_excess_inventory_done(request: Request):
             "  AND qty_returned IS NULL AND transfer_ref IS NULL AND done_at IS NULL",
             (pos_location, sku))
     return {"ok": True, "pos_location": pos_location, "sku": sku, "done": done}
+
+
+@app.get("/api/analytics/rebalancing")
+def analytics_rebalancing():
+    """Store Rebalancing report — one row per (store, SKU) showing stock that
+    should be returned to the warehouse.
+
+    Three sources, each (store, SKU) appears at most once (priority: Retired > Excess > Slow Mover):
+      * Retired    — Odoo-retired OR no company-wide sales in 182 days. Return ALL store units.
+      * Excess     — units above the brand × size allowance. Return the excess qty only.
+      * Slow Mover — not sold AT THIS STORE in >= 45 days (not already Retired or Excess). Return ALL.
+
+    Columns: store, product_title, sku, barcode, size, brand, inventory,
+             proposed_return, reason, days_since_last_sale.
+    """
+    ck = "rebalancing:" + _inventory_version()
+    cached, fresh = cache_get_swr(ck)
+    if cached is not None:
+        if not fresh:
+            swr_refresh(ck, analytics_rebalancing, label="rebalancing")
+        return cached
+
+    # Build excess lookup from the shared snapshot (already snapshot-cached)
+    excess_raw = _excess_inventory_dataset()
+    excess_map = {(r["pos_location"], r["sku"]): r
+                  for r in excess_raw if (r.get("excess") or 0) > 0}
+
+    # One SQL: all store SKUs that are retired OR not sold at-store in 45+ days.
+    # Excess-only rows (still selling but overstocked) are added in Python below.
+    rows = run_query("""
+        WITH store_inv AS (
+            SELECT i.pos_location_name                                           AS store,
+                   i.sku,
+                   SUM(i.available)                                              AS inventory,
+                   COALESCE(NULLIF(MAX(p.product_name),''), MAX(p.style_name))   AS product_title,
+                   MAX(p.barcode)                                                 AS barcode,
+                   UPPER(TRIM(COALESCE(MAX(p.size),'')))                          AS size,
+                   MAX(p.brand)                                                   AS brand,
+                   MAX(p.style_name)                                              AS style_name
+            FROM all_inventory i
+            LEFT JOIN all_products_clean p ON i.sku = p.sku
+            WHERE i.available > 0
+              AND i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+            GROUP BY i.pos_location_name, i.sku
+        ),
+        last_sale AS (
+            SELECT pos_location_name AS store, variant_sku AS sku,
+                   MAX(sale_date::date) AS last_sold
+            FROM all_sales
+            WHERE sale_kind IN ('sale','order')
+            GROUP BY pos_location_name, variant_sku
+        ),
+        style_sales_182 AS (
+            SELECT p.style_name,
+                   SUM(CASE WHEN s.sale_date::date >= CURRENT_DATE - 182
+                            THEN s.ordered_item_quantity ELSE 0 END) AS units_182
+            FROM all_sales s
+            JOIN all_products_clean p ON s.variant_sku = p.sku
+            WHERE s.sale_kind IN ('sale','order')
+            GROUP BY p.style_name
+        )
+        SELECT si.store, si.sku, si.product_title, si.barcode, si.size, si.brand,
+               si.inventory, si.style_name, ls.last_sold,
+               CASE WHEN ls.last_sold IS NULL THEN 999
+                    ELSE (CURRENT_DATE - ls.last_sold) END AS days_since_last_sale,
+               (COALESCE(ss.units_182, 0) = 0
+                OR si.style_name IN (""" + _ODOO_RETIRED_STYLES_SQL + """)) AS is_retired
+        FROM store_inv si
+        LEFT JOIN last_sale        ls ON ls.store = si.store AND ls.sku = si.sku
+        LEFT JOIN style_sales_182  ss ON ss.style_name = si.style_name
+        WHERE
+            COALESCE(ss.units_182, 0) = 0
+            OR si.style_name IN (""" + _ODOO_RETIRED_STYLES_SQL + """)
+            OR (ls.last_sold IS NULL OR ls.last_sold < CURRENT_DATE - 45)
+        ORDER BY is_retired DESC, days_since_last_sale DESC, si.inventory DESC
+    """)
+
+    seen: set = set()
+    out = []
+
+    for r in (rows or []):
+        key = (r["store"], r["sku"])
+        if key in seen:
+            continue
+        seen.add(key)
+        inventory  = int(r.get("inventory") or 0)
+        is_retired = bool(r.get("is_retired"))
+        exc_row    = excess_map.get(key)
+        size = (r.get("size") or "").strip() or _size_from_sku(r.get("sku"))
+        if is_retired:
+            reason, proposed = "Retired", inventory
+        elif exc_row:
+            reason, proposed = "Excess", int(exc_row.get("excess") or 0)
+        else:
+            reason, proposed = "Slow Mover", inventory
+        out.append({
+            "store":                r["store"],
+            "product_title":        r.get("product_title"),
+            "sku":                  r.get("sku"),
+            "barcode":              r.get("barcode"),
+            "size":                 size or None,
+            "brand":                r.get("brand"),
+            "inventory":            inventory,
+            "proposed_return":      proposed,
+            "reason":               reason,
+            "days_since_last_sale": int(r.get("days_since_last_sale") or 0),
+        })
+
+    # Excess-only rows (selling well but overstocked) not captured by the SQL above
+    for (store, sku), exc_row in excess_map.items():
+        if (store, sku) in seen:
+            continue
+        seen.add((store, sku))
+        size = (exc_row.get("size") or "").strip() or _size_from_sku(sku)
+        out.append({
+            "store":                store,
+            "product_title":        exc_row.get("product_name"),
+            "sku":                  sku,
+            "barcode":              exc_row.get("barcode"),
+            "size":                 size or None,
+            "brand":                exc_row.get("brand_group"),
+            "inventory":            int(exc_row.get("inventory") or 0),
+            "proposed_return":      int(exc_row.get("excess") or 0),
+            "reason":               "Excess",
+            "days_since_last_sale": None,
+        })
+
+    result = {"rows": out}
+    cache_set(ck, result, ttl=600)
+    return result
 
 
 @app.get("/api/inventory/freshness")
