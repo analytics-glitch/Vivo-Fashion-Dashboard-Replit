@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import ReactDOM from "react-dom";
 import * as XLSX from "xlsx";
+import { PieChart, Pie, Cell, Tooltip } from "recharts";
 import { api } from "@/lib/api";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
 import {
@@ -104,7 +105,7 @@ function TargetCard({ label, value, targetLabel, status, detail }) {
   );
 }
 
-function MetricCard({ label, value, sub, accent, onClick, testId }) {
+function MetricCard({ label, value, pctText, pctLabel, accent, onClick, testId }) {
   return (
     <div
       role="button" tabIndex={0}
@@ -113,9 +114,14 @@ function MetricCard({ label, value, sub, accent, onClick, testId }) {
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onClick?.(); }}
       data-testid={testId}
     >
-      <div className={`text-[12px] font-semibold mb-1 ${accent ? "text-emerald-200" : "text-muted"}`}>{label}</div>
-      <div className={`text-[26px] font-extrabold tabular-nums leading-none ${accent ? "text-white" : "text-[#0f3d24]"}`}>{value}</div>
-      {sub && <div className={`text-[12px] mt-1 ${accent ? "text-emerald-200" : "text-muted"}`}>{sub}</div>}
+      <div className={`text-[12px] font-semibold mb-1.5 ${accent ? "text-emerald-200" : "text-muted"}`}>{label}</div>
+      <div className="flex items-baseline gap-2.5 flex-wrap">
+        <div className={`text-[28px] font-extrabold tabular-nums leading-none ${accent ? "text-white" : "text-[#0f3d24]"}`}>{value}</div>
+        {pctText && (
+          <div className={`text-[22px] font-bold tabular-nums leading-none ${accent ? "text-emerald-200" : "text-slate-400"}`}>{pctText}</div>
+        )}
+      </div>
+      {pctLabel && <div className={`text-[11px] mt-1 ${accent ? "text-emerald-300" : "text-muted"}`}>{pctLabel}</div>}
     </div>
   );
 }
@@ -156,7 +162,7 @@ function BreakdownBar({ title, rows, colorFor, metric = "orders", fullLabels = f
                 >
                   {displayLabel}
                 </div>
-                <div className="flex-1 h-5 bg-[#f5f0eb] rounded overflow-hidden">
+                <div className="flex-1 h-8 bg-[#f5f0eb] rounded overflow-hidden">
                   <div
                     className="h-full rounded transition-all"
                     style={{ width: `${barW}%`, backgroundColor: color }}
@@ -168,6 +174,94 @@ function BreakdownBar({ title, rows, colorFor, metric = "orders", fullLabels = f
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PieMix({ title, rows, colorFor, metric = "units", testId }) {
+  const data = (rows || [])
+    .filter((r) => Number(r[metric]) > 0)
+    .sort((a, b) => Number(b[metric]) - Number(a[metric]));
+  const total = data.reduce((s, r) => s + (Number(r[metric]) || 0), 0);
+  const pieData = data.map((r) => ({
+    name: r.label || "—",
+    value: Number(r[metric]),
+    color: colorFor(r),
+    pct: total > 0 ? ((Number(r[metric]) / total) * 100).toFixed(0) : "0",
+  }));
+
+  const renderCustomLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, index }) => {
+    const RADIAN = Math.PI / 180;
+    const radius = innerRadius + (outerRadius - innerRadius) * 0.55;
+    const x = cx + radius * Math.cos(-midAngle * RADIAN);
+    const y = cy + radius * Math.sin(-midAngle * RADIAN);
+    const entry = pieData[index];
+    if (!entry || Number(entry.pct) < 5) return null;
+    return (
+      <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central"
+        style={{ fontSize: 13, fontWeight: 700, pointerEvents: "none" }}>
+        {entry.pct}%
+      </text>
+    );
+  };
+
+  const CustomTooltip = ({ active, payload }) => {
+    if (!active || !payload?.length) return null;
+    const d = payload[0];
+    return (
+      <div className="bg-white border border-slate-200 rounded-lg shadow-lg px-3 py-2 text-[12.5px]">
+        <div className="font-semibold text-[#0f3d24]">{d.name}</div>
+        <div className="text-muted">{fmtQty(d.value)} units · {total > 0 ? ((d.value / total) * 100).toFixed(0) : 0}%</div>
+      </div>
+    );
+  };
+
+  const renderLegend = () => (
+    <div className="flex flex-col gap-2 justify-center">
+      {pieData.map((d) => (
+        <div key={d.name} className="flex items-center gap-2">
+          <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
+          <span className="text-[12.5px] font-medium text-[#0f3d24]">{d.name}</span>
+          <span className="ml-auto text-[12.5px] tabular-nums text-muted">
+            {fmtQty(d.value)} · <span className="font-semibold text-[#0f3d24]">{d.pct}%</span>
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="card-white p-4" data-testid={testId}>
+      <div className="text-[13px] font-bold text-[#0f3d24] mb-3">{title}</div>
+      {total === 0 ? (
+        <div className="text-[13px] text-muted italic">No data for this period.</div>
+      ) : (
+        <div className="flex items-center gap-4">
+          <div style={{ flexShrink: 0 }}>
+            <PieChart width={200} height={200}>
+              <Pie
+                data={pieData}
+                cx={100}
+                cy={100}
+                outerRadius={90}
+                innerRadius={38}
+                dataKey="value"
+                labelLine={false}
+                label={renderCustomLabel}
+                stroke="none"
+              >
+                {pieData.map((d) => (
+                  <Cell key={d.name} fill={d.color} />
+                ))}
+              </Pie>
+              <Tooltip content={<CustomTooltip />} />
+            </PieChart>
+          </div>
+          <div className="flex-1 min-w-0">
+            {renderLegend()}
+          </div>
         </div>
       )}
     </div>
@@ -735,21 +829,24 @@ export default function ProductionOverview({ onOpenReport }) {
             testId="prod-ov-kpi-styles-new"
             label="New Styles"
             value={fmtQty(lcNew.orders)}
-            sub={`${pct(lcNew.orders, totalOrders)} of orders`}
+            pctText={pct(lcNew.orders, totalOrders)}
+            pctLabel="of orders"
             onClick={() => openDrill("New Style Orders", rangeOrders.filter((o) => o.lifecycle === "New"), ORDER_COLS)}
           />
           <MetricCard
             testId="prod-ov-kpi-styles-replen"
             label="Replenishment Styles"
             value={fmtQty(lcRep.orders)}
-            sub={`${pct(lcRep.orders, totalOrders)} of orders`}
+            pctText={pct(lcRep.orders, totalOrders)}
+            pctLabel="of orders"
             onClick={() => openDrill("Replenishment Orders", rangeOrders.filter((o) => o.lifecycle === "Replenishment"), ORDER_COLS)}
           />
           <MetricCard
             testId="prod-ov-kpi-styles-reorder"
             label="Re-order Styles"
             value={fmtQty(lcReo.orders)}
-            sub={`${pct(lcReo.orders, totalOrders)} of orders`}
+            pctText={pct(lcReo.orders, totalOrders)}
+            pctLabel="of orders"
             onClick={() => openDrill("Re-order Orders", rangeOrders.filter((o) => o.lifecycle === "Re-order"), ORDER_COLS)}
           />
         </div>
@@ -770,21 +867,24 @@ export default function ProductionOverview({ onOpenReport }) {
             testId="prod-ov-kpi-units-new"
             label="New Units"
             value={fmtQty(lcNew.units)}
-            sub={`${pct(lcNew.units, totalUnits)} of units`}
+            pctText={pct(lcNew.units, totalUnits)}
+            pctLabel="of units"
             onClick={() => openDrill("New Style Units", rangeOrders.filter((o) => o.lifecycle === "New"), ORDER_COLS)}
           />
           <MetricCard
             testId="prod-ov-kpi-units-replen"
             label="Replenishment Units"
             value={fmtQty(lcRep.units)}
-            sub={`${pct(lcRep.units, totalUnits)} of units`}
+            pctText={pct(lcRep.units, totalUnits)}
+            pctLabel="of units"
             onClick={() => openDrill("Replenishment Units", rangeOrders.filter((o) => o.lifecycle === "Replenishment"), ORDER_COLS)}
           />
           <MetricCard
             testId="prod-ov-kpi-units-reorder"
             label="Re-order Units"
             value={fmtQty(lcReo.units)}
-            sub={`${pct(lcReo.units, totalUnits)} of units`}
+            pctText={pct(lcReo.units, totalUnits)}
+            pctLabel="of units"
             onClick={() => openDrill("Re-order Units", rangeOrders.filter((o) => o.lifecycle === "Re-order"), ORDER_COLS)}
           />
         </div>
@@ -809,9 +909,9 @@ export default function ProductionOverview({ onOpenReport }) {
 
       {/* ── Order type mix + state ── */}
       <div className="grid gap-3 grid-cols-1 md:grid-cols-2">
-        <BreakdownBar
+        <PieMix
           title="Order type mix (by units)"
-          rows={rt.byCat.length === 0 ? Object.values(rt.byLc) : Object.values(rt.byLc)}
+          rows={Object.values(rt.byLc)}
           metric="units"
           colorFor={(r) => LIFECYCLE_HEX[r.label] || "#9ca3af"}
           testId="prod-ov-lifecycle-mix"
