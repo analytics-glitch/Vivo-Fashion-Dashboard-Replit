@@ -4334,6 +4334,16 @@ def get_kpis_customer_type_split(
             CASE
                 WHEN fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date
                      THEN 'New'
+                -- Shared counter accounts (e.g. "Sarit Walk in") have a real
+                -- customer_id tagged as 'returning' but their name reveals they
+                -- are anonymous walk-in placeholders.
+                WHEN s.customer_id IN (
+                         SELECT ac.customer_id FROM all_customers ac
+                         WHERE ac.customer_id IS NOT NULL
+                         AND (COALESCE(ac.first_name,'') || ' ' || COALESCE(ac.last_name,''))
+                             ~* 'walk[- ]?in'
+                     )
+                     THEN 'Walk-in'
                 WHEN COALESCE(LOWER(s.customer_type), '') NOT IN ('new', 'returning', 'registered')
                      THEN 'Walk-in'
                 ELSE 'Returning'
