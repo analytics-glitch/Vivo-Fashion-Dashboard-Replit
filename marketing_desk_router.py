@@ -83,35 +83,65 @@ def _db_exec(A, sql, params=None):
 
 
 def _run_coaching(api_key: str, social: list, loyalty: dict, gaps: list, conn) -> dict:
-    social_rows = "\n".join(
-        f"  {r.get('platform','?')}: {r.get('total_items',0)} items total, "
-        f"{r.get('positive',0)} positive / {r.get('negative',0)} negative / "
-        f"{r.get('neutral',0)} neutral, {r.get('needs_reply',0)} needing reply, "
-        f"sentiment score: {r.get('sentiment_score','n/a')}"
-        for r in social
-    )
-    total_backlog = sum(r.get("needs_reply", 0) or 0 for r in social)
+    total_backlog  = sum(r.get("needs_reply", 0) or 0 for r in social)
     negative_total = sum(r.get("negative", 0) or 0 for r in social)
-    top_gaps = [g["gap_name"].replace("_", " ") for g in gaps[:3]]
+    positive_total = sum(r.get("positive", 0) or 0 for r in social)
+    total_items    = sum(r.get("total_items", 0) or 0 for r in social)
+    overall_sentiment = round(
+        (positive_total - negative_total) / max(total_items, 1) * 100, 1
+    )
+
+    # Per-platform detail with backlog severity
+    social_rows = "\n".join(
+        f"  {r.get('platform','?').upper()}: "
+        f"backlog={r.get('needs_reply',0)} unanswered "
+        f"({'BRAND RISK' if (r.get('needs_reply') or 0) > 50 else 'SLA RISK' if (r.get('needs_reply') or 0) > 20 else 'ok'}) · "
+        f"sentiment {r.get('sentiment_score','?')} "
+        f"(+{r.get('positive',0)} pos / -{r.get('negative',0)} neg / {r.get('neutral',0)} neutral) · "
+        f"{r.get('total_items',0)} total items"
+        for r in sorted(social, key=lambda r: r.get("needs_reply") or 0, reverse=True)
+    )
+    # Worst platform
+    worst_platform = max(social, key=lambda r: r.get("needs_reply") or 0, default=None)
+    worst_name = worst_platform.get("platform", "unknown") if worst_platform else "none"
+    worst_backlog = (worst_platform.get("needs_reply") or 0) if worst_platform else 0
+
     loyalty_eng_rate = round(
         (loyalty.get("active_30d") or 0) / (loyalty.get("total_members") or 1) * 100, 1
     )
+    loyalty_eng_status = ("HEALTHY" if loyalty_eng_rate > 30 else
+                          "WATCH — below 30%% target" if loyalty_eng_rate > 15 else
+                          "RISK — critically low engagement")
+    enrolment_rate = round(
+        (loyalty.get("new_30d") or 0) / max(loyalty.get("total_members") or 1, 1) * 100, 1
+    )
+    top_gaps = [g["gap_name"].replace("_", " ") for g in gaps[:3]]
+
     context = (
         f"MARKETING DESK INTELLIGENCE — {date.today().isoformat()}\n\n"
-        f"SOCIAL INBOX (all-time accumulation):\n{social_rows or '  No social data'}\n\n"
-        f"SOCIAL FLAGS:\n"
-        f"  Total unanswered backlog: {total_backlog} (SLA risk if >48h)\n"
-        f"  Total negative items: {negative_total} (reputation risk if unaddressed)\n\n"
+        f"SOCIAL MEDIA INBOX OVERVIEW:\n"
+        f"  Total items across all platforms: {total_items:,}\n"
+        f"  Overall net sentiment: {overall_sentiment:+.1f}%% "
+        f"({'positive' if overall_sentiment > 10 else 'neutral' if overall_sentiment > -10 else 'NEGATIVE — brand risk'})\n"
+        f"  Total unanswered backlog: {total_backlog} "
+        f"({'BRAND RISK — >50 unanswered' if total_backlog > 50 else 'SLA RISK — >20 unanswered' if total_backlog > 20 else 'manageable'})\n"
+        f"  Most urgent platform: {worst_name} with {worst_backlog} unanswered items\n\n"
+        f"PLATFORM BREAKDOWN (by urgency):\n{social_rows or '  No social data'}\n\n"
         f"LOYALTY PROGRAMME:\n"
-        f"  Total enrolled members: {loyalty.get('total_members', 0):,}\n"
-        f"  Active last 30d: {loyalty.get('active_30d', 0):,} ({loyalty_eng_rate}%% engagement)\n"
-        f"  New enrolments last 30d: {loyalty.get('new_30d', 0):,}\n"
-        f"  (Target: >=30%% monthly engagement rate, >=5%% growth in enrolments)\n\n"
-        f"KEY DATA GAPS: {', '.join(top_gaps) if top_gaps else 'None flagged'}\n\n"
-        f"Analyse this marketing data. Identify reputation risks from the social backlog, "
-        f"loyalty engagement risks (if engagement <30%%), and opportunities to grow the programme. "
-        f"Propose concrete actions: who should reply to what, what campaign could drive loyalty sign-ups, "
-        f"which data gap blocks the most valuable insight."
+        f"  Total enrolled members: {loyalty.get('total_members',0):,}\n"
+        f"  Active last 30d: {loyalty.get('active_30d',0):,} "
+        f"({loyalty_eng_rate}%% engagement — {loyalty_eng_status})\n"
+        f"  New enrolments last 30d: {loyalty.get('new_30d',0):,} "
+        f"({enrolment_rate}%% monthly growth rate — "
+        f"{'strong' if enrolment_rate > 5 else 'slow — growth stalling' if enrolment_rate > 2 else 'near-zero — enrolment has stalled'})\n"
+        f"  Benchmark: 30%%+ engagement healthy · 5%%+ monthly growth strong\n\n"
+        f"KEY DATA GAPS blocking insight: {', '.join(top_gaps) if top_gaps else 'None flagged'}\n\n"
+        f"Apply the MANDATORY THINKING SEQUENCE. "
+        f"Focus on: (1) which platform's backlog poses the most urgent brand risk and needs immediate triage — "
+        f"name the platform and propose a specific clear-down plan; "
+        f"(2) whether the loyalty engagement rate is trending in the right direction; "
+        f"(3) what single marketing action would add the most enrolments in the next 30 days. "
+        f"Estimate KES revenue impact of improved loyalty engagement if relevant."
     )
     return du.call_llm_structured(api_key, context, DESK, "overview", conn)
 

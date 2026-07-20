@@ -442,40 +442,87 @@ OPEN ISSUES ({len(open_issues)} total, {len(stale_issues)} stale >7d):
 
 def _run_fleet_coaching(api_key: str, cards: list, fleet: dict, conn) -> dict:
     """Fleet-level structured intelligence for the retail overview page."""
+    from datetime import date as _date, timedelta as _td
+    today = _date.today()
+    day_of_month = today.day
+    days_in_month = 28 if today.month == 2 else 30 if today.month in (4,6,9,11) else 31
+    days_remaining = days_in_month - day_of_month
+    month_pct = round(day_of_month / days_in_month * 100)
+    month_phase = "early month" if day_of_month <= 10 else \
+                  "mid-month" if day_of_month <= 20 else "final stretch"
+
     behind_stores = [c for c in cards if c["status"] == "behind"]
     at_risk_stores = [c for c in cards if c["status"] == "at_risk"]
-    ahead_stores = [c for c in cards if c["status"] == "ahead"]
+    ahead_stores  = [c for c in cards if c["status"] == "ahead"]
 
+    # Country-level pattern analysis
+    by_country: dict = {}
+    for c in cards:
+        co = c.get("country", "Unknown")
+        by_country.setdefault(co, {"total": 0, "behind": 0, "gap": 0.0, "mtd": 0.0})
+        by_country[co]["total"] += 1
+        by_country[co]["gap"]   += c.get("gap_kes") or 0
+        by_country[co]["mtd"]   += c.get("mtd_net") or 0
+        if c["status"] == "behind":
+            by_country[co]["behind"] += 1
+    country_rows = "\n".join(
+        f"  {co}: {v['total']} stores · {v['behind']} behind · "
+        f"combined gap KES {v['gap']:,.0f} · MTD KES {v['mtd']:,.0f}"
+        for co, v in sorted(by_country.items())
+    )
+
+    # Required daily run-rate to close fleet gap
+    daily_req = round(abs(fleet["total_gap_kes"]) / max(days_remaining, 1)) if days_remaining > 0 else 0
+
+    # Sorted behind stores with momentum
     def _store_line(c):
-        return (f"  {c['store']} ({c.get('country','?')}): "
-                f"MTD KES {c.get('mtd_net',0):,.0f} vs req KES {c.get('mtd_req',0):,.0f} "
-                f"({c.get('gap_pct',0):+.1f}%%), MoM {c.get('mom_pct') or 0:+.1f}%%, "
-                f"issues={c.get('open_issues',0)}")
+        mom = c.get("mom_pct")
+        mom_str = f"{mom:+.1f}%% MoM" if mom is not None else "MoM n/a"
+        trend = "WORSENING" if (mom is not None and mom < -5) else \
+                "IMPROVING" if (mom is not None and mom > 5) else "FLAT"
+        return (
+            f"  [{trend}] {c['store']} ({c.get('country','?')}): "
+            f"MTD KES {c.get('mtd_net',0):,.0f} vs req KES {c.get('mtd_req',0):,.0f} "
+            f"(gap {c.get('gap_pct',0):+.1f}%% = KES {c.get('gap_kes',0):,.0f}) · "
+            f"{mom_str} · issues={c.get('open_issues',0)}"
+        )
 
-    behind_rows = "\n".join(_store_line(c) for c in behind_stores[:8])
-    at_risk_rows = "\n".join(_store_line(c) for c in at_risk_stores[:5])
-    ahead_rows = "\n".join(_store_line(c) for c in ahead_stores[:4])
+    behind_rows   = "\n".join(_store_line(c) for c in behind_stores[:8])
+    at_risk_rows  = "\n".join(_store_line(c) for c in at_risk_stores[:5])
+    ahead_rows    = "\n".join(
+        f"  {c['store']} ({c.get('country','?')}): "
+        f"+{c.get('gap_pct',0):.1f}%% ahead · MTD KES {c.get('mtd_net',0):,.0f}"
+        for c in sorted(ahead_stores, key=lambda c: -(c.get("gap_pct") or 0))[:4]
+    )
+
+    # Worst behind store by KES gap
+    worst = min(behind_stores, key=lambda c: c.get("gap_pct") or 0, default=None)
+    total_kes_gap = abs(fleet["total_gap_kes"])
 
     context = (
-        f"RETAIL FLEET INTELLIGENCE — {date.today().isoformat()}\n\n"
+        f"RETAIL FLEET INTELLIGENCE — {today.isoformat()}\n"
+        f"Month position: day {day_of_month}/{days_in_month} ({month_pct}%% through, {days_remaining}d remaining — {month_phase})\n\n"
         f"FLEET STATUS (MTD vs prorated growth-path target):\n"
         f"  Total stores: {fleet['total_stores']}\n"
         f"  Behind path: {fleet['behind']} stores "
-        f"({'CRITICAL — majority behind' if fleet['behind'] > fleet['total_stores'] // 2 else 'HIGH — >3 behind' if fleet['behind'] > 3 else 'manageable'})\n"
-        f"  At risk:     {fleet['at_risk']} stores\n"
-        f"  Ahead:       {fleet['ahead']} stores\n"
-        f"  Fleet MTD: KES {fleet['total_mtd']:,.0f} vs target KES {fleet['total_mtd_req']:,.0f} "
-        f"(gap: KES {fleet['total_gap_kes']:,.0f} / {fleet['total_gap_pct']:+.1f}%%)\n"
+        f"({'CRITICAL — majority of fleet behind' if fleet['behind'] > fleet['total_stores'] // 2 else 'HIGH — >3 behind' if fleet['behind'] > 3 else 'manageable'})\n"
+        f"  At risk (within -15%%): {fleet['at_risk']} stores\n"
+        f"  Ahead: {fleet['ahead']} stores\n"
+        f"  Fleet MTD: KES {fleet['total_mtd']:,.0f} vs target KES {fleet['total_mtd_req']:,.0f}\n"
+        f"  Fleet gap: KES {fleet['total_gap_kes']:,.0f} ({fleet['total_gap_pct']:+.1f}%%)\n"
+        f"  To close this gap in {days_remaining}d remaining: fleet needs KES {daily_req:,.0f}/day extra\n"
         f"  Open issues across fleet: {fleet['open_issues']}\n\n"
-        f"BEHIND STORES:\n{behind_rows or '  None'}\n\n"
+        f"BY COUNTRY:\n{country_rows}\n\n"
+        f"BEHIND STORES (sorted by gap %, with momentum):\n{behind_rows or '  None'}\n\n"
         f"AT-RISK STORES:\n{at_risk_rows or '  None'}\n\n"
-        f"AHEAD STORES:\n{ahead_rows or '  None'}\n\n"
-        f"Analyse the retail fleet performance vs monthly growth path. "
-        f"Identify: which stores are at highest risk of missing the month "
-        f"(gap size × days remaining × trend), any country-level pattern "
-        f"(e.g. all Kenya stores behind), and which stores are pulling the fleet forward. "
-        f"Propose: which 2-3 stores need immediate management attention and what specific "
-        f"intervention — do NOT give generic advice. Be precise about KES gaps and store names."
+        f"AHEAD STORES (pulling the fleet forward):\n{ahead_rows or '  None'}\n\n"
+        f"Apply the MANDATORY THINKING SEQUENCE. "
+        f"Lead with the country-level insight: is this a Kenya problem, Uganda problem, or fleet-wide? "
+        f"Name the single store whose gap has the most momentum risk "
+        f"(large KES gap + worsening MoM trend + {days_remaining}d left). "
+        f"What specific intervention — not 'a management visit' but exactly what action, by whom, by when — "
+        f"would move the needle most on the fleet gap this week? "
+        f"Note: {month_phase} — urgency framing should reflect {days_remaining} days remaining."
     )
     return du.call_llm_structured(api_key, context, "retail", "fleet_overview", conn)
 

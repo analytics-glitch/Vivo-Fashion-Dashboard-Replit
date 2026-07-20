@@ -117,6 +117,32 @@ export function DeskCoachingPanel({ coaching, desk }) {
 
       {expanded && (
         <>
+          {/* Watchlist — the 2 things to check in the next 24-48h */}
+          {structured?.watchlist?.length > 0 && (
+            <div style={{
+              background: "#f8fafc", border: "1px solid #e2e8f0",
+              borderLeft: "3px solid #6366f1", borderRadius: 6,
+              padding: "10px 14px", marginBottom: 12,
+            }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "#6366f1", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>
+                Watchlist — check within 24-48h
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                {structured.watchlist.map((w, i) => (
+                  <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: "#6366f1", minWidth: 14 }}>{i + 1}.</span>
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontSize: 12, color: "#1e293b" }}>{w.item}</span>
+                      {w.check_by && (
+                        <span style={{ fontSize: 10, color: "#94a3b8", marginLeft: 8 }}>by {w.check_by}</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Risks + Opportunities — two-column grid */}
           {(risks.length > 0 || opportunities.length > 0) && (
             <div style={{
@@ -137,19 +163,35 @@ export function DeskCoachingPanel({ coaching, desk }) {
                         borderLeft: `3px solid ${SEV_BORDER[r.severity] || "#9ca3af"}`,
                         borderRadius: 6, padding: "8px 10px",
                       }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, flexWrap: "wrap" }}>
                           <span style={{
                             fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em",
-                            color: SEV_BORDER[r.severity] || "#6b7280",
+                            color: SEV_BORDER[r.severity] || "#6b7280", flexShrink: 0,
                           }}>{r.severity}</span>
-                          <span style={{ fontSize: 12, fontWeight: 600, color: "#111827" }}>{r.title}</span>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: "#111827", flex: 1 }}>{r.title}</span>
+                          {r.kes_at_risk != null && (
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, color: "#dc2626",
+                              background: "#fef2f2", borderRadius: 4, padding: "1px 6px", whiteSpace: "nowrap",
+                            }}>
+                              KES {Number(r.kes_at_risk).toLocaleString()} at risk
+                            </span>
+                          )}
                         </div>
                         {r.evidence && (
                           <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 4, lineHeight: 1.4 }}>{r.evidence}</div>
                         )}
-                        {r.action && (
-                          <div style={{ fontSize: 11, color: "#1a5c38", fontWeight: 500 }}>Action: {r.action}</div>
-                        )}
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 4 }}>
+                          {r.action && (
+                            <div style={{ fontSize: 11, color: "#1a5c38", fontWeight: 500 }}>Action: {r.action}</div>
+                          )}
+                          {r.owner && (
+                            <span style={{
+                              fontSize: 10, color: "#6b7280", background: "#f3f4f6",
+                              borderRadius: 4, padding: "1px 6px", whiteSpace: "nowrap",
+                            }}>{r.owner}</span>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -167,13 +209,31 @@ export function DeskCoachingPanel({ coaching, desk }) {
                         background: "#f0fdf4", border: "1px solid #bbf7d0",
                         borderLeft: "3px solid #1a5c38", borderRadius: 6, padding: "8px 10px",
                       }}>
-                        <div style={{ fontSize: 12, fontWeight: 600, color: "#111827", marginBottom: 3 }}>{o.title}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: "#111827", flex: 1 }}>{o.title}</span>
+                          {o.kes_upside != null && (
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, color: "#1a5c38",
+                              background: "#dcfce7", borderRadius: 4, padding: "1px 6px", whiteSpace: "nowrap",
+                            }}>
+                              +KES {Number(o.kes_upside).toLocaleString()} upside
+                            </span>
+                          )}
+                        </div>
                         {o.evidence && (
                           <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 4, lineHeight: 1.4 }}>{o.evidence}</div>
                         )}
-                        {o.action && (
-                          <div style={{ fontSize: 11, color: "#1a5c38", fontWeight: 500 }}>Action: {o.action}</div>
-                        )}
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 4 }}>
+                          {o.action && (
+                            <div style={{ fontSize: 11, color: "#1a5c38", fontWeight: 500 }}>Action: {o.action}</div>
+                          )}
+                          {o.owner && (
+                            <span style={{
+                              fontSize: 10, color: "#6b7280", background: "#f3f4f6",
+                              borderRadius: 4, padding: "1px 6px", whiteSpace: "nowrap",
+                            }}>{o.owner}</span>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -191,7 +251,7 @@ export function DeskCoachingPanel({ coaching, desk }) {
               <div style={{ fontSize: 10, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>
                 Proposals
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {proposals.map((p, i) => (
                   <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
                     <span style={{
@@ -200,10 +260,18 @@ export function DeskCoachingPanel({ coaching, desk }) {
                       minWidth: 40,
                     }}>{p.priority}</span>
                     <div style={{ flex: 1 }}>
-                      <span style={{ fontSize: 12, color: "#111827" }}>{p.text}</span>
-                      {p.timeframe && (
-                        <span style={{ fontSize: 10, color: "#9ca3af", marginLeft: 8 }}>{p.timeframe}</span>
-                      )}
+                      <div style={{ fontSize: 12, color: "#111827", lineHeight: 1.4 }}>{p.text}</div>
+                      <div style={{ display: "flex", gap: 8, marginTop: 3, flexWrap: "wrap" }}>
+                        {p.timeframe && (
+                          <span style={{ fontSize: 10, color: "#9ca3af" }}>{p.timeframe}</span>
+                        )}
+                        {p.owner && (
+                          <span style={{
+                            fontSize: 10, color: "#6b7280", background: "#f3f4f6",
+                            borderRadius: 4, padding: "0px 5px",
+                          }}>{p.owner}</span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -213,7 +281,7 @@ export function DeskCoachingPanel({ coaching, desk }) {
 
           {/* Summary / plain note */}
           {coaching.note && !isPlaceholder && (
-            <div style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.6, fontStyle: "italic" }}>
+            <div style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.6, fontStyle: "italic", marginTop: 4 }}>
               {coaching.note}
             </div>
           )}

@@ -96,35 +96,79 @@ def _db_exec(A, sql, params=None):
 
 
 def _run_coaching(api_key: str, kpi: dict, branches: list, conn) -> dict:
+    from datetime import date as _date
+    today = _date.today()
+    day_of_month = today.day
+    days_in_month = 28 if today.month in (2,) else 30 if today.month in (4,6,9,11) else 31
+    month_pct = round(day_of_month / days_in_month * 100)
+    month_phase = "early month — gaps are still recoverable" if day_of_month <= 10 else \
+                  "mid-month — trajectory is now largely locked in" if day_of_month <= 20 else \
+                  "end of month — every gap is now permanent"
+
     branches_sorted = sorted(branches, key=lambda b: b.get("attendance_rate") or 100)
-    low_att = [b for b in branches if (b.get("attendance_rate") or 100) < 75]
-    low_hrs = [b for b in branches if (b.get("avg_hours") or 8) < 5]
+    low_att    = [b for b in branches if (b.get("attendance_rate") or 100) < 75]
+    watch_att  = [b for b in branches if 75 <= (b.get("attendance_rate") or 100) < 85]
+    low_hrs    = [b for b in branches if (b.get("avg_hours") or 8) < 5]
+    zero_staff = [b for b in branches if (b.get("headcount") or 0) == 0]
+
+    # Revenue-per-staff-hour analysis
+    rph_values = [b.get("rev_per_staff_hr") for b in branches
+                  if b.get("rev_per_staff_hr") and b.get("rev_per_staff_hr") > 0]
+    rph_median = sorted(rph_values)[len(rph_values)//2] if rph_values else None
+    efficiency_crisis = [b for b in branches
+                         if rph_median and (b.get("rev_per_staff_hr") or 0) > 0
+                         and b.get("rev_per_staff_hr") < rph_median * 0.5]
+
+    # Country-level aggregation
+    by_country: dict = {}
+    for b in branches:
+        c = b.get("branch_country", "Unknown")
+        by_country.setdefault(c, {"att_sum": 0, "n": 0, "rev": 0})
+        by_country[c]["att_sum"] += (b.get("attendance_rate") or 0)
+        by_country[c]["n"] += 1
+        by_country[c]["rev"] += (b.get("net_sales_l28d") or 0)
+    country_rows = "\n".join(
+        f"  {c}: avg attendance {round(v['att_sum']/v['n'],1)}%%, "
+        f"L28D revenue KES {v['rev']:,.0f} across {v['n']} branches"
+        for c, v in sorted(by_country.items())
+    )
+
     branch_rows = "\n".join(
-        f"  - {b.get('branch_name')} ({b.get('branch_country','')}): "
-        f"headcount={b.get('headcount')}, avg_hours/day={b.get('avg_hours')}, "
+        f"  {'[CRITICAL]' if (b.get('attendance_rate') or 100) < 75 else '[WATCH]' if (b.get('attendance_rate') or 100) < 85 else '[OK]'} "
+        f"{b.get('branch_name')} ({b.get('branch_country','')}): "
         f"attendance={b.get('attendance_rate')}%, "
-        f"rev_L28D=KES {b.get('net_sales_l28d',0):,.0f}, "
-        f"rev/staff-hr={b.get('rev_per_staff_hr') or 'n/a'}"
+        f"headcount={b.get('headcount')}, avg_hrs/day={b.get('avg_hours')}, "
+        f"L28D rev=KES {b.get('net_sales_l28d',0):,.0f}, "
+        f"rev/staff-hr=KES {b.get('rev_per_staff_hr') or 'n/a'}"
+        f"{' ← EFFICIENCY CRISIS (<50% of fleet median)' if rph_median and (b.get('rev_per_staff_hr') or 0) > 0 and b.get('rev_per_staff_hr') < rph_median * 0.5 else ''}"
         for b in branches_sorted[:12]
     )
     context = (
-        f"WORKFORCE DESK INTELLIGENCE — {date.today().isoformat()}\n"
-        f"Data window: last 28 days\n\n"
+        f"WORKFORCE DESK INTELLIGENCE — {today.isoformat()}\n"
+        f"Data window: last 28 days | Today: day {day_of_month}/{days_in_month} ({month_pct}% through month — {month_phase})\n\n"
         f"FLEET KPIs:\n"
         f"  Branches tracked: {kpi.get('branches_tracked')}\n"
+        f"  Total staff tracked: {kpi.get('total_staff_tracked')}\n"
         f"  Fleet attendance rate: {kpi.get('fleet_attendance_rate')}% "
-        f"(threshold: 85% healthy, <75% critical)\n"
+        f"(85%+ healthy · 75-85% watch · <75% critical)\n"
         f"  Avg hours per staff per day: {kpi.get('avg_hours_per_day')} "
-        f"(normal retail = 7–9h)\n"
-        f"  Total staff tracked: {kpi.get('total_staff_tracked')}\n\n"
-        f"BRANCHES (sorted by attendance, worst first):\n{branch_rows or '  No branch data'}\n\n"
-        f"FLAGS:\n"
-        f"  Below 75%% attendance: {len(low_att)} branches — {', '.join(b['branch_name'] for b in low_att[:5])}\n"
-        f"  Below 5h avg/day: {len(low_hrs)} branches — {', '.join(b['branch_name'] for b in low_hrs[:5])}\n\n"
-        f"DATA LIMITATIONS: No rota/schedule data. Rev/staff-hr is approximate (fuzzy name matching).\n\n"
-        f"Analyse this workforce data. Identify attendance risks, staffing efficiency gaps, "
-        f"and revenue-per-hour outliers (both high potential and underperformers). "
-        f"Propose concrete actions for leadership."
+        f"(normal retail = 7-9h)\n"
+        f"  Fleet revenue/staff-hour median: KES {rph_median:,.0f} per hr\n"
+        f"  Branches in efficiency crisis (<50%% of fleet median): {len(efficiency_crisis)}\n"
+        f"  Branches with ZERO headcount data (possible data gap): {len(zero_staff)}\n\n"
+        f"BY COUNTRY:\n{country_rows or '  No country breakdown'}\n\n"
+        f"BRANCHES (sorted by attendance, worst → best):\n{branch_rows or '  No branch data'}\n\n"
+        f"ATTENDANCE FLAGS:\n"
+        f"  Critical (<75%%): {len(low_att)} branches: {', '.join(b['branch_name'] for b in low_att[:5]) or 'none'}\n"
+        f"  Watch (75-85%%): {len(watch_att)} branches: {', '.join(b['branch_name'] for b in watch_att[:5]) or 'none'}\n"
+        f"  Below 5h avg/day: {len(low_hrs)} branches: {', '.join(b['branch_name'] for b in low_hrs[:5]) or 'none'}\n"
+        f"  Efficiency crisis (<50%% fleet median RPH): {', '.join(b['branch_name'] for b in efficiency_crisis[:4]) or 'none'}\n\n"
+        f"DATA NOTE: No schedule/rota data. Rev/staff-hr uses fuzzy name matching — treat as directional.\n\n"
+        f"Analyse this workforce data through the MANDATORY THINKING SEQUENCE. "
+        f"Identify the attendance crisis most likely to hurt sales this month given we are {month_phase}. "
+        f"Surface the revenue-per-staff-hour outliers — both the worst-performing branches "
+        f"(where the same headcount could generate much more revenue) and the best "
+        f"(what are they doing right?). Estimate KES at risk from attendance gaps."
     )
     return du.call_llm_structured(api_key, context, DESK, "overview", conn)
 

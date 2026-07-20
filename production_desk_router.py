@@ -118,45 +118,75 @@ def _db_exec(A, sql, params=None):
 
 def _run_coaching(api_key: str, kpi: dict, overdue: list, upcoming: list,
                    by_buyer: list, gaps: list, conn) -> dict:
-    overdue_sorted = sorted(overdue, key=lambda r: r.get("days_overdue") or 0, reverse=True)
+    overdue_sorted  = sorted(overdue, key=lambda r: r.get("days_overdue") or 0, reverse=True)
+    overdue_count   = kpi.get("overdue_orders") or len(overdue)
+    overdue_units   = kpi.get("overdue_units") or 0
+    active_orders   = kpi.get("active_orders") or 0
+    due_next_30d    = kpi.get("due_next_30d") or 0
+
+    # Stage distribution insight from overdue
+    stage_counts: dict = {}
+    for r in overdue:
+        s = r.get("stage", "unknown")
+        stage_counts[s] = stage_counts.get(s, 0) + 1
+    stage_rows = " · ".join(f"{s}: {n}" for s, n in sorted(stage_counts.items(), key=lambda x: -x[1]))
+
+    # Delivery risk: upcoming orders whose stage is still early
+    risky_upcoming = [r for r in (upcoming or [])
+                      if r.get("stage") in ("waiting_sewing", "sewing", "draft")]
+    due_14d = [r for r in (upcoming or [])
+               if str(r.get("due_date",""))[:10] <= (date.today() + __import__('datetime').timedelta(14)).isoformat()]
+
+    # Buyer accountability heat map
+    buyer_sorted = sorted(by_buyer or [], key=lambda b: b.get("overdue_units") or 0, reverse=True)
+    worst_buyer = buyer_sorted[0] if buyer_sorted else None
+    buyer_rows = "\n".join(
+        f"  {'[CRITICAL]' if (b.get('overdue_orders') or 0) > 5 else '[HIGH]' if (b.get('overdue_orders') or 0) > 2 else '[OK]'} "
+        f"{b.get('buyer','?')}: {b.get('total_orders',0)} total · "
+        f"{b.get('overdue_orders',0)} overdue ({b.get('overdue_units',0):,} units) · "
+        f"{b.get('due_next_30d',0)} due 30d"
+        f"{' ← HIGHEST ACCOUNTABILITY RISK' if worst_buyer and b.get('buyer') == worst_buyer.get('buyer') else ''}"
+        for b in buyer_sorted[:6]
+    )
     ov_rows = "\n".join(
-        f"  - {r.get('style_name') or r.get('order_ref','?')}: "
-        f"{r.get('days_overdue')} days overdue, {r.get('order_qty',0)} units, "
-        f"buyer={r.get('buyer','?')}, stage={r.get('stage','?')}"
+        f"  {'[60d+ CRITICAL]' if (r.get('days_overdue') or 0) > 60 else '[30d+ HIGH]' if (r.get('days_overdue') or 0) > 30 else '[WATCH]'} "
+        f"{r.get('style_name') or r.get('order_ref','?')}: "
+        f"{r.get('days_overdue')}d overdue · {r.get('order_qty',0):,} units · "
+        f"buyer={r.get('buyer','?')} · stage={r.get('stage','?')}"
         for r in overdue_sorted[:8]
     )
     upcoming_rows = "\n".join(
-        f"  - {r.get('style_name') or r.get('order_ref','?')}: "
-        f"due {str(r.get('due_date','?'))[:10]}, {r.get('order_qty',0)} units, "
-        f"buyer={r.get('buyer','?')}"
-        for r in (upcoming or [])[:6]
+        f"  {r.get('style_name') or r.get('order_ref','?')}: "
+        f"due {str(r.get('due_date','?'))[:10]} · {r.get('order_qty',0):,} units · "
+        f"buyer={r.get('buyer','?')} · stage={r.get('stage','?')}"
+        f"{' ← AT RISK (still in early stage with <14d to due)' if r in risky_upcoming and r in due_14d else ''}"
+        for r in (upcoming or [])[:8]
     )
-    buyer_rows = "\n".join(
-        f"  {b.get('buyer','?')}: {b.get('total_orders',0)} orders, "
-        f"{b.get('overdue_orders',0)} overdue, {b.get('overdue_units',0)} overdue units, "
-        f"{b.get('due_next_30d',0)} due within 30d"
-        for b in (by_buyer or [])[:6]
-    )
-    overdue_count = kpi.get("overdue_orders") or len(overdue)
-    overdue_units = kpi.get("overdue_units") or 0
     top_gaps = [g["gap_name"].replace("_", " ") for g in gaps[:3]]
     context = (
         f"PRODUCTION DESK INTELLIGENCE — {date.today().isoformat()}\n\n"
-        f"PIPELINE KPIs (18-month window):\n"
+        f"PIPELINE KPIs:\n"
         f"  Total production orders: {kpi.get('total_orders',0)}\n"
-        f"  Active (future due date): {kpi.get('active_orders',0)}\n"
+        f"  Active orders: {active_orders}\n"
         f"  Overdue: {overdue_count} orders / {overdue_units:,} units "
-        f"({'CRITICAL — immediate review' if overdue_count > 20 else 'HIGH — >5 overdue' if overdue_count > 5 else 'normal'})\n"
-        f"  Due within next 30 days: {kpi.get('due_next_30d',0)} orders\n"
+        f"({'CRITICAL' if overdue_count > 20 else 'HIGH' if overdue_count > 5 else 'normal'})\n"
+        f"  Due within 30d: {due_next_30d} orders ({len(due_14d)} due within 14d — URGENT)\n"
+        f"  Orders at delivery risk (early stage + due <14d): {len([r for r in risky_upcoming if r in due_14d])}\n"
         f"  Buyers tracked: {kpi.get('buyers',0)}\n\n"
-        f"OVERDUE ORDERS (worst first):\n{ov_rows or '  None overdue — pipeline on schedule'}\n\n"
-        f"UPCOMING DUE (next 30d):\n{upcoming_rows or '  No orders due within 30 days'}\n\n"
-        f"BY BUYER:\n{buyer_rows or '  No buyer breakdown available'}\n\n"
+        f"OVERDUE STAGE BREAKDOWN: {stage_rows or 'n/a'}\n\n"
+        f"OVERDUE ORDERS (worst first by lateness):\n{ov_rows or '  Pipeline on schedule'}\n\n"
+        f"UPCOMING DUE (next 30d):\n{upcoming_rows or '  No orders due'}\n\n"
+        f"BUYER ACCOUNTABILITY (ranked by overdue units):\n{buyer_rows or '  No buyer data'}\n"
+        f"  Worst accountability: {worst_buyer.get('buyer','?') if worst_buyer else 'n/a'} — "
+        f"{(worst_buyer.get('overdue_orders') or 0) if worst_buyer else 0} overdue orders, "
+        f"{(worst_buyer.get('overdue_units') or 0) if worst_buyer else 0:,} units\n\n"
         f"KEY DATA GAPS: {', '.join(top_gaps) if top_gaps else 'None'}\n\n"
-        f"Analyse production pipeline risk. Identify: orders at highest lateness risk (aging + units), "
-        f"buyer accountability issues (who has the most overdue by unit volume), "
-        f"capacity crunch risk in the next 30 days. "
-        f"Propose escalation actions with specific order refs, buyers, and deadlines."
+        f"Apply the MANDATORY THINKING SEQUENCE. "
+        f"Lead with the buyer who poses the biggest accountability risk — name them directly. "
+        f"Surface the delivery commitments at greatest risk in the next 14 days "
+        f"(stage vs time remaining). "
+        f"Flag if any overdue order has been stalled in a specific stage for an unusually long time — "
+        f"this indicates a process bottleneck, not just a buyer issue. Propose specific escalation."
     )
     return du.call_llm_structured(api_key, context, DESK, "overview", conn)
 

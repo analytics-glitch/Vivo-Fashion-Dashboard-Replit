@@ -151,38 +151,56 @@ def _db_exec(A, sql, params=None):
 
 
 def _run_coaching(api_key: str, kpi: dict, top_risk: list, conn) -> dict:
-    dead_stock_value = kpi.get("dead_stock_value") or 0
-    zero_sales = kpi.get("zero_sales_28d") or 0
+    dead_stock_value  = kpi.get("dead_stock_value") or 0
+    zero_sales        = kpi.get("zero_sales_28d") or 0
     styles_with_stock = kpi.get("styles_with_stock") or 0
+    avg_woc           = kpi.get("avg_woc") or 0
+    flagged_ret       = kpi.get("flagged_retirement") or 0
     zero_pct = round(zero_sales / styles_with_stock * 100, 1) if styles_with_stock else 0
 
-    # Split risk board into high/medium
-    critical_risk = [r for r in top_risk if r.get("woc", 0) > 26 and r.get("vel_decline_pct", 0) > 40]
-    high_risk     = [r for r in top_risk if r not in critical_risk and r.get("woc", 0) > 20]
+    # Tier analysis from risk board
+    critical_risk = [r for r in top_risk if r.get("woc", 0) > 26 and (r.get("vel_decline_pct") or 0) > 40]
+    excess_risk   = [r for r in top_risk if r.get("woc", 0) > 20]
+    total_capital_at_risk = sum(r.get("stock_value") or 0 for r in excess_risk)
+    top5_capital_at_risk  = sum(r.get("stock_value") or 0 for r in top_risk[:5])
+
+    # Velocity decay severity
+    severe_decay = [r for r in top_risk if (r.get("vel_decline_pct") or 0) > 50]
+    moderate_decay = [r for r in top_risk if 20 < (r.get("vel_decline_pct") or 0) <= 50]
 
     risk_rows = "\n".join(
-        f"  {'[CRITICAL]' if r in critical_risk else '[HIGH]'} {r.get('style_name','?')}: "
-        f"WOC={r.get('woc')}w, velocity decline={r.get('vel_decline_pct')}%%, "
-        f"SOH={r.get('soh')} units, stock value KES {r.get('stock_value',0):,.0f}, "
-        f"last sold: {str(r.get('last_sale_date','?'))[:10]}"
+        f"  {'[CRITICAL]' if r in critical_risk else '[HIGH-WOC]' if r.get('woc',0) > 20 else '[DECAY]'} "
+        f"{r.get('style_name','?')}: "
+        f"WOC={r.get('woc')}w · velocity decline={r.get('vel_decline_pct')}%% · "
+        f"SOH={r.get('soh',0)} units · capital KES {r.get('stock_value',0):,.0f} · "
+        f"last sold {str(r.get('last_sale_date','?'))[:10]}"
         for r in top_risk[:12]
     )
     context = (
         f"PRODUCT DESK INTELLIGENCE — {date.today().isoformat()}\n\n"
-        f"FLEET KPIs:\n"
+        f"PORTFOLIO KPIs:\n"
         f"  Styles with active stock: {styles_with_stock:,}\n"
-        f"  Zero sales in last 28d: {zero_sales:,} ({zero_pct}%% of portfolio — "
-        f"{'CRITICAL — >40%% dead' if zero_pct > 40 else 'HIGH — >25%% dead' if zero_pct > 25 else 'normal'})\n"
-        f"  Fleet avg weeks-of-cover: {kpi.get('avg_woc')}w\n"
-        f"  Dead stock value (0 sales 90d+): KES {dead_stock_value:,.0f}\n"
-        f"  Styles flagged for retirement: {kpi.get('flagged_retirement', 0)}\n\n"
-        f"MARKDOWN/EXCESS RISK BOARD (sorted by risk score):\n"
+        f"  Zero sales last 28d: {zero_sales:,} styles "
+        f"({zero_pct}%% of portfolio — "
+        f"{'CRITICAL: >40%% dead' if zero_pct > 40 else 'HIGH: >25%% dead' if zero_pct > 25 else 'normal'})\n"
+        f"  Fleet avg weeks-of-cover: {avg_woc}w "
+        f"({'EXCESS — fleet is overstocked' if avg_woc > 20 else 'WATCH — high cover' if avg_woc > 12 else 'healthy'})\n"
+        f"  Dead stock (0 sales 90d+): KES {dead_stock_value:,.0f} locked capital\n"
+        f"  Styles flagged for retirement: {flagged_ret}\n\n"
+        f"CAPITAL AT RISK ANALYSIS:\n"
+        f"  Styles with WOC >20w: {len(excess_risk)} styles · KES {total_capital_at_risk:,.0f} tied up\n"
+        f"  Top 5 risk styles alone: KES {top5_capital_at_risk:,.0f}\n"
+        f"  Severe velocity decay (>50%% decline): {len(severe_decay)} styles\n"
+        f"  Moderate velocity decay (20-50%% decline): {len(moderate_decay)} styles\n\n"
+        f"MARKDOWN/EXCESS RISK BOARD (worst risk first):\n"
         f"{risk_rows or '  No high-risk styles detected'}\n\n"
-        f"Analyse product portfolio health. Identify: styles at highest markdown risk "
-        f"(long WOC + declining velocity + high stock value), portfolio dead-stock concentration, "
-        f"and velocity decay patterns by category if inferable. "
-        f"Propose specific actions: which styles to promote/discount/IBT, "
-        f"what review the buying team should conduct, and how much capital is at risk."
+        f"THRESHOLDS: WOC <4w = stockout risk · 4-12w = healthy · 12-20w = watch · >20w = excess/markdown required\n\n"
+        f"Apply the MANDATORY THINKING SEQUENCE. "
+        f"Lead with the styles where capital is most at risk — name them, state their WOC and KES value. "
+        f"Identify the velocity decay pattern: is it isolated styles or a broader portfolio trend? "
+        f"Propose specific markdown or IBT actions for the top 3 styles by capital at risk — "
+        f"give a specific discount recommendation or IBT target store where applicable. "
+        f"Estimate what KES of capital could be freed in 30 days with focused action."
     )
     return du.call_llm_structured(api_key, context, DESK, "overview", conn)
 

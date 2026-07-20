@@ -115,44 +115,77 @@ def _db_exec(A, sql, params=None):
 
 def _run_coaching(api_key: str, kpi: dict, cohort: list, bands: list,
                    by_country: list, loyalty: dict, conn) -> dict:
-    churn_rate = kpi.get("churn_rate_90d") or kpi.get("churned_90d", 0)
-    repeat_rate = kpi.get("repeat_rate", 0)
+    repeat_rate = kpi.get("repeat_rate", 0) or 0
+    churned     = kpi.get("churned_90d", 0) or 0
+    reactivated = kpi.get("reactivated_30d", 0) or 0
+    reactivation_rate = round(reactivated / churned * 100, 1) if churned > 0 else 0
+
+    # Cohort retention trend: compare oldest vs newest cohorts
+    cohort_sorted = sorted(cohort or [], key=lambda c: c.get("cohort_month", ""))
+    cohort_oldest = cohort_sorted[:2]
+    cohort_newest = cohort_sorted[-2:]
+    oldest_ret  = sum(c.get("repeat_rate_pct") or 0 for c in cohort_oldest) / max(len(cohort_oldest), 1)
+    newest_ret  = sum(c.get("repeat_rate_pct") or 0 for c in cohort_newest) / max(len(cohort_newest), 1)
+    ret_trend   = "IMPROVING" if newest_ret > oldest_ret + 2 else \
+                  "DECLINING" if oldest_ret > newest_ret + 2 else "FLAT"
+
     cohort_rows = "\n".join(
-        f"  {c.get('cohort_month', '?')}: {c.get('customers_acquired')} acquired, "
-        f"{c.get('repeat_rate_pct')}% repeat, avg CLV KES {c.get('avg_clv', 0):,.0f}"
-        for c in (cohort or [])[:6]
+        f"  {c.get('cohort_month','?')}: {c.get('customers_acquired',0):,} acquired · "
+        f"repeat rate {c.get('repeat_rate_pct')}%% · "
+        f"avg CLV KES {c.get('avg_clv',0):,.0f}"
+        for c in (cohort or [])[-6:]
     )
+    # CLV band analysis
+    total_customers = sum(b.get("customer_count") or 0 for b in (bands or []))
     band_rows = "\n".join(
-        f"  {b.get('band', '?')}: {b.get('customer_count')} customers "
-        f"({b.get('pct_of_total')}% of base), avg CLV KES {b.get('avg_clv', 0):,.0f}"
+        f"  {b.get('band','?')}: {b.get('customer_count',0):,} customers "
+        f"({b.get('pct_of_total')}%% of base) · avg CLV KES {b.get('avg_clv',0):,.0f} · "
+        f"total CLV KES {(b.get('customer_count') or 0) * (b.get('avg_clv') or 0):,.0f}"
         for b in (bands or [])
     )
+    # Top-decile KES concentration (highest CLV band)
+    top_band = max((bands or []), key=lambda b: b.get("avg_clv") or 0, default=None)
+    top_band_kes = ((top_band.get("customer_count") or 0) * (top_band.get("avg_clv") or 0)) if top_band else 0
+
     country_rows = "\n".join(
-        f"  {c.get('country', '?')}: {c.get('customers')} customers, "
-        f"repeat rate {c.get('repeat_rate')}%, avg CLV KES {c.get('avg_clv', 0):,.0f}"
+        f"  {c.get('country','?')}: {c.get('customers',0):,} customers · "
+        f"repeat {c.get('repeat_rate')}%% · avg CLV KES {c.get('avg_clv',0):,.0f}"
         for c in (by_country or [])
     )
+    loyalty_eng_rate = round(
+        (loyalty.get("active_30d") or 0) / (loyalty.get("total_members") or 1) * 100, 1
+    )
+    loyalty_eng_status = "HEALTHY (>30%%)" if loyalty_eng_rate > 30 else \
+                         "WATCH (15-30%%)" if loyalty_eng_rate > 15 else "RISK (<15%%)"
     context = (
         f"CUSTOMER DESK INTELLIGENCE — {date.today().isoformat()}\n\n"
-        f"FLEET KPIs (all-time base, 30d window for recency):\n"
-        f"  Total identified customers: {kpi.get('total_customers'):,}\n"
-        f"  Repeat rate (>=2 orders): {repeat_rate}% "
-        f"(industry benchmark: 25-40% healthy)\n"
-        f"  Avg CLV: KES {kpi.get('avg_clv', 0):,.0f} | Median CLV: KES {kpi.get('median_clv', 0):,.0f}\n"
-        f"  Churned (no purchase 90d+): {kpi.get('churned_90d', 0):,} customers\n"
-        f"  Reactivated last 30d: {kpi.get('reactivated_30d', 0):,}\n"
-        f"  New customers last 30d: {kpi.get('new_30d', 0):,}\n\n"
-        f"COHORT RETENTION (last 6 months):\n{cohort_rows or '  No cohort data'}\n\n"
-        f"CLV BANDS:\n{band_rows or '  No band data'}\n\n"
+        f"BASE KPIs (all-time identified customer base):\n"
+        f"  Total identified customers: {kpi.get('total_customers',0):,}\n"
+        f"  Repeat rate (>=2 orders): {repeat_rate}%% "
+        f"({'HEALTHY >30%%' if repeat_rate > 30 else 'WATCH 20-30%%' if repeat_rate > 20 else 'CRISIS <20%%'})\n"
+        f"  Avg CLV: KES {kpi.get('avg_clv',0):,.0f} · Median CLV: KES {kpi.get('median_clv',0):,.0f}\n"
+        f"  Churned (no purchase 90d+): {churned:,} customers\n"
+        f"  Reactivated last 30d: {reactivated:,} ({reactivation_rate}%% win-back rate)\n"
+        f"  New customers last 30d: {kpi.get('new_30d',0):,}\n\n"
+        f"COHORT RETENTION TREND: {ret_trend}\n"
+        f"  Oldest cohorts avg repeat rate: {oldest_ret:.1f}%%\n"
+        f"  Newest cohorts avg repeat rate: {newest_ret:.1f}%%\n"
+        f"  Direction: {'retention is IMPROVING — new acquisition quality is rising' if ret_trend=='IMPROVING' else 'retention is DECLINING — newer customers are lower quality or less engaged' if ret_trend=='DECLINING' else 'retention is FLAT — no improvement trend'}\n\n"
+        f"COHORT DETAIL (last 6 cohorts, most recent first):\n{cohort_rows or '  No cohort data'}\n\n"
+        f"CLV BANDS (wealth concentration):\n{band_rows or '  No band data'}\n"
+        f"  → Top CLV band total value: KES {top_band_kes:,.0f} "
+        f"({'HIGH concentration risk — if top band churns, revenue impact is severe' if top_band and (top_band.get('pct_of_total') or 0) < 15 else 'distributed base'})\n\n"
         f"BY COUNTRY:\n{country_rows or '  No country data'}\n\n"
         f"LOYALTY PROGRAMME:\n"
-        f"  Total members: {loyalty.get('total_members', 0):,} | "
-        f"Active last 30d: {loyalty.get('active_30d', 0):,} | "
-        f"New last 30d: {loyalty.get('new_30d', 0):,}\n\n"
-        f"Analyse customer health deeply. Identify retention risks (cohort decay, churn rate), "
-        f"CLV growth opportunities (upsell bands, reactivation), and loyalty programme gaps. "
-        f"Note: ~97%% churn rate is historical artifact of a largely one-time buyer dataset — "
-        f"focus on the direction of change in cohort retention rates."
+        f"  Total members: {loyalty.get('total_members',0):,} · "
+        f"Active 30d: {loyalty.get('active_30d',0):,} ({loyalty_eng_rate}%% engagement — {loyalty_eng_status}) · "
+        f"New 30d: {loyalty.get('new_30d',0):,}\n"
+        f"  Benchmark: 30%%+ engagement is healthy; enrolment growth >5%%/month is strong\n\n"
+        f"CONTEXT: The ~97%% raw churn rate reflects a largely historical one-time-buyer dataset — "
+        f"focus on the DIRECTION of cohort retention and the reactivation rate, not the absolute churn figure.\n\n"
+        f"Apply the MANDATORY THINKING SEQUENCE. Surface: the cohort trend signal (improving or decaying, "
+        f"and what this implies for revenue 6 months out), the CLV concentration risk "
+        f"(what happens if top-band customers churn?), and the most actionable reactivation opportunity."
     )
     return du.call_llm_structured(api_key, context, DESK, "overview", conn)
 

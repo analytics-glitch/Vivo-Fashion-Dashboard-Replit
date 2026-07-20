@@ -110,40 +110,77 @@ def _db_exec(A, sql, params=None):
 def _run_coaching(api_key: str, kpi: dict, overdue: list, gaps: list,
                    suppliers_raw: list, conn) -> dict:
     overdue_sorted = sorted(overdue, key=lambda r: r.get("days_overdue") or 0, reverse=True)
+    overdue_count  = kpi.get("overdue_pos") or len(overdue)
+    fill_rate      = kpi.get("receipt_fill_rate") or 0
+    open_value     = kpi.get("open_po_value") or 0
+    total_value    = kpi.get("total_value_kes") or 0
+
+    # Age-bucket analysis of overdue POs
+    age_buckets = {"0-7d": [], "8-14d": [], "15-30d": [], "30d+": []}
+    for r in overdue:
+        d = r.get("days_overdue") or 0
+        v = r.get("total_value") or 0
+        if d <= 7:   age_buckets["0-7d"].append(v)
+        elif d <= 14: age_buckets["8-14d"].append(v)
+        elif d <= 30: age_buckets["15-30d"].append(v)
+        else:         age_buckets["30d+"].append(v)
+    age_rows = "\n".join(
+        f"  {k}: {len(v)} POs · KES {sum(v):,.0f} at risk"
+        for k, v in age_buckets.items() if v
+    )
+
+    # Supplier concentration
+    sup_sorted = sorted(suppliers_raw or [], key=lambda s: s.get("total_value") or 0, reverse=True)
+    top_sup = sup_sorted[0] if sup_sorted else None
+    top_sup_pct = round(
+        (top_sup.get("total_value") or 0) / max(open_value, 1) * 100, 1
+    ) if top_sup and open_value else 0
+    avg_overdue_days = round(
+        sum(r.get("days_overdue") or 0 for r in overdue) / max(len(overdue), 1), 1
+    ) if overdue else 0
+
     ov_rows = "\n".join(
-        f"  - {r.get('po_name','?')} / {r.get('supplier','?')}: "
-        f"{r.get('days_overdue')} days overdue, value KES {r.get('total_value',0):,.0f}, "
-        f"fabric: {r.get('fabric_name','?')}, status: {r.get('status','?')}"
+        f"  {'[30d+ CRITICAL]' if (r.get('days_overdue') or 0) > 30 else '[HIGH]' if (r.get('days_overdue') or 0) > 14 else '[WATCH]'} "
+        f"{r.get('po_name','?')} — {r.get('supplier','?')}: "
+        f"{r.get('days_overdue')}d overdue · KES {r.get('total_value',0):,.0f} · "
+        f"fabric: {r.get('fabric_name','?')} · status: {r.get('status','?')}"
         for r in overdue_sorted[:8]
     )
     supplier_rows = "\n".join(
-        f"  - {s.get('supplier','?')}: {s.get('total_pos',0)} POs, "
-        f"KES {s.get('total_value',0):,.0f} value, "
-        f"overdue: {s.get('overdue_pos',0)}, fill rate: {s.get('fill_rate','n/a')}%%"
-        for s in (suppliers_raw or [])[:6]
+        f"  {s.get('supplier','?')}: {s.get('total_pos',0)} POs · "
+        f"KES {s.get('total_value',0):,.0f} open value "
+        f"({round((s.get('total_value') or 0) / max(open_value,1) * 100, 1)}%% of fleet) · "
+        f"{s.get('overdue_pos',0)} overdue · fill rate: {s.get('fill_rate','n/a')}%%"
+        f"{' ← CONCENTRATION RISK' if (s.get('total_value') or 0) / max(open_value,1) > 0.3 else ''}"
+        for s in sup_sorted[:6]
     )
-    overdue_count = kpi.get("overdue_pos") or len(overdue)
-    fill_rate = kpi.get("receipt_fill_rate") or 0
-    open_value = kpi.get("open_po_value") or 0
     top_gaps = [g["gap_name"].replace("_", " ") for g in gaps[:3]]
+    kes_at_risk_overdue = sum(
+        r.get("total_value") or 0 for r in overdue if (r.get("days_overdue") or 0) > 14
+    )
     context = (
         f"SUPPLY CHAIN DESK INTELLIGENCE — {date.today().isoformat()}\n\n"
         f"FABRIC PO FLEET KPIs:\n"
-        f"  Total POs tracked: {kpi.get('total_pos',0)}\n"
-        f"  Total suppliers: {kpi.get('total_suppliers',0)}\n"
-        f"  Total PO value: KES {kpi.get('total_value_kes',0):,.0f}\n"
-        f"  Open PO value: KES {open_value:,.0f}\n"
+        f"  Total POs: {kpi.get('total_pos',0)} · Suppliers: {kpi.get('total_suppliers',0)}\n"
+        f"  Total portfolio value: KES {total_value:,.0f}\n"
+        f"  Open (undelivered) value: KES {open_value:,.0f}\n"
         f"  Overdue POs: {overdue_count} "
         f"({'CRITICAL — >15 overdue' if overdue_count > 15 else 'HIGH — >5 overdue' if overdue_count > 5 else 'normal'})\n"
+        f"  Avg days overdue (of overdue POs): {avg_overdue_days}d\n"
         f"  Receipt fill rate: {fill_rate}%% "
-        f"({'LOW — production risk' if fill_rate < 70 else 'acceptable' if fill_rate < 90 else 'healthy'})\n\n"
-        f"TOP OVERDUE POs (by days overdue):\n{ov_rows or '  None overdue — all POs on schedule'}\n\n"
-        f"SUPPLIER PERFORMANCE:\n{supplier_rows or '  No supplier breakdown available'}\n\n"
+        f"({'CRITICAL <70%%' if fill_rate < 70 else 'LOW — production risk' if fill_rate < 90 else 'healthy'})\n"
+        f"  KES at risk from POs overdue >14 days: KES {kes_at_risk_overdue:,.0f}\n\n"
+        f"OVERDUE PO AGE BUCKETS:\n{age_rows or '  No overdue POs'}\n\n"
+        f"TOP OVERDUE POs (worst first):\n{ov_rows or '  All POs on schedule'}\n\n"
+        f"SUPPLIER PERFORMANCE (by open value):\n{supplier_rows or '  No supplier data'}\n"
+        f"  Concentration: top supplier ({top_sup.get('supplier','?') if top_sup else '?'}) "
+        f"= {top_sup_pct}%% of open value "
+        f"({'CONCENTRATION RISK — single-supplier dependency' if top_sup_pct > 30 else 'acceptable'})\n\n"
         f"KEY DATA GAPS: {', '.join(top_gaps) if top_gaps else 'None'}\n\n"
-        f"Analyse supply chain risk comprehensively. Identify: fabric delivery risks threatening "
-        f"production deadlines, supplier concentration risks, fill rate deterioration. "
-        f"Propose specific escalation actions with named suppliers and timelines. "
-        f"Flag if any single supplier accounts for >30%% of open value."
+        f"Apply the MANDATORY THINKING SEQUENCE. "
+        f"Lead with the 30d+ overdue POs — these are now threatening production timelines directly. "
+        f"Surface the supplier that represents the greatest combined risk (overdue + concentration). "
+        f"Estimate what KES of production output is threatened if these POs don't clear within 7 days."
     )
     return du.call_llm_structured(api_key, context, DESK, "overview", conn)
 
