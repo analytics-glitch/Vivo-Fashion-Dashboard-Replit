@@ -240,7 +240,10 @@ function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
     const q = Number(qty);
     if (!toStage) { setError("Pick a destination."); return; }
     if (!(q > 0)) { setError("Qty must be > 0."); return; }
-    if (q > Number(row.qty_here)) { setError(`Only ${fmtQty(row.qty_here)} here.`); return; }
+    // Buying Order -> Cutting may exceed the plan (the factory can cut more
+    // than the BO listed); every other transition stays capped at qty_here.
+    const overMoveOk = row.stage === "buying_order" && toStage === "cutting";
+    if (!overMoveOk && q > Number(row.qty_here)) { setError(`Only ${fmtQty(row.qty_here)} here.`); return; }
     setSubmitting(true);
     try {
       const { data } = await api.post("/production/move", {
@@ -308,7 +311,7 @@ function SkuMoveRow({ orderRef, row, allowed, isTerminal, onMoved }) {
             <input
               type="number"
               min={1}
-              max={Number(row.qty_here)}
+              max={row.stage === "buying_order" && toStage === "cutting" ? undefined : Number(row.qty_here)}
               value={qty}
               onChange={(e) => setQty(e.target.value)}
               className="input-pill text-[11.5px] py-1 w-16"

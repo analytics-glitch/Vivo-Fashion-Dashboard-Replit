@@ -30830,7 +30830,9 @@ async def production_move(request: Request):
     """Move a quantity between stages — the board's only writer. Validates that
     the transition is allowed (to_stage in from_stage.allowed_next), that the
     stages differ, and that enough units sit at from_stage, so the ledger can
-    never go negative or skip stages. moved_by defaults to the signed-in user."""
+    never skip stages. One deliberate exception: buying_order -> cutting may
+    exceed the plan (cut overage), letting buying_order go negative by the
+    excess. moved_by defaults to the signed-in user."""
     try:
         body = await request.json()
     except Exception:
@@ -30896,6 +30898,11 @@ async def production_move(request: Request):
             return JSONResponse(
                 {"detail": f"Cannot move from {from_stage} to {to_stage}"},
                 status_code=400)
+        # Buying Order -> Cutting may exceed the plan: the factory can cut more
+        # units than the BO listed (extra fabric, overage). The ledger simply
+        # goes negative at buying_order for the excess, which is the honest
+        # record. Every other transition stays strictly bounded.
+        over_move_ok = (from_stage == "buying_order" and to_stage == "cutting")
         if from_stage in _PROD_DERIVED_STAGES:
             # Finishing: availability comes from LIVE Odoo stock attribution,
             # not the ledger (there is no ledger inbound for derived stages).
@@ -30921,7 +30928,7 @@ async def production_move(request: Request):
                 "AND size IS NOT DISTINCT FROM %s AND stage = %s",
                 (order_ref, sku, size, from_stage))
             available = float(cur.fetchone()["avail"])
-            if qty > available:
+            if qty > available and not over_move_ok:
                 cur.connection.rollback()
                 return JSONResponse(
                     {"detail": f"Only {available:g} units of {sku} available at {from_stage}"},
@@ -30932,7 +30939,7 @@ async def production_move(request: Request):
                 (order_ref, from_stage))
             bal = cur.fetchone()
             available = float(bal["qty_here"]) if bal else 0.0
-            if qty > available:
+            if qty > available and not over_move_ok:
                 cur.connection.rollback()
                 return JSONResponse(
                     {"detail": f"Only {available:g} units available at {from_stage}"},
