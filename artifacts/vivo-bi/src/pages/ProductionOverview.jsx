@@ -148,11 +148,10 @@ function BreakdownBar({ title, rows, colorFor, metric = "orders", fullLabels = f
             return (
               <div key={r.label} className="flex items-center gap-2 text-[13px]">
                 <div
-                  className="shrink-0 text-right font-medium text-[#0f3d24]"
+                  className={`shrink-0 font-medium text-[#0f3d24] ${fullLabels ? "text-left" : "text-right"}`}
                   style={{
-                    width: fullLabels ? undefined : "80px",
-                    minWidth: fullLabels ? "90px" : undefined,
-                    maxWidth: fullLabels ? "150px" : undefined,
+                    width: fullLabels ? "130px" : "80px",
+                    minWidth: fullLabels ? "130px" : undefined,
                     whiteSpace: fullLabels ? "normal" : "nowrap",
                     overflow: fullLabels ? undefined : "hidden",
                     textOverflow: fullLabels ? undefined : "ellipsis",
