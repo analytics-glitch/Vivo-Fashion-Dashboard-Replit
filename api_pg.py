@@ -3253,25 +3253,29 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
 
     Buckets (evaluated top-down; every in-scope style gets exactly one, so
     Active [Tier 1..4] + Retired == the total style universe):
-      Retired — hard retirement ONLY: the Odoo product status field marks the
-                style Retired (see _odoo_retired_styles). The old code-level
-                manual list and the Zoya auto-retire rule were removed —
-                Odoo is the single source of truth for retirement.
-      Tier 1  — consistent best performer ("NOOS"): sold in >= 11 of the trailing
-                12 calendar months.
-      Tier 2  — established repeat performer: >= 39 weeks old (~9 months) with
-                more than 3 reorder cycles.
-      Tier 3  — has completed at least one ~12-week reorder cycle.
-      Tier 4  — new / test (everything else).
+      Retired              — hard retirement ONLY: the Odoo product status field
+                             marks the style Retired (see _odoo_retired_styles).
+      Tier 1 / NOOS        — ≥24 months old AND sold in ≥11 of the trailing 12
+                             calendar months. Target: < 50 styles — the true
+                             never-out-of-stock core.
+      Tier 2 / Core        — reordered ≥4 times (a proven, established style).
+      Tier 3 / Recent Performer — reordered ≥1 time (has at least one repeat
+                             purchase order, gaining traction).
+      Tier 4 / New Styles  — everything else: < 4 months old and/or not yet
+                             reordered.
     """
     if _is_manually_retired(style_name):
         return "Retired"
-    if (months_active_12 or 0) >= 11:
+    # Tier 1 — NOOS: must be ≥24 months old AND consistently stocked (11/12 months)
+    if (age_weeks or 0) >= 104 and (months_active_12 or 0) >= 11:
         return "Tier 1"
-    if age_weeks is not None and age_weeks >= 39 and (reorder_count or 0) > 3:
+    # Tier 2 — Core: ≥4 reorder cycles — proven, established demand
+    if (reorder_count or 0) >= 4:
         return "Tier 2"
+    # Tier 3 — Recent Performer: at least one reorder completed
     if (reorder_count or 0) >= 1:
         return "Tier 3"
+    # Tier 4 — New Styles: brand new or not yet reordered
     return "Tier 4"
 
 
@@ -3335,6 +3339,124 @@ def _retirement_flag_reason(age_weeks, *, lifetime_sor, last_sale_days, woc,
     if (recent_units or 0) < 300:
         misses.append("%d units in 6 months (needs >=300)" % int(recent_units or 0))
     return "24+ months old, misses the hero-core bar: " + "; ".join(misses) + "."
+
+
+def _tier_transition_flags(tier, age_weeks, reorder_count, last_sale_days,
+                            woc, sor_life, units_6m, months_active_12,
+                            current_stock, weekly_avg):
+    """Advisory tier-movement recommendations for the Range Management decision table.
+
+    Returns a list of {type, suggested_move, reason} dicts (usually 0 or 1 items).
+    type is 'promote' (move up or watch closely) or 'retire' (flag for exit).
+    These are purely advisory — no style is retired or moved without a human decision.
+
+    Retire signals per stage:
+      Tier 4 (New Styles) : no sale in >21d AND/OR WOC >16 AND/OR SOR <20%
+      Tier 3 (Recent)     : no sale in >45d AND/OR WOC >26 AND/OR SOR <15%
+      Tier 2 (Core)       : no sale in >60d AND/OR WOC >52 AND/OR SOR <20%
+      Tier 1 (NOOS)       : months_active_12 drops below 9 — slipping NOOS status
+    Promote signals:
+      Tier 4 → Tier 3 : strong early velocity (WOC ≤12, sale ≤7d, weekly ≥1.5 u/wk)
+      Tier 3 → Tier 2 : reached 3 reorders (next cycle crosses the ≥4 Core gate)
+      Tier 2 → NOOS   : age ≥24m and active in ≥9 of trailing 12 months
+    """
+    flags = []
+    age_weeks    = age_weeks or 0
+    reorder_count = reorder_count or 0
+    months_active_12 = months_active_12 or 0
+    current_stock = current_stock or 0
+    weekly_avg   = weekly_avg or 0
+
+    if tier == "Tier 4":
+        # Promote: early signals of genuine demand — first reorder is due
+        if (weekly_avg >= 1.5 and (woc is None or woc <= 12)
+                and (last_sale_days is not None and last_sale_days <= 7)):
+            woc_str = f"{woc:.1f}wk" if woc is not None else "no stock concern"
+            flags.append({
+                "type": "promote",
+                "suggested_move": "Tier 3",
+                "reason": (f"Strong early velocity ({weekly_avg:.1f} u/wk), WOC {woc_str}, "
+                           f"sold within last 7d — place first reorder to graduate to Recent Performer."),
+            })
+        # Retire: past the 8-week read window with poor metrics
+        elif age_weeks >= 8:
+            retire_signals = []
+            if last_sale_days is None or last_sale_days > 21:
+                retire_signals.append(
+                    f"no sale in {'21+' if last_sale_days is None else last_sale_days}d")
+            if woc is not None and woc > 16:
+                retire_signals.append(f"WOC {woc:.1f}wk (overstocked for a new entry)")
+            if sor_life is not None and sor_life < 20:
+                retire_signals.append(f"SOR {sor_life:.1f}% (very low)")
+            if retire_signals:
+                flags.append({
+                    "type": "retire",
+                    "suggested_move": "Retire",
+                    "reason": "New style not gaining traction: " + "; ".join(retire_signals) + ".",
+                })
+
+    elif tier == "Tier 3":
+        # Promote: one reorder away from Core threshold
+        if reorder_count >= 3:
+            flags.append({
+                "type": "promote",
+                "suggested_move": "Tier 2",
+                "reason": (f"{reorder_count} reorder cycles — next reorder crosses the Core "
+                           f"threshold (≥4). Promote to Core if recent sell-through supports continued depth."),
+            })
+        else:
+            # Retire: stalled Recent Performer
+            retire_signals = []
+            if last_sale_days is not None and last_sale_days > 45:
+                retire_signals.append(f"no sale in {last_sale_days}d")
+            if woc is not None and woc > 26:
+                retire_signals.append(f"WOC {woc:.1f}wk (heavily overstocked)")
+            if sor_life is not None and sor_life < 15:
+                retire_signals.append(f"lifetime SOR {sor_life:.1f}% (very low for an established style)")
+            if retire_signals:
+                flags.append({
+                    "type": "retire",
+                    "suggested_move": "Retire",
+                    "reason": "Recent Performer showing stall: " + "; ".join(retire_signals) + ".",
+                })
+
+    elif tier == "Tier 2":
+        # Promote: approaching NOOS status
+        if age_weeks >= 104 and months_active_12 >= 9:
+            flags.append({
+                "type": "promote",
+                "suggested_move": "Tier 1 (NOOS)",
+                "reason": (f"≥24 months old, active in {months_active_12}/12 trailing months — "
+                           f"approaching NOOS gate (needs 11/12). Consider for NOOS if WOC "
+                           f"stays consistently low and replenishment is automated."),
+            })
+        # Retire: core style in decline
+        retire_signals = []
+        if last_sale_days is not None and last_sale_days > 60:
+            retire_signals.append(f"no sale in {last_sale_days}d")
+        if woc is not None and woc > 52:
+            retire_signals.append(f"WOC {woc:.1f}wk (a full year of cover — clear overstocked position)")
+        if sor_life is not None and sor_life < 20:
+            retire_signals.append(f"lifetime SOR {sor_life:.1f}% (weak for an established Core style)")
+        if retire_signals:
+            flags.append({
+                "type": "retire",
+                "suggested_move": "Retire",
+                "reason": "Core style showing decline: " + "; ".join(retire_signals) + ".",
+            })
+
+    elif tier == "Tier 1":
+        # Watch: NOOS consistency slipping
+        if months_active_12 < 9:
+            flags.append({
+                "type": "promote",
+                "suggested_move": "Monitor — risk of demotion to Tier 2",
+                "reason": (f"NOOS consistency dropping — active in only {months_active_12}/12 trailing "
+                           f"months (NOOS gate = 11/12). Review replenishment cadence to maintain "
+                           f"never-out-of-stock status, otherwise reclassify as Core."),
+            })
+
+    return flags
 
 
 def csv_to_sql(val):
@@ -18395,6 +18517,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             "age_tier": age_band,
             "launch_date": str(launch) if launch else None,
             "reorder_count": reorder_count,
+            "months_active_12": months_active_12,
             "current_stock": current_stock,
             "soh_stores": soh_stores,
             "soh_warehouse": soh_warehouse,
@@ -18529,6 +18652,47 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         "tier_summary": tier_summary,
     }
 
+    # Advisory tier-transition table — one entry per style that either (a) shows
+    # strong enough signals to be promoted to the next tier, or (b) should be
+    # considered for retirement.  Decision remains entirely with the buyer.
+    transitions = []
+    for row in active:
+        flags = _tier_transition_flags(
+            tier=row["tier"],
+            age_weeks=row["style_age_weeks"],
+            reorder_count=row["reorder_count"],
+            last_sale_days=row["last_sale_days"],
+            woc=row["woc"],
+            sor_life=row["sor_since_launch"],
+            units_6m=row["units_6m"],
+            months_active_12=row.get("months_active_12", 0),
+            current_stock=row["current_stock"],
+            weekly_avg=row["weekly_avg"],
+        )
+        for f in flags:
+            transitions.append({
+                "style_name": row["style_name"],
+                "brand": row["brand"],
+                "subcategory": row["subcategory"],
+                "current_tier": row["tier"],
+                "suggested_move": f["suggested_move"],
+                "reason": f["reason"],
+                "action_type": f["type"],
+                "woc": row["woc"],
+                "sor_since_launch": row["sor_since_launch"],
+                "last_sale_days": row["last_sale_days"],
+                "reorder_count": row["reorder_count"],
+                "current_stock": row["current_stock"],
+                "weekly_avg": row["weekly_avg"],
+                "original_price": row["original_price"],
+            })
+    # Sort: retire suggestions first (most urgent), then promote; within each group
+    # order by tier (Tier 4 first for retire, Tier 2 first for promote).
+    transitions.sort(key=lambda t: (
+        0 if t["action_type"] == "retire" else 1,
+        t["current_tier"],
+    ))
+
     candidates.sort(key=lambda c: c["weeks_to_gate"])
     pipeline.sort(key=lambda p: -(p["style_age_weeks"] or 0))
     return {
@@ -18538,6 +18702,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         "retirement_pipeline": pipeline,
         "recent_movements": [],
         "tier3_graduation_candidates": candidates,
+        "tier_transitions": transitions,
     }
 
 

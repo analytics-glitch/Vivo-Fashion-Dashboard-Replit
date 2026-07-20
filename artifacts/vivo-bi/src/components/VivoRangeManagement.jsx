@@ -33,20 +33,20 @@ const TIER_TONE = {
   "Tier 4": { bg: "#f1f5f9", text: "#334155" },
 };
 const TIER_TAG = {
-  "Tier 1": "NOOS / never out of stock",
-  "Tier 2": "Core performers",
-  "Tier 3": "Developing / watch",
-  "Tier 4": "Trial / new entry",
+  "Tier 1": "NOOS · Never Out Of Stock",
+  "Tier 2": "Core",
+  "Tier 3": "Recent Performer",
+  "Tier 4": "New Styles",
 };
 const TIER_DESC = {
   "Tier 1":
-    "Never Out Of Stock — always-on core range. Automatic reorder when WOC ≤ 8. Highest accountability, most visibility.",
+    "NOOS — Never Out Of Stock. ≥24 months old, sold in ≥11 of the last 12 calendar months. The always-on core: automatic reorder when WOC ≤ 8. Target <50 styles — the true backbone of the range.",
   "Tier 2":
-    "Core performers. Proven demand, regular reorder cadence. Largest tier by revenue. Average SOR on par with Tier 1.",
+    "Core. Proven styles reordered ≥4 times. Established demand, regular replenishment cadence. The largest tier by revenue. Styles performing well here are candidates for NOOS elevation.",
   "Tier 3":
-    "Recent performers. Developing range, watched for graduation to Tier 2 or demotion. Largest tier by style count — rationalisation needed.",
+    "Recent Performer. Styles reordered at least once — gaining traction and earning their place. Watched closely: strong performers graduate to Core (≥4 reorders), weak ones are flagged for exit.",
   "Tier 4":
-    "Trial styles and new entries. Gate at Week 12 — graduate the winners, exit the rest.",
+    "New Styles. Brand new entries not yet reordered. Gate at Week 8 — strong velocity earns the first reorder (→ Recent Performer); poor sell-through triggers a retirement review.",
 };
 
 const brandOf = (r) => BRAND_LABEL[r.brand] || r.brand || "Other";

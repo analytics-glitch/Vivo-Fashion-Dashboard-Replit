@@ -18,10 +18,10 @@ import {
 
 // Tier colour tokens — Gold / Green / Blue / Grey / Red per spec.
 const TIER_STYLES = {
-  "Tier 1": { bg: "#fef3c7", text: "#854d0e", label: "Tier 1 · Core Basics" },
-  "Tier 2": { bg: "#dcfce7", text: "#166534", label: "Tier 2 · Core Performers" },
-  "Tier 3": { bg: "#dbeafe", text: "#1e40af", label: "Tier 3 · Recent Performers" },
-  "Tier 4": { bg: "#f1f5f9", text: "#334155", label: "Tier 4 · New / Test" },
+  "Tier 1": { bg: "#fef3c7", text: "#854d0e", label: "Tier 1 · NOOS" },
+  "Tier 2": { bg: "#dcfce7", text: "#166534", label: "Tier 2 · Core" },
+  "Tier 3": { bg: "#dbeafe", text: "#1e40af", label: "Tier 3 · Recent Performer" },
+  "Tier 4": { bg: "#f1f5f9", text: "#334155", label: "Tier 4 · New Styles" },
   "Retire": { bg: "#fee2e2", text: "#991b1b", label: "Retire" },
 };
 
@@ -38,6 +38,13 @@ const STATUS_TONES = {
   "Retire":   { bg: "bg-rose-100",    text: "text-rose-800" },
 };
 
+const TIER_SHORT = {
+  "Tier 1": "Tier 1 · NOOS",
+  "Tier 2": "Tier 2 · Core",
+  "Tier 3": "Tier 3 · Recent Performer",
+  "Tier 4": "Tier 4 · New Styles",
+};
+
 const TierPill = ({ tier }) => {
   const t = TIER_STYLES[tier] || TIER_STYLES["Tier 4"];
   return (
@@ -46,7 +53,7 @@ const TierPill = ({ tier }) => {
       style={{ background: t.bg, color: t.text }}
       data-testid={`tier-pill-${tier?.replace(/\s+/g, "-")}`}
     >
-      {tier}
+      {TIER_SHORT[tier] || tier}
     </span>
   );
 };
@@ -196,7 +203,7 @@ const TierKpiCard = ({ tier, count, pctStyles, revenueLifetime, unitsLifetime, a
       data-testid={testId}
     >
       <div className="text-[10.5px] uppercase tracking-wide font-bold" style={{ color: t.text, opacity: 0.7 }}>
-        {tier}
+        {TIER_SHORT[tier] || tier}
       </div>
       <div className="font-extrabold mt-1 num leading-none" style={{ color: t.text, fontSize: "26px" }}>
         {fmtNum(count)}
@@ -337,6 +344,54 @@ const RangeManagement = () => {
   const retirement = data?.retirement_pipeline || [];
   const movements = data?.recent_movements || [];
   const candidates = data?.tier3_graduation_candidates || [];
+  const transitions = data?.tier_transitions || [];
+
+  // Age distribution (computed from active rows, no new endpoint needed)
+  const ageDist = useMemo(() => {
+    const buckets = [
+      { label: "< 1 year",  lo: 0,   hi: 52 },
+      { label: "1–2 years", lo: 52,  hi: 104 },
+      { label: "2–3 years", lo: 104, hi: 156 },
+      { label: "3–4 years", lo: 156, hi: 208 },
+      { label: "5 + years", lo: 208, hi: Infinity },
+    ];
+    return buckets.map((b) => {
+      const matched = rows.filter((r) => {
+        const w = r.style_age_weeks ?? 0;
+        return w >= b.lo && w < b.hi;
+      });
+      return {
+        label: b.label,
+        count: matched.length,
+        stock: matched.reduce((a, r) => a + (r.current_stock || 0), 0),
+        rev: matched.reduce((a, r) => a + (r.sales_since_launch || 0), 0),
+      };
+    });
+  }, [rows]);
+
+  // Price point distribution (computed from active rows, field = original_price)
+  const priceDist = useMemo(() => {
+    const buckets = [
+      { label: "< KES 1,000",       lo: 0,    hi: 1000 },
+      { label: "1,000–2,000",        lo: 1000, hi: 2000 },
+      { label: "2,000–3,000",        lo: 2000, hi: 3000 },
+      { label: "3,000–4,000",        lo: 3000, hi: 4000 },
+      { label: "4,000–5,000",        lo: 4000, hi: 5000 },
+      { label: "> KES 5,000",        lo: 5000, hi: Infinity },
+    ];
+    return buckets.map((b) => {
+      const matched = rows.filter((r) => {
+        const p = r.original_price ?? 0;
+        return p >= b.lo && p < b.hi;
+      });
+      return {
+        label: b.label,
+        count: matched.length,
+        stock: matched.reduce((a, r) => a + (r.current_stock || 0), 0),
+        rev: matched.reduce((a, r) => a + (r.sales_since_launch || 0), 0),
+      };
+    }).filter((b) => b.count > 0);
+  }, [rows]);
 
   const promoteAllCandidates = async () => {
     if (!candidates.length) return;
@@ -590,13 +645,13 @@ const RangeManagement = () => {
               className="text-[11px] text-muted mt-2 leading-snug"
               data-testid="range-data-ceiling-note"
             >
-              <strong>Note on age:</strong> Style age is computed from the persisted first-sale
-              date in <code className="text-[10px]">style_launch_dates_by_number</code> + the by-name
-              fallback collection, which together cover the last 5 years of Kenya trading history
-              (refreshed nightly). Tier assignments follow the 2026 Range Strategy lifecycle — Tier 1
-              (24+ months core), Tier 2 (9–24 months, 3+ reorders), Tier 3 (8 weeks–9 months under
-              review), Tier 4 (&lt; 8 weeks new / test). Use the graduation panel above to promote
-              ready styles manually.
+              <strong>Note on age &amp; tier model:</strong> Style age is computed from the persisted
+              first-sale date (refreshed nightly, 5-year Kenya history). Tier assignments follow the
+              July 2026 Range Strategy — <strong>Tier 1 · NOOS</strong> (≥24 months, sold in ≥11 of
+              last 12 months; target &lt;50 styles), <strong>Tier 2 · Core</strong> (≥4 reorders),{" "}
+              <strong>Tier 3 · Recent Performer</strong> (≥1 reorder),{" "}
+              <strong>Tier 4 · New Styles</strong> (not yet reordered). Reorder count is a
+              ≈12-week-cycle proxy from style age (first PO to real-PO migration planned).
             </p>
           </div>
 
@@ -714,6 +769,236 @@ const RangeManagement = () => {
             </div>
           )}
 
+          {/* ── Tier Transition Suggestions ──────────────────────────────── */}
+          {transitions.length > 0 && (
+            <div className="card-white p-4" data-testid="range-transitions">
+              <div className="mb-3">
+                <div className="eyebrow text-[10.5px] mb-0.5">Advisory · Range management</div>
+                <h3 className="font-extrabold text-[15px] leading-tight">
+                  Tier Movement Recommendations
+                </h3>
+                <p className="text-muted text-[12px] mt-0.5">
+                  {fmtNum(transitions.filter((t) => t.action_type === "retire").length)} retirement candidates ·{" "}
+                  {fmtNum(transitions.filter((t) => t.action_type === "promote").length)} promotion candidates.
+                  All recommendations are advisory only — you retain full decision authority.
+                </p>
+              </div>
+
+              {/* Retire suggestions */}
+              {transitions.filter((t) => t.action_type === "retire").length > 0 && (
+                <div className="mb-4">
+                  <div className="text-[11px] font-bold text-rose-700 uppercase tracking-wide mb-1">
+                    Retirement candidates ({fmtNum(transitions.filter((t) => t.action_type === "retire").length)})
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[12px] border-collapse" data-testid="transitions-retire-table">
+                      <thead>
+                        <tr className="border-b border-border text-left">
+                          <th className="p-2 font-semibold text-muted">Style</th>
+                          <th className="p-2 font-semibold text-muted">Current Tier</th>
+                          <th className="p-2 font-semibold text-muted text-right">Stock</th>
+                          <th className="p-2 font-semibold text-muted text-right">WOC</th>
+                          <th className="p-2 font-semibold text-muted text-right">SOR %</th>
+                          <th className="p-2 font-semibold text-muted text-right">Last Sale</th>
+                          <th className="p-2 font-semibold text-muted">Reason</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {transitions.filter((t) => t.action_type === "retire").slice(0, 20).map((t, i) => (
+                          <tr key={`${t.style_name}-retire-${i}`} className="border-b border-border hover:bg-panel">
+                            <td className="p-2">
+                              <div className="font-medium truncate max-w-[200px]" title={t.style_name}>{t.style_name}</div>
+                              <div className="text-muted text-[10.5px]">{t.brand} · {t.subcategory || "—"}</div>
+                            </td>
+                            <td className="p-2"><TierPill tier={t.current_tier} /></td>
+                            <td className="p-2 text-right num">{fmtNum(t.current_stock)}</td>
+                            <td className="p-2 text-right num text-amber-700">
+                              {t.woc == null ? "—" : `${t.woc.toFixed(1)}wk`}
+                            </td>
+                            <td className="p-2 text-right num">
+                              {t.sor_since_launch == null ? "—" : `${t.sor_since_launch.toFixed(1)}%`}
+                            </td>
+                            <td className="p-2 text-right num">
+                              {t.last_sale_days == null ? "—" : `${t.last_sale_days}d ago`}
+                            </td>
+                            <td className="p-2 text-[11px] text-muted max-w-[280px]">{t.reason}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {transitions.filter((t) => t.action_type === "retire").length > 20 && (
+                      <div className="text-center text-muted text-[11px] mt-2">
+                        + {fmtNum(transitions.filter((t) => t.action_type === "retire").length - 20)} more — filter by Status "At Risk" in the table below
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Promote suggestions */}
+              {transitions.filter((t) => t.action_type === "promote").length > 0 && (
+                <div>
+                  <div className="text-[11px] font-bold text-emerald-700 uppercase tracking-wide mb-1">
+                    Promotion candidates ({fmtNum(transitions.filter((t) => t.action_type === "promote").length)})
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[12px] border-collapse" data-testid="transitions-promote-table">
+                      <thead>
+                        <tr className="border-b border-border text-left">
+                          <th className="p-2 font-semibold text-muted">Style</th>
+                          <th className="p-2 font-semibold text-muted">Current Tier</th>
+                          <th className="p-2 font-semibold text-muted">Suggested Move</th>
+                          <th className="p-2 font-semibold text-muted text-right">Reorders</th>
+                          <th className="p-2 font-semibold text-muted text-right">Weekly Rate</th>
+                          <th className="p-2 font-semibold text-muted text-right">WOC</th>
+                          <th className="p-2 font-semibold text-muted">Reason</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {transitions.filter((t) => t.action_type === "promote").slice(0, 20).map((t, i) => (
+                          <tr key={`${t.style_name}-promote-${i}`} className="border-b border-border hover:bg-panel">
+                            <td className="p-2">
+                              <div className="font-medium truncate max-w-[200px]" title={t.style_name}>{t.style_name}</div>
+                              <div className="text-muted text-[10.5px]">{t.brand} · {t.subcategory || "—"}</div>
+                            </td>
+                            <td className="p-2"><TierPill tier={t.current_tier} /></td>
+                            <td className="p-2">
+                              <span className="inline-block px-2 py-0.5 rounded-full text-[10.5px] font-bold bg-emerald-100 text-emerald-800">
+                                {t.suggested_move}
+                              </span>
+                            </td>
+                            <td className="p-2 text-right num">{t.reorder_count ?? "—"}</td>
+                            <td className="p-2 text-right num">
+                              {t.weekly_avg == null ? "—" : `${t.weekly_avg.toFixed(1)} u/wk`}
+                            </td>
+                            <td className="p-2 text-right num">
+                              {t.woc == null ? "—" : `${t.woc.toFixed(1)}wk`}
+                            </td>
+                            <td className="p-2 text-[11px] text-muted max-w-[280px]">{t.reason}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {transitions.filter((t) => t.action_type === "promote").length > 20 && (
+                      <div className="text-center text-muted text-[11px] mt-2">
+                        + {fmtNum(transitions.filter((t) => t.action_type === "promote").length - 20)} more — use the table below to view all
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Range Age Distribution ──────────────────────────────────── */}
+          {rows.length > 0 && (
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="card-white p-4" data-testid="range-age-dist">
+                <div className="eyebrow text-[10.5px] mb-0.5">Active range analysis</div>
+                <h3 className="font-extrabold text-[14px] leading-tight mb-3">Age Distribution</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[12px] border-collapse">
+                    <thead>
+                      <tr className="border-b border-border text-left">
+                        <th className="py-1.5 pr-2 font-semibold text-muted">Age band</th>
+                        <th className="py-1.5 px-2 font-semibold text-muted text-right">Styles</th>
+                        <th className="py-1.5 px-2 font-semibold text-muted text-right">% of range</th>
+                        <th className="py-1.5 px-2 font-semibold text-muted text-right">Stock</th>
+                        <th className="py-1.5 px-2 font-semibold text-muted text-right">Revenue (lifetime)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ageDist.map((b) => {
+                        const pct = rows.length ? (b.count / rows.length) * 100 : 0;
+                        return (
+                          <tr key={b.label} className="border-b border-border">
+                            <td className="py-1.5 pr-2 font-medium">{b.label}</td>
+                            <td className="py-1.5 px-2 text-right num font-semibold">{fmtNum(b.count)}</td>
+                            <td className="py-1.5 px-2 text-right num">
+                              <div className="flex items-center justify-end gap-1">
+                                <div className="w-16 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                                  <div className="h-full rounded-full" style={{ width: `${pct}%`, background: "#1a5c38" }} />
+                                </div>
+                                <span>{pct.toFixed(1)}%</span>
+                              </div>
+                            </td>
+                            <td className="py-1.5 px-2 text-right num text-muted">{fmtNum(b.stock)}</td>
+                            <td className="py-1.5 px-2 text-right num">KES {fmtNum(Math.round(b.rev))}</td>
+                          </tr>
+                        );
+                      })}
+                      <tr className="border-t-2 border-border font-semibold">
+                        <td className="py-1.5 pr-2">Total active</td>
+                        <td className="py-1.5 px-2 text-right num">{fmtNum(rows.length)}</td>
+                        <td className="py-1.5 px-2 text-right num">100%</td>
+                        <td className="py-1.5 px-2 text-right num text-muted">
+                          {fmtNum(ageDist.reduce((a, b) => a + b.stock, 0))}
+                        </td>
+                        <td className="py-1.5 px-2 text-right num">
+                          KES {fmtNum(Math.round(ageDist.reduce((a, b) => a + b.rev, 0)))}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* ── Price Point Distribution ──────────────────────────────────── */}
+              <div className="card-white p-4" data-testid="range-price-dist">
+                <div className="eyebrow text-[10.5px] mb-0.5">Active range analysis</div>
+                <h3 className="font-extrabold text-[14px] leading-tight mb-3">Price Point Distribution</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[12px] border-collapse">
+                    <thead>
+                      <tr className="border-b border-border text-left">
+                        <th className="py-1.5 pr-2 font-semibold text-muted">Price band</th>
+                        <th className="py-1.5 px-2 font-semibold text-muted text-right">Styles</th>
+                        <th className="py-1.5 px-2 font-semibold text-muted text-right">% of range</th>
+                        <th className="py-1.5 px-2 font-semibold text-muted text-right">Stock</th>
+                        <th className="py-1.5 px-2 font-semibold text-muted text-right">Revenue (lifetime)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {priceDist.map((b) => {
+                        const pct = rows.length ? (b.count / rows.length) * 100 : 0;
+                        return (
+                          <tr key={b.label} className="border-b border-border">
+                            <td className="py-1.5 pr-2 font-medium">{b.label}</td>
+                            <td className="py-1.5 px-2 text-right num font-semibold">{fmtNum(b.count)}</td>
+                            <td className="py-1.5 px-2 text-right num">
+                              <div className="flex items-center justify-end gap-1">
+                                <div className="w-16 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                                  <div className="h-full rounded-full" style={{ width: `${pct}%`, background: "#1a5c38" }} />
+                                </div>
+                                <span>{pct.toFixed(1)}%</span>
+                              </div>
+                            </td>
+                            <td className="py-1.5 px-2 text-right num text-muted">{fmtNum(b.stock)}</td>
+                            <td className="py-1.5 px-2 text-right num">KES {fmtNum(Math.round(b.rev))}</td>
+                          </tr>
+                        );
+                      })}
+                      <tr className="border-t-2 border-border font-semibold">
+                        <td className="py-1.5 pr-2">Total active</td>
+                        <td className="py-1.5 px-2 text-right num">{fmtNum(rows.length)}</td>
+                        <td className="py-1.5 px-2 text-right num">—</td>
+                        <td className="py-1.5 px-2 text-right num text-muted">
+                          {fmtNum(priceDist.reduce((a, b) => a + b.stock, 0))}
+                        </td>
+                        <td className="py-1.5 px-2 text-right num">
+                          KES {fmtNum(Math.round(priceDist.reduce((a, b) => a + b.rev, 0)))}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-[10.5px] text-muted mt-2">
+                  Based on full-price (Kenya) per style. Styles with no price data are excluded from distribution.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Filters */}
           <div className="card-white p-3 flex flex-wrap items-end gap-2" data-testid="range-filters">
             <div className="flex items-center gap-2 input-pill flex-1 min-w-[260px]">
@@ -739,8 +1024,8 @@ const RangeManagement = () => {
             <div>
               <div className="eyebrow mb-1">Tier</div>
               <MultiSelect testId="range-filter-tier"
-                options={["Tier 1", "Tier 2", "Tier 3", "Tier 4"].map((t) => ({ value: t, label: t }))}
-                value={tierFilter} onChange={setTierFilter} placeholder="All tiers" width={130} />
+                options={Object.entries(TIER_SHORT).map(([value, label]) => ({ value, label }))}
+                value={tierFilter} onChange={setTierFilter} placeholder="All tiers" width={210} />
             </div>
             <div>
               <div className="eyebrow mb-1">Brand</div>
@@ -778,8 +1063,8 @@ const RangeManagement = () => {
             >
               All ({fmtNum(rows.length)})
             </button>
-            {["Tier 1", "Tier 2", "Tier 3", "Tier 4"].map((t) => {
-              const active = tierFilter.includes(t);
+            {Object.entries(TIER_SHORT).map(([t, label]) => {
+              const isActive = tierFilter.includes(t);
               const count = summary?.tier_counts?.[t] ?? 0;
               const style = TIER_STYLES[t] || TIER_STYLES["Tier 4"];
               return (
@@ -792,12 +1077,12 @@ const RangeManagement = () => {
                     )
                   }
                   className={`px-3 py-1 rounded-full text-[11px] font-bold border transition-colors ${
-                    active ? "ring-2 ring-offset-1 ring-slate-900" : "hover:opacity-80"
+                    isActive ? "ring-2 ring-offset-1 ring-slate-900" : "hover:opacity-80"
                   }`}
                   style={{ background: style.bg, color: style.text, borderColor: style.text + "33" }}
                   data-testid={`tier-pill-${t.replace(/\s+/g, "-")}`}
                 >
-                  {t} ({fmtNum(count)})
+                  {label} ({fmtNum(count)})
                 </button>
               );
             })}
