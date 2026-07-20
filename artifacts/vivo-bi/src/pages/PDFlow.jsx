@@ -5,7 +5,7 @@ import SortableTable from "@/components/SortableTable";
 import { useAuth } from "@/lib/auth";
 import {
   Kanban, Plus, X, ArrowRight, ArrowUUpLeft, CheckCircle, XCircle,
-  GearSix, DownloadSimple, ChartBar, ClockClockwise, ArrowsClockwise,
+  GearSix, DownloadSimple, ChartBar, ClockClockwise, ArrowsClockwise, Trash,
 } from "@phosphor-icons/react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -62,46 +62,109 @@ const downloadCsv = (name, headers, rows) => {
   URL.revokeObjectURL(url);
 };
 
+// ── Static lookup data ────────────────────────────────────────────────────────
+const BRANDS = ["Vivo", "Safari by Vivo", "Zoya"];
+const LIFECYCLE_TYPES = ["New", "Reorder", "Replenishment"];
+const PD_ASSIGNEES = [
+  "Abigail","Bella","Beryl","Chantal","Emily","Felista","Florence",
+  "Jewel","Marion","Mary","Maryann","Mercy","Natasha","Pech","Queen",
+  "Re","Rose","Tony","Victoria","Wandia","Wanjohi","Yvonne",
+];
+const CATEGORY_SUBCATS = {
+  ACCESSORIES:  ["Bangles & Bracelets","Belts","Body Mists & Fragrances","Earrings","Necklaces","Rings","Scarves","Shopping Bags"],
+  BOTTOMS:      ["Culottes & Capri Pants","Full Length Pants","Jumpsuits & Playsuits","Leggings","Shorts & Skorts"],
+  DRESSES:      ["Knee Length Dresses","Maxi Dresses","Midi & Capri Dresses","Short & Mini Dresses"],
+  MENS:         ["Men's Bottoms","Men's Tops"],
+  OUTERWEAR:    ["Hoodies & Sweatshirts","Jackets & Coats","Sweaters & Ponchos","Waterfalls & Kimonos"],
+  SALE:         ["Sample & Sale Items"],
+  SKIRTS:       ["Knee Length Skirts","Maxi Skirts","Midi & Capri Skirts","Short & Mini Skirts"],
+  TOPS:         ["Bodysuits","Fitted Tops","Loose Tops","Midriff & Crop Tops","T-shirts & Tank Tops"],
+};
+
 // ── Add style dialog ─────────────────────────────────────────────────────────
-const AddStyleDialog = ({ users, onClose, onSaved }) => {
-  const [form, setForm] = useState({ style_name: "", brand: "", category: "", assignee_user_id: "", decisions: "" });
+const AddStyleDialog = ({ onClose, onSaved }) => {
+  const EMPTY = { style_name: "", style_number: "", brand: "", category: "", sub_category: "", lifecycle_type: "", assignee_name: "", decisions: "" };
+  const [form, setForm] = useState(EMPTY);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v, ...(k === "category" ? { sub_category: "" } : {}) }));
+  const subcats = CATEGORY_SUBCATS[form.category] || [];
+
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setErr(null);
     try {
-      await api.post("/pd/styles", { ...form, assignee_user_id: form.assignee_user_id || null });
+      await api.post("/pd/styles", {
+        style_name:     form.style_name,
+        style_number:   form.style_number   || null,
+        brand:          form.brand          || null,
+        category:       form.category       || null,
+        sub_category:   form.sub_category   || null,
+        lifecycle_type: form.lifecycle_type || null,
+        assignee_name:  form.assignee_name  || null,
+        decisions:      form.decisions      || null,
+      });
       onSaved();
     } catch (ex) {
       setErr(ex?.response?.data?.detail || ex.message);
       setBusy(false);
     }
   };
+
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
       <form onClick={(e) => e.stopPropagation()} onSubmit={submit}
-        className="bg-white rounded-xl shadow-xl w-full max-w-md p-5 space-y-3" data-testid="pd-add-dialog">
+        className="bg-white rounded-xl shadow-xl w-full max-w-md p-5 space-y-3 max-h-[90vh] overflow-y-auto"
+        data-testid="pd-add-dialog">
         <div className="flex items-center justify-between">
           <h3 className="font-extrabold text-[15px]">Add adopted style</h3>
           <button type="button" onClick={onClose} className="text-muted hover:text-foreground"><X size={16} /></button>
         </div>
+
         <input className="w-full px-3 py-2 rounded-lg border border-border text-[13px]" placeholder="Style name *" required
-          value={form.style_name} onChange={(e) => setForm({ ...form, style_name: e.target.value })} data-testid="pd-add-name" />
-        <div className="grid grid-cols-2 gap-2">
-          <input className="px-3 py-2 rounded-lg border border-border text-[13px]" placeholder="Brand"
-            value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} data-testid="pd-add-brand" />
-          <input className="px-3 py-2 rounded-lg border border-border text-[13px]" placeholder="Category"
-            value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
-        </div>
+          value={form.style_name} onChange={(e) => set("style_name", e.target.value)} data-testid="pd-add-name" />
+
+        <input className="w-full px-3 py-2 rounded-lg border border-border text-[13px] font-mono" placeholder="Style number"
+          value={form.style_number} onChange={(e) => set("style_number", e.target.value)} />
+
         <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]"
-          value={form.assignee_user_id} onChange={(e) => setForm({ ...form, assignee_user_id: e.target.value })} data-testid="pd-add-assignee">
-          <option value="">Assignee (optional)</option>
-          {users.map((u) => <option key={u.user_id} value={u.user_id}>{u.name}</option>)}
+          value={form.brand} onChange={(e) => set("brand", e.target.value)} data-testid="pd-add-brand">
+          <option value="">Brand (optional)</option>
+          {BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
         </select>
+
+        <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]"
+          value={form.category} onChange={(e) => set("category", e.target.value)}>
+          <option value="">Category (optional)</option>
+          {Object.keys(CATEGORY_SUBCATS).map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+
+        {form.category && (
+          <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]"
+            value={form.sub_category} onChange={(e) => set("sub_category", e.target.value)}>
+            <option value="">Sub-category (optional)</option>
+            {subcats.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        )}
+
+        <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]"
+          value={form.lifecycle_type} onChange={(e) => set("lifecycle_type", e.target.value)}>
+          <option value="">Type — New / Reorder / Replenishment (optional)</option>
+          {LIFECYCLE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+
+        <select className="w-full px-3 py-2 rounded-lg border border-border text-[13px]"
+          value={form.assignee_name} onChange={(e) => set("assignee_name", e.target.value)}
+          data-testid="pd-add-assignee">
+          <option value="">Assignee (optional)</option>
+          {PD_ASSIGNEES.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+
         <textarea className="w-full px-3 py-2 rounded-lg border border-border text-[13px]" rows={3}
           placeholder="Adoption decisions made…"
-          value={form.decisions} onChange={(e) => setForm({ ...form, decisions: e.target.value })} data-testid="pd-add-decisions" />
+          value={form.decisions} onChange={(e) => set("decisions", e.target.value)} data-testid="pd-add-decisions" />
+
         {err && <div className="text-danger text-[12px]">{err}</div>}
         <button type="submit" disabled={busy}
           className="w-full py-2 rounded-lg bg-brand text-white font-semibold text-[13px] hover:bg-brand-deep disabled:opacity-50"
@@ -460,39 +523,97 @@ const AnalyticsTab = ({ onOpenStyle }) => {
   );
 };
 
-// ── History tab (immutable movement log) ─────────────────────────────────────
-const HistoryTab = () => {
+// ── History tab ───────────────────────────────────────────────────────────────
+const HistoryTab = ({ isAdmin }) => {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState(null);
+  const [search, setSearch] = useState("");
+  const [lcFilter, setLcFilter] = useState("");
+  const [deleting, setDeleting] = useState(null);
+
   useEffect(() => {
     api.get("/pd/history", { forceFresh: true })
       .then((r) => setRows(r.data.movements || []))
       .catch((e) => setErr(e?.response?.data?.detail || e.message));
   }, []);
+
+  const deleteMov = async (id) => {
+    if (!window.confirm("Delete this log entry? This cannot be undone.")) return;
+    setDeleting(id);
+    try {
+      await api.delete(`/pd/movements/${id}`);
+      setRows((prev) => prev.filter((r) => r.id !== id));
+    } catch (ex) {
+      alert(ex?.response?.data?.detail || ex.message);
+    } finally {
+      setDeleting(null);
+    }
+  };
+
   if (err) return <ErrorBox message={err} />;
   if (!rows) return <Loading />;
+
+  const q = search.trim().toLowerCase();
+  const filtered = rows.filter((r) => {
+    if (q && !(`${r.style_name || ""} ${r.style_number || ""}`.toLowerCase().includes(q))) return false;
+    if (lcFilter && r.lifecycle_type !== lcFilter) return false;
+    return true;
+  });
+
   return (
     <div className="card-white p-5" data-testid="pd-history">
-      <SectionTitle title="Movement & decision log" subtitle="Append-only audit of every adoption, move, send-back, approval and rejection" />
-      {rows.length === 0 ? <Empty label="No movements yet." /> : (
-        <SortableTable
-          testId="pd-history-table" exportName="pd_movement_log.csv"
-          initialSort={{ key: "created_at", dir: "desc" }}
-          columns={[
-            { key: "created_at", label: "When", align: "left", render: (r) => fmtWhen(r.created_at) },
-            { key: "style_name", label: "Style", align: "left" },
-            { key: "direction", label: "Action", align: "left", render: (r) => (
-              <span className={r.direction === "back" || r.direction === "reject" ? "pill-red" : r.direction === "approve" ? "pill-green" : "pill-neutral"}>{dirLabel(r.direction)}</span>) },
-            { key: "from_stage", label: "From", align: "left", render: (r) => <span className="capitalize">{String(r.from_stage || "—").replace(/_/g, " ")}</span> },
-            { key: "to_stage", label: "To", align: "left", render: (r) => <span className="capitalize">{String(r.to_stage || "—").replace(/_/g, " ")}</span> },
-            { key: "assignee_name", label: "Assignee", align: "left", render: (r) => r.assignee_name || "—" },
-            { key: "moved_by_name", label: "By", align: "left" },
-            { key: "decisions", label: "Decisions / reason", align: "left", render: (r) => (
-              <span className="text-[11.5px] whitespace-pre-wrap">{r.decisions || "—"}</span>) },
-          ]}
-          rows={rows}
-        />
-      )}
+      <SectionTitle title="Movement & decision log"
+        subtitle="Audit of every adoption, move, send-back, approval and rejection" />
+      <div className="flex flex-wrap gap-2 mb-3">
+        <input className="px-3 py-1.5 rounded-lg border border-border text-[12.5px] w-60"
+          placeholder="Search style name or style no."
+          value={search} onChange={(e) => setSearch(e.target.value)} />
+        <select className="px-3 py-1.5 rounded-lg border border-border text-[12.5px]"
+          value={lcFilter} onChange={(e) => setLcFilter(e.target.value)}>
+          <option value="">All types</option>
+          {LIFECYCLE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+      </div>
+      {filtered.length === 0
+        ? <Empty label={rows.length === 0 ? "No movements yet." : "No results for this filter."} />
+        : (
+          <SortableTable
+            testId="pd-history-table" exportName="pd_movement_log.csv"
+            initialSort={{ key: "created_at", dir: "desc" }}
+            columns={[
+              { key: "created_at", label: "When", align: "left", render: (r) => fmtWhen(r.created_at) },
+              { key: "style_name", label: "Style", align: "left" },
+              { key: "style_number", label: "Style No.", align: "left",
+                render: (r) => <span className="font-mono text-[12px] text-muted">{r.style_number || "—"}</span> },
+              { key: "lifecycle_type", label: "Type", align: "left",
+                render: (r) => r.lifecycle_type
+                  ? <span className="pill-neutral">{r.lifecycle_type}</span>
+                  : <span className="text-muted">—</span> },
+              { key: "direction", label: "Action", align: "left", render: (r) => (
+                <span className={r.direction === "back" || r.direction === "reject" ? "pill-red" : r.direction === "approve" ? "pill-green" : "pill-neutral"}>{dirLabel(r.direction)}</span>) },
+              { key: "from_stage", label: "From", align: "left",
+                render: (r) => <span className="capitalize">{String(r.from_stage || "—").replace(/_/g, " ")}</span> },
+              { key: "to_stage", label: "To", align: "left",
+                render: (r) => <span className="capitalize">{String(r.to_stage || "—").replace(/_/g, " ")}</span> },
+              { key: "assignee_name", label: "Assignee", align: "left", render: (r) => r.assignee_name || "—" },
+              { key: "moved_by_name", label: "By", align: "left" },
+              { key: "decisions", label: "Decisions / reason", align: "left",
+                render: (r) => <span className="text-[11.5px] whitespace-pre-wrap">{r.decisions || "—"}</span> },
+              ...(isAdmin ? [{
+                key: "_del", label: "", align: "right",
+                render: (r) => (
+                  <button onClick={() => deleteMov(r.id)} disabled={deleting === r.id}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-600 hover:text-rose-800 disabled:opacity-40"
+                    title="Delete this log entry">
+                    <Trash size={12} />{deleting === r.id ? "…" : "Delete"}
+                  </button>
+                ),
+                csv: () => "",
+              }] : []),
+            ]}
+            rows={filtered}
+          />
+        )}
     </div>
   );
 };
@@ -688,9 +809,9 @@ const PDFlow = () => {
 
       {tab === "analytics" && <AnalyticsTab key={refreshKey} onOpenStyle={setDetail} />}
       {tab === "completed" && <CompletedTab key={refreshKey} onOpenStyle={setDetail} />}
-      {tab === "history" && <HistoryTab key={refreshKey} />}
+      {tab === "history" && <HistoryTab key={refreshKey} isAdmin={isAdmin} />}
 
-      {adding && <AddStyleDialog users={users} onClose={() => setAdding(false)} onSaved={refresh} />}
+      {adding && <AddStyleDialog onClose={() => setAdding(false)} onSaved={refresh} />}
       {moving && board && (
         <MoveDialog card={moving} stages={board.stages} users={users}
           onClose={() => setMoving(null)} onSaved={() => { refresh(); setDetail(null); }} />

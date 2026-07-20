@@ -102,6 +102,9 @@ def ensure_pd_tables():
             created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
         )""", fetch=False)
     _db("CREATE INDEX IF NOT EXISTS pd_movements_style_idx ON pd_movements (style_id, created_at)", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS style_number  TEXT", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS sub_category  TEXT", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS lifecycle_type TEXT", fetch=False)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -151,8 +154,13 @@ def _style_out(r, sla_map=None):
         days = round((datetime.now(timezone.utc) - r["stage_entered_at"]).total_seconds() / 86400.0, 1)
     sla = (sla_map or {}).get(r["current_stage"])
     out = {
-        "id": r["id"], "style_name": r["style_name"], "brand": r["brand"],
-        "category": r["category"], "status": r["status"], "outcome": r.get("outcome"),
+        "id": r["id"], "style_name": r["style_name"],
+        "style_number": r.get("style_number"),
+        "brand": r["brand"],
+        "category": r["category"],
+        "sub_category": r.get("sub_category"),
+        "lifecycle_type": r.get("lifecycle_type"),
+        "status": r["status"], "outcome": r.get("outcome"),
         "current_stage": r["current_stage"],
         "stage_entered_at": _iso(r.get("stage_entered_at")),
         "days_in_stage": days,
@@ -251,13 +259,26 @@ def register_pd_routes(app, api_pg_module):
         style_name = (body.get("style_name") or "").strip()
         if not style_name:
             raise HTTPException(status_code=400, detail="style_name is required")
-        aid, aname = _resolve_assignee(body.get("assignee_user_id"))
+        # Assignee: prefer user_id lookup; fall back to a plain name string for
+        # the hardcoded assignee list (names that may not have app_users accounts).
+        if body.get("assignee_user_id"):
+            aid, aname = _resolve_assignee(body.get("assignee_user_id"))
+        else:
+            aid = None
+            aname = (body.get("assignee_name") or "").strip() or None
+        style_number  = (body.get("style_number")  or "").strip() or None
+        sub_category  = (body.get("sub_category")  or "").strip() or None
+        lifecycle_type = (body.get("lifecycle_type") or "").strip() or None
         rows = _db("""
-            INSERT INTO pd_styles (style_name, brand, category, assignee_user_id, assignee_name,
+            INSERT INTO pd_styles (style_name, style_number, brand, category, sub_category,
+                                   lifecycle_type, assignee_user_id, assignee_name,
                                    created_by_email, created_by_name)
-            VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *
-        """, (style_name, (body.get("brand") or "").strip() or None,
-              (body.get("category") or "").strip() or None, aid, aname, email, name))
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *
+        """, (style_name, style_number,
+              (body.get("brand") or "").strip() or None,
+              (body.get("category") or "").strip() or None,
+              sub_category, lifecycle_type,
+              aid, aname, email, name))
         st = rows[0]
         _log_move(st["id"], None, "adopted", "adopt", aid, aname, body.get("decisions"), email, name)
         try:
@@ -375,7 +396,8 @@ def register_pd_routes(app, api_pg_module):
     @app.get("/api/pd/history")
     def pd_history(limit: int = 2000):
         rows = _db("""
-            SELECT m.id, m.style_id, s.style_name, s.brand, m.from_stage, m.to_stage,
+            SELECT m.id, m.style_id, s.style_name, s.style_number, s.brand,
+                   s.lifecycle_type, m.from_stage, m.to_stage,
                    m.direction, m.assignee_name, m.decisions, m.moved_by_name,
                    m.moved_by_email, m.created_at
             FROM pd_movements m JOIN pd_styles s ON s.id = m.style_id
@@ -385,6 +407,22 @@ def register_pd_routes(app, api_pg_module):
         for r in rows:
             r["created_at"] = _iso(r["created_at"])
         return {"movements": rows}
+
+    @app.delete("/api/pd/movements/{movement_id}")
+    async def pd_movement_delete(movement_id: int, request: Request):
+        email, name, role = _actor(request)
+        if role != "admin":
+            raise HTTPException(status_code=403, detail="Only admins can delete movement log entries")
+        existing = _db("SELECT id FROM pd_movements WHERE id = %s", (movement_id,))
+        if not existing:
+            raise HTTPException(status_code=404, detail="Movement not found")
+        _db("DELETE FROM pd_movements WHERE id = %s", (movement_id,), fetch=False)
+        try:
+            A._log_activity(request, "DELETE", f"/api/pd/movements/{movement_id}",
+                            json.dumps({"action": "pd_movement_delete", "movement_id": movement_id}))
+        except Exception:
+            pass
+        return {"ok": True}
 
     @app.get("/api/pd/analytics")
     def pd_analytics():
