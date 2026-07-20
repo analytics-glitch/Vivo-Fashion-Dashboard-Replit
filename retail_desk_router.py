@@ -21,6 +21,7 @@ import logging
 import math
 import os
 import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 import desk_utils as du
 
@@ -32,6 +33,10 @@ A = None  # api_pg module ref — set in register_retail_desk_routes()
 
 _ai_lock = threading.Lock()
 _ai_inst = None
+
+# ── Module-level TTL cache for heavy read functions ───────────────────────────
+_FC_LOCK = threading.Lock()
+_FC: dict = {}  # key -> {"data": ..., "at": float}
 
 HAIKU  = "claude-haiku-3-5"
 SONNET = "claude-sonnet-4-5"
@@ -92,6 +97,19 @@ def _db_exec(sql, params=None, fetch=True):
 
 def _base_filters():
     return A.BASE_FILTERS if A is not None else "TRUE"
+
+
+def _fc(key: str, ttl: float, fn):
+    """Thread-safe TTL cache. Returns cached data if fresh, else calls fn()."""
+    now = time.time()
+    with _FC_LOCK:
+        entry = _FC.get(key)
+        if entry and now - entry["at"] < ttl:
+            return entry["data"]
+    data = fn()
+    with _FC_LOCK:
+        _FC[key] = {"data": data, "at": time.time()}
+    return data
 
 
 # ── Net-sales expression (mirrors NET_SALES_CANON) ────────────────────────────
@@ -162,7 +180,7 @@ def _weeks_behind_count(store: str) -> int:
         bm = baseline["t12m_monthly"]
         milestones, _ = compute_milestones(assumption, bm)
 
-        bf  = _base_filters()
+        bf  = _base_filters().replace("%", "%%")
         sql = f"""
             SELECT
                 DATE_TRUNC('week', s.sale_date::date)::date AS wk,
@@ -209,6 +227,11 @@ def _weeks_behind_count(store: str) -> int:
 # ── Core data reads ───────────────────────────────────────────────────────────
 
 def _get_store_t12m_and_mtd_raw():
+    """Cached (5 min) fleet-level sales aggregates — the heaviest query on this router."""
+    return _fc("store_t12m", 300, _store_t12m_query)
+
+
+def _store_t12m_query():
     bf  = _base_filters()
     sql = f"""
         SELECT
@@ -254,7 +277,7 @@ def _get_store_t12m_and_mtd_raw():
 
 
 def _get_store_weekly_trend(store: str, weeks: int = 8):
-    bf  = _base_filters()
+    bf  = _base_filters().replace("%", "%%")
     sql = f"""
         SELECT
             DATE_TRUNC('week', s.sale_date::date)::date AS week_start,
@@ -281,13 +304,13 @@ def _get_store_weekly_trend(store: str, weeks: int = 8):
 
 def _get_top_categories_for_store(store: str):
     """Top-5 selling categories for the store (L28D)."""
-    bf  = _base_filters()
+    bf  = _base_filters().replace("%", "%%")
     sql = f"""
         SELECT
             COALESCE(p.product_type, 'Unknown') AS category,
             ROUND(SUM({_NET_S}), 0) AS net_sales
         FROM all_sales s
-        LEFT JOIN all_products_clean p ON p.default_code = s.sku
+        LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
         WHERE s.sale_date::date >= CURRENT_DATE - 28
           AND s.pos_location_name = %s
           AND {_IS_RETAIL}
@@ -317,6 +340,11 @@ def _get_open_issues(store: str = None):
 
 
 def _build_store_path_data():
+    """Cached (5 min) growth-path distribution per store."""
+    return _fc("store_path", 300, _store_path_query)
+
+
+def _store_path_query():
     """
     Pull growth model path requirements for current month, distribute
     to stores by T12M share. Returns dict keyed by store name.
