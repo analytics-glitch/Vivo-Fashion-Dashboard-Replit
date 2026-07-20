@@ -4310,8 +4310,13 @@ def get_kpis_customer_type_split(
     rows = run_query("""
         WITH """ + _unified_first_purchase_ctes() + """
         SELECT
-            CASE WHEN fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date
-                 THEN 'New' ELSE 'Returning' END AS customer_segment,
+            CASE
+                WHEN fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date
+                     THEN 'New'
+                WHEN COALESCE(LOWER(s.customer_type), '') NOT IN ('new', 'returning', 'registered')
+                     THEN 'Walk-in'
+                ELSE 'Returning'
+            END AS customer_segment,
             -- UNROUNDED per bucket: rounding each bucket separately can drift
             -- ±1 KES from /api/kpis' ROUND(total); Python below rounds ONCE.
             (SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END)
@@ -4323,23 +4328,25 @@ def get_kpis_customer_type_split(
         GROUP BY customer_segment
         ORDER BY customer_segment
     """, date_to=date_to)
-    raw = {"New": 0, "Returning": 0}
-    orders = {"New": 0, "Returning": 0}
+    raw = {"New": 0, "Returning": 0, "Walk-in": 0}
+    orders = {"New": 0, "Returning": 0, "Walk-in": 0}
     for r in rows or []:
         raw[r["customer_segment"]] = float(r["total_sales"] or 0)
         orders[r["customer_segment"]] = r["orders"] or 0
     # Round the way Postgres ROUND(numeric, 0) does (half-away-from-zero) so
-    # new + returning lands on the SAME rounded figure /api/kpis shows, then
-    # derive Returning as the remainder — the identity is exact by definition.
+    # new + returning + walk-in lands on the SAME rounded figure /api/kpis shows.
     def _pg_round(x):
         return float(Decimal(str(x)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    total = _pg_round(raw["New"] + raw["Returning"])
+    total = _pg_round(raw["New"] + raw["Returning"] + raw["Walk-in"])
     new = _pg_round(raw["New"])
+    walkin = _pg_round(raw["Walk-in"])
     return {
         "new_sales": new,
-        "returning_sales": total - new,
+        "returning_sales": total - new - walkin,
+        "walk_in_sales": walkin,
         "new_orders": orders["New"],
         "returning_orders": orders["Returning"],
+        "walk_in_orders": orders["Walk-in"],
     }
 
 @app.get("/api/country-summary")

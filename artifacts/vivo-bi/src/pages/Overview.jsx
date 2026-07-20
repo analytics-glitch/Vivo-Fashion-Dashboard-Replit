@@ -45,6 +45,7 @@ import {
   ArrowsLeftRight,
   UserPlus,
   UsersThree,
+  PersonSimpleWalk,
   Door,
 } from "@phosphor-icons/react";
 import {
@@ -598,26 +599,29 @@ const Overview = () => {
   const delta = (k) => (kpis && kpisPrev) ? pctDelta(kpis[k], kpisPrev[k]) : null;
   const prev = (k, formatter) => (kpis && kpisPrev && compareMode !== "none" && kpisPrev[k] != null) ? formatter(kpisPrev[k]) : null;
 
-  // Revenue by customer type — from /kpis/customer-type-split, whose two
+  // Revenue by customer type — from /kpis/customer-type-split, whose three
   // buckets sum EXACTLY to the Total Sales headline (same filters, same
-  // measure, every row in exactly one bucket; walk-in/anonymous revenue is
-  // part of Returning). null = still loading (show "—"), {} = failed (0).
+  // measure, every row in exactly one bucket). null = still loading ("—").
   const ctSeg = useMemo(() => {
     const pick = (d, k) => (d == null ? null : Number(d[k] || 0));
     return {
-      newSales: pick(ctSpend, "new_sales"),
-      retSales: pick(ctSpend, "returning_sales"),
-      newSalesPrev: pick(ctSpendPrev, "new_sales"),
-      retSalesPrev: pick(ctSpendPrev, "returning_sales"),
+      newSales:      pick(ctSpend, "new_sales"),
+      retSales:      pick(ctSpend, "returning_sales"),
+      walkInSales:   pick(ctSpend, "walk_in_sales"),
+      newSalesPrev:  pick(ctSpendPrev, "new_sales"),
+      retSalesPrev:  pick(ctSpendPrev, "returning_sales"),
+      walkInSalesPrev: pick(ctSpendPrev, "walk_in_sales"),
     };
   }, [ctSpend, ctSpendPrev]);
-  // Share of the Total Sales headline each bucket represents (they sum to 100%).
+  // Share of Total Sales each bucket represents (they sum to 100%).
   const ctShare = useMemo(() => {
-    const tot = (ctSeg.newSales || 0) + (ctSeg.retSales || 0);
-    if (ctSeg.newSales == null || ctSeg.retSales == null || tot <= 0)
-      return { newPct: null, retPct: null };
-    const newPct = (100 * ctSeg.newSales) / tot;
-    return { newPct, retPct: 100 - newPct };
+    const { newSales, retSales, walkInSales } = ctSeg;
+    const tot = (newSales || 0) + (retSales || 0) + (walkInSales || 0);
+    if (newSales == null || retSales == null || walkInSales == null || tot <= 0)
+      return { newPct: null, retPct: null, walkInPct: null };
+    const newPct = (100 * newSales) / tot;
+    const walkInPct = (100 * walkInSales) / tot;
+    return { newPct, retPct: 100 - newPct - walkInPct, walkInPct };
   }, [ctSeg]);
   // WS3 — on a single-day range the "last month/year" comparison base is
   // the SAME DAY shifted, not the whole month/year; label it honestly.
@@ -1247,7 +1251,7 @@ const Overview = () => {
 
       {!kpisLoading && !error && kpis && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={kfmt(kpis.total_sales)} valueFull={fmtKESLong(kpis.total_sales)} icon={CurrencyCircleDollar}
               formula="How much money came in this period (before subtracting returns)."
               delta={delta("total_sales")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_sales", kfmt)} showDelta={compareMode !== "none"}
@@ -1257,30 +1261,6 @@ const Overview = () => {
               formula={`Canonical Net Sales = (Total Sales − Returns − Discounts) excluding VAT (16% Kenya & Online, 18% Uganda/Rwanda).\n\nBridge for this period: Total Sales ${fmtKESLong(kpis.total_sales)} (returns of ${fmtKESLong(kpis.total_returns)} already netted out) − discounts ${fmtKESLong(kpis.total_discounts)}, then VAT stripped = Net Sales ${fmtKESLong(kpis.net_sales)}.\n\nThis is the ONE Net Sales figure — Margin ‘Net Revenue’, Product Analysis and the Sales Export summary all show this same number for the same filters. Total Sales stays VAT-inclusive, so the gap between the two cards is mostly the VAT share (~14%).`}
               delta={delta("net_sales")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("net_sales", kfmt)} showDelta={compareMode !== "none"}
               action={{ label: "Drill into returns", to: "/exec-summary#returns" }} />
-            <KPICard testId="kpi-new-customer-revenue" label="New Customer Revenue"
-              value={ctSeg.newSales == null ? "\u2014" : kfmt(ctSeg.newSales)}
-              valueFull={ctSeg.newSales == null ? "\u2014" : fmtKESLong(ctSeg.newSales)}
-              sub={ctShare.newPct == null ? undefined : `${ctShare.newPct.toFixed(1)}% of Total Sales`}
-              icon={UserPlus}
-              formula="Money from customers whose first-ever purchase happened in this period, on the same basis as the Total Sales card (returns netted). New + Returning always adds up exactly to Total Sales."
-              delta={compareMode !== "none" && ctSeg.newSalesPrev ? pctDelta(ctSeg.newSales, ctSeg.newSalesPrev) : null}
-              deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
-              prevValue={compareMode !== "none" && ctSeg.newSalesPrev != null ? kfmt(ctSeg.newSalesPrev) : null}
-              showDelta={compareMode !== "none"}
-              action={{ label: "Customer breakdown", to: "/customers" }}
-              prefetch={pf("/customers")} />
-            <KPICard testId="kpi-returning-customer-revenue" label="Returning Customer Revenue"
-              value={ctSeg.retSales == null ? "\u2014" : kfmt(ctSeg.retSales)}
-              valueFull={ctSeg.retSales == null ? "\u2014" : fmtKESLong(ctSeg.retSales)}
-              sub={ctShare.retPct == null ? undefined : `${ctShare.retPct.toFixed(1)}% of Total Sales`}
-              icon={UsersThree}
-              formula="All revenue that isn't from brand-new customers: repeat customers plus walk-in (anonymous) sales, on the same basis as the Total Sales card (returns netted). New + Returning always adds up exactly to Total Sales."
-              delta={compareMode !== "none" && ctSeg.retSalesPrev ? pctDelta(ctSeg.retSales, ctSeg.retSalesPrev) : null}
-              deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
-              prevValue={compareMode !== "none" && ctSeg.retSalesPrev != null ? kfmt(ctSeg.retSalesPrev) : null}
-              showDelta={compareMode !== "none"}
-              action={{ label: "Customer breakdown", to: "/customers" }}
-              prefetch={pf("/customers")} />
             <KPICard testId="kpi-orders" label="Transactions" value={fmtNum(kpis.total_orders)} valueFull={fmtNum(kpis.total_orders)} icon={ShoppingCart}
               formula="How many separate purchases were made."
               delta={delta("total_orders")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_orders", fmtNum)} showDelta={compareMode !== "none"}
@@ -1369,6 +1349,48 @@ const Overview = () => {
               showDelta={compareMode !== "none"}
               action={{ label: "Export returns CSV", to: "/exports" }}
               prefetch={pf("/exports")} />
+          </div>
+
+          {/* Sales by Customer Type — New / Returning / Walk-in, shown at the end
+              so the primary headline KPIs lead. % of Revenue is the big number;
+              KES amount shown as subtitle. Three buckets sum to Total Sales. */}
+          <div className="grid grid-cols-3 gap-3">
+            <KPICard testId="kpi-new-customer-revenue" label="New Customers"
+              value={ctShare.newPct == null ? "\u2014" : `${ctShare.newPct.toFixed(1)}%`}
+              valueFull={ctSeg.newSales == null ? "\u2014" : fmtKESLong(ctSeg.newSales)}
+              sub={ctSeg.newSales == null ? "of Revenue" : `of Revenue · ${kfmt(ctSeg.newSales)}`}
+              icon={UserPlus}
+              formula="Share of Total Sales from customers whose first-ever purchase happened in this period. New + Returning + Walk-in adds up to 100% of Total Sales."
+              delta={compareMode !== "none" && ctSeg.newSalesPrev ? pctDelta(ctSeg.newSales, ctSeg.newSalesPrev) : null}
+              deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
+              prevValue={compareMode !== "none" && ctSeg.newSalesPrev != null ? kfmt(ctSeg.newSalesPrev) : null}
+              showDelta={compareMode !== "none"}
+              action={{ label: "Customer breakdown", to: "/customers" }}
+              prefetch={pf("/customers")} />
+            <KPICard testId="kpi-returning-customer-revenue" label="Returning Customers"
+              value={ctShare.retPct == null ? "\u2014" : `${ctShare.retPct.toFixed(1)}%`}
+              valueFull={ctSeg.retSales == null ? "\u2014" : fmtKESLong(ctSeg.retSales)}
+              sub={ctSeg.retSales == null ? "of Revenue" : `of Revenue · ${kfmt(ctSeg.retSales)}`}
+              icon={UsersThree}
+              formula="Share of Total Sales from repeat identified customers. Walk-in/anonymous revenue is shown separately."
+              delta={compareMode !== "none" && ctSeg.retSalesPrev ? pctDelta(ctSeg.retSales, ctSeg.retSalesPrev) : null}
+              deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
+              prevValue={compareMode !== "none" && ctSeg.retSalesPrev != null ? kfmt(ctSeg.retSalesPrev) : null}
+              showDelta={compareMode !== "none"}
+              action={{ label: "Customer breakdown", to: "/customers" }}
+              prefetch={pf("/customers")} />
+            <KPICard testId="kpi-walkin-revenue" label="Walk-in"
+              value={ctShare.walkInPct == null ? "\u2014" : `${ctShare.walkInPct.toFixed(1)}%`}
+              valueFull={ctSeg.walkInSales == null ? "\u2014" : fmtKESLong(ctSeg.walkInSales)}
+              sub={ctSeg.walkInSales == null ? "of Revenue" : `of Revenue · ${kfmt(ctSeg.walkInSales)}`}
+              icon={PersonSimpleWalk}
+              formula="Share of Total Sales from anonymous / walk-in customers (no customer_id or customer_type not in new/returning/registered)."
+              delta={compareMode !== "none" && ctSeg.walkInSalesPrev ? pctDelta(ctSeg.walkInSales, ctSeg.walkInSalesPrev) : null}
+              deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
+              prevValue={compareMode !== "none" && ctSeg.walkInSalesPrev != null ? kfmt(ctSeg.walkInSalesPrev) : null}
+              showDelta={compareMode !== "none"}
+              action={{ label: "Customer breakdown", to: "/customers" }}
+              prefetch={pf("/customers")} />
           </div>
 
           {/* WS9 T903 — KPI tiles (useKpis) resolve before the bootstrap chart
