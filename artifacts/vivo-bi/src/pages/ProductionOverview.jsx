@@ -133,12 +133,12 @@ function BreakdownBar({ title, rows, colorFor, metric = "orders", fullLabels = f
   const total = data.reduce((s, r) => s + (Number(r[metric]) || 0), 0);
   const maxVal = data.length > 0 ? Number(data[0][metric]) : 1;
   return (
-    <div className="card-white p-4" data-testid={testId}>
+    <div className="card-white p-4 flex flex-col" data-testid={testId}>
       <div className="text-[13px] font-bold text-[#0f3d24] mb-3">{title}</div>
       {total === 0 ? (
         <div className="text-[13px] text-muted italic">No data for this period.</div>
       ) : (
-        <div className="space-y-2">
+        <div className="flex flex-col flex-1 justify-between gap-1.5">
           {data.map((r) => {
             const val = Number(r[metric]);
             const pct = (val / total) * 100;
