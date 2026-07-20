@@ -1440,10 +1440,11 @@ const StyleTrackerTab = React.lazy(() => import("./StyleTracker"));
 const GalleryTab = React.lazy(() => import("./Gallery"));
 const SORReportTab = React.lazy(() => import("@/components/SORReportExport"));
 const StockMovementTab = React.lazy(() => import("./StoreFlow"));
+const PDFlowTab = React.lazy(() => import("./PDFlow"));
 
 export const PA_TAB_PAGE_IDS = [
   "product-analysis", "production", "range-mgmt", "allocations", "re-order",
-  "style-tracker", "gallery", "exports", "store-flow",
+  "style-tracker", "gallery", "exports", "store-flow", "pd-flow",
 ];
 
 const ProductionOverviewTab = React.lazy(() => import("./ProductionOverview"));
@@ -1453,6 +1454,7 @@ const PA_TABS = [
   { id: "cockpit", label: "Style Cockpit", pageId: "product-analysis", el: null },
   { id: "range", label: "Range Management", pageId: "range-mgmt", el: RangeManagementTab },
   { id: "tracker", label: "Weekly Style Tracker", pageId: "style-tracker", el: StyleTrackerTab },
+  { id: "pd-flow", label: "PD Flow", pageId: "pd-flow", el: PDFlowTab },
   { id: "catalog", label: "Catalog & SOR", pageId: "product-analysis", el: ProductsCatalog },
   { id: "sor-report", label: "SOR Report", pageId: "exports", el: SORReportTab },
   { id: "allocations", label: "Allocations", pageId: "allocations", el: AllocationsTab },
