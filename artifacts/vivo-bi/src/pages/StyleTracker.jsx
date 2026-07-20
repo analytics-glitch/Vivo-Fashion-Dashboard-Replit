@@ -1157,6 +1157,11 @@ const StyleTracker = () => {
     try {
       await api.post(`/style-tracker/styles/${style.id}`, { ...patch, ...(moveTo || {}) });
       await loadBoard(true, true);
+      // Re-apply the saved patch after the board reload so that any stale
+      // server response (or a concurrent in-flight request that resolves late)
+      // cannot overwrite the value the user just saved — covers order_type,
+      // status, and every other field updated via this path.
+      patchLocal(style.id, patch, moveTo);
     } catch (e) {
       const msg = e?.response?.data?.detail || e.message || "Failed to save change";
       toast.error(msg);
