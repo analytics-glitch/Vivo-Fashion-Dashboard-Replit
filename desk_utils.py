@@ -84,6 +84,20 @@ _DDL = [
     "CREATE INDEX IF NOT EXISTS idx_chair_questions_date ON chair_questions (run_date DESC)",
     # Add structured column to coaching log (safe, idempotent)
     "ALTER TABLE IF EXISTS desk_coaching_log ADD COLUMN IF NOT EXISTS structured JSONB",
+    # Add context_text column so report endpoint can retrieve stored context
+    "ALTER TABLE IF EXISTS desk_coaching_log ADD COLUMN IF NOT EXISTS context_text TEXT",
+    """
+    CREATE TABLE IF NOT EXISTS desk_reports (
+        id           BIGSERIAL PRIMARY KEY,
+        desk         TEXT NOT NULL,
+        scope_key    TEXT NOT NULL DEFAULT 'overview',
+        generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        report       JSONB NOT NULL,
+        model        TEXT,
+        generated_by TEXT DEFAULT 'system'
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_desk_reports_desk ON desk_reports(desk, generated_at DESC)",
 ]
 
 
@@ -167,6 +181,59 @@ def _strip_json(text: str) -> str:
     return text.strip()
 
 
+def _get_coaching_history(conn, desk: str, scope_key: str = "overview",
+                           days: int = 7) -> list:
+    """Load last N *prior* days of coaching output for trend detection."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT run_date, summary, structured FROM desk_coaching_log "
+                "WHERE desk=%s AND scope_key=%s "
+                "  AND run_date >= CURRENT_DATE - %s AND run_date < CURRENT_DATE "
+                "ORDER BY run_date ASC LIMIT 7",
+                (desk, scope_key, days),
+            )
+            rows = cur.fetchall()
+        return [{"date": str(r[0]), "summary": r[1] or "",
+                 "structured": r[2] or {}} for r in rows]
+    except Exception as e:
+        log.debug("_get_coaching_history [%s]: %s", desk, e)
+        return []
+
+
+def _format_history_context(history: list) -> str:
+    """Format prior coaching history as LLM-readable text for trend learning."""
+    if not history:
+        return ""
+    lines = [
+        "PRIOR INTELLIGENCE HISTORY (last 7 days — detect trends, recurring issues, unactioned proposals):",
+    ]
+    for h in history:
+        d = h.get("date", "?")
+        s = h.get("structured") or {}
+        risks = [r.get("title", "?") for r in s.get("risks", [])[:3]]
+        props = [p.get("text", "?")[:80] for p in s.get("proposals", [])[:2]]
+        summary = (h.get("summary") or "")[:160]
+        lines.append(f"[{d}]")
+        if risks:
+            lines.append(f"  Risks flagged: {' | '.join(risks)}")
+        if props:
+            lines.append(f"  Proposals made: {' | '.join(props)}")
+        if summary:
+            lines.append(f"  Summary: {summary}")
+    lines += [
+        "",
+        "LEARNING RULES — apply before generating output:",
+        "  RECURRING: same risk theme in 2+ consecutive entries → add '(PERSISTENT — Nd)' to title, escalate severity one level",
+        "  UNACTIONED: proposal from history not yet resolved in data → flag 'prior proposal appears unactioned — re-escalate'",
+        "  RESOLVED: previously flagged risk metric clearly improved → note 'RESOLVED: [issue]' in summary",
+        "  WORSENING: metric deteriorating vs prior entry → note trend direction with delta",
+        "--- END HISTORY ---",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 _INTEL_SYSTEM = """You are the Chief Intelligence Officer for Vivo Fashion Group — a vertically-integrated multi-brand fashion retailer (Vivo Woman, Shop Zetu) across East Africa: Kenya (primary, ~84% of POS revenue), Uganda, Rwanda, and Online. All amounts in KES (~130 KES = 1 USD).
 
 BUSINESS CONTEXT to apply:
@@ -222,12 +289,24 @@ def call_llm_structured(api_key: str, context_text: str, desk: str,
                          scope_key: str = "overview", conn=None) -> dict:
     """
     Call Claude haiku with structured JSON intelligence request.
+    - Injects coaching history from DB (last 7 days) for trend detection + learning.
+    - Saves original context_text to desk_coaching_log so report endpoint can use it.
+    - Auto-flags critical/high risks as issues when conn is provided.
     Returns: {note, structured: {risks, opportunities, proposals, summary}, model, generated_for}
-    Auto-flags critical/high risks as issues when conn is provided.
     """
     if not api_key:
         return {"note": "AI not configured.", "structured": None,
                 "model": None, "generated_for": date.today().isoformat()}
+
+    # Save original context before history injection (report endpoint reads this)
+    original_context = context_text
+
+    # Inject prior-days history for learning and trend detection
+    if conn is not None:
+        history = _get_coaching_history(conn, desk, scope_key)
+        if history:
+            context_text = _format_history_context(history) + context_text
+
     try:
         import requests as _req
         resp = _req.post(
@@ -242,6 +321,25 @@ def call_llm_structured(api_key: str, context_text: str, desk: str,
         raw = resp.json().get("content", [{}])[0].get("text", "")
         structured = _json.loads(_strip_json(raw))
         note = structured.get("summary", "")
+
+        # Persist context_text so the report endpoint can generate a report without
+        # re-running all DB queries (upsert: don't overwrite summary/structured,
+        # those come from save_coaching() called by each desk router separately)
+        if conn is not None:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO desk_coaching_log (desk, scope_key, run_date, context_text) "
+                        "VALUES (%s, %s, CURRENT_DATE, %s) "
+                        "ON CONFLICT (desk, scope_key, run_date) "
+                        "DO UPDATE SET context_text = EXCLUDED.context_text",
+                        (desk, scope_key, original_context),
+                    )
+                conn.commit()
+            except Exception as _ce:
+                log.debug("context_text save [%s]: %s", desk, _ce)
+                try: conn.rollback()
+                except Exception: pass
 
         # Auto-flag critical/high risks as issues immediately
         if conn is not None:
@@ -262,7 +360,6 @@ def call_llm_structured(api_key: str, context_text: str, desk: str,
 
     except _json.JSONDecodeError as e:
         log.warning("call_llm_structured [%s/%s] JSON parse error: %s", desk, scope_key, e)
-        # Fall back to plain-text note so something is shown
         return {"note": raw[:600] if "raw" in dir() and raw else "Coaching unavailable.",
                 "structured": None, "model": "claude-haiku-4-5",
                 "generated_for": date.today().isoformat()}
@@ -288,6 +385,152 @@ def auto_flag_issue(conn, desk: str, scope_key: str, title: str,
     create_issue(conn, desk=desk, scope_key=scope_key, title=title,
                  body=body, source="auto", severity=severity)
     return True
+
+
+# ── Report prompt + generation ────────────────────────────────────────────────
+
+_REPORT_SYSTEM = """You are the Chief Intelligence Officer for Vivo Fashion Group preparing a formal management report for senior leadership review and action.
+
+BUSINESS CONTEXT:
+Vivo Fashion Group — multi-brand fashion retailer (Vivo Woman, Shop Zetu) across East Africa: Kenya (primary, ~84%% of POS revenue), Uganda, Rwanda, Online. All amounts in KES (~130 KES = 1 USD).
+Revenue: retail POS stores + e-commerce (Shop Zetu). Priorities: (1) net sales vs growth-path, (2) gross margin, (3) stock velocity, (4) customer repeat rate + CLV, (5) staff productivity.
+Seasonality: school holidays (April, August, December) = peak; January/June = slow.
+Thresholds: Attendance 85%%+ healthy · <75%% CRITICAL. WOC <4w stockout · >20w excess. Repeat rate >30%% healthy · <20%% crisis. PO fill rate >90%% healthy · <75%% production risk. Rev/staff-hr <50%% of fleet median = efficiency crisis. Social backlog >20 unanswered = SLA risk · >50 = brand risk.
+
+If prior intelligence history appears at the top of the context, use it to determine trend direction and flag recurring issues.
+
+This report will be printed and acted on by department heads. Every finding must be substantiated by data. Every action must be specific enough to execute without further clarification.
+
+OUTPUT: Valid JSON only. No markdown fences. No text outside the JSON object.
+
+JSON SCHEMA (use exactly these keys):
+{
+  "title": "...",
+  "overall_status": "critical|high|normal|positive",
+  "executive_summary": "...",
+  "situation_assessment": "...",
+  "key_findings": [
+    {
+      "heading": "...",
+      "analysis": "...",
+      "evidence": "...",
+      "severity": "critical|high|medium|low",
+      "kes_impact": <integer or null>
+    }
+  ],
+  "action_plan": [
+    {
+      "action": "...",
+      "rationale": "...",
+      "owner": "...",
+      "by_when": "...",
+      "expected_impact": "...",
+      "priority": "high|medium|low",
+      "kes_impact": <integer or null>
+    }
+  ],
+  "trend_assessment": "...",
+  "risks_to_watch": [
+    {"risk": "...", "trigger": "...", "mitigation": "..."}
+  ],
+  "data_limitations": "...",
+  "conclusion": "..."
+}
+
+RULES:
+- executive_summary: 3-4 sentences standalone — readable by a busy CEO without reading the rest. Cover: overall situation, biggest risk (name it), key opportunity, 30-day outlook.
+- situation_assessment: 2-3 sentences of analytical narrative prose (not a list).
+- key_findings: max 5, ranked by severity then kes_impact. Each has 2-3 sentences of analysis + specific data evidence (real numbers from context). Heading must name the specific issue (e.g. "Vivowoman Branch Attendance 62%% — 3rd Consecutive Day").
+- action_plan: max 6 items, ranked by priority. Owner = specific title (never "team" or "management"). by_when = concrete deadline ("by EOD Friday", "within 48 hours", "by July 25"). kes_impact = your best integer estimate.
+- trend_assessment: state improving/worsening/stable with evidence. If history is available, cite it. If none: "Insufficient historical data — this is the baseline reading."
+- risks_to_watch: exactly 3. Each has a specific trigger condition and concrete mitigation step.
+- conclusion: 1-2 sentences. The single most important message leadership must act on this week.
+- kes_impact: always an integer estimate from the data. null only if genuinely not calculable.
+- Do not fabricate data. Quote only numbers present in the context provided."""
+
+
+def get_latest_coaching_context(conn, desk: str,
+                                 scope_key: str = "overview") -> str | None:
+    """Retrieve the stored context_text for report generation."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT context_text FROM desk_coaching_log "
+            "WHERE desk=%s AND scope_key=%s AND context_text IS NOT NULL "
+            "ORDER BY run_date DESC LIMIT 1",
+            (desk, scope_key),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def get_latest_report(conn, desk: str, scope_key: str = "overview") -> dict | None:
+    """Get most recent stored report for a desk."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT report, model, generated_at, generated_by FROM desk_reports "
+            "WHERE desk=%s AND scope_key=%s ORDER BY generated_at DESC LIMIT 1",
+            (desk, scope_key),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        "report": row[0],
+        "model": row[1],
+        "generated_at": row[2].isoformat() if row[2] else None,
+        "generated_by": row[3],
+    }
+
+
+def generate_report(api_key: str, context_text: str, desk: str,
+                    conn, scope_key: str = "overview",
+                    generated_by: str = "system") -> dict:
+    """
+    Generate a comprehensive narrative management report using _REPORT_SYSTEM.
+    Injects the last 7 days of history for trend assessment, then calls Claude
+    with max_tokens=4000 for a full narrative output. Saves to desk_reports.
+    Returns: {ok, report, model, generated_at} or {error: str}
+    """
+    if not api_key:
+        return {"error": "AI not configured — ANTHROPIC_API_KEY missing."}
+
+    # Inject history for richer trend analysis (same mechanism as call_llm_structured)
+    history = _get_coaching_history(conn, desk, scope_key)
+    if history:
+        context_text = _format_history_context(history) + context_text
+
+    try:
+        import requests as _req
+        resp = _req.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": "claude-haiku-4-5", "max_tokens": 4000,
+                  "system": _REPORT_SYSTEM,
+                  "messages": [{"role": "user", "content": context_text}]},
+            timeout=120,
+        )
+        raw = resp.json().get("content", [{}])[0].get("text", "")
+        report = _json.loads(_strip_json(raw))
+        report.setdefault("generated_at", date.today().isoformat())
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO desk_reports (desk, scope_key, report, model, generated_by) "
+                "VALUES (%s, %s, %s, 'claude-haiku-4-5', %s)",
+                (desk, scope_key, _json.dumps(report), generated_by),
+            )
+        conn.commit()
+
+        return {"ok": True, "report": report,
+                "model": "claude-haiku-4-5",
+                "generated_at": date.today().isoformat()}
+
+    except _json.JSONDecodeError:
+        return {"error": "LLM returned invalid JSON — please try again."}
+    except Exception as e:
+        log.warning("generate_report [%s]: %s", desk, e)
+        return {"error": str(e)}
 
 
 # ── Coaching cache ────────────────────────────────────────────────────────────

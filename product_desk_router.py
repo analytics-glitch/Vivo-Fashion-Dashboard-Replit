@@ -289,6 +289,34 @@ def register_product_desk_routes(app, A):
             return result
         finally: conn.close()
 
+    @app.get("/api/product-desk/report/latest")
+    async def product_desk_report_latest():
+        import psycopg2
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        try:
+            result = du.get_latest_report(conn, DESK)
+            return result or {"report": None}
+        finally:
+            conn.close()
+
+    @app.post("/api/product-desk/report")
+    async def product_desk_report_generate(request):
+        import psycopg2
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        try:
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            ctx = du.get_latest_coaching_context(conn, DESK)
+            if not ctx:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    {"error": "No coaching context yet. Open the Product Desk overview first."},
+                    status_code=400)
+            user = getattr(request.state, "user", {}) or {}
+            return du.generate_report(api_key, ctx, DESK, conn,
+                                       generated_by=user.get("email", "system"))
+        finally:
+            conn.close()
+
     @app.post("/api/product-desk/issues/{issue_id}/close")
     async def product_desk_close_issue(issue_id: int, request):
         body = await request.json()

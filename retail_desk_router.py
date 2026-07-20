@@ -798,6 +798,35 @@ def register_retail_desk_routes(app, api_pg_module):
         issue_id = rows[0]["id"] if rows else None
         return JSONResponse({"ok": True, "id": issue_id}, status_code=201)
 
+    @app.get("/api/retail-desk/report/latest")
+    async def retail_desk_report_latest():
+        import psycopg2
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        try:
+            result = du.get_latest_report(conn, "retail", "fleet_overview")
+            return JSONResponse(result or {"report": None})
+        finally:
+            conn.close()
+
+    @app.post("/api/retail-desk/report")
+    async def retail_desk_report_generate(request: Request):
+        import psycopg2
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        try:
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            ctx = du.get_latest_coaching_context(conn, "retail", "fleet_overview")
+            if not ctx:
+                return JSONResponse(
+                    {"error": "No coaching context yet. Open the Retail Desk overview first."},
+                    status_code=400)
+            user = getattr(request.state, "user", {}) or {}
+            result = du.generate_report(api_key, ctx, "retail", conn,
+                                         scope_key="fleet_overview",
+                                         generated_by=user.get("email", "system"))
+            return JSONResponse(result)
+        finally:
+            conn.close()
+
     @app.post("/api/retail-desk/issues/{issue_id}/close")
     async def retail_desk_close_issue(issue_id: int, request: Request):
         body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
