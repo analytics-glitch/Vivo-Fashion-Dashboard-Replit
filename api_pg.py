@@ -1524,6 +1524,27 @@ def _ensure_perf_indexes():
 
 
 @_deferred_startup
+def _backfill_receiving_kpm():
+    # Repair receiving sheets whose kg_per_mtr was snapshotted as NULL because
+    # the product had no Width/GSM in Odoo at creation time. The buying team
+    # may have since filled in Width+GSM; this one-shot backfill (NULL-only
+    # guard means it is a no-op once all sheets are fixed) repairs those sheets
+    # and their rolls so the "Missing Width/GSM" badge disappears without any
+    # manual intervention or a full restart. The sync loop also calls it on
+    # every fast-fabric extract so the fix applies within ~60s of an Odoo
+    # Width/GSM update being synced.
+    try:
+        from fabric_router import _recv_backfill_missing_kpm
+        conn = get_conn()
+        try:
+            _recv_backfill_missing_kpm(conn)
+        finally:
+            conn.close()
+    except Exception as e:
+        log.error("Startup kpm backfill failed: %s", e)
+
+
+@_deferred_startup
 def _start_cache_prewarmer():
     # Background pre-warmer for the heavy whole-history dashboards. These
     # queries take 10-20s cold and are cached HEAVY_DASH_TTL (900s); without

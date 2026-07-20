@@ -5757,6 +5757,74 @@ def _recv_audit(cur, po_id, sheet_id, fabric_name, action, details, actor):
     """, (po_id, sheet_id, fabric_name, action,
           psycopg2.extras.Json(details or {}), actor))
 
+def _recv_backfill_missing_kpm(conn):
+    """Back-fill kg_per_mtr on receiving sheets whose product now has Width/GSM.
+
+    When a receiving sheet is created for a product that has no Width/GSM in
+    Odoo yet, kg_per_mtr=NULL is frozen into fabric_receiving_sheets. After the
+    buying team later enters Width/GSM in Odoo and the ~60s sync updates
+    raw_fabric_products, this function finds every sheet where:
+      - fabric_receiving_sheets.kg_per_mtr IS NULL (never filled in)
+      - raw_fabric_products.kg_per_mtr_eff IS NOT NULL (now derivable)
+    and repairs them in a single transaction:
+      - Sets sheet.kg_per_mtr = kg_per_mtr_eff
+      - Recomputes sheet.total_mtrs = ROUND(total_kg / kg_per_mtr_eff, 1)
+      - Sets qty_mtrs on every non-deleted roll = ROUND(qty_kg / kg_per_mtr_eff, 2)
+    Sheets that already had a valid kg_per_mtr at creation are untouched.
+    Safe to call repeatedly — NULL-only guard means it is a no-op once fixed.
+    """
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                WITH stale AS (
+                    SELECT s.id             AS sheet_id,
+                           p.kg_per_mtr_eff AS kpm
+                    FROM fabric_receiving_sheets s
+                    JOIN raw_fabric_products p ON p.id = s.product_id
+                    WHERE s.kg_per_mtr IS NULL
+                      AND p.kg_per_mtr_eff IS NOT NULL
+                      AND p.kg_per_mtr_eff > 0
+                )
+                UPDATE fabric_receiving_sheets s
+                   SET kg_per_mtr     = stale.kpm,
+                       total_mtrs     = ROUND(s.total_kg / stale.kpm, 1),
+                       updated_at     = now(),
+                       updated_by_name = 'system (kpm backfill)'
+                  FROM stale
+                 WHERE s.id = stale.sheet_id
+                RETURNING s.id
+            """)
+            updated_sheet_ids = [r[0] for r in cur.fetchall()]
+            if not updated_sheet_ids:
+                conn.commit()
+                return
+            cur.execute("""
+                UPDATE fabric_receiving_rolls r
+                   SET qty_mtrs = ROUND(r.qty_kg / p.kg_per_mtr_eff, 2)
+                  FROM fabric_receiving_sheets s
+                  JOIN raw_fabric_products p ON p.id = s.product_id
+                 WHERE r.sheet_id = s.id
+                   AND s.id = ANY(%s)
+                   AND r.deleted_at IS NULL
+                   AND p.kg_per_mtr_eff IS NOT NULL
+                   AND p.kg_per_mtr_eff > 0
+            """, (updated_sheet_ids,))
+            updated_rolls = cur.rowcount
+        conn.commit()
+        _logger.info(
+            "kpm backfill: patched %d sheet(s) and %d roll(s) "
+            "with newly-available Width/GSM conversion",
+            len(updated_sheet_ids), updated_rolls)
+    except Exception as e:
+        _logger.error("kpm backfill failed: %s", e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def _recv_refresh_sheet_totals(conn, sheet_id, actor_name):
     """Recompute a sheet's totals from its rolls (using the sheet's SNAPSHOTTED
     kg->metre conversion) and stamp the edit."""

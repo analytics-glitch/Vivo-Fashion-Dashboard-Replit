@@ -1339,6 +1339,65 @@ def categorise_products(cur):
     log.info("✅ Product categorisation done")
 
 
+def _recv_backfill_missing_kpm_sync(conn):
+    """Standalone SQL helper (mirrors fabric_router._recv_backfill_missing_kpm).
+
+    Called from the fabric worker loop after every successful fast extract so
+    that within ~60s of a buying team entering Width/GSM in Odoo the
+    corresponding receiving sheets' kg_per_mtr and roll qty_mtrs values are
+    repaired automatically. Only patches sheets where kg_per_mtr IS NULL (safe
+    to call on every cycle — it is a no-op once all sheets are fixed).
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                WITH stale AS (
+                    SELECT s.id             AS sheet_id,
+                           p.kg_per_mtr_eff AS kpm
+                    FROM fabric_receiving_sheets s
+                    JOIN raw_fabric_products p ON p.id = s.product_id
+                    WHERE s.kg_per_mtr IS NULL
+                      AND p.kg_per_mtr_eff IS NOT NULL
+                      AND p.kg_per_mtr_eff > 0
+                )
+                UPDATE fabric_receiving_sheets s
+                   SET kg_per_mtr      = stale.kpm,
+                       total_mtrs      = ROUND(s.total_kg / stale.kpm, 1),
+                       updated_at      = now(),
+                       updated_by_name = 'system (kpm backfill)'
+                  FROM stale
+                 WHERE s.id = stale.sheet_id
+                RETURNING s.id
+            """)
+            updated_sheet_ids = [r[0] for r in cur.fetchall()]
+            if not updated_sheet_ids:
+                conn.commit()
+                return
+            cur.execute("""
+                UPDATE fabric_receiving_rolls r
+                   SET qty_mtrs = ROUND(r.qty_kg / p.kg_per_mtr_eff, 2)
+                  FROM fabric_receiving_sheets s
+                  JOIN raw_fabric_products p ON p.id = s.product_id
+                 WHERE r.sheet_id = s.id
+                   AND s.id = ANY(%s)
+                   AND r.deleted_at IS NULL
+                   AND p.kg_per_mtr_eff IS NOT NULL
+                   AND p.kg_per_mtr_eff > 0
+            """, (updated_sheet_ids,))
+            updated_rolls = cur.rowcount
+        conn.commit()
+        log.info(
+            "kpm backfill: patched %d sheet(s) and %d roll(s) "
+            "with newly-available Width/GSM conversion",
+            len(updated_sheet_ids), updated_rolls)
+    except Exception as e:
+        log.error("kpm backfill failed: %s", e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def fabric_worker_loop(stop_event=None):
     """Dedicated ~60s fabric extract loop, independent of the main sales cycle.
 
@@ -1429,6 +1488,11 @@ def fabric_worker_loop(stop_event=None):
                     )
                     write_heartbeat(conn, "fabric", table="fabric_heartbeat")
                     log.info("✅ Fabric fast extract complete")
+                    # Back-fill any receiving sheets whose kg_per_mtr was NULL
+                    # at creation (product had no Width/GSM then) but whose
+                    # product now has a valid kg_per_mtr_eff after this extract.
+                    # No-op when all sheets are already repaired.
+                    _recv_backfill_missing_kpm_sync(conn)
                     # A full bootstrap already pulled the heavy tables — start their
                     # slow timer now so we don't immediately re-run them.
                     if fabric_empty:
