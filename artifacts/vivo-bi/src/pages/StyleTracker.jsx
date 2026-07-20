@@ -10,6 +10,8 @@ import {
   ArrowCounterClockwise,
   CalendarBlank,
   CaretDown,
+  CaretLeft,
+  CaretRight,
   CaretUp,
   ChatText,
   CheckCircle,
@@ -238,6 +240,81 @@ function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivil
         </div>
       )}
     </div>
+  );
+}
+
+/** Single-week picker: dropdown + prev/next arrows */
+function WeekPicker({ weeks, selectedKey, onSelect }) {
+  const idx = weeks.findIndex((w) => weekKey(w) === selectedKey);
+  const prev = idx > 0 ? weeks[idx - 1] : null;
+  const next = idx < weeks.length - 1 ? weeks[idx + 1] : null;
+
+  return (
+    <div className="flex items-center gap-1.5" data-testid="week-picker">
+      <button
+        type="button"
+        onClick={() => prev && onSelect(weekKey(prev))}
+        disabled={!prev}
+        title={prev ? `Go to ${prev.label}` : undefined}
+        className="flex items-center justify-center w-7 h-7 rounded-lg border border-line bg-white text-muted hover:text-[#0f3d24] hover:bg-panel disabled:opacity-30 disabled:cursor-not-allowed"
+      >
+        <CaretLeft size={13} weight="bold" />
+      </button>
+
+      <select
+        value={selectedKey || ""}
+        onChange={(e) => onSelect(e.target.value)}
+        className="text-[12px] font-semibold text-[#0f3d24] bg-white border border-line rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand/40 min-w-[180px]"
+        data-testid="week-picker-select"
+      >
+        {weeks.map((w) => {
+          const wk = weekKey(w);
+          const suffix = w.overdue ? " — Overdue" : w.is_current ? " — This week" : "";
+          return (
+            <option key={wk} value={wk}>
+              {w.label}{suffix}
+            </option>
+          );
+        })}
+      </select>
+
+      <button
+        type="button"
+        onClick={() => next && onSelect(weekKey(next))}
+        disabled={!next}
+        title={next ? `Go to ${next.label}` : undefined}
+        className="flex items-center justify-center w-7 h-7 rounded-lg border border-line bg-white text-muted hover:text-[#0f3d24] hover:bg-panel disabled:opacity-30 disabled:cursor-not-allowed"
+      >
+        <CaretRight size={13} weight="bold" />
+      </button>
+    </div>
+  );
+}
+
+/** Inline Order Type select on the style card */
+function OrderTypeSelect({ style, orderTypes, busy, onUpdate }) {
+  const handleChange = (e) => {
+    const val = e.target.value || null;
+    onUpdate(style, { order_type: val });
+  };
+
+  const badgeCls = style.order_type
+    ? ORDER_TYPE_BADGE[style.order_type] || "bg-panel text-muted border-line"
+    : "bg-white text-muted border-line";
+
+  return (
+    <select
+      value={style.order_type || ""}
+      onChange={handleChange}
+      disabled={busy}
+      className={`text-[11px] font-medium border rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50 w-full ${badgeCls}`}
+      data-testid={`order-type-select-${style.id}`}
+    >
+      <option value="">— type —</option>
+      {orderTypes.map((t) => (
+        <option key={t} value={t}>{t}</option>
+      ))}
+    </select>
   );
 }
 
@@ -619,7 +696,7 @@ function FulfillmentDrawer({ styleId, styleName, onClose }) {
 
 /** One draggable style card */
 function StyleCard({
-  style, finishingOptions, busy, late, onUpdate, onDelete,
+  style, finishingOptions, orderTypes, busy, late, onUpdate, onDelete,
   onDragStart, onDragEnd, isPrivileged, onNoteAdded, onOpenFulfillment,
   onOptionsChange,
 }) {
@@ -691,8 +768,13 @@ function StyleCard({
         )}
       </div>
 
+      {/* Order Type inline select */}
+      <div className="mt-1.5">
+        <OrderTypeSelect style={style} orderTypes={orderTypes} busy={busy} onUpdate={onUpdate} />
+      </div>
+
       {/* Status select with finishing-options management */}
-      <div className="mt-2">
+      <div className="mt-1.5">
         {isPrivileged ? (
           <FinishingOptionsSelect
             style={style}
@@ -889,6 +971,7 @@ const StyleTracker = () => {
   const [archivingWeek, setArchivingWeek] = useState(null);
   const [dragOverWeek, setDragOverWeek] = useState(null);
   const [fulfillmentStyle, setFulfillmentStyle] = useState(null); // {id, style_name}
+  const [selectedWeekKey, setSelectedWeekKey] = useState(null);
   const dragStyleRef = useRef(null);
 
   // Check if current user is privileged (admin or specific emails)
@@ -919,6 +1002,17 @@ const StyleTracker = () => {
 
   useEffect(() => { loadBoard(); }, [loadBoard]);
   useEffect(() => { if (view === "archived") loadArchived(); }, [view]);
+
+  // Set the default selected week to the current week when the board first loads
+  useEffect(() => {
+    if (!board) return;
+    setSelectedWeekKey((prev) => {
+      // Keep the user's selection if it still exists in the board
+      if (prev && board.weeks.some((w) => weekKey(w) === prev)) return prev;
+      const cur = board.weeks.find((w) => w.is_current);
+      return cur ? weekKey(cur) : (board.weeks[0] ? weekKey(board.weeks[0]) : null);
+    });
+  }, [board]);
 
   const finishingOptions = board?.finishing_options || [];
   const statuses = board?.statuses || [];
@@ -1136,100 +1230,117 @@ const StyleTracker = () => {
             </div>
           )}
 
-          <div className="overflow-x-auto pb-2">
-            <div className="flex gap-3 min-w-max items-start">
-              {board.weeks.map((week) => {
-                const wk = weekKey(week);
-                const isDragTarget = dragOverWeek === wk;
-                return (
-                  <div
-                    key={wk}
-                    onDragOver={(e) => onColDragOver(e, week)}
-                    onDragLeave={() => setDragOverWeek((c) => (c === wk ? null : c))}
-                    onDrop={(e) => onColDrop(e, week)}
-                    className={`w-[270px] shrink-0 rounded-xl border flex flex-col transition ${
-                      week.overdue ? "bg-amber-50/70 border-amber-300"
-                        : week.is_current ? "bg-brand/5 border-brand/40"
-                        : "bg-panel/50 border-line"
-                    } ${isDragTarget ? "ring-2 ring-brand/60" : ""}`}
-                    data-testid={`style-tracker-col-${wk}`}
-                  >
-                    <div className={`px-3 py-2.5 border-b ${week.overdue ? "border-amber-200" : "border-line"}`}>
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <div className="font-bold text-[13px] text-[#0f3d24] truncate">{week.label}</div>
-                          {week.overdue && <span className="text-[9px] font-bold uppercase tracking-wide text-amber-800 bg-amber-200/80 border border-amber-300 rounded-full px-1.5 py-0.5 shrink-0">Overdue</span>}
-                          {week.is_current && <span className="text-[9px] font-bold uppercase tracking-wide text-white bg-[#1a5c38] rounded-full px-1.5 py-0.5 shrink-0">This week</span>}
-                        </div>
-                      </div>
-                      <WeekStats week={week} />
-                      {week.is_past && (
-                        <button
-                          type="button"
-                          onClick={() => archiveWeek(week)}
-                          disabled={archivingWeek === wk || !week.styles.some((s) => s.completed)}
-                          className="mt-1.5 flex items-center gap-1 text-[10.5px] font-semibold text-amber-900 bg-white border border-amber-300 hover:bg-amber-100 rounded-md px-2 py-1 disabled:opacity-45 disabled:cursor-not-allowed"
-                        >
-                          <Archive size={12} />
-                          {archivingWeek === wk ? "Archiving…" : "Archive week"}
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="p-2 space-y-2 flex-1 min-h-[80px]">
-                      {week.styles.length === 0 && addingWeek !== wk && (
-                        <div className="text-[11px] text-muted/70 italic text-center py-4">
-                          No styles — drop a card here or add one
-                        </div>
-                      )}
-                      {week.styles.map((s) => (
-                        <StyleCard
-                          key={s.id}
-                          style={s}
-                          finishingOptions={finishingOptions}
-                          busy={busyIds.has(s.id)}
-                          late={isLateStyle(s, board.today)}
-                          onUpdate={updateStyle}
-                          onDelete={deleteStyle}
-                          onDragStart={onCardDragStart}
-                          onDragEnd={onCardDragEnd}
-                          isPrivileged={isPrivileged}
-                          onNoteAdded={handleNoteAdded}
-                          onOpenFulfillment={(style) => setFulfillmentStyle({ id: style.id, style_name: style.style_name })}
-                          onOptionsChange={() => loadBoard(true, true)}
-                        />
-                      ))}
-                      {addingWeek === wk ? (
-                        <AddStyleForm
-                          week={week}
-                          finishingOptions={finishingOptions}
-                          brands={brands}
-                          categories={categories}
-                          orderTypes={orderTypes}
-                          onCreate={createStyle}
-                          onCancel={() => setAddingWeek(null)}
-                        />
-                      ) : isPrivileged ? (
-                        <button
-                          type="button"
-                          onClick={() => setAddingWeek(wk)}
-                          className="w-full flex items-center justify-center gap-1 text-[11.5px] font-semibold text-[#1a5c38] border border-dashed border-[#1a5c38]/40 hover:bg-brand/5 rounded-lg px-2 py-1.5"
-                          data-testid={`style-tracker-add-${wk}`}
-                        >
-                          <Plus size={13} weight="bold" /> Add style
-                        </button>
-                      ) : null}
-                    </div>
-
-                    <div className={`px-3 py-2 border-t text-[11px] font-semibold text-[#0f3d24] flex items-center justify-between ${week.overdue ? "border-amber-200" : "border-line"}`}>
-                      <span>{week.completed_count || 0}/{week.count} in WH</span>
-                      <span>{fmtUnits(week.completed_units || 0)}/{fmtUnits(week.total_units)} pcs</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+          {/* Week picker */}
+          <div className="flex items-center gap-3">
+            <WeekPicker
+              weeks={board.weeks}
+              selectedKey={selectedWeekKey}
+              onSelect={setSelectedWeekKey}
+            />
+            {selectedWeekKey && (() => {
+              const sw = board.weeks.find((w) => weekKey(w) === selectedWeekKey);
+              if (!sw) return null;
+              return (
+                <span className="text-[11.5px] text-muted">
+                  {sw.count} style{sw.count === 1 ? "" : "s"} · {fmtUnits(sw.total_units)} pcs
+                </span>
+              );
+            })()}
           </div>
+
+          {/* Single-week board column */}
+          {(() => {
+            const week = board.weeks.find((w) => weekKey(w) === selectedWeekKey);
+            if (!week) return null;
+            const wk = weekKey(week);
+            const isDragTarget = dragOverWeek === wk;
+            return (
+              <div
+                onDragOver={(e) => onColDragOver(e, week)}
+                onDragLeave={() => setDragOverWeek((c) => (c === wk ? null : c))}
+                onDrop={(e) => onColDrop(e, week)}
+                className={`rounded-xl border flex flex-col transition max-w-[560px] ${
+                  week.overdue ? "bg-amber-50/70 border-amber-300"
+                    : week.is_current ? "bg-brand/5 border-brand/40"
+                    : "bg-panel/50 border-line"
+                } ${isDragTarget ? "ring-2 ring-brand/60" : ""}`}
+                data-testid={`style-tracker-col-${wk}`}
+              >
+                <div className={`px-3 py-2.5 border-b ${week.overdue ? "border-amber-200" : "border-line"}`}>
+                  <div className="flex items-center gap-1.5">
+                    <div className="font-bold text-[13px] text-[#0f3d24]">{week.label}</div>
+                    {week.overdue && <span className="text-[9px] font-bold uppercase tracking-wide text-amber-800 bg-amber-200/80 border border-amber-300 rounded-full px-1.5 py-0.5">Overdue</span>}
+                    {week.is_current && <span className="text-[9px] font-bold uppercase tracking-wide text-white bg-[#1a5c38] rounded-full px-1.5 py-0.5">This week</span>}
+                  </div>
+                  <WeekStats week={week} />
+                  {week.is_past && (
+                    <button
+                      type="button"
+                      onClick={() => archiveWeek(week)}
+                      disabled={archivingWeek === wk || !week.styles.some((s) => s.completed)}
+                      className="mt-1.5 flex items-center gap-1 text-[10.5px] font-semibold text-amber-900 bg-white border border-amber-300 hover:bg-amber-100 rounded-md px-2 py-1 disabled:opacity-45 disabled:cursor-not-allowed"
+                    >
+                      <Archive size={12} />
+                      {archivingWeek === wk ? "Archiving…" : "Archive week"}
+                    </button>
+                  )}
+                </div>
+
+                <div className="p-3 space-y-2 flex-1 min-h-[80px]">
+                  {week.styles.length === 0 && addingWeek !== wk && (
+                    <div className="text-[11px] text-muted/70 italic text-center py-6">
+                      No styles this week — add one below
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {week.styles.map((s) => (
+                      <StyleCard
+                        key={s.id}
+                        style={s}
+                        finishingOptions={finishingOptions}
+                        orderTypes={orderTypes}
+                        busy={busyIds.has(s.id)}
+                        late={isLateStyle(s, board.today)}
+                        onUpdate={updateStyle}
+                        onDelete={deleteStyle}
+                        onDragStart={onCardDragStart}
+                        onDragEnd={onCardDragEnd}
+                        isPrivileged={isPrivileged}
+                        onNoteAdded={handleNoteAdded}
+                        onOpenFulfillment={(style) => setFulfillmentStyle({ id: style.id, style_name: style.style_name })}
+                        onOptionsChange={() => loadBoard(true, true)}
+                      />
+                    ))}
+                  </div>
+                  {addingWeek === wk ? (
+                    <AddStyleForm
+                      week={week}
+                      finishingOptions={finishingOptions}
+                      brands={brands}
+                      categories={categories}
+                      orderTypes={orderTypes}
+                      onCreate={createStyle}
+                      onCancel={() => setAddingWeek(null)}
+                    />
+                  ) : isPrivileged ? (
+                    <button
+                      type="button"
+                      onClick={() => setAddingWeek(wk)}
+                      className="w-full flex items-center justify-center gap-1 text-[11.5px] font-semibold text-[#1a5c38] border border-dashed border-[#1a5c38]/40 hover:bg-brand/5 rounded-lg px-2 py-1.5"
+                      data-testid={`style-tracker-add-${wk}`}
+                    >
+                      <Plus size={13} weight="bold" /> Add style
+                    </button>
+                  ) : null}
+                </div>
+
+                <div className={`px-3 py-2 border-t text-[11px] font-semibold text-[#0f3d24] flex items-center justify-between ${week.overdue ? "border-amber-200" : "border-line"}`}>
+                  <span>{week.completed_count || 0}/{week.count} in WH</span>
+                  <span>{fmtUnits(week.completed_units || 0)}/{fmtUnits(week.total_units)} pcs</span>
+                </div>
+              </div>
+            );
+          })()}
         </>
       ) : view === "table" ? (
         <WeekTable
