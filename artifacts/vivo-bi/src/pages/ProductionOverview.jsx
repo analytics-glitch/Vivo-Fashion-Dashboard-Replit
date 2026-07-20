@@ -126,7 +126,7 @@ function MetricCard({ label, value, pctText, pctLabel, accent, onClick, testId }
   );
 }
 
-function BreakdownBar({ title, rows, colorFor, metric = "orders", fullLabels = false, testId }) {
+function BreakdownBar({ title, rows, colorFor, metric = "orders", fullLabels = false, onRowClick, testId }) {
   const data = (rows || [])
     .filter((r) => Number(r[metric]) > 0)
     .sort((a, b) => Number(b[metric]) - Number(a[metric]));
@@ -146,7 +146,14 @@ function BreakdownBar({ title, rows, colorFor, metric = "orders", fullLabels = f
             const displayLabel = fullLabels ? (r.label || "—") : titleize(r.label || "—");
             const color = colorFor(r);
             return (
-              <div key={r.label} className="flex items-center gap-2 text-[13px]">
+              <div
+                key={r.label}
+                className={`flex items-center gap-2 text-[13px] rounded-md transition-colors ${onRowClick ? "cursor-pointer hover:bg-[#f5f0eb]/80 -mx-1 px-1" : ""}`}
+                onClick={onRowClick ? () => onRowClick(r) : undefined}
+                role={onRowClick ? "button" : undefined}
+                tabIndex={onRowClick ? 0 : undefined}
+                onKeyDown={onRowClick ? (e) => { if (e.key === "Enter" || e.key === " ") onRowClick(r); } : undefined}
+              >
                 <div
                   className={`shrink-0 font-medium text-[#0f3d24] ${fullLabels ? "text-left" : "text-right"}`}
                   style={{
@@ -931,6 +938,12 @@ export default function ProductionOverview({ onOpenReport }) {
           rows={rt.byCat}
           metric="units"
           colorFor={(r) => CATEGORY_COLORS[r.label] || "#9ca3af"}
+          onRowClick={(r) => openDrill(
+            `Category: ${titleize(r.label)}`,
+            rangeOrders.filter((o) => (o.category || "Unspecified") === r.label),
+            ORDER_COLS,
+            `${fmtQty(r.units)} units · ${dateFrom} → ${dateTo}`
+          )}
           testId="prod-ov-category-mix"
         />
         <BreakdownBar
@@ -939,6 +952,12 @@ export default function ProductionOverview({ onOpenReport }) {
           metric="units"
           colorFor={(r) => rt.subColorMap[r.label] || "#9ca3af"}
           fullLabels
+          onRowClick={(r) => openDrill(
+            `Subcategory: ${r.label}`,
+            rangeOrders.filter((o) => (o.product_type || "Unspecified") === r.label),
+            ORDER_COLS,
+            `${fmtQty(r.units)} units · ${dateFrom} → ${dateTo}`
+          )}
           testId="prod-ov-sub-category-mix"
         />
       </div>
