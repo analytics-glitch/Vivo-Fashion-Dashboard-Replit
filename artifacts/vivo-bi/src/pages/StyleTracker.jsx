@@ -111,8 +111,36 @@ const fulfillCellBg = (pct) => {
 const isLateStyle = (style, today) =>
   !!(style?.deliver_by && today && !style.completed && style.deliver_by < today);
 
+const ORDER_TYPE_COLORS = {
+  "New":           { dot: "bg-blue-500",  text: "text-blue-800"  },
+  "Re-Order":      { dot: "bg-amber-500", text: "text-amber-800" },
+  "Replenishment": { dot: "bg-teal-500",  text: "text-teal-800"  },
+};
+
 function WeekStats({ week, compact = false }) {
   const pct = weekPct(week);
+  const styles = week.styles || [];
+
+  // Order type breakdown — by units
+  const otUnits = {};
+  let otTotal = 0;
+  for (const s of styles) {
+    const qty = parseInt(s.quantity || 0, 10);
+    const key = s.order_type || "Unset";
+    otUnits[key] = (otUnits[key] || 0) + qty;
+    otTotal += qty;
+  }
+  const otEntries = Object.entries(otUnits).sort((a, b) => b[1] - a[1]);
+
+  // Status breakdown — by style count
+  const stCounts = {};
+  for (const s of styles) {
+    const key = s.status || "Unset";
+    stCounts[key] = (stCounts[key] || 0) + 1;
+  }
+  const stEntries = Object.entries(stCounts).sort((a, b) => b[1] - a[1]);
+  const stTotal = styles.length;
+
   return (
     <div className={compact ? "" : "mt-1.5"} data-testid={`week-stats-${weekKey(week)}`}>
       <div className="flex items-center justify-between gap-2 text-[10.5px] font-semibold text-[#0f3d24]">
@@ -127,6 +155,43 @@ function WeekStats({ week, compact = false }) {
           style={{ width: `${Math.min(pct || 0, 100)}%` }}
         />
       </div>
+      {!compact && styles.length > 0 && (
+        <div className="mt-2 space-y-1.5">
+          {/* Order type breakdown */}
+          {otEntries.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              {otEntries.map(([type, units]) => {
+                const p = otTotal > 0 ? Math.round((units / otTotal) * 100) : 0;
+                const col = ORDER_TYPE_COLORS[type];
+                return (
+                  <span key={type} className="flex items-center gap-1 text-[10px]">
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${col?.dot || "bg-muted"}`} />
+                    <span className={`font-semibold ${col?.text || "text-muted"}`}>{type}</span>
+                    <span className="text-muted">{p}%</span>
+                    <span className="text-muted/60">({fmtUnits(units)} pcs)</span>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+          {/* Status breakdown */}
+          {stEntries.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              {stEntries.map(([status, count]) => {
+                const p = stTotal > 0 ? Math.round((count / stTotal) * 100) : 0;
+                return (
+                  <span key={status} className="flex items-center gap-1 text-[10px]">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#1a5c38]/40 shrink-0" />
+                    <span className="font-semibold text-[#0f3d24]">{status}</span>
+                    <span className="text-muted">{p}%</span>
+                    <span className="text-muted/60">({count})</span>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
