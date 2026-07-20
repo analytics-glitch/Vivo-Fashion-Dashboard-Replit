@@ -684,8 +684,46 @@ function FulfillmentDrawer({ styleId, styleName, onClose }) {
       .finally(() => setLoading(false));
   }, [styleId]);
 
-  const thCls = "px-2 py-1.5 text-[10.5px] font-bold uppercase tracking-wide text-muted text-left";
   const STAGE_ORDER = ["cutting","waiting_sewing","sewing","finishing","warehouse"];
+
+  const activeStage = useMemo(() => {
+    if (!data?.stages?.length) return null;
+    const present = new Set(data.stages.map((s) => s.stage));
+    for (let i = STAGE_ORDER.length - 1; i >= 0; i--) {
+      if (present.has(STAGE_ORDER[i])) return STAGE_ORDER[i];
+    }
+    return null;
+  }, [data]);
+
+  const pivot = useMemo(() => {
+    if (!data?.matrix?.length) return null;
+    const SIZE_PREF = ["XXS","XS","S","M","L","XL","XXL","2XL","3XL","1X","2X","3X","4X",
+                       "4","6","8","10","12","14","16","18","20","22","24","26"];
+    const rank = (s) => {
+      const i = SIZE_PREF.findIndex((p) => p === (s || "").toUpperCase());
+      return i >= 0 ? i : 999;
+    };
+    const colours = [...new Set(data.matrix.map((r) => r.colour))].filter(Boolean).sort();
+    const sizes   = [...new Set(data.matrix.map((r) => r.size))].filter(Boolean)
+                      .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+
+    const lookup = {};
+    for (const row of data.matrix) {
+      const total = (row.cutting_qty || 0) + (row.waiting_sewing_qty || 0) +
+                    (row.sewing_qty  || 0) + (row.finishing_qty      || 0) +
+                    (row.current_qty || 0);
+      if (!lookup[row.colour]) lookup[row.colour] = {};
+      lookup[row.colour][row.size] = (lookup[row.colour][row.size] || 0) + total;
+    }
+
+    const rows = colours.map((colour) => {
+      const counts = sizes.map((sz) => lookup[colour]?.[sz] || 0);
+      return { colour, counts, total: counts.reduce((a, b) => a + b, 0) };
+    });
+    const totCounts = sizes.map((_, si) => rows.reduce((s, r) => s + r.counts[si], 0));
+    const grandTotal = rows.reduce((s, r) => s + r.total, 0);
+    return { colours, sizes, rows, totCounts, grandTotal };
+  }, [data]);
 
   const content = (
     <div
@@ -693,15 +731,15 @@ function FulfillmentDrawer({ styleId, styleName, onClose }) {
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="flex-1 bg-black/30" onClick={onClose} />
-      <div className="w-full max-w-[640px] bg-white h-full shadow-2xl flex flex-col">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-line shrink-0">
+      <div className="w-full max-w-[700px] bg-white h-full shadow-2xl flex flex-col">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-line shrink-0">
           <div>
             <div className="font-bold text-[14px] text-[#0f3d24]">Fulfillment Drill-Down</div>
             <div className="text-[12px] text-muted mt-0.5">{styleName}</div>
           </div>
           <button type="button" onClick={onClose} className="text-muted hover:text-danger p-1"><X size={18} /></button>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-5">
+        <div className="flex-1 overflow-y-auto p-5 space-y-6">
           {loading ? (
             <Loading label="Loading fulfillment data…" />
           ) : err ? (
@@ -712,78 +750,86 @@ function FulfillmentDrawer({ styleId, styleName, onClose }) {
             </div>
           ) : (
             <>
-              {/* Stage journey */}
+              {/* Journey Across the Line */}
               <div>
-                <div className="text-[11.5px] font-bold text-[#0f3d24] uppercase tracking-wide mb-2">Journey Across the Line</div>
-                <div className="flex flex-wrap gap-2">
-                  {STAGE_ORDER.map((sk) => {
+                <div className="text-[10.5px] font-bold text-[#0f3d24] uppercase tracking-widest mb-3">Journey Across the Line</div>
+                <div className="flex items-start flex-wrap gap-y-3">
+                  {STAGE_ORDER.map((sk, idx) => {
                     const stage = data.stages.find((s) => s.stage === sk);
                     if (!stage) return null;
+                    const isActive = sk === activeStage;
+                    const prevStageExists = idx > 0 && STAGE_ORDER.slice(0, idx).some(
+                      (prev) => data.stages.find((s) => s.stage === prev)
+                    );
                     return (
-                      <div key={sk} className="flex flex-col items-center gap-0.5 rounded-lg border border-line bg-panel/50 px-3 py-2 min-w-[90px] text-center">
-                        <div className="text-[10px] font-bold uppercase tracking-wide text-muted">{stage.stage_name}</div>
-                        <div className="text-[16px] font-bold text-[#0f3d24]">{fmtUnits(stage.units)}</div>
-                        <div className="text-[9px] text-muted">units</div>
+                      <div key={sk} className="flex items-start">
+                        {prevStageExists && (
+                          <div className="flex items-center mt-[22px] shrink-0">
+                            <div className="w-4 h-px border-t border-dashed border-[#1a5c38]/30" />
+                            <CaretRight size={12} className="text-[#1a5c38]/40 -ml-0.5" />
+                          </div>
+                        )}
+                        <div className={`rounded-lg border-2 px-3.5 py-2.5 min-w-[118px] text-center shrink-0 ${
+                          isActive
+                            ? "border-[#1a5c38] bg-[#1a5c38]/5"
+                            : "border-line bg-panel/40"
+                        }`}>
+                          <div className={`text-[9px] font-bold uppercase tracking-wide mb-1.5 ${isActive ? "text-[#1a5c38]" : "text-muted"}`}>
+                            {stage.stage_name}
+                          </div>
+                          <div className={`text-[24px] font-bold leading-none ${isActive ? "text-[#1a5c38]" : "text-[#0f3d24]"}`}>
+                            {stage.units.toLocaleString()}
+                          </div>
+                          <div className="text-[9px] text-muted mt-1">u entered</div>
+                        </div>
                       </div>
                     );
                   })}
                 </div>
               </div>
 
-              {/* Colour × size matrix */}
-              {data.matrix?.length > 0 && (
+              {/* Colours & Sizes pivot */}
+              {pivot && (
                 <div>
-                  <div className="text-[11.5px] font-bold text-[#0f3d24] uppercase tracking-wide mb-2">Size / Colour Fulfillment</div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="text-[10.5px] font-bold text-[#0f3d24] uppercase tracking-widest">Colours &amp; Sizes</div>
+                    <span className="rounded-full border border-[#1a5c38] text-[#1a5c38] text-[9.5px] font-bold px-2 py-0.5 leading-none">
+                      {pivot.colours.length} COLOUR{pivot.colours.length !== 1 ? "S" : ""}
+                    </span>
+                    <span className="rounded-full border border-[#1a5c38] text-[#1a5c38] text-[9.5px] font-bold px-2 py-0.5 leading-none">
+                      {pivot.sizes.length} SIZE{pivot.sizes.length !== 1 ? "S" : ""}
+                    </span>
+                  </div>
                   <div className="overflow-x-auto rounded-lg border border-line">
                     <table className="w-full text-[11.5px]">
                       <thead>
                         <tr className="bg-panel/60 border-b border-line">
-                          <th className={thCls}>Colour</th>
-                          <th className={thCls}>Size</th>
-                          <th className={`${thCls} text-right`}>Cutting</th>
-                          <th className={`${thCls} text-right`}>Waiting Sewing</th>
-                          <th className={`${thCls} text-right`}>Sewing</th>
-                          <th className={`${thCls} text-right`}>Finishing</th>
-                          <th className={`${thCls} text-right`}>In WH</th>
-                          <th className={`${thCls} text-right`}>Fulfillment</th>
+                          <th className="px-3 py-2 text-left text-[10px] font-bold uppercase tracking-wide text-muted whitespace-nowrap">Colour</th>
+                          {pivot.sizes.map((sz) => (
+                            <th key={sz} className="px-2 py-2 text-center text-[10px] font-bold uppercase tracking-wide text-muted">{sz}</th>
+                          ))}
+                          <th className="px-3 py-2 text-right text-[10px] font-bold uppercase tracking-wide text-muted">Total</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {data.matrix.map((row, i) => (
-                          <tr key={i} className={`border-b border-line/50 ${fulfillCellBg(row.fulfillment_pct)}`}>
-                            <td className="px-2 py-1.5">{row.colour || "—"}</td>
-                            <td className="px-2 py-1.5 font-medium">{row.size || "—"}</td>
-                            <td className="px-2 py-1.5 text-right">{fmtUnits(row.cutting_qty)}</td>
-                            <td className="px-2 py-1.5 text-right text-muted">{row.waiting_sewing_qty > 0 ? fmtUnits(row.waiting_sewing_qty) : "—"}</td>
-                            <td className="px-2 py-1.5 text-right text-muted">{row.sewing_qty > 0 ? fmtUnits(row.sewing_qty) : "—"}</td>
-                            <td className="px-2 py-1.5 text-right text-muted">{row.finishing_qty > 0 ? fmtUnits(row.finishing_qty) : "—"}</td>
-                            <td className="px-2 py-1.5 text-right">{fmtUnits(row.current_qty)}</td>
-                            <td className={`px-2 py-1.5 text-right ${fulfillTone(row.fulfillment_pct)}`}>
-                              {row.fulfillment_pct === null ? "—" : `${row.fulfillment_pct}%`}
-                            </td>
+                        {pivot.rows.map((row, i) => (
+                          <tr key={i} className="border-b border-line/50 hover:bg-panel/30">
+                            <td className="px-3 py-1.5 whitespace-nowrap">{row.colour || "—"}</td>
+                            {row.counts.map((n, si) => (
+                              <td key={si} className="px-2 py-1.5 text-center text-muted">{n > 0 ? n : "—"}</td>
+                            ))}
+                            <td className="px-3 py-1.5 text-right font-bold text-[#0f3d24]">{row.total}</td>
                           </tr>
                         ))}
-                        {/* Totals row */}
-                        {data.totals && (
-                          <tr className="border-t-2 border-line bg-panel/70 font-bold text-[#0f3d24]">
-                            <td className="px-2 py-2" colSpan={2}>TOTAL</td>
-                            <td className="px-2 py-2 text-right">{fmtUnits(data.totals.cutting_qty)}</td>
-                            <td className="px-2 py-2 text-right text-muted">{data.totals.waiting_sewing_qty > 0 ? fmtUnits(data.totals.waiting_sewing_qty) : "—"}</td>
-                            <td className="px-2 py-2 text-right text-muted">{data.totals.sewing_qty > 0 ? fmtUnits(data.totals.sewing_qty) : "—"}</td>
-                            <td className="px-2 py-2 text-right text-muted">{data.totals.finishing_qty > 0 ? fmtUnits(data.totals.finishing_qty) : "—"}</td>
-                            <td className="px-2 py-2 text-right">{fmtUnits(data.totals.current_qty)}</td>
-                            <td className={`px-2 py-2 text-right ${fulfillTone(data.totals.fulfillment_pct)}`}>
-                              {data.totals.fulfillment_pct === null ? "—" : `${data.totals.fulfillment_pct}%`}
-                            </td>
-                          </tr>
-                        )}
+                        <tr className="border-t-2 border-line bg-panel/60">
+                          <td className="px-3 py-2 font-bold text-[#0f3d24]">Total</td>
+                          {pivot.totCounts.map((n, si) => (
+                            <td key={si} className="px-2 py-2 text-center font-bold text-[#0f3d24]">{n > 0 ? n : "—"}</td>
+                          ))}
+                          <td className="px-3 py-2 text-right font-bold text-[#0f3d24]">{pivot.grandTotal}</td>
+                        </tr>
                       </tbody>
                     </table>
-                  </div>
-                  <div className="mt-2 flex items-center gap-3 text-[10px] text-muted">
-                    <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded bg-emerald-100 border border-emerald-300" /> ≥90%</span>
-                    <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded bg-amber-50 border border-amber-200" /> 75–89%</span>
-                    <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded bg-rose-50 border border-rose-200" /> &lt;75%</span>
                   </div>
                 </div>
               )}
