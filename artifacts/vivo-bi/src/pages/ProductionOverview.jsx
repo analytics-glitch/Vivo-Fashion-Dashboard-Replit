@@ -115,7 +115,7 @@ function MetricCard({ label, value, pctText, pctLabel, accent, onClick, testId }
       data-testid={testId}
     >
       <div className={`text-[12px] font-semibold mb-1.5 ${accent ? "text-emerald-200" : "text-muted"}`}>{label}</div>
-      <div className="flex items-baseline gap-2.5 flex-wrap">
+      <div className="flex items-baseline justify-between gap-2">
         <div className={`text-[28px] font-extrabold tabular-nums leading-none ${accent ? "text-white" : "text-[#0f3d24]"}`}>{value}</div>
         {pctText && (
           <div className={`text-[22px] font-bold tabular-nums leading-none ${accent ? "text-emerald-200" : "text-slate-400"}`}>{pctText}</div>
@@ -150,9 +150,9 @@ function BreakdownBar({ title, rows, colorFor, metric = "orders", fullLabels = f
                 <div
                   className="shrink-0 text-right font-medium text-[#0f3d24]"
                   style={{
-                    width: fullLabels ? undefined : "110px",
-                    minWidth: fullLabels ? "140px" : undefined,
-                    maxWidth: fullLabels ? "220px" : undefined,
+                    width: fullLabels ? undefined : "80px",
+                    minWidth: fullLabels ? "90px" : undefined,
+                    maxWidth: fullLabels ? "150px" : undefined,
                     whiteSpace: fullLabels ? "normal" : "nowrap",
                     overflow: fullLabels ? undefined : "hidden",
                     textOverflow: fullLabels ? undefined : "ellipsis",
@@ -168,7 +168,7 @@ function BreakdownBar({ title, rows, colorFor, metric = "orders", fullLabels = f
                     style={{ width: `${barW}%`, backgroundColor: color }}
                   />
                 </div>
-                <div className="w-[82px] shrink-0 text-right tabular-nums text-muted">
+                <div className="w-[68px] shrink-0 text-right tabular-nums text-muted text-[12px]">
                   {fmtQty(val)} · {pct.toFixed(0)}%
                 </div>
               </div>
