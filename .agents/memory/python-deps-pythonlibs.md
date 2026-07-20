@@ -16,3 +16,9 @@ package installed there persists into the repl and to deployment.
 
 **How to apply:** any time a backend import is missing (e.g. openpyxl for xlsx export),
 install with the uv `--target` command above, then verify with `python3 -c "import <pkg>"`.
+
+**Publish-breaking trap:** NEVER add packages to `pyproject.toml` `dependencies`. The
+deployment build runs `uv lock` + `uv sync` against the read-only Nix-store Python and
+fails with "Permission denied (os error 13)" installing wheels — the publish build dies
+in the "Installing packages" phase. Keep `dependencies = []`; `.pythonlibs` ships with
+the deployment filesystem snapshot, so `--target` installs reach prod on republish.
