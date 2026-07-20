@@ -454,6 +454,7 @@ function StatusSelect({ style, statuses, busy, onUpdate, className = "" }) {
 function FinishingOptionsSelect({ style, finishingOptions, busy, onUpdate, isPrivileged, onOptionsChange }) {
   const statuses = finishingOptions.map((f) => f.label);
   const [showAdd, setShowAdd] = useState(false);
+  const [showManage, setShowManage] = useState(false);
   const [addLabel, setAddLabel] = useState("");
   const [addSaving, setAddSaving] = useState(false);
   const [renamingId, setRenamingId] = useState(null);
@@ -528,14 +529,24 @@ function FinishingOptionsSelect({ style, finishingOptions, busy, onUpdate, isPri
           )}
         </select>
         {isPrivileged && (
-          <button
-            type="button"
-            onClick={() => setShowAdd((v) => !v)}
-            title="Add a new finishing option"
-            className="shrink-0 text-muted/50 hover:text-brand p-1 rounded"
-          >
-            <Plus size={13} weight="bold" />
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => { setShowAdd((v) => !v); setShowManage(false); }}
+              title="Add a new finishing option"
+              className="shrink-0 text-muted/50 hover:text-brand p-1 rounded"
+            >
+              <Plus size={13} weight="bold" />
+            </button>
+            <button
+              type="button"
+              onClick={() => { setShowManage((v) => !v); setShowAdd(false); setRenamingId(null); }}
+              title="Manage options (rename)"
+              className={`shrink-0 p-1 rounded transition-colors ${showManage ? "text-brand" : "text-muted/40 hover:text-brand"}`}
+            >
+              <PencilSimple size={12} />
+            </button>
+          </>
         )}
       </div>
       {whErr && <div className="text-[10px] text-rose-700">{whErr}</div>}
@@ -553,21 +564,8 @@ function FinishingOptionsSelect({ style, finishingOptions, busy, onUpdate, isPri
           <button type="button" onClick={() => setShowAdd(false)} className="text-muted hover:text-danger"><X size={12} /></button>
         </div>
       )}
-      {isPrivileged && renamingId !== null && (
-        <div className="flex items-center gap-1">
-          <input
-            autoFocus
-            value={renameLabel}
-            onChange={(e) => setRenameLabel(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") saveRename(); if (e.key === "Escape") setRenamingId(null); }}
-            className="flex-1 text-[11px] border border-line rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40"
-          />
-          <button type="button" disabled={renameSaving} onClick={saveRename} className="text-[10px] font-semibold text-white bg-brand rounded px-1.5 py-1 disabled:opacity-50">Save</button>
-          <button type="button" onClick={() => setRenamingId(null)} className="text-muted hover:text-danger"><X size={12} /></button>
-        </div>
-      )}
-      {isPrivileged && !showAdd && renamingId === null && finishingOptions.length > 0 && (
-        <div className="flex flex-wrap gap-1">
+      {isPrivileged && showManage && renamingId === null && finishingOptions.length > 0 && (
+        <div className="flex flex-wrap gap-1 pt-0.5">
           {finishingOptions.map((opt) => (
             <button
               key={opt.id}
@@ -579,6 +577,19 @@ function FinishingOptionsSelect({ style, finishingOptions, busy, onUpdate, isPri
               <PencilSimple size={9} /> {opt.label}
             </button>
           ))}
+        </div>
+      )}
+      {isPrivileged && renamingId !== null && (
+        <div className="flex items-center gap-1">
+          <input
+            autoFocus
+            value={renameLabel}
+            onChange={(e) => setRenameLabel(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") saveRename(); if (e.key === "Escape") setRenamingId(null); }}
+            className="flex-1 text-[11px] border border-line rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40"
+          />
+          <button type="button" disabled={renameSaving} onClick={saveRename} className="text-[10px] font-semibold text-white bg-brand rounded px-1.5 py-1 disabled:opacity-50">Save</button>
+          <button type="button" onClick={() => setRenamingId(null)} className="text-muted hover:text-danger"><X size={12} /></button>
         </div>
       )}
     </div>
