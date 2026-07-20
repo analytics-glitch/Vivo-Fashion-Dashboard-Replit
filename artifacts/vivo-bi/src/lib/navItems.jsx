@@ -34,6 +34,7 @@ import {
   Sparkle,
   RocketLaunch,
   Storefront,
+  Kanban,
 } from "@phosphor-icons/react";
 
 /**
@@ -136,6 +137,7 @@ export const PRIMARY_NAV = [
       { pageId: "style-tracker",     label: "Weekly Style Tracker" },
     ],
   },
+  { to: "/pd-flow", label: "Product Development Flow", icon: Kanban, id: "pd-flow", group: "Operations & Production", desc: "Pre-production style kanban — track every adopted style from Adopted to Final Review with assignees, stage aging and bottleneck analytics" },
 
   // Catalogues & others
   { to: "/ask", label: "Ask the Dashboard", icon: Sparkle, id: "ask", group: "Tools", desc: "Ask questions about today's sales, footfall, and performance — answered from live business data by AI" },

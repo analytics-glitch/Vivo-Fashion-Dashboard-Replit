@@ -685,10 +685,10 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair"])
 
 DEFAULT_ROLE_PAGES = {
-    "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "sops"],
+    "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "sops"],
     "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "exports", "sops", "ask"],
     "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "re-order", "allocations", "data-quality", "exports", "sops"],
     "store_manager": ["store-flow", "locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "sops"],
@@ -697,7 +697,7 @@ DEFAULT_ROLE_PAGES = {
     # Finance Reports Suite. The /api/finance gate below also excludes "smt".
     "smt": [p for p in _LEADERSHIP_PAGES if p not in ("finance", "margin")],
     # Production department — manufacturing board + report, style tracker, fabric warehouse view.
-    "production": ["production", "production-report", "style-tracker", "fabric", "sops"],
+    "production": ["production", "production-report", "style-tracker", "pd-flow", "fabric", "sops"],
     # Fabric Warehouse department — fabric stock + general inventory.
     "fabric_warehouse": ["fabric", "inventory", "sops"],
     "customer_service": ["customers", "customer-details", "crm", "footfall", "sops"],
@@ -1297,6 +1297,14 @@ async def clerk_auth_gate(request: Request, call_next):
         "product_development", "production", "leadership", "smt", "admin"
     ):
         return JSONResponse({"detail": "Production tracker access requires a production, product development, leadership or admin role"}, status_code=403)
+
+    # Product Development Flow (/api/pd/*) — the pre-production style kanban.
+    # Same audience as the production tracker; SLA edits are additionally
+    # admin-checked inside pd_flow_router.
+    if path.startswith("/api/pd/") and user.get("role") not in (
+        "product_development", "production", "leadership", "smt", "admin"
+    ):
+        return JSONResponse({"detail": "Product Development Flow access requires a production, product development, leadership or admin role"}, status_code=403)
 
     # HR attendance dashboard (/api/hr/*) is a staff surface. Leadership + admin
     # get the executive/HR-manager view; store managers map to branch managers
@@ -31475,6 +31483,20 @@ def _init_ai_tables():
         ai_insights_router.ensure_ai_tables()
     except Exception as e:
         log.error("AI insight table init failed: %s", e)
+
+# Product Development Flow endpoints (/api/pd/*). Pre-production style kanban.
+# Gated in clerk_auth_gate to product_development / production / leadership /
+# smt / admin; SLA edits admin-only inside the router.
+import pd_flow_router
+pd_flow_router.register_pd_routes(app, _sys.modules[__name__])
+
+
+@_deferred_startup
+def _init_pd_tables():
+    try:
+        pd_flow_router.ensure_pd_tables()
+    except Exception as e:
+        log.error("PD flow table init failed: %s", e)
 
 # Growth Model endpoints (/api/growth/*). Gated in clerk_auth_gate to
 # leadership + admin. Seeded with a default 60/25/15 assumption on first boot.

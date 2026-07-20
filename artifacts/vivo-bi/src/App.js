@@ -33,6 +33,7 @@ const ExecutiveSummary = React.lazy(() => import("@/pages/ExecutiveSummary"));
 const Marketing = React.lazy(() => import("@/pages/Marketing"));
 const CustomReport = React.lazy(() => import("@/pages/CustomReport"));
 const Production = React.lazy(() => import("@/pages/Production"));
+const PDFlow = React.lazy(() => import("@/pages/PDFlow"));
 const Finance = React.lazy(() => import("@/pages/Finance"));
 const Margin = React.lazy(() => import("@/pages/Margin"));
 const Catalogue = React.lazy(() => import("@/pages/Catalogue"));
@@ -219,6 +220,7 @@ function App() {
                 <Route path="/ibt" element={<Navigate to="/retail?tab=ibt" replace />} />
                 <Route path="/production" element={<ProtectedShell anyOfPageIds={["production", "production-report", "style-tracker"]}><Production /></ProtectedShell>} />
                 <Route path="/production-report" element={<Navigate to="/production?tab=report" replace />} />
+                <Route path="/pd-flow" element={<ProtectedShell pageId="pd-flow"><PDFlow /></ProtectedShell>} />
                 <Route path="/style-tracker" element={<Navigate to="/product-analysis?tab=tracker" replace />} />
                 <Route path="/data-quality" element={<ProtectedShell pageId="data-quality"><DataQuality /></ProtectedShell>} />
                 <Route path="/feedback" element={<ProtectedShell pageId="feedback"><Feedback /></ProtectedShell>} />
