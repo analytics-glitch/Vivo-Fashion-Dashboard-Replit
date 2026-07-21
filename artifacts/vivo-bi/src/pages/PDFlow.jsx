@@ -5,7 +5,7 @@ import SortableTable from "@/components/SortableTable";
 import { useAuth } from "@/lib/auth";
 import {
   Kanban, Plus, X, ArrowRight, ArrowUUpLeft, CheckCircle, XCircle,
-  GearSix, DownloadSimple, ChartBar, ClockClockwise, ArrowsClockwise, Trash,
+  GearSix, DownloadSimple, ChartBar, ClockClockwise, ArrowsClockwise, Trash, Rows,
 } from "@phosphor-icons/react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -305,13 +305,38 @@ const DetailDrawer = ({ styleId, onClose, onMove }) => {
         {st && (
           <>
             <div className="flex flex-wrap gap-1.5 text-[11.5px] mb-3">
+              {st.style_number && <span className="font-mono pill-neutral">{st.style_number}</span>}
               {st.brand && <span className="pill-neutral">{st.brand}</span>}
               {st.category && <span className="pill-neutral">{st.category}</span>}
+              {st.lifecycle_type && <span className="pill-neutral">{st.lifecycle_type}</span>}
               <span className={st.status === "completed" ? "pill-green" : "pill-amber"}>
                 {st.status === "completed" ? "Completed (approved)" : `In ${String(st.current_stage).replace(/_/g, " ")}`}
               </span>
               {st.assignee_name && <span className="pill-neutral">Assignee: {st.assignee_name}</span>}
             </div>
+
+            {/* ── Style metadata grid ── */}
+            <div className="mb-4 rounded-lg border border-line bg-slate-50 p-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11.5px]">
+              {[
+                ["Pattern Maker", st.pattern_maker || st.assignee_name],
+                ["Target Order Wk", st.target_order_week],
+                ["Sub-category", st.sub_category],
+                ["Theme", st.theme],
+                ["Fabric Type", st.fabric_type],
+                ["Fabric Name", st.fabric_name],
+                ["Sample Colour", st.sample_colour],
+                ["Print / Solid", st.print_solid],
+                ["Adoption Date", st.adoption_date ? new Date(st.adoption_date).toLocaleDateString("en-GB", { day:"numeric", month:"short", year:"numeric" }) : null],
+                ["Order Date", st.order_date ? new Date(st.order_date).toLocaleDateString("en-GB", { day:"numeric", month:"short", year:"numeric" }) : null],
+                ["Sample Approval", st.sample_approval_date ? new Date(st.sample_approval_date).toLocaleDateString("en-GB", { day:"numeric", month:"short", year:"numeric" }) : null],
+              ].filter(([, v]) => v).map(([label, val]) => (
+                <div key={label}>
+                  <span className="text-muted">{label}: </span>
+                  <span className="font-semibold">{val}</span>
+                </div>
+              ))}
+            </div>
+
             {st.status === "active" && (
               <button onClick={() => onMove(st)}
                 className="mb-4 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand text-white font-semibold text-[12px] hover:bg-brand-deep"
@@ -652,9 +677,118 @@ const CompletedTab = ({ onOpenStyle }) => {
   );
 };
 
+// ── Tracker tab — full sortable table of all styles ──────────────────────────
+const fmtDate = (iso) => {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  } catch { return "—"; }
+};
+
+const TrackerTab = ({ onOpenStyle }) => {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState(null);
+  const [search, setSearch] = useState("");
+  const [brandF, setBrandF] = useState("");
+  const [catF, setCatF] = useState("");
+  const [stageF, setStageF] = useState("");
+
+  useEffect(() => {
+    api.get("/pd/board", { forceFresh: true })
+      .then((r) => {
+        const active = r.data.cards || [];
+        api.get("/pd/completed", { forceFresh: true })
+          .then((r2) => setRows([...active, ...(r2.data.styles || [])]))
+          .catch(() => setRows(active));
+      })
+      .catch((e) => setErr(e?.response?.data?.detail || e.message));
+  }, []);
+
+  if (err) return <ErrorBox message={err} />;
+  if (!rows) return <Loading />;
+
+  const q = search.trim().toLowerCase();
+  const filtered = rows.filter((r) => {
+    if (q && !(`${r.style_name} ${r.style_number || ""} ${r.pattern_maker || ""} ${r.assignee_name || ""}`.toLowerCase().includes(q))) return false;
+    if (brandF && r.brand !== brandF) return false;
+    if (catF && (r.category || "").toUpperCase() !== catF.toUpperCase()) return false;
+    if (stageF && r.current_stage !== stageF) return false;
+    return true;
+  });
+
+  const brands = [...new Set(rows.map((r) => r.brand).filter(Boolean))].sort();
+  const cats = [...new Set(rows.map((r) => r.category).filter(Boolean))].sort();
+  const stages = [...new Set(rows.map((r) => r.current_stage).filter(Boolean))].sort();
+
+  return (
+    <div className="card-white p-5" data-testid="pd-tracker">
+      <SectionTitle title="Style Tracker" subtitle="All active and completed styles with full specification details — searchable and exportable" />
+      <div className="flex flex-wrap gap-2 mb-3">
+        <input className="px-3 py-1.5 rounded-lg border border-border text-[12.5px] w-64"
+          placeholder="Search style, number, pattern maker…"
+          value={search} onChange={(e) => setSearch(e.target.value)} />
+        <select className="px-3 py-1.5 rounded-lg border border-border text-[12.5px]"
+          value={brandF} onChange={(e) => setBrandF(e.target.value)}>
+          <option value="">All brands</option>
+          {brands.map((b) => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <select className="px-3 py-1.5 rounded-lg border border-border text-[12.5px]"
+          value={catF} onChange={(e) => setCatF(e.target.value)}>
+          <option value="">All categories</option>
+          {cats.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select className="px-3 py-1.5 rounded-lg border border-border text-[12.5px]"
+          value={stageF} onChange={(e) => setStageF(e.target.value)}>
+          <option value="">All stages</option>
+          {stages.map((s) => <option key={s} value={s}>{String(s).replace(/_/g, " ")}</option>)}
+        </select>
+        <span className="ml-auto text-[11.5px] text-muted self-center">{filtered.length} style{filtered.length !== 1 ? "s" : ""}</span>
+      </div>
+      {filtered.length === 0
+        ? <Empty label="No styles match the current filter." />
+        : (
+          <SortableTable
+            testId="pd-tracker-table" exportName="pd_q3_tracker.csv"
+            initialSort={{ key: "target_order_week", dir: "asc" }}
+            columns={[
+              { key: "style_number", label: "Style No.", align: "left",
+                render: (r) => <span className="font-mono text-[11.5px]">{r.style_number || "—"}</span> },
+              { key: "style_name", label: "Style Name", align: "left",
+                render: (r) => <button className="font-semibold text-brand hover:underline text-left" onClick={() => onOpenStyle(r.id)}>{r.style_name}</button> },
+              { key: "brand", label: "Brand", align: "left", render: (r) => r.brand || "—" },
+              { key: "lifecycle_type", label: "Type", align: "left",
+                render: (r) => r.lifecycle_type ? <span className="pill-neutral">{r.lifecycle_type}</span> : <span className="text-muted">—</span> },
+              { key: "current_stage", label: "Stage", align: "left",
+                render: (r) => (
+                  <span className={`capitalize text-[11.5px] font-semibold ${r.status === "completed" ? "text-emerald-700" : ""}`}>
+                    {r.status === "completed" ? "Completed" : String(r.current_stage).replace(/_/g, " ")}
+                  </span>
+                )},
+              { key: "category", label: "Category", align: "left", render: (r) => r.category || "—" },
+              { key: "sub_category", label: "Sub-Category", align: "left", render: (r) => r.sub_category || "—" },
+              { key: "pattern_maker", label: "Pattern Maker", align: "left", render: (r) => r.pattern_maker || r.assignee_name || "—" },
+              { key: "target_order_week", label: "Target Wk", align: "left", render: (r) => r.target_order_week || "—" },
+              { key: "adoption_date", label: "Adopted", align: "left", render: (r) => fmtDate(r.adoption_date || r.created_at) },
+              { key: "order_date", label: "Order Date", align: "left", render: (r) => fmtDate(r.order_date) },
+              { key: "sample_approval_date", label: "Sample Approval", align: "left", render: (r) => fmtDate(r.sample_approval_date) },
+              { key: "fabric_type", label: "Fabric Type", align: "left", render: (r) => r.fabric_type || "—" },
+              { key: "fabric_name", label: "Fabric Name", align: "left", render: (r) => r.fabric_name || "—" },
+              { key: "sample_colour", label: "Sample Colour", align: "left", render: (r) => r.sample_colour || "—" },
+              { key: "print_solid", label: "P/S", align: "left", render: (r) => r.print_solid || "—" },
+              { key: "theme", label: "Theme", align: "left", render: (r) => r.theme || "—" },
+            ]}
+            rows={filtered}
+          />
+        )}
+    </div>
+  );
+};
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 const TABS = [
   { key: "board", label: "Board", icon: Kanban },
+  { key: "tracker", label: "Tracker", icon: Rows },
   { key: "analytics", label: "Analytics & Bottlenecks", icon: ChartBar },
   { key: "completed", label: "Completed", icon: CheckCircle },
   { key: "history", label: "History Log", icon: ClockClockwise },
@@ -696,8 +830,8 @@ const PDFlow = () => {
   const exportBoard = () => {
     if (!board) return;
     downloadCsv("pd_board.csv",
-      ["style", "brand", "category", "stage", "assignee", "days_in_stage", "sla_days", "aging", "adopted_at"],
-      board.cards.map((c) => [c.style_name, c.brand, c.category, c.current_stage, c.assignee_name, c.days_in_stage, c.sla_days, c.aging, c.created_at]));
+      ["style_number", "style", "brand", "category", "sub_category", "type", "stage", "pattern_maker", "target_order_week", "adoption_date", "order_date", "sample_approval_date", "fabric_type", "fabric_name", "sample_colour", "print_solid", "theme", "days_in_stage", "sla_days", "aging"],
+      board.cards.map((c) => [c.style_number, c.style_name, c.brand, c.category, c.sub_category, c.lifecycle_type, c.current_stage, c.pattern_maker || c.assignee_name, c.target_order_week, c.adoption_date, c.order_date, c.sample_approval_date, c.fabric_type, c.fabric_name, c.sample_colour, c.print_solid, c.theme, c.days_in_stage, c.sla_days, c.aging]));
   };
 
   return (
@@ -778,11 +912,19 @@ const PDFlow = () => {
                         className={`w-full text-left rounded-lg border border-line border-l-4 bg-white hover:shadow-sm transition p-2.5 ${agingCard(c.aging)}`}
                         data-testid={`pd-card-${c.id}`}>
                         <div className="font-bold text-[12px] leading-tight">{c.style_name}</div>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          {c.style_number && (
+                            <span className="font-mono text-[10px] text-muted bg-slate-100 px-1 rounded">{c.style_number}</span>
+                          )}
+                          {c.target_order_week && (
+                            <span className="text-[10px] text-muted">{c.target_order_week}</span>
+                          )}
+                        </div>
                         <div className="text-[10.5px] text-muted mt-0.5">
                           {[c.brand, c.category].filter(Boolean).join(" · ") || "—"}
                         </div>
                         <div className="flex items-center justify-between mt-1.5">
-                          <span className="text-[10.5px] text-muted truncate max-w-[120px]">{c.assignee_name || "Unassigned"}</span>
+                          <span className="text-[10.5px] text-muted truncate max-w-[120px]">{c.assignee_name || c.pattern_maker || "Unassigned"}</span>
                           <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${agingBadge(c.aging)}`}>
                             {fmtDays(c.days_in_stage)}d
                           </span>
@@ -805,6 +947,7 @@ const PDFlow = () => {
         </div>
       )}
 
+      {tab === "tracker" && <TrackerTab key={refreshKey} onOpenStyle={setDetail} />}
       {tab === "analytics" && <AnalyticsTab key={refreshKey} onOpenStyle={setDetail} />}
       {tab === "completed" && <CompletedTab key={refreshKey} onOpenStyle={setDetail} />}
       {tab === "history" && <HistoryTab key={refreshKey} isAdmin={isAdmin} />}

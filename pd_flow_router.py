@@ -102,9 +102,19 @@ def ensure_pd_tables():
             created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
         )""", fetch=False)
     _db("CREATE INDEX IF NOT EXISTS pd_movements_style_idx ON pd_movements (style_id, created_at)", fetch=False)
-    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS style_number  TEXT", fetch=False)
-    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS sub_category  TEXT", fetch=False)
-    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS lifecycle_type TEXT", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS style_number    TEXT", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS sub_category    TEXT", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS lifecycle_type  TEXT", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS adoption_date   DATE", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS target_order_week TEXT", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS fabric_type     TEXT", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS fabric_name     TEXT", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS sample_colour   TEXT", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS theme           TEXT", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS print_solid     TEXT", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS pattern_maker   TEXT", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS order_date      DATE", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS sample_approval_date DATE", fetch=False)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -171,9 +181,19 @@ def _style_out(r, sla_map=None):
                   else "ok"),
         "assignee_user_id": r.get("assignee_user_id"),
         "assignee_name": r.get("assignee_name"),
+        "pattern_maker": r.get("pattern_maker"),
         "created_by_name": r.get("created_by_name"),
         "created_at": _iso(r.get("created_at")),
         "completed_at": _iso(r.get("completed_at")),
+        "adoption_date": _iso(r.get("adoption_date")),
+        "target_order_week": r.get("target_order_week"),
+        "order_date": _iso(r.get("order_date")),
+        "sample_approval_date": _iso(r.get("sample_approval_date")),
+        "fabric_type": r.get("fabric_type"),
+        "fabric_name": r.get("fabric_name"),
+        "sample_colour": r.get("sample_colour"),
+        "theme": r.get("theme"),
+        "print_solid": r.get("print_solid"),
     }
     return out
 
