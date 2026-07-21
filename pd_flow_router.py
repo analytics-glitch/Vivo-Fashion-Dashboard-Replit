@@ -15,11 +15,13 @@ design). The movement log is append-only: there are no update/delete endpoints
 for pd_movements, so the audit trail can never be rewritten.
 """
 
+import base64
+import io
 import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import HTTPException, Request
+from fastapi import File, HTTPException, Request, UploadFile
 
 log = logging.getLogger("pd_flow")
 
@@ -115,6 +117,14 @@ def ensure_pd_tables():
     _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS pattern_maker   TEXT", fetch=False)
     _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS order_date      DATE", fetch=False)
     _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS sample_approval_date DATE", fetch=False)
+    _db("""
+        CREATE TABLE IF NOT EXISTS pd_style_images (
+            style_id     BIGINT PRIMARY KEY REFERENCES pd_styles(id) ON DELETE CASCADE,
+            image_data   TEXT NOT NULL,
+            content_type TEXT NOT NULL DEFAULT 'image/jpeg',
+            uploaded_by  TEXT,
+            uploaded_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""", fetch=False)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -306,6 +316,70 @@ def register_pd_routes(app, api_pg_module):
         except Exception:
             pass
         return {"ok": True, "style": _style_out(st)}
+
+    @app.get("/api/pd/styles/{style_id}/image")
+    def pd_style_image_get(style_id: int):
+        from fastapi.responses import Response as FResponse
+        rows = _db("SELECT image_data, content_type FROM pd_style_images WHERE style_id = %s",
+                   (style_id,))
+        if not rows or not rows[0].get("image_data"):
+            return FResponse(status_code=404)
+        try:
+            img_bytes = base64.b64decode(rows[0]["image_data"])
+        except Exception:
+            return FResponse(status_code=404)
+        return FResponse(content=img_bytes,
+                         media_type=rows[0].get("content_type") or "image/jpeg",
+                         headers={"Cache-Control": "no-cache"})
+
+    @app.post("/api/pd/styles/{style_id}/image")
+    async def pd_style_image_upload(style_id: int, request: Request,
+                                    file: UploadFile = File(...)):
+        from PIL import Image as PilImage
+        from fastapi.responses import Response as FResponse
+        email, name, _role = _actor(request)
+        _style(style_id)  # 404 if not found
+        data = await file.read()
+        if not data:
+            raise HTTPException(status_code=400, detail="Empty file")
+        if len(data) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Image must be under 10 MB")
+        try:
+            img = PilImage.open(io.BytesIO(data))
+            img = img.convert("RGB")
+            img.thumbnail((900, 900), PilImage.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=82, optimize=True)
+            encoded = base64.b64encode(buf.getvalue()).decode()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid image: {exc}")
+        _db("""
+            INSERT INTO pd_style_images (style_id, image_data, content_type, uploaded_by, uploaded_at)
+            VALUES (%s, %s, 'image/jpeg', %s, now())
+            ON CONFLICT (style_id) DO UPDATE
+              SET image_data  = EXCLUDED.image_data,
+                  content_type = 'image/jpeg',
+                  uploaded_by = EXCLUDED.uploaded_by,
+                  uploaded_at = now()
+        """, (style_id, encoded, email or name), fetch=False)
+        try:
+            A._log_activity(request, "POST", f"/api/pd/styles/{style_id}/image",
+                            json.dumps({"action": "pd_style_image_upload", "style_id": style_id}))
+        except Exception:
+            pass
+        return {"ok": True}
+
+    @app.delete("/api/pd/styles/{style_id}/image")
+    def pd_style_image_delete(style_id: int, request: Request):
+        email, _name, _role = _actor(request)
+        _style(style_id)
+        _db("DELETE FROM pd_style_images WHERE style_id = %s", (style_id,), fetch=False)
+        try:
+            A._log_activity(request, "DELETE", f"/api/pd/styles/{style_id}/image",
+                            json.dumps({"action": "pd_style_image_delete", "style_id": style_id}))
+        except Exception:
+            pass
+        return {"ok": True}
 
     @app.patch("/api/pd/styles/{style_id}")
     async def pd_style_edit(style_id: int, request: Request):

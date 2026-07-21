@@ -1,11 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { SectionTitle, Loading, ErrorBox, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import { useAuth } from "@/lib/auth";
 import {
   Kanban, Plus, X, ArrowRight, ArrowUUpLeft, CheckCircle, XCircle,
-  GearSix, DownloadSimple, ChartBar, ClockClockwise, ArrowsClockwise, Trash, Rows, PencilSimple,
+  GearSix, DownloadSimple, ChartBar, ClockClockwise, ArrowsClockwise, Trash, Rows, PencilSimple, UploadSimple,
 } from "@phosphor-icons/react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -282,6 +282,84 @@ const MoveDialog = ({ card, stages, onClose, onSaved }) => {
   );
 };
 
+// ── Style photo panel ─────────────────────────────────────────────────────────
+const StyleImage = ({ styleId, styleName }) => {
+  const [hasImage, setHasImage] = useState(null);
+  const [ts, setTs] = useState(() => Date.now());
+  const [uploading, setUploading] = useState(false);
+  const [uploadErr, setUploadErr] = useState(null);
+  const fileRef = useRef(null);
+
+  const imgSrc = `/api/pd/styles/${styleId}/image?_t=${ts}`;
+
+  const handleUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true); setUploadErr(null);
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      await api.post(`/pd/styles/${styleId}/image`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setHasImage(true);
+      setTs(Date.now());
+    } catch (err) {
+      setUploadErr(err?.response?.data?.detail || err.message || "Upload failed");
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const handleRemove = async () => {
+    if (!window.confirm("Remove this photo?")) return;
+    try {
+      await api.delete(`/pd/styles/${styleId}/image`);
+      setHasImage(false);
+    } catch (err) {
+      setUploadErr(err?.response?.data?.detail || err.message);
+    }
+  };
+
+  return (
+    <div className="mb-4" data-testid="pd-style-image">
+      <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleUpload} />
+      {hasImage !== false ? (
+        <div className="relative rounded-lg overflow-hidden border border-line bg-slate-50 min-h-[60px]">
+          <img
+            src={imgSrc} alt={styleName}
+            className="w-full object-cover max-h-56"
+            onLoad={() => setHasImage(true)}
+            onError={() => setHasImage(false)}
+          />
+          {hasImage === true && (
+            <div className="absolute top-2 right-2 flex gap-1.5">
+              <button onClick={() => fileRef.current?.click()} disabled={uploading}
+                className="text-[10.5px] font-semibold bg-white/90 rounded-md px-2 py-0.5 shadow-sm hover:bg-white border border-line">
+                {uploading ? "Uploading…" : "Replace"}
+              </button>
+              <button onClick={handleRemove}
+                className="text-[10.5px] font-semibold bg-white/90 rounded-md px-2 py-0.5 shadow-sm hover:bg-white border border-line text-red-600">
+                Remove
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <button onClick={() => fileRef.current?.click()} disabled={uploading}
+          className="w-full rounded-lg border-2 border-dashed border-border bg-slate-50 hover:bg-slate-100 transition flex flex-col items-center justify-center gap-1.5 py-8 text-muted"
+          data-testid="pd-image-upload-btn">
+          <UploadSimple size={22} />
+          <span className="text-[12px] font-medium">{uploading ? "Uploading…" : "Upload photo"}</span>
+          <span className="text-[10.5px]">JPG, PNG or WebP · max 10 MB</span>
+        </button>
+      )}
+      {uploadErr && <p className="mt-1.5 text-[11.5px] text-red-600">{uploadErr}</p>}
+    </div>
+  );
+};
+
 // ── Tiny form field helpers ───────────────────────────────────────────────────
 const FField = ({ label, name, value, onChange, type = "text", placeholder = "" }) => (
   <div className="flex flex-col gap-0.5">
@@ -380,6 +458,9 @@ const DetailDrawer = ({ styleId, onClose, onMove, onRefreshBoard }) => {
               </span>
               {st.assignee_name && <span className="pill-neutral">Assignee: {st.assignee_name}</span>}
             </div>
+
+            {/* ── Style image ── */}
+            <StyleImage styleId={st.id} styleName={st.style_name} />
 
             {/* ── Edit form ── */}
             {editing ? (
