@@ -258,7 +258,7 @@ SITE_LOCATION_MAP = {
     " Oasis mall":     "The Oasis Mall",
     "Vivo Kigali":     "Vivo Kigali Heights",
     "Vivo Kigali ":    "Vivo Kigali Heights",  # trailing space variant
-    "Shop Zetu_MoiAv": "Online - Shop Zetu",
+    "Shop Zetu_MoiAv": "Vivo Moi Avenue",  # physical counter at Moi Avenue store
     "Vivo City Mall": "Vivo City Mall",
     "Vivo Signature": "Vivo Signature Mall",
     "Vivo Runda": "Vivo Runda",
