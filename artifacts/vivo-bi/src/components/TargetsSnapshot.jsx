@@ -181,7 +181,7 @@ const TargetsSnapshot = ({ quarterLabel, daysLeft, rows, overall, onClose }) => 
               so we omit the top pill + days-remaining + subtitle per
               May 2026 CEO feedback. */}
           <h1 className="font-serif font-extrabold text-[26px] leading-[1.05] tracking-tight text-orange-600">
-            {quarterLabel} Performance Update
+            {quarterLabel === "Q3" ? "Mission 420 Update" : `${quarterLabel} Performance Update`}
           </h1>
 
           {/* Hero card */}
