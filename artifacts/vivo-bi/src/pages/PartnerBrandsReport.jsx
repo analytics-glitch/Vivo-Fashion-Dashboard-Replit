@@ -201,6 +201,18 @@ export default function PartnerBrandsReport() {
           initialSort={{ key: "net_sales", dir: "desc" }}
           exportName={`partner-brands_${dateFrom}_to_${dateTo}.csv`}
           pageSize={100}
+          footerRow={[
+            <td key="lbl" className="py-2 px-3 font-semibold text-slate-700 whitespace-nowrap">Totals</td>,
+            <td key="v"   className="py-2 px-3" />,
+            <td key="sc"  className="py-2 px-3" />,
+            <td key="pt"  className="py-2 px-3" />,
+            <td key="sku" className="py-2 px-3" />,
+            <td key="pr"  className="py-2 px-3 text-right text-slate-400">—</td>,
+            <td key="d"   className="py-2 px-3 text-right font-semibold text-slate-700">{fmtKESLong(totals.discount)}</td>,
+            <td key="r"   className="py-2 px-3 text-right font-semibold text-slate-700">{fmtNum(totals.returns)}</td>,
+            <td key="u"   className="py-2 px-3 text-right font-semibold text-slate-700">{fmtNum(totals.units)}</td>,
+            <td key="ns"  className="py-2 px-3 text-right font-semibold text-primary">{fmtKESLong(totals.net_sales)}</td>,
+          ]}
         />
       )}
     </div>
