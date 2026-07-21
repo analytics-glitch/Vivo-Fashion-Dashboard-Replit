@@ -6091,19 +6091,22 @@ def get_subcategory_stock_sales(
     search:    str = Query(default=None),
     brand:     str = Query(default=None),
     product_type: str = Query(default=None),
+    locations: str = None,
 ):
+    # The Inventory page sends `locations` (plural); other callers send `channel`.
+    # Accept both — `locations` wins when set.
+    _chan = locations or channel
     subcat_list = "'" + "','".join(PRODUCT_SUBCATS) + "'"
     # Inventory-page local filters (search / brand / subcategory pill) scope
     # BOTH the sales and stock sides — see analytics_sts_by_category.
     local_scope = _inv_local_scope_sql(search, brand, product_type, alias="p")
-    where = build_filters(date_from, date_to, country, channel,
+    where = build_filters(date_from, date_to, country, _chan,
         extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.product_type IN (" + subcat_list + ")") + local_scope
-    # The filter-bar country / POS-location ("channel" param = pos_location_name)
-    # selection must scope the STOCK side too, not just sales — otherwise a
-    # store-scoped Units Sold was matched against catalog-wide Inventory and the
-    # Inventory column ignored the POS filter (reported repeatedly by leadership).
+    # The filter-bar country / POS-location selection must scope the STOCK side
+    # too, not just sales — otherwise a store-scoped Units Sold was matched
+    # against catalog-wide Inventory (reported repeatedly by leadership).
     inv_country_filter = ("AND i.country IN (" + csv_to_sql(country) + ")") if country else ""
-    inv_loc_filter = ("AND i.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    inv_loc_filter = ("AND i.pos_location_name IN (" + csv_to_sql(_chan) + ")") if _chan else ""
     return run_query("""
         WITH sales AS (
             SELECT p.product_type AS subcategory,
@@ -8815,23 +8818,26 @@ def analytics_sts_by_category(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
+    locations: str = Query(default=None),
     search:    str = Query(default=None),
     brand:     str = Query(default=None),
     product_type: str = Query(default=None),
 ):
+    # The Inventory page sends `locations` (plural); other callers send `channel`.
+    # Accept both — `locations` wins when set.
+    _chan = locations or channel
     # Inventory-page local filters (search / brand / subcategory pill) scope
     # BOTH the sales and stock sides so the table reflects only the matching
     # products, not category-wide totals.
     local_scope = _inv_local_scope_sql(search, brand, product_type, alias="p")
-    where = build_filters(date_from, date_to, country, channel,
+    where = build_filters(date_from, date_to, country, _chan,
         extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.category IS NOT NULL AND p.category <> ''") + local_scope
-    # The filter-bar country / POS-location ("channel" param = pos_location_name)
-    # selection must scope the STOCK side too, not just sales — otherwise the
-    # store-scoped Units Sold was matched against catalog-wide Inventory and the
-    # category-total Inventory column ignored the POS filter (mirrors the
-    # subcategory helper get_subcategory_stock_sales).
+    # The filter-bar country / POS-location selection must scope the STOCK side
+    # too, not just sales — otherwise the store-scoped Units Sold was matched
+    # against catalog-wide Inventory and the category-total Inventory column
+    # ignored the POS filter (mirrors the subcategory helper).
     inv_country_filter = ("AND i.country IN (" + csv_to_sql(country) + ")") if country else ""
-    inv_loc_filter = ("AND i.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    inv_loc_filter = ("AND i.pos_location_name IN (" + csv_to_sql(_chan) + ")") if _chan else ""
     return run_query("""
         WITH sales AS (
             SELECT p.category AS category,
@@ -8876,12 +8882,14 @@ def analytics_sts_by_subcat(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
+    locations: str = Query(default=None),
     search:    str = Query(default=None),
     brand:     str = Query(default=None),
     product_type: str = Query(default=None),
 ):
     rows = get_subcategory_stock_sales(date_from, date_to, country, channel,
-                                       search, brand, product_type)
+                                       search, brand, product_type,
+                                       locations=locations)
     for r in rows:
         sold = r.get("pct_of_total_sold") or 0
         stock = r.get("pct_of_total_stock") or 0
