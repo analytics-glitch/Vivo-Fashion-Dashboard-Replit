@@ -7135,6 +7135,86 @@ def receiving_po_batches():
             FROM fabric_receiving_sheets s
             WHERE s.po_id IS NULL AND s.deleted_at IS NULL
         """)
+        # Compute value_kes and value_yuan for each PO in one pass.
+        all_po_ids = [int(r["po_id"]) for r in rows if r.get("po_id") is not None]
+        kes_data, yuan_data = {}, {}
+        if all_po_ids:
+            # Per-(po_id, product_id) kg totals, kg_per_mtr and supplier_fabric_code.
+            prod_totals = q(conn, """
+                SELECT s.po_id, s.product_id,
+                       SUM(s.total_kg) as total_kg,
+                       MAX(p.kg_per_mtr_eff) as kg_per_mtr,
+                       MAX(NULLIF(BTRIM(p.supplier_fabric_code),'')) as supplier_fabric_code
+                FROM fabric_receiving_sheets s
+                LEFT JOIN raw_fabric_products p ON p.id = s.product_id
+                WHERE s.po_id = ANY(%s) AND s.deleted_at IS NULL
+                GROUP BY s.po_id, s.product_id
+            """, (all_po_ids,))
+            # MAX(price_unit) per (po_id, product_id) — same strategy as detail endpoint.
+            pu_rows = q(conn, """
+                SELECT po.po_id, po.product_id, MAX(po.price_unit) as price_unit
+                FROM raw_fabric_purchase_orders po
+                WHERE po.po_id = ANY(%s)
+                GROUP BY po.po_id, po.product_id
+            """, (all_po_ids,))
+            pu_map = {(r["po_id"], r["product_id"]): r["price_unit"] for r in pu_rows}
+            pitems: dict = {}
+            for r in q(conn,
+                "SELECT po_id, price_key, yuan_price, quote_unit"
+                " FROM fabric_po_pricing_items WHERE po_id = ANY(%s)",
+                (all_po_ids,)):
+                pitems.setdefault(r["po_id"], {})[r["price_key"]] = r
+            prod_by_po: dict = {}
+            for pt in prod_totals:
+                prod_by_po.setdefault(pt["po_id"], []).append(pt)
+            # Compute value_kes and value_yuan using identical per-fabric arithmetic
+            # as the detail endpoint — no pre-rounding so PO total = sum of fabric rows.
+            for po_id in all_po_ids:
+                items = pitems.get(po_id, {})
+                products = prod_by_po.get(po_id, [])
+                if not products:
+                    kes_data[po_id] = None
+                    yuan_data[po_id] = None
+                    continue
+                total_kes = 0.0
+                total_yuan = 0.0
+                kes_ok = True
+                yuan_ok = True
+                for pt in products:
+                    pid = pt["product_id"]
+                    kg = float(pt["total_kg"] or 0)
+                    kpm_val = pt.get("kg_per_mtr")
+                    try:
+                        kpm = float(kpm_val) if kpm_val not in (None, "") and float(kpm_val) > 0 else None
+                    except (TypeError, ValueError):
+                        kpm = None
+                    # KES
+                    pu = pu_map.get((po_id, pid))
+                    if pu is None:
+                        kes_ok = False
+                    elif kes_ok:
+                        total_kes += float(pu) * kg
+                    # Yuan
+                    sfc = pt.get("supplier_fabric_code") or None
+                    pkey = f"code:{sfc}" if sfc else f"product:{pid}"
+                    it = items.get(pkey) or {}
+                    yp = _recv_po_num(it.get("yuan_price"))
+                    qu = it.get("quote_unit") if it.get("quote_unit") in _PO_QUOTE_UNITS else "kg"
+                    if yp is None:
+                        yuan_ok = False
+                    elif yuan_ok:
+                        if qu == "kg":
+                            total_yuan += yp * kg
+                        elif kpm is None:
+                            yuan_ok = False
+                        else:
+                            total_yuan += yp * (kg / kpm)
+                kes_data[po_id] = total_kes if kes_ok else None
+                yuan_data[po_id] = total_yuan if yuan_ok else None
+    for r in rows:
+        po_id = r.get("po_id")
+        r["value_kes"] = kes_data.get(po_id) if po_id is not None else None
+        r["value_yuan"] = yuan_data.get(po_id) if po_id is not None else None
     no_po_group = None
     if nopo and int(nopo[0].get("sheets") or 0) > 0:
         no_po_group = {"po_id": None, "po_name": None, "po_date": None,
@@ -7143,7 +7223,8 @@ def receiving_po_batches():
                        "total_kg": nopo[0]["total_kg"],
                        "rolls": int(nopo[0].get("rolls") or 0),
                        "last_upload_status": None, "last_uploaded_by": None,
-                       "last_uploaded_at": None}
+                       "last_uploaded_at": None,
+                       "value_kes": None, "value_yuan": None}
     return {"items": rows, "no_po": no_po_group}
 
 @fabric_router.get("/api/fabric/receiving/po-batch-detail")
@@ -7217,6 +7298,11 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
         # Lock state + the who/what/when trail (roll changes merged with the
         # Odoo upload history, newest first) for this PO group.
         locked, audit, po_sheet = False, [], None
+        # Value fields — populated for real POs only.
+        detail_price_units: dict = {}   # product_id → price_unit (KES per unit)
+        detail_pricing: dict = {}       # price_key → {yuan_price, quote_unit}
+        detail_kpm: dict = {}           # product_id → kg_per_mtr_eff
+        detail_sfc: dict = {}           # product_id → supplier_fabric_code
         if params:  # a real PO id (not the legacy "No PO" group)
             ps = q(conn, """
                 SELECT id, po_name,
@@ -7247,6 +7333,31 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
             """, (params[0], params[0]))
             for a in audit:
                 a.pop("at", None)
+            # Load MAX(price_unit) per product for KES value — same strategy
+            # as the batch endpoint so PO total = sum of fabric-row values exactly.
+            pu_rows = q(conn, """
+                SELECT po.product_id, MAX(po.price_unit) as price_unit
+                FROM raw_fabric_purchase_orders po
+                WHERE po.po_id = %s
+                GROUP BY po.product_id
+            """, (params[0],))
+            detail_price_units = {r["product_id"]: r["price_unit"] for r in pu_rows}
+            # Load Yuan pricing items for this PO.
+            yi_rows = q(conn,
+                "SELECT price_key, yuan_price, quote_unit"
+                " FROM fabric_po_pricing_items WHERE po_id=%s", (params[0],))
+            detail_pricing = {r["price_key"]: r for r in yi_rows}
+            # kg_per_mtr and supplier_fabric_code per product.
+            kpm_rows = q(conn, """
+                SELECT p.id as product_id,
+                       p.kg_per_mtr_eff,
+                       NULLIF(BTRIM(p.supplier_fabric_code),'') as supplier_fabric_code
+                FROM raw_fabric_products p
+                WHERE p.id = ANY(%s)
+            """, ([s["product_id"] for s in sheets if s.get("product_id")],))
+            for r in kpm_rows:
+                detail_kpm[r["product_id"]] = r.get("kg_per_mtr_eff")
+                detail_sfc[r["product_id"]] = r.get("supplier_fabric_code")
     rolls_by_sheet = {}
     for r in rolls:
         rolls_by_sheet.setdefault(r["sheet_id"], []).append(
@@ -7290,6 +7401,27 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
         g = fabrics[key]
         g["total_kg"] = round(g["total_kg"], 3)
         g["total_mtrs"] = None if g["mtrs_missing"] else round(g["total_mtrs"], 1)
+        # Compute value_kes and value_yuan for this fabric group.
+        pid = g.get("product_id")
+        kg = g["total_kg"]
+        pu = detail_price_units.get(pid)
+        g["value_kes"] = float(pu) * kg if pu is not None else None
+        sfc = detail_sfc.get(pid)
+        pkey = f"code:{sfc}" if sfc else (f"product:{pid}" if pid else None)
+        it = (detail_pricing.get(pkey) or {}) if pkey else {}
+        yp = _recv_po_num(it.get("yuan_price"))
+        qu = it.get("quote_unit") if it.get("quote_unit") in _PO_QUOTE_UNITS else "kg"
+        if yp is None:
+            g["value_yuan"] = None
+        elif qu == "kg":
+            g["value_yuan"] = yp * kg
+        else:
+            kpm_val = detail_kpm.get(pid)
+            try:
+                kpm = float(kpm_val) if kpm_val not in (None, "") and float(kpm_val) > 0 else None
+            except (TypeError, ValueError):
+                kpm = None
+            g["value_yuan"] = yp * (kg / kpm) if kpm else None
         out.append(g)
     out.sort(key=lambda g: (g.get("fabric_name") or "").lower())
     return {"fabrics": out, "locked": locked, "audit": audit,

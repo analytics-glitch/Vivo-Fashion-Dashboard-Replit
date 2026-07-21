@@ -1145,8 +1145,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div class="card" style="padding:0;">
      <div class="tbl-wrap">
       <table class="data">
-       <thead><tr><th style="width:1%;"></th><th>PO</th><th>PO date</th><th class="r">Sheet#</th><th class="r">SKUs/Barcodes</th><th class="r">Rolls Received#</th><th class="r">Total kgs</th><th>Last upload</th><th></th></tr></thead>
-       <tbody id="recv-po-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
+       <thead><tr><th style="width:1%;"></th><th>PO</th><th>PO date</th><th class="r">Sheet#</th><th class="r">SKUs/Barcodes</th><th class="r">Rolls Received#</th><th class="r">Total kgs</th><th class="r">Value (KES)</th><th class="r">Value (¥ Yuan)</th><th>Last upload</th><th></th></tr></thead>
+       <tbody id="recv-po-body"><tr><td colspan="11" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
     </div>
@@ -4730,7 +4730,7 @@ async function loadRecvPoBatches(){
     const d=await apiFetch('/api/fabric/receiving/po-batches');
     const items=((d&&d.items)||[]).slice();
     if(d&&d.no_po)items.push(d.no_po);
-    if(!items.length){body.innerHTML='<tr><td colspan="9" class="muted" style="padding:1rem;">No receiving sheets saved yet — pick a draft PO and record the first delivery above.</td></tr>';return;}
+    if(!items.length){body.innerHTML='<tr><td colspan="11" class="muted" style="padding:1rem;">No receiving sheets saved yet — pick a draft PO and record the first delivery above.</td></tr>';return;}
     // Drop expansion state for groups that no longer exist.
     const keys=new Set(items.map(recvPoKey));
     Array.from(recvPoExpanded).forEach(k=>{if(!keys.has(k))recvPoExpanded.delete(k);});
@@ -4769,6 +4769,8 @@ async function loadRecvPoBatches(){
         }
       }
       const action=isNoPo?'':`<button class="btn" data-po-print="${esc(key)}" title="Print the full PO receiving sheet (all fabrics &amp; rolls)" style="padding:4px 10px;font-size:12px;">Print</button> <button class="btn" data-po-dl="${Number(r.po_id)}" data-dl-fmt="pdf" title="Download this PO's full receiving sheet as a PDF" style="padding:4px 10px;font-size:12px;">PDF</button> <button class="btn" data-po-dl="${Number(r.po_id)}" data-dl-fmt="xlsx" title="Download this PO's full receiving sheet as an Excel workbook" style="padding:4px 10px;font-size:12px;">Excel</button>${recvQualityOnly?'':` <button class="btn btn-primary" data-po-open="${Number(r.po_id)}" style="padding:4px 10px;font-size:12px;">Review &amp; upload</button> <button class="btn" data-po-lc="${Number(r.po_id)}" title="Attach clearing, duty &amp; freight charges to this PO's receipt as a draft landed cost in Odoo" style="padding:4px 10px;font-size:12px;">Landed cost</button>`} ${approveBtn}`;
+      const vKES=r.value_kes!=null?fmtKES(r.value_kes):'<span class="muted">—</span>';
+      const vYuan=r.value_yuan!=null?(fmt2(r.value_yuan)+' ¥'):'<span class="muted" title="Yuan pricing not yet entered for this PO">—</span>';
       const main=`<tr>
         <td><button class="btn" data-po-toggle="${esc(key)}" title="${open?'Collapse':'Expand'}" style="padding:2px 9px;font-size:13px;font-weight:700;">${open?'−':'+'}</button></td>
         <td data-po-toggle="${esc(key)}" style="font-weight:600;cursor:pointer;" title="${open?'Collapse':'Expand'}">${name}</td>
@@ -4777,10 +4779,12 @@ async function loadRecvPoBatches(){
         <td class="r">${fmt(r.products)}</td>
         <td class="r">${fmt(r.rolls)}</td>
         <td class="r">${fmt2(r.total_kg)}</td>
+        <td class="r">${vKES}</td>
+        <td class="r">${vYuan}</td>
         <td style="white-space:nowrap;">${lu}</td>
         <td style="white-space:nowrap;">${action}</td>
       </tr>`;
-      const detail=open?`<tr class="recv-po-detail-row"><td colspan="9" style="padding:0;background:rgba(0,0,0,.015);"><div class="recv-po-detail" data-po-detail="${esc(key)}" style="padding:.7rem .9rem;"><span class="loading">Loading sheets…</span></div></td></tr>`:'';
+      const detail=open?`<tr class="recv-po-detail-row"><td colspan="11" style="padding:0;background:rgba(0,0,0,.015);"><div class="recv-po-detail" data-po-detail="${esc(key)}" style="padding:.7rem .9rem;"><span class="loading">Loading sheets…</span></div></td></tr>`:'';
       return main+detail;
     }).join('');
     if(!body.dataset.bound){
@@ -4841,7 +4845,7 @@ async function loadRecvPoBatches(){
         renderRecvPoDetail(box,det,k);
       }catch(e){box.innerHTML='<div class="banner banner-err">Could not load this PO\u2019s sheets: '+esc(e.message)+'</div>';}
     });
-  }catch(e){rowErr('recv-po-body',9,e);}
+  }catch(e){rowErr('recv-po-body',11,e);}
 }
 // Renders one PO group's drill-down: fabric rows (summed totals) → sheets
 // with actions → rolls. All ERP-sourced text goes through esc().
@@ -4873,7 +4877,7 @@ function renderRecvPoDetail(box,det,poKey){
       <span style="font-weight:700;width:14px;text-align:center;">${open?'−':'+'}</span>
       <span style="font-weight:600;">${esc(g.fabric_name||'—')}</span>
       <span class="muted" style="font-size:12px;">${esc(fabricClean(g.barcode))}</span>
-      <span style="margin-left:auto;white-space:nowrap;font-size:12px;">${fmt(g.rolls_count)} roll${g.rolls_count===1?'':'s'} · <b>${fmt2(g.total_kg)} kg</b> · ${mtrs} · ${
+      <span style="margin-left:auto;white-space:nowrap;font-size:12px;">${fmt(g.rolls_count)} roll${g.rolls_count===1?'':'s'} · <b>${fmt2(g.total_kg)} kg</b> · ${mtrs} · ${g.value_kes!=null?fmtKES(g.value_kes):'<span class="muted" title="KES value unavailable">KES —</span>'} · ${g.value_yuan!=null?fmt2(g.value_yuan)+' ¥':'<span class="muted" title="Yuan pricing not entered for this PO">— ¥</span>'} · ${
         (g.q_pass||g.q_fail)
           ? `<span style="color:#0a7d33;font-weight:700;">${fmt(g.q_pass)} pass</span>${g.q_fail?' / <span style="color:var(--danger);font-weight:700;">'+fmt(g.q_fail)+' fail</span>':''}${g.q_pending?' / <span class="muted">'+fmt(g.q_pending)+' pending</span>':''}`
           : '<span class="muted">quality pending</span>'
