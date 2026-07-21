@@ -6,6 +6,7 @@ import { useAuth } from "@/lib/auth";
 import {
   Kanban, Plus, X, ArrowRight, ArrowUUpLeft, CheckCircle, XCircle,
   GearSix, DownloadSimple, ChartBar, ClockClockwise, ArrowsClockwise, Trash, Rows, PencilSimple, UploadSimple,
+  ChartPieSlice,
 } from "@phosphor-icons/react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -619,6 +620,160 @@ const SlaDialog = ({ stages, onClose, onSaved }) => {
 };
 
 // ── Analytics tab ─────────────────────────────────────────────────────────────
+// ── Summary tab — per-stage & per-assignee overview ──────────────────────────
+const AgingBar = ({ ok, warning, stuck, total }) => {
+  if (!total) return null;
+  return (
+    <div className="flex gap-0.5 h-1.5 rounded overflow-hidden bg-slate-100">
+      {ok > 0 && <div className="bg-emerald-500 transition-all" style={{ width: `${(ok / total) * 100}%` }} />}
+      {warning > 0 && <div className="bg-amber-400 transition-all" style={{ width: `${(warning / total) * 100}%` }} />}
+      {stuck > 0 && <div className="bg-rose-400 transition-all" style={{ width: `${(stuck / total) * 100}%` }} />}
+    </div>
+  );
+};
+
+const SummaryTab = () => {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    api.get("/pd/summary", { forceFresh: true })
+      .then((r) => setData(r.data))
+      .catch((e) => setErr(e?.response?.data?.detail || e.message));
+  }, []);
+  if (err) return <ErrorBox message={err} />;
+  if (!data) return <Loading />;
+  const { stages, assignees, cross_tab, stage_order, stage_names, totals } = data;
+
+  return (
+    <div className="space-y-6">
+      {/* KPI strip */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        {[
+          { label: "Active styles", value: totals.total_active, color: "border-l-brand", text: "text-foreground" },
+          { label: "Stuck (over SLA)", value: totals.stuck, color: "border-l-rose-400", text: "text-rose-600" },
+          { label: "At risk", value: totals.warning, color: "border-l-amber-400", text: "text-amber-600" },
+          { label: "Unassigned", value: totals.unassigned, color: "border-l-slate-300", text: "text-slate-500" },
+        ].map((k) => (
+          <div key={k.label} className={`card-white p-4 text-center border-l-4 ${k.color}`}>
+            <div className={`text-3xl font-bold ${k.text}`}>{k.value}</div>
+            <div className="text-[11px] text-muted mt-1">{k.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Stage pipeline */}
+      <div className="card-white p-5">
+        <SectionTitle title="Pipeline by stage" subtitle="Active styles in each stage — green ok · amber at risk · red stuck" />
+        <div className="grid grid-cols-3 sm:grid-cols-5 xl:grid-cols-9 gap-3 mt-4">
+          {stages.map((s) => (
+            <div key={s.stage_key} className="flex flex-col gap-2 bg-[#fdf8f4] rounded-xl p-3 min-w-0">
+              <div className="text-[10.5px] font-bold text-foreground leading-tight" title={s.stage_name}>{s.stage_name}</div>
+              <div className="text-2xl font-bold text-foreground">{s.total}</div>
+              <div className="text-[10px] text-muted">SLA {s.sla_days ?? "—"}d</div>
+              <AgingBar ok={s.ok} warning={s.warning} stuck={s.stuck} total={s.total} />
+              <div className="flex flex-col gap-1">
+                {s.ok > 0 && (
+                  <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">{s.ok} on track</span>
+                )}
+                {s.warning > 0 && (
+                  <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">{s.warning} at risk</span>
+                )}
+                {s.stuck > 0 && (
+                  <span className="text-[10px] font-semibold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded">{s.stuck} stuck</span>
+                )}
+                {s.total === 0 && <span className="text-[10px] text-muted italic">empty</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Assignee workload */}
+      <div className="card-white p-5">
+        <SectionTitle title="Workload by assignee" subtitle="Active styles per pattern maker / designer" />
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mt-4">
+          {assignees.map((a) => (
+            <div key={a.assignee} className="bg-[#fdf8f4] rounded-xl p-4 space-y-3">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-full bg-brand/10 text-brand font-bold text-sm flex items-center justify-center flex-shrink-0 uppercase">
+                  {a.assignee === "Unassigned" ? "?" : a.assignee.charAt(0)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-[13px] truncate">{a.assignee}</div>
+                  <div className="text-[11px] text-muted">{a.total} style{a.total !== 1 ? "s" : ""}</div>
+                </div>
+                <div className="flex gap-1 flex-shrink-0">
+                  {a.stuck > 0 && (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">{a.stuck} stuck</span>
+                  )}
+                  {a.warning > 0 && (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{a.warning} risk</span>
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {stage_order.filter((sk) => (a.by_stage[sk] || 0) > 0).map((sk) => (
+                  <span key={sk}
+                    className="inline-flex items-center gap-1 text-[10.5px] bg-white border border-line rounded-full px-2 py-0.5">
+                    <span className="text-muted">{stage_names[sk]}</span>
+                    <span className="font-bold text-brand">{a.by_stage[sk]}</span>
+                  </span>
+                ))}
+              </div>
+              <AgingBar ok={a.ok} warning={a.warning} stuck={a.stuck} total={a.total} />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Assignee × stage matrix */}
+      <div className="card-white p-5 overflow-x-auto">
+        <SectionTitle title="Assignee × stage matrix" subtitle="Count of active styles at each intersection" />
+        <table className="mt-4 text-[11px] w-full min-w-max">
+          <thead>
+            <tr>
+              <th className="text-left text-muted font-semibold pb-2 pr-6 sticky left-0 bg-white min-w-[130px]">Assignee</th>
+              {stage_order.map((sk) => (
+                <th key={sk} className="text-center text-muted font-semibold pb-2 px-3 whitespace-nowrap">{stage_names[sk]}</th>
+              ))}
+              <th className="text-center font-bold text-foreground pb-2 px-3">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cross_tab.map((row) => {
+              const rowMax = Math.max(...stage_order.map((sk) => row[sk] || 0), 1);
+              const rowTotal = stage_order.reduce((s, sk) => s + (row[sk] || 0), 0);
+              return (
+                <tr key={row.assignee} className="border-t border-line">
+                  <td className="py-2 pr-6 font-semibold text-[12px] text-foreground sticky left-0 bg-white">{row.assignee}</td>
+                  {stage_order.map((sk) => {
+                    const v = row[sk] || 0;
+                    const alpha = v > 0 ? 0.08 + (v / rowMax) * 0.24 : 0;
+                    return (
+                      <td key={sk} className="text-center py-2 px-3">
+                        {v > 0 ? (
+                          <span
+                            className="inline-flex items-center justify-center w-6 h-6 rounded font-bold text-brand"
+                            style={{ backgroundColor: `rgba(26,92,56,${alpha})` }}>
+                            {v}
+                          </span>
+                        ) : (
+                          <span className="text-slate-200">—</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                  <td className="text-center py-2 px-3 font-bold text-[12px] text-foreground">{rowTotal}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
 const AnalyticsTab = ({ onOpenStyle }) => {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
@@ -980,6 +1135,7 @@ const TrackerTab = ({ onOpenStyle }) => {
 const TABS = [
   { key: "board", label: "Board", icon: Kanban },
   { key: "tracker", label: "Tracker", icon: Rows },
+  { key: "summary", label: "Summary", icon: ChartPieSlice },
   { key: "analytics", label: "Analytics & Bottlenecks", icon: ChartBar },
   { key: "completed", label: "Completed", icon: CheckCircle },
   { key: "history", label: "History Log", icon: ClockClockwise },
@@ -1139,6 +1295,7 @@ const PDFlow = () => {
       )}
 
       {tab === "tracker" && <TrackerTab key={refreshKey} onOpenStyle={setDetail} />}
+      {tab === "summary" && <SummaryTab key={refreshKey} />}
       {tab === "analytics" && <AnalyticsTab key={refreshKey} onOpenStyle={setDetail} />}
       {tab === "completed" && <CompletedTab key={refreshKey} onOpenStyle={setDetail} />}
       {tab === "history" && <HistoryTab key={refreshKey} isAdmin={isAdmin} />}

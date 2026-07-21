@@ -569,6 +569,67 @@ def register_pd_routes(app, api_pg_module):
             pass
         return {"ok": True}
 
+    @app.get("/api/pd/summary")
+    def pd_summary():
+        stages = _stages()
+        sla_map = {s["stage_key"]: s["sla_days"] for s in stages}
+        actives = _db("SELECT * FROM pd_styles WHERE status = 'active'") or []
+        styles_out = [_style_out(r, sla_map) for r in actives]
+
+        # Per-stage aggregation
+        stage_agg = {}
+        for s in stages:
+            stage_agg[s["stage_key"]] = {
+                "stage_key": s["stage_key"], "stage_name": s["stage_name"],
+                "sla_days": s["sla_days"], "total": 0, "ok": 0, "warning": 0, "stuck": 0,
+            }
+        for st in styles_out:
+            sk = st["current_stage"]
+            if sk not in stage_agg:
+                continue
+            stage_agg[sk]["total"] += 1
+            ag = st["aging"] or "ok"
+            if ag in stage_agg[sk]:
+                stage_agg[sk][ag] += 1
+
+        # Per-assignee aggregation
+        assignee_agg = {}
+        for st in styles_out:
+            name = st["assignee_name"] or st["pattern_maker"] or "Unassigned"
+            if name not in assignee_agg:
+                assignee_agg[name] = {
+                    "assignee": name, "total": 0, "ok": 0, "warning": 0, "stuck": 0, "by_stage": {},
+                }
+            assignee_agg[name]["total"] += 1
+            ag = st["aging"] or "ok"
+            assignee_agg[name][ag] += 1
+            sk = st["current_stage"]
+            assignee_agg[name]["by_stage"][sk] = assignee_agg[name]["by_stage"].get(sk, 0) + 1
+
+        # Cross-tab rows: assignee × stage
+        cross_tab = []
+        for name, agg in sorted(assignee_agg.items(), key=lambda x: (-x[1]["total"], x[0])):
+            row = {"assignee": name}
+            for s in stages:
+                row[s["stage_key"]] = agg["by_stage"].get(s["stage_key"], 0)
+            cross_tab.append(row)
+
+        totals = {
+            "total_active": len(styles_out),
+            "stuck": sum(1 for s in styles_out if s["aging"] == "stuck"),
+            "warning": sum(1 for s in styles_out if s["aging"] == "warning"),
+            "unassigned": sum(1 for s in styles_out
+                              if not (s["assignee_name"] or s["pattern_maker"])),
+        }
+        return {
+            "stages": [stage_agg[s["stage_key"]] for s in stages],
+            "assignees": sorted(assignee_agg.values(), key=lambda x: (-x["total"], x["assignee"])),
+            "cross_tab": cross_tab,
+            "stage_order": [s["stage_key"] for s in stages],
+            "stage_names": {s["stage_key"]: s["stage_name"] for s in stages},
+            "totals": totals,
+        }
+
     @app.get("/api/pd/analytics")
     def pd_analytics():
         stages = _stages()
