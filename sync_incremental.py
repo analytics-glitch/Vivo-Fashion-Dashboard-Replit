@@ -232,6 +232,7 @@ SITE_LOCATION_MAP = {
     "Vivo Meru": "Vivo Meru",
     "Vivo Eldoret": "Vivo Eldoret",
     "Vivo Mombasa Digo": "Vivo MSA Digo Road",
+    "VIVO Mombasa": "Vivo MSA Digo Road",  # site renamed Jun 2026
     "Vivo City Mall": "Vivo City Mall",
     "Vivo Signature": "Vivo Signature Mall",
     "Vivo Runda": "Vivo Runda",
