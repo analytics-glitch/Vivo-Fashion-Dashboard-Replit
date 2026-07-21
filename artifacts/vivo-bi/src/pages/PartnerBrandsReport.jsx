@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
-import { api, fmtKES, fmtNum } from "@/lib/api";
+import { api, fmtKESLong, fmtNum } from "@/lib/api";
 import { Loading, ErrorBox, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import { Storefront } from "@phosphor-icons/react";
@@ -51,14 +51,14 @@ const COLS = [
     key: "price",
     label: "Price",
     numeric: true,
-    render: (r) => (r.price != null ? fmtKES(r.price) : "—"),
+    render: (r) => (r.price != null ? fmtKESLong(r.price) : "—"),
     csv: (r) => r.price ?? "",
   },
   {
     key: "discount",
     label: "Discount",
     numeric: true,
-    render: (r) => fmtKES(r.discount || 0),
+    render: (r) => fmtKESLong(r.discount || 0),
     csv: (r) => r.discount ?? 0,
   },
   {
@@ -80,7 +80,7 @@ const COLS = [
     label: "Net Sales",
     numeric: true,
     render: (r) => (
-      <span className="font-semibold">{fmtKES(r.net_sales || 0)}</span>
+      <span className="font-semibold">{fmtKESLong(r.net_sales || 0)}</span>
     ),
     csv: (r) => r.net_sales ?? 0,
   },
@@ -163,10 +163,10 @@ export default function PartnerBrandsReport() {
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
-        <KpiCard label="Units Sold"      value={fmtNum(totals.units)}     />
-        <KpiCard label="Discount (KES)"  value={fmtKES(totals.discount)}  />
-        <KpiCard label="Returns (units)" value={fmtNum(totals.returns)}   />
-        <KpiCard label="Net Sales (KES)" value={fmtKES(totals.net_sales)} />
+        <KpiCard label="Units Sold"      value={fmtNum(totals.units)}         />
+        <KpiCard label="Discount (KES)"  value={fmtKESLong(totals.discount)}  />
+        <KpiCard label="Returns (units)" value={fmtNum(totals.returns)}       />
+        <KpiCard label="Net Sales (KES)" value={fmtKESLong(totals.net_sales)} />
       </div>
 
       <div className="flex flex-wrap items-center gap-2 mb-4">
