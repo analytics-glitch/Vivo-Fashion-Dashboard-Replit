@@ -229,6 +229,7 @@ SITE_LOCATION_MAP = {
     "Vivo TRM": "Vivo TRM",
     "Vivo Kisumu": "Vivo Kisumu",
     "Vivo Nakuru": "Vivo Nakuru",
+    "VIVO Westside": "Vivo Nakuru",  # FootfallCam site name for Nakuru Westside Mall
     "Vivo Meru": "Vivo Meru",
     "Vivo Eldoret": "Vivo Eldoret",
     "Vivo Mombasa Digo": "Vivo MSA Digo Road",
