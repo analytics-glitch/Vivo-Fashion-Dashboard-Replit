@@ -569,6 +569,77 @@ def register_pd_routes(app, api_pg_module):
             pass
         return {"ok": True}
 
+    @app.get("/api/pd/cat-mix")
+    def pd_cat_mix():
+        rows = _db("""
+            WITH ordered AS (
+                SELECT p.category,
+                       p.product_type AS sub_category,
+                       SUM(o.order_qty) AS ordered_qty
+                FROM production_orders o
+                JOIN all_products_clean p ON p.style_number = o.style_number
+                WHERE o.style_number IS NOT NULL AND p.category IS NOT NULL
+                GROUP BY 1, 2
+            ),
+            sales AS (
+                SELECT p.category,
+                       p.product_type AS sub_category,
+                       SUM(s.ordered_item_quantity) AS sales_qty
+                FROM all_sales s
+                JOIN all_products_clean p ON p.sku = s.variant_sku
+                WHERE s.sale_date::date >= now()::date - 30
+                  AND s.pos_location_name NOT IN ('Staff purchases','Manual Order','Online - vivo-uganda')
+                  AND s.ordered_item_quantity > 0
+                  AND p.category IS NOT NULL
+                GROUP BY 1, 2
+            )
+            SELECT
+                COALESCE(o.category,    sa.category)    AS category,
+                COALESCE(o.sub_category, sa.sub_category) AS sub_category,
+                COALESCE(o.ordered_qty, 0)              AS ordered_qty,
+                COALESCE(sa.sales_qty,  0)              AS sales_qty
+            FROM ordered o
+            FULL OUTER JOIN sales sa
+                ON sa.category = o.category AND sa.sub_category = o.sub_category
+            ORDER BY category, ordered_qty DESC NULLS LAST
+        """) or []
+        total_ordered = sum(float(r["ordered_qty"] or 0) for r in rows)
+        total_sales   = sum(float(r["sales_qty"]   or 0) for r in rows)
+        out = []
+        for r in rows:
+            oq = float(r["ordered_qty"] or 0)
+            sq = float(r["sales_qty"]   or 0)
+            out.append({
+                "category":     r["category"],
+                "sub_category": r["sub_category"] or "—",
+                "ordered_qty":  round(oq),
+                "ordered_pct":  round(oq / total_ordered * 100, 1) if total_ordered else 0,
+                "sales_qty":    round(sq),
+                "sales_pct":    round(sq / total_sales * 100, 1) if total_sales else 0,
+            })
+        # Category-level subtotals
+        by_cat = {}
+        for r in out:
+            cat = r["category"]
+            if cat not in by_cat:
+                by_cat[cat] = {"ordered_qty": 0, "sales_qty": 0}
+            by_cat[cat]["ordered_qty"] += r["ordered_qty"]
+            by_cat[cat]["sales_qty"]   += r["sales_qty"]
+        cat_totals = {
+            cat: {
+                "ordered_pct": round(v["ordered_qty"] / total_ordered * 100, 1) if total_ordered else 0,
+                "sales_pct":   round(v["sales_qty"]   / total_sales   * 100, 1) if total_sales   else 0,
+                **v,
+            }
+            for cat, v in by_cat.items()
+        }
+        return {
+            "rows": out,
+            "cat_totals": cat_totals,
+            "total_ordered": round(total_ordered),
+            "total_sales": round(total_sales),
+        }
+
     @app.get("/api/pd/summary")
     def pd_summary():
         stages = _stages()

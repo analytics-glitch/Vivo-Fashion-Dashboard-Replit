@@ -632,6 +632,123 @@ const AgingBar = ({ ok, warning, stuck, total }) => {
   );
 };
 
+const CatMixTable = () => {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  const [collapsed, setCollapsed] = useState({});
+  useEffect(() => {
+    api.get("/pd/cat-mix", { forceFresh: true })
+      .then((r) => setData(r.data))
+      .catch((e) => setErr(e?.response?.data?.detail || e.message));
+  }, []);
+  if (err) return <div className="text-[11px] text-rose-600 bg-rose-50 rounded-lg p-3">Category mix unavailable: {err}</div>;
+  if (!data) return <div className="text-[11px] text-muted italic py-2">Loading category mix…</div>;
+
+  const { rows, cat_totals, total_ordered, total_sales } = data;
+  const categories = [...new Set(rows.map((r) => r.category))];
+
+  const PctBar = ({ pct, color }) => (
+    <div className="flex items-center gap-1.5">
+      <div className="w-16 h-1.5 bg-slate-100 rounded overflow-hidden flex-shrink-0">
+        <div className="h-full rounded" style={{ width: `${Math.min(pct, 100)}%`, backgroundColor: color }} />
+      </div>
+      <span className="text-[10.5px] tabular-nums">{pct}%</span>
+    </div>
+  );
+
+  const toggleCat = (cat) => setCollapsed((c) => ({ ...c, [cat]: !c[cat] }));
+
+  const pctDiff = (op, sp) => {
+    const d = op - sp;
+    if (Math.abs(d) < 0.5) return null;
+    return d > 0
+      ? <span className="text-[9.5px] font-bold text-amber-600">+{d.toFixed(1)}pp over</span>
+      : <span className="text-[9.5px] font-bold text-sky-600">{d.toFixed(1)}pp under</span>;
+  };
+
+  return (
+    <div className="card-white p-5">
+      <SectionTitle
+        title="Category mix: ordered vs 30-day sales"
+        subtitle={`Ordered ${total_ordered.toLocaleString()} units total · Last-30d sales ${total_sales.toLocaleString()} units`}
+        action={
+          <button className="text-[11px] text-muted hover:text-brand inline-flex items-center gap-1"
+            onClick={() => {
+              const csvRows = [["Category","Sub-category","Ordered qty","Ordered %","30d sales","Sales %","Gap (pp)"]];
+              rows.forEach((r) => csvRows.push([r.category, r.sub_category, r.ordered_qty, r.ordered_pct, r.sales_qty, r.sales_pct, (r.ordered_pct - r.sales_pct).toFixed(1)]));
+              const blob = new Blob([csvRows.map((r) => r.join(",")).join("\n")], { type: "text/csv" });
+              const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+              a.download = "pd_cat_mix.csv"; a.click();
+            }}>
+            <DownloadSimple size={12} /> CSV
+          </button>
+        }
+      />
+      <div className="mt-4 overflow-x-auto">
+        <table className="w-full text-[11.5px]">
+          <thead>
+            <tr className="border-b-2 border-line">
+              <th className="text-left font-semibold text-muted pb-2 pr-4 min-w-[160px]">Category / Sub-category</th>
+              <th className="text-right font-semibold text-muted pb-2 px-3 whitespace-nowrap">Ordered qty</th>
+              <th className="text-left font-semibold text-muted pb-2 px-3 whitespace-nowrap">Ordered %</th>
+              <th className="text-right font-semibold text-muted pb-2 px-3 whitespace-nowrap">30d sales</th>
+              <th className="text-left font-semibold text-muted pb-2 px-3 whitespace-nowrap">Sales %</th>
+              <th className="text-left font-semibold text-muted pb-2 pl-3">Gap</th>
+            </tr>
+          </thead>
+          <tbody>
+            {categories.map((cat) => {
+              const ct = cat_totals[cat] || {};
+              const subRows = rows.filter((r) => r.category === cat);
+              const isOpen = !collapsed[cat];
+              return (
+                <React.Fragment key={cat}>
+                  {/* Category subtotal row */}
+                  <tr
+                    className="border-b border-line bg-[#fdf8f4] cursor-pointer hover:bg-[#f5ede3] select-none"
+                    onClick={() => toggleCat(cat)}>
+                    <td className="py-2 pr-4 font-bold text-[12px] text-foreground">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="text-muted text-[10px]">{isOpen ? "▾" : "▸"}</span>
+                        {cat}
+                      </span>
+                    </td>
+                    <td className="text-right py-2 px-3 font-bold tabular-nums">{(ct.ordered_qty || 0).toLocaleString()}</td>
+                    <td className="py-2 px-3"><PctBar pct={ct.ordered_pct || 0} color="#1a5c38" /></td>
+                    <td className="text-right py-2 px-3 font-bold tabular-nums">{(ct.sales_qty || 0).toLocaleString()}</td>
+                    <td className="py-2 px-3"><PctBar pct={ct.sales_pct || 0} color="#d97706" /></td>
+                    <td className="py-2 pl-3">{pctDiff(ct.ordered_pct || 0, ct.sales_pct || 0)}</td>
+                  </tr>
+                  {/* Sub-category rows */}
+                  {isOpen && subRows.map((r) => (
+                    <tr key={`${cat}-${r.sub_category}`} className="border-b border-line/60 hover:bg-slate-50/50">
+                      <td className="py-1.5 pr-4 pl-5 text-muted">{r.sub_category}</td>
+                      <td className="text-right py-1.5 px-3 tabular-nums text-foreground">{r.ordered_qty.toLocaleString()}</td>
+                      <td className="py-1.5 px-3"><PctBar pct={r.ordered_pct} color="#1a5c38" /></td>
+                      <td className="text-right py-1.5 px-3 tabular-nums text-foreground">{r.sales_qty.toLocaleString()}</td>
+                      <td className="py-1.5 px-3"><PctBar pct={r.sales_pct} color="#d97706" /></td>
+                      <td className="py-1.5 pl-3">{pctDiff(r.ordered_pct, r.sales_pct)}</td>
+                    </tr>
+                  ))}
+                </React.Fragment>
+              );
+            })}
+            {/* Grand total */}
+            <tr className="border-t-2 border-line bg-slate-50">
+              <td className="py-2 pr-4 font-bold text-foreground">Total</td>
+              <td className="text-right py-2 px-3 font-bold tabular-nums">{total_ordered.toLocaleString()}</td>
+              <td className="py-2 px-3 text-[10.5px] text-muted">100%</td>
+              <td className="text-right py-2 px-3 font-bold tabular-nums">{total_sales.toLocaleString()}</td>
+              <td className="py-2 px-3 text-[10.5px] text-muted">100%</td>
+              <td />
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
 const SummaryTab = () => {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
@@ -646,6 +763,9 @@ const SummaryTab = () => {
 
   return (
     <div className="space-y-6">
+      {/* Category mix table */}
+      <CatMixTable />
+
       {/* KPI strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {[
