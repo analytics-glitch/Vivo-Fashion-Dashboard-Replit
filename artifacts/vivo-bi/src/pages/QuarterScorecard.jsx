@@ -25,6 +25,150 @@ import { Target, TrendUp, TrendDown, Buildings, Info } from "@phosphor-icons/rea
  *      targets. Sortable + CSV export.
  */
 
+// ── Mission 420 hero ─────────────────────────────────────────────────
+const M420_MARKETS = [
+  { bucket: "Kenya - Retail", label: "Kenya",  target: 335_000_000 },
+  { bucket: "Uganda",         label: "Uganda", target:  31_000_000 },
+  { bucket: "Rwanda",         label: "Rwanda", target:  12_000_000 },
+  { bucket: "Kenya - Online", label: "Online", target:  42_000_000 },
+];
+const M420_TOTAL = 420_000_000;
+
+function fmtM(n) {
+  const v = Number(n) || 0;
+  if (Math.abs(v) >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(v) >= 1_000) return `${(v / 1_000).toFixed(0)}K`;
+  return v.toFixed(0);
+}
+
+function Mission420Banner({ data }) {
+  const actual = Number(data.revenue_total?.actual || 0);
+  const target = M420_TOTAL;
+  const pct = target > 0 ? Math.min(100, (actual / target) * 100) : 0;
+  const gap = Math.max(0, target - actual);
+  const daysLeft = Number(data.days_left) || 0;
+  const daysElapsed = Number(data.days_elapsed) || 0;
+  const requiredDailyRate = daysLeft > 0 ? gap / daysLeft : 0;
+  const currentDailyRate = daysElapsed > 0 ? actual / daysElapsed : 0;
+  const onTrack = currentDailyRate >= requiredDailyRate || pct >= 100;
+  const revenueRows = data.revenue || [];
+  const actualByBucket = Object.fromEntries(revenueRows.map((r) => [r.bucket, Number(r.actual || 0)]));
+
+  return (
+    <div className="rounded-2xl overflow-hidden border border-[#1a5c38] bg-gradient-to-br from-[#0f3d24] to-[#1a5c38] text-white shadow-xl">
+      {/* Header */}
+      <div className="px-5 pt-5 pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <Target size={20} weight="bold" className="text-[#f97316] shrink-0" />
+            <span className="text-[11px] font-bold uppercase tracking-widest text-white/60">Q3 2026</span>
+          </div>
+          <h2 className="text-[26px] font-black tracking-tight leading-none mt-0.5">
+            MISSION <span className="text-[#f97316]">420</span>
+          </h2>
+          <p className="text-[12px] text-white/60 mt-1">KES 420 Million Q3 Revenue Target</p>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="text-[11px] font-semibold uppercase text-white/50">Q3-to-date</div>
+          <div className="text-[28px] font-black tabular-nums text-white leading-none">
+            KES {fmtM(actual)}
+          </div>
+          <div className={`inline-flex items-center gap-1 mt-1 text-[11px] font-bold px-2 py-0.5 rounded-full ${
+            onTrack ? "bg-[#00c853]/20 text-[#86efac]" : "bg-[#dc2626]/20 text-[#fca5a5]"
+          }`}>
+            {onTrack ? <TrendUp size={11} weight="bold" /> : <TrendDown size={11} weight="bold" />}
+            {onTrack ? "On track" : "Behind pace"}
+          </div>
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      <div className="px-5 pb-4">
+        <div className="flex items-center justify-between text-[10.5px] text-white/50 mb-1.5">
+          <span>{pct.toFixed(1)}% of mission</span>
+          <span>KES {fmtM(gap)} to go</span>
+        </div>
+        <div className="h-3 rounded-full bg-white/10 overflow-hidden">
+          <div
+            className="h-full rounded-full transition-all duration-700"
+            style={{
+              width: `${pct}%`,
+              background: pct >= 100 ? "#00c853" : pct >= 70 ? "#f97316" : "#dc2626",
+            }}
+          />
+        </div>
+        <div className="flex items-center gap-1 mt-1.5 text-[10.5px] text-white/40">
+          <span>Day {data.days_elapsed} of {data.days_total}</span>
+          <span>·</span>
+          <span>{daysLeft} days left</span>
+        </div>
+      </div>
+
+      {/* Market breakdown */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 border-t border-white/10">
+        {M420_MARKETS.map((m) => {
+          const mActual = actualByBucket[m.bucket] || 0;
+          const mPct = m.target > 0 ? Math.min(100, (mActual / m.target) * 100) : 0;
+          return (
+            <div key={m.bucket} className="px-4 py-3.5 border-r border-white/10 last:border-r-0">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <span
+                  className="inline-block w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: countryColor(m.label) }}
+                />
+                <span className="text-[10px] font-bold uppercase tracking-wide text-white/60">{m.label}</span>
+              </div>
+              <div className="text-[15px] font-extrabold tabular-nums text-white leading-none">
+                KES {fmtM(mActual)}
+              </div>
+              <div className="text-[10px] text-white/40 mt-0.5">
+                target KES {fmtM(m.target)}
+              </div>
+              <div className="mt-2 h-1 rounded-full bg-white/10 overflow-hidden">
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${mPct}%`,
+                    backgroundColor: mPct >= 100 ? "#00c853" : mPct >= 70 ? "#f97316" : "#dc2626",
+                  }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Daily run-rate strip */}
+      {data.started && (
+        <div className="border-t border-white/10 grid grid-cols-2 sm:grid-cols-3 divide-x divide-white/10">
+          <div className="px-4 py-3">
+            <div className="text-[10px] font-semibold uppercase text-white/50">Current daily rate</div>
+            <div className="text-[16px] font-extrabold tabular-nums text-white">
+              KES {fmtM(currentDailyRate)}
+            </div>
+          </div>
+          <div className="px-4 py-3">
+            <div className="text-[10px] font-semibold uppercase text-white/50">Required daily rate</div>
+            <div className={`text-[16px] font-extrabold tabular-nums ${
+              onTrack ? "text-[#86efac]" : "text-[#fca5a5]"
+            }`}>
+              KES {daysLeft > 0 ? fmtM(requiredDailyRate) : "—"}
+            </div>
+          </div>
+          <div className="px-4 py-3 col-span-2 sm:col-span-1">
+            <div className="text-[10px] font-semibold uppercase text-white/50">Gap to mission</div>
+            <div className={`text-[16px] font-extrabold tabular-nums ${
+              gap <= 0 ? "text-[#86efac]" : "text-white"
+            }`}>
+              {gap <= 0 ? "ACHIEVED" : `KES -${fmtM(gap)}`}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // KES compact for the tile face — millions / thousands.
 function fmtKESCompact(n) {
   const v = Number(n) || 0;
@@ -299,6 +443,9 @@ export default function QuarterScorecard() {
         title={`${qLabel} Target Scorecard`}
         subtitle={`${fmtD(winStart)} – ${fmtD(winEnd)}, ${data.year} · Quarterly goals by market, metric & store · money KES, net of returns`}
       />
+
+      {/* Mission 420 hero — Q3 only */}
+      {data.quarter === "Q3" && <Mission420Banner data={data} />}
 
       {/* Header strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

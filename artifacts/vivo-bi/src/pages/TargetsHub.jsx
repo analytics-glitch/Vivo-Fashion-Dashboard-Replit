@@ -12,7 +12,7 @@ const QuarterScorecardTab = React.lazy(() => import("./QuarterScorecard"));
 
 const TGT_TABS = [
   { id: "targets", label: "Targets", pageId: "targets", el: TargetsTrackerTab },
-  { id: "quarter", label: "Q3 Targets", pageId: "quarter-scorecard", el: QuarterScorecardTab },
+  { id: "quarter", label: "Mission 420", pageId: "quarter-scorecard", el: QuarterScorecardTab },
 ];
 
 const TargetsHubPage = () => {
