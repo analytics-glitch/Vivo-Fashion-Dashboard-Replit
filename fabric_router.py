@@ -6,6 +6,7 @@ Run: uvicorn fabric_api:app --port 8081
 import base64
 import datetime
 from zoneinfo import ZoneInfo
+import json
 import os
 import re
 from urllib.parse import quote
@@ -4763,6 +4764,17 @@ def _ensure_receiving_tables(conn):
                 created_by_name TEXT,
                 created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
             )""")
+        # Delivery-level signoff: who (supervisor or admin) formally approved
+        # this whole PO batch once every roll inspection is done. These columns
+        # are added lazily (idempotent ALTER IF NOT EXISTS) so existing rows
+        # on prod keep working; the approve endpoint writes them; the receiving
+        # list and QC report read them.
+        cur.execute("ALTER TABLE fabric_receiving_po_sheets "
+                    "ADD COLUMN IF NOT EXISTS delivery_approved_by TEXT")
+        cur.execute("ALTER TABLE fabric_receiving_po_sheets "
+                    "ADD COLUMN IF NOT EXISTS delivery_approved_by_email TEXT")
+        cur.execute("ALTER TABLE fabric_receiving_po_sheets "
+                    "ADD COLUMN IF NOT EXISTS delivery_approved_at TIMESTAMPTZ")
         cur.execute("ALTER TABLE fabric_receiving_sheets "
                     "ADD COLUMN IF NOT EXISTS po_sheet_id INTEGER")
         # Audit of every "Upload to Odoo PO" push: who pushed, when, to which
@@ -5263,9 +5275,100 @@ def receiving_rights(request: Request):
     (role admin OR the explicit fabric-admin email allowance). The dashboard
     uses this instead of checking role==='admin' client-side so the email
     allowance shows the same controls the server actually permits.
-    quality_only marks users who may ONLY record quality results."""
+    quality_only marks users who may ONLY record quality results.
+    can_approve_delivery: True for fabric_quality_supervisor + admin roles."""
     return {"admin": _recv_is_admin(request),
-            "quality_only": _recv_quality_only(request)}
+            "quality_only": _recv_quality_only(request),
+            "can_approve_delivery": _insp_can_approve(request)}
+
+
+@fabric_router.post("/api/fabric/receiving/po/{po_id}/approve-delivery")
+def approve_delivery(po_id: int, request: Request):
+    """Stamp a delivery-level signoff on a PO receiving batch.
+    Gated to fabric_quality_supervisor + admin. Validates all rolls have
+    at least a non-Pending status (or an approved 4-Point ticket) before
+    allowing approval. Writes delivery_approved_by/email/at on the
+    fabric_receiving_po_sheets row and a 'delivery_approved' row to
+    fabric_recv_audit. Idempotent check: returns 409 if already approved."""
+    if not _insp_can_approve(request):
+        raise HTTPException(status_code=403,
+            detail="Only Fabric Quality Supervisors and admins can approve deliveries")
+    u = getattr(request.state, "user", None) or {}
+    actor_name  = u.get("name") or u.get("email") or "system"
+    actor_email = (u.get("email") or "").strip()
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        # Confirm the PO sheet exists
+        ps = q(conn,
+               "SELECT id, po_name, delivery_approved_at "
+               "FROM fabric_receiving_po_sheets WHERE po_id=%s",
+               (po_id,))
+        if not ps:
+            raise HTTPException(status_code=404,
+                detail="No receiving sheet found for this PO")
+        sheet = ps[0]
+        if sheet.get("delivery_approved_at") is not None:
+            raise HTTPException(status_code=409,
+                detail="This delivery has already been approved")
+        # Check that no rolls still have Pending quality status without an
+        # approved 4-Point ticket. A roll counts as reviewed when:
+        #   (a) its quality_status is Pass or Fail, OR
+        #   (b) it has at least one ticket in Approved status.
+        pending_rolls = q(conn, """
+            SELECT r.id
+            FROM fabric_receiving_rolls r
+            JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+            WHERE s.po_id = %s
+              AND r.deleted_at IS NULL
+              AND s.deleted_at IS NULL
+              AND (r.quality_status IS NULL OR r.quality_status = '' OR r.quality_status = 'Pending')
+              AND NOT EXISTS (
+                  SELECT 1 FROM fabric_inspection_tickets t
+                  WHERE t.sheet_id = r.sheet_id
+                    AND t.roll_no  = r.roll_no
+                    AND t.status   = 'Approved'
+              )
+        """, (po_id,))
+        if pending_rolls:
+            raise HTTPException(status_code=422,
+                detail=f"{len(pending_rolls)} roll(s) still have a Pending quality "
+                       "status and no approved 4-Point inspection ticket. "
+                       "Complete or approve all inspections before signing off the delivery.")
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE fabric_receiving_po_sheets
+                   SET delivery_approved_by       = %s,
+                       delivery_approved_by_email = %s,
+                       delivery_approved_at       = now()
+                 WHERE po_id = %s
+            """, (actor_name, actor_email, po_id))
+            cur.execute("""
+                INSERT INTO fabric_recv_audit
+                    (po_id, fabric_name, action, details, actor_name)
+                VALUES (%s, NULL, 'delivery_approved',
+                        %s::jsonb, %s)
+            """, (po_id,
+                  json.dumps({"po_name": sheet.get("po_name") or ""}),
+                  actor_name))
+        conn.commit()
+        updated = q(conn,
+                    "SELECT delivery_approved_by, delivery_approved_by_email, "
+                    "delivery_approved_at FROM fabric_receiving_po_sheets "
+                    "WHERE po_id=%s", (po_id,))
+        row = updated[0] if updated else {}
+        at_fmt = None
+        if row.get("delivery_approved_at"):
+            try:
+                at_fmt = row["delivery_approved_at"].astimezone(
+                    ZoneInfo("Africa/Nairobi")).strftime("%d %b %Y, %H:%M")
+            except Exception:
+                at_fmt = str(row["delivery_approved_at"])[:16]
+        return {
+            "approved": True,
+            "delivery_approved_by":       row.get("delivery_approved_by"),
+            "delivery_approved_by_email": row.get("delivery_approved_by_email"),
+            "delivery_approved_at":       at_fmt,
+        }
 
 # ── 4-Point fabric inspection tickets ───────────────────────────────────────
 # Digital 4-Point (American system) inspection ticket per receiving roll.
@@ -5274,13 +5377,14 @@ def receiving_rights(request: Request):
 # admins plus an explicit allow-list. Tickets are keyed by (sheet_id,
 # roll_no) so they survive the admin sheet rewrite (new roll ids).
 
-_INSPECTION_SUPERVISOR_EMAILS = {"marywamuyu@vivofashiongroup.com"}
-
 def _insp_can_approve(request):
+    """True when the signed-in user may approve inspection tickets and sign off
+    deliveries. Strictly role-based — admin OR fabric_quality_supervisor.
+    Does NOT inherit the email-allowance path of _fabric_full_admin so that
+    fabric-receiving admin (add/edit/delete rolls) and QC approval authority
+    remain separate. Managed exclusively through the Users panel."""
     u = getattr(request.state, "user", None) or {}
-    if _fabric_full_admin(u):
-        return True
-    return (u.get("email") or "").strip().lower() in _INSPECTION_SUPERVISOR_EMAILS
+    return (u.get("role") or "").strip().lower() in ("admin", "fabric_quality_supervisor")
 
 # 4-point rule: points per defect from its measured length in inches.
 # <= 3in = 1pt, 3–6 = 2, 6–9 = 3, > 9in OR any hole = 4. Max 4 pts/defect.
@@ -6941,6 +7045,11 @@ def receiving_po_batches():
                    g.sheets, g.products, g.total_kg,
                    COALESCE(rc.rolls, 0) as rolls,
                    ps.id as sheet_no,
+                   ps.delivery_approved_by,
+                   ps.delivery_approved_by_email,
+                   to_char(ps.delivery_approved_at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY, HH24:MI') as delivery_approved_at,
+                   COALESCE(pq.q_pending, 0) as q_pending,
                    lu.status           as last_upload_status,
                    lu.uploaded_by_name as last_uploaded_by,
                    to_char(lu.uploaded_at AT TIME ZONE 'Africa/Nairobi',
@@ -6948,6 +7057,20 @@ def receiving_po_batches():
             FROM g
             LEFT JOIN rc ON rc.po_id = g.po_id
             LEFT JOIN fabric_receiving_po_sheets ps ON ps.po_id = g.po_id
+            LEFT JOIN LATERAL (
+                SELECT COUNT(*) AS q_pending
+                FROM fabric_receiving_rolls r2
+                JOIN fabric_receiving_sheets s2 ON s2.id = r2.sheet_id
+                WHERE s2.po_id = g.po_id
+                  AND r2.deleted_at IS NULL AND s2.deleted_at IS NULL
+                  AND (r2.quality_status IS NULL OR r2.quality_status = ''
+                       OR r2.quality_status = 'Pending')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM fabric_inspection_tickets t2
+                      WHERE t2.sheet_id = r2.sheet_id
+                        AND t2.roll_no  = r2.roll_no
+                        AND t2.status   = 'Approved')
+            ) pq ON true
             LEFT JOIN LATERAL (
                 SELECT status, uploaded_by_name, uploaded_at
                 FROM fabric_po_uploads u
@@ -8348,6 +8471,39 @@ def fabric_qc_report(date_from: str = Query(default=""),
         {"label": ">8%", "n": sum(1 for v in shrink_vals if v > 8)},
     ]
     by_month = sorted(_grp_out(by_mon, "month"), key=lambda x: x["month"])
+    # Delivery approval summary — one row per PO that appears in the filtered
+    # roll set. Opens a fresh connection (the main `with` block already closed).
+    po_names_in_filter = list({r.get("po_name") for r in rows if r.get("po_name")})
+    delivery_approvals = []
+    if po_names_in_filter:
+        try:
+            with _get_conn() as conn2:
+                dap = q(conn2, """
+                    SELECT ps.po_name,
+                           ps.delivery_approved_by,
+                           ps.delivery_approved_by_email,
+                           ps.delivery_approved_at
+                    FROM fabric_receiving_po_sheets ps
+                    WHERE ps.po_name = ANY(%s)
+                    ORDER BY ps.delivery_approved_at DESC NULLS LAST, ps.po_name
+                """, (po_names_in_filter,))
+            eat = ZoneInfo("Africa/Nairobi")
+            for da_row in dap:
+                at_fmt = None
+                if da_row.get("delivery_approved_at"):
+                    try:
+                        at_fmt = da_row["delivery_approved_at"].astimezone(eat).strftime("%d %b %Y, %H:%M")
+                    except Exception:
+                        at_fmt = str(da_row["delivery_approved_at"])[:16]
+                delivery_approvals.append({
+                    "po_name": da_row.get("po_name"),
+                    "approved": da_row.get("delivery_approved_at") is not None,
+                    "approved_by": da_row.get("delivery_approved_by"),
+                    "approved_by_email": da_row.get("delivery_approved_by_email"),
+                    "approved_at": at_fmt,
+                })
+        except Exception:
+            pass  # Non-fatal: delivery approval data is supplementary
     return {
         "high_shrink_pct": _QC_HIGH_SHRINK_PCT,
         "width_tol_cm": _QC_WIDTH_TOL_CM,
@@ -8380,6 +8536,12 @@ def fabric_qc_report(date_from: str = Query(default=""),
         "bleeding": bleed,
         "detail": detail,
         "detail_truncated": n > 1000,
+        "delivery_approvals": delivery_approvals,
+        "delivery_approvals_summary": {
+            "total_pos": len(delivery_approvals),
+            "approved": sum(1 for d in delivery_approvals if d["approved"]),
+            "pending": sum(1 for d in delivery_approvals if not d["approved"]),
+        },
         "options": {
             "suppliers": sorted({o["supplier"] for o in opts if o.get("supplier")}),
             "fabrics": sorted({o["fabric_name"] for o in opts if o.get("fabric_name")}),

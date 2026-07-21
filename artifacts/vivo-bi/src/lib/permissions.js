@@ -29,6 +29,7 @@ const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-s
 const SMT = LEADERSHIP.filter((p) => p !== "finance" && p !== "margin");
 const PRODUCTION = ["production", "production-report", "style-tracker", "pd-flow", "fabric", "sops"];
 const FABRIC_WAREHOUSE = ["fabric", "inventory", "sops"];
+const FABRIC_QUALITY_SUPERVISOR = ["fabric", "sops"];
 const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "footfall", "sops"];
 const MARKETING = ["marketing", "social", "crm", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask"];
 const HR = ["hr", "sops", "rota"];
@@ -47,6 +48,7 @@ export const ROLE_PAGES = {
   smt: SMT,
   production: PRODUCTION,
   fabric_warehouse: FABRIC_WAREHOUSE,
+  fabric_quality_supervisor: FABRIC_QUALITY_SUPERVISOR,
   customer_service: CUSTOMER_SERVICE,
   marketing: MARKETING,
   hr: HR,
@@ -69,6 +71,7 @@ export const ROLE_OPTIONS = [
   { value: "store_manager", label: "Store Managers", desc: "Store performance & replenishment" },
   { value: "production", label: "Production", desc: "Production tracker, report & fabric" },
   { value: "fabric_warehouse", label: "Fabric Warehouse", desc: "Fabric & inventory" },
+  { value: "fabric_quality_supervisor", label: "Fabric Quality Supervisor", desc: "Fabric QC — approve inspection tickets & sign off deliveries" },
   { value: "leadership", label: "SLT (Senior Leadership Team)", desc: "Full analytical & executive access" },
   { value: "smt", label: "SMT (Senior Management Team)", desc: "Everything SLT sees except Finance" },
   { value: "customer_service", label: "Customer Service", desc: "Customers, CRM & service" },

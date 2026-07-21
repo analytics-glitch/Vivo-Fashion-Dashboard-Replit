@@ -854,6 +854,16 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </table>
      </div>
     </div>
+    <h3 style="margin:1.6rem 0 .5rem;">Delivery approvals</h3>
+    <div class="card" style="padding:0;margin-bottom:1.1rem;" id="qc-approval-card">
+     <div style="padding:.7rem 1rem .4rem;font-size:13px;border-bottom:1px solid #f0e8e0;" id="qc-approval-summary" class="muted">Loading…</div>
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr><th>PO</th><th>Status</th><th>Approved by</th><th>Approved at</th></tr></thead>
+       <tbody id="qc-approval-body"><tr><td colspan="4" class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
+    </div>
    </section>
 
    <!-- DATA QUALITY: missing kg-per-metre -->
@@ -1883,7 +1893,35 @@ async function loadFabricQC(){
     renderQcBars(d);
     renderQcScore();
     renderQcDetail(d);
+    renderQcApprovals(d);
   }catch(e){showErr('qc-kpis',e);}
+}
+function renderQcApprovals(d){
+  const rows=d.delivery_approvals||[];
+  const summ=d.delivery_approvals_summary||{total_pos:rows.length,approved:rows.filter(r=>r.approved).length,pending:rows.filter(r=>!r.approved).length};
+  const tbody=document.getElementById('qc-approval-body');
+  const card=document.getElementById('qc-approval-card');
+  const summEl=document.getElementById('qc-approval-summary');
+  if(!tbody)return;
+  if(card)card.style.display='';
+  if(summEl){
+    const allOk=summ.pending===0&&summ.total_pos>0;
+    summEl.innerHTML=`<b>${fmt(summ.approved)}</b> of <b>${fmt(summ.total_pos)}</b> PO${summ.total_pos===1?'':'s'} delivery-approved`
+      +(summ.pending>0?` &nbsp;<span style="color:#c0392b;font-weight:600;">${fmt(summ.pending)} pending</span>`:' &nbsp;<span style="color:#0a7d33;font-weight:600;">All signed off</span>');
+  }
+  if(!rows.length){
+    tbody.innerHTML='<tr><td colspan="4" class="muted" style="text-align:center;padding:14px;">No POs in the filtered window have a delivery approval record yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML=rows.map(r=>{
+    const approved=!!(r.approved);
+    const status=approved
+      ?'<span style="color:#0a7d33;font-weight:700;">Approved</span>'
+      :'<span style="color:#c0392b;">Pending</span>';
+    return `<tr><td>${esc(r.po_name||'—')}</td><td>${status}</td>`+
+      `<td>${approved?esc(r.approved_by||'—'):'<span class="muted">—</span>'}</td>`+
+      `<td>${approved?esc(r.approved_at||'—'):'<span class="muted">—</span>'}</td></tr>`;
+  }).join('');
 }
 function renderQcKpis(d){
   const k=d.kpis||{};
@@ -4267,13 +4305,14 @@ async function saveReceivingSheet(alsoPrint){
     if(alsoPrint&&res.sheet_id)reprintReceivingSheet(res.sheet_id);
   }catch(e){showRecvErr(e.message==='auth'?'Your session has expired. Sign in again.':('Could not save: '+e.message));}
 }
-let recvIsAdmin=false, recvQualityOnly=false, recvPoMeta={};
+let recvIsAdmin=false, recvQualityOnly=false, recvCanApproveDelivery=false, recvPoMeta={};
 async function loadReceivingBatches(){
   recvBindOnce();
   try{
     const rt=await apiFetch('/api/fabric/receiving/rights');
     recvIsAdmin=!!(rt&&rt.admin);
     recvQualityOnly=!!(rt&&rt.quality_only);
+    recvCanApproveDelivery=!!(rt&&rt.can_approve_delivery);
   }catch(_){recvIsAdmin=false;recvQualityOnly=false;}
   const binBtn=document.getElementById('recv-bin-btn');
   if(binBtn)binBtn.style.display='';
@@ -4711,7 +4750,24 @@ async function loadRecvPoBatches(){
       const name=isNoPo
         ? 'No PO <span class="muted" style="font-weight:400;font-size:11px;">(legacy sheets saved without a purchase order)</span>'
         : esc(r.po_name||('PO #'+r.po_id));
-      const action=isNoPo?'':`<button class="btn" data-po-print="${esc(key)}" title="Print the full PO receiving sheet (all fabrics &amp; rolls)" style="padding:4px 10px;font-size:12px;">🖨 PO sheet</button> <button class="btn" data-po-dl="${Number(r.po_id)}" data-dl-fmt="pdf" title="Download this PO's full receiving sheet as a PDF" style="padding:4px 10px;font-size:12px;">⬇ PDF</button> <button class="btn" data-po-dl="${Number(r.po_id)}" data-dl-fmt="xlsx" title="Download this PO's full receiving sheet as an Excel workbook" style="padding:4px 10px;font-size:12px;">⬇ Excel</button>${recvQualityOnly?'':` <button class="btn btn-primary" data-po-open="${Number(r.po_id)}" style="padding:4px 10px;font-size:12px;">Review &amp; upload</button> <button class="btn" data-po-lc="${Number(r.po_id)}" title="Attach clearing, duty &amp; freight charges to this PO's receipt as a draft landed cost in Odoo" style="padding:4px 10px;font-size:12px;">💰 Landed cost</button>`}`;
+      const alreadyApproved=!!(r.delivery_approved_at);
+      const pendingRolls=Number(r.q_pending||0);
+      // Delivery approval badge/button — visible to all users, interactive for supervisors+admin.
+      let approveBtn='';
+      if(!isNoPo){
+        if(alreadyApproved){
+          approveBtn=`<span style="color:#0a7d33;font-size:12px;font-weight:600;">Delivery approved by ${esc(r.delivery_approved_by||'—')} on ${esc(r.delivery_approved_at||'—')}</span>`;
+        } else if(recvCanApproveDelivery){
+          if(pendingRolls>0){
+            approveBtn=`<button class="btn" disabled title="${pendingRolls} roll${pendingRolls===1?'':'s'} still have Pending quality status — complete all inspections first" style="padding:4px 10px;font-size:12px;opacity:.45;cursor:not-allowed;">Approve delivery</button>`;
+          } else {
+            approveBtn=`<button class="btn" data-po-approve="${Number(r.po_id)}" title="Sign off this delivery — all roll inspections are done" style="padding:4px 10px;font-size:12px;border-color:#1a5c38;color:#1a5c38;">Approve delivery</button>`;
+          }
+        } else {
+          approveBtn=`<span style="color:#9a9a9a;font-size:12px;" title="Awaiting delivery approval by a Quality Supervisor">Pending signoff</span>`;
+        }
+      }
+      const action=isNoPo?'':`<button class="btn" data-po-print="${esc(key)}" title="Print the full PO receiving sheet (all fabrics &amp; rolls)" style="padding:4px 10px;font-size:12px;">Print</button> <button class="btn" data-po-dl="${Number(r.po_id)}" data-dl-fmt="pdf" title="Download this PO's full receiving sheet as a PDF" style="padding:4px 10px;font-size:12px;">PDF</button> <button class="btn" data-po-dl="${Number(r.po_id)}" data-dl-fmt="xlsx" title="Download this PO's full receiving sheet as an Excel workbook" style="padding:4px 10px;font-size:12px;">Excel</button>${recvQualityOnly?'':` <button class="btn btn-primary" data-po-open="${Number(r.po_id)}" style="padding:4px 10px;font-size:12px;">Review &amp; upload</button> <button class="btn" data-po-lc="${Number(r.po_id)}" title="Attach clearing, duty &amp; freight charges to this PO's receipt as a draft landed cost in Odoo" style="padding:4px 10px;font-size:12px;">Landed cost</button>`} ${approveBtn}`;
       const main=`<tr>
         <td><button class="btn" data-po-toggle="${esc(key)}" title="${open?'Collapse':'Expand'}" style="padding:2px 9px;font-size:13px;font-weight:700;">${open?'−':'+'}</button></td>
         <td data-po-toggle="${esc(key)}" style="font-weight:600;cursor:pointer;" title="${open?'Collapse':'Expand'}">${name}</td>
@@ -4744,6 +4800,8 @@ async function loadRecvPoBatches(){
         if(pp){printPoFullSheet(pp.dataset.poPrint);return;}
         const dl=e.target.closest('button[data-po-dl]');
         if(dl){downloadPoSheet(dl);return;}
+        const ap=e.target.closest('button[data-po-approve]');
+        if(ap){approveDelivery(Number(ap.dataset.poApprove));return;}
         const ri=e.target.closest('button[data-roll-insp]');
         if(ri){openInspectionTicket(ri);return;}
         const re=e.target.closest('button[data-roll-edit]');
@@ -4872,7 +4930,8 @@ function recvAuditHtml(audit){
   if(!audit.length)return '';
   const LABELS={rolls_added:'Rolls added',roll_edited:'Roll edited',roll_deleted:'Roll deleted',
                 sheet_edited:'Sheet edited (admin)',sheet_deleted:'Sheet deleted',odoo_upload:'Odoo upload',
-                landed_cost_created:'Landed cost draft created',quality_updated:'Quality updated'};
+                landed_cost_created:'Landed cost draft created',quality_updated:'Quality updated',
+                delivery_approved:'Delivery approved'};
   const lines=audit.map(a=>{
     const dd=a.details||{};
     let what='';
@@ -4897,6 +4956,20 @@ function recvAuditHtml(audit){
   return '<div style="margin-top:.6rem;border-top:1px dashed var(--border,#d7d7de);padding-top:.4rem;">'
     +'<div class="muted" style="font-size:11.5px;font-weight:700;margin-bottom:2px;">Change log (who / what / when)</div>'
     +lines+'</div>';
+}
+// ── Delivery-level approval ──
+async function approveDelivery(poId){
+  if(!confirm('Sign off this delivery as quality-approved? This is a formal record that all roll inspections are complete.\n\nThis action cannot be undone.'))return;
+  try{
+    const r=await fetch('/api/fabric/receiving/po/'+encodeURIComponent(poId)+'/approve-delivery',
+      {method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'})});
+    if(!r.ok){
+      let d={};try{d=await r.json();}catch(_){}
+      alert('Could not approve delivery: '+(d.detail||('HTTP '+r.status)));
+      return;
+    }
+    loadRecvPoBatches();
+  }catch(e){alert('Could not approve delivery: '+e.message);}
 }
 // ── Per-roll actions from the drill-down ──
 async function recvRollEditFromBtn(btn){

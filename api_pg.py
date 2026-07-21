@@ -582,6 +582,7 @@ _DATE_QUERY_PARAMS = ("date_from", "date_to", "compare_from", "compare_to")
 VALID_ROLES = (
     "product_development", "retail", "warehouse", "store_manager",
     "leadership", "smt", "production", "fabric_warehouse",
+    "fabric_quality_supervisor",
     "customer_service", "marketing", "hr", "admin", "employee",
 )
 # Human-readable labels for the built-in groups (mirrors ROLE_OPTIONS in
@@ -594,6 +595,7 @@ BUILTIN_GROUP_LABELS = {
     "store_manager": "Store Managers",
     "production": "Production",
     "fabric_warehouse": "Fabric Warehouse",
+    "fabric_quality_supervisor": "Fabric Quality Supervisor",
     "leadership": "SLT (Senior Leadership Team)",
     "smt": "SMT (Senior Management Team)",
     "customer_service": "Customer Service",
@@ -700,6 +702,9 @@ DEFAULT_ROLE_PAGES = {
     "production": ["production", "production-report", "style-tracker", "pd-flow", "fabric", "sops"],
     # Fabric Warehouse department — fabric stock + general inventory.
     "fabric_warehouse": ["fabric", "inventory", "sops"],
+    # Fabric Quality Supervisor — fabric dashboard only (QC approvals + delivery signoff).
+    # Carries no extra BI page grants beyond the fabric surface by design.
+    "fabric_quality_supervisor": ["fabric", "sops"],
     "customer_service": ["customers", "customer-details", "crm", "footfall", "sops"],
     "marketing": ["marketing", "social", "crm", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask"],
     "hr": ["hr", "sops", "rota"],
@@ -1474,6 +1479,29 @@ def _migrate_legacy_roles():
             _users_exec("UPDATE app_users SET role=%s WHERE role=%s", (new, old))
     except Exception as e:
         log.error("Legacy role migration failed: %s", e)
+
+
+@_deferred_startup
+def _seed_fabric_quality_supervisor():
+    # Idempotent: ensure marywamuyu@vivofashiongroup.com carries the
+    # fabric_quality_supervisor role. Runs on every boot — safe because it only
+    # touches her row and only upgrades it (won't demote an admin).
+    try:
+        rows = _users_exec(
+            "SELECT role FROM app_users WHERE LOWER(email)=%s",
+            ("marywamuyu@vivofashiongroup.com",), fetch=True)
+        if rows:
+            current = (rows[0].get("role") or "")
+            if current != "admin" and current != "fabric_quality_supervisor":
+                _users_exec(
+                    "UPDATE app_users SET role=%s WHERE LOWER(email)=%s",
+                    ("fabric_quality_supervisor",
+                     "marywamuyu@vivofashiongroup.com"))
+                log.warning("Seeded fabric_quality_supervisor role for "
+                            "marywamuyu@vivofashiongroup.com "
+                            "(was: %s)", current)
+    except Exception as e:
+        log.error("fabric_quality_supervisor seed failed: %s", e)
 
 
 @_deferred_startup
