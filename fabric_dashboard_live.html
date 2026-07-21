@@ -4344,6 +4344,17 @@ async function reprintReceivingSheet(id){
     await printReceivingSheet(d);
   }catch(e){alert(errHtml(e).replace(/<[^>]*>/g,''));}
 }
+async function openScoresheetAuthed(id){
+  try{
+    const r=await fetch('/api/fabric/receiving/sheets/'+encodeURIComponent(id)+'/scoresheet',{credentials:'include',headers:vivoAuthHeaders()});
+    if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
+    if(!r.ok){alert('Could not open QC Score Sheet ('+r.status+').');return;}
+    const html=await r.blob();
+    const url=URL.createObjectURL(new Blob([html],{type:'text/html'}));
+    const w=window.open(url,'_blank');
+    if(w)w.addEventListener('unload',()=>URL.revokeObjectURL(url),{once:true});
+  }catch(e){alert('Could not open QC Score Sheet: '+(e&&e.message||e));}
+}
 async function deleteReceivingSheet(id){
   if(!confirm('Delete this receiving sheet? It moves to the Recovery Bin, where an admin can restore it for 90 days.'))return;
   try{
@@ -4818,6 +4829,8 @@ async function loadRecvPoBatches(){
         if(sl){printRollSlipFromBtn(sl);return;}
         const fp=e.target.closest('button[data-fab-print]');
         if(fp){printFabricMiniSheet(fp);return;}
+        const sc=e.target.closest('button[data-scoresheet]');
+        if(sc){openScoresheetAuthed(sc.dataset.scoresheet);return;}
         const fd=e.target.closest('button[data-fab-del]');
         if(fd){deleteFabricSection(fd);return;}
         const pr=e.target.closest('button[data-print]');
@@ -4870,7 +4883,7 @@ function renderRecvPoDetail(box,det,poKey){
     const mtrs=g.total_mtrs!=null?fmt1(g.total_mtrs)+' m':'<span style="color:var(--danger);" title="This fabric has no Width/GSM conversion">Missing Width/GSM</span>';
     const acts=s0?`<span style="white-space:nowrap;">
         <button class="btn btn-primary" data-fab-print="${Number(s0.id)}" title="Print this fabric\u2019s receiving sheet (PO header + its rolls)" style="padding:3px 9px;font-size:12px;">🖨 Print</button>
-        ${g.rolls_count>0?`<button class="btn" onclick="window.open('/api/fabric/receiving/sheets/${Number(s0.id)}/scoresheet','_blank')" title="Open the 4-Point QC score sheet for this fabric \u2014 roll lengths already recorded via Quality / Edit are pre-filled automatically; remaining columns are hand-written during inspection" style="padding:3px 8px;font-size:12px;">QC Score Sheet</button>`:''}
+        ${g.rolls_count>0?`<button class="btn" data-scoresheet="${Number(s0.id)}" title="Open the 4-Point QC score sheet for this fabric \u2014 roll lengths already recorded via Quality / Edit are pre-filled automatically; remaining columns are hand-written during inspection" style="padding:3px 8px;font-size:12px;">QC Score Sheet</button>`:''}
         <button class="btn" data-edit="${Number(s0.id)}" style="padding:3px 8px;font-size:12px;">Quality / Edit</button>
         ${canEditRolls?`<button class="btn" data-fab-del="${Number(s0.id)}" data-fab-name="${esc(g.fabric_name||'')}" data-fab-rolls="${Number(g.rolls_count||0)}" style="padding:3px 8px;font-size:12px;">Delete</button>`:''}
       </span>`:'';
