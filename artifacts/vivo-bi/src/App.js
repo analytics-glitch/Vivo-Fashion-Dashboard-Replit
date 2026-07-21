@@ -50,6 +50,7 @@ const MarketingDesk    = React.lazy(() => import("@/pages/MarketingDesk"));
 const SupplyChainDesk  = React.lazy(() => import("@/pages/SupplyChainDesk"));
 const ProductionDesk   = React.lazy(() => import("@/pages/ProductionDesk"));
 const TheChair         = React.lazy(() => import("@/pages/TheChair"));
+const PartnerBrandsReport = React.lazy(() => import("@/pages/PartnerBrandsReport"));
 const Login = React.lazy(() => import("@/pages/Login"));
 const AuthCallback = React.lazy(() => import("@/pages/AuthCallback"));
 
@@ -188,6 +189,7 @@ function App() {
                 <Route path="/supply-chain-desk" element={<ProtectedShell pageId="supply-chain-desk"><SupplyChainDesk /></ProtectedShell>} />
                 <Route path="/production-desk" element={<ProtectedShell pageId="production-desk"><ProductionDesk /></ProtectedShell>} />
                 <Route path="/the-chair" element={<ProtectedShell pageId="the-chair"><TheChair /></ProtectedShell>} />
+                <Route path="/partner-brands" element={<ProtectedShell pageId="partner-brands"><PartnerBrandsReport /></ProtectedShell>} />
                 <Route path="/gallery" element={<Navigate to="/product-analysis?tab=gallery" replace />} />
                 <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
                 <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />

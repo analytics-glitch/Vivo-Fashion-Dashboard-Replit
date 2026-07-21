@@ -163,6 +163,7 @@ export const PRIMARY_NAV = [
   { to: "/supply-chain-desk", label: "Supply Chain Desk", icon: Truck, id: "supply-chain-desk", group: "AI Desks", desc: "Fabric PO performance, supplier on-time, overdue orders — daily AI coaching note" },
   { to: "/production-desk", label: "Production Desk", icon: Factory, id: "production-desk", group: "AI Desks", desc: "Buying order pipeline, overdue orders, by-buyer accountability — daily AI coaching note" },
   { to: "/the-chair", label: "The Chair", icon: Target, id: "the-chair", group: "AI Desks", desc: "Weekly strategic synthesis across all AI Desks — open questions register for Stephen" },
+  { to: "/partner-brands", label: "Partner Brands", icon: Storefront, id: "partner-brands", group: "Products & Range", desc: "Sales report for Soko, TIE and Ythera partner brands — by location, SKU, price, discount, returns and net sales" },
   // Finance Reports Suite — leadership + admin (server-gated via /api/finance)
   { to: "/finance", label: "Finance", icon: Coins, id: "finance", group: "Performance", desc: "Finance reports suite — P&L statement, revenue, cost of revenue, opex, payroll, vendor spend and P&L trend & KPIs (KES)" },
   { to: "/margin", label: "Margin Analysis", icon: ChartLine, id: "margin", group: "Performance", desc: "Gross margin, discount rate and cost coverage by category, subcategory, brand, store or month (KES)" },

@@ -20993,6 +20993,70 @@ def get_trend_series(
     bucket = bucket if bucket in ("day", "week", "month", "quarter", "year") else "month"
     # `store` is a pos_location_name; reuse build_filters' channel arg which
     # filters s.pos_location_name. Absent => overall (all stores).
+
+# ── Partner Brands Report ──────────────────────────────────────────────────────
+# Dedicated sales drill-down for three external partner brands identified by
+# product_title patterns:
+#   Soko    → ILIKE '%soko%'
+#   TIE     → ILIKE '%this is ess%'  (This is Ess)
+#   Ythera  → ILIKE '%ythera%'
+# Returns one row per (store × SKU) with price, discount, returns, units sold
+# and canonical net sales (ex-VAT, after discounts and returns).
+
+@app.get("/api/partner-brands")
+def partner_brands_report(
+    date_from: str = Query(default=str(date.today() - timedelta(days=30))),
+    date_to:   str = Query(default=str(date.today())),
+    country:   str = Query(default=""),
+    locations: str = Query(default=""),
+):
+    try:
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+    except Exception:
+        df = date.today() - timedelta(days=30)
+        dt = date.today()
+    country_f = ("AND s.country IN (" + csv_to_sql(country)   + ")") if country   else ""
+    loc_f     = ("AND s.pos_location_name IN (" + csv_to_sql(locations) + ")") if locations else ""
+    rows = run_query("""
+        SELECT
+            s.pos_location_name                                          AS pos_location,
+            CASE
+                WHEN LOWER(s.product_title) LIKE '%soko%'               THEN 'Soko'
+                WHEN LOWER(s.product_title) LIKE '%this is ess%'        THEN 'TIE'
+                WHEN LOWER(s.product_title) LIKE '%ythera%'             THEN 'Ythera'
+            END                                                          AS vendor,
+            COALESCE(NULLIF(p.product_type, ''), '')                    AS subcategory,
+            COALESCE(NULLIF(p.product_name, ''), s.product_title, '')   AS product_title,
+            COALESCE(NULLIF(s.variant_sku,  ''), '')                    AS sku,
+            ROUND(
+                SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                         THEN s.total_sales_kes::numeric ELSE 0 END)
+                / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                                  THEN COALESCE(s.ordered_item_quantity, 0) ELSE 0 END), 0)
+            , 0)                                                         AS price,
+            ROUND(SUM(COALESCE(s.discounts_kes::numeric, 0)), 0)        AS discount,
+            SUM(CASE WHEN s.sale_kind = 'return'
+                     THEN COALESCE(s.ordered_item_quantity, 0) ELSE 0 END) AS returns,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                     THEN COALESCE(s.ordered_item_quantity, 0) ELSE 0 END) AS units_sold,
+            ROUND(COALESCE(""" + NET_SALES_CANON + """, 0), 0)          AS net_sales
+        FROM all_sales s
+        LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
+        WHERE s.sale_date::date BETWEEN '""" + str(df) + """' AND '""" + str(dt) + """'
+          AND (
+              LOWER(s.product_title) LIKE '%soko%'
+              OR LOWER(s.product_title) LIKE '%this is ess%'
+              OR LOWER(s.product_title) LIKE '%ythera%'
+          )
+          AND """ + BASE_FILTERS + country_f + """
+          """ + loc_f + """
+        GROUP BY 1, 2, 3, 4, 5
+        ORDER BY vendor, net_sales DESC NULLS LAST
+    """, date_to=dt)
+    return {"rows": rows, "date_from": str(df), "date_to": str(dt)}
+
+# (end of partner-brands endpoint; the retail-desk trend endpoint continues below)
     where = build_filters(date_from, date_to, country, store)
     sales_rows = run_query("""
         SELECT

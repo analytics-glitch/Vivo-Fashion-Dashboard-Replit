@@ -219,7 +219,6 @@ SITE_LOCATION_MAP = {
     "Vivo Village Market": "Vivo Village Market",
     "Vivo Westgate": "Vivo T- Mall",
     "Vivo Garden City": "Vivo Garden City",
-    "VIVO Gardencity": "Vivo Garden City",  # FootfallCam renamed Jun 2026
     "Vivo Two Rivers": "Vivo Two Rivers",
     "Vivo Galleria": "Vivo Galleria",
     "Vivo Hub Karen": "Vivo Hub",
@@ -230,35 +229,9 @@ SITE_LOCATION_MAP = {
     "Vivo TRM": "Vivo TRM",
     "Vivo Kisumu": "Vivo Kisumu",
     "Vivo Nakuru": "Vivo Nakuru",
-    "VIVO Westside": "Vivo Nakuru",  # FootfallCam site name for Nakuru Westside Mall
     "Vivo Meru": "Vivo Meru",
     "Vivo Eldoret": "Vivo Eldoret",
     "Vivo Mombasa Digo": "Vivo MSA Digo Road",
-    "Vivo_MSA_DigoRD": "Vivo MSA Digo Road",  # underscore format from Jun 2026
-    "VIVO Mombasa": "Vivo City Mall",  # FootfallCam site for City Mall Mombasa (renamed Jun 2026)
-    # --- Jun 2026 FootfallCam site renames ---
-    "VFGJUNCTION":     "Vivo Junction",
-    "VFGTHEHUB":       "Vivo Hub",
-    "VFGGALLERIAMALL": "Vivo Galleria",
-    "VFGELDORET":      "Vivo Eldoret",
-    "VFGSIGNATURE":    "Vivo Signature Mall",
-    "VFG T-MALL":      "Vivo T- Mall",
-    "VIVO Capital":    "Vivo Capital Centre",
-    "VIVO Mama Ngina": "Vivo Mama Ngina St",
-    "VIVO MERU":       "Vivo Meru",
-    "KILELESHWA":      "Vivo Kileleshwa",
-    "Two Rivers":      "Vivo Two Rivers",
-    "Sarit Centre":    "Vivo Sarit",
-    "Yaya Centre":     "Vivo Yaya",
-    "Vivo MoiAV":      "Vivo Moi Avenue",
-    "VivoKisumu":      "Vivo Kisumu",
-    "VivoVillageMKT":  "Vivo Village Market",
-    "Vivo Runda Mall": "Vivo Runda",
-    "Acacia Mall":     "Vivo Acacia",
-    " Oasis mall":     "The Oasis Mall",
-    "Vivo Kigali":     "Vivo Kigali Heights",
-    "Vivo Kigali ":    "Vivo Kigali Heights",  # trailing space variant
-    "Shop Zetu_MoiAv": "Vivo Moi Avenue",  # physical counter at Moi Avenue store
     "Vivo City Mall": "Vivo City Mall",
     "Vivo Signature": "Vivo Signature Mall",
     "Vivo Runda": "Vivo Runda",
@@ -1250,7 +1223,7 @@ def sync_footfall(cur, now):
     rows = []
     seen = set()
     for rec in data:
-        site = rec.get("ffc_site_summary.SiteName", "").strip()
+        site = rec.get("ffc_site_summary.SiteName", "")
         pos_loc = SITE_LOCATION_MAP.get(site, site)
         day = (
             rec.get("ffc_site_summary.Time") or rec.get("ffc_site_summary.Time.day", "")
