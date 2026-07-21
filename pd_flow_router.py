@@ -572,13 +572,23 @@ def register_pd_routes(app, api_pg_module):
     @app.get("/api/pd/cat-mix")
     def pd_cat_mix():
         rows = _db("""
-            WITH ordered AS (
-                SELECT p.category,
-                       p.product_type AS sub_category,
+            WITH prod_cats AS (
+                -- One category row per style_number to prevent fan-out
+                -- (all_products_clean has one row per SKU, so joining directly
+                --  multiplies order_qty by the number of SKUs in that style)
+                SELECT DISTINCT ON (style_number)
+                       style_number, category, product_type
+                FROM all_products_clean
+                WHERE style_number IS NOT NULL AND category IS NOT NULL
+                ORDER BY style_number
+            ),
+            ordered AS (
+                SELECT pc.category,
+                       pc.product_type AS sub_category,
                        SUM(o.order_qty) AS ordered_qty
                 FROM production_orders o
-                JOIN all_products_clean p ON p.style_number = o.style_number
-                WHERE o.style_number IS NOT NULL AND p.category IS NOT NULL
+                JOIN prod_cats pc ON pc.style_number = o.style_number
+                WHERE o.style_number IS NOT NULL
                   AND o.date_ordered >= now()::date - 30
                 GROUP BY 1, 2
             ),
