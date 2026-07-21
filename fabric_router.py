@@ -6269,9 +6269,9 @@ def receiving_list(search: str = Query(default=""),
         where, params = "WHERE s.deleted_at IS NULL", []
         if term:
             where += (" AND (s.fabric_name ILIKE %s OR s.barcode ILIKE %s "
-                      "OR s.po_name ILIKE %s)")
+                      "OR p.barcode ILIKE %s OR s.po_name ILIKE %s)")
             like = f"%{term}%"
-            params = [like, like, like]
+            params = [like, like, like, like]
         rows = q(conn, f"""
             SELECT s.id, s.product_id,
                    COALESCE(NULLIF(BTRIM(p.barcode),''), NULLIF(BTRIM(p.default_code),''), s.barcode)     AS barcode,
