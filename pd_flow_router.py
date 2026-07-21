@@ -307,6 +307,54 @@ def register_pd_routes(app, api_pg_module):
             pass
         return {"ok": True, "style": _style_out(st)}
 
+    @app.patch("/api/pd/styles/{style_id}")
+    async def pd_style_edit(style_id: int, request: Request):
+        email, name, _role = _actor(request)
+        body = await request.json()
+        _style(style_id)  # 404 if not found
+        _EDITABLE = {
+            "style_name", "style_number", "brand", "category", "sub_category",
+            "lifecycle_type", "pattern_maker", "target_order_week",
+            "fabric_type", "fabric_name", "sample_colour", "theme", "print_solid",
+            "adoption_date", "order_date", "sample_approval_date",
+            "assignee_name", "assignee_user_id",
+        }
+        _DATE_FIELDS = {"adoption_date", "order_date", "sample_approval_date"}
+        sets, params = [], []
+        for key in _EDITABLE:
+            if key not in body:
+                continue
+            val = body[key]
+            if isinstance(val, str):
+                val = val.strip() or None
+            if key in _DATE_FIELDS and val == "":
+                val = None
+            sets.append(f"{key} = %s")
+            params.append(val)
+        # Handle assignee resolution
+        if "assignee_user_id" in body and body["assignee_user_id"]:
+            aid, aname = _resolve_assignee(body["assignee_user_id"])
+            sets = [s for s in sets if "assignee_user_id" not in s and "assignee_name" not in s]
+            params_clean = []
+            for s, p in zip(sets[:], params[:]):
+                if "assignee" not in s:
+                    params_clean.append(p)
+            sets = [s for s in sets if "assignee" not in s]
+            params = params_clean
+            sets += ["assignee_user_id = %s", "assignee_name = %s"]
+            params += [aid, aname]
+        if not sets:
+            raise HTTPException(status_code=400, detail="Nothing to update")
+        params.append(style_id)
+        _db(f"UPDATE pd_styles SET {', '.join(sets)} WHERE id = %s", tuple(params), fetch=False)
+        try:
+            A._log_activity(request, "PATCH", f"/api/pd/styles/{style_id}",
+                            json.dumps({"action": "pd_style_edit", "style_id": style_id,
+                                        "fields": list(body.keys())}))
+        except Exception:
+            pass
+        return {"ok": True, "style": _style_out(_style(style_id))}
+
     @app.post("/api/pd/styles/{style_id}/move")
     async def pd_style_move(style_id: int, request: Request):
         email, name, _role = _actor(request)

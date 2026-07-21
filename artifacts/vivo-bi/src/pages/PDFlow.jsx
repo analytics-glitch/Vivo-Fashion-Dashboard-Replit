@@ -282,16 +282,73 @@ const MoveDialog = ({ card, stages, onClose, onSaved }) => {
   );
 };
 
+// ── Tiny form field helpers ───────────────────────────────────────────────────
+const FField = ({ label, name, value, onChange, type = "text", placeholder = "" }) => (
+  <div className="flex flex-col gap-0.5">
+    <label className="text-[10.5px] text-muted font-medium">{label}</label>
+    <input
+      type={type} name={name} value={value ?? ""} placeholder={placeholder}
+      onChange={(e) => onChange(name, e.target.value)}
+      className="px-2.5 py-1.5 rounded-lg border border-border text-[12px] bg-white focus:outline-none focus:ring-1 focus:ring-brand"
+    />
+  </div>
+);
+
 // ── Detail drawer with the stage timeline ────────────────────────────────────
-const DetailDrawer = ({ styleId, onClose, onMove }) => {
+const DetailDrawer = ({ styleId, onClose, onMove, onRefreshBoard }) => {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
-  useEffect(() => {
-    setData(null); setErr(null);
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState(null);
+
+  const load = () => {
+    setData(null); setErr(null); setEditing(false);
     api.get(`/pd/styles/${styleId}`, { forceFresh: true })
       .then((r) => setData(r.data))
       .catch((e) => setErr(e?.response?.data?.detail || e.message));
-  }, [styleId]);
+  };
+  useEffect(load, [styleId]);
+
+  const startEdit = (st) => {
+    setForm({
+      style_name: st.style_name || "",
+      style_number: st.style_number || "",
+      brand: st.brand || "",
+      category: st.category || "",
+      sub_category: st.sub_category || "",
+      lifecycle_type: st.lifecycle_type || "",
+      pattern_maker: st.pattern_maker || "",
+      target_order_week: st.target_order_week || "",
+      fabric_type: st.fabric_type || "",
+      fabric_name: st.fabric_name || "",
+      sample_colour: st.sample_colour || "",
+      theme: st.theme || "",
+      print_solid: st.print_solid || "",
+      adoption_date: st.adoption_date ? st.adoption_date.slice(0, 10) : "",
+      order_date: st.order_date ? st.order_date.slice(0, 10) : "",
+      sample_approval_date: st.sample_approval_date ? st.sample_approval_date.slice(0, 10) : "",
+    });
+    setSaveErr(null);
+    setEditing(true);
+  };
+
+  const setField = (name, val) => setForm((f) => ({ ...f, [name]: val }));
+
+  const save = async () => {
+    if (!form.style_name?.trim()) { setSaveErr("Style name is required"); return; }
+    setSaving(true); setSaveErr(null);
+    try {
+      await api.patch(`/pd/styles/${styleId}`, form);
+      if (onRefreshBoard) onRefreshBoard();
+      load();
+    } catch (e) {
+      setSaveErr(e?.response?.data?.detail || e.message);
+      setSaving(false);
+    }
+  };
+
   const st = data?.style;
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex justify-end" onClick={onClose}>
@@ -315,35 +372,84 @@ const DetailDrawer = ({ styleId, onClose, onMove }) => {
               {st.assignee_name && <span className="pill-neutral">Assignee: {st.assignee_name}</span>}
             </div>
 
-            {/* ── Style metadata grid ── */}
-            <div className="mb-4 rounded-lg border border-line bg-slate-50 p-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11.5px]">
-              {[
-                ["Pattern Maker", st.pattern_maker || st.assignee_name],
-                ["Target Order Wk", st.target_order_week],
-                ["Sub-category", st.sub_category],
-                ["Theme", st.theme],
-                ["Fabric Type", st.fabric_type],
-                ["Fabric Name", st.fabric_name],
-                ["Sample Colour", st.sample_colour],
-                ["Print / Solid", st.print_solid],
-                ["Adoption Date", st.adoption_date ? new Date(st.adoption_date).toLocaleDateString("en-GB", { day:"numeric", month:"short", year:"numeric" }) : null],
-                ["Order Date", st.order_date ? new Date(st.order_date).toLocaleDateString("en-GB", { day:"numeric", month:"short", year:"numeric" }) : null],
-                ["Sample Approval", st.sample_approval_date ? new Date(st.sample_approval_date).toLocaleDateString("en-GB", { day:"numeric", month:"short", year:"numeric" }) : null],
-              ].filter(([, v]) => v).map(([label, val]) => (
-                <div key={label}>
-                  <span className="text-muted">{label}: </span>
-                  <span className="font-semibold">{val}</span>
+            {/* ── Edit form ── */}
+            {editing ? (
+              <div className="mb-4 rounded-lg border border-brand/30 bg-slate-50 p-4 space-y-3" data-testid="pd-edit-form">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-bold text-[12.5px]">Edit style details</span>
+                  <button onClick={() => setEditing(false)} className="text-muted hover:text-foreground text-[11px]">Cancel</button>
                 </div>
-              ))}
-            </div>
-
-            {st.status === "active" && (
-              <button onClick={() => onMove(st)}
-                className="mb-4 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand text-white font-semibold text-[12px] hover:bg-brand-deep"
-                data-testid="pd-detail-move-btn">
-                <ArrowRight size={13} /> Move / decide
-              </button>
+                <div className="grid grid-cols-2 gap-3">
+                  <FField label="Style Name *" name="style_name" value={form.style_name} onChange={setField} />
+                  <FField label="Style Number" name="style_number" value={form.style_number} onChange={setField} placeholder="e.g. V0626023" />
+                  <FField label="Brand" name="brand" value={form.brand} onChange={setField} />
+                  <FField label="Category" name="category" value={form.category} onChange={setField} />
+                  <FField label="Sub-category" name="sub_category" value={form.sub_category} onChange={setField} />
+                  <FField label="Lifecycle Type" name="lifecycle_type" value={form.lifecycle_type} onChange={setField} placeholder="e.g. core, new" />
+                  <FField label="Pattern Maker" name="pattern_maker" value={form.pattern_maker} onChange={setField} />
+                  <FField label="Target Order Wk" name="target_order_week" value={form.target_order_week} onChange={setField} placeholder="e.g. WK 30" />
+                  <FField label="Fabric Type" name="fabric_type" value={form.fabric_type} onChange={setField} />
+                  <FField label="Fabric Name" name="fabric_name" value={form.fabric_name} onChange={setField} />
+                  <FField label="Sample Colour" name="sample_colour" value={form.sample_colour} onChange={setField} />
+                  <FField label="Print / Solid" name="print_solid" value={form.print_solid} onChange={setField} />
+                  <FField label="Theme" name="theme" value={form.theme} onChange={setField} />
+                  <FField label="Adoption Date" name="adoption_date" value={form.adoption_date} onChange={setField} type="date" />
+                  <FField label="Order Date" name="order_date" value={form.order_date} onChange={setField} type="date" />
+                  <FField label="Sample Approval" name="sample_approval_date" value={form.sample_approval_date} onChange={setField} type="date" />
+                </div>
+                {saveErr && <div className="text-[11.5px] text-red-600 font-medium">{saveErr}</div>}
+                <div className="flex gap-2 pt-1">
+                  <button onClick={save} disabled={saving}
+                    className="px-4 py-1.5 rounded-lg bg-brand text-white font-semibold text-[12px] hover:bg-brand-deep disabled:opacity-50"
+                    data-testid="pd-edit-save-btn">
+                    {saving ? "Saving…" : "Save changes"}
+                  </button>
+                  <button onClick={() => setEditing(false)}
+                    className="px-4 py-1.5 rounded-lg border border-border text-[12px] font-semibold hover:bg-slate-50">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* ── Read-only metadata grid ── */
+              <div className="mb-4 rounded-lg border border-line bg-slate-50 p-3" data-testid="pd-meta-grid">
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11.5px]">
+                  {[
+                    ["Pattern Maker", st.pattern_maker || st.assignee_name],
+                    ["Target Order Wk", st.target_order_week],
+                    ["Sub-category", st.sub_category],
+                    ["Theme", st.theme],
+                    ["Fabric Type", st.fabric_type],
+                    ["Fabric Name", st.fabric_name],
+                    ["Sample Colour", st.sample_colour],
+                    ["Print / Solid", st.print_solid],
+                    ["Adoption Date", st.adoption_date ? new Date(st.adoption_date).toLocaleDateString("en-GB", { day:"numeric", month:"short", year:"numeric" }) : null],
+                    ["Order Date", st.order_date ? new Date(st.order_date).toLocaleDateString("en-GB", { day:"numeric", month:"short", year:"numeric" }) : null],
+                    ["Sample Approval", st.sample_approval_date ? new Date(st.sample_approval_date).toLocaleDateString("en-GB", { day:"numeric", month:"short", year:"numeric" }) : null],
+                  ].filter(([, v]) => v).map(([label, val]) => (
+                    <div key={label}>
+                      <span className="text-muted">{label}: </span>
+                      <span className="font-semibold">{val}</span>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={() => startEdit(st)}
+                  className="mt-3 text-[11.5px] font-semibold text-brand hover:underline"
+                  data-testid="pd-edit-details-btn">
+                  Edit details
+                </button>
+              </div>
             )}
+
+            <div className="flex gap-2 mb-4">
+              {st.status === "active" && (
+                <button onClick={() => onMove(st)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand text-white font-semibold text-[12px] hover:bg-brand-deep"
+                  data-testid="pd-detail-move-btn">
+                  <ArrowRight size={13} /> Move / decide
+                </button>
+              )}
+            </div>
             <SectionTitle title="Stage timeline" subtitle="Every stage visit — entry, exit, duration, assignee, decisions and who moved it" />
             <div className="space-y-2 mt-2">
               {data.timeline.map((t, i) => (
@@ -959,7 +1065,8 @@ const PDFlow = () => {
       )}
       {detail != null && (
         <DetailDrawer styleId={detail} onClose={() => setDetail(null)}
-          onMove={(st) => { setMoving(st); }} />
+          onMove={(st) => { setMoving(st); }}
+          onRefreshBoard={refresh} />
       )}
       {slaOpen && board && (
         <SlaDialog stages={board.stages} onClose={() => setSlaOpen(false)}
