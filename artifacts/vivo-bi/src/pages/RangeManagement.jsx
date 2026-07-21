@@ -520,16 +520,37 @@ const RangeManagement = () => {
             <> · updated <span className="font-semibold text-foreground">{new Date().toLocaleTimeString()}</span></>
           </p>
         </div>
-        <button
-          type="button"
-          onClick={exportCsv}
-          disabled={!filtered.length}
-          data-testid="range-csv-btn"
-          className="btn-primary flex items-center gap-1.5 disabled:opacity-50"
-        >
-          <DownloadSimple size={14} weight="bold" />
-          Download CSV ({fmtNum(filtered.length)} rows)
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => {
+              const params = new URLSearchParams();
+              if (brandFilter.length === 1) params.set("brand", brandFilter[0]);
+              const url = `/api/range-mgmt/tier-export${params.toString() ? "?" + params.toString() : ""}`;
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = "style_tiers.csv";
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+            }}
+            data-testid="range-tier-export-btn"
+            className="btn-secondary flex items-center gap-1.5"
+          >
+            <DownloadSimple size={14} weight="bold" />
+            Download Tier Report
+          </button>
+          <button
+            type="button"
+            onClick={exportCsv}
+            disabled={!filtered.length}
+            data-testid="range-csv-btn"
+            className="btn-primary flex items-center gap-1.5 disabled:opacity-50"
+          >
+            <DownloadSimple size={14} weight="bold" />
+            Download CSV ({fmtNum(filtered.length)} rows)
+          </button>
+        </div>
       </div>
 
       {loading && <Loading label="Classifying every active style…" />}

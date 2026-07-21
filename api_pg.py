@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, Request, Body, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, Query, Request, Body, HTTPException, UploadFile, File, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 import calendar
@@ -18887,6 +18887,50 @@ def range_mgmt_store_tier_mix(country: str = Query(default=None), channel: str =
     rows = sorted(agg.values(), key=lambda e: (e["store"], e["tier"]))
     tiers = ["Tier 1", "Tier 2", "Tier 3", "Tier 4", "Retire"]
     return {"rows": rows, "tiers": tiers}
+
+
+@app.get("/api/range-mgmt/tier-export")
+def range_mgmt_tier_export(brand: str = Query(default=None)):
+    """Export every style with its tier classification as a downloadable CSV.
+
+    Uses the identical _lifecycle_tier + _RANGE_OVERRIDES logic as the Range
+    Management classify view — active (Tier 1–4) and retired styles are both
+    included. No date-range filter is applied (tier is a catalogue property).
+    Optional ``brand`` query param (exact, case-insensitive) mirrors the
+    on-page brand filter so the download scope matches what the user sees.
+
+    Columns: Style Name, Style Number, Tier
+    """
+    import csv as _csv
+    import io as _io
+
+    classify = range_mgmt_classify()
+    all_rows = classify.get("rows", []) + classify.get("retired_rows", [])
+
+    if brand:
+        brand_lower = brand.strip().lower()
+        all_rows = [r for r in all_rows if (r.get("brand") or "").lower() == brand_lower]
+
+    all_rows.sort(key=lambda r: (r.get("style_name") or "").lower())
+
+    buf = _io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(["Style Name", "Style Number", "Tier"])
+    for r in all_rows:
+        raw_tier = r.get("tier") or ""
+        # classify uses "Retire" internally; the export contract uses "Retired"
+        tier_label = "Retired" if raw_tier == "Retire" else raw_tier
+        w.writerow([
+            r.get("style_name") or "",
+            r.get("style_number") or "",
+            tier_label,
+        ])
+
+    return Response(
+        content=buf.getvalue().encode("utf-8"),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="style_tiers.csv"'},
+    )
 
 
 @app.get("/api/analytics/store-overstock")
