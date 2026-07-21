@@ -247,7 +247,7 @@ const Inventory = ({ onSeeAgedStock }) => {
       api.get("/analytics/stock-to-sales-by-subcat", { params: { ...dateParams, ...serverScopeParams } }),
       api.get("/analytics/stock-to-sales-by-category", { params: { ...dateParams, ...serverScopeParams } }),
       api.get("/analytics/weeks-of-cover", { params: { country: countryCsv, locations: locationsCsv, stock_scope: stockScope } }),
-      api.get("/analytics/sell-through-by-location", { params: { date_from: stsDateFrom, date_to: stsDateTo, country: countryCsv, ...serverScopeParams } })
+      api.get("/analytics/sell-through-by-location", { params: { date_from: stsDateFrom, date_to: stsDateTo, country: countryCsv, locations: locationsCsv, ...serverScopeParams } })
         .catch(() => ({ data: [] })),
     ])
       .then(([s, st, sc, cat, woc, str]) => {

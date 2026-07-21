@@ -4661,13 +4661,15 @@ def get_top_skus(
 
 @app.get("/api/inventory")
 def get_inventory(
-    location: str = Query(default=None),
-    country:  str = Query(default=None),
-    product:  str = Query(default=None),
+    location:  str = Query(default=None),
+    locations: str = Query(default=None),
+    country:   str = Query(default=None),
+    product:   str = Query(default=None),
 ):
     filters = ["i.available > 0"]
-    if location:
-        filters.append("i.pos_location_name IN (" + csv_to_sql(location) + ")")
+    _loc = locations or location   # prefer the plural form (sent by the inventory page)
+    if _loc:
+        filters.append("i.pos_location_name IN (" + csv_to_sql(_loc) + ")")
     if country:
         filters.append("i.country IN (" + csv_to_sql(country) + ")")
     if product:
@@ -7043,6 +7045,7 @@ def analytics_sell_through_by_location(
     date_from: str = Query(default=str(date.today().replace(day=1))),
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
+    locations: str = Query(default=None),
     search:    str = Query(default=None),
     brand:     str = Query(default=None),
     product_type: str = Query(default=None),
@@ -7051,9 +7054,11 @@ def analytics_sell_through_by_location(
     # EXISTS form; applied to BOTH the sales and stock sides.
     sales_scope = _inv_local_scope_exists(search, brand, product_type, sku_expr="s.variant_sku")
     inv_scope = _inv_local_scope_exists(search, brand, product_type, sku_expr="i.sku")
+    _loc_extra = (" AND s.pos_location_name IN (" + csv_to_sql(locations) + ")") if locations else ""
     sales_where = build_filters(date_from, date_to, country,
-        extra="s.sale_kind IN ('sale','order') AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")") + sales_scope
+        extra="s.sale_kind IN ('sale','order') AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")") + _loc_extra + sales_scope
     inv_country_filter = ("AND i.country IN (" + csv_to_sql(country) + ")") if country else ""
+    inv_location_filter = ("AND i.pos_location_name IN (" + csv_to_sql(locations) + ")") if locations else ""
     rows = run_query("""
         WITH sales AS (
             SELECT s.pos_location_name AS location, s.country,
@@ -7068,7 +7073,7 @@ def analytics_sell_through_by_location(
                 SUM(i.available) AS available
             FROM all_inventory i
             WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
-            """ + inv_country_filter + inv_scope + """
+            """ + inv_country_filter + inv_location_filter + inv_scope + """
             GROUP BY i.pos_location_name, i.country
         )
         SELECT COALESCE(s.location, i.location) AS location,

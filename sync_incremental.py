@@ -1250,7 +1250,7 @@ def sync_footfall(cur, now):
     rows = []
     seen = set()
     for rec in data:
-        site = rec.get("ffc_site_summary.SiteName", "")
+        site = rec.get("ffc_site_summary.SiteName", "").strip()
         pos_loc = SITE_LOCATION_MAP.get(site, site)
         day = (
             rec.get("ffc_site_summary.Time") or rec.get("ffc_site_summary.Time.day", "")
