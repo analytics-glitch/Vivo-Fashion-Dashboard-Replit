@@ -579,6 +579,7 @@ def register_pd_routes(app, api_pg_module):
                 FROM production_orders o
                 JOIN all_products_clean p ON p.style_number = o.style_number
                 WHERE o.style_number IS NOT NULL AND p.category IS NOT NULL
+                  AND o.date_ordered >= now()::date - 30
                 GROUP BY 1, 2
             ),
             sales AS (

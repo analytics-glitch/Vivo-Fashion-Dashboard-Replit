@@ -670,7 +670,7 @@ const CatMixTable = () => {
     <div className="card-white p-5">
       <SectionTitle
         title="Category mix: ordered vs 30-day sales"
-        subtitle={`Ordered ${total_ordered.toLocaleString()} units total · Last-30d sales ${total_sales.toLocaleString()} units`}
+        subtitle={`Last 30 days — ordered ${total_ordered.toLocaleString()} units · sold ${total_sales.toLocaleString()} units`}
         action={
           <button className="text-[11px] text-muted hover:text-brand inline-flex items-center gap-1"
             onClick={() => {
