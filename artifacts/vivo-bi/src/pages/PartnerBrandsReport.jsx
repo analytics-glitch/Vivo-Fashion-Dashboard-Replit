@@ -65,7 +65,11 @@ const COLS = [
     key: "returns",
     label: "Returns",
     numeric: true,
-    render: (r) => fmtNum(r.returns || 0),
+    render: (r) => (
+      <span className={(r.returns || 0) < 0 ? "text-rose-600 font-medium" : ""}>
+        {fmtKESLong(r.returns || 0)}
+      </span>
+    ),
     csv: (r) => r.returns ?? 0,
   },
   {
@@ -165,7 +169,7 @@ export default function PartnerBrandsReport() {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
         <KpiCard label="Units Sold"      value={fmtNum(totals.units)}         />
         <KpiCard label="Discount (KES)"  value={fmtKESLong(totals.discount)}  />
-        <KpiCard label="Returns (units)" value={fmtNum(totals.returns)}       />
+        <KpiCard label="Returns (KES)"    value={fmtKESLong(totals.returns)}   />
         <KpiCard label="Net Sales (KES)" value={fmtKESLong(totals.net_sales)} />
       </div>
 
@@ -209,7 +213,7 @@ export default function PartnerBrandsReport() {
             <td key="sku" className="py-2 px-3" />,
             <td key="pr"  className="py-2 px-3 text-right text-slate-400">—</td>,
             <td key="d"   className="py-2 px-3 text-right font-semibold text-slate-700">{fmtKESLong(totals.discount)}</td>,
-            <td key="r"   className="py-2 px-3 text-right font-semibold text-slate-700">{fmtNum(totals.returns)}</td>,
+            <td key="r"   className="py-2 px-3 text-right font-semibold text-rose-600">{fmtKESLong(totals.returns)}</td>,
             <td key="u"   className="py-2 px-3 text-right font-semibold text-slate-700">{fmtNum(totals.units)}</td>,
             <td key="ns"  className="py-2 px-3 text-right font-semibold text-primary">{fmtKESLong(totals.net_sales)}</td>,
           ]}

@@ -21036,8 +21036,8 @@ def partner_brands_report(
                                   THEN COALESCE(s.ordered_item_quantity, 0) ELSE 0 END), 0)
             , 0)                                                         AS price,
             ROUND(SUM(COALESCE(s.discounts_kes::numeric, 0)), 0)        AS discount,
-            SUM(CASE WHEN s.sale_kind = 'return'
-                     THEN COALESCE(s.ordered_item_quantity, 0) ELSE 0 END) AS returns,
+            -ROUND(SUM(CASE WHEN s.sale_kind = 'return'
+                          THEN COALESCE(s.returns_kes::numeric, 0) ELSE 0 END), 0) AS returns,
             SUM(CASE WHEN s.sale_kind IN ('sale','order')
                      THEN COALESCE(s.ordered_item_quantity, 0) ELSE 0 END) AS units_sold,
             ROUND(COALESCE(""" + NET_SALES_CANON + """, 0), 0)          AS net_sales
