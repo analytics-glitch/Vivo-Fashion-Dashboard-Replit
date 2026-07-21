@@ -2266,6 +2266,14 @@ SKU_STYLE_MAP = (
     "ORDER BY sku, (active IS TRUE) DESC, style_number)"
 )
 
+# Warehouse-origin codes for the Store Flow "Units Transferred" column.
+# Only pickings FROM these locations count as a warehouse→store replenishment.
+# Store-to-store, shopping-bag restocks, returns, and Sewing WIP are excluded.
+_WAREHOUSE_ORIGIN_FILTER = (
+    "t.from_location_name IN ('HWHFN/Stock','FGPRD/Stock','WHFIN/Stock','WHREC/Stock') "
+    "AND t.sku NOT LIKE 'VB001%%'"
+)
+
 WAREHOUSE_LOCATIONS = (
     "'Warehouse Finished Goods','Warehouse Receiving','In Transit',"
     "'Holding Warehouse Finished Goods','Finished Goods Production','Production',"
@@ -10530,18 +10538,22 @@ def analytics_store_flow(
     """, date_to=date_to)
 
     ctry_t = " AND t.to_country IN (" + csv_to_sql(country) + ")" if country else ""
-    # date_done is stored UTC; shift +3h so a picking completed at e.g. 21:30
-    # UTC lands on the correct East-Africa business day.
+    # Units Transferred = warehouse→store pickings only (no store-to-store, no
+    # shopping bags), bucketed by scheduled_date (the dispatch date, not the
+    # EAT-adjusted receive date). Units Incoming = same warehouse/bag filters,
+    # planned-but-not-done lines only (no date filter — all open pickings count).
     transfers = run_query("""
         SELECT t.to_store_name AS pos_location,
                MAX(t.to_country) AS country,
                COALESCE(SUM(t.qty_done) FILTER (
                    WHERE t.state = 'done'
-                     AND (t.date_done + INTERVAL '3 hours')::date
+                     AND t.scheduled_date::date
                          BETWEEN '""" + date_from + """' AND '""" + date_to + """'), 0) AS units_transferred,
-               COALESCE(SUM(t.qty_planned) FILTER (WHERE t.state != 'done'), 0) AS units_incoming
+               COALESCE(SUM(t.qty_planned) FILTER (
+                   WHERE t.state != 'done'), 0) AS units_incoming
         FROM stock_transfers t
         WHERE t.to_store_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+          AND """ + _WAREHOUSE_ORIGIN_FILTER + """
         """ + ctry_t + """
         GROUP BY t.to_store_name
     """, date_to=date_to)
@@ -10608,13 +10620,14 @@ def analytics_store_flow(
     # selected period so the UI can show a Mon–Sun column view.
     daily_xfr = run_query("""
         SELECT t.to_store_name AS pos_location,
-               EXTRACT(ISODOW FROM (t.date_done + INTERVAL '3 hours')::date)::int AS dow,
+               EXTRACT(ISODOW FROM t.scheduled_date::date)::int AS dow,
                SUM(t.qty_done) AS units
         FROM stock_transfers t
         WHERE t.state = 'done'
-          AND (t.date_done + INTERVAL '3 hours')::date
+          AND t.scheduled_date::date
               BETWEEN '""" + date_from + """' AND '""" + date_to + """'
           AND t.to_store_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+          AND """ + _WAREHOUSE_ORIGIN_FILTER + """
         """ + ctry_t + """
         GROUP BY t.to_store_name, dow
     """, date_to=date_to)
@@ -10660,8 +10673,11 @@ def analytics_store_flow(
         "stores": len(rows),
     }
     cov = run_query("""
-        SELECT MIN((date_done + INTERVAL '3 hours')::date)::text AS first_done
-        FROM stock_transfers WHERE state = 'done'
+        SELECT MIN(scheduled_date::date)::text AS first_done
+        FROM stock_transfers
+        WHERE state = 'done'
+          AND from_location_name IN ('HWHFN/Stock','FGPRD/Stock','WHFIN/Stock','WHREC/Stock')
+          AND sku NOT LIKE 'VB001%%'
     """, date_to=date_to)
     return {
         "rows": rows,
