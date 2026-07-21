@@ -1208,10 +1208,11 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div id="recv-po-last" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
      <div class="tbl-wrap">
       <table class="data">
-       <thead><tr><th>Fabric</th><th>Barcode</th><th class="r">Sheets</th><th class="r">Received kgs</th><th class="r">Received mtrs</th><th class="r">On PO now</th><th class="r">Will upload</th><th class="r">Unit price (KES)</th><th>Status</th></tr></thead>
+       <thead><tr><th>Fabric</th><th>Barcode</th><th class="r">Sheets</th><th class="r">Received kgs</th><th class="r">Received mtrs</th><th class="r">On PO now</th><th class="r">Will upload</th><th class="r">Unit price (KES)</th><th class="r">Value (KES)</th><th class="r">Value (¥ Yuan)</th><th>Status</th></tr></thead>
        <tbody id="recv-po-plan-body"></tbody>
       </table>
      </div>
+     <div id="recv-po-value-summary" style="margin-top:8px;"></div>
      <div id="recv-po-pricing" style="margin-top:12px;"></div>
      <div id="recv-po-sheets" class="muted" style="font-size:12px;margin-top:8px;"></div>
      <div id="recv-po-result" style="margin-top:10px;"></div>
@@ -5470,7 +5471,8 @@ async function openRecvPoBatch(poId){
   document.getElementById('recv-po-title').textContent='Purchase order batch';
   document.getElementById('recv-po-sub').textContent='';
   document.getElementById('recv-po-pricing').innerHTML='';
-  document.getElementById('recv-po-plan-body').innerHTML='<tr><td colspan="9" class="loading">Loading the PO from Odoo…</td></tr>';
+  document.getElementById('recv-po-value-summary').innerHTML='';
+  document.getElementById('recv-po-plan-body').innerHTML='<tr><td colspan="11" class="loading">Loading the PO from Odoo…</td></tr>';
   document.getElementById('recv-po-upload-btn').disabled=true;
   document.getElementById('recv-po-overlay').style.display='flex';
   try{
@@ -5478,7 +5480,7 @@ async function openRecvPoBatch(poId){
     recvPoBatch={po_id:poId,data:d};
     renderRecvPoBatch();
   }catch(e){
-    document.getElementById('recv-po-plan-body').innerHTML='<tr><td colspan="9" class="muted" style="padding:1rem;">Could not load this PO batch.</td></tr>';
+    document.getElementById('recv-po-plan-body').innerHTML='<tr><td colspan="11" class="muted" style="padding:1rem;">Could not load this PO batch.</td></tr>';
     document.getElementById('recv-po-err').innerHTML='<div class="banner banner-err">'+esc(e.message)+'</div>';
   }
 }
@@ -5782,13 +5784,25 @@ function renderRecvPoBatch(){
   document.getElementById('recv-po-last').innerHTML=last
     ? 'Last upload: <b>'+esc(last.status||'')+'</b>'+(last.uploaded_at?(' · '+esc(last.uploaded_at)):'')+(last.uploaded_by_name?(' · '+esc(last.uploaded_by_name)):'')
     : 'Never uploaded to Odoo yet.';
-  document.getElementById('recv-po-plan-body').innerHTML=plan.length?plan.map(e=>{
+  const pr=recvPoBatch.data.pricing||{};
+  const _y2u=pr.yuan_to_usd!=null?parseFloat(pr.yuan_to_usd):null;
+  const _u2k=pr.usd_to_kes!=null?parseFloat(pr.usd_to_kes):null;
+  const fxOk=_y2u!=null&&_y2u>0&&_u2k!=null&&_u2k>0;
+  let totalKes=0,totalYuan=0,hasKes=false,hasYuan=false;
+  const rows=plan.length?plan.map(e=>{
     const mtrs=e.total_mtrs!=null?fmt1(e.total_mtrs):'<span style="color:var(--danger);" title="No usable kg→metre conversion">Missing Width/GSM</span>';
     const onPo=e.line_id!=null?(fmt2(e.line_qty)+' '+esc(e.line_uom||'')):'<span class="muted">not on PO</span>';
     const push=e.push_qty!=null?('<b>'+fmt2(e.push_qty)+'</b> '+esc(e.push_uom||'')):'<span class="muted">—</span>';
     const price=e.push_price!=null
       ?('<b>'+fmt2(e.push_price)+'</b>'+(e.line_uom?('<span class="muted" style="font-size:11px;"> /'+esc(e.line_uom)+'</span>'):''))
       :(e.price_missing?'<span style="color:#b8860b;font-weight:700;" title="Enter the Yuan price + FX rates below">needs pricing</span>':'<span class="muted">—</span>');
+    let kesCell='<span class="muted">—</span>',yuanCell='<span class="muted">—</span>';
+    if(e.push_price!=null&&e.push_qty!=null){
+      const kv=e.push_price*e.push_qty;
+      totalKes+=kv;hasKes=true;
+      kesCell='<b>'+fmt2(kv)+'</b>';
+      if(fxOk){const yv=kv*_y2u/_u2k;totalYuan+=yv;hasYuan=true;yuanCell='<b>'+fmt2(yv)+'</b>';}
+    }
     return `<tr>
       <td>${esc(e.fabric_name||'—')}</td>
       <td>${esc(e.barcode||'—')}</td>
@@ -5798,9 +5812,18 @@ function renderRecvPoBatch(){
       <td class="r" style="white-space:nowrap;">${onPo}</td>
       <td class="r" style="white-space:nowrap;">${push}</td>
       <td class="r" style="white-space:nowrap;">${price}</td>
+      <td class="r" style="white-space:nowrap;">${kesCell}</td>
+      <td class="r" style="white-space:nowrap;">${yuanCell}</td>
       <td>${recvPoStatusCell(e)}</td>
     </tr>`;
-  }).join(''):'<tr><td colspan="9" class="muted" style="padding:1rem;">No receiving sheets are linked to this PO yet.</td></tr>';
+  }).join(''):'<tr><td colspan="11" class="muted" style="padding:1rem;">No receiving sheets are linked to this PO yet.</td></tr>';
+  document.getElementById('recv-po-plan-body').innerHTML=rows;
+  const sumParts=[];
+  if(hasKes)sumParts.push('<b>'+fmt2(totalKes)+'</b> KES');
+  if(hasYuan)sumParts.push('<b>'+fmt2(totalYuan)+'</b> ¥');
+  document.getElementById('recv-po-value-summary').innerHTML=sumParts.length
+    ?'<div class="muted" style="font-size:13px;text-align:right;padding-right:4px;">PO total: '+sumParts.join(' · ')+'</div>'
+    :'';
   renderRecvPoPricing();
   const sheets=d.sheets||[];
   document.getElementById('recv-po-sheets').innerHTML=sheets.length
