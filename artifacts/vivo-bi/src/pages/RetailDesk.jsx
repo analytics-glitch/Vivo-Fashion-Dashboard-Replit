@@ -884,7 +884,7 @@ function StoreDrawer({ store, onClose }) {
                         ["L28D Net",      KES(data?.trend?.l28d_net)],
                         ["Prior 28D",     KES(data?.trend?.prev28d_net)],
                         ["MoM",           data?.trend?.mom_pct != null ? PCT(data.trend.mom_pct) : "—"],
-                        ["Transactions",  (data?.mtd?.transactions || 0).toLocaleString()],
+                        ["Transactions",  data?.mtd?.transactions != null ? data.mtd.transactions.toLocaleString() : "—"],
                         ["Avg Basket",    KES(data?.mtd?.avg_basket)],
                       ].map(([label, val]) => (
                         <div key={label} style={{ background: "#f9fafb", border: "1px solid #e5e7eb",
@@ -904,7 +904,7 @@ function StoreDrawer({ store, onClose }) {
                   )}
                   {!data?.coaching_ai && (
                     <div style={{ fontSize: 12, color: "#9ca3af" }}>
-                      AI analyst not configured — set ANTHROPIC_API_KEY to enable.
+                      Store-level AI analysis is disabled. Contact your admin to configure the AI integration.
                     </div>
                   )}
                 </>
@@ -953,7 +953,7 @@ function StoreDrawer({ store, onClose }) {
                     ["L28D Net",     KES(data?.trend?.l28d_net)],
                     ["Prior 28D",    KES(data?.trend?.prev28d_net)],
                     ["MoM",          data?.trend?.mom_pct != null ? PCT(data.trend.mom_pct) : "—"],
-                    ["Transactions", (data?.mtd?.transactions || 0).toLocaleString()],
+                    ["Transactions", data?.mtd?.transactions != null ? data.mtd.transactions.toLocaleString() : "—"],
                     ["Avg Basket",   KES(data?.mtd?.avg_basket)],
                   ].map(([label, val]) => (
                     <div key={label} style={{ background: "#f9fafb", border: "1px solid #e5e7eb",

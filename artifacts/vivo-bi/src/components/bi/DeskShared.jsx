@@ -413,7 +413,8 @@ export function DeskCoachingPanel({ coaching, desk }) {
   const criticalRisks = risks.filter(r => r.severity === "critical");
   const highRisks = risks.filter(r => r.severity === "high");
   const hasStructured = risks.length > 0 || opportunities.length > 0 || proposals.length > 0;
-  const isPlaceholder = !coaching?.note || coaching.note.includes("not configured") || coaching.note.includes("unavailable");
+  const isPlaceholder = !coaching?.note || coaching.note.includes("not configured") || coaching.note.includes("unavailable") ||
+    /^\s*[{[]/.test(coaching.note);
 
   const slug = DESK_SLUG[desk] || (desk || "").toLowerCase().replace(/\s+/g, "-") + "-desk";
   const reportBase = `/api/${slug}`;

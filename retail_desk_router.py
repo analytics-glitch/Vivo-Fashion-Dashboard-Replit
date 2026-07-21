@@ -798,13 +798,18 @@ def _deterministic_scan_all(stores_data: list, path_data: dict, bench: dict):
             "medium", basket_gap_kes, "Floor Supervisor", basket_active,
         ))
 
-        # R5: UPT critically low (near single-item checkout)
-        upt_active = upt is not None and upt <= 1.10
+        # R5: UPT meaningfully below benchmark (< 0.95 absolute OR ≥10%% below fleet)
+        upt_active = (
+            upt is not None and (
+                upt < 0.95 or (fleet_upt > 0 and upt < fleet_upt * 0.90)
+            )
+        )
         upt_opp = (fleet_upt - upt) * ex.get("sale_txns", 0) * (basket / (upt or 1)) if upt_active and basket else None
         rules.append((
             "upt_low",
-            f"Low units per transaction: {upt:.2f} UPT (fleet {fleet_upt:.2f})" if upt_active else None,
-            f"Average {upt:.2f} units per sale — nearly all transactions single-item. Cross-sell training required." if upt_active else None,
+            f"UPT below benchmark: {upt:.2f} vs fleet {fleet_upt:.2f}" if upt_active else None,
+            (f"Average {upt:.2f} units per sale is more than 10%% below the fleet benchmark of "
+             f"{fleet_upt:.2f}. Cross-sell and add-on training recommended.") if upt_active else None,
             "medium", round(upt_opp, 0) if upt_opp else None, "Floor Supervisor", upt_active,
         ))
 
@@ -1717,6 +1722,11 @@ def _overview_compute() -> dict:
     fleet_coaching = None
     try:
         fleet_coaching = du.get_coaching(_conn, "retail", "fleet_overview")
+        # Treat a cached entry whose note is raw JSON (parse failure) as stale → regenerate
+        _note = (fleet_coaching or {}).get("note", "")
+        if fleet_coaching and _note and str(_note).strip()[:1] in ("{", "["):
+            log.info("fleet coaching note is a JSON blob — discarding stale cache")
+            fleet_coaching = None
         if not fleet_coaching:
             api_key = os.environ.get("ANTHROPIC_API_KEY", "")
             fleet_coaching = _run_fleet_coaching(api_key, cards, {
@@ -1797,10 +1807,25 @@ def register_retail_desk_routes(app, api_pg_module):
         if sd is None:
             raise HTTPException(status_code=404, detail=f"Store '{store}' not found")
 
-        weekly_trend = _get_store_weekly_trend(store, weeks=8)
-        categories   = _get_top_categories_for_store(store)
-        issues       = _get_open_issues(store)
-        pd           = path_data.get(store, {})
+        try:
+            weekly_trend = _get_store_weekly_trend(store, weeks=8)
+        except Exception as _e:
+            log.warning("weekly_trend error for %s: %s", store, _e)
+            weekly_trend = []
+        try:
+            categories = _get_top_categories_for_store(store)
+        except Exception as _e:
+            log.warning("categories error for %s: %s", store, _e)
+            categories = []
+        try:
+            issues = _get_open_issues(store)
+        except Exception as _e:
+            log.warning("issues error for %s: %s", store, _e)
+            issues = []
+
+        pd      = path_data.get(store, {})
+        # Prefer proper basket-per-transaction from the batch cache over the row-avg fallback
+        ext_s   = _get_batch_extended_metrics().get(store, {})
 
         # Analysis — serve from today's cache if it has the full structured analysis
         analysis    = {}
@@ -1831,23 +1856,31 @@ def register_retail_desk_routes(app, api_pg_module):
             coaching_text = cached[0]["summary"]
 
         # Fetch predictions for this store
-        preds = _db_exec(
-            """SELECT id, metric_name, prediction_text, current_value, predicted_value,
-                      time_horizon, confidence, rationale, status, actual_value,
-                      actual_recorded_at::date AS recorded_date, run_date::text AS run_date
-               FROM retail_desk_predictions
-               WHERE store = %s
-               ORDER BY run_date DESC, id DESC LIMIT 10""",
-            (store,), fetch=True
-        ) or []
+        try:
+            preds = _db_exec(
+                """SELECT id, metric_name, prediction_text, current_value, predicted_value,
+                          time_horizon, confidence, rationale, status, actual_value,
+                          actual_recorded_at::date AS recorded_date, run_date::text AS run_date
+                   FROM retail_desk_predictions
+                   WHERE store = %s
+                   ORDER BY run_date DESC, id DESC LIMIT 10""",
+                (store,), fetch=True
+            ) or []
+        except Exception as _e:
+            log.warning("predictions error for %s: %s", store, _e)
+            preds = []
 
         # Fetch recent corrections for this store
-        corrections = _db_exec(
-            """SELECT id, correction_text, submitted_at::date AS corr_date, applied
-               FROM retail_desk_corrections
-               WHERE store = %s ORDER BY submitted_at DESC LIMIT 10""",
-            (store,), fetch=True
-        ) or []
+        try:
+            corrections = _db_exec(
+                """SELECT id, correction_text, submitted_at::date AS corr_date, applied
+                   FROM retail_desk_corrections
+                   WHERE store = %s ORDER BY submitted_at DESC LIMIT 10""",
+                (store,), fetch=True
+            ) or []
+        except Exception as _e:
+            log.warning("corrections error for %s: %s", store, _e)
+            corrections = []
 
         return JSONResponse({
             "store":        store,
@@ -1857,7 +1890,7 @@ def register_retail_desk_routes(app, api_pg_module):
             "mtd": {
                 "actual":       sd["mtd_net"],
                 "transactions": sd["mtd_transactions"],
-                "avg_basket":   sd["mtd_avg_basket"],
+                "avg_basket":   ext_s.get("avg_basket_net") if ext_s.get("avg_basket_net") is not None else (sd["mtd_avg_basket"] or None),
             },
             "trend": {
                 "l28d_net":    sd["l28d_net"],
