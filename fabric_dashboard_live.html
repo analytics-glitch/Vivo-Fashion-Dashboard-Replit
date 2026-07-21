@@ -1163,11 +1163,12 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div class="modal-body">
      <div id="recv-edit-err"></div>
      <div id="recv-edit-adminnote" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
+     <div class="muted" style="font-size:12px;margin-bottom:8px;">Roll lengths entered below are pre-filled automatically on the <b>QC Score Sheet</b> when you print it &mdash; fill them in here before printing to avoid pen entry on the sheet.</div>
      <div class="tbl-wrap">
       <table class="data" id="recv-edit-table">
        <thead><tr>
         <th style="width:1%;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th>
-        <th class="r" title="Measured roll length in yards">Length (yds)</th>
+        <th class="r" title="Measured roll length in yards — fill this in before printing the QC Score Sheet and it will be pre-populated on the sheet">Length (yds)</th>
         <th class="r" title="Re-measured size of the 35cm gauge square after wash, along the WIDTH (in cm)">After-wash W (cm)</th>
         <th class="r" title="Re-measured size of the 35cm gauge square after wash, along the LENGTH (in cm)">After-wash L (cm)</th>
         <th title="Bleeding / colour-fastness test result">Bleeding test</th>
@@ -4864,7 +4865,7 @@ function renderRecvPoDetail(box,det,poKey){
     const mtrs=g.total_mtrs!=null?fmt1(g.total_mtrs)+' m':'<span style="color:var(--danger);" title="This fabric has no Width/GSM conversion">Missing Width/GSM</span>';
     const acts=s0?`<span style="white-space:nowrap;">
         <button class="btn btn-primary" data-fab-print="${Number(s0.id)}" title="Print this fabric\u2019s receiving sheet (PO header + its rolls)" style="padding:3px 9px;font-size:12px;">🖨 Print</button>
-        ${g.rolls_count>0?`<button class="btn" onclick="window.open('/api/fabric/receiving/sheets/${Number(s0.id)}/scoresheet','_blank')" title="Open a blank 4-Point QC score sheet for this fabric \u2014 print and fill in by hand during inspection" style="padding:3px 8px;font-size:12px;">QC Score Sheet</button>`:''}
+        ${g.rolls_count>0?`<button class="btn" onclick="window.open('/api/fabric/receiving/sheets/${Number(s0.id)}/scoresheet','_blank')" title="Open the 4-Point QC score sheet for this fabric \u2014 roll lengths already recorded via Quality / Edit are pre-filled automatically; remaining columns are hand-written during inspection" style="padding:3px 8px;font-size:12px;">QC Score Sheet</button>`:''}
         <button class="btn" data-edit="${Number(s0.id)}" style="padding:3px 8px;font-size:12px;">Quality / Edit</button>
         ${canEditRolls?`<button class="btn" data-fab-del="${Number(s0.id)}" data-fab-name="${esc(g.fabric_name||'')}" data-fab-rolls="${Number(g.rolls_count||0)}" style="padding:3px 8px;font-size:12px;">Delete</button>`:''}
       </span>`:'';
