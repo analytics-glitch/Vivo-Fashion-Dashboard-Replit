@@ -6496,7 +6496,10 @@ def receiving_recovery_purge(request: Request, body: dict = Body(...)):
 def _recv_download_data(conn, po_id):
     """All live sheets + rolls of one PO, ordered for the printable sheet."""
     sheets = q(conn, """
-        SELECT s.id, s.fabric_name, s.barcode, s.kg_per_mtr,
+        SELECT s.id,
+               COALESCE(p.name, s.fabric_name) AS fabric_name,
+               COALESCE(NULLIF(BTRIM(p.barcode),''), NULLIF(BTRIM(p.default_code),''), s.barcode) AS barcode,
+               s.kg_per_mtr,
                s.total_kg, s.total_mtrs, s.rolls_count, s.note,
                s.po_id, s.po_name,
                to_char(s.po_date, 'DD Mon YYYY') as po_date,
@@ -6504,6 +6507,7 @@ def _recv_download_data(conn, po_id):
                to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
                        'DD Mon YYYY, HH24:MI') as created_at
         FROM fabric_receiving_sheets s
+        LEFT JOIN raw_fabric_products p ON p.id = s.product_id
         WHERE s.po_id=%s AND s.deleted_at IS NULL
         ORDER BY s.fabric_name, s.id
     """, (po_id,))
