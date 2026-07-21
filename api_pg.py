@@ -1648,6 +1648,7 @@ def _start_cache_prewarmer():
                     country=None, channel=None)),
                 ("production-flow",    lambda: production_flow()),
                 ("production-summary", lambda: production_summary()),
+                ("retail-desk-overview", retail_desk_router._overview_snapshot),
             ]
             for name, fn in targets:
                 try:

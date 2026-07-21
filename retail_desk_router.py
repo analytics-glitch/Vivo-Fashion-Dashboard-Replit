@@ -289,6 +289,84 @@ def _weeks_behind_count(store: str) -> int:
         return 0
 
 
+def _weeks_behind_all_stores() -> dict:
+    """
+    Batch version of _weeks_behind_count — ONE query for the whole fleet.
+    Returns {store_name: int weeks_behind}. Cached 5 min.
+    """
+    return _fc("weeks_behind_all", 300, _weeks_behind_all_query)
+
+
+def _weeks_behind_all_query() -> dict:
+    """
+    Single all_sales scan grouped by (store, week) replacing 30 per-store queries.
+    Share-weights each store's target the same way _weeks_behind_count does.
+    """
+    try:
+        from growth_router import (
+            _get_t12m_baseline, _get_current_assumption, compute_milestones,
+        )
+        baseline   = _get_t12m_baseline()
+        assumption = _get_current_assumption()
+        if not assumption:
+            return {}
+        bm = baseline["t12m_monthly"]
+        milestones, _ = compute_milestones(assumption, bm)
+        ms_map  = {m["month_start"]: m["monthly_target"] for m in milestones}
+        ss_pct  = assumption.get("same_store_pct", 60) / 100.0
+
+        bf  = _base_filters().replace("%", "%%")
+        sql = f"""
+            SELECT
+                s.pos_location_name AS store,
+                DATE_TRUNC('week', s.sale_date::date)::date AS wk,
+                ROUND(SUM({_NET_S}), 0) AS actual_wk
+            FROM all_sales s
+            WHERE s.sale_date::date >= CURRENT_DATE - 63
+              AND {_IS_RETAIL}
+              AND {bf}
+            GROUP BY 1, 2
+            ORDER BY 1, 2
+        """
+        rows = _db_exec(sql, fetch=True) or []
+
+        # Group by store
+        store_weeks: dict = {}
+        for r in rows:
+            st = r["store"]
+            store_weeks.setdefault(st, []).append(r)
+
+        # Share weights from cached T12M data
+        stores_data = _get_store_t12m_and_mtd_raw()
+        total_t12m  = sum(s["t12m_net"] for s in stores_data)
+        share_map   = {
+            s["store"]: (s["t12m_net"] / total_t12m if total_t12m else 0.0)
+            for s in stores_data
+        }
+
+        result: dict = {}
+        for store, wrows in store_weeks.items():
+            share  = share_map.get(store, 0.0)
+            behind = 0
+            for r in wrows:
+                wk = r["wk"]
+                if not wk:
+                    continue
+                wk_date   = wk if isinstance(wk, date) else date.fromisoformat(str(wk))
+                month_key = str(date(wk_date.year, wk_date.month, 1))
+                mt        = ms_map.get(month_key)
+                if not mt:
+                    continue
+                store_weekly_req = (mt / 4.33) * share * ss_pct
+                if float(r.get("actual_wk") or 0) < store_weekly_req:
+                    behind += 1
+            result[store] = behind
+        return result
+    except Exception as e:
+        log.warning("_weeks_behind_all_query error: %s", e)
+        return {}
+
+
 # ── Core data reads ───────────────────────────────────────────────────────────
 
 def _get_store_t12m_and_mtd_raw():
@@ -619,6 +697,8 @@ _SCAN_CACHE_TTL = 600  # 10 minutes — scan runs once per TTL window
 _SCAN_LOCK      = threading.Lock()
 _SCAN_LAST_AT   = 0.0
 
+_OV_TTL = 600    # 10-min whole-response cache for /overview
+
 
 def _deterministic_scan_all(stores_data: list, path_data: dict, bench: dict):
     """
@@ -635,9 +715,10 @@ def _deterministic_scan_all(stores_data: list, path_data: dict, bench: dict):
         _SCAN_LAST_AT = now
 
     try:
-        ext   = _get_batch_extended_metrics()
-        dead  = _get_batch_dead_stock()
-        unkcat = _get_batch_unknown_category()
+        ext      = _get_batch_extended_metrics()
+        dead     = _get_batch_dead_stock()
+        unkcat   = _get_batch_unknown_category()
+        all_wb   = _weeks_behind_all_stores()
         fleet_basket = bench.get("avg_basket", 0)
         fleet_disc   = bench.get("avg_disc_depth_pct", 11.0)
         fleet_upt    = bench.get("avg_upt", 2.2)
@@ -656,7 +737,7 @@ def _deterministic_scan_all(stores_data: list, path_data: dict, bench: dict):
         t3m_prev = s.get("t3m_prev_net", 0)
         mom_pct  = round((l28d - prev28d) / prev28d * 100, 1) if prev28d else None
         rr_gap   = round((t3m - t3m_prev) / t3m_prev * 100, 1) if t3m_prev else None
-        weeks_b  = _weeks_behind_count(store)
+        weeks_b  = all_wb.get(store, 0)
 
         ex   = ext.get(store, {})
         ds   = dead.get(store, {})
@@ -1527,6 +1608,164 @@ def _save_predictions(store: str, predictions: list):
 
 # ── Route registration ────────────────────────────────────────────────────────
 
+# ── Overview whole-response cache ──────────────────────────────────────────────
+
+def _overview_snapshot() -> dict:
+    """Cached (10 min) full overview payload. Called via asyncio.to_thread."""
+    return _fc("rd_ov", _OV_TTL, _overview_compute)
+
+
+def _overview_compute() -> dict:
+    """
+    Core computation for GET /api/retail-desk/overview.
+    Uses batch _weeks_behind_all_stores() — one query instead of 30.
+    """
+    stores_data = _get_store_t12m_and_mtd_raw()
+    path_data   = _build_store_path_data()
+    bench       = _get_network_benchmarks()
+    all_weeks_b = _weeks_behind_all_stores()
+
+    # Run deterministic rule scan (throttled / cached internally)
+    try:
+        _deterministic_scan_all(stores_data, path_data, bench)
+    except Exception as e:
+        log.warning("deterministic_scan error: %s", e)
+
+    # Open issues + KES at stake per store
+    all_open = _db_exec(
+        """SELECT store, COUNT(*) AS n,
+                  COALESCE(SUM(kes_impact) FILTER (WHERE kes_impact IS NOT NULL), 0) AS total_kes
+           FROM retail_desk_issues WHERE status='open' GROUP BY store""",
+        fetch=True
+    ) or []
+    open_by_store = {r["store"]: {"n": int(r["n"]), "kes": float(r["total_kes"] or 0)}
+                     for r in all_open}
+
+    # Top open issue per store for exception queue rows
+    top_issues = _db_exec(
+        """SELECT DISTINCT ON (store) store, title, severity, rule_key, kes_impact, owner_role
+           FROM retail_desk_issues
+           WHERE status = 'open'
+           ORDER BY store, severity DESC, kes_impact DESC NULLS LAST, opened_at DESC""",
+        fetch=True
+    ) or []
+    top_issue_by_store = {r["store"]: dict(r) for r in top_issues}
+
+    cards = []
+    for s in stores_data:
+        store    = s["store"]
+        pd_s     = path_data.get(store, {})
+        l28      = s["l28d_net"]
+        p28      = s["prev28d_net"]
+        t3m      = s.get("t3m_net", 0)
+        t3m_p    = s.get("t3m_prev_net", 0)
+        mom_pct  = round((l28 - p28) / p28 * 100, 1) if p28 else None
+        rr_gap   = round((t3m - t3m_p) / t3m_p * 100, 1) if t3m_p else None
+        weeks_b  = all_weeks_b.get(store, 0)
+        gap_pct  = pd_s.get("gap_pct", 0)
+        gap_kes  = pd_s.get("gap_kes", 0)
+        c_status = _composite_status(gap_pct, mom_pct, rr_gap, weeks_b)
+        oi       = open_by_store.get(store, {"n": 0, "kes": 0})
+        ti       = top_issue_by_store.get(store)
+        cards.append({
+            "store":            store,
+            "country":          s["country"],
+            "t12m_net":         s["t12m_net"],
+            "mtd_net":          s["mtd_net"],
+            "l28d_net":         l28,
+            "prev28d_net":      p28,
+            "mtd_req":          pd_s.get("mtd_req", 0),
+            "gap_kes":          gap_kes,
+            "gap_pct":          gap_pct,
+            "status":           c_status,
+            "path_status":      pd_s.get("status", "unknown"),
+            "share_pct":        pd_s.get("share_pct", 0),
+            "mom_pct":          mom_pct,
+            "run_rate_gap_pct": rr_gap,
+            "weeks_behind":     weeks_b,
+            "open_issues":      oi["n"],
+            "open_issues_kes":  oi["kes"],
+            "monthly_req":      pd_s.get("monthly_req", 0),
+            "top_issue":        ti,
+        })
+
+    STATUS_ORDER = {"act_now": 0, "watch": 1, "on_track": 2, "outperforming": 3}
+    cards.sort(key=lambda c: (STATUS_ORDER.get(c["status"], 2), c["gap_kes"]))
+
+    total_stores     = len(cards)
+    act_now_count    = sum(1 for c in cards if c["status"] == "act_now")
+    watch_count      = sum(1 for c in cards if c["status"] == "watch")
+    on_track_count   = sum(1 for c in cards if c["status"] == "on_track")
+    outperf_count    = sum(1 for c in cards if c["status"] == "outperforming")
+    total_gap_kes    = sum(c["gap_kes"] for c in cards)
+    total_mtd        = sum(c["mtd_net"] for c in cards)
+    total_mtd_req    = sum(c["mtd_req"] for c in cards)
+    total_issues     = sum(c["open_issues"] for c in cards)
+    total_issues_kes = sum(c["open_issues_kes"] for c in cards)
+    total_gap_pct    = round(total_gap_kes / total_mtd_req * 100, 1) if total_mtd_req else 0
+
+    act_now_queue = [c for c in cards if c["status"] == "act_now"]
+    watch_queue   = [c for c in cards if c["status"] == "watch"]
+    wins_queue    = sorted(
+        [c for c in cards if c["status"] == "outperforming"],
+        key=lambda c: c["gap_pct"], reverse=True
+    )
+
+    # Fleet-level AI coaching (cached daily in DB — won't block unless stale)
+    import psycopg2 as _pg2
+    _conn = _pg2.connect(os.environ["DATABASE_URL"])
+    fleet_coaching = None
+    try:
+        fleet_coaching = du.get_coaching(_conn, "retail", "fleet_overview")
+        if not fleet_coaching:
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            fleet_coaching = _run_fleet_coaching(api_key, cards, {
+                "total_stores": total_stores,
+                "act_now": act_now_count, "watch": watch_count,
+                "on_track": on_track_count, "outperforming": outperf_count,
+                "total_gap_kes": total_gap_kes, "total_gap_pct": total_gap_pct,
+                "total_mtd": total_mtd, "total_mtd_req": total_mtd_req,
+                "open_issues": total_issues, "open_issues_kes": total_issues_kes,
+            }, _conn)
+            if fleet_coaching and (fleet_coaching.get("note") or fleet_coaching.get("structured")):
+                du.save_coaching(_conn, "retail", fleet_coaching.get("note", ""),
+                                 structured=fleet_coaching.get("structured"),
+                                 scope_key="fleet_overview",
+                                 model=fleet_coaching.get("model", ""))
+    except Exception as _e:
+        log.warning("fleet coaching error: %s", _e)
+    finally:
+        _conn.close()
+
+    return {
+        "stores": cards,
+        "exception_queues": {
+            "act_now": act_now_queue,
+            "watch":   watch_queue,
+            "wins":    wins_queue,
+        },
+        "fleet_summary": {
+            "total_stores":     total_stores,
+            "act_now":          act_now_count,
+            "watch":            watch_count,
+            "on_track":         on_track_count,
+            "outperforming":    outperf_count,
+            "total_gap_kes":    round(total_gap_kes, 0),
+            "total_mtd":        round(total_mtd, 0),
+            "total_mtd_req":    round(total_mtd_req, 0),
+            "total_gap_pct":    total_gap_pct,
+            "open_issues":      total_issues,
+            "open_issues_kes":  round(total_issues_kes, 0),
+        },
+        "fleet_coaching": fleet_coaching,
+        "benchmarks": {
+            "avg_basket":         bench.get("avg_basket", 0),
+            "avg_disc_depth_pct": bench.get("avg_disc_depth_pct", 11.0),
+            "avg_upt":            bench.get("avg_upt", 2.2),
+        },
+    }
+
+
 def register_retail_desk_routes(app, api_pg_module):
     global A
     A = api_pg_module
@@ -1538,158 +1777,12 @@ def register_retail_desk_routes(app, api_pg_module):
     async def retail_desk_overview(request: Request):
         """
         All-stores snapshot: composite 4-bucket status, gap KES/%, trend, issues count.
-        Runs deterministic rule scan and returns exception queues + fleet coaching.
+        Whole response cached 10 min (_OV_TTL). Deterministic scan throttled separately.
+        Computation delegated to _overview_snapshot() via asyncio.to_thread so the
+        async worker loop is never blocked.
         """
-        stores_data = _get_store_t12m_and_mtd_raw()
-        path_data   = _build_store_path_data()
-        bench       = _get_network_benchmarks()
-
-        # Run deterministic rule scan (throttled / cached internally)
-        try:
-            await asyncio.to_thread(_deterministic_scan_all, stores_data, path_data, bench)
-        except Exception as e:
-            log.warning("deterministic_scan error: %s", e)
-
-        # Open issues + KES at stake per store
-        all_open = _db_exec(
-            """SELECT store, COUNT(*) AS n,
-                      COALESCE(SUM(kes_impact) FILTER (WHERE kes_impact IS NOT NULL), 0) AS total_kes
-               FROM retail_desk_issues WHERE status='open' GROUP BY store""",
-            fetch=True
-        ) or []
-        open_by_store = {r["store"]: {"n": int(r["n"]), "kes": float(r["total_kes"] or 0)}
-                         for r in all_open}
-
-        # Get top open issue description per store (for exception queue rows)
-        top_issues = _db_exec(
-            """SELECT DISTINCT ON (store) store, title, severity, rule_key, kes_impact, owner_role
-               FROM retail_desk_issues
-               WHERE status = 'open'
-               ORDER BY store, severity DESC, kes_impact DESC NULLS LAST, opened_at DESC""",
-            fetch=True
-        ) or []
-        top_issue_by_store = {r["store"]: dict(r) for r in top_issues}
-
-        cards = []
-        for s in stores_data:
-            store   = s["store"]
-            pd_s    = path_data.get(store, {})
-            l28     = s["l28d_net"]
-            p28     = s["prev28d_net"]
-            t3m     = s.get("t3m_net", 0)
-            t3m_p   = s.get("t3m_prev_net", 0)
-            mom_pct = round((l28 - p28) / p28 * 100, 1) if p28 else None
-            rr_gap  = round((t3m - t3m_p) / t3m_p * 100, 1) if t3m_p else None
-            weeks_b = _weeks_behind_count(store)
-            gap_pct = pd_s.get("gap_pct", 0)
-            gap_kes = pd_s.get("gap_kes", 0)
-            c_status = _composite_status(gap_pct, mom_pct, rr_gap, weeks_b)
-            oi      = open_by_store.get(store, {"n": 0, "kes": 0})
-            ti      = top_issue_by_store.get(store)
-            cards.append({
-                "store":            store,
-                "country":          s["country"],
-                "t12m_net":         s["t12m_net"],
-                "mtd_net":          s["mtd_net"],
-                "l28d_net":         l28,
-                "prev28d_net":      p28,
-                "mtd_req":          pd_s.get("mtd_req", 0),
-                "gap_kes":          gap_kes,
-                "gap_pct":          gap_pct,
-                "status":           c_status,
-                "path_status":      pd_s.get("status", "unknown"),
-                "share_pct":        pd_s.get("share_pct", 0),
-                "mom_pct":          mom_pct,
-                "run_rate_gap_pct": rr_gap,
-                "weeks_behind":     weeks_b,
-                "open_issues":      oi["n"],
-                "open_issues_kes":  oi["kes"],
-                "monthly_req":      pd_s.get("monthly_req", 0),
-                "top_issue":        ti,
-            })
-
-        # Sort: act_now first (by KES impact), then watch, on_track, outperforming
-        STATUS_ORDER = {"act_now": 0, "watch": 1, "on_track": 2, "outperforming": 3}
-        cards.sort(key=lambda c: (STATUS_ORDER.get(c["status"], 2), c["gap_kes"]))
-
-        # Fleet summary
-        total_stores    = len(cards)
-        act_now_count   = sum(1 for c in cards if c["status"] == "act_now")
-        watch_count     = sum(1 for c in cards if c["status"] == "watch")
-        on_track_count  = sum(1 for c in cards if c["status"] == "on_track")
-        outperf_count   = sum(1 for c in cards if c["status"] == "outperforming")
-        total_gap_kes   = sum(c["gap_kes"] for c in cards)
-        total_mtd       = sum(c["mtd_net"] for c in cards)
-        total_mtd_req   = sum(c["mtd_req"] for c in cards)
-        total_issues    = sum(c["open_issues"] for c in cards)
-        total_issues_kes= sum(c["open_issues_kes"] for c in cards)
-        total_gap_pct   = round(total_gap_kes / total_mtd_req * 100, 1) if total_mtd_req else 0
-
-        # Exception queues — pre-built for the UI
-        act_now_queue = [
-            c for c in cards if c["status"] == "act_now"
-        ]
-        watch_queue = [
-            c for c in cards if c["status"] == "watch"
-        ]
-        wins_queue = sorted(
-            [c for c in cards if c["status"] == "outperforming"],
-            key=lambda c: c["gap_pct"], reverse=True
-        )
-
-        # Fleet-level AI intelligence (cached daily per desk, scope "fleet_overview")
-        import psycopg2 as _pg2
-        _conn = _pg2.connect(os.environ["DATABASE_URL"])
-        fleet_coaching = None
-        try:
-            fleet_coaching = du.get_coaching(_conn, "retail", "fleet_overview")
-            if not fleet_coaching:
-                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-                fleet_coaching = _run_fleet_coaching(api_key, cards, {
-                    "total_stores": total_stores,
-                    "act_now": act_now_count, "watch": watch_count,
-                    "on_track": on_track_count, "outperforming": outperf_count,
-                    "total_gap_kes": total_gap_kes, "total_gap_pct": total_gap_pct,
-                    "total_mtd": total_mtd, "total_mtd_req": total_mtd_req,
-                    "open_issues": total_issues, "open_issues_kes": total_issues_kes,
-                }, _conn)
-                if fleet_coaching and (fleet_coaching.get("note") or fleet_coaching.get("structured")):
-                    du.save_coaching(_conn, "retail", fleet_coaching.get("note", ""),
-                                     structured=fleet_coaching.get("structured"),
-                                     scope_key="fleet_overview",
-                                     model=fleet_coaching.get("model", ""))
-        except Exception as _e:
-            log.warning("fleet coaching error: %s", _e)
-        finally:
-            _conn.close()
-
-        return JSONResponse({
-            "stores":        cards,
-            "exception_queues": {
-                "act_now": act_now_queue,
-                "watch":   watch_queue,
-                "wins":    wins_queue,
-            },
-            "fleet_summary": {
-                "total_stores":     total_stores,
-                "act_now":          act_now_count,
-                "watch":            watch_count,
-                "on_track":         on_track_count,
-                "outperforming":    outperf_count,
-                "total_gap_kes":    round(total_gap_kes, 0),
-                "total_mtd":        round(total_mtd, 0),
-                "total_mtd_req":    round(total_mtd_req, 0),
-                "total_gap_pct":    total_gap_pct,
-                "open_issues":      total_issues,
-                "open_issues_kes":  round(total_issues_kes, 0),
-            },
-            "fleet_coaching": fleet_coaching,
-            "benchmarks": {
-                "avg_basket":         bench.get("avg_basket", 0),
-                "avg_disc_depth_pct": bench.get("avg_disc_depth_pct", 11.0),
-                "avg_upt":            bench.get("avg_upt", 2.2),
-            },
-        })
+        payload = await asyncio.to_thread(_overview_snapshot)
+        return JSONResponse(payload)
 
     @app.get("/api/retail-desk/store/{store:path}")
     async def retail_desk_store(store: str, request: Request):

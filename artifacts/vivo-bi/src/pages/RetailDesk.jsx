@@ -1313,8 +1313,29 @@ export default function RetailDesk() {
   );
 
   if (error) return (
-    <div style={{ padding: 32, color: "#dc2626", fontSize: 13 }}>
-      Failed to load Retail Desk. {String(error)}
+    <div style={{ padding: 32 }}>
+      <div style={{
+        background: "#fff", border: "1px solid #fca5a5", borderRadius: 8,
+        padding: 24, maxWidth: 480,
+      }}>
+        <div style={{ fontWeight: 700, color: "#dc2626", fontSize: 14, marginBottom: 6 }}>
+          Retail Desk failed to load
+        </div>
+        <div style={{ color: "#6b7280", fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
+          The overview data could not be retrieved. This may be a temporary issue while
+          the server computes the first result after a restart. Try again in a moment.
+        </div>
+        <button
+          onClick={() => refetch()}
+          style={{
+            background: "#1a5c38", color: "#fff", border: "none",
+            borderRadius: 6, padding: "8px 16px", fontSize: 13,
+            fontWeight: 600, cursor: "pointer",
+          }}
+        >
+          Retry
+        </button>
+      </div>
     </div>
   );
 
