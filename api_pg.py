@@ -16410,6 +16410,7 @@ def analytics_replenish_by_item(
             SELECT i.sku, SUM(i.available) AS soh_wh
             FROM all_inventory i
             WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+              AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)
               AND i.sku IN """ + item_skus + """
             GROUP BY 1
         )
@@ -16439,6 +16440,7 @@ def analytics_replenish_by_item(
         SELECT COALESCE(SUM(i.available), 0) AS soh_wh
         FROM all_inventory i
         WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+          AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)
           AND i.sku IN """ + item_skus + """
     """)
     wh_soh = int((wh_rows[0]["soh_wh"] if wh_rows else 0) or 0)
@@ -16553,6 +16555,7 @@ def analytics_replenish_gaps(
                 SELECT i.sku, SUM(i.available) AS soh_wh
                 FROM all_inventory i
                 WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+                  AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)
                 GROUP BY i.sku
             )
             SELECT sold.pos_location, sold.sku, COALESCE(NULLIF(p.product_name, ''), sold.product_name) AS product_name, sold.units_sold, sold.last_sale,
@@ -16598,6 +16601,7 @@ def analytics_replenish_gaps(
                 SELECT i.sku, SUM(i.available) AS soh_wh
                 FROM all_inventory i
                 WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+                  AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)
                 GROUP BY i.sku
             )
             SELECT sold.sku, COALESCE(NULLIF(p.product_name, ''), sold.product_name) AS product_name, sold.units_sold, sold.last_sale,
