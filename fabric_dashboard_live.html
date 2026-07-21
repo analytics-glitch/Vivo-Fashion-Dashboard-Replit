@@ -1995,7 +1995,7 @@ function renderQcDetail(d){
     const sk=r.shrink_pct==null?'<span class="muted">—</span>':`<span${r.high_shrink?' style="color:#b45309;font-weight:700;"':''}>${esc(r.shrink_pct)}%${r.high_shrink?' \u26a0':''}</span>`;
     const bo=r.bleeding_outcome==='fail'?' style="color:var(--danger);font-weight:700;"':'';
     return `<tr><td>${esc(r.recv_date||'')}</td><td>${esc(r.po_name||'—')}</td><td>${esc(r.supplier||'')}</td>`+
-      `<td title="${esc(r.barcode||'')}">${esc(r.fabric_name||'')}</td><td class="r">${esc(r.roll_no)}</td>`+
+      `<td title="${esc(fabricClean(r.barcode))}">${esc(r.fabric_name||'')}</td><td class="r">${esc(r.roll_no)}</td>`+
       `<td>${qcStatusPill(r.status)}</td><td class="r">${r.qty_kg==null?'—':fmt1(r.qty_kg)}</td>`+
       `<td class="r">${w}</td><td class="r">${sk}</td>`+
       `<td${bo} title="${esc(r.bleeding_test||'')}">${esc(r.bleeding_test||'—')}</td>`+
@@ -4870,7 +4870,7 @@ function renderRecvPoDetail(box,det,poKey){
     const head=`<div data-fab-toggle="${esc(fk)}" style="display:flex;gap:.9rem;align-items:center;cursor:pointer;padding:.45rem .55rem;border:1px solid var(--border,#d7d7de);border-radius:8px;background:#fff;${open?'border-bottom-left-radius:0;border-bottom-right-radius:0;':''}">
       <span style="font-weight:700;width:14px;text-align:center;">${open?'−':'+'}</span>
       <span style="font-weight:600;">${esc(g.fabric_name||'—')}</span>
-      <span class="muted" style="font-size:12px;">${esc(g.barcode||'')}</span>
+      <span class="muted" style="font-size:12px;">${esc(fabricClean(g.barcode))}</span>
       <span style="margin-left:auto;white-space:nowrap;font-size:12px;">${fmt(g.rolls_count)} roll${g.rolls_count===1?'':'s'} · <b>${fmt2(g.total_kg)} kg</b> · ${mtrs} · ${
         (g.q_pass||g.q_fail)
           ? `<span style="color:#0a7d33;font-weight:700;">${fmt(g.q_pass)} pass</span>${g.q_fail?' / <span style="color:var(--danger);font-weight:700;">'+fmt(g.q_fail)+' fail</span>':''}${g.q_pending?' / <span class="muted">'+fmt(g.q_pending)+' pending</span>':''}`
@@ -5309,7 +5309,7 @@ function printRollSlip(g,s,r,meta){
     +'<div class="slip"><h2>VIVO — FABRIC ROLL</h2>'
     +'<div class="big">Roll '+esc(String(r.roll_no))+'</div>'
     +'<div class="row"><span>Fabric</span><b>'+esc(g.fabric_name||'—')+'</b></div>'
-    +'<div class="row"><span>Barcode</span><b>'+esc(g.barcode||'—')+'</b></div>'
+    +'<div class="row"><span>Barcode</span><b>'+esc(fabricClean(g.barcode)||'—')+'</b></div>'
     +'<div class="row"><span>Purchase order</span><b>'+esc(meta.name||'—')+'</b></div>'
     +'<div class="row"><span>Received</span><b>'+esc(s.receiving_date||s.created_at||'—')+'</b></div>'
     +'<div class="row"><span>Weight</span><b>'+fmt2(r.qty_kg)+' kg</b></div>'
@@ -5375,7 +5375,7 @@ async function openRecvRecoveryBin(){
       if(sheets.length){
         html+='<div style="font-weight:700;font-size:13px;margin:.4rem 0 .2rem;">Deleted sheets (fabric sections — restoring brings back all their rolls)</div>'
           +'<table class="data"><thead><tr><th>Fabric</th><th>PO</th><th class="r">Rolls</th><th class="r">Total kg</th><th>Deleted</th><th>By</th><th></th></tr></thead><tbody>'
-          +sheets.map(s=>'<tr><td>'+esc(s.fabric_name||'—')+(s.barcode?' <span class="muted" style="font-size:11px;">'+esc(s.barcode)+'</span>':'')+'</td>'
+          +sheets.map(s=>'<tr><td>'+esc(s.fabric_name||'—')+(fabricClean(s.barcode)?' <span class="muted" style="font-size:11px;">'+esc(fabricClean(s.barcode))+'</span>':'')+'</td>'
             +'<td>'+esc(s.po_name||'—')+'</td><td class="r">'+fmt(s.rolls_count)+'</td><td class="r">'+fmt2(s.total_kg)+'</td>'
             +'<td style="white-space:nowrap;">'+esc(s.deleted_at||'—')+(s.days_left!=null?' <span class="muted" style="font-size:11px;">('+fmt(s.days_left)+'d left)</span>':'')+'</td>'
             +'<td>'+esc(s.deleted_by||'—')+'</td><td style="white-space:nowrap;">'+act('sheet',s.id)+'</td></tr>').join('')

@@ -1398,6 +1398,56 @@ def _recv_backfill_missing_kpm_sync(conn):
             pass
 
 
+def _recv_refresh_product_data_sync(conn):
+    """After each successful fast product extract, patch fabric_receiving_sheets
+    where the stored barcode or fabric_name has drifted from raw_fabric_products.
+    This keeps the snapshot consistent so exports and printouts also reflect
+    current Odoo data within ~60 s of an Odoo edit.
+    Only rows where the values have actually changed are touched (no-op otherwise).
+    """
+    try:
+        with conn.cursor() as cur:
+            # s.barcode was originally populated from default_code (SKU) at
+            # sheet creation.  We now refresh it to the best available Odoo
+            # identifier: scannable barcode first, then SKU/default_code.
+            # Only overwrite when upstream has a meaningful value, so we never
+            # NULL out an existing snapshot value when both Odoo fields are blank.
+            cur.execute("""
+                UPDATE fabric_receiving_sheets s
+                   SET barcode = CASE
+                         WHEN NULLIF(BTRIM(p.barcode), '') IS NOT NULL
+                              THEN BTRIM(p.barcode)
+                         WHEN NULLIF(BTRIM(p.default_code), '') IS NOT NULL
+                              THEN BTRIM(p.default_code)
+                         ELSE s.barcode
+                       END,
+                       fabric_name     = COALESCE(NULLIF(BTRIM(p.name), ''), s.fabric_name),
+                       updated_at      = now(),
+                       updated_by_name = 'system (product sync)'
+                  FROM raw_fabric_products p
+                 WHERE p.id = s.product_id
+                   AND s.deleted_at IS NULL
+                   AND (
+                       COALESCE(s.barcode, '') IS DISTINCT FROM
+                         COALESCE(NULLIF(BTRIM(p.barcode),''), NULLIF(BTRIM(p.default_code),''), s.barcode, '')
+                    OR (NULLIF(BTRIM(p.name), '') IS NOT NULL
+                        AND COALESCE(s.fabric_name, '') IS DISTINCT FROM BTRIM(p.name))
+                   )
+                RETURNING s.id
+            """)
+            n = cur.rowcount
+        conn.commit()
+        if n:
+            log.info("product data sync: patched %d receiving sheet(s) "
+                     "with updated barcode/name from Odoo", n)
+    except Exception as e:
+        log.error("recv_refresh_product_data_sync failed: %s", e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def fabric_worker_loop(stop_event=None):
     """Dedicated ~60s fabric extract loop, independent of the main sales cycle.
 
@@ -1493,6 +1543,9 @@ def fabric_worker_loop(stop_event=None):
                     # product now has a valid kg_per_mtr_eff after this extract.
                     # No-op when all sheets are already repaired.
                     _recv_backfill_missing_kpm_sync(conn)
+                    # Patch any receiving sheets whose barcode/name diverged from
+                    # raw_fabric_products since the last sync (≤60s propagation).
+                    _recv_refresh_product_data_sync(conn)
                     # A full bootstrap already pulled the heavy tables — start their
                     # slow timer now so we don't immediately re-run them.
                     if fabric_empty:

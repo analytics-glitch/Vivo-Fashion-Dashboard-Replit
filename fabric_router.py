@@ -4919,6 +4919,7 @@ def _ensure_receiving_tables(conn):
             )""")
     conn.commit()
     _migrate_recv_one_sheet_per_po(conn)
+    _migrate_recv_fix_false_barcodes(conn)
     _RECEIVING_TABLES_READY = True
 
 def _migrate_recv_one_sheet_per_po(conn):
@@ -5024,6 +5025,34 @@ def _migrate_recv_one_sheet_per_po(conn):
         _recv_refresh_sheet_totals(conn, sid, "system (migration)")
     if merged_sheet_ids or renumbered:
         conn.commit()
+
+
+def _migrate_recv_fix_false_barcodes(conn):
+    """One-time patch: Odoo's XML-RPC returns the boolean False for an unset
+    barcode field; older extracts stored that as the literal text 'false'
+    before the `or None` normalisation was added.  This migration NULLs them
+    so the UI never shows the word "false" as a barcode value.
+    Idempotent via the fabric_recv_migrations marker table."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM fabric_recv_migrations WHERE key=%s",
+                    ("fix_false_barcodes_v1",))
+        if cur.fetchone():
+            return
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext('fabric_recv_migrate'))")
+        cur.execute("SELECT 1 FROM fabric_recv_migrations WHERE key=%s",
+                    ("fix_false_barcodes_v1",))
+        if cur.fetchone():
+            conn.commit()
+            return
+        cur.execute("""
+            UPDATE fabric_receiving_sheets
+               SET barcode = NULL
+             WHERE LOWER(barcode) = 'false'
+        """)
+        cur.execute("INSERT INTO fabric_recv_migrations(key) VALUES (%s)",
+                    ("fix_false_barcodes_v1",))
+    conn.commit()
+
 
 # Allowed per-roll quality statuses (NULL/'' = not yet inspected → treated as
 # Pending in the UI). Kept small + explicit; validated server-side.
@@ -5489,9 +5518,12 @@ def _insp_roll_ctx(conn, roll_id):
                r.length_yards, r.width_measured_m, r.quality_status,
                r.quality_notes, r.shrinkage_inches, r.bleeding_test,
                r.after_wash_width_cm, r.after_wash_length_cm,
-               s.po_id, s.po_name, s.product_id, s.fabric_name, s.barcode
+               s.po_id, s.po_name, s.product_id,
+               COALESCE(p.name,    s.fabric_name) AS fabric_name,
+               COALESCE(NULLIF(BTRIM(p.barcode),''), NULLIF(BTRIM(p.default_code),''), s.barcode)     AS barcode
         FROM fabric_receiving_rolls r
         JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+        LEFT JOIN raw_fabric_products p ON p.id = s.product_id
         WHERE r.id=%s AND r.deleted_at IS NULL AND s.deleted_at IS NULL
     """, (roll_id,))
     if not rows:
@@ -6241,7 +6273,9 @@ def receiving_list(search: str = Query(default=""),
             like = f"%{term}%"
             params = [like, like, like]
         rows = q(conn, f"""
-            SELECT s.id, s.product_id, s.barcode, s.fabric_name,
+            SELECT s.id, s.product_id,
+                   COALESCE(NULLIF(BTRIM(p.barcode),''), NULLIF(BTRIM(p.default_code),''), s.barcode)     AS barcode,
+                   COALESCE(p.name,    s.fabric_name) AS fabric_name,
                    s.kg_per_mtr, s.total_kg, s.total_mtrs, s.rolls_count,
                    s.note, s.created_by_name,
                    s.po_id, s.po_name,
@@ -6258,6 +6292,7 @@ def receiving_list(search: str = Query(default=""),
                    COALESCE(qc.fail_n,0)    as q_fail,
                    COALESCE(qc.inspected,0) as q_inspected
             FROM fabric_receiving_sheets s
+            LEFT JOIN raw_fabric_products p ON p.id = s.product_id
             LEFT JOIN (
                 SELECT sheet_id,
                        COUNT(*) FILTER (WHERE quality_status='Pass') as pass_n,
@@ -6315,13 +6350,17 @@ def receiving_recovery_bin(request: Request):
         _ensure_receiving_tables(conn)
         _recv_bin_lazy_purge(conn)
         sheets = q(conn, """
-            SELECT s.id, s.fabric_name, s.barcode, s.po_id, s.po_name,
+            SELECT s.id,
+                   COALESCE(p.name,    s.fabric_name) AS fabric_name,
+                   COALESCE(NULLIF(BTRIM(p.barcode),''), NULLIF(BTRIM(p.default_code),''), s.barcode)     AS barcode,
+                   s.po_id, s.po_name,
                    s.total_kg, s.rolls_count, s.deleted_by,
                    to_char(s.deleted_at AT TIME ZONE 'Africa/Nairobi',
                            'DD Mon YYYY, HH24:MI') as deleted_at,
                    GREATEST(0, %s - EXTRACT(day FROM now() - s.deleted_at)::int)
                      as days_left
             FROM fabric_receiving_sheets s
+            LEFT JOIN raw_fabric_products p ON p.id = s.product_id
             WHERE s.deleted_at IS NOT NULL
             ORDER BY s.deleted_at DESC
         """, (_RECV_BIN_DAYS,))
@@ -7120,7 +7159,9 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
         sheets = q(conn, f"""
-            SELECT s.id, s.product_id, s.barcode, s.fabric_name,
+            SELECT s.id, s.product_id,
+                   COALESCE(NULLIF(BTRIM(p.barcode),''), NULLIF(BTRIM(p.default_code),''), s.barcode)     AS barcode,
+                   COALESCE(p.name,    s.fabric_name) AS fabric_name,
                    s.total_kg, s.total_mtrs, s.rolls_count, s.note,
                    s.created_by_name, s.updated_by_name,
                    COALESCE(to_char(s.po_date, 'DD Mon YYYY'),
@@ -7134,6 +7175,7 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
                    COALESCE(qc.fail_n,0)    as q_fail,
                    COALESCE(qc.inspected,0) as q_inspected
             FROM fabric_receiving_sheets s
+            LEFT JOIN raw_fabric_products p ON p.id = s.product_id
             LEFT JOIN (
                 SELECT sheet_id,
                        COUNT(*) FILTER (WHERE quality_status='Pass') as pass_n,
