@@ -1991,9 +1991,6 @@ const Overview = () => {
             />
           </div>
 
-          {/* ---- Product Development: BO category mix ---- */}
-          <PdCatMixTable />
-
           {/* ---- Below the fold: insights & projections ---- */}
           <div className="pt-2 border-t border-border/60" data-testid="insights-section">
             <div className="eyebrow mb-3 text-muted">Insights & Projections</div>
@@ -2041,6 +2038,9 @@ const Overview = () => {
               </div>
             )}
           </div>
+
+          {/* ---- Product Development: BO category mix ---- */}
+          <PdCatMixTable />
           </div>
         </>
       )}
