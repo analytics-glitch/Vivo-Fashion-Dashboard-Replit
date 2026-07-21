@@ -10538,16 +10538,18 @@ def analytics_store_flow(
     """, date_to=date_to)
 
     ctry_t = " AND t.to_country IN (" + csv_to_sql(country) + ")" if country else ""
-    # Units Transferred = warehouse→store pickings only (no store-to-store, no
-    # shopping bags), bucketed by scheduled_date (the dispatch date, not the
-    # EAT-adjusted receive date). Units Incoming = same warehouse/bag filters,
-    # planned-but-not-done lines only (no date filter — all open pickings count).
+    # Units Transferred = warehouse→store pickings dispatched in the period,
+    # counted the moment they leave the warehouse (scheduled_date), regardless
+    # of whether the store has validated receipt yet.  For done pickings use
+    # qty_done (actual); for ready/assigned use qty_planned (confirmed dispatch).
+    # Units Incoming = open pickings with no date filter (all in-transit stock).
     transfers = run_query("""
         SELECT t.to_store_name AS pos_location,
                MAX(t.to_country) AS country,
-               COALESCE(SUM(t.qty_done) FILTER (
-                   WHERE t.state = 'done'
-                     AND t.scheduled_date::date
+               COALESCE(SUM(
+                   CASE WHEN t.state = 'done' THEN t.qty_done ELSE t.qty_planned END
+               ) FILTER (
+                   WHERE t.scheduled_date::date
                          BETWEEN '""" + date_from + """' AND '""" + date_to + """'), 0) AS units_transferred,
                COALESCE(SUM(t.qty_planned) FILTER (
                    WHERE t.state != 'done'), 0) AS units_incoming
@@ -10621,10 +10623,9 @@ def analytics_store_flow(
     daily_xfr = run_query("""
         SELECT t.to_store_name AS pos_location,
                EXTRACT(ISODOW FROM t.scheduled_date::date)::int AS dow,
-               SUM(t.qty_done) AS units
+               SUM(CASE WHEN t.state = 'done' THEN t.qty_done ELSE t.qty_planned END) AS units
         FROM stock_transfers t
-        WHERE t.state = 'done'
-          AND t.scheduled_date::date
+        WHERE t.scheduled_date::date
               BETWEEN '""" + date_from + """' AND '""" + date_to + """'
           AND t.to_store_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
           AND """ + _WAREHOUSE_ORIGIN_FILTER + """
