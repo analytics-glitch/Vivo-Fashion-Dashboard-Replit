@@ -19397,7 +19397,7 @@ def analytics_category_country_matrix(
     }
 
 
-def _x_attr_variance(attr_col, key_name, date_from, date_to, cf, chf, inv_cf, local_scope=""):
+def _x_attr_variance(attr_col, key_name, date_from, date_to, cf, chf, inv_cf, local_scope="", inv_chf=""):
     rows = run_query(
         """
         WITH sales AS (
@@ -19413,7 +19413,7 @@ def _x_attr_variance(attr_col, key_name, date_from, date_to, cf, chf, inv_cf, lo
             SELECT p.""" + attr_col + """ AS k, SUM(i.available) AS current_stock
             FROM all_inventory i
             JOIN all_products_clean p ON i.sku = p.sku
-            WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)""" + inv_cf + local_scope + """
+            WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)""" + inv_cf + inv_chf + local_scope + """
             GROUP BY p.""" + attr_col + """
         )
         SELECT COALESCE(s.k, st.k) AS k,
@@ -19458,9 +19458,10 @@ def analytics_stock_to_sales_by_attribute(
 ):
     # Stock-to-sales variance by color/print and by size. country is a
     # lowercased CSV (matched case-insensitively); locations is a CSV of
-    # pos_location_name values applied to the sales side.
+    # pos_location_name values applied to BOTH the sales and stock sides so
+    # both tables respect the POS filter.
     cf, chf = _style_filters(country, locations, "s")
-    inv_cf, _ = _style_filters(country, None, "i")
+    inv_cf, inv_chf = _style_filters(country, locations, "i")
     # Inventory-page local filters (search / brand / subcategory pill) —
     # both CTEs already join the product master as `p`, so the scope fragment
     # applies to sales AND stock. This is what makes the by-Color / by-Size
@@ -19468,8 +19469,8 @@ def analytics_stock_to_sales_by_attribute(
     # client-side: rows are attribute aggregates, not style-level).
     local_scope = _inv_local_scope_sql(search, brand, product_type, alias="p")
     return {
-        "by_color": _x_attr_variance("color_print", "color", date_from, date_to, cf, chf, inv_cf, local_scope),
-        "by_size": _x_attr_variance("size", "size", date_from, date_to, cf, chf, inv_cf, local_scope),
+        "by_color": _x_attr_variance("color_print", "color", date_from, date_to, cf, chf, inv_cf, local_scope, inv_chf=inv_chf),
+        "by_size": _x_attr_variance("size", "size", date_from, date_to, cf, chf, inv_cf, local_scope, inv_chf=inv_chf),
     }
 
 
