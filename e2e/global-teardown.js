@@ -16,7 +16,7 @@ async function globalTeardown() {
 import os, psycopg2
 conn = psycopg2.connect(os.environ["DATABASE_URL"])
 cur = conn.cursor()
-cur.execute("DELETE FROM user_sessions WHERE session_token = %s", ("${TOKEN}",))
+cur.execute("DELETE FROM user_sessions WHERE session_token = %s", ("\${TOKEN}",))
 conn.commit()
 cur.close()
 conn.close()

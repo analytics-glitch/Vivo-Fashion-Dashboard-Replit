@@ -27,13 +27,13 @@ user_id = row[0]
 cur.execute(
     "INSERT INTO user_sessions (session_token, user_id, expires_at) "
     "VALUES (%s, %s, now() + interval '60 minutes')",
-    ("${TOKEN}", user_id),
+    ("\${TOKEN}", user_id),
 )
 conn.commit()
 cur.close()
 conn.close()
 print("ok")
-`.replace("${TOKEN}", token);
+`.replace("\${TOKEN}", token);
 
   try {
     const result = execSync(`python3 -c '${py.replace(/'/g, "'\"'\"'")}'`, {
