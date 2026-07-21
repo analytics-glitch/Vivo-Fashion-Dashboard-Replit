@@ -5,7 +5,7 @@ import SortableTable from "@/components/SortableTable";
 import { useAuth } from "@/lib/auth";
 import {
   Kanban, Plus, X, ArrowRight, ArrowUUpLeft, CheckCircle, XCircle,
-  GearSix, DownloadSimple, ChartBar, ClockClockwise, ArrowsClockwise, Trash, Rows,
+  GearSix, DownloadSimple, ChartBar, ClockClockwise, ArrowsClockwise, Trash, Rows, PencilSimple,
 } from "@phosphor-icons/react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -355,7 +355,16 @@ const DetailDrawer = ({ styleId, onClose, onMove, onRefreshBoard }) => {
       <div className="bg-white w-full max-w-lg h-full overflow-y-auto p-5 shadow-xl" onClick={(e) => e.stopPropagation()} data-testid="pd-detail-drawer">
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-extrabold text-[16px]">{st ? st.style_name : "Loading…"}</h3>
-          <button onClick={onClose} className="text-muted hover:text-foreground"><X size={18} /></button>
+          <div className="flex items-center gap-2">
+            {st && !editing && (
+              <button onClick={() => startEdit(st)}
+                className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-brand hover:text-brand-deep"
+                data-testid="pd-edit-details-btn" title="Edit style details">
+                <PencilSimple size={14} /> Edit
+              </button>
+            )}
+            <button onClick={onClose} className="text-muted hover:text-foreground"><X size={18} /></button>
+          </div>
         </div>
         {err && <ErrorBox message={err} />}
         {!data && !err && <Loading />}
@@ -433,11 +442,6 @@ const DetailDrawer = ({ styleId, onClose, onMove, onRefreshBoard }) => {
                     </div>
                   ))}
                 </div>
-                <button onClick={() => startEdit(st)}
-                  className="mt-3 text-[11.5px] font-semibold text-brand hover:underline"
-                  data-testid="pd-edit-details-btn">
-                  Edit details
-                </button>
               </div>
             )}
 
