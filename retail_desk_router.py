@@ -188,7 +188,42 @@ _DDL = [
         applied         BOOLEAN DEFAULT FALSE
     )""",
     "CREATE INDEX IF NOT EXISTS rdc_store ON retail_desk_corrections (store, analysis_date DESC)",
+    # v2 — enriched issue register
+    "ALTER TABLE IF EXISTS retail_desk_issues ADD COLUMN IF NOT EXISTS rule_key TEXT",
+    "ALTER TABLE IF EXISTS retail_desk_issues ADD COLUMN IF NOT EXISTS kes_impact FLOAT",
+    "ALTER TABLE IF EXISTS retail_desk_issues ADD COLUMN IF NOT EXISTS owner_role TEXT",
+    "ALTER TABLE IF EXISTS retail_desk_issues ADD COLUMN IF NOT EXISTS auto_resolved BOOLEAN DEFAULT FALSE",
+    # v2 — actions queue
+    """CREATE TABLE IF NOT EXISTS retail_desk_actions (
+        id              BIGSERIAL PRIMARY KEY,
+        store           TEXT NOT NULL,
+        action_text     TEXT NOT NULL,
+        owner           TEXT,
+        due_date        DATE,
+        status          TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open','in_progress','done','deferred')),
+        expected_kes    FLOAT,
+        source          TEXT DEFAULT 'manual',
+        issue_id        BIGINT,
+        created_at      TIMESTAMPTZ DEFAULT now(),
+        updated_at      TIMESTAMPTZ DEFAULT now(),
+        closed_at       TIMESTAMPTZ,
+        closed_by       TEXT,
+        outcome         TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS rda_store ON retail_desk_actions (store, status, due_date)",
 ]
+
+# ── Non-selling location exclusion ────────────────────────────────────────────
+
+_HOLDING_KEYWORDS = (
+    "warehouse", "wh ", "holding", " wh", "transit", "hub",
+    "offsite", "off site", "stockroom", "distribution",
+)
+
+def _is_holding_location(name: str) -> bool:
+    n = (name or "").lower()
+    return any(kw in n for kw in _HOLDING_KEYWORDS)
 
 # ── Consecutive-weeks-behind tracker (inline, no extra table) ─────────────────
 
@@ -276,6 +311,11 @@ def _store_t12m_query():
             ROUND(SUM(CASE WHEN s.sale_date::date >= CURRENT_DATE - 56
                            AND s.sale_date::date < CURRENT_DATE - 28
                       THEN {_NET_S} ELSE 0 END), 0) AS prev28d_net,
+            ROUND(SUM(CASE WHEN s.sale_date::date >= CURRENT_DATE - 90
+                      THEN {_NET_S} ELSE 0 END), 0) AS t3m_net,
+            ROUND(SUM(CASE WHEN s.sale_date::date >= CURRENT_DATE - 180
+                           AND s.sale_date::date < CURRENT_DATE - 90
+                      THEN {_NET_S} ELSE 0 END), 0) AS t3m_prev_net,
             COUNT(DISTINCT CASE WHEN DATE_TRUNC('month', s.sale_date::date) = DATE_TRUNC('month', CURRENT_DATE)
                            THEN s.id END) AS mtd_transactions,
             ROUND(AVG(CASE WHEN DATE_TRUNC('month', s.sale_date::date) = DATE_TRUNC('month', CURRENT_DATE)
@@ -292,17 +332,21 @@ def _store_t12m_query():
     rows = _db_exec(sql, fetch=True) or []
     return [
         {
-            "store":           r["store"],
-            "country":         r["country"],
-            "t12m_net":        float(r.get("t12m_net")         or 0),
-            "mtd_net":         float(r.get("mtd_net")          or 0),
-            "l28d_net":        float(r.get("l28d_net")         or 0),
-            "prev28d_net":     float(r.get("prev28d_net")      or 0),
-            "mtd_transactions": int(r.get("mtd_transactions")  or 0),
-            "mtd_avg_basket":  float(r.get("mtd_avg_basket")   or 0),
+            "store":            r["store"],
+            "country":          r["country"],
+            "t12m_net":         float(r.get("t12m_net")         or 0),
+            "mtd_net":          float(r.get("mtd_net")          or 0),
+            "l28d_net":         float(r.get("l28d_net")         or 0),
+            "prev28d_net":      float(r.get("prev28d_net")      or 0),
+            "t3m_net":          float(r.get("t3m_net")          or 0),
+            "t3m_prev_net":     float(r.get("t3m_prev_net")     or 0),
+            "mtd_transactions": int(r.get("mtd_transactions")   or 0),
+            "mtd_avg_basket":   float(r.get("mtd_avg_basket")   or 0),
         }
         for r in rows
-        if r.get("store") and r["store"] not in ("Staff purchases",)
+        if r.get("store")
+           and r["store"] not in ("Staff purchases",)
+           and not _is_holding_location(r["store"])
     ]
 
 
@@ -367,6 +411,410 @@ def _get_open_issues(store: str = None):
         params or None, fetch=True
     ) or []
     return [dict(r) for r in rows]
+
+
+# ── Composite status model (v2 — 4 buckets) ───────────────────────────────────
+
+def _composite_status(
+    gap_pct: float,
+    mom_pct: float | None,
+    run_rate_gap_pct: float | None,
+    weeks_behind: int,
+) -> str:
+    """
+    Compute a discriminating 4-bucket status:
+      act_now      — structural underperformance, needs immediate management action
+      watch        — slipping or mixed signals; monitor closely
+      on_track     — meeting or near growth path with stable trend
+      outperforming — materially ahead of path AND accelerating
+    """
+    gp = gap_pct if gap_pct is not None else 0.0
+    mp = mom_pct if mom_pct is not None else 0.0
+    rr = run_rate_gap_pct if run_rate_gap_pct is not None else 0.0
+
+    # Hard escalation to Act Now
+    if weeks_behind >= 4:
+        return "act_now"
+    if gp <= -25:
+        return "act_now"
+    if gp <= -15 and mp <= -10:
+        return "act_now"
+    if gp <= -10 and mp <= -20:
+        return "act_now"
+
+    # Watch — path negative OR falling fast despite being ahead
+    if gp <= -15:
+        return "watch"
+    if gp >= 0 and mp <= -15:
+        return "watch"      # ahead-on-path but declining sharply
+    if -15 < gp < 0 and mp <= -5:
+        return "watch"
+    if weeks_behind >= 2:
+        return "watch"
+    if gp >= 0 and rr <= -15:
+        return "watch"      # run-rate crumbling even if MTD OK
+
+    # Outperforming — materially ahead + accelerating
+    if gp >= 20 and mp >= 8:
+        return "outperforming"
+    if gp >= 15 and mp >= 5 and rr >= 0:
+        return "outperforming"
+
+    # Marginal recovery: small gap but trend improving
+    if -10 <= gp < 0 and mp >= 10:
+        return "on_track"
+
+    # Default positive
+    if gp >= 0:
+        return "on_track"
+
+    return "watch"
+
+
+# ── Batch extended metrics (all retail stores in one query) ────────────────────
+
+def _get_batch_extended_metrics() -> dict:
+    """Single L28D query for basket, UPT, discount depth, returns across all stores."""
+    return _fc("batch_ext", 600, _batch_ext_query)
+
+
+def _batch_ext_query() -> dict:
+    bf = _base_filters().replace("%", "%%")
+    try:
+        rows = _db_exec(
+            f"""
+            SELECT
+                s.pos_location_name                                            AS store,
+                COUNT(*) FILTER (WHERE s.sale_kind IN ('sale','order'))        AS sale_txns,
+                COUNT(*) FILTER (WHERE s.sale_kind = 'return')                 AS return_txns,
+                COALESCE(SUM(s.ordered_item_quantity)
+                    FILTER (WHERE s.sale_kind IN ('sale','order')), 0)         AS units_sold,
+                COALESCE(SUM(s.total_sales_kes::numeric)
+                    FILTER (WHERE s.sale_kind IN ('sale','order')), 0)         AS gross,
+                COALESCE(SUM(COALESCE(s.discounts_kes,0)::numeric), 0)        AS disc,
+                COALESCE(SUM(COALESCE(s.returns_kes,0)::numeric)
+                    FILTER (WHERE s.sale_kind = 'return'), 0)                  AS ret_kes
+            FROM all_sales s
+            WHERE s.sale_date::date >= CURRENT_DATE - 28
+              AND {_IS_RETAIL}
+              AND {bf}
+            GROUP BY s.pos_location_name
+            HAVING COUNT(*) > 10
+            """,
+            fetch=True,
+        ) or []
+    except Exception as e:
+        log.warning("_batch_ext_query error: %s", e)
+        return {}
+    out = {}
+    for r in rows:
+        store     = r.get("store") or ""
+        if not store or _is_holding_location(store):
+            continue
+        sale_txns   = int(r.get("sale_txns")   or 0)
+        return_txns = int(r.get("return_txns") or 0)
+        units_sold  = float(r.get("units_sold") or 0)
+        gross       = float(r.get("gross")      or 0)
+        disc        = float(r.get("disc")       or 0)
+        ret_kes     = float(r.get("ret_kes")    or 0)
+        total_txns  = sale_txns + return_txns
+        out[store] = {
+            "sale_txns":       sale_txns,
+            "discount_depth":  round(disc / gross * 100, 1) if gross > 0 else None,
+            "returns_rate":    round(return_txns / total_txns * 100, 1) if total_txns > 0 else None,
+            "upt":             round(units_sold / sale_txns, 2) if sale_txns > 0 else None,
+            "avg_basket_net":  round((gross - disc - ret_kes) / sale_txns, 0) if sale_txns > 0 else None,
+        }
+    return out
+
+
+def _get_batch_dead_stock() -> dict:
+    """Dead-stock units per store (no sale in 90d). Pre-aggregates inventory by SKU first."""
+    return _fc("batch_dead", 600, _batch_dead_query)
+
+
+def _batch_dead_query() -> dict:
+    try:
+        rows = _db_exec(
+            """
+            WITH store_soh AS (
+                SELECT pos_location_name AS store, sku, SUM(COALESCE(available,0)) AS soh
+                FROM all_inventory
+                WHERE COALESCE(available, 0) > 0
+                GROUP BY pos_location_name, sku
+            ),
+            recent_sales AS (
+                SELECT variant_sku AS sku, pos_location_name AS store,
+                       MAX(sale_date::date) AS last_sold
+                FROM all_sales
+                WHERE sale_kind IN ('sale','order')
+                  AND sale_date::date >= CURRENT_DATE - 365
+                GROUP BY variant_sku, pos_location_name
+            )
+            SELECT
+                ss.store,
+                SUM(ss.soh)                                                       AS total_soh,
+                SUM(CASE WHEN rs.last_sold IS NULL OR rs.last_sold < CURRENT_DATE - 90
+                         THEN ss.soh ELSE 0 END)                                  AS dead_soh
+            FROM store_soh ss
+            LEFT JOIN recent_sales rs ON rs.sku = ss.sku AND rs.store = ss.store
+            GROUP BY ss.store
+            """,
+            fetch=True,
+        ) or []
+    except Exception as e:
+        log.warning("_batch_dead_query error: %s", e)
+        return {}
+    return {
+        r["store"]: {
+            "total_soh": int(r.get("total_soh") or 0),
+            "dead_soh":  int(r.get("dead_soh")  or 0),
+            "dead_pct":  round(float(r["dead_soh"] or 0) / float(r["total_soh"]) * 100, 1)
+                         if (r.get("total_soh") or 0) > 0 else 0.0,
+        }
+        for r in rows
+        if r.get("store") and not _is_holding_location(r["store"])
+    }
+
+
+def _get_batch_unknown_category() -> dict:
+    """Unknown-category sales fraction per store (L28D)."""
+    return _fc("batch_unkcat", 600, _batch_unkcat_query)
+
+
+def _batch_unkcat_query() -> dict:
+    bf = _base_filters().replace("%", "%%")
+    try:
+        rows = _db_exec(
+            f"""
+            SELECT
+                s.pos_location_name AS store,
+                COUNT(*) AS total_lines,
+                COUNT(*) FILTER (WHERE p.product_type IS NULL
+                                    OR TRIM(p.product_type) = ''
+                                    OR LOWER(p.product_type) = 'unknown') AS unk_lines
+            FROM all_sales s
+            LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
+            WHERE s.sale_date::date >= CURRENT_DATE - 28
+              AND {_IS_RETAIL}
+              AND {bf}
+            GROUP BY s.pos_location_name
+            HAVING COUNT(*) > 50
+            """,
+            fetch=True,
+        ) or []
+    except Exception as e:
+        log.warning("_batch_unkcat_query error: %s", e)
+        return {}
+    return {
+        r["store"]: round(float(r["unk_lines"] or 0) / float(r["total_lines"]) * 100, 1)
+        for r in rows
+        if r.get("store") and (r.get("total_lines") or 0) > 0
+    }
+
+
+# ── Deterministic issue scanner (v2, replaces _auto_flag_issues) ───────────────
+
+_SCAN_CACHE_TTL = 600  # 10 minutes — scan runs once per TTL window
+_SCAN_LOCK      = threading.Lock()
+_SCAN_LAST_AT   = 0.0
+
+
+def _deterministic_scan_all(stores_data: list, path_data: dict, bench: dict):
+    """
+    Run the deterministic rule engine across all retail stores.
+    Creates issues for triggered rules (deduped by rule_key + store + 14-day window).
+    Auto-closes issues where the triggering metric has normalised.
+    Throttled to once per _SCAN_CACHE_TTL seconds.
+    """
+    global _SCAN_LAST_AT
+    now = time.time()
+    with _SCAN_LOCK:
+        if now - _SCAN_LAST_AT < _SCAN_CACHE_TTL:
+            return
+        _SCAN_LAST_AT = now
+
+    try:
+        ext   = _get_batch_extended_metrics()
+        dead  = _get_batch_dead_stock()
+        unkcat = _get_batch_unknown_category()
+        fleet_basket = bench.get("avg_basket", 0)
+        fleet_disc   = bench.get("avg_disc_depth_pct", 11.0)
+        fleet_upt    = bench.get("avg_upt", 2.2)
+    except Exception as e:
+        log.warning("_deterministic_scan_all prep error: %s", e)
+        return
+
+    for s in stores_data:
+        store    = s["store"]
+        pd_s     = path_data.get(store, {})
+        gap_pct  = pd_s.get("gap_pct", 0)
+        gap_kes  = pd_s.get("gap_kes", 0)
+        l28d     = s.get("l28d_net", 0)
+        prev28d  = s.get("prev28d_net", 0)
+        t3m      = s.get("t3m_net", 0)
+        t3m_prev = s.get("t3m_prev_net", 0)
+        mom_pct  = round((l28d - prev28d) / prev28d * 100, 1) if prev28d else None
+        rr_gap   = round((t3m - t3m_prev) / t3m_prev * 100, 1) if t3m_prev else None
+        weeks_b  = _weeks_behind_count(store)
+
+        ex   = ext.get(store, {})
+        ds   = dead.get(store, {})
+        unk  = unkcat.get(store, 0)
+
+        upt       = ex.get("upt")
+        disc_d    = ex.get("discount_depth")
+        ret_rate  = ex.get("returns_rate")
+        basket    = ex.get("avg_basket_net")
+        dead_pct  = ds.get("dead_pct", 0)
+        dead_soh  = ds.get("dead_soh", 0)
+
+        rules = []  # (rule_key, title, body, severity, kes_impact, owner_role, active)
+
+        # R1: consecutive weeks behind path
+        if weeks_b >= 3:
+            sev    = "high" if weeks_b >= 5 else "medium"
+            k_imp  = abs(gap_kes) if gap_kes < 0 else 0
+            rules.append((
+                "consecutive_weeks_behind",
+                f"{weeks_b} consecutive weeks behind growth path",
+                f"MTD gap: KES {gap_kes:,.0f} ({gap_pct:+.1f}%%) vs prorated target. {weeks_b} weeks running.",
+                sev, k_imp, "Store Manager", True,
+            ))
+        else:
+            rules.append(("consecutive_weeks_behind", None, None, None, None, None, False))
+
+        # R2: MoM critical decline
+        mom_active = mom_pct is not None and mom_pct <= -15
+        rules.append((
+            "mom_critical",
+            f"Revenue falling sharply: {mom_pct:+.1f}%% MoM" if mom_active else None,
+            (f"L28D net KES {l28d:,.0f} vs prior 28D KES {prev28d:,.0f} — "
+             f"{mom_pct:+.1f}%% MoM. Persistent decline signals structural issue.") if mom_active else None,
+            "high" if mom_active else None,
+            abs(l28d - prev28d) if mom_active else None,
+            "Area Manager", mom_active,
+        ))
+
+        # R3: MoM moderate decline (only if not also R2)
+        mom_med_active = mom_pct is not None and -15 < mom_pct <= -10
+        rules.append((
+            "mom_declining",
+            f"Revenue declining: {mom_pct:+.1f}%% MoM" if mom_med_active else None,
+            f"L28D vs prior 28D: {mom_pct:+.1f}%%. Trend needs attention." if mom_med_active else None,
+            "medium", abs(l28d - prev28d) * 0.5 if mom_med_active and prev28d else None,
+            "Store Manager", mom_med_active,
+        ))
+
+        # R4: Low basket vs fleet
+        basket_active = basket is not None and fleet_basket > 0 and basket < fleet_basket * 0.70
+        basket_gap_kes = (fleet_basket - basket) * ex.get("sale_txns", 0) if basket_active else None
+        rules.append((
+            "basket_low",
+            f"Basket below fleet avg: KES {basket:,.0f} vs {fleet_basket:,.0f} fleet" if basket_active else None,
+            (f"Store average basket KES {basket:,.0f} is {round((fleet_basket-basket)/fleet_basket*100,1)}%% "
+             f"below fleet avg KES {fleet_basket:,.0f}. Cross-sell opportunity.") if basket_active else None,
+            "medium", basket_gap_kes, "Floor Supervisor", basket_active,
+        ))
+
+        # R5: UPT critically low (near single-item checkout)
+        upt_active = upt is not None and upt <= 1.10
+        upt_opp = (fleet_upt - upt) * ex.get("sale_txns", 0) * (basket / (upt or 1)) if upt_active and basket else None
+        rules.append((
+            "upt_low",
+            f"Low units per transaction: {upt:.2f} UPT (fleet {fleet_upt:.2f})" if upt_active else None,
+            f"Average {upt:.2f} units per sale — nearly all transactions single-item. Cross-sell training required." if upt_active else None,
+            "medium", round(upt_opp, 0) if upt_opp else None, "Floor Supervisor", upt_active,
+        ))
+
+        # R6: Discount depth excessive
+        disc_active = disc_d is not None and fleet_disc > 0 and disc_d > fleet_disc + 8
+        disc_excess_kes = (disc_d - fleet_disc) / 100 * l28d * 4 if disc_active and l28d else None
+        rules.append((
+            "discount_heavy",
+            f"Excessive discounting: {disc_d:.1f}%% depth (fleet {fleet_disc:.1f}%%)" if disc_active else None,
+            (f"Discount depth {disc_d:.1f}%% — {round(disc_d-fleet_disc,1)}pp above fleet average. "
+             f"Review markdowns and cashier authorisation levels.") if disc_active else None,
+            "medium", round(disc_excess_kes, 0) if disc_excess_kes else None,
+            "Store Manager", disc_active,
+        ))
+
+        # R7: Dead stock critical
+        dead_hi = dead_pct > 30
+        dead_md = 15 < dead_pct <= 30
+        dead_kes_trapped = dead_soh * 800 if (dead_hi or dead_md) else None  # rough cost estimate
+        if dead_hi:
+            rules.append((
+                "dead_stock_critical",
+                f"Dead stock crisis: {dead_pct:.0f}%% of SOH not sold in 90+ days",
+                f"{dead_soh:,} units ({dead_pct:.0f}%% of SOH) with no sale in 90 days. Cash trapped in stale stock.",
+                "high", dead_kes_trapped, "Area Manager", True,
+            ))
+        else:
+            rules.append(("dead_stock_critical", None, None, None, None, None, False))
+        if dead_md:
+            rules.append((
+                "dead_stock_elevated",
+                f"Dead stock elevated: {dead_pct:.0f}%% of SOH aged >90 days",
+                f"{dead_soh:,} units ({dead_pct:.0f}%% SOH) with no recent sale. Consider IBT or clearance.",
+                "medium", dead_kes_trapped, "Store Manager", True,
+            ))
+        else:
+            rules.append(("dead_stock_elevated", None, None, None, None, None, False))
+
+        # R8: Run-rate structural decline
+        rr_active = rr_gap is not None and rr_gap <= -15
+        rules.append((
+            "run_rate_declining",
+            f"Run-rate declining {rr_gap:+.1f}%% vs prior quarter" if rr_active else None,
+            (f"T3M KES {t3m:,.0f} vs prior T3M KES {t3m_prev:,.0f} — "
+             f"{rr_gap:+.1f}%%. Sustained underperformance beyond a single month.") if rr_active else None,
+            "high", abs(t3m - t3m_prev) if rr_active else None, "Area Manager", rr_active,
+        ))
+
+        # R9: Unknown category data quality
+        unk_active = unk > 15
+        rules.append((
+            "unknown_category",
+            f"Data quality: {unk:.0f}%% of sales have no product category" if unk_active else None,
+            f"{unk:.0f}%% of L28D sale lines have no product_type. Reports and replenishment signals are unreliable." if unk_active else None,
+            "low", None, "Merchandising", unk_active,
+        ))
+
+        # Apply rules: upsert open issues / auto-close resolved ones
+        for rule_key, title, body, severity, kes_impact, owner_role, active in rules:
+            try:
+                existing = _db_exec(
+                    """SELECT id, status FROM retail_desk_issues
+                       WHERE store = %s AND rule_key = %s
+                         AND opened_at >= NOW() - INTERVAL '30 days'
+                       ORDER BY opened_at DESC LIMIT 1""",
+                    (store, rule_key), fetch=True,
+                )
+                existing_open = next((r for r in (existing or []) if r.get("status") == "open"), None)
+                if active and not existing_open and title:
+                    _db_exec(
+                        """INSERT INTO retail_desk_issues
+                               (store, title, body, source, severity, gap_kes, gap_pct,
+                                week_behind, rule_key, kes_impact, owner_role)
+                           VALUES (%s,%s,%s,'auto',%s,%s,%s,%s,%s,%s,%s)""",
+                        (store, title, body, severity, gap_kes, gap_pct,
+                         weeks_b, rule_key, kes_impact, owner_role),
+                        fetch=False,
+                    )
+                    log.info("Issue created: %s / %s", store, rule_key)
+                elif not active and existing_open:
+                    # Auto-resolve — metric has normalised
+                    _db_exec(
+                        """UPDATE retail_desk_issues
+                           SET status='closed', closed_at=NOW(), auto_resolved=TRUE,
+                               body = body || E'\n\n[Auto-resolved: metric normalised]'
+                           WHERE id = %s""",
+                        (existing_open["id"],), fetch=False,
+                    )
+                    log.info("Auto-resolved issue: %s / %s", store, rule_key)
+            except Exception as e:
+                log.warning("Issue rule error %s/%s: %s", store, rule_key, e)
 
 
 def _build_store_path_data():
@@ -1089,60 +1537,105 @@ def register_retail_desk_routes(app, api_pg_module):
     @app.get("/api/retail-desk/overview")
     async def retail_desk_overview(request: Request):
         """
-        All-stores snapshot: path status, gap KES/%, trend, open issues count.
-        Runs auto-flagging and returns a flash summary for the top-level desk view.
+        All-stores snapshot: composite 4-bucket status, gap KES/%, trend, issues count.
+        Runs deterministic rule scan and returns exception queues + fleet coaching.
         """
         stores_data = _get_store_t12m_and_mtd_raw()
         path_data   = _build_store_path_data()
+        bench       = _get_network_benchmarks()
 
-        # Auto-flag consecutive-weeks issues (lightweight — uses cached week calcs)
+        # Run deterministic rule scan (throttled / cached internally)
         try:
-            _auto_flag_issues(stores_data, path_data)
+            await asyncio.to_thread(_deterministic_scan_all, stores_data, path_data, bench)
         except Exception as e:
-            log.warning("auto_flag_issues error: %s", e)
+            log.warning("deterministic_scan error: %s", e)
 
-        # Open issues count per store
+        # Open issues + KES at stake per store
         all_open = _db_exec(
-            "SELECT store, COUNT(*) AS n FROM retail_desk_issues WHERE status='open' GROUP BY store",
+            """SELECT store, COUNT(*) AS n,
+                      COALESCE(SUM(kes_impact) FILTER (WHERE kes_impact IS NOT NULL), 0) AS total_kes
+               FROM retail_desk_issues WHERE status='open' GROUP BY store""",
             fetch=True
         ) or []
-        open_by_store = {r["store"]: int(r["n"]) for r in all_open}
+        open_by_store = {r["store"]: {"n": int(r["n"]), "kes": float(r["total_kes"] or 0)}
+                         for r in all_open}
+
+        # Get top open issue description per store (for exception queue rows)
+        top_issues = _db_exec(
+            """SELECT DISTINCT ON (store) store, title, severity, rule_key, kes_impact, owner_role
+               FROM retail_desk_issues
+               WHERE status = 'open'
+               ORDER BY store, severity DESC, kes_impact DESC NULLS LAST, opened_at DESC""",
+            fetch=True
+        ) or []
+        top_issue_by_store = {r["store"]: dict(r) for r in top_issues}
 
         cards = []
         for s in stores_data:
-            pd = path_data.get(s["store"], {})
-            l28  = s["l28d_net"]
-            p28  = s["prev28d_net"]
-            mom  = round((l28 - p28) / p28 * 100, 1) if p28 else None
+            store   = s["store"]
+            pd_s    = path_data.get(store, {})
+            l28     = s["l28d_net"]
+            p28     = s["prev28d_net"]
+            t3m     = s.get("t3m_net", 0)
+            t3m_p   = s.get("t3m_prev_net", 0)
+            mom_pct = round((l28 - p28) / p28 * 100, 1) if p28 else None
+            rr_gap  = round((t3m - t3m_p) / t3m_p * 100, 1) if t3m_p else None
+            weeks_b = _weeks_behind_count(store)
+            gap_pct = pd_s.get("gap_pct", 0)
+            gap_kes = pd_s.get("gap_kes", 0)
+            c_status = _composite_status(gap_pct, mom_pct, rr_gap, weeks_b)
+            oi      = open_by_store.get(store, {"n": 0, "kes": 0})
+            ti      = top_issue_by_store.get(store)
             cards.append({
-                "store":            s["store"],
+                "store":            store,
                 "country":          s["country"],
                 "t12m_net":         s["t12m_net"],
                 "mtd_net":          s["mtd_net"],
-                "mtd_req":          pd.get("mtd_req", 0),
-                "gap_kes":          pd.get("gap_kes", 0),
-                "gap_pct":          pd.get("gap_pct", 0),
-                "status":           pd.get("status", "unknown"),
-                "share_pct":        pd.get("share_pct", 0),
-                "mom_pct":          mom,
-                "open_issues":      open_by_store.get(s["store"], 0),
-                "monthly_req":      pd.get("monthly_req", 0),
+                "l28d_net":         l28,
+                "prev28d_net":      p28,
+                "mtd_req":          pd_s.get("mtd_req", 0),
+                "gap_kes":          gap_kes,
+                "gap_pct":          gap_pct,
+                "status":           c_status,
+                "path_status":      pd_s.get("status", "unknown"),
+                "share_pct":        pd_s.get("share_pct", 0),
+                "mom_pct":          mom_pct,
+                "run_rate_gap_pct": rr_gap,
+                "weeks_behind":     weeks_b,
+                "open_issues":      oi["n"],
+                "open_issues_kes":  oi["kes"],
+                "monthly_req":      pd_s.get("monthly_req", 0),
+                "top_issue":        ti,
             })
 
-        # Sort: behind first, then at_risk, then ahead — within each group by gap_kes
-        STATUS_ORDER = {"behind": 0, "at_risk": 1, "ahead": 2, "unknown": 3}
-        cards.sort(key=lambda c: (STATUS_ORDER.get(c["status"], 3), c["gap_kes"]))
+        # Sort: act_now first (by KES impact), then watch, on_track, outperforming
+        STATUS_ORDER = {"act_now": 0, "watch": 1, "on_track": 2, "outperforming": 3}
+        cards.sort(key=lambda c: (STATUS_ORDER.get(c["status"], 2), c["gap_kes"]))
 
         # Fleet summary
-        total_stores   = len(cards)
-        behind_count   = sum(1 for c in cards if c["status"] == "behind")
-        at_risk_count  = sum(1 for c in cards if c["status"] == "at_risk")
-        ahead_count    = sum(1 for c in cards if c["status"] == "ahead")
-        total_gap_kes  = sum(c["gap_kes"] for c in cards)
-        total_mtd      = sum(c["mtd_net"] for c in cards)
-        total_mtd_req  = sum(c["mtd_req"] for c in cards)
-        total_issues   = sum(c["open_issues"] for c in cards)
-        total_gap_pct  = round(total_gap_kes / total_mtd_req * 100, 1) if total_mtd_req else 0
+        total_stores    = len(cards)
+        act_now_count   = sum(1 for c in cards if c["status"] == "act_now")
+        watch_count     = sum(1 for c in cards if c["status"] == "watch")
+        on_track_count  = sum(1 for c in cards if c["status"] == "on_track")
+        outperf_count   = sum(1 for c in cards if c["status"] == "outperforming")
+        total_gap_kes   = sum(c["gap_kes"] for c in cards)
+        total_mtd       = sum(c["mtd_net"] for c in cards)
+        total_mtd_req   = sum(c["mtd_req"] for c in cards)
+        total_issues    = sum(c["open_issues"] for c in cards)
+        total_issues_kes= sum(c["open_issues_kes"] for c in cards)
+        total_gap_pct   = round(total_gap_kes / total_mtd_req * 100, 1) if total_mtd_req else 0
+
+        # Exception queues — pre-built for the UI
+        act_now_queue = [
+            c for c in cards if c["status"] == "act_now"
+        ]
+        watch_queue = [
+            c for c in cards if c["status"] == "watch"
+        ]
+        wins_queue = sorted(
+            [c for c in cards if c["status"] == "outperforming"],
+            key=lambda c: c["gap_pct"], reverse=True
+        )
 
         # Fleet-level AI intelligence (cached daily per desk, scope "fleet_overview")
         import psycopg2 as _pg2
@@ -1154,10 +1647,11 @@ def register_retail_desk_routes(app, api_pg_module):
                 api_key = os.environ.get("ANTHROPIC_API_KEY", "")
                 fleet_coaching = _run_fleet_coaching(api_key, cards, {
                     "total_stores": total_stores,
-                    "behind": behind_count, "at_risk": at_risk_count, "ahead": ahead_count,
+                    "act_now": act_now_count, "watch": watch_count,
+                    "on_track": on_track_count, "outperforming": outperf_count,
                     "total_gap_kes": total_gap_kes, "total_gap_pct": total_gap_pct,
                     "total_mtd": total_mtd, "total_mtd_req": total_mtd_req,
-                    "open_issues": total_issues,
+                    "open_issues": total_issues, "open_issues_kes": total_issues_kes,
                 }, _conn)
                 if fleet_coaching and (fleet_coaching.get("note") or fleet_coaching.get("structured")):
                     du.save_coaching(_conn, "retail", fleet_coaching.get("note", ""),
@@ -1171,18 +1665,30 @@ def register_retail_desk_routes(app, api_pg_module):
 
         return JSONResponse({
             "stores":        cards,
+            "exception_queues": {
+                "act_now": act_now_queue,
+                "watch":   watch_queue,
+                "wins":    wins_queue,
+            },
             "fleet_summary": {
-                "total_stores":  total_stores,
-                "ahead":         ahead_count,
-                "at_risk":       at_risk_count,
-                "behind":        behind_count,
-                "total_gap_kes": round(total_gap_kes, 0),
-                "total_mtd":     round(total_mtd, 0),
-                "total_mtd_req": round(total_mtd_req, 0),
-                "total_gap_pct": total_gap_pct,
-                "open_issues":   total_issues,
+                "total_stores":     total_stores,
+                "act_now":          act_now_count,
+                "watch":            watch_count,
+                "on_track":         on_track_count,
+                "outperforming":    outperf_count,
+                "total_gap_kes":    round(total_gap_kes, 0),
+                "total_mtd":        round(total_mtd, 0),
+                "total_mtd_req":    round(total_mtd_req, 0),
+                "total_gap_pct":    total_gap_pct,
+                "open_issues":      total_issues,
+                "open_issues_kes":  round(total_issues_kes, 0),
             },
             "fleet_coaching": fleet_coaching,
+            "benchmarks": {
+                "avg_basket":         bench.get("avg_basket", 0),
+                "avg_disc_depth_pct": bench.get("avg_disc_depth_pct", 11.0),
+                "avg_upt":            bench.get("avg_upt", 2.2),
+            },
         })
 
     @app.get("/api/retail-desk/store/{store:path}")
@@ -1437,5 +1943,108 @@ def register_retail_desk_routes(app, api_pg_module):
                WHERE id=%s AND status='open'""",
             (user_email, note, note, issue_id),
             fetch=False
+        )
+        return JSONResponse({"ok": True})
+
+    @app.patch("/api/retail-desk/issues/{issue_id}/status")
+    async def retail_desk_update_issue_status(issue_id: int, request: Request):
+        """Acknowledge or move an issue to in_progress."""
+        body = await request.json()
+        new_status = body.get("status", "")
+        if new_status not in ("open", "acknowledged", "in_progress", "closed"):
+            raise HTTPException(status_code=400, detail="status must be open|acknowledged|in_progress|closed")
+        user_email = getattr(request.state, "user_email", None)
+        extra_set = ""
+        if new_status == "closed":
+            extra_set = ", closed_at = NOW(), closed_by = %s"
+            params = (new_status, user_email, issue_id)
+        else:
+            params = (new_status, issue_id)
+        _db_exec(
+            f"UPDATE retail_desk_issues SET status = %s {extra_set} WHERE id = %s",
+            params, fetch=False,
+        )
+        return JSONResponse({"ok": True})
+
+    @app.get("/api/retail-desk/actions")
+    async def retail_desk_actions_list(
+        request: Request,
+        store: str = None,
+        status: str = None,
+        scope: str = "active",  # active | overdue | all
+    ):
+        """List actions queue — overdue surfaced first, then by due date."""
+        parts = ["1=1"]
+        params = []
+        if store:
+            parts.append("store = %s"); params.append(store)
+        if status:
+            parts.append("status = %s"); params.append(status)
+        elif scope == "active":
+            parts.append("status IN ('open','in_progress')")
+        elif scope == "overdue":
+            parts.append("status IN ('open','in_progress') AND due_date < CURRENT_DATE")
+        where = "WHERE " + " AND ".join(parts)
+        rows = _db_exec(
+            f"""SELECT id, store, action_text, owner, due_date::text, status,
+                       expected_kes, source, issue_id,
+                       created_at::date::text AS created_date,
+                       closed_at::date::text AS closed_date, outcome,
+                       CASE WHEN due_date < CURRENT_DATE AND status IN ('open','in_progress')
+                            THEN TRUE ELSE FALSE END AS overdue
+                FROM retail_desk_actions
+                {where}
+                ORDER BY
+                    CASE WHEN due_date < CURRENT_DATE AND status IN ('open','in_progress') THEN 0 ELSE 1 END,
+                    due_date ASC NULLS LAST, created_at DESC
+                LIMIT 200""",
+            params or None, fetch=True,
+        ) or []
+        return JSONResponse({"actions": [dict(r) for r in rows], "total": len(rows)})
+
+    @app.post("/api/retail-desk/actions")
+    async def retail_desk_create_action(request: Request):
+        """Persist an action from an AI analysis or manual entry."""
+        body = await request.json()
+        store       = (body.get("store") or "").strip()
+        action_text = (body.get("action_text") or body.get("action") or "").strip()
+        if not store or not action_text:
+            raise HTTPException(status_code=400, detail="store and action_text are required")
+        owner        = (body.get("owner") or "").strip() or None
+        due_date_str = (body.get("due_date") or "").strip() or None
+        expected_kes = body.get("expected_kes") or body.get("kes_impact") or None
+        source       = (body.get("source") or "manual").strip()
+        issue_id     = body.get("issue_id") or None
+        rows = _db_exec(
+            """INSERT INTO retail_desk_actions
+                   (store, action_text, owner, due_date, expected_kes, source, issue_id)
+               VALUES (%s,%s,%s,%s::date,%s,%s,%s)
+               RETURNING id""",
+            (store, action_text, owner, due_date_str, expected_kes, source, issue_id),
+            fetch=True,
+        )
+        return JSONResponse({"ok": True, "id": rows[0]["id"] if rows else None}, status_code=201)
+
+    @app.patch("/api/retail-desk/actions/{action_id}")
+    async def retail_desk_update_action(action_id: int, request: Request):
+        """Update action status / outcome."""
+        body = await request.json()
+        new_status = body.get("status")
+        outcome    = body.get("outcome")
+        user_email = getattr(request.state, "user_email", None)
+        if new_status and new_status not in ("open", "in_progress", "done", "deferred"):
+            raise HTTPException(status_code=400, detail="invalid status")
+        sets, params = [], []
+        if new_status:
+            sets.append("status = %s"); params.append(new_status)
+        if outcome is not None:
+            sets.append("outcome = %s"); params.append(outcome)
+        if new_status == "done":
+            sets.append("closed_at = NOW()"); sets.append("closed_by = %s"); params.append(user_email)
+        sets.append("updated_at = NOW()")
+        params.append(action_id)
+        _db_exec(
+            f"UPDATE retail_desk_actions SET {', '.join(sets)} WHERE id = %s",
+            params, fetch=False,
         )
         return JSONResponse({"ok": True})
