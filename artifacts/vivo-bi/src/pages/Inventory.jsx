@@ -956,7 +956,7 @@ const Inventory = ({ onSeeAgedStock }) => {
               testId="inv-kpi-units"
               accent
               label="Total Available Units"
-              sub={filtersActive ? "Filtered · stores + warehouse + online (pipeline excl.)" : "Stores + warehouse + online (pipeline excl.)"}
+              sub={`Stores ${fmtNum(kpiStore)} · Warehouse ${fmtNum(kpiWarehouse)} · Online ${fmtNum(kpiOnline)}${filtersActive ? " (filtered)" : ""}`}
               value={fmtNum(kpiTotal)}
               icon={Package}
               showDelta={false}
@@ -1013,11 +1013,12 @@ const Inventory = ({ onSeeAgedStock }) => {
               // WOC = (Total Units Available (Warehouse + Stores + Online) / Units Sold Previous Month) × 4.3
               const unitsPrevMonth = filteredWeeksOfCover.reduce((s, r) => s + (r.units_prev_month || 0), 0);
               const woc = unitsPrevMonth > 0 ? (kpiTotal / unitsPrevMonth) * 4.3 : null;
+              const wocBreakdown = woc == null ? "" : ` · ${fmtNum(kpiTotal)} avail ÷ ${fmtNum(unitsPrevMonth)} prev-month`;
               const sub = woc == null
                 ? "Not enough sales data for previous month"
-                : woc < 2 ? "Undercover — stockout risk, restock"
-                : woc <= 4 ? "Low cover — monitor, plan re-order"
-                : "Healthy cover (ideal ~12 weeks)";
+                : woc < 2 ? `Undercover — stockout risk${wocBreakdown}`
+                : woc <= 4 ? `Low cover — monitor${wocBreakdown}`
+                : `Healthy cover${wocBreakdown}`;
               return (
                 <KPICard
                   testId="inv-kpi-weeks-of-cover"
