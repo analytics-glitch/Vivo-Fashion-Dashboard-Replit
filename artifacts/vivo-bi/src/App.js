@@ -51,6 +51,7 @@ const SupplyChainDesk  = React.lazy(() => import("@/pages/SupplyChainDesk"));
 const ProductionDesk   = React.lazy(() => import("@/pages/ProductionDesk"));
 const TheChair         = React.lazy(() => import("@/pages/TheChair"));
 const PartnerBrandsReport = React.lazy(() => import("@/pages/PartnerBrandsReport"));
+const OrderExplorer = React.lazy(() => import("@/pages/OrderExplorer"));
 const Login = React.lazy(() => import("@/pages/Login"));
 const AuthCallback = React.lazy(() => import("@/pages/AuthCallback"));
 
@@ -205,6 +206,7 @@ function App() {
                 <Route path="/crm" element={<ExternalRedirect to="/crm/" />} />
                 <Route path="/social" element={<ExternalRedirect to="/crm/inbox" />} />
                 <Route path="/exports" element={<ProtectedShell pageId="exports"><Exports /></ProtectedShell>} />
+                <Route path="/order-explorer" element={<ProtectedShell pageId="order-explorer"><OrderExplorer /></ProtectedShell>} />
                 <Route path="/customers" element={<ProtectedShell anyOfPageIds={["customers", "customer-details", "crm"]}><CustomersHub /></ProtectedShell>} />
                 <Route path="/customer-details" element={<Navigate to="/customers?tab=details" replace />} />
                 <Route path="/marketing" element={<ProtectedShell pageId="marketing"><Marketing /></ProtectedShell>} />

@@ -23,15 +23,15 @@ const STORE_MANAGER = ["store-flow", "locations", "footfall", "replenishments", 
 // "finance" (the Finance Reports Suite) is a leadership + admin surface, so it
 // lives in LEADERSHIP (ADMIN spreads LEADERSHIP). The server /api/finance gate
 // independently restricts the underlying API to leadership + admin.
-const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair"])];
+const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair"])];
 // SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
 // Finance Reports Suite. The server /api/finance gate also excludes SMT.
 const SMT = LEADERSHIP.filter((p) => p !== "finance" && p !== "margin");
 const PRODUCTION = ["production", "production-report", "style-tracker", "pd-flow", "fabric", "sops"];
 const FABRIC_WAREHOUSE = ["fabric", "inventory", "sops"];
 const FABRIC_QUALITY_SUPERVISOR = ["fabric", "sops"];
-const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "footfall", "sops"];
-const MARKETING = ["marketing", "social", "crm", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask"];
+const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "order-explorer", "footfall", "sops"];
+const MARKETING = ["marketing", "social", "crm", "order-explorer", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask"];
 const HR = ["hr", "sops", "rota"];
 // Employee self-service (auto-approved Google sign-ups): NO BI pages — their
 // only surface is the Salary Advance form in the HR app (/hr/salary-advance).

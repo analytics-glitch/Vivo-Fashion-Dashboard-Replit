@@ -687,7 +687,7 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "sops"],
@@ -705,8 +705,8 @@ DEFAULT_ROLE_PAGES = {
     # Fabric Quality Supervisor — fabric dashboard only (QC approvals + delivery signoff).
     # Carries no extra BI page grants beyond the fabric surface by design.
     "fabric_quality_supervisor": ["fabric", "sops"],
-    "customer_service": ["customers", "customer-details", "crm", "footfall", "sops"],
-    "marketing": ["marketing", "social", "crm", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask"],
+    "customer_service": ["customers", "customer-details", "crm", "order-explorer", "footfall", "sops"],
+    "marketing": ["marketing", "social", "crm", "order-explorer", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask"],
     "hr": ["hr", "sops", "rota"],
     # Employee self-service (Google auto-approved sign-ups): NO BI pages at all.
     # Their only surface is the Salary Advance form inside the HR app
@@ -1286,6 +1286,13 @@ async def clerk_auth_gate(request: Request, call_next):
         "customer_service", "marketing", "leadership", "smt", "admin"
     ) and not _is_crm_admin_user(user):
         return JSONResponse({"detail": "CRM access requires a customer service, marketing, leadership or admin role"}, status_code=403)
+
+    # Order Explorer (/api/orders/*) — same audience as CRM: customer service,
+    # marketing, leadership, smt, admin, and CRM-admin allowlisted accounts.
+    if path.startswith("/api/orders") and user.get("role") not in (
+        "customer_service", "marketing", "leadership", "smt", "admin"
+    ) and not _is_crm_admin_user(user):
+        return JSONResponse({"detail": "Order Explorer access requires a customer service, marketing, leadership or admin role"}, status_code=403)
 
     # Social (Facebook Page) management is a marketing action: publishing offers
     # and replying to customers. Marketing + leadership + admin only.
@@ -5877,6 +5884,186 @@ def get_customer_products(customer_id: str = Query(default="")):
         ORDER BY units_bought DESC
         LIMIT 10
     """)
+
+# ── Order Explorer endpoints ───────────────────────────────────────────────────
+# Three thin endpoints that power the /order-explorer drill-around page:
+#   1. /orders/customer/{id} — full line-item history for one customer
+#   2. /orders/product/buyers — ranked buyer list for a style (+ PII reveal)
+#   3. /orders/product/detail — style attributes + per-store SOH
+# All apply BASE_FILTERS + the global date/country/channel params.
+# Access: same gate as CRM (crm/social paths in clerk_auth_gate check
+# allowed_pages which now includes "order-explorer" for those roles).
+
+@app.get("/api/orders/customer/{customer_id:path}")
+def get_orders_for_customer(
+    customer_id: str,
+    request:     Request,
+    date_from:   str = Query(default="2020-01-01"),
+    date_to:     str = Query(default=str(date.today())),
+    country:     str = Query(default=None),
+    channel:     str = Query(default=None),
+):
+    """Full line-item order history for one identified customer.
+    Returns every sale/order/return row filtered by the global date+country+channel.
+    Fields: order_id, sale_date, pos_location_name, country, sku, style_name,
+            colour, size, quantity, gross_sales_kes, net_sales_kes, sale_kind.
+    Sorted by date desc, order_id asc. Capped at 1000 rows."""
+    cid = (customer_id or "").replace("'", "").strip()
+    if not cid:
+        return []
+    where = build_filters(date_from, date_to, country, channel,
+        extra="s.sale_kind IN ('sale','order','return') AND s.customer_id = '" + cid + "'")
+    return run_query("""
+        SELECT
+            s.order_id,
+            COALESCE(NULLIF(s.order_name,''), s.order_id) AS order_name,
+            s.sale_date,
+            s.pos_location_name,
+            s.country,
+            COALESCE(s.variant_sku, '') AS sku,
+            COALESCE(p.style_name, s.product_title, '') AS style_name,
+            COALESCE(p.color_print, '') AS colour,
+            COALESCE(p.size, '') AS size,
+            s.ordered_item_quantity AS quantity,
+            ROUND(COALESCE(s.product_price_kes::numeric, 0), 0) AS unit_price_kes,
+            ROUND(COALESCE(s.total_sales_kes::numeric, 0), 0) AS gross_sales_kes,
+            ROUND(COALESCE(s.total_sales_kes::numeric, 0)
+                  - COALESCE(s.discounts_kes::numeric, 0), 0) AS net_sales_kes,
+            s.sale_kind
+        FROM all_sales s
+        LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
+        WHERE """ + where + """
+        ORDER BY s.sale_date DESC, s.order_id
+        LIMIT 1000
+    """, date_to=date_to)
+
+
+@app.get("/api/orders/product/buyers")
+def get_product_buyers(
+    request:    Request,
+    style_name: str  = Query(default=""),
+    sku:        str  = Query(default=None),
+    date_from:  str  = Query(default="2020-01-01"),
+    date_to:    str  = Query(default=str(date.today())),
+    country:    str  = Query(default=None),
+    channel:    str  = Query(default=None),
+    reveal:     bool = Query(default=False),
+):
+    """Ranked list of identified customers who bought a given style.
+    Accepts style_name (primary) or sku (fallback). Returns customer_id,
+    name, masked phone/email (unmask via X-PII-Reveal-Token), total_units,
+    total_spend, total_orders, last_order_date. Capped at 500 rows."""
+    sn = (style_name or "").replace("'", "").strip()
+    sk = (sku or "").replace("'", "").strip()
+    if not sn and not sk:
+        return []
+    # Build the style filter — prefer style_name (JOIN), fall back to SKU
+    if sn:
+        style_cond = "LOWER(p.style_name) = LOWER('" + sn + "')"
+    else:
+        style_cond = "s.variant_sku = '" + sk + "'"
+    where = build_filters(date_from, date_to, country, channel,
+        extra=("s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL "
+               "AND s.customer_id NOT IN ('None','null','') AND "
+               + _not_walkin_pseudo_sql() + " AND " + style_cond))
+    rows = run_query("""
+        SELECT
+            s.customer_id,
+            TRIM(CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,''))) AS customer_name,
+            COALESCE(c.phone, '') AS phone,
+            COALESCE(c.email, '') AS email,
+            COALESCE(c.city, '') AS city,
+            COALESCE(lm.tier, '') AS loyalty_tier,
+            SUM(s.ordered_item_quantity) AS total_units,
+            ROUND(SUM(s.total_sales_kes::numeric
+                      - COALESCE(s.discounts_kes::numeric, 0)), 0) AS total_spend,
+            COUNT(DISTINCT s.order_id) AS total_orders,
+            MAX(s.sale_date) AS last_order_date,
+            MIN(s.sale_date) AS first_order_date
+        FROM all_sales s
+        LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
+        LEFT JOIN all_customers c ON s.customer_id = c.customer_id
+        LEFT JOIN crm_loyalty_member lm ON lm.phone = c.phone
+        WHERE """ + where + """
+        GROUP BY s.customer_id, c.first_name, c.last_name, c.phone, c.email, c.city, lm.tier
+        ORDER BY total_spend DESC
+        LIMIT 500
+    """, date_to=date_to)
+    return mask_pii_rows(rows, request)
+
+
+@app.get("/api/orders/product/detail")
+def get_product_detail(
+    style_name: str = Query(default=""),
+    sku:        str = Query(default=None),
+):
+    """Style attributes + current per-store SOH for a product.
+    Returns brand, collection, category, subcategory, colours, sizes,
+    full_price (modal SKU price), total SOH by store, and the first
+    representative SKU (to resolve image URLs client-side).
+
+    Inventory joins on SKU (never style_name) per the triad-joins-sku-only
+    invariant — ~16.7k all_inventory rows have blank style_name."""
+    sn = (style_name or "").replace("'", "").strip()
+    sk = (sku or "").replace("'", "").strip()
+    if not sn and not sk:
+        return {}
+    if sn:
+        style_cond = "LOWER(p.style_name) = LOWER('" + sn + "')"
+    else:
+        style_cond = "p.sku = '" + sk + "'"
+    rows = run_query("""
+        WITH catalog AS (
+            SELECT
+                MAX(p.brand) AS brand,
+                MAX(p.collection) AS collection,
+                MAX(p.category) AS category,
+                MAX(p.product_type) AS subcategory,
+                MIN(p.sku) AS representative_sku,
+                ARRAY_AGG(DISTINCT COALESCE(p.color_print,'') ORDER BY COALESCE(p.color_print,''))
+                    FILTER (WHERE p.color_print IS NOT NULL AND p.color_print <> '') AS colours,
+                ARRAY_AGG(DISTINCT COALESCE(p.size,'') ORDER BY COALESCE(p.size,''))
+                    FILTER (WHERE p.size IS NOT NULL AND p.size <> '') AS sizes,
+                COALESCE(MAX(p.style_name), '""" + sn + """') AS style_name
+            FROM all_products_clean p
+            WHERE """ + style_cond + """
+        ),
+        style_skus AS (
+            SELECT p.sku FROM all_products_clean p WHERE """ + style_cond + """
+        ),
+        recent_prices AS (
+            SELECT s.variant_sku,
+                ROUND(CASE WHEN SUM(s.ordered_item_quantity) > 0
+                      THEN SUM(s.total_sales_kes::numeric) / SUM(s.ordered_item_quantity)
+                      ELSE 0 END, 0) AS price_each
+            FROM all_sales s
+            WHERE s.variant_sku IN (SELECT sku FROM style_skus)
+              AND s.sale_kind IN ('sale','order')
+              AND s.sale_date >= (CURRENT_DATE - INTERVAL '90 days')::text
+            GROUP BY s.variant_sku
+        ),
+        soh AS (
+            SELECT i.pos_location_name, i.country,
+                SUM(i.available) AS stock
+            FROM all_inventory i
+            WHERE i.sku IN (SELECT sku FROM style_skus)
+            GROUP BY i.pos_location_name, i.country
+            ORDER BY stock DESC
+        )
+        SELECT
+            c.style_name, c.brand, c.collection, c.category, c.subcategory,
+            c.representative_sku, c.colours, c.sizes,
+            COALESCE((SELECT PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY rp.price_each)
+                      FROM recent_prices rp WHERE rp.price_each > 0), 0) AS modal_price,
+            (SELECT JSONB_AGG(JSONB_BUILD_OBJECT(
+                'store', s.pos_location_name, 'country', s.country, 'stock', s.stock
+             ) ORDER BY s.stock DESC)
+             FROM soh s WHERE s.stock > 0) AS soh_by_store,
+            (SELECT SUM(s.stock) FROM soh s) AS total_soh
+        FROM catalog c
+    """, ttl=300)
+    return rows[0] if rows else {}
+
 
 @app.get("/api/customer-frequency")
 def get_customer_frequency(
