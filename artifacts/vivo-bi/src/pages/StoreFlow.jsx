@@ -16,7 +16,7 @@ const WH_OWNERS = {
   "Digo Road": "Emmah",
   "Moi Avenue": "Emmah",
   "City Mall": "Teddy",
-  "The Hub": "Christabel",
+  "Hub": "Christabel",
   "Kileleshwa": "Christabel",
   "Greenspan": "Mathew",
   "Signature": "Emmah",
@@ -32,15 +32,15 @@ const WH_OWNERS = {
   "Oasis": "Christabel",
   "Runda": "Elvin",
   "Sarit": "Teddy",
-  "Imara": "Teddy",
+  "Imaara": "Teddy",
   "Meru": "Teddy",
   "Yaya": "Emmah",
-  "Shopzetu": "Elvin",
+  "Shop Zetu": "Elvin",
 };
 const WH_OWNER_KEYS = Object.keys(WH_OWNERS).sort((a, b) => b.length - a.length);
 function whOwner(posLocation) {
   if (!posLocation) return "—";
-  const loc = posLocation.toLowerCase();
+  const loc = posLocation.toLowerCase().replace(/-/g, " ").replace(/\s+/g, " ");
   for (const key of WH_OWNER_KEYS) {
     if (loc.includes(key.toLowerCase())) return WH_OWNERS[key];
   }
