@@ -10715,7 +10715,9 @@ def analytics_weeks_of_cover(
         ),
         stock AS (
             SELECT p.product_type AS subcategory, p.style_name,
-                SUM(i.available) AS available
+                SUM(i.available) AS available,
+                -- Odoo product status for the Active/Retired toggle
+                MAX(p.status) AS odoo_status
             FROM all_inventory i
             LEFT JOIN all_products_clean p ON i.sku = p.sku
             WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
@@ -10728,6 +10730,7 @@ def analytics_weeks_of_cover(
                 COALESCE(st.available, 0) AS available,
                 COALESCE(sa.units_28, 0) AS units_28,
                 COALESCE(sa.units_56, 0) AS units_56,
+                st.odoo_status,
                 ((COALESCE(sa.units_28, 0) * 2)
                   + GREATEST(COALESCE(sa.units_56, 0) - COALESCE(sa.units_28, 0), 0)) / 12.0
                   AS weekly_units
@@ -10742,7 +10745,9 @@ def analytics_weeks_of_cover(
             units_28 AS units_sold_28d,
             ROUND(available / NULLIF(weekly_units, 0), 1) AS weeks_of_cover,
             ROUND(weekly_units * """ + reorder_weeks + """)::int AS reorder_point,
-            (available < weekly_units * """ + reorder_weeks + """) AS at_risk
+            (available < weekly_units * """ + reorder_weeks + """) AS at_risk,
+            CASE WHEN COALESCE(odoo_status, '') = 'Retired' THEN 'Retired' ELSE 'Active' END
+                AS style_status
         FROM base
         ORDER BY available DESC
         LIMIT 2000
@@ -19899,9 +19904,12 @@ def inventory_style_counts(
     country:   str = Query(default=None),
     locations: str = Query(default=None),
 ):
-    # Active = styles sold in the last 182 days; retired = styles with stock
-    # but no sale in that window; total = the union.
-    cf_s, chf_s = _style_filters(country, locations, "s")
+    # Universe and active/retired definition aligned with Range Management:
+    # styles with current stock (available > 0, merch product types), partitioned
+    # by Odoo product status via _is_manually_retired — the same rule used by
+    # _lifecycle_tier and range_mgmt_classify.  "Sold recently = active" was
+    # wrong: styles with stock but no recent sale are still Odoo-Active, and
+    # Odoo-Retired styles that happened to sell still belong in the retired bucket.
     cf_i, _ = _style_filters(country, None, "i")
     loc_i = ""
     if locations:
@@ -19911,40 +19919,20 @@ def inventory_style_counts(
                 "'" + l.replace("'", "''") + "'" for l in locs) + ")"
     rows = run_query(
         """
-        WITH sold AS (
-            SELECT DISTINCT p.style_name
-            FROM all_sales s
-            JOIN all_products_clean p ON s.variant_sku = p.sku
-            WHERE s.sale_kind IN ('sale','order') AND s.net_quantity > 0
-              AND s.sale_date::date >= CURRENT_DATE - INTERVAL '182 days'
-              AND p.style_name IS NOT NULL AND p.style_name <> ''
-              AND """ + BASE_FILTERS + cf_s + chf_s + """
-        ),
-        instock AS (
-            SELECT DISTINCT p.style_name
-            FROM all_inventory i
-            JOIN all_products_clean p ON i.sku = p.sku
-            WHERE i.available > 0 AND p.style_name IS NOT NULL AND p.style_name <> ''""" + cf_i + loc_i + """
-        )
-        SELECT 'sold' AS src, style_name FROM sold
-        UNION ALL
-        SELECT 'instock' AS src, style_name FROM instock
-        """
+        SELECT DISTINCT p.style_name
+        FROM all_inventory i
+        JOIN all_products_clean p ON i.sku = p.sku
+        WHERE i.available > 0
+          AND p.style_name IS NOT NULL AND p.style_name <> ''
+          AND p.product_type IN (""" + MERCH_SUBCATEGORIES_SQL + """)
+        """ + cf_i + loc_i
     ) or []
-    # Compute counts in Python so the Odoo-status retirement rule is honored
-    # consistently (the normalized match can't be expressed in raw SQL equality):
-    # active = sold styles MINUS manual-retired; retired = everything in the
-    # universe that is not active (in-stock-no-sale PLUS manual-retired); the two
-    # buckets stay disjoint so active + retired == total.
-    sold, instock = set(), set()
-    for r in rows:
-        (sold if r["src"] == "sold" else instock).add(r["style_name"])
-    universe = sold | instock
-    active = {s for s in sold if not _is_manually_retired(s)}
-    retired = universe - active
+    universe = [r["style_name"] for r in rows]
+    active = sum(1 for s in universe if not _is_manually_retired(s))
+    retired = len(universe) - active
     return {
-        "active_styles": len(active),
-        "retired_styles": len(retired),
+        "active_styles": active,
+        "retired_styles": retired,
         "total_styles": len(universe),
     }
 

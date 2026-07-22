@@ -548,8 +548,15 @@ const Inventory = ({ onSeeAgedStock }) => {
   const filteredWeeksOfCover = useMemo(
     () => weeksOfCover
       .filter((r) => isMerchandise(r.subcategory))
+      // Active/Retired toggle uses Odoo status from the WOC row (style_status
+      // field), aligned with Range Management and inventory-style-counts.
+      .filter((r) => {
+        if (styleStatus === "active") return r.style_status !== "Retired";
+        if (styleStatus === "retired") return r.style_status === "Retired";
+        return true;
+      })
       .filter((r) => !filtersActive || visibleStyles.has(r.style_name)),
-    [weeksOfCover, filtersActive, visibleStyles]
+    [weeksOfCover, filtersActive, visibleStyles, styleStatus]
   );
 
   // ─── Stock aging classification ──────────────────────────────────
