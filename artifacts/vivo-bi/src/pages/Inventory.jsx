@@ -28,6 +28,7 @@ import {
   TrendDown,
   Cube,
   Gauge,
+  Globe,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -41,14 +42,18 @@ import {
 } from "recharts";
 
 // Single source of truth for the store-vs-warehouse split. A location counts as
-// "warehouse" (i.e. non-store stock) when its name matches this pattern. Used
-// both for the client-side aggregate (filtered rows) and for splitting the
-// backend inventory-summary `by_location` list. "online - shop zetu" is
-// online-fulfilment holding stock, not a retail store, so it is warehouse here.
+// "warehouse" (i.e. dispatch-ready / holding stock) when its name matches this
+// pattern. Used both for the client-side aggregate (filtered rows) and for
+// splitting the backend inventory-summary `by_location` list.
 const isWarehouseLocation = (loc) =>
-  /warehouse|wholesale|holding|staging|sale stock|online - shop zetu/.test(
+  /warehouse|wholesale|holding|staging|sale stock/.test(
     (loc || "").toLowerCase()
   );
+
+// Online fulfilment stock — Shop Zetu. Shown as its own card, separate from
+// the physical warehouse and the retail store floor.
+const isOnlineLocation = (loc) =>
+  /online - shop zetu/.test((loc || "").toLowerCase());
 
 // Production pipeline (WIP) locations — Waiting Sewing (Fabric Trimming),
 // Sewing (Sew/Stock A–E), Finishing (Finished Goods Production). Mirrors the
@@ -432,13 +437,15 @@ const Inventory = ({ onSeeAgedStock }) => {
   const storeVsWarehouse = useMemo(() => {
     let store = 0;
     let warehouse = 0;
+    let online = 0;
     let pipeline = 0;
     for (const r of filteredInv) {
       if (isPipelineLocation(r.location_name)) pipeline += r.available || 0;
+      else if (isOnlineLocation(r.location_name)) online += r.available || 0;
       else if (isWarehouseLocation(r.location_name)) warehouse += r.available || 0;
       else store += r.available || 0;
     }
-    return { store, warehouse, pipeline };
+    return { store, warehouse, online, pipeline };
   }, [filteredInv]);
 
   // Store vs Warehouse split from the backend by_location aggregate, used for
@@ -447,13 +454,15 @@ const Inventory = ({ onSeeAgedStock }) => {
   const summaryStoreWarehouse = useMemo(() => {
     let store = 0;
     let warehouse = 0;
+    let online = 0;
     let pipeline = 0;
     for (const r of summary?.by_location || []) {
       if (isPipelineLocation(r.location)) pipeline += r.units || 0;
+      else if (isOnlineLocation(r.location)) online += r.units || 0;
       else if (isWarehouseLocation(r.location)) warehouse += r.units || 0;
       else store += r.units || 0;
     }
-    return { store, warehouse, pipeline };
+    return { store, warehouse, online, pipeline };
   }, [summary]);
 
   const lowStockByStyle = useMemo(() => {
@@ -714,12 +723,14 @@ const Inventory = ({ onSeeAgedStock }) => {
   const kpiWarehouse = useSummaryKpis
     ? summaryStoreWarehouse.warehouse
     : storeVsWarehouse.warehouse;
+  const kpiOnline = useSummaryKpis
+    ? summaryStoreWarehouse.online
+    : storeVsWarehouse.online;
   const kpiPipeline = useSummaryKpis
     ? summaryStoreWarehouse.pipeline
     : storeVsWarehouse.pipeline;
-  // Total SOH = Stores + Warehouse only — the production pipeline (WIP) is
-  // NOT sellable stock and is always excluded from the headline total.
-  const kpiTotal = kpiStore + kpiWarehouse;
+  // Total SOH = Stores + Warehouse + Online — pipeline (WIP) always excluded.
+  const kpiTotal = kpiStore + kpiWarehouse + kpiOnline;
 
   // Export filename slug reflecting the active filters — makes traceability
   // obvious when sharing CSVs via email/chat.
@@ -866,12 +877,12 @@ const Inventory = ({ onSeeAgedStock }) => {
 
       {!loading && !error && summary && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-7 gap-3">
             <KPICard
               testId="inv-kpi-units"
               accent
               label="Total Available Units"
-              sub={filtersActive ? "Filtered · stores + warehouse (pipeline excl.)" : "Stores + warehouse (pipeline excl.)"}
+              sub={filtersActive ? "Filtered · stores + warehouse + online (pipeline excl.)" : "Stores + warehouse + online (pipeline excl.)"}
               value={fmtNum(kpiTotal)}
               icon={Package}
               showDelta={false}
@@ -889,11 +900,19 @@ const Inventory = ({ onSeeAgedStock }) => {
             <KPICard
               testId="inv-kpi-warehouse-stock"
               label="Stock in Warehouse"
-              sub="Warehouse, wholesale, holding, staging"
+              sub="Warehouse Finished Goods — dispatch-ready"
               value={fmtNum(kpiWarehouse)}
               icon={Cube}
               showDelta={false}
               action={{ label: "Plan distribution", to: "/ibt" }}
+            />
+            <KPICard
+              testId="inv-kpi-online-stock"
+              label="Online Stock"
+              sub="Shop Zetu fulfilment holding"
+              value={fmtNum(kpiOnline)}
+              icon={Globe}
+              showDelta={false}
             />
             <KPICard
               testId="inv-kpi-pipeline-stock"
