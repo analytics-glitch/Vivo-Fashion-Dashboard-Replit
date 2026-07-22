@@ -6534,8 +6534,18 @@ def get_orders_list(
             TRIM(COALESCE(rso.customer_first_name,'') || ' ' || COALESCE(rso.customer_last_name,'')) AS customer_name,
             rso.source_name,
             rso.shipping_city,
-            rso.shipping_country
+            rso.shipping_country,
+            agg.pos_location,
+            agg.item_count
         FROM raw_shopify_orders rso
+        LEFT JOIN LATERAL (
+            SELECT
+                MAX(s.pos_location_name) AS pos_location,
+                SUM(s.ordered_item_quantity)::int AS item_count
+            FROM all_sales s
+            WHERE s.order_id = rso.id::text
+              AND s.sale_kind IN ('sale','order')
+        ) agg ON TRUE
         WHERE {where}
         ORDER BY rso.id::bigint DESC
         LIMIT {safe_limit + 1}
@@ -6566,8 +6576,18 @@ def get_order_detail_v2(order_id: str, request: Request):
             TRIM(COALESCE(rso.customer_first_name,'') || ' ' || COALESCE(rso.customer_last_name,'')) AS customer_name,
             rso.source_name,
             rso.billing_city, rso.billing_country,
-            rso.shipping_city, rso.shipping_country
+            rso.shipping_city, rso.shipping_country,
+            agg.pos_location,
+            agg.item_count
         FROM raw_shopify_orders rso
+        LEFT JOIN LATERAL (
+            SELECT
+                MAX(s.pos_location_name) AS pos_location,
+                SUM(s.ordered_item_quantity)::int AS item_count
+            FROM all_sales s
+            WHERE s.order_id = rso.id::text
+              AND s.sale_kind IN ('sale','order')
+        ) agg ON TRUE
         WHERE rso.id = '{oid}'
         LIMIT 1
     """)

@@ -253,8 +253,10 @@ function OrdersTable({ orders, selectedId, onSelect, hasMore, nextCursor, onLoad
                 <th className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Order</th>
                 <th className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Date</th>
                 <th className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Customer</th>
+                <th className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Location</th>
                 <th className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Payment</th>
                 <th className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Fulfillment</th>
+                <th className="text-right px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Items</th>
                 <th className="text-right px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Total</th>
               </tr>
             </thead>
@@ -283,11 +285,19 @@ function OrdersTable({ orders, selectedId, onSelect, hasMore, nextCursor, onLoad
                       </p>
                       <p className="text-[10px] text-stone-400 truncate">{order.customer_email || ""}</p>
                     </td>
+                    <td className="px-3 py-2.5 max-w-[130px]">
+                      <span className="truncate block text-stone-600" title={order.pos_location || ""}>
+                        {order.pos_location || <span className="text-stone-300">—</span>}
+                      </span>
+                    </td>
                     <td className="px-3 py-2.5">
                       <PayBadge status={order.financial_status} />
                     </td>
                     <td className="px-3 py-2.5">
                       <FulfilBadge status={order.fulfillment_status} />
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-stone-700 tabular-nums">
+                      {order.item_count != null ? order.item_count : <span className="text-stone-300">—</span>}
                     </td>
                     <td className="px-3 py-2.5 text-right font-semibold text-stone-800 whitespace-nowrap">
                       {KES(order.total_price)}
