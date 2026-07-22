@@ -6466,6 +6466,178 @@ def get_orders_summary(
         "gross": 0, "discount": 0, "returns": 0, "net": 0, "net_ex_vat": 0,
     }
 
+
+@app.get("/api/orders/list")
+def get_orders_list(
+    request:            Request,
+    date_from:          str  = Query(default=None),
+    date_to:            str  = Query(default=str(date.today())),
+    financial_status:   str  = Query(default=None),
+    fulfillment_status: str  = Query(default=None),
+    search:             str  = Query(default=None),
+    limit:              int  = Query(default=50),
+    after_id:           str  = Query(default=None),
+):
+    """Paginated order list from raw_shopify_orders.
+    Keyset-paginated by Shopify order ID DESC. Returns at most 200 per page.
+    after_id = last row id for the next page cursor.
+    fulfillment_status accepts 'unfulfilled' (NULL rows) + 'fulfilled'/'partial'.
+    """
+    safe_limit = min(max(1, int(limit or 50)), 200)
+    conds = ["1=1"]
+    if date_from:
+        df = date_from.replace("'", "")
+        conds.append(f"rso.created_at::date >= '{df}'::date")
+    if date_to:
+        dt = date_to.replace("'", "")
+        conds.append(f"rso.created_at::date <= '{dt}'::date")
+    if financial_status:
+        fst = [s.strip() for s in financial_status.split(",") if s.strip()]
+        if fst:
+            quoted = ",".join(f"'{s.replace(chr(39),'')}'" for s in fst)
+            conds.append(f"rso.financial_status IN ({quoted})")
+    if fulfillment_status:
+        fult = [s.strip() for s in fulfillment_status.split(",") if s.strip()]
+        if fult:
+            clauses = []
+            for s in fult:
+                if s == "unfulfilled":
+                    clauses.append("(rso.fulfillment_status IS NULL OR rso.fulfillment_status = '')")
+                else:
+                    clauses.append(f"rso.fulfillment_status = '{s.replace(chr(39),'')}'" )
+            conds.append("(" + " OR ".join(clauses) + ")")
+    if search:
+        q = search.replace("'", "").strip()
+        conds.append(
+            f"(rso.customer_first_name ILIKE '%{q}%' OR rso.customer_last_name ILIKE '%{q}%'"
+            f" OR rso.customer_email ILIKE '%{q}%' OR rso.name ILIKE '%{q}%')"
+        )
+    if after_id:
+        try:
+            aid = str(int(after_id.strip()))
+            conds.append(f"rso.id::bigint < {aid}")
+        except (ValueError, TypeError):
+            pass
+    where = " AND ".join(conds)
+    rows = run_query(f"""
+        SELECT
+            rso.id,
+            rso.name,
+            rso.created_at,
+            rso.updated_at,
+            rso.financial_status,
+            CASE WHEN COALESCE(rso.fulfillment_status,'') = '' THEN 'unfulfilled'
+                 ELSE rso.fulfillment_status END AS fulfillment_status,
+            rso.total_price,
+            rso.customer_id,
+            rso.customer_email,
+            TRIM(COALESCE(rso.customer_first_name,'') || ' ' || COALESCE(rso.customer_last_name,'')) AS customer_name,
+            rso.source_name,
+            rso.shipping_city,
+            rso.shipping_country
+        FROM raw_shopify_orders rso
+        WHERE {where}
+        ORDER BY rso.id::bigint DESC
+        LIMIT {safe_limit + 1}
+    """, ttl=30)
+    has_more = len(rows) > safe_limit
+    items = rows[:safe_limit]
+    next_cursor = items[-1]["id"] if has_more and items else None
+    return {"orders": items, "has_more": has_more, "next_cursor": next_cursor}
+
+
+@app.get("/api/orders/detail/{order_id:path}")
+def get_order_detail_v2(order_id: str, request: Request):
+    """Full Shopify order detail: header, line items (with images),
+    customer profile, and pricing breakdown.
+    Uses raw_shopify_orders for the header/statuses and all_sales for line items."""
+    oid = (order_id or "").replace("'", "").strip()
+    if not oid:
+        raise HTTPException(status_code=404, detail="Order not found")
+    # ── header ──────────────────────────────────────────────────────────────
+    hrows = run_query(f"""
+        SELECT
+            rso.id, rso.name, rso.created_at, rso.updated_at,
+            rso.financial_status,
+            CASE WHEN COALESCE(rso.fulfillment_status,'') = '' THEN 'unfulfilled'
+                 ELSE rso.fulfillment_status END AS fulfillment_status,
+            rso.total_price,
+            rso.customer_id, rso.customer_email,
+            TRIM(COALESCE(rso.customer_first_name,'') || ' ' || COALESCE(rso.customer_last_name,'')) AS customer_name,
+            rso.source_name,
+            rso.billing_city, rso.billing_country,
+            rso.shipping_city, rso.shipping_country
+        FROM raw_shopify_orders rso
+        WHERE rso.id = '{oid}'
+        LIMIT 1
+    """)
+    if not hrows:
+        raise HTTPException(status_code=404, detail="Order not found")
+    header = hrows[0]
+    # ── line items from all_sales ────────────────────────────────────────────
+    lines = run_query(f"""
+        SELECT
+            s.variant_sku AS sku,
+            COALESCE(NULLIF(p.style_name,''), s.product_title, '') AS product_title,
+            COALESCE(p.color_print, '') AS colour,
+            COALESCE(p.size, '') AS size,
+            s.ordered_item_quantity AS quantity,
+            ROUND(COALESCE(s.product_price_kes::numeric, 0), 0) AS unit_price,
+            ROUND(COALESCE(s.total_sales_kes::numeric, 0), 0) AS line_total,
+            ROUND(COALESCE(s.discounts_kes::numeric, 0), 0) AS discount,
+            s.sale_kind,
+            CASE WHEN pi.image_512 IS NOT NULL AND pi.image_512 <> ''
+                 THEN 'data:image/png;base64,' || pi.image_512
+                 ELSE '' END AS image_url
+        FROM all_sales s
+        LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
+        LEFT JOIN LATERAL (
+            SELECT i.image_512
+            FROM product_image_map m
+            JOIN product_images i ON i.tmpl_id = m.tmpl_id
+            WHERE m.sku = s.variant_sku AND i.image_512 IS NOT NULL AND i.image_512 <> ''
+            LIMIT 1
+        ) pi ON TRUE
+        WHERE s.order_id = '{oid}'
+        ORDER BY s.sale_kind, s.variant_sku
+    """)
+    # ── customer profile ────────────────────────────────────────────────────
+    cid = (header.get("customer_id") or "").replace("'", "").strip()
+    customer = {}
+    if cid:
+        crows = run_query(f"""
+            SELECT
+                c.first_name, c.last_name, c.phone, c.email, c.city,
+                c.total_orders, c.total_spend_kes AS lifetime_value,
+                c.first_order_date, c.last_order_date,
+                CASE
+                    WHEN lm.spend_kes >= 100000 THEN 'VIP'
+                    WHEN lm.spend_kes >= 50000  THEN 'Gold'
+                    WHEN lm.spend_kes >= 20000  THEN 'Silver'
+                    WHEN lm.member_id IS NOT NULL THEN 'Bronze'
+                    ELSE NULL
+                END AS loyalty_tier
+            FROM all_customers c
+            LEFT JOIN crm_loyalty_member lm ON lm.customer_id = c.customer_id
+            WHERE c.customer_id = '{cid}'
+            LIMIT 1
+        """)
+        if crows:
+            customer = crows[0]
+    # ── pricing summary from all_sales ──────────────────────────────────────
+    prows = run_query(f"""
+        SELECT
+            ROUND(COALESCE(SUM(CASE WHEN sale_kind IN ('sale','order') THEN total_sales_kes::numeric ELSE 0 END),0),0) AS subtotal,
+            ROUND(COALESCE(SUM(CASE WHEN sale_kind IN ('sale','order') THEN discounts_kes::numeric ELSE 0 END),0),0) AS discounts,
+            ROUND(COALESCE(SUM(CASE WHEN sale_kind = 'return' THEN returns_kes::numeric ELSE 0 END),0),0) AS returns,
+            COALESCE(SUM(ordered_item_quantity) FILTER (WHERE sale_kind IN ('sale','order')),0) AS total_qty
+        FROM all_sales
+        WHERE order_id = '{oid}'
+    """)
+    pricing = prows[0] if prows else {}
+    return {"header": header, "lines": lines, "customer": customer, "pricing": pricing}
+
+
 @app.get("/api/stock-to-sales")
 def get_stock_to_sales(
     date_from: str = Query(default=str(date.today().replace(day=1))),
