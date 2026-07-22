@@ -1142,9 +1142,9 @@ const Inventory = ({ onSeeAgedStock }) => {
                     label="WOC — Active Styles"
                     sub={wocSub}
                     formula={
-                      "Active WOC = (Total Active Units Available ÷ Units Sold Last 28d) × 4.3\n" +
-                      "Numerator: store + warehouse + online units for Odoo-Active styles.\n" +
-                      "Denominator: sum of units_sold_28d across active WOC rows × 4.3 weeks/month."
+                      "WOC = (Total Units Available (Warehouse + Stores + Online) ÷ Total Units Sold Last Month) × 4.3\n" +
+                      "Numerator: active-style store + warehouse + online units (pipeline excluded).\n" +
+                      "Denominator: units_sold_28d (last 28 days ≈ 1 month) summed across active styles."
                     }
                     value={rowsLoading ? "…" : woc == null ? "—" : `${woc.toFixed(1)} wks`}
                     icon={Gauge}
