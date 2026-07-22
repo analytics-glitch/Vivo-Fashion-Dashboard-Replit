@@ -6557,11 +6557,13 @@ def get_orders_list(
             SELECT
                 s.order_id,
                 s.store_id,
-                MAX(s.sale_date)            AS sale_date,
-                MAX(s.pos_location_name)    AS pos_location,
-                SUM(s.ordered_item_quantity)::int AS item_count,
-                SUM(s.total_sales_kes)::numeric   AS total_price,
-                MAX(s.country)              AS country
+                MAX(s.sale_date)                           AS sale_date,
+                MAX(s.pos_location_name)                   AS pos_location,
+                SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_kind IN ('sale','order'))::int
+                                                           AS item_count,
+                SUM(s.total_sales_kes)::numeric            AS total_price,
+                MAX(s.country)                             AS country,
+                MAX(s.customer_id)                         AS customer_id_agg
             FROM all_sales s
             WHERE {cte_where}
             GROUP BY s.order_id, s.store_id
@@ -6576,11 +6578,14 @@ def get_orders_list(
             oa.item_count,
             oa.total_price,
             oa.country,
-            rso.customer_id,
-            rso.customer_email,
-            TRIM(COALESCE(rso.customer_first_name,'') || ' ' || COALESCE(rso.customer_last_name,''))
-                                                                AS customer_name,
-            rso.financial_status,
+            COALESCE(rso.customer_id, oa.customer_id_agg)      AS customer_id,
+            COALESCE(rso.customer_email, ac.email)              AS customer_email,
+            COALESCE(
+                NULLIF(TRIM(COALESCE(rso.customer_first_name,'') || ' ' || COALESCE(rso.customer_last_name,'')), ''),
+                NULLIF(TRIM(COALESCE(ac.first_name,'') || ' ' || COALESCE(ac.last_name,'')), '')
+            )                                                   AS customer_name,
+            COALESCE(rso.financial_status, CASE WHEN oa.store_id = 'vivofashiongroup' THEN 'paid' ELSE NULL END)
+                                                                AS financial_status,
             CASE WHEN COALESCE(rso.fulfillment_status,'') = '' THEN 'unfulfilled'
                  ELSE rso.fulfillment_status END                AS fulfillment_status,
             rso.source_name,
@@ -6589,6 +6594,8 @@ def get_orders_list(
         FROM order_agg oa
         LEFT JOIN raw_shopify_orders rso
                ON rso.id = oa.order_id AND rso.store_id = oa.store_id
+        LEFT JOIN all_customers ac
+               ON ac.customer_id = oa.customer_id_agg AND oa.customer_id_agg IS NOT NULL
         WHERE {outer_where} AND {cursor_cond}
         ORDER BY oa.sale_date DESC, oa.order_id DESC
         LIMIT {safe_limit + 1}
@@ -6639,27 +6646,31 @@ def get_order_detail_v2(order_id: str, request: Request):
         LIMIT 1
     """)
     if not hrows:
-        # Fall back: build header from all_sales (Kenya/Odoo orders)
+        # Fall back: build header from all_sales + all_customers (Kenya/Odoo orders)
         hrows = run_query(f"""
             SELECT
                 s.order_id                  AS id,
                 s.order_id                  AS name,
                 MAX(s.sale_date)::text      AS created_at,
                 NULL::text                  AS updated_at,
-                NULL::text                  AS financial_status,
+                'paid'                      AS financial_status,
                 'unfulfilled'               AS fulfillment_status,
                 SUM(s.total_sales_kes)::numeric AS total_price,
-                NULL::text                  AS customer_id,
-                NULL::text                  AS customer_email,
-                NULL::text                  AS customer_name,
+                MAX(s.customer_id)          AS customer_id,
+                MAX(ac.email)               AS customer_email,
+                NULLIF(TRIM(COALESCE(MAX(ac.first_name),'') || ' ' || COALESCE(MAX(ac.last_name),'')), '')
+                                            AS customer_name,
                 MAX(s.store_id)             AS source_name,
                 NULL::text                  AS billing_city,
                 MAX(s.country)              AS billing_country,
                 NULL::text                  AS shipping_city,
                 MAX(s.country)              AS shipping_country,
                 MAX(s.pos_location_name)    AS pos_location,
-                SUM(s.ordered_item_quantity)::int AS item_count
+                SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_kind IN ('sale','order'))::int
+                                            AS item_count
             FROM all_sales s
+            LEFT JOIN all_customers ac ON ac.customer_id = s.customer_id
+                                      AND s.customer_id IS NOT NULL
             WHERE s.order_id = '{oid}'
               AND s.sale_kind IN ('sale','order')
             GROUP BY s.order_id
@@ -6668,23 +6679,35 @@ def get_order_detail_v2(order_id: str, request: Request):
     if not hrows:
         raise HTTPException(status_code=404, detail="Order not found")
     header = hrows[0]
-    # ── line items from all_sales ────────────────────────────────────────────
+    # ── line items from all_sales + all_products_clean ───────────────────────
+    # Odoo promotion lines have empty SKU and near-zero price; flag them as
+    # line_type='discount' so the frontend can render them separately.
     lines = run_query(f"""
         SELECT
-            s.variant_sku AS sku,
-            COALESCE(NULLIF(p.style_name,''), s.product_title, '') AS product_title,
-            COALESCE(p.color_print, '') AS colour,
-            COALESCE(p.size, '') AS size,
-            s.ordered_item_quantity AS quantity,
+            COALESCE(s.variant_sku, '')    AS sku,
+            COALESCE(NULLIF(p.style_name,''), NULLIF(s.product_title,''), '') AS product_title,
+            COALESCE(p.color_print, '')    AS colour,
+            COALESCE(p.size, '')           AS size,
+            COALESCE(p.brand, '')          AS brand,
+            COALESCE(p.category, '')       AS category,
+            s.ordered_item_quantity        AS quantity,
             ROUND(COALESCE(s.product_price_kes::numeric, 0), 0) AS unit_price,
-            ROUND(COALESCE(s.total_sales_kes::numeric, 0), 0) AS line_total,
-            ROUND(COALESCE(s.discounts_kes::numeric, 0), 0) AS discount,
+            ROUND(COALESCE(s.total_sales_kes::numeric, 0), 0)   AS line_total,
+            ROUND(COALESCE(s.discounts_kes::numeric, 0), 0)     AS discount,
             s.sale_kind,
+            CASE
+                WHEN COALESCE(s.variant_sku,'') = ''
+                     AND COALESCE(s.total_sales_kes::numeric, 0) <= 0
+                THEN 'discount'
+                WHEN s.sale_kind = 'return' THEN 'return'
+                ELSE 'product'
+            END AS line_type,
             CASE WHEN pi.image_512 IS NOT NULL AND pi.image_512 <> ''
                  THEN 'data:image/png;base64,' || pi.image_512
                  ELSE '' END AS image_url
         FROM all_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
+                                      AND COALESCE(s.variant_sku,'') <> ''
         LEFT JOIN LATERAL (
             SELECT i.image_512
             FROM (
@@ -6705,7 +6728,11 @@ def get_order_detail_v2(order_id: str, request: Request):
             LIMIT 1
         ) pi ON TRUE
         WHERE s.order_id = '{oid}'
-        ORDER BY s.sale_kind, s.variant_sku
+        ORDER BY
+            CASE WHEN COALESCE(s.variant_sku,'') = '' AND COALESCE(s.total_sales_kes::numeric,0) <= 0
+                 THEN 1 ELSE 0 END,
+            s.sale_kind,
+            s.variant_sku
     """)
     # ── customer profile ────────────────────────────────────────────────────
     cid = (header.get("customer_id") or "").replace("'", "").strip()

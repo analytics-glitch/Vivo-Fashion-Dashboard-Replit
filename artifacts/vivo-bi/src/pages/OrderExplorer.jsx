@@ -640,8 +640,13 @@ function OrderDetail({ detail, loadingDetail, onClose, revealToken, openModal, o
   }
 
   const { header, lines, customer, pricing } = detail;
-  const saleLine = (lines || []).filter((l) => l.sale_kind !== "return");
-  const retLines = (lines || []).filter((l) => l.sale_kind === "return");
+  const productLines  = (lines || []).filter((l) => l.line_type === "product");
+  const discountLines = (lines || []).filter((l) => l.line_type === "discount");
+  const retLines      = (lines || []).filter((l) => l.line_type === "return");
+  // Fallback for older API shape that lacks line_type
+  const saleLine = productLines.length > 0 || discountLines.length > 0
+    ? productLines
+    : (lines || []).filter((l) => l.sale_kind !== "return");
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -726,7 +731,7 @@ function OrderDetail({ detail, loadingDetail, onClose, revealToken, openModal, o
         {/* ── Line items ───────────────────────────────────────── */}
         <div>
           <SectionLabel>Line Items</SectionLabel>
-          {saleLine.length === 0 ? (
+          {saleLine.length === 0 && discountLines.length === 0 ? (
             <p className="text-xs text-stone-400 italic">No sale lines found in internal records</p>
           ) : (
             <div className="space-y-2">
@@ -737,6 +742,17 @@ function OrderDetail({ detail, loadingDetail, onClose, revealToken, openModal, o
                   onImageExpand={onImageExpand}
                   onProductClick={onProductClick}
                 />
+              ))}
+              {discountLines.map((item, i) => (
+                <div key={`disc-${i}`} className="flex items-center justify-between rounded-lg px-3 py-2 bg-amber-50 border border-amber-100">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-600 bg-amber-100 rounded px-1.5 py-0.5 flex-shrink-0">Promo</span>
+                    <span className="text-xs text-stone-600 truncate">{item.product_title || "Discount"}</span>
+                  </div>
+                  <span className="text-xs font-semibold text-amber-700 flex-shrink-0 ml-2">
+                    {Number(item.line_total) < 0 ? `− ${KES(Math.abs(item.line_total))}` : KES(item.line_total)}
+                  </span>
+                </div>
               ))}
             </div>
           )}
