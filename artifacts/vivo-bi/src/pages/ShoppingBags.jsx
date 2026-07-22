@@ -35,8 +35,8 @@ export default function ShoppingBags() {
     setLoading(true);
     setError(null);
     try {
-      const res = await api("/inventory/shopping-bags");
-      setData(res);
+      const res = await api.get("/inventory/shopping-bags");
+      setData(res.data);
       setLastRefresh(new Date());
     } catch (e) {
       setError(e.message || "Failed to load shopping bags data");
