@@ -6493,24 +6493,34 @@ def get_orders_list(
     limit:              int  = Query(default=50),
     after_id:           str  = Query(default=None),
 ):
-    """Paginated order list from raw_shopify_orders.
-    Keyset-paginated by Shopify order ID DESC. Returns at most 200 per page.
-    after_id = last row id for the next page cursor.
-    fulfillment_status accepts 'unfulfilled' (NULL rows) + 'fulfilled'/'partial'.
+    """Paginated order list from all_sales (all channels/countries) LEFT JOIN raw_shopify_orders.
+    Keyset-paginated by (sale_date DESC, order_id DESC). Returns at most 200 per page.
+    after_id cursor format: '{sale_date}|{order_id}' (opaque).
+    fulfillment_status accepts 'unfulfilled' + 'fulfilled'/'partial' (Shopify orders only).
     """
     safe_limit = min(max(1, int(limit or 50)), 200)
-    conds = ["1=1"]
+
+    # ── CTE conditions applied to all_sales ─────────────────────────────────
+    cte_conds = ["s.sale_kind IN ('sale','order')"]
     if date_from:
         df = date_from.replace("'", "")
-        conds.append(f"rso.created_at::date >= '{df}'::date")
+        cte_conds.append(f"s.sale_date::date >= '{df}'::date")
     if date_to:
         dt = date_to.replace("'", "")
-        conds.append(f"rso.created_at::date <= '{dt}'::date")
+        cte_conds.append(f"s.sale_date::date <= '{dt}'::date")
+    if pos_location:
+        loc = pos_location.replace("'", "").strip()
+        if loc:
+            cte_conds.append(f"s.pos_location_name = '{loc}'")
+    cte_where = " AND ".join(cte_conds)
+
+    # ── outer conditions (Shopify-only fields OK to filter on) ───────────────
+    outer_conds = ["1=1"]
     if financial_status:
         fst = [s.strip() for s in financial_status.split(",") if s.strip()]
         if fst:
             quoted = ",".join(f"'{s.replace(chr(39),'')}'" for s in fst)
-            conds.append(f"rso.financial_status IN ({quoted})")
+            outer_conds.append(f"rso.financial_status IN ({quoted})")
     if fulfillment_status:
         fult = [s.strip() for s in fulfillment_status.split(",") if s.strip()]
         if fult:
@@ -6520,75 +6530,88 @@ def get_orders_list(
                     clauses.append("(rso.fulfillment_status IS NULL OR rso.fulfillment_status = '')")
                 else:
                     clauses.append(f"rso.fulfillment_status = '{s.replace(chr(39),'')}'" )
-            conds.append("(" + " OR ".join(clauses) + ")")
+            outer_conds.append("(" + " OR ".join(clauses) + ")")
     if search:
         q = search.replace("'", "").strip()
-        conds.append(
+        outer_conds.append(
             f"(rso.customer_first_name ILIKE '%{q}%' OR rso.customer_last_name ILIKE '%{q}%'"
-            f" OR rso.customer_email ILIKE '%{q}%' OR rso.name ILIKE '%{q}%')"
+            f" OR rso.customer_email ILIKE '%{q}%'"
+            f" OR COALESCE(rso.name, oa.order_id) ILIKE '%{q}%')"
         )
-    if pos_location:
-        loc = pos_location.replace("'", "").strip()
-        if loc:
-            conds.append(
-                f"EXISTS (SELECT 1 FROM all_sales s2"
-                f" WHERE s2.order_id = rso.id::text"
-                f"   AND s2.sale_kind IN ('sale','order')"
-                f"   AND s2.pos_location_name = '{loc}')"
-            )
+    outer_where = " AND ".join(outer_conds)
+
+    # ── keyset cursor: '{sale_date}|{order_id}' ──────────────────────────────
+    cursor_cond = "1=1"
     if after_id:
-        try:
-            aid = str(int(after_id.strip()))
-            conds.append(f"rso.id::bigint < {aid}")
-        except (ValueError, TypeError):
-            pass
-    where = " AND ".join(conds)
+        parts = (after_id or "").split("|", 1)
+        if len(parts) == 2:
+            c_date = parts[0].replace("'", "").strip()
+            c_oid  = parts[1].replace("'", "").strip()
+            cursor_cond = (
+                f"(oa.sale_date < '{c_date}'"
+                f" OR (oa.sale_date = '{c_date}' AND oa.order_id < '{c_oid}'))"
+            )
+
     rows = run_query(f"""
+        WITH order_agg AS (
+            SELECT
+                s.order_id,
+                s.store_id,
+                MAX(s.sale_date)            AS sale_date,
+                MAX(s.pos_location_name)    AS pos_location,
+                SUM(s.ordered_item_quantity)::int AS item_count,
+                SUM(s.total_sales_kes)::numeric   AS total_price,
+                MAX(s.country)              AS country
+            FROM all_sales s
+            WHERE {cte_where}
+            GROUP BY s.order_id, s.store_id
+        )
         SELECT
-            rso.id,
-            rso.name,
-            rso.created_at,
-            rso.updated_at,
-            rso.financial_status,
-            CASE WHEN COALESCE(rso.fulfillment_status,'') = '' THEN 'unfulfilled'
-                 ELSE rso.fulfillment_status END AS fulfillment_status,
-            rso.total_price,
+            oa.order_id                                         AS id,
+            oa.store_id,
+            COALESCE(rso.name, oa.order_id)                    AS name,
+            COALESCE(rso.created_at, oa.sale_date::text)       AS created_at,
+            oa.sale_date,
+            oa.pos_location,
+            oa.item_count,
+            oa.total_price,
+            oa.country,
             rso.customer_id,
             rso.customer_email,
-            TRIM(COALESCE(rso.customer_first_name,'') || ' ' || COALESCE(rso.customer_last_name,'')) AS customer_name,
+            TRIM(COALESCE(rso.customer_first_name,'') || ' ' || COALESCE(rso.customer_last_name,''))
+                                                                AS customer_name,
+            rso.financial_status,
+            CASE WHEN COALESCE(rso.fulfillment_status,'') = '' THEN 'unfulfilled'
+                 ELSE rso.fulfillment_status END                AS fulfillment_status,
             rso.source_name,
             rso.shipping_city,
-            rso.shipping_country,
-            agg.pos_location,
-            agg.item_count
-        FROM raw_shopify_orders rso
-        LEFT JOIN LATERAL (
-            SELECT
-                MAX(s.pos_location_name) AS pos_location,
-                SUM(s.ordered_item_quantity)::int AS item_count
-            FROM all_sales s
-            WHERE s.order_id = rso.id::text
-              AND s.sale_kind IN ('sale','order')
-        ) agg ON TRUE
-        WHERE {where}
-        ORDER BY rso.id::bigint DESC
+            rso.shipping_country
+        FROM order_agg oa
+        LEFT JOIN raw_shopify_orders rso
+               ON rso.id = oa.order_id AND rso.store_id = oa.store_id
+        WHERE {outer_where} AND {cursor_cond}
+        ORDER BY oa.sale_date DESC, oa.order_id DESC
         LIMIT {safe_limit + 1}
     """, ttl=30)
     has_more = len(rows) > safe_limit
     items = rows[:safe_limit]
-    next_cursor = items[-1]["id"] if has_more and items else None
+    if has_more and items:
+        last = items[-1]
+        next_cursor = f"{last['sale_date']}|{last['id']}"
+    else:
+        next_cursor = None
     return {"orders": items, "has_more": has_more, "next_cursor": next_cursor}
 
 
 @app.get("/api/orders/detail/{order_id:path}")
 def get_order_detail_v2(order_id: str, request: Request):
-    """Full Shopify order detail: header, line items (with images),
-    customer profile, and pricing breakdown.
-    Uses raw_shopify_orders for the header/statuses and all_sales for line items."""
+    """Full order detail — header, line items (with images), customer profile, pricing.
+    Tries raw_shopify_orders first (Uganda/Rwanda Shopify); falls back to all_sales
+    aggregate for Kenya/Odoo orders that have no RSO row."""
     oid = (order_id or "").replace("'", "").strip()
     if not oid:
         raise HTTPException(status_code=404, detail="Order not found")
-    # ── header ──────────────────────────────────────────────────────────────
+    # ── header: try Shopify first, then fall back to all_sales aggregate ─────
     hrows = run_query(f"""
         SELECT
             rso.id, rso.name, rso.created_at, rso.updated_at,
@@ -6615,6 +6638,33 @@ def get_order_detail_v2(order_id: str, request: Request):
         WHERE rso.id = '{oid}'
         LIMIT 1
     """)
+    if not hrows:
+        # Fall back: build header from all_sales (Kenya/Odoo orders)
+        hrows = run_query(f"""
+            SELECT
+                s.order_id                  AS id,
+                s.order_id                  AS name,
+                MAX(s.sale_date)::text      AS created_at,
+                NULL::text                  AS updated_at,
+                NULL::text                  AS financial_status,
+                'unfulfilled'               AS fulfillment_status,
+                SUM(s.total_sales_kes)::numeric AS total_price,
+                NULL::text                  AS customer_id,
+                NULL::text                  AS customer_email,
+                NULL::text                  AS customer_name,
+                MAX(s.store_id)             AS source_name,
+                NULL::text                  AS billing_city,
+                MAX(s.country)              AS billing_country,
+                NULL::text                  AS shipping_city,
+                MAX(s.country)              AS shipping_country,
+                MAX(s.pos_location_name)    AS pos_location,
+                SUM(s.ordered_item_quantity)::int AS item_count
+            FROM all_sales s
+            WHERE s.order_id = '{oid}'
+              AND s.sale_kind IN ('sale','order')
+            GROUP BY s.order_id
+            LIMIT 1
+        """)
     if not hrows:
         raise HTTPException(status_code=404, detail="Order not found")
     header = hrows[0]
