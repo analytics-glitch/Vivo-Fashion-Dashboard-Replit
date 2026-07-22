@@ -739,6 +739,73 @@ const Inventory = ({ onSeeAgedStock }) => {
   // Total SOH = Stores + Warehouse + Online — pipeline (WIP) always excluded.
   const kpiTotal = kpiStore + kpiWarehouse + kpiOnline;
 
+  // ─── Active-styles KPI row ────────────────────────────────────────────────
+  // Derives the same KPI set restricted to Odoo-Active styles only.  Uses the
+  // style_status field added to /analytics/weeks-of-cover (from the stock CTE)
+  // rather than the "sold in N days" proxy that was previously used for this.
+  const activeWocRows = useMemo(
+    () => weeksOfCover.filter((r) => isMerchandise(r.subcategory) && r.style_status !== "Retired"),
+    [weeksOfCover]
+  );
+  const activeStyleNames = useMemo(
+    () => new Set(activeWocRows.map((r) => r.style_name).filter(Boolean)),
+    [activeWocRows]
+  );
+  // Filter the already-filtered inv rows (brand/type/search scope preserved)
+  // to just the active-style subset so the active row respects local filters.
+  const activeInv = useMemo(
+    () => filteredInv.filter((r) => {
+      const s = r.style_name || r.product_name;
+      return Boolean(s && activeStyleNames.has(s));
+    }),
+    [filteredInv, activeStyleNames]
+  );
+  const activeKpis = useMemo(() => {
+    let store = 0, warehouse = 0, online = 0, pipeline = 0;
+    for (const r of activeInv) {
+      if (isPipelineLocation(r.location_name)) pipeline += r.available || 0;
+      else if (isOnlineLocation(r.location_name)) online += r.available || 0;
+      else if (isWarehouseLocation(r.location_name)) warehouse += r.available || 0;
+      else store += r.available || 0;
+    }
+    const total = store + warehouse + online;
+    // User formula: WOC = (Total Units Available / Total Units Sold last month) × 4.3
+    // "Sold last month" ≈ units_sold_28d summed across active WOC rows.
+    const soldLastMonth = activeWocRows.reduce((s, r) => s + (r.units_sold_28d || 0), 0);
+    const woc = soldLastMonth > 0 ? (total / soldLastMonth) * 4.3 : null;
+    // Low-stock: styles where total available across all locations ≤ 10.
+    const styleTotals = new Map();
+    for (const r of activeInv) {
+      const style = r.style_name || r.product_name;
+      if (!style || !isMerchandise(r.product_type)) continue;
+      styleTotals.set(style, (styleTotals.get(style) || 0) + (r.available || 0));
+    }
+    const lowStock = [...styleTotals.values()].filter((v) => v <= 10).length;
+    // Understocked subcats (active-style store stock% vs overall sold%).
+    const soldPctBySubcat = new Map(
+      (filteredSubcatSS || []).map((r) => [r.product_type, r.pct_of_total_sold || 0])
+    );
+    const stockBySubcat = new Map();
+    let activeStockTotal = 0;
+    for (const r of activeWocRows) {
+      if (!r.subcategory) continue;
+      stockBySubcat.set(r.subcategory, (stockBySubcat.get(r.subcategory) || 0) + (r.available || 0));
+      activeStockTotal += r.available || 0;
+    }
+    const activeSubcats = [...stockBySubcat.keys()];
+    let understockedCount = 0;
+    for (const sc of activeSubcats) {
+      const stockPct = activeStockTotal > 0 ? (stockBySubcat.get(sc) / activeStockTotal) * 100 : 0;
+      if (((soldPctBySubcat.get(sc) || 0) - stockPct) > 3) understockedCount++;
+    }
+    const subcatTotal = activeSubcats.length;
+    const understockedPct = subcatTotal > 0 ? (understockedCount / subcatTotal) * 100 : 0;
+    return {
+      store, warehouse, online, pipeline, total, woc, lowStock,
+      soldLastMonth, understockedCount, subcatTotal, understockedPct,
+    };
+  }, [activeInv, activeWocRows, filteredSubcatSS]);
+
   // Export filename slug reflecting the active filters — makes traceability
   // obvious when sharing CSVs via email/chat.
   const exportSlug = useMemo(() => {
@@ -884,7 +951,7 @@ const Inventory = ({ onSeeAgedStock }) => {
 
       {!loading && !error && summary && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-7 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-8 gap-3">
             <KPICard
               testId="inv-kpi-units"
               accent
@@ -1020,6 +1087,101 @@ const Inventory = ({ onSeeAgedStock }) => {
                 />
               );
             })()}
+          </div>
+
+          {/* ── Active Styles KPI row ─────────────────────────────────────── */}
+          <div>
+            <p className="text-[11px] font-semibold text-muted uppercase tracking-widest mb-2 pl-0.5">
+              Active Styles
+            </p>
+            <div className="grid grid-cols-2 lg:grid-cols-8 gap-3">
+              <KPICard
+                accent
+                label="Active Available Units"
+                sub={rowsLoading ? "Loading…" : "Active-style total (stores + wh + online)"}
+                value={rowsLoading ? "…" : fmtNum(activeKpis.total)}
+                icon={Package}
+                showDelta={false}
+              />
+              <KPICard
+                label="Store Stock (Active)"
+                sub="Customer-facing units, active styles only"
+                value={rowsLoading ? "…" : fmtNum(activeKpis.store)}
+                icon={Storefront}
+                showDelta={false}
+              />
+              <KPICard
+                label="Warehouse (Active)"
+                sub="Finished goods, active styles only"
+                value={rowsLoading ? "…" : fmtNum(activeKpis.warehouse)}
+                icon={Cube}
+                showDelta={false}
+              />
+              <KPICard
+                label="Online Stock (Active)"
+                sub="Shop Zetu fulfilment, active styles"
+                value={rowsLoading ? "…" : fmtNum(activeKpis.online)}
+                icon={Globe}
+                showDelta={false}
+              />
+              <KPICard
+                label="Pipeline (Active)"
+                sub="WIP — not sellable, active styles"
+                value={rowsLoading ? "…" : fmtNum(activeKpis.pipeline)}
+                icon={Cube}
+                showDelta={false}
+              />
+              {(() => {
+                const { woc, total, soldLastMonth } = activeKpis;
+                const wocSub = rowsLoading ? "Loading…"
+                  : woc == null ? "No recent sales for active styles"
+                  : woc < 4 ? "Low cover — monitor & reorder"
+                  : "Healthy cover (ideal ~12 weeks)";
+                return (
+                  <KPICard
+                    label="WOC — Active Styles"
+                    sub={wocSub}
+                    formula={
+                      "Active WOC = (Total Active Units Available ÷ Units Sold Last 28d) × 4.3\n" +
+                      "Numerator: store + warehouse + online units for Odoo-Active styles.\n" +
+                      "Denominator: sum of units_sold_28d across active WOC rows × 4.3 weeks/month."
+                    }
+                    value={rowsLoading ? "…" : woc == null ? "—" : `${woc.toFixed(1)} wks`}
+                    icon={Gauge}
+                    higherIsBetter={false}
+                    showDelta={false}
+                  />
+                );
+              })()}
+              <KPICard
+                label="Low-Stock Active (≤10)"
+                sub={rowsLoading ? "Loading SKU detail…" : "Active styles at stockout risk"}
+                value={rowsLoading ? "…" : fmtNum(activeKpis.lowStock)}
+                icon={Warning}
+                showDelta={false}
+                higherIsBetter={false}
+              />
+              {(() => {
+                const { understockedCount, subcatTotal, understockedPct } = activeKpis;
+                const sub = subcatTotal === 0
+                  ? "No subcategory data"
+                  : `${understockedCount} of ${subcatTotal} subcats · variance > 3 pp`;
+                return (
+                  <KPICard
+                    label="% Understocked (Active)"
+                    sub={sub}
+                    formula={
+                      "Active-style store stock% vs overall sold% per subcat.\n" +
+                      "Understocked = subcats where (sold% − active stock%) > 3 pp."
+                    }
+                    value={subcatTotal > 0 ? `${understockedPct.toFixed(1)}%` : "—"}
+                    icon={TrendDown}
+                    higherIsBetter={false}
+                    showDelta={false}
+                  />
+                );
+              })()}
+            </div>
           </div>
 
           <div className="card-white p-3 flex flex-wrap items-center gap-2">
