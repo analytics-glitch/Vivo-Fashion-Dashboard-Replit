@@ -6,6 +6,47 @@ import { ArrowsClockwise, DownloadSimple, Storefront, Basket, Truck, Package, Ca
 
 const COUNTRIES = ["", "Kenya", "Uganda", "Rwanda", "Online"];
 
+const WH_OWNERS = {
+  "Safari Sarit": "Mathew",
+  "Capital Centre": "Mathew",
+  "Garden City": "Elvin",
+  "Mama Ngina": "Mathew",
+  "Two Rivers": "Mathew",
+  "Village Market": "Teddy",
+  "Digo Road": "Emmah",
+  "Moi Avenue": "Emmah",
+  "City Mall": "Teddy",
+  "The Hub": "Christabel",
+  "Kileleshwa": "Christabel",
+  "Greenspan": "Mathew",
+  "Signature": "Emmah",
+  "T Mall": "Benard",
+  "TRM": "Benard",
+  "Galleria": "Christabel",
+  "Junction": "Emmah",
+  "Acacia": "Elvin",
+  "Eldoret": "Benard",
+  "Nakuru": "Benard",
+  "Kisumu": "Elvin",
+  "Kigali": "Benard",
+  "Oasis": "Christabel",
+  "Runda": "Elvin",
+  "Sarit": "Teddy",
+  "Imara": "Teddy",
+  "Meru": "Teddy",
+  "Yaya": "Emmah",
+  "Shopzetu": "Elvin",
+};
+const WH_OWNER_KEYS = Object.keys(WH_OWNERS).sort((a, b) => b.length - a.length);
+function whOwner(posLocation) {
+  if (!posLocation) return "—";
+  const loc = posLocation.toLowerCase();
+  for (const key of WH_OWNER_KEYS) {
+    if (loc.includes(key.toLowerCase())) return WH_OWNERS[key];
+  }
+  return "—";
+}
+
 const DOW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]; // index 0=Mon(1)…6=Sun(7)
 
 function isoDate(d) {
@@ -213,6 +254,7 @@ const StoreFlow = () => {
       const pctVal = r.prev_week_sold > 0 ? +((r.units_transferred / r.prev_week_sold) * 100).toFixed(1) : null;
       return {
         "POS Location": r.pos_location,
+        "WH Owner": whOwner(r.pos_location),
         "Avg Weekly (4W)": Math.round((r.units_4w || 0) / 4),
         "Prev Week Sales": r.prev_week_sold,
         "Mon": dt[1] || 0,
@@ -247,6 +289,7 @@ const StoreFlow = () => {
       const delta = r.woc != null && r.woc_4w_ago != null ? +(r.woc - r.woc_4w_ago).toFixed(1) : null;
       return {
         "POS Location": r.pos_location,
+        "WH Owner": whOwner(r.pos_location),
         "SOH": r.current_stock,
         "Units Sold (4W)": r.units_4w || 0,
         "Weekly Rate": r.units_4w ? Math.round(r.units_4w / 4) : null,
@@ -454,6 +497,7 @@ const StoreFlow = () => {
                         className="py-2 pr-3 sticky left-0 bg-white z-10">
                         <span className="inline-flex items-center gap-1"><Storefront size={13} /> POS Location</span>
                       </SortTh>
+                      <th className="py-2 pr-3 whitespace-nowrap">WH Owner</th>
                       {/* Benchmark columns — Avg 4W first */}
                       <SortTh sk="avg_4w" cur={sortKey} dir={sortDir} onSort={handleSort}
                         className="py-2 pr-3 text-right text-indigo-600 whitespace-nowrap"
@@ -491,6 +535,7 @@ const StoreFlow = () => {
                       return (
                         <tr key={r.pos_location} className="border-b border-slate-100 hover:bg-slate-50" data-testid={`row-store-${r.pos_location}`}>
                           <td className="py-1.5 pr-3 font-medium text-slate-700 whitespace-nowrap sticky left-0 bg-white">{r.pos_location}</td>
+                          <td className="py-1.5 pr-3 text-slate-600 whitespace-nowrap">{whOwner(r.pos_location)}</td>
                           <td className="py-1.5 pr-3 text-right tabular-nums text-indigo-500">{r.units_4w ? fmtNum(Math.round(r.units_4w / 4)) : "—"}</td>
                           <td className="py-1.5 pr-3 text-right tabular-nums text-indigo-700 font-medium">{fmtNum(r.prev_week_sold)}</td>
                           {[1, 2, 3, 4, 5, 6, 7].map((dow) => (
@@ -510,6 +555,7 @@ const StoreFlow = () => {
                   <tfoot>
                     <tr className="border-t border-slate-300 font-semibold text-slate-800">
                       <td className="py-2 pr-3 sticky left-0 bg-white">Total</td>
+                      <td className="py-2 pr-3" />
                       <td className="py-2 pr-3 text-right tabular-nums text-indigo-500">
                         {fmtNum(Math.round(filtered.reduce((a, r) => a + (r.units_4w || 0), 0) / 4))}
                       </td>
@@ -601,6 +647,7 @@ const StoreFlow = () => {
                           className="py-2 pr-4">
                           <span className="inline-flex items-center gap-1"><Storefront size={13} /> POS Location</span>
                         </SortTh>
+                        <th className="py-2 pr-4 whitespace-nowrap">WH Owner</th>
                         <SortTh sk="current_stock" cur={wocSortKey} dir={wocSortDir} onSort={handleWocSort}
                           className="py-2 pr-4 text-right">SOH</SortTh>
                         <SortTh sk="units_4w" cur={wocSortKey} dir={wocSortDir} onSort={handleWocSort}
@@ -632,6 +679,7 @@ const StoreFlow = () => {
                         return (
                           <tr key={r.pos_location} className="border-b border-slate-100 hover:bg-slate-50" data-testid={`row-woc-${r.pos_location}`}>
                             <td className="py-1.5 pr-4 font-medium text-slate-700 whitespace-nowrap">{r.pos_location}</td>
+                            <td className="py-1.5 pr-4 text-slate-600 whitespace-nowrap">{whOwner(r.pos_location)}</td>
                             <td className="py-1.5 pr-4 text-right tabular-nums">{fmtNum(r.current_stock)}</td>
                             <td className="py-1.5 pr-4 text-right tabular-nums">{fmtNum(r.units_4w || 0)}</td>
                             <td className="py-1.5 pr-4 text-right tabular-nums">{r.units_4w ? fmtNum(Math.round(r.units_4w / 4)) : "—"}</td>
