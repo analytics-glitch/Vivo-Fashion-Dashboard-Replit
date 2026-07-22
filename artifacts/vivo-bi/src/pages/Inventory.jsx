@@ -1010,19 +1010,11 @@ const Inventory = ({ onSeeAgedStock }) => {
               // and styles outside the filter scope.  Force the
               // row-rollup path so WoC reacts in lockstep with the
               // other KPIs.
-              let woc;
-              if (!filtersActive && weeksOfCoverSummary && weeksOfCoverSummary.weeks_of_cover != null) {
-                woc = weeksOfCoverSummary.weeks_of_cover;
-              } else {
-                const totalStock = filteredWeeksOfCover.reduce((s, r) => s + (r.current_stock || 0), 0);
-                const totalWeekly = filteredWeeksOfCover.reduce(
-                  (s, r) => s + (r.units_sold_28d ?? r.units_sold_3m ?? 0),
-                  0,
-                ) / 4;
-                woc = totalWeekly > 0 ? totalStock / totalWeekly : null;
-              }
+              // WOC = (Total Units Available (Warehouse + Stores + Online) / Units Sold Previous Month) × 4.3
+              const unitsPrevMonth = filteredWeeksOfCover.reduce((s, r) => s + (r.units_prev_month || 0), 0);
+              const woc = unitsPrevMonth > 0 ? (kpiTotal / unitsPrevMonth) * 4.3 : null;
               const sub = woc == null
-                ? "Not enough recent sales"
+                ? "Not enough sales data for previous month"
                 : woc < 2 ? "Undercover — stockout risk, restock"
                 : woc <= 4 ? "Low cover — monitor, plan re-order"
                 : "Healthy cover (ideal ~12 weeks)";
@@ -1032,10 +1024,9 @@ const Inventory = ({ onSeeAgedStock }) => {
                   label="Overall Weeks of Cover"
                   sub={sub}
                   formula={
-                    "Overall WoC = total chain stock ÷ chain weekly units sold.\n" +
-                    "Weekly units = (last 3 full calendar months avg) ÷ 4  ≡  total_units_3m ÷ 12.\n" +
-                    "Numerator covers EVERY style (matches the Stock-in-Stores tile), not just the top-200 SOR slice.\n" +
-                    "Lower is better — high WoC means stock is sitting too long."
+                    "WOC = (Total Units Available (Warehouse + Stores + Online) ÷ Units Sold Previous Month) × 4.3\n" +
+                    "Numerator: store + warehouse + online units (pipeline excluded) — matches the Total Available tile.\n" +
+                    "Denominator: units sold in the previous complete calendar month (1st→last day)."
                   }
                   value={woc == null ? "—" : `${woc.toFixed(1)} wks`}
                   icon={Gauge}
