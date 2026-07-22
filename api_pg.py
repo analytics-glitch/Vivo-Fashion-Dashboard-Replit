@@ -6613,9 +6613,21 @@ def get_order_detail_v2(order_id: str, request: Request):
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
         LEFT JOIN LATERAL (
             SELECT i.image_512
-            FROM product_image_map m
-            JOIN product_images i ON i.tmpl_id = m.tmpl_id
-            WHERE m.sku = s.variant_sku AND i.image_512 IS NOT NULL AND i.image_512 <> ''
+            FROM (
+                SELECT m.tmpl_id, 1 AS prio
+                FROM product_image_map m
+                WHERE m.sku = s.variant_sku
+                  AND COALESCE(s.variant_sku, '') <> ''
+                UNION ALL
+                SELECT m2.tmpl_id, 2 AS prio
+                FROM product_image_map m2
+                WHERE (s.variant_sku IS NULL OR s.variant_sku = '')
+                  AND LOWER(s.product_title) LIKE '%shopping bag%'
+                  AND m2.sku = '61e57313b6750'
+            ) src
+            JOIN product_images i ON i.tmpl_id = src.tmpl_id
+            WHERE i.image_512 IS NOT NULL AND i.image_512 <> ''
+            ORDER BY src.prio
             LIMIT 1
         ) pi ON TRUE
         WHERE s.order_id = '{oid}'
