@@ -1158,6 +1158,28 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      </div>
     </div>
     <div class="section-head" style="margin-top:1.3rem;"><h3>Purchase Order batches</h3><span class="muted">every saved sheet lives under its PO — expand a PO to see its fabrics, sheets and rolls, or review &amp; upload the summed totals onto the draft PO</span><span style="margin-left:auto;"></span><button class="btn" id="recv-bin-btn" style="display:none;" onclick="openRecvRecoveryBin()" title="Deleted receiving sheets &amp; rolls are kept here for 90 days — restore or permanently remove them (admin only)">🗑 Recovery Bin</button> <button class="btn" id="recv-lc-btn" onclick="openLandedCost(null)" title="Attach clearing, duty &amp; freight charges to a confirmed PO's receipt as a draft landed cost in Odoo">💰 Landed cost upload</button></div>
+    <div class="card" style="padding:0;overflow:hidden;margin-bottom:1rem;">
+     <div style="display:flex;align-items:center;gap:.8rem;padding:.7rem 1rem;cursor:pointer;user-select:none;background:#fff;border-radius:8px;" onclick="toggleRecvSupplierSummary()">
+      <span id="recv-ss-chevron" style="font-weight:700;font-size:12px;color:#555;width:14px;display:inline-block;flex-shrink:0;">▶</span>
+      <span style="font-weight:600;font-size:13.5px;">Supplier Code Summary</span>
+      <span id="recv-ss-date-badge" style="display:none;font-size:11.5px;background:rgba(26,92,56,.1);color:#1a5c38;padding:2px 8px;border-radius:10px;font-weight:500;"></span>
+      <span style="margin-left:auto;display:flex;align-items:center;gap:.5rem;" onclick="event.stopPropagation()">
+       <label style="font-size:12px;color:#666;">From</label>
+       <input type="date" id="recv-ss-from" style="font-size:12px;padding:2px 6px;border:1px solid var(--border,#ddd);border-radius:5px;" onchange="onRecvSsDateChange()">
+       <label style="font-size:12px;color:#666;">To</label>
+       <input type="date" id="recv-ss-to" style="font-size:12px;padding:2px 6px;border:1px solid var(--border,#ddd);border-radius:5px;" onchange="onRecvSsDateChange()">
+       <button class="btn" id="recv-ss-csv-btn" onclick="downloadRecvSupplierSummaryCsv()" style="display:none;padding:3px 10px;font-size:12px;">Export CSV</button>
+      </span>
+     </div>
+     <div id="recv-ss-body" style="display:none;border-top:1px solid var(--border,#e5e5e5);">
+      <div class="tbl-wrap">
+       <table class="data">
+        <thead><tr><th>Supplier</th><th>Code</th><th class="r">Rolls</th><th class="r">Kg</th><th class="r">Metres</th><th class="r">Value (KES)</th><th class="r">Value (¥ Yuan)</th></tr></thead>
+        <tbody id="recv-ss-table-body"><tr><td colspan="7" class="loading">Loading…</td></tr></tbody>
+       </table>
+      </div>
+     </div>
+    </div>
     <div class="card" style="padding:0;">
      <div class="tbl-wrap">
       <table class="data">
@@ -4465,6 +4487,66 @@ async function loadReceivingBatches(){
   const lcBtn=document.getElementById('recv-lc-btn');
   if(lcBtn)lcBtn.style.display=recvQualityOnly?'none':'';
   loadRecvPoBatches();
+}
+let recvSsOpen=false, recvSsData=null, recvSsDebounce=null;
+function toggleRecvSupplierSummary(){
+  recvSsOpen=!recvSsOpen;
+  const body=document.getElementById('recv-ss-body');
+  const chev=document.getElementById('recv-ss-chevron');
+  if(body)body.style.display=recvSsOpen?'':'none';
+  if(chev)chev.textContent=recvSsOpen?'▼':'▶';
+  if(recvSsOpen)loadReceivingSupplierSummary();
+}
+function onRecvSsDateChange(){
+  recvSsData=null;
+  clearTimeout(recvSsDebounce);
+  recvSsDebounce=setTimeout(()=>loadReceivingSupplierSummary(),450);
+}
+async function loadReceivingSupplierSummary(){
+  if(!recvSsOpen)return;
+  const tbody=document.getElementById('recv-ss-table-body');
+  const csvBtn=document.getElementById('recv-ss-csv-btn');
+  const badge=document.getElementById('recv-ss-date-badge');
+  if(!tbody)return;
+  tbody.innerHTML='<tr><td colspan="7" class="loading">Loading…</td></tr>';
+  if(csvBtn)csvBtn.style.display='none';
+  const from=(document.getElementById('recv-ss-from')||{}).value||'';
+  const to=(document.getElementById('recv-ss-to')||{}).value||'';
+  const p=new URLSearchParams();
+  if(from)p.set('date_from',from);
+  if(to)p.set('date_to',to);
+  const qs=p.toString()?'?'+p.toString():'';
+  if(badge){
+    if(from||to){badge.textContent='Filtered: '+(from||'…')+' – '+(to||'…');badge.style.display='';}
+    else badge.style.display='none';
+  }
+  try{
+    const rows=await apiFetch('/api/fabric/receiving/supplier-summary'+qs);
+    recvSsData=rows||[];
+    if(!recvSsData.length){
+      tbody.innerHTML='<tr><td colspan="7" class="muted" style="padding:1rem;">No receiving data found for this date range.</td></tr>';
+      return;
+    }
+    tbody.innerHTML=recvSsData.map(r=>{
+      const mtrs=r.total_mtrs!=null?fmt1(r.total_mtrs)+' m':'<span class="muted">—</span>';
+      const vKES=r.value_kes!=null?fmtKES(r.value_kes):'<span class="muted">—</span>';
+      const vYuan=r.value_yuan!=null?(fmt2(r.value_yuan)+' ¥'):'<span class="muted" title="Yuan pricing not entered for this supplier\'s POs">—</span>';
+      return `<tr><td>${esc(r.supplier||'—')}</td><td>${esc(r.supplier_code||'—')}</td><td class="r">${fmt(r.rolls)}</td><td class="r">${fmt2(r.total_kg)}</td><td class="r">${mtrs}</td><td class="r">${vKES}</td><td class="r">${vYuan}</td></tr>`;
+    }).join('');
+    if(csvBtn)csvBtn.style.display='';
+  }catch(e){tbody.innerHTML='<tr><td colspan="7"><div class="banner banner-err">'+esc(e.message)+'</div></td></tr>';}
+}
+function downloadRecvSupplierSummaryCsv(){
+  if(!recvSsData||!recvSsData.length)return;
+  mixDownloadCsv([
+    ['Supplier',r=>r.supplier],
+    ['Code',r=>r.supplier_code],
+    ['Rolls',r=>r.rolls],
+    ['Kg',r=>r.total_kg],
+    ['Metres',r=>r.total_mtrs],
+    ['Value KES',r=>r.value_kes],
+    ['Value Yuan',r=>r.value_yuan],
+  ],recvSsData,'fabric_receiving_supplier_summary.csv');
 }
 function recvQualityCell(s){
   const total=Number(s.rolls_count||0);

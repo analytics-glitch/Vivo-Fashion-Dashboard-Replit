@@ -7394,6 +7394,149 @@ def receiving_po_batches():
                        "value_kes": None, "value_yuan": None}
     return {"items": rows, "no_po": no_po_group}
 
+
+@fabric_router.get("/api/fabric/receiving/supplier-summary")
+def receiving_supplier_summary(
+    date_from: str = Query(default=""),
+    date_to: str = Query(default=""),
+):
+    """Cross-PO supplier code summary for the Receiving tab.
+    Groups all received sheets by (fabric_supplier_name, supplier_code)
+    and returns rolls, kg, metres, KES value and Yuan value.
+    date_from / date_to are optional YYYY-MM-DD filters on po_date."""
+    date_where = ""
+    date_params: list = []
+    if date_from and date_from.strip():
+        date_where += " AND s.po_date::date >= %s"
+        date_params.append(date_from.strip())
+    if date_to and date_to.strip():
+        date_where += " AND s.po_date::date <= %s"
+        date_params.append(date_to.strip())
+
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        prod_rows = q(conn, f"""
+            SELECT s.po_id,
+                   s.product_id,
+                   SUM(s.total_kg)                                               AS total_kg,
+                   COUNT(r.id)                                                   AS rolls,
+                   MAX(p.kg_per_mtr_eff)                                         AS kg_per_mtr,
+                   MAX(NULLIF(BTRIM(p.supplier_fabric_code), ''))                AS supplier_fabric_code,
+                   MAX(COALESCE(NULLIF(BTRIM(p.fabric_supplier_name), ''), ''))  AS fabric_supplier_name,
+                   MAX(COALESCE(p.name, s.fabric_name))                          AS fabric_name
+            FROM fabric_receiving_sheets s
+            LEFT JOIN raw_fabric_products p ON p.id = s.product_id
+            LEFT JOIN fabric_receiving_rolls r
+                   ON r.sheet_id = s.id AND r.deleted_at IS NULL
+            WHERE s.deleted_at IS NULL
+              AND s.po_id IS NOT NULL{date_where}
+            GROUP BY s.po_id, s.product_id
+        """, date_params if date_params else ())
+
+        if not prod_rows:
+            return []
+
+        all_po_ids = list({int(r["po_id"]) for r in prod_rows})
+
+        pu_rows = q(conn, """
+            SELECT po.po_id, po.product_id, MAX(po.price_unit) AS price_unit
+            FROM raw_fabric_purchase_orders po
+            WHERE po.po_id = ANY(%s)
+            GROUP BY po.po_id, po.product_id
+        """, (all_po_ids,))
+        pu_map = {(r["po_id"], r["product_id"]): r["price_unit"] for r in pu_rows}
+
+        pitems: dict = {}
+        for r in q(conn,
+            "SELECT po_id, price_key, yuan_price, quote_unit"
+            " FROM fabric_po_pricing_items WHERE po_id = ANY(%s)",
+            (all_po_ids,)):
+            pitems.setdefault(r["po_id"], {})[r["price_key"]] = r
+
+    groups: dict = {}
+    for pt in prod_rows:
+        po_id = int(pt["po_id"])
+        pid   = int(pt["product_id"])
+        kg    = float(pt["total_kg"] or 0)
+        rolls = int(pt["rolls"] or 0)
+
+        kpm_val = pt.get("kg_per_mtr")
+        try:
+            kpm = float(kpm_val) if kpm_val not in (None, "") and float(kpm_val) > 0 else None
+        except (TypeError, ValueError):
+            kpm = None
+        mtrs = (kg / kpm) if kpm else None
+
+        sfc = pt.get("supplier_fabric_code") or None
+        if sfc:
+            supplier_code = sfc
+        else:
+            supplier_code = _derive_supplier_code(pt.get("fabric_name") or "") or ""
+
+        supplier_name = pt.get("fabric_supplier_name") or ""
+        group_key = (supplier_name, supplier_code)
+
+        g = groups.get(group_key)
+        if g is None:
+            g = {"supplier": supplier_name, "supplier_code": supplier_code,
+                 "rolls": 0, "total_kg": 0.0, "total_mtrs": 0.0,
+                 "_mtrs_ok": True, "_kes_ok": True,
+                 "_has_yuan": False,   # True once at least one entry has pricing
+                 "value_kes": 0.0, "value_yuan": 0.0}
+            groups[group_key] = g
+
+        g["rolls"]    += rolls
+        g["total_kg"] += kg
+        if mtrs is None:
+            g["_mtrs_ok"] = False
+        else:
+            g["total_mtrs"] += mtrs
+
+        pu = pu_map.get((po_id, pid))
+        if pu is None:
+            g["_kes_ok"] = False
+        elif g["_kes_ok"]:
+            g["value_kes"] += float(pu) * kg
+
+        items_po = pitems.get(po_id, {})
+        if sfc:
+            pkey = f"code:{sfc}"
+        else:
+            dc = _derive_supplier_code(pt.get("fabric_name") or "")
+            pkey = f"code:{dc}" if dc else f"product:{pid}"
+        it = items_po.get(pkey)
+        if it is None and pkey.startswith("code:"):
+            it = items_po.get("derived:" + pkey[5:])
+        it = it or {}
+        yp = _recv_po_num(it.get("yuan_price"))
+        qu = it.get("quote_unit") if it.get("quote_unit") in _PO_QUOTE_UNITS else "kg"
+        # Partial coverage is fine for Yuan: accumulate only priced entries;
+        # return None only when NO entry for this (supplier, code) has any pricing.
+        if yp is not None:
+            if qu == "kg":
+                g["_has_yuan"] = True
+                g["value_yuan"] += yp * kg
+            elif kpm is not None:
+                g["_has_yuan"] = True
+                g["value_yuan"] += yp * (kg / kpm)
+            # qu=="m" but kpm missing: skip this entry (partial is still fine)
+
+    rows_out = []
+    for g in groups.values():
+        rows_out.append({
+            "supplier":      g["supplier"],
+            "supplier_code": g["supplier_code"],
+            "rolls":         g["rolls"],
+            "total_kg":      round(g["total_kg"], 2),
+            "total_mtrs":    round(g["total_mtrs"], 1) if g["_mtrs_ok"] else None,
+            "value_kes":     round(g["value_kes"], 2)  if g["_kes_ok"]  else None,
+            "value_yuan":    round(g["value_yuan"], 2) if g["_has_yuan"] else None,
+        })
+
+    rows_out.sort(key=lambda r: (r["value_kes"] is None, -(r["value_kes"] or 0)))
+    return rows_out
+
+
 @fabric_router.get("/api/fabric/receiving/po-batch-detail")
 def receiving_po_batch_detail(po_id: str = Query(default="")):
     """Inline drill-down for one PO group on the Receiving tab (Postgres only —
