@@ -2010,6 +2010,7 @@ const ReplenishmentsTab = React.lazy(() => import("./Replenishments"));
 const ReplenishByItemTab = React.lazy(() => import("./ReplenishByItem"));
 const StoreFlowTab = React.lazy(() => import("./StoreFlow"));
 const SizeHealthTab = React.lazy(() => import("./SizeHealth"));
+const ShoppingBagsTab = React.lazy(() => import("./ShoppingBags"));
 
 const INV_TABS = [
   { id: "stock", label: "Stock on Hand", pageId: "inventory", el: null },
@@ -2019,6 +2020,7 @@ const INV_TABS = [
   { id: "replenish-by-sku", label: "Replenish by Style/SKU", pageId: "replenish-by-item", el: ReplenishByItemTab },
   { id: "store-flow", label: "Stock Movement", pageId: "store-flow", el: StoreFlowTab },
   { id: "size-health", label: "Size Health", pageId: "size-health", el: SizeHealthTab },
+  { id: "shopping-bags", label: "Shopping Bags", pageId: "inventory", el: ShoppingBagsTab },
 ];
 
 const InventoryPage = () => {

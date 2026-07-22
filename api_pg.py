@@ -33126,6 +33126,45 @@ def _init_warehouse_bins():
     except Exception as e:
         log.error("warehouse_bins table init failed: %s", e)
 
+
+@app.get("/api/inventory/shopping-bags")
+def inventory_shopping_bags():
+    """Shopping bag stock per store, broken down by size and brand."""
+    rows = _users_exec("""
+        SELECT pos_location_name AS store,
+               COALESCE(SUM(qty_available) FILTER (WHERE sku LIKE 'VB001S%'), 0) AS vivo_small,
+               COALESCE(SUM(qty_available) FILTER (WHERE sku LIKE 'VB001M%'), 0) AS vivo_medium,
+               COALESCE(SUM(qty_available) FILTER (WHERE sku LIKE 'VB001L%'), 0) AS vivo_large,
+               COALESCE(SUM(qty_available) FILTER (WHERE brand = 'Zoya'), 0) AS zoya,
+               COALESCE(SUM(qty_available) FILTER (WHERE brand = 'Safari'), 0) AS safari,
+               ROUND(SUM(qty_available)) AS total
+        FROM shopping_bags
+        WHERE pos_location_name NOT IN (
+            'Shopping Bags/Stock','WND/Stock','WHREC/Stock','RCALL/Stock',
+            'Wash/Stock','Studi/Stock','Repai/Stock','Defects/Stock',
+            'SALE/Stock','HWHFN/Stock','CUTT/Stock','PDDEV/Stock',
+            'Staff purchases','Warehouse Finished Goods')
+        GROUP BY pos_location_name
+        ORDER BY total DESC
+    """, fetch=True)
+    warehouse = _users_exec("""
+        SELECT ROUND(SUM(qty_available) FILTER (WHERE sku LIKE 'VB001S%')) AS vivo_small,
+               ROUND(SUM(qty_available) FILTER (WHERE sku LIKE 'VB001M%')) AS vivo_medium,
+               ROUND(SUM(qty_available) FILTER (WHERE sku LIKE 'VB001L%')) AS vivo_large,
+               ROUND(SUM(qty_available) FILTER (WHERE brand = 'Zoya')) AS zoya,
+               ROUND(SUM(qty_available) FILTER (WHERE brand = 'Safari')) AS safari,
+               ROUND(SUM(qty_available)) AS total
+        FROM shopping_bags
+        WHERE location_code = 'Shopping Bags'
+           OR pos_location_name = 'Shopping Bags/Stock'
+    """, fetch=True)
+    return {
+        "stores": rows,
+        "warehouse": warehouse[0] if warehouse else {},
+        "grand_total": sum(int(r.get("total") or 0) for r in rows)
+    }
+
+
 from fastapi.staticfiles import StaticFiles
 import pathlib
 
@@ -34200,42 +34239,6 @@ if build_dir.exists():
         response.headers["Expires"] = "0"
         return response
 
-@app.get("/api/inventory/shopping-bags")
-def inventory_shopping_bags():
-    """Shopping bag stock per store, broken down by size and brand."""
-    rows = _users_exec("""
-        SELECT pos_location_name AS store,
-               COALESCE(SUM(qty_available) FILTER (WHERE sku LIKE 'VB001S%'), 0) AS vivo_small,
-               COALESCE(SUM(qty_available) FILTER (WHERE sku LIKE 'VB001M%'), 0) AS vivo_medium,
-               COALESCE(SUM(qty_available) FILTER (WHERE sku LIKE 'VB001L%'), 0) AS vivo_large,
-               COALESCE(SUM(qty_available) FILTER (WHERE brand = 'Zoya'), 0) AS zoya,
-               COALESCE(SUM(qty_available) FILTER (WHERE brand = 'Safari'), 0) AS safari,
-               ROUND(SUM(qty_available)) AS total
-        FROM shopping_bags
-        WHERE pos_location_name NOT IN (
-            'Shopping Bags/Stock','WND/Stock','WHREC/Stock','RCALL/Stock',
-            'Wash/Stock','Studi/Stock','Repai/Stock','Defects/Stock',
-            'SALE/Stock','HWHFN/Stock','CUTT/Stock','PDDEV/Stock',
-            'Staff purchases','Warehouse Finished Goods')
-        GROUP BY pos_location_name
-        ORDER BY total DESC
-    """, fetch=True)
-    warehouse = _users_exec("""
-        SELECT ROUND(SUM(qty_available) FILTER (WHERE sku LIKE 'VB001S%')) AS vivo_small,
-               ROUND(SUM(qty_available) FILTER (WHERE sku LIKE 'VB001M%')) AS vivo_medium,
-               ROUND(SUM(qty_available) FILTER (WHERE sku LIKE 'VB001L%')) AS vivo_large,
-               ROUND(SUM(qty_available) FILTER (WHERE brand = 'Zoya')) AS zoya,
-               ROUND(SUM(qty_available) FILTER (WHERE brand = 'Safari')) AS safari,
-               ROUND(SUM(qty_available)) AS total
-        FROM shopping_bags
-        WHERE location_code = 'Shopping Bags'
-           OR pos_location_name = 'Shopping Bags/Stock'
-    """, fetch=True)
-    return {
-        "stores": rows,
-        "warehouse": warehouse[0] if warehouse else {},
-        "grand_total": sum(int(r.get("total") or 0) for r in rows)
-    }
 
 if __name__ == "__main__":
     import uvicorn
