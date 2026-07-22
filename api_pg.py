@@ -10704,11 +10704,17 @@ def analytics_weeks_of_cover(
             SELECT p.product_type AS subcategory, p.style_name,
                 SUM(s.ordered_item_quantity) FILTER (
                     WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days') AS units_28,
-                SUM(s.ordered_item_quantity) AS units_56
+                SUM(s.ordered_item_quantity) AS units_56,
+                -- Previous complete calendar month (e.g. June 1–30 when today is July 22).
+                -- Window extends to 62 days so the 1st of last month is always in range.
+                SUM(s.ordered_item_quantity) FILTER (
+                    WHERE s.sale_date::date >= date_trunc('month', CURRENT_DATE - INTERVAL '1 month')
+                    AND   s.sale_date::date <  date_trunc('month', CURRENT_DATE)
+                ) AS units_prev_month
             FROM all_sales s
             LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
             WHERE s.sale_kind IN ('sale','order')
-            AND s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
+            AND s.sale_date::date >= CURRENT_DATE - INTERVAL '62 days'
             AND """ + BASE_FILTERS + """
             AND p.product_type IN (""" + subcat_list + """)
             GROUP BY p.product_type, p.style_name
@@ -10730,6 +10736,7 @@ def analytics_weeks_of_cover(
                 COALESCE(st.available, 0) AS available,
                 COALESCE(sa.units_28, 0) AS units_28,
                 COALESCE(sa.units_56, 0) AS units_56,
+                COALESCE(sa.units_prev_month, 0) AS units_prev_month,
                 st.odoo_status,
                 ((COALESCE(sa.units_28, 0) * 2)
                   + GREATEST(COALESCE(sa.units_56, 0) - COALESCE(sa.units_28, 0), 0)) / 12.0
@@ -10743,6 +10750,7 @@ def analytics_weeks_of_cover(
             available AS current_stock,
             ROUND(weekly_units, 2) AS weekly_units,
             units_28 AS units_sold_28d,
+            units_prev_month,
             ROUND(available / NULLIF(weekly_units, 0), 1) AS weeks_of_cover,
             ROUND(weekly_units * """ + reorder_weeks + """)::int AS reorder_point,
             (available < weekly_units * """ + reorder_weeks + """) AS at_risk,

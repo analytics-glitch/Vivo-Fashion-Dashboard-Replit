@@ -770,8 +770,8 @@ const Inventory = ({ onSeeAgedStock }) => {
     }
     const total = store + warehouse + online;
     // User formula: WOC = (Total Units Available / Total Units Sold last month) × 4.3
-    // "Sold last month" ≈ units_sold_28d summed across active WOC rows.
-    const soldLastMonth = activeWocRows.reduce((s, r) => s + (r.units_sold_28d || 0), 0);
+    // "Sold last month" = units_prev_month (previous complete calendar month).
+    const soldLastMonth = activeWocRows.reduce((s, r) => s + (r.units_prev_month || 0), 0);
     const woc = soldLastMonth > 0 ? (total / soldLastMonth) * 4.3 : null;
     // Low-stock: styles where total available across all locations ≤ 10.
     const styleTotals = new Map();
@@ -1142,9 +1142,9 @@ const Inventory = ({ onSeeAgedStock }) => {
                     label="WOC — Active Styles"
                     sub={wocSub}
                     formula={
-                      "WOC = (Total Units Available (Warehouse + Stores + Online) ÷ Total Units Sold Last Month) × 4.3\n" +
+                      "WOC = (Total Units Available (Warehouse + Stores + Online) ÷ Total Units Sold Previous Month) × 4.3\n" +
                       "Numerator: active-style store + warehouse + online units (pipeline excluded).\n" +
-                      "Denominator: units_sold_28d (last 28 days ≈ 1 month) summed across active styles."
+                      "Denominator: units sold in the previous complete calendar month (1st→last day)."
                     }
                     value={rowsLoading ? "…" : woc == null ? "—" : `${woc.toFixed(1)} wks`}
                     icon={Gauge}
